@@ -1,0 +1,17 @@
+{
+  "title": "Raspberry Pi 5 — total tok/s (4 threads, Gemma 4 E2B Q4_K_M)",
+  "panels": [
+    {"label": "32-token prompt + 128 decode  —  decode-heavy: geist leads total",
+     "series": {
+       "geist":           {"prefill": 30.0, "decode": 7.5, "total": 8.8},
+       "llama.cpp CPU":   {"prefill": 38.5, "decode": 6.8, "total": 8.2},
+       "llama.cpp BLAS":  {"prefill": 34.7, "decode": 6.6, "total": 7.9}
+     }},
+    {"label": "128-token prompt + 128 decode  —  more prefill: near tie",
+     "series": {
+       "geist":           {"prefill": 33.5, "decode": 6.7, "total": 11.1},
+       "llama.cpp CPU":   {"prefill": 38.6, "decode": 6.7, "total": 11.3},
+       "llama.cpp BLAS":  {"prefill": 38.3, "decode": 6.5, "total": 11.1}
+     }}
+  ]
+}

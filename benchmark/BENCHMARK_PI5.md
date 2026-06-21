@@ -146,7 +146,7 @@ Prefill t/s alone understates geist: a real generation is **decode-dominated**
 (one prefill, many decode steps), so end-to-end throughput is what a user feels.
 Measured with the speculative output head **on** (the default since June 2026),
 each engine cold-started under a tight ≤50 °C gate (no thermal skew), total =
-(P+D)/(t_prefill + t_decode). Harness: [`total_tps_pi5.py`](total_tps_pi5.py).
+(P+D)/(t_prefill + t_decode). Harness: [`total_tps.py`](total_tps.py).
 
 **32-token prompt + 128 decode (decode-heavy):**
 
@@ -223,6 +223,31 @@ here; the lever lives on 4 KB-page hosts.
 The Pi 5 build is numerically sound: the function-calling / JSON benchmark
 (`tools/eval_tooling.py`) scores **28/28**, identical to the Apple build, so
 `-ffast-math` + Cortex-A76 NEON do not perturb greedy output on these tasks.
+
+### MMLU (accuracy parity with llama.cpp)
+
+`tools/eval_mmlu.py` runs the standard lm-eval cloze (5-shot, log-prob of
+` A`/` B`/` C`/` D`, argmax) on `cais/mmlu`, driving `eval_geist` with the
+model's own GGUF tokenizer. Quality is hardware-independent (same GGUF → same
+logits modulo kernel rounding), so this was run on the Mac; the Pi build shares
+the kernels. Same 500 questions (`--shuffle` seed 1234), same prompts.
+
+| engine    | MMLU (Gemma 4 E2B Q4_K_M, 5-shot) |
+|-----------|-----------------------------------|
+| llama.cpp | **54.0%** (270/500)               |
+| geist     | **52.8%** (264/500)               |
+
+The 1.2-point gap is 6 questions — inside the ±4.4% binomial CI at n=500 — and
+comes from Q4_K kernel rounding flipping a few close-call argmaxes; per-subject
+scores track llama.cpp closely. geist is quality-faithful to the reference on
+identical weights. Reproduce: `llama-server -m model.gguf -c 4096` then
+`python3 tools/eval_mmlu_llama.py --hf --shuffle --limit 500` for the reference,
+and `tools/eval_mmlu.py --hf --shuffle --limit 500` for geist.
+
+> Gotcha baked into the harness: Gemma needs `<bos>` prepended (`--bos 2`,
+> default on). Without it the model runs out-of-distribution and predicts a
+> newline after `Answer:`, collapsing accuracy to ~37%. llama-server's
+> `/completion` adds BOS itself, so the comparison stays apples-to-apples.
 
 > Measured on one Pi 5 in June 2026, not in CI (CI has no Pi 5 hardware). If you
 > reproduce or refute these, please open a PR with your board, OS, thread count,

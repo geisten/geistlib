@@ -190,16 +190,91 @@ def update_benchmark_md(path: Path, row: dict) -> None:
     path.write_text(f"{preamble}{MARKER}\n\n{body}")
 
 
+QUALITY_MARKER = "<!-- BENCH:QUALITY -->"
+QUALITY_COLS = ["Date", "Model", "Host", "Target/Mode", "MMLU %", "n", "shots"]
+# MMLU is quant-determined (same GGUF -> same logits modulo kernel rounding), so
+# Host/Target only confirm a build reproduces it; they don't change the number.
+
+MMLU_RE = re.compile(r"MMLU accuracy:\s*([\d.]+)\s*\((\d+)/(\d+)\)")
+
+
+def _run_mmlu(script: str, extra: list[str], limit: int, shots: int) -> tuple[float, int] | None:
+    """Run an eval_mmlu*.py harness; return (accuracy, n) or None on failure."""
+    cmd = [sys.executable, script, "--hf", "--shuffle",
+           "--limit", str(limit), "--shots", str(shots)] + extra
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    out = proc.stdout + proc.stderr
+    m = MMLU_RE.search(out)
+    if not m:
+        sys.stderr.write(out)
+        return None
+    return float(m.group(1)), int(m.group(3))
+
+
 def quality_suite(args: argparse.Namespace) -> None:
-    ref_gguf = os.environ.get("BENCH_REF_GGUF")
-    ref_bin = os.environ.get("BENCH_REF_BIN")
-    print(f"bench: suite '{args.suite}' needs a reference toolchain and is not "
-          "wired into the hermetic make flow yet.")
-    print("  Quality (PPL / KL / MMLU) requires the HF tokenizer + datasets;")
-    print("  compare-ref additionally needs a llama.cpp build.")
+    gguf = resolve_gguf()
+    if gguf is None:
+        print("bench: no model found (set BENCH_GGUF or GEIST_GGUF_PATH). Skipping.")
+        return
+    # eval_geist lives in the sibling tools/ dir of the bench (tests/) bin dir.
+    eval_geist = Path(args.bin_dir).parent / "tools" / "eval_geist"
+    if not eval_geist.is_file():
+        sys.exit(f"bench: missing {eval_geist} — run `make bin` first")
+
+    here = Path(__file__).parent
+    default_limit = "1000" if args.suite == "quality-detailed" else "200"
+    limit = int(os.environ.get("BENCH_MMLU_LIMIT", default_limit))
+    shots = int(os.environ.get("BENCH_MMLU_SHOTS", "5"))
+
+    print(f"bench: MMLU cloze, {limit} questions, {shots}-shot (needs `pip install datasets`)")
+    res = _run_mmlu(str(here / "eval_mmlu.py"),
+                    ["--bin", str(eval_geist), "--gguf", gguf], limit, shots)
+    if res is None:
+        sys.exit("bench: geist MMLU failed (see output above)")
+    acc, n = res
+    print(f"\ngeist MMLU: {acc:.4f} ({int(acc * n)}/{n}, {shots}-shot)")
+
     if args.suite == "compare-ref":
-        print(f"  BENCH_REF_GGUF={ref_gguf or '(unset)'}  BENCH_REF_BIN={ref_bin or '(unset)'}")
-    print("  See benchmark/BENCHMARKING.md for the manual procedure. Exiting cleanly.")
+        # Reference = a running llama-server on BENCH_REF_URL (same GGUF).
+        url = os.environ.get("BENCH_REF_URL", "http://127.0.0.1:8080")
+        ref = _run_mmlu(str(here / "eval_mmlu_llama.py"), ["--url", url], limit, shots)
+        if ref is None:
+            print(f"  reference skipped: no llama-server at {url}. Start one with:")
+            print(f"    llama-server -m {gguf} -c 4096")
+        else:
+            print(f"llama.cpp MMLU: {ref[0]:.4f} (n={ref[1]}, {shots}-shot)  "
+                  f"-> geist {('leads' if acc > ref[0] else 'trails' if acc < ref[0] else 'ties')} "
+                  f"by {abs(acc - ref[0]) * 100:.1f} pts")
+
+    if args.record and args.benchmark_md:
+        row = [datetime.now(timezone.utc).strftime("%Y-%m-%d"), Path(gguf).name,
+               host_id(), f"{args.target}/{args.mode}", f"{acc * 100:.1f}", str(n), str(shots)]
+        record_quality(Path(args.benchmark_md), row)
+        print(f"recorded to {args.benchmark_md}")
+
+
+def record_quality(path: Path, new_cells: list[str]) -> None:
+    """Upsert a quality row under QUALITY_MARKER; key = (model, host, target, n, shots)."""
+    key_idx = (1, 2, 3, 5, 6)
+    header = ("| " + " | ".join(QUALITY_COLS) + " |\n| "
+              + " | ".join(":---" if i < 4 else ":---:" for i in range(len(QUALITY_COLS))) + " |")
+    existing: dict[tuple, list[str]] = {}
+    preamble = ""
+    if path.is_file():
+        text = path.read_text()
+        if QUALITY_MARKER in text:
+            preamble, body = text.split(QUALITY_MARKER, 1)
+            for line in body.splitlines():
+                if line.strip().startswith("|") and ":---" not in line and "MMLU" not in line:
+                    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                    if len(cells) == len(QUALITY_COLS):
+                        existing[tuple(cells[i] for i in key_idx)] = cells
+        else:
+            preamble = text.rstrip() + "\n\n"
+    existing[tuple(new_cells[i] for i in key_idx)] = new_cells  # newest wins per key
+    rows = sorted(existing.values(), key=lambda c: (c[1], c[3], c[6]))
+    body = header + "\n" + "\n".join("| " + " | ".join(c) + " |" for c in rows) + "\n"
+    path.write_text(f"{preamble}{QUALITY_MARKER}\n\n{body}")
 
 
 def main() -> None:

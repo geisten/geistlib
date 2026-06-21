@@ -277,7 +277,8 @@ help:
 	"Bench (timing/quality tools, not pass/fail):" \
 	"  make bench | bench-mm                       raw probes | multimodal encoders" \
 	"  make bench-small | bench-detailed           record perf to benchmark/BENCHMARK.md" \
-	"  make bench-quality-small|-detailed|bench-compare-ref   PPL/KL (set BENCH_REF_*)" \
+	"  make bench-quality-small|-detailed          MMLU acc -> benchmark/BENCHMARK.md" \
+	"  make bench-compare-ref BENCH_REF_URL=...    MMLU vs a running llama-server" \
 	"  make bench-mmlu [MMLU_LIMIT=0] | bench-tooling         accuracy (pip install datasets)" \
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
