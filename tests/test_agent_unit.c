@@ -63,71 +63,54 @@ static void test_whitelist(void) {
     fails += geist_expect(agent_find(&ag, "doc_searc") == nullptr, "whitelist: no prefix match");
 }
 
+static void run_search(const char *query, char *out, size_t cap) {
+    char   req[512];
+    int    k = snprintf(req, sizeof req, "{\"query\":\"%s\"}", query);
+    size_t n = 0;
+    docsearch_invoke((void *) (intptr_t) DOC_DIR, (size_t) k, req, cap, out, &n);
+}
+
 static void test_docsearch(void) {
     mkdir(DOC_DIR, 0755);
+    /* three blank-line-separated paragraphs: the answer is in para 2/3, not 1. */
     FILE *f = fopen(DOC_DIR "/bgb.txt", "w");
     if (f) {
-        fputs("§ 573c Kuendigungsfristen\n"
-              "Die Kuendigung ist spaetestens am dritten Werktag zulaessig.\n"
+        fputs("# Mietrecht\nAllgemeine Hinweise zum Wohnraum.\n\n"
+              "Die Kuendigungsfrist betraegt drei Monate fuer den Mieter.\n\n"
               "Ein unkuendbarer Mietvertrag ist die Ausnahme.\n",
               f);
         fclose(f);
     }
 
-    char   out[GEIST_AGENT_OBS_CAP];
-    size_t n = 0;
-    /* a hit, case-insensitive */
-    enum geist_status st = docsearch_invoke((void *) (intptr_t) DOC_DIR,
-                                            strlen("{\"query\":\"UNKUENDBAR\"}"),
-                                            "{\"query\":\"UNKUENDBAR\"}",
-                                            sizeof out,
-                                            out,
-                                            &n);
-    fails += geist_expect(st == GEIST_OK, "docsearch: returns OK");
-    fails += geist_expect(strstr(out, "unkuendbar") != nullptr,
-                          "docsearch: finds the matching line");
+    char out[GEIST_AGENT_OBS_CAP];
+
+    /* single keyword (case-insensitive) -> the paragraph that contains it */
+    run_search("UNKUENDBAR", out, sizeof out);
+    fails += geist_expect(strstr(out, "unkuendbarer") != nullptr, "docsearch: single-word hit");
     fails += geist_expect(strstr(out, "bgb.txt") != nullptr, "docsearch: tags the source file");
 
-    /* no hit */
-    docsearch_invoke((void *) (intptr_t) DOC_DIR,
-                     strlen("{\"query\":\"zebra\"}"),
-                     "{\"query\":\"zebra\"}",
-                     sizeof out,
-                     out,
-                     &n);
+    /* a whole QUESTION: shares warranty-style key terms with para 2 but also
+     * carries interrogatives (wie/lang) the answer lacks -> overlap score still
+     * clears the threshold (this is the line-AND regression this fixes). */
+    run_search("wie lang ist die Kuendigungsfrist fuer den Mieter", out, sizeof out);
+    fails += geist_expect(strstr(out, "drei Monate") != nullptr,
+                          "docsearch: question hits answer paragraph");
+
+    /* returns the matching paragraph, not paragraph 1 */
+    fails += geist_expect(strstr(out, "Allgemeine Hinweise") == nullptr,
+                          "docsearch: returns the relevant paragraph, not the first");
+
+    run_search("zebra giraffe", out, sizeof out);
     fails += geist_expect(strstr(out, "no matches") != nullptr, "docsearch: reports no matches");
 
-    /* missing query field */
-    docsearch_invoke((void *) (intptr_t) DOC_DIR, strlen("{}"), "{}", sizeof out, out, &n);
-    fails += geist_expect(strstr(out, "missing") != nullptr, "docsearch: flags a missing query");
-
-    /* multi-word AND: all significant words present on one line -> hit */
-    docsearch_invoke((void *) (intptr_t) DOC_DIR,
-                     strlen("{\"query\":\"unkuendbarer Mietvertrag\"}"),
-                     "{\"query\":\"unkuendbarer Mietvertrag\"}",
-                     sizeof out,
-                     out,
-                     &n);
-    fails += geist_expect(strstr(out, "Mietvertrag") != nullptr, "docsearch: multi-word AND hit");
-
-    /* short/stop words are skipped: "ist die Ausnahme" -> Ausnahme drives it */
-    docsearch_invoke((void *) (intptr_t) DOC_DIR,
-                     strlen("{\"query\":\"ist die Ausnahme\"}"),
-                     "{\"query\":\"ist die Ausnahme\"}",
-                     sizeof out,
-                     out,
-                     &n);
-    fails += geist_expect(strstr(out, "Ausnahme") != nullptr, "docsearch: short words skipped");
-
-    /* one significant word absent -> no match (AND, not OR) */
-    docsearch_invoke((void *) (intptr_t) DOC_DIR,
-                     strlen("{\"query\":\"Mietvertrag Zebra\"}"),
-                     "{\"query\":\"Mietvertrag Zebra\"}",
-                     sizeof out,
-                     out,
-                     &n);
+    /* one key term present but below threshold (2) -> no match */
+    run_search("Mietvertrag zebra", out, sizeof out);
     fails += geist_expect(strstr(out, "no matches") != nullptr,
-                          "docsearch: AND misses on absent word");
+                          "docsearch: below-threshold -> miss");
+
+    /* missing query field */
+    docsearch_invoke((void *) (intptr_t) DOC_DIR, strlen("{}"), "{}", sizeof out, out, nullptr);
+    fails += geist_expect(strstr(out, "missing") != nullptr, "docsearch: flags a missing query");
 
     remove(DOC_DIR "/bgb.txt");
     remove(DOC_DIR);
