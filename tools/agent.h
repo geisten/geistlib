@@ -58,27 +58,31 @@ struct geist_agent {
     const struct geist_tool *tools; /* borrowed — caller keeps it alive */
     size_t                   n_tools;
     size_t                   max_steps;
+    const char              *system_prompt; /* borrowed; nullptr -> default role */
     geist_token_t            eos, eot;
     char                     transcript[GEIST_AGENT_TRANSCRIPT_CAP];
     size_t                   tlen;
 };
 
 /* Caller provides storage for *a (it is large — put it in static/heap, not a
- * deep stack). tools[] must outlive the agent. max_steps 0 -> default 8. */
+ * deep stack). tools[] + system_prompt must outlive the agent. max_steps 0 ->
+ * default 8. system_prompt nullptr -> a generic default role line. */
 static inline void geist_agent_init(struct geist_agent     *a,
                                     struct geist_model     *model,
                                     struct geist_session   *session,
                                     size_t                  n_tools,
                                     const struct geist_tool tools[static n_tools],
-                                    size_t                  max_steps) {
-    a->model     = model;
-    a->session   = session;
-    a->tools     = tools;
-    a->n_tools   = n_tools;
-    a->max_steps = max_steps ? max_steps : 8;
-    a->eos       = geist_model_eos_token(model);
-    a->eot       = geist_model_token_by_text(model, "<end_of_turn>");
-    a->tlen      = 0;
+                                    size_t                  max_steps,
+                                    const char             *system_prompt) {
+    a->model         = model;
+    a->session       = session;
+    a->tools         = tools;
+    a->n_tools       = n_tools;
+    a->max_steps     = max_steps ? max_steps : 8;
+    a->system_prompt = system_prompt;
+    a->eos           = geist_model_eos_token(model);
+    a->eot           = geist_model_token_by_text(model, "<end_of_turn>");
+    a->tlen          = 0;
 }
 
 /* Find the first {"tool":"NAME","args":{...}} in raw. Returns 1 and fills name
@@ -232,13 +236,15 @@ static inline size_t agent_generate_turn(struct geist_agent *a, size_t cap, char
  * + the required output shape. Returns bytes written. */
 static inline size_t
 agent_system_prompt(const struct geist_agent *a, size_t cap, char out[static cap]) {
-    size_t w =
-            (size_t) snprintf(out,
-                              cap,
-                              "<start_of_turn>user\n"
-                              "You are a task agent. To act, reply with EXACTLY one line of JSON:\n"
-                              "{\"tool\":\"<name>\",\"args\":{...}}\n"
-                              "Available tools (you may use no other):\n");
+    const char *role = a->system_prompt ? a->system_prompt : "You are a task agent.";
+    size_t      w    = (size_t) snprintf(out,
+                                         cap,
+                                         "<start_of_turn>user\n"
+                                         "%s\n"
+                                         "To act, reply with EXACTLY one line of JSON:\n"
+                                         "{\"tool\":\"<name>\",\"args\":{...}}\n"
+                                         "Available tools (you may use no other):\n",
+                                         role);
     for (size_t i = 0; i < a->n_tools && w < cap; i++) {
         w += (size_t) snprintf(
                 out + w, cap - w, "- %s: args %s\n", a->tools[i].name, a->tools[i].args_schema);
