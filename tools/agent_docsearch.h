@@ -41,6 +41,39 @@ static inline int ci_contains(const char *hay, const char *needle) {
     return 0;
 }
 
+/* A line matches if every "significant" query word (>= 3 chars) appears in it,
+ * case-insensitive (AND). Short words (the, on, is, …) are skipped so a natural
+ * question like "warranty on the X200" matches a line that lacks "on"/"the". If
+ * the query has no >=3-char word, fall back to a whole-query substring.
+ * ponytail: length-3 heuristic, not a real stop-word list or stemmer; no
+ * ranking — upgrade to BM25/an index when the corpus grows. */
+static inline int docsearch_line_matches(const char *line, const char *query) {
+    int         significant = 0;
+    const char *p           = query;
+    char        word[128];
+    while (*p) {
+        while (*p == ' ') {
+            p++;
+        }
+        size_t w = 0;
+        while (*p && *p != ' ') {
+            if (w + 1 < sizeof word) {
+                word[w++] = *p;
+            }
+            p++;
+        }
+        word[w] = '\0';
+        if (w < 3) {
+            continue; /* skip short / stop-ish words */
+        }
+        significant++;
+        if (!ci_contains(line, word)) {
+            return 0; /* a significant word is missing */
+        }
+    }
+    return significant ? 1 : ci_contains(line, query);
+}
+
 /* geist_tool invoke: ctx = directory path. args = {"query": "..."}. */
 static inline enum geist_status docsearch_invoke(void      *ctx,
                                                  size_t     args_len,
@@ -83,7 +116,7 @@ static inline enum geist_status docsearch_invoke(void      *ctx,
         }
         char line[DOCSEARCH_LINE_CAP];
         while (fgets(line, sizeof line, f) && hits < DOCSEARCH_MAX_HITS) {
-            if (ci_contains(line, query)) {
+            if (docsearch_line_matches(line, query)) {
                 line[strcspn(line, "\n")] = '\0';
                 int k = snprintf(out + w, out_cap - w, "[%s] %s\n", de->d_name, line);
                 if (k < 0 || (size_t) k >= out_cap - w) {

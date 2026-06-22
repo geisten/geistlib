@@ -101,6 +101,34 @@ static void test_docsearch(void) {
     docsearch_invoke((void *) (intptr_t) DOC_DIR, strlen("{}"), "{}", sizeof out, out, &n);
     fails += geist_expect(strstr(out, "missing") != nullptr, "docsearch: flags a missing query");
 
+    /* multi-word AND: all significant words present on one line -> hit */
+    docsearch_invoke((void *) (intptr_t) DOC_DIR,
+                     strlen("{\"query\":\"unkuendbarer Mietvertrag\"}"),
+                     "{\"query\":\"unkuendbarer Mietvertrag\"}",
+                     sizeof out,
+                     out,
+                     &n);
+    fails += geist_expect(strstr(out, "Mietvertrag") != nullptr, "docsearch: multi-word AND hit");
+
+    /* short/stop words are skipped: "ist die Ausnahme" -> Ausnahme drives it */
+    docsearch_invoke((void *) (intptr_t) DOC_DIR,
+                     strlen("{\"query\":\"ist die Ausnahme\"}"),
+                     "{\"query\":\"ist die Ausnahme\"}",
+                     sizeof out,
+                     out,
+                     &n);
+    fails += geist_expect(strstr(out, "Ausnahme") != nullptr, "docsearch: short words skipped");
+
+    /* one significant word absent -> no match (AND, not OR) */
+    docsearch_invoke((void *) (intptr_t) DOC_DIR,
+                     strlen("{\"query\":\"Mietvertrag Zebra\"}"),
+                     "{\"query\":\"Mietvertrag Zebra\"}",
+                     sizeof out,
+                     out,
+                     &n);
+    fails += geist_expect(strstr(out, "no matches") != nullptr,
+                          "docsearch: AND misses on absent word");
+
     remove(DOC_DIR "/bgb.txt");
     remove(DOC_DIR);
 }
