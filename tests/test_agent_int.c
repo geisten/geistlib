@@ -51,7 +51,7 @@ int main(void) {
     }
 
     struct geist_tool tools[] = {docsearch_tool(DOC_DIR)};
-    geist_agent_init(&agent, model, sess, 1, tools, 4 /* max_steps */);
+    geist_agent_init(&agent, model, sess, 1, tools, 4 /* max_steps */, nullptr /* default role */);
 
     int               rc  = GEIST_TEST_PASS;
     const char       *req = "How long is the warranty on the X200 blender?";
