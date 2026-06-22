@@ -53,6 +53,18 @@ static inline size_t xfwrite(const void *p, size_t sz, size_t n, FILE *f) {
 #define GEIST_TEST_SKIP 77
 #define GEIST_TEST_ERROR 99
 
+/* Counter-style expectation: prints FAIL and returns 1 on a failed check, so a
+ * test can accumulate  fails += geist_expect(cond, "what");  and finish with
+ * return fails ? GEIST_TEST_FAIL : GEIST_TEST_PASS. static inline -> no
+ * unused-function warning in TUs that don't use it. */
+static inline int geist_expect(int cond, const char *what) {
+    if (!cond) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        return 1;
+    }
+    return 0;
+}
+
 /* ---- Skip helpers ------------------------------------------------------- */
 
 /* Print SKIP reason to stdout and exit 77. Use from main() when the test

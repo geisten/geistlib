@@ -1,0 +1,230 @@
+/*
+ * agent_webfetch.h — a web_fetch geist_tool (Unix/desktop): fetch an http(s)
+ * URL via curl and return the tag-stripped text. ctx is an optional host
+ * allowlist (comma-separated; nullptr = any http/https host).
+ *
+ * web_fetch is the agent's most dangerous tool — an untrusted model picks the
+ * URL — so the trust boundary is defended several ways, NOT simplified away:
+ *   - no shell: curl is run via fork + execvp with the URL as a separate argv
+ *     element, so a URL like  http://x;rm -rf ~  cannot inject a command;
+ *   - scheme gate: only literal http:// / https:// (no file:, data:, gopher:);
+ *   - host allowlist (ctx): exact host or a dot-bounded subdomain;
+ *   - curl --proto/--proto-redir =http,https so a redirect can't escape to
+ *     file:// or another scheme; size + time caps.
+ * ponytail: does NOT block private/link-local IPs (SSRF) — for an open fetch
+ *   add IP filtering; the host allowlist is the real mitigation. Keeps text
+ *   inside <script>/<style>; swap in lynx -dump if you need clean extraction.
+ *   iOS/Android: curl + fork aren't available in the sandbox — the host app
+ *   supplies its own web_fetch via the platform HTTP client; this header is the
+ *   Unix tool.
+ */
+#ifndef GEIST_AGENT_WEBFETCH_H
+#define GEIST_AGENT_WEBFETCH_H
+
+#include <geist.h>
+
+#include "agent.h"
+
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+enum { WEBFETCH_RAW_CAP = 1 << 16 }; /* read at most 64 KB of body */
+
+/* http:// or https:// only (lowercase — models emit lowercase; stricter=safer). */
+static inline int webfetch_scheme_ok(const char *url) {
+    return strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0;
+}
+
+/* Host between "://" and the next '/'|':'|'?'|'#'. Returns 1 on success. */
+static inline int webfetch_host(const char *url, size_t cap, char host[static cap]) {
+    const char *s = strstr(url, "://");
+    if (!s) {
+        return 0;
+    }
+    s += 3;
+    size_t w = 0;
+    while (*s && *s != '/' && *s != ':' && *s != '?' && *s != '#' && w + 1 < cap) {
+        host[w++] = *s++;
+    }
+    host[w] = '\0';
+    return w > 0;
+}
+
+/* allow nullptr/"" = any. Else host must equal an entry or be a dot-bounded
+ * subdomain of it (so "example.com" allows "www.example.com" but NOT
+ * "notexample.com" or "example.com.evil.com"). */
+static inline int webfetch_host_allowed(const char *host, const char *allow) {
+    if (!allow || !allow[0]) {
+        return 1;
+    }
+    size_t      hl = strlen(host);
+    const char *p  = allow;
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t      el    = comma ? (size_t) (comma - p) : strlen(p);
+        while (el && *p == ' ') { /* trim */
+            p++;
+            el--;
+        }
+        while (el && p[el - 1] == ' ') {
+            el--;
+        }
+        if (el) {
+            if (hl == el && strncmp(host, p, el) == 0) {
+                return 1; /* exact */
+            }
+            if (hl > el + 1 && host[hl - el - 1] == '.' && strncmp(host + hl - el, p, el) == 0) {
+                return 1; /* dot-bounded subdomain */
+            }
+        }
+        if (!comma) {
+            break;
+        }
+        p = comma + 1;
+    }
+    return 0;
+}
+
+/* Drop everything between '<' and '>' and collapse runs of whitespace. */
+static inline size_t
+webfetch_strip_html(size_t n, const char in[static n], size_t cap, char out[static cap]) {
+    size_t w     = 0;
+    int    intag = 0, sp = 0;
+    for (size_t i = 0; i < n && w + 1 < cap; i++) {
+        char c = in[i];
+        if (c == '<') {
+            intag = 1;
+        } else if (c == '>') {
+            intag = 0;
+        } else if (!intag) {
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                if (!sp && w > 0) {
+                    out[w++] = ' ';
+                    sp       = 1;
+                }
+            } else {
+                out[w++] = c;
+                sp       = 0;
+            }
+        }
+    }
+    while (w > 0 && out[w - 1] == ' ') {
+        w--;
+    }
+    out[w] = '\0';
+    return w;
+}
+
+/* Run curl with the URL as a literal argv (no shell). Returns bytes read into
+ * raw, or -1 if curl is missing / failed / the fetch errored. */
+static inline long webfetch_curl(const char *url, size_t cap, char raw[static cap]) {
+    int fds[2];
+    if (pipe(fds) != 0) {
+        return -1;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return -1;
+    }
+    if (pid == 0) { /* child: curl stdout -> pipe, stderr -> /dev/null */
+        dup2(fds[1], STDOUT_FILENO);
+        int nul = open("/dev/null", O_WRONLY);
+        if (nul >= 0) {
+            dup2(nul, STDERR_FILENO);
+        }
+        close(fds[0]);
+        close(fds[1]);
+        char *const argv[] = {(char *) "curl",
+                              (char *) "-sSL",
+                              (char *) "--max-time",
+                              (char *) "10",
+                              (char *) "--max-filesize",
+                              (char *) "5000000",
+                              (char *) "--proto",
+                              (char *) "=http,https",
+                              (char *) "--proto-redir",
+                              (char *) "=http,https",
+                              (char *) "-A",
+                              (char *) "geist-agent",
+                              (char *) url,
+                              nullptr};
+        execvp("curl", argv);
+        _exit(127); /* curl not found */
+    }
+    close(fds[1]);
+    size_t  n = 0;
+    ssize_t r;
+    while (n + 1 < cap && (r = read(fds[0], raw + n, cap - 1 - n)) > 0) {
+        n += (size_t) r;
+    }
+    raw[n] = '\0';
+    close(fds[0]);
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        return -1;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return -1; /* curl missing or fetch failed */
+    }
+    return (long) n;
+}
+
+/* geist_tool invoke: ctx = host allowlist (or nullptr). args = {"url": "..."}. */
+static inline enum geist_status webfetch_invoke(void      *ctx,
+                                                size_t     args_len,
+                                                const char args[static args_len],
+                                                size_t     out_cap,
+                                                char       out[static out_cap],
+                                                size_t    *out_len) {
+    (void) args_len;
+    const char *allow = (const char *) ctx;
+    char        url[1024];
+    size_t      n = 0;
+
+    if (!agent_json_str(args, "url", sizeof url, url)) {
+        n = (size_t) snprintf(out, out_cap, "error: missing \"url\"");
+    } else if (!webfetch_scheme_ok(url)) {
+        n = (size_t) snprintf(out, out_cap, "error: only http/https URLs are allowed");
+    } else {
+        char host[256];
+        if (!webfetch_host(url, sizeof host, host)) {
+            n = (size_t) snprintf(out, out_cap, "error: malformed URL");
+        } else if (!webfetch_host_allowed(host, allow)) {
+            n = (size_t) snprintf(out, out_cap, "error: host \"%s\" is not allowed", host);
+        } else {
+            static char raw[WEBFETCH_RAW_CAP]; /* ponytail: bounded, single-threaded agent */
+            long        got = webfetch_curl(url, sizeof raw, raw);
+            if (got < 0) {
+                n = (size_t) snprintf(
+                        out, out_cap, "error: fetch failed (curl missing or HTTP error)");
+            } else {
+                n = webfetch_strip_html((size_t) got, raw, out_cap, out);
+                if (n == 0) {
+                    n = (size_t) snprintf(out, out_cap, "(no text content)");
+                }
+            }
+        }
+    }
+    if (out_len) {
+        *out_len = n;
+    }
+    return GEIST_OK; /* errors are usable observations, not hard failures */
+}
+
+/* Ready-made whitelist entry; allow_hosts nullptr = any http/https host. */
+static inline struct geist_tool webfetch_tool(const char *allow_hosts) {
+    return (struct geist_tool) {
+            .name        = "web_fetch",
+            .args_schema = "{\"url\": string}",
+            .invoke      = webfetch_invoke,
+            .ctx         = (void *) (intptr_t) allow_hosts,
+    };
+}
+
+#endif /* GEIST_AGENT_WEBFETCH_H */

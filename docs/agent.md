@@ -1,0 +1,193 @@
+# Agent, CLI & memory palace
+
+The interaction layer that sits **above** the public ABI (`include/geist.h`).
+Everything here lives in `tools/` as **header-only** modules (`static inline`),
+so the desktop binaries and an embedded host (iOS/Android) compile the same code
+in-process — there is no `libgeist` surface change and nothing new to link.
+
+The agent runs in the **same process** as the model: a request is an in-process
+function call over a resident `geist_session`. "Resident" therefore means
+different things per platform — a long-lived daemon on a server, a live session
+object inside an app — but the core is identical.
+
+- [The CLI — `geist_chat`](#the-cli--geist_chat)
+- [The memory palace — `mind.h`](#the-memory-palace--mindh)
+- [The agent — `agent.h`](#the-agent--agenth)
+- [Tools](#tools)
+- [Security model](#security-model)
+- [Embedding the agent](#embedding-the-agent)
+
+---
+
+## The CLI — `geist_chat`
+
+`tools/geist_chat.c` is an interactive multi-turn chat over the STABLE core API
+(`set_prompt` → `decode_step` → `token_to_str`). It streams each token live and
+carries the conversation across turns (the KV cache is not reset mid-chat).
+
+```sh
+make bin                                   # builds bin/<target>/<mode>/tools/geist_chat
+GEIST_MIND_DIR=./mind \
+  bin/<target>/release/tools/geist_chat gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+```
+
+REPL commands (anything else is a chat turn):
+
+| command | effect |
+|---|---|
+| `/remember <title> \| <text>` | write a note + index it |
+| `/recall <slug>` | load a note into the conversation context |
+| `/notes` | print the index (what's stored) |
+| `/help`, `/quit` | help / exit |
+
+`geist_chat --selftest` runs a palace round-trip with **no model** (CI-friendly).
+
+Environment: `GEIST_MIND_DIR` (default `./mind`) is the palace directory.
+
+## The memory palace — `mind.h`
+
+A file-based long-term memory: plain Markdown, no database, no embeddings.
+
+```
+$GEIST_MIND_DIR/
+  INDEX.md          one line per note; loaded into the model's context each session
+  <slug>.md         one note per file, with YAML front-matter
+```
+
+A note:
+
+```markdown
+---
+title: Tenancy notice periods
+date: 2026-06-21
+---
+A landlord's ordinary notice is due by the third working day of the month …
+```
+
+`INDEX.md` line: `- [<title>](<slug>.md) — <hook> · <date>`
+
+**Retrieval has no vector store.** `INDEX.md` is small and is injected into the
+system context at session start, so the model sees the titles/hooks and asks to
+`recall(<slug>)`; the full note then enters context. `grep -ri <term> $MIND_DIR`
+covers ad-hoc search.
+
+API (all `static inline`, caller-bounded buffers, no hidden heap):
+
+```c
+int  mind_remember(const char *title, const char *text);          // write + index; 0 ok
+long mind_recall(const char *slug, char *buf, size_t cap);        // bytes, or -1 if absent
+long mind_slurp(const char *path, char *buf, size_t cap);         // bounded file read
+void mind_slugify(const char *title, char *out, size_t cap);      // "My Note!" -> "my-note"
+```
+
+Ceiling (`ponytail:`): the in-context index scales to a few hundred notes; beyond
+that, grep the index or shard by tag.
+
+## The agent — `agent.h`
+
+A bounded, whitelist-gated tool-use loop over a resident session. A request may
+take several internal steps (search → read → search again → answer), so the
+public entry is `geist_agent_run` (one request, many steps), not a single step.
+
+```c
+struct geist_agent agent;                                   /* caller storage (large) */
+struct geist_tool  tools[] = { docsearch_tool("./docs") };
+geist_agent_init(&agent, model, session, 1, tools, /*max_steps=*/8);
+
+char   resp[2048];
+size_t n = 0;
+geist_agent_run(&agent, strlen(req), req, sizeof resp, resp, &n);   /* -> enum geist_status */
+```
+
+`run()` loops, each step:
+
+1. generate one assistant turn,
+2. parse the first `{"tool":"<name>","args":{…}}` (tolerates prose / ```json fences),
+3. **gate** `<name>` against the whitelist — unknown/forbidden ⇒ never runs, the
+   step gets an `error: tool … not allowed` observation instead,
+4. run the matching tool, append its result as an observation, reopen the turn,
+5. when the model replies in plain text (no tool call) ⇒ that is the final answer.
+
+`max_steps` (default 8) bounds how many tool calls one request can trigger — a
+runaway and cost guard on constrained hardware, and a hard cap on actions per
+request.
+
+Signatures follow [`.agent/AGENT.md`](../.agent/AGENT.md): count precedes its
+buffer, caller-provided buffers, `enum geist_status`, no `assert()`, no hidden
+heap (the transcript is fixed inside the caller-owned `struct geist_agent`).
+
+Ceilings (`ponytail:`): O(n²) full-transcript reprefill per step; naive JSON
+brace-balance (→ grammar-constrained sampling for a hard guarantee, below).
+
+## Tools
+
+A tool is a host-supplied entry in the whitelist:
+
+```c
+struct geist_tool {
+    const char *name;          /* whitelist key; must match the emitted "tool" */
+    const char *args_schema;   /* shown to the model, e.g. {"query": string} */
+    enum geist_status (*invoke)(void *ctx,
+                                size_t args_len, const char args[static args_len],
+                                size_t out_cap,  char       out[static out_cap],
+                                size_t *out_len);
+    void *ctx;                 /* host state: doc index, HTTP client, home bridge */
+};
+```
+
+Use `agent_json_str(args, "key", cap, out)` to pull a flat string field from the
+validated args. Shipped tools:
+
+- **`doc_search`** (`tools/agent_docsearch.h`) — keyword search over a directory
+  of text files (BGB, manuals). `docsearch_tool(dir)`; ctx = the directory.
+  Local RAG, no embeddings. Ceiling: linear scan (→ BM25/index), plain text only
+  (→ a `pdftotext`-style extraction step).
+- **`web_fetch`** (`tools/agent_webfetch.h`) — fetch an http(s) URL via `curl`,
+  return tag-stripped text. `webfetch_tool(allow_hosts)`; ctx = a comma-separated
+  host allowlist (`nullptr` = any). Unix/desktop only (uses `curl` + `fork`); an
+  iOS/Android host supplies its own via the platform HTTP client. See
+  [Security model](#security-model).
+
+## Security model
+
+A small model jailbreaks easily as free chat, so **the host — not the model —
+decides what can happen**:
+
+1. **Fixed scope** — a short system prompt + a fixed tool whitelist (no "universal
+   assistant").
+2. **Whitelist gate** — the model may emit any text, but only a tool in `tools[]`
+   can run; an off-list name is rejected before any side effect.
+3. **Step budget** — `max_steps` caps actions per request.
+4. **Per-tool input validation at the trust boundary** — e.g. `web_fetch`:
+   - **no shell**: `curl` runs via `fork`+`execvp` with the URL as a separate
+     argv element, so a URL like `http://x;rm -rf ~` cannot inject a command;
+   - **scheme gate**: only literal `http://` / `https://`;
+   - **host allowlist**: exact host or a dot-bounded subdomain (so `example.com`
+     allows `www.example.com` but rejects `notexample.com` / `example.com.evil.com`);
+   - `curl --proto/--proto-redir =http,https` so a redirect can't change scheme;
+     size + time caps.
+
+The transport choice (stdin pipe, Unix socket, in-process) does **not** affect
+jailbreak resistance — that lives in steps 1–4. It only affects attack surface:
+prefer a Unix-domain socket (filesystem-permission gated) or in-process over an
+HTTP listener for a same-host agent.
+
+Hardest guarantee (`ponytail:` upgrade): **grammar-constrained sampling** — mask
+the sampler's logits to grammar-valid tokens so the model *cannot* emit anything
+but a valid, on-whitelist call. The current loop is generate-then-validate.
+
+Not yet defended: `web_fetch` does not block private/link-local IPs (SSRF) — the
+host allowlist is the mitigation for an open fetch.
+
+## Embedding the agent
+
+- **Desktop / server (Unix):** include `agent.h` + your tools, hold a resident
+  `geist_session` + `geist_agent` for the process lifetime, and call
+  `geist_agent_run` per request. For repeated requests on a warm model, wrap it
+  in a small `accept()` loop on a Unix-domain socket (`chmod 600` = access
+  control). See [DEPLOY.md](DEPLOY.md).
+- **iOS / Android:** link `libgeist.a`, include `agent.h` via a bridging header,
+  and call `geist_agent_run` directly from Swift/Kotlin — no transport, no socket
+  (the OS forbids spawning a second process; a background daemon is suspended).
+  Supply platform-native tools (e.g. a `web_fetch` over `URLSession`/`OkHttp`
+  instead of the `curl` one).

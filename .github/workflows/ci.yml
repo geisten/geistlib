@@ -53,6 +53,26 @@ jobs:
       - name: Build example
         run: make -C examples TARGET=${{ matrix.target }} CC=${{ matrix.cc }}
 
+  # Test what we ship: the release artifact is a musl-static binary (release.yml),
+  # but the matrix above only exercises glibc. musl gates POSIX symbols behind the
+  # same feature macros and differs in some libc behaviour, so build+run on musl
+  # too — catching musl-specific issues before they reach geisten.net. Mirrors the
+  # release build flags (GEMM_PROVIDER=native + -D_GNU_SOURCE) and adds the tests.
+  build-test-musl:
+    name: build + unit tests (Linux arm64, musl)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build + unit tests (musl in Alpine)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+            set -e
+            apk add --no-cache build-base linux-headers bash
+            FLAGS="TARGET=linux CC=gcc GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE"
+            make $FLAGS                                 # builds lib + all test/demo binaries
+            make test-unit $FLAGS AUTO_FETCH_MODEL=0    # run the model-free unit suite
+          '
+
   format:
     name: clang-format
     # ARM64 runner: `make format-check` auto-detects the target, and the linux
