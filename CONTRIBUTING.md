@@ -55,7 +55,25 @@ make MODE=asan test  # sanitizer pass
 | else | FAIL |
 
 New tests follow the `*_unit` / `*_int` / `*_e2e` naming convention and skip
-cleanly (exit 77) when their preconditions aren't met.
+cleanly (exit 77) when their preconditions aren't met. `*_unit` use
+`tests/test_helpers.h` (`geist_expect`, `GEIST_REQUIRE_GGUF`).
+
+> **POSIX footgun:** under strict `-std=c23` glibc hides POSIX symbols, so any
+> TU using `setenv`/`fork`/`opendir`/… needs `#define _POSIX_C_SOURCE 200809L`
+> (or `_GNU_SOURCE` for raw sockets) as its **first line**. Caught by the musl
+> CI leg if you forget.
+
+**What CI enforces (not just unit tests).** Every PR is gated on: build + unit
+on macOS / Linux-glibc / Linux-musl; **integration + e2e against the real model**
+(forward pass, tokenizer, KV, agent/chat loops); a **perf** floor and a
+**tool-calling quality** floor; **ASan + UBSan**; and clang-format. Run the heavy
+ones locally before pushing:
+
+```sh
+make test-int test-e2e            # real-model product path (needs the GGUF)
+make MODE=asan test-unit          # AddressSanitizer + UBSan
+make bench-tooling TOOLING_MIN=0.7 # tool-calling/JSON quality floor
+```
 
 ## Benchmarks
 
@@ -71,8 +89,8 @@ regenerate them on the relevant hardware.
 ## Formatting
 
 ```sh
-make format          # rewrite in place (clang-format, .clang-format at root)
-make format-check    # verify only (CI runs this, advisory for now)
+make format          # rewrite in place (clang-format 22, .clang-format at root)
+make format-check    # verify only (CI runs this as a hard gate)
 ```
 
 ## Pull requests
