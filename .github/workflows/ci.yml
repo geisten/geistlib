@@ -16,6 +16,12 @@ jobs:
     name: build + unit tests (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    # ccache turns the recompile of ~38k lines into a near-no-op on a cache hit,
+    # so each push only rebuilds what changed. Content-based (hashes the source),
+    # unlike caching make's mtime-driven build/ dir.
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
     strategy:
       fail-fast: false
       matrix:
@@ -32,24 +38,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Unique key each run so the warmed cache is always saved; restore-keys
+      # falls back to the latest prior cache for this matrix leg.
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: ccache-${{ matrix.name }}-
+
       - name: Install deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install libomp
+        run: brew install libomp ccache
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-14 libopenblas-dev
+            gcc-14 libopenblas-dev ccache
 
       - name: Build
-        run: make TARGET=${{ matrix.target }} CC=${{ matrix.cc }}
+        run: make TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
       # Unit tests are hardware/kernel-level and do not need a GGUF model;
       # AUTO_FETCH_MODEL=0 keeps the ~3 GB reference download out of CI.
       - name: Unit tests
-        run: make test-unit TARGET=${{ matrix.target }} CC=${{ matrix.cc }} AUTO_FETCH_MODEL=0
+        run: make test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" AUTO_FETCH_MODEL=0
 
       # The integration + e2e suites load the real GGUF, so they actually exercise
       # the product path (forward pass, tokenizer, KV, the agent/chat loops) — the
@@ -64,10 +79,10 @@ jobs:
 
       - name: Integration + e2e tests (real model)
         if: matrix.target == 'linux'
-        run: make test-int test-e2e TARGET=${{ matrix.target }} CC=${{ matrix.cc }}
+        run: make test-int test-e2e TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
       - name: Build example
-        run: make -C examples TARGET=${{ matrix.target }} CC=${{ matrix.cc }}
+        run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
   # Test what we ship: the release artifact is a musl-static binary (release.yml),
   # but the matrix above only exercises glibc. musl gates POSIX symbols behind the
@@ -99,17 +114,26 @@ jobs:
     name: ASan + UBSan (Linux arm64)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
     steps:
       - uses: actions/checkout@v4
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-asan-${{ github.run_id }}
+          restore-keys: ccache-asan-
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev
+          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache
       - name: ASan/UBSan unit tests
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           ASAN_OPTIONS: detect_leaks=0
-        run: make MODE=asan test-unit TARGET=linux CC=gcc-14 AUTO_FETCH_MODEL=0
+        run: make MODE=asan test-unit TARGET=linux CC="ccache gcc-14" AUTO_FETCH_MODEL=0
 
   format:
     name: clang-format
