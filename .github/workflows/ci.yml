@@ -81,6 +81,19 @@ jobs:
         if: matrix.target == 'linux'
         run: make test-int test-e2e TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
+      # Coarse Q4_K perf-regression gate on the (noisy) shared runner: generous
+      # floors catch a cliff — scalar fallback, -O0, OpenMP off, an early-return
+      # kernel — not subtle drift. The Pi 5 stays the precise arbiter. Floors are
+      # conservative; tighten toward ~60% of the runner's real numbers once the
+      # log shows them. Reuses the model already built + cached above.
+      - name: Perf regression gate (Q4_K)
+        if: matrix.target == 'linux'
+        run: |
+          bin/${{ matrix.target }}/release/tests/bench_perf_sweep \
+            --gguf gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
+            --seq-lens 128 --decode-n 16 --warmup 4 --repeats 3 \
+            | python3 benchmark/perf_gate.py --min-prefill 20 --min-decode 4
+
       - name: Build example
         run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
