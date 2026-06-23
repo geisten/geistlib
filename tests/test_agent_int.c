@@ -72,6 +72,45 @@ int main(void) {
         printf("agent run loop works end to end\n");
     }
 
+    /* constrained tool-name decode (item 3): drive it directly against the real
+     * model with a 2-tool whitelist. Whatever the logits prefer, the result must
+     * be a valid whitelist index spelling a real tool name — the guarantee that
+     * an off-list name can never reach dispatch. */
+    if (rc == GEIST_TEST_PASS) {
+        struct geist_tool         two[] = {docsearch_tool(DOC_DIR),
+                                           {.name        = "web_fetch",
+                                            .args_schema = "{\"url\": string}",
+                                            .invoke      = docsearch_invoke,
+                                            .ctx         = (void *) (intptr_t) DOC_DIR}};
+        static struct geist_agent ca;
+        geist_agent_init(&ca, model, sess, 2, two, 4, nullptr);
+        ca.tlen = agent_system_prompt(&ca, sizeof ca.transcript, ca.transcript);
+        ca.tlen +=
+                (size_t) snprintf(ca.transcript + ca.tlen,
+                                  sizeof ca.transcript - ca.tlen,
+                                  "Fetch https://example.com<end_of_turn>\n<start_of_turn>model\n");
+        geist_token_t ids[GEIST_AGENT_NAME_CAP];
+        size_t        nid = 0;
+        int           idx = -1;
+        if (geist_session_reset(sess) == GEIST_OK &&
+            geist_session_set_prompt(sess, ca.transcript) == GEIST_OK &&
+            geist_session_tokenize(sess, "{\"tool\":\"", sizeof ids / sizeof *ids, ids, &nid) ==
+                    GEIST_OK &&
+            geist_session_prefill_tokens(sess, nid, ids) == GEIST_OK) {
+            idx = agent_decode_name_constrained(&ca);
+        }
+        fprintf(stderr,
+                "constrained name decode -> idx=%d (%s)\n",
+                idx,
+                idx >= 0 ? two[idx].name : "<none>");
+        if (idx < 0 || idx >= 2) {
+            fprintf(stderr, "FAIL: constrained decode did not yield a whitelist tool\n");
+            rc = GEIST_TEST_FAIL;
+        } else {
+            printf("constrained tool-name decode yields a whitelisted tool\n");
+        }
+    }
+
     geist_session_destroy(sess);
     geist_model_destroy(model);
     geist_backend_destroy(be);

@@ -13,8 +13,12 @@
  *   - max_steps bounds how many tool calls one request can trigger (runaway +
  *     cost guard on constrained hardware).
  * A small model jailbreaks easily as free chat; here it can only DO what the
- * tool table allows. (Upgrade: grammar-constrained sampling so the model
- * cannot even emit an off-grammar token — see the ponytail note in run().)
+ * tool table allows. First slice of grammar-constraint: when the model emits an
+ * off-whitelist tool name, agent_decode_name_constrained re-picks the name by
+ * decoding it constrained to the whitelist (so a near-miss is recovered to the
+ * model's intended whitelisted tool, not burned on an error step). Full upgrade:
+ * per-token logit masking in the sampler so the model cannot even emit an
+ * off-grammar token, plus an args-schema grammar.
  *
  * No assert(): all checks are explicit and return enum geist_status. Buffers
  * are caller-provided or fixed in the struct (no hidden heap).
@@ -184,6 +188,95 @@ static inline const struct geist_tool *agent_find(const struct geist_agent *a, c
     return nullptr; /* not in the whitelist -> will not run */
 }
 
+/* ---- grammar-constrained tool-name selection (item 3, first slice) ---------
+ * The whitelist gate already stops an off-list tool from RUNNING, but a
+ * near-miss name (typo, wrong case, a hallucinated tool) just burns a step on an
+ * error observation. On that branch we instead pick the tool by *constrained
+ * decoding*: walk the name token-by-token but only ever along a real whitelist
+ * name, letting the model's own logits choose WHICH whitelisted tool to extend
+ * toward. The result is a whitelist member by construction.
+ *
+ * Driven entirely over the public peek_logits/prefill_tokens/tokenize API — no
+ * in-engine sampler change, so the decode hot path (and the perf gate) is
+ * untouched; the cost is a short bounded pass that runs only on the off-list
+ * branch. Upgrade path (next rungs): per-token logit masking inside the sampler
+ * for a true "cannot emit an off-grammar token" guarantee, plus an args-schema
+ * grammar so the args object is constrained too. */
+
+/* partial is a prefix of (or equal to) some whitelist name. PURE (no model). */
+static inline int agent_name_is_prefix(const struct geist_agent *a, const char *partial) {
+    size_t pl = strlen(partial);
+    for (size_t i = 0; i < a->n_tools; i++) {
+        if (strncmp(a->tools[i].name, partial, pl) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* index of the tool whose name == partial exactly, else -1. PURE (no model). */
+static inline int agent_name_complete(const struct geist_agent *a, const char *partial) {
+    for (size_t i = 0; i < a->n_tools; i++) {
+        if (strcmp(a->tools[i].name, partial) == 0) {
+            return (int) i;
+        }
+    }
+    return -1;
+}
+
+/* Greedily decode the tool name constrained to the whitelist. Precondition:
+ * logits are pending at the name's first position (caller has prefilled the
+ * transcript + the opening `{"tool":"`). At each step, among the whitelist names
+ * that still match the chars emitted so far, force the next token of whichever
+ * has the highest logit, so the model picks the tool but can only ever spell a
+ * real one. Returns the chosen tool index, or -1 if the whitelist is empty.
+ * ponytail: assumes no whitelist name is a strict prefix of another (true for
+ * distinct tool names) — else greedy never stops at the shorter one. */
+static inline int agent_decode_name_constrained(struct geist_agent *a) {
+    char   partial[GEIST_AGENT_NAME_CAP];
+    size_t pl  = 0;
+    partial[0] = '\0';
+    for (int step = 0; step < GEIST_AGENT_NAME_CAP; step++) {
+        size_t       n_logits = 0;
+        const float *logits   = geist_session_peek_logits(a->session, &n_logits);
+        if (!logits || n_logits == 0) {
+            break;
+        }
+        /* pick the next token of the highest-logit still-matching name */
+        int           have = 0;
+        float         best_logit = 0;
+        geist_token_t best_tok   = 0;
+        for (size_t i = 0; i < a->n_tools; i++) {
+            const char *name = a->tools[i].name;
+            if (strlen(name) <= pl || strncmp(name, partial, pl) != 0) {
+                continue; /* not a still-matching name with a remaining suffix */
+            }
+            geist_token_t ids[8];
+            size_t        nid = 0;
+            if (geist_session_tokenize(a->session, name + pl, 8, ids, &nid) != GEIST_OK || nid == 0 ||
+                ids[0] >= (geist_token_t) n_logits) {
+                continue;
+            }
+            if (!have || logits[ids[0]] > best_logit) {
+                have = 1, best_logit = logits[ids[0]], best_tok = ids[0];
+            }
+        }
+        if (!have) {
+            break; /* partial is complete; nothing extends it */
+        }
+        const char *piece = geist_session_token_to_str(a->session, best_tok);
+        size_t      plen  = piece ? strlen(piece) : 0;
+        if (!plen || pl + plen + 1 >= sizeof partial ||
+            geist_session_prefill_tokens(a->session, 1, &best_tok) != GEIST_OK) {
+            break;
+        }
+        memcpy(partial + pl, piece, plen);
+        pl += plen;
+        partial[pl] = '\0';
+    }
+    return agent_name_complete(a, partial);
+}
+
 /* Decode one assistant turn into out (greedy, stops on EOS/<end_of_turn>).
  * Returns bytes written. */
 static inline size_t agent_generate_turn(struct geist_agent *a, size_t cap, char out[static cap]) {
@@ -324,6 +417,24 @@ static inline size_t agent_copy(size_t cap, char resp[static cap], const char *s
 
         const struct geist_tool *t  = agent_find(a, name);
         size_t                   on = 0;
+        if (!t) {
+            /* off-list name -> recover via constrained decode: prefill the
+             * transcript + the opening `{"tool":"` and let the model pick a
+             * whitelisted tool, spelled along the whitelist by construction. */
+            geist_token_t ids[GEIST_AGENT_NAME_CAP];
+            size_t        nid = 0;
+            int           idx = -1;
+            if (geist_session_reset(a->session) == GEIST_OK &&
+                geist_session_set_prompt(a->session, a->transcript) == GEIST_OK &&
+                geist_session_tokenize(a->session, "{\"tool\":\"", sizeof ids / sizeof *ids, ids,
+                                       &nid) == GEIST_OK &&
+                geist_session_prefill_tokens(a->session, nid, ids) == GEIST_OK) {
+                idx = agent_decode_name_constrained(a);
+            }
+            if (idx >= 0) {
+                t = &a->tools[idx];
+            }
+        }
         if (!t) {
             on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" is not allowed", name);
         } else if (t->invoke(t->ctx, strlen(args), args, sizeof obs, obs, &on) != GEIST_OK) {
