@@ -15,6 +15,7 @@ jobs:
   build-test:
     name: build + unit tests (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -49,6 +50,21 @@ jobs:
       # AUTO_FETCH_MODEL=0 keeps the ~3 GB reference download out of CI.
       - name: Unit tests
         run: make test-unit TARGET=${{ matrix.target }} CC=${{ matrix.cc }} AUTO_FETCH_MODEL=0
+
+      # The integration + e2e suites load the real GGUF, so they actually exercise
+      # the product path (forward pass, tokenizer, KV, the agent/chat loops) — the
+      # unit suite cannot. Run them on Linux only and cache the ~3 GB model so it
+      # downloads once; asset-gated tests (vision/audio/safetensors refs) SKIP.
+      - name: Cache reference model
+        if: matrix.target == 'linux'
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts
+          key: geist-model-gemma4-e2b-q4km-v1
+
+      - name: Integration + e2e tests (real model)
+        if: matrix.target == 'linux'
+        run: make test-int test-e2e TARGET=${{ matrix.target }} CC=${{ matrix.cc }}
 
       - name: Build example
         run: make -C examples TARGET=${{ matrix.target }} CC=${{ matrix.cc }}
