@@ -223,13 +223,15 @@ bench-mmlu: bin $(MODEL_PREREQ)
 # Quality: function-calling + JSON-generation via tools/eval_tooling.py (also
 # self-contained — drives the eval_geist GEN command, no dataset needed). The
 # probe set is curated and validates extracted JSON (valid + schema + correct
-# function/arguments). TOOLING_SUITE = json | func | all.
+# function/arguments). TOOLING_SUITE = json | func | all. TOOLING_MIN is a
+# quality gate: 0 = report only; >0 fails if correct/total drops below it (CI).
 TOOLING_SUITE ?= all
+TOOLING_MIN ?= 0
 bench-tooling: bin $(MODEL_PREREQ)
 	@$(GGUF_ENV) OMP_WAIT_POLICY=active python3 tools/eval_tooling.py \
 	  --bin $(BIN_DIR)/tools/eval_geist \
 	  --gguf "$${GEIST_GGUF_PATH:-$(abspath $(MODEL_PATH))}" \
-	  --suite $(TOOLING_SUITE)
+	  --suite $(TOOLING_SUITE) --min-correct $(TOOLING_MIN)
 
 # Cleanup.
 clean:

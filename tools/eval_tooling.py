@@ -296,19 +296,33 @@ def main():
     ap.add_argument("--gguf", required=True)
     ap.add_argument("--suite", choices=["json", "func", "all"], default="all")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--min-correct", type=float, default=0.0,
+                    help="gate: exit non-zero if (json schema-correct + func "
+                         "fully-correct) / total < this fraction (0 = report only)")
     args = ap.parse_args()
     if not Path(args.bin).is_file():
         sys.exit(f"eval_tooling: binary not found: {args.bin} (run `make` first)")
 
     repl = Repl(args.bin, args.gguf)
+    correct = total = 0
     try:
         print("== geist tooling benchmark (Gemma 4 chat template, greedy) ==")
         if args.suite in ("json", "all"):
-            run_json(repl, args.verbose)
+            _v, schema, n = run_json(repl, args.verbose)
+            correct += schema
+            total += n
         if args.suite in ("func", "all"):
-            run_func(repl, args.verbose)
+            _v, full, n = run_func(repl, args.verbose)
+            correct += full
+            total += n
     finally:
         repl.close()
+
+    if args.min_correct > 0.0:
+        rate = correct / total if total else 0.0
+        print(f"tooling: {correct}/{total} correct ({rate:.0%}), floor {args.min_correct:.0%}")
+        if rate < args.min_correct:
+            sys.exit(f"TOOLING REGRESSION: {rate:.0%} < {args.min_correct:.0%}")
 
 
 if __name__ == "__main__":
