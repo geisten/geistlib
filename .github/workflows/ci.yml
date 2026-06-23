@@ -89,6 +89,28 @@ jobs:
             make test-unit $FLAGS AUTO_FETCH_MODEL=0    # run the model-free unit suite
           '
 
+  # AGENT.md requires the code to be ASan/UBSan-friendly; nothing enforced it.
+  # Build MODE=asan (-fsanitize=address,undefined) and run the model-free unit
+  # suite — catches use-after-free / overflow / UB in the kernels + engine the
+  # unit tests exercise. UBSAN_OPTIONS=halt_on_error makes UB a hard failure
+  # (UBSan only logs by default, which would pass CI); leak detection is off for
+  # now (short-lived test binaries intentionally don't free at exit).
+  asan:
+    name: ASan + UBSan (Linux arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev
+      - name: ASan/UBSan unit tests
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=0
+        run: make MODE=asan test-unit TARGET=linux CC=gcc-14 AUTO_FETCH_MODEL=0
+
   format:
     name: clang-format
     # ARM64 runner: `make format-check` auto-detects the target, and the linux
