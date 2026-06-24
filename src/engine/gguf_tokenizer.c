@@ -200,6 +200,16 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
         }
     }
 
+    /* tokenizer.ggml.scores — per-token log-probs for the unigram model. Copied
+     * into an owned heap array (small, 4 B × vocab) so it survives a non-copy
+     * load too; only present/needed for the unigram (no-merges) path. */
+    if (gguf_get_meta_array_info(ctx, "tokenizer.ggml.scores", &elem_vt, &count, &p) &&
+        elem_vt == GGUF_META_VT_F32 && count == tok->vocab_size) {
+        tok->scores = heap_alloc_array_aligned(float, tok->vocab_size);
+        if (tok->scores != nullptr)
+            memcpy(tok->scores, p, tok->vocab_size * sizeof(float));
+    }
+
     uint32_t u;
     if (gguf_get_meta_u32(ctx, "tokenizer.ggml.bos_token_id", &u))
         tok->bos_id = (int32_t) u;
@@ -307,11 +317,14 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
         tok->mode = GGUF_TOK_MODE_GPT2;
     } else if (tok->n_merges > 0) {
         tok->mode = GGUF_TOK_MODE_SPM;
+    } else if (tok->scores != nullptr) {
+        /* No merges but per-token scores -> SentencePiece unigram (Llama/BitNet). */
+        tok->mode = GGUF_TOK_MODE_UNIGRAM;
     } else {
         tok->mode = GGUF_TOK_MODE_UNSUPPORTED;
     }
 
-    if (tok->mode == GGUF_TOK_MODE_SPM) {
+    if (tok->mode == GGUF_TOK_MODE_SPM || tok->mode == GGUF_TOK_MODE_UNIGRAM) {
         /* SentencePiece add_dummy_prefix — defaults to true when absent. */
         bool b;
         tok->add_space_prefix =
@@ -338,6 +351,11 @@ void gguf_tokenizer_unload(struct gguf_tokenizer *tok) {
         void *p = tok->token_len;
         safe_free(&p);
         tok->token_len = nullptr;
+    }
+    if (tok->scores != nullptr) {
+        void *p = tok->scores;
+        safe_free(&p);
+        tok->scores = nullptr;
     }
     if (tok->merge_left != nullptr) {
         void *p = tok->merge_left;
@@ -527,10 +545,10 @@ size_t gguf_tokenizer_decode(
             s    = tok->token_str[id];
             slen = tok->token_len[id];
         }
-        if (tok->mode == GGUF_TOK_MODE_SPM) {
-            /* SentencePiece: <0xXX> → raw byte; ▁ (U+2581) → space; the
-             * rest verbatim. (add_space_prefix's leading ▁, if any, decodes
-             * to a leading space — symmetric with encode.) */
+        if (tok->mode == GGUF_TOK_MODE_SPM || tok->mode == GGUF_TOK_MODE_UNIGRAM) {
+            /* SentencePiece (BPE or unigram): <0xXX> → raw byte; ▁ (U+2581) →
+             * space; the rest verbatim. (add_space_prefix's leading ▁, if any,
+             * decodes to a leading space — symmetric with encode.) */
             const int bval = spm_byte_token_value(s, slen);
             if (bval >= 0) {
                 total = append_byte(out, out_cap, total, (char) bval);
@@ -822,11 +840,106 @@ static bool is_ascii_space(unsigned char b) {
     return b == ' ' || b == '\t' || b == '\n' || b == '\r';
 }
 
-/* SentencePiece encode: there is no GPT-2 pre-tokenizer split — BPE runs
- * over each whole inter-special chunk after ▁ normalization (space → ▁,
+/* SentencePiece *unigram* encode of one normalized chunk. Same greedy pairwise
+ * merge as SPM-BPE, but with no merges table: a pair may merge iff its
+ * concatenation is a vocab token, and the merge PRIORITY is that token's score
+ * (highest score merges first). This is llama.cpp's SPM algorithm — the scores
+ * here are rank-like (score ≈ -(id), so a lower-id/"more common" token wins),
+ * which is why a score-MAXIMIZING lattice would wrongly collapse to the
+ * score-0 byte tokens; the pairwise merge is the correct reading. Unmatched
+ * symbols fall back to <0xXX> byte tokens, then unk. Returns ids written. */
+static size_t unigram_chunk_to_ids(const struct gguf_tokenizer *tok,
+                                   const char                  *buf,
+                                   size_t                       buf_len,
+                                   int32_t                     *out,
+                                   size_t                       cap) {
+    if (buf_len == 0 || cap == 0)
+        return 0;
+    struct bpe_sym *syms = heap_alloc_array_aligned(struct bpe_sym, buf_len);
+    if (syms == nullptr)
+        return 0;
+    int    n_syms = 0;
+    size_t k      = 0;
+    while (k < buf_len) { /* one symbol per UTF-8 codepoint */
+        size_t adv;
+        (void) utf8_decode_one(buf + k, buf_len - k, &adv);
+        if (adv == 0)
+            adv = 1;
+        if (k + adv > buf_len)
+            adv = buf_len - k;
+        syms[n_syms].off  = k;
+        syms[n_syms].len  = adv;
+        syms[n_syms].prev = n_syms - 1;
+        syms[n_syms].next = n_syms + 1;
+        n_syms++;
+        k += adv;
+    }
+    if (n_syms == 0) {
+        void *p = syms;
+        safe_free(&p);
+        return 0;
+    }
+    syms[n_syms - 1].next = -1;
+
+    /* Greedy merge: each step joins the adjacent pair whose concatenation is a
+     * vocab token with the highest score. Stops when no pair forms a token. */
+    int head = 0;
+    while (true) {
+        int   best_left  = -1;
+        float best_score = 0.0f;
+        for (int i = head; i >= 0 && syms[i].next >= 0; i = syms[i].next) {
+            const int     j  = syms[i].next;
+            const int32_t id = vocab_lookup(tok, buf + syms[i].off, syms[i].len + syms[j].len);
+            if (id < 0)
+                continue;
+            const float sc = tok->scores[id];
+            if (best_left < 0 || sc > best_score) {
+                best_score = sc;
+                best_left  = i;
+            }
+        }
+        if (best_left < 0)
+            break;
+        const int ri = syms[best_left].next;
+        syms[best_left].len += syms[ri].len;
+        syms[best_left].next = syms[ri].next;
+        if (syms[ri].next >= 0)
+            syms[syms[ri].next].prev = best_left;
+    }
+
+    size_t n_out = 0;
+    for (int i = head; i >= 0 && n_out < cap; i = syms[i].next) {
+        int32_t id = vocab_lookup(tok, buf + syms[i].off, syms[i].len);
+        if (id >= 0) {
+            out[n_out++] = id;
+        } else { /* SPM byte fallback: one <0xXX> per raw byte, else unk */
+            for (size_t b = 0; b < syms[i].len && n_out < cap; b++) {
+                int32_t bid = tok->spm_byte_id[(uint8_t) buf[syms[i].off + b]];
+                if (bid < 0)
+                    bid = tok->unk_id;
+                if (bid >= 0)
+                    out[n_out++] = bid;
+            }
+        }
+    }
+    void *p = syms;
+    safe_free(&p);
+    return n_out;
+}
+
+/* Encode one normalized chunk with the active SentencePiece algorithm. */
+static size_t spm_chunk_to_ids(
+        const struct gguf_tokenizer *tok, const char *buf, size_t len, int32_t *out, size_t cap) {
+    if (tok->mode == GGUF_TOK_MODE_UNIGRAM)
+        return unigram_chunk_to_ids(tok, buf, len, out, cap);
+    return bpe_chunk_to_ids(tok, buf, len, out, cap, true);
+}
+
+/* SentencePiece encode: there is no GPT-2 pre-tokenizer split — the algorithm
+ * runs over each whole inter-special chunk after ▁ normalization (space → ▁,
  * plus an optional leading ▁ when add_space_prefix). Unknown symbols fall
- * back to <0xXX> byte tokens. Mirrors the external sp_bpe path, reusing the
- * shared merge engine (bpe_chunk_to_ids). */
+ * back to <0xXX> byte tokens. Covers both the merge-driven (SPM) and unigram
+ * paths via spm_chunk_to_ids. */
 static bool encode_spm(const struct gguf_tokenizer *tok,
                        const char                  *text,
                        int32_t                     *out_ids,
@@ -846,25 +959,25 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
     bool   first_chunk = true;
 
 /* Normalize text[chunk_start, end) into buf and BPE-encode it. */
-#define SPM_FLUSH(end)                                                                      \
-    do {                                                                                    \
-        size_t w_ = 0;                                                                      \
-        if (first_chunk && tok->add_space_prefix) {                                         \
-            memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                                   \
-            w_ += SPM_MARKER_LEN;                                                           \
-        }                                                                                   \
-        for (size_t r_ = chunk_start; r_ < (end); r_++) {                                   \
-            if (text[r_] == ' ') {                                                          \
-                memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                               \
-                w_ += SPM_MARKER_LEN;                                                       \
-            } else {                                                                        \
-                buf[w_++] = text[r_];                                                       \
-            }                                                                               \
-        }                                                                                   \
-        first_chunk = false;                                                                \
-        if (w_ > 0 && *n_out < cap) {                                                       \
-            *n_out += bpe_chunk_to_ids(tok, buf, w_, out_ids + *n_out, cap - *n_out, true); \
-        }                                                                                   \
+#define SPM_FLUSH(end)                                                                \
+    do {                                                                              \
+        size_t w_ = 0;                                                                \
+        if (first_chunk && tok->add_space_prefix) {                                   \
+            memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                             \
+            w_ += SPM_MARKER_LEN;                                                     \
+        }                                                                             \
+        for (size_t r_ = chunk_start; r_ < (end); r_++) {                             \
+            if (text[r_] == ' ') {                                                    \
+                memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                         \
+                w_ += SPM_MARKER_LEN;                                                 \
+            } else {                                                                  \
+                buf[w_++] = text[r_];                                                 \
+            }                                                                         \
+        }                                                                             \
+        first_chunk = false;                                                          \
+        if (w_ > 0 && *n_out < cap) {                                                 \
+            *n_out += spm_chunk_to_ids(tok, buf, w_, out_ids + *n_out, cap - *n_out); \
+        }                                                                             \
     } while (0)
 
     while (i < tlen) {
@@ -906,7 +1019,7 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
     if (tok == nullptr || text == nullptr || out_ids == nullptr || n_out == nullptr)
         return false;
     *n_out = 0;
-    if (tok->mode == GGUF_TOK_MODE_SPM)
+    if (tok->mode == GGUF_TOK_MODE_SPM || tok->mode == GGUF_TOK_MODE_UNIGRAM)
         return encode_spm(tok, text, out_ids, cap, n_out);
     if (tok->mode != GGUF_TOK_MODE_GPT2)
         return false;

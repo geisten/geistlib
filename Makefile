@@ -56,6 +56,9 @@ run: geist
 # in-binary .rodata blob. Small models only — the binary grows by the model
 # size; >~1.5 GB exceeds the 2 GB release limit. The GGUF must carry its own
 # tokenizer (no sibling file is searched). Text-only (no external vision/audio).
+# NB: toggling EMBED_MODEL over an existing build doesn't re-trigger geist.o (the
+# -DGEIST_EMBEDDED_MODEL change isn't tracked) -- `rm $(BUILD_DIR)/tools/geist.o`
+# (or `make clean`) when switching between embedded and file mode.
 ifneq ($(strip $(EMBED_MODEL)),)
   ifeq ($(wildcard $(EMBED_MODEL)),)
     $(error EMBED_MODEL='$(EMBED_MODEL)' not found)
