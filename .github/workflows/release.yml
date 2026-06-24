@@ -8,9 +8,23 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      embed_model_url:
+        description: 'Optional GGUF URL to bake into a second, single-binary `geist` (text-only, <~1.5 GB). Empty = ship only the model-less CLI.'
+        required: false
+        default: ''
 
 permissions:
   contents: write   # attach assets to the GitHub Release on a tag
+
+# Optional single-binary build: when this is non-empty the per-platform jobs ALSO
+# fetch the GGUF and bake it into a `geist-<platform>-embedded` artifact (the
+# model-less CLI still ships unchanged). Source of the URL: the workflow_dispatch
+# input for a manual run, else the repo variable EMBED_MODEL_URL for tag pushes
+# (Settings -> Secrets and variables -> Actions -> Variables). The GGUF must
+# carry its own tokenizer (gpt2-BPE / SPM / unigram) — see the Makefile EMBED note.
+env:
+  EMBED_MODEL_URL: ${{ inputs.embed_model_url || vars.EMBED_MODEL_URL }}
 
 jobs:
   linux-arm64:
@@ -52,6 +66,34 @@ jobs:
           name: geist-linux-arm64
           path: geist-linux-arm64.tar.gz
 
+      # Optional: a second binary with the model baked in (.incbin, zero-copy).
+      # rm geist.o first — the plain build above compiled it without
+      # -DGEIST_EMBEDDED_MODEL and make doesn't track that flag flip.
+      - name: Build + package embedded (if EMBED_MODEL_URL set)
+        if: env.EMBED_MODEL_URL != ''
+        run: |
+          curl -fL --retry 3 --retry-delay 2 -o embed-model.gguf "$EMBED_MODEL_URL"
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+            set -e
+            apk add --no-cache build-base linux-headers
+            rm -f build/linux/release/tools/geist.o
+            make TARGET=linux CC=gcc GEMM_PROVIDER=native \
+                 EXTRA_CFLAGS=-D_GNU_SOURCE EXTRA_LDFLAGS="-static -s" \
+                 EMBED_MODEL=embed-model.gguf bin/linux/release/tools/geist
+          '
+          file bin/linux/release/tools/geist
+          bin/linux/release/tools/geist --version
+          ls -l bin/linux/release/tools/geist
+          mkdir -p dist/geist-linux-arm64-embedded
+          cp bin/linux/release/tools/geist dist/geist-linux-arm64-embedded/
+          cp README.md LICENSE dist/geist-linux-arm64-embedded/
+          tar -C dist -czf geist-linux-arm64-embedded.tar.gz geist-linux-arm64-embedded
+      - uses: actions/upload-artifact@v4
+        if: env.EMBED_MODEL_URL != ''
+        with:
+          name: geist-linux-arm64-embedded
+          path: geist-linux-arm64-embedded.tar.gz
+
   macos-arm64:
     name: macos-arm64 (Accelerate/AMX)
     runs-on: macos-15
@@ -82,6 +124,29 @@ jobs:
         with:
           name: geist-macos-arm64
           path: geist-macos-arm64.tar.gz
+
+      # Optional: a second binary with the model baked in. rm geist.o first (the
+      # plain build compiled it without -DGEIST_EMBEDDED_MODEL; make won't notice).
+      - name: Build + package embedded (if EMBED_MODEL_URL set)
+        if: env.EMBED_MODEL_URL != ''
+        run: |
+          curl -fL --retry 3 --retry-delay 2 -o embed-model.gguf "$EMBED_MODEL_URL"
+          rm -f build/mac-omp/release/tools/geist.o
+          make TARGET=mac-omp CC=clang GEIST_STATIC_OMP=1 \
+               EMBED_MODEL=embed-model.gguf bin/mac-omp/release/tools/geist
+          strip bin/mac-omp/release/tools/geist
+          otool -L bin/mac-omp/release/tools/geist
+          bin/mac-omp/release/tools/geist --version
+          ls -l bin/mac-omp/release/tools/geist
+          mkdir -p dist/geist-macos-arm64-embedded
+          cp bin/mac-omp/release/tools/geist dist/geist-macos-arm64-embedded/
+          cp README.md LICENSE dist/geist-macos-arm64-embedded/
+          tar -C dist -czf geist-macos-arm64-embedded.tar.gz geist-macos-arm64-embedded
+      - uses: actions/upload-artifact@v4
+        if: env.EMBED_MODEL_URL != ''
+        with:
+          name: geist-macos-arm64-embedded
+          path: geist-macos-arm64-embedded.tar.gz
 
   release:
     name: attach artifacts to the Release
