@@ -88,9 +88,10 @@ struct geist_arch_config {
      *   loaded as L->attn_sub_norm / L->ffn_sub_norm (P1.4 weight loader).
      *
      * ffn_activation: which FFN structure the layer runs. Gemma 3/4
-     *   keeps GEGLU (default 0). Llama family is SWIGLU. BitNet 2B-4T
-     *   is SQUARED_RELU and has no gate_proj — the FFN forward path
-     *   skips the gate projection when this is SQUARED_RELU. */
+     *   keeps GEGLU (default 0). Llama family is SWIGLU. BitNet b1.58
+     *   2B-4T is GATED_SQUARED_RELU (relu(gate)^2 * up; gate/up/down all
+     *   present). The gateless SQUARED_RELU variant skips the gate
+     *   projection but isn't what the official 2B-4T uses. */
     bool                           has_sub_ln;
     enum geist_ffn_activation_kind ffn_activation;
 

@@ -164,25 +164,35 @@ static void populate_layers_llama(struct transformer_arch_state *st) {
  *      Forward path is in P1.4; we set has_sub_ln so the loader knows
  *      to pull the extra norm weights.
  *
- *   2. FFN activation: BitNet b1.58 2B-4T (Microsoft flagship) uses
- *      squared-ReLU and a single up_proj (no gate_proj). Community
- *      1bitLLM/bitnet_b1_58-3B still uses SwiGLU. The populator
- *      defaults to SQUARED_RELU and overrides from metadata when
- *      "bitnet.feed_forward_activation" or "general.feed_forward_activation"
- *      are present.
+ *   2. FFN activation: BitNet b1.58 2B-4T (Microsoft flagship) uses *gated*
+ *      squared-ReLU — relu(gate)^2 * up, with gate/up/down all present (HF
+ *      hidden_act="relu2"). Community 1bitLLM/bitnet_b1_58-* use SwiGLU. The
+ *      activation is not in the GGUF, so ffn_activation_from_meta picks the
+ *      default by general.architecture ("bitnet-b1.58" -> gated squared-ReLU,
+ *      "bitnet" -> SwiGLU) and a *.feed_forward_activation key overrides it.
  *
  * Tensor weights are TQ2_0 (see P1.2). Tokenizer is Llama3-style BPE
  * for 2B-4T, Llama2-style SentencePiece for 3B — both routed through
  * the existing GGUF-embedded tokenizer path.
  */
 static enum geist_ffn_activation_kind ffn_activation_from_meta(struct gguf_ctx *gguf) {
-    /* Default: SwiGLU. Microsoft's official bitnet-b1.58-2B-4T GGUF
-     * ships gate_proj / up_proj / down_proj tensors (verified via the
-     * i2_s build of model microsoft/bitnet-b1.58-2B-4T-gguf), so the
-     * forward path is gate * silu(up). Squared-ReLU is an explicit
-     * opt-in via the "bitnet-b1.58.feed_forward_activation" string. */
-    enum geist_ffn_activation_kind out = GEIST_FFN_SWIGLU;
-    size_t                         len = 0;
+    /* Default depends on the architecture, because the activation is NOT in the
+     * GGUF metadata and the two BitNet families differ:
+     *   - "bitnet-b1.58": Microsoft's official 2B-4T uses gated squared-ReLU
+     *     (HF config hidden_act="relu2"): relu(gate)^2 * up. Its GGUF carries no
+     *     activation key, so this MUST be the default — verified: MMLU on the
+     *     i2_s 2B-4T jumps 25.5% (SwiGLU, chance) -> 50% (relu2, ~the published
+     *     ~53%); SwiGLU also breaks greedy coherence.
+     *   - "bitnet" (community 1bitLLM reproductions): SwiGLU (silu(gate) * up) —
+     *     relu2 garbles those, so they keep the SwiGLU default.
+     * An explicit *.feed_forward_activation key (below) overrides either. */
+    size_t                         al   = 0;
+    const char                    *arch = gguf_get_meta_string(gguf, "general.architecture", &al);
+    enum geist_ffn_activation_kind out  = (arch != nullptr && al == sizeof("bitnet-b1.58") - 1 &&
+                                           memcmp(arch, "bitnet-b1.58", al) == 0)
+                                                  ? GEIST_FFN_GATED_SQUARED_RELU
+                                                  : GEIST_FFN_SWIGLU;
+    size_t                         len  = 0;
     const char *s = gguf_get_meta_string(gguf, "bitnet-b1.58.feed_forward_activation", &len);
     if (s == nullptr) {
         s = gguf_get_meta_string(gguf, "bitnet.feed_forward_activation", &len);
