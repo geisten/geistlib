@@ -1,13 +1,15 @@
 /*
- * test_agent_grammar_unit — the whitelist-grammar matchers, no model.
+ * test_agent_grammar_unit — the pure (no-model) core of the grammar constraint.
  *
- * agent_name_is_prefix / agent_name_complete are the pure core of the
- * constrained tool-name decode (item 3): they decide, for the chars emitted so
- * far, whether the partial still matches a whitelist name and whether it is a
- * complete one. The model-driven decode (agent_decode_name_constrained) is
- * exercised in the _int test; here we pin the matcher invariants that guarantee
- * the decode can only ever spell a whitelisted name. No assert() — checks set a
- * flag, the exit code carries PASS/FAIL.
+ * Two slices of item 3:
+ *  - name: agent_name_is_prefix / agent_name_complete decide, for the chars
+ *    emitted so far, whether the partial still matches a whitelist name and
+ *    whether it is complete — the invariant that lets the model-driven decode
+ *    (agent_decode_name_constrained, exercised in the _int test) only ever spell
+ *    a whitelisted name.
+ *  - args: agent_schema_keys parses a tool's declared keys and
+ *    agent_args_normalize re-keys a mis-keyed string arg onto the schema key.
+ * No assert() — checks set a flag, the exit code carries PASS/FAIL.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -65,12 +67,62 @@ static void test_matchers(void) {
                           "decode-invariant: final partial is the whitelist tool");
 }
 
+static void test_schema_keys(void) {
+    char   keys[4][GEIST_AGENT_NAME_CAP];
+    size_t n;
+
+    n = agent_schema_keys("{\"query\": string}", 4, keys);
+    fails += geist_expect(n == 1 && strcmp(keys[0], "query") == 0, "schema: single key");
+
+    n = agent_schema_keys("{\"url\": string, \"limit\": int}", 4, keys);
+    fails += geist_expect(n == 2 && strcmp(keys[0], "url") == 0 && strcmp(keys[1], "limit") == 0,
+                          "schema: two keys in order");
+
+    n = agent_schema_keys("{}", 4, keys);
+    fails += geist_expect(n == 0, "schema: no keys");
+}
+
+static void test_args_normalize(void) {
+    char args[GEIST_AGENT_ARGS_CAP];
+
+    /* wrong key, right value -> re-keyed to the schema key */
+    snprintf(args, sizeof args, "{\"contents\":\"how long is the warranty\"}");
+    fails += geist_expect(agent_args_normalize("{\"query\": string}", sizeof args, args) == 1 &&
+                                  strcmp(args, "{\"query\":\"how long is the warranty\"}") == 0,
+                          "normalize: re-keys a mis-keyed string arg");
+
+    /* already the schema key -> untouched */
+    snprintf(args, sizeof args, "{\"query\":\"rent\"}");
+    agent_args_normalize("{\"query\": string}", sizeof args, args);
+    fails += geist_expect(strcmp(args, "{\"query\":\"rent\"}") == 0,
+                          "normalize: happy path untouched");
+
+    /* a value with a quote survives via escaping */
+    snprintf(args, sizeof args, "{\"q\":\"say \\\"hi\\\"\"}");
+    agent_args_normalize("{\"query\": string}", sizeof args, args);
+    fails += geist_expect(strcmp(args, "{\"query\":\"say \\\"hi\\\"\"}") == 0,
+                          "normalize: escapes quotes in the re-keyed value");
+
+    /* empty schema -> nothing to enforce, args left as-is */
+    snprintf(args, sizeof args, "{\"x\":\"y\"}");
+    fails += geist_expect(agent_args_normalize("{}", sizeof args, args) == 1,
+                          "normalize: empty schema is a no-op");
+
+    /* multi-key schema -> left untouched (ambiguous to re-key) */
+    snprintf(args, sizeof args, "{\"wrong\":\"v\"}");
+    fails += geist_expect(
+            agent_args_normalize("{\"a\": string, \"b\": string}", sizeof args, args) == 0,
+            "normalize: multi-key schema is left to the model");
+}
+
 int main(void) {
     test_matchers();
+    test_schema_keys();
+    test_args_normalize();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("agent grammar: prefix + complete matchers pass\n");
+    printf("agent grammar: name matchers + schema keys + args re-keying pass\n");
     return GEIST_TEST_PASS;
 }

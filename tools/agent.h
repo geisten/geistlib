@@ -13,12 +13,13 @@
  *   - max_steps bounds how many tool calls one request can trigger (runaway +
  *     cost guard on constrained hardware).
  * A small model jailbreaks easily as free chat; here it can only DO what the
- * tool table allows. First slice of grammar-constraint: when the model emits an
- * off-whitelist tool name, agent_decode_name_constrained re-picks the name by
- * decoding it constrained to the whitelist (so a near-miss is recovered to the
- * model's intended whitelisted tool, not burned on an error step). Full upgrade:
- * per-token logit masking in the sampler so the model cannot even emit an
- * off-grammar token, plus an args-schema grammar.
+ * tool table allows. Grammar-constraint, two slices: (1) an off-whitelist tool
+ * NAME is re-picked by agent_decode_name_constrained, which decodes the name
+ * constrained to the whitelist (a near-miss recovers to the model's intended
+ * tool, not an error step); (2) the args object is re-keyed to the tool's
+ * args_schema by agent_args_normalize (small models mis-key flat string args).
+ * Full upgrade: per-token logit masking in the sampler so the model cannot even
+ * emit an off-grammar token, plus a constrained key-decode for multi-key args.
  *
  * No assert(): all checks are explicit and return enum geist_status. Buffers
  * are caller-provided or fixed in the struct (no hidden heap).
@@ -154,7 +155,7 @@ static inline int agent_parse_call(size_t     raw_len,
 static inline int
 agent_json_str(const char *json, const char *key, size_t cap, char out[static cap]) {
     out[0] = '\0';
-    char pat[64];
+    char pat[GEIST_AGENT_NAME_CAP + 4]; /* "<key>" + NUL; sized so a NAME_CAP key can't truncate */
     snprintf(pat, sizeof pat, "\"%s\"", key);
     const char *p = strstr(json, pat);
     if (!p) {
@@ -177,6 +178,120 @@ agent_json_str(const char *json, const char *key, size_t cap, char out[static ca
     }
     out[w] = '\0';
     return w > 0;
+}
+
+/* ---- args-schema enforcement (item 3, second slice) ------------------------
+ * The whitelist constrains the tool NAME; the args object still arrives free,
+ * and small models routinely mis-KEY it (e.g. {"contents":...} for a tool that
+ * wants {"query":...}), so the dispatch then fails on a missing field. The args
+ * VALUE is genuinely free (a query, a URL) — nothing to constrain there — so the
+ * only schema-constrainable part is the KEY. For the common single-key string
+ * tool the key has no real choice: it is a rename, not a decode. So we ENFORCE
+ * the schema by re-keying (deterministic, no model pass), not by a constrained
+ * decode. Multi-key schemas are left untouched (re-keying is ambiguous there);
+ * the upgrade for those is a constrained key-decode — same technique as
+ * agent_decode_name_constrained. */
+
+/* First JSON string VALUE in obj (the value of the first "k":"v" pair) -> out.
+ * Returns 1 if a non-empty string value was found. Flat string values only. */
+static inline int agent_first_str_value(const char *obj, size_t cap, char out[static cap]) {
+    out[0]        = '\0';
+    const char *p = strchr(obj, ':');
+    if (!p) {
+        return 0;
+    }
+    p++;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (*p != '"') {
+        return 0; /* non-string value -> not handled */
+    }
+    p++;
+    size_t w = 0;
+    while (*p && *p != '"' && w + 1 < cap) {
+        if (*p == '\\' && p[1]) {
+            p++;
+        }
+        out[w++] = *p++;
+    }
+    out[w] = '\0';
+    return w > 0;
+}
+
+/* Keys declared in a tool args_schema like {"query": string, "limit": int}:
+ * a quoted token immediately followed (after ws) by ':' is a key. Writes up to
+ * max keys (NUL-term) and returns the count. ponytail: flat schema only. */
+static inline size_t
+agent_schema_keys(const char *schema, size_t max, char keys[static max][GEIST_AGENT_NAME_CAP]) {
+    size_t      n = 0;
+    const char *p = schema;
+    while (*p && n < max) {
+        if (*p != '"') {
+            p++;
+            continue;
+        }
+        const char *q = p + 1;
+        size_t      w = 0;
+        char        tmp[GEIST_AGENT_NAME_CAP];
+        while (*q && *q != '"' && w + 1 < sizeof tmp) {
+            tmp[w++] = *q++;
+        }
+        tmp[w] = '\0';
+        if (*q != '"') {
+            p = q; /* unterminated quote */
+            continue;
+        }
+        const char *r = q + 1;
+        while (*r == ' ' || *r == '\t') {
+            r++;
+        }
+        if (*r == ':') {
+            memcpy(keys[n++], tmp, w + 1);
+        }
+        p = q + 1;
+    }
+    return n;
+}
+
+/* Enforce a single-key string schema on the model's args in place: if the
+ * schema declares exactly one key and the model used a different one, re-key its
+ * first string value under the schema key. Returns 1 if args carry the schema
+ * key afterward. Pure (no model). No schema keys -> nothing to enforce (1);
+ * multi-key -> left untouched (0). */
+static inline int
+agent_args_normalize(const char *schema, size_t args_cap, char args[static args_cap]) {
+    char   keys[4][GEIST_AGENT_NAME_CAP];
+    size_t nk = agent_schema_keys(schema, 4, keys);
+    if (nk == 0) {
+        return 1; /* schema declares no keys */
+    }
+    if (nk > 1) {
+        return 0; /* re-keying is ambiguous; constrained key-decode is the upgrade */
+    }
+    char present[GEIST_AGENT_ARGS_CAP];
+    if (agent_json_str(args, keys[0], sizeof present, present)) {
+        return 1; /* model already used the schema key (happy path) */
+    }
+    char val[GEIST_AGENT_ARGS_CAP];
+    if (!agent_first_str_value(args, sizeof val, val)) {
+        return 0; /* no string value to re-key */
+    }
+    int k = snprintf(args, args_cap, "{\"%s\":\"", keys[0]);
+    if (k < 0 || (size_t) k >= args_cap) {
+        return 0;
+    }
+    size_t w = (size_t) k;
+    for (const char *v = val; *v && w + 3 < args_cap; v++) {
+        if (*v == '"' || *v == '\\') {
+            args[w++] = '\\';
+        }
+        args[w++] = *v;
+    }
+    args[w++] = '"';
+    args[w++] = '}';
+    args[w]   = '\0';
+    return 1;
 }
 
 static inline const struct geist_tool *agent_find(const struct geist_agent *a, const char *name) {
@@ -437,8 +552,11 @@ static inline size_t agent_copy(size_t cap, char resp[static cap], const char *s
         }
         if (!t) {
             on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" is not allowed", name);
-        } else if (t->invoke(t->ctx, strlen(args), args, sizeof obs, obs, &on) != GEIST_OK) {
-            on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" failed", name);
+        } else {
+            agent_args_normalize(t->args_schema, sizeof args, args); /* re-key to the schema */
+            if (t->invoke(t->ctx, strlen(args), args, sizeof obs, obs, &on) != GEIST_OK) {
+                on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" failed", name);
+            }
         }
 
         /* keep a best-effort answer in resp in case we hit max_steps */
