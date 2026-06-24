@@ -40,7 +40,13 @@ make EMBED_MODEL=gguf_artifacts/gemma4-e2b-Q4_K_M.gguf   # ./geist needs no mode
 ```
 Only for small models — the binary grows by the model size and a >~1.5 GB binary
 exceeds the 2 GB GitHub-release limit. For a 3 GB Gemma GGUF, keep the model **on
-the server** and deploy only the binary (below).
+the server** and deploy only the binary (below). The GGUF must carry its own
+tokenizer (gpt2-BPE / SPM / SPM-unigram — e.g. a BitNet TQ2_0 works).
+
+`release.yml` can ship this too: set the **`EMBED_MODEL_URL`** repo variable (or
+pass `embed_model_url` to a manual `workflow_dispatch` run) to a small GGUF's URL
+and each platform also gets a `geist-<platform>-embedded` artifact alongside the
+model-less CLI. Unset → the model-less CLI ships as before.
 
 ## GitHub options
 

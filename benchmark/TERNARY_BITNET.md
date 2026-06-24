@@ -30,13 +30,14 @@ the first Pi run is turnkey.
    dual-issue, and an `mt4` variant that reuses each weight tile across 4 tokens
    in prefill. No naive low-hanging fruit in the inner loop.
 
-4. **Tokenizer gap for *older* BitNet models.** `1bitLLM/bitnet_b1_58-*` ship a
-   llama **SentencePiece *unigram*** tokenizer (`scores` + `token_type`, **no
-   `merges`**); geist implements gpt2-BPE and merge-driven SPM only, so it
-   refuses unigram and there's no `tokenizer.bin`. This blocks *text* I/O on
-   those models (not the compute path — `bench_perf_sweep` uses synthetic IDs).
-   The target **2B-4T** model may differ; check its tokenizer KV before relying
-   on coherence tests.
+4. **Tokenizer for *older* BitNet models — supported.** `1bitLLM/bitnet_b1_58-*`
+   ship a llama **SentencePiece *unigram*** tokenizer (`scores` + `token_type`,
+   **no `merges`**). geist handles this via `GGUF_TOK_MODE_UNIGRAM` (the
+   llama.cpp merge-by-score algorithm in `src/engine/gguf_tokenizer.c`), so text
+   I/O works directly from the GGUF (no `tokenizer.bin` needed): an embedded
+   `./geist` completes "The capital of France is Paris…" on `bitnet_b1_58-large`.
+   Coherence/quality is then purely a compute (TQ2_0/i2_s) question, not a
+   tokenization one.
 
 ### Apple reference numbers (NOT the goal hardware — do not transfer to A76)
 
