@@ -57,16 +57,67 @@ struct geist_tool {
     void *ctx;
 };
 
+/* Model-specific chat framing. The agent loop, whitelist gate, and grammar
+ * constraint are all model-AGNOSTIC; only the turn markers + the assistant-turn
+ * terminator differ per model family. Splitting that out here is what lets the
+ * same agent drive Gemma, Llama, or BitNet — feeding one model another's turn
+ * tokens pushes it off-distribution and wrecks instruction-following. The agent
+ * auto-detects the template from the model's special tokens in geist_agent_init;
+ * a caller may override `a->tmpl` after init (e.g. to match a GGUF's own
+ * tokenizer.chat_template). */
+struct geist_chat_template {
+    const char *name;
+    const char *user_open;  /* opens a user / observation turn */
+    const char *turn_close; /* closes any turn */
+    const char *model_open; /* opens the assistant turn (the model generates after this) */
+    const char *stop;       /* assistant-turn terminator token text; "" -> stop on EOS only */
+    const char *leak[5];    /* nullptr-terminated marker literals to cut if they leak into a turn */
+};
+
+/* Gemma 3/4: <start_of_turn>{role}\n … <end_of_turn>. */
+static const struct geist_chat_template GEIST_CHAT_GEMMA = {
+    .name       = "gemma",
+    .user_open  = "<start_of_turn>user\n",
+    .turn_close = "<end_of_turn>\n",
+    .model_open = "<start_of_turn>model\n",
+    .stop       = "<end_of_turn>",
+    .leak       = {"<start_of_turn", "</start_of_turn", "<end_of_turn", "</end_of_turn", nullptr},
+};
+
+/* Generic instruct fallback for families without Gemma's turn tokens (Llama 3,
+ * BitNet b1.58, …): plain "User:/Assistant:" framing; the assistant turn ends at
+ * the model's EOS. ponytail: a widely-understood format, not any one model's
+ * exact template — refine per family (or render the GGUF's tokenizer.chat_template)
+ * if a model needs its native framing for good tool-calling. */
+static const struct geist_chat_template GEIST_CHAT_GENERIC = {
+    .name       = "generic",
+    .user_open  = "User: ",
+    .turn_close = "\n",
+    .model_open = "Assistant:",
+    .stop       = "",
+    .leak       = {"\nUser:", "\nAssistant:", nullptr, nullptr, nullptr},
+};
+
+/* Pick a chat template from the model's special tokens. Gemma is identified by
+ * its <end_of_turn> turn marker; everything else gets the generic fallback. */
+static inline struct geist_chat_template geist_chat_template_for_model(struct geist_model *m) {
+    if (geist_model_token_by_text(m, "<end_of_turn>") != GEIST_TOKEN_NONE) {
+        return GEIST_CHAT_GEMMA;
+    }
+    return GEIST_CHAT_GENERIC;
+}
+
 struct geist_agent {
-    struct geist_model      *model;
-    struct geist_session    *session;
-    const struct geist_tool *tools; /* borrowed — caller keeps it alive */
-    size_t                   n_tools;
-    size_t                   max_steps;
-    const char              *system_prompt; /* borrowed; nullptr -> default role */
-    geist_token_t            eos, eot;
-    char                     transcript[GEIST_AGENT_TRANSCRIPT_CAP];
-    size_t                   tlen;
+    struct geist_model        *model;
+    struct geist_session      *session;
+    const struct geist_tool   *tools; /* borrowed — caller keeps it alive */
+    size_t                     n_tools;
+    size_t                     max_steps;
+    const char                *system_prompt; /* borrowed; nullptr -> default role */
+    struct geist_chat_template tmpl;          /* model-specific framing (auto-detected in init) */
+    geist_token_t              eos, eot;
+    char                       transcript[GEIST_AGENT_TRANSCRIPT_CAP];
+    size_t                     tlen;
 };
 
 /* Caller provides storage for *a (it is large — put it in static/heap, not a
@@ -85,9 +136,10 @@ static inline void geist_agent_init(struct geist_agent     *a,
     a->n_tools       = n_tools;
     a->max_steps     = max_steps ? max_steps : 8;
     a->system_prompt = system_prompt;
+    a->tmpl          = geist_chat_template_for_model(model);
     a->eos           = geist_model_eos_token(model);
-    a->eot           = geist_model_token_by_text(model, "<end_of_turn>");
-    a->tlen          = 0;
+    a->eot = a->tmpl.stop[0] ? geist_model_token_by_text(model, a->tmpl.stop) : GEIST_TOKEN_NONE;
+    a->tlen = 0;
 }
 
 /* Find the first {"tool":"NAME","args":{...}} in raw. Returns 1 and fills name
@@ -421,11 +473,10 @@ static inline size_t agent_generate_turn(struct geist_agent *a, size_t cap, char
     out[w] = '\0';
     /* A turn marker emitted as multiple BPE pieces (e.g. </start_of_turn>)
      * slips past the single-token break above; cut the turn at the earliest
-     * marker literal so it never leaks into the call/answer. */
-    const char *cut     = nullptr;
-    const char *marks[] = {"<start_of_turn", "</start_of_turn", "<end_of_turn", "</end_of_turn"};
-    for (size_t m = 0; m < sizeof marks / sizeof marks[0]; m++) {
-        const char *hit = strstr(out, marks[m]);
+     * template leak marker so it never leaks into the call/answer. */
+    const char *cut = nullptr;
+    for (size_t m = 0; a->tmpl.leak[m] != nullptr; m++) {
+        const char *hit = strstr(out, a->tmpl.leak[m]);
         if (hit && (!cut || hit < cut)) {
             cut = hit;
         }
@@ -447,11 +498,11 @@ agent_system_prompt(const struct geist_agent *a, size_t cap, char out[static cap
     const char *role = a->system_prompt ? a->system_prompt : "You are a task agent.";
     size_t      w    = (size_t) snprintf(out,
                                          cap,
-                                         "<start_of_turn>user\n"
-                                         "%s\n"
+                                         "%s%s\n"
                                          "To act, reply with EXACTLY one line of JSON:\n"
                                          "{\"tool\":\"<name>\",\"args\":{...}}\n"
                                          "Available tools (you may use no other):\n",
+                                         a->tmpl.user_open,
                                          role);
     for (size_t i = 0; i < a->n_tools && w < cap; i++) {
         w += (size_t) snprintf(
@@ -500,12 +551,14 @@ static inline size_t agent_copy(size_t cap, char resp[static cap], const char *s
     }
 
     a->tlen = agent_system_prompt(a, sizeof a->transcript, a->transcript);
-    /* close the system turn, open the user's request, open the model turn */
+    /* append the user's request, close the turn, open the model turn */
     a->tlen += (size_t) snprintf(a->transcript + a->tlen,
                                  sizeof a->transcript - a->tlen,
-                                 "%.*s<end_of_turn>\n<start_of_turn>model\n",
+                                 "%.*s%s%s",
                                  (int) req_len,
-                                 req);
+                                 req,
+                                 a->tmpl.turn_close,
+                                 a->tmpl.model_open);
 
     char turn[GEIST_AGENT_TURN_CAP];
     char name[GEIST_AGENT_NAME_CAP];
@@ -568,11 +621,14 @@ static inline size_t agent_copy(size_t cap, char resp[static cap], const char *s
         /* append the model's call + the observation, reopen the model turn */
         int w = snprintf(a->transcript + a->tlen,
                          sizeof a->transcript - a->tlen,
-                         "%s<end_of_turn>\n<start_of_turn>user\nobservation: %.*s"
-                         "<end_of_turn>\n<start_of_turn>model\n",
+                         "%s%s%sobservation: %.*s%s%s",
                          turn,
+                         a->tmpl.turn_close,
+                         a->tmpl.user_open,
                          (int) on,
-                         obs);
+                         obs,
+                         a->tmpl.turn_close,
+                         a->tmpl.model_open);
         if (w < 0 || (size_t) w >= sizeof a->transcript - a->tlen) {
             return GEIST_E_INVALID_STATE; /* context full */
         }
