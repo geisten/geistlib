@@ -32,6 +32,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 
 /* FFN activation kind. Constexpr-able (single enum byte), consumed by
  * the FFN forward branch in transformer/forward.c.
@@ -48,6 +49,38 @@ enum geist_ffn_activation_kind {
     GEIST_FFN_SQUARED_RELU,
     GEIST_FFN_GATED_SQUARED_RELU,
 };
+
+/* Pick the FFN activation. An explicit *.feed_forward_activation value (`act`,
+ * `act_len`; pass act=nullptr when the GGUF has no such key) wins. Otherwise the
+ * default is keyed on `general.architecture`: only "bitnet-b1.58" (Microsoft's
+ * official 2B-4T — gated squared-ReLU, and its GGUF carries NO activation key)
+ * defaults to GATED_SQUARED_RELU; everything else (community "bitnet", llama,
+ * gemma) defaults to SwiGLU. Pure (no GGUF) so it is unit-testable — this is the
+ * exact decision that, when it wrongly defaulted 2B-4T to SwiGLU, dropped MMLU
+ * to chance. Keep test_bitnet_arch_unit in sync. */
+static inline enum geist_ffn_activation_kind
+geist_ffn_activation_select(const char *arch, size_t arch_len, const char *act, size_t act_len) {
+    enum geist_ffn_activation_kind out =
+            (arch != nullptr && arch_len == sizeof("bitnet-b1.58") - 1 &&
+             memcmp(arch, "bitnet-b1.58", arch_len) == 0)
+                    ? GEIST_FFN_GATED_SQUARED_RELU
+                    : GEIST_FFN_SWIGLU;
+    if (act == nullptr) {
+        return out;
+    }
+    if (act_len == sizeof("swiglu") - 1 && memcmp(act, "swiglu", act_len) == 0) {
+        out = GEIST_FFN_SWIGLU;
+    } else if (act_len == sizeof("squared_relu") - 1 && memcmp(act, "squared_relu", act_len) == 0) {
+        out = GEIST_FFN_SQUARED_RELU;
+    } else if (act_len == sizeof("geglu") - 1 && memcmp(act, "geglu", act_len) == 0) {
+        out = GEIST_FFN_GEGLU;
+    } else if ((act_len == sizeof("relu2") - 1 && memcmp(act, "relu2", act_len) == 0) ||
+               (act_len == sizeof("gated_squared_relu") - 1 &&
+                memcmp(act, "gated_squared_relu", act_len) == 0)) {
+        out = GEIST_FFN_GATED_SQUARED_RELU;
+    }
+    return out;
+}
 
 struct geist_arch_config {
     /* ---- Family identity. Future use by sub-vtable dispatch

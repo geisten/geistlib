@@ -176,49 +176,23 @@ static void populate_layers_llama(struct transformer_arch_state *st) {
  * the existing GGUF-embedded tokenizer path.
  */
 static enum geist_ffn_activation_kind ffn_activation_from_meta(struct gguf_ctx *gguf) {
-    /* Default depends on the architecture, because the activation is NOT in the
-     * GGUF metadata and the two BitNet families differ:
-     *   - "bitnet-b1.58": Microsoft's official 2B-4T uses gated squared-ReLU
-     *     (HF config hidden_act="relu2"): relu(gate)^2 * up. Its GGUF carries no
-     *     activation key, so this MUST be the default — verified: MMLU on the
-     *     i2_s 2B-4T jumps 25.5% (SwiGLU, chance) -> 50% (relu2, ~the published
-     *     ~53%); SwiGLU also breaks greedy coherence.
-     *   - "bitnet" (community 1bitLLM reproductions): SwiGLU (silu(gate) * up) —
-     *     relu2 garbles those, so they keep the SwiGLU default.
-     * An explicit *.feed_forward_activation key (below) overrides either. */
-    size_t                         al   = 0;
-    const char                    *arch = gguf_get_meta_string(gguf, "general.architecture", &al);
-    enum geist_ffn_activation_kind out  = (arch != nullptr && al == sizeof("bitnet-b1.58") - 1 &&
-                                           memcmp(arch, "bitnet-b1.58", al) == 0)
-                                                  ? GEIST_FFN_GATED_SQUARED_RELU
-                                                  : GEIST_FFN_SWIGLU;
-    size_t                         len  = 0;
-    const char *s = gguf_get_meta_string(gguf, "bitnet-b1.58.feed_forward_activation", &len);
+    /* Read general.architecture + an optional *.feed_forward_activation override
+     * and let geist_ffn_activation_select (pure, unit-tested) decide. The default
+     * is arch-keyed because the activation is NOT in the GGUF and the BitNet
+     * families differ: "bitnet-b1.58" (Microsoft 2B-4T) needs gated squared-ReLU
+     * — verified MMLU 25.5% (SwiGLU, chance) -> 50% (relu2, ~published ~53%) —
+     * while community "bitnet" uses SwiGLU. The official 2B-4T converter / mainline
+     * llama.cpp don't emit the activation key (see docs/bitnet_conversion.md). */
+    size_t      al = 0, len = 0;
+    const char *arch = gguf_get_meta_string(gguf, "general.architecture", &al);
+    const char *s    = gguf_get_meta_string(gguf, "bitnet-b1.58.feed_forward_activation", &len);
     if (s == nullptr) {
         s = gguf_get_meta_string(gguf, "bitnet.feed_forward_activation", &len);
     }
     if (s == nullptr) {
         s = gguf_get_meta_string(gguf, "general.feed_forward_activation", &len);
     }
-    if (s != nullptr) {
-        if (len == sizeof("swiglu") - 1 && memcmp(s, "swiglu", len) == 0) {
-            out = GEIST_FFN_SWIGLU;
-        } else if (len == sizeof("squared_relu") - 1 && memcmp(s, "squared_relu", len) == 0) {
-            out = GEIST_FFN_SQUARED_RELU;
-        } else if (len == sizeof("geglu") - 1 && memcmp(s, "geglu", len) == 0) {
-            out = GEIST_FFN_GEGLU;
-        } else if ((len == sizeof("relu2") - 1 && memcmp(s, "relu2", len) == 0) ||
-                   (len == sizeof("gated_squared_relu") - 1 &&
-                    memcmp(s, "gated_squared_relu", len) == 0)) {
-            /* Microsoft BitNet 2B-4T uses `hidden_act = "relu2"` which
-             * in their config means gated squared-ReLU: relu(g)^2 * up.
-             * gguf-py / mainline llama.cpp doesn't emit this key today;
-             * a local converter patch (see docs/bitnet_conversion.md)
-             * adds it. */
-            out = GEIST_FFN_GATED_SQUARED_RELU;
-        }
-    }
-    return out;
+    return geist_ffn_activation_select(arch, al, s, s != nullptr ? len : 0);
 }
 
 static void populate_bitnet_b158(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
