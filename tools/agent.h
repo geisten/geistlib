@@ -98,9 +98,27 @@ static const struct geist_chat_template GEIST_CHAT_GENERIC = {
     .leak       = {"\nUser:", "\nAssistant:", nullptr, nullptr, nullptr},
 };
 
-/* Pick a chat template from the model's special tokens. Gemma is identified by
- * its <end_of_turn> turn marker; everything else gets the generic fallback. */
+/* Microsoft BitNet b1.58 2B-4T: <bos>Human: {content}\n\nBITNETAssistant: {…}EOS
+ * (from the GGUF tokenizer.chat_template). The assistant turn ends at EOS — so
+ * stop="" and the loop stops on the model's eos, which the generic User:/Assistant:
+ * framing didn't elicit cleanly (it rambled past the answer). */
+static const struct geist_chat_template GEIST_CHAT_BITNET = {
+    .name       = "bitnet",
+    .user_open  = "Human: ",
+    .turn_close = "\n\n",
+    .model_open = "BITNETAssistant: ",
+    .stop       = "",
+    .leak       = {"\nHuman:", "\nBITNETAssistant:", nullptr, nullptr, nullptr},
+};
+
+/* Pick a chat template by model family: the GGUF's general.architecture selects
+ * BitNet b1.58's native framing; Gemma is identified by its <end_of_turn> turn
+ * marker; everything else gets the generic fallback. */
 static inline struct geist_chat_template geist_chat_template_for_model(struct geist_model *m) {
+    const char *arch = geist_model_arch(m);
+    if (arch != nullptr && strcmp(arch, "bitnet-b1.58") == 0) {
+        return GEIST_CHAT_BITNET;
+    }
     if (geist_model_token_by_text(m, "<end_of_turn>") != GEIST_TOKEN_NONE) {
         return GEIST_CHAT_GEMMA;
     }
