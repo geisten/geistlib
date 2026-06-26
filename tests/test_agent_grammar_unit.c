@@ -115,14 +115,37 @@ static void test_args_normalize(void) {
             "normalize: multi-key schema is left to the model");
 }
 
+static void test_tail_loop(void) {
+    /* No repetition -> 0 (a real answer / one-line tool call is left intact). */
+    fails += geist_expect(agent_tail_loop("The warranty is 24 months.", 26) == 0,
+                          "loop: clean text is not a loop");
+    fails += geist_expect(
+            agent_tail_loop("{\"tool\":\"doc_search\",\"args\":{\"query\":\"x\"}}", 41) == 0,
+            "loop: a valid tool call is not a loop");
+
+    /* Three identical consecutive >=3-byte blocks -> detected, returns P. */
+    const char *r = "ans [File: a.pdf][File: a.pdf][File: a.pdf]";
+    fails += geist_expect(agent_tail_loop(r, strlen(r)) == strlen("[File: a.pdf]"),
+                          "loop: triple-repeated block detected (P = block len)");
+
+    /* Two repeats is not enough (avoids over-eager cutting). */
+    const char *r2 = "ans [File: a.pdf][File: a.pdf]";
+    fails += geist_expect(agent_tail_loop(r2, strlen(r2)) == 0, "loop: two repeats is not a loop");
+
+    /* Short period: "ababab" -> P=2 is below the min(3); "xyzxyzxyz" -> P=3. */
+    fails += geist_expect(agent_tail_loop("ababab", 6) == 0, "loop: period<3 ignored (e.g. '...')");
+    fails += geist_expect(agent_tail_loop("xyzxyzxyz", 9) == 3, "loop: period-3 triple detected");
+}
+
 int main(void) {
     test_matchers();
     test_schema_keys();
     test_args_normalize();
+    test_tail_loop();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("agent grammar: name matchers + schema keys + args re-keying pass\n");
+    printf("agent grammar: name matchers + schema keys + args re-keying + loop-stop pass\n");
     return GEIST_TEST_PASS;
 }
