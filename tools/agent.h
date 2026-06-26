@@ -138,9 +138,16 @@ static const struct geist_chat_template GEIST_CHAT_LLAMA3 = {
                    nullptr},
 };
 
-/* Pick a chat template from the model's turn-end special token — more robust
- * than the arch string (a real Llama-3 model and the BitNet 2B-4T both land on
- * Llama-3 framing). <end_of_turn> -> Gemma; <|eot_id|> -> Llama-3; else generic. */
+/* Pick a chat template from the model's turn-end special token. NB: this keys on
+ * the GGUF-EMBEDDED tokenizer (token_by_text returns NONE for a model loaded via
+ * an external SentencePiece, e.g. Gemma 4) — which is deliberate, not a gap: the
+ * agent builds the transcript as a STRING and set_prompt re-tokenizes it, and an
+ * external tokenizer does NOT map "<start_of_turn>" text to Gemma's control
+ * tokens (105/106), so feeding Gemma its own marker text off-distributes it
+ * (it answers with a hallucinated "<finish_of_turn>"). Gemma works BETTER on the
+ * plain generic User:/Assistant: framing here, so letting it fall through is
+ * correct. <end_of_turn> token -> Gemma (GGUF-embedded gemma); <|eot_id|> ->
+ * Llama-3 (incl. BitNet 2B-4T); else generic. */
 static inline struct geist_chat_template geist_chat_template_for_model(struct geist_model *m) {
     if (geist_model_token_by_text(m, "<end_of_turn>") != GEIST_TOKEN_NONE) {
         return GEIST_CHAT_GEMMA;
