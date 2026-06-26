@@ -40,7 +40,29 @@ enum {
     GEIST_AGENT_ARGS_CAP       = 1024,
     GEIST_AGENT_OBS_CAP        = 4096,
     GEIST_AGENT_MAX_DECODE     = 512,
+    GEIST_AGENT_LOOP_PMAX      = 128, /* longest repeating block the anti-loop cap detects */
 };
+
+/* Generic anti-degeneration: greedy decoding on a chatty model can fall into a
+ * loop, emitting the same phrase over and over without ever hitting EOS (the
+ * 2B-4T's "[File Name Used: …]" x40; Gemma's "is is is"). If the tail of `out`
+ * is 3 identical consecutive blocks of some length P in [3, PMAX], return P (the
+ * run length); else 0. Model-INDEPENDENT — it keys on repetition, not on any
+ * model's markers — and a valid one-line tool call / a real answer don't
+ * triple-repeat a >=3-byte chunk, so it never fires on good output.
+ * ponytail: misses loops whose period exceeds PMAX bytes; raise PMAX if needed. */
+static inline size_t agent_tail_loop(const char *out, size_t w) {
+    for (size_t p = 3; p <= GEIST_AGENT_LOOP_PMAX; p++) {
+        if (w < 3 * p) {
+            break; /* p only grows from here, so nothing longer fits either */
+        }
+        if (memcmp(out + w - 3 * p, out + w - 2 * p, p) == 0 &&
+            memcmp(out + w - 2 * p, out + w - p, p) == 0) {
+            return p;
+        }
+    }
+    return 0;
+}
 
 /* A host action. The agent never runs anything not in the whitelist passed to
  * geist_agent_init; the callback receives only validated args. ctx is the
@@ -462,8 +484,8 @@ static inline int agent_decode_name_constrained(struct geist_agent *a) {
     return agent_name_complete(a, partial);
 }
 
-/* Decode one assistant turn into out (greedy, stops on EOS/<end_of_turn>).
- * Returns bytes written. */
+/* Decode one assistant turn into out (greedy, stops on EOS / the template stop /
+ * a degenerate repetition loop — see agent_tail_loop). Returns bytes written. */
 static inline size_t agent_generate_turn(struct geist_agent *a, size_t cap, char out[static cap]) {
     size_t w = 0;
     for (int i = 0; i < GEIST_AGENT_MAX_DECODE; i++) {
@@ -487,6 +509,14 @@ static inline size_t agent_generate_turn(struct geist_agent *a, size_t cap, char
         }
         memcpy(out + w, piece, pl);
         w += pl;
+        size_t loop_p = agent_tail_loop(out, w);
+        if (loop_p > 0) {
+            /* Drop the repeats but keep ONE copy of the block: if the whole turn
+             * is the loop (model degenerated from the first token), this still
+             * leaves content rather than an empty answer. */
+            w -= 2 * loop_p;
+            break;
+        }
     }
     out[w] = '\0';
     /* A turn marker emitted as multiple BPE pieces (e.g. </start_of_turn>)
