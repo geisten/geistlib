@@ -43,7 +43,25 @@ struct model_engine_state {
      * set_prompt / tokenize dispatch on whichever is non-null. */
     struct sp_bpe_tokenizer *sp_tok;
     struct gguf_tokenizer   *gguf_tok;
+    char                    *arch; /* general.architecture, owned copy (nullptr if absent) */
 };
+
+/* Read general.architecture from an open GGUF into an owned NUL-terminated copy
+ * (GGUF strings are length-prefixed, not terminated). Returns nullptr if absent
+ * or OOM — callers fall back to "transformer". */
+static char *model_arch_copy(struct gguf_ctx *tg) {
+    size_t      alen = 0;
+    const char *as   = gguf_get_meta_string(tg, "general.architecture", &alen);
+    if (as == nullptr || alen == 0) {
+        return nullptr;
+    }
+    char *copy = heap_alloc_aligned(alen + 1, alignof(char));
+    if (copy != nullptr) {
+        memcpy(copy, as, alen);
+        copy[alen] = '\0';
+    }
+    return copy;
+}
 
 /* Find tokenizer.bin near the GGUF: <dir>/tokenizer.bin, then ./tokenizer.bin,
  * then ../<sibling-model-dir>/tokenizer.bin heuristically, then env. */
@@ -172,13 +190,15 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
      *     gguf_tokenizer handles GPT-2-style byte-level BPE.
      *  2. External `tokenizer.bin` — Gemma 4 layout.
      *     sp_bpe_tokenizer handles SentencePiece-BPE. */
-    struct sp_bpe_tokenizer *sp_tok   = nullptr;
-    struct gguf_tokenizer   *gguf_tok = nullptr;
+    struct sp_bpe_tokenizer *sp_tok    = nullptr;
+    struct gguf_tokenizer   *gguf_tok  = nullptr;
+    char                    *arch_copy = nullptr;
     {
         const char      *terr = nullptr;
         struct gguf_ctx *tg   = gguf_open(path, &terr);
         if (tg != nullptr) {
-            gguf_tok = heap_alloc_aligned(sizeof(*gguf_tok), alignof(struct gguf_tokenizer));
+            arch_copy = model_arch_copy(tg);
+            gguf_tok  = heap_alloc_aligned(sizeof(*gguf_tok), alignof(struct gguf_tokenizer));
             if (gguf_tok != nullptr) {
                 if (!gguf_tokenizer_load_copy(gguf_tok, tg)) {
                     void *p = gguf_tok;
@@ -245,6 +265,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
             .path     = path_copy,
             .sp_tok   = sp_tok,
             .gguf_tok = gguf_tok,
+            .arch     = arch_copy,
     };
     *m = (struct geist_model) {
             .text_decoder   = {.arch_ops = desc->decoder_ops, .arch_meta = arch_state},
@@ -321,12 +342,14 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
     }
 
     /* GGUF-embedded tokenizer only (no sibling tokenizer.bin to find). */
-    struct gguf_tokenizer *gguf_tok = nullptr;
+    struct gguf_tokenizer *gguf_tok  = nullptr;
+    char                  *arch_copy = nullptr;
     {
         const char      *terr = nullptr;
         struct gguf_ctx *tg   = gguf_open_memory(data, size, &terr);
         if (tg != nullptr) {
-            gguf_tok = heap_alloc_aligned(sizeof(*gguf_tok), alignof(struct gguf_tokenizer));
+            arch_copy = model_arch_copy(tg);
+            gguf_tok  = heap_alloc_aligned(sizeof(*gguf_tok), alignof(struct gguf_tokenizer));
             if (gguf_tok != nullptr && !gguf_tokenizer_load_copy(gguf_tok, tg)) {
                 void *p = gguf_tok;
                 safe_free(&p);
@@ -340,6 +363,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
             .path     = nullptr, /* embedded — no file path */
             .sp_tok   = nullptr,
             .gguf_tok = gguf_tok,
+            .arch     = arch_copy,
     };
     *m = (struct geist_model) {
             .text_decoder   = {.arch_ops = desc->decoder_ops, .arch_meta = arch_state},
@@ -385,6 +409,9 @@ void geist_model_destroy(struct geist_model *m) {
         if (eng->path != nullptr) {
             safe_free((void **) &eng->path);
         }
+        if (eng->arch != nullptr) {
+            safe_free((void **) &eng->arch);
+        }
         safe_free((void **) &eng);
     }
     safe_free((void **) &m);
@@ -395,9 +422,13 @@ const char *geist_model_errmsg(const struct geist_model *m) {
     return "(model errmsg not yet stored per-handle)";
 }
 
+static const struct model_engine_state *model_engine(const struct geist_model *m); /* fwd */
+
 const char *geist_model_arch(const struct geist_model *m) {
-    (void) m;
-    return "transformer"; /* hardcoded for Gemma 4 in B-4a */
+    const struct model_engine_state *eng = model_engine(m);
+    /* The GGUF's general.architecture ("gemma4", "bitnet-b1.58", "llama", …),
+     * captured at load. Falls back to "transformer" when the key is absent. */
+    return (eng != nullptr && eng->arch != nullptr) ? eng->arch : "transformer";
 }
 
 /* Special-token accessors — read the ids the tokenizer parsed from the GGUF
