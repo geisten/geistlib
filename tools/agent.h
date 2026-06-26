@@ -120,29 +120,33 @@ static const struct geist_chat_template GEIST_CHAT_GENERIC = {
     .leak       = {"\nUser:", "\nAssistant:", nullptr, nullptr, nullptr},
 };
 
-/* Microsoft BitNet b1.58 2B-4T: <bos>Human: {content}\n\nBITNETAssistant: {…}EOS
- * (from the GGUF tokenizer.chat_template). The assistant turn ends at EOS — so
- * stop="" and the loop stops on the model's eos, which the generic User:/Assistant:
- * framing didn't elicit cleanly (it rambled past the answer). */
-static const struct geist_chat_template GEIST_CHAT_BITNET = {
-    .name       = "bitnet",
-    .user_open  = "Human: ",
-    .turn_close = "\n\n",
-    .model_open = "BITNETAssistant: ",
-    .stop       = "",
-    .leak       = {"\nHuman:", "\nBITNETAssistant:", nullptr, nullptr, nullptr},
+/* Llama-3 family: <|start_header_id|>role<|end_header_id|>\n\n … <|eot_id|>. The
+ * model ends a turn with <|eot_id|>, so stop on it. Microsoft's BitNet b1.58
+ * 2B-4T shares the Llama-3 128k tokenizer AND its training format: its GGUF
+ * tokenizer.chat_template ships a simplified "Human:/BITNETAssistant:" string
+ * the model does NOT actually follow — feeding it Llama-3 framing instead makes
+ * it coherent and stop cleanly ("Paris", not a 512-token ramble). (It still
+ * won't emit structured tool calls — it isn't tool-trained; that needs a
+ * tool-trained model like Llama-3.1 / Qwen2.5.) */
+static const struct geist_chat_template GEIST_CHAT_LLAMA3 = {
+    .name       = "llama3",
+    .user_open  = "<|start_header_id|>user<|end_header_id|>\n\n",
+    .turn_close = "<|eot_id|>",
+    .model_open = "<|start_header_id|>assistant<|end_header_id|>\n\n",
+    .stop       = "<|eot_id|>",
+    .leak       = {"<|start_header_id|>", "<|eot_id|>", "<|end_header_id|>", "<|begin_of_text|>",
+                   nullptr},
 };
 
-/* Pick a chat template by model family: the GGUF's general.architecture selects
- * BitNet b1.58's native framing; Gemma is identified by its <end_of_turn> turn
- * marker; everything else gets the generic fallback. */
+/* Pick a chat template from the model's turn-end special token — more robust
+ * than the arch string (a real Llama-3 model and the BitNet 2B-4T both land on
+ * Llama-3 framing). <end_of_turn> -> Gemma; <|eot_id|> -> Llama-3; else generic. */
 static inline struct geist_chat_template geist_chat_template_for_model(struct geist_model *m) {
-    const char *arch = geist_model_arch(m);
-    if (arch != nullptr && strcmp(arch, "bitnet-b1.58") == 0) {
-        return GEIST_CHAT_BITNET;
-    }
     if (geist_model_token_by_text(m, "<end_of_turn>") != GEIST_TOKEN_NONE) {
         return GEIST_CHAT_GEMMA;
+    }
+    if (geist_model_token_by_text(m, "<|eot_id|>") != GEIST_TOKEN_NONE) {
+        return GEIST_CHAT_LLAMA3;
     }
     return GEIST_CHAT_GENERIC;
 }
