@@ -130,6 +130,11 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
 
     static struct geist_agent agent; /* large -> static, not a deep stack */
     geist_agent_init(&agent, model, sess, n_tools, tools, opts.max_steps, system_prompt);
+    /* GEIST_FORCE_CALL=1: grammar-force turn 0 into a valid tool call. Lets a
+     * single-tool task agent drive a model that isn't tool-trained (e.g. BitNet
+     * 2B-4T) — the proof that prompted tool use needs forcing, not training. */
+    const char *fc  = getenv("GEIST_FORCE_CALL");
+    agent.force_call = fc != nullptr && fc[0] == '1';
 
     int rc = 0;
     if (opts.question) {

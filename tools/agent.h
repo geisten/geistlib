@@ -159,6 +159,7 @@ struct geist_agent {
     size_t                     max_steps;
     const char                *system_prompt; /* borrowed; nullptr -> default role */
     struct geist_chat_template tmpl;          /* model-specific framing (auto-detected in init) */
+    bool                       force_call;     /* force turn 0 to be a valid tool call (see run) */
     geist_token_t              eos, eot;
     char                       transcript[GEIST_AGENT_TRANSCRIPT_CAP];
     size_t                     tlen;
@@ -181,6 +182,7 @@ static inline void geist_agent_init(struct geist_agent     *a,
     a->max_steps     = max_steps ? max_steps : 8;
     a->system_prompt = system_prompt;
     a->tmpl          = geist_chat_template_for_model(model);
+    a->force_call    = false;
     a->eos           = geist_model_eos_token(model);
     a->eot = a->tmpl.stop[0] ? geist_model_token_by_text(model, a->tmpl.stop) : GEIST_TOKEN_NONE;
     a->tlen = 0;
@@ -488,6 +490,83 @@ static inline int agent_decode_name_constrained(struct geist_agent *a) {
     return agent_name_complete(a, partial);
 }
 
+/* Force the next turn to be a valid tool call, whether or not the model would
+ * have emitted one — the proof that prompted tool use does NOT require a
+ * tool-trained model. The JSON scaffold is prefilled token-by-token; the model
+ * only fills the open slots: the tool NAME is constrained to the whitelist
+ * (agent_decode_name_constrained) and a single-key string arg's VALUE is
+ * free-decoded (the model's choice — grammar forces STRUCTURE, not content). For
+ * a 0-key or multi-key schema the args object is forced to {}. Builds the
+ * parseable call into out and returns its length. Precondition: the session is
+ * set to the transcript with the model turn open. Public peek/prefill/tokenize
+ * only — no in-engine sampler change. */
+static inline size_t agent_force_call(struct geist_agent *a, size_t cap, char out[static cap]) {
+    size_t        w = 0;
+    geist_token_t ids[64];
+    size_t        nid = 0;
+/* Append `lit` to out AND prefill it so the model's later decode is conditioned
+ * on the scaffold it is "inside". */
+#define AGENT_PREFILL(lit)                                                                 \
+    do {                                                                                   \
+        if (geist_session_tokenize(a->session, (lit), 64, ids, &nid) == GEIST_OK &&        \
+            nid > 0) {                                                                     \
+            (void) geist_session_prefill_tokens(a->session, nid, ids);                     \
+        }                                                                                  \
+        w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%s", (lit));               \
+    } while (0)
+
+    AGENT_PREFILL("{\"tool\":\"");
+    int idx = agent_decode_name_constrained(a); /* forces + prefills a whitelist name */
+    if (idx < 0 || (size_t) idx >= a->n_tools) {
+        out[w < cap ? w : cap - 1] = '\0';
+        return w; /* empty whitelist — nothing to force */
+    }
+    const struct geist_tool *t = &a->tools[idx];
+    w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%s", t->name);
+    AGENT_PREFILL("\",\"args\":");
+
+    char   keys[4][GEIST_AGENT_NAME_CAP];
+    size_t nk = agent_schema_keys(t->args_schema, 4, keys);
+    if (nk != 1) {
+        w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "{}}"); /* close args + call */
+    } else {
+        char open[GEIST_AGENT_NAME_CAP + 8];
+        snprintf(open, sizeof open, "{\"%s\":\"", keys[0]);
+        AGENT_PREFILL(open);
+        /* free-decode the value (greedy) until a closing quote / newline / marker
+         * / EOS / a token cap. STRUCTURE is forced; this VALUE is the model's. */
+        for (int i = 0; i < 48; i++) {
+            geist_token_t tok = 0;
+            if (geist_session_decode_step(a->session, &tok) != GEIST_OK || tok == a->eos ||
+                tok == a->eot) {
+                break;
+            }
+            const char *p = geist_session_token_to_str(a->session, tok);
+            if (p == nullptr || p[0] == '\0') {
+                break;
+            }
+            int done = 0;
+            for (const char *c = p; *c != '\0' && w + 2 < cap; c++) {
+                if (*c == '"' || *c == '\n' || *c == '<') {
+                    done = 1; /* value ends at a quote / newline / control marker */
+                    break;
+                }
+                if (*c == '\\') {
+                    out[w++] = '\\'; /* keep the rebuilt JSON valid */
+                }
+                out[w++] = *c;
+            }
+            if (done) {
+                break;
+            }
+        }
+        w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "\"}}"); /* close value+args+call */
+    }
+#undef AGENT_PREFILL
+    out[w < cap ? w : cap - 1] = '\0';
+    return w < cap ? w : cap - 1;
+}
+
 /* Decode one assistant turn into out (greedy, stops on EOS / the template stop /
  * a degenerate repetition loop — see agent_tail_loop). Returns bytes written. */
 static inline size_t agent_generate_turn(struct geist_agent *a, size_t cap, char out[static cap]) {
@@ -624,7 +703,11 @@ static inline size_t agent_copy(size_t cap, char resp[static cap], const char *s
         }
         /* ponytail: full-transcript reprefill each step — O(n^2) over the
          * request. Switch to incremental prefill_tokens if requests get long. */
-        size_t tn = agent_generate_turn(a, sizeof turn, turn);
+        /* force_call: make turn 0 a guaranteed-valid tool call even on a model
+         * that wouldn't emit one (no tool training needed); later turns are free
+         * so the model can give a plain-text answer after the observation. */
+        size_t tn = (a->force_call && step == 0) ? agent_force_call(a, sizeof turn, turn)
+                                                 : agent_generate_turn(a, sizeof turn, turn);
 
         if (!agent_parse_call(tn, turn, sizeof name, name, sizeof args, args)) {
             /* no tool call -> this turn is the final answer */
