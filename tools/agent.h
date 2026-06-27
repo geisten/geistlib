@@ -501,11 +501,13 @@ static inline int agent_decode_name_constrained(struct geist_agent *a) {
 /* Route a request to the best tool by scoring, instead of trusting the raw
  * `{"tool":"` logit (which, with several tools, picks a valid-but-wrong one — a
  * "list the directory" request forced summarize_file). Frame the request + the
- * tool menu as a question and pick the tool whose name the model most wants as
- * the answer (first-token logprob, the SCOREALT pattern). Returns a tool index;
- * 0 when there is a single tool (no choice). Pure peek/prefill/tokenize — leaves
- * the session reset to the selection prompt (caller re-sets the transcript). */
-enum { AGENT_MAX_ROUTED = 26 }; /* A..Z */
+ * tool menu as a question and pick the tool whose NAME the model most wants as
+ * the answer (first-token logprob, the SCOREALT pattern). Scoring the name, not
+ * an A/B letter, gives a weak model real semantic signal ("list_dir" lines up
+ * with "list the directory" where an abstract "A" does not). Returns a tool
+ * index; 0 when there is a single tool (no choice). Pure peek/prefill/tokenize —
+ * leaves the session reset to the selection prompt (caller re-sets transcript). */
+enum { AGENT_MAX_ROUTED = 26 };
 
 /* Logit of the first token of `text`, or -INF-ish if it doesn't tokenize. */
 static inline float agent_first_token_logit(struct geist_agent *a, const char *text,
@@ -519,26 +521,30 @@ static inline float agent_first_token_logit(struct geist_agent *a, const char *t
     return logits[ids[0]];
 }
 
-static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
-    if (a->n_tools <= 1) {
-        return 0;
+/* Build the selection prompt for `req` into sel; returns its length. The menu is
+ * fixed (name: description); only the Request line varies, so the same builder
+ * serves the real request and the content-free baseline used for calibration. */
+static inline size_t agent_select_prompt(struct geist_agent *a, size_t n, size_t req_len,
+                                         const char *req, size_t cap, char sel[static cap]) {
+    size_t w = (size_t) snprintf(
+            sel, cap, "%sWhich tool best handles this request?\nRequest: %.*s\nTools:\n",
+            a->tmpl.user_open, (int) req_len, req);
+    for (size_t i = 0; i < n && w < cap; i++) {
+        const char *d = a->tools[i].description ? a->tools[i].description : "";
+        w += (size_t) snprintf(sel + w, cap - w, "- %s: %s\n", a->tools[i].name, d);
     }
-    const size_t n = a->n_tools < AGENT_MAX_ROUTED ? a->n_tools : AGENT_MAX_ROUTED;
-    static char  sel[GEIST_AGENT_TRANSCRIPT_CAP];
-    size_t       w = (size_t) snprintf(sel,
-                                       sizeof sel,
-                                       "%sWhich tool best handles this request?\nRequest: %.*s\n",
-                                       a->tmpl.user_open,
-                                       (int) req_len,
-                                       req);
-    for (size_t i = 0; i < n && w < sizeof sel; i++) {
-        const char *d = a->tools[i].description ? a->tools[i].description : a->tools[i].name;
-        w += (size_t) snprintf(sel + w, sizeof sel - w, "%c) %s\n", (char) ('A' + i), d);
-    }
-    w += (size_t) snprintf(
-            sel + w, sizeof sel - w, "Answer with the letter.%s%s", a->tmpl.turn_close, a->tmpl.model_open);
+    w += (size_t) snprintf(sel + w, cap - w, "Answer with the tool name.%s%s", a->tmpl.turn_close,
+                           a->tmpl.model_open);
+    return w;
+}
+
+/* Score each tool name's first token at the current decode position into out[n].
+ * The first token may be bare ("list_dir") or space-prefixed (" list_dir") per
+ * the template — take the max of both. Returns 0 on a peek failure. */
+static inline int agent_score_names(struct geist_agent *a, size_t n, const char *prompt,
+                                    float out[static n]) {
     if (geist_session_reset(a->session) != GEIST_OK ||
-        geist_session_set_prompt(a->session, sel) != GEIST_OK) {
+        geist_session_set_prompt(a->session, prompt) != GEIST_OK) {
         return 0;
     }
     size_t       n_logits = 0;
@@ -546,17 +552,39 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
     if (logits == nullptr || n_logits == 0) {
         return 0;
     }
-    /* Score each option's letter. The first generated token may be "A" (line
-     * start) or " A" (after a colon) depending on the template — take the max of
-     * both forms so the choice is robust to that, consistently across options. */
+    for (size_t i = 0; i < n; i++) {
+        char spaced[GEIST_AGENT_NAME_CAP + 1];
+        snprintf(spaced, sizeof spaced, " %s", a->tools[i].name);
+        float v0 = agent_first_token_logit(a, a->tools[i].name, logits, n_logits);
+        float v1 = agent_first_token_logit(a, spaced, logits, n_logits);
+        out[i]   = v0 > v1 ? v0 : v1;
+    }
+    return 1;
+}
+
+static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
+    if (a->n_tools <= 1) {
+        return 0;
+    }
+    const size_t n = a->n_tools < AGENT_MAX_ROUTED ? a->n_tools : AGENT_MAX_ROUTED;
+    static char  sel[GEIST_AGENT_TRANSCRIPT_CAP];
+    float        score[AGENT_MAX_ROUTED] = {0}, base[AGENT_MAX_ROUTED] = {0};
+
+    /* Raw name logits have a token-frequency bias (a small model favours
+     * "list_dir" regardless of the request). Calibrate: subtract the prior the
+     * model assigns each name given the SAME menu but a content-free request, so
+     * only the request-driven signal (PMI) decides. */
+    agent_select_prompt(a, n, req_len, req, sizeof sel, sel);
+    if (!agent_score_names(a, n, sel, score)) {
+        return 0;
+    }
+    agent_select_prompt(a, n, strlen("(unspecified)"), "(unspecified)", sizeof sel, sel);
+    int have_base = agent_score_names(a, n, sel, base);
+
     int   best   = 0;
     float best_v = -1e30f;
     for (size_t i = 0; i < n; i++) {
-        char bare[2]  = {(char) ('A' + i), '\0'};
-        char spaced[3] = {' ', (char) ('A' + i), '\0'};
-        float v0 = agent_first_token_logit(a, bare, logits, n_logits);
-        float v1 = agent_first_token_logit(a, spaced, logits, n_logits);
-        float v  = v0 > v1 ? v0 : v1;
+        float v = have_base ? score[i] - base[i] : score[i];
         if (v > best_v) {
             best_v = v, best = (int) i;
         }
