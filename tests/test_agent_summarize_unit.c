@@ -46,9 +46,22 @@ static void test_chunk(void) {
     fails += geist_expect(end == strlen(one), "chunk: returns len when the rest fits");
 }
 
+static void test_refine_usable(void) {
+    fails += geist_expect(summ_refine_usable(strlen("The WM 2026 is in three countries."),
+                                             "The WM 2026 is in three countries."),
+                          "refine: real content is usable");
+    fails += geist_expect(!summ_refine_usable(0, ""), "refine: empty is not usable");
+    fails += geist_expect(!summ_refine_usable(3, "   "), "refine: whitespace-only is not usable");
+    fails += geist_expect(!summ_refine_usable(strlen("Summary so far:  "), "Summary so far:  "),
+                          "refine: scaffold echo is not usable");
+    fails += geist_expect(!summ_refine_usable(strlen("\n Summary so far:"), "\n Summary so far:"),
+                          "refine: scaffold echo after whitespace is not usable");
+}
+
 int main(void) {
     test_confine();
     test_chunk();
+    test_refine_usable();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;

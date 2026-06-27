@@ -134,6 +134,22 @@ static inline size_t summ_generate(struct geist_session             *s,
     return w;
 }
 
+/* A refine step must never replace a good running summary with worse output: a
+ * weak model sometimes echoes the "Summary so far:" scaffold or returns nothing.
+ * Reject those (keep the prior summary); accept anything with real content. */
+static inline int summ_refine_usable(size_t n, const char *s) {
+    if (n == 0) {
+        return 0;
+    }
+    while (*s == ' ' || *s == '\n' || *s == '\t' || *s == '\r') {
+        s++;
+    }
+    if (*s == '\0') {
+        return 0;
+    }
+    return strncmp(s, "Summary so far", 14) != 0; /* scaffold echo */
+}
+
 /* Core: read `path` under `root`, preprocess by type, refine-summarize, write the
  * summary into out. Always returns GEIST_OK with a human-readable error string in
  * out on failure (so the agent observes it rather than aborting). */
@@ -195,6 +211,7 @@ static inline enum geist_status summarize_file(struct geist_model   *model,
     geist_token_t eot = tmpl.stop[0] ? geist_model_token_by_text(model, tmpl.stop) : GEIST_TOKEN_NONE;
 
     static char running[SUMM_RUN_CAP];
+    static char fresh[SUMM_RUN_CAP];
     static char prompt[SUMM_PROMPT_CAP];
     running[0]    = '\0';
     size_t run_n  = 0;
@@ -217,7 +234,14 @@ static inline enum geist_status summarize_file(struct geist_model   *model,
                      (int) (end - pos),
                      text + pos);
         }
-        run_n = summ_generate(sub, &tmpl, eos, eot, prompt, sizeof running, running);
+        /* Generate into a scratch buffer, then accept only if it's an improvement
+         * to keep — else the prior running summary survives a degenerate step. */
+        size_t fn = summ_generate(sub, &tmpl, eos, eot, prompt, sizeof fresh, fresh);
+        if (run_n == 0 || summ_refine_usable(fn, fresh)) {
+            memcpy(running, fresh, fn);
+            running[fn] = '\0';
+            run_n       = fn;
+        }
         first = 0;
         pos   = end;
     }
