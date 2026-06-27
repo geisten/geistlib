@@ -121,7 +121,14 @@ websearch_parse(const char *html, size_t cap, char out[static cap]) {
         p = tend;
     }
     if (w == 0) {
-        w = (size_t) snprintf(out, cap, "(no results)");
+        /* DuckDuckGo serves an "anomaly" interstitial when it rate-limits a
+         * client — distinguish that from a genuinely empty result set. */
+        w = (strstr(html, "anomaly") || strstr(html, "https://duckduckgo.com/help"))
+                    ? (size_t) snprintf(
+                              out, cap,
+                              "error: the search engine rate-limited this request (try again "
+                              "later, or point web_search at a SearXNG instance)")
+                    : (size_t) snprintf(out, cap, "(no results)");
     }
     out[w < cap ? w : cap - 1] = '\0';
     return w < cap ? w : cap - 1;
