@@ -10,9 +10,10 @@
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20(ARM64)-lightgrey.svg)](#-build--usage)
 [![Status](https://img.shields.io/badge/status-experimental%20(v0.2.1)-yellow.svg)](#-status)
 
-**geist** is a high-performance inference engine that runs LLMs **on the CPU
-with zero dependencies** — one small static binary, no BLAS, no Python, no CUDA,
-no runtime to install. Copy it to the machine and it runs.
+**geist** is a high-performance inference engine — and an **on-device agent** —
+that runs small LLMs **on the CPU with zero dependencies**: one small static
+binary, no BLAS, no Python, no CUDA, no runtime to install. Copy it to the machine
+and it runs, reads your local files, and searches the web — all locally.
 
 That is the bet, and it is a different one from the universal engines:
 
@@ -22,10 +23,17 @@ That is the bet, and it is a different one from the universal engines:
   with no libc at all; the macOS build links **only the OS's own frameworks**
   (Accelerate + libSystem — Apple ships no static libc), so there's nothing to
   install there either.
-- **Focused, not universal.** Where llama.cpp runs *every* model on *every*
-  backend, geist does **a few models excellently** (Gemma 4 E2B-it and ternary
-  1.58-bit BitNet today) — every tensor bound to a hand-picked kernel at load time,
-  not a generic dispatch loop.
+- **Focused on small models, done excellently.** Where llama.cpp runs *every*
+  model on *every* backend, geist does **a few small ones excellently** (Gemma 4
+  E2B-it and ternary 1.58-bit BitNet today) — every tensor bound to a hand-picked
+  kernel at load time, not a generic dispatch loop. On the edge that focus
+  **beats** the universal engine: end-to-end throughput above llama.cpp on a Pi 5,
+  and ~2× Microsoft's bitnet.cpp on ternary ([benchmarks](#-performance-both-models-macos--pi-5)).
+- **Agentic, built for weak models.** A bounded, whitelist-gated tool loop lets a
+  2 B model **read and summarize local documents** (no embeddings, no cloud) and
+  **search the web** — reliably, because routing and tool-call structure are
+  *forced* from outside the sampler, not left to a model that was never tool-trained
+  ([how](#-on-device-agent)).
 - **Edge-first (Raspberry Pi 5).** Tuned for \$50–\$100 CPUs: a 4.6 B model fits in
   4 GB of RAM, no GPU or driver stack, decode at parity, on-device audio built in.
   The win is deploying and running *simply* on cheap hardware — not topping the
@@ -71,7 +79,24 @@ text-generation core is ~70 lines of C — see
 
 ---
 
-## 🚀 Performance on a Raspberry Pi 5
+## 🚀 Performance: both models, macOS & Pi 5
+
+**At a glance** — identical GGUF for geist and the baseline, greedy decode. geist
+leads where it counts on the edge (end-to-end throughput) and on Apple's matrix
+unit (prefill); on the A76 it trades raw prefill for the fastest decode. Full
+methodology and the complete sweep live in [`benchmark/`](benchmark/README.md).
+
+| model | platform | metric | **geist** | baseline | source |
+| :-- | :-- | :-- | --: | --: | :-- |
+| Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | total t/s (32p+128d) | **8.8** | 8.2 *(llama.cpp)* | [↓](#-performance-both-models-macos--pi-5) |
+| Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | decode t/s | **7.5** | 6.8 *(llama.cpp)* | [↓](#-performance-both-models-macos--pi-5) |
+| Gemma 4 E2B-it (Q4_K_M) | **M1 Max** | prefill t/s (pp1024) | **144** | 97 *(llama.cpp)* | [BENCHMARK.md](benchmark/BENCHMARK.md) |
+| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s | **17.4** | 8.2 *(bitnet.cpp)* | [↓](#bitnet-b158-2b-4t-on-a-raspberry-pi-5) |
+
+> macOS is **prefill-led** here (decode is memory-bound and less interesting on a
+> desktop); the Pi 5 is the edge target where the full prefill+decode+total story
+> is measured. BitNet is the Pi/edge play — there is no macOS BitNet baseline to
+> compare against.
 
 What you actually feel when you run a model is **end-to-end throughput**: type a
 short prompt, watch tokens stream out. That's decode-dominated. Same GGUF on both
@@ -135,6 +160,57 @@ geist's dense path uses **Accelerate/AMX** on Apple (wins, lead widens to 1.48×
 prefill by ~10–15 % — the hard case geist is built around. Charts, per-phase
 analysis and methodology: [`benchmark/`](benchmark/README.md).
 </details>
+
+---
+
+## 🤖 On-device agent
+
+geist is not only an engine — it ships a **bounded, whitelist-gated tool-use
+agent** (header-only, in `tools/`) so a small local model can *do* things: read
+your files, summarize them, and search the web. All of it runs in the **same
+process** as the model, with **no extra dependencies** and nothing leaving the
+machine except an explicit web request.
+
+(`geist_shell` is the demo agent CLI — `make bin` builds it to
+`bin/<target>/release/tools/geist_shell`; `GEIST_FORCE_CALL=1` forces the tool
+call so an untrained model still drives the tools.)
+
+```console
+$ GEIST_FORCE_CALL=1 ./geist_shell model.gguf "Fasse die Datei bericht.md zusammen"
+The report proposes a Q3 migration to the new billing system, …
+
+$ GEIST_FORCE_CALL=1 ./geist_shell model.gguf "Zeige mir den Inhalt des aktuellen Ordners"
+src   build   assets   README.md
+
+$ GEIST_FORCE_CALL=1 ./geist_shell model.gguf "Suche im Web nach FIFA World Cup 2026"
+1. 2026 FIFA World Cup - Wikipedia
+   https://en.wikipedia.org/wiki/2026_FIFA_World_Cup
+…
+```
+
+Bundled tools (each a no-shell, host-gated `*_tool()` you opt into):
+
+| tool | what it does |
+| :-- | :-- |
+| `list_dir` | list a directory (`opendir`, no shell) |
+| `summarize_file` | read a text file under a fixed root and refine-summarize it — **local, no embeddings, no cloud** |
+| `doc_search` | keyword search across a directory of documents (local RAG) |
+| `web_search` | search the web — DuckDuckGo, or a self-hosted **SearXNG** (JSON) instance |
+| `web_fetch` | fetch a URL and return tag-stripped text |
+
+**Why it works on a model that was never tool-trained.** A 2 B model rarely emits
+a clean tool call on its own. geist does not rely on it: the host decides what can
+run (a fixed whitelist), the right tool is **chosen by scoring tool names**
+(PMI-calibrated, so a frequent token doesn't always win), and the JSON call
+**structure is forced** token-by-token with the argument lifted from the request —
+all reconstructed from the public `peek_logits`/`prefill_tokens` API, with **no
+in-engine sampler change**. The model picks the tool; geist guarantees the call.
+
+The security boundary is the **host, not the model**: fixed scope, whitelist gate,
+a `max_steps` budget, and per-tool input validation (e.g. `web_fetch` runs `curl`
+via `fork`+`execvp` — no shell, scheme gate, host allowlist). Full design,
+including how to embed it in an iOS/Android host with platform-native tools:
+**[`docs/agent.md`](docs/agent.md)**.
 
 ---
 
@@ -237,6 +313,19 @@ tests, and a small auditable core (the stable text path is ~70 lines).
 - [`examples/`](examples/) — Minimal self-contained integration examples.
 - [`benchmark/`](benchmark/) — Benchmark scripts and performance evaluations.
 - [`docs/`](docs/) — Architectural notes and guides.
+
+---
+
+## 📚 Documentation
+
+| Document | What it covers |
+| :-- | :-- |
+| [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Run the CLI and embed the library in two minutes (copy-paste C program). |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, load-time kernel binding, the processing pipeline, and the agent above the ABI. |
+| [`docs/agent.md`](docs/agent.md) | The tool-use **agent**, the bundled tools, tool routing & forced calls, the security model, and embedding it. |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Single-binary builds, server/embedded deployment, Unix-socket transport. |
+| [`benchmark/`](benchmark/README.md) | Methodology and full results — [Apple/Pi 5](benchmark/BENCHMARK.md), [Pi 5 deep-dive](benchmark/BENCHMARK_PI5.md), [ternary BitNet](benchmark/TERNARY_BITNET.md). |
+| [`include/geist.h`](include/geist.h) | The public C API, with per-symbol `STABLE` / `EXPERIMENTAL` stability tags. |
 
 ---
 

@@ -1,10 +1,14 @@
 /*
- * agent_websearch.h — a web_search geist_tool (Unix/desktop): run a query against
- * DuckDuckGo's no-JS HTML endpoint and return the top results as "title + URL"
- * lines, which the agent can then hand to web_fetch. Reuses webfetch_curl (no
- * shell: curl via fork + execvp; scheme/size/time caps), so the same trust
- * boundary applies. ctx is an optional endpoint override (a SearXNG base URL
- * ending in "?q="); nullptr = DuckDuckGo.
+ * agent_websearch.h — a web_search geist_tool (Unix/desktop): run a query and
+ * return the top results as "title + URL" lines, which the agent can then hand to
+ * web_fetch. Reuses webfetch_curl (no shell: curl via fork + execvp;
+ * scheme/size/time caps), so the same trust boundary applies.
+ *
+ * ctx is the endpoint base up to "?q=" (nullptr = DuckDuckGo's no-JS HTML page).
+ * The response shape is auto-detected: a body starting with '{' is parsed as
+ * SearXNG JSON ({"results":[{"url","title",..}]}), anything else as DuckDuckGo
+ * HTML — so pointing ctx at "https://<host>/search?format=json&q=" switches to a
+ * self-hosted SearXNG with no code or flag change (and sidesteps DDG throttling).
  *
  * Unlike web_fetch the *host* is fixed (the search engine), so this tool is the
  * low-risk half of web access — but the results it returns are attacker-influenced
@@ -89,7 +93,7 @@ static inline int websearch_real_url(const char *href, size_t hlen, size_t cap, 
 /* Parse up to WEBSEARCH_MAX_RESULTS "result__a" anchors out of a DDG HTML page
  * into "N. <title>\n   <url>\n" lines. Returns bytes written. */
 static inline size_t
-websearch_parse(const char *html, size_t cap, char out[static cap]) {
+websearch_parse_html(const char *html, size_t cap, char out[static cap]) {
     size_t      w   = 0;
     int         hit = 0;
     const char *p   = html;
@@ -134,8 +138,95 @@ websearch_parse(const char *html, size_t cap, char out[static cap]) {
     return w < cap ? w : cap - 1;
 }
 
+/* Copy the JSON string value starting at `s` (just past the opening quote) into
+ * out, decoding the escapes SearXNG actually emits (\" \\ \/ \n \t). Returns a
+ * pointer just past the closing quote, or nullptr if unterminated. */
+static inline const char *websearch_json_str(const char *s, size_t cap, char out[static cap]) {
+    size_t w = 0;
+    while (*s && *s != '"' && w + 1 < cap) {
+        if (*s == '\\' && s[1]) {
+            s++;
+            switch (*s) {
+            case 'n': out[w++] = '\n'; break;
+            case 't': out[w++] = '\t'; break;
+            default: out[w++] = *s; break; /* \" \\ \/ -> the literal char */
+            }
+            s++;
+        } else {
+            out[w++] = *s++;
+        }
+    }
+    out[w] = '\0';
+    return *s == '"' ? s + 1 : nullptr;
+}
+
+/* Parse a SearXNG JSON response ({"results":[{"url":..,"title":..,..},..]}) into
+ * the same "N. <title>\n   <url>\n" lines. Pairs each "title" with the "url" in
+ * the same result object (whichever key appears first), up to MAX_RESULTS.
+ * ponytail: a flat key scan, not a real JSON parser — fine for SearXNG's shape;
+ * a "content" value containing a literal "url": would mis-pair (not observed). */
+static inline size_t websearch_parse_json(const char *json, size_t cap, char out[static cap]) {
+    size_t      w   = 0;
+    int         hit = 0;
+    char        url[1024]  = {0};
+    char        title[512] = {0};
+    const char *p          = json;
+    while (hit < WEBSEARCH_MAX_RESULTS && *p) {
+        const char *uq = strstr(p, "\"url\"");
+        const char *tq = strstr(p, "\"title\"");
+        if (!uq && !tq) {
+            break;
+        }
+        /* take whichever key comes first; step past key + ':' + optional spaces to
+         * the value's opening quote (SearXNG may pretty-print "url": "...") */
+        int         is_url = uq && (!tq || uq < tq);
+        const char *c      = (is_url ? uq + 5 : tq + 7); /* past "url" / "title" */
+        while (*c && *c != ':' && *c != '"') {
+            c++;
+        }
+        if (*c != ':') { /* malformed / not this key's value -> skip past the key */
+            p = c;
+            continue;
+        }
+        c++;
+        while (*c == ' ' || *c == '\n' || *c == '\t' || *c == '\r') {
+            c++;
+        }
+        if (*c != '"') { /* value isn't a string (null/number) -> skip */
+            p = c;
+            continue;
+        }
+        p = websearch_json_str(c + 1, is_url ? sizeof url : sizeof title, is_url ? url : title);
+        if (!p) {
+            break;
+        }
+        if (url[0] && title[0]) {
+            w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%d. %s\n   %s\n", hit + 1, title,
+                                   url);
+            hit++;
+            url[0] = title[0] = '\0';
+        }
+    }
+    if (w == 0) {
+        w = (size_t) snprintf(out, cap, "(no results)");
+    }
+    out[w < cap ? w : cap - 1] = '\0';
+    return w < cap ? w : cap - 1;
+}
+
+/* Dispatch by response shape: a JSON body (SearXNG ?format=json) starts with '{';
+ * anything else is treated as DuckDuckGo HTML. So one tool serves both engines
+ * with no config flag — the endpoint (ctx) alone decides what comes back. */
+static inline size_t websearch_parse(const char *body, size_t cap, char out[static cap]) {
+    const char *p = body;
+    while (*p == ' ' || *p == '\n' || *p == '\t' || *p == '\r') {
+        p++;
+    }
+    return *p == '{' ? websearch_parse_json(body, cap, out) : websearch_parse_html(body, cap, out);
+}
+
 /* geist_tool invoke: ctx = endpoint base up to "?q=" (or nullptr = DuckDuckGo).
- * args = {"query": "..."}. */
+ * For SearXNG pass "https://<host>/search?format=json&q=". args = {"query": ".."}. */
 static inline enum geist_status websearch_invoke(void      *ctx,
                                                  size_t     args_len,
                                                  const char args[static args_len],
