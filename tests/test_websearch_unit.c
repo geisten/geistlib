@@ -64,9 +64,15 @@ static void test_parse(void) {
                           "parse: second title with nested tag stripped");
     fails += geist_expect(strstr(out, "https://fifa.com/wc") != nullptr, "parse: second URL");
 
-    char empty[64];
+    char empty[128];
     websearch_parse("<html>no results here</html>", sizeof empty, empty);
     fails += geist_expect(strcmp(empty, "(no results)") == 0, "parse: no anchors -> (no results)");
+
+    char blocked[128];
+    websearch_parse(
+            "<html>If this error persists... anomaly detected</html>", sizeof blocked, blocked);
+    fails += geist_expect(strstr(blocked, "rate-limited") != nullptr,
+                          "parse: DDG anomaly page -> rate-limit message, not (no results)");
 }
 
 int main(void) {
