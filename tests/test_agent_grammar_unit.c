@@ -147,12 +147,34 @@ static void test_degenerate(void) {
     fails += geist_expect(!agent_answer_degenerate("ok"), "degenerate: two letters is enough");
 }
 
+static void test_locator(void) {
+    fails += geist_expect(agent_key_is_locator("path") && agent_key_is_locator("url") &&
+                                  !agent_key_is_locator("query"),
+                          "locator: path/url yes, query no");
+
+    char        out[512];
+    size_t      n;
+    const char *r1 = "Fasse die Datei /tmp/note.txt zusammen";
+    n              = agent_extract_locator(strlen(r1), r1, sizeof out, out);
+    fails += geist_expect(n == strlen("/tmp/note.txt") && strcmp(out, "/tmp/note.txt") == 0,
+                          "locator: lifts the path verbatim (no space mangling)");
+
+    const char *r2 = "fetch http://example.com/p now";
+    n              = agent_extract_locator(strlen(r2), r2, sizeof out, out);
+    fails += geist_expect(strcmp(out, "http://example.com/p") == 0, "locator: lifts a URL");
+
+    const char *r3 = "show me the current directory";
+    fails += geist_expect(agent_extract_locator(strlen(r3), r3, sizeof out, out) == 0,
+                          "locator: no slash word -> none (free-decode fallback)");
+}
+
 int main(void) {
     test_matchers();
     test_schema_keys();
     test_args_normalize();
     test_tail_loop();
     test_degenerate();
+    test_locator();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
