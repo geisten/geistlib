@@ -670,23 +670,37 @@ static inline int agent_key_is_locator(const char *key) {
 }
 
 /* Find the first whitespace-delimited word in the request that looks like a
- * locator (contains '/') and copy it to out. Covers "/tmp/note.txt" and
- * "http://host/p". Returns its length, or 0 if the request has no such word. */
+ * locator — contains '/' (a path/URL: "/tmp/x", "http://host/p") OR ends in a
+ * file extension (".txt"/".md": "note.txt") — and copy it to out. Returns its
+ * length, or 0 if the request has no such word. */
 static inline size_t
 agent_extract_locator(size_t req_len, const char *req, size_t cap, char out[static cap]) {
     for (size_t i = 0; i < req_len;) {
         while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
             i++;
         }
-        size_t s = i;
+        size_t s = i, dot = (size_t) -1;
         int    slash = 0;
         while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
             if (req[i] == '/') {
                 slash = 1;
+            } else if (req[i] == '.') {
+                dot = i;
             }
             i++;
         }
-        if (slash && i > s) {
+        int ext = 0; /* a dot, not leading, then 1-5 alnum to the word end */
+        if (dot != (size_t) -1 && dot > s && i - dot >= 2 && i - dot <= 6) {
+            ext = 1;
+            for (size_t j = dot + 1; j < i; j++) {
+                char c = req[j];
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
+                    ext = 0;
+                    break;
+                }
+            }
+        }
+        if ((slash || ext) && i > s) {
             size_t n = i - s;
             if (n + 1 > cap) {
                 n = cap - 1;
@@ -702,11 +716,11 @@ agent_extract_locator(size_t req_len, const char *req, size_t cap, char out[stat
 /* Force the next turn to be a valid call to tool `idx` (chosen by
  * agent_select_tool), whether or not the model would have emitted one — the
  * proof that prompted tool use does NOT require a tool-trained model. The JSON
- * scaffold + the selected tool name are prefilled token-by-token; the model only
- * fills the open slot: a single-key string arg's VALUE is lifted from the request
- * for a locator key (path/url — see agent_extract_locator) else free-decoded (the
- * model's choice — grammar forces STRUCTURE, not content). For a 0-key or
- * multi-key schema the args object is forced to {}. Builds the parseable call
+ * scaffold + the selected tool name are prefilled token-by-token. A single-key
+ * string arg's VALUE is lifted from the request (the slash-bearing word for a
+ * locator key — see agent_extract_locator — else the request itself), not
+ * free-decoded: a weak forced model mangles it. For a 0-key or multi-key schema
+ * the args object is forced to {}. Builds the parseable call
  * into out and returns its length. Precondition: the session is set to the
  * transcript with the model turn open. Public peek/prefill/tokenize only — no
  * in-engine sampler change. */
@@ -749,53 +763,41 @@ static inline size_t agent_force_call(struct geist_agent *a,
         char open[GEIST_AGENT_NAME_CAP + 8];
         snprintf(open, sizeof open, "{\"%s\":\"", keys[0]);
         AGENT_PREFILL(open);
-        char   loc[512];
-        size_t locn = agent_key_is_locator(keys[0])
-                              ? agent_extract_locator(req_len, req, sizeof loc, loc)
-                              : 0;
-        if (locn > 0) {
-            /* locator key + the user named a path/url: lift it verbatim (a small
-             * model mangles a free-decoded path). STRUCTURE and now VALUE forced.
-             * Prefill it to the session WITHOUT AGENT_PREFILL (that also appends to
-             * out) — we append here ourselves, with JSON escaping. */
-            geist_token_t lids[64];
-            size_t        lnid = 0;
-            if (geist_session_tokenize(a->session, loc, 64, lids, &lnid) == GEIST_OK && lnid > 0) {
-                (void) geist_session_prefill_tokens(a->session, lnid, lids);
+        /* The VALUE is lifted from the request, not free-decoded: a weak forced
+         * model mangles it (drops words from a query, splits a path). For a
+         * locator key use the slash-bearing word; otherwise the request itself IS
+         * the intent (a search query / question), so lift it whole — a search
+         * engine handles the extra words. STRUCTURE and VALUE are both forced. */
+        char        loc[512];
+        const char *val = nullptr;
+        size_t      vn  = 0;
+        if (agent_key_is_locator(keys[0])) {
+            /* a path/url arg: lift the locator word the user named, else default to
+             * "." (a bare list_dir = cwd) — NOT the whole request, which is not a
+             * path. */
+            size_t locn = agent_extract_locator(req_len, req, sizeof loc, loc);
+            val = locn > 0 ? loc : ".";
+            vn  = locn > 0 ? locn : 1;
+        } else {
+            /* a free-text arg (a query / question): the request IS the intent. */
+            val = req, vn = req_len;
+        }
+        /* prefill the value tokens to keep the session consistent (no append — we
+         * write the JSON-escaped copy ourselves below). */
+        geist_token_t vids[256];
+        size_t        vnid = 0;
+        if (geist_session_tokenize(a->session, val, 256, vids, &vnid) == GEIST_OK && vnid > 0) {
+            (void) geist_session_prefill_tokens(a->session, vnid, vids);
+        }
+        for (size_t c = 0; c < vn && w + 2 < cap; c++) {
+            char ch = val[c];
+            if (ch == '\n' || ch == '\r' || ch == '\t') {
+                ch = ' '; /* keep the JSON string on one line */
             }
-            for (size_t c = 0; c < locn && w + 2 < cap; c++) {
-                if (loc[c] == '"' || loc[c] == '\\') {
-                    out[w++] = '\\';
-                }
-                out[w++] = loc[c];
+            if (ch == '"' || ch == '\\') {
+                out[w++] = '\\'; /* keep the rebuilt JSON valid */
             }
-        } else
-        /* free-decode the value (greedy) until a closing quote / newline / marker
-         * / EOS / a token cap. STRUCTURE is forced; this VALUE is the model's. */
-        for (int i = 0; i < 48; i++) {
-            geist_token_t tok = 0;
-            if (geist_session_decode_step(a->session, &tok) != GEIST_OK || tok == a->eos ||
-                tok == a->eot) {
-                break;
-            }
-            const char *p = geist_session_token_to_str(a->session, tok);
-            if (p == nullptr || p[0] == '\0') {
-                break;
-            }
-            int done = 0;
-            for (const char *c = p; *c != '\0' && w + 2 < cap; c++) {
-                if (*c == '"' || *c == '\n' || *c == '<') {
-                    done = 1; /* value ends at a quote / newline / control marker */
-                    break;
-                }
-                if (*c == '\\') {
-                    out[w++] = '\\'; /* keep the rebuilt JSON valid */
-                }
-                out[w++] = *c;
-            }
-            if (done) {
-                break;
-            }
+            out[w++] = ch;
         }
         w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "\"}}"); /* close value+args+call */
     }

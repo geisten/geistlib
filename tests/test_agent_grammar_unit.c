@@ -165,7 +165,16 @@ static void test_locator(void) {
 
     const char *r3 = "show me the current directory";
     fails += geist_expect(agent_extract_locator(strlen(r3), r3, sizeof out, out) == 0,
-                          "locator: no slash word -> none (free-decode fallback)");
+                          "locator: no path-like word -> none");
+
+    /* a bare filename with an extension (no slash) is a locator too */
+    const char *r4 = "Fasse die Datei note.txt zusammen";
+    n              = agent_extract_locator(strlen(r4), r4, sizeof out, out);
+    fails += geist_expect(strcmp(out, "note.txt") == 0, "locator: lifts a bare filename.ext");
+
+    const char *r5 = "summarize wm2026_de.txt please";
+    n              = agent_extract_locator(strlen(r5), r5, sizeof out, out);
+    fails += geist_expect(strcmp(out, "wm2026_de.txt") == 0, "locator: lifts filename with digits");
 }
 
 static void test_route_tiebreak(void) {
