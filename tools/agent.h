@@ -564,18 +564,69 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
     return best;
 }
 
+/* A locator arg (a path/file/url) is something the user almost always wrote out
+ * in the request — so for these keys we don't free-decode (a small model mangles
+ * "/tmp/note.txt" into "/. tmp/ note. txt" via the tokenizer's leading-space
+ * tokens) but LIFT the literal from the request. Recognises path/file/url-ish key
+ * names. ponytail: a fixed name list, extend if a tool adds a new locator key. */
+static inline int agent_key_is_locator(const char *key) {
+    static const char *const loc[] = {"path", "file",      "filename", "dir",
+                                       "url",  "directory", "filepath"};
+    for (size_t i = 0; i < sizeof loc / sizeof *loc; i++) {
+        if (strcmp(key, loc[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Find the first whitespace-delimited word in the request that looks like a
+ * locator (contains '/') and copy it to out. Covers "/tmp/note.txt" and
+ * "http://host/p". Returns its length, or 0 if the request has no such word. */
+static inline size_t
+agent_extract_locator(size_t req_len, const char *req, size_t cap, char out[static cap]) {
+    for (size_t i = 0; i < req_len;) {
+        while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
+            i++;
+        }
+        size_t s = i;
+        int    slash = 0;
+        while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
+            if (req[i] == '/') {
+                slash = 1;
+            }
+            i++;
+        }
+        if (slash && i > s) {
+            size_t n = i - s;
+            if (n + 1 > cap) {
+                n = cap - 1;
+            }
+            memcpy(out, req + s, n);
+            out[n] = '\0';
+            return n;
+        }
+    }
+    return 0;
+}
+
 /* Force the next turn to be a valid call to tool `idx` (chosen by
  * agent_select_tool), whether or not the model would have emitted one — the
  * proof that prompted tool use does NOT require a tool-trained model. The JSON
  * scaffold + the selected tool name are prefilled token-by-token; the model only
- * fills the open slot: a single-key string arg's VALUE is
- * free-decoded (the model's choice — grammar forces STRUCTURE, not content). For
- * a 0-key or multi-key schema the args object is forced to {}. Builds the
- * parseable call into out and returns its length. Precondition: the session is
- * set to the transcript with the model turn open. Public peek/prefill/tokenize
- * only — no in-engine sampler change. */
-static inline size_t
-agent_force_call(struct geist_agent *a, int idx, size_t cap, char out[static cap]) {
+ * fills the open slot: a single-key string arg's VALUE is lifted from the request
+ * for a locator key (path/url — see agent_extract_locator) else free-decoded (the
+ * model's choice — grammar forces STRUCTURE, not content). For a 0-key or
+ * multi-key schema the args object is forced to {}. Builds the parseable call
+ * into out and returns its length. Precondition: the session is set to the
+ * transcript with the model turn open. Public peek/prefill/tokenize only — no
+ * in-engine sampler change. */
+static inline size_t agent_force_call(struct geist_agent *a,
+                                      int                 idx,
+                                      size_t              req_len,
+                                      const char         *req,
+                                      size_t              cap,
+                                      char                out[static cap]) {
     if (idx < 0 || (size_t) idx >= a->n_tools) {
         if (cap) {
             out[0] = '\0';
@@ -609,6 +660,27 @@ agent_force_call(struct geist_agent *a, int idx, size_t cap, char out[static cap
         char open[GEIST_AGENT_NAME_CAP + 8];
         snprintf(open, sizeof open, "{\"%s\":\"", keys[0]);
         AGENT_PREFILL(open);
+        char   loc[512];
+        size_t locn = agent_key_is_locator(keys[0])
+                              ? agent_extract_locator(req_len, req, sizeof loc, loc)
+                              : 0;
+        if (locn > 0) {
+            /* locator key + the user named a path/url: lift it verbatim (a small
+             * model mangles a free-decoded path). STRUCTURE and now VALUE forced.
+             * Prefill it to the session WITHOUT AGENT_PREFILL (that also appends to
+             * out) — we append here ourselves, with JSON escaping. */
+            geist_token_t lids[64];
+            size_t        lnid = 0;
+            if (geist_session_tokenize(a->session, loc, 64, lids, &lnid) == GEIST_OK && lnid > 0) {
+                (void) geist_session_prefill_tokens(a->session, lnid, lids);
+            }
+            for (size_t c = 0; c < locn && w + 2 < cap; c++) {
+                if (loc[c] == '"' || loc[c] == '\\') {
+                    out[w++] = '\\';
+                }
+                out[w++] = loc[c];
+            }
+        } else
         /* free-decode the value (greedy) until a closing quote / newline / marker
          * / EOS / a token cap. STRUCTURE is forced; this VALUE is the model's. */
         for (int i = 0; i < 48; i++) {
@@ -807,7 +879,7 @@ static inline int agent_answer_degenerate(const char *s) {
                 geist_session_set_prompt(a->session, a->transcript) != GEIST_OK) {
                 return GEIST_E_INVALID_STATE;
             }
-            tn = agent_force_call(a, idx, sizeof turn, turn);
+            tn = agent_force_call(a, idx, req_len, req, sizeof turn, turn);
         } else {
             tn = agent_generate_turn(a, sizeof turn, turn);
         }
