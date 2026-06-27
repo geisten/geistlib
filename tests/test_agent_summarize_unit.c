@@ -58,10 +58,26 @@ static void test_refine_usable(void) {
                           "refine: scaffold echo after whitespace is not usable");
 }
 
+static void test_skip_scaffold(void) {
+    /* leading scaffold header (markdown-wrapped) is stripped, real content kept */
+    fails += geist_expect(
+            strcmp(summ_skip_scaffold("**Summary so far:**\n\nDie WM 2026."), "Die WM 2026.") == 0,
+            "scaffold: strips '**Summary so far:**' header");
+    fails += geist_expect(strcmp(summ_skip_scaffold("Updated summary: Foo."), "Foo.") == 0,
+                          "scaffold: strips 'Updated summary:' header");
+    /* no header -> untouched; a real leading '*' bullet is preserved */
+    const char *plain = "Die WM 2026 findet statt.";
+    fails += geist_expect(summ_skip_scaffold(plain) == plain, "scaffold: no header -> unchanged");
+    const char *bullet = "* erster Punkt";
+    fails += geist_expect(summ_skip_scaffold(bullet) == bullet,
+                          "scaffold: a real bullet is not mistaken for a header");
+}
+
 int main(void) {
     test_confine();
     test_chunk();
     test_refine_usable();
+    test_skip_scaffold();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
