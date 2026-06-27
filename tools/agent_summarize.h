@@ -263,7 +263,7 @@ static inline enum geist_status summarize_invoke(void      *ctx,
 static inline struct geist_tool summarize_file_tool(struct summarize_ctx *ctx) {
     return (struct geist_tool) {
             .name        = "summarize_file",
-            .description = "read a text file and summarize its contents",
+            .description = "eine Textdatei lesen und ihren Inhalt zusammenfassen",
             .args_schema = "{\"path\": string}",
             .invoke      = summarize_invoke,
             .ctx         = ctx,

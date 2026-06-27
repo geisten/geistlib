@@ -78,7 +78,7 @@ static inline enum geist_status listdir_invoke(void      *ctx,
 static inline struct geist_tool listdir_tool(void) {
     return (struct geist_tool) {
             .name        = "list_dir",
-            .description = "list the files in a directory",
+            .description = "die Dateien in einem Verzeichnis auflisten",
             .args_schema = "{\"path\": string}",
             .invoke      = listdir_invoke,
             .ctx         = nullptr,
