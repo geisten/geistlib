@@ -671,6 +671,22 @@ static inline size_t agent_copy(size_t cap, char resp[static cap], const char *s
     return n;
 }
 
+/* A final-answer turn with fewer than 2 alphanumeric chars (e.g. a lone "{" or
+ * "}" — a small model fumbling the post-observation turn by starting another JSON
+ * call instead of prose). When this happens after a tool ran, surfacing the
+ * tool's observation is far more useful than the junk. */
+static inline int agent_answer_degenerate(const char *s) {
+    int alnum = 0;
+    for (; *s != '\0'; s++) {
+        if ((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || (*s >= '0' && *s <= '9')) {
+            if (++alnum >= 2) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 /* Run one request to completion: loop generate -> parse -> (whitelist) dispatch
  * -> observe, until the model answers in plain text or max_steps is hit.
  * On any failure resp is left well-defined ("" / *resp_len 0). */
@@ -717,8 +733,12 @@ static inline size_t agent_copy(size_t cap, char resp[static cap], const char *s
                                                  : agent_generate_turn(a, sizeof turn, turn);
 
         if (!agent_parse_call(tn, turn, sizeof name, name, sizeof args, args)) {
-            /* no tool call -> this turn is the final answer */
-            size_t n = agent_copy(resp_cap, resp, turn);
+            /* no tool call -> this turn is the final answer. If a tool already ran
+             * this request (step > 0) and the model fumbled the answer turn into a
+             * degenerate fragment (a lone "{"), surface the last observation
+             * instead — the tool's output is what the user actually asked for. */
+            const char *answer = (step > 0 && agent_answer_degenerate(turn)) ? obs : turn;
+            size_t      n      = agent_copy(resp_cap, resp, answer);
             if (resp_len) {
                 *resp_len = n;
             }

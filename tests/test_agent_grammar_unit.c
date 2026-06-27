@@ -137,11 +137,22 @@ static void test_tail_loop(void) {
     fails += geist_expect(agent_tail_loop("xyzxyzxyz", 9) == 3, "loop: period-3 triple detected");
 }
 
+static void test_degenerate(void) {
+    fails += geist_expect(agent_answer_degenerate("{"), "degenerate: lone brace");
+    fails += geist_expect(agent_answer_degenerate("  {} \n"), "degenerate: punctuation only");
+    fails += geist_expect(agent_answer_degenerate(""), "degenerate: empty");
+    fails += geist_expect(!agent_answer_degenerate("error"), "degenerate: a real word is not");
+    fails += geist_expect(!agent_answer_degenerate("notes.txt\nreport.pdf"),
+                          "degenerate: a listing is not");
+    fails += geist_expect(!agent_answer_degenerate("ok"), "degenerate: two letters is enough");
+}
+
 int main(void) {
     test_matchers();
     test_schema_keys();
     test_args_normalize();
     test_tail_loop();
+    test_degenerate();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
