@@ -666,14 +666,20 @@ static inline size_t agent_force_call(struct geist_agent *a,
                               : 0;
         if (locn > 0) {
             /* locator key + the user named a path/url: lift it verbatim (a small
-             * model mangles a free-decoded path). STRUCTURE and now VALUE forced. */
+             * model mangles a free-decoded path). STRUCTURE and now VALUE forced.
+             * Prefill it to the session WITHOUT AGENT_PREFILL (that also appends to
+             * out) — we append here ourselves, with JSON escaping. */
+            geist_token_t lids[64];
+            size_t        lnid = 0;
+            if (geist_session_tokenize(a->session, loc, 64, lids, &lnid) == GEIST_OK && lnid > 0) {
+                (void) geist_session_prefill_tokens(a->session, lnid, lids);
+            }
             for (size_t c = 0; c < locn && w + 2 < cap; c++) {
                 if (loc[c] == '"' || loc[c] == '\\') {
                     out[w++] = '\\';
                 }
                 out[w++] = loc[c];
             }
-            AGENT_PREFILL(loc);
         } else
         /* free-decode the value (greedy) until a closing quote / newline / marker
          * / EOS / a token cap. STRUCTURE is forced; this VALUE is the model's. */
