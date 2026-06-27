@@ -168,6 +168,25 @@ static void test_locator(void) {
                           "locator: no slash word -> none (free-decode fallback)");
 }
 
+static void test_route_tiebreak(void) {
+    /* names-a-file: an extension word (even without a slash) is detected; a bare
+     * directory request / path is not. */
+    const char *f1 = "Fasse die Datei note.txt zusammen";
+    const char *f2 = "Zeige mir den Inhalt des aktuellen Ordners";
+    const char *f3 = "list /home/germar/docs";
+    fails +=
+            geist_expect(agent_request_names_file(strlen(f1), f1), "names_file: note.txt detected");
+    fails += geist_expect(!agent_request_names_file(strlen(f2), f2),
+                          "names_file: no extension -> no");
+    fails += geist_expect(!agent_request_names_file(strlen(f3), f3),
+                          "names_file: bare dir path -> no (no extension)");
+
+    fails += geist_expect(agent_desc_is_dir("die Dateien in einem Verzeichnis auflisten"),
+                          "desc_is_dir: Verzeichnis tool");
+    fails += geist_expect(!agent_desc_is_dir("eine Textdatei lesen und zusammenfassen"),
+                          "desc_is_dir: file tool is not a dir tool");
+}
+
 int main(void) {
     test_matchers();
     test_schema_keys();
@@ -175,6 +194,7 @@ int main(void) {
     test_tail_loop();
     test_degenerate();
     test_locator();
+    test_route_tiebreak();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;

@@ -562,6 +562,47 @@ static inline int agent_score_names(struct geist_agent *a, size_t n, const char 
     return 1;
 }
 
+/* True if a request word looks like a named file with an extension (note.txt,
+ * report.md): a dot, not leading, then 1-5 alnum to the word end. Distinguishes
+ * a named file from a bare directory path. ponytail: "2.0" also matches — a rare
+ * false positive, only consulted as a close-race tie-breaker, so harmless. */
+static inline int agent_request_names_file(size_t req_len, const char *req) {
+    for (size_t i = 0; i < req_len;) {
+        while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
+            i++;
+        }
+        size_t s = i, dot = (size_t) -1;
+        while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
+            if (req[i] == '.') {
+                dot = i;
+            }
+            i++;
+        }
+        if (dot != (size_t) -1 && dot > s && i - dot >= 2 && i - dot <= 6) {
+            int alnum = 1;
+            for (size_t j = dot + 1; j < i; j++) {
+                char c = req[j];
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
+                    alnum = 0;
+                    break;
+                }
+            }
+            if (alnum) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* True if a tool description denotes a DIRECTORY tool — so a request naming a
+ * specific file should prefer a non-dir tool. Bilingual, case-robust by matching
+ * the stable inner substring (Verzeichnis/Ordner/directory/folder). */
+static inline int agent_desc_is_dir(const char *d) {
+    return d && (strstr(d, "erzeichnis") || strstr(d, "rdner") || strstr(d, "directory") ||
+                 strstr(d, "folder"));
+}
+
 static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
     if (a->n_tools <= 1) {
         return 0;
@@ -581,12 +622,32 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
     agent_select_prompt(a, n, strlen("(unspecified)"), "(unspecified)", sizeof sel, sel);
     int have_base = agent_score_names(a, n, sel, base);
 
-    int   best   = 0;
-    float best_v = -1e30f;
+    float cal[AGENT_MAX_ROUTED] = {0};
+    int   best                  = 0;
+    float best_v                = -1e30f;
     for (size_t i = 0; i < n; i++) {
-        float v = have_base ? score[i] - base[i] : score[i];
-        if (v > best_v) {
-            best_v = v, best = (int) i;
+        cal[i] = have_base ? score[i] - base[i] : score[i];
+        if (cal[i] > best_v) {
+            best_v = cal[i], best = (int) i;
+        }
+    }
+
+    /* Tie-breaker: if the winner is a directory tool but the request names a
+     * specific file (note.txt), prefer the best non-dir tool within a small
+     * window. The German separable verb "Fasse … zusammen" splits the verb so the
+     * scored first token is "Fasse" and the name score barely favours list_dir; a
+     * named file is strong evidence for a file tool. Bounded — only on a real
+     * file extension (a bare directory path never fires) and only a close race. */
+    if (agent_desc_is_dir(a->tools[best].description) && agent_request_names_file(req_len, req)) {
+        int   alt   = -1;
+        float alt_v = -1e30f;
+        for (size_t i = 0; i < n; i++) {
+            if (!agent_desc_is_dir(a->tools[i].description) && cal[i] > alt_v) {
+                alt = (int) i, alt_v = cal[i];
+            }
+        }
+        if (alt >= 0 && alt_v > best_v - 1.5f) { /* 1.5: the observed residual is ~0.5 */
+            best = alt;
         }
     }
     return best;
