@@ -41,8 +41,11 @@ int main(void) {
     geist_session_reset(s);
     geist_session_set_prompt(s, agent.transcript);
 
-    char   turn[GEIST_AGENT_TURN_CAP];
-    size_t n = agent_force_call(&agent, sizeof turn, turn);
+    char turn[GEIST_AGENT_TURN_CAP];
+    int  idx = agent_select_tool(&agent, strlen(req), req); /* single tool -> 0 */
+    geist_session_reset(s);
+    geist_session_set_prompt(s, agent.transcript);
+    size_t n = agent_force_call(&agent, idx, sizeof turn, turn);
     fprintf(stderr, "FORCED CALL (%zu bytes): %s\n", n, turn);
 
     char name[GEIST_AGENT_NAME_CAP], args[GEIST_AGENT_ARGS_CAP];

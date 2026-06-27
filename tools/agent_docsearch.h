@@ -198,6 +198,7 @@ static inline enum geist_status docsearch_invoke(void      *ctx,
 static inline struct geist_tool docsearch_tool(const char *doc_dir) {
     return (struct geist_tool) {
             .name        = "doc_search",
+            .description = "search the local documents for a query",
             .args_schema = "{\"query\": string}",
             .invoke      = docsearch_invoke,
             .ctx         = (void *) (intptr_t) doc_dir, /* borrowed, host-owned */

@@ -115,18 +115,15 @@ int main(void) {
     fprintf(stderr, "run st=%d, answer=\"%.120s\"\n", (int) st, resp);
 
     int rc = GEIST_TEST_PASS;
-    /* The loop must have: returned OK, emitted a list_dir call, and fed the real
-     * listing back as an observation (assumes the forced path is cwd-relative,
-     * which greedy decoding yields — empty or "." both list the cwd). */
+    /* force_call is single-shot: it routes + forces list_dir, runs it, and
+     * returns the tool's observation as the answer — so the real directory
+     * listing must be in resp. (The spy lists the cwd deterministically, so this
+     * doesn't depend on which path value the model forced.) */
     if (st != GEIST_OK) {
         fprintf(stderr, "FAIL: agent_run did not return OK\n");
         rc = GEIST_TEST_FAIL;
-    } else if (strstr(agent.transcript, "list_dir") == nullptr) {
-        fprintf(stderr, "FAIL: no list_dir call in the transcript\n");
-        rc = GEIST_TEST_FAIL;
-    } else if (strstr(agent.transcript, "alpha.txt") == nullptr ||
-               strstr(agent.transcript, "beta.md") == nullptr) {
-        fprintf(stderr, "FAIL: directory contents not in the observation\n");
+    } else if (strstr(resp, "alpha.txt") == nullptr || strstr(resp, "beta.md") == nullptr) {
+        fprintf(stderr, "FAIL: directory contents not in the answer\n");
         rc = GEIST_TEST_FAIL;
     }
     if (rc == GEIST_TEST_PASS) {

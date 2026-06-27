@@ -221,6 +221,7 @@ static inline enum geist_status webfetch_invoke(void      *ctx,
 static inline struct geist_tool webfetch_tool(const char *allow_hosts) {
     return (struct geist_tool) {
             .name        = "web_fetch",
+            .description = "fetch a web page by URL and return its text",
             .args_schema = "{\"url\": string}",
             .invoke      = webfetch_invoke,
             .ctx         = (void *) (intptr_t) allow_hosts,

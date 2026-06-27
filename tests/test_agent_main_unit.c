@@ -30,7 +30,8 @@ static enum geist_status stub_invoke(void      *ctx,
     }
     return GEIST_OK;
 }
-static const struct geist_tool STUB = {"echo", "{\"x\": string}", stub_invoke, nullptr};
+static const struct geist_tool STUB = {
+        .name = "echo", .args_schema = "{\"x\": string}", .invoke = stub_invoke, .ctx = nullptr};
 
 /* Parse a fixed argv array (no GNU statement-expressions -> -Wpedantic clean). */
 static enum agent_main_parse parse(struct agent_main_opts *o, int argc, char **argv) {

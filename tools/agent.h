@@ -70,6 +70,7 @@ static inline size_t agent_tail_loop(const char *out, size_t w) {
 struct geist_tool {
     const char *name;        /* whitelist key, must match the emitted "tool" */
     const char *args_schema; /* shown to the model, e.g. {"query": string} */
+    const char *description;  /* one line of intent for routing; nullptr -> use name */
     enum geist_status (*invoke)(void      *ctx,
                                 size_t     args_len,
                                 const char args[static args_len],
@@ -497,20 +498,94 @@ static inline int agent_decode_name_constrained(struct geist_agent *a) {
     return agent_name_complete(a, partial);
 }
 
-/* Force the next turn to be a valid tool call, whether or not the model would
- * have emitted one — the proof that prompted tool use does NOT require a
- * tool-trained model. The JSON scaffold is prefilled token-by-token; the model
- * only fills the open slots: the tool NAME is constrained to the whitelist
- * (agent_decode_name_constrained) and a single-key string arg's VALUE is
+/* Route a request to the best tool by scoring, instead of trusting the raw
+ * `{"tool":"` logit (which, with several tools, picks a valid-but-wrong one — a
+ * "list the directory" request forced summarize_file). Frame the request + the
+ * tool menu as a question and pick the tool whose name the model most wants as
+ * the answer (first-token logprob, the SCOREALT pattern). Returns a tool index;
+ * 0 when there is a single tool (no choice). Pure peek/prefill/tokenize — leaves
+ * the session reset to the selection prompt (caller re-sets the transcript). */
+enum { AGENT_MAX_ROUTED = 26 }; /* A..Z */
+
+/* Logit of the first token of `text`, or -INF-ish if it doesn't tokenize. */
+static inline float agent_first_token_logit(struct geist_agent *a, const char *text,
+                                            const float *logits, size_t n_logits) {
+    geist_token_t ids[8];
+    size_t        nid = 0;
+    if (geist_session_tokenize(a->session, text, 8, ids, &nid) != GEIST_OK || nid == 0 ||
+        ids[0] >= (geist_token_t) n_logits) {
+        return -1e30f;
+    }
+    return logits[ids[0]];
+}
+
+static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
+    if (a->n_tools <= 1) {
+        return 0;
+    }
+    const size_t n = a->n_tools < AGENT_MAX_ROUTED ? a->n_tools : AGENT_MAX_ROUTED;
+    static char  sel[GEIST_AGENT_TRANSCRIPT_CAP];
+    size_t       w = (size_t) snprintf(sel,
+                                       sizeof sel,
+                                       "%sWhich tool best handles this request?\nRequest: %.*s\n",
+                                       a->tmpl.user_open,
+                                       (int) req_len,
+                                       req);
+    for (size_t i = 0; i < n && w < sizeof sel; i++) {
+        const char *d = a->tools[i].description ? a->tools[i].description : a->tools[i].name;
+        w += (size_t) snprintf(sel + w, sizeof sel - w, "%c) %s\n", (char) ('A' + i), d);
+    }
+    w += (size_t) snprintf(
+            sel + w, sizeof sel - w, "Answer with the letter.%s%s", a->tmpl.turn_close, a->tmpl.model_open);
+    if (geist_session_reset(a->session) != GEIST_OK ||
+        geist_session_set_prompt(a->session, sel) != GEIST_OK) {
+        return 0;
+    }
+    size_t       n_logits = 0;
+    const float *logits   = geist_session_peek_logits(a->session, &n_logits);
+    if (logits == nullptr || n_logits == 0) {
+        return 0;
+    }
+    /* Score each option's letter. The first generated token may be "A" (line
+     * start) or " A" (after a colon) depending on the template — take the max of
+     * both forms so the choice is robust to that, consistently across options. */
+    int   best   = 0;
+    float best_v = -1e30f;
+    for (size_t i = 0; i < n; i++) {
+        char bare[2]  = {(char) ('A' + i), '\0'};
+        char spaced[3] = {' ', (char) ('A' + i), '\0'};
+        float v0 = agent_first_token_logit(a, bare, logits, n_logits);
+        float v1 = agent_first_token_logit(a, spaced, logits, n_logits);
+        float v  = v0 > v1 ? v0 : v1;
+        if (v > best_v) {
+            best_v = v, best = (int) i;
+        }
+    }
+    return best;
+}
+
+/* Force the next turn to be a valid call to tool `idx` (chosen by
+ * agent_select_tool), whether or not the model would have emitted one — the
+ * proof that prompted tool use does NOT require a tool-trained model. The JSON
+ * scaffold + the selected tool name are prefilled token-by-token; the model only
+ * fills the open slot: a single-key string arg's VALUE is
  * free-decoded (the model's choice — grammar forces STRUCTURE, not content). For
  * a 0-key or multi-key schema the args object is forced to {}. Builds the
  * parseable call into out and returns its length. Precondition: the session is
  * set to the transcript with the model turn open. Public peek/prefill/tokenize
  * only — no in-engine sampler change. */
-static inline size_t agent_force_call(struct geist_agent *a, size_t cap, char out[static cap]) {
-    size_t        w = 0;
-    geist_token_t ids[64];
-    size_t        nid = 0;
+static inline size_t
+agent_force_call(struct geist_agent *a, int idx, size_t cap, char out[static cap]) {
+    if (idx < 0 || (size_t) idx >= a->n_tools) {
+        if (cap) {
+            out[0] = '\0';
+        }
+        return 0;
+    }
+    const struct geist_tool *t = &a->tools[idx];
+    size_t                   w = 0;
+    geist_token_t            ids[64];
+    size_t                   nid = 0;
 /* Append `lit` to out AND prefill it so the model's later decode is conditioned
  * on the scaffold it is "inside". */
 #define AGENT_PREFILL(lit)                                                                 \
@@ -523,13 +598,7 @@ static inline size_t agent_force_call(struct geist_agent *a, size_t cap, char ou
     } while (0)
 
     AGENT_PREFILL("{\"tool\":\"");
-    int idx = agent_decode_name_constrained(a); /* forces + prefills a whitelist name */
-    if (idx < 0 || (size_t) idx >= a->n_tools) {
-        out[w < cap ? w : cap - 1] = '\0';
-        return w; /* empty whitelist — nothing to force */
-    }
-    const struct geist_tool *t = &a->tools[idx];
-    w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%s", t->name);
+    AGENT_PREFILL(t->name); /* the pre-selected tool (see agent_select_tool) */
     AGENT_PREFILL("\",\"args\":");
 
     char   keys[4][GEIST_AGENT_NAME_CAP];
@@ -728,9 +797,20 @@ static inline int agent_answer_degenerate(const char *s) {
          * request. Switch to incremental prefill_tokens if requests get long. */
         /* force_call: make turn 0 a guaranteed-valid tool call even on a model
          * that wouldn't emit one (no tool training needed); later turns are free
-         * so the model can give a plain-text answer after the observation. */
-        size_t tn = (a->force_call && step == 0) ? agent_force_call(a, sizeof turn, turn)
-                                                 : agent_generate_turn(a, sizeof turn, turn);
+         * so the model can give a plain-text answer after the observation. The
+         * tool is ROUTED (agent_select_tool) so multiple tools don't mis-fire;
+         * selection clobbers the session, so re-set the transcript before forcing. */
+        size_t tn;
+        if (a->force_call && step == 0) {
+            int idx = agent_select_tool(a, req_len, req);
+            if (geist_session_reset(a->session) != GEIST_OK ||
+                geist_session_set_prompt(a->session, a->transcript) != GEIST_OK) {
+                return GEIST_E_INVALID_STATE;
+            }
+            tn = agent_force_call(a, idx, sizeof turn, turn);
+        } else {
+            tn = agent_generate_turn(a, sizeof turn, turn);
+        }
 
         if (!agent_parse_call(tn, turn, sizeof name, name, sizeof args, args)) {
             /* no tool call -> this turn is the final answer. If a tool already ran
@@ -772,6 +852,18 @@ static inline int agent_answer_degenerate(const char *s) {
             if (t->invoke(t->ctx, strlen(args), args, sizeof obs, obs, &on) != GEIST_OK) {
                 on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" failed", name);
             }
+        }
+
+        /* force_call is a single-task tool-runner: once the routed tool has run,
+         * its observation IS the answer (the listing / the summary). Return it
+         * directly rather than letting a weak model fumble a free answer turn or
+         * fire more tools. (The normal, un-forced loop keeps composing answers.) */
+        if (a->force_call && step == 0) {
+            size_t n = agent_copy(resp_cap, resp, obs);
+            if (resp_len) {
+                *resp_len = n;
+            }
+            return GEIST_OK;
         }
 
         /* keep a best-effort answer in resp in case we hit max_steps */
