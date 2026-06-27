@@ -109,6 +109,24 @@ The generate node reuses the decode pipeline shown above; only the orchestration
 platform-specific (a `curl`-backed `web_fetch` on Unix; a `URLSession` one on
 iOS), which is why they are not part of `libgeist`.
 
+**Driving tools on small, non-tool-trained models — without touching the
+sampler.** A 2 B model rarely emits a clean tool call on its own, and geist's
+ABI deliberately exposes no in-engine grammar mask. The agent gets the same
+guarantee *from outside* the engine, using only `peek_logits` / `prefill_tokens`
+/ `tokenize`:
+
+- **Routing** scores each tool *name* as the answer to a "which tool?" cloze and
+  PMI-calibrates it against a content-free baseline (so a frequent token like
+  `list` doesn't always win) — picking the tool, not trusting a raw logit.
+- **Forcing** prefills the `{"tool":"<name>","args":{…}}` scaffold token-by-token
+  and lifts the arg value from the request, so the *structure* is guaranteed and
+  only the routing decision is the model's.
+
+This is the architectural reason the agent layer is **above** the ABI, not inside
+it: a constrained-decoding capability that would normally live in the sampler is
+reconstructed from the public peek/prefill primitives, keeping `libgeist` small
+and the grammar logic auditable in `agent.h`. See [agent.md](agent.md#tool-selection--forced-calls).
+
 ## Zero-dispatch kernel binding
 
 Generic engines walk a layer-dispatch loop every token, switching on dtype and

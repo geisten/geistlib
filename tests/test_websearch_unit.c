@@ -75,11 +75,38 @@ static void test_parse(void) {
                           "parse: DDG anomaly page -> rate-limit message, not (no results)");
 }
 
+static void test_parse_json(void) {
+    /* A SearXNG-shaped JSON body: dispatch picks the JSON path on the leading '{'.
+     * Keys appear in different orders across the two results; \/ is decoded. */
+    const char *json = "{\"results\": ["
+                       "{\"url\": \"https:\\/\\/en.wikipedia.org\\/wiki\\/2026_FIFA_World_Cup\", "
+                       "\"title\": \"2026 FIFA World Cup\", \"content\": \"the 23rd ...\"},"
+                       "{\"title\": \"FIFA.com\", \"url\": \"https://www.fifa.com/wc2026\"}"
+                       "]}";
+    char        out[1024];
+    size_t      n = websearch_parse(json, sizeof out, out);
+    fails += geist_expect(n > 0, "json: non-empty");
+    fails += geist_expect(strstr(out, "2026 FIFA World Cup") != nullptr, "json: first title");
+    fails += geist_expect(strstr(out, "https://en.wikipedia.org/wiki/2026_FIFA_World_Cup") !=
+                                  nullptr,
+                          "json: first URL with \\/ unescaped");
+    fails += geist_expect(strstr(out, "FIFA.com") != nullptr,
+                          "json: second title (url-first order)");
+    fails +=
+            geist_expect(strstr(out, "https://www.fifa.com/wc2026") != nullptr, "json: second URL");
+
+    char empty[64];
+    websearch_parse("{\"results\": []}", sizeof empty, empty);
+    fails +=
+            geist_expect(strcmp(empty, "(no results)") == 0, "json: empty results -> (no results)");
+}
+
 int main(void) {
     test_url();
     test_pct_decode();
     test_real_url();
     test_parse();
+    test_parse_json();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;

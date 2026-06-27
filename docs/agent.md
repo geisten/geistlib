@@ -14,6 +14,7 @@ object inside an app — but the core is identical.
 - [The memory palace — `mind.h`](#the-memory-palace--mindh)
 - [The agent — `agent.h`](#the-agent--agenth)
 - [Tools](#tools)
+  - [Tool selection & forced calls](#tool-selection--forced-calls)
 - [Security model](#security-model)
 - [Embedding the agent](#embedding-the-agent)
 
@@ -92,7 +93,10 @@ public entry is `geist_agent_run` (one request, many steps), not a single step.
 ```c
 struct geist_agent agent;                                   /* caller storage (large) */
 struct geist_tool  tools[] = { docsearch_tool("./docs") };
-geist_agent_init(&agent, model, session, 1, tools, /*max_steps=*/8);
+geist_agent_init(&agent, model, session,
+                 /*n_tools=*/1, tools, /*max_steps=*/8,
+                 /*system_prompt=*/"You are a document assistant.");
+agent.force_call = true;   /* optional: see "Tool selection & forced calls" below */
 
 char   resp[2048];
 size_t n = 0;
@@ -126,6 +130,7 @@ A tool is a host-supplied entry in the whitelist:
 ```c
 struct geist_tool {
     const char *name;          /* whitelist key; must match the emitted "tool" */
+    const char *description;   /* one line, used by the router (see below) */
     const char *args_schema;   /* shown to the model, e.g. {"query": string} */
     enum geist_status (*invoke)(void *ctx,
                                 size_t args_len, const char args[static args_len],
@@ -136,17 +141,45 @@ struct geist_tool {
 ```
 
 Use `agent_json_str(args, "key", cap, out)` to pull a flat string field from the
-validated args. Shipped tools:
+validated args. Shipped tools (each a one-call `*_tool(...)` constructor):
 
-- **`doc_search`** (`tools/agent_docsearch.h`) — keyword search over a directory
-  of text files (BGB, manuals). `docsearch_tool(dir)`; ctx = the directory.
-  Local RAG, no embeddings. Ceiling: linear scan (→ BM25/index), plain text only
-  (→ a `pdftotext`-style extraction step).
-- **`web_fetch`** (`tools/agent_webfetch.h`) — fetch an http(s) URL via `curl`,
-  return tag-stripped text. `webfetch_tool(allow_hosts)`; ctx = a comma-separated
-  host allowlist (`nullptr` = any). Unix/desktop only (uses `curl` + `fork`); an
-  iOS/Android host supplies its own via the platform HTTP client. See
-  [Security model](#security-model).
+| tool | header | constructor | does |
+|---|---|---|---|
+| **`list_dir`** | `agent_listdir.h` | `listdir_tool()` | list a directory's entries (`opendir`, no shell) |
+| **`summarize_file`** | `agent_summarize.h` | `summarize_file_tool(&ctx)` | read a text file under a root and refine-summarize it (sub-session); `ctx` = `{model, be, root}` |
+| **`doc_search`** | `agent_docsearch.h` | `docsearch_tool(dir)` | keyword search over a directory of text files — local RAG, no embeddings |
+| **`web_search`** | `agent_websearch.h` | `websearch_tool(endpoint)` | search the web (DuckDuckGo HTML, or SearXNG JSON if `endpoint` points there) → title+URL results |
+| **`web_fetch`** | `agent_webfetch.h` | `webfetch_tool(allow_hosts)` | fetch an http(s) URL via `curl`, return tag-stripped text |
+
+`web_search` + `web_fetch` compose: search for pages, then fetch+read one. Both
+are Unix/desktop only (`curl` + `fork`); an iOS/Android host supplies its own over
+the platform HTTP client. `summarize_file` confines reads to its `root` (rejects
+absolute paths and `..`). Ceilings (`ponytail:`): `doc_search` is a linear scan,
+plain text only; `web_search` scrapes DuckDuckGo's HTML result anchors (point it
+at a SearXNG instance for robustness); HTML entities in titles aren't decoded.
+
+### Tool selection & forced calls
+
+Two mechanisms make tools work on **small, non-tool-trained** models, both driven
+entirely over the public `peek_logits` / `prefill_tokens` / `tokenize` API — no
+in-engine sampler change:
+
+- **Routing** (`agent_select_tool`) — with more than one tool, the raw
+  `{"tool":"` logit often picks a valid-but-wrong tool. Instead the request + a
+  tool menu (`name: description`) are framed as a question and each tool **name**
+  is scored by its first-token log-prob (an MMLU-style cloze). The score is
+  **PMI-calibrated** — the model's prior for each name (given the menu but a
+  content-free request) is subtracted, removing token-frequency bias. A
+  deterministic tie-breaker prefers a file tool when the request names a file
+  (`note.txt`) and the race is close.
+- **Forcing** (`agent.force_call = true`) — grammar-*forces* turn 0 to be a valid
+  call to the routed tool: the JSON scaffold + the chosen tool name are prefilled
+  token-by-token, and a single-key arg's value is **lifted from the request** (the
+  path word for a locator arg, else the request itself as the query) rather than
+  free-decoded, which a weak model mangles. The forced call is single-shot — the
+  tool's observation is returned as the answer. This is why an *untrained* model
+  can still drive tools reliably: structure and value are forced, only the routing
+  decision is the model's.
 
 ## Security model
 
@@ -175,6 +208,12 @@ HTTP listener for a same-host agent.
 Hardest guarantee (`ponytail:` upgrade): **grammar-constrained sampling** — mask
 the sampler's logits to grammar-valid tokens so the model *cannot* emit anything
 but a valid, on-whitelist call. The current loop is generate-then-validate.
+
+`web_search` is the lower-risk half of web access — it only talks to a **fixed**
+search endpoint (the host is not model-chosen), so the model influences the
+*query*, not the destination. But the results it returns are attacker-influenced
+text, so a URL the model then hands to `web_fetch` is still untrusted and goes
+through `web_fetch`'s scheme + host gate.
 
 Not yet defended: `web_fetch` does not block private/link-local IPs (SSRF) — the
 host allowlist is the mitigation for an open fetch.
