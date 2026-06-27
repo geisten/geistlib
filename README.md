@@ -188,15 +188,44 @@ $ GEIST_FORCE_CALL=1 ./geist_shell model.gguf "Suche im Web nach FIFA World Cup 
 …
 ```
 
-Bundled tools (each a no-shell, host-gated `*_tool()` you opt into):
+### Capabilities available today
 
-| tool | what it does |
-| :-- | :-- |
-| `list_dir` | list a directory (`opendir`, no shell) |
-| `summarize_file` | read a text file under a fixed root and refine-summarize it — **local, no embeddings, no cloud** |
-| `doc_search` | keyword search across a directory of documents (local RAG) |
-| `web_search` | search the web — DuckDuckGo, or a self-hosted **SearXNG** (JSON) instance |
-| `web_fetch` | fetch a URL and return tag-stripped text |
+Each is a no-shell, host-gated `*_tool()` you opt into; all five are shipped and
+work on both bundled models (routing/forcing is model-independent):
+
+| capability | tool | status | notes |
+| :-- | :-- | :--: | :-- |
+| **List a directory** | `list_dir` | ✅ | `opendir`, no shell |
+| **Read & summarize a file** | `summarize_file` | ✅ | local, **no embeddings, no cloud**; reads confined to a root |
+| **Search local documents** | `doc_search` | ✅ | keyword scan over a folder (local RAG) |
+| **Search the web** | `web_search` | ✅ | DuckDuckGo, or a self-hosted **SearXNG** (JSON) |
+| **Fetch & read a web page** | `web_fetch` | ✅ | `curl` → tag-stripped text |
+| Multi-tool routing | `agent_select_tool` | ✅ | name-scoring + PMI calibration picks the right tool |
+| Forced tool call | `force_call` | ✅ | drives tools on models that were never tool-trained |
+| Audio-in (Conformer) | — | 🧪 | engine supports it; not yet wired as an agent tool |
+
+### Response time per task
+
+Measured end-to-end via `geist_shell` (`GEIST_FORCE_CALL=1`, greedy), **model
+resident** (warm). Mac = M1 Max + Gemma 4 E2B-it (Q4_K_M); Pi 5 = Cortex-A76 @
+2.4 GHz + BitNet 2B-4T (`i2_s`). Light tasks are dominated by the **router +
+forced call** (a few model forward passes) — the tool's own I/O is milliseconds;
+**summarize** runs the whole document through the model, so it scales with length.
+
+| task | **Mac** (Gemma) | **Pi 5** (BitNet) |
+| :-- | --: | --: |
+| list a directory | ~5 s | ~18 s |
+| fetch a web page | ~4 s | ~19 s |
+| web search | ~4 s ＋net | ~19 s ＋net |
+| summarize a short note (~1 paragraph) | ~5 s | ~21 s |
+| summarize an 8 KB article (~4 chunks) | ~80 s | ~3.4 min |
+
+> **One-time model load** is separate from the per-task times above: ~3 s on macOS
+> (eager), while the Pi `mmap`s the weights (first request pays the page-in, then
+> the model stays resident). The Pi's ~18 s floor on light tasks is the router's
+> repeated full-prompt prefill on the A76 — a known optimisation target (the
+> O(n²) reprefill noted in `agent.h`), not the tool itself. Numbers are
+> single-run wall-clock on a live machine; treat them as ballpark, not a gate.
 
 **Why it works on a model that was never tool-trained.** A 2 B model rarely emits
 a clean tool call on its own. geist does not rely on it: the host decides what can
