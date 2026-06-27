@@ -19,15 +19,19 @@
 #include "agent_listdir.h"
 #include "agent_main.h" /* arg parsing + agent_main_ask, reused */
 #include "agent_summarize.h"
+#include "agent_webfetch.h"
+#include "agent_websearch.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static const char *SHELL_SYSTEM =
-        "You are a file assistant. To see a directory's contents reply with "
+        "You are a file and web assistant. To see a directory's contents reply with "
         "{\"tool\":\"list_dir\",\"args\":{\"path\":\".\"}}. To summarize a file reply with "
-        "{\"tool\":\"summarize_file\",\"args\":{\"path\":\"<file>\"}}. After the tool result, "
+        "{\"tool\":\"summarize_file\",\"args\":{\"path\":\"<file>\"}}. To search the web reply with "
+        "{\"tool\":\"web_search\",\"args\":{\"query\":\"<query>\"}}. To read a web page reply with "
+        "{\"tool\":\"web_fetch\",\"args\":{\"url\":\"<url>\"}}. After the tool result, "
         "answer the user in one or two sentences.";
 
 int main(int argc, char **argv) {
@@ -67,8 +71,12 @@ int main(int argc, char **argv) {
     /* summarize_file's sub-session runs on this model+backend; ctx must outlive
      * the agent. root="." -> reads are confined to the current directory tree. */
     static struct summarize_ctx sctx;
-    sctx                          = (struct summarize_ctx) {.model = model, .be = be, .root = "."};
-    struct geist_tool tools[]     = {listdir_tool(), summarize_file_tool(&sctx)};
+    sctx                      = (struct summarize_ctx) {.model = model, .be = be, .root = "."};
+    /* web_search hits a fixed engine (low risk); web_fetch lets the model pick the
+     * host — nullptr allowlist = any http/https, fine for a local demo, tighten via
+     * webfetch_tool("example.com,...") for an exposed deployment. */
+    struct geist_tool tools[] = {listdir_tool(), summarize_file_tool(&sctx), websearch_tool(nullptr),
+                                 webfetch_tool(nullptr)};
     static struct geist_agent agent;
     geist_agent_init(&agent,
                      model,
