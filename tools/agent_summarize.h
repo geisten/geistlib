@@ -150,6 +150,36 @@ static inline int summ_refine_usable(size_t n, const char *s) {
     return strncmp(s, "Summary so far", 14) != 0; /* scaffold echo */
 }
 
+/* Skip a leading echo of the refine scaffold ("Summary so far:" / "Updated
+ * summary:"), with optional surrounding markdown '*' and whitespace, looping in
+ * case both appear. Returns a pointer into s past the header(s); s unchanged when
+ * the output doesn't lead with one (so non-echoing models are untouched). */
+static inline const char *summ_skip_scaffold(const char *s) {
+    static const char *const hdr[] = {"Summary so far:", "Updated summary:"};
+    for (;;) {
+        const char *p = s;
+        while (*p == ' ' || *p == '\n' || *p == '\t' || *p == '\r' || *p == '*') {
+            p++;
+        }
+        int matched = 0;
+        for (size_t i = 0; i < sizeof hdr / sizeof *hdr; i++) {
+            size_t len = strlen(hdr[i]);
+            if (strncmp(p, hdr[i], len) == 0) {
+                p += len;
+                matched = 1;
+                break;
+            }
+        }
+        if (!matched) {
+            return s; /* no scaffold prefix -> leave the output as-is */
+        }
+        while (*p == ' ' || *p == '\n' || *p == '\t' || *p == '\r' || *p == '*') {
+            p++;
+        }
+        s = p;
+    }
+}
+
 /* Core: read `path` under `root`, preprocess by type, refine-summarize, write the
  * summary into out. Always returns GEIST_OK with a human-readable error string in
  * out on failure (so the agent observes it rather than aborting). */
@@ -247,8 +277,14 @@ static inline enum geist_status summarize_file(struct geist_model   *model,
     }
     geist_session_destroy(sub);
 
+    /* Some models (e.g. Gemma) prefix the answer with the refine scaffold itself
+     * ("**Summary so far:**\n\n<real summary>"). Strip a leading scaffold header
+     * if present — content-based, so a model that doesn't emit it is untouched. */
+    const char *start = summ_skip_scaffold(running);
+    run_n             = run_n - (size_t) (start - running);
+
     size_t n = run_n < out_cap ? run_n : out_cap - 1;
-    memcpy(out, running, n);
+    memcpy(out, start, n);
     out[n] = '\0';
     if (out_len) {
         *out_len = n;
