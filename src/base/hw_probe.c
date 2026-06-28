@@ -26,6 +26,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 #if defined(_OPENMP)
 #include <omp.h>
@@ -179,6 +181,77 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
         if (n > 0) {
             out->logical_cores = (size_t) n;
         }
+    }
+#endif
+
+    /* ----- Physical cores + L3 domains (CCDs) — Linux /sys ----------
+     *
+     * physical_cores = # of unique topology/thread_siblings_list strings.
+     * n_l3_domains   = # of unique cache/index3/shared_cpu_list strings.
+     *
+     * On AMD 9950X this resolves to 16 physical cores, 2 L3 domains
+     * (CCDs). On Pi 5 / single-socket Intel client it's 1 L3 domain.
+     * Used by the Phase-1a CCD-aware threading default in cpu_x86
+     * (decode pins to one L3 domain, prefill to all). */
+#if defined(__linux__)
+    if (out->logical_cores > 0 && out->logical_cores <= 256) {
+        char   siblings_seen[64][64] = {0};
+        char   l3_seen[16][64]       = {0};
+        size_t n_physical            = 0;
+        size_t n_l3                  = 0;
+        for (size_t cpu = 0; cpu < out->logical_cores; cpu++) {
+            char path[128];
+            char buf[64];
+
+            snprintf(path,
+                     sizeof(path),
+                     "/sys/devices/system/cpu/cpu%zu/topology/thread_siblings_list",
+                     cpu);
+            FILE *f = fopen(path, "r");
+            if (f != nullptr) {
+                if (fgets(buf, sizeof(buf), f) != nullptr) {
+                    /* Strip newline. */
+                    buf[strcspn(buf, "\n")] = '\0';
+                    bool seen               = false;
+                    for (size_t i = 0; i < n_physical && i < 64; i++) {
+                        if (strcmp(siblings_seen[i], buf) == 0) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen && n_physical < 64) {
+                        snprintf(siblings_seen[n_physical], 64, "%s", buf);
+                        n_physical++;
+                    }
+                }
+                fclose(f);
+            }
+
+            snprintf(path,
+                     sizeof(path),
+                     "/sys/devices/system/cpu/cpu%zu/cache/index3/shared_cpu_list",
+                     cpu);
+            f = fopen(path, "r");
+            if (f != nullptr) {
+                if (fgets(buf, sizeof(buf), f) != nullptr) {
+                    buf[strcspn(buf, "\n")] = '\0';
+                    bool seen               = false;
+                    for (size_t i = 0; i < n_l3 && i < 16; i++) {
+                        if (strcmp(l3_seen[i], buf) == 0) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen && n_l3 < 16) {
+                        snprintf(l3_seen[n_l3], 64, "%s", buf);
+                        n_l3++;
+                    }
+                }
+                fclose(f);
+            }
+        }
+        out->physical_cores = n_physical;
+        out->n_l3_domains   = n_l3;
     }
 #endif
 }

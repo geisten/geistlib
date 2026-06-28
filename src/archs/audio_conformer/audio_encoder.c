@@ -1101,12 +1101,18 @@ static void clip_linear_apply(const struct ClippableLinear *cl,
 
     switch (prec) {
     case AUDIO_PREC_W8A8: {
+#if defined(__ARM_NEON)
         /* Static activation scale derived from clip bounds applied above. */
         float amax    = fmaxf(fabsf(cl->input_min), fabsf(cl->input_max));
         float scale_x = amax / 127.0f;
         if (scale_x == 0.0f)
             scale_x = 1.0f;
         linear_w8a8(cl->w_q8, cl->w_scales, x, 1.0f / scale_x, scale_x, n, in_dim, out_dim, y);
+#else
+        /* ponytail: non-NEON falls through to W8A32 (correct, slower). x86
+         * gets the int8 fast path once cpu_x86 lands the W8A8 GEMV. */
+        linear_w8a32(cl->w_q8, cl->w_scales, x, n, in_dim, out_dim, y);
+#endif
         break;
     }
     case AUDIO_PREC_W8A32:

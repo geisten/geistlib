@@ -136,16 +136,16 @@ void dequant_q3_K_row(const void *blocks, float *out, size_t n_elems) {
 #else
         const uint8_t *hmask = b[i].hmask;
         const uint8_t *qs    = b[i].qs;
-        for (int w = 0; w < Q3_K_BLOCK_ELEMS; w++) {
-            const int scale_idx   = w >> 4;
-            const int byte_idx_lo = ((w >> 7) << 5) | (w & 31);
-            const int shift_lo    = ((w >> 5) & 3) << 1;
-            const int low2        = (qs[byte_idx_lo] >> shift_lo) & 0x03;
-            const int byte_idx_hi = w & 31;
-            const int shift_hi    = w >> 5;
-            const int hi1         = (hmask[byte_idx_hi] >> shift_hi) & 0x01;
-            const int q_signed    = low2 - ((hi1 ^ 1) << 2);
-            y[w]                  = d * (float) scale[scale_idx] * (float) q_signed;
+        for (size_t w = 0; w < Q3_K_BLOCK_ELEMS; w++) {
+            const size_t scale_idx   = w >> 4;
+            const size_t byte_idx_lo = ((w >> 7) << 5) | (w & 31);
+            const int    shift_lo    = (int) ((w >> 5) & 3) << 1;
+            const int    low2        = (qs[byte_idx_lo] >> shift_lo) & 0x03;
+            const size_t byte_idx_hi = w & 31;
+            const int    shift_hi    = (int) (w >> 5);
+            const int    hi1         = (hmask[byte_idx_hi] >> shift_hi) & 0x01;
+            const int    q_signed    = low2 - ((hi1 ^ 1) << 2);
+            y[w]                     = d * (float) scale[scale_idx] * (float) q_signed;
         }
 #endif
     }

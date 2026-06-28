@@ -518,9 +518,15 @@ int main(void) {
     reference_block(
             x_in, w_q, w_k, w_v, w_o, w_gate, w_up, w_down, w_attn_norm, w_ffn_norm, eps, y_ref);
 
-    /* Vtable path — both backends. */
+    /* Vtable path — both backends compiled in. cpu_neon is skipped when not
+     * built (e.g. scalar-only x86 builds). */
     int fails = 0;
-    for (const char *backend = "cpu_neon"; backend != nullptr;
+#if defined(GEIST_BACKEND_CPU_NEON) && GEIST_BACKEND_CPU_NEON
+    const char *first_backend = "cpu_neon";
+#else
+    const char *first_backend = "cpu_scalar";
+#endif
+    for (const char *backend = first_backend; backend != nullptr;
          backend             = (strcmp(backend, "cpu_neon") == 0) ? "cpu_scalar" : nullptr) {
         float y_vtable[D_MODEL];
         if (vtable_block_via_backend(backend,

@@ -80,6 +80,10 @@ struct spec_cand {
     uint32_t idx;
 };
 
+/* Eligible only with NEON + dotprod (the SDOT sketch kernel) and a large tied
+ * lm_head (F16 on BitNet 2B-4T, Q6_K on Gemma 4 — see spec_dtype_ok). */
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+
 static size_t spec_env_sz(const char *name, size_t dflt, size_t lo, size_t hi) {
     const char *e = getenv(name);
     if (e == nullptr || e[0] == '\0') {
@@ -94,10 +98,6 @@ static size_t spec_env_sz(const char *name, size_t dflt, size_t lo, size_t hi) {
     }
     return (size_t) v;
 }
-
-/* Eligible only with NEON + dotprod (the SDOT sketch kernel) and a large tied
- * lm_head (F16 on BitNet 2B-4T, Q6_K on Gemma 4 — see spec_dtype_ok). */
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
 
 static int spec_head_env(void) {
     static int m = -1;

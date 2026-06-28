@@ -93,6 +93,30 @@ extern void cblas_sgemv(int          order,
                         float       *y,
                         int          incy);
 
+/* OpenBLAS multithreads each cblas call via its own pool. geist already
+ * parallelizes the heavy (quantized) matmuls itself and only routes small,
+ * skinny F32/BF16 dense matmuls (e.g. Gemma 4's per-layer PLE projections,
+ * called ~70× per prefill chunk) through cblas — there the per-call thread
+ * spawn/sync overhead dominates. Pin BLAS to 1 thread once (measured +9% on
+ * Gemma 4 prefill). OpenBLAS-only: the symbol doesn't exist under Accelerate
+ * (which manages its own threading) and a weak undefined symbol is a hard
+ * link error on Mach-O — so gate it on the openblas provider macro. */
+#if defined(GEIST_GEMM_OPENBLAS)
+extern void openblas_set_num_threads(int);
+
+static void geist_blas_pin_single_thread(void) {
+    static int done = 0;
+    if (done) {
+        return;
+    }
+    done = 1;
+    openblas_set_num_threads(1);
+}
+#else
+static void geist_blas_pin_single_thread(void) {
+}
+#endif
+
 static void geist_sgemm_impl(int          transA,
                              int          transB,
                              int          M,
@@ -106,6 +130,7 @@ static void geist_sgemm_impl(int          transA,
                              float        beta,
                              float       *C,
                              int          ldc) {
+    geist_blas_pin_single_thread();
     cblas_sgemm(
             GEIST_CBLAS_ROW_MAJOR, transA, transB, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
 }
@@ -121,6 +146,7 @@ static void geist_sgemv_impl(int          transA,
                              float        beta,
                              float       *y,
                              int          incy) {
+    geist_blas_pin_single_thread();
     cblas_sgemv(GEIST_CBLAS_ROW_MAJOR, transA, M, N, alpha, A, lda, x, incx, beta, y, incy);
 }
 

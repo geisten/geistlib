@@ -8,5 +8,5 @@
 OPENBLAS_LIBS   ?= $(shell pkg-config --libs   openblas 2>/dev/null || echo '-lopenblas')
 OPENBLAS_CFLAGS ?= $(shell pkg-config --cflags openblas 2>/dev/null)
 
-GEMM_CFLAGS := $(OPENBLAS_CFLAGS)
+GEMM_CFLAGS := $(OPENBLAS_CFLAGS) -DGEIST_GEMM_OPENBLAS
 GEMM_LDLIBS := $(OPENBLAS_LIBS)
