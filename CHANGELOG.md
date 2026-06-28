@@ -8,6 +8,14 @@ minor release.
 
 ## [Unreleased]
 
+### Changed — `geist agent` trace on by default
+
+- The per-step trace (`· routing → calling → running → observed → answering`) now
+  prints by default for the one-shot `geist agent` — it goes to stderr, so the
+  answer on stdout stays clean and piping is unaffected. Silence it with
+  `GEIST_AGENT_TRACE=0`. `geist chat` is the opposite: trace stays **opt-in**
+  (`GEIST_AGENT_TRACE=1`) so a conversation is quiet by default.
+
 ### Added — single-file builds get the agent + chat
 
 - A `make EMBED_MODEL=...` build is no longer text-only: `geist agent <request>`

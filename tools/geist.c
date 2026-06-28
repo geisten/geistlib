@@ -198,7 +198,11 @@ static int run_chat(int argc, char **argv) {
     static struct geist_agent agent;
     geist_agent_init(&agent, model, sess, n_tools, tools, 0, system_with_index(AGENT_SYSTEM));
     agent.conversation = true; /* keep the transcript across turns */
-    if (agent_trace_enabled()) { /* default on; GEIST_AGENT_TRACE=0 to silence */
+    /* chat: trace is opt-in (a conversation stays quiet by default — set
+     * GEIST_AGENT_TRACE=1 to watch tool steps). The one-shot `geist agent` traces
+     * by default; see agent_trace_enabled. */
+    const char *chat_trace = getenv("GEIST_AGENT_TRACE");
+    if (chat_trace != nullptr && strcmp(chat_trace, "0") != 0) {
         agent.on_event     = agent_event_print;
         agent.on_event_ctx = stderr;
     }
