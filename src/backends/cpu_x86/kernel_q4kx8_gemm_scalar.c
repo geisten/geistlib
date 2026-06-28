@@ -26,9 +26,8 @@
 
 /* Decode the 96-byte scales[] field of one block_q4_Kx8 back into 8 rows
  * of 16 sub-blocks worth of (scale, min) pairs (each 6-bit unsigned). */
-static void decode_q4kx8_scales(const struct block_q4_Kx8 *b,
-                                uint8_t                    sc[8][16],
-                                uint8_t                    mn[8][16]) {
+static void
+decode_q4kx8_scales(const struct block_q4_Kx8 *b, uint8_t sc[8][16], uint8_t mn[8][16]) {
     /* The scales[] format is the inverse of make_block_q4_kx8's pack.
      * Per llama.cpp's GEMM, the layout per 12-byte block is:
      *   [0..3]: low-6-bit packed s0..s3 (with high 2 bits of s4..s7)
@@ -38,18 +37,18 @@ static void decode_q4kx8_scales(const struct block_q4_Kx8 *b,
      * For i in 0..3, scales[48 + i*12 + .] holds sub-block i+4 across 8 rows.
      */
     for (int half = 0; half < 2; half++) {
-        const int sb_base = half * 4;
-        const uint8_t *base = b->scales + half * 48;
+        const int      sb_base = half * 4;
+        const uint8_t *base    = b->scales + half * 48;
         for (int i = 0; i < 4; i++) {
-            const uint8_t *p   = base + i * 12;
+            const uint8_t *p = base + i * 12;
             uint8_t        s_lo4[4], m_lo4[4], s_hi2[4], m_hi2[4];
             /* p[0..3]: low6 of s[0..3] + high2 of s[4..7] (×4). */
             for (int j = 0; j < 4; j++) {
                 /* low 6 bits */
-                const uint8_t low6_s = p[j] & 63;
+                const uint8_t low6_s   = p[j] & 63;
                 const uint8_t high2_s4 = (uint8_t) ((p[j] >> 6) & 3);
                 /* p[4..7] holds low6 of m[0..3] + high2 of m[4..7] */
-                const uint8_t low6_m = p[j + 4] & 63;
+                const uint8_t low6_m   = p[j + 4] & 63;
                 const uint8_t high2_m4 = (uint8_t) ((p[j + 4] >> 6) & 3);
                 /* p[8..11]: low4 = low4 of s[4..7], high4 = m[4..7] low4 */
                 const uint8_t s_lo4_j = p[j + 8] & 15;
@@ -57,10 +56,10 @@ static void decode_q4kx8_scales(const struct block_q4_Kx8 *b,
 
                 sc[j][sb_base + i] = low6_s;
                 mn[j][sb_base + i] = low6_m;
-                s_lo4[j] = s_lo4_j;
-                m_lo4[j] = m_lo4_j;
-                s_hi2[j] = high2_s4;
-                m_hi2[j] = high2_m4;
+                s_lo4[j]           = s_lo4_j;
+                m_lo4[j]           = m_lo4_j;
+                s_hi2[j]           = high2_s4;
+                m_hi2[j]           = high2_m4;
             }
             for (int j = 0; j < 4; j++) {
                 /* Reconstruct s/m for source rows 4..7. */
@@ -94,23 +93,20 @@ static void decode_q4kx8_scales(const struct block_q4_Kx8 *b,
  * For the interleaved Q4_Kx8 layout, the byte at source offset b of source
  * row n_row lives at qs[(b / 8) * 64 + n_row * 8 + (b % 8)].
  */
-static uint8_t extract_q4kx8_nibble(const struct block_q4_Kx8 *b,
-                                    int                        n_row,
-                                    int                        k) {
+static uint8_t extract_q4kx8_nibble(const struct block_q4_Kx8 *b, int n_row, int k) {
     /* Determine source byte offset and lo/hi within Q4_K layout. */
-    const int half       = k / 64; /* 0..3 */
-    const int half_pos   = k % 64; /* 0..63 */
+    const int half        = k / 64;        /* 0..3 */
+    const int half_pos    = k % 64;        /* 0..63 */
     const int sub_in_half = half_pos / 32; /* 0 or 1 */
-    const int pos_in_sub = half_pos % 32; /* 0..31 */
+    const int pos_in_sub  = half_pos % 32; /* 0..31 */
     /* Source byte index within source row's 128-byte qs[]. */
     const int src_byte_off = half * 32 + pos_in_sub;
     /* Interleaved layout: stripe (src_byte_off / 8) at position
      * (n_row * 8 + (src_byte_off % 8)). */
-    const int stripe_idx = src_byte_off / 8;
-    const int in_stripe  = n_row * 8 + (src_byte_off % 8);
-    const uint8_t byte = b->qs[stripe_idx * 64 + in_stripe];
-    return (sub_in_half == 0) ? (uint8_t) (byte & 0x0F)
-                              : (uint8_t) ((byte >> 4) & 0x0F);
+    const int     stripe_idx = src_byte_off / 8;
+    const int     in_stripe  = n_row * 8 + (src_byte_off % 8);
+    const uint8_t byte       = b->qs[stripe_idx * 64 + in_stripe];
+    return (sub_in_half == 0) ? (uint8_t) (byte & 0x0F) : (uint8_t) ((byte >> 4) & 0x0F);
 }
 
 /* Extract the int8 activation a[m_row][k] for m-row m_row ∈ [0,4) and
@@ -120,13 +116,11 @@ static uint8_t extract_q4kx8_nibble(const struct block_q4_Kx8 *b,
  *   stripe s (0..7) at byte offset s*32; within stripe, bytes [r*8 .. r*8+7]
  *   = row r's elements [s*8 .. s*8+7] within the sub-block.
  */
-static int8_t extract_q8kx4_act(const struct block_q8_Kx4 *b,
-                                int                        m_row,
-                                int                        k) {
-    const int sb         = k / 64;
-    const int pos_in_sb  = k % 64;
-    const int stripe     = pos_in_sb / 8;
-    const int in_stripe  = pos_in_sb % 8;
+static int8_t extract_q8kx4_act(const struct block_q8_Kx4 *b, int m_row, int k) {
+    const int sb        = k / 64;
+    const int pos_in_sb = k % 64;
+    const int stripe    = pos_in_sb / 8;
+    const int in_stripe = pos_in_sb % 8;
     return b->qs[sb * 256 + stripe * 32 + m_row * 8 + in_stripe];
 }
 
@@ -181,19 +175,16 @@ void q4kx8_gemm_scalar(size_t                     M,
                         for (int wsb = 0; wsb < 8; wsb++) {
                             int32_t sum_q_a = 0;
                             for (int kk = 0; kk < 32; kk++) {
-                                const int      k_global = wsb * 32 + kk;
-                                const uint8_t  q        =
-                                        extract_q4kx8_nibble(Wb, j, k_global);
-                                const int8_t a =
-                                        extract_q8kx4_act(Xb, i, k_global);
+                                const int     k_global = wsb * 32 + kk;
+                                const uint8_t q        = extract_q4kx8_nibble(Wb, j, k_global);
+                                const int8_t  a        = extract_q8kx4_act(Xb, i, k_global);
                                 sum_q_a += (int32_t) q * (int32_t) a;
                             }
                             pos_acc += (float) sc[j][wsb] * (float) sum_q_a;
                             const int g0 = 2 * wsb;
                             const int g1 = 2 * wsb + 1;
                             neg_acc += (float) mn[j][wsb] *
-                                       (float) (Xb->bsums[i * 16 + g0] +
-                                                Xb->bsums[i * 16 + g1]);
+                                       (float) (Xb->bsums[i * 16 + g0] + Xb->bsums[i * 16 + g1]);
                         }
                         const float d_a = Xb->d[i];
                         acc[i][j] += d_a * (dw[j] * pos_acc - dmin_w[j] * neg_acc);

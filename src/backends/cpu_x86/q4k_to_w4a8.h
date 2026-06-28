@@ -58,11 +58,10 @@
  *   w_scales:  n_block
  *   w_offsets: n_block
  */
-void q4k_to_w4a8_row(
-        size_t        n_in,
-        const uint8_t q4k_row[static (n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES],
-        uint8_t       weights[static (n_in / W4A8_BLOCK_ELEMS) * W4A8_BLOCK_BYTES_WEIGHTS],
-        float         w_scales[static n_in / W4A8_BLOCK_ELEMS],
-        float         w_offsets[static n_in / W4A8_BLOCK_ELEMS]);
+void q4k_to_w4a8_row(size_t        n_in,
+                     const uint8_t q4k_row[static(n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES],
+                     uint8_t weights[static(n_in / W4A8_BLOCK_ELEMS) * W4A8_BLOCK_BYTES_WEIGHTS],
+                     float   w_scales[static n_in / W4A8_BLOCK_ELEMS],
+                     float   w_offsets[static n_in / W4A8_BLOCK_ELEMS]);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_Q4K_TO_W4A8_H */

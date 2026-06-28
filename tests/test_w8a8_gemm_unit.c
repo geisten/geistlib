@@ -33,14 +33,16 @@ static int scenario(size_t M, size_t N, size_t K) {
     uint8_t *W  = malloc(N * NB * W8A8_BLOCK_ELEMS);
     float   *ws = malloc(N * NB * sizeof(float));
     float   *wo = malloc(N * NB * sizeof(float));
-    for (size_t i = 0; i < N * NB * W8A8_BLOCK_ELEMS; i++) W[i] = (uint8_t) (prng_next(&s) & 0x3Fu);
+    for (size_t i = 0; i < N * NB * W8A8_BLOCK_ELEMS; i++)
+        W[i] = (uint8_t) (prng_next(&s) & 0x3Fu);
     for (size_t i = 0; i < N * NB; i++) {
         ws[i] = 0.001f + ((prng_next(&s) & 0xFFFFu) / 65536.0f) * 0.01f;
         wo[i] = ((prng_next(&s) & 0xFFFFu) / 65536.0f) * 0.5f;
     }
 
     float *X = malloc(M * K * sizeof(float));
-    for (size_t i = 0; i < M * K; i++) X[i] = 2.0f * ((prng_next(&s) & 0xFFFFu) / 65536.0f) - 1.0f;
+    for (size_t i = 0; i < M * K; i++)
+        X[i] = 2.0f * ((prng_next(&s) & 0xFFFFu) / 65536.0f) - 1.0f;
 
     int8_t  *acts = malloc(M * K);
     int32_t *sa   = malloc(M * NB * sizeof(int32_t));
@@ -50,7 +52,8 @@ static int scenario(size_t M, size_t N, size_t K) {
         sx[j] = w4a8_quantize_acts_row(K, X + j * K, acts + j * K, tmp);
         for (size_t b = 0; b < NB; b++) {
             int32_t t = 0;
-            for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) t += acts[j * K + b * W8A8_BLOCK_ELEMS + i];
+            for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++)
+                t += acts[j * K + b * W8A8_BLOCK_ELEMS + i];
             sa[j * NB + b] = t;
         }
     }
@@ -61,15 +64,22 @@ static int scenario(size_t M, size_t N, size_t K) {
     for (size_t j = 0; j < M; j++)
         w8a8_gemv(N, NB, W, ws, wo, acts + j * K, sa + j * NB, sx[j], Yref + j * N);
 
-    double maxd = 0.0;
+    double maxd  = 0.0;
     int    fails = 0;
     for (size_t i = 0; i < M * N; i++) {
         const double d = fabs((double) Yg[i] - (double) Yref[i]);
-        if (d > maxd) maxd = d;
-        if (d > 1e-3) fails++;
+        if (d > maxd)
+            maxd = d;
+        if (d > 1e-3)
+            fails++;
     }
-    fprintf(stdout, "[w8a8_gemm  M=%zu N=%zu K=%zu] max |Δ vs gemv| = %g, fails=%d\n",
-            M, N, K, maxd, fails);
+    fprintf(stdout,
+            "[w8a8_gemm  M=%zu N=%zu K=%zu] max |Δ vs gemv| = %g, fails=%d\n",
+            M,
+            N,
+            K,
+            maxd,
+            fails);
 
     /* Lane-parallel W8x8 (VNNI hosts; N % 8 == 0). Repack the row-major
      * weights and compare the lane-parallel GEMM to the same GEMV oracle. */
@@ -83,12 +93,22 @@ static int scenario(size_t M, size_t N, size_t K) {
         double maxdx = 0.0;
         for (size_t i = 0; i < M * N; i++) {
             const double d = fabs((double) Yx[i] - (double) Yref[i]);
-            if (d > maxdx) maxdx = d;
-            if (d > 1e-3) fails++;
+            if (d > maxdx)
+                maxdx = d;
+            if (d > 1e-3)
+                fails++;
         }
-        fprintf(stdout, "[w8x8_gemm  M=%zu N=%zu K=%zu] max |Δ vs gemv| = %g, fails=%d\n",
-                M, N, K, maxdx, fails);
-        free(qs); free(qsc); free(qof); free(Yx);
+        fprintf(stdout,
+                "[w8x8_gemm  M=%zu N=%zu K=%zu] max |Δ vs gemv| = %g, fails=%d\n",
+                M,
+                N,
+                K,
+                maxdx,
+                fails);
+        free(qs);
+        free(qsc);
+        free(qof);
+        free(Yx);
     }
 
     /* Lane-parallel 512-bit W8x16 (N % 16 == 0). */
@@ -102,24 +122,43 @@ static int scenario(size_t M, size_t N, size_t K) {
         double maxdx = 0.0;
         for (size_t i = 0; i < M * N; i++) {
             const double d = fabs((double) Yx[i] - (double) Yref[i]);
-            if (d > maxdx) maxdx = d;
-            if (d > 1e-3) fails++;
+            if (d > maxdx)
+                maxdx = d;
+            if (d > 1e-3)
+                fails++;
         }
-        fprintf(stdout, "[w8x16_gemm M=%zu N=%zu K=%zu] max |Δ vs gemv| = %g, fails=%d\n",
-                M, N, K, maxdx, fails);
-        free(qs); free(qsc); free(qof); free(Yx);
+        fprintf(stdout,
+                "[w8x16_gemm M=%zu N=%zu K=%zu] max |Δ vs gemv| = %g, fails=%d\n",
+                M,
+                N,
+                K,
+                maxdx,
+                fails);
+        free(qs);
+        free(qsc);
+        free(qof);
+        free(Yx);
     }
 
-    free(W); free(ws); free(wo); free(X);
-    free(acts); free(sa); free(sx); free(tmp); free(Yg); free(Yref);
+    free(W);
+    free(ws);
+    free(wo);
+    free(X);
+    free(acts);
+    free(sa);
+    free(sx);
+    free(tmp);
+    free(Yg);
+    free(Yref);
     return fails;
 }
 
 int main(void) {
     int fails = 0;
-    fails += scenario(4, 32, 256);     /* JT-exact, small */
-    fails += scenario(7, 48, 512);     /* M not divisible by JT (=4) → tail */
+    fails += scenario(4, 32, 256);      /* JT-exact, small */
+    fails += scenario(7, 48, 512);      /* M not divisible by JT (=4) → tail */
     fails += scenario(64, 1536, 12288); /* real Gemma 4 ffn_down shape */
-    if (fails == 0) fprintf(stdout, "OK\n");
+    if (fails == 0)
+        fprintf(stdout, "OK\n");
     return fails == 0 ? 0 : 1;
 }

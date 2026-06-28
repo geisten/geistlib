@@ -30,11 +30,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-void q6k_to_w8a8_row(
-        size_t        n_in,
-        const uint8_t q6k_row[static (n_in / Q6_K_BLOCK_ELEMS) * Q6_K_BLOCK_BYTES],
-        uint8_t       weights[static (n_in / W8A8_BLOCK_ELEMS) * W8A8_BLOCK_ELEMS],
-        float         w_scales[static n_in / W8A8_BLOCK_ELEMS],
-        float         w_offsets[static n_in / W8A8_BLOCK_ELEMS]);
+void q6k_to_w8a8_row(size_t        n_in,
+                     const uint8_t q6k_row[static(n_in / Q6_K_BLOCK_ELEMS) * Q6_K_BLOCK_BYTES],
+                     uint8_t       weights[static(n_in / W8A8_BLOCK_ELEMS) * W8A8_BLOCK_ELEMS],
+                     float         w_scales[static n_in / W8A8_BLOCK_ELEMS],
+                     float         w_offsets[static n_in / W8A8_BLOCK_ELEMS]);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_Q6K_TO_W8A8_H */

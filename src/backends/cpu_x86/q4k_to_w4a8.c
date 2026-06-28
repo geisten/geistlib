@@ -17,12 +17,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-void q4k_to_w4a8_row(
-        size_t        n_in,
-        const uint8_t q4k_row[static (n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES],
-        uint8_t       weights[static (n_in / W4A8_BLOCK_ELEMS) * W4A8_BLOCK_BYTES_WEIGHTS],
-        float         w_scales[static n_in / W4A8_BLOCK_ELEMS],
-        float         w_offsets[static n_in / W4A8_BLOCK_ELEMS]) {
+void q4k_to_w4a8_row(size_t        n_in,
+                     const uint8_t q4k_row[static(n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES],
+                     uint8_t weights[static(n_in / W4A8_BLOCK_ELEMS) * W4A8_BLOCK_BYTES_WEIGHTS],
+                     float   w_scales[static n_in / W4A8_BLOCK_ELEMS],
+                     float   w_offsets[static n_in / W4A8_BLOCK_ELEMS]) {
     const size_t               n_super = n_in / Q4_K_BLOCK_ELEMS;
     const struct block_q4_K_t *blocks  = (const struct block_q4_K_t *) q4k_row;
 
@@ -35,8 +34,8 @@ void q4k_to_w4a8_row(
         /* 8 sub-blocks per super-block, paired (sb0+sb1 share 32 source
          * bytes — sb0 takes low nibbles, sb1 takes high nibbles). */
         for (size_t pair = 0; pair < 4; pair++) {
-            const size_t   sb0_idx  = 2 * pair;
-            const size_t   sb1_idx  = 2 * pair + 1;
+            const size_t   sb0_idx   = 2 * pair;
+            const size_t   sb1_idx   = 2 * pair + 1;
             const uint8_t *q_segment = blk->qs + pair * 32;
 
             /* Scales / mins for the two sub-blocks of this pair. */

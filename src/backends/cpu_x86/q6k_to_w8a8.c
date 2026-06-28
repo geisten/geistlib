@@ -23,34 +23,31 @@
 #include <stddef.h>
 #include <stdint.h>
 
-void q6k_to_w8a8_row(
-        size_t        n_in,
-        const uint8_t q6k_row[static (n_in / Q6_K_BLOCK_ELEMS) * Q6_K_BLOCK_BYTES],
-        uint8_t       weights[static (n_in / W8A8_BLOCK_ELEMS) * W8A8_BLOCK_ELEMS],
-        float         w_scales[static n_in / W8A8_BLOCK_ELEMS],
-        float         w_offsets[static n_in / W8A8_BLOCK_ELEMS]) {
-    const size_t n_super = n_in / Q6_K_BLOCK_ELEMS;
-    const struct block_q6_K_t *blocks = (const struct block_q6_K_t *) q6k_row;
+void q6k_to_w8a8_row(size_t        n_in,
+                     const uint8_t q6k_row[static(n_in / Q6_K_BLOCK_ELEMS) * Q6_K_BLOCK_BYTES],
+                     uint8_t       weights[static(n_in / W8A8_BLOCK_ELEMS) * W8A8_BLOCK_ELEMS],
+                     float         w_scales[static n_in / W8A8_BLOCK_ELEMS],
+                     float         w_offsets[static n_in / W8A8_BLOCK_ELEMS]) {
+    const size_t               n_super = n_in / Q6_K_BLOCK_ELEMS;
+    const struct block_q6_K_t *blocks  = (const struct block_q6_K_t *) q6k_row;
 
     for (size_t s = 0; s < n_super; s++) {
-        const struct block_q6_K_t *blk = &blocks[s];
-        const float                d   = fp16_to_fp32(blk->d);
-        const uint8_t             *ql  = blk->ql;
-        const uint8_t             *qh  = blk->qh;
-        uint8_t *u_w_super              = weights + s * Q6_K_BLOCK_ELEMS;
+        const struct block_q6_K_t *blk       = &blocks[s];
+        const float                d         = fp16_to_fp32(blk->d);
+        const uint8_t             *ql        = blk->ql;
+        const uint8_t             *qh        = blk->qh;
+        uint8_t                   *u_w_super = weights + s * Q6_K_BLOCK_ELEMS;
 
         /* Two 128-element halves, mirror of dequant_q6_K_row. */
         for (size_t half = 0; half < 2; half++) {
             uint8_t *u_w_half = u_w_super + half * 128;
             for (int l = 0; l < 32; l++) {
-                const uint8_t q1 = (uint8_t) ((ql[l + 0] & 0x0Fu) |
-                                              (((qh[l] >> 0) & 0x03u) << 4));
-                const uint8_t q2 = (uint8_t) ((ql[l + 32] & 0x0Fu) |
-                                              (((qh[l] >> 2) & 0x03u) << 4));
-                const uint8_t q3 = (uint8_t) (((ql[l + 0] >> 4) & 0x0Fu) |
-                                              (((qh[l] >> 4) & 0x03u) << 4));
-                const uint8_t q4 = (uint8_t) (((ql[l + 32] >> 4) & 0x0Fu) |
-                                              (((qh[l] >> 6) & 0x03u) << 4));
+                const uint8_t q1 = (uint8_t) ((ql[l + 0] & 0x0Fu) | (((qh[l] >> 0) & 0x03u) << 4));
+                const uint8_t q2 = (uint8_t) ((ql[l + 32] & 0x0Fu) | (((qh[l] >> 2) & 0x03u) << 4));
+                const uint8_t q3 =
+                        (uint8_t) (((ql[l + 0] >> 4) & 0x0Fu) | (((qh[l] >> 4) & 0x03u) << 4));
+                const uint8_t q4 =
+                        (uint8_t) (((ql[l + 32] >> 4) & 0x0Fu) | (((qh[l] >> 6) & 0x03u) << 4));
                 u_w_half[l + 0]  = q1;
                 u_w_half[l + 32] = q2;
                 u_w_half[l + 64] = q3;

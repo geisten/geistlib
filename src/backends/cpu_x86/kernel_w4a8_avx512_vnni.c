@@ -39,22 +39,22 @@
 
 /* Horizontal sum of 8 int32 lanes in a __m256i → int32. */
 static inline int32_t hsum_i32_avx2(__m256i v) {
-    const __m128i lo  = _mm256_castsi256_si128(v);
-    const __m128i hi  = _mm256_extracti128_si256(v, 1);
-    __m128i       s4  = _mm_add_epi32(lo, hi);
-    s4                = _mm_hadd_epi32(s4, s4);
-    s4                = _mm_hadd_epi32(s4, s4);
+    const __m128i lo = _mm256_castsi256_si128(v);
+    const __m128i hi = _mm256_extracti128_si256(v, 1);
+    __m128i       s4 = _mm_add_epi32(lo, hi);
+    s4               = _mm_hadd_epi32(s4, s4);
+    s4               = _mm_hadd_epi32(s4, s4);
     return _mm_cvtsi128_si32(s4);
 }
 
-[[nodiscard]] float w4a8_dot_avx512_vnni(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x) {
+[[nodiscard]] float
+w4a8_dot_avx512_vnni(size_t        n_blocks,
+                     const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
+                     const float   w_scales[static n_blocks],
+                     const float   w_offsets[static n_blocks],
+                     const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
+                     const int32_t sum_a_per_block[static n_blocks],
+                     float         scale_x) {
     const __m256i lo_mask256 = _mm256_set1_epi8(0x0F);
 
     float  acc = 0.0f;
@@ -63,13 +63,12 @@ static inline int32_t hsum_i32_avx2(__m256i v) {
     /* Main loop: two W4A8 blocks per 512-bit VPDPBUSD. */
     for (; b + 2 <= n_blocks; b += 2) {
         /* 32 packed bytes = 16 (block 0) + 16 (block 1) in 256-bit reg. */
-        const __m256i packed = _mm256_loadu_si256(
-                (const __m256i *) (weights + b * W4A8_BLOCK_BYTES_WEIGHTS));
+        const __m256i packed =
+                _mm256_loadu_si256((const __m256i *) (weights + b * W4A8_BLOCK_BYTES_WEIGHTS));
 
         /* Per-byte unsigned nibble extraction. */
         const __m256i lo_nibs = _mm256_and_si256(packed, lo_mask256);
-        const __m256i hi_nibs =
-                _mm256_and_si256(_mm256_srli_epi16(packed, 4), lo_mask256);
+        const __m256i hi_nibs = _mm256_and_si256(_mm256_srli_epi16(packed, 4), lo_mask256);
 
         /* Interleave WITHIN each 128-bit lane: low lane = block 0 nibble
          * pairs, high lane = block 1 nibble pairs. unpacklo gives the
@@ -95,48 +94,38 @@ static inline int32_t hsum_i32_avx2(__m256i v) {
 
         /* Concatenate into a 64-byte __m512i: bytes 0..31 = block 0,
          * bytes 32..63 = block 1. */
-        const __m512i u_w_512 = _mm512_inserti64x4(
-                _mm512_castsi256_si512(b0_u_w), b1_u_w, 1);
+        const __m512i u_w_512 = _mm512_inserti64x4(_mm512_castsi256_si512(b0_u_w), b1_u_w, 1);
 
         /* 64 int8 activations: block 0 acts | block 1 acts. */
-        const __m512i s_a_512 = _mm512_loadu_si512(
-                (const __m512i *) (acts + b * W4A8_BLOCK_ELEMS));
+        const __m512i s_a_512 = _mm512_loadu_si512((const __m512i *) (acts + b * W4A8_BLOCK_ELEMS));
 
         /* 16 int32 lanes. Lanes 0..7 sum block 0's 4-wide groups; lanes
          * 8..15 sum block 1's. */
-        const __m512i dot512 =
-                _mm512_dpbusd_epi32(_mm512_setzero_si512(), u_w_512, s_a_512);
+        const __m512i dot512 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), u_w_512, s_a_512);
 
         const __m256i d_low  = _mm512_castsi512_si256(dot512);
         const __m256i d_high = _mm512_extracti64x4_epi64(dot512, 1);
         const int32_t d_b0   = hsum_i32_avx2(d_low);
         const int32_t d_b1   = hsum_i32_avx2(d_high);
 
-        acc += w_scales[b]     * (float) d_b0 -
-               w_offsets[b]    * (float) sum_a_per_block[b];
-        acc += w_scales[b + 1] * (float) d_b1 -
-               w_offsets[b + 1] * (float) sum_a_per_block[b + 1];
+        acc += w_scales[b] * (float) d_b0 - w_offsets[b] * (float) sum_a_per_block[b];
+        acc += w_scales[b + 1] * (float) d_b1 - w_offsets[b + 1] * (float) sum_a_per_block[b + 1];
     }
 
     /* Tail: one block (kernel called with odd n_blocks). 256-bit path. */
     if (b < n_blocks) {
-        const __m128i packed_128 = _mm_loadu_si128(
-                (const __m128i *) (weights + b * W4A8_BLOCK_BYTES_WEIGHTS));
+        const __m128i packed_128 =
+                _mm_loadu_si128((const __m128i *) (weights + b * W4A8_BLOCK_BYTES_WEIGHTS));
         const __m256i packed_256 = _mm256_set_m128i(packed_128, packed_128);
         const __m256i lo_nibs    = _mm256_and_si256(packed_256, lo_mask256);
-        const __m256i hi_nibs    = _mm256_and_si256(_mm256_srli_epi16(packed_256, 4),
-                                                    lo_mask256);
+        const __m256i hi_nibs    = _mm256_and_si256(_mm256_srli_epi16(packed_256, 4), lo_mask256);
         const __m256i nibs_lo    = _mm256_unpacklo_epi8(lo_nibs, hi_nibs);
         const __m256i nibs_hi    = _mm256_unpackhi_epi8(lo_nibs, hi_nibs);
-        const __m256i u_w        =
-                _mm256_permute2x128_si256(nibs_lo, nibs_hi, 0x20);
-        const __m256i s_a = _mm256_loadu_si256(
-                (const __m256i *) (acts + b * W4A8_BLOCK_ELEMS));
-        const __m256i dot32 =
-                _mm256_dpbusd_epi32(_mm256_setzero_si256(), u_w, s_a);
-        const int32_t d_b = hsum_i32_avx2(dot32);
-        acc += w_scales[b] * (float) d_b -
-               w_offsets[b] * (float) sum_a_per_block[b];
+        const __m256i u_w        = _mm256_permute2x128_si256(nibs_lo, nibs_hi, 0x20);
+        const __m256i s_a   = _mm256_loadu_si256((const __m256i *) (acts + b * W4A8_BLOCK_ELEMS));
+        const __m256i dot32 = _mm256_dpbusd_epi32(_mm256_setzero_si256(), u_w, s_a);
+        const int32_t d_b   = hsum_i32_avx2(dot32);
+        acc += w_scales[b] * (float) d_b - w_offsets[b] * (float) sum_a_per_block[b];
     }
 
     return scale_x * acc;

@@ -29,14 +29,14 @@
 /* Forward-declare every ISA-specific variant so the cross-ISA test can call
  * them directly, regardless of which one the dispatcher latched. Symbols
  * that the build did not compile in resolve at link time only if used. */
-[[nodiscard]] float w4a8_dot_avx512_vnni(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x);
+[[nodiscard]] float
+w4a8_dot_avx512_vnni(size_t        n_blocks,
+                     const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
+                     const float   w_scales[static n_blocks],
+                     const float   w_offsets[static n_blocks],
+                     const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
+                     const int32_t sum_a_per_block[static n_blocks],
+                     float         scale_x);
 
 /* Pack two unsigned 4-bit nibbles in [0, 15] into one byte. lo → bits 0..3,
  * hi → bits 4..7. Matches the layout described in kernel_w4a8.h. */
@@ -54,9 +54,9 @@ static uint32_t prng_next(uint32_t *state) {
 }
 
 /* Compute sum_a per block — what a real caller does once per activation row. */
-static void compute_sum_a_per_block(size_t        n_blocks,
-                                    const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
-                                    int32_t       sum_a[static n_blocks]) {
+static void compute_sum_a_per_block(size_t       n_blocks,
+                                    const int8_t acts[static n_blocks * W4A8_BLOCK_ELEMS],
+                                    int32_t      sum_a[static n_blocks]) {
     for (size_t b = 0; b < n_blocks; b++) {
         int32_t s = 0;
         for (size_t i = 0; i < W4A8_BLOCK_ELEMS; i++) {
@@ -112,18 +112,18 @@ static int scenario_tiny_deterministic(void) {
     const float scale_x  = 4.0f;
     const float expected = -736.0f;
 
-    const float y_ref =
-            w4a8_dot_scalar(NB, weights, w_scales, w_offsets, acts, sum_a, scale_x);
+    const float y_ref = w4a8_dot_scalar(NB, weights, w_scales, w_offsets, acts, sum_a, scale_x);
     if (fabsf(y_ref - expected) > 1e-4f) {
-        fprintf(stderr, "tiny: scalar y=%f, expected %f\n",
-                (double) y_ref, (double) expected);
+        fprintf(stderr, "tiny: scalar y=%f, expected %f\n", (double) y_ref, (double) expected);
         return 1;
     }
 
     const float y_disp = w4a8_dot(NB, weights, w_scales, w_offsets, acts, sum_a, scale_x);
     if (fabsf(y_disp - y_ref) > 1e-4f) {
-        fprintf(stderr, "tiny: dispatcher diverged: scalar=%f dispatched=%f\n",
-                (double) y_ref, (double) y_disp);
+        fprintf(stderr,
+                "tiny: dispatcher diverged: scalar=%f dispatched=%f\n",
+                (double) y_ref,
+                (double) y_disp);
         return 1;
     }
     return 0;
@@ -183,8 +183,7 @@ static int scenario_random_cross_check(void) {
     compute_sum_a_per_block(NB, acts, sum_a);
     const float scale_x = 0.013f;
 
-    const float y_ref =
-            w4a8_dot_scalar(NB, weights, w_scales, w_offsets, acts, sum_a, scale_x);
+    const float y_ref  = w4a8_dot_scalar(NB, weights, w_scales, w_offsets, acts, sum_a, scale_x);
     const float y_disp = w4a8_dot(NB, weights, w_scales, w_offsets, acts, sum_a, scale_x);
 
     const float atol = 1e-3f;
@@ -194,7 +193,10 @@ static int scenario_random_cross_check(void) {
     if (diff > tol) {
         fprintf(stderr,
                 "random: dispatcher diverged: scalar=%g dispatched=%g diff=%g tol=%g\n",
-                (double) y_ref, (double) y_disp, (double) diff, (double) tol);
+                (double) y_ref,
+                (double) y_disp,
+                (double) diff,
+                (double) tol);
         return 1;
     }
     return 0;
@@ -210,7 +212,11 @@ static int compare_to_scalar(const char *label, float y_isa, float y_ref) {
     if (diff > tol) {
         fprintf(stderr,
                 "cross-ISA: %s diverged: ref=%g isa=%g diff=%g tol=%g\n",
-                label, (double) y_ref, (double) y_isa, (double) diff, (double) tol);
+                label,
+                (double) y_ref,
+                (double) y_isa,
+                (double) diff,
+                (double) tol);
         return 1;
     }
     return 0;
@@ -249,8 +255,7 @@ static int scenario_cross_isa_direct(void) {
     compute_sum_a_per_block(NB, acts, sum_a);
     const float scale_x = 0.017f;
 
-    const float y_ref =
-            w4a8_dot_scalar(NB, weights, w_scales, w_offsets, acts, sum_a, scale_x);
+    const float y_ref = w4a8_dot_scalar(NB, weights, w_scales, w_offsets, acts, sum_a, scale_x);
 
     int                 fails   = 0;
     const enum w4a8_isa current = w4a8_dispatcher_current();

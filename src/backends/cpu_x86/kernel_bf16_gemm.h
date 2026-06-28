@@ -68,8 +68,8 @@ typedef uint16_t bf16_t;
  *   W_packed[(j/16) * K * 16 + (k/2) * 32 + (j%16) * 2 + (k%2)]
  *
  * Both buffers hold the same total N*K bf16 values — just rearranged. */
-void bf16_pack_weights_ntile16(size_t N,
-                               size_t K,
+void bf16_pack_weights_ntile16(size_t       N,
+                               size_t       K,
                                const bf16_t W_flat[static N * K],
                                bf16_t       W_packed[static N * K]);
 

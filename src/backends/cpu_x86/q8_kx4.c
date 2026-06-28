@@ -18,9 +18,7 @@
 #include <stdint.h>
 #include <string.h>
 
-void quantize_q8_Kx4(size_t n_in,
-                     const float          x_rows[static 4 * n_in],
-                     struct block_q8_Kx4 *out) {
+void quantize_q8_Kx4(size_t n_in, const float x_rows[static 4 * n_in], struct block_q8_Kx4 *out) {
     const size_t n_super = n_in / 256;
 
     /* Per row: find max-abs, derive scale_x = max|x| / 127. */
@@ -59,10 +57,9 @@ void quantize_q8_Kx4(size_t n_in,
                 uint8_t *stripe_dst = sb_dst + (size_t) stripe * 32;
                 for (int r = 0; r < 4; r++) {
                     int8_t      *row_dst = (int8_t *) (stripe_dst + r * 8);
-                    const float *row_src = x_rows + (size_t) r * n_in +
-                                           s * 256 + (size_t) sb * 64 +
+                    const float *row_src = x_rows + (size_t) r * n_in + s * 256 + (size_t) sb * 64 +
                                            (size_t) stripe * 8;
-                    const float inv = 1.0f / scale_x[r];
+                    const float  inv     = 1.0f / scale_x[r];
                     for (int i = 0; i < 8; i++) {
                         row_dst[i] = (int8_t) lrintf(row_src[i] * inv);
                     }
@@ -86,9 +83,9 @@ void quantize_q8_Kx4(size_t n_in,
                  * consecutive 8-byte stripes within sub-block sb. */
                 const uint8_t *sb_src = (const uint8_t *) (b->qs + (size_t) sb * 256);
                 for (int half = 0; half < 2; half++) {
-                    const int    stripe_idx = sb_pos / 8 + half;
-                    const int8_t *row_stripe = (const int8_t *)
-                            (sb_src + (size_t) stripe_idx * 32 + r * 8);
+                    const int     stripe_idx = sb_pos / 8 + half;
+                    const int8_t *row_stripe =
+                            (const int8_t *) (sb_src + (size_t) stripe_idx * 32 + r * 8);
                     for (int i = 0; i < 8; i++) {
                         sum += row_stripe[i];
                     }

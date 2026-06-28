@@ -32,15 +32,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
-static inline size_t f32q_blocks_per_row(size_t n_in) { return n_in / W8A8_BLOCK_ELEMS; }
+static inline size_t f32q_blocks_per_row(size_t n_in) {
+    return n_in / W8A8_BLOCK_ELEMS;
+}
 
 /* blob: [weights u8 : n_out*n_in] [w_scales f32 : n_out*nblk] [w_offsets f32]. */
-static void f32q_pointers(const uint8_t *blob, size_t n_in, size_t n_out,
-                          const uint8_t **w_out, const float **s_out, const float **o_out) {
+static void f32q_pointers(const uint8_t  *blob,
+                          size_t          n_in,
+                          size_t          n_out,
+                          const uint8_t **w_out,
+                          const float   **s_out,
+                          const float   **o_out) {
     const size_t nblk = f32q_blocks_per_row(n_in);
-    *w_out = blob;
-    *s_out = (const float *) (blob + n_out * n_in);
-    *o_out = *s_out + n_out * nblk;
+    *w_out            = blob;
+    *s_out            = (const float *) (blob + n_out * n_in);
+    *o_out            = *s_out + n_out * nblk;
 }
 
 static size_t f32q_rowmajor_bytes(size_t n_in, size_t n_out) {
@@ -50,7 +56,9 @@ static size_t f32q_rowmajor_bytes(size_t n_in, size_t n_out) {
 /* When n_out % 8 == 0, append a lane-parallel W8x8 copy (same size, a pure
  * permutation) and run w8x8_gemm at prefill — 8 output rows per VPDPBUSD,
  * reduced once per tile, vs w8a8_gemm's per-row hsum. */
-static inline bool f32q_use_w8x8(size_t n_out) { return (n_out % W8X8_NROWS) == 0; }
+static inline bool f32q_use_w8x8(size_t n_out) {
+    return (n_out % W8X8_NROWS) == 0;
+}
 
 static size_t f32q_blob_bytes(size_t n_in, size_t n_out) {
     const size_t rm = f32q_rowmajor_bytes(n_in, n_out);
@@ -58,17 +66,21 @@ static size_t f32q_blob_bytes(size_t n_in, size_t n_out) {
 }
 
 /* Interleaved W8x8 region, appended after the row-major blob. */
-static void f32q_w8x8_pointers(const uint8_t *blob, size_t n_in, size_t n_out,
-                               const uint8_t **qs, const float **s, const float **o) {
+static void f32q_w8x8_pointers(const uint8_t  *blob,
+                               size_t          n_in,
+                               size_t          n_out,
+                               const uint8_t **qs,
+                               const float   **s,
+                               const float   **o) {
     const size_t   nblk = f32q_blocks_per_row(n_in);
     const uint8_t *base = blob + f32q_rowmajor_bytes(n_in, n_out);
-    *qs = base;
-    *s  = (const float *) (base + n_out * n_in);
-    *o  = *s + n_out * nblk;
+    *qs                 = base;
+    *s                  = (const float *) (base + n_out * n_in);
+    *o                  = *s + n_out * nblk;
 }
 
-void f32_to_w8a8_row(size_t n_in, const float *row, uint8_t *u_w, float *w_scales,
-                     float *w_offsets) {
+void f32_to_w8a8_row(
+        size_t n_in, const float *row, uint8_t *u_w, float *w_scales, float *w_offsets) {
     const size_t nblk = f32q_blocks_per_row(n_in);
     for (size_t b = 0; b < nblk; b++) {
         const float *wb = row + b * W8A8_BLOCK_ELEMS;
@@ -77,9 +89,9 @@ void f32_to_w8a8_row(size_t n_in, const float *row, uint8_t *u_w, float *w_scale
             mn = wb[i] < mn ? wb[i] : mn;
             mx = wb[i] > mx ? wb[i] : mx;
         }
-        const float  scale = (mx > mn) ? (mx - mn) / 255.0f : 0.0f;
-        const float  inv   = (scale > 0.0f) ? 1.0f / scale : 0.0f;
-        uint8_t     *ub    = u_w + b * W8A8_BLOCK_ELEMS;
+        const float scale = (mx > mn) ? (mx - mn) / 255.0f : 0.0f;
+        const float inv   = (scale > 0.0f) ? 1.0f / scale : 0.0f;
+        uint8_t    *ub    = u_w + b * W8A8_BLOCK_ELEMS;
         for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) {
             int q = (int) lrintf((wb[i] - mn) * inv);
             q     = q < 0 ? 0 : (q > 255 ? 255 : q);
@@ -107,11 +119,14 @@ void f32_to_w8a8_row(size_t n_in, const float *row, uint8_t *u_w, float *w_scale
     const uint8_t *bw;
     const float   *bs, *bo;
     f32q_pointers(blob, n_in, n_out, &bw, &bs, &bo);
-    const size_t   nblk    = f32q_blocks_per_row(n_in);
-    const float   *src     = (const float *) w->raw;
+    const size_t nblk = f32q_blocks_per_row(n_in);
+    const float *src  = (const float *) w->raw;
     for (size_t r = 0; r < n_out; r++) {
-        f32_to_w8a8_row(n_in, src + r * n_in, (uint8_t *) bw + r * n_in,
-                        (float *) bs + r * nblk, (float *) bo + r * nblk);
+        f32_to_w8a8_row(n_in,
+                        src + r * n_in,
+                        (uint8_t *) bw + r * n_in,
+                        (float *) bs + r * nblk,
+                        (float *) bo + r * nblk);
     }
 
     /* Interleave for the lane-parallel prefill kernel (n_out % 8 == 0). */
@@ -135,20 +150,23 @@ void f32_to_w8a8_row(size_t n_in, const float *row, uint8_t *u_w, float *w_scale
 }
 
 /* int8-quantize one activation row → st->acts_scratch + 16-block sum_a. */
-static float quant_act_row(size_t n_in, struct cpu_x86_state *st, const float *x,
-                           int8_t *acts, int32_t *sum_a) {
-    const float scale_x = w4a8_quantize_acts_row(n_in, x, acts, st->sum_a_scratch);
-    const size_t nblk   = n_in / W8A8_BLOCK_ELEMS;
+static float
+quant_act_row(size_t n_in, struct cpu_x86_state *st, const float *x, int8_t *acts, int32_t *sum_a) {
+    const float  scale_x = w4a8_quantize_acts_row(n_in, x, acts, st->sum_a_scratch);
+    const size_t nblk    = n_in / W8A8_BLOCK_ELEMS;
     for (size_t b = 0; b < nblk; b++) {
         int32_t s = 0;
-        for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) s += (int32_t) acts[b * W8A8_BLOCK_ELEMS + i];
+        for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++)
+            s += (int32_t) acts[b * W8A8_BLOCK_ELEMS + i];
         sum_a[b] = s;
     }
     return scale_x;
 }
 
-void cpu_x86_linear_f32q_m1(const float *x, const struct geist_weight *w,
-                            struct geist_backend *be, float *y) {
+void cpu_x86_linear_f32q_m1(const float               *x,
+                            const struct geist_weight *w,
+                            struct geist_backend      *be,
+                            float                     *y) {
     struct cpu_x86_state *st    = (struct cpu_x86_state *) be->state;
     const size_t          n_in  = (size_t) w->n_in;
     const size_t          n_out = (size_t) w->n_out;
@@ -157,12 +175,22 @@ void cpu_x86_linear_f32q_m1(const float *x, const struct geist_weight *w,
     f32q_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
 
     const float scale_x = quant_act_row(n_in, st, x, st->acts_scratch, st->sum_a_scratch);
-    w8a8_gemv(n_out, n_in / W8A8_BLOCK_ELEMS, weights, w_scales, w_offsets,
-              st->acts_scratch, st->sum_a_scratch, scale_x, y);
+    w8a8_gemv(n_out,
+              n_in / W8A8_BLOCK_ELEMS,
+              weights,
+              w_scales,
+              w_offsets,
+              st->acts_scratch,
+              st->sum_a_scratch,
+              scale_x,
+              y);
 }
 
-void cpu_x86_linear_f32q_mN(const float *x, const struct geist_weight *w, size_t m,
-                            struct geist_backend *be, float *y) {
+void cpu_x86_linear_f32q_mN(const float               *x,
+                            const struct geist_weight *w,
+                            size_t                     m,
+                            struct geist_backend      *be,
+                            float                     *y) {
     (void) be;
     const size_t   n_in  = (size_t) w->n_in;
     const size_t   n_out = (size_t) w->n_out;
@@ -176,8 +204,10 @@ void cpu_x86_linear_f32q_mN(const float *x, const struct geist_weight *w, size_t
     float   *scale_x = heap_alloc_aligned(m * sizeof(float), OPTIMAL_ALIGNMENT);
     int32_t *tmp     = heap_alloc_aligned((n_in / 32 + 1) * sizeof(int32_t), OPTIMAL_ALIGNMENT);
     if (acts == nullptr || sum_a == nullptr || scale_x == nullptr || tmp == nullptr) {
-        safe_free((void **) &acts); safe_free((void **) &sum_a);
-        safe_free((void **) &scale_x); safe_free((void **) &tmp);
+        safe_free((void **) &acts);
+        safe_free((void **) &sum_a);
+        safe_free((void **) &scale_x);
+        safe_free((void **) &tmp);
         return;
     }
     for (size_t j = 0; j < m; j++) {
@@ -186,7 +216,8 @@ void cpu_x86_linear_f32q_mN(const float *x, const struct geist_weight *w, size_t
         int32_t *s = sum_a + j * nblk;
         for (size_t b = 0; b < nblk; b++) {
             int32_t v = 0;
-            for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) v += (int32_t) a[b * W8A8_BLOCK_ELEMS + i];
+            for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++)
+                v += (int32_t) a[b * W8A8_BLOCK_ELEMS + i];
             s[b] = v;
         }
     }
@@ -202,6 +233,8 @@ void cpu_x86_linear_f32q_mN(const float *x, const struct geist_weight *w, size_t
     } else {
         w8a8_gemm(m, n_out, nblk, weights, w_scales, w_offsets, acts, sum_a, scale_x, y);
     }
-    safe_free((void **) &acts); safe_free((void **) &sum_a);
-    safe_free((void **) &scale_x); safe_free((void **) &tmp);
+    safe_free((void **) &acts);
+    safe_free((void **) &sum_a);
+    safe_free((void **) &scale_x);
+    safe_free((void **) &tmp);
 }

@@ -29,14 +29,13 @@ typedef float (*w8a8_dot_fn)(size_t        n_blocks,
                              const int32_t sum_a_per_block[static n_blocks],
                              float         scale_x);
 
-[[nodiscard]] float w8a8_dot_avx512_vnni(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x);
+[[nodiscard]] float w8a8_dot_avx512_vnni(size_t        n_blocks,
+                                         const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
+                                         const float   w_scales[static n_blocks],
+                                         const float   w_offsets[static n_blocks],
+                                         const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
+                                         const int32_t sum_a_per_block[static n_blocks],
+                                         float         scale_x);
 
 void w8a8_gemm_avx512_vnni(
         size_t        n_tokens,
@@ -50,8 +49,8 @@ void w8a8_gemm_avx512_vnni(
         const float   scale_x[static n_tokens],
         float         out[static n_tokens * n_rows]);
 
-static w8a8_dot_fn g_dot8     = nullptr;
-static int         g_inited8  = 0;
+static w8a8_dot_fn g_dot8    = nullptr;
+static int         g_inited8 = 0;
 
 static void w8a8_dispatch_init(void) {
     if (g_inited8 != 0) {
@@ -69,19 +68,17 @@ static void w8a8_dispatch_init(void) {
     g_inited8 = 1;
 }
 
-[[nodiscard]] float w8a8_dot(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x) {
+[[nodiscard]] float w8a8_dot(size_t        n_blocks,
+                             const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
+                             const float   w_scales[static n_blocks],
+                             const float   w_offsets[static n_blocks],
+                             const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
+                             const int32_t sum_a_per_block[static n_blocks],
+                             float         scale_x) {
     if (g_inited8 == 0) {
         w8a8_dispatch_init();
     }
-    return g_dot8(n_blocks, weights, w_scales, w_offsets,
-                  acts, sum_a_per_block, scale_x);
+    return g_dot8(n_blocks, weights, w_scales, w_offsets, acts, sum_a_per_block, scale_x);
 }
 
 [[nodiscard]] int w8a8_isa_is_vnni(void) {
@@ -91,16 +88,15 @@ static void w8a8_dispatch_init(void) {
     return g_dot8 == w8a8_dot_avx512_vnni;
 }
 
-void w8a8_gemv(
-        size_t        n_rows,
-        size_t        n_blocks_per_row,
-        const uint8_t weights[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const float   w_scales[static n_rows * n_blocks_per_row],
-        const float   w_offsets[static n_rows * n_blocks_per_row],
-        const int8_t  acts[static n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks_per_row],
-        float         scale_x,
-        float         out[static n_rows]) {
+void w8a8_gemv(size_t        n_rows,
+               size_t        n_blocks_per_row,
+               const uint8_t weights[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+               const float   w_scales[static n_rows * n_blocks_per_row],
+               const float   w_offsets[static n_rows * n_blocks_per_row],
+               const int8_t  acts[static n_blocks_per_row * W8A8_BLOCK_ELEMS],
+               const int32_t sum_a_per_block[static n_blocks_per_row],
+               float         scale_x,
+               float         out[static n_rows]) {
     if (g_inited8 == 0) {
         w8a8_dispatch_init();
     }
@@ -113,30 +109,34 @@ void w8a8_gemv(
         const uint8_t *w_row = weights + m * bytes_per_row;
         const float   *s_row = w_scales + m * scales_per_row;
         const float   *o_row = w_offsets + m * scales_per_row;
-        out[m]               = g_dot8(n_blocks_per_row,
-                                     w_row, s_row, o_row,
-                                     acts, sum_a_per_block, scale_x);
+        out[m] = g_dot8(n_blocks_per_row, w_row, s_row, o_row, acts, sum_a_per_block, scale_x);
     }
 }
 
-void w8a8_gemm(
-        size_t        n_tokens,
-        size_t        n_rows,
-        size_t        n_blocks_per_row,
-        const uint8_t weights[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const float   w_scales[static n_rows * n_blocks_per_row],
-        const float   w_offsets[static n_rows * n_blocks_per_row],
-        const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
-        const float   scale_x[static n_tokens],
-        float         out[static n_tokens * n_rows]) {
+void w8a8_gemm(size_t        n_tokens,
+               size_t        n_rows,
+               size_t        n_blocks_per_row,
+               const uint8_t weights[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+               const float   w_scales[static n_rows * n_blocks_per_row],
+               const float   w_offsets[static n_rows * n_blocks_per_row],
+               const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+               const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
+               const float   scale_x[static n_tokens],
+               float         out[static n_tokens * n_rows]) {
     if (g_inited8 == 0) {
         w8a8_dispatch_init();
     }
     if (g_dot8 == w8a8_dot_avx512_vnni) {
-        w8a8_gemm_avx512_vnni(n_tokens, n_rows, n_blocks_per_row,
-                              weights, w_scales, w_offsets,
-                              acts, sum_a_per_block, scale_x, out);
+        w8a8_gemm_avx512_vnni(n_tokens,
+                              n_rows,
+                              n_blocks_per_row,
+                              weights,
+                              w_scales,
+                              w_offsets,
+                              acts,
+                              sum_a_per_block,
+                              scale_x,
+                              out);
         return;
     }
     /* Scalar fallback: per (token, row) dot via the dispatched scalar kernel.
@@ -152,7 +152,10 @@ void w8a8_gemm(
         const float   *s_row = w_scales + r * scales_per_row;
         const float   *o_row = w_offsets + r * scales_per_row;
         for (size_t j = 0; j < n_tokens; j++) {
-            out[j * n_rows + r] = g_dot8(n_blocks_per_row, w_row, s_row, o_row,
+            out[j * n_rows + r] = g_dot8(n_blocks_per_row,
+                                         w_row,
+                                         s_row,
+                                         o_row,
                                          acts + j * bytes_per_row,
                                          sum_a_per_block + j * scales_per_row,
                                          scale_x[j]);

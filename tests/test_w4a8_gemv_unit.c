@@ -31,7 +31,7 @@ static uint16_t fp32_to_fp16(float f) {
     union {
         float    f;
         uint32_t u;
-    } bits = {.f = f};
+    } bits            = {.f = f};
     uint32_t x        = bits.u;
     uint32_t sign     = (x >> 31) & 0x1u;
     int32_t  exp32    = (int32_t) ((x >> 23) & 0xFFu) - 127;
@@ -89,8 +89,7 @@ static void set_scale_min_k4(int j, uint8_t scales[12], uint8_t d_in, uint8_t m_
 }
 
 /* ----- Synthesize a single row of n_in Q4_K weights ----- */
-static void synth_q4k_row(size_t n_in, uint32_t *prng_state,
-                          struct block_q4_K_t *out_blocks) {
+static void synth_q4k_row(size_t n_in, uint32_t *prng_state, struct block_q4_K_t *out_blocks) {
     const size_t n_super = n_in / Q4_K_BLOCK_ELEMS;
     for (size_t s = 0; s < n_super; s++) {
         struct block_q4_K_t *blk = &out_blocks[s];
@@ -133,8 +132,8 @@ static int scenario_random_gemv(void) {
     }
 
     /* --- Reference: per row, dequant_q4_K_row + fp32 sgemv. ---------------- */
-    float    y_ref[N_ROWS];
-    float    w_dq[N_IN]; /* per-row fp32 weights, reused across rows */
+    float y_ref[N_ROWS];
+    float w_dq[N_IN]; /* per-row fp32 weights, reused across rows */
     for (size_t m = 0; m < N_ROWS; m++) {
         dequant_q4_K_row(w_q4k[m], w_dq, N_IN);
         double acc = 0.0;
@@ -156,8 +155,8 @@ static int scenario_random_gemv(void) {
                         w_offsets + m * N_BLK);
     }
 
-    int8_t  acts[N_IN];
-    int32_t sum_a[N_BLK];
+    int8_t      acts[N_IN];
+    int32_t     sum_a[N_BLK];
     const float scale_x = w4a8_quantize_acts_row(N_IN, x, acts, sum_a);
 
     float y_test[N_ROWS];
@@ -190,8 +189,12 @@ static int scenario_random_gemv(void) {
         if (d > tol) {
             fprintf(stderr,
                     "row %zu: ref=%g test=%g diff=%g tol=%g (rms_y_ref=%g)\n",
-                    m, (double) y_ref[m], (double) y_test[m],
-                    (double) d, (double) tol, (double) rms_y_ref);
+                    m,
+                    (double) y_ref[m],
+                    (double) y_test[m],
+                    (double) d,
+                    (double) tol,
+                    (double) rms_y_ref);
             fails++;
         }
         if (d > max_diff) {
@@ -199,9 +202,13 @@ static int scenario_random_gemv(void) {
         }
     }
     fprintf(stdout,
-            "[w4a8_gemv] max |y_test-y_ref| = %g, rms_y_ref = %g, tol = %g (n_rows=%zu, n_in=%zu)\n",
-            (double) max_diff, (double) rms_y_ref, (double) tol,
-            (size_t) N_ROWS, (size_t) N_IN);
+            "[w4a8_gemv] max |y_test-y_ref| = %g, rms_y_ref = %g, tol = %g (n_rows=%zu, "
+            "n_in=%zu)\n",
+            (double) max_diff,
+            (double) rms_y_ref,
+            (double) tol,
+            (size_t) N_ROWS,
+            (size_t) N_IN);
     return fails;
 }
 

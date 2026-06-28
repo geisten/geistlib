@@ -35,10 +35,7 @@ void cpu_x86_linear_q6k_m1(const float               *x,
                            float                     *y);
 
 /* M>1 (prefill) kernel installed by the resolver. Tiled W8A8 GEMM. */
-void cpu_x86_linear_q6k_mN(const float               *x,
-                           const struct geist_weight *w,
-                           size_t                     m,
-                           struct geist_backend      *be,
-                           float                     *y);
+void cpu_x86_linear_q6k_mN(
+        const float *x, const struct geist_weight *w, size_t m, struct geist_backend *be, float *y);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_LINEAR_Q6K_H */

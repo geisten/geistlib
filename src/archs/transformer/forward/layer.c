@@ -445,17 +445,26 @@ enum plepre_stage {
 static uint64_t          g_plepre_ns[PLEPRE_COUNT];
 static uint64_t          g_plepre_calls[PLEPRE_COUNT];
 static const char *const g_plepre_names[PLEPRE_COUNT] = {
-        "gather_q5k", "model_proj", "scale", "rmsnorm", "combine",
+        "gather_q5k",
+        "model_proj",
+        "scale",
+        "rmsnorm",
+        "combine",
 };
 
 static void plepre_print(void) {
     uint64_t total = 0;
-    for (size_t i = 0; i < PLEPRE_COUNT; i++) total += g_plepre_ns[i];
-    if (total == 0) return;
+    for (size_t i = 0; i < PLEPRE_COUNT; i++)
+        total += g_plepre_ns[i];
+    if (total == 0)
+        return;
     fprintf(stderr, "transformer ple precompute (per-chunk):\n");
     for (size_t i = 0; i < PLEPRE_COUNT; i++) {
-        fprintf(stderr, "  %-12s %10.2f ms  %5.1f%%  (%llu calls)\n", g_plepre_names[i],
-                (double) g_plepre_ns[i] / 1e6, 100.0 * (double) g_plepre_ns[i] / (double) total,
+        fprintf(stderr,
+                "  %-12s %10.2f ms  %5.1f%%  (%llu calls)\n",
+                g_plepre_names[i],
+                (double) g_plepre_ns[i] / 1e6,
+                100.0 * (double) g_plepre_ns[i] / (double) total,
                 (unsigned long long) g_plepre_calls[i]);
     }
 }
@@ -464,15 +473,18 @@ static bool plepre_enabled(void) {
     static int en = -1;
     if (en < 0) {
         const char *e = getenv("GEIST_PROFILE_PREFILL");
-        if (e == nullptr || e[0] == '\0') e = getenv("GEIST_PROFILE_FORWARD");
+        if (e == nullptr || e[0] == '\0')
+            e = getenv("GEIST_PROFILE_FORWARD");
         en = (e != nullptr && e[0] == '1') ? 1 : 0;
-        if (en) atexit(plepre_print);
+        if (en)
+            atexit(plepre_print);
     }
     return en != 0;
 }
 
 static void plepre_add(enum plepre_stage stage, uint64_t t0) {
-    if (t0 == 0) return;
+    if (t0 == 0)
+        return;
     g_plepre_ns[stage] += transformer_profile_now_ns() - t0;
     g_plepre_calls[stage]++;
 }
@@ -516,7 +528,7 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
     struct geist_tensor t_h_2d   = view_2d(h_buf, (int64_t) n, st->d_model);
     struct geist_tensor t_out_2d = view_2d(out_buf, (int64_t) n, (int64_t) PLE_OUT);
     t0                           = prof ? transformer_profile_now_ns() : 0;
-    enum geist_status   s        = linear_w_or_legacy(
+    enum geist_status s          = linear_w_or_legacy(
             be, v, h_buf, out_buf, &st->model_proj_w, n, &t_h_2d, &st->model_proj, &t_out_2d);
     plepre_add(PLEPRE_MODEL_PROJ, t0);
     if (s != GEIST_OK) {

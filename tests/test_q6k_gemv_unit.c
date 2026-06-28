@@ -31,7 +31,9 @@ static uint32_t prng(uint32_t *s) {
 }
 
 /* fp16 bits for a small positive scale ~0.0007 (typical Q6_K d). */
-static uint16_t small_d(void) { return 0x139Bu; /* ~0.000727 */ }
+static uint16_t small_d(void) {
+    return 0x139Bu; /* ~0.000727 */
+}
 
 static int scenario(size_t N, size_t K) {
     const size_t NS = K / 256;
@@ -40,19 +42,23 @@ static int scenario(size_t N, size_t K) {
     /* Synthesize N rows of Q6_K. */
     struct block_q6_K_t *W = calloc(N * NS, sizeof(*W));
     for (size_t r = 0; r < N * NS; r++) {
-        for (int i = 0; i < 128; i++) W[r].ql[i] = (uint8_t) (prng(&s) & 0xFFu);
-        for (int i = 0; i < 64; i++) W[r].qh[i] = (uint8_t) (prng(&s) & 0xFFu);
-        for (int i = 0; i < 16; i++) W[r].scales[i] = (int8_t) ((prng(&s) % 101) - 50);
+        for (int i = 0; i < 128; i++)
+            W[r].ql[i] = (uint8_t) (prng(&s) & 0xFFu);
+        for (int i = 0; i < 64; i++)
+            W[r].qh[i] = (uint8_t) (prng(&s) & 0xFFu);
+        for (int i = 0; i < 16; i++)
+            W[r].scales[i] = (int8_t) ((prng(&s) % 101) - 50);
         W[r].d = small_d();
     }
 
     float *x = malloc(K * sizeof(float));
-    for (size_t k = 0; k < K; k++) x[k] = 2.0f * ((prng(&s) & 0xFFFFu) / 65536.0f) - 1.0f;
+    for (size_t k = 0; k < K; k++)
+        x[k] = 2.0f * ((prng(&s) & 0xFFFFu) / 65536.0f) - 1.0f;
 
     /* Reference: dequant each row via q6k_to_w8a8_row, dot with x. */
-    uint8_t *uw = malloc(K);
-    float   *ws = malloc((K / 16) * sizeof(float));
-    float   *wo = malloc((K / 16) * sizeof(float));
+    uint8_t *uw    = malloc(K);
+    float   *ws    = malloc((K / 16) * sizeof(float));
+    float   *wo    = malloc((K / 16) * sizeof(float));
     float   *y_ref = malloc(N * sizeof(float));
     for (size_t r = 0; r < N; r++) {
         q6k_to_w8a8_row(K, (const uint8_t *) (W + r * NS), uw, ws, wo);
@@ -78,7 +84,13 @@ static int scenario(size_t N, size_t K) {
     const double cos = dotp / (sqrt(na) * sqrt(nb) + 1e-12);
     fprintf(stdout, "[q6k_gemv N=%zu K=%zu] cosine = %.6f\n", N, K, cos);
 
-    free(W); free(x); free(uw); free(ws); free(wo); free(y_ref); free(y);
+    free(W);
+    free(x);
+    free(uw);
+    free(ws);
+    free(wo);
+    free(y_ref);
+    free(y);
     return cos >= 0.999 ? 0 : 1;
 }
 
@@ -87,6 +99,7 @@ int main(void) {
     fails += scenario(64, 256);
     fails += scenario(128, 512);
     fails += scenario(256, 1024);
-    if (fails == 0) fprintf(stdout, "OK\n");
+    if (fails == 0)
+        fprintf(stdout, "OK\n");
     return fails == 0 ? 0 : 1;
 }

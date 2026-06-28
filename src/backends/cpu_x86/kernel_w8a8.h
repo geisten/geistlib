@@ -36,52 +36,48 @@
 
 constexpr size_t W8A8_BLOCK_ELEMS = 16;
 
-[[nodiscard]] float w8a8_dot_scalar(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x);
+[[nodiscard]] float w8a8_dot_scalar(size_t        n_blocks,
+                                    const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
+                                    const float   w_scales[static n_blocks],
+                                    const float   w_offsets[static n_blocks],
+                                    const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
+                                    const int32_t sum_a_per_block[static n_blocks],
+                                    float         scale_x);
 
-[[nodiscard]] float w8a8_dot(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x);
+[[nodiscard]] float w8a8_dot(size_t        n_blocks,
+                             const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
+                             const float   w_scales[static n_blocks],
+                             const float   w_offsets[static n_blocks],
+                             const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
+                             const int32_t sum_a_per_block[static n_blocks],
+                             float         scale_x);
 
 /* Multi-row GEMV: n_rows independent dots, OMP-parallel internally. */
-void w8a8_gemv(
-        size_t        n_rows,
-        size_t        n_blocks_per_row,
-        const uint8_t weights[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const float   w_scales[static n_rows * n_blocks_per_row],
-        const float   w_offsets[static n_rows * n_blocks_per_row],
-        const int8_t  acts[static n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks_per_row],
-        float         scale_x,
-        float         out[static n_rows]);
+void w8a8_gemv(size_t        n_rows,
+               size_t        n_blocks_per_row,
+               const uint8_t weights[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+               const float   w_scales[static n_rows * n_blocks_per_row],
+               const float   w_offsets[static n_rows * n_blocks_per_row],
+               const int8_t  acts[static n_blocks_per_row * W8A8_BLOCK_ELEMS],
+               const int32_t sum_a_per_block[static n_blocks_per_row],
+               float         scale_x,
+               float         out[static n_rows]);
 
 /* Prefill GEMM: M tokens × n_rows output rows. Y is token-major row-major
  * (Y[j * n_rows + r]). Weights are read once per output row and reused
  * across all M tokens (the tiled-GEMM amortization); JT independent fp32
  * accumulators per inner step keep the back-end fed. OMP-parallel over
  * output rows internally. Allocation-free; caller owns every buffer. */
-void w8a8_gemm(
-        size_t        n_tokens,
-        size_t        n_rows,
-        size_t        n_blocks_per_row,
-        const uint8_t weights[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const float   w_scales[static n_rows * n_blocks_per_row],
-        const float   w_offsets[static n_rows * n_blocks_per_row],
-        const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
-        const float   scale_x[static n_tokens],
-        float         out[static n_tokens * n_rows]);
+void w8a8_gemm(size_t        n_tokens,
+               size_t        n_rows,
+               size_t        n_blocks_per_row,
+               const uint8_t weights[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+               const float   w_scales[static n_rows * n_blocks_per_row],
+               const float   w_offsets[static n_rows * n_blocks_per_row],
+               const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+               const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
+               const float   scale_x[static n_tokens],
+               float         out[static n_tokens * n_rows]);
 
 /* --- Lane-parallel W8A8 (W8x8) ---------------------------------------------
  *
@@ -115,53 +111,49 @@ constexpr size_t W8X16_NROWS = 16;
 /* Repack a row-major W8A8 matrix (the q6k_to_w8a8 output) into the W8x8
  * interleaved layout. n_out must be a multiple of W8X8_NROWS. Layout-only
  * (no ISA); runs once at model load. Caller owns the outputs. */
-void w8x8_repack(
-        size_t        n_out,
-        size_t        n_in,
-        const uint8_t weights[static n_out * n_in],
-        const float   w_scales[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        const float   w_offsets[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        uint8_t       qs_out[static n_out * n_in],
-        float         scales_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        float         offsets_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)]);
+void w8x8_repack(size_t        n_out,
+                 size_t        n_in,
+                 const uint8_t weights[static n_out * n_in],
+                 const float   w_scales[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                 const float   w_offsets[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                 uint8_t       qs_out[static n_out * n_in],
+                 float         scales_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                 float         offsets_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)]);
 
 /* W8x16 repack (16-row interleave) + 512-bit GEMM. n_out/n_rows % 16 == 0. */
-void w8x16_repack(
-        size_t        n_out,
-        size_t        n_in,
-        const uint8_t weights[static n_out * n_in],
-        const float   w_scales[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        const float   w_offsets[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        uint8_t       qs_out[static n_out * n_in],
-        float         scales_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        float         offsets_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)]);
+void w8x16_repack(size_t        n_out,
+                  size_t        n_in,
+                  const uint8_t weights[static n_out * n_in],
+                  const float   w_scales[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                  const float   w_offsets[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                  uint8_t       qs_out[static n_out * n_in],
+                  float         scales_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                  float         offsets_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)]);
 
-void w8x16_gemm(
-        size_t        n_tokens,
-        size_t        n_rows,
-        size_t        n_blocks_per_row,
-        const uint8_t qs[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const float   scales[static n_rows * n_blocks_per_row],
-        const float   offsets[static n_rows * n_blocks_per_row],
-        const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
-        const float   scale_x[static n_tokens],
-        float         out[static n_tokens * n_rows]);
+void w8x16_gemm(size_t        n_tokens,
+                size_t        n_rows,
+                size_t        n_blocks_per_row,
+                const uint8_t qs[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+                const float   scales[static n_rows * n_blocks_per_row],
+                const float   offsets[static n_rows * n_blocks_per_row],
+                const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+                const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
+                const float   scale_x[static n_tokens],
+                float         out[static n_tokens * n_rows]);
 
 /* Lane-parallel prefill GEMM. n_rows % W8X8_NROWS == 0. Y is token-major
  * row-major (Y[j * n_rows + r]). AVX-512+VNNI only — call w8a8_isa_is_vnni()
  * first. Allocation-free; caller owns every buffer. */
-void w8x8_gemm(
-        size_t        n_tokens,
-        size_t        n_rows,
-        size_t        n_blocks_per_row,
-        const uint8_t qs[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const float   scales[static n_rows * n_blocks_per_row],
-        const float   offsets[static n_rows * n_blocks_per_row],
-        const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
-        const float   scale_x[static n_tokens],
-        float         out[static n_tokens * n_rows]);
+void w8x8_gemm(size_t        n_tokens,
+               size_t        n_rows,
+               size_t        n_blocks_per_row,
+               const uint8_t qs[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+               const float   scales[static n_rows * n_blocks_per_row],
+               const float   offsets[static n_rows * n_blocks_per_row],
+               const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+               const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
+               const float   scale_x[static n_tokens],
+               float         out[static n_tokens * n_rows]);
 
 /* Reuses the per-row int8 quantization + sum_a logic from kernel_w4a8.h
  * (W8A8 and W4A8 share the activation pipeline). The caller is expected

@@ -22,8 +22,7 @@
  * column at a stride of 64 bytes (8 source rows × 8 bytes per stripe). */
 constexpr unsigned BLCK_SIZE_INTERLEAVE = 8;
 
-static void make_block_q4_kx8(const struct block_q4_K_t *in,
-                              struct block_q4_Kx8       *out) {
+static void make_block_q4_kx8(const struct block_q4_K_t *in, struct block_q4_Kx8 *out) {
     /* Copy fp16 d / dmin per source row. */
     for (int i = 0; i < 8; i++) {
         out->d[i]    = in[i].d;
@@ -68,7 +67,8 @@ static void make_block_q4_kx8(const struct block_q4_K_t *in,
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < 8; j++) {
             s[j] = (uint8_t) (((in[j].scales[i] & 192) >> 2) | (in[j].scales[i + 8] & 15));
-            m[j] = (uint8_t) (((in[j].scales[i + 4] & 192) >> 2) | ((in[j].scales[i + 8] & 240) >> 4));
+            m[j] = (uint8_t) (((in[j].scales[i + 4] & 192) >> 2) |
+                              ((in[j].scales[i + 8] & 240) >> 4));
         }
         out->scales[i * 12 + 48] = (uint8_t) ((s[0] & 63) + ((s[4] & 48) << 2));
         out->scales[i * 12 + 49] = (uint8_t) ((s[1] & 63) + ((s[5] & 48) << 2));
@@ -85,7 +85,7 @@ static void make_block_q4_kx8(const struct block_q4_K_t *in,
     }
 }
 
-void q4k_to_q4kx8_octet(size_t n_super,
+void q4k_to_q4kx8_octet(size_t               n_super,
                         const uint8_t        q4k_rows[static 8 * n_super * Q4_K_BLOCK_BYTES],
                         struct block_q4_Kx8 *q4kx8_out) {
     /* For each super-block index s: gather the s-th super-block from each
@@ -94,25 +94,22 @@ void q4k_to_q4kx8_octet(size_t n_super,
     for (size_t s = 0; s < n_super; s++) {
         for (int r = 0; r < 8; r++) {
             const size_t row_offset = (size_t) r * n_super * Q4_K_BLOCK_BYTES;
-            memcpy(&tmp[r],
-                   q4k_rows + row_offset + s * Q4_K_BLOCK_BYTES,
-                   Q4_K_BLOCK_BYTES);
+            memcpy(&tmp[r], q4k_rows + row_offset + s * Q4_K_BLOCK_BYTES, Q4_K_BLOCK_BYTES);
         }
         make_block_q4_kx8(tmp, &q4kx8_out[s]);
     }
 }
 
-void q4k_to_q4kx8_matrix(size_t n_in,
-                         size_t n_out,
-                         const uint8_t              *q4k_data,
-                         struct block_q4_Kx8        *q4kx8_out) {
+void q4k_to_q4kx8_matrix(size_t               n_in,
+                         size_t               n_out,
+                         const uint8_t       *q4k_data,
+                         struct block_q4_Kx8 *q4kx8_out) {
     const size_t n_super        = n_in / Q4_K_BLOCK_ELEMS;
     const size_t row_bytes      = n_super * Q4_K_BLOCK_BYTES;
     const size_t n_octets       = n_out / 8;
     const size_t blocks_per_oct = n_super;
     for (size_t oct = 0; oct < n_octets; oct++) {
         const uint8_t *row_base = q4k_data + oct * 8 * row_bytes;
-        q4k_to_q4kx8_octet(n_super, row_base,
-                           q4kx8_out + oct * blocks_per_oct);
+        q4k_to_q4kx8_octet(n_super, row_base, q4kx8_out + oct * blocks_per_oct);
     }
 }

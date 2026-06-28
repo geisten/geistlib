@@ -56,16 +56,15 @@ static float *gelu_f32_ptr(const struct geist_tensor *t, size_t *out_n) {
 static inline float gelu1(float v) {
     static constexpr float K0 = 0.7978845608028654f; /* sqrt(2/pi) */
     static constexpr float K1 = 0.044715f;
-    float u = K0 * (v + K1 * v * v * v);
-    u       = fmaxf(-10.0f, fminf(10.0f, u));
-    const float e = expf(2.0f * u);
-    const float t = (e - 1.0f) / (e + 1.0f); /* tanh(u) */
+    float                  u  = K0 * (v + K1 * v * v * v);
+    u                         = fmaxf(-10.0f, fminf(10.0f, u));
+    const float e             = expf(2.0f * u);
+    const float t             = (e - 1.0f) / (e + 1.0f); /* tanh(u) */
     return 0.5f * v * (1.0f + t);
 }
 
-[[nodiscard]] enum geist_status cpu_x86_gelu_tanh(struct geist_backend      *be,
-                                                  const struct geist_tensor *x,
-                                                  struct geist_tensor       *y) {
+[[nodiscard]] enum geist_status
+cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
     size_t       nx = 0, ny = 0;
     const float *xp = gelu_f32_ptr(x, &nx);
     float       *yp = gelu_f32_ptr(y, &ny);
@@ -110,13 +109,14 @@ static inline float gelu1(float v) {
     float       *yp = gelu_f32_ptr(y, &ny);
     if (xp == nullptr || zp == nullptr || yp == nullptr || scale == nullptr || nx != nz ||
         nx != ny || y->ndim < 1) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 gelu_tanh_mul_scaled: bad inputs");
+        geist_backend_set_error(
+                be, GEIST_E_INVALID_ARG, "cpu_x86 gelu_tanh_mul_scaled: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
     const size_t feat = (size_t) y->shape[y->ndim - 1];
     if (feat == 0 || nx % feat != 0) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG,
-                                "cpu_x86 gelu_tanh_mul_scaled: feature mismatch");
+        geist_backend_set_error(
+                be, GEIST_E_INVALID_ARG, "cpu_x86 gelu_tanh_mul_scaled: feature mismatch");
         return GEIST_E_INVALID_ARG;
     }
     const size_t rows = nx / feat;

@@ -53,8 +53,7 @@ struct block_q4_Kx8 {
     uint8_t  qs[1024];   /* 8-byte-interleaved 4-bit quants */
 } __attribute__((packed));
 
-_Static_assert(sizeof(struct block_q4_Kx8) == Q4_KX8_BLOCK_BYTES,
-               "block_q4_Kx8 size mismatch");
+_Static_assert(sizeof(struct block_q4_Kx8) == Q4_KX8_BLOCK_BYTES, "block_q4_Kx8 size mismatch");
 
 /* Repack one row-octet (8 contiguous Q4_K rows × n_super super-blocks per
  * row) into a Q4_Kx8 array of length n_super.
@@ -67,15 +66,15 @@ _Static_assert(sizeof(struct block_q4_Kx8) == Q4_KX8_BLOCK_BYTES,
  * Output:
  *   q4kx8_out: n_super interleaved Q4_Kx8 blocks (n_super × Q4_KX8_BLOCK_BYTES).
  */
-void q4k_to_q4kx8_octet(size_t n_super,
+void q4k_to_q4kx8_octet(size_t               n_super,
                         const uint8_t        q4k_rows[static 8 * n_super * Q4_K_BLOCK_BYTES],
                         struct block_q4_Kx8 *q4kx8_out);
 
 /* Bulk repack: n_out / 8 octets covered in one call. n_out must be a
  * multiple of 8. */
-void q4k_to_q4kx8_matrix(size_t n_in,
-                         size_t n_out,
-                         const uint8_t              *q4k_data,
-                         struct block_q4_Kx8        *q4kx8_out);
+void q4k_to_q4kx8_matrix(size_t               n_in,
+                         size_t               n_out,
+                         const uint8_t       *q4k_data,
+                         struct block_q4_Kx8 *q4kx8_out);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_Q4K_TO_Q4KX8_H */

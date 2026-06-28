@@ -13,9 +13,8 @@
 #include <geist.h>
 #include <geist_backend.h>
 
-[[nodiscard]] enum geist_status cpu_x86_gelu_tanh(struct geist_backend      *be,
-                                                  const struct geist_tensor *x,
-                                                  struct geist_tensor       *y);
+[[nodiscard]] enum geist_status
+cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y);
 
 [[nodiscard]] enum geist_status cpu_x86_gelu_tanh_mul(struct geist_backend      *be,
                                                       const struct geist_tensor *x,

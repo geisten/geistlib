@@ -42,11 +42,12 @@ struct q8k_act {
  * the dot expects: d = amax/127, qs = round(x/d), bsums summed per 16). */
 static void quantize_q8k_act(size_t n_super, const float *x, struct q8k_act *out) {
     for (size_t s = 0; s < n_super; s++) {
-        const float *xs = x + s * 256;
+        const float *xs   = x + s * 256;
         float        amax = 0.0f;
         for (size_t k = 0; k < 256; k++) {
             const float ax = fabsf(xs[k]);
-            if (ax > amax) amax = ax;
+            if (ax > amax)
+                amax = ax;
         }
         const float d  = amax / 127.0f;
         const float id = (amax > 0.0f) ? 127.0f / amax : 0.0f;
@@ -54,7 +55,7 @@ static void quantize_q8k_act(size_t n_super, const float *x, struct q8k_act *out
         for (size_t g = 0; g < 16; g++) {
             int32_t sum = 0;
             for (size_t i = 0; i < 16; i++) {
-                const int v = (int) lrintf(xs[g * 16 + i] * id);
+                const int v           = (int) lrintf(xs[g * 16 + i] * id);
                 out[s].qs[g * 16 + i] = (int8_t) v;
                 sum += v;
             }
@@ -65,14 +66,12 @@ static void quantize_q8k_act(size_t n_super, const float *x, struct q8k_act *out
 
 static inline __m128i scale_shuffle(int i) {
     static const uint8_t k[128] = {
-        0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,  1,  1,  1,  1,
-        2,  2,  2,  2,  2,  2,  2,  2,  3,  3,  3,  3,  3,  3,  3,  3,
-        4,  4,  4,  4,  4,  4,  4,  4,  5,  5,  5,  5,  5,  5,  5,  5,
-        6,  6,  6,  6,  6,  6,  6,  6,  7,  7,  7,  7,  7,  7,  7,  7,
-        8,  8,  8,  8,  8,  8,  8,  8,  9,  9,  9,  9,  9,  9,  9,  9,
-        10, 10, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11,
-        12, 12, 12, 12, 12, 12, 12, 12, 13, 13, 13, 13, 13, 13, 13, 13,
-        14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15};
+            0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,  1,  1,  1,  1,  2,  2,  2,  2,  2,  2,
+            2,  2,  3,  3,  3,  3,  3,  3,  3,  3,  4,  4,  4,  4,  4,  4,  4,  4,  5,  5,  5,  5,
+            5,  5,  5,  5,  6,  6,  6,  6,  6,  6,  6,  6,  7,  7,  7,  7,  7,  7,  7,  7,  8,  8,
+            8,  8,  8,  8,  8,  8,  9,  9,  9,  9,  9,  9,  9,  9,  10, 10, 10, 10, 10, 10, 10, 10,
+            11, 11, 11, 11, 11, 11, 11, 11, 12, 12, 12, 12, 12, 12, 12, 12, 13, 13, 13, 13, 13, 13,
+            13, 13, 14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15};
     return _mm_loadu_si128((const __m128i *) k + i);
 }
 
@@ -105,24 +104,35 @@ static float dot_q6k_q8k(size_t n_super, const struct block_q6_K_t *x, const str
         __m256i sumi = _mm256_setzero_si256();
         int     is   = 0;
         for (int j = 0; j < 2; j++) { /* QK_K/128 = 2 */
-            const __m256i q4bits1 = _mm256_loadu_si256((const __m256i *) q4); q4 += 32;
-            const __m256i q4bits2 = _mm256_loadu_si256((const __m256i *) q4); q4 += 32;
-            const __m256i q4bitsH = _mm256_loadu_si256((const __m256i *) qh); qh += 32;
+            const __m256i q4bits1 = _mm256_loadu_si256((const __m256i *) q4);
+            q4 += 32;
+            const __m256i q4bits2 = _mm256_loadu_si256((const __m256i *) q4);
+            q4 += 32;
+            const __m256i q4bitsH = _mm256_loadu_si256((const __m256i *) qh);
+            qh += 32;
 
             const __m256i q4h_0 = _mm256_slli_epi16(_mm256_and_si256(q4bitsH, m3), 4);
-            const __m256i q4h_1 = _mm256_slli_epi16(_mm256_and_si256(q4bitsH, _mm256_set1_epi8(12)), 2);
+            const __m256i q4h_1 =
+                    _mm256_slli_epi16(_mm256_and_si256(q4bitsH, _mm256_set1_epi8(12)), 2);
             const __m256i q4h_2 = _mm256_and_si256(q4bitsH, _mm256_set1_epi8(48));
-            const __m256i q4h_3 = _mm256_srli_epi16(_mm256_and_si256(q4bitsH, _mm256_set1_epi8((char) -64)), 2);
+            const __m256i q4h_3 =
+                    _mm256_srli_epi16(_mm256_and_si256(q4bitsH, _mm256_set1_epi8((char) -64)), 2);
 
             const __m256i q4_0 = _mm256_or_si256(_mm256_and_si256(q4bits1, m15), q4h_0);
             const __m256i q4_1 = _mm256_or_si256(_mm256_and_si256(q4bits2, m15), q4h_1);
-            const __m256i q4_2 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(q4bits1, 4), m15), q4h_2);
-            const __m256i q4_3 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(q4bits2, 4), m15), q4h_3);
+            const __m256i q4_2 =
+                    _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(q4bits1, 4), m15), q4h_2);
+            const __m256i q4_3 =
+                    _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(q4bits2, 4), m15), q4h_3);
 
-            const __m256i q8_0 = _mm256_loadu_si256((const __m256i *) q8); q8 += 32;
-            const __m256i q8_1 = _mm256_loadu_si256((const __m256i *) q8); q8 += 32;
-            const __m256i q8_2 = _mm256_loadu_si256((const __m256i *) q8); q8 += 32;
-            const __m256i q8_3 = _mm256_loadu_si256((const __m256i *) q8); q8 += 32;
+            const __m256i q8_0 = _mm256_loadu_si256((const __m256i *) q8);
+            q8 += 32;
+            const __m256i q8_1 = _mm256_loadu_si256((const __m256i *) q8);
+            q8 += 32;
+            const __m256i q8_2 = _mm256_loadu_si256((const __m256i *) q8);
+            q8 += 32;
+            const __m256i q8_3 = _mm256_loadu_si256((const __m256i *) q8);
+            q8 += 32;
 
             __m256i p16_0 = _mm256_maddubs_epi16(q4_0, q8_0);
             __m256i p16_1 = _mm256_maddubs_epi16(q4_1, q8_1);
@@ -149,11 +159,7 @@ static float dot_q6k_q8k(size_t n_super, const struct block_q6_K_t *x, const str
     return hsum_ps_avx(acc);
 }
 
-void q6k_gemv_m1(size_t        N,
-                 size_t        K,
-                 const float  *x,
-                 const uint8_t *q6k_raw,
-                 float         y[static N]) {
+void q6k_gemv_m1(size_t N, size_t K, const float *x, const uint8_t *q6k_raw, float y[static N]) {
     const size_t n_super = K / 256;
     if (n_super == 0 || n_super > 64) {
         return; /* caller falls back. */

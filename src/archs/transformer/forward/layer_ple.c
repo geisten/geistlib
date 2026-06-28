@@ -26,7 +26,12 @@ enum ple_profile_stage {
 static uint64_t          g_ple_ns[PLE_PROFILE_COUNT];
 static uint64_t          g_ple_calls[PLE_PROFILE_COUNT];
 static const char *const g_ple_names[PLE_PROFILE_COUNT] = {
-        "gate_lin", "gelu", "mul", "proj_lin", "rmsnorm", "add",
+        "gate_lin",
+        "gelu",
+        "mul",
+        "proj_lin",
+        "rmsnorm",
+        "add",
 };
 static struct transformer_forward_profile g_ple_profile = {
         .title       = "transformer ple (per-layer)",
@@ -48,8 +53,8 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             view_2d(st->sess->scratch_h_post_ff, ctx->SEQ, st->d_model);
     struct geist_tensor t_h_out_2d = view_2d(ctx->h_out_buf, ctx->SEQ, st->d_model);
     if (ctx->apply_ple && ctx->per_layer_input_buf != nullptr) {
-        const bool prof = transformer_profile_enabled(&g_ple_profile);
-        uint64_t   t0;
+        const bool          prof = transformer_profile_enabled(&g_ple_profile);
+        uint64_t            t0;
         struct geist_tensor t_gate_ple_2d =
                 view_2d(st->sess->scratch_gate_ple, ctx->SEQ, st->hidden_per_layer);
         struct geist_tensor t_ple_in_2d =
@@ -57,14 +62,14 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
 
         t0 = prof ? transformer_profile_now_ns() : 0;
         s  = linear_w_or_legacy(be,
-                               v,
-                               st->sess->scratch_h_post_ff,
-                               st->sess->scratch_gate_ple,
-                               &L->per_layer_gate_w,
-                               ctx->seq,
-                               &t_h_post_ff_2d,
-                               &L->per_layer_gate,
-                               &t_gate_ple_2d);
+                                v,
+                                st->sess->scratch_h_post_ff,
+                                st->sess->scratch_gate_ple,
+                                &L->per_layer_gate_w,
+                                ctx->seq,
+                                &t_h_post_ff_2d,
+                                &L->per_layer_gate,
+                                &t_gate_ple_2d);
         transformer_profile_add(&g_ple_profile, PLE_GATE, t0);
         if (s != GEIST_OK) {
             return s;

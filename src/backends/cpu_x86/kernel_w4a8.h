@@ -80,26 +80,25 @@ constexpr size_t W4A8_BLOCK_ELEMS         = 32;
 constexpr size_t W4A8_BLOCK_BYTES_WEIGHTS = W4A8_BLOCK_ELEMS / 2;
 
 /* Scalar reference. Always available, used as cross-ISA-consistency oracle. */
-[[nodiscard]] float w4a8_dot_scalar(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x);
+[[nodiscard]] float
+w4a8_dot_scalar(size_t        n_blocks,
+                const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
+                const float   w_scales[static n_blocks],
+                const float   w_offsets[static n_blocks],
+                const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
+                const int32_t sum_a_per_block[static n_blocks],
+                float         scale_x);
 
 /* Dispatched entry point. Picks the best variant for the current host at
  * init time (see w4a8_dispatcher_init). Output matches the scalar reference
  * within the numerical contract above. */
-[[nodiscard]] float w4a8_dot(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x);
+[[nodiscard]] float w4a8_dot(size_t        n_blocks,
+                             const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
+                             const float   w_scales[static n_blocks],
+                             const float   w_offsets[static n_blocks],
+                             const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
+                             const int32_t sum_a_per_block[static n_blocks],
+                             float         scale_x);
 
 /* W4A8 matrix-vector product (decode m=1 case).
  *
@@ -114,16 +113,15 @@ constexpr size_t W4A8_BLOCK_BYTES_WEIGHTS = W4A8_BLOCK_ELEMS / 2;
  *   w_scales / w_offsets: n_rows * n_blocks_per_row fp32.
  *
  * Allocation-free; caller owns every buffer. */
-void w4a8_gemv(
-        size_t        n_rows,
-        size_t        n_blocks_per_row,
-        const uint8_t weights[static n_rows * n_blocks_per_row * W4A8_BLOCK_BYTES_WEIGHTS],
-        const float   w_scales[static n_rows * n_blocks_per_row],
-        const float   w_offsets[static n_rows * n_blocks_per_row],
-        const int8_t  acts[static n_blocks_per_row * W4A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks_per_row],
-        float         scale_x,
-        float         out[static n_rows]);
+void w4a8_gemv(size_t        n_rows,
+               size_t        n_blocks_per_row,
+               const uint8_t weights[static n_rows * n_blocks_per_row * W4A8_BLOCK_BYTES_WEIGHTS],
+               const float   w_scales[static n_rows * n_blocks_per_row],
+               const float   w_offsets[static n_rows * n_blocks_per_row],
+               const int8_t  acts[static n_blocks_per_row * W4A8_BLOCK_ELEMS],
+               const int32_t sum_a_per_block[static n_blocks_per_row],
+               float         scale_x,
+               float         out[static n_rows]);
 
 /* Quantize one fp32 activation row to int8 + per-block sum_a + per-row
  * scale_x — the three inputs the W4A8 dot kernel consumes.
@@ -136,11 +134,11 @@ void w4a8_gemv(
  *
  * n_in must be a positive multiple of W4A8_BLOCK_ELEMS (32). Allocation-
  * free; caller owns acts_out and sum_a_per_block_out. */
-[[nodiscard]] float w4a8_quantize_acts_row(
-        size_t      n_in,
-        const float x[static n_in],
-        int8_t      acts_out[static n_in],
-        int32_t     sum_a_per_block_out[static n_in / W4A8_BLOCK_ELEMS]);
+[[nodiscard]] float
+w4a8_quantize_acts_row(size_t      n_in,
+                       const float x[static n_in],
+                       int8_t      acts_out[static n_in],
+                       int32_t     sum_a_per_block_out[static n_in / W4A8_BLOCK_ELEMS]);
 
 /* Initialize the dispatcher. Idempotent, thread-safe (first-call wins).
  * Returns the ISA tier the dispatcher will use on this host.

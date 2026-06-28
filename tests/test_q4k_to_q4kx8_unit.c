@@ -29,7 +29,7 @@ static uint32_t prng_next(uint32_t *state) {
 
 static int scenario_d_dmin_roundtrip(void) {
     /* 8 source rows × 1 super-block (256 elements). */
-    constexpr size_t N_SUPER = 1;
+    constexpr size_t    N_SUPER = 1;
     struct block_q4_K_t src[8 * N_SUPER];
     uint32_t            s = 0xCAFEBABEu;
     for (size_t r = 0; r < 8 * N_SUPER; r++) {
@@ -49,13 +49,11 @@ static int scenario_d_dmin_roundtrip(void) {
     /* d / dmin must be preserved per row. */
     for (int r = 0; r < 8; r++) {
         if (out[0].d[r] != src[r].d) {
-            fprintf(stderr, "d[%d]: out=%u src=%u\n",
-                    r, out[0].d[r], src[r].d);
+            fprintf(stderr, "d[%d]: out=%u src=%u\n", r, out[0].d[r], src[r].d);
             return 1;
         }
         if (out[0].dmin[r] != src[r].dmin) {
-            fprintf(stderr, "dmin[%d]: out=%u src=%u\n",
-                    r, out[0].dmin[r], src[r].dmin);
+            fprintf(stderr, "dmin[%d]: out=%u src=%u\n", r, out[0].dmin[r], src[r].dmin);
             return 1;
         }
     }
@@ -71,8 +69,7 @@ static int scenario_d_dmin_roundtrip(void) {
             const uint8_t expected = src[src_row].qs[src_off + b];
             const uint8_t got      = out[0].qs[dst_off + b];
             if (expected != got) {
-                fprintf(stderr, "qs stripe %d byte %d: out=%u src=%u\n",
-                        i, b, got, expected);
+                fprintf(stderr, "qs stripe %d byte %d: out=%u src=%u\n", i, b, got, expected);
                 return 1;
             }
         }

@@ -88,20 +88,15 @@ void bf16_gemm_avx512_bf16(size_t       M,
 
             for (size_t kp = 0; kp < k_pairs; kp++) {
                 /* 32 bf16 weights for this tile and K-pair = one cache line. */
-                const __m512i w = _mm512_loadu_si512(
-                        (const __m512i *) (Wt + kp * 32));
+                const __m512i w = _mm512_loadu_si512((const __m512i *) (Wt + kp * 32));
 
                 /* Load + broadcast pair per m-row. Reading a 32-bit at
                  * Xi[2*kp] gives us (a0, a1) packed; broadcast to all
                  * 16 lanes via VPBROADCASTD. */
-                const __m512i a0v = _mm512_set1_epi32(
-                        *(const int32_t *) (Xi0 + 2 * kp));
-                const __m512i a1v = _mm512_set1_epi32(
-                        *(const int32_t *) (Xi1 + 2 * kp));
-                const __m512i a2v = _mm512_set1_epi32(
-                        *(const int32_t *) (Xi2 + 2 * kp));
-                const __m512i a3v = _mm512_set1_epi32(
-                        *(const int32_t *) (Xi3 + 2 * kp));
+                const __m512i a0v = _mm512_set1_epi32(*(const int32_t *) (Xi0 + 2 * kp));
+                const __m512i a1v = _mm512_set1_epi32(*(const int32_t *) (Xi1 + 2 * kp));
+                const __m512i a2v = _mm512_set1_epi32(*(const int32_t *) (Xi2 + 2 * kp));
+                const __m512i a3v = _mm512_set1_epi32(*(const int32_t *) (Xi3 + 2 * kp));
 
                 acc0 = _mm512_dpbf16_ps(acc0, (__m512bh) a0v, (__m512bh) w);
                 acc1 = _mm512_dpbf16_ps(acc1, (__m512bh) a1v, (__m512bh) w);
@@ -118,14 +113,12 @@ void bf16_gemm_avx512_bf16(size_t       M,
 
         /* Tail: any leftover m-rows. */
         for (; i < M; i++) {
-            __m512 acc = _mm512_setzero_ps();
-            const bf16_t *Xi = X_bf + i * K;
+            __m512        acc = _mm512_setzero_ps();
+            const bf16_t *Xi  = X_bf + i * K;
             for (size_t kp = 0; kp < k_pairs; kp++) {
-                const __m512i w = _mm512_loadu_si512(
-                        (const __m512i *) (Wt + kp * 32));
-                const __m512i av = _mm512_set1_epi32(
-                        *(const int32_t *) (Xi + 2 * kp));
-                acc = _mm512_dpbf16_ps(acc, (__m512bh) av, (__m512bh) w);
+                const __m512i w  = _mm512_loadu_si512((const __m512i *) (Wt + kp * 32));
+                const __m512i av = _mm512_set1_epi32(*(const int32_t *) (Xi + 2 * kp));
+                acc              = _mm512_dpbf16_ps(acc, (__m512bh) av, (__m512bh) w);
             }
             _mm512_storeu_ps(Y + i * N + t * BF16_NTILE, acc);
         }

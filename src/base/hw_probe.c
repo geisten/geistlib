@@ -195,22 +195,24 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
      * (decode pins to one L3 domain, prefill to all). */
 #if defined(__linux__)
     if (out->logical_cores > 0 && out->logical_cores <= 256) {
-        char  siblings_seen[64][64] = {0};
-        char  l3_seen[16][64]       = {0};
-        size_t n_physical           = 0;
-        size_t n_l3                 = 0;
+        char   siblings_seen[64][64] = {0};
+        char   l3_seen[16][64]       = {0};
+        size_t n_physical            = 0;
+        size_t n_l3                  = 0;
         for (size_t cpu = 0; cpu < out->logical_cores; cpu++) {
             char path[128];
             char buf[64];
 
-            snprintf(path, sizeof(path),
-                     "/sys/devices/system/cpu/cpu%zu/topology/thread_siblings_list", cpu);
+            snprintf(path,
+                     sizeof(path),
+                     "/sys/devices/system/cpu/cpu%zu/topology/thread_siblings_list",
+                     cpu);
             FILE *f = fopen(path, "r");
             if (f != nullptr) {
                 if (fgets(buf, sizeof(buf), f) != nullptr) {
                     /* Strip newline. */
                     buf[strcspn(buf, "\n")] = '\0';
-                    bool seen = false;
+                    bool seen               = false;
                     for (size_t i = 0; i < n_physical && i < 64; i++) {
                         if (strcmp(siblings_seen[i], buf) == 0) {
                             seen = true;
@@ -225,13 +227,15 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
                 fclose(f);
             }
 
-            snprintf(path, sizeof(path),
-                     "/sys/devices/system/cpu/cpu%zu/cache/index3/shared_cpu_list", cpu);
+            snprintf(path,
+                     sizeof(path),
+                     "/sys/devices/system/cpu/cpu%zu/cache/index3/shared_cpu_list",
+                     cpu);
             f = fopen(path, "r");
             if (f != nullptr) {
                 if (fgets(buf, sizeof(buf), f) != nullptr) {
                     buf[strcspn(buf, "\n")] = '\0';
-                    bool seen = false;
+                    bool seen               = false;
                     for (size_t i = 0; i < n_l3 && i < 16; i++) {
                         if (strcmp(l3_seen[i], buf) == 0) {
                             seen = true;

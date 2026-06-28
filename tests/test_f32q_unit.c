@@ -27,7 +27,9 @@ static uint32_t prng(uint32_t *s) {
     z          = (z ^ (z >> 13)) * 0xC2B2AE35u;
     return z ^ (z >> 16);
 }
-static float frand(uint32_t *s) { return 2.0f * ((prng(s) & 0xFFFFu) / 65536.0f) - 1.0f; }
+static float frand(uint32_t *s) {
+    return 2.0f * ((prng(s) & 0xFFFFu) / 65536.0f) - 1.0f;
+}
 
 static int scenario(size_t N, size_t K) {
     const size_t nblk = K / W8A8_BLOCK_ELEMS;
@@ -35,14 +37,17 @@ static int scenario(size_t N, size_t K) {
 
     float *W = malloc(N * K * sizeof(float));
     float *x = malloc(K * sizeof(float));
-    for (size_t i = 0; i < N * K; i++) W[i] = frand(&s) * 0.05f; /* PLE-ish magnitudes */
-    for (size_t k = 0; k < K; k++) x[k] = frand(&s);
+    for (size_t i = 0; i < N * K; i++)
+        W[i] = frand(&s) * 0.05f; /* PLE-ish magnitudes */
+    for (size_t k = 0; k < K; k++)
+        x[k] = frand(&s);
 
     /* Exact F32 reference. */
     float *y_ref = malloc(N * sizeof(float));
     for (size_t r = 0; r < N; r++) {
         double d = 0.0;
-        for (size_t k = 0; k < K; k++) d += (double) W[r * K + k] * (double) x[k];
+        for (size_t k = 0; k < K; k++)
+            d += (double) W[r * K + k] * (double) x[k];
         y_ref[r] = (float) d;
     }
 
@@ -55,13 +60,14 @@ static int scenario(size_t N, size_t K) {
     }
 
     /* Quantize activation → int8 + 16-block sums. */
-    int8_t  *acts = malloc(K);
-    int32_t *sa   = malloc(nblk * sizeof(int32_t));
-    int32_t *tmp  = malloc((K / 32 + 1) * sizeof(int32_t));
+    int8_t     *acts    = malloc(K);
+    int32_t    *sa      = malloc(nblk * sizeof(int32_t));
+    int32_t    *tmp     = malloc((K / 32 + 1) * sizeof(int32_t));
     const float scale_x = w4a8_quantize_acts_row(K, x, acts, tmp);
     for (size_t b = 0; b < nblk; b++) {
         int32_t v = 0;
-        for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) v += (int32_t) acts[b * W8A8_BLOCK_ELEMS + i];
+        for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++)
+            v += (int32_t) acts[b * W8A8_BLOCK_ELEMS + i];
         sa[b] = v;
     }
 
@@ -77,8 +83,16 @@ static int scenario(size_t N, size_t K) {
     const double cos = dp / (sqrt(na) * sqrt(nb) + 1e-12);
     fprintf(stdout, "[f32q N=%zu K=%zu] cosine = %.6f\n", N, K, cos);
 
-    free(W); free(x); free(y_ref); free(uw); free(ws); free(wo);
-    free(acts); free(sa); free(tmp); free(y);
+    free(W);
+    free(x);
+    free(y_ref);
+    free(uw);
+    free(ws);
+    free(wo);
+    free(acts);
+    free(sa);
+    free(tmp);
+    free(y);
     return cos >= 0.999 ? 0 : 1;
 }
 
@@ -87,6 +101,7 @@ int main(void) {
     fails += scenario(256, 1536);  /* gemma4 inp_gate: 1536→256 */
     fails += scenario(1536, 256);  /* gemma4 proj:     256→1536 */
     fails += scenario(8960, 1536); /* gemma4 model_proj-ish */
-    if (fails == 0) fprintf(stdout, "OK\n");
+    if (fails == 0)
+        fprintf(stdout, "OK\n");
     return fails == 0 ? 0 : 1;
 }

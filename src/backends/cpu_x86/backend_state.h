@@ -36,11 +36,11 @@ struct cpu_x86_state {
      * m_max activation rows pre-quantized once per linear_mN call so the
      * row-major output loop streams weights once across all m tokens
      * (cache-friendly). */
-    int8_t  *acts_mtile;   /* m_cap * n_in_max int8. */
-    int32_t *sum_a_mtile;  /* m_cap * (n_in_max / W4A8_BLOCK_ELEMS) int32. */
+    int8_t  *acts_mtile;    /* m_cap * n_in_max int8. */
+    int32_t *sum_a_mtile;   /* m_cap * (n_in_max / W4A8_BLOCK_ELEMS) int32. */
     float   *scale_x_mtile; /* m_cap fp32. */
-    size_t   mtile_m_cap;  /* max m supported by current mtile. */
-    size_t   mtile_n_cap;  /* max n_in supported by current mtile. */
+    size_t   mtile_m_cap;   /* max m supported by current mtile. */
+    size_t   mtile_n_cap;   /* max n_in supported by current mtile. */
 };
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_BACKEND_STATE_H */

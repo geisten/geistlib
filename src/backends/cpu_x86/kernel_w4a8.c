@@ -40,14 +40,14 @@ typedef float (*w4a8_dot_fn)(size_t        n_blocks,
 
 /* Forward decls of the ISA-specific variants. Each lives in its own TU
  * compiled with the matching -march= flag; see mk/backend-cpu_x86.mk. */
-[[nodiscard]] float w4a8_dot_avx512_vnni(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x);
+[[nodiscard]] float
+w4a8_dot_avx512_vnni(size_t        n_blocks,
+                     const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
+                     const float   w_scales[static n_blocks],
+                     const float   w_offsets[static n_blocks],
+                     const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
+                     const int32_t sum_a_per_block[static n_blocks],
+                     float         scale_x);
 
 /* Dispatcher state. Once written, never mutated again — readers see a
  * consistent snapshot under any thread interleaving (writes happen at
@@ -130,14 +130,13 @@ enum w4a8_isa w4a8_dispatcher_current(void) {
     return g_current;
 }
 
-[[nodiscard]] float w4a8_dot(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x) {
+[[nodiscard]] float w4a8_dot(size_t        n_blocks,
+                             const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
+                             const float   w_scales[static n_blocks],
+                             const float   w_offsets[static n_blocks],
+                             const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
+                             const int32_t sum_a_per_block[static n_blocks],
+                             float         scale_x) {
     /* Lazy init: any caller hitting w4a8_dot before the backend bind path
      * still gets a correct dispatch. Subsequent inits are no-ops. */
     if (g_inited == 0) {
@@ -146,23 +145,22 @@ enum w4a8_isa w4a8_dispatcher_current(void) {
     return g_dot(n_blocks, weights, w_scales, w_offsets, acts, sum_a_per_block, scale_x);
 }
 
-void w4a8_gemv(
-        size_t        n_rows,
-        size_t        n_blocks_per_row,
-        const uint8_t weights[static n_rows * n_blocks_per_row * W4A8_BLOCK_BYTES_WEIGHTS],
-        const float   w_scales[static n_rows * n_blocks_per_row],
-        const float   w_offsets[static n_rows * n_blocks_per_row],
-        const int8_t  acts[static n_blocks_per_row * W4A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks_per_row],
-        float         scale_x,
-        float         out[static n_rows]) {
+void w4a8_gemv(size_t        n_rows,
+               size_t        n_blocks_per_row,
+               const uint8_t weights[static n_rows * n_blocks_per_row * W4A8_BLOCK_BYTES_WEIGHTS],
+               const float   w_scales[static n_rows * n_blocks_per_row],
+               const float   w_offsets[static n_rows * n_blocks_per_row],
+               const int8_t  acts[static n_blocks_per_row * W4A8_BLOCK_ELEMS],
+               const int32_t sum_a_per_block[static n_blocks_per_row],
+               float         scale_x,
+               float         out[static n_rows]) {
     /* Ensure the dispatcher is wired before the OMP region: lazy init from
      * inside #pragma omp parallel would race on first-use. */
     if (g_inited == 0) {
         (void) w4a8_dispatcher_init();
     }
-    const size_t bytes_per_row   = n_blocks_per_row * W4A8_BLOCK_BYTES_WEIGHTS;
-    const size_t scales_per_row  = n_blocks_per_row;
+    const size_t bytes_per_row  = n_blocks_per_row * W4A8_BLOCK_BYTES_WEIGHTS;
+    const size_t scales_per_row = n_blocks_per_row;
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
@@ -171,21 +169,15 @@ void w4a8_gemv(
         const uint8_t *w_row = weights + m * bytes_per_row;
         const float   *s_row = w_scales + m * scales_per_row;
         const float   *o_row = w_offsets + m * scales_per_row;
-        out[m]               = g_dot(n_blocks_per_row,
-                                     w_row,
-                                     s_row,
-                                     o_row,
-                                     acts,
-                                     sum_a_per_block,
-                                     scale_x);
+        out[m] = g_dot(n_blocks_per_row, w_row, s_row, o_row, acts, sum_a_per_block, scale_x);
     }
 }
 
-[[nodiscard]] float w4a8_quantize_acts_row(
-        size_t      n_in,
-        const float x[static n_in],
-        int8_t      acts_out[static n_in],
-        int32_t     sum_a_per_block_out[static n_in / W4A8_BLOCK_ELEMS]) {
+[[nodiscard]] float
+w4a8_quantize_acts_row(size_t      n_in,
+                       const float x[static n_in],
+                       int8_t      acts_out[static n_in],
+                       int32_t     sum_a_per_block_out[static n_in / W4A8_BLOCK_ELEMS]) {
     const float scale_x = quantize_x_int8_sym(x, n_in, acts_out);
 
     /* Single pass over the freshly-written int8 buffer (hot in L1) to

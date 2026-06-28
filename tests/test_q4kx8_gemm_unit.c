@@ -28,11 +28,11 @@ static uint16_t fp32_to_fp16(float f) {
     union {
         float    f;
         uint32_t u;
-    } bits  = {.f = f};
-    uint32_t x      = bits.u;
-    uint32_t sign   = (x >> 31) & 0x1u;
-    int32_t  exp32  = (int32_t) ((x >> 23) & 0xFFu) - 127;
-    uint32_t mant32 = x & 0x7FFFFFu;
+    } bits            = {.f = f};
+    uint32_t x        = bits.u;
+    uint32_t sign     = (x >> 31) & 0x1u;
+    int32_t  exp32    = (int32_t) ((x >> 23) & 0xFFu) - 127;
+    uint32_t mant32   = x & 0x7FFFFFu;
     uint16_t out_sign = (uint16_t) (sign << 15);
     if (exp32 == 128) {
         return (uint16_t) (out_sign | 0x7C00u | (mant32 != 0));
@@ -85,9 +85,9 @@ static void set_scale_min_k4(int j, uint8_t scales[12], uint8_t d_in, uint8_t m_
 
 static int scenario_endtoend_m4(void) {
     /* 8 weight rows × 1 super-block (K=256). M=4 activation rows. */
-    constexpr size_t N      = 8;
-    constexpr size_t M      = 4;
-    constexpr size_t K      = 256;
+    constexpr size_t N       = 8;
+    constexpr size_t M       = 4;
+    constexpr size_t K       = 256;
     constexpr size_t N_SUPER = K / 256;
 
     /* Synthesize Q4_K weights. */
@@ -95,10 +95,10 @@ static int scenario_endtoend_m4(void) {
     uint32_t            s = 0xFEEDFACEu;
     for (size_t r = 0; r < N * N_SUPER; r++) {
         memset(&W_q4k[r], 0, sizeof(W_q4k[r]));
-        const float df    = 0.002f + 0.005f * ((prng_next(&s) & 0xFFFFu) / 65536.0f);
-        const float mf    = 0.001f + 0.003f * ((prng_next(&s) & 0xFFFFu) / 65536.0f);
-        W_q4k[r].d        = fp32_to_fp16(df);
-        W_q4k[r].dmin     = fp32_to_fp16(mf);
+        const float df = 0.002f + 0.005f * ((prng_next(&s) & 0xFFFFu) / 65536.0f);
+        const float mf = 0.001f + 0.003f * ((prng_next(&s) & 0xFFFFu) / 65536.0f);
+        W_q4k[r].d     = fp32_to_fp16(df);
+        W_q4k[r].dmin  = fp32_to_fp16(mf);
         for (int sb = 0; sb < 8; sb++) {
             const uint8_t sc = (uint8_t) (prng_next(&s) & 0x3Fu);
             const uint8_t mn = (uint8_t) (prng_next(&s) & 0x3Fu);
@@ -164,22 +164,38 @@ static int scenario_endtoend_m4(void) {
         const float d_scl = fabsf(Y_test[i] - Y_ref[i]);
         const float d_avx = fabsf(Y_avx[i] - Y_ref[i]);
         if (d_scl > tol) {
-            fprintf(stderr, "scalar: i=%zu ref=%g test=%g diff=%g tol=%g\n",
-                    i, (double) Y_ref[i], (double) Y_test[i], (double) d_scl, (double) tol);
+            fprintf(stderr,
+                    "scalar: i=%zu ref=%g test=%g diff=%g tol=%g\n",
+                    i,
+                    (double) Y_ref[i],
+                    (double) Y_test[i],
+                    (double) d_scl,
+                    (double) tol);
             fails++;
         }
         if (d_avx > tol) {
-            fprintf(stderr, "avx: i=%zu ref=%g avx=%g diff=%g tol=%g\n",
-                    i, (double) Y_ref[i], (double) Y_avx[i], (double) d_avx, (double) tol);
+            fprintf(stderr,
+                    "avx: i=%zu ref=%g avx=%g diff=%g tol=%g\n",
+                    i,
+                    (double) Y_ref[i],
+                    (double) Y_avx[i],
+                    (double) d_avx,
+                    (double) tol);
             fails++;
         }
-        if (d_scl > max_diff_scl) max_diff_scl = d_scl;
-        if (d_avx > max_diff_avx) max_diff_avx = d_avx;
-        if (fails > 8) break;
+        if (d_scl > max_diff_scl)
+            max_diff_scl = d_scl;
+        if (d_avx > max_diff_avx)
+            max_diff_avx = d_avx;
+        if (fails > 8)
+            break;
     }
-    fprintf(stdout, "[q4kx8_gemm M=4] scalar max |Δ| = %g, avx max |Δ| = %g, rms = %g, tol = %g\n",
-            (double) max_diff_scl, (double) max_diff_avx,
-            (double) rms, (double) tol);
+    fprintf(stdout,
+            "[q4kx8_gemm M=4] scalar max |Δ| = %g, avx max |Δ| = %g, rms = %g, tol = %g\n",
+            (double) max_diff_scl,
+            (double) max_diff_avx,
+            (double) rms,
+            (double) tol);
     return fails;
 }
 
@@ -190,14 +206,15 @@ static int scenario_endtoend_m16(size_t M, size_t N, size_t K) {
 
     /* Synthesize Q4_K weights. */
     struct block_q4_K_t *W_q4k = (struct block_q4_K_t *) calloc(N * N_SUPER, sizeof(*W_q4k));
-    if (!W_q4k) return 1;
-    uint32_t            s = 0xCAFEF00Du;
+    if (!W_q4k)
+        return 1;
+    uint32_t s = 0xCAFEF00Du;
     for (size_t r = 0; r < N * N_SUPER; r++) {
         memset(&W_q4k[r], 0, sizeof(W_q4k[r]));
-        const float df    = 0.002f + 0.005f * ((prng_next(&s) & 0xFFFFu) / 65536.0f);
-        const float mf    = 0.001f + 0.003f * ((prng_next(&s) & 0xFFFFu) / 65536.0f);
-        W_q4k[r].d        = fp32_to_fp16(df);
-        W_q4k[r].dmin     = fp32_to_fp16(mf);
+        const float df = 0.002f + 0.005f * ((prng_next(&s) & 0xFFFFu) / 65536.0f);
+        const float mf = 0.001f + 0.003f * ((prng_next(&s) & 0xFFFFu) / 65536.0f);
+        W_q4k[r].d     = fp32_to_fp16(df);
+        W_q4k[r].dmin  = fp32_to_fp16(mf);
         for (int sb = 0; sb < 8; sb++) {
             const uint8_t sc = (uint8_t) (prng_next(&s) & 0x3Fu);
             const uint8_t mn = (uint8_t) (prng_next(&s) & 0x3Fu);
@@ -209,20 +226,34 @@ static int scenario_endtoend_m16(size_t M, size_t N, size_t K) {
     }
 
     /* Repack to Q4_Kx8 — N/8 octets × N_SUPER super-blocks. */
-    struct block_q4_Kx8 *W_q4kx8 = (struct block_q4_Kx8 *) calloc((N / 8) * N_SUPER, sizeof(*W_q4kx8));
-    if (!W_q4kx8) { free(W_q4k); return 1; }
+    struct block_q4_Kx8 *W_q4kx8 =
+            (struct block_q4_Kx8 *) calloc((N / 8) * N_SUPER, sizeof(*W_q4kx8));
+    if (!W_q4kx8) {
+        free(W_q4k);
+        return 1;
+    }
     q4k_to_q4kx8_matrix(K, N, (const uint8_t *) W_q4k, W_q4kx8);
 
     /* Synthesize fp32 activations. */
     float *X_fp32 = (float *) calloc(M * K, sizeof(float));
-    if (!X_fp32) { free(W_q4k); free(W_q4kx8); return 1; }
+    if (!X_fp32) {
+        free(W_q4k);
+        free(W_q4kx8);
+        return 1;
+    }
     for (size_t i = 0; i < M * K; i++) {
         X_fp32[i] = 1.0f * prng_uniform_pm1(prng_next(&s));
     }
 
     /* Quantize to Q8_Kx4 (M/4 = 4 m-tiles × N_SUPER per row group). */
-    struct block_q8_Kx4 *X_q8kx4 = (struct block_q8_Kx4 *) calloc((M / 4) * N_SUPER, sizeof(*X_q8kx4));
-    if (!X_q8kx4) { free(W_q4k); free(W_q4kx8); free(X_fp32); return 1; }
+    struct block_q8_Kx4 *X_q8kx4 =
+            (struct block_q8_Kx4 *) calloc((M / 4) * N_SUPER, sizeof(*X_q8kx4));
+    if (!X_q8kx4) {
+        free(W_q4k);
+        free(W_q4kx8);
+        free(X_fp32);
+        return 1;
+    }
     for (size_t mt = 0; mt < M / 4; mt++) {
         quantize_q8_Kx4(K, X_fp32 + mt * 4 * K, X_q8kx4 + mt * N_SUPER);
     }
@@ -236,24 +267,42 @@ static int scenario_endtoend_m16(size_t M, size_t N, size_t K) {
     q4kx8_gemm_avx512(M, N, K, X_q8kx4, W_q4kx8, Y_avx);
 
     /* Compare AVX-512 vs scalar (both run the same Q8_Kx4 quant). */
-    int   fails        = 0;
-    float max_diff     = 0.0f;
+    int   fails    = 0;
+    float max_diff = 0.0f;
     for (size_t i = 0; i < M * N; i++) {
         const float d = fabsf(Y_avx[i] - Y_scalar[i]);
         if (d > 0.5f) {
             if (fails < 8) {
-                fprintf(stderr, "M=%zu N=%zu: i=%zu (row=%zu col=%zu) scalar=%g avx=%g diff=%g\n",
-                        M, N, i, i / N, i % N,
-                        (double) Y_scalar[i], (double) Y_avx[i], (double) d);
+                fprintf(stderr,
+                        "M=%zu N=%zu: i=%zu (row=%zu col=%zu) scalar=%g avx=%g diff=%g\n",
+                        M,
+                        N,
+                        i,
+                        i / N,
+                        i % N,
+                        (double) Y_scalar[i],
+                        (double) Y_avx[i],
+                        (double) d);
             }
             fails++;
         }
-        if (d > max_diff) max_diff = d;
+        if (d > max_diff)
+            max_diff = d;
     }
-    fprintf(stdout, "[q4kx8_gemm M=%zu N=%zu K=%zu] max |Δ vs scalar| = %g, fails=%d\n",
-            M, N, K, (double) max_diff, fails);
+    fprintf(stdout,
+            "[q4kx8_gemm M=%zu N=%zu K=%zu] max |Δ vs scalar| = %g, fails=%d\n",
+            M,
+            N,
+            K,
+            (double) max_diff,
+            fails);
 
-    free(W_q4k); free(W_q4kx8); free(X_fp32); free(X_q8kx4); free(Y_scalar); free(Y_avx);
+    free(W_q4k);
+    free(W_q4kx8);
+    free(X_fp32);
+    free(X_q8kx4);
+    free(Y_scalar);
+    free(Y_avx);
     return fails;
 }
 

@@ -50,12 +50,10 @@ static struct geist_backend_vtbl cpu_x86_vtbl;
 [[nodiscard]] static enum geist_status cpu_x86_create(struct geist_backend            *be,
                                                       const struct geist_backend_opts *opts) {
     (void) opts;
-    struct cpu_x86_state *st = geist_backend_alloc(
-            be, sizeof(*st), alignof(struct cpu_x86_state));
+    struct cpu_x86_state *st = geist_backend_alloc(be, sizeof(*st), alignof(struct cpu_x86_state));
     if (st == nullptr) {
-        geist_backend_set_error(be, GEIST_E_OOM,
-                                "cpu_x86: failed to allocate %zu-byte state",
-                                sizeof(*st));
+        geist_backend_set_error(
+                be, GEIST_E_OOM, "cpu_x86: failed to allocate %zu-byte state", sizeof(*st));
         return GEIST_E_OOM;
     }
     *st       = (struct cpu_x86_state) {0};
@@ -88,8 +86,17 @@ static void cpu_x86_linear_f32_m1(const float               *x,
                                   struct geist_backend      *be,
                                   float                     *y) {
     (void) be;
-    geist_sgemv(GEIST_OP_N, (int) w->n_out, (int) w->n_in, 1.0f,
-                (const float *) w->raw, (int) w->n_in, x, 1, 0.0f, y, 1);
+    geist_sgemv(GEIST_OP_N,
+                (int) w->n_out,
+                (int) w->n_in,
+                1.0f,
+                (const float *) w->raw,
+                (int) w->n_in,
+                x,
+                1,
+                0.0f,
+                y,
+                1);
 }
 
 static void cpu_x86_linear_f32_mN(const float               *x,
@@ -99,9 +106,19 @@ static void cpu_x86_linear_f32_mN(const float               *x,
                                   float                     *y) {
     (void) be;
     /* Y [m, n_out] = X [m, n_in] @ W^T  (W row-major [n_out, n_in]). */
-    geist_sgemm(GEIST_OP_N, GEIST_OP_T, (int) m, (int) w->n_out, (int) w->n_in,
-                1.0f, x, (int) w->n_in, (const float *) w->raw, (int) w->n_in,
-                0.0f, y, (int) w->n_out);
+    geist_sgemm(GEIST_OP_N,
+                GEIST_OP_T,
+                (int) m,
+                (int) w->n_out,
+                (int) w->n_in,
+                1.0f,
+                x,
+                (int) w->n_in,
+                (const float *) w->raw,
+                (int) w->n_in,
+                0.0f,
+                y,
+                (int) w->n_out);
 }
 
 [[nodiscard]] static enum geist_status cpu_x86_resolve_weight(struct geist_backend *be,
@@ -145,10 +162,10 @@ static void cpu_x86_linear_f32_mN(const float               *x,
 /* ---------- Vtbl init ---------- */
 
 __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
-    cpu_x86_vtbl                  = cpu_scalar_vtbl;
-    cpu_x86_vtbl.create           = cpu_x86_create;
-    cpu_x86_vtbl.destroy          = cpu_x86_destroy;
-    cpu_x86_vtbl.resolve_weight   = cpu_x86_resolve_weight;
+    cpu_x86_vtbl                      = cpu_scalar_vtbl;
+    cpu_x86_vtbl.create               = cpu_x86_create;
+    cpu_x86_vtbl.destroy              = cpu_x86_destroy;
+    cpu_x86_vtbl.resolve_weight       = cpu_x86_resolve_weight;
     cpu_x86_vtbl.gelu_tanh            = cpu_x86_gelu_tanh;
     cpu_x86_vtbl.gelu_tanh_mul        = cpu_x86_gelu_tanh_mul;
     cpu_x86_vtbl.gelu_tanh_mul_scaled = cpu_x86_gelu_tanh_mul_scaled;

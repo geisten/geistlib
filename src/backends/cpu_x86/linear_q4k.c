@@ -69,12 +69,12 @@ static size_t blob_total_bytes(size_t n_in, size_t n_out) {
     return weights_total + 2 * scales_total + q4kx8_bytes_total(n_in, n_out);
 }
 
-static void blob_pointers(const uint8_t *blob,
-                          size_t         n_in,
-                          size_t         n_out,
-                          const uint8_t              **weights_out,
-                          const float                **scales_out,
-                          const float                **offsets_out,
+static void blob_pointers(const uint8_t              *blob,
+                          size_t                      n_in,
+                          size_t                      n_out,
+                          const uint8_t             **weights_out,
+                          const float               **scales_out,
+                          const float               **offsets_out,
                           const struct block_q4_Kx8 **q4kx8_out) {
     const size_t weights_bytes = n_out * weights_bytes_per_row(n_in);
     const size_t scales_count  = n_out * scales_count_per_row(n_in);
@@ -98,8 +98,8 @@ static enum geist_status grow_scratch(struct cpu_x86_state *st, size_t n_in) {
     /* Size sum_a for the SMALLEST block granularity — W8A8 (16) — so the
      * buffer covers both Q4_K (W4A8, 32-elem blocks) and Q6_K (W8A8) callers
      * sharing this scratch. */
-    const size_t n_blocks = n_in / W8A8_BLOCK_ELEMS;
-    int32_t *new_sum_a    = heap_alloc_aligned(n_blocks * sizeof(int32_t), OPTIMAL_ALIGNMENT);
+    const size_t n_blocks  = n_in / W8A8_BLOCK_ELEMS;
+    int32_t     *new_sum_a = heap_alloc_aligned(n_blocks * sizeof(int32_t), OPTIMAL_ALIGNMENT);
     if (new_sum_a == nullptr) {
         safe_free((void **) &new_acts);
         return GEIST_E_OOM;
@@ -112,8 +112,8 @@ static enum geist_status grow_scratch(struct cpu_x86_state *st, size_t n_in) {
     return GEIST_OK;
 }
 
-[[nodiscard]] enum geist_status
-cpu_x86_linear_q4k_resolve(struct cpu_x86_state *st, struct geist_weight *w) {
+[[nodiscard]] enum geist_status cpu_x86_linear_q4k_resolve(struct cpu_x86_state *st,
+                                                           struct geist_weight  *w) {
     if (st == nullptr || w == nullptr || w->n_in <= 0 || w->n_out <= 0) {
         return GEIST_E_INVALID_ARG;
     }
@@ -130,21 +130,21 @@ cpu_x86_linear_q4k_resolve(struct cpu_x86_state *st, struct geist_weight *w) {
     if (blob == nullptr) {
         return GEIST_E_OOM;
     }
-    const uint8_t              *blob_w_const;
-    const float                *blob_s_const;
-    const float                *blob_o_const;
-    const struct block_q4_Kx8  *blob_q4kx8_const;
-    blob_pointers(blob, n_in, n_out,
-                  &blob_w_const, &blob_s_const, &blob_o_const, &blob_q4kx8_const);
-    uint8_t              *blob_w     = (uint8_t *) blob_w_const;
-    float                *blob_s     = (float *) blob_s_const;
-    float                *blob_o     = (float *) blob_o_const;
-    struct block_q4_Kx8  *blob_q4kx8 = (struct block_q4_Kx8 *) blob_q4kx8_const;
+    const uint8_t             *blob_w_const;
+    const float               *blob_s_const;
+    const float               *blob_o_const;
+    const struct block_q4_Kx8 *blob_q4kx8_const;
+    blob_pointers(
+            blob, n_in, n_out, &blob_w_const, &blob_s_const, &blob_o_const, &blob_q4kx8_const);
+    uint8_t             *blob_w     = (uint8_t *) blob_w_const;
+    float               *blob_s     = (float *) blob_s_const;
+    float               *blob_o     = (float *) blob_o_const;
+    struct block_q4_Kx8 *blob_q4kx8 = (struct block_q4_Kx8 *) blob_q4kx8_const;
 
-    const size_t q4k_row_bytes = (n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES;
-    const size_t w_row_bytes   = weights_bytes_per_row(n_in);
-    const size_t s_row_count   = scales_count_per_row(n_in);
-    const uint8_t *q4k_raw     = (const uint8_t *) w->raw;
+    const size_t   q4k_row_bytes = (n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES;
+    const size_t   w_row_bytes   = weights_bytes_per_row(n_in);
+    const size_t   s_row_count   = scales_count_per_row(n_in);
+    const uint8_t *q4k_raw       = (const uint8_t *) w->raw;
     for (size_t m = 0; m < n_out; m++) {
         q4k_to_w4a8_row(n_in,
                         q4k_raw + m * q4k_row_bytes,
@@ -168,9 +168,9 @@ cpu_x86_linear_q4k_resolve(struct cpu_x86_state *st, struct geist_weight *w) {
 
     /* aux_fp32 reinterpreted as the blob pointer; engine frees it on
      * model destroy via heap_free / safe_free (GEIST_W_AUX_HEAP_OWNED). */
-    w->aux_fp32  = (const float *) blob;
-    w->aux_n     = (int32_t) blob_bytes;
-    w->flags    |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->aux_fp32 = (const float *) blob;
+    w->aux_n    = (int32_t) blob_bytes;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
     w->linear_m1 = cpu_x86_linear_q4k_m1;
     w->linear_mN = cpu_x86_linear_q4k_mN;
     return GEIST_OK;
@@ -180,17 +180,17 @@ void cpu_x86_linear_q4k_m1(const float               *x,
                            const struct geist_weight *w,
                            struct geist_backend      *be,
                            float                     *y) {
-    struct cpu_x86_state *st    = (struct cpu_x86_state *) be->state;
-    const size_t          n_in  = (size_t) w->n_in;
-    const size_t          n_out = (size_t) w->n_out;
+    struct cpu_x86_state *st               = (struct cpu_x86_state *) be->state;
+    const size_t          n_in             = (size_t) w->n_in;
+    const size_t          n_out            = (size_t) w->n_out;
     const size_t          n_blocks_per_row = n_in / W4A8_BLOCK_ELEMS;
 
-    const uint8_t              *weights;
-    const float                *w_scales;
-    const float                *w_offsets;
-    const struct block_q4_Kx8  *q4kx8;
-    blob_pointers((const uint8_t *) w->aux_fp32, n_in, n_out,
-                  &weights, &w_scales, &w_offsets, &q4kx8);
+    const uint8_t             *weights;
+    const float               *w_scales;
+    const float               *w_offsets;
+    const struct block_q4_Kx8 *q4kx8;
+    blob_pointers(
+            (const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets, &q4kx8);
 
     /* Decode over the compact Q4_Kx8 layout when its blob is built (n_out a
      * multiple of 8 — every Q4_K body matrix). The 8-cell lane-parallel GEMV
@@ -203,13 +203,18 @@ void cpu_x86_linear_q4k_m1(const float               *x,
     }
 
     /* Per-row activation quantization → int8 acts + per-block sum_a. */
-    const float scale_x = w4a8_quantize_acts_row(
-            n_in, x, st->acts_scratch, st->sum_a_scratch);
+    const float scale_x = w4a8_quantize_acts_row(n_in, x, st->acts_scratch, st->sum_a_scratch);
 
     /* Multi-row GEMV fallback (n_out not a multiple of 8). OMP-parallel. */
-    w4a8_gemv(n_out, n_blocks_per_row,
-              weights, w_scales, w_offsets,
-              st->acts_scratch, st->sum_a_scratch, scale_x, y);
+    w4a8_gemv(n_out,
+              n_blocks_per_row,
+              weights,
+              w_scales,
+              w_offsets,
+              st->acts_scratch,
+              st->sum_a_scratch,
+              scale_x,
+              y);
 }
 
 /* These helpers + the tiled mN below use AVX-512+VNNI intrinsics. The
@@ -220,8 +225,7 @@ void cpu_x86_linear_q4k_m1(const float               *x,
 #define VNNI_TARGET "avx2,avx512f,avx512bw,avx512dq,avx512vl,avx512vnni"
 
 /* Horizontal sum of 8 fp32 lanes → one fp32. */
-__attribute__((target(VNNI_TARGET)))
-static inline float hsum_f32_avx(__m256 v) {
+__attribute__((target(VNNI_TARGET))) static inline float hsum_f32_avx(__m256 v) {
     const __m128 lo = _mm256_castps256_ps128(v);
     const __m128 hi = _mm256_extractf128_ps(v, 1);
     __m128       s  = _mm_add_ps(lo, hi);
@@ -233,8 +237,8 @@ static inline float hsum_f32_avx(__m256 v) {
 /* Unpack 16 packed Q4_K bytes (= one 32-element block) into 32 unsigned
  * int8 values in element order, returned in a 256-bit register. The
  * caller will feed the result to VPDPBUSD against int8 activations. */
-__attribute__((target(VNNI_TARGET)))
-static inline __m256i unpack_w4a8_block_to_u8(const uint8_t weight_packed[16]) {
+__attribute__((target(VNNI_TARGET))) static inline __m256i
+unpack_w4a8_block_to_u8(const uint8_t weight_packed[16]) {
     const __m128i packed_128 = _mm_loadu_si128((const __m128i *) weight_packed);
     const __m256i packed_256 = _mm256_set_m128i(packed_128, packed_128);
     const __m256i lo_mask    = _mm256_set1_epi8(0x0F);
@@ -274,12 +278,17 @@ void cpu_x86_linear_q4k_mN(const float               *x,
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
 
-    const uint8_t              *weights_unused;
-    const float                *scales_unused;
-    const float                *offsets_unused;
-    const struct block_q4_Kx8  *q4kx8;
-    blob_pointers((const uint8_t *) w->aux_fp32, n_in, n_out,
-                  &weights_unused, &scales_unused, &offsets_unused, &q4kx8);
+    const uint8_t             *weights_unused;
+    const float               *scales_unused;
+    const float               *offsets_unused;
+    const struct block_q4_Kx8 *q4kx8;
+    blob_pointers((const uint8_t *) w->aux_fp32,
+                  n_in,
+                  n_out,
+                  &weights_unused,
+                  &scales_unused,
+                  &offsets_unused,
+                  &q4kx8);
     (void) weights_unused;
     (void) scales_unused;
     (void) offsets_unused;
@@ -296,11 +305,10 @@ void cpu_x86_linear_q4k_mN(const float               *x,
     /* Quantize acts into block_q8_Kx4 scratch — 4 rows interleaved per
      * super-block. Allocated per call from heap.h (small: m/4 × n_in/256
      * × ~1.2 KB ≈ 36 KB for m=128, n_in=1536). */
-    const size_t n_super_k = n_in / 256;
-    const size_t q8kx4_count = (m / 4) * n_super_k;
+    const size_t         n_super_k   = n_in / 256;
+    const size_t         q8kx4_count = (m / 4) * n_super_k;
     struct block_q8_Kx4 *acts =
-            heap_alloc_aligned(q8kx4_count * sizeof(struct block_q8_Kx4),
-                               OPTIMAL_ALIGNMENT);
+            heap_alloc_aligned(q8kx4_count * sizeof(struct block_q8_Kx4), OPTIMAL_ALIGNMENT);
     if (acts == nullptr) {
         for (size_t row = 0; row < m; row++) {
             cpu_x86_linear_q4k_m1(x + row * n_in, w, be, y + row * n_out);

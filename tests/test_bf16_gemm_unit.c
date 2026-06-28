@@ -38,8 +38,8 @@ static float prng_uniform_pm1(uint32_t bits) {
 static int scenario_pack_roundtrip(void) {
     constexpr size_t N = 32;
     constexpr size_t K = 8;
-    bf16_t flat[N * K];
-    bf16_t packed[N * K];
+    bf16_t           flat[N * K];
+    bf16_t           packed[N * K];
 
     uint32_t s = 0xDEADBEEFu;
     for (size_t i = 0; i < N * K; i++) {
@@ -49,13 +49,13 @@ static int scenario_pack_roundtrip(void) {
     bf16_pack_weights_ntile16(N, K, flat, packed);
 
     /* Reconstruct flat from packed and compare. */
-    bf16_t reconstructed[N * K];
+    bf16_t       reconstructed[N * K];
     const size_t n_tiles = N / BF16_NTILE;
     for (size_t t = 0; t < n_tiles; t++) {
         for (size_t kp = 0; kp < K / 2; kp++) {
             for (size_t lane = 0; lane < BF16_NTILE; lane++) {
-                const size_t j     = t * BF16_NTILE + lane;
-                const size_t base  = t * K * BF16_NTILE + kp * 32 + lane * 2;
+                const size_t j                    = t * BF16_NTILE + lane;
+                const size_t base                 = t * K * BF16_NTILE + kp * 32 + lane * 2;
                 reconstructed[j * K + 2 * kp + 0] = packed[base + 0];
                 reconstructed[j * K + 2 * kp + 1] = packed[base + 1];
             }
@@ -74,11 +74,11 @@ static int scenario_pack_roundtrip(void) {
 
 static int scenario_tiny(void) {
     /* M=1 row, N=16 cells, K=2 (one K-pair). */
-    constexpr size_t M = 1;
-    constexpr size_t N = 16;
-    constexpr size_t K = 2;
-    float  x[M * K]    = {1.0f, 2.0f};
-    bf16_t W_flat[N * K];
+    constexpr size_t M        = 1;
+    constexpr size_t N        = 16;
+    constexpr size_t K        = 2;
+    float            x[M * K] = {1.0f, 2.0f};
+    bf16_t           W_flat[N * K];
     for (size_t j = 0; j < N; j++) {
         /* Row j: (1+j, 2+j). Output: 1*(1+j) + 2*(2+j) = 5 + 3j. */
         W_flat[j * K + 0] = fp32_to_bf16((float) (1 + j));
@@ -96,13 +96,19 @@ static int scenario_tiny(void) {
     for (size_t j = 0; j < N; j++) {
         const float expected = 5.0f + 3.0f * (float) j;
         if (fabsf(y_scalar[j] - expected) > 0.5f) {
-            fprintf(stderr, "tiny scalar: y[%zu]=%g expected %g\n",
-                    j, (double) y_scalar[j], (double) expected);
+            fprintf(stderr,
+                    "tiny scalar: y[%zu]=%g expected %g\n",
+                    j,
+                    (double) y_scalar[j],
+                    (double) expected);
             return 1;
         }
         if (fabsf(y_avx[j] - y_scalar[j]) > 1e-3f) {
-            fprintf(stderr, "tiny avx: y[%zu]=%g vs scalar %g\n",
-                    j, (double) y_avx[j], (double) y_scalar[j]);
+            fprintf(stderr,
+                    "tiny avx: y[%zu]=%g vs scalar %g\n",
+                    j,
+                    (double) y_avx[j],
+                    (double) y_scalar[j]);
             return 1;
         }
     }
@@ -115,11 +121,11 @@ static int scenario_random_cross_isa(void) {
     constexpr size_t M = 8;
     constexpr size_t N = 64;
     constexpr size_t K = 32;
-    static float  X[M * K];
-    static bf16_t W_flat[N * K];
-    static bf16_t W_packed[N * K];
-    static float  Y_scalar[M * N];
-    static float  Y_avx[M * N];
+    static float     X[M * K];
+    static bf16_t    W_flat[N * K];
+    static bf16_t    W_packed[N * K];
+    static float     Y_scalar[M * N];
+    static float     Y_avx[M * N];
 
     uint32_t s = 0xCAFEBABEu;
     for (size_t i = 0; i < M * K; i++) {
@@ -133,18 +139,21 @@ static int scenario_random_cross_isa(void) {
     bf16_gemm_scalar(M, N, K, X, W_packed, Y_scalar);
     bf16_gemm_avx512_bf16(M, N, K, X, W_packed, Y_avx);
 
-    const float atol = 1e-2f;
-    const float rtol = 1e-2f;
-    int   fails    = 0;
-    float max_diff = 0.0f;
+    const float atol     = 1e-2f;
+    const float rtol     = 1e-2f;
+    int         fails    = 0;
+    float       max_diff = 0.0f;
     for (size_t i = 0; i < M * N; i++) {
-        const float d = fabsf(Y_avx[i] - Y_scalar[i]);
+        const float d   = fabsf(Y_avx[i] - Y_scalar[i]);
         const float tol = atol + rtol * fabsf(Y_scalar[i]);
         if (d > tol) {
             fprintf(stderr,
                     "cross-ISA: i=%zu scalar=%g avx=%g diff=%g tol=%g\n",
-                    i, (double) Y_scalar[i], (double) Y_avx[i],
-                    (double) d, (double) tol);
+                    i,
+                    (double) Y_scalar[i],
+                    (double) Y_avx[i],
+                    (double) d,
+                    (double) tol);
             fails++;
             if (fails > 4) {
                 break;
@@ -154,8 +163,12 @@ static int scenario_random_cross_isa(void) {
             max_diff = d;
         }
     }
-    fprintf(stdout, "[bf16_gemm] max |y_avx - y_scalar| = %g (M=%zu, N=%zu, K=%zu)\n",
-            (double) max_diff, (size_t) M, (size_t) N, (size_t) K);
+    fprintf(stdout,
+            "[bf16_gemm] max |y_avx - y_scalar| = %g (M=%zu, N=%zu, K=%zu)\n",
+            (double) max_diff,
+            (size_t) M,
+            (size_t) N,
+            (size_t) K);
     return fails;
 }
 

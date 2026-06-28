@@ -34,8 +34,8 @@ struct cpu_x86_state;
  *
  * Caller: cpu_x86_resolve_weight in backend.c.
  */
-[[nodiscard]] enum geist_status
-cpu_x86_linear_q4k_resolve(struct cpu_x86_state *st, struct geist_weight *w);
+[[nodiscard]] enum geist_status cpu_x86_linear_q4k_resolve(struct cpu_x86_state *st,
+                                                           struct geist_weight  *w);
 
 /* The M=1 (decode) kernel installed into w->linear_m1 by the resolver. */
 void cpu_x86_linear_q4k_m1(const float               *x,
@@ -52,10 +52,7 @@ void cpu_x86_linear_q4k_m1(const float               *x,
  * m-tile; benchmarks against cpu_scalar should still show a large win
  * here because cpu_scalar dequants Q4_K → fp32 per row inside the
  * inner. */
-void cpu_x86_linear_q4k_mN(const float               *x,
-                           const struct geist_weight *w,
-                           size_t                     m,
-                           struct geist_backend      *be,
-                           float                     *y);
+void cpu_x86_linear_q4k_mN(
+        const float *x, const struct geist_weight *w, size_t m, struct geist_backend *be, float *y);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_LINEAR_Q4K_H */

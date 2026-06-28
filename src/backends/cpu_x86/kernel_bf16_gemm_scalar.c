@@ -13,8 +13,8 @@
 #include <stddef.h>
 #include <string.h>
 
-void bf16_pack_weights_ntile16(size_t N,
-                               size_t K,
+void bf16_pack_weights_ntile16(size_t       N,
+                               size_t       K,
                                const bf16_t W_flat[static N * K],
                                bf16_t       W_packed[static N * K]) {
     /* Per the layout in kernel_bf16_gemm.h:
@@ -25,10 +25,10 @@ void bf16_pack_weights_ntile16(size_t N,
     for (size_t t = 0; t < n_tiles; t++) {
         for (size_t kp = 0; kp < K / 2; kp++) {
             for (size_t lane = 0; lane < BF16_NTILE; lane++) {
-                const size_t j     = t * BF16_NTILE + lane;
-                const size_t k0    = 2 * kp;
-                const size_t k1    = 2 * kp + 1;
-                const size_t p_base = t * K * BF16_NTILE + kp * 32 + lane * 2;
+                const size_t j       = t * BF16_NTILE + lane;
+                const size_t k0      = 2 * kp;
+                const size_t k1      = 2 * kp + 1;
+                const size_t p_base  = t * K * BF16_NTILE + kp * 32 + lane * 2;
                 W_packed[p_base + 0] = W_flat[j * K + k0];
                 W_packed[p_base + 1] = W_flat[j * K + k1];
             }
@@ -56,8 +56,8 @@ void bf16_gemm_scalar(size_t       M,
                 acc[l] = 0.0f;
             }
             for (size_t kp = 0; kp < K / 2; kp++) {
-                const float a0 = X[i * K + 2 * kp];
-                const float a1 = X[i * K + 2 * kp + 1];
+                const float   a0  = X[i * K + 2 * kp];
+                const float   a1  = X[i * K + 2 * kp + 1];
                 const bf16_t *Wkp = Wt + kp * 32;
                 for (size_t l = 0; l < BF16_NTILE; l++) {
                     const float w0 = bf16_to_fp32(Wkp[l * 2 + 0]);

@@ -36,11 +36,11 @@ static uint16_t fp32_to_fp16(float f) {
     union {
         float    f;
         uint32_t u;
-    } bits = {.f = f};
-    uint32_t x       = bits.u;
-    uint32_t sign    = (x >> 31) & 0x1u;
-    int32_t  exp32   = (int32_t) ((x >> 23) & 0xFFu) - 127;
-    uint32_t mant32  = x & 0x7FFFFFu;
+    } bits            = {.f = f};
+    uint32_t x        = bits.u;
+    uint32_t sign     = (x >> 31) & 0x1u;
+    int32_t  exp32    = (int32_t) ((x >> 23) & 0xFFu) - 127;
+    uint32_t mant32   = x & 0x7FFFFFu;
     uint16_t out_sign = (uint16_t) (sign << 15);
 
     if (exp32 == 128) {
@@ -54,11 +54,11 @@ static uint16_t fp32_to_fp16(float f) {
     if (exp32 > 15) {
         return (uint16_t) (out_sign | 0x7C00u); /* overflow → ±inf */
     }
-    uint16_t exp16  = (uint16_t) ((exp32 + 15) & 0x1Fu);
+    uint16_t exp16 = (uint16_t) ((exp32 + 15) & 0x1Fu);
     /* Round-to-nearest-even on the dropped 13 mantissa bits. */
-    uint32_t mant16 = mant32 >> 13;
+    uint32_t mant16    = mant32 >> 13;
     uint32_t round_bit = (mant32 >> 12) & 1u;
-    uint32_t sticky = mant32 & 0xFFFu;
+    uint32_t sticky    = mant32 & 0xFFFu;
     if (round_bit != 0 && (sticky != 0 || (mant16 & 1u) != 0)) {
         mant16 += 1;
         if (mant16 == 0x400u) {
@@ -101,26 +101,26 @@ static void set_scale_min_k4(int j, uint8_t scales[12], uint8_t d_in, uint8_t m_
  * documented in kernel_w4a8.h. */
 static void reconstruct_from_w4a8_row(size_t        n_in,
                                       const uint8_t weights[static n_in / 2],
-                                      const float w_scales[static n_in / W4A8_BLOCK_ELEMS],
-                                      const float w_offsets[static n_in / W4A8_BLOCK_ELEMS],
-                                      float       out[static n_in]) {
+                                      const float   w_scales[static n_in / W4A8_BLOCK_ELEMS],
+                                      const float   w_offsets[static n_in / W4A8_BLOCK_ELEMS],
+                                      float         out[static n_in]) {
     const size_t n_block = n_in / W4A8_BLOCK_ELEMS;
     for (size_t b = 0; b < n_block; b++) {
         const float    s   = w_scales[b];
         const float    o   = w_offsets[b];
         const uint8_t *blk = weights + b * W4A8_BLOCK_BYTES_WEIGHTS;
         for (size_t k = 0; k < W4A8_BLOCK_BYTES_WEIGHTS; k++) {
-            const uint8_t byte = blk[k];
-            const float   lo   = (float) (byte & 0x0Fu);
-            const float   hi   = (float) ((byte >> 4) & 0x0Fu);
+            const uint8_t byte                    = blk[k];
+            const float   lo                      = (float) (byte & 0x0Fu);
+            const float   hi                      = (float) ((byte >> 4) & 0x0Fu);
             out[b * W4A8_BLOCK_ELEMS + 2 * k + 0] = s * lo - o;
             out[b * W4A8_BLOCK_ELEMS + 2 * k + 1] = s * hi - o;
         }
     }
 }
 
-static int compare_rows(const char *label, size_t n,
-                        const float a[static n], const float b[static n]) {
+static int
+compare_rows(const char *label, size_t n, const float a[static n], const float b[static n]) {
     const float atol = 1e-5f;
     const float rtol = 1e-5f;
     for (size_t i = 0; i < n; i++) {
@@ -129,7 +129,12 @@ static int compare_rows(const char *label, size_t n,
         if (diff > tol) {
             fprintf(stderr,
                     "%s: mismatch at i=%zu ref=%g w4a8=%g diff=%g tol=%g\n",
-                    label, i, (double) a[i], (double) b[i], (double) diff, (double) tol);
+                    label,
+                    i,
+                    (double) a[i],
+                    (double) b[i],
+                    (double) diff,
+                    (double) tol);
             return 1;
         }
     }
@@ -145,8 +150,8 @@ static int scenario_handcrafted_super_block(void) {
     blk.dmin                = fp32_to_fp16(0.075f);
     /* Fill 8 sub-blocks with structured (scale, min) pairs. */
     for (int sb = 0; sb < 8; sb++) {
-        set_scale_min_k4(sb, blk.scales, (uint8_t) ((sb * 5 + 1) & 0x3Fu),
-                         (uint8_t) ((sb * 3 + 2) & 0x3Fu));
+        set_scale_min_k4(
+                sb, blk.scales, (uint8_t) ((sb * 5 + 1) & 0x3Fu), (uint8_t) ((sb * 3 + 2) & 0x3Fu));
     }
     /* Deterministic nibbles: pos-encoded so dequant has visible structure. */
     for (size_t k = 0; k < 128; k++) {
@@ -187,9 +192,8 @@ static int scenario_random_multi_super_block(void) {
         for (int sb = 0; sb < 8; sb++) {
             const uint32_t sc_bits = prng_next(&s);
             const uint32_t mn_bits = prng_next(&s);
-            set_scale_min_k4(sb, blocks[b].scales,
-                             (uint8_t) (sc_bits & 0x3Fu),
-                             (uint8_t) (mn_bits & 0x3Fu));
+            set_scale_min_k4(
+                    sb, blocks[b].scales, (uint8_t) (sc_bits & 0x3Fu), (uint8_t) (mn_bits & 0x3Fu));
         }
         for (size_t k = 0; k < 128; k++) {
             const uint32_t bits = prng_next(&s);

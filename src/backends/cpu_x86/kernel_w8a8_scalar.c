@@ -11,14 +11,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-[[nodiscard]] float w8a8_dot_scalar(
-        size_t        n_blocks,
-        const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
-        const float   w_scales[static n_blocks],
-        const float   w_offsets[static n_blocks],
-        const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_blocks],
-        float         scale_x) {
+[[nodiscard]] float w8a8_dot_scalar(size_t        n_blocks,
+                                    const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
+                                    const float   w_scales[static n_blocks],
+                                    const float   w_offsets[static n_blocks],
+                                    const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
+                                    const int32_t sum_a_per_block[static n_blocks],
+                                    float         scale_x) {
     float acc = 0.0f;
     for (size_t b = 0; b < n_blocks; b++) {
         const uint8_t *w_block = weights + b * W8A8_BLOCK_ELEMS;
@@ -28,17 +27,22 @@
             d_b += (int32_t) w_block[i] * (int32_t) a_block[i];
         }
         const float block_term =
-                w_scales[b] * (float) d_b -
-                w_offsets[b] * (float) sum_a_per_block[b];
+                w_scales[b] * (float) d_b - w_offsets[b] * (float) sum_a_per_block[b];
         acc += block_term;
     }
     return scale_x * acc;
 }
 
 /* Shared interleave for W8x8 / W8x16 — nrows = 8 or 16. */
-static void w8x_repack_n(size_t nrows, size_t n_out, size_t n_in, const uint8_t *weights,
-                         const float *w_scales, const float *w_offsets, uint8_t *qs_out,
-                         float *scales_out, float *offsets_out) {
+static void w8x_repack_n(size_t         nrows,
+                         size_t         n_out,
+                         size_t         n_in,
+                         const uint8_t *weights,
+                         const float   *w_scales,
+                         const float   *w_offsets,
+                         uint8_t       *qs_out,
+                         float         *scales_out,
+                         float         *offsets_out) {
     const size_t NB           = n_in / W8A8_BLOCK_ELEMS;
     const size_t n_grp        = n_in / 4; /* 4-element stripes */
     const size_t NG           = n_out / nrows;
@@ -67,28 +71,33 @@ static void w8x_repack_n(size_t nrows, size_t n_out, size_t n_in, const uint8_t 
     }
 }
 
-void w8x8_repack(
-        size_t        n_out,
-        size_t        n_in,
-        const uint8_t weights[static n_out * n_in],
-        const float   w_scales[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        const float   w_offsets[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        uint8_t       qs_out[static n_out * n_in],
-        float         scales_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        float         offsets_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)]) {
-    w8x_repack_n(W8X8_NROWS, n_out, n_in, weights, w_scales, w_offsets, qs_out, scales_out,
-                 offsets_out);
+void w8x8_repack(size_t        n_out,
+                 size_t        n_in,
+                 const uint8_t weights[static n_out * n_in],
+                 const float   w_scales[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                 const float   w_offsets[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                 uint8_t       qs_out[static n_out * n_in],
+                 float         scales_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                 float         offsets_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)]) {
+    w8x_repack_n(
+            W8X8_NROWS, n_out, n_in, weights, w_scales, w_offsets, qs_out, scales_out, offsets_out);
 }
 
-void w8x16_repack(
-        size_t        n_out,
-        size_t        n_in,
-        const uint8_t weights[static n_out * n_in],
-        const float   w_scales[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        const float   w_offsets[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        uint8_t       qs_out[static n_out * n_in],
-        float         scales_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
-        float         offsets_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)]) {
-    w8x_repack_n(W8X16_NROWS, n_out, n_in, weights, w_scales, w_offsets, qs_out, scales_out,
+void w8x16_repack(size_t        n_out,
+                  size_t        n_in,
+                  const uint8_t weights[static n_out * n_in],
+                  const float   w_scales[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                  const float   w_offsets[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                  uint8_t       qs_out[static n_out * n_in],
+                  float         scales_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+                  float         offsets_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)]) {
+    w8x_repack_n(W8X16_NROWS,
+                 n_out,
+                 n_in,
+                 weights,
+                 w_scales,
+                 w_offsets,
+                 qs_out,
+                 scales_out,
                  offsets_out);
 }
