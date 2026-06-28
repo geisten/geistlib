@@ -19,30 +19,53 @@ locally.
 
 ## ⚡ Run it now
 
-Grab the dependency-free binary — no toolchain, no Python, nothing to install:
+Two files — a **< 1 MB binary** and a **model** — then run. No toolchain, no
+Python, no CUDA, nothing to install.
+
+**1 — Get the binary** (direct download, pick your platform):
+
+| Platform | Download |
+| :-- | :-- |
+| **macOS** · Apple Silicon | [⬇ geist-macos-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-macos-arm64.tar.gz) |
+| **Linux** · ARM64 (static, no libc) | [⬇ geist-linux-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64.tar.gz) |
+
+<sub>x86 / Windows wait on the AVX backend — [build from source](#-getting-started) meanwhile.</sub>
+
+**2 — Get a model** (one file; pick by RAM — [full list](#-models-that-run-today)):
+
+| Model | Size | Download |
+| :-- | --: | :-- |
+| **BitNet b1.58 2B-4T** · `i2_s` — ternary, fast on edge | 1.1 GB | [⬇ ggml-model-i2_s.gguf](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf) |
+| **Gemma 4 E2B-it** · `Q4_K_M` — text · vision · audio | 2.9 GB | [HF ↗](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF) |
+
+**3 — Run** — one binary, three subcommands:
 
 ```bash
-# macOS (Apple Silicon)
+./geist       bitnet.gguf "The capital of France is"   # generate text
+./geist agent bitnet.gguf "Summarize report.md"        # one-shot tool-use agent
+./geist chat  bitnet.gguf                               # multi-turn chat + memory
+```
+
+<details>
+<summary><strong>…or paste one block and go</strong> — download + run (macOS; swap the binary URL for Linux)</summary>
+
+```bash
 curl -L https://github.com/geisten/geistlib/releases/latest/download/geist-macos-arm64.tar.gz | tar xz
-# Linux (ARM64, static musl)
-curl -L https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64.tar.gz | tar xz
+curl -L https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf -o bitnet.gguf
+./geist-macos-arm64/geist bitnet.gguf "The capital of France is"
 ```
+</details>
 
-One binary, three subcommands:
-
-```bash
-./geist-*/geist  model.gguf "The capital of France is"    # generate text
-./geist-*/geist agent model.gguf "Summarize report.md"    # one-shot tool-use agent
-./geist-*/geist chat  model.gguf                           # multi-turn chat + memory
-```
+> **No model file at all?** Bake one into the binary for a single self-contained
+> download — `make EMBED_MODEL=… EMBED_NAME=geist-bitnet`, then `./geist-bitnet "…"`
+> with no model argument. See [Ship one file](#ship-one-file-model-baked-in).
 
 <p align="center">
-  <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: the geist --help interface, then real-time BitNet b1.58 2B-4T text generation" width="100%">
+  <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: real-time BitNet b1.58 2B-4T text generation from a single dependency-free binary" width="100%">
 </p>
 
 *Real-time on a **Raspberry Pi 5** — ternary BitNet b1.58 2B-4T (`i2_s`), no GPU,
-no driver stack. (ARM64 prebuilt today; x86 / Windows after the AVX backend — or
-[build from source](#-getting-started). Grab a model under [Models](#-models-that-run-today).)*
+no driver stack, one binary.*
 
 **The bet:** where llama.cpp & co. run *every* model on *every* backend, geist does
 **a few small ones excellently on the CPU** —
@@ -349,9 +372,13 @@ Build a runnable copy with `make -C examples` — full walkthrough in
 
 ### Ship one file (model baked in)
 
-The plain `make` build above gives you a `geist` that **takes a model path** (you
-bring the GGUF). A separate **`make EMBED_MODEL=…`** build *bakes the model in*, so
-that binary needs **no model argument** — it's your self-contained app.
+**Prebuilt:** every [release](https://github.com/geisten/geistlib/releases/latest)
+ships a `geist-<platform>-embedded.tar.gz` — BitNet 2B-4T already baked in, no model
+file, no path argument. Download, extract, `./geist "your prompt"`. That's the whole app.
+
+**Build your own** with any GGUF. The plain `make` build gives you a `geist` that
+**takes a model path** (you bring the GGUF); a separate **`make EMBED_MODEL=…`** build
+*bakes the model in*, so that binary needs **no model argument**.
 
 Give it its own name with `EMBED_NAME` so it's never confused with the
 model-needing `geist`:

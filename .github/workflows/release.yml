@@ -10,21 +10,22 @@ on:
   workflow_dispatch:
     inputs:
       embed_model_url:
-        description: 'Optional GGUF URL to bake into a second, single-binary `geist` (text-only, <~1.5 GB). Empty = ship only the model-less CLI.'
+        description: 'GGUF URL to bake into the single-file `geist-<platform>-embedded` artifact (<~1.5 GB). Empty = the default below (BitNet b1.58 2B-4T).'
         required: false
         default: ''
 
 permissions:
   contents: write   # attach assets to the GitHub Release on a tag
 
-# Optional single-binary build: when this is non-empty the per-platform jobs ALSO
-# fetch the GGUF and bake it into a `geist-<platform>-embedded` artifact (the
-# model-less CLI still ships unchanged). Source of the URL: the workflow_dispatch
-# input for a manual run, else the repo variable EMBED_MODEL_URL for tag pushes
-# (Settings -> Secrets and variables -> Actions -> Variables). The GGUF must
-# carry its own tokenizer (gpt2-BPE / SPM / unigram) — see the Makefile EMBED note.
+# Single-binary build: every release ALSO ships a `geist-<platform>-embedded`
+# artifact — the model baked in (.incbin, zero-copy), so it runs with no model
+# argument (`./geist "prompt"`). The model-less CLI still ships unchanged
+# alongside it. URL source, first non-empty wins: the workflow_dispatch input,
+# the repo variable EMBED_MODEL_URL (Settings -> Variables), else the default
+# below. The GGUF must carry its own tokenizer (gpt2-BPE / SPM / unigram) — see
+# the Makefile EMBED note. To stop shipping embedded, clear the default here.
 env:
-  EMBED_MODEL_URL: ${{ inputs.embed_model_url || vars.EMBED_MODEL_URL }}
+  EMBED_MODEL_URL: ${{ inputs.embed_model_url || vars.EMBED_MODEL_URL || 'https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf' }}
 
 jobs:
   linux-arm64:
