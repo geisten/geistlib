@@ -8,15 +8,17 @@ minor release.
 
 ## [Unreleased]
 
-### Added — faster first run: direct downloads + prebuilt embedded binaries
+### Added — one-command install + prebuilt single-file binaries
 
-- README "Run it now" is now genuinely copy-paste runnable: direct download links
-  for the binary (per platform) **and** a model, a one-block download-and-run, and
-  the three subcommands — no more `./geist model.gguf` with no model in hand.
-- Releases now ship a `geist-<platform>-embedded.tar.gz` by default (BitNet 2B-4T
-  baked in) — a single self-contained file that runs with no model argument. The
-  release workflow's `EMBED_MODEL_URL` defaults to the BitNet GGUF; clear it to
-  stop shipping embedded binaries.
+- **`install.sh`** — `curl -fsSL …/install.sh | sh` detects your platform,
+  downloads the single-file `geist-bitnet` (BitNet 2B-4T baked in), and drops it on
+  your PATH. One command, one file, nothing else to fetch.
+- Releases now ship a `geist-bitnet-<platform>.tar.gz` by default — a self-contained
+  binary that runs with **no model argument**. The release workflow's
+  `EMBED_MODEL_URL` defaults to the BitNet GGUF; clear it to stop shipping them.
+- README "Run it now" is now genuinely copy-paste runnable and split into two clear
+  paths: ① the single baked-in binary (no model file), ② the < 1 MB engine + a GGUF
+  (one model file runs on every platform). All download links are direct.
 
 ### Changed — `geist agent` sensible defaults (force + trace on)
 
