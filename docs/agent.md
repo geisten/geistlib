@@ -15,6 +15,7 @@ object inside an app — but the core is identical.
 - [The agent — `agent.h`](#the-agent--agenth)
 - [Tools](#tools)
   - [Tool selection & forced calls](#tool-selection--forced-calls)
+  - [Progress events](#progress-events)
 - [Security model](#security-model)
 - [Embedding the agent](#embedding-the-agent)
 
@@ -180,6 +181,35 @@ in-engine sampler change:
   tool's observation is returned as the answer. This is why an *untrained* model
   can still drive tools reliably: structure and value are forced, only the routing
   decision is the model's.
+
+### Progress events
+
+`geist_agent_run` is otherwise a black box that returns only the final answer.
+Set an optional callback to watch each step live (routing → calling → running →
+observed → answering):
+
+```c
+a.on_event     = agent_event_print;   /* the bundled printer, or your own */
+a.on_event_ctx = stderr;
+```
+
+The callback receives a `struct geist_agent_event { phase; step; tool; detail; }`
+at every phase boundary (`enum geist_agent_phase`). `nullptr` (the default) = no
+events, zero overhead. The bundled `agent_event_print` writes one friendly line
+per step to a `FILE*` — `geist_shell` wires it to `stderr` when
+`GEIST_AGENT_TRACE` is set, so the answer on `stdout` stays clean:
+
+```
+· routing summarize_file: selected
+→ calling summarize_file: {"path":"report.md"}
+⚙ running summarize_file
+✓ observed summarize_file: The report proposes …
+● answering: The report proposes …
+```
+
+`tool`/`detail` point into agent buffers and are valid **only during the
+callback** — copy them if you retain them. A server host can serialize the same
+struct to JSON and stream it to a UI.
 
 ## Security model
 

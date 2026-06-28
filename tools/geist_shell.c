@@ -87,6 +87,10 @@ int main(int argc, char **argv) {
                      SHELL_SYSTEM);
     const char *fc   = getenv("GEIST_FORCE_CALL");
     agent.force_call = fc != nullptr && fc[0] == '1';
+    if (getenv("GEIST_AGENT_TRACE")) { /* live per-step progress on stderr */
+        agent.on_event     = agent_event_print;
+        agent.on_event_ctx = stderr;
+    }
 
     int rc = 0;
     if (opts.question) {
