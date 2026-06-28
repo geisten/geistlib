@@ -20,6 +20,13 @@ minor release.
   `geist chat` is the opposite: trace stays **opt-in** (`GEIST_AGENT_TRACE=1`) so a
   conversation is quiet by default.
 
+### Added — name the embedded binary (`EMBED_NAME`)
+
+- `make EMBED_MODEL=... EMBED_NAME=geist-bitnet` names the self-contained binary
+  distinctly. An embedded binary takes **no model-path argument** (the model is
+  baked in), unlike the plain `geist` — giving it its own name avoids the "which
+  one needs a model?" confusion. Defaults to `geist` (unchanged for normal builds).
+
 ### Added — single-file builds get the agent + chat
 
 - A `make EMBED_MODEL=...` build is no longer text-only: `geist agent <request>`

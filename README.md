@@ -349,18 +349,24 @@ Build a runnable copy with `make -C examples` — full walkthrough in
 
 ### Ship one file (model baked in)
 
-Fold the GGUF into the binary for a single self-contained file — no model to ship
-alongside, no path argument. The agent and chat subcommands work on the baked-in
-model too:
+The plain `make` build above gives you a `geist` that **takes a model path** (you
+bring the GGUF). A separate **`make EMBED_MODEL=…`** build *bakes the model in*, so
+that binary needs **no model argument** — it's your self-contained app.
+
+Give it its own name with `EMBED_NAME` so it's never confused with the
+model-needing `geist`:
 
 ```bash
-make EMBED_MODEL=bitnet-2b4t.i2_s.gguf   # bakes the GGUF into ./geist (zero-copy aliased)
-./geist "The capital of France is"                 # generate — no model path
-./geist agent "Summarize the file report.md"       # tools — no model path
+make EMBED_MODEL=bitnet-2b4t.i2_s.gguf EMBED_NAME=geist-bitnet   # GGUF baked in (zero-copy)
+./geist-bitnet "The capital of France is"            # generate — no model path
+./geist-bitnet agent "Summarize the file report.md"  # tools too — no model path
 ```
 
+(Agent + chat work on the baked-in model. To ship it, just copy the binary —
+`bin/<target>/release/tools/geist` — under whatever name you like.)
+
 Real-time on a **Raspberry Pi 5**, BitNet b1.58 2B-4T baked into the binary
-(`./geist`, no model file, no deps):
+(no model file, no deps):
 
 <p align="center">
   <img src="assets/demo-pi5-embed-gen.gif" alt="Embedded geist on a Pi 5 generating text with the model baked in (loaded embedded), in real time" width="49%">
