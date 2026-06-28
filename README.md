@@ -265,17 +265,19 @@ $ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Search the web for FIFA World Cup
 …
 ```
 
-Set `GEIST_AGENT_TRACE=1` to watch each step live (printed to **stderr**, so the
-answer on stdout stays clean) — useful while a request thinks for a few seconds:
+A per-step trace prints **by default** to **stderr** (so the answer on stdout
+stays clean) — you can watch the agent route, call, and observe:
 
 ```console
-$ GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1 ./geist agent model.gguf "Summarize the file report.md"
+$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Summarize the file report.md"
 · routing summarize_file: selected
 → calling summarize_file: {"path":"report.md"}
 ⚙ running summarize_file
 ✓ observed summarize_file: The Q3 plan migrates the billing system …
 ● answering: The Q3 plan migrates the billing system …
 ```
+
+Set `GEIST_AGENT_TRACE=0` to silence it (e.g. for scripting).
 
 The same steps are a structured **output type** (`struct geist_agent_event`) your
 own host can consume — render a spinner, log it, or stream it to a UI as JSON.
@@ -365,8 +367,8 @@ Real-time on a **Raspberry Pi 5**, BitNet b1.58 2B-4T baked into the binary
 </p>
 
 *Left: text generation. Right: `geist agent` routing to `summarize_file` and
-summarizing a local file, with `GEIST_AGENT_TRACE=1` showing each step — all from
-one ~1.2 GB binary with the weights aliased zero-copy from its read-only data.*
+summarizing a local file — the per-step trace prints by default — all from one
+~1.2 GB binary with the weights aliased zero-copy from its read-only data.*
 
 The weights are aliased from the binary's read-only data (no extra RAM), so this
 suits **small** models — the binary grows by the model size, and >~1.5 GB exceeds

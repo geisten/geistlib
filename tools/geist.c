@@ -198,7 +198,7 @@ static int run_chat(int argc, char **argv) {
     static struct geist_agent agent;
     geist_agent_init(&agent, model, sess, n_tools, tools, 0, system_with_index(AGENT_SYSTEM));
     agent.conversation = true; /* keep the transcript across turns */
-    if (getenv("GEIST_AGENT_TRACE")) {
+    if (agent_trace_enabled()) { /* default on; GEIST_AGENT_TRACE=0 to silence */
         agent.on_event     = agent_event_print;
         agent.on_event_ctx = stderr;
     }

@@ -100,6 +100,15 @@ agent_main_parse_args(int argc, char **argv, bool want_model, struct agent_main_
     return (!want_model || opts->model) ? AGENT_MAIN_RUN : AGENT_MAIN_BADARGS;
 }
 
+/* The per-step progress trace is ON by default — it prints to stderr, so it never
+ * mixes into the answer on stdout, and piping/redirects are unaffected. Silence it
+ * with GEIST_AGENT_TRACE=0. Wire it onto an agent: if it returns true, set
+ * a->on_event = agent_event_print; a->on_event_ctx = stderr. */
+static inline bool agent_trace_enabled(void) {
+    const char *t = getenv("GEIST_AGENT_TRACE");
+    return t == nullptr || strcmp(t, "0") != 0;
+}
+
 /* Run one request and print the answer + newline. Returns 0 on success. */
 static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
     static char resp[AGENT_MAIN_RESP_CAP];
@@ -174,7 +183,7 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
      * proof that prompted tool use needs forcing, not training. */
     const char *fc   = getenv("GEIST_FORCE_CALL");
     agent.force_call = fc != nullptr && fc[0] == '1';
-    if (getenv("GEIST_AGENT_TRACE")) { /* live per-step progress on stderr */
+    if (agent_trace_enabled()) { /* live per-step progress on stderr (default on) */
         agent.on_event     = agent_event_print;
         agent.on_event_ctx = stderr;
     }
