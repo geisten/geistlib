@@ -56,6 +56,26 @@ run: geist
 # in-binary .rodata blob. Small models only — the binary grows by the model
 # size; >~1.5 GB exceeds the 2 GB release limit. The GGUF must carry its own
 # tokenizer (no sibling file is searched). Text-only (no external vision/audio).
+#
+# Toggling EMBED_MODEL flips -DGEIST_EMBEDDED_MODEL on geist.o, which make can't
+# see from the source mtime alone (stale geist.o -> link error, or a binary that
+# silently ignores the embed). Track the embed state in a stamp file and depend
+# geist.o on it: the stamp is rewritten only when the state changes, so switching
+# between embedded/file mode rebuilds geist.o automatically and nothing churns
+# otherwise. Applies in both branches, so it lives outside the ifneq.
+EMBED_TAG         := $(if $(strip $(EMBED_MODEL)),embedded:$(abspath $(EMBED_MODEL)),none)
+GEIST_EMBED_STAMP := $(BUILD_DIR)/tools/.geist-embed-state
+# When the embed state changes, DELETE geist.o + the binary so they rebuild with
+# the right -DGEIST_EMBEDDED_MODEL. We can't rely on a stamp prerequisite's mtime:
+# macOS ships GNU make 3.81, whose timestamp comparison is whole-second, so a
+# stamp rewritten in the same second as the prior build looks "not newer" and the
+# rebuild is skipped. Deleting sidesteps mtime entirely. Runs at parse time.
+$(shell mkdir -p $(BUILD_DIR)/tools 2>/dev/null; \
+        if [ "$$(cat $(GEIST_EMBED_STAMP) 2>/dev/null)" != "$(EMBED_TAG)" ]; then \
+            printf '%s' "$(EMBED_TAG)" > $(GEIST_EMBED_STAMP); \
+            rm -f $(BUILD_DIR)/tools/geist.o $(BIN_DIR)/tools/geist; \
+        fi)
+
 ifneq ($(strip $(EMBED_MODEL)),)
   ifeq ($(wildcard $(EMBED_MODEL)),)
     $(error EMBED_MODEL='$(EMBED_MODEL)' not found)
@@ -223,13 +243,15 @@ bench-mmlu: bin $(MODEL_PREREQ)
 # Quality: function-calling + JSON-generation via tools/eval_tooling.py (also
 # self-contained — drives the eval_geist GEN command, no dataset needed). The
 # probe set is curated and validates extracted JSON (valid + schema + correct
-# function/arguments). TOOLING_SUITE = json | func | all.
+# function/arguments). TOOLING_SUITE = json | func | all. TOOLING_MIN is a
+# quality gate: 0 = report only; >0 fails if correct/total drops below it (CI).
 TOOLING_SUITE ?= all
+TOOLING_MIN ?= 0
 bench-tooling: bin $(MODEL_PREREQ)
 	@$(GGUF_ENV) OMP_WAIT_POLICY=active python3 tools/eval_tooling.py \
 	  --bin $(BIN_DIR)/tools/eval_geist \
 	  --gguf "$${GEIST_GGUF_PATH:-$(abspath $(MODEL_PATH))}" \
-	  --suite $(TOOLING_SUITE)
+	  --suite $(TOOLING_SUITE) --min-correct $(TOOLING_MIN)
 
 # Cleanup.
 clean:
@@ -277,7 +299,8 @@ help:
 	"Bench (timing/quality tools, not pass/fail):" \
 	"  make bench | bench-mm                       raw probes | multimodal encoders" \
 	"  make bench-small | bench-detailed           record perf to benchmark/BENCHMARK.md" \
-	"  make bench-quality-small|-detailed|bench-compare-ref   PPL/KL (set BENCH_REF_*)" \
+	"  make bench-quality-small|-detailed          MMLU acc -> benchmark/BENCHMARK.md" \
+	"  make bench-compare-ref BENCH_REF_URL=...    MMLU vs a running llama-server" \
 	"  make bench-mmlu [MMLU_LIMIT=0] | bench-tooling         accuracy (pip install datasets)" \
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \

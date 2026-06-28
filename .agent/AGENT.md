@@ -1,4 +1,5 @@
 Context: pure C23 inference engine / runtime core.
+Layer map + data flow: see docs/ARCHITECTURE.md (base ← quant ← {formats, backends} ← archs ← engine).
 
 Priorities:
 1. correctness
@@ -21,15 +22,13 @@ Hard constraints:
 - Use restrict only when semantically correct.
 - Use attributes ([[nodiscard]], etc.) conservatively but meaningfully.
 
-Memory allocation rule:
-- Prefer the project’s `heap.h` allocation interface whenever dynamic memory is required.
-- Do not call `malloc`, `calloc`, `realloc`, or `free` directly unless there is a clear, explicitly justified reason.
-- Route dynamic memory through `heap.h` so allocation behavior, tracking, limits, failure handling, and portability remain consistent with the project.
-- If allocation is needed, prefer APIs that accept an explicit heap/context/allocator handle when that matches the project design.
-- If no allocation is needed, prefer caller-provided buffers and explicit workspace/scratch memory.
-- Do not hide heap allocation in hot paths.
-- Keep allocation and deallocation responsibilities explicit.
-- If a function allocates via `heap.h`, document exactly who owns the memory and how it must be released.
+Memory allocation:
+- Dynamic memory goes through `src/base/heap.h`, never raw malloc/calloc/realloc/free
+  (consistent tracking, limits, failure handling, portability). Justify any exception.
+- Prefer APIs that take an explicit heap/allocator handle where that matches the design.
+- No allocation needed → caller-provided buffers + explicit workspace/scratch.
+- If a function allocates, document who owns the result and how it must be released.
+  (Hot-path allocation is already barred above.)
 
 Inference-engine architecture:
 - Separate clearly: model representation, immutable weights, runtime context, scratch memory, kernels, scheduling, token/state handling.
@@ -60,8 +59,8 @@ Important build/runtime rule:
 
 Testing requirements:
 - Write tests as standalone test programs, not only as inline examples.
-- Place new tests in `test/`.
-- Follow the style and structure of the existing test programs in `test/`.
+- Place new tests in `tests/`.
+- Follow the style and structure of the existing test programs in `tests/`.
 - Add boundary tests and negative tests where relevant.
 - Prefer deterministic tests.
 - Include tests for:
@@ -75,10 +74,14 @@ Testing requirements:
 - Keep tests simple, explicit, and easy to run in low-level build environments.
 
 Build:
-- Code must compile cleanly under the project's strict warning flags (see build.mk).
+- Code must compile cleanly under the project's strict warning flags
+  (`-Wall -Wextra -Wpedantic -Werror`, see mk/common.mk).
 - Code must be ASan/UBSan friendly.
 
-Before writing code, first list briefly:
+Scale this to the change: a one-line fix or test tweak skips the ritual below.
+Reserve the full listing for new APIs, kernels, or data-layout changes.
+
+For those, before writing code, first list briefly:
 1. core data structures and buffer/array contracts
 2. ownership, lifetime, and workspace/scratch model
 3. error model

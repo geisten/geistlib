@@ -15,6 +15,13 @@ jobs:
   build-test:
     name: build + unit tests (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    # ccache turns the recompile of ~38k lines into a near-no-op on a cache hit,
+    # so each push only rebuilds what changed. Content-based (hashes the source),
+    # unlike caching make's mtime-driven build/ dir.
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
     strategy:
       fail-fast: false
       matrix:
@@ -31,27 +38,124 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Unique key each run so the warmed cache is always saved; restore-keys
+      # falls back to the latest prior cache for this matrix leg.
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: ccache-${{ matrix.name }}-
+
       - name: Install deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install libomp
+        run: brew install libomp ccache
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-14 libopenblas-dev
+            gcc-14 libopenblas-dev ccache
 
       - name: Build
-        run: make TARGET=${{ matrix.target }} CC=${{ matrix.cc }}
+        run: make TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
       # Unit tests are hardware/kernel-level and do not need a GGUF model;
       # AUTO_FETCH_MODEL=0 keeps the ~3 GB reference download out of CI.
       - name: Unit tests
-        run: make test-unit TARGET=${{ matrix.target }} CC=${{ matrix.cc }} AUTO_FETCH_MODEL=0
+        run: make test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" AUTO_FETCH_MODEL=0
+
+      # The integration + e2e suites load the real GGUF, so they actually exercise
+      # the product path (forward pass, tokenizer, KV, the agent/chat loops) — the
+      # unit suite cannot. Run them on Linux only and cache the ~3 GB model so it
+      # downloads once; asset-gated tests (vision/audio/safetensors refs) SKIP.
+      - name: Cache reference model
+        if: matrix.target == 'linux'
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts
+          key: geist-model-gemma4-e2b-q4km-v1
+
+      - name: Integration + e2e tests (real model)
+        if: matrix.target == 'linux'
+        run: make test-int test-e2e TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
+
+      # Coarse Q4_K perf-regression gate on the (noisy) shared runner: generous
+      # floors catch a cliff — scalar fallback, -O0, OpenMP off, an early-return
+      # kernel — not subtle drift. The Pi 5 stays the precise arbiter. Floors are
+      # conservative; tighten toward ~60% of the runner's real numbers once the
+      # log shows them. Reuses the model already built + cached above.
+      - name: Perf regression gate (Q4_K)
+        if: matrix.target == 'linux'
+        run: |
+          bin/${{ matrix.target }}/release/tests/bench_perf_sweep \
+            --gguf gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
+            --seq-lens 128 --decode-n 16 --warmup 4 --repeats 3 \
+            | python3 benchmark/perf_gate.py --min-prefill 20 --min-decode 4
+
+      # Quality gate: self-contained tool-calling/JSON probes (no dataset),
+      # greedy/deterministic. Fails if (JSON schema-correct + func fully-correct)
+      # / total drops below the floor — catches a quant/sampling/kernel change
+      # that degrades structured output. Floor 0.70 (local baseline ~0.89); the
+      # first run prints the runner's rate so it can be tuned.
+      - name: Quality gate (tool-calling)
+        if: matrix.target == 'linux'
+        run: make bench-tooling TOOLING_MIN=0.7 TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
       - name: Build example
-        run: make -C examples TARGET=${{ matrix.target }} CC=${{ matrix.cc }}
+        run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
+
+  # Test what we ship: the release artifact is a musl-static binary (release.yml),
+  # but the matrix above only exercises glibc. musl gates POSIX symbols behind the
+  # same feature macros and differs in some libc behaviour, so build+run on musl
+  # too — catching musl-specific issues before they reach geisten.net. Mirrors the
+  # release build flags (GEMM_PROVIDER=native + -D_GNU_SOURCE) and adds the tests.
+  build-test-musl:
+    name: build + unit tests (Linux arm64, musl)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build + unit tests (musl in Alpine)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+            set -e
+            apk add --no-cache build-base linux-headers bash
+            FLAGS="TARGET=linux CC=gcc GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE"
+            make $FLAGS                                 # builds lib + all test/demo binaries
+            make test-unit $FLAGS AUTO_FETCH_MODEL=0    # run the model-free unit suite
+          '
+
+  # AGENT.md requires the code to be ASan/UBSan-friendly; nothing enforced it.
+  # Build MODE=asan (-fsanitize=address,undefined) and run the model-free unit
+  # suite — catches use-after-free / overflow / UB in the kernels + engine the
+  # unit tests exercise. UBSAN_OPTIONS=halt_on_error makes UB a hard failure
+  # (UBSan only logs by default, which would pass CI); leak detection is off for
+  # now (short-lived test binaries intentionally don't free at exit).
+  asan:
+    name: ASan + UBSan (Linux arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v4
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-asan-${{ github.run_id }}
+          restore-keys: ccache-asan-
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache
+      - name: ASan/UBSan unit tests
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=0
+        run: make MODE=asan test-unit TARGET=linux CC="ccache gcc-14" AUTO_FETCH_MODEL=0
 
   format:
     name: clang-format

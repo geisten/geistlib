@@ -33,15 +33,20 @@
 #include <stdint.h>
 
 /* Tokenization algorithm, picked from `tokenizer.ggml.model` at load.
- *   GPT2 — byte-level BPE (Ġ space marker, byte↔codepoint map).
- *   SPM  — SentencePiece-style BPE (▁ space marker, <0xXX> byte fallback),
- *          driven by the embedded merges. Covers Gemma / Llama / Mistral.
+ *   GPT2    — byte-level BPE (Ġ space marker, byte↔codepoint map).
+ *   SPM     — SentencePiece-style BPE (▁ space marker, <0xXX> byte fallback),
+ *             driven by the embedded merges. Covers Gemma / Mistral.
+ *   UNIGRAM — SentencePiece unigram (▁ marker, <0xXX> fallback), driven by the
+ *             per-token scores via Viterbi (no merges). Covers the classic
+ *             Llama/SentencePiece vocab — incl. BitNet b1.58, which ships
+ *             tokenizer.ggml.model="llama" with scores but no merges.
  * UNSUPPORTED leaves the encode/decode paths refusing so the engine falls
  * back to an external tokenizer.bin. */
 enum gguf_tokenizer_mode {
     GGUF_TOK_MODE_UNSUPPORTED = 0,
     GGUF_TOK_MODE_GPT2,
     GGUF_TOK_MODE_SPM,
+    GGUF_TOK_MODE_UNIGRAM,
 };
 
 struct gguf_tokenizer {
@@ -50,6 +55,10 @@ struct gguf_tokenizer {
     const char **token_str;
     size_t      *token_len;
     size_t       vocab_size;
+
+    /* UNIGRAM: per-token scores from tokenizer.ggml.scores (rank-like, ≈ -id),
+     * owned heap copy (4 B × vocab, always copied at load). null for gpt2. */
+    float *scores;
 
     /* BPE merges (P1.5.g). Each entry encodes "left right" as a
      * single GGUF string; we split on the first space at load time.

@@ -76,6 +76,57 @@ Speculative decode (`geist_session_decode_speculative`) replaces the single
 `decode step` with an n-gram draft + one batched `verify_forward`; on a miss it
 falls back to the sequential path shown above.
 
+## Above the ABI: CLI & agent
+
+The CLI (`geist` with its `agent` / `chat` subcommands), the memory palace, and
+the tool-use agent are **consumers** of the public ABI, not part of the runtime.
+They live in `tools/` as header-only modules (`mind.h`, `agent.h`, `agent_*.h`,
+`agent_main.h`) so the same code runs in-process on desktop and inside an embedded
+host (iOS/Android) with no link step. The agent is the **same process** as the model — `geist_agent_run` is an
+in-process call over a resident session. The host, not the model, decides what
+runs: a request can only act through a fixed **tool whitelist**, bounded by
+`max_steps`. See [agent.md](agent.md).
+
+```mermaid
+flowchart TD
+    REQ["geist_agent_run(request)"] --> SYS["fixed system prompt<br/>+ tool whitelist + INDEX.md"]
+    SYS --> GEN["generate one turn<br/>(decode loop, above)"]
+    GEN --> PARSE{"emitted a<br/>tool call?"}
+    PARSE -->|no| ANS(["plain text = final answer"])
+    PARSE -->|yes| GATE{"name ∈ whitelist?"}
+    GATE -->|no| REJ["error observation<br/>(tool never runs)"]
+    GATE -->|yes| RUN["tool.invoke(ctx,args)<br/>doc_search · web_fetch · …"]
+    REJ --> OBS["append observation"]
+    RUN --> OBS
+    OBS -->|"step < max_steps"| GEN
+    OBS -->|"step = max_steps"| ANS
+
+    GEN -.->|"geist_session_set_prompt / decode_step"| ABI["public ABI (include/geist.h)"]
+```
+
+The generate node reuses the decode pipeline shown above; only the orchestration
+(parse → gate → dispatch → observe) is agent-layer. Tools are host-supplied and
+platform-specific (a `curl`-backed `web_fetch` on Unix; a `URLSession` one on
+iOS), which is why they are not part of `libgeist`.
+
+**Driving tools on small, non-tool-trained models — without touching the
+sampler.** A 2 B model rarely emits a clean tool call on its own, and geist's
+ABI deliberately exposes no in-engine grammar mask. The agent gets the same
+guarantee *from outside* the engine, using only `peek_logits` / `prefill_tokens`
+/ `tokenize`:
+
+- **Routing** scores each tool *name* as the answer to a "which tool?" cloze and
+  PMI-calibrates it against a content-free baseline (so a frequent token like
+  `list` doesn't always win) — picking the tool, not trusting a raw logit.
+- **Forcing** prefills the `{"tool":"<name>","args":{…}}` scaffold token-by-token
+  and lifts the arg value from the request, so the *structure* is guaranteed and
+  only the routing decision is the model's.
+
+This is the architectural reason the agent layer is **above** the ABI, not inside
+it: a constrained-decoding capability that would normally live in the sampler is
+reconstructed from the public peek/prefill primitives, keeping `libgeist` small
+and the grammar logic auditable in `agent.h`. See [agent.md](agent.md#tool-selection--forced-calls).
+
 ## Zero-dispatch kernel binding
 
 Generic engines walk a layer-dispatch loop every token, switching on dtype and
@@ -130,3 +181,5 @@ text bottleneck would discard.
 - Kernel binding: `src/backends/cpu_neon/weight_resolve.c`.
 - A representative low-bit kernel: `src/backends/cpu_neon/kernels/q4_K.c`.
 - The public contract: `include/geist.h` (stability tags per symbol).
+- The interaction layer (CLI, memory palace, tool-use agent): [agent.md](agent.md).
+- Building self-contained binaries and deploying: [DEPLOY.md](DEPLOY.md).

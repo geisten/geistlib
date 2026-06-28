@@ -15,11 +15,17 @@ MODE   ?= release
 
 include ../mk/target-$(TARGET).mk
 
+# Mirror the library build: the GEMM provider fragment supplies the dense-fp32
+# BLAS link (e.g. -lopenblas on Linux/Pi). target-*.mk sets the per-target
+# default (openblas on Linux, accelerate on macOS); native = no cblas link.
+GEMM_PROVIDER ?= native
+include ../mk/gemm-$(GEMM_PROVIDER).mk
+
 LIB := ../lib/$(TARGET)/$(MODE)/libgeist.a
 
-CFLAGS  := -std=c23 -O2 -Wall -Wextra -I../include $(CFLAGS_TARGET)
+CFLAGS  := -std=c23 -O2 -Wall -Wextra -I../include $(CFLAGS_TARGET) $(GEMM_CFLAGS)
 LDFLAGS := $(LDFLAGS_TARGET)
-LDLIBS  := $(LDLIBS_TARGET)
+LDLIBS  := $(LDLIBS_TARGET) $(GEMM_LDLIBS)
 
 EXAMPLES := simple_generate
 

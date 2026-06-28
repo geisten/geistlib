@@ -25,15 +25,20 @@ make bench-vision    # vision encoder only
 make bench-audio     # audio encoder only
 ```
 
-## Comparison vs llama.cpp (manual)
+## Comparison vs llama.cpp
 
-A fair comparison pins the reference. Build `llama.cpp` (`llama-bench`) from a
-known commit against the **same** GGUF, then:
+**Speed** — pin the reference: build `llama.cpp` (`llama-bench`) from a known
+commit against the **same** GGUF, then run `benchmark/total_tps.py` with
+`LLAMA_CPU` / `LLAMA_BLAS` pointing at it (cross-engine total tok/s).
+
+**Quality** — `make bench-quality-small` / `-detailed` run the MMLU cloze on
+geist; `make bench-compare-ref` additionally scores a running `llama-server`
+on the *same* GGUF and prints the gap:
 
 ```sh
-BENCH_REF_BIN=/path/to/llama-bench \
-BENCH_REF_GGUF=gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
-make bench-compare-ref
+pip install datasets
+llama-server -m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf -c 4096 &  # reference
+make bench-compare-ref BENCH_REF_URL=http://127.0.0.1:8080       # default URL
 ```
 
 Record, every time:
@@ -46,10 +51,10 @@ Record, every time:
 Use bit-identical greedy output as the correctness gate before quoting any
 speedup — a faster engine that produces different tokens is not iso-quality.
 
-> The `compare-ref` and `quality-*` suites need a reference toolchain (a
-> llama.cpp build and/or the HF tokenizer + datasets) that is intentionally
-> kept out of the hermetic `make` flow. `tools/bench_quality_perf.py` prints
-> setup guidance and exits cleanly when invoked for these suites.
+> `quality-*` / `compare-ref` need `pip install datasets` (and `compare-ref` a
+> running `llama-server`); they're kept out of the hermetic build because of
+> those external deps, but are otherwise fully wired (`tools/bench_quality_perf.py`).
+> A cross-engine **PPL/KL** ranking is still unavailable — see below.
 
 ## Quality (perplexity / KL / MMLU)
 
@@ -99,28 +104,50 @@ the embedded sample at `--shots 0`, 5/5 at `--shots 5`), which is a property of
 the model, not the scorer. This gives a real **absolute** MMLU number for geist;
 a cross-*engine* MMLU/PPL ranking still needs matched conditions (below).
 
-### Known limitation: cross-engine Gemma 4 E2B PPL ranking
+### Cross-engine MMLU ranking (resolved for the cloze path)
 
-`make bench-quality-*` is deliberately stubbed (prints guidance, exits 0).
-A *quality ranking* (MMLU/PPL/KL) requires logprob-identical conditions on both
-sides, and for Gemma 4 E2B neither side is clean yet:
+A cross-*engine* MMLU comparison needs logprob-identical conditions on both
+sides. The MMLU **cloze** path now meets that bar:
 
-- **geist side:** `bench_quality` generates correct text (greedy output is fine
-  — "What is the capital of France?" → "The capital of France is Paris."), but
-  it is an **eyeball tool, not a parity-grade scoring harness**. The Gemma 4
-  turn markers it uses (`<|turn>` = id 105, `<turn|>` = id 106; the literal
-  strings `<start_of_turn>`/`<end_of_turn>` are *not* single tokens for this
-  model and tokenize to 7 pieces each) have not been verified byte-for-byte
-  against the HF reference chat template, including BOS handling. For greedy
-  generation the difference is invisible; for logprob scoring it shifts the
-  distribution and invalidates a cross-engine comparison.
-- **reference side:** llama.cpp's perplexity reports abnormally high absolute
-  values on Gemma 4 E2B, so it is not currently a reliable PPL baseline for this
-  model either.
+```sh
+llama-server -m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf -c 4096   # reference
+python3 tools/eval_mmlu_llama.py --hf --shuffle --limit 500     # llama.cpp
+python3 tools/eval_mmlu.py --bin .../eval_geist --gguf model.gguf --hf --shuffle --limit 500
+```
 
-Until both harnesses are verified for gemma4-e2b, geist publishes **speed**
-(reproducible, above) and **iso-quality correctness** (bit-identical greedy
-output vs llama.cpp on the *same* weights — a correctness claim, not a quality
-ranking) but **not** an MMLU/PPL leaderboard number. Fixing this — a
-template-parity harness plus a sane reference PPL path — is tracked as an open
-task and is a welcome contribution.
+`eval_mmlu_llama.py` reuses `eval_mmlu.py`'s dataset loader + prompt builder, so
+both engines see the *identical* questions (same `--shuffle` seed), 5-shot
+exemplars and prompt text — only the kernels differ. Result on Gemma 4 E2B
+Q4_K_M (500 q): **geist 52.8% vs llama.cpp 54.0%** — inside the ±4.4% binomial CI
+at n=500, i.e. iso-quality (see [BENCHMARK_PI5.md](BENCHMARK_PI5.md#quality)).
+
+Two gotchas that make or break the comparison:
+- **BOS:** Gemma needs `<bos>` (id 2) prepended. `eval_mmlu.py --bos` defaults to
+  it; llama-server's `/completion` adds it itself. Without it the model goes
+  out-of-distribution and predicts a newline after `Answer:` (~37%).
+- **Strip collisions:** ` C` and `C` both strip to `C` in the server's top-logprob
+  table; keep the higher (the spaced variant is the real continuation).
+
+Still **not** published as a leaderboard number: a cross-engine **PPL/KL** ranking.
+llama.cpp's perplexity reports abnormally high absolute values on Gemma 4 E2B, so
+it is not a reliable PPL baseline for this model yet, and geist's `bench_quality`
+chat-template markers are unverified for logprob scoring (fine for greedy). The
+cloze MMLU above sidesteps both (base completion, no chat template).
+
+## Reporting (charts from data, not by hand)
+
+The measuring scripts emit result JSON (stdlib-only — runs on a bare Pi);
+`tools/bench_report.py` renders it to a grouped-bar chart with matplotlib (a
+dev-box dep, kept off the measuring path). This keeps chart bars from drifting
+away from the numbers:
+
+```sh
+pip install matplotlib
+JSON_OUT=benchmark/pi5_results.json python3 benchmark/total_tps.py   # measure (no deps)
+python3 tools/bench_report.py benchmark/pi5_results.json -o assets/pi5_pp_decode_total.svg
+```
+
+`bench_report.py` takes multiple JSON files (each `panels` entry → a panel) and
+`-` for stdin, writes `.svg` or `.png`, and draws error bars when a metric value
+is `{"value": x, "err": e}` (or `{"value": x, "lo": l, "hi": h}`) — e.g. a
+best-of-N spread or the MMLU binomial CI.

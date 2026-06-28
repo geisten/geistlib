@@ -16,6 +16,10 @@ gguf_artifacts/
 # Compiled example binaries.
 examples/simple_generate
 
+# Memory-palace test/selftest scratch dirs (created by the memory tools + tests).
+.agent_memory_unit/
+.mind_selftest/
+
 # Benchmark run artifacts and scratch outputs.
 bench_runs/
 *.npy

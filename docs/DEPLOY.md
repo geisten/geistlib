@@ -1,0 +1,105 @@
+# Building & deploying
+
+## Build locally
+
+```sh
+make                       # auto-detect target, MODE=release -> ./geist symlink
+make TARGET=pi5 CC=gcc     # cross-target (see mk/target-*.mk)
+make bin                   # all binaries (geist + eval/profile dev tools)
+make test                  # unit + int + py (auto-fetches the model)
+```
+
+Binaries land in `bin/<target>/<mode>/tools/`. The user-facing CLI is a single
+binary with subcommands:
+
+| `geist` subcommand | what it is |
+|---|---|
+| `geist <model> <prompt>` | one-shot text completion (the release artifact) |
+| `geist agent <model> <request>` | one-shot whitelist-gated tool loop |
+| `geist chat <model>` | interactive chat + tools + memory palace (see [agent.md](agent.md)) |
+
+The tool-use **agent** (`agent.h`) is a header-only library; the `agent` and
+`chat` subcommands drive it in-process. A resident socket daemon is a planned
+follow-up (see [the daemon](#the-resident-daemon-follow-up)).
+
+### Self-contained / dependency-free build
+
+`GEMM_PROVIDER=native` drops the BLAS dependency; static linking drops libc.
+This is exactly what `release.yml` ships:
+
+```sh
+# Linux: fully static against musl (no libc dependency at all)
+make TARGET=linux CC=gcc GEMM_PROVIDER=native \
+     EXTRA_CFLAGS=-D_GNU_SOURCE EXTRA_LDFLAGS="-static -s" \
+     bin/linux/release/tools/geist
+ldd bin/linux/release/tools/geist   # -> "not a dynamic executable"
+```
+
+### Single-binary (model baked in)
+
+```sh
+make EMBED_MODEL=gguf_artifacts/gemma4-e2b-Q4_K_M.gguf   # ./geist needs no model file
+```
+Only for small models — the binary grows by the model size and a >~1.5 GB binary
+exceeds the 2 GB GitHub-release limit. For a 3 GB Gemma GGUF, keep the model **on
+the server** and deploy only the binary (below). The GGUF must carry its own
+tokenizer (gpt2-BPE / SPM / SPM-unigram — e.g. a BitNet TQ2_0 works).
+
+`release.yml` can ship this too: set the **`EMBED_MODEL_URL`** repo variable (or
+pass `embed_model_url` to a manual `workflow_dispatch` run) to a small GGUF's URL
+and each platform also gets a `geist-<platform>-embedded` artifact alongside the
+model-less CLI. Unset → the model-less CLI ships as before.
+
+## GitHub options
+
+| option | how | best for |
+|---|---|---|
+| **Release artifacts** (in place: `.github/workflows/release.yml`) | push a `v*` tag → builds static `geist` for linux-arm64 (musl) + macos-arm64, attaches them to the GitHub Release | distributing the CLI; `curl`/`gh release download` on any box |
+| **GHCR container** | an Actions job builds a Docker image, pushes to `ghcr.io/geisten/geist`, the server `docker pull`s it | bundling binary + runtime; rollback by tag |
+| **Actions → SSH deploy** | a workflow step `rsync`/`scp`s the built binary to geisten.net (SSH deploy key in repo secrets) and `systemctl restart`s the service | deploying straight to your own server |
+
+`release.yml` builds `tools/geist` — the one binary that carries the `agent` and
+`chat` subcommands. Adding the future daemon is a one-line change to its build step.
+
+## Deploying to geisten.net
+
+The agent is **resident** (load the ~3 GB model once, keep it warm), so run it as
+a long-lived service, not per-request. Recommended shape:
+
+1. **Build** a musl-static binary in CI (as `release.yml` does) — no runtime deps.
+2. **Ship the model once** to the server (e.g. `/srv/geist/model.gguf`); it is too
+   large to bake in or attach to a release.
+3. **Run as a systemd service** that holds the model warm. Until the socket daemon
+   lands, the simplest service is the chat REPL behind a small front; for a real
+   API, finish the daemon (below) and expose it via a **Unix socket** or a
+   localhost port fronted by nginx + TLS for `geisten.net`.
+4. **Deploy on tag** with an Actions SSH step:
+
+```yaml
+# sketch — add to a deploy workflow, needs SSH_KEY / HOST secrets
+- run: |
+    scp -i <key> bin/linux/release/tools/geist deploy@geisten.net:/srv/geist/geist
+    ssh -i <key> deploy@geisten.net 'systemctl --user restart geist'
+```
+
+```ini
+# /etc/systemd/system/geist.service  (model warm, restart on crash)
+[Service]
+ExecStart=/srv/geist/geist /srv/geist/model.gguf
+Restart=always
+# when the socket daemon exists, point ExecStart at it + a Unix socket;
+# chmod 600 the socket so only the service user can talk to it.
+[Install]
+WantedBy=multi-user.target
+```
+
+### The resident daemon (follow-up)
+
+A ~30-line `accept()` loop over a Unix-domain socket that calls `geist_agent_run`
+per connection, keeping one `geist_session` warm. This is the missing piece for a
+production geisten.net deployment; the agent core (`agent.h`) is already the
+in-process call it wraps. Ask and it gets built next.
+
+> Security: prefer a Unix socket (`chmod 600`) or a localhost port behind nginx
+> over a public listener. The agent's jailbreak resistance is the tool whitelist
+> + step budget ([agent.md](agent.md#security-model)), independent of transport.

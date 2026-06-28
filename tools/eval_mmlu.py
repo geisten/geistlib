@@ -183,6 +183,10 @@ def main() -> None:
     ap.add_argument("--selftest", action="store_true", help="run the embedded sample only")
     ap.add_argument("--limit", type=int, default=0, help="cap number of questions (0 = all)")
     ap.add_argument("--shots", type=int, default=5, help="few-shot exemplars (MMLU default 5)")
+    ap.add_argument("--bos", type=int, default=2,
+                    help="BOS token id to prepend (Gemma/Llama = 2; -1 to disable). "
+                         "Gemma is trained with <bos>; without it the model goes "
+                         "out-of-distribution and predicts a newline after 'Answer:'.")
     ap.add_argument("--shuffle", action="store_true",
                     help="deterministically shuffle before --limit (the MMLU test "
                          "split is subject-ordered, so an unshuffled --limit hits one subject)")
@@ -217,6 +221,8 @@ def main() -> None:
         for i, (subject, question, choices, gold) in enumerate(rows):
             shots = pick_shots(shots_by_subject, subject, args.shots)
             prompt_ids = repl.tok(build_prompt(subject, question, choices, shots))
+            if args.bos >= 0:
+                prompt_ids = [args.bos] + prompt_ids
             lps = repl.scorealt(prompt_ids, letter_ids)
             pred = max(range(4), key=lambda k: lps[k])
             ok = (pred == gold)

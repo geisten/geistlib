@@ -31,9 +31,9 @@ extern "C" {
 /* ====================================================================== */
 
 #define GEIST_VERSION_MAJOR 0
-#define GEIST_VERSION_MINOR 2
-#define GEIST_VERSION_PATCH 1
-#define GEIST_VERSION_STRING "0.2.1"
+#define GEIST_VERSION_MINOR 3
+#define GEIST_VERSION_PATCH 0
+#define GEIST_VERSION_STRING "0.3.0"
 
 /* @stability STABLE since 0.1.0 */
 const char *geist_version_string(void);
@@ -173,7 +173,9 @@ enum geist_status geist_model_load_from_memory(const void           *data,
 void        geist_model_destroy(struct geist_model *m);
 const char *geist_model_errmsg(const struct geist_model *m);
 
-/* @stability EXPERIMENTAL — name may evolve. */
+/* @stability EXPERIMENTAL — the GGUF's general.architecture string ("gemma4",
+ * "bitnet-b1.58", "llama", …), captured at load; "transformer" if the key is
+ * absent. Lets a chat/agent layer pick a model-specific template by family. */
 const char *geist_model_arch(const struct geist_model *m);
 
 /* ====================================================================== */
