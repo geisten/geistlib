@@ -80,8 +80,11 @@ platform-specific** — one download runs on every platform.
 <sub>x86 / Windows wait on the AVX backend — [build from source](#-getting-started) meanwhile.</sub>
 
 <p align="center">
-  <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: real-time BitNet b1.58 2B-4T text generation from a single dependency-free binary" width="100%">
+  <img src="assets/demo-bitnet-gen.gif" alt="The single-file geist-bitnet on a Mac: BitNet 2B-4T baked in (loaded embedded), generating text in real time with no model file" width="100%">
 </p>
+
+*The single self-contained `geist-bitnet` — BitNet 2B-4T baked in, no model file,
+no deps. The same binary runs real-time on a [Raspberry Pi 5](#faster-where-it-counts-on-the-edge).*
 
 ---
 
@@ -107,6 +110,13 @@ Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5 and
 What you *feel* when you run a model is end-to-end throughput, and that's
 decode-dominated — which is exactly where geist wins. Full methodology and the
 complete sweep: [`benchmark/`](benchmark/README.md).
+
+<p align="center">
+  <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: real-time BitNet b1.58 2B-4T text generation from a single dependency-free binary" width="100%">
+</p>
+
+*Real-time on a **Raspberry Pi 5** — ternary BitNet b1.58 2B-4T (`i2_s`), no GPU,
+no driver stack.*
 
 **Honest take — when to pick which:**
 
@@ -315,11 +325,12 @@ own host can consume — render a spinner, log it, or stream it to a UI as JSON.
 See [`docs/agent.md`](docs/agent.md#progress-events).
 
 <p align="center">
-  <img src="assets/demo-agent.gif" alt="geist on-device agent: a 2B model lists a directory, summarizes a local file, and searches the web — all on the CPU" width="100%">
+  <img src="assets/demo-bitnet-agent-ls.gif" alt="geist-bitnet agent on a Mac listing a folder: routes to list_dir, calls it, and answers — model baked in, trace on" width="49%">
+  <img src="assets/demo-bitnet-agent-web.gif" alt="geist-bitnet agent on a Mac searching the web for the FIFA World Cup 2026: routes to web_search and returns titles + links" width="49%">
 </p>
 
-*Real `geist agent` run on Gemma 4 E2B-it (Mac, idle time trimmed): `list_dir` →
-`summarize_file` → live `web_search`, all in one process.*
+*Real `geist-bitnet agent` runs (Mac, BitNet 2B-4T baked in, no model file). Left:
+`list_dir`. Right: live `web_search`. The per-step trace prints by default.*
 
 ### Chat with memory
 

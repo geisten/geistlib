@@ -2,7 +2,9 @@ build/
 lib/
 bin/
 # `make` symlinks ./geist -> bin/<target>/<mode>/tools/geist
+# `make EMBED_NAME=geist-bitnet` symlinks ./geist-bitnet the same way
 /geist
+/geist-bitnet
 .DS_Store
 __pycache__/
 *.py[cod]

@@ -86,6 +86,18 @@ static void test_strip(void) {
             strlen("<div><span></span></div>"), "<div><span></span></div>", sizeof out, out);
     fails += geist_expect(out[0] == '\0', "strip: tags-only -> empty");
 
+    /* HTML entities are decoded (the &amp; that showed up in web_search titles) */
+    const char *ent = "Tickets &amp; Travel &lt;b&gt; &quot;x&quot; &#39;y&#39; a&nbsp;b";
+    webfetch_strip_html(strlen(ent), ent, sizeof out, out);
+    fails += geist_expect(strcmp(out, "Tickets & Travel <b> \"x\" 'y' a b") == 0,
+                          "strip: HTML entities decoded");
+
+    /* a bare ampersand in running text is left alone (not an entity) */
+    const char *amp = "Q &amp; A but R & D and AT&T";
+    webfetch_strip_html(strlen(amp), amp, sizeof out, out);
+    fails += geist_expect(strcmp(out, "Q & A but R & D and AT&T") == 0,
+                          "strip: bare '&' passes through");
+
     /* truncation must stay in-bounds and NUL-terminate */
     char small[8];
     webfetch_strip_html(strlen("abcdefghijklmnop"), "abcdefghijklmnop", sizeof small, small);

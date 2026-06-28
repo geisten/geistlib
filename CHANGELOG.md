@@ -8,6 +8,13 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed — decode HTML entities in fetched/searched text
+
+- `webfetch_strip_html` now decodes HTML entities (`&amp;` → `&`, `&lt;`/`&gt;`,
+  `&quot;`, `&#39;`, `&nbsp;`, numeric `&#NN;`/`&#xHH;`), so `web_search` titles and
+  `web_fetch` page text read cleanly instead of showing raw `&amp;`. Bare `&` in
+  running text is left untouched. Covered by `test_webfetch_unit`.
+
 ## [0.3.1] — 2026-06-28
 
 ### Added — one-command install + prebuilt single-file binaries
