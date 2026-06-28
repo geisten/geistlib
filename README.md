@@ -17,30 +17,44 @@ with zero dependencies**. One small static binary. Copy it to a machine and it
 runs — it generates text, reads your local files, and searches the web, all
 locally.
 
-> 🚀 **In a hurry?** Jump to [Getting Started](#-getting-started) — build and chat
-> in two minutes.
+## ⚡ Run it now
 
----
+Grab the dependency-free binary — no toolchain, no Python, nothing to install:
 
-## 🤔 Why geist?
+```bash
+# macOS (Apple Silicon)
+curl -L https://github.com/geisten/geistlib/releases/latest/download/geist-macos-arm64.tar.gz | tar xz
+# Linux (ARM64, static musl)
+curl -L https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64.tar.gz | tar xz
+```
 
-The universal engines (llama.cpp & co.) run *every* model on *every* backend. That
-generality costs you: a dispatch loop in the hot path, a pile of optional
-dependencies, and a runtime to install before anything happens.
+One binary, three subcommands:
 
-geist makes the opposite bet — **a few small models, done excellently, on cheap
-hardware you already own.**
+```bash
+./geist-*/geist  model.gguf "The capital of France is"    # generate text
+./geist-*/geist agent model.gguf "Summarize report.md"    # one-shot tool-use agent
+./geist-*/geist chat  model.gguf                           # multi-turn chat + memory
+```
 
-- **Nothing to install.** Deploy by copying one file. The Linux ARM build is a
-  fully static musl binary (**< 1 MB**, `ldd` → *not a dynamic executable*); the
-  macOS build links only Apple's own frameworks. No BLAS, no Python, no CUDA.
-- **Embed it anywhere.** The C header *is* the ABI — any language FFIs in with no
-  shim. The whole stable text-generation core is **~70 lines of C**.
-- **Built for weak models.** A 2 B model rarely emits a clean tool call. geist
-  doesn't trust it to: routing and tool-call structure are *forced from outside
+<p align="center">
+  <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: the geist --help interface, then real-time BitNet b1.58 2B-4T text generation" width="100%">
+</p>
+
+*Real-time on a **Raspberry Pi 5** — ternary BitNet b1.58 2B-4T (`i2_s`), no GPU,
+no driver stack. (ARM64 prebuilt today; x86 / Windows after the AVX backend — or
+[build from source](#-getting-started). Grab a model under [Models](#-models-that-run-today).)*
+
+**The bet:** where llama.cpp & co. run *every* model on *every* backend, geist does
+**a few small ones excellently on the CPU** —
+
+- **One file, nothing to install.** Static musl on Linux ARM (**< 1 MB**, `ldd` →
+  *not a dynamic executable*); only Apple's own frameworks on macOS. No BLAS, no
+  Python, no CUDA. The C header *is* the ABI — embed it from any language.
+- **Built for weak models.** A 2 B model rarely emits a clean tool call; geist
+  doesn't trust it to — routing and tool-call structure are *forced from outside
   the sampler*, so even an untrained model drives the tools reliably.
-- **Edge-first.** A 4.6 B model fits in **4 GB of RAM** on a $50–$100 board — no
-  GPU, no driver stack, on-device audio built in.
+- **Edge-first.** A 4.6 B model fits in **4 GB of RAM** on a \$50–\$100 board, and
+  ternary BitNet runs at **~2× Microsoft's bitnet.cpp** — see the [benchmarks](#-features).
 
 ---
 
@@ -171,21 +185,9 @@ curl -L -o bitnet-2b4t.i2_s.gguf \
 
 ## 🚀 Getting Started
 
-### Install (prebuilt, the impatient path)
-
-Grab the latest dependency-free binary — no toolchain, no build:
-
-```bash
-# macOS (Apple Silicon)
-curl -L https://github.com/geisten/geistlib/releases/latest/download/geist-macos-arm64.tar.gz | tar xz
-# Linux (ARM64, fully static musl)
-curl -L https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64.tar.gz | tar xz
-./geist-*/geist --version
-```
-
-> Prebuilt binaries are **ARM64 only** today (Apple Silicon + aarch64 Linux) — the
-> platforms geist is fast on. x86-64 / Windows land with the AVX backend. On other
-> platforms, build from source below.
+> **Just want to run it?** The prebuilt ARM64 one-liner is at the
+> [top](#-run-it-now). This section builds from source — any platform with a C23
+> compiler (and the only path for x86-64 until the AVX backend lands).
 
 ### Prerequisites
 - A C23 compiler: **gcc ≥ 14**, or Apple-clang ≥ 16 (Xcode 16 / macOS 15).
@@ -206,8 +208,14 @@ make fetch-model           # Gemma 4 E2B-it Q4_K_M (~3.1 GB) — optional helper
 ```
 
 ### 3. Run
+
+`make` drops a `./geist` symlink. It's one binary with three subcommands:
+
 ```bash
-OMP_WAIT_POLICY=active ./geist gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "The capital of France is"
+M=gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+OMP_WAIT_POLICY=active ./geist       $M "The capital of France is"   # generate text
+OMP_WAIT_POLICY=active ./geist agent $M "Summarize the file README.md"  # tool-use agent
+OMP_WAIT_POLICY=active ./geist chat  $M                              # multi-turn chat + memory
 ```
 
 ```console
@@ -216,7 +224,7 @@ The capital of France is Paris.
 ```
 
 > `make run ARGS='…'` sets `OMP_WAIT_POLICY=active` for you (it matters for
-> multi-thread perf).
+> multi-thread perf). Full agent + chat walk-throughs are under [Usage](#-usage).
 
 ---
 
