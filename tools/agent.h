@@ -159,6 +159,8 @@ static inline struct geist_chat_template geist_chat_template_for_model(struct ge
     return GEIST_CHAT_GENERIC;
 }
 
+enum { AGENT_MAX_ROUTED = 26 }; /* tools the router ranks (A..Z worth of names) */
+
 struct geist_agent {
     struct geist_model        *model;
     struct geist_session      *session;
@@ -171,6 +173,11 @@ struct geist_agent {
     geist_token_t              eos, eot;
     char                       transcript[GEIST_AGENT_TRANSCRIPT_CAP];
     size_t                     tlen;
+    /* Router PMI baseline (agent_select_tool): the per-tool prior is
+     * request-independent, so it is computed once and cached here — every later
+     * route then does ONE prefill (the request) instead of two. */
+    float  route_base[AGENT_MAX_ROUTED];
+    size_t route_base_n; /* tools the cached baseline covers; 0 = not computed */
 };
 
 /* Caller provides storage for *a (it is large — put it in static/heap, not a
@@ -193,7 +200,8 @@ static inline void geist_agent_init(struct geist_agent     *a,
     a->force_call    = false;
     a->eos           = geist_model_eos_token(model);
     a->eot = a->tmpl.stop[0] ? geist_model_token_by_text(model, a->tmpl.stop) : GEIST_TOKEN_NONE;
-    a->tlen = 0;
+    a->tlen         = 0;
+    a->route_base_n = 0; /* router baseline computed lazily on the first route */
 }
 
 /* Find the first {"tool":"NAME","args":{...}} in raw. Returns 1 and fills name
@@ -507,7 +515,6 @@ static inline int agent_decode_name_constrained(struct geist_agent *a) {
  * with "list the directory" where an abstract "A" does not). Returns a tool
  * index; 0 when there is a single tool (no choice). Pure peek/prefill/tokenize —
  * leaves the session reset to the selection prompt (caller re-sets transcript). */
-enum { AGENT_MAX_ROUTED = 26 };
 
 /* Logit of the first token of `text`, or -INF-ish if it doesn't tokenize. */
 static inline float agent_first_token_logit(struct geist_agent *a, const char *text,
@@ -609,24 +616,31 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
     }
     const size_t n = a->n_tools < AGENT_MAX_ROUTED ? a->n_tools : AGENT_MAX_ROUTED;
     static char  sel[GEIST_AGENT_TRANSCRIPT_CAP];
-    float        score[AGENT_MAX_ROUTED] = {0}, base[AGENT_MAX_ROUTED] = {0};
+    float        score[AGENT_MAX_ROUTED] = {0};
 
     /* Raw name logits have a token-frequency bias (a small model favours
      * "list_dir" regardless of the request). Calibrate: subtract the prior the
      * model assigns each name given the SAME menu but a content-free request, so
-     * only the request-driven signal (PMI) decides. */
+     * only the request-driven signal (PMI) decides. The baseline depends only on
+     * the tool menu, not the request, so it is computed ONCE and cached on the
+     * agent — every later route then does a single prefill (the request) instead
+     * of two, halving routing latency (the Pi's light-task floor). */
+    if (a->route_base_n != n) {
+        agent_select_prompt(a, n, strlen("(unspecified)"), "(unspecified)", sizeof sel, sel);
+        a->route_base_n = agent_score_names(a, n, sel, a->route_base) ? n : 0;
+    }
+    int have_base = a->route_base_n == n;
+
     agent_select_prompt(a, n, req_len, req, sizeof sel, sel);
     if (!agent_score_names(a, n, sel, score)) {
         return 0;
     }
-    agent_select_prompt(a, n, strlen("(unspecified)"), "(unspecified)", sizeof sel, sel);
-    int have_base = agent_score_names(a, n, sel, base);
 
     float cal[AGENT_MAX_ROUTED] = {0};
     int   best                  = 0;
     float best_v                = -1e30f;
     for (size_t i = 0; i < n; i++) {
-        cal[i] = have_base ? score[i] - base[i] : score[i];
+        cal[i] = have_base ? score[i] - a->route_base[i] : score[i];
         if (cal[i] > best_v) {
             best_v = cal[i], best = (int) i;
         }
