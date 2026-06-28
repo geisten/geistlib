@@ -346,10 +346,31 @@ Build a runnable copy with `make -C examples` — full walkthrough in
 
 ### Ship one file (model baked in)
 
+Fold the GGUF into the binary for a single self-contained file — no model to ship
+alongside, no path argument. The agent and chat subcommands work on the baked-in
+model too:
+
 ```bash
-make EMBED_MODEL=path/to/model.gguf   # bakes the GGUF into ./geist (zero-copy aliased)
-./geist "The capital of France is"    # the CLI now takes only a prompt
+make EMBED_MODEL=bitnet-2b4t.i2_s.gguf   # bakes the GGUF into ./geist (zero-copy aliased)
+./geist "Write a haiku about the ocean:"           # generate — no model path
+./geist agent "Summarize the file report.md"       # tools — no model path
 ```
+
+Real-time on a **Raspberry Pi 5**, BitNet b1.58 2B-4T baked into the binary
+(`./geist`, no model file, no deps):
+
+<p align="center">
+  <img src="assets/demo-pi5-embed-gen.gif" alt="Embedded geist on a Pi 5 generating a haiku with the model baked in (loaded embedded), in real time" width="49%">
+  <img src="assets/demo-pi5-embed-agent.gif" alt="Embedded geist agent on a Pi 5 summarizing a local file with GEIST_AGENT_TRACE, model baked in" width="49%">
+</p>
+
+*Left: text generation. Right: `geist agent` routing to `summarize_file` and
+summarizing a local file, with `GEIST_AGENT_TRACE=1` showing each step — all from
+one ~1.2 GB binary with the weights aliased zero-copy from its read-only data.*
+
+The weights are aliased from the binary's read-only data (no extra RAM), so this
+suits **small** models — the binary grows by the model size, and >~1.5 GB exceeds
+the 2 GB GitHub-release limit.
 
 ---
 

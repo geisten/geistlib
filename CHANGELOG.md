@@ -8,6 +8,24 @@ minor release.
 
 ## [Unreleased]
 
+### Added — single-file builds get the agent + chat
+
+- A `make EMBED_MODEL=...` build is no longer text-only: `geist agent <request>`
+  and `geist chat` now drive the baked-in model (no model-path argument). One
+  self-contained binary generates text *and* runs tools — demoed with BitNet
+  b1.58 2B-4T embedded, generating and summarizing a file on a Raspberry Pi 5.
+  `geist_agent_main` takes the embedded GGUF bounds; `agent_main_parse_args`
+  gained `want_model` to drop the model positional when it is baked in.
+
+### Changed — memory tools are opt-in (`GEIST_MIND_DIR`)
+
+- The agent's default toolset dropped from 7 to 5: `remember`/`recall` are
+  included only when a palace is configured (`GEIST_MIND_DIR`). On weak models the
+  router scores tool names, and the two memory tools made common requests (e.g.
+  "summarize report.md") mis-route to `recall` on some CPU backends (BitNet/NEON).
+  Fewer default tools → robust routing across backends. `geist chat`'s
+  `/remember`,`/recall` slash commands are unaffected (they call `mind.h` directly).
+
 ### Changed — bounded chat context (sliding window)
 
 - Multi-turn `geist chat` now evicts the oldest turns once the transcript passes
