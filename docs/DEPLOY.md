@@ -5,20 +5,22 @@
 ```sh
 make                       # auto-detect target, MODE=release -> ./geist symlink
 make TARGET=pi5 CC=gcc     # cross-target (see mk/target-*.mk)
-make bin                   # all binaries (incl. tools/geist_chat)
+make bin                   # all binaries (geist + eval/profile dev tools)
 make test                  # unit + int + py (auto-fetches the model)
 ```
 
-Binaries land in `bin/<target>/<mode>/tools/`:
+Binaries land in `bin/<target>/<mode>/tools/`. The user-facing CLI is a single
+binary with subcommands:
 
-| binary | what it is |
+| `geist` subcommand | what it is |
 |---|---|
-| `geist` | one-shot CLI: prompt → completion (the v0.1 release artifact) |
-| `geist_chat` | interactive chat + memory palace (see [agent.md](agent.md)) |
+| `geist <model> <prompt>` | one-shot text completion (the release artifact) |
+| `geist agent <model> <request>` | one-shot whitelist-gated tool loop |
+| `geist chat <model>` | interactive chat + tools + memory palace (see [agent.md](agent.md)) |
 
-The tool-use **agent** (`agent.h`) is a header-only library today — it is driven
-in-process / via `geist_chat`, not as its own binary. A resident socket daemon
-is a planned follow-up (see [the daemon](#the-resident-daemon-follow-up)).
+The tool-use **agent** (`agent.h`) is a header-only library; the `agent` and
+`chat` subcommands drive it in-process. A resident socket daemon is a planned
+follow-up (see [the daemon](#the-resident-daemon-follow-up)).
 
 ### Self-contained / dependency-free build
 
@@ -56,8 +58,8 @@ model-less CLI. Unset → the model-less CLI ships as before.
 | **GHCR container** | an Actions job builds a Docker image, pushes to `ghcr.io/geisten/geist`, the server `docker pull`s it | bundling binary + runtime; rollback by tag |
 | **Actions → SSH deploy** | a workflow step `rsync`/`scp`s the built binary to geisten.net (SSH deploy key in repo secrets) and `systemctl restart`s the service | deploying straight to your own server |
 
-`release.yml` builds only `tools/geist` today; adding `geist_chat` (or the future
-daemon) is a one-line change to its build step.
+`release.yml` builds `tools/geist` — the one binary that carries the `agent` and
+`chat` subcommands. Adding the future daemon is a one-line change to its build step.
 
 ## Deploying to geisten.net
 
@@ -76,7 +78,7 @@ a long-lived service, not per-request. Recommended shape:
 ```yaml
 # sketch — add to a deploy workflow, needs SSH_KEY / HOST secrets
 - run: |
-    scp -i <key> bin/linux/release/tools/geist_chat deploy@geisten.net:/srv/geist/geist
+    scp -i <key> bin/linux/release/tools/geist deploy@geisten.net:/srv/geist/geist
     ssh -i <key> deploy@geisten.net 'systemctl --user restart geist'
 ```
 

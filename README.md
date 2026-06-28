@@ -280,6 +280,26 @@ See [`docs/agent.md`](docs/agent.md#progress-events).
 *Real `geist agent` run on Gemma 4 E2B-it (Mac, idle time trimmed): `list_dir` →
 `summarize_file` → live `web_search`, all in one process.*
 
+### Chat with memory
+
+`geist chat` is a multi-turn conversation on the same engine, with the full
+toolset plus a file-based **memory palace** (Markdown notes under `$GEIST_MIND_DIR`,
+no DB, no embeddings):
+
+```console
+$ ./geist chat model.gguf
+> /remember Fav color | My favorite color is teal.
+remembered.
+> My name is Germar.
+ Hello Germar.
+> What is my name?
+ Your name is Germar.
+```
+
+Slash commands (`/remember`, `/recall`, `/notes`) are the reliable manual path; a
+capable model can also call the `remember`/`recall` tools itself. Notes persist
+across sessions.
+
 ### Embed the library (C)
 
 The whole stable text path is this small:
