@@ -42,6 +42,12 @@ enum {
     GEIST_AGENT_OBS_CAP        = 4096,
     GEIST_AGENT_MAX_DECODE     = 512,
     GEIST_AGENT_LOOP_PMAX      = 128, /* longest repeating block the anti-loop cap detects */
+    /* Chat context bound (agent_compact): once the transcript passes BUDGET,
+     * evict the oldest turns down to TARGET. Bounds per-turn prefill (so a long
+     * chat stays O(n), not O(n^2)) and avoids the hard "context full" stop.
+     * ponytail: bytes as a token proxy; lower both for snappier edge chat. */
+    GEIST_AGENT_CTX_BUDGET = (GEIST_AGENT_TRANSCRIPT_CAP * 3) / 4,
+    GEIST_AGENT_CTX_TARGET = GEIST_AGENT_TRANSCRIPT_CAP / 2,
 };
 
 /* Generic anti-degeneration: greedy decoding on a chatty model can fall into a
@@ -274,6 +280,7 @@ struct geist_agent {
     geist_token_t              eos, eot;
     char                       transcript[GEIST_AGENT_TRANSCRIPT_CAP];
     size_t                     tlen;
+    size_t                     sys_len; /* protected system-prompt prefix [0..sys_len) */
     /* Router PMI baseline (agent_select_tool): the per-tool prior is
      * request-independent, so it is computed once and cached here — every later
      * route then does ONE prefill (the request) instead of two. */
@@ -303,9 +310,11 @@ static inline void geist_agent_init(struct geist_agent     *a,
     a->system_prompt = system_prompt;
     a->tmpl          = geist_chat_template_for_model(model);
     a->force_call    = false;
+    a->conversation  = false;
     a->eos           = geist_model_eos_token(model);
     a->eot = a->tmpl.stop[0] ? geist_model_token_by_text(model, a->tmpl.stop) : GEIST_TOKEN_NONE;
     a->tlen         = 0;
+    a->sys_len      = 0;
     a->route_base_n = 0; /* router baseline computed lazily on the first route */
     a->on_event     = nullptr;
     a->on_event_ctx = nullptr;
@@ -972,6 +981,50 @@ agent_system_prompt(const struct geist_agent *a, size_t cap, char out[static cap
     return w;
 }
 
+/* Sliding-window context bound for multi-turn chat. When the transcript passes
+ * GEIST_AGENT_CTX_BUDGET, evict the OLDEST conversation turns: keep the protected
+ * system-prompt prefix [0..sys_len) and the most recent whole turns (snapped to a
+ * user_open marker), down to GEIST_AGENT_CTX_TARGET. A turn_close is inserted
+ * after the prefix so the kept history is well-framed (the system instructions
+ * become their own user turn). This bounds per-turn re-prefill — a long chat
+ * stays O(n), not O(n^2) — and replaces the hard "context full" stop.
+ *
+ * No-op outside conversation mode / before a system prompt exists. The model
+ * forgets the evicted turns.
+ * ponytail: hard drop. To keep the gist instead, fold the evicted span
+ * [sys_len..keep_from) into a running summary via summ_generate and splice it in
+ * as "[system][summary][recent]" here — the summarizer already exists. */
+static inline void agent_compact(struct geist_agent *a) {
+    if (!a->conversation || a->sys_len == 0 || a->tlen <= GEIST_AGENT_CTX_BUDGET) {
+        return;
+    }
+    const char *uo  = a->tmpl.user_open;
+    size_t      uol = strlen(uo);
+    size_t      tcl = strlen(a->tmpl.turn_close);
+    /* tail bytes we may keep after the prefix + the inserted turn_close */
+    size_t budget_tail =
+            (GEIST_AGENT_CTX_TARGET > a->sys_len + tcl) ? GEIST_AGENT_CTX_TARGET - a->sys_len - tcl : 0;
+    /* earliest user_open whose tail fits the target (keep the most history);
+     * else the latest one (keep only the newest turn — guarantees progress). */
+    size_t earliest_fit = 0, latest = 0;
+    for (size_t i = a->sys_len; i + uol <= a->tlen; i++) {
+        if (memcmp(a->transcript + i, uo, uol) == 0) {
+            latest = i;
+            if (earliest_fit == 0 && a->tlen - i <= budget_tail) {
+                earliest_fit = i;
+            }
+        }
+    }
+    size_t keep_from = earliest_fit ? earliest_fit : latest;
+    if (keep_from <= a->sys_len) {
+        return; /* no conversation-turn boundary to cut at */
+    }
+    size_t body = a->tlen - keep_from;
+    memmove(a->transcript + a->sys_len + tcl, a->transcript + keep_from, body + 1); /* +NUL */
+    memcpy(a->transcript + a->sys_len, a->tmpl.turn_close, tcl);
+    a->tlen = a->sys_len + tcl + body;
+}
+
 /* Copy src into resp (cap), truncating safely; returns the written length.
  * Used instead of snprintf(resp, cap, "%s", turn) so gcc -Wformat-truncation
  * (under _FORTIFY_SOURCE) can't flag copying a larger fixed buffer into resp. */
@@ -1023,7 +1076,9 @@ static inline int agent_answer_degenerate(const char *s) {
 
     if (a->conversation && a->tlen > 0) {
         /* multi-turn chat: the transcript already holds the prior turns (ending
-         * after a closed model turn). Open a fresh user turn and continue. */
+         * after a closed model turn). Evict the oldest turns if we're over budget,
+         * then open a fresh user turn and continue. */
+        agent_compact(a);
         a->tlen += (size_t) snprintf(a->transcript + a->tlen,
                                      sizeof a->transcript - a->tlen,
                                      "%s%.*s%s%s",
@@ -1034,7 +1089,8 @@ static inline int agent_answer_degenerate(const char *s) {
                                      a->tmpl.model_open);
     } else {
         /* one-shot (or the first chat turn): system prompt opens the user turn. */
-        a->tlen = agent_system_prompt(a, sizeof a->transcript, a->transcript);
+        a->tlen    = agent_system_prompt(a, sizeof a->transcript, a->transcript);
+        a->sys_len = a->tlen; /* protected prefix: never evicted by agent_compact */
         a->tlen += (size_t) snprintf(a->transcript + a->tlen,
                                      sizeof a->transcript - a->tlen,
                                      "%.*s%s%s",
