@@ -346,8 +346,9 @@ int main(int argc, char **argv) {
     const char *prog = "geist";
     const char *model_path = nullptr;
     const char *prompt = "Hello, my name is";
-    int max_new = 64;
-    int got_prompt = 0;
+    int  max_new    = 64;
+    bool n_explicit = false; /* explicit -n is a hard cap; the default is a soft target */
+    int  got_prompt = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -360,6 +361,7 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc) { fprintf(stderr, "%s: %s needs an argument\n", prog, a); return 2; }
             max_new = atoi(argv[++i]);
             if (max_new <= 0) { fprintf(stderr, "%s: invalid token count\n", prog); return 2; }
+            n_explicit = true;
         } else if (a[0] == '-' && a[1] != '\0') {
             fprintf(stderr, "%s: unknown option '%s'\n", prog, a);
             return usage(prog, 2);
@@ -419,7 +421,12 @@ int main(int argc, char **argv) {
     printf("%s", prompt);
     fflush(stdout);
 
-    for (int i = 0; i < max_new; i++) {
+    /* max_new is a hard cap when the user passed -n; otherwise it's a soft target:
+     * keep going past it until a sentence ends (capped at 2x), so a bare completion
+     * prompt — the base model never emits an end token for one — stops on a clean
+     * boundary instead of mid-word. */
+    int budget = n_explicit ? max_new : max_new * 2;
+    for (int i = 0; i < budget; i++) {
         geist_token_t tok = 0;
         if (geist_session_decode_step(sess, &tok) != GEIST_OK) {
             fprintf(stderr, "\ndecode_step failed: %s\n", geist_session_errmsg(sess));
@@ -431,6 +438,10 @@ int main(int argc, char **argv) {
         if (len >= 2 && piece[0] == '<' && piece[len - 1] == '>') break; /* control/special */
         fputs(piece, stdout);
         fflush(stdout);
+        if (!n_explicit && i + 1 >= max_new && len > 0) { /* past soft target: stop at sentence end */
+            char last = piece[len - 1];
+            if (last == '.' || last == '!' || last == '?' || last == '\n') break;
+        }
     }
     putchar('\n');
 

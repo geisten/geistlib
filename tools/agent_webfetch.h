@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -89,7 +90,53 @@ static inline int webfetch_host_allowed(const char *host, const char *allow) {
     return 0;
 }
 
-/* Drop everything between '<' and '>' and collapse runs of whitespace. */
+/* If s[0..max) begins with an HTML entity (&name; or &#NN; / &#xHH;), set *ch to
+ * its character and return the bytes consumed (incl. '&' and ';'); else return 0.
+ * Codepoints >127 are dropped (*ch=0, still consumed) except nbsp -> space, so the
+ * decode never emits raw high bytes into the agent's text. */
+static inline size_t webfetch_decode_entity(const char *s, size_t max, char *ch) {
+    if (max < 3 || s[0] != '&') {
+        return 0;
+    }
+    size_t semi = 0;
+    for (size_t k = 1; k < max && k <= 10; k++) { /* entities are short; bail early */
+        if (s[k] == ';') {
+            semi = k;
+            break;
+        }
+        if (s[k] == '&' || s[k] == ' ' || s[k] == '<') {
+            return 0; /* a bare '&' in running text, not an entity */
+        }
+    }
+    if (semi < 2) {
+        return 0;
+    }
+    if (s[1] == '#') { /* numeric: &#39; (decimal) or &#x27; (hex) */
+        char      *end = nullptr;
+        int        hex = (s[2] == 'x' || s[2] == 'X');
+        long       v   = strtol(s + (hex ? 3 : 2), &end, hex ? 16 : 10);
+        if (end != s + semi) {
+            return 0;
+        }
+        *ch = (v > 0 && v < 128) ? (char) v : (v == 160 ? ' ' : 0);
+        return semi + 1;
+    }
+    static const struct {
+        const char *name;
+        char        ch;
+    } ents[] = {{"amp", '&'}, {"lt", '<'}, {"gt", '>'}, {"quot", '"'}, {"apos", '\''}, {"nbsp", ' '}};
+    size_t nlen = semi - 1;
+    for (size_t e = 0; e < sizeof ents / sizeof ents[0]; e++) {
+        if (strlen(ents[e].name) == nlen && strncmp(s + 1, ents[e].name, nlen) == 0) {
+            *ch = ents[e].ch;
+            return semi + 1;
+        }
+    }
+    return 0;
+}
+
+/* Drop everything between '<' and '>', decode HTML entities (&amp; -> &, …), and
+ * collapse runs of whitespace. */
 static inline size_t
 webfetch_strip_html(size_t n, const char in[static n], size_t cap, char out[static cap]) {
     size_t w     = 0;
@@ -101,6 +148,15 @@ webfetch_strip_html(size_t n, const char in[static n], size_t cap, char out[stat
         } else if (c == '>') {
             intag = 0;
         } else if (!intag) {
+            char   ent  = 0;
+            size_t used = c == '&' ? webfetch_decode_entity(in + i, n - i, &ent) : 0;
+            if (used) {
+                i += used - 1; /* the loop's i++ steps past the ';' */
+                c = ent;       /* fall through with the decoded char (0 = drop) */
+                if (c == '\0') {
+                    continue;
+                }
+            }
             if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
                 if (!sp && w > 0) {
                     out[w++] = ' ';

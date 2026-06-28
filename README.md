@@ -80,8 +80,14 @@ platform-specific** — one download runs on every platform.
 <sub>x86 / Windows wait on the AVX backend — [build from source](#-getting-started) meanwhile.</sub>
 
 <p align="center">
-  <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: real-time BitNet b1.58 2B-4T text generation from a single dependency-free binary" width="100%">
+  <img src="assets/demo-bitnet-trio.gif" alt="One geist-bitnet binary doing three things in a row on a Mac: generate text, then drive tools to list a folder and search the web — model baked in, no model file" width="100%">
 </p>
+
+*One self-contained `geist-bitnet` (BitNet b1.58 2B-4T baked in, no model file) doing
+three things back-to-back: generate, then **drive tools** — list a folder, search the
+web live. BitNet is a **base model with no tool training**; geist forces a valid tool
+call from outside the sampler, so it routes and calls anyway. The same binary runs
+real-time on a [Raspberry Pi 5](#faster-where-it-counts).*
 
 ---
 
@@ -91,9 +97,10 @@ platform-specific** — one download runs on every platform.
 Static musl on Linux ARM (< 1 MB), Apple frameworks only on macOS. Fold the model
 in too (`make EMBED_MODEL=…`) and deployment is *literally one file*.
 
-### Faster where it counts on the edge
-Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5 and
-**prefill** on Apple's matrix unit:
+### Faster where it counts
+Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5,
+**prefill** on Apple's matrix unit, and now **matches-to-beats llama.cpp on AMD
+x86** (AVX-512) — across edge and desktop:
 
 | model | platform | metric | **geist** | baseline |
 | :-- | :-- | :-- | --: | --: |
@@ -101,12 +108,33 @@ Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5 and
 | Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | decode t/s | **7.5** | 6.8 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max** | prefill t/s (pp1024) | **144** | 97 *(llama.cpp)* |
 | BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s | **17.4** | 8.2 *(bitnet.cpp)* |
+| Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | prefill t/s | **512** | 495 *(llama.cpp)* |
+| Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | decode t/s | **48.6** | 44.1 *(llama.cpp)* |
+| Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | prefill t/s | **351** | 346 *(llama.cpp)* |
+| Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | decode t/s | 34.1 | 34.5 *(llama.cpp)* |
 
-<img src="assets/pi5_pp_decode_total.svg" alt="Prefill, decode and total tokens/s for geist vs llama.cpp on a Pi 5: total tracks decode; geist has the lowest prefill but the highest decode, leading total at the short prompt." width="100%">
+<p align="center">
+  <img src="assets/headline_benchmarks.svg" alt="Horizontal scoreboard of geist's throughput as a ratio of the baseline engine, grouped by system. Raspberry Pi 5: BitNet decode 2.1x bitnet.cpp, Gemma decode and total ~1.1x llama.cpp. Apple M1 Max: Gemma prefill 1.5x llama.cpp. AMD Ryzen 9 9950X: Gemma decode 1.1x, Gemma and Llama 3.2 prefill at parity-to-ahead vs llama.cpp. Each row is a different metric and baseline." width="100%">
+</p>
+
+*geist meets or beats every baseline — across **Raspberry Pi 5**, **Apple M1 Max**
+and **AMD x86 (AVX-512)**, each on its own headline metric (decode, prefill, total).
+Below, the one that matters most for chat: **end-to-end total** throughput.*
+
+<p align="center">
+  <img src="assets/pi5_total_tps.svg" alt="Grouped bar chart of total tokens/s, geist vs llama.cpp (CPU and OpenBLAS), on a Raspberry Pi 5 with Gemma 4 E2B-it Q4_K_M: geist leads end-to-end at a short prompt (8.8 vs 8.2) and ties at a longer one (11.1 vs 11.3)." width="92%">
+</p>
 
 What you *feel* when you run a model is end-to-end throughput, and that's
 decode-dominated — which is exactly where geist wins. Full methodology and the
 complete sweep: [`benchmark/`](benchmark/README.md).
+
+<p align="center">
+  <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: real-time BitNet b1.58 2B-4T text generation from a single dependency-free binary" width="100%">
+</p>
+
+*Real-time on a **Raspberry Pi 5** — ternary BitNet b1.58 2B-4T (`i2_s`), no GPU,
+no driver stack.*
 
 **Honest take — when to pick which:**
 
@@ -315,11 +343,12 @@ own host can consume — render a spinner, log it, or stream it to a UI as JSON.
 See [`docs/agent.md`](docs/agent.md#progress-events).
 
 <p align="center">
-  <img src="assets/demo-agent.gif" alt="geist on-device agent: a 2B model lists a directory, summarizes a local file, and searches the web — all on the CPU" width="100%">
+  <img src="assets/demo-bitnet-agent-ls.gif" alt="geist-bitnet agent on a Mac listing a folder: routes to list_dir, calls it, and answers — model baked in, trace on" width="49%">
+  <img src="assets/demo-bitnet-agent-web.gif" alt="geist-bitnet agent on a Mac searching the web for the FIFA World Cup 2026: routes to web_search and returns titles + links" width="49%">
 </p>
 
-*Real `geist agent` run on Gemma 4 E2B-it (Mac, idle time trimmed): `list_dir` →
-`summarize_file` → live `web_search`, all in one process.*
+*Real `geist-bitnet agent` runs (Mac, BitNet 2B-4T baked in, no model file). Left:
+`list_dir`. Right: live `web_search`. The per-step trace prints by default.*
 
 ### Chat with memory
 
