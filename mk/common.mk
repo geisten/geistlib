@@ -203,7 +203,7 @@ STB_OBJ := $(BUILD_DIR)/third_party/stb/stb_impl.o
 # bin/.../tools/eval_geist).
 # Excluded: dump_llamacpp_logits.c (requires external llama.h from llama.cpp).
 TEST_SOURCES := $(wildcard tests/test_*.c tests/bench_*.c)
-DEMO_SOURCES := tools/geist.c tools/geist_chat.c tools/geist_agent.c tools/geist_shell.c tools/eval_geist.c tools/profile_decode.c
+DEMO_SOURCES := tools/geist.c tools/geist_chat.c tools/eval_geist.c tools/profile_decode.c
 
 # These tests call cblas_* directly as an independent reference to validate
 # geist's own kernels. They can't link under GEMM_PROVIDER=native (no cblas to

@@ -1,19 +1,65 @@
 /*
  * geist.c — the geist command-line interface.
  *
- * Loads a GGUF model and greedy-decodes a text continuation to stdout. This
- * is the v0.1 release CLI; it uses only the STABLE core of the public API
- * (include/geist.h): backend -> model -> session -> set_prompt -> decode_step
- * -> token_to_str. For an embeddable example see examples/simple_generate.c.
+ * Default mode loads a GGUF model and greedy-decodes a text continuation to
+ * stdout, using only the STABLE core of the public API (include/geist.h):
+ * backend -> model -> session -> set_prompt -> decode_step -> token_to_str.
  *
- *   geist <model.gguf> [prompt] [-n N]
+ * The `agent` subcommand runs the whitelist-gated tool loop instead (the same
+ * model can list a directory, summarize a file, search local docs, and search /
+ * read the web). It honours GEIST_FORCE_CALL=1 and GEIST_AGENT_TRACE=1.
+ *
+ *   geist <model.gguf> [prompt] [-n N]          # generate text
+ *   geist agent <model.gguf> [request] [-n N]   # tool-use agent (REPL if no request)
  *   geist --version
+ *
+ * For an embeddable text example see examples/simple_generate.c.
  */
+#define _POSIX_C_SOURCE 200809L /* the agent's opendir/fork-based tools */
+
 #include <geist.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The `agent` subcommand is a normal-build feature; an embedded single-file
+ * binary stays text-only (and lean — no curl/opendir code linked in). */
+#if !defined(GEIST_EMBEDDED_MODEL)
+#include "agent_docsearch.h"
+#include "agent_listdir.h"
+#include "agent_main.h"
+#include "agent_summarize.h"
+#include "agent_webfetch.h"
+#include "agent_websearch.h"
+
+static const char *AGENT_SYSTEM =
+        "You are a file and web assistant. To see a directory's contents reply with "
+        "{\"tool\":\"list_dir\",\"args\":{\"path\":\".\"}}. To summarize a file reply with "
+        "{\"tool\":\"summarize_file\",\"args\":{\"path\":\"<file>\"}}. To search local documents reply "
+        "with {\"tool\":\"doc_search\",\"args\":{\"query\":\"<query>\"}}. To search the web reply with "
+        "{\"tool\":\"web_search\",\"args\":{\"query\":\"<query>\"}}. To read a web page reply with "
+        "{\"tool\":\"web_fetch\",\"args\":{\"url\":\"<url>\"}}. After the tool result, "
+        "answer the user in one or two sentences.";
+
+/* Built after the model loads (summarize_file's sub-session needs model+backend).
+ * doc_search scans GEIST_DOCS (default ./docs); web_fetch's nullptr allowlist =
+ * any http/https, fine for a local demo — tighten via webfetch_tool("host,..."). */
+static size_t agent_tools(struct geist_model *model, struct geist_backend *be,
+                          struct geist_tool *out, size_t cap, void *ctx) {
+    (void) cap;
+    (void) ctx;
+    static struct summarize_ctx sctx;
+    sctx             = (struct summarize_ctx) {.model = model, .be = be, .root = "."};
+    const char *docs = getenv("GEIST_DOCS");
+    out[0]           = listdir_tool();
+    out[1]           = summarize_file_tool(&sctx);
+    out[2]           = docsearch_tool(docs && docs[0] ? docs : "./docs");
+    out[3]           = websearch_tool(nullptr);
+    out[4]           = webfetch_tool(nullptr);
+    return 5;
+}
+#endif /* !GEIST_EMBEDDED_MODEL */
 
 /* When built with `make EMBED_MODEL=...`, the GGUF is baked into the binary
  * (embedded_model.S) and the CLI takes only a prompt — no model-path argument. */
@@ -44,7 +90,8 @@ static int usage(const char *prog, int code) {
     fprintf(o,
         "geist %s — minimal CPU LLM inference\n\n"
         "Usage:\n"
-        "  %s <model.gguf> [prompt] [-n N]\n"
+        "  %s <model.gguf> [prompt] [-n N]        generate text\n"
+        "  %s agent <model.gguf> [request] [-n N] tool-use agent (REPL if no request)\n"
         "  %s --version\n\n"
         "Options:\n"
         "  -n, --max-tokens N   max new tokens to generate (default 64)\n"
@@ -52,12 +99,19 @@ static int usage(const char *prog, int code) {
         "  -h, --help           print this help and exit\n\n"
         "Example:\n"
         "  OMP_WAIT_POLICY=active %s model.gguf \"The capital of France is\" -n 40\n",
-        geist_version_string(), prog, prog, prog);
+        geist_version_string(), prog, prog, prog, prog);
 #endif
     return code;
 }
 
 int main(int argc, char **argv) {
+#if !defined(GEIST_EMBEDDED_MODEL)
+    /* `geist agent ...` -> the tool-use loop. Drop argv[0]; geist_agent_main then
+     * parses "agent" as its prog name and <model>/<request>/-n after it. */
+    if (argc > 1 && strcmp(argv[1], "agent") == 0) {
+        return geist_agent_main(argc - 1, argv + 1, AGENT_SYSTEM, agent_tools, nullptr);
+    }
+#endif
     const char *prog = "geist";
     const char *model_path = nullptr;
     const char *prompt = "Hello, my name is";

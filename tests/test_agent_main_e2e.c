@@ -1,5 +1,5 @@
 /*
- * test_agent_main_e2e — drive the built geist_agent CLI end to end (model-gated).
+ * test_agent_main_e2e — drive the built `geist agent` CLI end to end (model-gated).
  * Real binary, real model, the whitelist-gated loop over a throwaway doc dir
  * (GEIST_DOCS). Asserts MECHANICS (exits 0, prints a non-empty answer within a
  * small step budget), not content. SKIPs without a GGUF or the binary. No
@@ -25,19 +25,20 @@ int main(int argc, char **argv) {
     (void) argc;
     GEIST_REQUIRE_GGUF(model_path);
 
-    /* geist_agent is the sibling tools/ binary of this test's bin dir. */
+    /* geist is the sibling tools/ binary of this test's bin dir; `geist agent`
+     * is the tool-use subcommand. */
     char self[1024];
     snprintf(self, sizeof self, "%s", argv[0]);
     char *t = strstr(self, "/tests/");
     if (!t) {
-        GEIST_SKIP("cannot locate geist_agent from argv[0]");
+        GEIST_SKIP("cannot locate geist from argv[0]");
     }
     *t = '\0';
     char bin[1100];
-    snprintf(bin, sizeof bin, "%s/tools/geist_agent", self);
+    snprintf(bin, sizeof bin, "%s/tools/geist", self);
     FILE *bf = fopen(bin, "rb");
     if (!bf) {
-        GEIST_SKIP("geist_agent binary not built next to this test");
+        GEIST_SKIP("geist binary not built next to this test");
     }
     fclose(bf);
 
@@ -53,17 +54,17 @@ int main(int argc, char **argv) {
     char cmd[4096];
     snprintf(cmd,
              sizeof cmd,
-             "'%s' '%s' 'How long is the warranty on the X200 blender?' -n 2 > '%s' 2>/dev/null",
+             "'%s' agent '%s' 'How long is the warranty on the X200 blender?' -n 2 > '%s' 2>/dev/null",
              bin,
              model_path,
              OUTFILE);
     int rc = system(cmd);
-    fails += geist_expect(rc == 0, "geist_agent exited 0");
+    fails += geist_expect(rc == 0, "geist agent exited 0");
 
     char buf[8192];
     mind_slurp(OUTFILE, buf, sizeof buf);
     fprintf(stderr, "answer: \"%.200s\"\n", buf);
-    fails += geist_expect(buf[0] != '\0', "geist_agent printed a non-empty answer");
+    fails += geist_expect(buf[0] != '\0', "geist agent printed a non-empty answer");
 
     remove(E2E_DIR "/manual.md");
     remove(OUTFILE);
@@ -73,6 +74,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("geist_agent e2e: CLI answers from a doc folder\n");
+    printf("geist agent e2e: CLI answers from a doc folder\n");
     return GEIST_TEST_PASS;
 }

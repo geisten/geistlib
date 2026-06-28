@@ -93,7 +93,7 @@ process, nothing leaving the machine except an explicit web request:
 | Search the web | `web_search` | DuckDuckGo or self-hosted **SearXNG** |
 | Fetch & read a web page | `web_fetch` | `curl` → tag-stripped text |
 
-**Response time per task** — warm (model resident), greedy, via `geist_shell`. A
+**Response time per task** — warm (model resident), greedy, via `geist agent`. A
 light task's cost is the model **deciding + forming the call** (a few forward
 passes); the tool's own I/O is milliseconds. **Summarize** runs the whole document
 through the model, so it scales with length:
@@ -239,18 +239,19 @@ Ocean's deep secrets.
 
 ### Drive the agent
 
-`geist_shell` is the demo agent CLI (`make bin` → `bin/<target>/release/tools/geist_shell`).
-`GEIST_FORCE_CALL=1` forces the tool call so an untrained model still drives the tools:
+The agent is a subcommand of the main CLI — **`geist agent`** — so the same binary
+generates text *and* runs tools. `GEIST_FORCE_CALL=1` forces the tool call so an
+untrained model still drives the tools:
 
 ```console
-$ GEIST_FORCE_CALL=1 ./geist_shell model.gguf "Show me the contents of this folder"
+$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Show me the contents of this folder"
 notes.txt   report.md   config.toml   src
 
-$ GEIST_FORCE_CALL=1 ./geist_shell model.gguf "Summarize the file report.md"
+$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Summarize the file report.md"
 The Q3 plan migrates the billing system to the new ledger service, aiming for 40%
 lower reconciliation latency and a single source of truth for invoices …
 
-$ GEIST_FORCE_CALL=1 ./geist_shell model.gguf "Search the web for FIFA World Cup 2026"
+$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Search the web for FIFA World Cup 2026"
 1. 2026 FIFA World Cup - Wikipedia
    https://en.wikipedia.org/wiki/2026_FIFA_World_Cup
 …
@@ -260,7 +261,7 @@ Set `GEIST_AGENT_TRACE=1` to watch each step live (printed to **stderr**, so the
 answer on stdout stays clean) — useful while a request thinks for a few seconds:
 
 ```console
-$ GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1 ./geist_shell model.gguf "Summarize the file report.md"
+$ GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1 ./geist agent model.gguf "Summarize the file report.md"
 · routing summarize_file: selected
 → calling summarize_file: {"path":"report.md"}
 ⚙ running summarize_file
@@ -276,7 +277,7 @@ See [`docs/agent.md`](docs/agent.md#progress-events).
   <img src="assets/demo-agent.gif" alt="geist on-device agent: a 2B model lists a directory, summarizes a local file, and searches the web — all on the CPU" width="100%">
 </p>
 
-*Real `geist_shell` run on Gemma 4 E2B-it (Mac, idle time trimmed): `list_dir` →
+*Real `geist agent` run on Gemma 4 E2B-it (Mac, idle time trimmed): `list_dir` →
 `summarize_file` → live `web_search`, all in one process.*
 
 ### Embed the library (C)

@@ -8,6 +8,19 @@ minor release.
 
 ## [Unreleased]
 
+### Changed — one agent CLI, folded into `geist`
+
+- The tool-use agent is now the **`geist agent`** subcommand of the main CLI, not
+  a separate binary. `geist <model> <prompt>` generates text; `geist agent <model>
+  <request>` runs the whitelist-gated tool loop (list_dir, summarize_file,
+  doc_search, web_search, web_fetch). Both honour `GEIST_FORCE_CALL=1` and
+  `GEIST_AGENT_TRACE=1`. This removes the "which binary?" footgun — `./geist` no
+  longer silently ignores the agent env vars.
+- Removed the `geist_agent` and `geist_shell` demo binaries (merged into the
+  subcommand). The reusable engine `agent_main.h` gained a tool-builder callback
+  (so a tool's ctx can reference the loaded model) and now owns the force-call +
+  trace env knobs, so every CLI built on it behaves identically.
+
 ## [0.3.0] — 2026-06-23
 
 ### Added — on-device tool-use agent

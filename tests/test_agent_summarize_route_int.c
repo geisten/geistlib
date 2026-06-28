@@ -2,7 +2,7 @@
  * test_agent_summarize_route_int — the whole routing chain on a real document.
  *
  * Runs "Fasse die Datei wm2026_de.txt zusammen" through geist_agent_run with the
- * SAME two tools geist_shell ships (list_dir + summarize_file) and force_call on,
+ * SAME two file tools `geist agent` ships (list_dir + summarize_file) and force_call on,
  * over a committed fixture (tests/data/wm2026_de.txt, a German Wikipedia article).
  * This is the end-to-end exercise of everything the router work added: name
  * scoring + PMI calibration + the file-name tie-breaker must pick summarize_file
@@ -64,7 +64,7 @@ int main(void) {
         GEIST_SKIP("session_create failed");
     }
 
-    /* The exact two tools geist_shell ships; summarize confined to the fixture dir. */
+    /* The same two file tools `geist agent` ships; summarize confined to the fixture dir. */
     static struct summarize_ctx sctx;
     sctx = (struct summarize_ctx) {.model = model, .be = be, .root = FIXTURE_DIR};
     struct geist_tool tools[] = {listdir_tool(), summarize_file_tool(&sctx)};
