@@ -214,7 +214,10 @@ static void cpu_scalar_buffer_unmap(struct geist_buffer *buf) {
 
 /* ---------- Vtable + Descriptor ---------- */
 
-static const struct geist_backend_vtbl cpu_scalar_vtbl = {
+/* ponytail: exported (not static) so cpu_x86 can reuse it as its Phase-0
+ * vtbl. Per-op slots get replaced with native VPDPBUSD/VDPBF16PS kernels as
+ * Phase 1a/1b/2 land. See docs/LINUX_X86_SPEC.md. */
+const struct geist_backend_vtbl cpu_scalar_vtbl = {
         .create                = cpu_scalar_create,
         .destroy               = cpu_scalar_destroy,
         .supports_op           = cpu_scalar_supports_op,

@@ -431,6 +431,64 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
  *   6. out_buf += ple_lookup then *= PLE_INPUT_SCALE.
  *
  * Caller is responsible for n <= st->m_max. */
+/* Once-per-chunk PLE precompute sub-stage profiler (GEIST_PROFILE_PREFILL=1).
+ * Self-contained (the main layer.c profiler has fixed buckets); splits the
+ * otherwise-hidden compute_per_layer_inputs_batch cost into its steps. */
+enum plepre_stage {
+    PLEPRE_GATHER = 0, /* Q5_K dequant of the per-layer-token-embd rows */
+    PLEPRE_MODEL_PROJ, /* the BF16/F32 model_proj matmul */
+    PLEPRE_SCALE,
+    PLEPRE_RMSNORM,
+    PLEPRE_COMBINE,
+    PLEPRE_COUNT,
+};
+static uint64_t          g_plepre_ns[PLEPRE_COUNT];
+static uint64_t          g_plepre_calls[PLEPRE_COUNT];
+static const char *const g_plepre_names[PLEPRE_COUNT] = {
+        "gather_q5k",
+        "model_proj",
+        "scale",
+        "rmsnorm",
+        "combine",
+};
+
+static void plepre_print(void) {
+    uint64_t total = 0;
+    for (size_t i = 0; i < PLEPRE_COUNT; i++)
+        total += g_plepre_ns[i];
+    if (total == 0)
+        return;
+    fprintf(stderr, "transformer ple precompute (per-chunk):\n");
+    for (size_t i = 0; i < PLEPRE_COUNT; i++) {
+        fprintf(stderr,
+                "  %-12s %10.2f ms  %5.1f%%  (%llu calls)\n",
+                g_plepre_names[i],
+                (double) g_plepre_ns[i] / 1e6,
+                100.0 * (double) g_plepre_ns[i] / (double) total,
+                (unsigned long long) g_plepre_calls[i]);
+    }
+}
+
+static bool plepre_enabled(void) {
+    static int en = -1;
+    if (en < 0) {
+        const char *e = getenv("GEIST_PROFILE_PREFILL");
+        if (e == nullptr || e[0] == '\0')
+            e = getenv("GEIST_PROFILE_FORWARD");
+        en = (e != nullptr && e[0] == '1') ? 1 : 0;
+        if (en)
+            atexit(plepre_print);
+    }
+    return en != 0;
+}
+
+static void plepre_add(enum plepre_stage stage, uint64_t t0) {
+    if (t0 == 0)
+        return;
+    g_plepre_ns[stage] += transformer_profile_now_ns() - t0;
+    g_plepre_calls[stage]++;
+}
+
 [[nodiscard]] enum geist_status compute_per_layer_inputs_batch(struct transformer_arch_state *st,
                                                                size_t                         n,
                                                                const geist_token_t *ple_ids,
@@ -443,8 +501,11 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
     struct geist_backend            *be      = st->backend;
     const struct geist_backend_vtbl *v       = be->desc->vtbl;
     const size_t                     PLE_OUT = (size_t) st->ple_out;
+    const bool                       prof    = plepre_enabled();
+    uint64_t                         t0;
 
     /* 1+2. Dequant n PLE rows + scale by 16. */
+    t0 = prof ? transformer_profile_now_ns() : 0;
     {
         float *dst = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
         for (size_t t = 0; t < n; t++) {
@@ -460,18 +521,22 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
         }
         v->buffer_unmap(st->sess->scratch_ple_lookup);
     }
+    plepre_add(PLEPRE_GATHER, t0);
 
     /* 3. linear(h, model_proj) → out_buf.
      * P1.1.e: model_proj F32 dense → cblas trampoline. */
     struct geist_tensor t_h_2d   = view_2d(h_buf, (int64_t) n, st->d_model);
     struct geist_tensor t_out_2d = view_2d(out_buf, (int64_t) n, (int64_t) PLE_OUT);
-    enum geist_status   s        = linear_w_or_legacy(
+    t0                           = prof ? transformer_profile_now_ns() : 0;
+    enum geist_status s          = linear_w_or_legacy(
             be, v, h_buf, out_buf, &st->model_proj_w, n, &t_h_2d, &st->model_proj, &t_out_2d);
+    plepre_add(PLEPRE_MODEL_PROJ, t0);
     if (s != GEIST_OK) {
         return s;
     }
 
     /* 4. *= PLE_MODEL_PROJ_SCALE. */
+    t0 = prof ? transformer_profile_now_ns() : 0;
     {
         float *p = (float *) v->buffer_map(out_buf);
         for (size_t i = 0; i < n * PLE_OUT; i++) {
@@ -479,17 +544,21 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
         }
         v->buffer_unmap(out_buf);
     }
+    plepre_add(PLEPRE_SCALE, t0);
 
     /* 5. rmsnorm [n * NUM_LAYERS, HIDDEN_PER_LAYER]. */
     struct geist_tensor t_out_norm =
             view_2d(out_buf, (int64_t) (n * st->n_layers), st->hidden_per_layer);
     struct geist_tensor t_w = view_1d(st->model_proj_norm.buffer, st->hidden_per_layer);
+    t0                      = prof ? transformer_profile_now_ns() : 0;
     s                       = v->rmsnorm(be, &t_out_norm, &t_w, st->config.rms_eps, &t_out_norm);
+    plepre_add(PLEPRE_RMSNORM, t0);
     if (s != GEIST_OK) {
         return s;
     }
 
     /* 6. out_buf = (out_buf + ple_lookup) * PLE_INPUT_SCALE. */
+    t0 = prof ? transformer_profile_now_ns() : 0;
     {
         float *p   = (float *) v->buffer_map(out_buf);
         float *plu = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
@@ -499,6 +568,7 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
         v->buffer_unmap(st->sess->scratch_ple_lookup);
         v->buffer_unmap(out_buf);
     }
+    plepre_add(PLEPRE_COMBINE, t0);
     return GEIST_OK;
 }
 

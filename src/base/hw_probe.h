@@ -53,7 +53,11 @@ struct geist_hw_probe {
     bool has_accelerate;
     bool has_openmp;
 
-    size_t logical_cores; /* 0 when unknown. */
+    size_t logical_cores;  /* 0 when unknown. */
+    size_t physical_cores; /* 0 when unknown. SMT collapsed (Linux only today). */
+    size_t n_l3_domains;   /* 0 unknown, 1 = single L3, N = AMD multi-CCD / Intel
+                            * P/E cluster. Used by Phase-1a CCD-aware threading
+                            * (see docs/LINUX_X86_SPEC.md). */
 };
 
 void        geist_hw_probe_fill(struct geist_hw_probe *out);

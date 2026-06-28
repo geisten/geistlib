@@ -219,18 +219,33 @@ ifeq ($(GEMM_PROVIDER),native)
     TEST_SOURCES := $(filter-out $(CBLAS_REF_TESTS),$(TEST_SOURCES))
 endif
 
-# These tests call the cpu_neon kernels (linear_q4k_*, linear_iq*_, ...)
-# directly rather than through the backend vtable, so they only link in a
-# build that compiles cpu_neon. When cpu_neon is not in BACKENDS, drop them —
-# otherwise they fail at link with undefined references. The library and CLI
-# still build (and the vtable-routed tests still run) without cpu_neon.
+# These tests need cpu_neon: some call the cpu_neon kernels (linear_q4k_*,
+# linear_iq*_, ...) directly, others tune tolerances or assumptions to the
+# NEON W4A8 path (state_layer_fwd, multi_session). When cpu_neon is not in
+# BACKENDS, drop them — otherwise they fail at link or assert on scalar
+# drift. The library, CLI, and vtable-routed tests still run without cpu_neon.
 NEON_KERNEL_TESTS := \
     tests/test_q4k_kernel_int.c tests/test_q6k_prefill_int.c \
     tests/test_prefill_q3k_int.c tests/test_iq_kernel_int.c \
     tests/test_backend_vs_direct_int.c tests/bench_q4k_kernel.c \
-    tests/test_i2_s_parity.c tests/test_tl1_parity.c
+    tests/test_i2_s_parity.c tests/test_tl1_parity.c \
+    tests/bench_5trit_probe.c tests/test_state_layer_fwd_int.c \
+    tests/test_multi_session_int.c
 ifeq ($(filter cpu_neon,$(BACKENDS)),)
     TEST_SOURCES := $(filter-out $(NEON_KERNEL_TESTS),$(TEST_SOURCES))
+endif
+
+# Tests that exercise cpu_x86 kernel TUs directly. Linker-gated on the
+# backend being compiled in.
+X86_KERNEL_TESTS := tests/test_w4a8_kernel_unit.c tests/test_q4k_to_w4a8_unit.c \
+                    tests/test_w4a8_gemv_unit.c tests/test_bf16_gemm_unit.c \
+                    tests/test_q4k_to_q4kx8_unit.c \
+                    tests/test_q4kx8_gemm_unit.c \
+                    tests/test_w8a8_gemm_unit.c \
+                    tests/test_q6k_gemv_unit.c \
+                    tests/test_f32q_unit.c
+ifeq ($(filter cpu_x86,$(BACKENDS)),)
+    TEST_SOURCES := $(filter-out $(X86_KERNEL_TESTS),$(TEST_SOURCES))
 endif
 
 BIN_SOURCES  := $(TEST_SOURCES) $(DEMO_SOURCES)
