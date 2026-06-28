@@ -112,9 +112,17 @@ static size_t agent_tools(struct geist_model *model, struct geist_backend *be,
     out[2]           = docsearch_tool(docs && docs[0] ? docs : "./docs");
     out[3]           = websearch_tool(nullptr);
     out[4]           = webfetch_tool(nullptr);
-    out[5]           = remember_tool();
-    out[6]           = recall_tool();
-    return 7;
+    size_t n         = 5;
+    /* Memory tools are opt-in: include them only when a palace is configured
+     * (GEIST_MIND_DIR). On weak models the router scores tool NAMES, and adding
+     * remember/recall to the default set makes common requests (e.g. "summarize
+     * report.md") mis-route to recall on some CPU backends (seen on BitNet/NEON).
+     * `geist chat`'s /remember,/recall slash commands work regardless of this. */
+    if (getenv("GEIST_MIND_DIR")) {
+        out[n++] = remember_tool();
+        out[n++] = recall_tool();
+    }
+    return n;
 }
 
 /* Returns a system prompt = base + the notes index (so recall is usable: the
