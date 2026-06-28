@@ -8,6 +8,14 @@ minor release.
 
 ## [Unreleased]
 
+### Changed — clearer benchmark chart (total tok/s, geist vs llama.cpp)
+
+- Replaced the prefill/decode/total matplotlib chart with a focused grouped-bar
+  SVG of **total tok/s** (the user-facing metric) — geist vs llama.cpp (CPU and
+  OpenBLAS) on a Pi 5, labelled with model + OS, honest about the long-prompt tie.
+  Generated dependency-free by [`benchmark/chart_total_tps.py`](benchmark/chart_total_tps.py)
+  straight from `pi5_results.json` (no matplotlib).
+
 ### Changed — generation stops on a sentence by default (no `-n` needed)
 
 - `geist <model> "prompt"` treats the token budget as a **soft target**: it rounds

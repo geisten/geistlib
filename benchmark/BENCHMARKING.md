@@ -142,8 +142,13 @@ dev-box dep, kept off the measuring path). This keeps chart bars from drifting
 away from the numbers:
 
 ```sh
-pip install matplotlib
 JSON_OUT=benchmark/pi5_results.json python3 benchmark/total_tps.py   # measure (no deps)
+
+# README chart — total tok/s, geist vs llama.cpp (no deps, pure stdlib):
+python3 benchmark/chart_total_tps.py                                 # -> assets/pi5_total_tps.svg
+
+# optional detailed prefill/decode/total breakdown (needs matplotlib):
+pip install matplotlib
 python3 tools/bench_report.py benchmark/pi5_results.json -o assets/pi5_pp_decode_total.svg
 ```
 

@@ -108,7 +108,9 @@ Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5 and
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max** | prefill t/s (pp1024) | **144** | 97 *(llama.cpp)* |
 | BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s | **17.4** | 8.2 *(bitnet.cpp)* |
 
-<img src="assets/pi5_pp_decode_total.svg" alt="Prefill, decode and total tokens/s for geist vs llama.cpp on a Pi 5: total tracks decode; geist has the lowest prefill but the highest decode, leading total at the short prompt." width="100%">
+<p align="center">
+  <img src="assets/pi5_total_tps.svg" alt="Grouped bar chart of total tokens/s, geist vs llama.cpp (CPU and OpenBLAS), on a Raspberry Pi 5 with Gemma 4 E2B-it Q4_K_M: geist leads end-to-end at a short prompt (8.8 vs 8.2) and ties at a longer one (11.1 vs 11.3)." width="92%">
+</p>
 
 What you *feel* when you run a model is end-to-end throughput, and that's
 decode-dominated — which is exactly where geist wins. Full methodology and the
