@@ -161,6 +161,25 @@ static inline struct geist_chat_template geist_chat_template_for_model(struct ge
 
 enum { AGENT_MAX_ROUTED = 26 }; /* tools the router ranks (A..Z worth of names) */
 
+/* The agent's current step, surfaced to an optional on_event callback so a host
+ * (CLI, UI, server) can show live progress instead of treating geist_agent_run as
+ * a black box that only returns the final answer. One event per phase boundary. */
+enum geist_agent_phase {
+    GEIST_AGENT_ROUTING,   /* choosing which tool handles the request */
+    GEIST_AGENT_CALLING,   /* the tool call has been formed (forced or generated) */
+    GEIST_AGENT_RUNNING,   /* dispatching the tool */
+    GEIST_AGENT_OBSERVED,  /* the tool returned its observation */
+    GEIST_AGENT_ANSWERING, /* generating / returning the final text answer */
+};
+
+struct geist_agent_event {
+    enum geist_agent_phase phase;
+    size_t                 step;   /* 0-based loop index */
+    const char            *tool;   /* tool name when relevant, else nullptr */
+    const char            *detail; /* args on CALLING, an obs snippet on OBSERVED; may be nullptr.
+                                    * Valid ONLY during the callback — copy to retain. */
+};
+
 struct geist_agent {
     struct geist_model        *model;
     struct geist_session      *session;
@@ -178,6 +197,10 @@ struct geist_agent {
      * route then does ONE prefill (the request) instead of two. */
     float  route_base[AGENT_MAX_ROUTED];
     size_t route_base_n; /* tools the cached baseline covers; 0 = not computed */
+    /* Optional live-progress hook (nullptr = silent, zero overhead). Set after
+     * geist_agent_init. See struct geist_agent_event. */
+    void (*on_event)(void *ctx, const struct geist_agent_event *ev);
+    void *on_event_ctx;
 };
 
 /* Caller provides storage for *a (it is large — put it in static/heap, not a
@@ -202,6 +225,20 @@ static inline void geist_agent_init(struct geist_agent     *a,
     a->eot = a->tmpl.stop[0] ? geist_model_token_by_text(model, a->tmpl.stop) : GEIST_TOKEN_NONE;
     a->tlen         = 0;
     a->route_base_n = 0; /* router baseline computed lazily on the first route */
+    a->on_event     = nullptr;
+    a->on_event_ctx = nullptr;
+}
+
+/* Fire the progress hook if the host set one (one nullptr-check when unset). */
+static inline void agent_emit(struct geist_agent    *a,
+                              enum geist_agent_phase phase,
+                              size_t                 step,
+                              const char            *tool,
+                              const char            *detail) {
+    if (a->on_event) {
+        struct geist_agent_event ev = {.phase = phase, .step = step, .tool = tool, .detail = detail};
+        a->on_event(a->on_event_ctx, &ev);
+    }
 }
 
 /* Find the first {"tool":"NAME","args":{...}} in raw. Returns 1 and fills name
@@ -979,7 +1016,9 @@ static inline int agent_answer_degenerate(const char *s) {
          * selection clobbers the session, so re-set the transcript before forcing. */
         size_t tn;
         if (a->force_call && step == 0) {
+            agent_emit(a, GEIST_AGENT_ROUTING, step, nullptr, nullptr);
             int idx = agent_select_tool(a, req_len, req);
+            agent_emit(a, GEIST_AGENT_ROUTING, step, a->tools[idx].name, "selected");
             if (geist_session_reset(a->session) != GEIST_OK ||
                 geist_session_set_prompt(a->session, a->transcript) != GEIST_OK) {
                 return GEIST_E_INVALID_STATE;
@@ -995,12 +1034,15 @@ static inline int agent_answer_degenerate(const char *s) {
              * degenerate fragment (a lone "{"), surface the last observation
              * instead — the tool's output is what the user actually asked for. */
             const char *answer = (step > 0 && agent_answer_degenerate(turn)) ? obs : turn;
+            agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, answer);
             size_t      n      = agent_copy(resp_cap, resp, answer);
             if (resp_len) {
                 *resp_len = n;
             }
             return GEIST_OK;
         }
+
+        agent_emit(a, GEIST_AGENT_CALLING, step, name, args);
 
         const struct geist_tool *t  = agent_find(a, name);
         size_t                   on = 0;
@@ -1025,17 +1067,20 @@ static inline int agent_answer_degenerate(const char *s) {
         if (!t) {
             on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" is not allowed", name);
         } else {
+            agent_emit(a, GEIST_AGENT_RUNNING, step, t->name, nullptr);
             agent_args_normalize(t->args_schema, sizeof args, args); /* re-key to the schema */
             if (t->invoke(t->ctx, strlen(args), args, sizeof obs, obs, &on) != GEIST_OK) {
                 on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" failed", name);
             }
         }
+        agent_emit(a, GEIST_AGENT_OBSERVED, step, t ? t->name : name, obs);
 
         /* force_call is a single-task tool-runner: once the routed tool has run,
          * its observation IS the answer (the listing / the summary). Return it
          * directly rather than letting a weak model fumble a free answer turn or
          * fire more tools. (The normal, un-forced loop keeps composing answers.) */
         if (a->force_call && step == 0) {
+            agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, obs);
             size_t n = agent_copy(resp_cap, resp, obs);
             if (resp_len) {
                 *resp_len = n;
@@ -1066,6 +1111,39 @@ static inline int agent_answer_degenerate(const char *s) {
         a->tlen += (size_t) w;
     }
     return GEIST_OK; /* max_steps hit; resp holds the last turn (best effort) */
+}
+
+/* Human label for a phase (stable, ASCII). */
+static inline const char *geist_agent_phase_name(enum geist_agent_phase p) {
+    switch (p) {
+    case GEIST_AGENT_ROUTING: return "routing";
+    case GEIST_AGENT_CALLING: return "calling";
+    case GEIST_AGENT_RUNNING: return "running";
+    case GEIST_AGENT_OBSERVED: return "observed";
+    case GEIST_AGENT_ANSWERING: return "answering";
+    }
+    return "?";
+}
+
+/* Ready-made on_event handler: print one friendly progress line per step to the
+ * FILE* passed as ctx (use stderr so it doesn't mix into the answer on stdout).
+ * Wire it with: a.on_event = agent_event_print; a.on_event_ctx = stderr; */
+static inline void agent_event_print(void *ctx, const struct geist_agent_event *ev) {
+    FILE       *f      = ctx ? (FILE *) ctx : stderr;
+    const char *glyph  = ev->phase == GEIST_AGENT_ROUTING     ? "·"
+                         : ev->phase == GEIST_AGENT_CALLING   ? "\xe2\x86\x92"  /* → */
+                         : ev->phase == GEIST_AGENT_RUNNING   ? "\xe2\x9a\x99"  /* ⚙ */
+                         : ev->phase == GEIST_AGENT_OBSERVED  ? "\xe2\x9c\x93"  /* ✓ */
+                                                              : "\xe2\x97\x8f"; /* ● */
+    fprintf(f, "%s %s", glyph, geist_agent_phase_name(ev->phase));
+    if (ev->tool) {
+        fprintf(f, " %s", ev->tool);
+    }
+    if (ev->detail && ev->detail[0]) {
+        fprintf(f, ": %.80s%s", ev->detail, strlen(ev->detail) > 80 ? "…" : "");
+    }
+    fputc('\n', f);
+    fflush(f);
 }
 
 #endif /* GEIST_AGENT_H */
