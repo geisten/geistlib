@@ -354,7 +354,7 @@ model too:
 
 ```bash
 make EMBED_MODEL=bitnet-2b4t.i2_s.gguf   # bakes the GGUF into ./geist (zero-copy aliased)
-./geist "Write a haiku about the ocean:"           # generate — no model path
+./geist "The capital of France is"                 # generate — no model path
 ./geist agent "Summarize the file report.md"       # tools — no model path
 ```
 
@@ -362,8 +362,8 @@ Real-time on a **Raspberry Pi 5**, BitNet b1.58 2B-4T baked into the binary
 (`./geist`, no model file, no deps):
 
 <p align="center">
-  <img src="assets/demo-pi5-embed-gen.gif" alt="Embedded geist on a Pi 5 generating a haiku with the model baked in (loaded embedded), in real time" width="49%">
-  <img src="assets/demo-pi5-embed-agent.gif" alt="Embedded geist agent on a Pi 5 summarizing a local file with GEIST_AGENT_TRACE, model baked in" width="49%">
+  <img src="assets/demo-pi5-embed-gen.gif" alt="Embedded geist on a Pi 5 generating text with the model baked in (loaded embedded), in real time" width="49%">
+  <img src="assets/demo-pi5-embed-agent.gif" alt="Embedded geist agent on a Pi 5 summarizing a local file, the per-step trace shown by default, model baked in" width="49%">
 </p>
 
 *Left: text generation. Right: `geist agent` routing to `summarize_file` and
