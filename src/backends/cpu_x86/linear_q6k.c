@@ -129,8 +129,13 @@ static void w8x8_pointers(const uint8_t *blob,
         const float   *il_s;
         const float   *il_o;
         w8x8_pointers(blob, n_in, n_out, &il_qs, &il_s, &il_o);
-        w8x8_repack(n_out, n_in, blob_w, blob_s, blob_o,
-                    (uint8_t *) il_qs, (float *) il_s, (float *) il_o);
+        if (n_out % W8X16_NROWS == 0) {
+            w8x16_repack(n_out, n_in, blob_w, blob_s, blob_o,
+                         (uint8_t *) il_qs, (float *) il_s, (float *) il_o);
+        } else {
+            w8x8_repack(n_out, n_in, blob_w, blob_s, blob_o,
+                        (uint8_t *) il_qs, (float *) il_s, (float *) il_o);
+        }
     }
 
     w->aux_fp32  = (const float *) blob;
@@ -261,9 +266,11 @@ void cpu_x86_linear_q6k_mN(const float               *x,
         const float   *il_s;
         const float   *il_o;
         w8x8_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &il_qs, &il_s, &il_o);
-        w8x8_gemm(m, n_out, n_blocks_per_row,
-                  il_qs, il_s, il_o,
-                  acts, sum_a, scale_x, y);
+        if (n_out % W8X16_NROWS == 0) {
+            w8x16_gemm(m, n_out, n_blocks_per_row, il_qs, il_s, il_o, acts, sum_a, scale_x, y);
+        } else {
+            w8x8_gemm(m, n_out, n_blocks_per_row, il_qs, il_s, il_o, acts, sum_a, scale_x, y);
+        }
     } else {
         w8a8_gemm(m, n_out, n_blocks_per_row,
                   weights, w_scales, w_offsets,

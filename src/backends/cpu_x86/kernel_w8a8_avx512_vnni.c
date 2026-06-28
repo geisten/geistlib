@@ -242,3 +242,71 @@ void w8x8_gemm(
     }
 }
 
+/* 512-bit / 16-row variant of w8x8_gemm: one VPDPBUSD lands 16 output rows
+ * in the 16 int32 lanes. ~1.5× w8x8 on Zen 5's full-width AVX-512 datapath. */
+#define W8X16_JT 4
+
+void w8x16_gemm(
+        size_t        n_tokens,
+        size_t        n_rows,
+        size_t        n_blocks,
+        const uint8_t qs[static n_rows * n_blocks * W8A8_BLOCK_ELEMS],
+        const float   scales[static n_rows * n_blocks],
+        const float   offsets[static n_rows * n_blocks],
+        const int8_t  acts[static n_tokens * n_blocks * W8A8_BLOCK_ELEMS],
+        const int32_t sum_a_per_block[static n_tokens * n_blocks],
+        const float   scale_x[static n_tokens],
+        float         out[static n_tokens * n_rows]) {
+    const size_t n_in       = n_blocks * W8A8_BLOCK_ELEMS;
+    const size_t qs_per_grp = n_in * W8X16_NROWS;     /* bytes per 16-row group */
+    const size_t sc_per_grp = n_blocks * W8X16_NROWS; /* floats per group */
+    const size_t NG         = n_rows / W8X16_NROWS;
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t g = 0; g < NG; g++) {
+        const uint8_t *qs_g = qs + g * qs_per_grp;
+        const float   *sc_g = scales + g * sc_per_grp;
+        const float   *of_g = offsets + g * sc_per_grp;
+
+        for (size_t j0 = 0; j0 < n_tokens; j0 += W8X16_JT) {
+            const size_t jt = (n_tokens - j0 < W8X16_JT) ? (n_tokens - j0) : W8X16_JT;
+            __m512       acc[W8X16_JT];
+            for (size_t jj = 0; jj < jt; jj++) acc[jj] = _mm512_setzero_ps();
+
+            for (size_t b = 0; b < n_blocks; b++) {
+                /* 16-row weight stripes for block b: 4 stripes × 64 bytes. */
+                const uint8_t *wb  = qs_g + b * (W8A8_BLOCK_ELEMS * W8X16_NROWS);
+                const __m512   sc16 = _mm512_loadu_ps(sc_g + b * W8X16_NROWS);
+                const __m512   of16 = _mm512_loadu_ps(of_g + b * W8X16_NROWS);
+                const __m512i  w0  = _mm512_loadu_si512((const void *) (wb + 0));
+                const __m512i  w1  = _mm512_loadu_si512((const void *) (wb + 64));
+                const __m512i  w2  = _mm512_loadu_si512((const void *) (wb + 128));
+                const __m512i  w3  = _mm512_loadu_si512((const void *) (wb + 192));
+
+                for (size_t jj = 0; jj < jt; jj++) {
+                    const int8_t *a = acts + (j0 + jj) * n_in + b * W8A8_BLOCK_ELEMS;
+                    int32_t a4[4];
+                    __builtin_memcpy(a4, a, 16);
+                    __m512i d = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w0,
+                                                    _mm512_set1_epi32(a4[0]));
+                    d = _mm512_dpbusd_epi32(d, w1, _mm512_set1_epi32(a4[1]));
+                    d = _mm512_dpbusd_epi32(d, w2, _mm512_set1_epi32(a4[2]));
+                    d = _mm512_dpbusd_epi32(d, w3, _mm512_set1_epi32(a4[3]));
+                    const __m512 df   = _mm512_cvtepi32_ps(d);
+                    const __m512 sa_b = _mm512_set1_ps(
+                            (float) sum_a_per_block[(j0 + jj) * n_blocks + b]);
+                    acc[jj] = _mm512_fmadd_ps(sc16, df, acc[jj]);
+                    acc[jj] = _mm512_fnmadd_ps(of16, sa_b, acc[jj]);
+                }
+            }
+
+            for (size_t jj = 0; jj < jt; jj++) {
+                const __m512 y = _mm512_mul_ps(acc[jj], _mm512_set1_ps(scale_x[j0 + jj]));
+                _mm512_storeu_ps(out + (j0 + jj) * n_rows + g * W8X16_NROWS, y);
+            }
+        }
+    }
+}
+

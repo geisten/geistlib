@@ -91,6 +91,25 @@ static int scenario(size_t M, size_t N, size_t K) {
         free(qs); free(qsc); free(qof); free(Yx);
     }
 
+    /* Lane-parallel 512-bit W8x16 (N % 16 == 0). */
+    if (w8a8_isa_is_vnni() && (N % W8X16_NROWS) == 0) {
+        uint8_t *qs  = malloc(N * K);
+        float   *qsc = malloc(N * NB * sizeof(float));
+        float   *qof = malloc(N * NB * sizeof(float));
+        float   *Yx  = malloc(M * N * sizeof(float));
+        w8x16_repack(N, K, W, ws, wo, qs, qsc, qof);
+        w8x16_gemm(M, N, NB, qs, qsc, qof, acts, sa, sx, Yx);
+        double maxdx = 0.0;
+        for (size_t i = 0; i < M * N; i++) {
+            const double d = fabs((double) Yx[i] - (double) Yref[i]);
+            if (d > maxdx) maxdx = d;
+            if (d > 1e-3) fails++;
+        }
+        fprintf(stdout, "[w8x16_gemm M=%zu N=%zu K=%zu] max |Δ vs gemv| = %g, fails=%d\n",
+                M, N, K, maxdx, fails);
+        free(qs); free(qsc); free(qof); free(Yx);
+    }
+
     free(W); free(ws); free(wo); free(X);
     free(acts); free(sa); free(sx); free(tmp); free(Yg); free(Yref);
     return fails;

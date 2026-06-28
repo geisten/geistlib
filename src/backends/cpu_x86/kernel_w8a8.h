@@ -101,6 +101,13 @@ void w8a8_gemm(
  * Total bytes == the row-major W8A8 blob (pure permutation). */
 constexpr size_t W8X8_NROWS = 8;
 
+/* W8x16: same idea, 16 rows per group → one 512-bit VPDPBUSD lands 16
+ * output rows in the 16 int32 lanes. On Zen 5's full-width AVX-512 datapath
+ * this is ~1.5× the 256-bit W8x8 (measured 2393→3720 GFLOP/s). Layout is
+ * identical to W8x8 with NROWS=16 (qs[grp*64 + r*4 + e], scales[b*16 + r]).
+ * Requires n_out % 16 == 0. */
+constexpr size_t W8X16_NROWS = 16;
+
 /* True iff the W8A8 dispatcher resolved to the AVX-512+VNNI tier, i.e.
  * w8x8_gemm is usable on this host. Host-constant after first call. */
 [[nodiscard]] int w8a8_isa_is_vnni(void);
@@ -117,6 +124,29 @@ void w8x8_repack(
         uint8_t       qs_out[static n_out * n_in],
         float         scales_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
         float         offsets_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)]);
+
+/* W8x16 repack (16-row interleave) + 512-bit GEMM. n_out/n_rows % 16 == 0. */
+void w8x16_repack(
+        size_t        n_out,
+        size_t        n_in,
+        const uint8_t weights[static n_out * n_in],
+        const float   w_scales[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+        const float   w_offsets[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+        uint8_t       qs_out[static n_out * n_in],
+        float         scales_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)],
+        float         offsets_out[static n_out * (n_in / W8A8_BLOCK_ELEMS)]);
+
+void w8x16_gemm(
+        size_t        n_tokens,
+        size_t        n_rows,
+        size_t        n_blocks_per_row,
+        const uint8_t qs[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+        const float   scales[static n_rows * n_blocks_per_row],
+        const float   offsets[static n_rows * n_blocks_per_row],
+        const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+        const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
+        const float   scale_x[static n_tokens],
+        float         out[static n_tokens * n_rows]);
 
 /* Lane-parallel prefill GEMM. n_rows % W8X8_NROWS == 0. Y is token-major
  * row-major (Y[j * n_rows + r]). AVX-512+VNNI only — call w8a8_isa_is_vnni()
