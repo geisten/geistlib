@@ -14,8 +14,12 @@
  *     }
  *     int main(int argc, char **argv) {
  *         return geist_agent_main(argc, argv, "Answer from the local docs.",
- *                                 build, getenv("GEIST_DOCS"));
+ *                                 build, getenv("GEIST_DOCS"),
+ *                                 nullptr, nullptr);   // model from argv (not baked in)
  *     }
+ *
+ * Pass the embedded GGUF bounds as the last two args (instead of nullptr) for a
+ * `make EMBED_MODEL=...` single-file build — then the model positional is dropped.
  *
  * GEIST_FORCE_CALL=1 grammar-forces turn 0 into a tool call; GEIST_AGENT_TRACE=1
  * prints per-step progress on stderr. Both are handled here, so every agent CLI
@@ -62,9 +66,10 @@ static inline void agent_main_usage(FILE *o, const char *prog) {
 }
 
 /* Pure parse: no exit(), no output, so it is unit-testable. Fills *opts and
- * returns RUN / HELP / BADARGS. */
+ * returns RUN / HELP / BADARGS. want_model=false (embedded build: the model is
+ * baked in) drops the model positional, so the first positional is the question. */
 [[nodiscard]] static inline enum agent_main_parse
-agent_main_parse_args(int argc, char **argv, struct agent_main_opts *opts) {
+agent_main_parse_args(int argc, char **argv, bool want_model, struct agent_main_opts *opts) {
     opts->model     = nullptr;
     opts->question  = nullptr;
     opts->max_steps = 0;
@@ -84,7 +89,7 @@ agent_main_parse_args(int argc, char **argv, struct agent_main_opts *opts) {
             opts->max_steps = (size_t) n;
         } else if (a[0] == '-' && a[1] != '\0') {
             return AGENT_MAIN_BADARGS; /* unknown flag */
-        } else if (!opts->model) {
+        } else if (want_model && !opts->model) {
             opts->model = a;
         } else if (!opts->question) {
             opts->question = a;
@@ -92,7 +97,7 @@ agent_main_parse_args(int argc, char **argv, struct agent_main_opts *opts) {
             return AGENT_MAIN_BADARGS; /* extra positional */
         }
     }
-    return opts->model ? AGENT_MAIN_RUN : AGENT_MAIN_BADARGS;
+    return (!want_model || opts->model) ? AGENT_MAIN_RUN : AGENT_MAIN_BADARGS;
 }
 
 /* Run one request and print the answer + newline. Returns 0 on success. */
@@ -111,14 +116,17 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
 
 /* The reusable agent CLI. system_prompt must outlive the call; build_tools is
  * invoked once after the model loads to populate the tool table. */
-[[nodiscard]] static inline int geist_agent_main(int            argc,
-                                                 char         **argv,
-                                                 const char    *system_prompt,
-                                                 geist_tools_fn build_tools,
-                                                 void          *tools_ctx) {
-    const char            *prog = argc > 0 ? argv[0] : "geist_agent";
+[[nodiscard]] static inline int geist_agent_main(int                  argc,
+                                                 char               **argv,
+                                                 const char          *system_prompt,
+                                                 geist_tools_fn       build_tools,
+                                                 void                *tools_ctx,
+                                                 const unsigned char *emb_start,
+                                                 const unsigned char *emb_end) {
+    const char *prog       = argc > 0 ? argv[0] : "geist agent";
+    bool        want_model = emb_start == nullptr; /* false -> a baked-in model */
     struct agent_main_opts opts;
-    switch (agent_main_parse_args(argc, argv, &opts)) {
+    switch (agent_main_parse_args(argc, argv, want_model, &opts)) {
     case AGENT_MAIN_HELP:
         agent_main_usage(stdout, prog);
         return 0;
@@ -135,7 +143,11 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
         return 1;
     }
     struct geist_model *model = nullptr;
-    if (geist_model_load(opts.model, be, &model) != GEIST_OK) {
+    enum geist_status   ls =
+            want_model ? geist_model_load(opts.model, be, &model)
+                       : geist_model_load_from_memory(emb_start, (size_t) (emb_end - emb_start), be,
+                                                      &model);
+    if (ls != GEIST_OK) {
         fprintf(stderr, "agent: model_load failed: %s\n", geist_last_create_error());
         geist_backend_destroy(be);
         return 1;

@@ -23,9 +23,20 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The `agent` / `chat` subcommands are normal-build features; an embedded
- * single-file binary stays text-only (and lean — no curl/opendir code linked). */
-#if !defined(GEIST_EMBEDDED_MODEL)
+/* When built with `make EMBED_MODEL=...`, the GGUF is baked into the binary
+ * (embedded_model.S); the CLI then takes a prompt/request with no model path. */
+#if defined(GEIST_EMBEDDED_MODEL)
+extern const unsigned char geist_embedded_model_start[];
+extern const unsigned char geist_embedded_model_end[];
+enum { geist_embedded = 1 };
+#else
+enum { geist_embedded = 0 };
+#endif
+
+/* The `agent` and `chat` subcommands and their tools. Always compiled — an
+ * embedded build gets them too, driving the baked-in model (the 1+ GB model
+ * dwarfs the few KB of tool code, so the old "embedded = text-only" split bought
+ * nothing). */
 #include "agent_docsearch.h"
 #include "agent_listdir.h"
 #include "agent_main.h"
@@ -34,6 +45,46 @@
 #include "agent_webfetch.h"
 #include "agent_websearch.h"
 #include "mind.h"
+
+/* Open backend + model (+ greedy session). path == nullptr -> the embedded model.
+ * Returns 0 on success; logs and cleans up on failure. */
+static int cli_open(const char *path, struct geist_backend **be, struct geist_model **model,
+                    struct geist_session **sess) {
+    *be    = nullptr;
+    *model = nullptr;
+    *sess  = nullptr;
+    if (geist_backend_create("auto", nullptr, nullptr, be) != GEIST_OK) {
+        fprintf(stderr, "backend_create failed: %s\n", geist_last_create_error());
+        return 1;
+    }
+    enum geist_status ls;
+    if (path != nullptr) {
+        ls = geist_model_load(path, *be, model);
+    } else {
+#if defined(GEIST_EMBEDDED_MODEL)
+        ls = geist_model_load_from_memory(
+                geist_embedded_model_start,
+                (size_t) (geist_embedded_model_end - geist_embedded_model_start), *be, model);
+#else
+        fprintf(stderr, "no model path given and this build has no embedded model\n");
+        geist_backend_destroy(*be);
+        return 1;
+#endif
+    }
+    if (ls != GEIST_OK) {
+        fprintf(stderr, "model_load failed: %s\n", geist_last_create_error());
+        geist_backend_destroy(*be);
+        return 1;
+    }
+    struct geist_session_opts opts = {0}; /* greedy, deterministic */
+    if (geist_session_create(*model, *be, &opts, sess) != GEIST_OK) {
+        fprintf(stderr, "session_create failed\n");
+        geist_model_destroy(*model);
+        geist_backend_destroy(*be);
+        return 1;
+    }
+    return 0;
+}
 
 static const char *AGENT_SYSTEM =
         "You are a file, web and memory assistant. To see a directory's contents reply with "
@@ -112,28 +163,25 @@ static int run_chat(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--selftest") == 0) {
         return chat_selftest();
     }
-    if (argc != 2) {
-        fprintf(stderr, "usage: geist chat <model.gguf>   (or: geist chat --selftest)\n");
-        return 2;
+    /* Non-embedded: `geist chat <model>`. Embedded: `geist chat` (baked-in model). */
+    const char *model_path = nullptr;
+    if (geist_embedded) {
+        if (argc != 1) {
+            fprintf(stderr, "usage: geist chat   (or: geist chat --selftest)\n");
+            return 2;
+        }
+    } else {
+        if (argc != 2) {
+            fprintf(stderr, "usage: geist chat <model.gguf>   (or: geist chat --selftest)\n");
+            return 2;
+        }
+        model_path = argv[1];
     }
 
-    struct geist_backend *be = nullptr;
-    if (geist_backend_create("auto", nullptr, nullptr, &be) != GEIST_OK) {
-        fprintf(stderr, "chat: backend_create failed: %s\n", geist_last_create_error());
-        return 1;
-    }
-    struct geist_model *model = nullptr;
-    if (geist_model_load(argv[1], be, &model) != GEIST_OK) {
-        fprintf(stderr, "chat: model_load failed: %s\n", geist_last_create_error());
-        geist_backend_destroy(be);
-        return 1;
-    }
-    struct geist_session_opts sopts = {0}; /* greedy */
-    struct geist_session     *sess  = nullptr;
-    if (geist_session_create(model, be, &sopts, &sess) != GEIST_OK) {
-        fprintf(stderr, "chat: session_create failed\n");
-        geist_model_destroy(model);
-        geist_backend_destroy(be);
+    struct geist_backend *be    = nullptr;
+    struct geist_model   *model = nullptr;
+    struct geist_session *sess  = nullptr;
+    if (cli_open(model_path, &be, &model, &sess) != 0) {
         return 1;
     }
 
@@ -229,17 +277,6 @@ static int run_chat(int argc, char **argv) {
     geist_backend_destroy(be);
     return 0;
 }
-#endif /* !GEIST_EMBEDDED_MODEL */
-
-/* When built with `make EMBED_MODEL=...`, the GGUF is baked into the binary
- * (embedded_model.S) and the CLI takes only a prompt — no model-path argument. */
-#if defined(GEIST_EMBEDDED_MODEL)
-extern const unsigned char geist_embedded_model_start[];
-extern const unsigned char geist_embedded_model_end[];
-enum { geist_embedded = 1 };
-#else
-enum { geist_embedded = 0 };
-#endif
 
 static int usage(const char *prog, int code) {
     FILE *o = code ? stderr : stdout;
@@ -247,7 +284,9 @@ static int usage(const char *prog, int code) {
     fprintf(o,
         "geist %s — minimal CPU LLM inference (model embedded in this binary)\n\n"
         "Usage:\n"
-        "  %s [prompt] [-n N]\n"
+        "  %s [prompt] [-n N]              generate text\n"
+        "  %s agent [request] [-n N]       one-shot tool-use agent\n"
+        "  %s chat                         multi-turn chat + memory palace\n"
         "  %s --version\n\n"
         "Options:\n"
         "  -n, --max-tokens N   max new tokens to generate (default 64)\n"
@@ -255,7 +294,7 @@ static int usage(const char *prog, int code) {
         "  -h, --help           print this help and exit\n\n"
         "Example:\n"
         "  OMP_WAIT_POLICY=active %s \"The capital of France is\" -n 40\n",
-        geist_version_string(), prog, prog, prog);
+        geist_version_string(), prog, prog, prog, prog, prog);
 #else
     fprintf(o,
         "geist %s — minimal CPU LLM inference\n\n"
@@ -276,18 +315,22 @@ static int usage(const char *prog, int code) {
 }
 
 int main(int argc, char **argv) {
-#if !defined(GEIST_EMBEDDED_MODEL)
-    /* `geist agent ...` -> one-shot tool loop. Drop argv[0]; geist_agent_main then
-     * parses "agent" as its prog name and <model>/<request>/-n after it. */
+    /* `geist agent ...` -> one-shot tool loop. Drop argv[0]; geist_agent_main
+     * parses "agent" as its prog name and the rest after it. In an embedded build
+     * the model is baked in (pass its bounds; no model positional). */
     if (argc > 1 && strcmp(argv[1], "agent") == 0) {
+#if defined(GEIST_EMBEDDED_MODEL)
         return geist_agent_main(argc - 1, argv + 1, system_with_index(AGENT_SYSTEM), agent_tools,
-                                nullptr);
+                                nullptr, geist_embedded_model_start, geist_embedded_model_end);
+#else
+        return geist_agent_main(argc - 1, argv + 1, system_with_index(AGENT_SYSTEM), agent_tools,
+                                nullptr, nullptr, nullptr);
+#endif
     }
     /* `geist chat ...` -> multi-turn conversation with the same tools + memory. */
     if (argc > 1 && strcmp(argv[1], "chat") == 0) {
         return run_chat(argc - 1, argv + 1);
     }
-#endif
     const char *prog = "geist";
     const char *model_path = nullptr;
     const char *prompt = "Hello, my name is";
