@@ -8,6 +8,14 @@ minor release.
 
 ## [Unreleased]
 
+### Added — AMD x86 (AVX-512) benchmarks vs llama.cpp
+
+- README now reports the `cpu_x86` backend's measurements on an **AMD Ryzen 9
+  9950X** (Zen 5, 16C/32T): Gemma 4 E2B Q4_K_M prefill **512 vs 495** (+3.4 %) and
+  decode **48.6 vs 44.1** (+10 %); Llama 3.2 3B prefill **351 vs 346** (+1.4 %),
+  decode 34.1 vs 34.5 (parity) — geist matches-to-beats llama.cpp on x86. Added to
+  the headline table and the system-grouped scoreboard chart.
+
 ### Changed — clearer benchmark charts (geist vs the baseline)
 
 - Replaced the prefill/decode/total matplotlib chart with two focused, dependency-free

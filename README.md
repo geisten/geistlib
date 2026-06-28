@@ -87,7 +87,7 @@ platform-specific** — one download runs on every platform.
 three things back-to-back: generate, then **drive tools** — list a folder, search the
 web live. BitNet is a **base model with no tool training**; geist forces a valid tool
 call from outside the sampler, so it routes and calls anyway. The same binary runs
-real-time on a [Raspberry Pi 5](#faster-where-it-counts-on-the-edge).*
+real-time on a [Raspberry Pi 5](#faster-where-it-counts).*
 
 ---
 
@@ -97,9 +97,10 @@ real-time on a [Raspberry Pi 5](#faster-where-it-counts-on-the-edge).*
 Static musl on Linux ARM (< 1 MB), Apple frameworks only on macOS. Fold the model
 in too (`make EMBED_MODEL=…`) and deployment is *literally one file*.
 
-### Faster where it counts on the edge
-Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5 and
-**prefill** on Apple's matrix unit:
+### Faster where it counts
+Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5,
+**prefill** on Apple's matrix unit, and now **matches-to-beats llama.cpp on AMD
+x86** (AVX-512) — across edge and desktop:
 
 | model | platform | metric | **geist** | baseline |
 | :-- | :-- | :-- | --: | --: |
@@ -107,14 +108,18 @@ Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5 and
 | Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | decode t/s | **7.5** | 6.8 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max** | prefill t/s (pp1024) | **144** | 97 *(llama.cpp)* |
 | BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s | **17.4** | 8.2 *(bitnet.cpp)* |
+| Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | prefill t/s | **512** | 495 *(llama.cpp)* |
+| Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | decode t/s | **48.6** | 44.1 *(llama.cpp)* |
+| Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | prefill t/s | **351** | 346 *(llama.cpp)* |
+| Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | decode t/s | 34.1 | 34.5 *(llama.cpp)* |
 
 <p align="center">
-  <img src="assets/headline_benchmarks.svg" alt="Horizontal scoreboard of geist's throughput as a ratio of the baseline engine: BitNet decode on Pi 5 is 2.1x bitnet.cpp; Gemma prefill on M1 Max is 1.5x llama.cpp; Gemma decode and total on Pi 5 are ~1.1x llama.cpp. Each row is a different metric and baseline." width="100%">
+  <img src="assets/headline_benchmarks.svg" alt="Horizontal scoreboard of geist's throughput as a ratio of the baseline engine, grouped by system. Raspberry Pi 5: BitNet decode 2.1x bitnet.cpp, Gemma decode and total ~1.1x llama.cpp. Apple M1 Max: Gemma prefill 1.5x llama.cpp. AMD Ryzen 9 9950X: Gemma decode 1.1x, Gemma and Llama 3.2 prefill at parity-to-ahead vs llama.cpp. Each row is a different metric and baseline." width="100%">
 </p>
 
-*geist meets or beats every baseline — on each platform's **headline** metric (a
-different one per row: decode, prefill, total). Below, the one that matters most
-for chat: **end-to-end total** throughput.*
+*geist meets or beats every baseline — across **Raspberry Pi 5**, **Apple M1 Max**
+and **AMD x86 (AVX-512)**, each on its own headline metric (decode, prefill, total).
+Below, the one that matters most for chat: **end-to-end total** throughput.*
 
 <p align="center">
   <img src="assets/pi5_total_tps.svg" alt="Grouped bar chart of total tokens/s, geist vs llama.cpp (CPU and OpenBLAS), on a Raspberry Pi 5 with Gemma 4 E2B-it Q4_K_M: geist leads end-to-end at a short prompt (8.8 vs 8.2) and ties at a longer one (11.1 vs 11.3)." width="92%">

@@ -18,6 +18,8 @@ SYSTEMS = {
                "accent": "#e11d48", "tint": "#fff5f6"},
     "M1 Max": {"name": "Apple M1 Max",   "detail": "Apple Silicon · CPU via Accelerate / AMX · desktop",
                "accent": "#7c3aed", "tint": "#f7f5ff"},
+    "AMD 9950X": {"name": "AMD Ryzen 9 9950X", "detail": "Zen 5 · 16C/32T · AVX-512 · desktop",
+               "accent": "#2563eb", "tint": "#eff6ff"},
 }
 
 W = 880
@@ -108,10 +110,16 @@ def main():
             s.append(f'<text x="{LBL}" y="{mid + 14:.1f}" font-size="11" fill="#64748b">'
                      f'{num(row["geist"])} vs {num(row["baseline"])} t/s · {esc(row["baseline_engine"])}</text>')
             by = mid - 11
-            s.append(f'<rect x="{BX0}" y="{by:.1f}" width="{xr(1.0) - BX0:.1f}" height="23" rx="3" fill="{TEAL_LITE}"/>')
-            s.append(f'<rect x="{xr(1.0):.1f}" y="{by:.1f}" width="{xr(ratio) - xr(1.0):.1f}" height="23" rx="3" fill="{TEAL}"/>')
+            # light = up to parity; solid teal = the margin past parity (none if sub-parity)
+            s.append(f'<rect x="{BX0}" y="{by:.1f}" width="{xr(min(ratio, 1.0)) - BX0:.1f}" '
+                     f'height="23" rx="3" fill="{TEAL_LITE}"/>')
+            if ratio > 1.0:
+                s.append(f'<rect x="{xr(1.0):.1f}" y="{by:.1f}" width="{xr(ratio) - xr(1.0):.1f}" '
+                         f'height="23" rx="3" fill="{TEAL}"/>')
+            disp = round(ratio, 1)
+            badge = "#0e7490" if disp >= 1.0 else "#64748b"
             s.append(f'<text x="{xr(ratio) + 9:.1f}" y="{mid + 5:.1f}" font-size="15" font-weight="700" '
-                     f'fill="#0e7490">{ratio:.1f}&#215;</text>')
+                     f'fill="{badge}">{disp:.1f}&#215;</text>')
 
     s.append(f'<text x="40" y="{H - 15}" font-size="11" fill="#94a3b8">'
              'Each row is that system&#8217;s headline metric (decode / prefill / total) vs its own '
