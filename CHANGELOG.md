@@ -8,13 +8,17 @@ minor release.
 
 ## [Unreleased]
 
-### Changed — `geist agent` trace on by default
+### Changed — `geist agent` sensible defaults (force + trace on)
 
-- The per-step trace (`· routing → calling → running → observed → answering`) now
-  prints by default for the one-shot `geist agent` — it goes to stderr, so the
-  answer on stdout stays clean and piping is unaffected. Silence it with
-  `GEIST_AGENT_TRACE=0`. `geist chat` is the opposite: trace stays **opt-in**
-  (`GEIST_AGENT_TRACE=1`) so a conversation is quiet by default.
+- `geist agent` now **forces the tool call by default** (`GEIST_FORCE_CALL=0` to
+  opt out). The bundled models (BitNet 2B-4T, Gemma 4 E2B) aren't tool-trained, so
+  without forcing the agent would never run a tool — making it the default means
+  `geist agent "<request>"` just works, no env prefix. (`geist chat` never forces.)
+- The per-step trace (`· routing → calling → running → observed → answering`) also
+  prints by default for `geist agent` — it goes to stderr, so the answer on stdout
+  stays clean and piping is unaffected. Silence it with `GEIST_AGENT_TRACE=0`.
+  `geist chat` is the opposite: trace stays **opt-in** (`GEIST_AGENT_TRACE=1`) so a
+  conversation is quiet by default.
 
 ### Added — single-file builds get the agent + chat
 

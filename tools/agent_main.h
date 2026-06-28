@@ -110,6 +110,15 @@ static inline bool agent_trace_enabled(void) {
     return t == nullptr || strcmp(t, "0") != 0;
 }
 
+/* `geist agent` forces turn 0 into a valid tool call by default — the models geist
+ * ships with (BitNet 2B-4T, Gemma 4 E2B) are not tool-trained and rarely emit a
+ * clean call on their own, so without this the agent would never run a tool. Turn-
+ * trained models, or "just answer" use, opt out with GEIST_FORCE_CALL=0. */
+static inline bool agent_force_enabled(void) {
+    const char *f = getenv("GEIST_FORCE_CALL");
+    return f == nullptr || strcmp(f, "0") != 0;
+}
+
 /* Run one request and print the answer + newline. Returns 0 on success. */
 static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
     static char resp[AGENT_MAIN_RESP_CAP];
@@ -179,11 +188,10 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
 
     static struct geist_agent agent; /* large -> static, not a deep stack */
     geist_agent_init(&agent, model, sess, n_tools, tools, opts.max_steps, system_prompt);
-    /* GEIST_FORCE_CALL=1: grammar-force turn 0 into a valid tool call. Lets a
-     * task agent drive a model that isn't tool-trained (e.g. BitNet 2B-4T) — the
-     * proof that prompted tool use needs forcing, not training. */
-    const char *fc   = getenv("GEIST_FORCE_CALL");
-    agent.force_call = fc != nullptr && fc[0] == '1';
+    /* Force turn 0 into a valid tool call (default on; GEIST_FORCE_CALL=0 to let
+     * the model decide) — the bundled models aren't tool-trained, so without this
+     * the agent would never run a tool. See agent_force_enabled. */
+    agent.force_call = agent_force_enabled();
     if (agent_trace_enabled()) { /* live per-step progress on stderr (default on) */
         agent.on_event     = agent_event_print;
         agent.on_event_ctx = stderr;

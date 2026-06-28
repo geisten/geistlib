@@ -248,18 +248,19 @@ Ocean's deep secrets.
 ### Drive the agent
 
 The agent is a subcommand of the main CLI — **`geist agent`** — so the same binary
-generates text *and* runs tools. `GEIST_FORCE_CALL=1` forces the tool call so an
-untrained model still drives the tools:
+generates text *and* runs tools. It **forces the tool call by default**, so even
+the bundled un-tool-trained models reliably drive the tools (set
+`GEIST_FORCE_CALL=0` to let the model decide instead):
 
 ```console
-$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Show me the contents of this folder"
+$ ./geist agent model.gguf "Show me the contents of this folder"
 notes.txt   report.md   config.toml   src
 
-$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Summarize the file report.md"
+$ ./geist agent model.gguf "Summarize the file report.md"
 The Q3 plan migrates the billing system to the new ledger service, aiming for 40%
 lower reconciliation latency and a single source of truth for invoices …
 
-$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Search the web for FIFA World Cup 2026"
+$ ./geist agent model.gguf "Search the web for FIFA World Cup 2026"
 1. 2026 FIFA World Cup - Wikipedia
    https://en.wikipedia.org/wiki/2026_FIFA_World_Cup
 …
@@ -269,7 +270,7 @@ A per-step trace prints **by default** to **stderr** (so the answer on stdout
 stays clean) — you can watch the agent route, call, and observe:
 
 ```console
-$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Summarize the file report.md"
+$ ./geist agent model.gguf "Summarize the file report.md"
 · routing summarize_file: selected
 → calling summarize_file: {"path":"report.md"}
 ⚙ running summarize_file
