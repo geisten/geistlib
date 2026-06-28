@@ -98,9 +98,11 @@ extern void cblas_sgemv(int          order,
  * skinny F32/BF16 dense matmuls (e.g. Gemma 4's per-layer PLE projections,
  * called ~70× per prefill chunk) through cblas — there the per-call thread
  * spawn/sync overhead dominates. Pin BLAS to 1 thread once (measured +9% on
- * Gemma 4 prefill). Weak symbol: present on OpenBLAS, absent (no-op) on
- * Accelerate / other providers. */
-extern void openblas_set_num_threads(int) __attribute__((weak));
+ * Gemma 4 prefill). OpenBLAS-only: the symbol doesn't exist under Accelerate
+ * (which manages its own threading) and a weak undefined symbol is a hard
+ * link error on Mach-O — so gate it on the openblas provider macro. */
+#if defined(GEIST_GEMM_OPENBLAS)
+extern void openblas_set_num_threads(int);
 
 static void geist_blas_pin_single_thread(void) {
     static int done = 0;
@@ -108,10 +110,12 @@ static void geist_blas_pin_single_thread(void) {
         return;
     }
     done = 1;
-    if (openblas_set_num_threads != nullptr) {
-        openblas_set_num_threads(1);
-    }
+    openblas_set_num_threads(1);
 }
+#else
+static void geist_blas_pin_single_thread(void) {
+}
+#endif
 
 static void geist_sgemm_impl(int          transA,
                              int          transB,
