@@ -30,6 +30,7 @@
 #include <geist.h>
 #include <geist_util.h>
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -62,6 +63,85 @@ static inline size_t agent_tail_loop(const char *out, size_t w) {
         }
     }
     return 0;
+}
+
+/* Greedy-decode the open assistant turn into out[0..cap): stop on EOS / eot, a
+ * single-token control marker (<...>), the buffer cap, or a degeneration loop
+ * (keep one copy of the looped block). Then cut at the EARLIEST leaked turn
+ * marker — one emitted as several BPE pieces slips past the single-token break —
+ * and trim trailing whitespace. Returns bytes written. The session must already
+ * be prefilled to where the model generates. Shared by the agent loop and the
+ * summarizer sub-session (the only two greedy generators). */
+static inline size_t geist_generate_greedy(struct geist_session     *s,
+                                           geist_token_t              eos,
+                                           geist_token_t              eot,
+                                           const char *const          leak[],
+                                           int                        max_tokens,
+                                           size_t                     cap,
+                                           char                       out[static cap]) {
+    size_t w = 0;
+    for (int i = 0; i < max_tokens; i++) {
+        geist_token_t tok = 0;
+        if (geist_session_decode_step(s, &tok) != GEIST_OK) {
+            break;
+        }
+        if (tok == eos || (eot != GEIST_TOKEN_NONE && tok == eot)) {
+            break;
+        }
+        const char *piece = geist_session_token_to_str(s, tok);
+        size_t      pl    = piece ? strlen(piece) : 0;
+        if (pl == 0 || (pl >= 2 && piece[0] == '<' && piece[pl - 1] == '>')) {
+            break; /* control marker / empty piece */
+        }
+        if (w + pl + 1 >= cap) {
+            break;
+        }
+        memcpy(out + w, piece, pl);
+        w += pl;
+        size_t loop_p = agent_tail_loop(out, w);
+        if (loop_p > 0) {
+            w -= 2 * loop_p; /* drop the repeats, keep one copy */
+            break;
+        }
+    }
+    out[w] = '\0';
+    const char *cut = nullptr;
+    for (size_t m = 0; leak && leak[m] != nullptr; m++) {
+        const char *hit = strstr(out, leak[m]);
+        if (hit && (!cut || hit < cut)) {
+            cut = hit;
+        }
+    }
+    if (cut) {
+        w = (size_t) (cut - out);
+        while (w > 0 && (out[w - 1] == '\n' || out[w - 1] == ' ')) {
+            w--;
+        }
+        out[w] = '\0';
+    }
+    return w;
+}
+
+/* The "write a message, set *out_len, return OK" tail every tool shares, for the
+ * error/short-result paths. Tools that fill `out` incrementally use agent_ret. */
+static inline enum geist_status
+agent_obs(size_t out_cap, char out[static out_cap], size_t *out_len, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(out, out_cap, fmt, ap);
+    va_end(ap);
+    if (out_len) {
+        *out_len = (n < 0) ? 0 : (size_t) n;
+    }
+    return GEIST_OK;
+}
+
+/* Set *out_len (out is already filled) and return OK. */
+static inline enum geist_status agent_ret(size_t *out_len, size_t w) {
+    if (out_len) {
+        *out_len = w;
+    }
+    return GEIST_OK;
 }
 
 /* A host action. The agent never runs anything not in the whitelist passed to
@@ -862,56 +942,8 @@ static inline size_t agent_force_call(struct geist_agent *a,
 /* Decode one assistant turn into out (greedy, stops on EOS / the template stop /
  * a degenerate repetition loop — see agent_tail_loop). Returns bytes written. */
 static inline size_t agent_generate_turn(struct geist_agent *a, size_t cap, char out[static cap]) {
-    size_t w = 0;
-    for (int i = 0; i < GEIST_AGENT_MAX_DECODE; i++) {
-        geist_token_t tok = 0;
-        if (geist_session_decode_step(a->session, &tok) != GEIST_OK) {
-            break;
-        }
-        if (tok == a->eos || tok == a->eot) {
-            break;
-        }
-        const char *piece = geist_session_token_to_str(a->session, tok);
-        if (!piece) {
-            break;
-        }
-        size_t pl = strlen(piece);
-        if (pl >= 2 && piece[0] == '<' && piece[pl - 1] == '>') {
-            break; /* control marker */
-        }
-        if (w + pl + 1 >= cap) {
-            break;
-        }
-        memcpy(out + w, piece, pl);
-        w += pl;
-        size_t loop_p = agent_tail_loop(out, w);
-        if (loop_p > 0) {
-            /* Drop the repeats but keep ONE copy of the block: if the whole turn
-             * is the loop (model degenerated from the first token), this still
-             * leaves content rather than an empty answer. */
-            w -= 2 * loop_p;
-            break;
-        }
-    }
-    out[w] = '\0';
-    /* A turn marker emitted as multiple BPE pieces (e.g. </start_of_turn>)
-     * slips past the single-token break above; cut the turn at the earliest
-     * template leak marker so it never leaks into the call/answer. */
-    const char *cut = nullptr;
-    for (size_t m = 0; a->tmpl.leak[m] != nullptr; m++) {
-        const char *hit = strstr(out, a->tmpl.leak[m]);
-        if (hit && (!cut || hit < cut)) {
-            cut = hit;
-        }
-    }
-    if (cut) {
-        w = (size_t) (cut - out);
-        while (w > 0 && (out[w - 1] == '\n' || out[w - 1] == ' ')) {
-            w--;
-        }
-        out[w] = '\0';
-    }
-    return w;
+    return geist_generate_greedy(a->session, a->eos, a->eot, a->tmpl.leak, GEIST_AGENT_MAX_DECODE,
+                                 cap, out);
 }
 
 /* Build the fixed system prompt (scope definition): role + the tool whitelist

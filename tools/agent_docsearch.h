@@ -97,11 +97,8 @@ static inline enum geist_status docsearch_invoke(void      *ctx,
     const char *dir = (const char *) ctx;
     char        query[256];
     if (!agent_json_str(args, "query", sizeof query, query)) {
-        size_t n = (size_t) snprintf(out, out_cap, "error: missing \"query\"");
-        if (out_len) {
-            *out_len = n;
-        }
-        return GEIST_OK; /* a usable observation, not a hard failure */
+        /* a usable observation, not a hard failure */
+        return agent_obs(out_cap, out, out_len, "error: missing \"query\"");
     }
 
     char   words[DOCSEARCH_MAX_WORDS][64];
@@ -116,11 +113,7 @@ static inline enum geist_status docsearch_invoke(void      *ctx,
 
     DIR *d = opendir(dir);
     if (!d) {
-        size_t n = (size_t) snprintf(out, out_cap, "error: cannot open doc dir");
-        if (out_len) {
-            *out_len = n;
-        }
-        return GEIST_OK;
+        return agent_obs(out_cap, out, out_len, "error: cannot open doc dir");
     }
 
     size_t         w    = 0;
@@ -186,12 +179,9 @@ static inline enum geist_status docsearch_invoke(void      *ctx,
     closedir(d);
 
     if (hits == 0) {
-        w = (size_t) snprintf(out, out_cap, "no matches for \"%s\"", query);
+        return agent_obs(out_cap, out, out_len, "no matches for \"%s\"", query);
     }
-    if (out_len) {
-        *out_len = w;
-    }
-    return GEIST_OK;
+    return agent_ret(out_len, w);
 }
 
 /* Ready-made whitelist entry; bind .ctx to your doc directory. */
