@@ -336,9 +336,9 @@ backend, gemma4 arch supported). After the decode kernels:
 
 | model              | metric  | geist | llama.cpp | result |
 | ------------------ | ------- | ----: | --------: | ------ |
-| Llama 3.2 3B Q4_K_M | prefill | 338   | 346       | 98 %   |
-| Llama 3.2 3B Q4_K_M | decode  | 34.2  | 34.5      | parity |
-| **Gemma 4 E2B Q4_K_M** | prefill | **488** | 495     | 98.6 % |
+| Llama 3.2 3B Q4_K_M | prefill | **351** | 346     | **+1.4 %** |
+| Llama 3.2 3B Q4_K_M | decode  | 34.1  | 34.5      | parity |
+| **Gemma 4 E2B Q4_K_M** | prefill | **512** | 495     | **+3.4 %** |
 | **Gemma 4 E2B Q4_K_M** | decode  | **48.6** | 44.1   | **geist +10 %** |
 
 Progression of the Gemma 4 numbers across the session: prefill 29 → 452
