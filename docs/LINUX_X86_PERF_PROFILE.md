@@ -338,7 +338,7 @@ backend, gemma4 arch supported). After the decode kernels:
 | ------------------ | ------- | ----: | --------: | ------ |
 | Llama 3.2 3B Q4_K_M | prefill | 338   | 346       | 98 %   |
 | Llama 3.2 3B Q4_K_M | decode  | 34.2  | 34.5      | parity |
-| **Gemma 4 E2B Q4_K_M** | prefill | **452** | 495     | 91 %   |
+| **Gemma 4 E2B Q4_K_M** | prefill | **488** | 495     | 98.6 % |
 | **Gemma 4 E2B Q4_K_M** | decode  | **48.6** | 44.1   | **geist +10 %** |
 
 Progression of the Gemma 4 numbers across the session: prefill 29 → 452
