@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Render headline_results.json into a horizontal "scoreboard" SVG: geist vs the
-# baseline across model/OS, each row its OWN metric + baseline, compared fairly
-# as a ratio (geist / baseline). Pure stdlib — no matplotlib, no deps. Numbers
-# come straight from the JSON; this only draws them.
+# baseline, GROUPED BY SYSTEM (OS / machine) so the different platforms stand out.
+# Each row is its OWN metric + baseline, compared fairly as a ratio (geist /
+# baseline). Pure stdlib — no matplotlib, no deps. Numbers come from the JSON.
 #
 #   python3 benchmark/chart_headline.py            # -> assets/headline_benchmarks.svg
 #   python3 benchmark/chart_headline.py out.svg    # custom path
@@ -12,15 +12,29 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "headline_results.json")
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "assets", "headline_benchmarks.svg")
 
-W = 860
-HEAD, ROW, FOOT = 110, 66, 44
-BX0, BX1 = 350, 800     # bar track (x)
-RMAX = 2.4              # ratio axis max
-TEAL, TEAL_LITE, GRID = "#0ea5a4", "#c7ede3", "#e5e7eb"
+# Per-system presentation (display name, machine detail, accent, light tint).
+SYSTEMS = {
+    "Pi 5":   {"name": "Raspberry Pi 5", "detail": "ARM Cortex-A76 · 4 cores · CPU-only edge board",
+               "accent": "#e11d48", "tint": "#fff5f6"},
+    "M1 Max": {"name": "Apple M1 Max",   "detail": "Apple Silicon · CPU via Accelerate / AMX · desktop",
+               "accent": "#7c3aed", "tint": "#f7f5ff"},
+}
+
+W = 880
+GX0, GX1 = 32, 848            # group block x-extent
+LBL = 56                      # left label x
+BX0, BX1 = 412, 820           # bar track x
+RMAX = 2.4                    # ratio axis max
+HEADER_H, ROW_H, GPAD, GGAP = 42, 56, 12, 16
+TEAL, TEAL_LITE = "#0ea5a4", "#c7ede3"
 
 
 def esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def num(v):
+    return f"{v:g}"
 
 
 def xr(r):
@@ -29,53 +43,78 @@ def xr(r):
 
 def main():
     data = json.load(open(DATA))
-    rows = sorted(data["rows"], key=lambda r: r["geist"] / r["baseline"], reverse=True)
-    H = HEAD + len(rows) * ROW + FOOT
-    plot_top, plot_bot = HEAD - 8, HEAD + len(rows) * ROW
+    # group rows by OS, sort rows within a group + groups by their best ratio
+    groups = {}
+    for r in data["rows"]:
+        groups.setdefault(r["os"], []).append(r)
+    for rows in groups.values():
+        rows.sort(key=lambda r: r["geist"] / r["baseline"], reverse=True)
+    order = sorted(groups, key=lambda o: max(r["geist"] / r["baseline"] for r in groups[o]), reverse=True)
 
-    def g(v):  # tidy number: 144 not 144.0
-        return f"{v:g}"
+    # layout pass: assign a y to each group
+    y = 104
+    blocks = []
+    for o in order:
+        rows = groups[o]
+        gh = HEADER_H + len(rows) * ROW_H + GPAD
+        blocks.append((o, rows, y, gh))
+        y += gh + GGAP
+    gtop, gbot = 104, y - GGAP
+    H = gbot + 44
 
     s = []
     s.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" '
              f'font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">')
-    s.append(f'<rect x="0" y="0" width="{W}" height="{H}" rx="14" fill="#ffffff" stroke="{GRID}"/>')
+    s.append(f'<rect x="0" y="0" width="{W}" height="{H}" rx="14" fill="#ffffff" stroke="#e5e7eb"/>')
     s.append('<text x="40" y="46" font-size="23" font-weight="700" fill="#0f172a">'
              'Headline benchmarks — geist vs the baseline</text>')
     s.append('<text x="40" y="72" font-size="13.5" fill="#475569">'
-             'each bar = geist throughput &#247; the baseline engine, on its own metric  ·  '
-             '1.0&#215; = parity, longer = faster</text>')
+             'grouped by system · each bar = geist throughput &#247; the baseline engine, on its own '
+             'metric · 1.0&#215; = parity</text>')
 
-    # x-axis ticks (ratio) + the 1.0x parity reference line
+    # system group blocks (tint + accent rail + header)
+    for o, rows, top, gh in blocks:
+        sysm = SYSTEMS.get(o, {"name": o, "detail": "", "accent": "#475569", "tint": "#f8fafc"})
+        s.append(f'<rect x="{GX0}" y="{top}" width="{GX1 - GX0}" height="{gh}" rx="12" '
+                 f'fill="{sysm["tint"]}" stroke="#eef2f6"/>')
+        s.append(f'<rect x="{GX0 + 3}" y="{top + 10}" width="5" height="{gh - 20}" rx="2.5" fill="{sysm["accent"]}"/>')
+        # system pill + machine detail
+        pill_w = 18 + len(sysm["name"]) * 8.3
+        s.append(f'<rect x="{LBL}" y="{top + 12}" width="{pill_w:.0f}" height="23" rx="11.5" fill="{sysm["accent"]}"/>')
+        s.append(f'<text x="{LBL + pill_w / 2:.0f}" y="{top + 28}" font-size="13" font-weight="700" '
+                 f'fill="#ffffff" text-anchor="middle">{esc(sysm["name"])}</text>')
+        s.append(f'<text x="{LBL + pill_w + 12:.0f}" y="{top + 28}" font-size="12" fill="#64748b">'
+                 f'{esc(sysm["detail"])}</text>')
+
+    # ratio gridlines + the 1.0x parity reference, spanning all blocks
     for r in (0.0, 1.0, 2.0):
         x = xr(r)
-        dashed = ' stroke-dasharray="4 4"' if r == 1.0 else ''
-        col = "#94a3b8" if r == 1.0 else GRID
-        s.append(f'<line x1="{x:.1f}" y1="{plot_top}" x2="{x:.1f}" y2="{plot_bot}" stroke="{col}"{dashed}/>')
-        s.append(f'<text x="{x:.1f}" y="{plot_bot + 18}" font-size="11" fill="#94a3b8" '
-                 f'text-anchor="middle">{g(r)}&#215;</text>')
-    s.append(f'<text x="{xr(1.0):.1f}" y="{plot_top - 6}" font-size="11" fill="#94a3b8" '
+        dash = ' stroke-dasharray="4 4"' if r == 1.0 else ''
+        col = "#cbd5e1" if r == 1.0 else "#e8edf2"
+        s.append(f'<line x1="{x:.1f}" y1="{gtop}" x2="{x:.1f}" y2="{gbot}" stroke="{col}"{dash}/>')
+        s.append(f'<text x="{x:.1f}" y="{gbot + 18}" font-size="11" fill="#94a3b8" '
+                 f'text-anchor="middle">{num(r)}&#215;</text>')
+    s.append(f'<text x="{xr(1.0):.1f}" y="{gtop - 5}" font-size="11" fill="#94a3b8" '
              f'text-anchor="middle">parity</text>')
 
-    for i, row in enumerate(rows):
-        ratio = row["geist"] / row["baseline"]
-        top = HEAD + i * ROW
-        mid = top + ROW / 2
-        by = mid - 12
-        # left label: model (bold) + "os · metric · G vs B t/s (engine)"
-        s.append(f'<text x="40" y="{mid - 3:.1f}" font-size="14" font-weight="600" fill="#0f172a">'
-                 f'{esc(row["model"])} <tspan fill="#94a3b8" font-weight="400">· {esc(row["quant"])}</tspan></text>')
-        s.append(f'<text x="40" y="{mid + 14:.1f}" font-size="11.5" fill="#64748b">'
-                 f'{esc(row["os"])} · {esc(row["metric"])} · {g(row["geist"])} vs {g(row["baseline"])} t/s '
-                 f'({esc(row["baseline_engine"])})</text>')
-        # two-tone bar: 0..parity light, parity..ratio solid (the win)
-        s.append(f'<rect x="{BX0}" y="{by:.1f}" width="{xr(1.0) - BX0:.1f}" height="24" rx="3" fill="{TEAL_LITE}"/>')
-        s.append(f'<rect x="{xr(1.0):.1f}" y="{by:.1f}" width="{xr(ratio) - xr(1.0):.1f}" height="24" rx="3" fill="{TEAL}"/>')
-        s.append(f'<text x="{xr(ratio) + 9:.1f}" y="{mid + 5:.1f}" font-size="15" font-weight="700" '
-                 f'fill="#0e7490">{ratio:.1f}&#215;</text>')
+    # rows: model · metric label, two-tone bar, ratio badge
+    for o, rows, top, gh in blocks:
+        for i, row in enumerate(rows):
+            ratio = row["geist"] / row["baseline"]
+            rtop = top + HEADER_H + i * ROW_H
+            mid = rtop + ROW_H / 2 - 4
+            s.append(f'<text x="{LBL}" y="{mid - 3:.1f}" font-size="13.5" font-weight="600" fill="#0f172a">'
+                     f'{esc(row["model"])} <tspan fill="#94a3b8" font-weight="400">· {esc(row["metric"])}</tspan></text>')
+            s.append(f'<text x="{LBL}" y="{mid + 14:.1f}" font-size="11" fill="#64748b">'
+                     f'{num(row["geist"])} vs {num(row["baseline"])} t/s · {esc(row["baseline_engine"])}</text>')
+            by = mid - 11
+            s.append(f'<rect x="{BX0}" y="{by:.1f}" width="{xr(1.0) - BX0:.1f}" height="23" rx="3" fill="{TEAL_LITE}"/>')
+            s.append(f'<rect x="{xr(1.0):.1f}" y="{by:.1f}" width="{xr(ratio) - xr(1.0):.1f}" height="23" rx="3" fill="{TEAL}"/>')
+            s.append(f'<text x="{xr(ratio) + 9:.1f}" y="{mid + 5:.1f}" font-size="15" font-weight="700" '
+                     f'fill="#0e7490">{ratio:.1f}&#215;</text>')
 
-    s.append(f'<text x="40" y="{H - 16}" font-size="11" fill="#94a3b8">'
-             'Each row is that model/OS&#8217;s headline metric (decode / prefill / total) vs its own '
+    s.append(f'<text x="40" y="{H - 15}" font-size="11" fill="#94a3b8">'
+             'Each row is that system&#8217;s headline metric (decode / prefill / total) vs its own '
              'baseline engine — comparable only as a ratio. Full sweep: benchmark/.</text>')
     s.append('</svg>')
 
