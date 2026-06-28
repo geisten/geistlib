@@ -109,6 +109,14 @@ Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5 and
 | BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s | **17.4** | 8.2 *(bitnet.cpp)* |
 
 <p align="center">
+  <img src="assets/headline_benchmarks.svg" alt="Horizontal scoreboard of geist's throughput as a ratio of the baseline engine: BitNet decode on Pi 5 is 2.1x bitnet.cpp; Gemma prefill on M1 Max is 1.5x llama.cpp; Gemma decode and total on Pi 5 are ~1.1x llama.cpp. Each row is a different metric and baseline." width="100%">
+</p>
+
+*geist meets or beats every baseline — on each platform's **headline** metric (a
+different one per row: decode, prefill, total). Below, the one that matters most
+for chat: **end-to-end total** throughput.*
+
+<p align="center">
   <img src="assets/pi5_total_tps.svg" alt="Grouped bar chart of total tokens/s, geist vs llama.cpp (CPU and OpenBLAS), on a Raspberry Pi 5 with Gemma 4 E2B-it Q4_K_M: geist leads end-to-end at a short prompt (8.8 vs 8.2) and ties at a longer one (11.1 vs 11.3)." width="92%">
 </p>
 

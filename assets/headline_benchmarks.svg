@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 418" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect x="0" y="0" width="860" height="418" rx="14" fill="#ffffff" stroke="#e5e7eb"/>
+<text x="40" y="46" font-size="23" font-weight="700" fill="#0f172a">Headline benchmarks — geist vs the baseline</text>
+<text x="40" y="72" font-size="13.5" fill="#475569">each bar = geist throughput &#247; the baseline engine, on its own metric  ·  1.0&#215; = parity, longer = faster</text>
+<line x1="350.0" y1="102" x2="350.0" y2="374" stroke="#e5e7eb"/>
+<text x="350.0" y="392" font-size="11" fill="#94a3b8" text-anchor="middle">0&#215;</text>
+<line x1="537.5" y1="102" x2="537.5" y2="374" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<text x="537.5" y="392" font-size="11" fill="#94a3b8" text-anchor="middle">1&#215;</text>
+<line x1="725.0" y1="102" x2="725.0" y2="374" stroke="#e5e7eb"/>
+<text x="725.0" y="392" font-size="11" fill="#94a3b8" text-anchor="middle">2&#215;</text>
+<text x="537.5" y="96" font-size="11" fill="#94a3b8" text-anchor="middle">parity</text>
+<text x="40" y="140.0" font-size="14" font-weight="600" fill="#0f172a">BitNet b1.58 2B-4T <tspan fill="#94a3b8" font-weight="400">· i2_s</tspan></text>
+<text x="40" y="157.0" font-size="11.5" fill="#64748b">Pi 5 · decode · 17.4 vs 8.2 t/s (bitnet.cpp)</text>
+<rect x="350" y="131.0" width="187.5" height="24" rx="3" fill="#c7ede3"/>
+<rect x="537.5" y="131.0" width="210.4" height="24" rx="3" fill="#0ea5a4"/>
+<text x="756.9" y="148.0" font-size="15" font-weight="700" fill="#0e7490">2.1&#215;</text>
+<text x="40" y="206.0" font-size="14" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· Q4_K_M</tspan></text>
+<text x="40" y="223.0" font-size="11.5" fill="#64748b">M1 Max · prefill · 144 vs 97 t/s (llama.cpp)</text>
+<rect x="350" y="197.0" width="187.5" height="24" rx="3" fill="#c7ede3"/>
+<rect x="537.5" y="197.0" width="90.9" height="24" rx="3" fill="#0ea5a4"/>
+<text x="637.4" y="214.0" font-size="15" font-weight="700" fill="#0e7490">1.5&#215;</text>
+<text x="40" y="272.0" font-size="14" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· Q4_K_M</tspan></text>
+<text x="40" y="289.0" font-size="11.5" fill="#64748b">Pi 5 · decode · 7.5 vs 6.8 t/s (llama.cpp)</text>
+<rect x="350" y="263.0" width="187.5" height="24" rx="3" fill="#c7ede3"/>
+<rect x="537.5" y="263.0" width="19.3" height="24" rx="3" fill="#0ea5a4"/>
+<text x="565.8" y="280.0" font-size="15" font-weight="700" fill="#0e7490">1.1&#215;</text>
+<text x="40" y="338.0" font-size="14" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· Q4_K_M</tspan></text>
+<text x="40" y="355.0" font-size="11.5" fill="#64748b">Pi 5 · total · 8.8 vs 8.2 t/s (llama.cpp)</text>
+<rect x="350" y="329.0" width="187.5" height="24" rx="3" fill="#c7ede3"/>
+<rect x="537.5" y="329.0" width="13.7" height="24" rx="3" fill="#0ea5a4"/>
+<text x="560.2" y="346.0" font-size="15" font-weight="700" fill="#0e7490">1.1&#215;</text>
+<text x="40" y="402" font-size="11" fill="#94a3b8">Each row is that model/OS&#8217;s headline metric (decode / prefill / total) vs its own baseline engine — comparable only as a ratio. Full sweep: benchmark/.</text>
+</svg>

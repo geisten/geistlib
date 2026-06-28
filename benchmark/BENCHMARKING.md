@@ -144,8 +144,9 @@ away from the numbers:
 ```sh
 JSON_OUT=benchmark/pi5_results.json python3 benchmark/total_tps.py   # measure (no deps)
 
-# README chart — total tok/s, geist vs llama.cpp (no deps, pure stdlib):
-python3 benchmark/chart_total_tps.py                                 # -> assets/pi5_total_tps.svg
+# README charts — no deps, pure stdlib, numbers straight from the JSON:
+python3 benchmark/chart_total_tps.py    # total tok/s vs llama.cpp -> assets/pi5_total_tps.svg
+python3 benchmark/chart_headline.py     # headline scoreboard      -> assets/headline_benchmarks.svg
 
 # optional detailed prefill/decode/total breakdown (needs matplotlib):
 pip install matplotlib
