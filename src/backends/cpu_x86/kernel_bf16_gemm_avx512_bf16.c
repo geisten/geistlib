@@ -53,7 +53,10 @@ void bf16_gemm_avx512_bf16(size_t       M,
     /* Pre-convert X (fp32) → bf16 once per call so the inner loop only
      * loads + broadcasts already-converted pairs (no per-iter fp32→bf16
      * inside the hot path). One contiguous M*K bf16 buffer. */
-    bf16_t *X_bf = aligned_alloc(64, M * K * sizeof(bf16_t));
+    /* aligned_alloc (C11) requires size to be a multiple of the alignment —
+     * round up, else a tiny M*K aborts under ASan. */
+    const size_t x_bytes = ((M * K * sizeof(bf16_t)) + 63u) & ~(size_t) 63u;
+    bf16_t      *X_bf    = aligned_alloc(64, x_bytes);
     if (X_bf == nullptr) {
         return;
     }
