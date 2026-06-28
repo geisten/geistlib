@@ -8,6 +8,8 @@ minor release.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-06-28
+
 ### Added — one-command install + prebuilt single-file binaries
 
 - **`install.sh`** — `curl -fsSL …/install.sh | sh` detects your platform,
