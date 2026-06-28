@@ -35,7 +35,7 @@ static const struct geist_tool STUB = {
 
 /* Parse a fixed argv array (no GNU statement-expressions -> -Wpedantic clean). */
 static enum agent_main_parse parse(struct agent_main_opts *o, int argc, char **argv) {
-    return agent_main_parse_args(argc, argv, o);
+    return agent_main_parse_args(argc, argv, /*want_model=*/true, o);
 }
 
 static void test_parse(void) {

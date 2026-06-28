@@ -8,6 +8,55 @@ minor release.
 
 ## [Unreleased]
 
+### Added — one-command install + prebuilt single-file binaries
+
+- **`install.sh`** — `curl -fsSL …/install.sh | sh` detects your platform,
+  downloads the single-file `geist-bitnet` (BitNet 2B-4T baked in), and drops it on
+  your PATH. One command, one file, nothing else to fetch.
+- Releases now ship a `geist-bitnet-<platform>.tar.gz` by default — a self-contained
+  binary that runs with **no model argument**. The release workflow's
+  `EMBED_MODEL_URL` defaults to the BitNet GGUF; clear it to stop shipping them.
+- README "Run it now" is now genuinely copy-paste runnable and split into two clear
+  paths: ① the single baked-in binary (no model file), ② the < 1 MB engine + a GGUF
+  (one model file runs on every platform). All download links are direct.
+
+### Changed — `geist agent` sensible defaults (force + trace on)
+
+- `geist agent` now **forces the tool call by default** (`GEIST_FORCE_CALL=0` to
+  opt out). The bundled models (BitNet 2B-4T, Gemma 4 E2B) aren't tool-trained, so
+  without forcing the agent would never run a tool — making it the default means
+  `geist agent "<request>"` just works, no env prefix. (`geist chat` never forces.)
+- The per-step trace (`· routing → calling → running → observed → answering`) also
+  prints by default for `geist agent` — it goes to stderr, so the answer on stdout
+  stays clean and piping is unaffected. Silence it with `GEIST_AGENT_TRACE=0`.
+  `geist chat` is the opposite: trace stays **opt-in** (`GEIST_AGENT_TRACE=1`) so a
+  conversation is quiet by default.
+
+### Added — name the embedded binary (`EMBED_NAME`)
+
+- `make EMBED_MODEL=... EMBED_NAME=geist-bitnet` names the self-contained binary
+  distinctly. An embedded binary takes **no model-path argument** (the model is
+  baked in), unlike the plain `geist` — giving it its own name avoids the "which
+  one needs a model?" confusion. Defaults to `geist` (unchanged for normal builds).
+
+### Added — single-file builds get the agent + chat
+
+- A `make EMBED_MODEL=...` build is no longer text-only: `geist agent <request>`
+  and `geist chat` now drive the baked-in model (no model-path argument). One
+  self-contained binary generates text *and* runs tools — demoed with BitNet
+  b1.58 2B-4T embedded, generating and summarizing a file on a Raspberry Pi 5.
+  `geist_agent_main` takes the embedded GGUF bounds; `agent_main_parse_args`
+  gained `want_model` to drop the model positional when it is baked in.
+
+### Changed — memory tools are opt-in (`GEIST_MIND_DIR`)
+
+- The agent's default toolset dropped from 7 to 5: `remember`/`recall` are
+  included only when a palace is configured (`GEIST_MIND_DIR`). On weak models the
+  router scores tool names, and the two memory tools made common requests (e.g.
+  "summarize report.md") mis-route to `recall` on some CPU backends (BitNet/NEON).
+  Fewer default tools → robust routing across backends. `geist chat`'s
+  `/remember`,`/recall` slash commands are unaffected (they call `mind.h` directly).
+
 ### Changed — bounded chat context (sliding window)
 
 - Multi-turn `geist chat` now evicts the oldest turns once the transcript passes

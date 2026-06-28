@@ -143,8 +143,10 @@ int main(int argc, char **argv) {
     snprintf(env, sizeof env, "%s GEIST_MIND_DIR='%s'", forced, mind_recall_dir);
     expect_scenario("recall", run_agent(env, "recall-fixture", 2));
 
-    /* 6. a plain question, no force, no tool: the model answers directly */
-    expect_scenario("plain_answer", run_agent("", "What is the capital of France?", 8));
+    /* 6. a plain question with forcing off (GEIST_FORCE_CALL=0): the model answers
+     * directly, no tool. Forcing is on by default, so opt out explicitly here. */
+    expect_scenario("plain_answer",
+                    run_agent("GEIST_FORCE_CALL=0", "What is the capital of France?", 8));
 
     /* cleanup */
     remove(DIR_ "/report.md");

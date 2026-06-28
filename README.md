@@ -4,7 +4,10 @@
 
 # geist 👻
 
-> Run a real LLM **and an on-device agent** from one tiny CPU binary — no BLAS, no Python, no CUDA, nothing to install.
+> Run a real LLM on a low-cost CPU box and get **close to big-model quality** —
+> through aggressive, platform-specific optimization and an agent harness, not a
+> bigger model. The smallest builds need no model file at all: **one binary is the
+> whole thing** — no BLAS, no Python, no CUDA, nothing to install.
 
 [![CI](https://github.com/geisten/geistlib/actions/workflows/ci.yml/badge.svg)](https://github.com/geisten/geistlib/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -13,34 +16,72 @@
 [![Status](https://img.shields.io/badge/status-experimental%20(v0.3.0)-yellow.svg)](#-status)
 
 **geist** is a high-performance inference engine that runs small LLMs **on the CPU
-with zero dependencies**. One small static binary. Copy it to a machine and it
+with zero dependencies**. On the platforms it targets it is **already faster than
+llama.cpp** end-to-end — and ~2× Microsoft's bitnet.cpp on ternary models (see the
+[benchmarks](#-features)). One small static binary. Copy it to a machine and it
 runs — it generates text, reads your local files, and searches the web, all
 locally.
 
-> 🚀 **In a hurry?** Jump to [Getting Started](#-getting-started) — build and chat
-> in two minutes.
+For now we focus on a **handful of models** — mostly quantized and tuned for
+specific target platforms — rather than running everything everywhere. That is a
+deliberate scope, not a ceiling: GPU support is on the roadmap too, where the aim
+is highly-optimized, **near-real-time** inference.
 
----
+## Run it now
 
-## 🤔 Why geist?
+One command — the installer picks your platform, downloads the single-file
+**`geist-bitnet`** (BitNet 2B-4T baked in), and puts it on your PATH:
 
-The universal engines (llama.cpp & co.) run *every* model on *every* backend. That
-generality costs you: a dispatch loop in the hot path, a pile of optional
-dependencies, and a runtime to install before anything happens.
+```bash
+curl -fsSL https://raw.githubusercontent.com/geisten/geistlib/main/install.sh | sh
+geist-bitnet "The capital of France is"
+```
 
-geist makes the opposite bet — **a few small models, done excellently, on cheap
-hardware you already own.**
+That binary *is* the whole app — no model file, no BLAS, no Python, no CUDA.
+Prefer a manual download, or want vision + audio? Pick a path below.
 
-- **Nothing to install.** Deploy by copying one file. The Linux ARM build is a
-  fully static musl binary (**< 1 MB**, `ldd` → *not a dynamic executable*); the
-  macOS build links only Apple's own frameworks. No BLAS, no Python, no CUDA.
-- **Embed it anywhere.** The C header *is* the ABI — any language FFIs in with no
-  shim. The whole stable text-generation core is **~70 lines of C**.
-- **Built for weak models.** A 2 B model rarely emits a clean tool call. geist
-  doesn't trust it to: routing and tool-call structure are *forced from outside
-  the sampler*, so even an untrained model drives the tools reliably.
-- **Edge-first.** A 4.6 B model fits in **4 GB of RAM** on a $50–$100 board — no
-  GPU, no driver stack, on-device audio built in.
+### ① One file, nothing else — BitNet 2B-4T baked in
+
+A small binary with the model **baked in** — download, run, no model argument:
+
+| Platform | Single-file download (model included) |
+| :-- | :-- |
+| **Raspberry Pi / Linux** · ARM64 | [⬇ geist-bitnet-linux-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-arm64.tar.gz) |
+| **macOS** · Apple Silicon | [⬇ geist-bitnet-macos-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-macos-arm64.tar.gz) |
+
+```bash
+./geist-bitnet "The capital of France is"     # generate — no model argument
+./geist-bitnet agent "Summarize report.md"    # one-shot tool-use agent
+./geist-bitnet chat                           # multi-turn chat + memory
+```
+
+### ② The engine + your own model — text · vision · audio
+
+The model-less binary is **< 1 MB**; pair it with a GGUF. A model file is **not
+platform-specific** — one download runs on every platform.
+
+| Platform | Engine (model-less) |
+| :-- | :-- |
+| **macOS** · Apple Silicon | [⬇ geist-macos-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-macos-arm64.tar.gz) |
+| **Raspberry Pi / Linux** · ARM64 | [⬇ geist-linux-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64.tar.gz) |
+
+| Model (one file, any platform) | Size | Direct download |
+| :-- | --: | :-- |
+| **Gemma 4 E2B-it** · `Q4_K_M` — text · vision · audio | 2.9 GB | [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf) |
+| **Gemma 4 E4B-it** · `Q4_K_M` — bigger, text · vision · audio | 4.6 GB | [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf) |
+| **BitNet b1.58 2B-4T** · `i2_s` — ternary, fast on edge | 1.1 GB | [⬇ gguf](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf) |
+
+```bash
+./geist       model.gguf "The capital of France is"   # generate text
+./geist agent model.gguf "Summarize report.md"        # one-shot tool-use agent
+./geist chat  model.gguf                               # multi-turn chat + memory
+```
+
+<sub>x86 / Windows wait on the AVX backend — [build from source](#-getting-started) meanwhile.</sub>
+
+<p align="center">
+  <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: real-time BitNet b1.58 2B-4T text generation from a single dependency-free binary" width="100%">
+</p>
 
 ---
 
@@ -92,6 +133,8 @@ process, nothing leaving the machine except an explicit web request:
 | Search local documents | `doc_search` | keyword scan (local RAG) |
 | Search the web | `web_search` | DuckDuckGo or self-hosted **SearXNG** |
 | Fetch & read a web page | `web_fetch` | `curl` → tag-stripped text |
+
+*This toolset is expanding steadily.*
 
 **Response time per task** — warm (model resident), greedy, via `geist agent`. A
 light task's cost is the model **deciding + forming the call** (a few forward
@@ -149,8 +192,9 @@ same `./geist` binary — pick by your hardware and what you need.
 
 | Model | Modality | Quant | ~Size | RAM | Best on | Get it |
 | :-- | :-- | :-- | --: | --: | :-- | :-- |
-| **Gemma 4 E2B-it** | text · vision · audio | `Q4_K_M` | 2.9 GB | ≥ 4 GB | Mac / Pi 5 | `make fetch-model` · [HF ↗](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF) |
-| **BitNet b1.58 2B-4T** | text (ternary) | `i2_s` | 1.1 GB | ≥ 4 GB | **Pi 5 / edge** | curl ↓ · [HF ↗](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf) |
+| **Gemma 4 E2B-it** | text · vision · audio | `Q4_K_M` | 2.9 GB | ≥ 4 GB | Mac / Pi 5 | `make fetch-model` · [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf) |
+| Gemma 4 E4B-it | text · vision · audio | `Q4_K_M` | 4.6 GB | ≥ 6 GB | Mac | [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf) |
+| **BitNet b1.58 2B-4T** | text (ternary) | `i2_s` | 1.1 GB | ≥ 4 GB | **Pi 5 / edge** | [⬇ gguf](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf) |
 | BitNet b1.58-large | text (ternary) | `TQ2_0` | 207 MB | ≥ 1 GB | smallest footprint | convert from [1bitLLM ↗](https://huggingface.co/1bitLLM/bitnet_b1_58-large) |
 
 ```bash
@@ -171,21 +215,9 @@ curl -L -o bitnet-2b4t.i2_s.gguf \
 
 ## 🚀 Getting Started
 
-### Install (prebuilt, the impatient path)
-
-Grab the latest dependency-free binary — no toolchain, no build:
-
-```bash
-# macOS (Apple Silicon)
-curl -L https://github.com/geisten/geistlib/releases/latest/download/geist-macos-arm64.tar.gz | tar xz
-# Linux (ARM64, fully static musl)
-curl -L https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64.tar.gz | tar xz
-./geist-*/geist --version
-```
-
-> Prebuilt binaries are **ARM64 only** today (Apple Silicon + aarch64 Linux) — the
-> platforms geist is fast on. x86-64 / Windows land with the AVX backend. On other
-> platforms, build from source below.
+> **Just want to run it?** The prebuilt ARM64 one-liner is at the
+> [top](#-run-it-now). This section builds from source — any platform with a C23
+> compiler (and the only path for x86-64 until the AVX backend lands).
 
 ### Prerequisites
 - A C23 compiler: **gcc ≥ 14**, or Apple-clang ≥ 16 (Xcode 16 / macOS 15).
@@ -206,8 +238,14 @@ make fetch-model           # Gemma 4 E2B-it Q4_K_M (~3.1 GB) — optional helper
 ```
 
 ### 3. Run
+
+`make` drops a `./geist` symlink. It's one binary with three subcommands:
+
 ```bash
-OMP_WAIT_POLICY=active ./geist gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "The capital of France is"
+M=gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+OMP_WAIT_POLICY=active ./geist       $M "The capital of France is"   # generate text
+OMP_WAIT_POLICY=active ./geist agent $M "Summarize the file README.md"  # tool-use agent
+OMP_WAIT_POLICY=active ./geist chat  $M                              # multi-turn chat + memory
 ```
 
 ```console
@@ -216,7 +254,7 @@ The capital of France is Paris.
 ```
 
 > `make run ARGS='…'` sets `OMP_WAIT_POLICY=active` for you (it matters for
-> multi-thread perf).
+> multi-thread perf). Full agent + chat walk-throughs are under [Usage](#-usage).
 
 ---
 
@@ -240,34 +278,37 @@ Ocean's deep secrets.
 ### Drive the agent
 
 The agent is a subcommand of the main CLI — **`geist agent`** — so the same binary
-generates text *and* runs tools. `GEIST_FORCE_CALL=1` forces the tool call so an
-untrained model still drives the tools:
+generates text *and* runs tools. It **forces the tool call by default**, so even
+the bundled un-tool-trained models reliably drive the tools (set
+`GEIST_FORCE_CALL=0` to let the model decide instead):
 
 ```console
-$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Show me the contents of this folder"
+$ ./geist agent model.gguf "Show me the contents of this folder"
 notes.txt   report.md   config.toml   src
 
-$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Summarize the file report.md"
+$ ./geist agent model.gguf "Summarize the file report.md"
 The Q3 plan migrates the billing system to the new ledger service, aiming for 40%
 lower reconciliation latency and a single source of truth for invoices …
 
-$ GEIST_FORCE_CALL=1 ./geist agent model.gguf "Search the web for FIFA World Cup 2026"
+$ ./geist agent model.gguf "Search the web for FIFA World Cup 2026"
 1. 2026 FIFA World Cup - Wikipedia
    https://en.wikipedia.org/wiki/2026_FIFA_World_Cup
 …
 ```
 
-Set `GEIST_AGENT_TRACE=1` to watch each step live (printed to **stderr**, so the
-answer on stdout stays clean) — useful while a request thinks for a few seconds:
+A per-step trace prints **by default** to **stderr** (so the answer on stdout
+stays clean) — you can watch the agent route, call, and observe:
 
 ```console
-$ GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1 ./geist agent model.gguf "Summarize the file report.md"
+$ ./geist agent model.gguf "Summarize the file report.md"
 · routing summarize_file: selected
 → calling summarize_file: {"path":"report.md"}
 ⚙ running summarize_file
 ✓ observed summarize_file: The Q3 plan migrates the billing system …
 ● answering: The Q3 plan migrates the billing system …
 ```
+
+Set `GEIST_AGENT_TRACE=0` to silence it (e.g. for scripting).
 
 The same steps are a structured **output type** (`struct geist_agent_event`) your
 own host can consume — render a spinner, log it, or stream it to a UI as JSON.
@@ -338,10 +379,42 @@ Build a runnable copy with `make -C examples` — full walkthrough in
 
 ### Ship one file (model baked in)
 
+**Prebuilt:** every [release](https://github.com/geisten/geistlib/releases/latest)
+ships a `geist-bitnet-<platform>.tar.gz` — BitNet 2B-4T already baked in, no model
+file, no path argument. Download, extract, `./geist-bitnet "your prompt"` — or just
+`curl … install.sh | sh` ([top](#run-it-now)). That's the whole app.
+
+**Build your own** with any GGUF. The plain `make` build gives you a `geist` that
+**takes a model path** (you bring the GGUF); a separate **`make EMBED_MODEL=…`** build
+*bakes the model in*, so that binary needs **no model argument**.
+
+Give it its own name with `EMBED_NAME` so it's never confused with the
+model-needing `geist`:
+
 ```bash
-make EMBED_MODEL=path/to/model.gguf   # bakes the GGUF into ./geist (zero-copy aliased)
-./geist "The capital of France is"    # the CLI now takes only a prompt
+make EMBED_MODEL=bitnet-2b4t.i2_s.gguf EMBED_NAME=geist-bitnet   # GGUF baked in (zero-copy)
+./geist-bitnet "The capital of France is"            # generate — no model path
+./geist-bitnet agent "Summarize the file report.md"  # tools too — no model path
 ```
+
+(Agent + chat work on the baked-in model. To ship it, just copy the binary —
+`bin/<target>/release/tools/geist` — under whatever name you like.)
+
+Real-time on a **Raspberry Pi 5**, BitNet b1.58 2B-4T baked into the binary
+(no model file, no deps):
+
+<p align="center">
+  <img src="assets/demo-pi5-embed-gen.gif" alt="Embedded geist on a Pi 5 generating text with the model baked in (loaded embedded), in real time" width="49%">
+  <img src="assets/demo-pi5-embed-agent.gif" alt="Embedded geist agent on a Pi 5 summarizing a local file, the per-step trace shown by default, model baked in" width="49%">
+</p>
+
+*Left: text generation. Right: `geist agent` routing to `summarize_file` and
+summarizing a local file — the per-step trace prints by default — all from one
+~1.2 GB binary with the weights aliased zero-copy from its read-only data.*
+
+The weights are aliased from the binary's read-only data (no extra RAM), so this
+suits **small** models — the binary grows by the model size, and >~1.5 GB exceeds
+the 2 GB GitHub-release limit.
 
 ---
 

@@ -38,16 +38,23 @@ include mk/common.mk
 lib: $(LIB_FILE)
 bin: $(BIN_TARGETS)
 
-# `./geist` → the built CLI for the current TARGET/MODE, so the demo is just
+# `./$(EMBED_NAME)` → the built CLI for the current TARGET/MODE, so the demo is
 #   make && OMP_WAIT_POLICY=active ./geist model.gguf "The capital of France is"
 # Re-pointed on every build (cheap); removed by `make distclean`.
+#
+# EMBED_NAME names the symlink. Give an embedded single-file build its OWN name —
+# it has no model-path argument, unlike the plain `geist`, so a distinct name
+# avoids the "which one needs a model?" confusion:
+#   make EMBED_MODEL=bitnet-2b4t.i2_s.gguf EMBED_NAME=geist-bitnet
+#   ./geist-bitnet "The capital of France is"      # no model path — it's baked in
+EMBED_NAME ?= geist
 geist: $(BIN_DIR)/tools/geist
-	@ln -sf $(BIN_DIR)/tools/geist $@ && echo "./$@ -> $(BIN_DIR)/tools/geist"
+	@ln -sf $(BIN_DIR)/tools/geist $(EMBED_NAME) && echo "./$(EMBED_NAME) -> $(BIN_DIR)/tools/geist"
 
 # `make run ARGS='model.gguf "your prompt" -n 40'` — build, then run the CLI
 # with OMP_WAIT_POLICY=active (matters for multi-thread perf on mac-omp).
 run: geist
-	@OMP_WAIT_POLICY=active ./geist $(ARGS)
+	@OMP_WAIT_POLICY=active ./$(EMBED_NAME) $(ARGS)
 
 # ---- Optional: embed a model into the geist CLI (single-binary deploy) -----
 # `make EMBED_MODEL=path/to/model.gguf` bakes the GGUF into ./geist via an
@@ -82,7 +89,7 @@ ifneq ($(strip $(EMBED_MODEL)),)
   endif
   EMBED_ABS  := $(abspath $(EMBED_MODEL))
   EMBED_SIZE := $(shell wc -c < "$(EMBED_ABS)")
-  $(info embedding $(EMBED_MODEL) ($(shell echo $$(($(EMBED_SIZE)/1048576))) MB) into ./geist)
+  $(info embedding $(EMBED_MODEL) ($(shell echo $$(($(EMBED_SIZE)/1048576))) MB) into ./$(EMBED_NAME) — runs with no model-path argument)
   ifeq ($(shell test $(EMBED_SIZE) -gt 1610612736 && echo big),big)
     $(warning EMBED_MODEL >1.5 GB — the binary will exceed the 2 GB GitHub-release limit and be unwieldy)
   endif
@@ -260,7 +267,7 @@ clean:
 
 distclean:
 	@rm -rf build lib bin
-	@rm -f geist *.npy *.bin test_* eval_geist profile_decode dump_llamacpp_logits bench_sgemv summary.json module_tree.txt tokens_ref.txt
+	@rm -f geist $(EMBED_NAME) *.npy *.bin test_* eval_geist profile_decode dump_llamacpp_logits bench_sgemv summary.json module_tree.txt tokens_ref.txt
 	@echo "Cleaned all targets, modes, and temporary files."
 
 # Code formatting via clang-format. Reads .clang-format from repo root.

@@ -95,6 +95,33 @@ int main(void) {
     agent_compact(&A);
     fails += geist_expect(A.tlen == sizeof A.transcript - 1, "compact: no-op outside conversation");
 
+    /* regression: a user_open the user pasted into the first request, sitting in
+     * the (sys_len, sys_len+tcl) gap, must NOT be chosen as the cut boundary — a
+     * forward-shifting memmove there would write past the buffer. Build a
+     * near-cap transcript whose only marker is one byte past sys_len and confirm
+     * agent_compact leaves it untouched (no boundary past the prefix) rather than
+     * corrupting tlen / overrunning transcript. */
+    memset(&A, 0, sizeof A);
+    A.conversation = true;
+    A.tmpl         = GEIST_CHAT_GEMMA;
+    A.sys_len =
+            (size_t) snprintf(A.transcript, sizeof A.transcript, "%ssystem.\n", A.tmpl.user_open);
+    A.transcript[A.sys_len] = 'x'; /* first request byte: NOT a marker */
+    size_t mk               = A.sys_len + 1;
+    size_t uol              = strlen(A.tmpl.user_open);
+    memcpy(A.transcript + mk, A.tmpl.user_open, uol); /* pasted marker in the gap */
+    size_t fill = mk + uol;
+    while (fill < sizeof A.transcript - 1) {
+        A.transcript[fill++] = 'x'; /* padding, no further markers */
+    }
+    A.transcript[fill] = '\0';
+    A.tlen             = fill;
+    size_t t3          = A.tlen;
+    agent_compact(&A); /* must be a no-op, and must not overrun the buffer */
+    fails += geist_expect(A.tlen == t3, "compact: skips a gap-marker, no-op (no OOB)");
+    fails += geist_expect(strlen(A.transcript) == A.tlen,
+                          "compact: transcript intact after gap-marker");
+
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;

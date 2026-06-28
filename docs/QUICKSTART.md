@@ -47,6 +47,10 @@ CLI usage: `geist <model.gguf> [prompt] [-n N]` — `-n` caps new tokens
 (default 64). `OMP_WAIT_POLICY=active` keeps the OpenMP threads spinning between
 tokens and noticeably improves multi-thread throughput; always set it.
 
+The same binary carries two more subcommands — `geist agent <model> "<request>"`
+(one-shot whitelist-gated tool use) and `geist chat <model>` (multi-turn chat +
+file-based memory palace). See [agent.md](agent.md).
+
 For an interactive prompt loop, use the evaluation REPL (no symlink — full path):
 
 ```bash

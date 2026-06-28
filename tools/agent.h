@@ -1005,9 +1005,14 @@ static inline void agent_compact(struct geist_agent *a) {
     size_t budget_tail =
             (GEIST_AGENT_CTX_TARGET > a->sys_len + tcl) ? GEIST_AGENT_CTX_TARGET - a->sys_len - tcl : 0;
     /* earliest user_open whose tail fits the target (keep the most history);
-     * else the latest one (keep only the newest turn — guarantees progress). */
+     * else the latest one (keep only the newest turn — guarantees progress).
+     * Scan from sys_len + tcl, not sys_len: a marker within tcl bytes of the
+     * prefix would make the memmove destination (sys_len + tcl) overtake the
+     * source and shift the body FORWARD past the buffer end. Real turn
+     * boundaries are always well past the prefix, so this only skips a marker
+     * the user happened to paste into the first request. */
     size_t earliest_fit = 0, latest = 0;
-    for (size_t i = a->sys_len; i + uol <= a->tlen; i++) {
+    for (size_t i = a->sys_len + tcl; i + uol <= a->tlen; i++) {
         if (memcmp(a->transcript + i, uo, uol) == 0) {
             latest = i;
             if (earliest_fit == 0 && a->tlen - i <= budget_tail) {
@@ -1016,8 +1021,8 @@ static inline void agent_compact(struct geist_agent *a) {
         }
     }
     size_t keep_from = earliest_fit ? earliest_fit : latest;
-    if (keep_from <= a->sys_len) {
-        return; /* no conversation-turn boundary to cut at */
+    if (keep_from == 0) {
+        return; /* no conversation-turn boundary past the prefix to cut at */
     }
     size_t body = a->tlen - keep_from;
     memmove(a->transcript + a->sys_len + tcl, a->transcript + keep_from, body + 1); /* +NUL */

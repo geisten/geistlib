@@ -202,9 +202,8 @@ a.on_event_ctx = stderr;
 The callback receives a `struct geist_agent_event { phase; step; tool; detail; }`
 at every phase boundary (`enum geist_agent_phase`). `nullptr` (the default) = no
 events, zero overhead. The bundled `agent_event_print` writes one friendly line
-per step to a `FILE*` — `geist_agent_main` wires it to `stderr` when
-`GEIST_AGENT_TRACE` is set (so `geist agent` and any CLI built on the engine get
-it), keeping the answer on `stdout` clean:
+per step to a `FILE*` — `geist_agent_main` wires it to `stderr` **by default**
+(`GEIST_AGENT_TRACE=0` silences it), keeping the answer on `stdout` clean:
 
 ```
 · routing summarize_file: selected
