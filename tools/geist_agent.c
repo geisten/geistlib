@@ -19,17 +19,22 @@
 
 #include <stdlib.h>
 
+static size_t docs_tools(struct geist_model *model, struct geist_backend *be,
+                         struct geist_tool *out, size_t cap, void *ctx) {
+    (void) model;
+    (void) be;
+    (void) cap;
+    const char *docs = (const char *) ctx;
+    out[0] = docsearch_tool(docs && docs[0] ? docs : "./docs");
+    return 1;
+}
+
 int main(int argc, char **argv) {
-    const char *docs = getenv("GEIST_DOCS");
-    if (!docs || !docs[0]) {
-        docs = "./docs";
-    }
-    struct geist_tool tools[] = {docsearch_tool(docs)};
     return geist_agent_main(argc,
                             argv,
                             "Answer the user's question using the local documents. Search them "
                             "with the doc_search tool; if they do not contain the answer, say so. "
                             "Cite the file name you used.",
-                            sizeof tools / sizeof *tools,
-                            tools);
+                            docs_tools,
+                            getenv("GEIST_DOCS"));
 }
