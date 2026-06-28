@@ -54,7 +54,8 @@ int main(int argc, char **argv) {
     char cmd[4096];
     snprintf(cmd,
              sizeof cmd,
-             "'%s' agent '%s' 'How long is the warranty on the X200 blender?' -n 2 > '%s' 2>/dev/null",
+             "'%s' agent '%s' 'How long is the warranty on the X200 blender?' -n 2 > '%s' "
+             "2>/dev/null",
              bin,
              model_path,
              OUTFILE);

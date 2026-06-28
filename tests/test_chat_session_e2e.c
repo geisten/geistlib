@@ -77,7 +77,12 @@ int main(int argc, char **argv) {
     fclose(s);
 
     char cmd[4096];
-    snprintf(cmd, sizeof cmd, "'%s' chat '%s' < '%s' > '%s' 2>/dev/null", bin, model_path, SCRIPT,
+    snprintf(cmd,
+             sizeof cmd,
+             "'%s' chat '%s' < '%s' > '%s' 2>/dev/null",
+             bin,
+             model_path,
+             SCRIPT,
              OUTFILE);
     int rc = system(cmd);
     fails += geist_expect(rc == 0, "geist chat exited 0");

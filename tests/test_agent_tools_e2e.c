@@ -37,15 +37,15 @@
 #define OUTFILE DIR_ "/out.txt"
 #define ERRFILE DIR_ "/err.txt"
 
-static char g_bin[PATH_MAX];   /* absolute path to the geist binary */
-static char g_model[PATH_MAX]; /* absolute path to the GGUF */
-static char g_dir[PATH_MAX];   /* absolute path to the fixture dir */
+static char g_bin[PATH_MAX + 32]; /* realpath'd dir + "/tools/geist" */
+static char g_model[PATH_MAX];    /* absolute path to the GGUF (realpath target) */
+static char g_dir[PATH_MAX];      /* absolute path to the fixture dir */
 static int  fails = 0;
 
 /* Run `[env] geist agent <model> "<req>" -n <n>`, capturing stdout->OUTFILE and
  * the trace (stderr)->ERRFILE. Returns the child's exit status. */
 static int run_agent(const char *env, const char *req, int n) {
-    char cmd[1 << 14];
+    char cmd[1 << 15];
     snprintf(cmd,
              sizeof cmd,
              "%s '%s' agent '%s' '%s' -n %d > '%s' 2> '%s'",
@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
     }
 
     /* seed a note for the recall scenario in a dedicated mind dir. */
-    char mind_recall_dir[PATH_MAX];
+    char mind_recall_dir[PATH_MAX + 32];
     snprintf(mind_recall_dir, sizeof mind_recall_dir, "%s/mind_recall", g_dir);
     setenv("GEIST_MIND_DIR", mind_recall_dir, 1);
     mind_remember("Recall Fixture", "the vault password is hunter2");
@@ -129,40 +129,53 @@ int main(int argc, char **argv) {
 
     /* 1. list_dir — force the listing of the fixture dir; output names report.md */
     snprintf(req, sizeof req, "List the files in the directory %s", g_dir);
-    expect_scenario("list_dir", run_agent("GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1", req, 2),
-                    "list_dir", "report.md");
+    expect_scenario("list_dir",
+                    run_agent("GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1", req, 2),
+                    "list_dir",
+                    "report.md");
 
     /* 2. summarize_file — force; routes to summarize_file for the named file */
     snprintf(req, sizeof req, "Summarize the file %s/report.md", g_dir);
-    expect_scenario("summarize_file", run_agent("GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1", req, 4),
-                    "summarize_file", nullptr); /* summary content varies */
+    expect_scenario("summarize_file",
+                    run_agent("GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1", req, 4),
+                    "summarize_file",
+                    nullptr); /* summary content varies */
 
     /* 3. doc_search — the unique token "pineapple" planted in facts.md */
     snprintf(env, sizeof env, "GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1 GEIST_DOCS='%s'", g_dir);
-    expect_scenario("doc_search", run_agent(env, "Search the documents for pineapple", 2),
-                    "doc_search", "pineapple");
+    expect_scenario("doc_search",
+                    run_agent(env, "Search the documents for pineapple", 2),
+                    "doc_search",
+                    "pineapple");
 
     /* 4. remember — force; a note + INDEX.md land under a fresh mind dir */
-    char mind_write_dir[PATH_MAX];
+    char mind_write_dir[PATH_MAX + 32];
     snprintf(mind_write_dir, sizeof mind_write_dir, "%s/mind_write", g_dir);
-    snprintf(env, sizeof env, "GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1 GEIST_MIND_DIR='%s'",
+    snprintf(env,
+             sizeof env,
+             "GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1 GEIST_MIND_DIR='%s'",
              mind_write_dir);
-    expect_scenario("remember", run_agent(env, "Remember that the magic number is 42", 2),
-                    "remember", nullptr);
-    char ipath[PATH_MAX], buf[8192];
+    expect_scenario("remember",
+                    run_agent(env, "Remember that the magic number is 42", 2),
+                    "remember",
+                    nullptr);
+    char ipath[PATH_MAX + 64], buf[8192];
     snprintf(ipath, sizeof ipath, "%s/INDEX.md", mind_write_dir);
-    fails += geist_expect(mind_slurp(ipath, buf, sizeof buf) > 0, "remember: wrote INDEX.md on disk");
+    fails += geist_expect(mind_slurp(ipath, buf, sizeof buf) > 0,
+                          "remember: wrote INDEX.md on disk");
 
     /* 5. recall — load the pre-seeded note's body back out. A forced single-arg
      * call lifts the whole request as the slug (a slug isn't a path-like locator),
      * so the request IS the slug: "recall-fixture". */
-    snprintf(env, sizeof env, "GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1 GEIST_MIND_DIR='%s'",
+    snprintf(env,
+             sizeof env,
+             "GEIST_FORCE_CALL=1 GEIST_AGENT_TRACE=1 GEIST_MIND_DIR='%s'",
              mind_recall_dir);
     expect_scenario("recall", run_agent(env, "recall-fixture", 2), "recall", "hunter2");
 
     /* 6. plain answer — no force, no tool needed: the model answers, exits 0 */
-    expect_scenario("plain_answer", run_agent("", "What is the capital of France?", 8), nullptr,
-                    nullptr);
+    expect_scenario(
+            "plain_answer", run_agent("", "What is the capital of France?", 8), nullptr, nullptr);
     mind_slurp(OUTFILE, buf, sizeof buf);
     fails += geist_expect(buf[0] != '\0', "plain_answer: non-empty answer");
 

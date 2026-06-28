@@ -185,12 +185,21 @@ static int run_chat(int argc, char **argv) {
                 puts(mind_remember(title, text) == 0 ? "remembered." : "remember failed.");
             }
         } else if (strncmp(line, "/recall ", 8) == 0) {
-            static char note[CHAT_NOTE_CAP];
-            const char *slug = line + 8;
+            static char  note[CHAT_NOTE_CAP];
+            static char  entry[CHAT_NOTE_CAP + 256]; /* > note + prefix: format can't truncate */
+            const char  *slug = line + 8;
             if (mind_recall(slug, note, sizeof note) > 0) {
+                /* Format the entry into a buffer sized to hold a full note + the
+                 * prefix, then append to `pending` only if it fits — so the format
+                 * write is bounded and the append is an explicit, guarded copy. */
+                int    el = snprintf(entry, sizeof entry, "Recalled note %.200s:\n%s\n", slug, note);
                 size_t pl = strlen(pending);
-                snprintf(pending + pl, sizeof pending - pl, "Recalled note %s:\n%s\n", slug, note);
-                printf("recalled %s — it will be in context for your next message\n", slug);
+                if (el > 0 && pl + (size_t) el + 1 <= sizeof pending) {
+                    memcpy(pending + pl, entry, (size_t) el + 1);
+                    printf("recalled %s — it will be in context for your next message\n", slug);
+                } else {
+                    puts("(recall context full — /quit and start over)");
+                }
             } else {
                 printf("no note '%s'\n", slug);
             }
