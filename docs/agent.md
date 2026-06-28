@@ -10,7 +10,7 @@ function call over a resident `geist_session`. "Resident" therefore means
 different things per platform — a long-lived daemon on a server, a live session
 object inside an app — but the core is identical.
 
-- [The CLI — `geist_chat`](#the-cli--geist_chat)
+- [The CLI — `geist chat`](#the-cli--geist-chat)
 - [The memory palace — `mind.h`](#the-memory-palace--mindh)
 - [The agent — `agent.h`](#the-agent--agenth)
 - [Tools](#tools)
@@ -21,28 +21,34 @@ object inside an app — but the core is identical.
 
 ---
 
-## The CLI — `geist_chat`
+## The CLI — `geist chat`
 
-`tools/geist_chat.c` is an interactive multi-turn chat over the STABLE core API
-(`set_prompt` → `decode_step` → `token_to_str`). It streams each token live and
-carries the conversation across turns (the KV cache is not reset mid-chat).
+`geist chat` is an interactive multi-turn conversation, built on the **same agent
+engine** as `geist agent` (`geist_agent_run` with `conversation = true`, so the
+transcript carries across turns). It has the full toolset plus the memory palace,
+and reliable `/slash` control over notes.
 
 ```sh
-make bin                                   # builds bin/<target>/<mode>/tools/geist_chat
+make                                       # builds ./geist
 GEIST_MIND_DIR=./mind \
-  bin/<target>/release/tools/geist_chat gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+  ./geist chat gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
 ```
 
-REPL commands (anything else is a chat turn):
+REPL commands (anything else is a chat turn the model answers — and may call a
+tool, including `remember`/`recall`, on its own):
 
 | command | effect |
 |---|---|
-| `/remember <title> \| <text>` | write a note + index it |
-| `/recall <slug>` | load a note into the conversation context |
+| `/remember <title> \| <text>` | write a note + index it (explicit title) |
+| `/recall <slug>` | queue a note into context for your next message |
 | `/notes` | print the index (what's stored) |
 | `/help`, `/quit` | help / exit |
 
-`geist_chat --selftest` runs a palace round-trip with **no model** (CI-friendly).
+The slash commands are the **reliable** manual path (they bypass the model); the
+`remember`/`recall` **tools** let a capable model manage memory itself. On the
+bundled un-tool-trained models, prefer the slash commands.
+
+`geist chat --selftest` runs a palace round-trip with **no model** (CI-friendly).
 
 Environment: `GEIST_MIND_DIR` (default `./mind`) is the palace directory.
 
@@ -196,8 +202,9 @@ a.on_event_ctx = stderr;
 The callback receives a `struct geist_agent_event { phase; step; tool; detail; }`
 at every phase boundary (`enum geist_agent_phase`). `nullptr` (the default) = no
 events, zero overhead. The bundled `agent_event_print` writes one friendly line
-per step to a `FILE*` — `geist_shell` wires it to `stderr` when
-`GEIST_AGENT_TRACE` is set, so the answer on `stdout` stays clean:
+per step to a `FILE*` — `geist_agent_main` wires it to `stderr` when
+`GEIST_AGENT_TRACE` is set (so `geist agent` and any CLI built on the engine get
+it), keeping the answer on `stdout` clean:
 
 ```
 · routing summarize_file: selected

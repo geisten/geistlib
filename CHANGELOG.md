@@ -8,6 +8,34 @@ minor release.
 
 ## [Unreleased]
 
+### Added — `geist chat` + memory tools
+
+- The interactive chat is now the **`geist chat`** subcommand, rebuilt on the
+  agent engine: `geist_agent_run` gained a `conversation` flag that keeps the
+  transcript across turns. It carries the full toolset and the memory palace, and
+  inherits the engine's chat-template handling (the old hand-rolled inline framing
+  and its stop-marker leak are gone). Removed the `geist_chat` binary.
+- The memory palace is now model-callable via two tools (`tools/agent_memory.h`):
+  `remember(text)` (title auto-derived from the first line — single-arg so it
+  works under a forced call) and `recall(slug)`. "Search my notes" reuses
+  `doc_search` over `$GEIST_MIND_DIR`. Both tools are in `geist agent` and `geist
+  chat`; when memory is present the notes index is injected so `recall` is usable
+  one-shot. The `/remember`, `/recall`, `/notes` slash commands stay as the
+  reliable manual path on un-tool-trained models.
+
+### Changed — one agent CLI, folded into `geist`
+
+- The tool-use agent is now the **`geist agent`** subcommand of the main CLI, not
+  a separate binary. `geist <model> <prompt>` generates text; `geist agent <model>
+  <request>` runs the whitelist-gated tool loop (list_dir, summarize_file,
+  doc_search, web_search, web_fetch). Both honour `GEIST_FORCE_CALL=1` and
+  `GEIST_AGENT_TRACE=1`. This removes the "which binary?" footgun — `./geist` no
+  longer silently ignores the agent env vars.
+- Removed the `geist_agent` and `geist_shell` demo binaries (merged into the
+  subcommand). The reusable engine `agent_main.h` gained a tool-builder callback
+  (so a tool's ctx can reference the loaded model) and now owns the force-call +
+  trace env knobs, so every CLI built on it behaves identically.
+
 ## [0.3.0] — 2026-06-23
 
 ### Added — on-device tool-use agent

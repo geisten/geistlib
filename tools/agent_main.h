@@ -1,14 +1,25 @@
 /*
- * agent_main.h — the reusable agent CLI engine. An app defines its tools + a
- * system prompt and forwards argc/argv; this does the rest (arg parse, model
- * load, one-shot or REPL, geist_agent_run, cleanup). Header-only so a separate
- * app repo just links libgeist.a and writes a ~15-line main:
+ * agent_main.h — the reusable agent CLI engine. An app supplies a system prompt
+ * and a builder that fills the tool table (called once the model + backend
+ * exist, so tools whose ctx needs the model — e.g. summarize_file — work too);
+ * this does the rest (arg parse, model load, one-shot or REPL, force-call + trace
+ * env knobs, geist_agent_run, cleanup). Header-only so a separate app repo just
+ * links libgeist.a and writes a ~15-line main:
  *
- *     int main(int argc, char **argv) {
- *         struct geist_tool tools[] = { docsearch_tool(getenv("GEIST_DOCS")) };
- *         return geist_agent_main(argc, argv, "Answer from the local docs.",
- *                                 sizeof tools / sizeof *tools, tools);
+ *     static size_t build(struct geist_model *m, struct geist_backend *be,
+ *                         struct geist_tool *out, size_t cap, void *ctx) {
+ *         (void) m; (void) be; (void) cap;
+ *         out[0] = docsearch_tool(ctx ? ctx : "./docs");
+ *         return 1;
  *     }
+ *     int main(int argc, char **argv) {
+ *         return geist_agent_main(argc, argv, "Answer from the local docs.",
+ *                                 build, getenv("GEIST_DOCS"));
+ *     }
+ *
+ * GEIST_FORCE_CALL=1 grammar-forces turn 0 into a tool call; GEIST_AGENT_TRACE=1
+ * prints per-step progress on stderr. Both are handled here, so every agent CLI
+ * gets them identically.
  *
  * Plain ISO C (no POSIX) so it needs no feature-test macro; the app's tools may.
  */
@@ -24,7 +35,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { AGENT_MAIN_RESP_CAP = 1 << 13, AGENT_MAIN_LINE_CAP = 8192 };
+enum { AGENT_MAIN_RESP_CAP = 1 << 13, AGENT_MAIN_LINE_CAP = 8192, AGENT_MAIN_TOOLS_CAP = 8 };
+
+/* Fills out[0..cap) with the CLI's tools, returns the count. Called after the
+ * model + backend are loaded, so a tool's ctx can reference them. ctx is the
+ * opaque pointer passed to geist_agent_main. */
+typedef size_t (*geist_tools_fn)(struct geist_model   *model,
+                                 struct geist_backend *be,
+                                 struct geist_tool    *out,
+                                 size_t                cap,
+                                 void                 *ctx);
 
 struct agent_main_opts {
     const char *model;     /* required (first positional) */
@@ -89,12 +109,13 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
     return 0;
 }
 
-/* The reusable agent CLI. tools[] + system_prompt must outlive the call. */
-[[nodiscard]] static inline int geist_agent_main(int                     argc,
-                                                 char                  **argv,
-                                                 const char             *system_prompt,
-                                                 size_t                  n_tools,
-                                                 const struct geist_tool tools[static n_tools]) {
+/* The reusable agent CLI. system_prompt must outlive the call; build_tools is
+ * invoked once after the model loads to populate the tool table. */
+[[nodiscard]] static inline int geist_agent_main(int            argc,
+                                                 char         **argv,
+                                                 const char    *system_prompt,
+                                                 geist_tools_fn build_tools,
+                                                 void          *tools_ctx) {
     const char            *prog = argc > 0 ? argv[0] : "geist_agent";
     struct agent_main_opts opts;
     switch (agent_main_parse_args(argc, argv, &opts)) {
@@ -128,13 +149,23 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
         return 1;
     }
 
+    /* Build the tool table now the model + backend exist (a tool's ctx may need
+     * them). Borrowed by the agent, so it must outlive the run — this stack frame
+     * spans the whole REPL, so a local array is fine. */
+    struct geist_tool tools[AGENT_MAIN_TOOLS_CAP];
+    size_t            n_tools = build_tools(model, be, tools, AGENT_MAIN_TOOLS_CAP, tools_ctx);
+
     static struct geist_agent agent; /* large -> static, not a deep stack */
     geist_agent_init(&agent, model, sess, n_tools, tools, opts.max_steps, system_prompt);
     /* GEIST_FORCE_CALL=1: grammar-force turn 0 into a valid tool call. Lets a
-     * single-tool task agent drive a model that isn't tool-trained (e.g. BitNet
-     * 2B-4T) — the proof that prompted tool use needs forcing, not training. */
-    const char *fc  = getenv("GEIST_FORCE_CALL");
+     * task agent drive a model that isn't tool-trained (e.g. BitNet 2B-4T) — the
+     * proof that prompted tool use needs forcing, not training. */
+    const char *fc   = getenv("GEIST_FORCE_CALL");
     agent.force_call = fc != nullptr && fc[0] == '1';
+    if (getenv("GEIST_AGENT_TRACE")) { /* live per-step progress on stderr */
+        agent.on_event     = agent_event_print;
+        agent.on_event_ctx = stderr;
+    }
 
     int rc = 0;
     if (opts.question) {

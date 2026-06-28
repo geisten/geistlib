@@ -1,7 +1,7 @@
 /*
  * test_chat_int — multi-turn chat over the STABLE session API (model-gated).
  *
- * Validates the exact pattern geist_chat.c uses: build a turn-marked transcript,
+ * Validates the multi-turn chat transcript pattern: build a turn-marked transcript,
  * reset + set_prompt (which prepends BOS), decode greedily, and stop on EOS /
  * <end_of_turn>. Asserts generation MECHANICS, not content (greedy text varies):
  *   - a turn produces at least one non-control token,

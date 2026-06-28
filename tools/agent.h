@@ -189,6 +189,8 @@ struct geist_agent {
     const char                *system_prompt; /* borrowed; nullptr -> default role */
     struct geist_chat_template tmpl;          /* model-specific framing (auto-detected in init) */
     bool                       force_call;     /* force turn 0 to be a valid tool call (see run) */
+    bool                       conversation;   /* keep the transcript across geist_agent_run calls
+                                                * (multi-turn chat) instead of resetting each call */
     geist_token_t              eos, eot;
     char                       transcript[GEIST_AGENT_TRANSCRIPT_CAP];
     size_t                     tlen;
@@ -987,15 +989,28 @@ static inline int agent_answer_degenerate(const char *s) {
         *resp_len = 0;
     }
 
-    a->tlen = agent_system_prompt(a, sizeof a->transcript, a->transcript);
-    /* append the user's request, close the turn, open the model turn */
-    a->tlen += (size_t) snprintf(a->transcript + a->tlen,
-                                 sizeof a->transcript - a->tlen,
-                                 "%.*s%s%s",
-                                 (int) req_len,
-                                 req,
-                                 a->tmpl.turn_close,
-                                 a->tmpl.model_open);
+    if (a->conversation && a->tlen > 0) {
+        /* multi-turn chat: the transcript already holds the prior turns (ending
+         * after a closed model turn). Open a fresh user turn and continue. */
+        a->tlen += (size_t) snprintf(a->transcript + a->tlen,
+                                     sizeof a->transcript - a->tlen,
+                                     "%s%.*s%s%s",
+                                     a->tmpl.user_open,
+                                     (int) req_len,
+                                     req,
+                                     a->tmpl.turn_close,
+                                     a->tmpl.model_open);
+    } else {
+        /* one-shot (or the first chat turn): system prompt opens the user turn. */
+        a->tlen = agent_system_prompt(a, sizeof a->transcript, a->transcript);
+        a->tlen += (size_t) snprintf(a->transcript + a->tlen,
+                                     sizeof a->transcript - a->tlen,
+                                     "%.*s%s%s",
+                                     (int) req_len,
+                                     req,
+                                     a->tmpl.turn_close,
+                                     a->tmpl.model_open);
+    }
 
     char turn[GEIST_AGENT_TURN_CAP];
     char name[GEIST_AGENT_NAME_CAP];
@@ -1035,7 +1050,20 @@ static inline int agent_answer_degenerate(const char *s) {
              * instead — the tool's output is what the user actually asked for. */
             const char *answer = (step > 0 && agent_answer_degenerate(turn)) ? obs : turn;
             agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, answer);
-            size_t      n      = agent_copy(resp_cap, resp, answer);
+            if (a->conversation) {
+                /* fold the answer into the transcript so the next turn sees it.
+                 * Only advance tlen if it fit (else leave the transcript as-is —
+                 * the turn is just not recorded, never corrupted). */
+                int fw = snprintf(a->transcript + a->tlen,
+                                  sizeof a->transcript - a->tlen,
+                                  "%s%s",
+                                  answer,
+                                  a->tmpl.turn_close);
+                if (fw > 0 && (size_t) fw < sizeof a->transcript - a->tlen) {
+                    a->tlen += (size_t) fw;
+                }
+            }
+            size_t n = agent_copy(resp_cap, resp, answer);
             if (resp_len) {
                 *resp_len = n;
             }
