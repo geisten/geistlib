@@ -8,6 +8,24 @@ minor release.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-23
+
+### Added — on-device tool-use agent
+
+- A bounded, whitelist-gated tool-use loop lets a small local model read files and
+  search the web **in-process**: `list_dir`, `summarize_file`, `doc_search` (local
+  keyword RAG, paragraph-granular + overlap-scored), and `web_fetch` (curl, no
+  shell, scheme + host gated). Tool routing and the JSON call structure are forced
+  from outside the sampler, so even untrained 2 B models drive the tools reliably.
+  Full design and security model in `docs/agent.md`.
+- A reusable agent CLI engine (`tools/agent_main.h`) with the `geist_agent`
+  reference CLI, plus an interactive chat mode with a file-based memory palace.
+
+### Changed — CI hardening
+
+- New jobs: ASan + UBSan unit tests, a musl/Alpine build (tests what we ship),
+  real-model integration + e2e tests, and ccache-cached compilation.
+
 ### Changed — speculative output head is now on by default
 
 - The speculative int8-sketch lm_head (below) now defaults **on** for greedy
@@ -151,7 +169,8 @@ First public release.
   reproducible perf benchmark harness (`make bench-small`).
 - `examples/simple_generate` demonstrating the stable text-generation core.
 
-[Unreleased]: https://github.com/geisten/geistlib/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/geisten/geistlib/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/geisten/geistlib/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/geisten/geistlib/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/geisten/geistlib/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/geisten/geistlib/compare/v0.1.2...v0.1.3
