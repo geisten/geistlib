@@ -98,40 +98,7 @@ static inline size_t summ_generate(struct geist_session             *s,
         out[0] = '\0';
         return 0;
     }
-    size_t w = 0;
-    for (int i = 0; i < SUMM_GEN_TOKENS; i++) {
-        geist_token_t tok = 0;
-        if (geist_session_decode_step(s, &tok) != GEIST_OK) {
-            break;
-        }
-        if (tok == eos || (eot != GEIST_TOKEN_NONE && tok == eot)) {
-            break;
-        }
-        const char *p  = geist_session_token_to_str(s, tok);
-        size_t      pl = p ? strlen(p) : 0;
-        if (pl == 0 || (pl >= 2 && p[0] == '<' && p[pl - 1] == '>')) {
-            break; /* control marker */
-        }
-        if (w + pl + 1 >= cap) {
-            break;
-        }
-        memcpy(out + w, p, pl);
-        w += pl;
-        size_t lp = agent_tail_loop(out, w);
-        if (lp > 0) {
-            w -= 2 * lp; /* drop the degenerate run, keep one copy */
-            break;
-        }
-    }
-    out[w] = '\0';
-    for (size_t m = 0; t->leak[m] != nullptr; m++) { /* cut any leaked turn marker */
-        char *h = strstr(out, t->leak[m]);
-        if (h != nullptr) {
-            w      = (size_t) (h - out);
-            out[w] = '\0';
-        }
-    }
-    return w;
+    return geist_generate_greedy(s, eos, eot, t->leak, SUMM_GEN_TOKENS, cap, out);
 }
 
 /* A refine step must never replace a good running summary with worse output: a
@@ -190,17 +157,8 @@ static inline enum geist_status summarize_file(struct geist_model   *model,
                                                size_t                out_cap,
                                                char                  out[static out_cap],
                                                size_t               *out_len) {
-#define SUMM_ERR(...)                                          \
-    do {                                                      \
-        size_t n_ = (size_t) snprintf(out, out_cap, __VA_ARGS__); \
-        if (out_len) {                                        \
-            *out_len = n_;                                    \
-        }                                                     \
-        return GEIST_OK;                                      \
-    } while (0)
-
     if (!summ_path_ok(path)) {
-        SUMM_ERR("error: path \"%s\" is not allowed", path);
+        return agent_obs(out_cap, out, out_len, "error: path \"%s\" is not allowed", path);
     }
     char full[1100];
     snprintf(full, sizeof full, "%s/%s", (root && root[0]) ? root : ".", path);
@@ -208,7 +166,7 @@ static inline enum geist_status summarize_file(struct geist_model   *model,
     static char raw[SUMM_RAW_CAP];
     FILE       *f = fopen(full, "r");
     if (f == nullptr) {
-        SUMM_ERR("error: cannot open \"%s\"", path);
+        return agent_obs(out_cap, out, out_len, "error: cannot open \"%s\"", path);
     }
     size_t rn = fread(raw, 1, sizeof raw - 1, f);
     raw[rn]   = '\0';
@@ -228,13 +186,13 @@ static inline enum geist_status summarize_file(struct geist_model   *model,
         }
     }
     if (tn == 0) {
-        SUMM_ERR("(empty file)");
+        return agent_obs(out_cap, out, out_len, "(empty file)");
     }
 
     struct geist_session_opts so  = {0}; /* greedy, deterministic */
     struct geist_session     *sub = nullptr;
     if (geist_session_create(model, be, &so, &sub) != GEIST_OK) {
-        SUMM_ERR("error: could not create the summarizer session");
+        return agent_obs(out_cap, out, out_len, "error: could not create the summarizer session");
     }
     struct geist_chat_template tmpl = geist_chat_template_for_model(model);
     geist_token_t              eos  = geist_model_eos_token(model);
@@ -286,11 +244,7 @@ static inline enum geist_status summarize_file(struct geist_model   *model,
     size_t n = run_n < out_cap ? run_n : out_cap - 1;
     memcpy(out, start, n);
     out[n] = '\0';
-    if (out_len) {
-        *out_len = n;
-    }
-    return GEIST_OK;
-#undef SUMM_ERR
+    return agent_ret(out_len, n);
 }
 
 /* Tool ctx: the model + backend the sub-session runs on, and the read root. The
@@ -311,11 +265,7 @@ static inline enum geist_status summarize_invoke(void      *ctx,
     struct summarize_ctx *c = (struct summarize_ctx *) ctx;
     char                  path[1024];
     if (!agent_json_str(args, "path", sizeof path, path) || path[0] == '\0') {
-        size_t n = (size_t) snprintf(out, out_cap, "error: missing \"path\"");
-        if (out_len) {
-            *out_len = n;
-        }
-        return GEIST_OK;
+        return agent_obs(out_cap, out, out_len, "error: missing \"path\"");
     }
     return summarize_file(c->model, c->be, c->root, path, out_cap, out, out_len);
 }

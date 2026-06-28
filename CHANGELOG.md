@@ -8,6 +8,16 @@ minor release.
 
 ## [Unreleased]
 
+### Changed — bounded chat context (sliding window)
+
+- Multi-turn `geist chat` now evicts the oldest turns once the transcript passes
+  a budget (`agent_compact`): it keeps the protected system prompt and the most
+  recent whole turns, down to a target size. This bounds per-turn re-prefill (a
+  long chat stays O(n) instead of O(n²)) and replaces the old hard "context full"
+  stop — the model forgets the evicted turns. The eviction point is a documented
+  hook for folding the dropped span into a running summary later (the summarizer
+  already exists). Tunable via `GEIST_AGENT_CTX_BUDGET` / `_TARGET`.
+
 ### Added — `geist chat` + memory tools
 
 - The interactive chat is now the **`geist chat`** subcommand, rebuilt on the

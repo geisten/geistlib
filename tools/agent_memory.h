@@ -39,11 +39,7 @@ static inline enum geist_status memory_remember_invoke(void      *ctx,
     (void) args_len;
     static char text[MEMORY_ARG_CAP];
     if (!agent_json_str(args, "text", sizeof text, text) || text[0] == '\0') {
-        size_t n = (size_t) snprintf(out, out_cap, "error: remember needs a non-empty \"text\"");
-        if (out_len) {
-            *out_len = n;
-        }
-        return GEIST_OK;
+        return agent_obs(out_cap, out, out_len, "error: remember needs a non-empty \"text\"");
     }
     /* title = first line of the text, capped — mind slugifies it for the filename
      * and builds the index hook from the body. */
@@ -56,13 +52,10 @@ static inline enum geist_status memory_remember_invoke(void      *ctx,
 
     char slug[256];
     mind_slugify(title, slug, sizeof slug);
-    size_t n = (mind_remember(title, text) == 0)
-                       ? (size_t) snprintf(out, out_cap, "remembered as \"%s\" (%s.md)", title, slug)
-                       : (size_t) snprintf(out, out_cap, "error: could not write the note");
-    if (out_len) {
-        *out_len = n;
+    if (mind_remember(title, text) != 0) {
+        return agent_obs(out_cap, out, out_len, "error: could not write the note");
     }
-    return GEIST_OK;
+    return agent_obs(out_cap, out, out_len, "remembered as \"%s\" (%s.md)", title, slug);
 }
 
 static inline enum geist_status memory_recall_invoke(void      *ctx,
@@ -75,24 +68,13 @@ static inline enum geist_status memory_recall_invoke(void      *ctx,
     (void) args_len;
     char slug[256];
     if (!agent_json_str(args, "slug", sizeof slug, slug) || slug[0] == '\0') {
-        size_t n = (size_t) snprintf(out, out_cap, "error: recall needs a \"slug\"");
-        if (out_len) {
-            *out_len = n;
-        }
-        return GEIST_OK;
+        return agent_obs(out_cap, out, out_len, "error: recall needs a \"slug\"");
     }
     long got = mind_recall(slug, out, out_cap);
     if (got < 0) {
-        size_t n = (size_t) snprintf(out, out_cap, "error: no note \"%s\"", slug);
-        if (out_len) {
-            *out_len = n;
-        }
-        return GEIST_OK;
+        return agent_obs(out_cap, out, out_len, "error: no note \"%s\"", slug);
     }
-    if (out_len) {
-        *out_len = (size_t) got;
-    }
-    return GEIST_OK;
+    return agent_ret(out_len, (size_t) got);
 }
 
 static inline struct geist_tool remember_tool(void) {

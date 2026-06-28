@@ -203,7 +203,7 @@ STB_OBJ := $(BUILD_DIR)/third_party/stb/stb_impl.o
 # bin/.../tools/eval_geist).
 # Excluded: dump_llamacpp_logits.c (requires external llama.h from llama.cpp).
 TEST_SOURCES := $(wildcard tests/test_*.c tests/bench_*.c)
-DEMO_SOURCES := tools/geist.c tools/eval_geist.c tools/profile_decode.c
+DEMO_SOURCES := tools/geist.c tools/eval_geist.c
 
 # These tests call cblas_* directly as an independent reference to validate
 # geist's own kernels. They can't link under GEMM_PROVIDER=native (no cblas to
@@ -249,7 +249,7 @@ DEPS := $(LIB_OBJS:.o=.d) $(BIN_OBJS:.o=.d)
 
 # Object compilation. -MMD -MP generates .d files for header tracking.
 # src/*.c uses CFLAGS_STRICT (adds -Wshadow -Wundef); the tools/ demos
-# (eval_geist, profile_decode) and tests/ use the slightly more relaxed
+# (geist, eval_geist) and tests/ use the slightly more relaxed
 # CFLAGS. Both build clean under -Wall -Wextra -Werror.
 $(BUILD_DIR)/src/%.o: src/%.c
 	@mkdir -p $(@D)

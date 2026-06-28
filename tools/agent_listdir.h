@@ -43,11 +43,7 @@ static inline enum geist_status listdir_invoke(void      *ctx,
     }
     DIR *d = opendir(path);
     if (d == nullptr) {
-        size_t n = (size_t) snprintf(out, out_cap, "error: cannot open directory \"%s\"", path);
-        if (out_len) {
-            *out_len = n;
-        }
-        return GEIST_OK;
+        return agent_obs(out_cap, out, out_len, "error: cannot open directory \"%s\"", path);
     }
     size_t         w = 0;
     struct dirent *e;
@@ -65,14 +61,10 @@ static inline enum geist_status listdir_invoke(void      *ctx,
     }
     closedir(d);
     if (w == 0) {
-        w = (size_t) snprintf(out, out_cap, "(empty directory)");
-    } else {
-        out[w] = '\0';
+        return agent_obs(out_cap, out, out_len, "(empty directory)");
     }
-    if (out_len) {
-        *out_len = w;
-    }
-    return GEIST_OK;
+    out[w] = '\0';
+    return agent_ret(out_len, w);
 }
 
 static inline struct geist_tool listdir_tool(void) {
