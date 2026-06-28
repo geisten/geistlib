@@ -8,6 +8,14 @@ minor release.
 
 ## [Unreleased]
 
+### Changed — generation stops on a sentence by default (no `-n` needed)
+
+- `geist <model> "prompt"` treats the token budget as a **soft target**: it rounds
+  up to the next sentence end (capped at 2×) instead of cutting mid-word. A base
+  model on a bare completion prompt emits no end token, so the old hard 64-token
+  default ended like "…Paris is also known". `-n N` is still an exact **hard** cap.
+  So you never *need* to pass `-n` for a clean result.
+
 ### Fixed — decode HTML entities in fetched/searched text
 
 - `webfetch_strip_html` now decodes HTML entities (`&amp;` → `&`, `&lt;`/`&gt;`,

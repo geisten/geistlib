@@ -80,11 +80,14 @@ platform-specific** — one download runs on every platform.
 <sub>x86 / Windows wait on the AVX backend — [build from source](#-getting-started) meanwhile.</sub>
 
 <p align="center">
-  <img src="assets/demo-bitnet-gen.gif" alt="The single-file geist-bitnet on a Mac: BitNet 2B-4T baked in (loaded embedded), generating text in real time with no model file" width="100%">
+  <img src="assets/demo-bitnet-trio.gif" alt="One geist-bitnet binary doing three things in a row on a Mac: generate text, then drive tools to list a folder and search the web — model baked in, no model file" width="100%">
 </p>
 
-*The single self-contained `geist-bitnet` — BitNet 2B-4T baked in, no model file,
-no deps. The same binary runs real-time on a [Raspberry Pi 5](#faster-where-it-counts-on-the-edge).*
+*One self-contained `geist-bitnet` (BitNet b1.58 2B-4T baked in, no model file) doing
+three things back-to-back: generate, then **drive tools** — list a folder, search the
+web live. BitNet is a **base model with no tool training**; geist forces a valid tool
+call from outside the sampler, so it routes and calls anyway. The same binary runs
+real-time on a [Raspberry Pi 5](#faster-where-it-counts-on-the-edge).*
 
 ---
 
