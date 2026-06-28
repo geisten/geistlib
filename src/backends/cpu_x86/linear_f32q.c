@@ -43,8 +43,28 @@ static void f32q_pointers(const uint8_t *blob, size_t n_in, size_t n_out,
     *o_out = *s_out + n_out * nblk;
 }
 
-static size_t f32q_blob_bytes(size_t n_in, size_t n_out) {
+static size_t f32q_rowmajor_bytes(size_t n_in, size_t n_out) {
     return n_out * n_in + 2 * n_out * f32q_blocks_per_row(n_in) * sizeof(float);
+}
+
+/* When n_out % 8 == 0, append a lane-parallel W8x8 copy (same size, a pure
+ * permutation) and run w8x8_gemm at prefill — 8 output rows per VPDPBUSD,
+ * reduced once per tile, vs w8a8_gemm's per-row hsum. */
+static inline bool f32q_use_w8x8(size_t n_out) { return (n_out % W8X8_NROWS) == 0; }
+
+static size_t f32q_blob_bytes(size_t n_in, size_t n_out) {
+    const size_t rm = f32q_rowmajor_bytes(n_in, n_out);
+    return f32q_use_w8x8(n_out) ? 2 * rm : rm;
+}
+
+/* Interleaved W8x8 region, appended after the row-major blob. */
+static void f32q_w8x8_pointers(const uint8_t *blob, size_t n_in, size_t n_out,
+                               const uint8_t **qs, const float **s, const float **o) {
+    const size_t   nblk = f32q_blocks_per_row(n_in);
+    const uint8_t *base = blob + f32q_rowmajor_bytes(n_in, n_out);
+    *qs = base;
+    *s  = (const float *) (base + n_out * n_in);
+    *o  = *s + n_out * nblk;
 }
 
 void f32_to_w8a8_row(size_t n_in, const float *row, uint8_t *u_w, float *w_scales,
@@ -92,6 +112,14 @@ void f32_to_w8a8_row(size_t n_in, const float *row, uint8_t *u_w, float *w_scale
     for (size_t r = 0; r < n_out; r++) {
         f32_to_w8a8_row(n_in, src + r * n_in, (uint8_t *) bw + r * n_in,
                         (float *) bs + r * nblk, (float *) bo + r * nblk);
+    }
+
+    /* Interleave for the lane-parallel prefill kernel (n_out % 8 == 0). */
+    if (f32q_use_w8x8(n_out)) {
+        const uint8_t *iq;
+        const float   *is, *io;
+        f32q_w8x8_pointers(blob, n_in, n_out, &iq, &is, &io);
+        w8x8_repack(n_out, n_in, bw, bs, bo, (uint8_t *) iq, (float *) is, (float *) io);
     }
 
     w->aux_fp32 = (const float *) blob;
@@ -158,7 +186,14 @@ void cpu_x86_linear_f32q_mN(const float *x, const struct geist_weight *w, size_t
             s[b] = v;
         }
     }
-    w8a8_gemm(m, n_out, nblk, weights, w_scales, w_offsets, acts, sum_a, scale_x, y);
+    if (f32q_use_w8x8(n_out)) {
+        const uint8_t *iq;
+        const float   *is, *io;
+        f32q_w8x8_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &iq, &is, &io);
+        w8x8_gemm(m, n_out, nblk, iq, is, io, acts, sum_a, scale_x, y);
+    } else {
+        w8a8_gemm(m, n_out, nblk, weights, w_scales, w_offsets, acts, sum_a, scale_x, y);
+    }
     safe_free((void **) &acts); safe_free((void **) &sum_a);
     safe_free((void **) &scale_x); safe_free((void **) &tmp);
 }
