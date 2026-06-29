@@ -99,8 +99,9 @@ in too (`make EMBED_MODEL=…`) and deployment is *literally one file*.
 
 ### Faster where it counts
 Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5,
-**prefill** on Apple's matrix unit, and now **matches-to-beats llama.cpp on AMD
-x86** (AVX-512) — across edge and desktop:
+**prefill** on Apple's matrix unit, **matches-to-beats llama.cpp on AMD x86**
+(AVX-512), and **beats Microsoft's bitnet.cpp on ternary BitNet on both Pi 5 and
+x86** (9950X: prefill +30 %, decode +38 %) — across edge and desktop:
 
 | model | platform | metric | **geist** | baseline |
 | :-- | :-- | :-- | --: | --: |
@@ -108,6 +109,8 @@ x86** (AVX-512) — across edge and desktop:
 | Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | decode t/s | **7.5** | 6.8 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max** | prefill t/s (pp1024) | **144** | 97 *(llama.cpp)* |
 | BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s | **17.4** | 8.2 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | prefill t/s (pp128) | **884** | 679 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | decode t/s (tg128) | **77.9** | 56.5 *(bitnet.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | prefill t/s | **512** | 495 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | decode t/s | **48.6** | 44.1 *(llama.cpp)* |
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | prefill t/s | **351** | 346 *(llama.cpp)* |
