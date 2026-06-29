@@ -503,3 +503,77 @@ removing non-matmul stalls; the GEMMs themselves were already at parity
 The remaining gap is not addressable by GEMM micro-tuning (verified: int8
 folding regressed; wider 512-bit Q6_K is ~3 % for a large rewrite) — the
 profile is clean, matmul-bound code.
+
+## BitNet b1.58 2B-4T (I2_S ternary) — 2026-06
+
+BitNet was completely non-functional on cpu_x86 before this work: cpu_scalar's
+resolver returned `GEIST_E_UNSUPPORTED` for I2_S (ternary BitLinear weights)
+and had no F16 dense path for the tied lm_head, so the model failed at the
+first projection and emitted zero tokens. Fixed (I2_S/F16/BF16 in cpu_scalar)
+then accelerated on cpu_x86.
+
+Kernels (9950X, 16T, same `ggml-model-i2_s.gguf`):
+- **kernel_i2s** — biased-u8 VPDPBUSD ternary GEMV/GEMM. Codes {0,1,2} unpacked
+  in-register from the packed 0.25 B/wt stream (decode is BW-bound, so no f32
+  predecode); `dot = Σcode·a − Σa`; one per-tensor fp32 scale; activations
+  permuted once per token into the VPDPBUSD pairing order. M=1 decode + JT=4
+  token-tiled prefill GEMM (weight row read once, reused across the tile).
+- **kernel_f16_gemv** — OMP + F16C GEMV for the 657 MB tied F16 lm_head (read
+  once per decode step; the NEON spec-head fast path is ARM-only). 400 → 8.6
+  ms/call (~76 GB/s).
+
+| metric | scalar (was) | packed VNNI | x4 | x4+Q8 | **x4 + spec-head** | bitnet.cpp |
+| ------ | -----------: | ----------: | --: | ----: | -----------------: | ---------: |
+| prefill pp128 | 4.6  | 472 | 846 | 864 | **884** | 679 |
+| decode  tg128 | 1.0  | 48  | 46  | 61  | **77.9** | 56.5 |
+
+**geist beats bitnet.cpp on both: prefill +30 % (884 vs 679), decode +38 %
+(77.9 vs 56.5).** The x4 path is bit-identical to the scalar oracle (Δ=0); the
+spec-head greedy output is **byte-identical to the exact f16 dense head** (perfect
+top-512 recall, verified over 80 tokens). Q8 lm_head (cosine 0.99999, the
+sampling/`GEIST_SPEC_HEAD=0` fallback) is the intermediate column.
+
+### The prefill win: x4 row-interleave (one act load → 4 rows)
+
+The packed kernel (472) loaded the activation once *per output row*. bitnet.cpp's
+`ggml_vec_dot_i2_i8_s_1x4_32W` interleaves **4 output rows at 2-bit granularity
+within each byte** so one activation load feeds 4 rows. Ported as `i2s_to_x4`
+(load-time repack into `w->aux_fp32`, still 0.25 B/wt, columns normalized so no
+activation permute) + x4 GEMV/GEMM: 472 → 846 t/s. **4× fewer activation loads
+was the lever** — the per-cell reduce was NOT (proven: replacing it with a fake
+1-lane extract left the packed prefill unchanged at 456 vs 472). Rejected en
+route: JT=8 (465), lo/hi 2-chain (454), 4-accumulator/token (451; 22-zmm spill).
+Kept the parallel quant prelude.
+
+### Decode win: spec-head i8 sketch (61 → 77.9, beats bitnet.cpp's 56.5 by +38%)
+
+Ported the NEON-only speculative output head (`spec_head.c`) to x86 (AVX2 sketch
+SDOT via sign-extend+madd, F16C finalist dot). Two stages: (1) rough-score the
+whole 128 K vocab against a STRIDE-4 subsampled int8 sketch (~82 MB read, not
+657 MB), (2) exact f16 dot on only the top-512 finalists. Greedy output is
+**byte-identical to the exact f16 dense head** (true argmax always in the top-512
+for a 128 K vocab — verified 80 tokens). Decode 61 → 77.9 t/s. Gated to the F16
+tied lm_head on x86 (the Q6_K/repacked phase-3 paths are NEON-validated only;
+Gemma/Llama keep their exact dense Q-decode). Sampling (temp>0) and
+`GEIST_SPEC_HEAD=0` fall back to the Q8 lm_head below.
+
+### Q8 lm_head (the dense fallback: 46 → 61)
+
+Decode read ~1.1 GB/token: 0.43 GB ternary + **0.66 GB F16 lm_head** (40 % of
+decode, the largest single cost at 8.4 ms @78 GB/s). Quantizing the tied lm_head
+to per-row int8 at load (`f16_to_q8w` → `w->aux_fp32`, `q8w_gemv_m1`: int8
+weight read, f32 activation, AVX2 cvtepi8→f32 + FMA) halves its read to 0.33 GB
+→ lm_head ~4 ms, **decode 46 → 61 t/s**. Quality: per-row int8 quant of an
+output projection is cosine 0.99999 vs f32 and generation is coherent; this is
+the one place geist diverges from bitnet.cpp's exact f16 numerics (gated to F16
+weights ≥ 1 M elems — small F16 dense keeps the exact F16C GEMV). The ternary
+layers stay at ~52 GB/s (per-op overhead on the small per-layer GEMVs); lifting
+those to lm_head's 78 GB/s via op-fusion is the remaining decode headroom.
+
+### Build footgun
+`backend_registry.o` is compiled with the `-DGEIST_BACKEND_*` set active at
+*its* compile time; switching `BACKENDS=` without `make clean` leaves a stale
+object so `"auto"` silently resolves to the wrong `registry[0]` (cpu_scalar
+instead of cpu_x86). Always `make clean` when changing `BACKENDS`. The
+bench_perf_sweep harness also defaults to cpu_neon→cpu_scalar; use
+`GEIST_BENCH_BACKEND=cpu_x86`.
