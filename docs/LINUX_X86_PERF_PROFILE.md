@@ -522,28 +522,37 @@ Kernels (9950X, 16T, same `ggml-model-i2_s.gguf`):
   once per decode step; the NEON spec-head fast path is ARM-only). 400 → 8.6
   ms/call (~76 GB/s).
 
-| metric | scalar (was) | geist cpu_x86 | bitnet.cpp (i2_s) |
-| ------ | -----------: | ------------: | ----------------: |
-| prefill pp128 | 4.6  | **472** | 686 |
-| decode  tg64  | 1.0  | **49.6** | 57.0 |
+| metric | scalar (was) | packed VNNI | **x4 (final)** | bitnet.cpp (i2_s) |
+| ------ | -----------: | ----------: | -------------: | ----------------: |
+| prefill pp128 | 4.6  | 472 | **846** | 679 |
+| decode  tg128 | 1.0  | 48  | **46**  | 56.5 |
 
-Output is byte-identical to bitnet.cpp (greedy) — correctness cross-validated.
-geist is at ~69 % of bitnet.cpp prefill, ~87 % decode. bitnet.cpp's i2_s GEMM is
-plain AVX2 maddubs (not VNNI) but wins via a load-time weight transform + ggml's
-mature cache-blocked/threaded GEMM.
+**geist beats bitnet.cpp on prefill by ~25 %** (846 vs 679). Decode is ~82 %
+(BW-bound; see below). Output was byte-identical to bitnet.cpp on the packed
+path; the x4 path is bit-identical to the scalar oracle (Δ=0).
 
-Prefill GEMM optimization attempts (all measured; kept only the win):
-- **Parallel quant+permute prelude** (OMP over tokens) — KEPT. The activation
-  int8 quant + VPDPBUSD-pairing permute ran serially before the OMP GEMM.
-- JT=8 token tile — no-op (465 vs 472). 2 chains/token (lo+hi) — worse (454).
-- Per-code-group independent accumulators (4/token) — worse (451; spills at 22
-  live zmm).
-- **Row-interleave (16 rows → 16 lanes, eliminates the per-cell reduce):
-  rejected by experiment.** Replacing `_mm512_reduce_add_epi32` with a fake
-  1-lane extract left prefill unchanged (456 vs 472) → the reduce is NOT the
-  bottleneck, so the row-interleave rewrite (+4× weight-memory) would not pay
-  off. The GEMM is throughput/memory-bound in the dpbusd+load mix; the residual
-  gap is bitnet.cpp's mature ggml GEMM infrastructure, not one missing trick.
+### The prefill win: x4 row-interleave (one act load → 4 rows)
+
+The packed kernel (472) loaded the activation once *per output row*. bitnet.cpp's
+`ggml_vec_dot_i2_i8_s_1x4_32W` interleaves **4 output rows at 2-bit granularity
+within each byte** so one activation load feeds 4 rows. Ported as `i2s_to_x4`
+(load-time repack into `w->aux_fp32`, still 0.25 B/wt, columns normalized so no
+activation permute) + x4 GEMV/GEMM: 472 → 846 t/s. **4× fewer activation loads
+was the lever** — the per-cell reduce was NOT (proven: replacing it with a fake
+1-lane extract left the packed prefill unchanged at 456 vs 472). Rejected en
+route: JT=8 (465), lo/hi 2-chain (454), 4-accumulator/token (451; 22-zmm spill).
+Kept the parallel quant prelude.
+
+### Decode (46 vs 56.5) — BW-bound, gap is per-op overhead
+
+Decode reads ~1.1 GB/token (0.43 GB ternary + 0.66 GB F16 lm_head). Profile:
+lm_head 8.4 ms (78 GB/s — near peak), the 30 ternary layers 8.3 ms (52 GB/s),
+rest attention-core/sample/glue. x4 doesn't help decode (same weight bytes, M=1).
+We hit 51 GB/s effective vs bitnet.cpp's 62 — their edge is lower per-op overhead
+on the many small per-layer GEMVs (ggml's fused threading), plus the shared F16
+lm_head both pay. Winning decode needs either an int8/Q8 lm_head (halves its BW,
+~+4 ms → ~56 t/s, but diverges from the f16 reference numerics) or per-layer
+op-fusion to lift the small GEMVs from 52→78 GB/s — both larger changes.
 
 ### Build footgun
 `backend_registry.o` is compiled with the `-DGEIST_BACKEND_*` set active at
