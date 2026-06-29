@@ -8,6 +8,15 @@ minor release.
 
 ## [Unreleased]
 
+### Added — prebuilt linux-x86_64 release binary (AVX-512)
+
+- `release.yml` now also builds a **`geist-linux-x86_64.tar.gz`** — a dependency-free
+  musl-static binary with the native AVX-512/VNNI backend (`BACKENDS="cpu_x86
+  cpu_scalar"`, `GEMM_PROVIDER=native`). Baseline `x86-64-v3` (Haswell / Zen+) with
+  AVX-512 kernels runtime-dispatched via `hw_probe`, so the one binary runs on any
+  x86-64-v3 CPU. Model-less only (BitNet ternary has no AVX kernel yet) — pair it
+  with a Gemma/Llama GGUF. Windows still not shipped.
+
 ### Changed — docs reflect the landed x86-64 (AVX-512) backend
 
 - README, `install.sh` and ROADMAP no longer say "x86 / Windows wait on the AVX
