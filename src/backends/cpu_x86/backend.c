@@ -208,9 +208,12 @@ static void cpu_x86_linear_i2s_x4_pair_m1(const float               *x,
                         y1);
 }
 
-/* GEIST_I2S_PAIR=1 fuses gate+up / q+k decode (shared quant + one OMP region).
- * Default off: perf-neutral at the DDR5 BW ceiling, opt-in for slower RAM
- * where per-op overhead bites. Host-constant after first read. */
+/* Fuse gate+up / q+k decode (shared quant + one OMP region, 5 regions/layer →
+ * 3). Measured neutral on the 9950X (DDR5-6400) under both active and passive
+ * OMP wait — the ternary GEMVs are already BW-bound and the saving is lost in
+ * run-to-run noise. Kept as an explicit opt-in (GEIST_I2S_PAIR=1) for hosts
+ * where the caller measures a benefit (low memory bandwidth, high core count,
+ * costly thread wakeups). Default off; host-constant after first read. */
 static int cpu_x86_i2s_pair_enabled(void) {
     static int e = -1;
     if (e < 0) {

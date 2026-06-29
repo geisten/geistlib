@@ -574,18 +574,21 @@ A per-matmul BW breakdown (spec-head profile, /token) shows the ternary decode
 GEMVs are **already at the DDR5-6400 ceiling**, not at the ~52 GB/s an earlier
 (wrong) aggregate estimate suggested: gate_up 265 MB @ **76 GB/s**, down 133 MB
 @ **75**, o_proj 49 MB @ **69**, qkv 74 MB @ **65** — aggregate **73 GB/s**.
-So with spinning threads (`OMP_WAIT_POLICY=active`) there is no BW headroom and
-the fused gate+up / q+k decode (shared activation quant + one OMP region,
-`i2s_x4_gemv_pair_m1` via `linear_pair_m1`, collapsing 5 OMP regions/layer → 3)
-is **neutral** (80.8 vs 79.5). But it is **not** neutral under the *default* OMP
-wait policy (`passive`, threads sleep between regions — the common case when the
-caller doesn't pin spinning threads): there the per-region fork/join is real and
-the fusion is **+8 % decode (72.6 vs 67.1)**. Hence it is kept as an opt-in,
-**`GEIST_I2S_PAIR=1`** (default off) — a win for `passive`-wait / shared hosts,
-free elsewhere. (A blunt memory-bandwidth-contention emulation of "slower RAM"
-was inconclusive — saturating the controllers collapses decode to ~1.3 t/s, too
-extreme to read.) The only decode lever beyond this is reading fewer bytes,
-already maximized (2-bit ternary + spec-head).
+So there is no BW headroom, and a fused gate+up / q+k decode (shared activation
+quant + one OMP region, `i2s_x4_gemv_pair_m1` via `linear_pair_m1`, collapsing
+5 OMP regions/layer → 3) measured **neutral** under `OMP_WAIT_POLICY=active`
+(80.8 vs 79.5). An initial single-sample run under `passive` wait suggested a
++8 % win, but it **did not reproduce** — repeated alternating runs were
+75.1/70.8/80.6 (off) vs 70.6/84.4/74.1 (on), i.e. ±10 t/s of run-to-run noise
+swamping any effect (passive-wait wakeup latency is highly variable; an earlier
+bwhog stress had also left the box warm). A blunt BW-contention emulation of
+"slower RAM" was likewise inconclusive (saturating the controllers collapses
+decode to ~1.3 t/s). **Conclusion: the fusion is neutral on this host.** It is
+kept as an explicit opt-in, **`GEIST_I2S_PAIR=1`** (default off), for hosts
+where the caller *measures* a benefit (low memory bandwidth, high core count,
+costly thread wakeups) — verified bit-identical to two separate m1 calls. The
+only decode lever beyond this is reading fewer bytes, already maximized (2-bit
+ternary + spec-head).
 
 ### Build footgun
 `backend_registry.o` is compiled with the `-DGEIST_BACKEND_*` set active at
