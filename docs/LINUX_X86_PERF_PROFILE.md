@@ -522,14 +522,16 @@ Kernels (9950X, 16T, same `ggml-model-i2_s.gguf`):
   once per decode step; the NEON spec-head fast path is ARM-only). 400 → 8.6
   ms/call (~76 GB/s).
 
-| metric | scalar (was) | packed VNNI | **x4 (final)** | bitnet.cpp (i2_s) |
-| ------ | -----------: | ----------: | -------------: | ----------------: |
-| prefill pp128 | 4.6  | 472 | **846** | 679 |
-| decode  tg128 | 1.0  | 48  | **46**  | 56.5 |
+| metric | scalar (was) | packed VNNI | x4 | **x4 + Q8 lm_head** | bitnet.cpp (i2_s) |
+| ------ | -----------: | ----------: | --: | ------------------: | ----------------: |
+| prefill pp128 | 4.6  | 472 | 846 | **864** | 679 |
+| decode  tg128 | 1.0  | 48  | 46  | **61**  | 56.5 |
 
-**geist beats bitnet.cpp on prefill by ~25 %** (846 vs 679). Decode is ~82 %
-(BW-bound; see below). Output was byte-identical to bitnet.cpp on the packed
-path; the x4 path is bit-identical to the scalar oracle (Δ=0).
+**geist beats bitnet.cpp on both: prefill +27 % (864 vs 679), decode +8 %
+(61 vs 56.5).** The x4 path is bit-identical to the scalar oracle (Δ=0); the
+Q8 lm_head is cosine 0.99999 vs the f32 reference and generation stays
+coherent. (Q8 lm_head trades exact f16-reference numerics for the BW win —
+see decode below.)
 
 ### The prefill win: x4 row-interleave (one act load → 4 rows)
 
@@ -543,16 +545,18 @@ was the lever** — the per-cell reduce was NOT (proven: replacing it with a fak
 route: JT=8 (465), lo/hi 2-chain (454), 4-accumulator/token (451; 22-zmm spill).
 Kept the parallel quant prelude.
 
-### Decode (46 vs 56.5) — BW-bound, gap is per-op overhead
+### Decode win: Q8 lm_head (46 → 61, beats bitnet.cpp's 56.5)
 
-Decode reads ~1.1 GB/token (0.43 GB ternary + 0.66 GB F16 lm_head). Profile:
-lm_head 8.4 ms (78 GB/s — near peak), the 30 ternary layers 8.3 ms (52 GB/s),
-rest attention-core/sample/glue. x4 doesn't help decode (same weight bytes, M=1).
-We hit 51 GB/s effective vs bitnet.cpp's 62 — their edge is lower per-op overhead
-on the many small per-layer GEMVs (ggml's fused threading), plus the shared F16
-lm_head both pay. Winning decode needs either an int8/Q8 lm_head (halves its BW,
-~+4 ms → ~56 t/s, but diverges from the f16 reference numerics) or per-layer
-op-fusion to lift the small GEMVs from 52→78 GB/s — both larger changes.
+Decode read ~1.1 GB/token: 0.43 GB ternary + **0.66 GB F16 lm_head** (40 % of
+decode, the largest single cost at 8.4 ms @78 GB/s). Quantizing the tied lm_head
+to per-row int8 at load (`f16_to_q8w` → `w->aux_fp32`, `q8w_gemv_m1`: int8
+weight read, f32 activation, AVX2 cvtepi8→f32 + FMA) halves its read to 0.33 GB
+→ lm_head ~4 ms, **decode 46 → 61 t/s**. Quality: per-row int8 quant of an
+output projection is cosine 0.99999 vs f32 and generation is coherent; this is
+the one place geist diverges from bitnet.cpp's exact f16 numerics (gated to F16
+weights ≥ 1 M elems — small F16 dense keeps the exact F16C GEMV). The ternary
+layers stay at ~52 GB/s (per-op overhead on the small per-layer GEMVs); lifting
+those to lm_head's 78 GB/s via op-fusion is the remaining decode headroom.
 
 ### Build footgun
 `backend_registry.o` is compiled with the `-DGEIST_BACKEND_*` set active at

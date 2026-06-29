@@ -214,6 +214,51 @@ static void cpu_x86_linear_f16_m1(const float               *x,
     f16_gemv_m1((size_t) w->n_out, (size_t) w->n_in, x, (const uint16_t *) w->raw, y);
 }
 
+/* Q8-weight decode: int8 weights (0.5× the f16 read) in w->aux_fp32, per-row
+ * scales right after them. The BW lever for the lm_head. */
+static inline size_t q8w_scales_offset(size_t n_out, size_t n_in) {
+    return (n_out * n_in + 63u) & ~(size_t) 63u; /* int8 wq, then 64-aligned scales */
+}
+
+static void cpu_x86_linear_q8w_m1(const float               *x,
+                                  const struct geist_weight *w,
+                                  struct geist_backend      *be,
+                                  float                     *y) {
+    (void) be;
+    const size_t   n_in   = (size_t) w->n_in;
+    const size_t   n_out  = (size_t) w->n_out;
+    const int8_t  *wq     = (const int8_t *) w->aux_fp32;
+    const float   *scales = (const float *) (wq + q8w_scales_offset(n_out, n_in));
+    q8w_gemv_m1(n_out, n_in, x, wq, scales, y);
+}
+
+/* Quantize an F16 weight to per-row int8 at load (aux, heap-owned). Returns
+ * false (keep the f16 GEMV) on OOM. Only worthwhile for big weights (the
+ * 657 MB tied lm_head); small F16 weights keep the exact f16 path. */
+static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
+    const size_t n_in  = (size_t) w->n_in;
+    const size_t n_out = (size_t) w->n_out;
+    if ((uint64_t) n_out * n_in < (1u << 20)) {
+        return false; /* tiny F16 dense → not worth the BW/quant tradeoff */
+    }
+    const size_t scales_off = q8w_scales_offset(n_out, n_in);
+    const size_t blob_bytes  = scales_off + n_out * sizeof(float);
+    uint8_t     *blob        = heap_alloc_aligned(blob_bytes, OPTIMAL_ALIGNMENT);
+    if (blob == nullptr) {
+        return false;
+    }
+    f16_to_q8w(n_out,
+               n_in,
+               (const uint16_t *) w->raw,
+               (int8_t *) blob,
+               (float *) (blob + scales_off));
+    w->aux_fp32  = (const float *) blob;
+    w->aux_n     = (int32_t) blob_bytes;
+    w->flags     = (uint16_t) (w->flags | GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK);
+    w->linear_m1 = cpu_x86_linear_q8w_m1;
+    return true;
+}
+
 [[nodiscard]] static enum geist_status cpu_x86_resolve_weight(struct geist_backend *be,
                                                               struct geist_weight  *w) {
     /* Start from the cpu_scalar mapping: covers every dtype + sets m1/_mN
@@ -247,8 +292,11 @@ static void cpu_x86_linear_f16_m1(const float               *x,
         }
         break;
     case GEIST_DTYPE_F16:
-        /* Tied lm_head on BitNet: OMP + F16C GEMV for the M=1 head. */
-        w->linear_m1 = cpu_x86_linear_f16_m1;
+        /* Tied lm_head on BitNet: Q8 weight (half the BW) for the M=1 head;
+         * F16C GEMV fallback on OOM / tiny weights. */
+        if (!cpu_x86_linear_q8w_resolve(w)) {
+            w->linear_m1 = cpu_x86_linear_f16_m1;
+        }
         break;
     case GEIST_DTYPE_F32:
         /* Quantize F32 dense (Gemma 4 PLE gate/proj) to W8A8 and run the
