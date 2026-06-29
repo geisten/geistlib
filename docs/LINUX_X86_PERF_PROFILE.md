@@ -528,12 +528,22 @@ Kernels (9950X, 16T, same `ggml-model-i2_s.gguf`):
 | decode  tg64  | 1.0  | **49.6** | 57.0 |
 
 Output is byte-identical to bitnet.cpp (greedy) — correctness cross-validated.
-geist is at 69 % of bitnet.cpp prefill, 87 % decode. bitnet.cpp's i2_s GEMM is
+geist is at ~69 % of bitnet.cpp prefill, ~87 % decode. bitnet.cpp's i2_s GEMM is
 plain AVX2 maddubs (not VNNI) but wins via a load-time weight transform + ggml's
-mature GEMM blocking/threading. Tried and rejected as no-ops here: JT=8 (465 vs
-472) and per-code-group independent accumulators (451; register-spills at 22
-live zmm). Closing the gap needs the row-interleaved layout (16 rows → 16 int32
-lanes, no per-cell `_mm512_reduce_add_epi32`) — a load-time repack, deferred.
+mature cache-blocked/threaded GEMM.
+
+Prefill GEMM optimization attempts (all measured; kept only the win):
+- **Parallel quant+permute prelude** (OMP over tokens) — KEPT. The activation
+  int8 quant + VPDPBUSD-pairing permute ran serially before the OMP GEMM.
+- JT=8 token tile — no-op (465 vs 472). 2 chains/token (lo+hi) — worse (454).
+- Per-code-group independent accumulators (4/token) — worse (451; spills at 22
+  live zmm).
+- **Row-interleave (16 rows → 16 lanes, eliminates the per-cell reduce):
+  rejected by experiment.** Replacing `_mm512_reduce_add_epi32` with a fake
+  1-lane extract left prefill unchanged (456 vs 472) → the reduce is NOT the
+  bottleneck, so the row-interleave rewrite (+4× weight-memory) would not pay
+  off. The GEMM is throughput/memory-bound in the dpbusd+load mix; the residual
+  gap is bitnet.cpp's mature ggml GEMM infrastructure, not one missing trick.
 
 ### Build footgun
 `backend_registry.o` is compiled with the `-DGEIST_BACKEND_*` set active at

@@ -177,6 +177,9 @@ void i2s_gemm_mN(size_t        m,
         i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (size_t i = 0; i < m; i++) {
         scale[i] = tensor_scale * quantize_act_row(n_in, x + i * n_in, xq + i * n_in, &sum_a[i]);
     }

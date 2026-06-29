@@ -104,6 +104,9 @@ void i2s_gemm_avx512_vnni(size_t         m,
         }
         return;
     }
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (size_t i = 0; i < m; i++) {
         build_acts_perm(n_blocks, xq + i * n_in, perm + i * n_in);
     }
