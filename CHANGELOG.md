@@ -8,14 +8,40 @@ minor release.
 
 ## [Unreleased]
 
+### Added — BitNet b1.58 2B-4T on x86 (AVX-512): beats bitnet.cpp
+
+- The `cpu_x86` backend now runs **BitNet-2B-4T (I2_S ternary)** end-to-end and
+  **beats Microsoft's bitnet.cpp on both metrics** (AMD Ryzen 9 9950X, Zen 5,
+  16T, same `ggml-model-i2_s.gguf`): prefill **pp128 884 vs 679 t/s (+30 %)**,
+  decode **tg128 77.9 vs 56.5 t/s (+38 %)**. It was previously non-functional on
+  x86 (`cpu_scalar` had no I2_S linear nor an F16 lm_head path → zero tokens).
+- **Ternary kernels** (`kernel_i2s*`): biased-u8 `VPDPBUSD` dot over the packed
+  0.25 B/wt stream (Zen 5 has no s8×s8 VNNI, so codes {0,1,2} + a per-token
+  sum-correction), unpacked in-register. The prefill GEMM uses an **x4
+  row-interleaved layout** (`i2s_to_x4`) — 4 output rows packed at 2-bit
+  granularity per byte so one activation load feeds 4 rows (4× fewer act loads),
+  the decisive prefill win.
+- **lm_head**: ported the NEON-only **speculative i8-sketch head** (`spec_head.c`)
+  to x86 (AVX2 sketch dot + F16C finalists) — reads a ~82 MB subsampled sketch
+  instead of the 657 MB F16 table, greedy output **byte-identical to the exact
+  f16 dense head**. A `Q8` lm_head (`f16_to_q8w`) is the sampling /
+  `GEIST_SPEC_HEAD=0` fallback (`GEIST_Q8_LMHEAD=0` forces exact F16C). On x86 the
+  spec-head is gated to the F16 lm_head; Gemma/Llama keep their exact dense
+  Q-decode.
+- Cross-validated byte-identical to bitnet.cpp on the packed path; the x4 /
+  spec-head paths verified against the scalar oracle / exact f16
+  (`test_i2s_gemv_unit`, `test_q8w_gemv_unit`). `cpu_scalar` gained I2_S / F16 /
+  BF16 linear (the unblock + test oracle).
+
 ### Added — prebuilt linux-x86_64 release binary (AVX-512)
 
 - `release.yml` now also builds a **`geist-linux-x86_64.tar.gz`** — a dependency-free
   musl-static binary with the native AVX-512/VNNI backend (`BACKENDS="cpu_x86
   cpu_scalar"`, `GEMM_PROVIDER=native`). Baseline `x86-64-v3` (Haswell / Zen+) with
   AVX-512 kernels runtime-dispatched via `hw_probe`, so the one binary runs on any
-  x86-64-v3 CPU. Model-less only (BitNet ternary has no AVX kernel yet) — pair it
-  with a Gemma/Llama GGUF. Windows still not shipped.
+  x86-64-v3 CPU. Model-less — pair it with a Gemma / Llama / BitNet GGUF (the
+  BitNet I2_S ternary + spec-head kernels have since landed; see above). Windows
+  still not shipped.
 
 ### Changed — docs reflect the landed x86-64 (AVX-512) backend
 
