@@ -22,14 +22,15 @@ platform* — not a global "with or without".
 | :-------------- | :---------- | :--------------------- | :-------------- | :-------------------------------------- |
 | **macOS-ARM**   | native int8 | Accelerate / **AMX**   | vDSP            | system-self-contained (framework always present) |
 | **linux-arm64** | native int8 | **native NEON fp32**   | vendored pocketfft | **musl-static, BLAS-free, tiny**     |
-| **x86-64** *(v0.2)* | AVX backend | OpenBLAS → AVX     | pocketfft       | OpenBLAS bundled (stopgap until AVX)    |
+| **x86-64 Linux** *(✅)* | native int8 (AVX-512) | AVX-512 / OpenBLAS | pocketfft   | from source (no prebuilt binary yet)   |
 
 Why this maps to "fastest per platform": the quant matmuls (the bulk of text
 inference) already win natively on ARM (measured: native int8 ≈ 30 t/s vs the
 dequant→OpenBLAS-sgemm path ≈ 13 t/s on Pi 5). Accelerate/AMX is a real,
 Apple-only hardware win for dense fp32 and is always present on macOS, so the Mac
-binary keeps it for free. x86 has no native SIMD yet, so OpenBLAS is a stopgap
-there until the AVX backend lands.
+binary keeps it for free. x86-64 now has a native **AVX-512 / VNNI** backend — it
+matches-to-beats llama.cpp on a Ryzen 9 9950X (Zen 5); OpenBLAS remains only for
+the vision/audio dense fp32 path.
 
 ### Work sequence
 
@@ -50,15 +51,16 @@ linux-arm64: build + unit tests + clang-format gate). Tagging a `v*` tag
 4. ✅ **CI matrix v0.1 = ARM only** — `release.yml` builds `linux-arm64` (fully
    static ELF, no deps) + `macos-arm64` (static libomp + Accelerate, system
    frameworks only). Both validated; a `geist` CLI is the entry point.
-5. **v0.2, gated on the AVX backend** — x86-64 (Linux / Intel-Mac / Windows),
-   OpenBLAS stopgap → native AVX. Not started.
+5. **v0.2 — AVX backend** — x86-64 **Linux**: ✅ native AVX-512 / VNNI, matches-to-
+   beats llama.cpp on a Ryzen 9 9950X (Zen 5). Prebuilt x86 binaries, Intel-Mac and
+   Windows: not yet.
 
 ### Deliberate non-goals / deferred
 
 - **Cosmopolitan / APE** — rejected (see above).
-- **x86 & Windows in v0.1** — would ship slow scalar binaries (no AVX backend
-  yet); a reputation risk. They wait for the AVX backend (a separate, planned
-  effort the size of the current NEON backend).
+- **Prebuilt x86 / Windows binaries** — the x86-64 AVX-512 backend now exists
+  (build from source, competitive with llama.cpp); shipping prebuilt x86 binaries
+  and Windows support are still deferred.
 
 ### Open packaging details (not design forks)
 
