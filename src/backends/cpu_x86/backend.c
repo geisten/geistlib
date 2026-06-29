@@ -140,6 +140,20 @@ static void cpu_x86_linear_i2s_m1(const float               *x,
     i2s_gemv_m1(n_out, n_in, x, raw, scale, y);
 }
 
+static void cpu_x86_linear_i2s_mN(const float               *x,
+                                  const struct geist_weight *w,
+                                  size_t                     m,
+                                  struct geist_backend      *be,
+                                  float                     *y) {
+    (void) be;
+    const size_t   n_in  = (size_t) w->n_in;
+    const size_t   n_out = (size_t) w->n_out;
+    const uint8_t *raw   = (const uint8_t *) w->raw;
+    float          scale;
+    memcpy(&scale, raw + n_in * n_out / 4, sizeof scale);
+    i2s_gemm_mN(m, n_out, n_in, x, raw, scale, y);
+}
+
 /* F16 dense decode (BitNet's tied lm_head, 657 MB read once per token):
  * OMP + F16C GEMV, far faster than the serial cpu_scalar dequant-dot. */
 static void cpu_x86_linear_f16_m1(const float               *x,
@@ -174,9 +188,9 @@ static void cpu_x86_linear_f16_m1(const float               *x,
         (void) cpu_x86_linear_q6k_resolve(w); /* OOM → keep scalar m1 */
         break;
     case GEIST_DTYPE_I2_S:
-        /* Decode: native packed-2-bit VNNI GEMV. M>1 prefill stays on
-         * cpu_scalar's dequant path until the lane-parallel ternary GEMM. */
+        /* Decode + prefill: native packed-2-bit VPDPBUSD ternary kernels. */
         w->linear_m1 = cpu_x86_linear_i2s_m1;
+        w->linear_mN = cpu_x86_linear_i2s_mN;
         break;
     case GEIST_DTYPE_F16:
         /* Tied lm_head on BitNet: OMP + F16C GEMV for the M=1 head. */

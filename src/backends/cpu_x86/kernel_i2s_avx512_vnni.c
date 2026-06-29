@@ -16,6 +16,7 @@
 #include <immintrin.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #if defined(_OPENMP)
 #include <omp.h>
@@ -75,4 +76,72 @@ void i2s_gemv_m1_avx512_vnni(size_t        n_out,
         const int32_t dot = _mm512_reduce_add_epi32(acc) - sum_a;
         y[r]              = (float) dot * scale;
     }
+}
+
+/* Prefill GEMM. JT tokens share each weight-row load: the 4 unpacked code
+ * vectors per block are reused across the token-tile, so the packed weight
+ * is read once per (row, block, tile) and the VPDPBUSD throughput is the
+ * limiter. y is [m, n_out] row-major. */
+#define I2S_JT 4
+
+void i2s_gemm_avx512_vnni(size_t         m,
+                          size_t         n_out,
+                          size_t         n_in,
+                          const int8_t  *xq,
+                          const int32_t *sum_a,
+                          const float   *scale,
+                          const uint8_t  w_raw[],
+                          float          y[]) {
+    const size_t n_blocks  = n_in / I2S_BLOCK_ELEMS;
+    const size_t row_bytes = n_in / 4;
+
+    /* Permute every token's activations once (shared, read-only). */
+    int8_t *perm = (int8_t *) malloc(m * n_in);
+    if (perm == nullptr) {
+        for (size_t i = 0; i < m; i++) {
+            i2s_gemv_m1_avx512_vnni(
+                    n_out, n_in, xq + i * n_in, sum_a[i], w_raw, scale[i], y + i * n_out);
+        }
+        return;
+    }
+    for (size_t i = 0; i < m; i++) {
+        build_acts_perm(n_blocks, xq + i * n_in, perm + i * n_in);
+    }
+
+    const __m512i m3 = _mm512_set1_epi8(3);
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t r = 0; r < n_out; r++) {
+        const uint8_t *Wr = w_raw + r * row_bytes;
+        for (size_t j0 = 0; j0 < m; j0 += I2S_JT) {
+            const size_t jt = (m - j0 < I2S_JT) ? (m - j0) : I2S_JT;
+            __m512i      acc[I2S_JT];
+            for (size_t jj = 0; jj < I2S_JT; jj++) {
+                acc[jj] = _mm512_setzero_si512();
+            }
+            for (size_t b = 0; b < n_blocks; b++) {
+                const __m512i w  = _mm512_loadu_si512((const void *) (Wr + b * I2S_BLOCK_BYTES));
+                const __m512i c0 = _mm512_and_si512(_mm512_srli_epi16(w, 6), m3);
+                const __m512i c1 = _mm512_and_si512(_mm512_srli_epi16(w, 4), m3);
+                const __m512i c2 = _mm512_and_si512(_mm512_srli_epi16(w, 2), m3);
+                const __m512i c3 = _mm512_and_si512(w, m3);
+                for (size_t jj = 0; jj < jt; jj++) {
+                    const int8_t *ab = perm + (j0 + jj) * n_in + b * 256;
+                    __m512i       a  = acc[jj];
+                    a = _mm512_dpbusd_epi32(a, c0, _mm512_loadu_si512((const void *) (ab + 0)));
+                    a = _mm512_dpbusd_epi32(a, c1, _mm512_loadu_si512((const void *) (ab + 64)));
+                    a = _mm512_dpbusd_epi32(a, c2, _mm512_loadu_si512((const void *) (ab + 128)));
+                    a = _mm512_dpbusd_epi32(a, c3, _mm512_loadu_si512((const void *) (ab + 192)));
+                    acc[jj] = a;
+                }
+            }
+            for (size_t jj = 0; jj < jt; jj++) {
+                const int32_t dot = _mm512_reduce_add_epi32(acc[jj]) - sum_a[j0 + jj];
+                y[(j0 + jj) * n_out + r] = (float) dot * scale[j0 + jj];
+            }
+        }
+    }
+    free(perm);
 }

@@ -21,6 +21,8 @@
 #include <omp.h>
 #endif
 
+#include <stdlib.h>
+
 /* VNNI path (kernel_i2s_avx512_vnni.c). */
 void i2s_gemv_m1_avx512_vnni(size_t        n_out,
                              size_t        n_in,
@@ -29,6 +31,15 @@ void i2s_gemv_m1_avx512_vnni(size_t        n_out,
                              const uint8_t w_raw[],
                              float         scale,
                              float         y[static n_out]);
+
+void i2s_gemm_avx512_vnni(size_t         m,
+                          size_t         n_out,
+                          size_t         n_in,
+                          const int8_t  *xq,    /* [m * n_in] natural-order int8 */
+                          const int32_t *sum_a, /* [m] */
+                          const float   *scale, /* [m] = tensor_scale * inv_act_scale */
+                          const uint8_t  w_raw[],
+                          float          y[]);
 
 /* --- Activation quant: per-row symmetric int8, scale = 127/max|x|. ------- */
 static float quantize_act_row(size_t n_in, const float *x, int8_t *xq, int32_t *sum_a_out) {
@@ -127,4 +138,50 @@ void i2s_gemv_m1(size_t        n_out,
     int32_t     sum_a;
     const float scale = tensor_scale * quantize_act_row(n_in, x, xq, &sum_a);
     i2s_gemv_m1_avx512_vnni(n_out, n_in, xq, sum_a, w_raw, scale, y);
+}
+
+/* --- Prefill GEMM -------------------------------------------------------- */
+void i2s_gemm_mN_scalar(size_t        m,
+                        size_t        n_out,
+                        size_t        n_in,
+                        const float  *x,
+                        const uint8_t w_raw[],
+                        float         tensor_scale,
+                        float         y[]) {
+    for (size_t i = 0; i < m; i++) {
+        i2s_gemv_m1_scalar(n_out, n_in, x + i * n_in, w_raw, tensor_scale, y + i * n_out);
+    }
+}
+
+void i2s_gemm_mN(size_t        m,
+                 size_t        n_out,
+                 size_t        n_in,
+                 const float  *x,
+                 const uint8_t w_raw[],
+                 float         tensor_scale,
+                 float         y[]) {
+    if (m == 0) {
+        return;
+    }
+    if (n_in % I2S_BLOCK_ELEMS != 0 || !i2s_isa_is_vnni()) {
+        i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
+        return;
+    }
+    int8_t  *xq    = (int8_t *) malloc(m * n_in);
+    int32_t *sum_a = (int32_t *) malloc(m * sizeof(int32_t));
+    float   *scale = (float *) malloc(m * sizeof(float));
+    if (xq == nullptr || sum_a == nullptr || scale == nullptr) {
+        free(xq);
+        free(sum_a);
+        free(scale);
+        i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
+        return;
+    }
+    for (size_t i = 0; i < m; i++) {
+        scale[i] = tensor_scale * quantize_act_row(n_in, x + i * n_in, xq + i * n_in, &sum_a[i]);
+    }
+    i2s_gemm_avx512_vnni(m, n_out, n_in, xq, sum_a, scale, w_raw, y);
+    free(xq);
+    free(sum_a);
+    free(scale);
 }

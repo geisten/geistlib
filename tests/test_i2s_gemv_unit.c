@@ -103,9 +103,36 @@ static int scenario(size_t N, size_t K) {
         fprintf(stderr, "  [N=%zu K=%zu] cosine=%.6f < 0.999\n", N, K, cos);
         fail = 1;
     }
-    printf("  [N=%zu K=%zu] vnni=%d  Δ(disp,scal)=%.3e  cos(scal,f32)=%.6f%s\n",
-           N, K, i2s_isa_is_vnni(), max_dd, cos, fail ? "  FAIL" : "");
+    /* (3) prefill GEMM (M tokens): each row vs the m1 dispatch result. */
+    const size_t M    = 9; /* spans two+ JT=4 tiles incl. a partial tail */
+    float       *xm   = malloc(M * K * sizeof(float));
+    for (size_t i = 0; i < M * K; i++) {
+        xm[i] = 2.0f * ((prng(&s) & 0xFFFFu) / 65536.0f) - 1.0f;
+    }
+    float *y_gemm = malloc(M * N * sizeof(float));
+    float *y_row  = malloc(N * sizeof(float));
+    i2s_gemm_mN(M, N, K, xm, W, scale, y_gemm);
+    double max_gd = 0.0;
+    for (size_t i = 0; i < M; i++) {
+        i2s_gemv_m1(N, K, xm + i * K, W, scale, y_row);
+        for (size_t r = 0; r < N; r++) {
+            const double gd = fabs((double) y_gemm[i * N + r] - (double) y_row[r]);
+            if (gd > max_gd) {
+                max_gd = gd;
+            }
+        }
+    }
+    if (max_gd > 1e-3) {
+        fprintf(stderr, "  [N=%zu K=%zu] gemm vs m1 Δ=%.3e > 1e-3\n", N, K, max_gd);
+        fail = 1;
+    }
 
+    printf("  [N=%zu K=%zu] vnni=%d  Δ(disp,scal)=%.3e  cos(scal,f32)=%.6f  Δ(gemm,m1)=%.3e%s\n",
+           N, K, i2s_isa_is_vnni(), max_dd, cos, max_gd, fail ? "  FAIL" : "");
+
+    free(xm);
+    free(y_gemm);
+    free(y_row);
     free(W);
     free(trits);
     free(x);

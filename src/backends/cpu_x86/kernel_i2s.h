@@ -60,6 +60,26 @@ void i2s_gemv_m1_scalar(size_t        n_out,
                         float         tensor_scale,
                         float         y[static n_out]);
 
+/* Prefill GEMM: M token rows × n_out output rows. x is [M, n_in] row-major;
+ * y is [M, n_out] row-major (y[i*n_out + r]). Each weight row is read once
+ * and reused across a token-tile (VPDPBUSD amortization). Dispatches to
+ * AVX-512+VNNI when available, else the scalar reference. */
+void i2s_gemm_mN(size_t        m,
+                 size_t        n_out,
+                 size_t        n_in,
+                 const float  *x,
+                 const uint8_t w_raw[],
+                 float         tensor_scale,
+                 float         y[]);
+
+void i2s_gemm_mN_scalar(size_t        m,
+                        size_t        n_out,
+                        size_t        n_in,
+                        const float  *x,
+                        const uint8_t w_raw[],
+                        float         tensor_scale,
+                        float         y[]);
+
 /* True iff i2s_gemv_m1 resolved to the AVX-512+VNNI tier. */
 [[nodiscard]] int i2s_isa_is_vnni(void);
 
