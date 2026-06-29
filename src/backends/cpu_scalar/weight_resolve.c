@@ -99,7 +99,7 @@ static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *r
                 for (size_t bb = 0; bb < 32; bb++) {
                     const uint8_t byte = qs[h * 32 + bb];
                     for (size_t g = 0; g < 4; g++) {
-                        const int trit             = (int) ((byte >> (6 - 2 * g)) & 3) - 1;
+                        const int trit = (int) ((byte >> (6 - 2 * g)) & 3) - 1;
                         row[b * 256 + h * 128 + g * 32 + bb] = (float) trit * scale;
                     }
                 }

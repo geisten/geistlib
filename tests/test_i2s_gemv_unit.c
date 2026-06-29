@@ -78,8 +78,8 @@ static int scenario(size_t N, size_t K) {
     i2s_gemv_m1_scalar(N, K, x, W, scale, y_scal);
 
     /* (1) dispatch vs scalar: identical integer math. */
-    int    fail     = 0;
-    double max_dd   = 0.0;
+    int    fail   = 0;
+    double max_dd = 0.0;
     for (size_t r = 0; r < N; r++) {
         const double dd = fabs((double) y_disp[r] - (double) y_scal[r]);
         if (dd > max_dd) {
@@ -104,8 +104,8 @@ static int scenario(size_t N, size_t K) {
         fail = 1;
     }
     /* (3) prefill GEMM (M tokens): each row vs the m1 dispatch result. */
-    const size_t M    = 9; /* spans two+ JT=4 tiles incl. a partial tail */
-    float       *xm   = malloc(M * K * sizeof(float));
+    const size_t M  = 9; /* spans two+ JT=4 tiles incl. a partial tail */
+    float       *xm = malloc(M * K * sizeof(float));
     for (size_t i = 0; i < M * K; i++) {
         xm[i] = 2.0f * ((prng(&s) & 0xFFFFu) / 65536.0f) - 1.0f;
     }
@@ -166,7 +166,14 @@ static int scenario(size_t N, size_t K) {
 
     printf("  [N=%zu K=%zu] vnni=%d  Δ(disp,scal)=%.3e  cos=%.6f  Δ(gemm,m1)=%.3e  "
            "Δx4(gemv)=%.3e Δx4(gemm)=%.3e%s\n",
-           N, K, i2s_isa_is_vnni(), max_dd, cos, max_gd, max_x4, max_x4g,
+           N,
+           K,
+           i2s_isa_is_vnni(),
+           max_dd,
+           cos,
+           max_gd,
+           max_x4,
+           max_x4g,
            fail ? "  FAIL" : "");
 
     free(xm);

@@ -129,7 +129,7 @@ void i2s_gemv_m1_scalar(size_t        n_out,
 }
 
 /* --- Dispatch ------------------------------------------------------------ */
-static int g_i2s_vnni   = -1;
+static int g_i2s_vnni = -1;
 
 [[nodiscard]] int i2s_isa_is_vnni(void) {
     if (g_i2s_vnni < 0) {
@@ -213,10 +213,8 @@ void i2s_gemm_mN(size_t        m,
 /* Decode one native-I2_S weight code ∈ {0,1,2} at (row, col). The native
  * block layout: 256-elem/64-byte blocks; element e=col%256 maps to byte
  * qs[h*32+bb] (h=e/128, bb=e%32) at shift 6-2g (g=(e%128)/32). */
-static inline uint8_t i2s_native_code(const uint8_t *w_raw,
-                                      size_t         row_bytes,
-                                      size_t         row,
-                                      size_t         col) {
+static inline uint8_t
+i2s_native_code(const uint8_t *w_raw, size_t row_bytes, size_t row, size_t col) {
     const size_t  b    = col / 256;
     const size_t  e    = col % 256;
     const size_t  h    = e / 128;
@@ -239,7 +237,7 @@ void i2s_to_x4(size_t n_out, size_t n_in, const uint8_t w_raw[], uint8_t x4[]) {
             const uint8_t r1 = i2s_native_code(w_raw, row_bytes, grp * 4 + 1, c);
             const uint8_t r2 = i2s_native_code(w_raw, row_bytes, grp * 4 + 2, c);
             const uint8_t r3 = i2s_native_code(w_raw, row_bytes, grp * 4 + 3, c);
-            dst[c] = (uint8_t) ((r0 << 6) | (r1 << 4) | (r2 << 2) | r3);
+            dst[c]           = (uint8_t) ((r0 << 6) | (r1 << 4) | (r2 << 2) | r3);
         }
     }
 }

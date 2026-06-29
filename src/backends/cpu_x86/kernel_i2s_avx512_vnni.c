@@ -141,7 +141,7 @@ void i2s_gemm_avx512_vnni(size_t         m,
                 }
             }
             for (size_t jj = 0; jj < jt; jj++) {
-                const int32_t dot = _mm512_reduce_add_epi32(acc[jj]) - sum_a[j0 + jj];
+                const int32_t dot        = _mm512_reduce_add_epi32(acc[jj]) - sum_a[j0 + jj];
                 y[(j0 + jj) * n_out + r] = (float) dot * scale[j0 + jj];
             }
         }
@@ -225,8 +225,8 @@ void i2s_x4_gemm_avx512_vnni(size_t         m,
                 const __m512i r2 = _mm512_and_si512(_mm512_srli_epi16(w, 2), m3);
                 const __m512i r3 = _mm512_and_si512(w, m3);
                 for (size_t jj = 0; jj < tt; jj++) {
-                    const __m512i a = _mm512_loadu_si512(
-                            (const void *) (xq + (j0 + jj) * n_in + cb * 64));
+                    const __m512i a =
+                            _mm512_loadu_si512((const void *) (xq + (j0 + jj) * n_in + cb * 64));
                     acc[0][jj] = _mm512_dpbusd_epi32(acc[0][jj], r0, a);
                     acc[1][jj] = _mm512_dpbusd_epi32(acc[1][jj], r1, a);
                     acc[2][jj] = _mm512_dpbusd_epi32(acc[2][jj], r2, a);

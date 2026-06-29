@@ -80,9 +80,9 @@ static int scenario(size_t N, size_t K) {
 
 int main(void) {
     int fail = 0;
-    fail |= scenario(256, 2560);  /* lm_head-shaped */
-    fail |= scenario(127, 320);   /* odd N, tail K */
-    fail |= scenario(64, 100);    /* non-multiple-of-8 K */
+    fail |= scenario(256, 2560); /* lm_head-shaped */
+    fail |= scenario(127, 320);  /* odd N, tail K */
+    fail |= scenario(64, 100);   /* non-multiple-of-8 K */
     if (fail) {
         fprintf(stderr, "test_q8w_gemv_unit: FAIL\n");
         return 1;

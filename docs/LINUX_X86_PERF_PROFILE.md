@@ -522,16 +522,16 @@ Kernels (9950X, 16T, same `ggml-model-i2_s.gguf`):
   once per decode step; the NEON spec-head fast path is ARM-only). 400 → 8.6
   ms/call (~76 GB/s).
 
-| metric | scalar (was) | packed VNNI | x4 | **x4 + Q8 lm_head** | bitnet.cpp (i2_s) |
-| ------ | -----------: | ----------: | --: | ------------------: | ----------------: |
-| prefill pp128 | 4.6  | 472 | 846 | **864** | 679 |
-| decode  tg128 | 1.0  | 48  | 46  | **61**  | 56.5 |
+| metric | scalar (was) | packed VNNI | x4 | x4+Q8 | **x4 + spec-head** | bitnet.cpp |
+| ------ | -----------: | ----------: | --: | ----: | -----------------: | ---------: |
+| prefill pp128 | 4.6  | 472 | 846 | 864 | **884** | 679 |
+| decode  tg128 | 1.0  | 48  | 46  | 61  | **77.9** | 56.5 |
 
-**geist beats bitnet.cpp on both: prefill +27 % (864 vs 679), decode +8 %
-(61 vs 56.5).** The x4 path is bit-identical to the scalar oracle (Δ=0); the
-Q8 lm_head is cosine 0.99999 vs the f32 reference and generation stays
-coherent. (Q8 lm_head trades exact f16-reference numerics for the BW win —
-see decode below.)
+**geist beats bitnet.cpp on both: prefill +30 % (884 vs 679), decode +38 %
+(77.9 vs 56.5).** The x4 path is bit-identical to the scalar oracle (Δ=0); the
+spec-head greedy output is **byte-identical to the exact f16 dense head** (perfect
+top-512 recall, verified over 80 tokens). Q8 lm_head (cosine 0.99999, the
+sampling/`GEIST_SPEC_HEAD=0` fallback) is the intermediate column.
 
 ### The prefill win: x4 row-interleave (one act load → 4 rows)
 
@@ -545,7 +545,19 @@ was the lever** — the per-cell reduce was NOT (proven: replacing it with a fak
 route: JT=8 (465), lo/hi 2-chain (454), 4-accumulator/token (451; 22-zmm spill).
 Kept the parallel quant prelude.
 
-### Decode win: Q8 lm_head (46 → 61, beats bitnet.cpp's 56.5)
+### Decode win: spec-head i8 sketch (61 → 77.9, beats bitnet.cpp's 56.5 by +38%)
+
+Ported the NEON-only speculative output head (`spec_head.c`) to x86 (AVX2 sketch
+SDOT via sign-extend+madd, F16C finalist dot). Two stages: (1) rough-score the
+whole 128 K vocab against a STRIDE-4 subsampled int8 sketch (~82 MB read, not
+657 MB), (2) exact f16 dot on only the top-512 finalists. Greedy output is
+**byte-identical to the exact f16 dense head** (true argmax always in the top-512
+for a 128 K vocab — verified 80 tokens). Decode 61 → 77.9 t/s. Gated to the F16
+tied lm_head on x86 (the Q6_K/repacked phase-3 paths are NEON-validated only;
+Gemma/Llama keep their exact dense Q-decode). Sampling (temp>0) and
+`GEIST_SPEC_HEAD=0` fall back to the Q8 lm_head below.
+
+### Q8 lm_head (the dense fallback: 46 → 61)
 
 Decode read ~1.1 GB/token: 0.43 GB ternary + **0.66 GB F16 lm_head** (40 % of
 decode, the largest single cost at 8.4 ms @78 GB/s). Quantizing the tied lm_head

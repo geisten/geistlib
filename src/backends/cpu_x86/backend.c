@@ -38,6 +38,7 @@
 #include <geist_weight.h>
 
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Borrowed from cpu_scalar/backend.c (exported there). */
@@ -191,7 +192,7 @@ static bool cpu_x86_linear_i2s_x4_resolve(struct geist_weight *w) {
         return false;
     }
     const size_t blob_bytes = n_out * n_in / 4;
-    uint8_t     *blob        = heap_alloc_aligned(blob_bytes, OPTIMAL_ALIGNMENT);
+    uint8_t     *blob       = heap_alloc_aligned(blob_bytes, OPTIMAL_ALIGNMENT);
     if (blob == nullptr) {
         return false;
     }
@@ -225,10 +226,10 @@ static void cpu_x86_linear_q8w_m1(const float               *x,
                                   struct geist_backend      *be,
                                   float                     *y) {
     (void) be;
-    const size_t   n_in   = (size_t) w->n_in;
-    const size_t   n_out  = (size_t) w->n_out;
-    const int8_t  *wq     = (const int8_t *) w->aux_fp32;
-    const float   *scales = (const float *) (wq + q8w_scales_offset(n_out, n_in));
+    const size_t  n_in   = (size_t) w->n_in;
+    const size_t  n_out  = (size_t) w->n_out;
+    const int8_t *wq     = (const int8_t *) w->aux_fp32;
+    const float  *scales = (const float *) (wq + q8w_scales_offset(n_out, n_in));
     q8w_gemv_m1(n_out, n_in, x, wq, scales, y);
 }
 
@@ -241,17 +242,20 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
     if ((uint64_t) n_out * n_in < (1u << 20)) {
         return false; /* tiny F16 dense → not worth the BW/quant tradeoff */
     }
+    {
+        const char *e = getenv("GEIST_Q8_LMHEAD"); /* =0 keeps the exact F16C GEMV */
+        if (e != nullptr && e[0] == '0') {
+            return false;
+        }
+    }
     const size_t scales_off = q8w_scales_offset(n_out, n_in);
-    const size_t blob_bytes  = scales_off + n_out * sizeof(float);
-    uint8_t     *blob        = heap_alloc_aligned(blob_bytes, OPTIMAL_ALIGNMENT);
+    const size_t blob_bytes = scales_off + n_out * sizeof(float);
+    uint8_t     *blob       = heap_alloc_aligned(blob_bytes, OPTIMAL_ALIGNMENT);
     if (blob == nullptr) {
         return false;
     }
-    f16_to_q8w(n_out,
-               n_in,
-               (const uint16_t *) w->raw,
-               (int8_t *) blob,
-               (float *) (blob + scales_off));
+    f16_to_q8w(
+            n_out, n_in, (const uint16_t *) w->raw, (int8_t *) blob, (float *) (blob + scales_off));
     w->aux_fp32  = (const float *) blob;
     w->aux_n     = (int32_t) blob_bytes;
     w->flags     = (uint16_t) (w->flags | GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK);

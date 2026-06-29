@@ -70,6 +70,15 @@
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
+/* The sketch SDOT + finalist dots need either NEON+dotprod or x86 AVX2(+F16C
+ * for the F16 head). Both are gated below; everything else gets the stub. */
+#if (defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)) || defined(__AVX2__)
+#define SPEC_HEAD_AVAILABLE 1
+#endif
 
 #define SPEC_STRIDE_DEFAULT 4
 #define SPEC_TOPK_DEFAULT 512
@@ -80,9 +89,9 @@ struct spec_cand {
     uint32_t idx;
 };
 
-/* Eligible only with NEON + dotprod (the SDOT sketch kernel) and a large tied
- * lm_head (F16 on BitNet 2B-4T, Q6_K on Gemma 4 — see spec_dtype_ok). */
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+/* Eligible with NEON+dotprod or x86 AVX2 (the sketch dot kernel) and a large
+ * tied lm_head (F16 on BitNet 2B-4T, Q6_K on Gemma 4 — see spec_dtype_ok). */
+#ifdef SPEC_HEAD_AVAILABLE
 
 static size_t spec_env_sz(const char *name, size_t dflt, size_t lo, size_t hi) {
     const char *e = getenv(name);
@@ -114,6 +123,8 @@ static int spec_head_env(void) {
     return m;
 }
 
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+
 /* Signed int8 dot, n a multiple of 16 in practice (scalar tail otherwise). */
 static inline int32_t spec_i8dot(const int8_t *a, const int8_t *b, size_t n) {
     int32x4_t acc0 = vdupq_n_s32(0), acc1 = vdupq_n_s32(0);
@@ -134,16 +145,17 @@ static inline int32_t spec_i8dot(const int8_t *a, const int8_t *b, size_t n) {
 
 /* Exact f16(weight) x f32(activation) dot — in-register convert, no f32
  * materialization (mirrors cpu_neon_w_f16_m1's inner loop). */
-static inline float spec_f16dot(const float16_t *wr, const float *x, size_t n) {
-    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
-    size_t      k = 0;
+static inline float spec_f16dot(const uint16_t *wr, const float *x, size_t n) {
+    const float16_t *w  = (const float16_t *) wr;
+    float32x4_t      a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
+    size_t           k = 0;
     for (; k + 8 <= n; k += 8) {
-        a0 = vfmaq_f32(a0, vcvt_f32_f16(vld1_f16(wr + k)), vld1q_f32(x + k));
-        a1 = vfmaq_f32(a1, vcvt_f32_f16(vld1_f16(wr + k + 4)), vld1q_f32(x + k + 4));
+        a0 = vfmaq_f32(a0, vcvt_f32_f16(vld1_f16(w + k)), vld1q_f32(x + k));
+        a1 = vfmaq_f32(a1, vcvt_f32_f16(vld1_f16(w + k + 4)), vld1q_f32(x + k + 4));
     }
     float s = vaddvq_f32(vaddq_f32(a0, a1));
     for (; k < n; k++) {
-        s += (float) wr[k] * x[k];
+        s += (float) w[k] * x[k];
     }
     return s;
 }
@@ -163,6 +175,83 @@ static inline float spec_f32dot(const float *w, const float *x, size_t n) {
     }
     return s;
 }
+
+#else /* x86 AVX2 / F16C / FMA (the spec_head.c baseline is x86-64-v3) */
+
+static inline float spec_hsum256(__m256 v) {
+    const __m128 lo = _mm256_castps256_ps128(v);
+    const __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128       s  = _mm_add_ps(lo, hi);
+    s               = _mm_hadd_ps(s, s);
+    s               = _mm_hadd_ps(s, s);
+    return _mm_cvtss_f32(s);
+}
+
+/* Signed int8 dot via sign-extend to int16 + madd (Zen5 has no s8×s8 VNNI). */
+static inline int32_t spec_i8dot(const int8_t *a, const int8_t *b, size_t n) {
+    __m256i acc = _mm256_setzero_si256();
+    size_t  k   = 0;
+    for (; k + 16 <= n; k += 16) {
+        const __m256i av = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i *) (a + k)));
+        const __m256i bv = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i *) (b + k)));
+        acc              = _mm256_add_epi32(acc, _mm256_madd_epi16(av, bv));
+    }
+    const __m128i lo = _mm256_castsi256_si128(acc);
+    const __m128i hi = _mm256_extracti128_si256(acc, 1);
+    __m128i       s  = _mm_add_epi32(lo, hi);
+    s                = _mm_hadd_epi32(s, s);
+    s                = _mm_hadd_epi32(s, s);
+    int32_t r        = _mm_cvtsi128_si32(s);
+    for (; k < n; k++) {
+        r += (int32_t) a[k] * (int32_t) b[k];
+    }
+    return r;
+}
+
+/* Exact f16(weight) x f32(activation) dot — F16C in-register convert. */
+static inline float spec_f16dot(const uint16_t *wr, const float *x, size_t n) {
+    __m256 a0 = _mm256_setzero_ps();
+    __m256 a1 = _mm256_setzero_ps();
+    size_t k  = 0;
+    for (; k + 16 <= n; k += 16) {
+        a0 = _mm256_fmadd_ps(_mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) (wr + k))),
+                             _mm256_loadu_ps(x + k),
+                             a0);
+        a1 = _mm256_fmadd_ps(_mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) (wr + k + 8))),
+                             _mm256_loadu_ps(x + k + 8),
+                             a1);
+    }
+    for (; k + 8 <= n; k += 8) {
+        a0 = _mm256_fmadd_ps(_mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) (wr + k))),
+                             _mm256_loadu_ps(x + k),
+                             a0);
+    }
+    float s = spec_hsum256(_mm256_add_ps(a0, a1));
+    for (; k < n; k++) {
+        s += fp16_to_fp32(wr[k]) * x[k];
+    }
+    return s;
+}
+
+static inline float spec_f32dot(const float *w, const float *x, size_t n) {
+    __m256 a0 = _mm256_setzero_ps();
+    __m256 a1 = _mm256_setzero_ps();
+    size_t k  = 0;
+    for (; k + 16 <= n; k += 16) {
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(w + k), _mm256_loadu_ps(x + k), a0);
+        a1 = _mm256_fmadd_ps(_mm256_loadu_ps(w + k + 8), _mm256_loadu_ps(x + k + 8), a1);
+    }
+    for (; k + 8 <= n; k += 8) {
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(w + k), _mm256_loadu_ps(x + k), a0);
+    }
+    float s = spec_hsum256(_mm256_add_ps(a0, a1));
+    for (; k < n; k++) {
+        s += w[k] * x[k];
+    }
+    return s;
+}
+
+#endif
 
 /* Embedding dtypes the spec head can read. The tied lm_head is F16 on BitNet
  * 2B-4T and Q6_K on Gemma 4; the block-quantized ones are dequantized one row
@@ -210,9 +299,9 @@ static size_t spec_row_stride(uint16_t dt, size_t n) {
 static void spec_row_to_f32(uint16_t dt, const uint8_t *row, size_t n, float *dst) {
     switch (dt) {
     case GEIST_DTYPE_F16: {
-        const float16_t *w = (const float16_t *) row;
+        const uint16_t *w = (const uint16_t *) row;
         for (size_t i = 0; i < n; i++) {
-            dst[i] = (float) w[i];
+            dst[i] = fp16_to_fp32(w[i]);
         }
         break;
     }
@@ -255,6 +344,15 @@ static bool spec_head_build(struct transformer_arch_state *st) {
     if (w->raw == nullptr || !spec_dtype_ok(w->dtype)) {
         return false;
     }
+#if !(defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD))
+    /* x86 port: only the F16 tied lm_head (BitNet 2B-4T) is validated
+     * byte-identical to the dense head (exact f16 phase-3). The quantized /
+     * repacked-layout phase-3 paths (e.g. Gemma Q6_K) are NEON-validated only,
+     * so on x86 those heads keep the exact dense decode. */
+    if (w->dtype != GEIST_DTYPE_F16) {
+        return false;
+    }
+#endif
     const size_t H = (size_t) w->n_in;
     const size_t V = (size_t) w->n_out;
     if (H != (size_t) st->d_model || V != (size_t) st->vocab_size) {
@@ -499,7 +597,7 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
         const size_t   row = heap[c].idx;
         const uint8_t *rb  = Wbase + row * stride;
         if (dt == GEIST_DTYPE_F16) {
-            logits[row] = spec_f16dot((const float16_t *) rb, h, H);
+            logits[row] = spec_f16dot((const uint16_t *) rb, h, H);
         } else if (exact_kernel) {
             struct geist_weight rw = st->embed_table_w;
             rw.n_out               = 1;

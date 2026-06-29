@@ -31,11 +31,8 @@ static inline float hsum256(__m256 v) {
     return _mm_cvtss_f32(s);
 }
 
-void f16_gemv_m1(size_t         n_out,
-                 size_t         n_in,
-                 const float   *x,
-                 const uint16_t w_f16[],
-                 float          y[static n_out]) {
+void f16_gemv_m1(
+        size_t n_out, size_t n_in, const float *x, const uint16_t w_f16[], float y[static n_out]) {
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
@@ -62,11 +59,7 @@ void f16_gemv_m1(size_t         n_out,
     }
 }
 
-void f16_to_q8w(size_t         n_out,
-                size_t         n_in,
-                const uint16_t w_f16[],
-                int8_t         wq[],
-                float          scales[]) {
+void f16_to_q8w(size_t n_out, size_t n_in, const uint16_t w_f16[], int8_t wq[], float scales[]) {
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
@@ -111,10 +104,10 @@ void q8w_gemv_m1(size_t       n_out,
         __m256        acc1 = _mm256_setzero_ps();
         size_t        k    = 0;
         for (; k + 16 <= n_in; k += 16) {
-            const __m256 w0 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(
-                    _mm_loadl_epi64((const __m128i *) (qr + k))));
-            const __m256 w1 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(
-                    _mm_loadl_epi64((const __m128i *) (qr + k + 8))));
+            const __m256 w0 = _mm256_cvtepi32_ps(
+                    _mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i *) (qr + k))));
+            const __m256 w1 = _mm256_cvtepi32_ps(
+                    _mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i *) (qr + k + 8))));
             acc0 = _mm256_fmadd_ps(w0, _mm256_loadu_ps(x + k), acc0);
             acc1 = _mm256_fmadd_ps(w1, _mm256_loadu_ps(x + k + 8), acc1);
         }

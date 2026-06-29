@@ -21,11 +21,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-void f16_gemv_m1(size_t        n_out,
-                 size_t        n_in,
-                 const float  *x,
-                 const uint16_t w_f16[],
-                 float         y[static n_out]);
+void f16_gemv_m1(
+        size_t n_out, size_t n_in, const float *x, const uint16_t w_f16[], float y[static n_out]);
 
 /* --- Q8 weight path (halves the lm_head read) -----------------------------
  *
@@ -34,11 +31,7 @@ void f16_gemv_m1(size_t        n_out,
  * the f16 bytes — the BW lever for the 657 MB tied lm_head) and keeps f32
  * activations (no activation-quant error). Output-projection quant; argmax
  * is robust to the per-weight ~0.4 % error. Run once at load. */
-void f16_to_q8w(size_t         n_out,
-                size_t         n_in,
-                const uint16_t w_f16[],
-                int8_t         wq[],
-                float          scales[]);
+void f16_to_q8w(size_t n_out, size_t n_in, const uint16_t w_f16[], int8_t wq[], float scales[]);
 
 void q8w_gemv_m1(size_t       n_out,
                  size_t       n_in,
