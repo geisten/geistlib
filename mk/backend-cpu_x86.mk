@@ -25,6 +25,9 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/kernel_w8a8_avx512_vnni.c \
     src/backends/cpu_x86/kernel_q6k_gemv.c \
     src/backends/cpu_x86/q6k_to_w8a8.c \
+    src/backends/cpu_x86/kernel_i2s.c \
+    src/backends/cpu_x86/kernel_i2s_avx512_vnni.c \
+    src/backends/cpu_x86/kernel_f16_gemv.c \
     src/backends/cpu_x86/kernel_bf16_gemm_scalar.c \
     src/backends/cpu_x86/kernel_bf16_gemm_avx512_bf16.c \
     src/backends/cpu_x86/q4k_to_q4kx8.c \
@@ -42,6 +45,8 @@ BACKEND_SOURCES += \
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_w4a8_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_w8a8_avx512_vnni.o: CFLAGS_STRICT += \
+    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
+$(BUILD_DIR)/src/backends/cpu_x86/kernel_i2s_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_bf16_gemm_avx512_bf16.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512bf16

@@ -25,6 +25,8 @@
 
 #include "backend_state.h"
 #include "elementwise.h"
+#include "kernel_f16_gemv.h"
+#include "kernel_i2s.h"
 #include "linear_f32q.h"
 #include "linear_q4k.h"
 #include "linear_q6k.h"
@@ -36,6 +38,7 @@
 #include <geist_weight.h>
 
 #include <stddef.h>
+#include <string.h>
 
 /* Borrowed from cpu_scalar/backend.c (exported there). */
 extern const struct geist_backend_vtbl cpu_scalar_vtbl;
@@ -121,6 +124,32 @@ static void cpu_x86_linear_f32_mN(const float               *x,
                 (int) w->n_out);
 }
 
+/* BitNet b1.58 I2_S ternary decode: native packed-2-bit VPDPBUSD GEMV
+ * (kernel_i2s). The single per-tensor fp32 scale lives at the tail of the
+ * weight blob (offset n_in*n_out/4). */
+static void cpu_x86_linear_i2s_m1(const float               *x,
+                                  const struct geist_weight *w,
+                                  struct geist_backend      *be,
+                                  float                     *y) {
+    (void) be;
+    const size_t   n_in  = (size_t) w->n_in;
+    const size_t   n_out = (size_t) w->n_out;
+    const uint8_t *raw   = (const uint8_t *) w->raw;
+    float          scale;
+    memcpy(&scale, raw + n_in * n_out / 4, sizeof scale);
+    i2s_gemv_m1(n_out, n_in, x, raw, scale, y);
+}
+
+/* F16 dense decode (BitNet's tied lm_head, 657 MB read once per token):
+ * OMP + F16C GEMV, far faster than the serial cpu_scalar dequant-dot. */
+static void cpu_x86_linear_f16_m1(const float               *x,
+                                  const struct geist_weight *w,
+                                  struct geist_backend      *be,
+                                  float                     *y) {
+    (void) be;
+    f16_gemv_m1((size_t) w->n_out, (size_t) w->n_in, x, (const uint16_t *) w->raw, y);
+}
+
 [[nodiscard]] static enum geist_status cpu_x86_resolve_weight(struct geist_backend *be,
                                                               struct geist_weight  *w) {
     /* Start from the cpu_scalar mapping: covers every dtype + sets m1/_mN
@@ -143,6 +172,15 @@ static void cpu_x86_linear_f32_mN(const float               *x,
     }
     case GEIST_DTYPE_Q6_K:
         (void) cpu_x86_linear_q6k_resolve(w); /* OOM → keep scalar m1 */
+        break;
+    case GEIST_DTYPE_I2_S:
+        /* Decode: native packed-2-bit VNNI GEMV. M>1 prefill stays on
+         * cpu_scalar's dequant path until the lane-parallel ternary GEMM. */
+        w->linear_m1 = cpu_x86_linear_i2s_m1;
+        break;
+    case GEIST_DTYPE_F16:
+        /* Tied lm_head on BitNet: OMP + F16C GEMV for the M=1 head. */
+        w->linear_m1 = cpu_x86_linear_f16_m1;
         break;
     case GEIST_DTYPE_F32:
         /* Quantize F32 dense (Gemma 4 PLE gate/proj) to W8A8 and run the
