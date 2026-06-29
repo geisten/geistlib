@@ -48,6 +48,7 @@ A small binary with the model **baked in** — download, run, no model argument:
 | :-- | :-- |
 | **Raspberry Pi / Linux** · ARM64 | [⬇ geist-bitnet-linux-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-arm64.tar.gz) |
 | **macOS** · Apple Silicon | [⬇ geist-bitnet-macos-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-macos-arm64.tar.gz) |
+| **Linux** · x86-64 (AVX-512) | [⬇ geist-bitnet-linux-x86_64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-x86_64.tar.gz) |
 
 ```bash
 ./geist-bitnet "The capital of France is"     # generate — no model argument
