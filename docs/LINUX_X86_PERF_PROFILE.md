@@ -503,3 +503,42 @@ removing non-matmul stalls; the GEMMs themselves were already at parity
 The remaining gap is not addressable by GEMM micro-tuning (verified: int8
 folding regressed; wider 512-bit Q6_K is ~3 % for a large rewrite) — the
 profile is clean, matmul-bound code.
+
+## BitNet b1.58 2B-4T (I2_S ternary) — 2026-06
+
+BitNet was completely non-functional on cpu_x86 before this work: cpu_scalar's
+resolver returned `GEIST_E_UNSUPPORTED` for I2_S (ternary BitLinear weights)
+and had no F16 dense path for the tied lm_head, so the model failed at the
+first projection and emitted zero tokens. Fixed (I2_S/F16/BF16 in cpu_scalar)
+then accelerated on cpu_x86.
+
+Kernels (9950X, 16T, same `ggml-model-i2_s.gguf`):
+- **kernel_i2s** — biased-u8 VPDPBUSD ternary GEMV/GEMM. Codes {0,1,2} unpacked
+  in-register from the packed 0.25 B/wt stream (decode is BW-bound, so no f32
+  predecode); `dot = Σcode·a − Σa`; one per-tensor fp32 scale; activations
+  permuted once per token into the VPDPBUSD pairing order. M=1 decode + JT=4
+  token-tiled prefill GEMM (weight row read once, reused across the tile).
+- **kernel_f16_gemv** — OMP + F16C GEMV for the 657 MB tied F16 lm_head (read
+  once per decode step; the NEON spec-head fast path is ARM-only). 400 → 8.6
+  ms/call (~76 GB/s).
+
+| metric | scalar (was) | geist cpu_x86 | bitnet.cpp (i2_s) |
+| ------ | -----------: | ------------: | ----------------: |
+| prefill pp128 | 4.6  | **472** | 686 |
+| decode  tg64  | 1.0  | **49.6** | 57.0 |
+
+Output is byte-identical to bitnet.cpp (greedy) — correctness cross-validated.
+geist is at 69 % of bitnet.cpp prefill, 87 % decode. bitnet.cpp's i2_s GEMM is
+plain AVX2 maddubs (not VNNI) but wins via a load-time weight transform + ggml's
+mature GEMM blocking/threading. Tried and rejected as no-ops here: JT=8 (465 vs
+472) and per-code-group independent accumulators (451; register-spills at 22
+live zmm). Closing the gap needs the row-interleaved layout (16 rows → 16 int32
+lanes, no per-cell `_mm512_reduce_add_epi32`) — a load-time repack, deferred.
+
+### Build footgun
+`backend_registry.o` is compiled with the `-DGEIST_BACKEND_*` set active at
+*its* compile time; switching `BACKENDS=` without `make clean` leaves a stale
+object so `"auto"` silently resolves to the wrong `registry[0]` (cpu_scalar
+instead of cpu_x86). Always `make clean` when changing `BACKENDS`. The
+bench_perf_sweep harness also defaults to cpu_neon→cpu_scalar; use
+`GEIST_BENCH_BACKEND=cpu_x86`.
