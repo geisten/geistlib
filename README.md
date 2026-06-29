@@ -12,7 +12,7 @@
 [![CI](https://github.com/geisten/geistlib/actions/workflows/ci.yml/badge.svg)](https://github.com/geisten/geistlib/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-orange.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
-[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20(ARM64)-lightgrey.svg)](#-getting-started)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20(ARM64%20%2B%20x86--64)-lightgrey.svg)](#-getting-started)
 [![Status](https://img.shields.io/badge/status-experimental%20(v0.3.1)-yellow.svg)](#-status)
 
 **geist** is a high-performance inference engine that runs small LLMs **on the CPU
@@ -77,7 +77,7 @@ platform-specific** — one download runs on every platform.
 ./geist chat  model.gguf                               # multi-turn chat + memory
 ```
 
-<sub>x86 / Windows wait on the AVX backend — [build from source](#-getting-started) meanwhile.</sub>
+<sub>Prebuilt binaries are ARM64. **x86-64 Linux** (AVX-512) runs too — [build from source](#-getting-started); Windows is still pending.</sub>
 
 <p align="center">
   <img src="assets/demo-bitnet-trio.gif" alt="One geist-bitnet binary doing three things in a row on a Mac: generate text, then drive tools to list a folder and search the web — model baked in, no model file" width="100%">
@@ -141,7 +141,7 @@ no driver stack.*
 | Pick **geist** when… | Pick **llama.cpp** when… |
 | :-- | :-- |
 | You want the fastest end-to-end tokens on a Pi 5 / edge CPU | You need raw **prefill** on no-`i8mm` ARM (its OpenBLAS sgemm still edges geist ~10–15 %) |
-| Deployment must be **one dependency-free binary** (no BLAS/Python) | You need a model or backend geist doesn't ship (GPU, x86, Llama/Qwen/Mistral, …) |
+| Deployment must be **one dependency-free binary** (no BLAS/Python) | You need a backend geist doesn't ship (GPU, Windows) or a model architecture it hasn't added yet |
 | You're embedding an engine through a plain **C ABI** | You want the broadest format & sampler coverage today |
 | You run **ternary BitNet** (~2× bitnet.cpp) | — |
 
@@ -245,7 +245,8 @@ curl -L -o bitnet-2b4t.i2_s.gguf \
 
 > **Just want to run it?** The prebuilt ARM64 one-liner is at the
 > [top](#-run-it-now). This section builds from source — any platform with a C23
-> compiler (and the only path for x86-64 until the AVX backend lands).
+> compiler, including **x86-64 Linux** now that the AVX-512 backend has landed
+> (prebuilt x86 binaries aren't shipped yet — build it here).
 
 ### Prerequisites
 - A C23 compiler: **gcc ≥ 14**, or Apple-clang ≥ 16 (Xcode 16 / macOS 15).

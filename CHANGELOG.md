@@ -8,6 +8,13 @@ minor release.
 
 ## [Unreleased]
 
+### Changed — docs reflect the landed x86-64 (AVX-512) backend
+
+- README, `install.sh` and ROADMAP no longer say "x86 / Windows wait on the AVX
+  backend" — that backend has landed. x86-64 Linux (AVX-512) now builds from source
+  and is competitive with llama.cpp; prebuilt binaries stay ARM64 for now, Windows
+  is still pending. Platform badge updated to `ARM64 + x86-64`.
+
 ### Added — AMD x86 (AVX-512) benchmarks vs llama.cpp
 
 - README now reports the `cpu_x86` backend's measurements on an **AMD Ryzen 9

@@ -19,7 +19,7 @@ case "$os/$arch" in
   Linux/aarch64|Linux/arm64)  plat=linux-arm64 ;;
   *)
     echo "geist: no prebuilt binary for $os/$arch yet." >&2
-    echo "       x86 / Windows wait on the AVX backend — build from source:" >&2
+    echo "       Prebuilt binaries are ARM64; x86-64 Linux (AVX-512) builds from source:" >&2
     echo "       https://github.com/$REPO#-getting-started" >&2
     exit 1 ;;
 esac
