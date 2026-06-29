@@ -32,6 +32,13 @@ minor release.
   spec-head paths verified against the scalar oracle / exact f16
   (`test_i2s_gemv_unit`, `test_q8w_gemv_unit`). `cpu_scalar` gained I2_S / F16 /
   BF16 linear (the unblock + test oracle).
+- **`GEIST_I2S_PAIR=1`** (opt-in, default off): fuses the gate+up / q+k decode
+  GEMVs into one OMP region sharing a single activation quant (5 OMP
+  regions/layer → 3). Measured **neutral on the 9950X** — the ternary GEMVs are
+  already bandwidth-bound (~73 GB/s aggregate) under both active and passive OMP
+  wait — so it stays off by default; exposed for hosts where the caller measures
+  a benefit (low memory bandwidth, high core count, costly thread wakeups).
+  Bit-identical to the unfused path (`test_i2s_gemv_unit`).
 
 ### Added — prebuilt linux-x86_64 release binary (AVX-512)
 
