@@ -155,6 +155,34 @@ void i2s_gemm_avx512_vnni(size_t         m,
  * (natural column order, no permute) feeds all 4 rows via 4 independent
  * VPDPBUSDs. n_out%4==0, n_in%64==0. */
 
+/* One x4 row-group (4 output rows) of the M=1 GEMV: 4 independent VPDPBUSD
+ * accumulators, one shared activation load per 64-col block, 4 outputs.
+ * Shared by the single- and pair-weight decode kernels. */
+static inline void i2s_x4_group_m1(const uint8_t *Wg,
+                                   const int8_t  *xq,
+                                   size_t         n_cblocks,
+                                   __m512i        m3,
+                                   int32_t        sum_a,
+                                   float          scale,
+                                   float         *yo) {
+    __m512i a0 = _mm512_setzero_si512();
+    __m512i a1 = _mm512_setzero_si512();
+    __m512i a2 = _mm512_setzero_si512();
+    __m512i a3 = _mm512_setzero_si512();
+    for (size_t cb = 0; cb < n_cblocks; cb++) {
+        const __m512i w = _mm512_loadu_si512((const void *) (Wg + cb * 64));
+        const __m512i a = _mm512_loadu_si512((const void *) (xq + cb * 64));
+        a0              = _mm512_dpbusd_epi32(a0, _mm512_and_si512(_mm512_srli_epi16(w, 6), m3), a);
+        a1              = _mm512_dpbusd_epi32(a1, _mm512_and_si512(_mm512_srli_epi16(w, 4), m3), a);
+        a2              = _mm512_dpbusd_epi32(a2, _mm512_and_si512(_mm512_srli_epi16(w, 2), m3), a);
+        a3              = _mm512_dpbusd_epi32(a3, _mm512_and_si512(w, m3), a);
+    }
+    yo[0] = (float) (_mm512_reduce_add_epi32(a0) - sum_a) * scale;
+    yo[1] = (float) (_mm512_reduce_add_epi32(a1) - sum_a) * scale;
+    yo[2] = (float) (_mm512_reduce_add_epi32(a2) - sum_a) * scale;
+    yo[3] = (float) (_mm512_reduce_add_epi32(a3) - sum_a) * scale;
+}
+
 void i2s_x4_gemv_m1_avx512_vnni(size_t        n_out,
                                 size_t        n_in,
                                 const int8_t *xq,
@@ -170,23 +198,42 @@ void i2s_x4_gemv_m1_avx512_vnni(size_t        n_out,
 #pragma omp parallel for schedule(static)
 #endif
     for (size_t grp = 0; grp < n_groups; grp++) {
-        const uint8_t *Wg = x4 + grp * n_in;
-        __m512i        a0 = _mm512_setzero_si512();
-        __m512i        a1 = _mm512_setzero_si512();
-        __m512i        a2 = _mm512_setzero_si512();
-        __m512i        a3 = _mm512_setzero_si512();
-        for (size_t cb = 0; cb < n_cblocks; cb++) {
-            const __m512i w = _mm512_loadu_si512((const void *) (Wg + cb * 64));
-            const __m512i a = _mm512_loadu_si512((const void *) (xq + cb * 64));
-            a0 = _mm512_dpbusd_epi32(a0, _mm512_and_si512(_mm512_srli_epi16(w, 6), m3), a);
-            a1 = _mm512_dpbusd_epi32(a1, _mm512_and_si512(_mm512_srli_epi16(w, 4), m3), a);
-            a2 = _mm512_dpbusd_epi32(a2, _mm512_and_si512(_mm512_srli_epi16(w, 2), m3), a);
-            a3 = _mm512_dpbusd_epi32(a3, _mm512_and_si512(w, m3), a);
+        i2s_x4_group_m1(x4 + grp * n_in, xq, n_cblocks, m3, sum_a, scale, y + grp * 4);
+    }
+}
+
+/* Fused pair: two same-n_in weights (gate+up, q+k) under ONE OMP region,
+ * sharing the single pre-quantized activation — fewer fork/joins + no
+ * redundant activation quant, and the combined output rows amortize better
+ * than two separate small GEMVs. Opt-in (GEIST_I2S_PAIR=1): perf-neutral at
+ * the DDR5-6400 BW ceiling, a win only where per-op overhead bites (slower
+ * RAM). */
+void i2s_x4_gemv_pair_m1_avx512_vnni(size_t        n_in,
+                                     const int8_t *xq,
+                                     int32_t       sum_a,
+                                     const uint8_t x4_0[],
+                                     float         scale0,
+                                     size_t        n_out0,
+                                     float        *y0,
+                                     const uint8_t x4_1[],
+                                     float         scale1,
+                                     size_t        n_out1,
+                                     float        *y1) {
+    const size_t  g0        = n_out0 / 4;
+    const size_t  gt        = g0 + n_out1 / 4;
+    const size_t  n_cblocks = n_in / 64;
+    const __m512i m3        = _mm512_set1_epi8(3);
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t g = 0; g < gt; g++) {
+        if (g < g0) {
+            i2s_x4_group_m1(x4_0 + g * n_in, xq, n_cblocks, m3, sum_a, scale0, y0 + g * 4);
+        } else {
+            const size_t grp = g - g0;
+            i2s_x4_group_m1(x4_1 + grp * n_in, xq, n_cblocks, m3, sum_a, scale1, y1 + grp * 4);
         }
-        y[grp * 4 + 0] = (float) (_mm512_reduce_add_epi32(a0) - sum_a) * scale;
-        y[grp * 4 + 1] = (float) (_mm512_reduce_add_epi32(a1) - sum_a) * scale;
-        y[grp * 4 + 2] = (float) (_mm512_reduce_add_epi32(a2) - sum_a) * scale;
-        y[grp * 4 + 3] = (float) (_mm512_reduce_add_epi32(a3) - sum_a) * scale;
     }
 }
 

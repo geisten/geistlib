@@ -159,6 +159,31 @@ static int scenario(size_t N, size_t K) {
             fprintf(stderr, "  [N=%zu K=%zu] x4 gemm vs gemv Δ=%.3e\n", N, K, max_x4g);
             fail = 1;
         }
+
+        /* (5) fused pair == two separate m1 (same weight twice, distinct scales). */
+        float *yp0 = malloc(N * sizeof(float));
+        float *yp1 = malloc(N * sizeof(float));
+        i2s_x4_gemv_pair_m1(K, x, x4, scale, N, yp0, x4, scale * 0.5f, N, yp1);
+        float *yref1 = malloc(N * sizeof(float));
+        i2s_x4_gemv_m1(N, K, x, x4, scale * 0.5f, yref1);
+        double max_pair = 0.0;
+        for (size_t r = 0; r < N; r++) {
+            double d0 = fabs((double) yp0[r] - (double) y_x4[r]); /* y_x4 used scale */
+            double d1 = fabs((double) yp1[r] - (double) yref1[r]);
+            if (d0 > max_pair) {
+                max_pair = d0;
+            }
+            if (d1 > max_pair) {
+                max_pair = d1;
+            }
+        }
+        if (max_pair > 1e-3) {
+            fprintf(stderr, "  [N=%zu K=%zu] pair vs m1 Δ=%.3e\n", N, K, max_pair);
+            fail = 1;
+        }
+        free(yp0);
+        free(yp1);
+        free(yref1);
         free(x4);
         free(y_x4);
         free(y_x4g);

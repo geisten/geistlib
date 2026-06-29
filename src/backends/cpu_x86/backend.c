@@ -182,6 +182,44 @@ static void cpu_x86_linear_i2s_x4_mN(const float               *x,
     i2s_x4_gemm_mN(m, n_out, n_in, x, (const uint8_t *) w->aux_fp32, scale, y);
 }
 
+/* Fused decode of two same-input I2_S x4 weights (gate+up, q+k): one shared
+ * activation quant + one OMP region. Each weight's per-tensor scale is at the
+ * tail of its own w->raw, its x4 codes in its own w->aux_fp32. */
+static void cpu_x86_linear_i2s_x4_pair_m1(const float               *x,
+                                          const struct geist_weight *w0,
+                                          const struct geist_weight *w1,
+                                          struct geist_backend      *be,
+                                          float                     *y0,
+                                          float                     *y1) {
+    (void) be;
+    const size_t n_in = (size_t) w0->n_in;
+    float        s0, s1;
+    memcpy(&s0, (const uint8_t *) w0->raw + n_in * (size_t) w0->n_out / 4, sizeof s0);
+    memcpy(&s1, (const uint8_t *) w1->raw + n_in * (size_t) w1->n_out / 4, sizeof s1);
+    i2s_x4_gemv_pair_m1(n_in,
+                        x,
+                        (const uint8_t *) w0->aux_fp32,
+                        s0,
+                        (size_t) w0->n_out,
+                        y0,
+                        (const uint8_t *) w1->aux_fp32,
+                        s1,
+                        (size_t) w1->n_out,
+                        y1);
+}
+
+/* GEIST_I2S_PAIR=1 fuses gate+up / q+k decode (shared quant + one OMP region).
+ * Default off: perf-neutral at the DDR5 BW ceiling, opt-in for slower RAM
+ * where per-op overhead bites. Host-constant after first read. */
+static int cpu_x86_i2s_pair_enabled(void) {
+    static int e = -1;
+    if (e < 0) {
+        const char *v = getenv("GEIST_I2S_PAIR");
+        e             = (v != nullptr && v[0] == '1') ? 1 : 0;
+    }
+    return e;
+}
+
 /* Install the x4 fast path: repack into the row-interleaved blob (aux,
  * heap-owned) and route both kernels there. Returns false (keep the packed
  * path) on shape mismatch or OOM. */
@@ -202,6 +240,11 @@ static bool cpu_x86_linear_i2s_x4_resolve(struct geist_weight *w) {
     w->flags     = (uint16_t) (w->flags | GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK);
     w->linear_m1 = cpu_x86_linear_i2s_x4_m1;
     w->linear_mN = cpu_x86_linear_i2s_x4_mN;
+    /* Opt-in fused gate+up / q+k decode (dispatcher gates on equal
+     * linear_pair_m1 pointers + equal n_in between the two x4 weights). */
+    if (cpu_x86_i2s_pair_enabled()) {
+        w->linear_pair_m1 = cpu_x86_linear_i2s_x4_pair_m1;
+    }
     return true;
 }
 

@@ -113,4 +113,19 @@ void i2s_x4_gemm_mN(size_t        m,
                     float         tensor_scale,
                     float         y[]);
 
+/* Fused decode of two same-`n_in` weights (gate+up, q+k) sharing one
+ * activation quant + one OMP region. Opt-in via GEIST_I2S_PAIR=1 (perf-neutral
+ * at the DDR5 BW ceiling; a win only on slower RAM). x is [n_in]; each weight
+ * has its own x4 blob, per-tensor scale, n_out, and output. */
+void i2s_x4_gemv_pair_m1(size_t        n_in,
+                         const float  *x,
+                         const uint8_t x4_0[],
+                         float         tensor_scale0,
+                         size_t        n_out0,
+                         float        *y0,
+                         const uint8_t x4_1[],
+                         float         tensor_scale1,
+                         size_t        n_out1,
+                         float        *y1);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_I2S_H */

@@ -60,6 +60,18 @@ void i2s_x4_gemm_avx512_vnni(size_t         m,
                              const uint8_t  x4[],
                              float          y[]);
 
+void i2s_x4_gemv_pair_m1_avx512_vnni(size_t        n_in,
+                                     const int8_t *xq,
+                                     int32_t       sum_a,
+                                     const uint8_t x4_0[],
+                                     float         scale0,
+                                     size_t        n_out0,
+                                     float        *y0,
+                                     const uint8_t x4_1[],
+                                     float         scale1,
+                                     size_t        n_out1,
+                                     float        *y1);
+
 /* --- Activation quant: per-row symmetric int8, scale = 127/max|x|. ------- */
 static float quantize_act_row(size_t n_in, const float *x, int8_t *xq, int32_t *sum_a_out) {
     float max_abs = 1e-5f;
@@ -283,4 +295,30 @@ void i2s_x4_gemm_mN(size_t        m,
     free(xq);
     free(sum_a);
     free(scale);
+}
+
+void i2s_x4_gemv_pair_m1(size_t        n_in,
+                         const float  *x,
+                         const uint8_t x4_0[],
+                         float         tensor_scale0,
+                         size_t        n_out0,
+                         float        *y0,
+                         const uint8_t x4_1[],
+                         float         tensor_scale1,
+                         size_t        n_out1,
+                         float        *y1) {
+    int8_t     *xq = (int8_t *) __builtin_alloca(n_in);
+    int32_t     sum_a;
+    const float inv = quantize_act_row(n_in, x, xq, &sum_a); /* shared activation quant */
+    i2s_x4_gemv_pair_m1_avx512_vnni(n_in,
+                                    xq,
+                                    sum_a,
+                                    x4_0,
+                                    tensor_scale0 * inv,
+                                    n_out0,
+                                    y0,
+                                    x4_1,
+                                    tensor_scale1 * inv,
+                                    n_out1,
+                                    y1);
 }

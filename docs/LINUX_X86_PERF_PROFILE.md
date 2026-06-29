@@ -566,9 +566,20 @@ weight read, f32 activation, AVX2 cvtepi8→f32 + FMA) halves its read to 0.33 G
 → lm_head ~4 ms, **decode 46 → 61 t/s**. Quality: per-row int8 quant of an
 output projection is cosine 0.99999 vs f32 and generation is coherent; this is
 the one place geist diverges from bitnet.cpp's exact f16 numerics (gated to F16
-weights ≥ 1 M elems — small F16 dense keeps the exact F16C GEMV). The ternary
-layers stay at ~52 GB/s (per-op overhead on the small per-layer GEMVs); lifting
-those to lm_head's 78 GB/s via op-fusion is the remaining decode headroom.
+weights ≥ 1 M elems — small F16 dense keeps the exact F16C GEMV).
+
+### No remaining ternary-GEMV headroom on this host (the matmuls are BW-bound)
+
+A per-matmul BW breakdown (spec-head profile, /token) shows the ternary decode
+GEMVs are **already at the DDR5-6400 ceiling**, not at the ~52 GB/s an earlier
+(wrong) aggregate estimate suggested: gate_up 265 MB @ **76 GB/s**, down 133 MB
+@ **75**, o_proj 49 MB @ **69**, qkv 74 MB @ **65** — aggregate **73 GB/s**.
+So there is no per-op-overhead win to be had here: a fused gate+up / q+k decode
+(shared activation quant + one OMP region, `i2s_x4_gemv_pair_m1` via
+`linear_pair_m1`) measured **neutral** (78.4 vs 77.9). It is kept as an opt-in,
+**`GEIST_I2S_PAIR=1`** (default off), for lower-bandwidth hosts where per-op
+overhead weighs more relative to the (slower) weight read. The only real decode
+lever left is reading fewer bytes, already maximized (2-bit ternary + spec-head).
 
 ### Build footgun
 `backend_registry.o` is compiled with the `-DGEIST_BACKEND_*` set active at
