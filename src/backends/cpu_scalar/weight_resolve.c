@@ -13,10 +13,11 @@
  * Performance characteristics:
  *   - F32 dense: naive triple loop with double accumulator. ~10× slower
  *     than cpu_neon + cblas; intentional, this is the reference.
- *   - Q3_K / Q4_K / Q5_K / Q6_K / Q8_0 / IQ2_S / IQ3_S: dequant one
- *     weight row at a time into a heap row-buffer, naive dot. Same as
- *     the old cpu_scalar_linear_quant body, just exposed via the
- *     resolver pattern.
+ *   - Q3_K / Q4_K / Q5_K / Q6_K / Q8_0 / IQ2_S / IQ3_S / TQ2_0 / I2_S /
+ *     F16 / BF16: dequant one weight row at a time into a heap row-buffer,
+ *     naive dot. Same as the old cpu_scalar_linear_quant body, just exposed
+ *     via the resolver pattern. (I2_S/F16 added for BitNet b1.58 2B-4T, whose
+ *     ternary BitLinear weights are I2_S and whose tied lm_head is F16.)
  *
  * No SIMD, no BLAS — that's what cpu_neon is for.
  */
@@ -33,6 +34,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,6 +44,23 @@ static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *r
     const uint8_t *base = (const uint8_t *) w->raw;
     const size_t   n_in = (size_t) w->n_in;
     switch ((enum geist_dtype) w->dtype) {
+    case GEIST_DTYPE_F16: {
+        const uint8_t *r = base + j * n_in * 2;
+        for (size_t i = 0; i < n_in; i++) {
+            const uint16_t h = (uint16_t) r[2 * i] | ((uint16_t) r[2 * i + 1] << 8);
+            row[i]           = fp16_to_fp32(h);
+        }
+        return true;
+    }
+    case GEIST_DTYPE_BF16: {
+        const uint8_t *r = base + j * n_in * 2;
+        for (size_t i = 0; i < n_in; i++) {
+            const uint32_t b = (uint32_t) ((uint16_t) r[2 * i] | ((uint16_t) r[2 * i + 1] << 8))
+                               << 16;
+            memcpy(&row[i], &b, sizeof b);
+        }
+        return true;
+    }
     case GEIST_DTYPE_Q3_K:
         dequant_q3_K_row(base + j * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, row, n_in);
         return true;
@@ -66,6 +85,28 @@ static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *r
     case GEIST_DTYPE_TQ2_0:
         dequant_tq2_0_row(base + j * n_in / TQ2_0_BLOCK_ELEMS * TQ2_0_BLOCK_BYTES, row, n_in);
         return true;
+    case GEIST_DTYPE_I2_S: {
+        /* BitNet b1.58 official: 256-elem/64-byte ternary blocks, four 2-bit
+         * fields per byte in REVERSE order (element 32*g+bb at shift 6-2g),
+         * ONE f32 per-TENSOR scale at the tail (offset n_in*n_out/4). */
+        float        scale;
+        const size_t packed = n_in * (size_t) w->n_out / 4;
+        memcpy(&scale, base + packed, sizeof scale);
+        const uint8_t *Wr = base + j * (n_in / 4);
+        for (size_t b = 0; b < n_in / 256; b++) {
+            const uint8_t *qs = Wr + b * 64;
+            for (size_t h = 0; h < 2; h++) {
+                for (size_t bb = 0; bb < 32; bb++) {
+                    const uint8_t byte = qs[h * 32 + bb];
+                    for (size_t g = 0; g < 4; g++) {
+                        const int trit             = (int) ((byte >> (6 - 2 * g)) & 3) - 1;
+                        row[b * 256 + h * 128 + g * 32 + bb] = (float) trit * scale;
+                    }
+                }
+            }
+        }
+        return true;
+    }
     case GEIST_DTYPE_Q4_0:
         dequant_q4_0_row(base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row, n_in);
         return true;
@@ -187,6 +228,9 @@ static void cpu_scalar_w_quant_mN(const float               *x,
     case GEIST_DTYPE_IQ2_S:
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
         w->linear_m1 = cpu_scalar_w_quant_m1;
         w->linear_mN = cpu_scalar_w_quant_mN;
         return GEIST_OK;
