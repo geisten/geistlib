@@ -46,9 +46,10 @@ minor release.
   musl-static binary with the native AVX-512/VNNI backend (`BACKENDS="cpu_x86
   cpu_scalar"`, `GEMM_PROVIDER=native`). Baseline `x86-64-v3` (Haswell / Zen+) with
   AVX-512 kernels runtime-dispatched via `hw_probe`, so the one binary runs on any
-  x86-64-v3 CPU. Model-less — pair it with a Gemma / Llama / BitNet GGUF (the
-  BitNet I2_S ternary + spec-head kernels have since landed; see above). Windows
-  still not shipped.
+  x86-64-v3 CPU. Pair it with a Gemma / Llama / BitNet GGUF. Windows still not shipped.
+- …and a **`geist-bitnet-linux-x86_64.tar.gz`** single-file (BitNet 2B-4T baked in),
+  now that the x86 I2_S ternary + spec-head kernels make BitNet fast on x86 — same
+  one-file, no-model-argument deal as the arm64 / macOS embedded builds.
 
 ### Changed — docs reflect the landed x86-64 (AVX-512) backend
 

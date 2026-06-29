@@ -108,10 +108,10 @@ jobs:
       # one binary runs on any x86-64-v3 CPU and uses AVX-512 only where present (no
       # SIGILL). GEMM_PROVIDER=native -> BLAS-free (portable scalar fp32 for the
       # vision/audio dense path; the quantized text kernels never touch BLAS).
-      # Model-less only (no embedded x86 artifact yet) — pair this engine with a
-      # Gemma / Llama / BitNet GGUF. The BitNet I2_S ternary + spec-head x86 kernels
-      # have landed (beats bitnet.cpp on Zen 5), so an embedded geist-bitnet-linux-
-      # x86_64 single-file could be added here like the arm64 job.
+      # Ships two artifacts (like arm64): the model-less engine below, and — when
+      # EMBED_MODEL_URL is set (defaults to BitNet) — an embedded geist-bitnet-linux-
+      # x86_64 single-file. BitNet I2_S now has native x86 kernels (beats bitnet.cpp
+      # on Zen 5), so the baked-in BitNet runs fast on x86 too.
       - name: Build (musl-static in Alpine, stripped)
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
@@ -137,6 +137,34 @@ jobs:
         with:
           name: geist-linux-x86_64
           path: geist-linux-x86_64.tar.gz
+
+      # Optional: a second binary with BitNet baked in (.incbin, zero-copy) — now
+      # that the x86 I2_S kernels make ternary fast on x86. rm geist.o first (the
+      # plain build above compiled it without -DGEIST_EMBEDDED_MODEL).
+      - name: Build + package embedded (if EMBED_MODEL_URL set)
+        if: env.EMBED_MODEL_URL != ''
+        run: |
+          curl -fL --retry 3 --retry-delay 2 -o embed-model.gguf "$EMBED_MODEL_URL"
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+            set -e
+            apk add --no-cache build-base linux-headers
+            rm -f build/linux/release/tools/geist.o
+            make TARGET=linux CC=gcc BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native \
+                 EXTRA_CFLAGS=-D_GNU_SOURCE EXTRA_LDFLAGS="-static -s" \
+                 EMBED_MODEL=embed-model.gguf bin/linux/release/tools/geist
+          '
+          file bin/linux/release/tools/geist
+          bin/linux/release/tools/geist --version
+          ls -l bin/linux/release/tools/geist
+          mkdir -p dist/geist-bitnet-linux-x86_64
+          cp bin/linux/release/tools/geist dist/geist-bitnet-linux-x86_64/geist-bitnet
+          cp README.md LICENSE dist/geist-bitnet-linux-x86_64/
+          tar -C dist -czf geist-bitnet-linux-x86_64.tar.gz geist-bitnet-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        if: env.EMBED_MODEL_URL != ''
+        with:
+          name: geist-bitnet-linux-x86_64
+          path: geist-bitnet-linux-x86_64.tar.gz
 
   macos-arm64:
     name: macos-arm64 (Accelerate/AMX)
