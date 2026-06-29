@@ -83,4 +83,34 @@ void i2s_gemm_mN_scalar(size_t        m,
 /* True iff i2s_gemv_m1 resolved to the AVX-512+VNNI tier. */
 [[nodiscard]] int i2s_isa_is_vnni(void);
 
+/* --- x4 row-interleaved layout (the fast path) ----------------------------
+ *
+ * Repack the native I2_S weights so 4 output rows are interleaved at 2-bit
+ * granularity within each byte and columns are in natural order:
+ *   x4[g*n_in + c] = code(4g+0,c)<<6 | code(4g+1,c)<<4
+ *                  | code(4g+2,c)<<2 | code(4g+3,c)
+ * for row-group g, column c. Still 0.25 B/wt (no expansion). A single
+ * activation load then feeds 4 output rows (4× fewer act loads), and no
+ * activation permute is needed. Requires n_out % 4 == 0 and n_in % 64 == 0.
+ * Run once at model load; `x4` is n_out*n_in/4 bytes, caller-owned. */
+void i2s_to_x4(size_t n_out, size_t n_in, const uint8_t w_raw[], uint8_t x4[]);
+
+/* x4 decode GEMV (M=1) and prefill GEMM. `x4` is the i2s_to_x4 output;
+ * `tensor_scale` is the per-tensor fp32 scale. AVX-512+VNNI only (caller
+ * gates on i2s_isa_is_vnni() + the divisibility constraints). */
+void i2s_x4_gemv_m1(size_t        n_out,
+                    size_t        n_in,
+                    const float  *x,
+                    const uint8_t x4[],
+                    float         tensor_scale,
+                    float         y[static n_out]);
+
+void i2s_x4_gemm_mN(size_t        m,
+                    size_t        n_out,
+                    size_t        n_in,
+                    const float  *x,
+                    const uint8_t x4[],
+                    float         tensor_scale,
+                    float         y[]);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_I2S_H */

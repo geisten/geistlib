@@ -127,8 +127,47 @@ static int scenario(size_t N, size_t K) {
         fail = 1;
     }
 
-    printf("  [N=%zu K=%zu] vnni=%d  Δ(disp,scal)=%.3e  cos(scal,f32)=%.6f  Δ(gemm,m1)=%.3e%s\n",
-           N, K, i2s_isa_is_vnni(), max_dd, cos, max_gd, fail ? "  FAIL" : "");
+    /* (4) x4 row-interleaved path vs scalar oracle (VNNI only). */
+    double max_x4 = 0.0, max_x4g = 0.0;
+    if (i2s_isa_is_vnni() && N % 4 == 0 && K % 64 == 0) {
+        uint8_t *x4 = malloc(N * K / 4);
+        i2s_to_x4(N, K, W, x4);
+        float *y_x4 = malloc(N * sizeof(float));
+        i2s_x4_gemv_m1(N, K, x, x4, scale, y_x4);
+        for (size_t r = 0; r < N; r++) {
+            const double d = fabs((double) y_x4[r] - (double) y_scal[r]);
+            if (d > max_x4) {
+                max_x4 = d;
+            }
+        }
+        if (max_x4 > 1e-3) {
+            fprintf(stderr, "  [N=%zu K=%zu] x4 gemv vs scalar Δ=%.3e\n", N, K, max_x4);
+            fail = 1;
+        }
+        float *y_x4g = malloc(M * N * sizeof(float));
+        i2s_x4_gemm_mN(M, N, K, xm, x4, scale, y_x4g);
+        for (size_t i = 0; i < M; i++) {
+            i2s_x4_gemv_m1(N, K, xm + i * K, x4, scale, y_row);
+            for (size_t r = 0; r < N; r++) {
+                const double d = fabs((double) y_x4g[i * N + r] - (double) y_row[r]);
+                if (d > max_x4g) {
+                    max_x4g = d;
+                }
+            }
+        }
+        if (max_x4g > 1e-3) {
+            fprintf(stderr, "  [N=%zu K=%zu] x4 gemm vs gemv Δ=%.3e\n", N, K, max_x4g);
+            fail = 1;
+        }
+        free(x4);
+        free(y_x4);
+        free(y_x4g);
+    }
+
+    printf("  [N=%zu K=%zu] vnni=%d  Δ(disp,scal)=%.3e  cos=%.6f  Δ(gemm,m1)=%.3e  "
+           "Δx4(gemv)=%.3e Δx4(gemm)=%.3e%s\n",
+           N, K, i2s_isa_is_vnni(), max_dd, cos, max_gd, max_x4, max_x4g,
+           fail ? "  FAIL" : "");
 
     free(xm);
     free(y_gemm);

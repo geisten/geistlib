@@ -41,6 +41,25 @@ void i2s_gemm_avx512_vnni(size_t         m,
                           const uint8_t  w_raw[],
                           float          y[]);
 
+/* x4 row-interleaved kernels (kernel_i2s_avx512_vnni.c). xq is natural-order
+ * int8 [.. * n_in]; one activation load feeds 4 output rows. */
+void i2s_x4_gemv_m1_avx512_vnni(size_t        n_out,
+                                size_t        n_in,
+                                const int8_t *xq,
+                                int32_t       sum_a,
+                                const uint8_t x4[],
+                                float         scale,
+                                float         y[static n_out]);
+
+void i2s_x4_gemm_avx512_vnni(size_t         m,
+                             size_t         n_out,
+                             size_t         n_in,
+                             const int8_t  *xq,
+                             const int32_t *sum_a,
+                             const float   *scale,
+                             const uint8_t  x4[],
+                             float          y[]);
+
 /* --- Activation quant: per-row symmetric int8, scale = 127/max|x|. ------- */
 static float quantize_act_row(size_t n_in, const float *x, int8_t *xq, int32_t *sum_a_out) {
     float max_abs = 1e-5f;
@@ -184,6 +203,85 @@ void i2s_gemm_mN(size_t        m,
         scale[i] = tensor_scale * quantize_act_row(n_in, x + i * n_in, xq + i * n_in, &sum_a[i]);
     }
     i2s_gemm_avx512_vnni(m, n_out, n_in, xq, sum_a, scale, w_raw, y);
+    free(xq);
+    free(sum_a);
+    free(scale);
+}
+
+/* --- x4 row-interleaved layout ------------------------------------------- */
+
+/* Decode one native-I2_S weight code ∈ {0,1,2} at (row, col). The native
+ * block layout: 256-elem/64-byte blocks; element e=col%256 maps to byte
+ * qs[h*32+bb] (h=e/128, bb=e%32) at shift 6-2g (g=(e%128)/32). */
+static inline uint8_t i2s_native_code(const uint8_t *w_raw,
+                                      size_t         row_bytes,
+                                      size_t         row,
+                                      size_t         col) {
+    const size_t  b    = col / 256;
+    const size_t  e    = col % 256;
+    const size_t  h    = e / 128;
+    const size_t  g    = (e % 128) / 32;
+    const size_t  bb   = e % 32;
+    const uint8_t byte = w_raw[row * row_bytes + b * 64 + h * 32 + bb];
+    return (uint8_t) ((byte >> (6 - 2 * g)) & 3);
+}
+
+void i2s_to_x4(size_t n_out, size_t n_in, const uint8_t w_raw[], uint8_t x4[]) {
+    const size_t row_bytes = n_in / 4;
+    const size_t n_groups  = n_out / 4;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t grp = 0; grp < n_groups; grp++) {
+        uint8_t *dst = x4 + grp * n_in;
+        for (size_t c = 0; c < n_in; c++) {
+            const uint8_t r0 = i2s_native_code(w_raw, row_bytes, grp * 4 + 0, c);
+            const uint8_t r1 = i2s_native_code(w_raw, row_bytes, grp * 4 + 1, c);
+            const uint8_t r2 = i2s_native_code(w_raw, row_bytes, grp * 4 + 2, c);
+            const uint8_t r3 = i2s_native_code(w_raw, row_bytes, grp * 4 + 3, c);
+            dst[c] = (uint8_t) ((r0 << 6) | (r1 << 4) | (r2 << 2) | r3);
+        }
+    }
+}
+
+void i2s_x4_gemv_m1(size_t        n_out,
+                    size_t        n_in,
+                    const float  *x,
+                    const uint8_t x4[],
+                    float         tensor_scale,
+                    float         y[static n_out]) {
+    int8_t     *xq = (int8_t *) __builtin_alloca(n_in);
+    int32_t     sum_a;
+    const float scale = tensor_scale * quantize_act_row(n_in, x, xq, &sum_a);
+    i2s_x4_gemv_m1_avx512_vnni(n_out, n_in, xq, sum_a, x4, scale, y);
+}
+
+void i2s_x4_gemm_mN(size_t        m,
+                    size_t        n_out,
+                    size_t        n_in,
+                    const float  *x,
+                    const uint8_t x4[],
+                    float         tensor_scale,
+                    float         y[]) {
+    int8_t  *xq    = (int8_t *) malloc(m * n_in);
+    int32_t *sum_a = (int32_t *) malloc(m * sizeof(int32_t));
+    float   *scale = (float *) malloc(m * sizeof(float));
+    if (xq == nullptr || sum_a == nullptr || scale == nullptr) {
+        free(xq);
+        free(sum_a);
+        free(scale);
+        for (size_t i = 0; i < m; i++) {
+            i2s_x4_gemv_m1(n_out, n_in, x + i * n_in, x4, tensor_scale, y + i * n_out);
+        }
+        return;
+    }
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t i = 0; i < m; i++) {
+        scale[i] = tensor_scale * quantize_act_row(n_in, x + i * n_in, xq + i * n_in, &sum_a[i]);
+    }
+    i2s_x4_gemm_avx512_vnni(m, n_out, n_in, xq, sum_a, scale, x4, y);
     free(xq);
     free(sum_a);
     free(scale);

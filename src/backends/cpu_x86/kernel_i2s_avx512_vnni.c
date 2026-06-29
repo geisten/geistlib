@@ -148,3 +148,100 @@ void i2s_gemm_avx512_vnni(size_t         m,
     }
     free(perm);
 }
+
+/* ===================== x4 row-interleaved kernels ========================= */
+/* x4[grp*n_in + c] packs 4 output rows' codes for column c (row 4g+rb at
+ * shift 6-2rb). One 64-byte load = 64 columns × 4 rows; one activation load
+ * (natural column order, no permute) feeds all 4 rows via 4 independent
+ * VPDPBUSDs. n_out%4==0, n_in%64==0. */
+
+void i2s_x4_gemv_m1_avx512_vnni(size_t        n_out,
+                                size_t        n_in,
+                                const int8_t *xq,
+                                int32_t       sum_a,
+                                const uint8_t x4[],
+                                float         scale,
+                                float         y[static n_out]) {
+    const size_t  n_groups  = n_out / 4;
+    const size_t  n_cblocks = n_in / 64;
+    const __m512i m3        = _mm512_set1_epi8(3);
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t grp = 0; grp < n_groups; grp++) {
+        const uint8_t *Wg = x4 + grp * n_in;
+        __m512i        a0 = _mm512_setzero_si512();
+        __m512i        a1 = _mm512_setzero_si512();
+        __m512i        a2 = _mm512_setzero_si512();
+        __m512i        a3 = _mm512_setzero_si512();
+        for (size_t cb = 0; cb < n_cblocks; cb++) {
+            const __m512i w = _mm512_loadu_si512((const void *) (Wg + cb * 64));
+            const __m512i a = _mm512_loadu_si512((const void *) (xq + cb * 64));
+            a0 = _mm512_dpbusd_epi32(a0, _mm512_and_si512(_mm512_srli_epi16(w, 6), m3), a);
+            a1 = _mm512_dpbusd_epi32(a1, _mm512_and_si512(_mm512_srli_epi16(w, 4), m3), a);
+            a2 = _mm512_dpbusd_epi32(a2, _mm512_and_si512(_mm512_srli_epi16(w, 2), m3), a);
+            a3 = _mm512_dpbusd_epi32(a3, _mm512_and_si512(w, m3), a);
+        }
+        y[grp * 4 + 0] = (float) (_mm512_reduce_add_epi32(a0) - sum_a) * scale;
+        y[grp * 4 + 1] = (float) (_mm512_reduce_add_epi32(a1) - sum_a) * scale;
+        y[grp * 4 + 2] = (float) (_mm512_reduce_add_epi32(a2) - sum_a) * scale;
+        y[grp * 4 + 3] = (float) (_mm512_reduce_add_epi32(a3) - sum_a) * scale;
+    }
+}
+
+#define I2S_X4_TT 2 /* tokens per tile: 4 rows × TT → 4·TT live accumulators */
+
+void i2s_x4_gemm_avx512_vnni(size_t         m,
+                             size_t         n_out,
+                             size_t         n_in,
+                             const int8_t  *xq,
+                             const int32_t *sum_a,
+                             const float   *scale,
+                             const uint8_t  x4[],
+                             float          y[]) {
+    const size_t  n_groups  = n_out / 4;
+    const size_t  n_cblocks = n_in / 64;
+    const __m512i m3        = _mm512_set1_epi8(3);
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t grp = 0; grp < n_groups; grp++) {
+        const uint8_t *Wg = x4 + grp * n_in;
+        for (size_t j0 = 0; j0 < m; j0 += I2S_X4_TT) {
+            const size_t tt = (m - j0 < I2S_X4_TT) ? (m - j0) : I2S_X4_TT;
+            /* acc[row][token] */
+            __m512i acc[4][I2S_X4_TT];
+            for (size_t rb = 0; rb < 4; rb++) {
+                for (size_t jj = 0; jj < I2S_X4_TT; jj++) {
+                    acc[rb][jj] = _mm512_setzero_si512();
+                }
+            }
+            for (size_t cb = 0; cb < n_cblocks; cb++) {
+                const __m512i w  = _mm512_loadu_si512((const void *) (Wg + cb * 64));
+                const __m512i r0 = _mm512_and_si512(_mm512_srli_epi16(w, 6), m3);
+                const __m512i r1 = _mm512_and_si512(_mm512_srli_epi16(w, 4), m3);
+                const __m512i r2 = _mm512_and_si512(_mm512_srli_epi16(w, 2), m3);
+                const __m512i r3 = _mm512_and_si512(w, m3);
+                for (size_t jj = 0; jj < tt; jj++) {
+                    const __m512i a = _mm512_loadu_si512(
+                            (const void *) (xq + (j0 + jj) * n_in + cb * 64));
+                    acc[0][jj] = _mm512_dpbusd_epi32(acc[0][jj], r0, a);
+                    acc[1][jj] = _mm512_dpbusd_epi32(acc[1][jj], r1, a);
+                    acc[2][jj] = _mm512_dpbusd_epi32(acc[2][jj], r2, a);
+                    acc[3][jj] = _mm512_dpbusd_epi32(acc[3][jj], r3, a);
+                }
+            }
+            for (size_t jj = 0; jj < tt; jj++) {
+                const int32_t sa = sum_a[j0 + jj];
+                const float   sc = scale[j0 + jj];
+                float        *yr = y + (j0 + jj) * n_out + grp * 4;
+                yr[0]            = (float) (_mm512_reduce_add_epi32(acc[0][jj]) - sa) * sc;
+                yr[1]            = (float) (_mm512_reduce_add_epi32(acc[1][jj]) - sa) * sc;
+                yr[2]            = (float) (_mm512_reduce_add_epi32(acc[2][jj]) - sa) * sc;
+                yr[3]            = (float) (_mm512_reduce_add_epi32(acc[3][jj]) - sa) * sc;
+            }
+        }
+    }
+}

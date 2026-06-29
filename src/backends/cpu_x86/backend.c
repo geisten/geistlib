@@ -154,6 +154,56 @@ static void cpu_x86_linear_i2s_mN(const float               *x,
     i2s_gemm_mN(m, n_out, n_in, x, raw, scale, y);
 }
 
+/* I2_S x4 row-interleaved fast path: codes live in w->aux_fp32 (the
+ * i2s_to_x4 blob), the per-tensor scale at the tail of w->raw. */
+static void cpu_x86_linear_i2s_x4_m1(const float               *x,
+                                     const struct geist_weight *w,
+                                     struct geist_backend      *be,
+                                     float                     *y) {
+    (void) be;
+    const size_t n_in  = (size_t) w->n_in;
+    const size_t n_out = (size_t) w->n_out;
+    float        scale;
+    memcpy(&scale, (const uint8_t *) w->raw + n_in * n_out / 4, sizeof scale);
+    i2s_x4_gemv_m1(n_out, n_in, x, (const uint8_t *) w->aux_fp32, scale, y);
+}
+
+static void cpu_x86_linear_i2s_x4_mN(const float               *x,
+                                     const struct geist_weight *w,
+                                     size_t                     m,
+                                     struct geist_backend      *be,
+                                     float                     *y) {
+    (void) be;
+    const size_t n_in  = (size_t) w->n_in;
+    const size_t n_out = (size_t) w->n_out;
+    float        scale;
+    memcpy(&scale, (const uint8_t *) w->raw + n_in * n_out / 4, sizeof scale);
+    i2s_x4_gemm_mN(m, n_out, n_in, x, (const uint8_t *) w->aux_fp32, scale, y);
+}
+
+/* Install the x4 fast path: repack into the row-interleaved blob (aux,
+ * heap-owned) and route both kernels there. Returns false (keep the packed
+ * path) on shape mismatch or OOM. */
+static bool cpu_x86_linear_i2s_x4_resolve(struct geist_weight *w) {
+    const size_t n_in  = (size_t) w->n_in;
+    const size_t n_out = (size_t) w->n_out;
+    if (n_out % 4 != 0 || n_in % 64 != 0 || !i2s_isa_is_vnni()) {
+        return false;
+    }
+    const size_t blob_bytes = n_out * n_in / 4;
+    uint8_t     *blob        = heap_alloc_aligned(blob_bytes, OPTIMAL_ALIGNMENT);
+    if (blob == nullptr) {
+        return false;
+    }
+    i2s_to_x4(n_out, n_in, (const uint8_t *) w->raw, blob);
+    w->aux_fp32  = (const float *) blob;
+    w->aux_n     = (int32_t) blob_bytes;
+    w->flags     = (uint16_t) (w->flags | GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK);
+    w->linear_m1 = cpu_x86_linear_i2s_x4_m1;
+    w->linear_mN = cpu_x86_linear_i2s_x4_mN;
+    return true;
+}
+
 /* F16 dense decode (BitNet's tied lm_head, 657 MB read once per token):
  * OMP + F16C GEMV, far faster than the serial cpu_scalar dequant-dot. */
 static void cpu_x86_linear_f16_m1(const float               *x,
@@ -188,9 +238,13 @@ static void cpu_x86_linear_f16_m1(const float               *x,
         (void) cpu_x86_linear_q6k_resolve(w); /* OOM → keep scalar m1 */
         break;
     case GEIST_DTYPE_I2_S:
-        /* Decode + prefill: native packed-2-bit VPDPBUSD ternary kernels. */
-        w->linear_m1 = cpu_x86_linear_i2s_m1;
-        w->linear_mN = cpu_x86_linear_i2s_mN;
+        /* Fast path: 4-row-interleaved x4 layout (one act load feeds 4 rows).
+         * Falls back to the packed VPDPBUSD kernels on shape mismatch / OOM /
+         * non-VNNI. */
+        if (!cpu_x86_linear_i2s_x4_resolve(w)) {
+            w->linear_m1 = cpu_x86_linear_i2s_m1;
+            w->linear_mN = cpu_x86_linear_i2s_mN;
+        }
         break;
     case GEIST_DTYPE_F16:
         /* Tied lm_head on BitNet: OMP + F16C GEMV for the M=1 head. */
