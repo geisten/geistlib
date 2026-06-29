@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-orange.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20(ARM64%20%2B%20x86--64)-lightgrey.svg)](#-getting-started)
-[![Status](https://img.shields.io/badge/status-experimental%20(v0.3.1)-yellow.svg)](#-status)
+[![Status](https://img.shields.io/badge/status-experimental%20(v0.3.2)-yellow.svg)](#-status)
 
 **geist** is a high-performance inference engine that runs small LLMs **on the CPU
 with zero dependencies**. On the platforms it targets it is **already faster than
@@ -64,12 +64,13 @@ platform-specific** — one download runs on every platform.
 | :-- | :-- |
 | **macOS** · Apple Silicon | [⬇ geist-macos-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-macos-arm64.tar.gz) |
 | **Raspberry Pi / Linux** · ARM64 | [⬇ geist-linux-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64.tar.gz) |
+| **Linux** · x86-64 (AVX-512) | [⬇ geist-linux-x86_64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-linux-x86_64.tar.gz) |
 
 | Model (one file, any platform) | Size | Direct download |
 | :-- | --: | :-- |
 | **Gemma 4 E2B-it** · `Q4_K_M` — text · vision · audio | 2.9 GB | [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf) |
 | **Gemma 4 E4B-it** · `Q4_K_M` — bigger, text · vision · audio | 4.6 GB | [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf) |
-| **BitNet b1.58 2B-4T** · `i2_s` — ternary, fast on edge | 1.1 GB | [⬇ gguf](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf) |
+| **BitNet b1.58 2B-4T** · `i2_s` — ternary, beats bitnet.cpp (Pi 5 & x86) | 1.1 GB | [⬇ gguf](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf) |
 
 ```bash
 ./geist       model.gguf "The capital of France is"   # generate text
@@ -77,7 +78,7 @@ platform-specific** — one download runs on every platform.
 ./geist chat  model.gguf                               # multi-turn chat + memory
 ```
 
-<sub>Prebuilt binaries are ARM64. **x86-64 Linux** (AVX-512) runs too — [build from source](#-getting-started); Windows is still pending.</sub>
+<sub>Prebuilt for macOS · ARM64, Linux · ARM64 and Linux · x86-64 (AVX-512, runs on any x86-64-v3 CPU). Windows is still pending.</sub>
 
 <p align="center">
   <img src="assets/demo-bitnet-trio.gif" alt="One geist-bitnet binary doing three things in a row on a Mac: generate text, then drive tools to list a folder and search the web — model baked in, no model file" width="100%">
@@ -117,7 +118,7 @@ x86** (9950X: prefill +30 %, decode +38 %) — across edge and desktop:
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | decode t/s | 34.1 | 34.5 *(llama.cpp)* |
 
 <p align="center">
-  <img src="assets/headline_benchmarks.svg" alt="Horizontal scoreboard of geist's throughput as a ratio of the baseline engine, grouped by system. Raspberry Pi 5: BitNet decode 2.1x bitnet.cpp, Gemma decode and total ~1.1x llama.cpp. Apple M1 Max: Gemma prefill 1.5x llama.cpp. AMD Ryzen 9 9950X: Gemma decode 1.1x, Gemma and Llama 3.2 prefill at parity-to-ahead vs llama.cpp. Each row is a different metric and baseline." width="100%">
+  <img src="assets/headline_benchmarks.svg" alt="Horizontal scoreboard of geist's throughput as a ratio of the baseline engine, grouped by system. Raspberry Pi 5: BitNet decode 2.1x bitnet.cpp, Gemma decode and total ~1.1x llama.cpp. Apple M1 Max: Gemma prefill 1.5x llama.cpp. AMD Ryzen 9 9950X: BitNet decode 1.4x and prefill 1.3x bitnet.cpp, Gemma decode 1.1x, Gemma and Llama 3.2 prefill at parity-to-ahead vs llama.cpp. Each row is a different metric and baseline." width="100%">
 </p>
 
 *geist meets or beats every baseline — across **Raspberry Pi 5**, **Apple M1 Max**
@@ -149,9 +150,11 @@ no driver stack.*
 | You run **ternary BitNet** (~2× bitnet.cpp) | — |
 
 ### Ternary (1.58-bit) as a first-class citizen
-geist runs Microsoft's BitNet b1.58 (`TQ2_0` and canonical `I2_S`) with ARM
-**SDOT** — integer add/subtract only, no multiplies. On a Pi 5 that's **~2×
-Microsoft's own bitnet.cpp** (decode **17.4** vs 8.2 t/s).
+geist runs Microsoft's BitNet b1.58 (`TQ2_0` and canonical `I2_S`) with integer-only
+dot products — ARM **SDOT** (add/subtract, no multiplies) and x86 **AVX-512 VNNI**.
+It beats Microsoft's own bitnet.cpp on **both**: a Pi 5 decodes **~2×** (17.4 vs
+8.2 t/s), and an AMD 9950X does prefill **+30 %** (884 vs 679) and decode **+38 %**
+(77.9 vs 56.5 t/s).
 
 ### On-device agent for small models
 A bounded, whitelist-gated tool loop lets a 2 B model *do* things — all in the same
@@ -225,7 +228,7 @@ same `./geist` binary — pick by your hardware and what you need.
 | :-- | :-- | :-- | --: | --: | :-- | :-- |
 | **Gemma 4 E2B-it** | text · vision · audio | `Q4_K_M` | 2.9 GB | ≥ 4 GB | Mac / Pi 5 | `make fetch-model` · [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf) |
 | Gemma 4 E4B-it | text · vision · audio | `Q4_K_M` | 4.6 GB | ≥ 6 GB | Mac | [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf) |
-| **BitNet b1.58 2B-4T** | text (ternary) | `i2_s` | 1.1 GB | ≥ 4 GB | **Pi 5 / edge** | [⬇ gguf](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf) |
+| **BitNet b1.58 2B-4T** | text (ternary) | `i2_s` | 1.1 GB | ≥ 4 GB | **Pi 5 · x86** | [⬇ gguf](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf) |
 | BitNet b1.58-large | text (ternary) | `TQ2_0` | 207 MB | ≥ 1 GB | smallest footprint | convert from [1bitLLM ↗](https://huggingface.co/1bitLLM/bitnet_b1_58-large) |
 
 ```bash
@@ -246,10 +249,9 @@ curl -L -o bitnet-2b4t.i2_s.gguf \
 
 ## 🚀 Getting Started
 
-> **Just want to run it?** The prebuilt ARM64 one-liner is at the
-> [top](#-run-it-now). This section builds from source — any platform with a C23
-> compiler, including **x86-64 Linux** now that the AVX-512 backend has landed
-> (prebuilt x86 binaries aren't shipped yet — build it here).
+> **Just want to run it?** Prebuilt binaries (macOS · ARM64, Linux · ARM64,
+> Linux · x86-64) are at the [top](#-run-it-now). This section builds from source —
+> any platform with a C23 compiler, the path for a custom target or Windows.
 
 ### Prerequisites
 - A C23 compiler: **gcc ≥ 14**, or Apple-clang ≥ 16 (Xcode 16 / macOS 15).

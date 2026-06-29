@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 790" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
-<rect x="0" y="0" width="880" height="790" rx="14" fill="#ffffff" stroke="#e5e7eb"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 902" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect x="0" y="0" width="880" height="902" rx="14" fill="#ffffff" stroke="#e5e7eb"/>
 <text x="40" y="46" font-size="23" font-weight="700" fill="#0f172a">Headline benchmarks — geist vs the baseline</text>
 <text x="40" y="72" font-size="13.5" fill="#475569">grouped by system · each bar = geist throughput &#247; the baseline engine, on its own metric · 1.0&#215; = parity</text>
 <rect x="32" y="104" width="816" height="222" rx="12" fill="#fff5f6" stroke="#eef2f6"/>
@@ -12,17 +12,17 @@
 <rect x="56" y="354" width="118" height="23" rx="11.5" fill="#7c3aed"/>
 <text x="115" y="370" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">Apple M1 Max</text>
 <text x="186" y="370" font-size="12" fill="#64748b">Apple Silicon · CPU via Accelerate / AMX · desktop</text>
-<rect x="32" y="468" width="816" height="278" rx="12" fill="#eff6ff" stroke="#eef2f6"/>
-<rect x="35" y="478" width="5" height="258" rx="2.5" fill="#2563eb"/>
+<rect x="32" y="468" width="816" height="390" rx="12" fill="#eff6ff" stroke="#eef2f6"/>
+<rect x="35" y="478" width="5" height="370" rx="2.5" fill="#2563eb"/>
 <rect x="56" y="480" width="159" height="23" rx="11.5" fill="#2563eb"/>
 <text x="136" y="496" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">AMD Ryzen 9 9950X</text>
 <text x="227" y="496" font-size="12" fill="#64748b">Zen 5 · 16C/32T · AVX-512 · desktop</text>
-<line x1="412.0" y1="104" x2="412.0" y2="746" stroke="#e8edf2"/>
-<text x="412.0" y="764" font-size="11" fill="#94a3b8" text-anchor="middle">0&#215;</text>
-<line x1="582.0" y1="104" x2="582.0" y2="746" stroke="#cbd5e1" stroke-dasharray="4 4"/>
-<text x="582.0" y="764" font-size="11" fill="#94a3b8" text-anchor="middle">1&#215;</text>
-<line x1="752.0" y1="104" x2="752.0" y2="746" stroke="#e8edf2"/>
-<text x="752.0" y="764" font-size="11" fill="#94a3b8" text-anchor="middle">2&#215;</text>
+<line x1="412.0" y1="104" x2="412.0" y2="858" stroke="#e8edf2"/>
+<text x="412.0" y="876" font-size="11" fill="#94a3b8" text-anchor="middle">0&#215;</text>
+<line x1="582.0" y1="104" x2="582.0" y2="858" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<text x="582.0" y="876" font-size="11" fill="#94a3b8" text-anchor="middle">1&#215;</text>
+<line x1="752.0" y1="104" x2="752.0" y2="858" stroke="#e8edf2"/>
+<text x="752.0" y="876" font-size="11" fill="#94a3b8" text-anchor="middle">2&#215;</text>
 <text x="582.0" y="99" font-size="11" fill="#94a3b8" text-anchor="middle">parity</text>
 <text x="56" y="167.0" font-size="13.5" font-weight="600" fill="#0f172a">BitNet b1.58 2B-4T <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
 <text x="56" y="184.0" font-size="11" fill="#64748b">17.4 vs 8.2 t/s · bitnet.cpp</text>
@@ -44,24 +44,34 @@
 <rect x="412" y="397.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
 <rect x="582.0" y="397.0" width="82.4" height="23" rx="3" fill="#0ea5a4"/>
 <text x="673.4" y="413.0" font-size="15" font-weight="700" fill="#0e7490">1.5&#215;</text>
-<text x="56" y="531.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
-<text x="56" y="548.0" font-size="11" fill="#64748b">48.6 vs 44.1 t/s · llama.cpp</text>
+<text x="56" y="531.0" font-size="13.5" font-weight="600" fill="#0f172a">BitNet b1.58 2B-4T <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
+<text x="56" y="548.0" font-size="11" fill="#64748b">77.9 vs 56.5 t/s · bitnet.cpp</text>
 <rect x="412" y="523.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
-<rect x="582.0" y="523.0" width="17.3" height="23" rx="3" fill="#0ea5a4"/>
-<text x="608.3" y="539.0" font-size="15" font-weight="700" fill="#0e7490">1.1&#215;</text>
-<text x="56" y="587.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
-<text x="56" y="604.0" font-size="11" fill="#64748b">512 vs 495 t/s · llama.cpp</text>
+<rect x="582.0" y="523.0" width="64.4" height="23" rx="3" fill="#0ea5a4"/>
+<text x="655.4" y="539.0" font-size="15" font-weight="700" fill="#0e7490">1.4&#215;</text>
+<text x="56" y="587.0" font-size="13.5" font-weight="600" fill="#0f172a">BitNet b1.58 2B-4T <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
+<text x="56" y="604.0" font-size="11" fill="#64748b">884 vs 679 t/s · bitnet.cpp</text>
 <rect x="412" y="579.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
-<rect x="582.0" y="579.0" width="5.8" height="23" rx="3" fill="#0ea5a4"/>
-<text x="596.8" y="595.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
-<text x="56" y="643.0" font-size="13.5" font-weight="600" fill="#0f172a">Llama 3.2 3B <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
-<text x="56" y="660.0" font-size="11" fill="#64748b">351 vs 346 t/s · llama.cpp</text>
+<rect x="582.0" y="579.0" width="51.3" height="23" rx="3" fill="#0ea5a4"/>
+<text x="642.3" y="595.0" font-size="15" font-weight="700" fill="#0e7490">1.3&#215;</text>
+<text x="56" y="643.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
+<text x="56" y="660.0" font-size="11" fill="#64748b">48.6 vs 44.1 t/s · llama.cpp</text>
 <rect x="412" y="635.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
-<rect x="582.0" y="635.0" width="2.5" height="23" rx="3" fill="#0ea5a4"/>
-<text x="593.5" y="651.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
-<text x="56" y="699.0" font-size="13.5" font-weight="600" fill="#0f172a">Llama 3.2 3B <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
-<text x="56" y="716.0" font-size="11" fill="#64748b">34.1 vs 34.5 t/s · llama.cpp</text>
-<rect x="412" y="691.0" width="168.0" height="23" rx="3" fill="#c7ede3"/>
-<text x="589.0" y="707.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
-<text x="40" y="775" font-size="11" fill="#94a3b8">Each row is that system&#8217;s headline metric (decode / prefill / total) vs its own baseline engine — comparable only as a ratio. Full sweep: benchmark/.</text>
+<rect x="582.0" y="635.0" width="17.3" height="23" rx="3" fill="#0ea5a4"/>
+<text x="608.3" y="651.0" font-size="15" font-weight="700" fill="#0e7490">1.1&#215;</text>
+<text x="56" y="699.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
+<text x="56" y="716.0" font-size="11" fill="#64748b">512 vs 495 t/s · llama.cpp</text>
+<rect x="412" y="691.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
+<rect x="582.0" y="691.0" width="5.8" height="23" rx="3" fill="#0ea5a4"/>
+<text x="596.8" y="707.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
+<text x="56" y="755.0" font-size="13.5" font-weight="600" fill="#0f172a">Llama 3.2 3B <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
+<text x="56" y="772.0" font-size="11" fill="#64748b">351 vs 346 t/s · llama.cpp</text>
+<rect x="412" y="747.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
+<rect x="582.0" y="747.0" width="2.5" height="23" rx="3" fill="#0ea5a4"/>
+<text x="593.5" y="763.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
+<text x="56" y="811.0" font-size="13.5" font-weight="600" fill="#0f172a">Llama 3.2 3B <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
+<text x="56" y="828.0" font-size="11" fill="#64748b">34.1 vs 34.5 t/s · llama.cpp</text>
+<rect x="412" y="803.0" width="168.0" height="23" rx="3" fill="#c7ede3"/>
+<text x="589.0" y="819.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
+<text x="40" y="887" font-size="11" fill="#94a3b8">Each row is that system&#8217;s headline metric (decode / prefill / total) vs its own baseline engine — comparable only as a ratio. Full sweep: benchmark/.</text>
 </svg>

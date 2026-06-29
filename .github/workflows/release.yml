@@ -108,8 +108,10 @@ jobs:
       # one binary runs on any x86-64-v3 CPU and uses AVX-512 only where present (no
       # SIGILL). GEMM_PROVIDER=native -> BLAS-free (portable scalar fp32 for the
       # vision/audio dense path; the quantized text kernels never touch BLAS).
-      # Model-less only: BitNet ternary has no AVX kernel yet, so no embedded x86
-      # artifact — pair this engine with a Gemma/Llama GGUF (where it beats llama.cpp).
+      # Model-less only (no embedded x86 artifact yet) — pair this engine with a
+      # Gemma / Llama / BitNet GGUF. The BitNet I2_S ternary + spec-head x86 kernels
+      # have landed (beats bitnet.cpp on Zen 5), so an embedded geist-bitnet-linux-
+      # x86_64 single-file could be added here like the arm64 job.
       - name: Build (musl-static in Alpine, stripped)
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
