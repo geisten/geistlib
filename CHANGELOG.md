@@ -8,6 +8,13 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed — release embedded-build download resilience
+
+- The embedded release builds fetch the ~1.1 GB BitNet GGUF 3× per release; on
+  v0.3.3 HuggingFace rate-limited (HTTP 429) and the `--retry-delay 2` was too
+  short, failing the x86 embedded job. Bumped to `--retry 5 --retry-delay 15
+  --retry-all-errors` so a transient 429 is ridden out.
+
 ### Added — BitNet b1.58 2B-4T on x86 (AVX-512): beats bitnet.cpp
 
 - The `cpu_x86` backend now runs **BitNet-2B-4T (I2_S ternary)** end-to-end and

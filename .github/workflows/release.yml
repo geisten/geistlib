@@ -74,7 +74,7 @@ jobs:
       - name: Build + package embedded (if EMBED_MODEL_URL set)
         if: env.EMBED_MODEL_URL != ''
         run: |
-          curl -fL --retry 3 --retry-delay 2 -o embed-model.gguf "$EMBED_MODEL_URL"
+          curl -fL --retry 5 --retry-delay 15 --retry-all-errors -o embed-model.gguf "$EMBED_MODEL_URL"
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
             set -e
             apk add --no-cache build-base linux-headers
@@ -144,7 +144,7 @@ jobs:
       - name: Build + package embedded (if EMBED_MODEL_URL set)
         if: env.EMBED_MODEL_URL != ''
         run: |
-          curl -fL --retry 3 --retry-delay 2 -o embed-model.gguf "$EMBED_MODEL_URL"
+          curl -fL --retry 5 --retry-delay 15 --retry-all-errors -o embed-model.gguf "$EMBED_MODEL_URL"
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
             set -e
             apk add --no-cache build-base linux-headers
@@ -202,7 +202,7 @@ jobs:
       - name: Build + package embedded (if EMBED_MODEL_URL set)
         if: env.EMBED_MODEL_URL != ''
         run: |
-          curl -fL --retry 3 --retry-delay 2 -o embed-model.gguf "$EMBED_MODEL_URL"
+          curl -fL --retry 5 --retry-delay 15 --retry-all-errors -o embed-model.gguf "$EMBED_MODEL_URL"
           rm -f build/mac-omp/release/tools/geist.o
           make TARGET=mac-omp CC=clang GEIST_STATIC_OMP=1 \
                EMBED_MODEL=embed-model.gguf bin/mac-omp/release/tools/geist
