@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-orange.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20(ARM64%20%2B%20x86--64)-lightgrey.svg)](#-getting-started)
-[![Status](https://img.shields.io/badge/status-experimental%20(v0.3.2)-yellow.svg)](#-status)
+[![Status](https://img.shields.io/badge/status-experimental%20(v0.3.3)-yellow.svg)](#-status)
 
 **geist** is a high-performance inference engine that runs small LLMs **on the CPU
 with zero dependencies**. On the platforms it targets it is **already faster than
