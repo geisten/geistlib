@@ -30,6 +30,12 @@
 #   SKIP_COOL     set =1 to bypass the thermal gate (not recommended)
 #   SETUP_REFS    set =1 to clone+build llama.cpp and bitnet.cpp under ./benchmark/ref/
 #                 if their binaries aren't already provided (one-time, ~10 min)
+#   LLAMA_REF     llama.cpp commit/tag to pin when SETUP_REFS builds it
+#                 (default b9010 = d05fe1d, the documented Pi baseline)
+#   BITNET_REF    microsoft/BitNet commit to pin when SETUP_REFS builds it
+#                 (default 01eb415… — pins FUTURE runs; the numbers already in
+#                 benchmark/headline_results.json predate this pin, see their
+#                 baseline_version "master")
 set -u
 
 MODEL="${MODEL:-}"
@@ -42,9 +48,25 @@ DECODE_N="${DECODE_N:-64}"
 REPEATS="${REPEATS:-10}"
 MAX_TEMP_C="${MAX_TEMP_C:-56}"
 SKIP_COOL="${SKIP_COOL:-0}"
+LLAMA_REF="${LLAMA_REF:-b9010}"                                    # = d05fe1d, documented Pi baseline
+BITNET_REF="${BITNET_REF:-01eb415772c342d9f20dc42772f1583ae1e5b102}"
 
 die() { echo "error: $*" >&2; exit 1; }
 note() { echo ">> $*"; }
+
+# Pin a freshly-cloned reference repo to a fixed commit/tag (reproducibility).
+# No-op with a warning if ref is empty. subs=1 re-syncs submodules after checkout.
+pin_ref() {  # $1=dir  $2=ref  $3=1 to update submodules
+  local dir="$1" ref="$2" subs="${3:-0}"
+  [ -n "$ref" ] || { note "$dir: UNPINNED (default branch — run not reproducible)"; return 0; }
+  if git -C "$dir" fetch --depth 1 origin "$ref" >/dev/null 2>&1; then
+    git -C "$dir" checkout -q FETCH_HEAD
+  elif ! git -C "$dir" checkout -q "$ref" 2>/dev/null; then
+    note "$dir: could not checkout $ref — using default branch"; return 0
+  fi
+  [ "$subs" = "1" ] && git -C "$dir" submodule update --init --recursive >/dev/null 2>&1
+  note "$dir pinned @ $ref ($(git -C "$dir" rev-parse --short HEAD 2>/dev/null))"
+}
 
 [ -n "$MODEL" ] || die "set MODEL=path/to/ternary.gguf (a TQ2_0 BitNet GGUF)"
 [ -f "$MODEL" ] || die "MODEL not found: $MODEL"
@@ -83,6 +105,7 @@ if [ "${SETUP_REFS:-0}" = "1" ]; then
   if [ -z "$LLAMA_BENCH" ] || [ ! -x "$LLAMA_BENCH" ]; then
     note "building llama.cpp under $REFDIR/llama.cpp (OpenBLAS) ..."
     [ -d "$REFDIR/llama.cpp" ] || git clone --depth 1 https://github.com/ggml-org/llama.cpp "$REFDIR/llama.cpp"
+    pin_ref "$REFDIR/llama.cpp" "$LLAMA_REF"
     cmake -S "$REFDIR/llama.cpp" -B "$REFDIR/llama.cpp/build" \
       -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS -DGGML_NATIVE=ON -DLLAMA_CURL=OFF >/dev/null \
       && cmake --build "$REFDIR/llama.cpp/build" --target llama-bench -j4 >/dev/null \
@@ -92,6 +115,7 @@ if [ "${SETUP_REFS:-0}" = "1" ]; then
   if [ -z "$BITNET_BENCH" ] || [ ! -x "$BITNET_BENCH" ]; then
     note "building bitnet.cpp under $REFDIR/BitNet ..."
     [ -d "$REFDIR/BitNet" ] || git clone --depth 1 --recursive https://github.com/microsoft/BitNet "$REFDIR/BitNet"
+    pin_ref "$REFDIR/BitNet" "$BITNET_REF" 1
     # bitnet.cpp ships a llama.cpp fork in 3rdparty; build its llama-bench.
     cmake -S "$REFDIR/BitNet/3rdparty/llama.cpp" -B "$REFDIR/BitNet/build" -DGGML_NATIVE=ON >/dev/null 2>&1 \
       && cmake --build "$REFDIR/BitNet/build" --target llama-bench -j4 >/dev/null 2>&1 \

@@ -1,77 +1,95 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 902" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
-<rect x="0" y="0" width="880" height="902" rx="14" fill="#ffffff" stroke="#e5e7eb"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 1030" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect x="0" y="0" width="880" height="1030" rx="14" fill="#ffffff" stroke="#e5e7eb"/>
 <text x="40" y="46" font-size="23" font-weight="700" fill="#0f172a">Headline benchmarks — geist vs the baseline</text>
 <text x="40" y="72" font-size="13.5" fill="#475569">grouped by system · each bar = geist throughput &#247; the baseline engine, on its own metric · 1.0&#215; = parity</text>
-<rect x="32" y="104" width="816" height="222" rx="12" fill="#fff5f6" stroke="#eef2f6"/>
-<rect x="35" y="114" width="5" height="202" rx="2.5" fill="#e11d48"/>
+<rect x="32" y="104" width="816" height="334" rx="12" fill="#fff5f6" stroke="#eef2f6"/>
+<rect x="35" y="114" width="5" height="314" rx="2.5" fill="#e11d48"/>
 <rect x="56" y="116" width="134" height="23" rx="11.5" fill="#e11d48"/>
 <text x="123" y="132" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">Raspberry Pi 5</text>
-<text x="202" y="132" font-size="12" fill="#64748b">ARM Cortex-A76 · 4 cores · CPU-only edge board</text>
-<rect x="32" y="342" width="816" height="110" rx="12" fill="#f7f5ff" stroke="#eef2f6"/>
-<rect x="35" y="352" width="5" height="90" rx="2.5" fill="#7c3aed"/>
-<rect x="56" y="354" width="118" height="23" rx="11.5" fill="#7c3aed"/>
-<text x="115" y="370" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">Apple M1 Max</text>
-<text x="186" y="370" font-size="12" fill="#64748b">Apple Silicon · CPU via Accelerate / AMX · desktop</text>
-<rect x="32" y="468" width="816" height="390" rx="12" fill="#eff6ff" stroke="#eef2f6"/>
-<rect x="35" y="478" width="5" height="370" rx="2.5" fill="#2563eb"/>
-<rect x="56" y="480" width="159" height="23" rx="11.5" fill="#2563eb"/>
-<text x="136" y="496" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">AMD Ryzen 9 9950X</text>
-<text x="227" y="496" font-size="12" fill="#64748b">Zen 5 · 16C/32T · AVX-512 · desktop</text>
-<line x1="412.0" y1="104" x2="412.0" y2="858" stroke="#e8edf2"/>
-<text x="412.0" y="876" font-size="11" fill="#94a3b8" text-anchor="middle">0&#215;</text>
-<line x1="582.0" y1="104" x2="582.0" y2="858" stroke="#cbd5e1" stroke-dasharray="4 4"/>
-<text x="582.0" y="876" font-size="11" fill="#94a3b8" text-anchor="middle">1&#215;</text>
-<line x1="752.0" y1="104" x2="752.0" y2="858" stroke="#e8edf2"/>
-<text x="752.0" y="876" font-size="11" fill="#94a3b8" text-anchor="middle">2&#215;</text>
+<rect x="200" y="117" width="65" height="21" rx="10.5" fill="#fffbeb" stroke="#e2e8f0"/>
+<circle cx="214" cy="128" r="4" fill="#f59e0b"/>
+<text x="223" y="132" font-size="11.5" font-weight="600" fill="#475569">Linux</text>
+<text x="277" y="132" font-size="12" fill="#64748b">ARM Cortex-A76 · 4 cores · CPU-only edge board</text>
+<rect x="32" y="454" width="816" height="110" rx="12" fill="#f7f5ff" stroke="#eef2f6"/>
+<rect x="35" y="464" width="5" height="90" rx="2.5" fill="#7c3aed"/>
+<rect x="56" y="466" width="118" height="23" rx="11.5" fill="#7c3aed"/>
+<text x="115" y="482" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">Apple M1 Max</text>
+<rect x="184" y="467" width="65" height="21" rx="10.5" fill="#f1f5f9" stroke="#e2e8f0"/>
+<circle cx="198" cy="478" r="4" fill="#0f172a"/>
+<text x="207" y="482" font-size="11.5" font-weight="600" fill="#475569">macOS</text>
+<text x="261" y="482" font-size="12" fill="#64748b">Apple Silicon · CPU via Accelerate / AMX · desktop</text>
+<rect x="32" y="580" width="816" height="390" rx="12" fill="#eff6ff" stroke="#eef2f6"/>
+<rect x="35" y="590" width="5" height="370" rx="2.5" fill="#2563eb"/>
+<rect x="56" y="592" width="159" height="23" rx="11.5" fill="#2563eb"/>
+<text x="136" y="608" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">AMD Ryzen 9 9950X</text>
+<rect x="225" y="593" width="65" height="21" rx="10.5" fill="#fffbeb" stroke="#e2e8f0"/>
+<circle cx="239" cy="604" r="4" fill="#f59e0b"/>
+<text x="248" y="608" font-size="11.5" font-weight="600" fill="#475569">Linux</text>
+<text x="302" y="608" font-size="12" fill="#64748b">Zen 5 · 16C/32T · AVX-512 · desktop</text>
+<line x1="412.0" y1="104" x2="412.0" y2="970" stroke="#e8edf2"/>
+<text x="412.0" y="988" font-size="11" fill="#94a3b8" text-anchor="middle">0&#215;</text>
+<line x1="582.0" y1="104" x2="582.0" y2="970" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<text x="582.0" y="988" font-size="11" fill="#94a3b8" text-anchor="middle">1&#215;</text>
+<line x1="752.0" y1="104" x2="752.0" y2="970" stroke="#e8edf2"/>
+<text x="752.0" y="988" font-size="11" fill="#94a3b8" text-anchor="middle">2&#215;</text>
 <text x="582.0" y="99" font-size="11" fill="#94a3b8" text-anchor="middle">parity</text>
 <text x="56" y="167.0" font-size="13.5" font-weight="600" fill="#0f172a">BitNet b1.58 2B-4T <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
-<text x="56" y="184.0" font-size="11" fill="#64748b">17.4 vs 8.2 t/s · bitnet.cpp</text>
+<text x="56" y="184.0" font-size="11" fill="#64748b">17.4 vs 8.2 t/s · bitnet.cpp <tspan fill="#94a3b8">master</tspan></text>
 <rect x="412" y="159.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
 <rect x="582.0" y="159.0" width="190.7" height="23" rx="3" fill="#0ea5a4"/>
 <text x="781.7" y="175.0" font-size="15" font-weight="700" fill="#0e7490">2.1&#215;</text>
 <text x="56" y="223.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
-<text x="56" y="240.0" font-size="11" fill="#64748b">7.5 vs 6.8 t/s · llama.cpp</text>
+<text x="56" y="240.0" font-size="11" fill="#64748b">7.5 vs 6.8 t/s · llama.cpp <tspan fill="#94a3b8">d05fe1d</tspan></text>
 <rect x="412" y="215.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
 <rect x="582.0" y="215.0" width="17.5" height="23" rx="3" fill="#0ea5a4"/>
 <text x="608.5" y="231.0" font-size="15" font-weight="700" fill="#0e7490">1.1&#215;</text>
-<text x="56" y="279.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· total</tspan></text>
-<text x="56" y="296.0" font-size="11" fill="#64748b">8.8 vs 8.2 t/s · llama.cpp</text>
+<text x="56" y="279.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· total · 32p</tspan></text>
+<text x="56" y="296.0" font-size="11" fill="#64748b">8.8 vs 8.2 t/s · llama.cpp <tspan fill="#94a3b8">d05fe1d</tspan></text>
 <rect x="412" y="271.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
 <rect x="582.0" y="271.0" width="12.4" height="23" rx="3" fill="#0ea5a4"/>
 <text x="603.4" y="287.0" font-size="15" font-weight="700" fill="#0e7490">1.1&#215;</text>
-<text x="56" y="405.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
-<text x="56" y="422.0" font-size="11" fill="#64748b">144 vs 97 t/s · llama.cpp</text>
-<rect x="412" y="397.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
-<rect x="582.0" y="397.0" width="82.4" height="23" rx="3" fill="#0ea5a4"/>
-<text x="673.4" y="413.0" font-size="15" font-weight="700" fill="#0e7490">1.5&#215;</text>
-<text x="56" y="531.0" font-size="13.5" font-weight="600" fill="#0f172a">BitNet b1.58 2B-4T <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
-<text x="56" y="548.0" font-size="11" fill="#64748b">77.9 vs 56.5 t/s · bitnet.cpp</text>
-<rect x="412" y="523.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
-<rect x="582.0" y="523.0" width="64.4" height="23" rx="3" fill="#0ea5a4"/>
-<text x="655.4" y="539.0" font-size="15" font-weight="700" fill="#0e7490">1.4&#215;</text>
-<text x="56" y="587.0" font-size="13.5" font-weight="600" fill="#0f172a">BitNet b1.58 2B-4T <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
-<text x="56" y="604.0" font-size="11" fill="#64748b">884 vs 679 t/s · bitnet.cpp</text>
-<rect x="412" y="579.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
-<rect x="582.0" y="579.0" width="51.3" height="23" rx="3" fill="#0ea5a4"/>
-<text x="642.3" y="595.0" font-size="15" font-weight="700" fill="#0e7490">1.3&#215;</text>
-<text x="56" y="643.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
-<text x="56" y="660.0" font-size="11" fill="#64748b">48.6 vs 44.1 t/s · llama.cpp</text>
+<text x="56" y="335.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· total · 128p</tspan></text>
+<text x="56" y="352.0" font-size="11" fill="#64748b">11.1 vs 11.35 t/s · llama.cpp <tspan fill="#94a3b8">d05fe1d</tspan></text>
+<rect x="412" y="327.0" width="166.3" height="23" rx="3" fill="#c7ede3"/>
+<text x="587.3" y="343.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
+<text x="56" y="391.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
+<text x="56" y="408.0" font-size="11" fill="#64748b">34.8 vs 37.4 t/s · llama.cpp <tspan fill="#94a3b8">d05fe1d</tspan></text>
+<rect x="412" y="383.0" width="158.2" height="23" rx="3" fill="#c7ede3"/>
+<text x="579.2" y="399.0" font-size="15" font-weight="700" fill="#64748b">0.9&#215;</text>
+<text x="56" y="517.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· prefill (pp1024)</tspan></text>
+<text x="56" y="534.0" font-size="11" fill="#64748b">144 vs 97 t/s · llama.cpp <tspan fill="#94a3b8">d05fe1d</tspan></text>
+<rect x="412" y="509.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
+<rect x="582.0" y="509.0" width="82.4" height="23" rx="3" fill="#0ea5a4"/>
+<text x="673.4" y="525.0" font-size="15" font-weight="700" fill="#0e7490">1.5&#215;</text>
+<text x="56" y="643.0" font-size="13.5" font-weight="600" fill="#0f172a">BitNet b1.58 2B-4T <tspan fill="#94a3b8" font-weight="400">· decode (tg128)</tspan></text>
+<text x="56" y="660.0" font-size="11" fill="#64748b">77.9 vs 56.5 t/s · bitnet.cpp <tspan fill="#94a3b8">master</tspan></text>
 <rect x="412" y="635.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
-<rect x="582.0" y="635.0" width="17.3" height="23" rx="3" fill="#0ea5a4"/>
-<text x="608.3" y="651.0" font-size="15" font-weight="700" fill="#0e7490">1.1&#215;</text>
-<text x="56" y="699.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
-<text x="56" y="716.0" font-size="11" fill="#64748b">512 vs 495 t/s · llama.cpp</text>
+<rect x="582.0" y="635.0" width="64.4" height="23" rx="3" fill="#0ea5a4"/>
+<text x="655.4" y="651.0" font-size="15" font-weight="700" fill="#0e7490">1.4&#215;</text>
+<text x="56" y="699.0" font-size="13.5" font-weight="600" fill="#0f172a">BitNet b1.58 2B-4T <tspan fill="#94a3b8" font-weight="400">· prefill (pp128)</tspan></text>
+<text x="56" y="716.0" font-size="11" fill="#64748b">884 vs 679 t/s · bitnet.cpp <tspan fill="#94a3b8">master</tspan></text>
 <rect x="412" y="691.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
-<rect x="582.0" y="691.0" width="5.8" height="23" rx="3" fill="#0ea5a4"/>
-<text x="596.8" y="707.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
-<text x="56" y="755.0" font-size="13.5" font-weight="600" fill="#0f172a">Llama 3.2 3B <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
-<text x="56" y="772.0" font-size="11" fill="#64748b">351 vs 346 t/s · llama.cpp</text>
+<rect x="582.0" y="691.0" width="51.3" height="23" rx="3" fill="#0ea5a4"/>
+<text x="642.3" y="707.0" font-size="15" font-weight="700" fill="#0e7490">1.3&#215;</text>
+<text x="56" y="755.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
+<text x="56" y="772.0" font-size="11" fill="#64748b">48.6 vs 44.1 t/s · llama.cpp <tspan fill="#94a3b8">b9827</tspan></text>
 <rect x="412" y="747.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
-<rect x="582.0" y="747.0" width="2.5" height="23" rx="3" fill="#0ea5a4"/>
-<text x="593.5" y="763.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
-<text x="56" y="811.0" font-size="13.5" font-weight="600" fill="#0f172a">Llama 3.2 3B <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
-<text x="56" y="828.0" font-size="11" fill="#64748b">34.1 vs 34.5 t/s · llama.cpp</text>
-<rect x="412" y="803.0" width="168.0" height="23" rx="3" fill="#c7ede3"/>
-<text x="589.0" y="819.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
-<text x="40" y="887" font-size="11" fill="#94a3b8">Each row is that system&#8217;s headline metric (decode / prefill / total) vs its own baseline engine — comparable only as a ratio. Full sweep: benchmark/.</text>
+<rect x="582.0" y="747.0" width="17.3" height="23" rx="3" fill="#0ea5a4"/>
+<text x="608.3" y="763.0" font-size="15" font-weight="700" fill="#0e7490">1.1&#215;</text>
+<text x="56" y="811.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
+<text x="56" y="828.0" font-size="11" fill="#64748b">512 vs 495 t/s · llama.cpp <tspan fill="#94a3b8">b9827</tspan></text>
+<rect x="412" y="803.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
+<rect x="582.0" y="803.0" width="5.8" height="23" rx="3" fill="#0ea5a4"/>
+<text x="596.8" y="819.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
+<text x="56" y="867.0" font-size="13.5" font-weight="600" fill="#0f172a">Llama 3.2 3B <tspan fill="#94a3b8" font-weight="400">· prefill</tspan></text>
+<text x="56" y="884.0" font-size="11" fill="#64748b">351 vs 346 t/s · llama.cpp <tspan fill="#94a3b8">b9827</tspan></text>
+<rect x="412" y="859.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
+<rect x="582.0" y="859.0" width="2.5" height="23" rx="3" fill="#0ea5a4"/>
+<text x="593.5" y="875.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
+<text x="56" y="923.0" font-size="13.5" font-weight="600" fill="#0f172a">Llama 3.2 3B <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
+<text x="56" y="940.0" font-size="11" fill="#64748b">34.1 vs 34.5 t/s · llama.cpp <tspan fill="#94a3b8">b9827</tspan></text>
+<rect x="412" y="915.0" width="168.0" height="23" rx="3" fill="#c7ede3"/>
+<text x="589.0" y="931.0" font-size="15" font-weight="700" fill="#0e7490">1.0&#215;</text>
+<text x="40" y="999" font-size="11" fill="#94a3b8">Each row is that system&#8217;s headline metric (decode / prefill / total) vs its own baseline engine — comparable only as a ratio. Full sweep: benchmark/.</text>
+<text x="40" y="1015" font-size="11" fill="#94a3b8">Baselines: llama.cpp commits d05fe1d (Pi 5, M1 Max) / b9827 (x86); bitnet.cpp = microsoft/BitNet master (its bundled llama.cpp fork, unpinned).</text>
 </svg>

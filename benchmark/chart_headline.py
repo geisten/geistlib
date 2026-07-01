@@ -22,6 +22,12 @@ SYSTEMS = {
                "accent": "#2563eb", "tint": "#eff6ff"},
 }
 
+# OS-family chip (fill + a recognizable accent dot), shown next to the machine name.
+OS_STYLE = {
+    "Linux": {"fill": "#fffbeb", "dot": "#f59e0b"},   # Tux amber
+    "macOS": {"fill": "#f1f5f9", "dot": "#0f172a"},   # graphite apple
+}
+
 W = 880
 GX0, GX1 = 32, 848            # group block x-extent
 LBL = 56                      # left label x
@@ -62,7 +68,7 @@ def main():
         blocks.append((o, rows, y, gh))
         y += gh + GGAP
     gtop, gbot = 104, y - GGAP
-    H = gbot + 44
+    H = gbot + 60
 
     s = []
     s.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" '
@@ -80,12 +86,24 @@ def main():
         s.append(f'<rect x="{GX0}" y="{top}" width="{GX1 - GX0}" height="{gh}" rx="12" '
                  f'fill="{sysm["tint"]}" stroke="#eef2f6"/>')
         s.append(f'<rect x="{GX0 + 3}" y="{top + 10}" width="5" height="{gh - 20}" rx="2.5" fill="{sysm["accent"]}"/>')
-        # system pill + machine detail
+        # machine-name pill
         pill_w = 18 + len(sysm["name"]) * 8.3
         s.append(f'<rect x="{LBL}" y="{top + 12}" width="{pill_w:.0f}" height="23" rx="11.5" fill="{sysm["accent"]}"/>')
         s.append(f'<text x="{LBL + pill_w / 2:.0f}" y="{top + 28}" font-size="13" font-weight="700" '
                  f'fill="#ffffff" text-anchor="middle">{esc(sysm["name"])}</text>')
-        s.append(f'<text x="{LBL + pill_w + 12:.0f}" y="{top + 28}" font-size="12" fill="#64748b">'
+        # OS-family chip (dot + name) so the operating system per system is explicit
+        osf = rows[0].get("os_family", "")
+        osty = OS_STYLE.get(osf, {"fill": "#f1f5f9", "dot": "#94a3b8"})
+        ox = LBL + pill_w + 10
+        os_w = 28 + len(osf) * 7.4
+        s.append(f'<rect x="{ox:.0f}" y="{top + 13}" width="{os_w:.0f}" height="21" rx="10.5" '
+                 f'fill="{osty["fill"]}" stroke="#e2e8f0"/>')
+        s.append(f'<circle cx="{ox + 14:.0f}" cy="{top + 23.5:.0f}" r="4" fill="{osty["dot"]}"/>')
+        s.append(f'<text x="{ox + 23:.0f}" y="{top + 28}" font-size="11.5" font-weight="600" '
+                 f'fill="#475569">{esc(osf)}</text>')
+        # machine detail
+        dx = ox + os_w + 12
+        s.append(f'<text x="{dx:.0f}" y="{top + 28}" font-size="12" fill="#64748b">'
                  f'{esc(sysm["detail"])}</text>')
 
     # ratio gridlines + the 1.0x parity reference, spanning all blocks
@@ -107,8 +125,10 @@ def main():
             mid = rtop + ROW_H / 2 - 4
             s.append(f'<text x="{LBL}" y="{mid - 3:.1f}" font-size="13.5" font-weight="600" fill="#0f172a">'
                      f'{esc(row["model"])} <tspan fill="#94a3b8" font-weight="400">· {esc(row["metric"])}</tspan></text>')
+            ver = row.get("baseline_version", "")
+            vtag = f' <tspan fill="#94a3b8">{esc(ver)}</tspan>' if ver else ''
             s.append(f'<text x="{LBL}" y="{mid + 14:.1f}" font-size="11" fill="#64748b">'
-                     f'{num(row["geist"])} vs {num(row["baseline"])} t/s · {esc(row["baseline_engine"])}</text>')
+                     f'{num(row["geist"])} vs {num(row["baseline"])} t/s · {esc(row["baseline_engine"])}{vtag}</text>')
             by = mid - 11
             # light = up to parity; solid teal = the margin past parity (none if sub-parity)
             s.append(f'<rect x="{BX0}" y="{by:.1f}" width="{xr(min(ratio, 1.0)) - BX0:.1f}" '
@@ -121,9 +141,12 @@ def main():
             s.append(f'<text x="{xr(ratio) + 9:.1f}" y="{mid + 5:.1f}" font-size="15" font-weight="700" '
                      f'fill="{badge}">{disp:.1f}&#215;</text>')
 
-    s.append(f'<text x="40" y="{H - 15}" font-size="11" fill="#94a3b8">'
+    s.append(f'<text x="40" y="{H - 31}" font-size="11" fill="#94a3b8">'
              'Each row is that system&#8217;s headline metric (decode / prefill / total) vs its own '
              'baseline engine — comparable only as a ratio. Full sweep: benchmark/.</text>')
+    s.append(f'<text x="40" y="{H - 15}" font-size="11" fill="#94a3b8">'
+             'Baselines: llama.cpp commits d05fe1d (Pi 5, M1 Max) / b9827 (x86); bitnet.cpp = '
+             'microsoft/BitNet master (its bundled llama.cpp fork, unpinned).</text>')
     s.append('</svg>')
 
     out = os.path.abspath(OUT)
