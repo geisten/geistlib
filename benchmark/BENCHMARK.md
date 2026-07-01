@@ -135,7 +135,7 @@ matmuls/token and contends when every core is saturated). Override with
 `GEIST_PREFILL_THREADS` / `GEIST_DECODE_THREADS`.
 
 To reproduce a head-to-head on *your* hardware with the llama.cpp commit
-pinned, see [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
+pinned, see [BENCHMARKING.md](BENCHMARKING.md).
 
 ## Quality — MMLU (`make bench-mmlu`)
 
@@ -216,7 +216,7 @@ real multi-sequence decode also pays per-sequence attention, which the bench's
 single-sequence prefill does not model.)
 
 Quality (perplexity / KL-divergence vs the reference, sampled MMLU/GSM8K) is
-likewise documented in [docs/BENCHMARKING.md](docs/BENCHMARKING.md); it needs
+likewise documented in [BENCHMARKING.md](BENCHMARKING.md); it needs
 the HF tokenizer and datasets and is not part of the hermetic `make` flow.
 
 <!-- BENCH:AUTO -->

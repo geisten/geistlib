@@ -29,6 +29,23 @@ env:
   EMBED_MODEL_URL: ${{ inputs.embed_model_url || vars.EMBED_MODEL_URL || 'https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf' }}
 
 jobs:
+  # Refuse to publish a release whose binary would print a different version than
+  # the tag, or that has no CHANGELOG entry. Source of truth: include/geist.h.
+  version-guard:
+    name: tag == geist.h version, CHANGELOG entry exists
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert tag matches GEIST_VERSION_STRING and has a CHANGELOG section
+        run: |
+          hdr=$(sed -n 's/.*GEIST_VERSION_STRING "\([0-9][0-9.]*\)".*/\1/p' include/geist.h | head -1)
+          tag="${GITHUB_REF_NAME#v}"
+          echo "geist.h=$hdr  tag=$tag"
+          test "$hdr" = "$tag" || { echo "::error::include/geist.h version $hdr != tag $tag — bump include/geist.h"; exit 1; }
+          grep -q "^## \[$tag\]" CHANGELOG.md || { echo "::error::no '## [$tag]' section in CHANGELOG.md"; exit 1; }
+          sh scripts/check-version.sh
+
   linux-arm64:
     name: linux-arm64 (musl-static, dependency-free)
     runs-on: ubuntu-24.04-arm
@@ -222,7 +239,7 @@ jobs:
 
   release:
     name: attach artifacts to the Release
-    needs: [linux-arm64, linux-x86_64, macos-arm64]
+    needs: [version-guard, linux-arm64, linux-x86_64, macos-arm64]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:

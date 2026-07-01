@@ -45,18 +45,22 @@ exceeds the 2 GB GitHub-release limit. For a 3 GB Gemma GGUF, keep the model **o
 the server** and deploy only the binary (below). The GGUF must carry its own
 tokenizer (gpt2-BPE / SPM / SPM-unigram — e.g. a BitNet TQ2_0 works).
 
-`release.yml` can ship this too: set the **`EMBED_MODEL_URL`** repo variable (or
-pass `embed_model_url` to a manual `workflow_dispatch` run) to a small GGUF's URL
-and each platform also gets a `geist-<platform>-embedded` artifact alongside the
-model-less CLI. Unset → the model-less CLI ships as before.
+`release.yml` ships an embedded single-file build **by default**: the
+**`EMBED_MODEL_URL`** repo variable defaults to the BitNet 2B-4T GGUF, so every
+release attaches a `geist-bitnet-<platform>` artifact (model baked in, no model
+file) alongside the model-less `geist` CLI. Point it at a different small GGUF, or
+unset it to ship the model-less CLI only.
 
 ## GitHub options
 
+Only **release artifacts** is a wired-up workflow today; the container and
+SSH-deploy rows are sketches (no such workflow exists yet).
+
 | option | how | best for |
 |---|---|---|
-| **Release artifacts** (in place: `.github/workflows/release.yml`) | push a `v*` tag → builds static `geist` for linux-arm64 (musl) + macos-arm64, attaches them to the GitHub Release | distributing the CLI; `curl`/`gh release download` on any box |
-| **GHCR container** | an Actions job builds a Docker image, pushes to `ghcr.io/geisten/geist`, the server `docker pull`s it | bundling binary + runtime; rollback by tag |
-| **Actions → SSH deploy** | a workflow step `rsync`/`scp`s the built binary to geisten.net (SSH deploy key in repo secrets) and `systemctl restart`s the service | deploying straight to your own server |
+| **Release artifacts** ✅ `.github/workflows/release.yml` | push a `v*` tag → builds static `geist` + embedded `geist-bitnet` for linux-arm64/x86-64 (musl) + macos-arm64, attaches them to the GitHub Release | distributing the CLI; `curl`/`gh release download` on any box |
+| **GHCR container** *(sketch — not wired up)* | an Actions job could build a Docker image and push to `ghcr.io/geisten/geist` for the server to `docker pull` | bundling binary + runtime; rollback by tag |
+| **Actions → SSH deploy** *(sketch — see below)* | a workflow step `rsync`/`scp`s the binary to your server and `systemctl restart`s the service | deploying straight to your own server |
 
 `release.yml` builds `tools/geist` — the one binary that carries the `agent` and
 `chat` subcommands. Adding the future daemon is a one-line change to its build step.
@@ -64,7 +68,9 @@ model-less CLI. Unset → the model-less CLI ships as before.
 ## Deploying to geisten.net
 
 The agent is **resident** (load the ~3 GB model once, keep it warm), so run it as
-a long-lived service, not per-request. Recommended shape:
+a long-lived service, not per-request. (This is the Gemma multimodal path; for a
+text-only endpoint, `geist-bitnet` bakes the model into the binary — nothing to
+ship to the server separately.) Recommended shape:
 
 1. **Build** a musl-static binary in CI (as `release.yml` does) — no runtime deps.
 2. **Ship the model once** to the server (e.g. `/srv/geist/model.gguf`); it is too

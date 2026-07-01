@@ -123,9 +123,10 @@ geist_agent_run(&agent, strlen(req), req, sizeof resp, resp, &n);   /* -> enum g
 runaway and cost guard on constrained hardware, and a hard cap on actions per
 request.
 
-Signatures follow [`.agent/AGENT.md`](../.agent/AGENT.md): count precedes its
-buffer, caller-provided buffers, `enum geist_status`, no `assert()`, no hidden
-heap (the transcript is fixed inside the caller-owned `struct geist_agent`).
+Signatures follow the project C conventions ([CONTRIBUTING.md](../CONTRIBUTING.md)):
+count precedes its buffer, caller-provided buffers, `enum geist_status`, no
+`assert()`, no hidden heap (the transcript is fixed inside the caller-owned
+`struct geist_agent`).
 
 Ceilings (`ponytail:`): O(n²) full-transcript reprefill per step; naive JSON
 brace-balance (→ grammar-constrained sampling for a hard guarantee, below).
@@ -241,9 +242,11 @@ jailbreak resistance — that lives in steps 1–4. It only affects attack surfa
 prefer a Unix-domain socket (filesystem-permission gated) or in-process over an
 HTTP listener for a same-host agent.
 
-Hardest guarantee (`ponytail:` upgrade): **grammar-constrained sampling** — mask
-the sampler's logits to grammar-valid tokens so the model *cannot* emit anything
-but a valid, on-whitelist call. The current loop is generate-then-validate.
+Hardest guarantee (`ponytail:` upgrade): **in-sampler grammar masking** — mask the
+sampler's logits to grammar-valid tokens so the model *cannot* emit anything but a
+valid, on-whitelist call. geist already **forces** a valid tool name and re-keys
+arguments from outside the sampler (see *Tool selection & forced calls* above);
+full in-sampler masking of arbitrary argument grammars is the remaining step.
 
 `web_search` is the lower-risk half of web access — it only talks to a **fixed**
 search endpoint (the host is not model-chosen), so the model influences the

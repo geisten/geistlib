@@ -8,6 +8,8 @@ minor release.
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-07-01
+
 ### Fixed — release embedded-build download resilience
 
 - The embedded release builds fetch the ~1.1 GB BitNet GGUF 3× per release; on

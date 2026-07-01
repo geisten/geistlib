@@ -3,9 +3,10 @@
 **Goal:** geist's ternary decode *and* prefill on a Raspberry Pi 5 (Cortex-A76,
 SDOT, **no i8mm**) at or above `MAX(bitnet.cpp, llama.cpp)` on the same model.
 
-**Status:** baseline **not yet measured on the Pi**. This doc records what is
-verified, the measurement protocol, and the grounded (but unverified) plan, so
-the first Pi run is turnkey.
+**Status: measured on the Pi 5.** geist decodes the canonical 2B-4T `i2_s` at
+**17.4 t/s vs bitnet.cpp's 8.2** (~2×), with prefill and Cougar/bitnet.cpp
+head-to-heads built and run on the same board (below). The one open gap is a
+canonical 2B-4T **TQ2_0** GGUF (only `i2_s` ships upstream).
 
 ---
 
@@ -98,36 +99,36 @@ surrounding overhead, and two cheap levers were ruled out by measurement:
 - **`GEIST_PP` spin-pool dispatch** → catastrophic (3.5 t/s; it oversubscribes
   against the active OMP pool).
 
-Matches [q4k-prefill-a76](../...) memory: A76 decode micro-opts don't pan out.
+Consistent with the A76's memory-bound decode: micro-opts don't pan out.
 Remaining decode levers are structural (per-GEMV OMP region overhead; fusing
 the qkv / gate_up activation-quant), not inner-loop — pursue only if bitnet.cpp
 proves a gap worth the risk.
 
-### bitnet.cpp (the other half of MAX) — in progress
+### bitnet.cpp (the other half of MAX)
 
 bitnet.cpp uses its own i2_s/tl1 quant (not TQ2_0), so a fair 3-way needs the
-same model in its format. Building it on the Pi via `setup_env.py -hr
+same model in its format. Built on the Pi via `setup_env.py -hr
 1bitLLM/bitnet_b1_58-large -q tl1 --use-pretuned` (pretuned TL1 kernel, no
 codegen). Two environment snags fixed en route: bitnet.cpp pins `torch~=2.2.1`
 (no Py3.13/aarch64 wheel — install unpinned torch), and pip's default temp
-overflowed (point `TMPDIR` at the 91 GB `/`). Its prefill is very unlikely to
-beat geist's 5×; its **decode** (TL1/TL2) is the contested number.
+overflowed (point `TMPDIR` at the 91 GB `/`). Measured result: its prefill loses
+to geist's ~5×, and its **decode** lands at **8.2 t/s** — ~2× behind geist's 17.4
+(head-to-head below).
 
 ---
 
-## What unblocks *verified* progress
+## The one open gap
 
-1. **Pi 5 access** (the only hardware that can validate the goal), or someone to
-   run `compare_ternary_pi5.sh` and share the raw outputs.
-2. **The 2B-4T TQ2_0 GGUF** (`bitnet-2b4t-TQ2_0-v2.gguf`, referenced in
-   `mk/target-pi5.mk`). The official `microsoft/bitnet-b1.58-2B-4T-gguf` is
-   `i2_s`, not TQ2_0 — needs a convert/quantize to TQ2_0, or the existing v2 file.
-3. **Reference builds on the Pi:** `llama.cpp` (`llama-bench`, OpenBLAS) and
-   `bitnet.cpp` (its `llama-bench` fork) for the same model.
+The Pi measurements, the `i2_s` head-to-head, and the reference builds
+(`llama.cpp` + `bitnet.cpp` on the board) are **done** — reproduce them with
+[`compare_ternary_pi5.sh`](compare_ternary_pi5.sh). What remains is a canonical
+**2B-4T TQ2_0 GGUF**: the official `microsoft/bitnet-b1.58-2B-4T-gguf` ships
+`i2_s`, not TQ2_0, so a same-format TQ2_0 comparison still needs a convert/quantize
+(or the existing `bitnet-2b4t-TQ2_0-v2.gguf` referenced in `mk/target-pi5.mk`).
 
-With (1)–(3), the loop is: baseline → identify the behind-metric → targeted
-A76 kernel change → re-measure cool → keep only if it wins, record in
-`BENCHMARK_PI5.md`.
+The measurement loop for any further A76 kernel work: baseline → identify the
+behind-metric → targeted kernel change → re-measure cool → keep only if it wins,
+record in `BENCHMARK_PI5.md`.
 
 ---
 

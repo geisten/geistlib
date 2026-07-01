@@ -174,10 +174,9 @@ make EMBED_MODEL=path/to/model.gguf        # bakes the GGUF into ./geist
 ./geist "The capital of France is"         # the CLI now takes only a prompt
 ```
 
-The weights are aliased **zero-copy** from the binary's read-only data (no extra
-RAM at runtime), so this is for **small models** — the binary grows by the model
-size, and a >~1.5 GB blob exceeds the 2 GB GitHub-release ceiling. The model
-must carry its own tokenizer.
+Weights are aliased **zero-copy** from the binary's read-only data, so this suits
+**small** models (the binary grows by the model size). Full single-file &
+deployment guide: [DEPLOY.md](DEPLOY.md).
 
 Your own app gets the same capability via the public API — load a GGUF that is
 already in memory (e.g. an `.incbin`-embedded blob, or one you `mmap`ed yourself):

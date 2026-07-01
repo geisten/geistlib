@@ -22,7 +22,7 @@ platform* — not a global "with or without".
 | :-------------- | :---------- | :--------------------- | :-------------- | :-------------------------------------- |
 | **macOS-ARM**   | native int8 | Accelerate / **AMX**   | vDSP            | system-self-contained (framework always present) |
 | **linux-arm64** | native int8 | **native NEON fp32**   | vendored pocketfft | **musl-static, BLAS-free, tiny**     |
-| **x86-64 Linux** *(✅)* | native int8 (AVX-512) | AVX-512 / OpenBLAS | pocketfft   | from source (no prebuilt binary yet)   |
+| **x86-64 Linux** *(✅)* | native int8 (AVX-512) | AVX-512 / OpenBLAS | pocketfft   | **prebuilt musl-static** (+ from source) |
 
 Why this maps to "fastest per platform": the quant matmuls (the bulk of text
 inference) already win natively on ARM (measured: native int8 ≈ 30 t/s vs the
@@ -51,19 +51,18 @@ linux-arm64: build + unit tests + clang-format gate). Tagging a `v*` tag
 4. ✅ **CI matrix v0.1 = ARM only** — `release.yml` builds `linux-arm64` (fully
    static ELF, no deps) + `macos-arm64` (static libomp + Accelerate, system
    frameworks only). Both validated; a `geist` CLI is the entry point.
-5. **v0.2 — AVX backend** — x86-64 **Linux**: ✅ native AVX-512 / VNNI, matches-to-
-   beats llama.cpp on a Ryzen 9 9950X (Zen 5). Prebuilt x86 binaries, Intel-Mac and
-   Windows: not yet.
+5. ✅ **v0.2 — AVX backend** — x86-64 **Linux**: native AVX-512 / VNNI, matches-to-
+   beats llama.cpp on a Ryzen 9 9950X (Zen 5); **prebuilt x86-64 binaries now ship**
+   (model-less + embedded `geist-bitnet`). Intel-Mac and Windows: not yet.
 
 ### Deliberate non-goals / deferred
 
 - **Cosmopolitan / APE** — rejected (see above).
-- **Prebuilt x86 / Windows binaries** — the x86-64 AVX-512 backend now exists
-  (build from source, competitive with llama.cpp); shipping prebuilt x86 binaries
-  and Windows support are still deferred.
+- **Windows binaries** — the x86-64 AVX-512 backend ships prebuilt (linux-x86_64,
+  competitive with llama.cpp); Intel-Mac and **Windows** support remain deferred.
 
 ### Open packaging details (not design forks)
 
 - ✅ **Release CLI artifact** — the `geist` CLI (`tools/geist.c`); the static
   binaries package it. `examples/simple_generate` stays as the embedding example.
-- **Windows toolchain** — MinGW vs MSVC; only relevant at v0.2.
+- **Windows toolchain** — MinGW vs MSVC; deferred (see non-goals).

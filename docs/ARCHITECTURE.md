@@ -19,7 +19,7 @@ src/archs/               architectures: how a model's forward pass is wired
 src/backends/            compute: the kernels that actually run the ops
       cpu_neon/            Apple Silicon + ARM64, OpenMP-parallel
       cpu_scalar/          portable reference (correctness oracle)
-      cpu_x86/             policy skeleton (no compute path yet)
+      cpu_x86/             x86-64 AVX-512 / VNNI (opt-in; runtime hw_probe dispatch)
 src/formats/             GGUF + PTQTP quant (de)quantization
 src/io/                  GGUF reader, safetensors reader
 ```

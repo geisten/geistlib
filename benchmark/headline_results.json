@@ -1,6 +1,6 @@
 {
   "title": "Headline benchmarks — geist vs the baseline",
-  "note": "Each row is a measured number for that model/system — a DIFFERENT metric and baseline. Comparable only as a ratio (geist / baseline). Sub-parity rows are kept on purpose (honesty). baseline_version: llama.cpp commit, or 'master' for bitnet.cpp (microsoft/BitNet upstream, --depth 1 clone of its bundled llama.cpp fork — no pinned commit). Sources: README headline table, BENCHMARK.md, BENCHMARK_PI5.md, TERNARY_BITNET.md, docs/LINUX_X86_PERF_PROFILE.md.",
+  "note": "Each row is a measured number for that model/system — a DIFFERENT metric and baseline. Comparable only as a ratio (geist / baseline). Sub-parity rows are kept on purpose (honesty). baseline_version: llama.cpp commit, or 'master' for bitnet.cpp (microsoft/BitNet upstream, --depth 1 clone of its bundled llama.cpp fork — no pinned commit). Sources: README headline table, BENCHMARK.md, BENCHMARK_PI5.md, TERNARY_BITNET.md, BENCHMARK_X86.md.",
   "rows": [
     {"model": "Gemma 4 E2B-it", "quant": "Q4_K_M", "os": "Pi 5",  "os_family": "Linux", "metric": "prefill",       "geist": 34.8, "baseline": 37.4, "baseline_engine": "llama.cpp",  "baseline_version": "d05fe1d"},
     {"model": "Gemma 4 E2B-it", "quant": "Q4_K_M", "os": "Pi 5",  "os_family": "Linux", "metric": "decode",        "geist": 7.5,  "baseline": 6.8,  "baseline_engine": "llama.cpp",  "baseline_version": "d05fe1d"},

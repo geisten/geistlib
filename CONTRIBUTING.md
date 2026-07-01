@@ -2,8 +2,8 @@
 
 Thanks for your interest! geist is a lean C23 inference runtime, and the most
 valuable contributions right now are in **NEON/AMX microkernels**, **low-bit
-quantization** (IQ/TQ/ternary), and **portability** (an AVX2/AVX-512 path for
-the x86 backend skeleton).
+quantization** (IQ/TQ/ternary), and **portability** (Windows, wider x86-64 quant
+coverage, GPU backends).
 
 ## Ground rules
 
@@ -31,9 +31,11 @@ for the multi-threaded `mac-omp` target. On ARM64 Linux you need OpenBLAS
 (`libopenblas-dev`); the audio FFT is vendored. For a dependency-free build,
 `make GEMM_PROVIDER=native` (native fp32, no OpenBLAS).
 
-> x86 is **not supported yet** — the compute kernels are NEON-only and the
-> `src/backends/cpu_x86/` path is a policy skeleton. A vectorized x86 port is a
-> high-value contribution; `make TARGET=linux` on x86 fails fast with guidance.
+> x86-64 has a **native AVX-512 / VNNI backend** (`src/backends/cpu_x86/`) that
+> matches-to-beats llama.cpp on a Ryzen 9 9950X. It is **opt-in** for now — build
+> with `make TARGET=linux BACKENDS="cpu_x86 cpu_scalar"` (x86_64 still defaults to
+> the portable `cpu_scalar` path). Widening its quant coverage and making it the
+> default are open, high-value work.
 
 ## Tests
 

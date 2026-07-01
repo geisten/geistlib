@@ -12,6 +12,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  version-consistency:
+    name: version strings agree (geist.h == README)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh scripts/check-version.sh
+
   build-test:
     name: build + unit tests (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}

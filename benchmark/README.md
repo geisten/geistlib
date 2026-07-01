@@ -1,7 +1,9 @@
 # geist Benchmarks
 
-geist vs **llama.cpp**, the **identical** `Gemma 4 E2B-it Q4_K_M` GGUF on both
-engines, CPU-only, on the two reference machines.
+geist vs **llama.cpp** and Microsoft's **bitnet.cpp**, CPU-only, the **identical**
+GGUF on both engines. This page details the `Gemma 4 E2B-it Q4_K_M` sweep on the
+two ARM/Apple reference machines; **ternary BitNet** (Pi 5) and the **AMD x86-64
+(AVX-512)** results are linked under [Files](#files).
 
 | | [Raspberry Pi 5](BENCHMARK_PI5.md) | [Apple M1 Max](BENCHMARK.md) |
 | :-- | :-- | :-- |
@@ -13,7 +15,8 @@ engines, CPU-only, on the two reference machines.
 > **TL;DR** — On **Apple Silicon** geist wins prefill at *every* length and the
 > lead **widens** with context (1.48× at 1024 tokens). On the **Pi 5** llama.cpp's
 > OpenBLAS prefill leads geist by ~10–15 % across the sweep (both flat, ~37–39 vs
-> ~32–34 t/s); **decode is a tie** (~6.8 t/s). geist's Pi value is the
+> ~32–34 t/s); **decode ties on the sweep and edges ahead** with the spec-decode
+> head (7.5 vs 6.8 t/s). geist's Pi value is the
 > dependency-free static binary + decode parity, not raw prefill — the A76's
 > mature OpenBLAS fp32 path is the bar geist is still chasing there.
 
@@ -65,8 +68,10 @@ prefill t/s   (each █ ≈ 2.5 t/s)           both flat ·· llama ~10-15% ahea
        1024 █████████████ 31              1024 ██████████████ 36
 ```
 
-**Decode:** ≈ par — geist **6.9 t/s** vs llama.cpp **6.8 t/s** (best at 3 threads,
-memory-bound for both). geist's prefill curve is flat thanks to a parallelized
+**Decode:** on the prefill-sweep harness it's ≈ par (geist 6.9 vs llama.cpp 6.8,
+best at 3 threads, memory-bound for both); with the **spec-decode head** geist's
+end-to-end decode is **7.5 t/s** — the headline number (see the total-tps section
+of the write-up). geist's prefill curve is flat thanks to a parallelized
 O(n²) attention core (it used to fade to 23 t/s at 1024), but llama's mature
 OpenBLAS sgemm still leads Pi prefill by ~10–15 %.
 [Full write-up + the thermal correction + thread placement →](BENCHMARK_PI5.md)
@@ -144,5 +149,10 @@ weights), and the quality/PPL caveats.
 - **[BENCHMARK.md](BENCHMARK.md)** — Apple M1 Max: the AMX reference + the
   auto-recorded `make bench-small`/`bench-detailed` results table + the
   decode-kernel investigation.
+- **[TERNARY_BITNET.md](TERNARY_BITNET.md)** — ternary BitNet b1.58 on the Pi 5:
+  geist **17.4 t/s decode vs bitnet.cpp's 8.2** (~2×), plus the Cougar/bitnet.cpp
+  head-to-head and the spec-head lm_head trick.
+- **[BENCHMARK_X86.md](BENCHMARK_X86.md)** — AMD Ryzen 9 9950X (AVX-512): Gemma &
+  Llama vs llama.cpp, and BitNet vs bitnet.cpp (prefill +30 %, decode +38 %).
 - **[BENCHMARKING.md](BENCHMARKING.md)** — how to produce trustworthy numbers
   (reproduce, compare-ref, quality/MMLU procedures).

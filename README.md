@@ -322,7 +322,7 @@ exceeds the 2 GB GitHub-release limit. (Runs real-time on a Pi 5 —
 
 ## Status
 
-`geist` is **v0.3.0 — experimental**. It runs Gemma 4 (text + vision + audio) end
+`geist` is **v0.3.3 — experimental**. It runs Gemma 4 (text + vision + audio) end
 to end on the CPU backends and has a broad C test suite (`make test`). The
 `STABLE` core (load → session → decode → tokenize) is the part to build on;
 `EXPERIMENTAL`-tagged surfaces (KV-cache modes, speculative decode, multimodal
@@ -352,7 +352,7 @@ Using geist in research? A "Cite this repository" button is on the repo sidebar
   author  = {Schlegel, Germar},
   title   = {geist: a dependency-free CPU inference engine and on-device agent for small LLMs},
   year    = {2026},
-  version = {0.3.0},
+  version = {0.3.3},
   url     = {https://github.com/geisten/geistlib}
 }
 ```

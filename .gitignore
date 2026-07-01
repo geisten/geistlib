@@ -31,3 +31,7 @@ tokens_ref.txt
 
 # JetBrains IDE
 .idea/
+
+# internal agent config / scratch (not part of the public docs)
+.agent/
+.agent_memory_unit/

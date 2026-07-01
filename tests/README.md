@@ -91,19 +91,3 @@ int main(int argc, char** argv) {
 }
 ```
 
-## Migration Status
-
-- [x] Phase E-1: Test infrastructure (this README, `mk/run-tests.sh`, `make test*`).
-- [x] Phase E-2: Triage 34 existing tests into HALTEN/STREICHEN/DEFER.
-      See `tests/migration-plan.md`.
-- [x] Phase E-3: No-op (triage correction — no STREICHEN candidates were
-      actually redundant).
-- [x] Phase E-4: 21 HALTEN tests renamed with `_unit`/`_int` suffix;
-      missing-args now SKIP (exit 77) instead of FAIL.
-- [x] Phase E-5: 7 DEFER tests marked `_legacy` (excluded from default
-      `make test`); benches separated into `make bench`.
-- [x] Phase B-6.a: The 7 `_legacy` tests deleted along with the pre-v2
-      `lm.c` they exercised. Equivalent regression coverage comes from
-      `test_session_lifecycle_int`, `test_state_{decode,weights,layer_fwd}_int`,
-      `test_speculative_{primitives,loop}_int`, `test_iq_kernel_int`,
-      `test_llama_e2e_int`, and `test_audio_attach_int`.
