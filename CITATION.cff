@@ -11,8 +11,8 @@ authors:
   - family-names: Schlegel
     given-names: Germar
     affiliation: "geisten Holding UG (haftungsbeschränkt)"
-repository-code: "https://github.com/geisten/geistlib"
-url: "https://github.com/geisten/geistlib"
+repository-code: "https://github.com/geisten/geisten"
+url: "https://github.com/geisten/geisten"
 version: "0.3.0"
 license: Apache-2.0
 keywords:

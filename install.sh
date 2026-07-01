@@ -3,12 +3,12 @@
 # baked in) for your platform and drops it on your PATH. One file, no model file,
 # no BLAS, no Python, no CUDA.
 #
-#   curl -fsSL https://raw.githubusercontent.com/geisten/geistlib/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/geisten/geisten/main/install.sh | sh
 #
 # Env knobs: GEIST_BINDIR (install dir, default ~/.local/bin).
 set -eu
 
-REPO=geisten/geistlib
+REPO=geisten/geisten
 BINDIR=${GEIST_BINDIR:-$HOME/.local/bin}
 
 # Map uname -> the release artifact. Pi 5 / any ARM64 Linux share one binary.
