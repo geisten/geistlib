@@ -327,10 +327,22 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
      * P1.2.c (refactor v2): all 21 scratch buffers backed by a single
      * heap_alloc_aligned'd pool. One allocation per state instead of
      * 21 separate ones; each buffer is a GEIST_MEMORY_ALIASED slice. */
+    /* The scratch pool is sized against fixed caps (head_dim, intermediate);
+     * a model whose geometry exceeds them would overflow the pool at prefill.
+     * Reject at load rather than corrupt the heap. */
+    if (!transformer_scratch_caps_ok(st)) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer: model geometry exceeds scratch caps "
+                                "(head_dim <= %zu, intermediate <= %zu)",
+                                GEIST_SCRATCH_HEAD_DIM_MAX,
+                                GEIST_SCRATCH_INTER_MAX);
+        return GEIST_E_UNSUPPORTED;
+    }
     struct transformer_scratch_plan scratch_plan;
     transformer_scratch_plan_build(st, &scratch_plan);
     const size_t F               = sizeof(float);
-    const size_t head_dim_max    = 512;
+    const size_t head_dim_max    = GEIST_SCRATCH_HEAD_DIM_MAX;
     st->sess->scratch_pool_bytes = scratch_plan.pool_bytes;
     st->sess->scratch_pool_base  = heap_alloc_aligned(st->sess->scratch_pool_bytes, 64);
     if (st->sess->scratch_pool_base == nullptr) {

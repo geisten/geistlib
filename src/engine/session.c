@@ -241,11 +241,17 @@ const char *geist_session_errmsg(const struct geist_session *s) {
         }
         n_enc += enc_n;
         session_attach(sf);
-        const uint64_t t0 = monotonic_ns();
-        ops->prefill(sf->model->text_decoder.arch_meta, n_enc, (const geist_token_t *) enc_ids);
+        const uint64_t    t0 = monotonic_ns();
+        enum geist_status ps = ops->prefill(
+                sf->model->text_decoder.arch_meta, n_enc, (const geist_token_t *) enc_ids);
         sf->total_prefill_ns += monotonic_ns() - t0;
         void *p = enc_ids;
         safe_free(&p);
+        if (ps != GEIST_OK) {
+            snprintf(sf->err_msg, sizeof(sf->err_msg), "set_prompt: prefill failed");
+            sf->err_code = ps;
+            return ps;
+        }
         return GEIST_OK;
     }
 
@@ -259,10 +265,16 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     /* sp_bpe yields uint32_t; bit-pattern of u32 ≡ i32 for IDs in 21-bit
      * vocab range. arch->prefill takes geist_token_t (int32_t). */
     session_attach(sf);
-    const uint64_t t0 = monotonic_ns();
-    ops->prefill(sf->model->text_decoder.arch_meta, n_ids, (const geist_token_t *) ids);
+    const uint64_t    t0 = monotonic_ns();
+    enum geist_status ps =
+            ops->prefill(sf->model->text_decoder.arch_meta, n_ids, (const geist_token_t *) ids);
     sf->total_prefill_ns += monotonic_ns() - t0;
     safe_free((void **) &ids);
+    if (ps != GEIST_OK) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "set_prompt: prefill failed");
+        sf->err_code = ps;
+        return ps;
+    }
     return GEIST_OK;
 }
 
@@ -282,18 +294,36 @@ const char *geist_session_errmsg(const struct geist_session *s) {
      * tokenize reports the content tokens; callers add BOS if they need it. */
     struct gguf_tokenizer *gtok = geist_model_internal_gguf_tokenizer(sf->model);
     if (gtok != nullptr) {
-        int32_t *enc = heap_alloc_array_aligned(int32_t, out_capacity ? out_capacity : 1);
+        /* Encode into a scratch buffer one slot larger than out_capacity so
+         * an over-length result is detectable: gguf_tokenizer_encode clamps
+         * to its cap and reports success either way, so with cap == capacity
+         * a truncated result is indistinguishable from an exact fit. The
+         * extra slot lets us return GEIST_E_INVALID_ARG on overflow, matching
+         * the SentencePiece path's contract (see doc in geist_util.h). */
+        const size_t scratch_cap =
+                out_capacity + 1; /* out_capacity is a token count, no overflow */
+        int32_t *enc = heap_alloc_array_aligned(int32_t, scratch_cap);
         if (enc == nullptr) {
             sf->err_code = GEIST_E_OOM;
             return GEIST_E_OOM;
         }
         size_t enc_n = 0;
-        if (!gguf_tokenizer_encode(gtok, text, enc, out_capacity, &enc_n)) {
+        if (!gguf_tokenizer_encode(gtok, text, enc, scratch_cap, &enc_n)) {
             void *p = enc;
             safe_free(&p);
             snprintf(sf->err_msg, sizeof(sf->err_msg), "tokenize: gguf encode failed");
             sf->err_code = GEIST_E_IO;
             return GEIST_E_IO;
+        }
+        if (enc_n > out_capacity) {
+            void *p = enc;
+            safe_free(&p);
+            snprintf(sf->err_msg,
+                     sizeof(sf->err_msg),
+                     "tokenize: output buffer too small (need > %zu ids)",
+                     out_capacity);
+            sf->err_code = GEIST_E_INVALID_ARG;
+            return GEIST_E_INVALID_ARG;
         }
         for (size_t i = 0; i < enc_n; i++)
             out_ids[i] = (geist_token_t) enc[i];
@@ -349,9 +379,14 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
         return GEIST_E_INVALID_STATE;
     }
     session_attach(sf);
-    const uint64_t t0 = monotonic_ns();
-    ops->prefill(sf->model->text_decoder.arch_meta, n, ids);
+    const uint64_t    t0 = monotonic_ns();
+    enum geist_status ps = ops->prefill(sf->model->text_decoder.arch_meta, n, ids);
     sf->total_prefill_ns += monotonic_ns() - t0;
+    if (ps != GEIST_OK) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "prefill_tokens: prefill failed");
+        sf->err_code = ps;
+        return ps;
+    }
     return GEIST_OK;
 }
 
@@ -589,7 +624,12 @@ geist_session_decode_speculative(struct geist_session *s,
      * next spec_step / decode_step needs pending logits computed from
      * it, so push it now via a single-token prefill. Numerically the
      * same as ending the previous batched forward one token earlier. */
-    ops->prefill(st, 1, &correction);
+    enum geist_status ps = ops->prefill(st, 1, &correction);
+    if (ps != GEIST_OK) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "decode_speculative: correction prefill failed");
+        sf->err_code = ps;
+        return ps;
+    }
 
     *n_out = emitted;
     sf->n_tokens_decoded += emitted;
@@ -695,10 +735,15 @@ geist_session_attach_audio(struct geist_session *s,
     }
 
     session_attach(sf);
-    const uint64_t t_pre0 = monotonic_ns();
-    dec_ops->prefill_audio(sf->model->text_decoder.arch_meta, n_soft, soft);
+    const uint64_t    t_pre0 = monotonic_ns();
+    enum geist_status ps = dec_ops->prefill_audio(sf->model->text_decoder.arch_meta, n_soft, soft);
     sf->total_prefill_ns += monotonic_ns() - t_pre0;
     safe_free((void **) &soft);
+    if (ps != GEIST_OK) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "attach_audio: prefill failed");
+        sf->err_code = ps;
+        return ps;
+    }
     return GEIST_OK;
 }
 
@@ -756,10 +801,15 @@ geist_session_attach_image(struct geist_session *s,
     }
 
     session_attach(sf);
-    const uint64_t t_pre0 = monotonic_ns();
-    dec_ops->prefill_image(sf->model->text_decoder.arch_meta, n_soft, soft);
+    const uint64_t    t_pre0 = monotonic_ns();
+    enum geist_status ps = dec_ops->prefill_image(sf->model->text_decoder.arch_meta, n_soft, soft);
     sf->total_prefill_ns += monotonic_ns() - t_pre0;
     safe_free((void **) &soft);
+    if (ps != GEIST_OK) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "attach_image: prefill failed");
+        sf->err_code = ps;
+        return ps;
+    }
     return GEIST_OK;
 }
 
@@ -819,10 +869,15 @@ geist_session_attach_video(struct geist_session *s,
     }
 
     session_attach(sf);
-    const uint64_t t_pre0 = monotonic_ns();
-    dec_ops->prefill_image(sf->model->text_decoder.arch_meta, n_soft, soft);
+    const uint64_t    t_pre0 = monotonic_ns();
+    enum geist_status ps = dec_ops->prefill_image(sf->model->text_decoder.arch_meta, n_soft, soft);
     sf->total_prefill_ns += monotonic_ns() - t_pre0;
     safe_free((void **) &soft);
+    if (ps != GEIST_OK) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "attach_video: prefill failed");
+        sf->err_code = ps;
+        return ps;
+    }
     return GEIST_OK;
 }
 
@@ -841,7 +896,12 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
         return GEIST_E_UNSUPPORTED;
     }
     session_attach(sf);
-    ops->pin_prefix(sf->model->text_decoder.arch_meta, n, ids);
+    enum geist_status ps = ops->pin_prefix(sf->model->text_decoder.arch_meta, n, ids);
+    if (ps != GEIST_OK) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "pin_prefix: prefill failed");
+        sf->err_code = ps;
+        return ps;
+    }
     return GEIST_OK;
 }
 
