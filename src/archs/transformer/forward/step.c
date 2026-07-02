@@ -269,6 +269,11 @@ enum geist_status transformer_decode_step(struct transformer_arch_state *st,
     if (st == nullptr || out_token == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
+    /* KV cache / RoPE table are sized to max_seq_len; a decode at that
+     * position (q_position = kv_len) would overflow them. */
+    if (st->sess->kv_len >= st->max_seq_len) {
+        return GEIST_E_INVALID_ARG;
+    }
     /* Decode is memory-bound; let the backend enter its decode thread regime
      * (cpu_neon caps OMP threads). Restored after the step. */
     struct geist_backend            *be = st->backend;

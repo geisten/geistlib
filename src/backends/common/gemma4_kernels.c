@@ -222,19 +222,13 @@ void attention_mqa_causal_kv(const float *q,
     (void) head_dim;
     const size_t kv_group_size = n_q_heads / n_kv_heads;
 
-    /* Score scratch, grown on demand and kept for the thread's lifetime —
-     * this runs per layer per decoded token, so no heap round-trip here. */
-    static _Thread_local float *scores     = nullptr;
-    static _Thread_local size_t scores_cap = 0;
-    if (scores_cap < n_kv) {
-        safe_free((void **) &scores);
-        scores = heap_alloc_array_aligned(float, n_kv);
-        if (scores == nullptr) {
-            scores_cap = 0;
-            fprintf(stderr, "attention_mqa_causal_kv: OOM (%zu scores)\n", n_kv);
-            return;
-        }
-        scores_cap = n_kv;
+    /* Per-call score scratch. This common fallback has no backend workspace
+     * to borrow (unlike the cpu_neon SDPA path), so it allocates and frees
+     * per call rather than holding a process-lifetime _Thread_local buffer. */
+    float *scores = heap_alloc_array_aligned(float, n_kv);
+    if (scores == nullptr) {
+        fprintf(stderr, "attention_mqa_causal_kv: OOM (%zu scores)\n", n_kv);
+        return;
     }
     for (size_t t = 0; t < n_q; t++) {
         size_t q_pos = q_offset + t;
@@ -280,6 +274,7 @@ void attention_mqa_causal_kv(const float *q,
             }
         }
     }
+    safe_free((void **) &scores);
 }
 
 void attention_mqa_causal(const float *q,

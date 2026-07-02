@@ -43,7 +43,13 @@ enum geist_status linear_w_or_legacy(struct geist_backend            *be,
     /* Pass `be` so the kernel can reach its backend's workspace
      * (cpu_neon q8a scratch, etc.) without consulting file-scope TLS.
      * Engine guarantees `be->state` is valid for the lifetime of this
-     * call — see the resolver fail-fast check at cpu_neon_resolve_weight. */
+     * call — see the resolver fail-fast check at cpu_neon_resolve_weight.
+     *
+     * The kernels are void-returning; on allocation failure they leave `y`
+     * unwritten and latch the error into be->err_code via
+     * geist_backend_set_error. Clear it first, then surface it so the caller
+     * never proceeds on stale output believing it succeeded. */
+    be->err_code = GEIST_OK;
     if (seq == 1) {
         w->linear_m1(xp, w, be, yp);
     } else {
@@ -51,7 +57,7 @@ enum geist_status linear_w_or_legacy(struct geist_backend            *be,
     }
     v->buffer_unmap(x_buf);
     v->buffer_unmap(y_buf);
-    return GEIST_OK;
+    return be->err_code;
 }
 
 enum geist_status linear_w_scaled_input_or_legacy(struct geist_backend            *be,
@@ -118,6 +124,7 @@ enum geist_status linear_w_pair_or_legacy(struct geist_backend            *be,
         }
         return GEIST_E_BACKEND;
     }
+    be->err_code = GEIST_OK; /* void kernels latch OOM here; see linear_w_or_legacy */
     if (seq == 1) {
         if (w0->linear_pair_m1 != nullptr && w0->linear_pair_m1 == w1->linear_pair_m1 &&
             w0->n_in == w1->n_in) {
@@ -138,7 +145,7 @@ enum geist_status linear_w_pair_or_legacy(struct geist_backend            *be,
     v->buffer_unmap(x_buf);
     v->buffer_unmap(y0_buf);
     v->buffer_unmap(y1_buf);
-    return GEIST_OK;
+    return be->err_code;
 }
 
 enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
@@ -202,6 +209,7 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
         return GEIST_E_BACKEND;
     }
 
+    be->err_code = GEIST_OK; /* void kernels latch OOM here; see linear_w_or_legacy */
     if (seq == 1) {
         if (w0->linear_pair_m1 != nullptr && w0->linear_pair_m1 == w1->linear_pair_m1 &&
             w0->n_in == w1->n_in) {
@@ -225,5 +233,5 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
     v->buffer_unmap(y0_buf);
     v->buffer_unmap(y1_buf);
     v->buffer_unmap(y2_buf);
-    return GEIST_OK;
+    return be->err_code;
 }

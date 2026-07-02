@@ -400,8 +400,10 @@ static void cpu_neon_w_q4k_mN(const float               *x,
         return;
     }
 
-    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in))
+    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: mN activation workspace alloc failed");
         return;
+    }
 
     const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
                                   q4k_weight_predecoded(w) && !q4k_weight_ntile4(w);
@@ -468,8 +470,10 @@ static void cpu_neon_w_q4k_pair_mN(const float               *x,
         return;
     }
 
-    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in))
+    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: mN activation workspace alloc failed");
         return;
+    }
 
     const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
                                   q4k_weight_predecoded(w0) && q4k_weight_predecoded(w1) &&
@@ -533,8 +537,10 @@ static void cpu_neon_w_q6k_mN(const float               *x,
         return;
     }
 
-    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in))
+    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: mN activation workspace alloc failed");
         return;
+    }
     const bool qp6 = qprof_on();
     uint64_t   t6  = qp6 ? qprof_now_ns() : 0;
     for (size_t i = 0; i < m; i++) {
@@ -768,8 +774,10 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
     {
         float *tile = heap_alloc_array_aligned(float, tile_rows *n_in);
         if (tile == nullptr) {
-            /* No room for per-thread tile — silently skip; decode will
-             * see stale y values. Caller can't propagate. */
+            /* No room for per-thread tile — leave y unwritten and latch the
+             * error so the dispatcher surfaces it (racy-benign across
+             * threads: any failing thread sets the same OOM code). */
+            geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: dequant tile alloc failed");
         } else {
 #pragma omp for schedule(static) nowait
             for (size_t r0 = 0; r0 < n_out; r0 += tile_rows) {
@@ -794,8 +802,10 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
     }
 #else
     float *tile = heap_alloc_array_aligned(float, tile_rows *n_in);
-    if (tile == nullptr)
+    if (tile == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: dequant tile alloc failed");
         return;
+    }
     for (size_t r0 = 0; r0 < n_out; r0 += tile_rows) {
         const size_t tr = (n_out - r0 < tile_rows) ? (n_out - r0) : tile_rows;
         dequant_tile(w, r0, tr, tile);
@@ -931,7 +941,6 @@ static void cpu_neon_w_dequant_trampoline_mN(const float               *x,
                                              size_t                     m,
                                              struct geist_backend      *be,
                                              float                     *y) {
-    (void) be;
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
     /* Used for F32/F16/BF16 dense (notably Gemma's PLE model_proj, n×1536→8960).
@@ -947,7 +956,9 @@ static void cpu_neon_w_dequant_trampoline_mN(const float               *x,
 #pragma omp parallel
     {
         float *tile = heap_alloc_array_aligned(float, DEQ_TILE_ROWS_DEFAULT *n_in);
-        if (tile != nullptr) {
+        if (tile == nullptr) {
+            geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: dequant tile alloc failed");
+        } else {
 #pragma omp for schedule(dynamic, 1)
             for (size_t ti = 0; ti < n_tiles; ti++) {
                 const size_t r0 = ti * DEQ_TILE_ROWS_DEFAULT;
@@ -973,8 +984,10 @@ static void cpu_neon_w_dequant_trampoline_mN(const float               *x,
     }
 #else
     float *tile = heap_alloc_array_aligned(float, DEQ_TILE_ROWS_DEFAULT *n_in);
-    if (tile == nullptr)
+    if (tile == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: dequant tile alloc failed");
         return;
+    }
     for (size_t r0 = 0; r0 < n_out; r0 += DEQ_TILE_ROWS_DEFAULT) {
         const size_t tr =
                 (n_out - r0 < DEQ_TILE_ROWS_DEFAULT) ? (n_out - r0) : DEQ_TILE_ROWS_DEFAULT;

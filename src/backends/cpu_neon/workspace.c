@@ -51,4 +51,6 @@ void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws) {
     ws->ffn_mid_sc_cap = 0;
     safe_free((void **) &ws->elt_f32);
     ws->elt_f32_cap = 0;
+    safe_free((void **) &ws->attn_scores);
+    ws->attn_scores_cap = 0;
 }

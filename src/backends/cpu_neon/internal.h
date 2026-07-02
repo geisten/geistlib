@@ -84,6 +84,11 @@ struct cpu_neon_workspace {
     /* F32 elementwise workspace (currently vForce tanh input). */
     float *elt_f32;
     size_t elt_f32_cap;
+
+    /* SDPA score scratch, sized n_threads * n_kv and sliced per OMP thread.
+     * Persistent so the per-op heap round-trip is avoided; freed at destroy. */
+    float *attn_scores;
+    size_t attn_scores_cap;
 };
 
 void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws);

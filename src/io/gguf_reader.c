@@ -124,8 +124,15 @@ size_t gguf_tensor_elem_count(const struct gguf_tensor_t *t) {
     if (!t)
         return 0;
     size_t n = 1;
-    for (int i = 0; i < t->n_dims; i++)
-        n *= (size_t) t->dims[i];
+    for (int i = 0; i < t->n_dims; i++) {
+        const size_t d = (size_t) t->dims[i];
+        /* Reject file-provided dims whose product overflows size_t —
+         * otherwise a wrapped-small count yields a tiny nbytes that passes
+         * the EOF check while the true tensor is huge (OOB downstream). */
+        if (d != 0 && n > SIZE_MAX / d)
+            return SIZE_MAX;
+        n *= d;
+    }
     return n;
 }
 
@@ -268,7 +275,10 @@ static bool record_meta_kv(struct gguf_ctx *ctx,
         vlen == 4) {
         uint32_t a;
         memcpy(&a, vp_start, 4);
-        ctx->alignment = (uint64_t) a;
+        /* Ignore a zero alignment — it would make the data-offset padding
+         * math (`% ctx->alignment`) a divide-by-zero (SIGFPE) at open. */
+        if (a != 0)
+            ctx->alignment = (uint64_t) a;
     }
     return true;
 }
@@ -435,6 +445,16 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
             continue;
         }
         size_t elems = gguf_tensor_elem_count(t);
+        if (elems == SIZE_MAX) {
+            gguf_close(ctx);
+            set_err(errmsg, "tensor dims overflow");
+            return nullptr;
+        }
+        /* All EOF checks below are phrased as `x > avail - y` (never
+         * `off + nbytes > fsize`) so a file-controlled offset/size near
+         * UINT64_MAX cannot wrap the sum small and slip past the guard.
+         * data_offset <= fsize was established above, so avail is valid. */
+        const size_t avail = fsize - ctx->data_offset;
         /* Some quants (Microsoft's I2_S) don't fit the "fixed block size"
          * model — their storage is per-row not per-256-element-block.
          * For those entries we register block_bytes=0, block_elems=0 so
@@ -445,7 +465,12 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
          * the raw bytes — but nbytes is left at 0 to flag the gap. */
         if (dt->block_elems == 0) {
             t->nbytes = 0;
-            t->data   = (const uint8_t *) map + ctx->data_offset + t->offset;
+            if (t->offset > avail) {
+                gguf_close(ctx);
+                set_err(errmsg, "tensor data past EOF");
+                return nullptr;
+            }
+            t->data = (const uint8_t *) map + ctx->data_offset + t->offset;
             continue;
         }
         if (elems % dt->block_elems != 0) {
@@ -454,7 +479,11 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
             return nullptr;
         }
         t->nbytes = (elems / dt->block_elems) * dt->block_bytes;
-        if (ctx->data_offset + t->offset + t->nbytes > fsize) {
+        /* I2_S stores one extra per-tensor f32 scale just past the packed
+         * blocks (at offset nbytes); it must stay inside the map too. */
+        const size_t tail = (t->dtype == GGUF_TYPE_I2_S) ? sizeof(float) : 0;
+        if (t->offset > avail || t->nbytes > avail - t->offset ||
+            tail > avail - t->offset - t->nbytes) {
             gguf_close(ctx);
             set_err(errmsg, "tensor data past EOF");
             return nullptr;

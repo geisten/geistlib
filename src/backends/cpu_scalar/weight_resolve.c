@@ -161,12 +161,13 @@ static void cpu_scalar_w_quant_m1(const float               *x,
                                   const struct geist_weight *w,
                                   struct geist_backend      *be,
                                   float                     *y) {
-    (void) be;
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
     float       *row   = heap_alloc_aligned(n_in * sizeof(float), OPTIMAL_ALIGNMENT);
-    if (row == nullptr)
+    if (row == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_scalar: dequant row alloc failed");
         return;
+    }
     for (size_t j = 0; j < n_out; j++) {
         if (!dequant_one_row_for(w, j, row)) {
             y[j] = 0;
@@ -185,12 +186,13 @@ static void cpu_scalar_w_quant_mN(const float               *x,
                                   size_t                     m,
                                   struct geist_backend      *be,
                                   float                     *y) {
-    (void) be;
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
     float       *row   = heap_alloc_aligned(n_in * sizeof(float), OPTIMAL_ALIGNMENT);
-    if (row == nullptr)
+    if (row == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_scalar: dequant row alloc failed");
         return;
+    }
     for (size_t j = 0; j < n_out; j++) {
         if (!dequant_one_row_for(w, j, row)) {
             for (size_t i = 0; i < m; i++)
