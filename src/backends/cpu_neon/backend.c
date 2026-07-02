@@ -58,38 +58,22 @@ static void cpu_neon_destroy(struct geist_backend *be) {
 
 /* ---------- Capability ---------- */
 
+/* Answer capability queries from the resolver's kernel table so this can
+ * never drift from what resolve_weight actually installs. The resolver has
+ * no dequant-and-emulate fallback — a dtype either resolves to a native
+ * kernel or fails — so every answer here is NATIVE or NONE. */
 static enum geist_support cpu_neon_supports_op(struct geist_backend                *be,
                                                const struct geist_op_support_query *query) {
-    (void) be;
-    if (query == nullptr || query->input_count < 2) {
+    if (query == nullptr || query->input_count < 2 || query->op != GEIST_OP_LINEAR) {
         return GEIST_SUPPORT_NONE;
     }
-    if (query->op == GEIST_OP_LINEAR) {
-        const struct geist_tensor_format *x = &query->inputs[0];
-        const struct geist_tensor_format *w = &query->inputs[1];
-        if (x->dtype != GEIST_DTYPE_F32 || x->layout != GEIST_LAYOUT_DENSE) {
-            return GEIST_SUPPORT_NONE;
-        }
-        if (w->dtype == GEIST_DTYPE_F32 && w->layout == GEIST_LAYOUT_DENSE) {
-            return GEIST_SUPPORT_NATIVE; /* cblas_sgemm */
-        }
-        if (w->layout == GEIST_LAYOUT_BLOCK_QUANTIZED) {
-            switch (w->dtype) {
-            case GEIST_DTYPE_Q3_K:
-            case GEIST_DTYPE_Q4_K:
-            case GEIST_DTYPE_Q6_K:
-            case GEIST_DTYPE_Q8_0:
-                return GEIST_SUPPORT_NATIVE; /* W3A8/W4A8/W6A8/W8A8 NEON */
-            case GEIST_DTYPE_Q5_K:
-            case GEIST_DTYPE_IQ2_S:
-            case GEIST_DTYPE_IQ3_S:
-                return GEIST_SUPPORT_EMULATED; /* dequant + cblas_sgemm */
-            default:
-                return GEIST_SUPPORT_NONE;
-            }
-        }
+    const struct geist_tensor_format *x = &query->inputs[0];
+    const struct geist_tensor_format *w = &query->inputs[1];
+    if (x->dtype != GEIST_DTYPE_F32 || x->layout != GEIST_LAYOUT_DENSE) {
+        return GEIST_SUPPORT_NONE;
     }
-    return GEIST_SUPPORT_NONE;
+    return cpu_neon_weight_dtype_supported(be, w->dtype) ? GEIST_SUPPORT_NATIVE
+                                                         : GEIST_SUPPORT_NONE;
 }
 
 /* ---------- Buffer ops (mirror cpu_scalar) ---------- */
