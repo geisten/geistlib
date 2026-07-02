@@ -395,6 +395,16 @@ static void q8a_m1_row_body(size_t r, void *vctx) {
     c->y[r] = row_sum * c->inv_act_scale;
 }
 
+/* GEIST_PP=1 opts into the custom spin-pool over OMP. Parsed once. */
+static int tq2_pp_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("GEIST_PP");
+        cached        = (e && e[0] == '1') ? 1 : 0;
+    }
+    return cached;
+}
+
 void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
                              const struct geist_weight *w,
                              struct geist_backend      *be,
@@ -482,11 +492,7 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
      *   - else, in OMP team     → omp for (work-share, no team spawn)
      *   - else, standalone OMP  → omp parallel for (spawn a team)
      *   - else                  → serial */
-    static int pp_enabled = -1;
-    if (pp_enabled < 0) {
-        const char *e = getenv("GEIST_PP");
-        pp_enabled    = (e && e[0] == '1') ? 1 : 0;
-    }
+    const int pp_enabled = tq2_pp_enabled();
     if (pp_enabled) {
         geist_pp_parallel_for(n_out, q8a_m1_row_body, &ctx);
     }
@@ -703,11 +709,7 @@ void cpu_neon_w_tq2_0_q8a_mN(const float               *x,
             .row_bytes      = row_bytes,
     };
 
-    static int pp_enabled = -1;
-    if (pp_enabled < 0) {
-        const char *e = getenv("GEIST_PP");
-        pp_enabled    = (e && e[0] == '1') ? 1 : 0;
-    }
+    const int pp_enabled = tq2_pp_enabled();
 #if defined(__ARM_NEON) && defined(_OPENMP)
     if (!pp_enabled) {
 /* Loop-reordered NC-row panels (q4_K cache-blocking applied to ternary):
@@ -1004,11 +1006,7 @@ void cpu_neon_w_i2_s_q8a_m1(const float               *x,
             .blocks_per_row = blocks_per_row,
     };
 
-    static int pp_enabled = -1;
-    if (pp_enabled < 0) {
-        const char *e = getenv("GEIST_PP");
-        pp_enabled    = (e && e[0] == '1') ? 1 : 0;
-    }
+    const int pp_enabled = tq2_pp_enabled();
     if (pp_enabled) {
         geist_pp_parallel_for(n_out, i2s_m1_row_body, &ctx);
     }
@@ -1294,11 +1292,7 @@ void cpu_neon_w_i2_s_q8a_mN(const float               *x,
             .row_bytes      = row_bytes,
     };
 
-    static int pp_enabled = -1;
-    if (pp_enabled < 0) {
-        const char *e = getenv("GEIST_PP");
-        pp_enabled    = (e && e[0] == '1') ? 1 : 0;
-    }
+    const int pp_enabled = tq2_pp_enabled();
     if (pp_enabled) {
         geist_pp_parallel_for(n_out, i2s_mN_row_body, (void *) &ctx);
     }

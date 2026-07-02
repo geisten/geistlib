@@ -178,11 +178,6 @@ static void init_pool(void) {
     }
 }
 
-size_t geist_pp_thread_count(void) {
-    pthread_once(&g_init_once, init_pool);
-    return (size_t) (g_state.n_threads > 0 ? g_state.n_threads : 1);
-}
-
 void geist_pp_parallel_for(size_t n, geist_pp_body_fn body_fn, void *ctx) {
     pthread_once(&g_init_once, init_pool);
     const int N = g_state.n_threads > 0 ? g_state.n_threads : 1;

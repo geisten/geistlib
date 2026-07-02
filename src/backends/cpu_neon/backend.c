@@ -3,11 +3,10 @@
  *
  * Layer: BACKEND.
  *
- * B-3 lite (this commit): walking-skeleton mirroring cpu_scalar's shape,
- *                         with linear() routing F32 DENSE through cblas_sgemm
- *                         (Accelerate on Mac, OpenBLAS on Pi 5). Quantized
- *                         kernels (Q3_K, Q4_K, Q8_0) wrap the existing
- *                         gguf_quant.c NEON paths in subsequent sub-commits.
+ * Descriptor, lifecycle, and buffer ops for the NEON backend. Kernel
+ * selection happens at model load in weight_resolve.c (see the
+ * CPU_NEON_KERNELS table); F32 DENSE routes through cblas_sgemm
+ * (Accelerate on Mac, OpenBLAS on Pi 5).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -26,75 +25,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ---------- IQ flat-decode cache ---------- */
-
-const int8_t *iq_flat_cache_lookup(const struct iq_flat_cache *cache, const void *key) {
-    if (cache == nullptr || cache->budget_bytes == 0)
-        return nullptr;
-    for (size_t i = 0; i < cache->count; i++) {
-        if (cache->entries[i].key == key)
-            return cache->entries[i].flat;
-    }
-    return nullptr;
-}
-
-const int8_t *iq_flat_cache_get_or_decode(struct iq_flat_cache *cache,
-                                          const void           *key,
-                                          enum geist_dtype      dtype,
-                                          size_t                n_in,
-                                          size_t                n_out) {
-    if (cache == nullptr || cache->budget_bytes == 0)
-        return nullptr;
-    const int8_t *hit = iq_flat_cache_lookup(cache, key);
-    if (hit != nullptr)
-        return hit;
-
-    const size_t flat_bytes = n_in * n_out;
-    if (cache->used_bytes + flat_bytes > cache->budget_bytes)
-        return nullptr;
-    if (cache->count == GEIST_IQ_FLAT_CACHE_MAX_ENTRIES)
-        return nullptr;
-    if (cache->entries == nullptr)
-        return nullptr;
-
-    int8_t *flat = (int8_t *) heap_alloc_aligned(flat_bytes, OPTIMAL_ALIGNMENT);
-    if (flat == nullptr)
-        return nullptr;
-
-    const size_t n_blocks_per_row =
-            dtype == GEIST_DTYPE_IQ2_S ? n_in / IQ2_S_BLOCK_ELEMS : n_in / IQ3_S_BLOCK_ELEMS;
-    const size_t   block_bytes = dtype == GEIST_DTYPE_IQ2_S ? IQ2_S_BLOCK_BYTES : IQ3_S_BLOCK_BYTES;
-    const uint8_t *src         = (const uint8_t *) key;
-    for (size_t r = 0; r < n_out; r++) {
-        if (dtype == GEIST_DTYPE_IQ2_S) {
-            iq2s_decode_to_int8_row(
-                    src + r * n_blocks_per_row * block_bytes, flat + r * n_in, n_in);
-        } else {
-            iq3s_decode_to_int8_row(
-                    src + r * n_blocks_per_row * block_bytes, flat + r * n_in, n_in);
-        }
-    }
-
-    cache->entries[cache->count++] = (struct iq_flat_entry) {
-            .key  = key,
-            .flat = flat,
-    };
-    cache->used_bytes += flat_bytes;
-    return flat;
-}
-
-void iq_flat_cache_destroy(struct iq_flat_cache *cache) {
-    if (cache == nullptr)
-        return;
-    for (size_t i = 0; i < cache->count; i++) {
-        if (cache->entries[i].flat != nullptr)
-            safe_free((void **) &cache->entries[i].flat);
-    }
-    if (cache->entries != nullptr)
-        safe_free((void **) &cache->entries);
-    *cache = (struct iq_flat_cache) {0};
-}
-
 /* ---------- Lifecycle ---------- */
 
 [[nodiscard]] static enum geist_status cpu_neon_create(struct geist_backend            *be,
@@ -110,52 +40,6 @@ void iq_flat_cache_destroy(struct iq_flat_cache *cache) {
     geist_hw_probe_fill(&st->hw);
     st->policy = cpu_neon_kernel_policy_default(&st->hw);
 
-    const char *budget_env = getenv("GEIST_IQ_FLAT_CACHE_MB");
-    long        mb         = 0;
-    if (budget_env != nullptr) {
-        mb = strtol(budget_env, nullptr, 10);
-    }
-    /* Pi 5 / non-Apple targets are memory-bandwidth-bound at IQ2_S
-     * decode: the flat-decode cache holds int8 weights (1 B/element)
-     * vs the compact IQ2_S form (~0.3 B/element). On Cortex-A76 with
-     * 64 KB L1d / 512 KB L2 and ~12 GB/s effective DRAM, the larger
-     * working set thrashes cache and regresses decode (Pi 5 measured
-     * −13 % at 400 MB budget; OOM at 800 MB on 4 GB models). Auto-
-     * disable here regardless of GEIST_IQ_FLAT_CACHE_MB. Apple Silicon
-     * builds skip this guard. */
-    /* Three cases, all need an audible signal so the operator knows what
-     * is active. iq_flat_cache_force is true iff the user set
-     * GEIST_IQ_FLAT_CACHE_FORCE=1 (kernel_catalog tracks it separately
-     * from iq_flat_cache_allowed so this branch stays reachable even
-     * when the FORCE flag has already flipped iq_flat_cache_allowed). */
-    if (mb > 0) {
-        if (st->policy.iq_flat_cache_force) {
-            fprintf(stderr,
-                    "geist: GEIST_IQ_FLAT_CACHE_MB=%ld enabled via "
-                    "FORCE override — flat-decode is known to regress "
-                    "memory-bandwidth-bound platforms.\n",
-                    mb);
-        } else if (!st->policy.iq_flat_cache_allowed) {
-            fprintf(stderr,
-                    "geist: GEIST_IQ_FLAT_CACHE_MB=%ld ignored — non-Apple "
-                    "targets regress with flat-decode (memory-bandwidth "
-                    "bound). Set GEIST_IQ_FLAT_CACHE_FORCE=1 to override.\n",
-                    mb);
-            mb = 0;
-        }
-    }
-    if (mb > 0) {
-        st->iq_cache.budget_bytes = (size_t) mb * 1024u * 1024u;
-        st->iq_cache.entries =
-                heap_alloc_array_aligned(struct iq_flat_entry, GEIST_IQ_FLAT_CACHE_MAX_ENTRIES);
-        if (st->iq_cache.entries == nullptr) {
-            /* Out of memory just for the index — silently disable rather
-             * than fail backend create; the dispatch path treats null
-             * entries the same as a zero budget. */
-            st->iq_cache.budget_bytes = 0;
-        }
-    }
-
     be->state = st;
     return GEIST_OK;
 }
@@ -168,7 +52,6 @@ static void cpu_neon_destroy(struct geist_backend *be) {
     /* Backend-owned scratch: freed directly via the workspace. No OMP
      * barrier needed because the storage lives on `st`, not in TLS. */
     cpu_neon_workspace_destroy(&st->workspace);
-    iq_flat_cache_destroy(&st->iq_cache);
     geist_backend_free(be, be->state);
     be->state = nullptr;
 }

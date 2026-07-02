@@ -158,6 +158,28 @@ int tl1_pack_from_tq2_0(const void *tq2_0_rows, size_t n_in, size_t n_out, void 
     return 0;
 }
 
+/* Symmetric int8 activation quant (round half away from zero). Returns
+ * the inverse scale (max_abs / 127) to fold back into y. */
+static float tl1_quantize_act_row(const float *xt, size_t n_in, int8_t *qt) {
+    float max_abs = 1e-5f;
+    for (size_t i = 0; i < n_in; i++) {
+        const float a = xt[i] < 0.0f ? -xt[i] : xt[i];
+        if (a > max_abs)
+            max_abs = a;
+    }
+    const float act_scale = 127.0f / max_abs;
+    for (size_t i = 0; i < n_in; i++) {
+        const float q  = xt[i] * act_scale;
+        int32_t     qi = (int32_t) (q < 0.0f ? q - 0.5f : q + 0.5f);
+        if (qi > 127)
+            qi = 127;
+        if (qi < -128)
+            qi = -128;
+        qt[i] = (int8_t) qi;
+    }
+    return max_abs / 127.0f;
+}
+
 void cpu_neon_w_tl1_m1(const float               *x,
                        const struct geist_weight *w,
                        struct geist_backend      *be,
@@ -181,24 +203,8 @@ void cpu_neon_w_tl1_m1(const float               *x,
         }
         xq_cap = n_in;
     }
-    int8_t *xq      = xq_cache;
-    float   max_abs = 1e-5f;
-    for (size_t i = 0; i < n_in; i++) {
-        const float a = x[i] < 0.0f ? -x[i] : x[i];
-        if (a > max_abs)
-            max_abs = a;
-    }
-    const float act_scale     = 127.0f / max_abs;
-    const float inv_act_scale = max_abs / 127.0f;
-    for (size_t i = 0; i < n_in; i++) {
-        const float q  = x[i] * act_scale;
-        int32_t     qi = (int32_t) (q < 0.0f ? q - 0.5f : q + 0.5f);
-        if (qi > 127)
-            qi = 127;
-        if (qi < -128)
-            qi = -128;
-        xq[i] = (int8_t) qi;
-    }
+    int8_t     *xq            = xq_cache;
+    const float inv_act_scale = tl1_quantize_act_row(x, n_in, xq);
 
     const size_t n_r_tiles = n_out / TL1_BM;
     const size_t n_k_tiles = n_in / TL1_BBK;
@@ -464,25 +470,7 @@ void cpu_neon_w_tl1_mN(const float               *x,
 
     /* Per-token symmetric int8 activation quant. */
     for (size_t t = 0; t < m; t++) {
-        const float *xt      = x + t * n_in;
-        int8_t      *qt      = xq + t * n_in;
-        float        max_abs = 1e-5f;
-        for (size_t i = 0; i < n_in; i++) {
-            const float a = xt[i] < 0.0f ? -xt[i] : xt[i];
-            if (a > max_abs)
-                max_abs = a;
-        }
-        const float as = 127.0f / max_abs;
-        invs[t]        = max_abs / 127.0f;
-        for (size_t i = 0; i < n_in; i++) {
-            const float q  = xt[i] * as;
-            int32_t     qi = (int32_t) (q < 0.0f ? q - 0.5f : q + 0.5f);
-            if (qi > 127)
-                qi = 127;
-            if (qi < -128)
-                qi = -128;
-            qt[i] = (int8_t) qi;
-        }
+        invs[t] = tl1_quantize_act_row(x + t * n_in, n_in, xq + t * n_in);
     }
 
 #if defined(__ARM_NEON)

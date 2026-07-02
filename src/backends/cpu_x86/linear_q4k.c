@@ -22,7 +22,6 @@
 #include "linear_q4k.h"
 
 #include "backend_state.h"
-#include "kernel_bf16_gemm.h"
 #include "kernel_q4kx8_gemm.h" /* Phase 3 lane-parallel Q4_Kx8 GEMV */
 #include "kernel_w4a8.h"
 #include "kernel_w8a8.h" /* sum_a sized for W8A8 to also cover Q6_K */
@@ -268,7 +267,7 @@ unpack_w4a8_block_to_u8(const uint8_t weight_packed[16]) {
  * AVX kernel handles the 8-cell tile per (m, n_tile) call.
  *
  * Fallback: if n_out is not divisible by 8 (no Gemma 4 matrix is, this
- * is purely defensive), drop to the bf16 path. */
+ * is purely defensive), drop to the per-row m1 path. */
 void cpu_x86_linear_q4k_mN(const float               *x,
                            const struct geist_weight *w,
                            size_t                     m,

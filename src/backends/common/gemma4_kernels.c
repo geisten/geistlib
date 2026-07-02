@@ -3,6 +3,7 @@
 #include "heap.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -221,7 +222,20 @@ void attention_mqa_causal_kv(const float *q,
     (void) head_dim;
     const size_t kv_group_size = n_q_heads / n_kv_heads;
 
-    float *scores = heap_alloc_array_aligned(float, n_kv);
+    /* Score scratch, grown on demand and kept for the thread's lifetime —
+     * this runs per layer per decoded token, so no heap round-trip here. */
+    static _Thread_local float *scores     = nullptr;
+    static _Thread_local size_t scores_cap = 0;
+    if (scores_cap < n_kv) {
+        safe_free((void **) &scores);
+        scores = heap_alloc_array_aligned(float, n_kv);
+        if (scores == nullptr) {
+            scores_cap = 0;
+            fprintf(stderr, "attention_mqa_causal_kv: OOM (%zu scores)\n", n_kv);
+            return;
+        }
+        scores_cap = n_kv;
+    }
     for (size_t t = 0; t < n_q; t++) {
         size_t q_pos = q_offset + t;
         size_t s_lo  = 0;
@@ -266,7 +280,6 @@ void attention_mqa_causal_kv(const float *q,
             }
         }
     }
-    safe_free((void **) &scores);
 }
 
 void attention_mqa_causal(const float *q,

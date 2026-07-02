@@ -156,82 +156,9 @@ void linear_iq3s_w3a8_prefill_pre(const int8_t *x_q8,
 /* Pre-decode one row of IQ2_S / IQ3_S weights into 1 byte per element
  * (signed int8 magnitude; sub-block scale stays in the original blocks).
  * `n_in` must be a multiple of the IQ block elem-count. `flat` must hold
- * `n_in` bytes. Output layout matches the dot order used by the matching
- * flat-decode kernel below. */
+ * `n_in` bytes. Implemented in formats/gguf/iq{2,3}_s.c. */
 void iq2s_decode_to_int8_row(const void *w_iq2s_row, int8_t *flat, size_t n_in);
 void iq3s_decode_to_int8_row(const void *w_iq3s_row, int8_t *flat, size_t n_in);
-
-/* Selective-flat-decode M=1 W2A8 / W3A8 kernels.
- *
- * Identical numerics to linear_iq{2s,3s}_decode_w{2,3}a8 but skips the
- * codebook lookup + sign-apply in the per-token hot path by reading
- * pre-decoded int8 weights from `w_flat`. FP16 d and sub-block scales
- * still come from the original IQ blocks. Caller allocates and populates
- * `w_flat` (1 byte per element of the original weight tensor) via the
- * iq{2s,3s}_decode_to_int8_row helpers — typically lazy-cached for
- * ffn_down / ffn_up where the per-token decode cost dominates. */
-void linear_iq2s_flat_w2a8(const float  *x,
-                           const void   *w_iq2s_blocks,
-                           const int8_t *w_flat,
-                           size_t        n_in,
-                           size_t        n_out,
-                           float        *y);
-void linear_iq2s_flat_w2a8_pre(const int8_t *x_q8,
-                               float         scale_x,
-                               const void   *w_iq2s_blocks,
-                               const int8_t *w_flat,
-                               size_t        n_in,
-                               size_t        n_out,
-                               float        *y);
-void linear_iq3s_flat_w3a8(const float  *x,
-                           const void   *w_iq3s_blocks,
-                           const int8_t *w_flat,
-                           size_t        n_in,
-                           size_t        n_out,
-                           float        *y);
-void linear_iq3s_flat_w3a8_pre(const int8_t *x_q8,
-                               float         scale_x,
-                               const void   *w_iq3s_blocks,
-                               const int8_t *w_flat,
-                               size_t        n_in,
-                               size_t        n_out,
-                               float        *y);
-
-/* Selective-flat-decode M>1 W2A8 / W3A8 prefill kernels. Same numerics
- * as linear_iq{2s,3s}_w{2,3}a8_prefill_pre but consumes the pre-decoded
- * int8 buffer instead of recomputing weights per sub-block. Hot for the
- * speculative-decode verify pass — cache-hits eliminate the dominant
- * per-call weight-reconstruction cost. */
-void linear_iq2s_flat_w2a8_prefill(const float  *x,
-                                   const void   *w_iq2s_blocks,
-                                   const int8_t *w_flat,
-                                   size_t        m,
-                                   size_t        n_in,
-                                   size_t        n_out,
-                                   float        *y);
-void linear_iq2s_flat_w2a8_prefill_pre(const int8_t *x_q8,
-                                       const float  *scale_x,
-                                       size_t        m,
-                                       const void   *w_iq2s_blocks,
-                                       const int8_t *w_flat,
-                                       size_t        n_in,
-                                       size_t        n_out,
-                                       float        *y);
-void linear_iq3s_flat_w3a8_prefill(const float  *x,
-                                   const void   *w_iq3s_blocks,
-                                   const int8_t *w_flat,
-                                   size_t        m,
-                                   size_t        n_in,
-                                   size_t        n_out,
-                                   float        *y);
-void linear_iq3s_flat_w3a8_prefill_pre(const int8_t *x_q8,
-                                       const float  *scale_x,
-                                       size_t        m,
-                                       const void   *w_iq3s_blocks,
-                                       const int8_t *w_flat,
-                                       size_t        n_in,
-                                       size_t        n_out,
-                                       float        *y);
 
 /* GGUF tensor-aware dequant dispatch (gguf_dequant_to_fp32 /
  * gguf_dequant_row_to_fp32) lives in formats/gguf/gguf_dequant.h — it
@@ -273,8 +200,6 @@ void linear_q4k_decode_w4a8_pair(const float *x,
 /* W4A8 prefill (m>1) variant. Mirror of W3A8 prefill for Q4_K weights —
  * eliminates the slow gguf_dequant_to_fp32 + cblas_sgemm path for prefill
  * on Pi 5 / non-AMX targets. x is row-major (m, n_in); y row-major (m, n_out). */
-void linear_q4k_w4a8_prefill(
-        const float *x, const void *w_q4k, size_t m, size_t n_in, size_t n_out, float *y);
 void   linear_q4k_w4a8_prefill_pre(const int8_t  *x_q8,
                                    const float   *scale_x,
                                    const int32_t *sum32,

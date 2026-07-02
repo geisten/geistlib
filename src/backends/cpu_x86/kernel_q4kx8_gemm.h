@@ -50,6 +50,16 @@ void q4kx8_gemm_avx512(size_t                     M,
                        const struct block_q4_Kx8 *W,
                        float                      Y[static M * N]);
 
+/* AVX2 GEMV-style fallback (defined in kernel_q4kx8_gemm_avx512.c). Used by
+ * kernel_q4kx8_gemm_avx512_full.c for the tail and M < 16 / N < 16 cases the
+ * 16x16 panel cannot cover. */
+void q4kx8_gemv_avx2_fallback(size_t                     M,
+                              size_t                     N,
+                              size_t                     K,
+                              const struct block_q8_Kx4 *X,
+                              const struct block_q4_Kx8 *W,
+                              float                      Y[static M * N]);
+
 /* Decode (M=1) GEMV over the compact Q4_Kx8 layout. x is the fp32 activation
  * row (length K); y is the fp32 output (length N). N % 8 == 0, K % 256 == 0.
  * 8-cell lane-parallel, no per-block reduction. See the .c for rationale. */

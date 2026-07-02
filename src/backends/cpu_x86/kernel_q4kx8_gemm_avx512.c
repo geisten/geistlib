@@ -312,13 +312,6 @@ void q4kx8_gemv_avx2_fallback(size_t                     M,
                               size_t                     K,
                               const struct block_q8_Kx4 *X,
                               const struct block_q4_Kx8 *W,
-                              float                      Y[static M * N]);
-
-void q4kx8_gemv_avx2_fallback(size_t                     M,
-                              size_t                     N,
-                              size_t                     K,
-                              const struct block_q8_Kx4 *X,
-                              const struct block_q4_Kx8 *W,
                               float                      Y[static M * N]) {
     const size_t n_super_k = K / 256;
     const size_t N_tiles   = N / 8;

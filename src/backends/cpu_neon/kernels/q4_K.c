@@ -2280,29 +2280,6 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(const int8_t  *x_q8,
 #endif
 }
 
-void linear_q4k_w4a8_prefill(
-        const float *x, const void *w_q4k, size_t m, size_t n_in, size_t n_out, float *y) {
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    int8_t  *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
-    int32_t *sum32   = heap_alloc_array_aligned(int32_t, m *(n_in / 32));
-    float   *scale_x = heap_alloc_array_aligned(float, m);
-    if (x_q8 == NULL || sum32 == NULL || scale_x == NULL) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &sum32);
-        safe_free((void **) &scale_x);
-        return;
-    }
-    for (size_t i = 0; i < m; i++) {
-        scale_x[i] =
-                quantize_x_for_q4k(x + i * n_in, n_in, x_q8 + i * n_in, sum32 + i * (n_in / 32));
-    }
-    linear_q4k_w4a8_prefill_pre(x_q8, scale_x, sum32, m, w_q4k, n_in, n_out, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &sum32);
-    safe_free((void **) &scale_x);
-}
-
 void linear_q4k_decode_w4a8_predecoded(
         const float *x, const void *packed, size_t n_in, size_t n_out, float *y) {
     if (!q4k_predecode_valid(packed, n_in, n_out))
