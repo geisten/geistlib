@@ -26,30 +26,6 @@ struct geist_buffer {
     unsigned int           memory_flags;
 };
 
-/* Lazy cache of pre-decoded IQ2_S / IQ3_S weights as flat int8. Keyed
- * by source weight pointer; populated on first matmul call. Lookup
- * runs once per matmul before any OMP fan-out — no internal locking.
- * Budget via GEIST_IQ_FLAT_CACHE_MB (default 0 = disabled); auto-
- * disabled on non-Apple targets (memory-bandwidth-bound, see
- * cpu_neon_create). */
-struct iq_flat_entry {
-    const void *key;  /* source weight host pointer */
-    int8_t     *flat; /* n_out * n_in bytes, owned via heap.h */
-};
-
-/* Hard cap on cached tensor count. Gemma 4 E2B IQ2_M has ~140 IQ
- * matmuls (35 layers × ~4 IQ tensors); 256 is a comfortable upper
- * bound for any future Gemma-class quant. Lookup is a linear scan
- * over `count` entries, ~50 ns at scale. */
-#define GEIST_IQ_FLAT_CACHE_MAX_ENTRIES 256
-
-struct iq_flat_cache {
-    struct iq_flat_entry *entries; /* heap_alloc_array_aligned */
-    size_t                count;
-    size_t                budget_bytes; /* 0 = disabled */
-    size_t                used_bytes;
-};
-
 /* Backend-owned scratch for kernels that need temporary int8 / fp32 /
  * int32 buffers. Replaces the file-scope `_Thread_local` caches that
  * lived through the OMP runtime's lifetime independently of backend
@@ -108,33 +84,20 @@ struct cpu_neon_workspace {
     /* F32 elementwise workspace (currently vForce tanh input). */
     float *elt_f32;
     size_t elt_f32_cap;
+
+    /* SDPA score scratch, sized n_threads * n_kv and sliced per OMP thread.
+     * Persistent so the per-op heap round-trip is avoided; freed at destroy. */
+    float *attn_scores;
+    size_t attn_scores_cap;
 };
 
 void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws);
 
 struct cpu_neon_state {
-    struct iq_flat_cache          iq_cache;
     struct geist_hw_probe         hw;
     struct cpu_neon_kernel_policy policy;
     struct cpu_neon_workspace     workspace;
 };
-
-/* Returns the cached flat int8 buffer for `key`, or NULL on miss / when
- * the cache is disabled. Read-only — does not allocate. */
-const int8_t *iq_flat_cache_lookup(const struct iq_flat_cache *cache, const void *key);
-
-/* Lazy-populate `key` from `w_blocks` (block_iq{2,3}_s_t row-major,
- * n_out * (n_in / 256) blocks). Returns the resulting flat buffer, or
- * NULL if the cache is disabled, the budget is exhausted, or alloc
- * fails. dtype must be GEIST_DTYPE_IQ2_S or GEIST_DTYPE_IQ3_S. */
-const int8_t *iq_flat_cache_get_or_decode(struct iq_flat_cache *cache,
-                                          const void           *key,
-                                          enum geist_dtype      dtype,
-                                          size_t                n_in,
-                                          size_t                n_out);
-
-/* Free all cached buffers + entries array. Safe on already-empty cache. */
-void iq_flat_cache_destroy(struct iq_flat_cache *cache);
 
 /* TQ2_0 (ternary BitNet b1.58) compute kernels — implemented in
  * kernels/tq2_0.c, referenced by the resolver table in weight_resolve.c.

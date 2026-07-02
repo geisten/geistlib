@@ -68,49 +68,57 @@ static void op_set_session_opts(void *arch_state, const struct geist_session_opt
  * path. After the call, arch_state holds logits for the next position;
  * ops->decode_step will return the argmax of those logits on its first
  * invocation. */
-static void op_prefill(void *arch_state, size_t n, const geist_token_t ids[static n]) {
+static enum geist_status op_prefill(void *arch_state, size_t n, const geist_token_t ids[static n]) {
     struct transformer_arch_state *st = arch_state;
-    if (st == nullptr || n == 0) {
-        return;
+    if (st == nullptr) {
+        return GEIST_E_INVALID_ARG;
     }
-    (void) transformer_prefill_text_batch(st, n, ids);
-    /* On failure the next decode_step will surface the error indirectly
-     * via the engine. */
+    if (n == 0) {
+        return GEIST_OK;
+    }
+    return transformer_prefill_text_batch(st, n, ids);
 }
 
 /* Append `n` audio soft-tokens to the KV cache via the batched seq>1
  * path. Each soft-token is a HIDDEN-dim FP32 vector produced upstream
  * by the audio encoder. */
-static void op_prefill_audio(void *arch_state, size_t n, const float *soft_tokens) {
+static enum geist_status op_prefill_audio(void *arch_state, size_t n, const float *soft_tokens) {
     struct transformer_arch_state *st = arch_state;
-    if (st == nullptr || soft_tokens == nullptr || n == 0) {
-        return;
+    if (st == nullptr || (n > 0 && soft_tokens == nullptr)) {
+        return GEIST_E_INVALID_ARG;
     }
-    (void) transformer_prefill_audio_batch(st, n, soft_tokens);
+    if (n == 0) {
+        return GEIST_OK;
+    }
+    return transformer_prefill_audio_batch(st, n, soft_tokens);
 }
 
 /* Vision soft-tokens follow the same wire format as audio (1536-dim
  * fp32 per token). The transformer side just memcpys them into the
  * residual stream and runs the layer loop — no embedding lookup, no
  * scale. Delegate to the audio prefill batch path. */
-static void op_prefill_image(void *arch_state, size_t n, const float *soft_tokens) {
+static enum geist_status op_prefill_image(void *arch_state, size_t n, const float *soft_tokens) {
     struct transformer_arch_state *st = arch_state;
-    if (st == nullptr || soft_tokens == nullptr || n == 0) {
-        return;
+    if (st == nullptr || (n > 0 && soft_tokens == nullptr)) {
+        return GEIST_E_INVALID_ARG;
     }
-    (void) transformer_prefill_audio_batch(st, n, soft_tokens);
+    if (n == 0) {
+        return GEIST_OK;
+    }
+    return transformer_prefill_audio_batch(st, n, soft_tokens);
 }
 
 /* Pin `n` prefix tokens into the KV cache. Truncates cache, prefills the
  * prefix once, snapshots the resulting kv_len as the reset target.
  * Subsequent state_reset calls truncate kv_len back to the pinned length,
  * keeping the prefix's KV state across conversation turns. */
-static void op_pin_prefix(void *arch_state, size_t n, const geist_token_t ids[static n]) {
+static enum geist_status
+op_pin_prefix(void *arch_state, size_t n, const geist_token_t ids[static n]) {
     struct transformer_arch_state *st = arch_state;
     if (st == nullptr) {
-        return;
+        return GEIST_E_INVALID_ARG;
     }
-    (void) transformer_pin_prefix(st, n, ids);
+    return transformer_pin_prefix(st, n, ids);
 }
 
 /* Greedy one-token autoregressive step. Returns the prediction computed

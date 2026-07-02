@@ -12,44 +12,7 @@
 
 #include "kernel_catalog.h"
 
-#include <stdio.h>
 #include <stdlib.h>
-
-cpu_neon_isa_mask cpu_neon_isa_from_probe(const struct geist_hw_probe *hw) {
-    if (hw == nullptr) {
-        return 0;
-    }
-    cpu_neon_isa_mask m = 0;
-    if (hw->has_neon) {
-        m |= CPU_NEON_ISA_NEON;
-    }
-    if (hw->has_dotprod) {
-        m |= CPU_NEON_ISA_DOTPROD;
-    }
-    if (hw->has_fp16) {
-        m |= CPU_NEON_ISA_FP16;
-    }
-    return m;
-}
-
-const char *cpu_neon_isa_mask_name(cpu_neon_isa_mask mask) {
-    /* Small static buffer: only called on the error path, never from
-     * the hot path. Format: "{NEON,DOTPROD,FP16}" or "{}" if empty. */
-    static char buf[48];
-    int n = snprintf(buf,
-                     sizeof(buf),
-                     "{%s%s%s%s}",
-                     (mask & CPU_NEON_ISA_NEON) ? "NEON" : "",
-                     ((mask & CPU_NEON_ISA_NEON) &&
-                      ((mask & CPU_NEON_ISA_DOTPROD) || (mask & CPU_NEON_ISA_FP16)))
-                             ? ","
-                             : "",
-                     (mask & CPU_NEON_ISA_DOTPROD) ? "DOTPROD" : "",
-                     (mask & CPU_NEON_ISA_FP16) ? ((mask & CPU_NEON_ISA_DOTPROD) ? ",FP16" : "FP16")
-                                                : "");
-    (void) n;
-    return buf;
-}
 
 bool cpu_neon_env_bool(const char *name, bool fallback) {
     const char *env = getenv(name);
@@ -66,16 +29,6 @@ bool cpu_neon_env_bool(const char *name, bool fallback) {
 struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_hw_probe *hw) {
 
     const bool has_accelerate = hw != nullptr && hw->has_accelerate;
-    const bool non_apple      = !(hw != nullptr && hw->is_apple_silicon);
-#if defined(GEIST_TARGET_PI5)
-    /* The Pi5 OpenBLAS SGEMM-prefill path is currently not quality-safe for
-     * Gemma Q4_K/Q6_K end-to-end generation. Keep it opt-in via
-     * GEIST_Q{4,6}K_SGEMM_PREFILL=1 until the dequant+sgemm path has a
-     * full-logits parity gate on Pi. */
-    const bool pi5_sgemm_prefill = false;
-#else
-    const bool pi5_sgemm_prefill = false;
-#endif
 
     struct cpu_neon_kernel_policy p = {
             /* Runtime ISA facts — surfaced verbatim from the probe so the
@@ -85,22 +38,24 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
 
             /* Apple AMX/Accelerate wins for high-M dequant+SGEMM; Pi/Linux
              * wins with native per-row NEON kernels for these tile sizes. */
-            .q5k_native_mn             = !has_accelerate,
-            .q4k_predecode             = has_accelerate,
-            .q4k_mtile_prefill         = has_accelerate,
-            .q4k_ntile_prefill         = has_accelerate,
-            .q4k_block_q8_prefill      = false,
-            .q4k_sgemm_prefill         = has_accelerate || pi5_sgemm_prefill,
-            .q6k_sgemm_prefill         = has_accelerate || pi5_sgemm_prefill,
-            .qk_sgemm_threshold        = has_accelerate ? 64 : (pi5_sgemm_prefill ? 16 : 32),
+            .q5k_native_mn        = !has_accelerate,
+            .q4k_predecode        = has_accelerate,
+            .q4k_mtile_prefill    = has_accelerate,
+            .q4k_ntile_prefill    = has_accelerate,
+            .q4k_block_q8_prefill = false,
+            /* The Pi5 OpenBLAS SGEMM-prefill path is currently not
+             * quality-safe for Gemma Q4_K/Q6_K end-to-end generation. Keep
+             * it opt-in via GEIST_Q{4,6}K_SGEMM_PREFILL=1 until the
+             * dequant+sgemm path has a full-logits parity gate on Pi. */
+            .q4k_sgemm_prefill         = has_accelerate,
+            .q6k_sgemm_prefill         = has_accelerate,
+            .qk_sgemm_threshold        = has_accelerate ? 64 : 32,
             .qk_sgemm_tile_rows        = 64,
             .q6k_ntile_prefill         = has_accelerate,
             .q6k_ntile4_stream_prefill = has_accelerate,
             .q8_0_native_mn            = !has_accelerate,
             .tq2_0_native_mn           = !has_accelerate,
             .tq2_0_tl1_m1              = false,
-            .iq_flat_cache_allowed     = !non_apple,
-            .iq_flat_cache_force       = false,
     };
 
     p.q5k_native_mn     = cpu_neon_env_bool("GEIST_Q5K_NATIVE_MN", p.q5k_native_mn);
@@ -133,11 +88,6 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
     p.q8_0_native_mn  = cpu_neon_env_bool("GEIST_Q8_0_NATIVE_MN", p.q8_0_native_mn);
     p.tq2_0_native_mn = cpu_neon_env_bool("GEIST_TQ2_0_NATIVE_MN", p.tq2_0_native_mn);
     p.tq2_0_tl1_m1    = cpu_neon_env_bool("GEIST_TL1", p.tq2_0_tl1_m1);
-
-    if (cpu_neon_env_bool("GEIST_IQ_FLAT_CACHE_FORCE", false)) {
-        p.iq_flat_cache_allowed = true;
-        p.iq_flat_cache_force   = true;
-    }
     return p;
 }
 

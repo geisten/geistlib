@@ -3,10 +3,9 @@
  *
  * Layer: BACKEND.
  *
- * B-2a (this commit): walking skeleton — descriptor, lifecycle, buffer ops.
- *                     supports_op returns GEIST_SUPPORT_NONE for everything;
- *                     linear() returns GEIST_E_UNSUPPORTED. Real ops land in
- *                     B-2b (linear F32 DENSE) and follow-up sub-commits.
+ * Descriptor, lifecycle, buffer ops, and capability reporting for the
+ * pure-C reference backend. Kernel dispatch goes through
+ * cpu_scalar_resolve_weight (weight_resolve.c).
  *
  * The geist_buffer for this backend wraps a host pointer plus its size,
  * role, and memory_flags. Allocation routes through the user-provided
@@ -31,17 +30,9 @@
 
 [[nodiscard]] static enum geist_status cpu_scalar_create(struct geist_backend            *be,
                                                          const struct geist_backend_opts *opts) {
-    (void) opts; /* B-2b will read max_threads, log_cb, etc. */
-
-    struct cpu_scalar_state *st =
-            geist_backend_alloc(be, sizeof(*st), alignof(struct cpu_scalar_state));
-    if (st == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_OOM, "cpu_scalar: failed to allocate %zu-byte state", sizeof(*st));
-        return GEIST_E_OOM;
-    }
-    *st       = (struct cpu_scalar_state) {0};
-    be->state = st;
+    (void) opts;
+    /* No per-instance state needed — all ops are stateless. */
+    be->state = nullptr;
     return GEIST_OK;
 }
 

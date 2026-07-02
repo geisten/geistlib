@@ -296,7 +296,10 @@ struct ptqtp_ctx *ptqtp_open(const char *path, const char **err) {
                 ptqtp_close(ctx);
                 return nullptr;
             }
-            if (trit_off + trit_sz > ctx->map_size || alpha_off + alpha_sz > ctx->map_size) {
+            /* Overflow-safe bounds: the offsets are raw file uint64s, so
+             * `off + sz > map_size` could wrap small and slip past. */
+            if (trit_off > ctx->map_size || trit_sz > ctx->map_size - trit_off ||
+                alpha_off > ctx->map_size || alpha_sz > ctx->map_size - alpha_off) {
                 if (err)
                     *err = ERR_TRUNC;
                 ptqtp_close(ctx);

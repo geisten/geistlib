@@ -38,6 +38,32 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ---- Prefill entry guards -------------------------------------------- */
+
+/* KV cache, RoPE tables and scratch are all sized to max_seq_len rows;
+ * appending `n` more positions past that capacity is a heap overflow.
+ * Every prefill/verify entry checks this before mutating any state.
+ * (kv_len <= max_seq_len is the maintained invariant.) */
+static enum geist_status kv_capacity_check(const struct transformer_arch_state *st, size_t n) {
+    if (st->sess->kv_len > st->max_seq_len || n > st->max_seq_len - st->sess->kv_len) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return GEIST_OK;
+}
+
+/* Validate caller-supplied token ids against the embedding table. Without
+ * this, an id >= vocab_size (or a negative id cast to a huge size_t) is a
+ * wild out-of-bounds read in dequant_one_row. */
+static enum geist_status
+token_ids_check(const struct transformer_arch_state *st, size_t n, const geist_token_t *ids) {
+    for (size_t i = 0; i < n; i++) {
+        if (ids[i] < 0 || (size_t) ids[i] >= st->vocab_size) {
+            return GEIST_E_INVALID_ARG;
+        }
+    }
+    return GEIST_OK;
+}
+
 /* ---- Batched text prefill -------------------------------------------- */
 
 static enum geist_status
@@ -47,6 +73,14 @@ prefill_text_batch_inner(struct transformer_arch_state *st, size_t n, const geis
     }
     if (n == 0) {
         return GEIST_OK;
+    }
+    enum geist_status guard = kv_capacity_check(st, n);
+    if (guard != GEIST_OK) {
+        return guard;
+    }
+    guard = token_ids_check(st, n, ids);
+    if (guard != GEIST_OK) {
+        return guard;
     }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
@@ -153,6 +187,14 @@ enum geist_status transformer_verify_forward(struct transformer_arch_state *st,
     if (k > st->m_max) {
         /* Spec K should fit in one prefill chunk. Larger requires chunking. */
         return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status guard = kv_capacity_check(st, k);
+    if (guard != GEIST_OK) {
+        return guard;
+    }
+    guard = token_ids_check(st, k, ids);
+    if (guard != GEIST_OK) {
+        return guard;
     }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
@@ -271,6 +313,10 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_state 
     }
     if (n == 0) {
         return GEIST_OK;
+    }
+    enum geist_status guard = kv_capacity_check(st, n);
+    if (guard != GEIST_OK) {
+        return guard;
     }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;

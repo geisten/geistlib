@@ -1,8 +1,7 @@
 # mk/backend-cpu_x86.mk — x86_64 backend sources.
 #
-# Phase 0 (current): backend.c shell + kernel_catalog policy table. The vtbl
-# is cpu_scalar's; per-ISA kernel TUs land in Phase 1a (W4A8 VPDPBUSD), 1b
-# (BF16-SGEMM trampoline), 2 (native VDPBF16PS-SGEMM).
+# backend.c shell plus per-ISA kernel TUs (W4A8 VPDPBUSD, Q4_Kx8 GEMM, ...);
+# the dispatcher in kernel_w4a8.c probes the host and picks the variant.
 # See docs/LINUX_X86_SPEC.md.
 #
 # Opt-in via `make BACKENDS="cpu_x86 cpu_scalar"` (default Linux x86_64 build
@@ -12,7 +11,6 @@
 BACKEND_SOURCES += \
     src/backends/cpu_x86/backend.c \
     src/backends/cpu_x86/elementwise.c \
-    src/backends/cpu_x86/kernel_catalog.c \
     src/backends/cpu_x86/kernel_w4a8.c \
     src/backends/cpu_x86/kernel_w4a8_scalar.c \
     src/backends/cpu_x86/kernel_w4a8_avx512_vnni.c \
@@ -28,8 +26,6 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/kernel_i2s.c \
     src/backends/cpu_x86/kernel_i2s_avx512_vnni.c \
     src/backends/cpu_x86/kernel_f16_gemv.c \
-    src/backends/cpu_x86/kernel_bf16_gemm_scalar.c \
-    src/backends/cpu_x86/kernel_bf16_gemm_avx512_bf16.c \
     src/backends/cpu_x86/q4k_to_q4kx8.c \
     src/backends/cpu_x86/q8_kx4.c \
     src/backends/cpu_x86/kernel_q4kx8_gemm_scalar.c \
@@ -48,7 +44,5 @@ $(BUILD_DIR)/src/backends/cpu_x86/kernel_w8a8_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_i2s_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
-$(BUILD_DIR)/src/backends/cpu_x86/kernel_bf16_gemm_avx512_bf16.o: CFLAGS_STRICT += \
-    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512bf16
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.o: CFLAGS_STRICT += \
     -mavx2 -mavx -mf16c -mfma -mavx512f -mavx512bw -mavx512dq -mavx512vl

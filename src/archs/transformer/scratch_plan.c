@@ -8,16 +8,26 @@
 
 #include <string.h>
 
+bool transformer_scratch_caps_ok(const struct transformer_arch_state *st) {
+    for (size_t i = 0; i < (size_t) st->n_layers; i++) {
+        if (st->layers[i].head_dim > GEIST_SCRATCH_HEAD_DIM_MAX ||
+            st->layers[i].intermediate > GEIST_SCRATCH_INTER_MAX) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void transformer_scratch_plan_build(const struct transformer_arch_state *st,
                                     struct transformer_scratch_plan     *out) {
 
     memset(out, 0, sizeof(*out));
     const size_t F = sizeof(float);
     const size_t M = (st->sess != NULL && st->sess->m_max > 0) ? st->sess->m_max : st->m_max;
-    const size_t head_dim_max = 512;
+    const size_t head_dim_max = GEIST_SCRATCH_HEAD_DIM_MAX;
     const size_t q_out_max    = st->n_q_heads * head_dim_max;
     const size_t kv_out_max   = st->n_kv_heads * head_dim_max;
-    const size_t inter_max    = 12288;
+    const size_t inter_max    = GEIST_SCRATCH_INTER_MAX;
 
     out->hidden           = M * st->d_model * F;
     out->q_out            = M * q_out_max * F;

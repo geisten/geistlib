@@ -72,25 +72,28 @@ struct geist_arch_ops_decoder {
      * weights. Used by geist_session_reset. */
     void (*state_reset)(void *arch_state);
 
-    /* prefill: append `n` tokens to the recurrent state. */
-    void (*prefill)(void *arch_state, size_t n, const geist_token_t ids[static n]);
+    /* prefill: append `n` tokens to the recurrent state. Returns non-OK
+     * (e.g. GEIST_E_INVALID_ARG for over-capacity/out-of-range ids, or an
+     * OOM/backend error) if the append failed; on failure the recurrent
+     * state may be partially advanced and the caller should not decode. */
+    enum geist_status (*prefill)(void *arch_state, size_t n, const geist_token_t ids[static n]);
 
     /* decode_step: one greedy autoregressive step, returns next token. */
     geist_token_t (*decode_step)(void *arch_state);
 
     /* Optional: pin prefix into KV cache so reset() restores to it
      * instead of clearing. nullptr if architecture doesn't support it. */
-    void (*pin_prefix)(void *arch_state, size_t n, const geist_token_t ids[static n]);
+    enum geist_status (*pin_prefix)(void *arch_state, size_t n, const geist_token_t ids[static n]);
 
     /* Optional: append audio soft-tokens (1536-dim per token for Gemma 4)
      * to the recurrent state. nullptr if no audio path. */
-    void (*prefill_audio)(void *arch_state, size_t n, const float *soft_tokens);
+    enum geist_status (*prefill_audio)(void *arch_state, size_t n, const float *soft_tokens);
 
     /* Optional: append vision soft-tokens (1536-dim per token for Gemma 4)
      * to the recurrent state. Same wire format as prefill_audio — both
      * modalities feed d_model-dim floats into the residual stream — so
      * the transformer impl is shared. nullptr if no vision path. */
-    void (*prefill_image)(void *arch_state, size_t n, const float *soft_tokens);
+    enum geist_status (*prefill_image)(void *arch_state, size_t n, const float *soft_tokens);
 
     /* Optional: pointer to the cached next-token logits. Writes the vocab
      * size to `*n_logits` on success. Returns nullptr (and sets *n_logits=0)

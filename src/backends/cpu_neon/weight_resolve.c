@@ -11,20 +11,12 @@
  *
  * without dtype dispatch or vtable indirection.
  *
- * Trampolines: thin wrappers around the existing kernels in
- * src/backends/common/gguf_quant.c that translate the new signature
- * (struct geist_weight *) back into the kernels' (raw, n_in, n_out)
- * style. Once all callers are on the new flow (P1.1.c..d), the kernels
- * can be inlined here and the wrapper indirection removed.
+ * Trampolines: thin wrappers that translate the resolver signature
+ * (struct geist_weight *) into the kernels' (raw, n_in, n_out) style.
  *
- * Supported dtypes (full M=1 + M>1 coverage):
- *   Q3_K, Q4_K, Q6_K, IQ2_S, IQ3_S
- *
- * Partial coverage (M=1 only; M>1 falls through to legacy path):
- *   Q8_0
- *
- * Not supported yet (returns GEIST_E_UNSUPPORTED → legacy path runs):
- *   Q5_K, F32 dense, F16 dense, BF16 dense, IQ2_XXS, IQ2_M (mixed)
+ * Supported dtypes: see the CPU_NEON_KERNELS table below — it is the
+ * source of truth for (dtype, ISA, M=1/M>1) coverage. Unsupported
+ * dtypes return GEIST_E_UNSUPPORTED at load.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -36,6 +28,7 @@
 #include <geist_backend.h>
 #include <geist_weight.h>
 
+#include "gemma4_kernels.h"
 #include "quant.h"
 #include "heap.h"
 
@@ -407,8 +400,10 @@ static void cpu_neon_w_q4k_mN(const float               *x,
         return;
     }
 
-    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in))
+    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: mN activation workspace alloc failed");
         return;
+    }
 
     const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
                                   q4k_weight_predecoded(w) && !q4k_weight_ntile4(w);
@@ -475,8 +470,10 @@ static void cpu_neon_w_q4k_pair_mN(const float               *x,
         return;
     }
 
-    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in))
+    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: mN activation workspace alloc failed");
         return;
+    }
 
     const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
                                   q4k_weight_predecoded(w0) && q4k_weight_predecoded(w1) &&
@@ -540,8 +537,10 @@ static void cpu_neon_w_q6k_mN(const float               *x,
         return;
     }
 
-    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in))
+    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: mN activation workspace alloc failed");
         return;
+    }
     const bool qp6 = qprof_on();
     uint64_t   t6  = qp6 ? qprof_now_ns() : 0;
     for (size_t i = 0; i < m; i++) {
@@ -734,34 +733,16 @@ dequant_tile(const struct geist_weight *w, size_t row_start, size_t tile_rows, f
             }
 #endif
             for (; i < n_in; i++) {
-                /* Scalar fallback — emulate F16-to-F32 via IEEE bit twiddle. */
-                uint16_t h     = src[i];
-                uint32_t sign  = (uint32_t) (h & 0x8000) << 16;
-                uint32_t exp16 = (h >> 10) & 0x1F;
-                uint32_t mant  = h & 0x3FF;
-                uint32_t bits;
-                if (exp16 == 0) {
-                    bits = sign | (mant ? (((uint32_t) (mant) << 13) | 0x38800000u) : 0u);
-                } else if (exp16 == 0x1F) {
-                    bits = sign | 0x7F800000u | (mant << 13);
-                } else {
-                    bits = sign | ((exp16 + 112u) << 23) | (mant << 13);
-                }
-                memcpy(dst + i, &bits, 4);
+                dst[i] = fp16_to_fp32(src[i]);
             }
             src += n_in;
         }
         return;
     }
     if (dt == GEIST_DTYPE_BF16) {
-        /* BF16 → F32: shift up by 16 bits, low half is zero. */
         const uint16_t *src = (const uint16_t *) w->raw + row_start * n_in;
         for (size_t r = 0; r < tile_rows; r++) {
-            float *dst = tile_fp32 + r * n_in;
-            for (size_t i = 0; i < n_in; i++) {
-                uint32_t bits = (uint32_t) src[i] << 16;
-                memcpy(dst + i, &bits, 4);
-            }
+            bf16_array_to_fp32(src, tile_fp32 + r * n_in, n_in);
             src += n_in;
         }
         return;
@@ -793,16 +774,17 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
     {
         float *tile = heap_alloc_array_aligned(float, tile_rows *n_in);
         if (tile == nullptr) {
-            /* No room for per-thread tile — silently skip; decode will
-             * see stale y values. Caller can't propagate. */
+            /* No room for per-thread tile — leave y unwritten and latch the
+             * error so the dispatcher surfaces it (racy-benign across
+             * threads: any failing thread sets the same OOM code). */
+            geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: dequant tile alloc failed");
         } else {
 #pragma omp for schedule(static) nowait
             for (size_t r0 = 0; r0 < n_out; r0 += tile_rows) {
                 const size_t tr = (n_out - r0 < tile_rows) ? (n_out - r0) : tile_rows;
                 dequant_tile(w, r0, tr, tile);
-                /* Force OpenBLAS to use 1 thread inside the parallel region
-                 * to avoid 4×4 = 16-way oversubscription. Set once per call
-                 * via openblas_set_num_threads — cheap. */
+                /* geist_gemm.c pins OpenBLAS to 1 thread so this parallel
+                 * region doesn't oversubscribe. */
                 geist_sgemv(GEIST_OP_N,
                             (int) tr,
                             (int) n_in,
@@ -820,8 +802,10 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
     }
 #else
     float *tile = heap_alloc_array_aligned(float, tile_rows *n_in);
-    if (tile == nullptr)
+    if (tile == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: dequant tile alloc failed");
         return;
+    }
     for (size_t r0 = 0; r0 < n_out; r0 += tile_rows) {
         const size_t tr = (n_out - r0 < tile_rows) ? (n_out - r0) : tile_rows;
         dequant_tile(w, r0, tr, tile);
@@ -957,7 +941,6 @@ static void cpu_neon_w_dequant_trampoline_mN(const float               *x,
                                              size_t                     m,
                                              struct geist_backend      *be,
                                              float                     *y) {
-    (void) be;
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
     /* Used for F32/F16/BF16 dense (notably Gemma's PLE model_proj, n×1536→8960).
@@ -973,7 +956,9 @@ static void cpu_neon_w_dequant_trampoline_mN(const float               *x,
 #pragma omp parallel
     {
         float *tile = heap_alloc_array_aligned(float, DEQ_TILE_ROWS_DEFAULT *n_in);
-        if (tile != nullptr) {
+        if (tile == nullptr) {
+            geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: dequant tile alloc failed");
+        } else {
 #pragma omp for schedule(dynamic, 1)
             for (size_t ti = 0; ti < n_tiles; ti++) {
                 const size_t r0 = ti * DEQ_TILE_ROWS_DEFAULT;
@@ -999,8 +984,10 @@ static void cpu_neon_w_dequant_trampoline_mN(const float               *x,
     }
 #else
     float *tile = heap_alloc_array_aligned(float, DEQ_TILE_ROWS_DEFAULT *n_in);
-    if (tile == nullptr)
+    if (tile == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: dequant tile alloc failed");
         return;
+    }
     for (size_t r0 = 0; r0 < n_out; r0 += DEQ_TILE_ROWS_DEFAULT) {
         const size_t tr =
                 (n_out - r0 < DEQ_TILE_ROWS_DEFAULT) ? (n_out - r0) : DEQ_TILE_ROWS_DEFAULT;

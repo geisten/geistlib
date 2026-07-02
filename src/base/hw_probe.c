@@ -164,10 +164,6 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
     out->has_accelerate = true;
 #endif
 
-#if defined(_OPENMP)
-    out->has_openmp = true;
-#endif
-
     /* ----- Logical cores — OS hardware count, NOT the OMP team ----- */
 #if defined(_WIN32)
     {
@@ -183,103 +179,4 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
         }
     }
 #endif
-
-    /* ----- Physical cores + L3 domains (CCDs) — Linux /sys ----------
-     *
-     * physical_cores = # of unique topology/thread_siblings_list strings.
-     * n_l3_domains   = # of unique cache/index3/shared_cpu_list strings.
-     *
-     * On AMD 9950X this resolves to 16 physical cores, 2 L3 domains
-     * (CCDs). On Pi 5 / single-socket Intel client it's 1 L3 domain.
-     * Used by the Phase-1a CCD-aware threading default in cpu_x86
-     * (decode pins to one L3 domain, prefill to all). */
-#if defined(__linux__)
-    if (out->logical_cores > 0 && out->logical_cores <= 256) {
-        char   siblings_seen[64][64] = {0};
-        char   l3_seen[16][64]       = {0};
-        size_t n_physical            = 0;
-        size_t n_l3                  = 0;
-        for (size_t cpu = 0; cpu < out->logical_cores; cpu++) {
-            char path[128];
-            char buf[64];
-
-            snprintf(path,
-                     sizeof(path),
-                     "/sys/devices/system/cpu/cpu%zu/topology/thread_siblings_list",
-                     cpu);
-            FILE *f = fopen(path, "r");
-            if (f != nullptr) {
-                if (fgets(buf, sizeof(buf), f) != nullptr) {
-                    /* Strip newline. */
-                    buf[strcspn(buf, "\n")] = '\0';
-                    bool seen               = false;
-                    for (size_t i = 0; i < n_physical && i < 64; i++) {
-                        if (strcmp(siblings_seen[i], buf) == 0) {
-                            seen = true;
-                            break;
-                        }
-                    }
-                    if (!seen && n_physical < 64) {
-                        snprintf(siblings_seen[n_physical], 64, "%s", buf);
-                        n_physical++;
-                    }
-                }
-                fclose(f);
-            }
-
-            snprintf(path,
-                     sizeof(path),
-                     "/sys/devices/system/cpu/cpu%zu/cache/index3/shared_cpu_list",
-                     cpu);
-            f = fopen(path, "r");
-            if (f != nullptr) {
-                if (fgets(buf, sizeof(buf), f) != nullptr) {
-                    buf[strcspn(buf, "\n")] = '\0';
-                    bool seen               = false;
-                    for (size_t i = 0; i < n_l3 && i < 16; i++) {
-                        if (strcmp(l3_seen[i], buf) == 0) {
-                            seen = true;
-                            break;
-                        }
-                    }
-                    if (!seen && n_l3 < 16) {
-                        snprintf(l3_seen[n_l3], 64, "%s", buf);
-                        n_l3++;
-                    }
-                }
-                fclose(f);
-            }
-        }
-        out->physical_cores = n_physical;
-        out->n_l3_domains   = n_l3;
-    }
-#endif
-}
-
-const char *geist_hw_os_name(enum geist_hw_os os) {
-    switch (os) {
-    case GEIST_HW_OS_MACOS:
-        return "macos";
-    case GEIST_HW_OS_LINUX:
-        return "linux";
-    case GEIST_HW_OS_WINDOWS:
-        return "windows";
-    default:
-        return "unknown";
-    }
-}
-
-const char *geist_hw_cpu_name(enum geist_hw_cpu cpu) {
-    switch (cpu) {
-    case GEIST_HW_CPU_ARM64_GENERIC:
-        return "arm64";
-    case GEIST_HW_CPU_ARM64_CORTEX_A76:
-        return "cortex-a76";
-    case GEIST_HW_CPU_APPLE_SILICON:
-        return "apple-silicon";
-    case GEIST_HW_CPU_X86_64_GENERIC:
-        return "x86_64";
-    default:
-        return "unknown";
-    }
 }

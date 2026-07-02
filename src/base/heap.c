@@ -62,10 +62,6 @@ static void *portable_aligned_alloc(const size_t alignment, const size_t size) {
 #endif
 }
 
-uintptr_t optimal_aligned_size(const size_t size) {
-    return aligned_size(size, OPTIMAL_ALIGNMENT);
-}
-
 /**
  * Creates a memory arena with the specified size.
  *

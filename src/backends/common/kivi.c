@@ -96,20 +96,21 @@ void kivi_pack_k_group(size_t      g_tokens,
     }
 
     /* Pass 2: quantize each (token, channel). Pack 4 channel-consecutive
-     * values per byte. Token rows stay sequential; channels stride by 1. */
-    for (size_t t = 0; t < g_tokens; t++) {
-        const float *row     = in + t * n_channels;
-        uint8_t     *row_out = out_q + t * (n_channels / 4);
-        for (size_t c = 0; c < n_channels; c += 4) {
-            const float   inv0 = out_scales[c + 0] > 0.0f ? 1.0f / out_scales[c + 0] : 0.0f;
-            const float   inv1 = out_scales[c + 1] > 0.0f ? 1.0f / out_scales[c + 1] : 0.0f;
-            const float   inv2 = out_scales[c + 2] > 0.0f ? 1.0f / out_scales[c + 2] : 0.0f;
-            const float   inv3 = out_scales[c + 3] > 0.0f ? 1.0f / out_scales[c + 3] : 0.0f;
-            const uint8_t q0   = kivi_quant_one(row[c + 0], out_zeros[c + 0], inv0);
-            const uint8_t q1   = kivi_quant_one(row[c + 1], out_zeros[c + 1], inv1);
-            const uint8_t q2   = kivi_quant_one(row[c + 2], out_zeros[c + 2], inv2);
-            const uint8_t q3   = kivi_quant_one(row[c + 3], out_zeros[c + 3], inv3);
-            row_out[c / 4]     = kivi_pack4(q0, q1, q2, q3);
+     * values per byte. Channel block outer so the per-channel reciprocals
+     * are computed once, not once per token row. */
+    for (size_t c = 0; c < n_channels; c += 4) {
+        const float inv0 = out_scales[c + 0] > 0.0f ? 1.0f / out_scales[c + 0] : 0.0f;
+        const float inv1 = out_scales[c + 1] > 0.0f ? 1.0f / out_scales[c + 1] : 0.0f;
+        const float inv2 = out_scales[c + 2] > 0.0f ? 1.0f / out_scales[c + 2] : 0.0f;
+        const float inv3 = out_scales[c + 3] > 0.0f ? 1.0f / out_scales[c + 3] : 0.0f;
+        for (size_t t = 0; t < g_tokens; t++) {
+            const float  *row     = in + t * n_channels;
+            uint8_t      *row_out = out_q + t * (n_channels / 4);
+            const uint8_t q0      = kivi_quant_one(row[c + 0], out_zeros[c + 0], inv0);
+            const uint8_t q1      = kivi_quant_one(row[c + 1], out_zeros[c + 1], inv1);
+            const uint8_t q2      = kivi_quant_one(row[c + 2], out_zeros[c + 2], inv2);
+            const uint8_t q3      = kivi_quant_one(row[c + 3], out_zeros[c + 3], inv3);
+            row_out[c / 4]        = kivi_pack4(q0, q1, q2, q3);
         }
     }
 }

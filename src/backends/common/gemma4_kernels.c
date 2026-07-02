@@ -3,6 +3,7 @@
 #include "heap.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -221,7 +222,14 @@ void attention_mqa_causal_kv(const float *q,
     (void) head_dim;
     const size_t kv_group_size = n_q_heads / n_kv_heads;
 
+    /* Per-call score scratch. This common fallback has no backend workspace
+     * to borrow (unlike the cpu_neon SDPA path), so it allocates and frees
+     * per call rather than holding a process-lifetime _Thread_local buffer. */
     float *scores = heap_alloc_array_aligned(float, n_kv);
+    if (scores == nullptr) {
+        fprintf(stderr, "attention_mqa_causal_kv: OOM (%zu scores)\n", n_kv);
+        return;
+    }
     for (size_t t = 0; t < n_q; t++) {
         size_t q_pos = q_offset + t;
         size_t s_lo  = 0;

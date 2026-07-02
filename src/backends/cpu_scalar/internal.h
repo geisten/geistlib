@@ -24,12 +24,6 @@ struct geist_buffer {
     unsigned int           memory_flags;
 };
 
-/* Per-instance backend state — kept opaque outside cpu_scalar. */
-struct cpu_scalar_state {
-    /* Reserved for B-2c+: scratch arena for activations, op profiling. */
-    int placeholder_;
-};
-
 /* P1.1.b → P2.e: load-time weight resolver. Inspects w->dtype and writes
  * direct M=1 / M>1 kernel function pointers. After the linear-slot drop
  * (P2-final), this is the only path the forward layer dispatches through. */
