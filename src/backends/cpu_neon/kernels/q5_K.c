@@ -110,6 +110,8 @@ void linear_q5k_w5a8_prefill_pre(const int8_t  *x_q8,
                                  size_t         n_out,
                                  float         *y) {
 #if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
     const struct block_q5_K_t *w                = (const struct block_q5_K_t *) w_q5k;
     const size_t               n_blocks_per_row = n_in / Q5_K_BLOCK_ELEMS;
     const size_t               n_chunks         = n_in / 32;
@@ -122,9 +124,9 @@ void linear_q5k_w5a8_prefill_pre(const int8_t  *x_q8,
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
 
-        float   *accs = heap_alloc_array_aligned(float, m);
-        int32_t *acc1 = heap_alloc_array_aligned(int32_t, m);
-        int32_t *acc2 = heap_alloc_array_aligned(int32_t, m);
+        float   accs[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
+        int32_t acc1[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
+        int32_t acc2[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
         for (size_t i = 0; i < m; i++)
             accs[i] = 0.0f;
 
@@ -186,9 +188,6 @@ void linear_q5k_w5a8_prefill_pre(const int8_t  *x_q8,
         }
         for (size_t i = 0; i < m; i++)
             y[i * n_out + n] = accs[i];
-        safe_free((void **) &accs);
-        safe_free((void **) &acc1);
-        safe_free((void **) &acc2);
     }
 #else
     (void) x_q8;

@@ -63,6 +63,8 @@ void linear_q8_0_w8a8_prefill_pre(const int8_t *x_q8,
                                   size_t        n_out,
                                   float        *y) {
 #if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
     const struct block_q8_0_t *w          = (const struct block_q8_0_t *) w_q8;
     const size_t               nb_per_row = n_in / Q8_0_BLOCK_ELEMS;
 
@@ -74,7 +76,7 @@ void linear_q8_0_w8a8_prefill_pre(const int8_t *x_q8,
         if (n + 1 < n_out)
             __builtin_prefetch(row + nb_per_row, 0, 0);
 
-        float *accs = heap_alloc_array_aligned(float, m);
+        float accs[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
         for (size_t i = 0; i < m; i++)
             accs[i] = 0.0f;
 
@@ -94,7 +96,6 @@ void linear_q8_0_w8a8_prefill_pre(const int8_t *x_q8,
         }
         for (size_t i = 0; i < m; i++)
             y[i * n_out + n] = accs[i];
-        safe_free((void **) &accs);
     }
 #else
     (void) x_q8;

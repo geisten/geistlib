@@ -34,15 +34,6 @@
 #include <omp.h>
 #endif
 
-/* AVX2 GEMV from kernel_q4kx8_gemm_avx512.c — used to handle the tail and
- * M < 16 / N < 16 cases that the 16x16 panel cannot cover. */
-void q4kx8_gemv_avx2_fallback(size_t                     M,
-                              size_t                     N,
-                              size_t                     K,
-                              const struct block_q8_Kx4 *X,
-                              const struct block_q4_Kx8 *W,
-                              float                      Y[static M * N]);
-
 #define AVX512_TARGET "avx2,avx,f16c,fma,avx512f,avx512bw,avx512dq,avx512vl"
 
 /* Load 16 fp16 values from two 8-fp16 sources into 16 fp32 in a __m512.

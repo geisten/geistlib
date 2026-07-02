@@ -51,17 +51,10 @@ struct geist_hw_probe {
     bool has_avx512_vnni;
     bool has_amx_int8;
     bool has_accelerate;
-    bool has_openmp;
 
-    size_t logical_cores;  /* 0 when unknown. */
-    size_t physical_cores; /* 0 when unknown. SMT collapsed (Linux only today). */
-    size_t n_l3_domains;   /* 0 unknown, 1 = single L3, N = AMD multi-CCD / Intel
-                            * P/E cluster. Used by Phase-1a CCD-aware threading
-                            * (see docs/LINUX_X86_SPEC.md). */
+    size_t logical_cores; /* 0 when unknown. */
 };
 
-void        geist_hw_probe_fill(struct geist_hw_probe *out);
-const char *geist_hw_os_name(enum geist_hw_os os);
-const char *geist_hw_cpu_name(enum geist_hw_cpu cpu);
+void geist_hw_probe_fill(struct geist_hw_probe *out);
 
 #endif /* GEIST_INTERNAL_HW_PROBE_H */

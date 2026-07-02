@@ -36,8 +36,6 @@ struct memory_arena {
     size_t used;
 };
 
-size_t calculate_aligned_size(size_t original_size);
-
 /**
  * Creates a memory arena with the specified size.
  *
@@ -77,7 +75,6 @@ void *arena_allocate_aligned(struct memory_arena *arena, size_t size, size_t ali
 void *heap_alloc_aligned(size_t size, size_t alignment);
 void *heap_calloc_aligned(size_t count, size_t size, size_t alignment);
 
-uintptr_t optimal_aligned_size(size_t size);
 uintptr_t aligned_size(size_t size, size_t alignment);
 
 #define arena_allocate_array_aligned(_arena, _type, _num) \

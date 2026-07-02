@@ -38,14 +38,6 @@ enum {
     CPU_NEON_ISA_FP16    = 1u << 2,
 };
 
-/* Build an ISA mask from the runtime probe — what the host actually has. */
-cpu_neon_isa_mask cpu_neon_isa_from_probe(const struct geist_hw_probe *hw);
-
-/* Render a mask as a short human-readable string for diagnostics. The
- * returned pointer aliases an internal static buffer per invocation;
- * not thread-safe but only used on the error path. */
-const char *cpu_neon_isa_mask_name(cpu_neon_isa_mask mask);
-
 /* Kernel-table entry. The resolver scans CPU_NEON_KERNELS in order and
  * installs the first row whose dtype matches the requested dtype AND
  * whose `requires` bitmask is a subset of the active host's ISA mask.
@@ -95,12 +87,6 @@ struct cpu_neon_kernel_policy {
     bool   q8_0_native_mn;
     bool   tq2_0_native_mn;
     bool   tq2_0_tl1_m1;
-    bool   iq_flat_cache_allowed;
-    /* True iff iq_flat_cache_allowed was set via GEIST_IQ_FLAT_CACHE_FORCE
-     * (i.e. the user opted into a config the platform default disabled).
-     * Carried separately so backend.c can keep the loud override warning
-     * on the FORCE path even when policy.iq_flat_cache_allowed is true. */
-    bool iq_flat_cache_force;
 };
 
 struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_hw_probe *hw);

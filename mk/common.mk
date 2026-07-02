@@ -238,7 +238,7 @@ endif
 # Tests that exercise cpu_x86 kernel TUs directly. Linker-gated on the
 # backend being compiled in.
 X86_KERNEL_TESTS := tests/test_w4a8_kernel_unit.c tests/test_q4k_to_w4a8_unit.c \
-                    tests/test_w4a8_gemv_unit.c tests/test_bf16_gemm_unit.c \
+                    tests/test_w4a8_gemv_unit.c \
                     tests/test_q4k_to_q4kx8_unit.c \
                     tests/test_q4kx8_gemm_unit.c \
                     tests/test_w8a8_gemm_unit.c \

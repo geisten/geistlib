@@ -90,14 +90,19 @@ static bool grow_i32(int32_t **p, size_t *cap, size_t need) {
 }
 
 static size_t ffn_tile_blocks(void) {
-    const char *env = getenv("GEIST_FFN_TILE_BLOCKS");
-    if (env != nullptr && env[0] != '\0') {
-        char               *end = nullptr;
-        const unsigned long v   = strtoul(env, &end, 10);
-        if (end != env && v >= 1 && v <= 8)
-            return (size_t) v;
+    static size_t cached = 0; /* 0 = env not parsed yet */
+    if (cached == 0) {
+        size_t      v   = 2;
+        const char *env = getenv("GEIST_FFN_TILE_BLOCKS");
+        if (env != nullptr && env[0] != '\0') {
+            char               *end = nullptr;
+            const unsigned long u   = strtoul(env, &end, 10);
+            if (end != env && u >= 1 && u <= 8)
+                v = (size_t) u;
+        }
+        cached = v;
     }
-    return 2;
+    return cached;
 }
 
 [[nodiscard]] enum geist_status cpu_neon_ffn_geglu_q4q6_mN(struct geist_backend      *be,
@@ -425,6 +430,12 @@ static void attention_set_omp_schedule(void) {
 }
 #endif
 
+/* Score scratch for the SDPA kernels below — grown on demand and kept for
+ * the thread's lifetime instead of a heap round-trip per attention call
+ * (one per layer per forward pass). */
+static _Thread_local float *tls_score_arena     = nullptr;
+static _Thread_local size_t tls_score_arena_cap = 0;
+
 static bool attention_mqa1_causal_kv_neon(const float *q,
                                           const float *k,
                                           const float *v,
@@ -448,11 +459,11 @@ static bool attention_mqa1_causal_kv_neon(const float *q,
 #ifdef _OPENMP
     n_threads = (size_t) omp_get_max_threads();
 #endif
-    float *score_arena = heap_alloc_array_aligned(float, n_threads *n_kv);
-    if (score_arena == nullptr) {
+    if (!grow_f32(&tls_score_arena, &tls_score_arena_cap, n_threads * n_kv)) {
         return false;
     }
-    const bool hd256 = head_dim == 256;
+    float     *score_arena = tls_score_arena;
+    const bool hd256       = head_dim == 256;
 
 #ifdef _OPENMP
     attention_set_omp_schedule();
@@ -556,7 +567,6 @@ static bool attention_mqa1_causal_kv_neon(const float *q,
     }
 #endif
 
-    safe_free((void **) &score_arena);
     return true;
 }
 
@@ -585,10 +595,10 @@ static bool attention_mqa_causal_kv_neon(const float *q,
 #ifdef _OPENMP
     n_threads = (size_t) omp_get_max_threads();
 #endif
-    float *score_arena = heap_alloc_array_aligned(float, n_threads *n_kv);
-    if (score_arena == nullptr) {
+    if (!grow_f32(&tls_score_arena, &tls_score_arena_cap, n_threads * n_kv)) {
         return false;
     }
+    float *score_arena = tls_score_arena;
 
 #ifdef _OPENMP
     attention_set_omp_schedule();
@@ -681,7 +691,6 @@ static bool attention_mqa_causal_kv_neon(const float *q,
     }
 #endif
 
-    safe_free((void **) &score_arena);
     return true;
 }
 #endif
