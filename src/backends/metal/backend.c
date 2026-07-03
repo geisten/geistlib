@@ -703,6 +703,13 @@ struct metal_state {
     void *attn_flash_sg_f16_library;
     void *attention_qnorm_flash_sg_f16_function;
     void *attention_qnorm_flash_sg_f16_pipeline;
+    void *attention_flash_sg_f16_function;
+    void *attention_flash_sg_f16_pipeline;
+    /* persistent f32->f16 K/V staging for the plain flash path (main's
+     * engine keeps the KV cache f32). */
+    struct geist_buffer *attn_kf16_buffer;
+    struct geist_buffer *attn_vf16_buffer;
+    size_t attn_kvf16_capacity;
     void *attn_dec_combine_library;
     void *attention_dec_combine_function;
     void *attention_dec_combine_pipeline;
@@ -1695,6 +1702,30 @@ static const char metal_attn_flash_sg_f16_source_a[] =
     "uint span=thi+1u-tlo,nfull=span/32u,rem=span%32u;"
     "uint nit=nfull+(rem>0u?1u:0u);";
 
+/* No-norm variant for main's contract: the engine applies q-norm and rope
+ * as separate ops, so this head loads Q as a plain half copy. The main
+ * loop is byte-identical — metal_attn_flash_sg_f16_source_b is appended
+ * after this head a second time at library init. */
+static const char metal_attn_flash_sg_f16_plain_head[] =
+    "kernel void attention_flash_sg_f16(device const float*q[[buffer(0)]],device const half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device float*y[[buffer(3)]],constant A&p[[buffer(4)]],uint2 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint sg[[simdgroup_index_in_threadgroup]],uint ln[[thread_index_in_simdgroup]]){"
+    "threadgroup half Qt[2048];threadgroup float Sred[1024];threadgroup float Sf[256];threadgroup half Pt[256];threadgroup float Mt[8];threadgroup float Lt[8];threadgroup float Dg[64];threadgroup float Mn[8];"
+    "uint hd=p.hd,h=tg.y,q0=tg.x*8u;"
+    "uint kvh=h/(p.qh/p.kvh),kstr=p.kvh*hd;"
+    "for(uint rr=0u;rr<2u;rr++){"
+    "uint r=sg*2u+rr,row=q0+r,base=p.qo+row*p.qh*hd+h*hd;"
+    "for(uint i=ln;i<hd;i+=32u){Qt[r*hd+i]=half(q[base+i]);}}"
+    "if(lid<8u){Mt[lid]=-3.402823466e+38f;Lt[lid]=0.0f;}"
+    "if(lid<64u)Dg[lid]=0.0f;"
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"
+    "uint slc=hd/4u,c0=sg*slc,nO=slc/8u;"
+    "simdgroup_float8x8 O[8];for(uint i=0u;i<8u;i++)O[i]=make_filled_simdgroup_matrix<float,8>(0.0f);"
+    "uint qmax=p.qpos+q0+7u;"
+    "uint thi=qmax<p.kv_len?qmax:p.kv_len-1u;"
+    "uint qp0=p.qpos+q0;"
+    "uint tlo=(p.sw>0u&&qp0+1u>p.sw)?qp0+1u-p.sw:0u;"
+    "uint span=thi+1u-tlo,nfull=span/32u,rem=span%32u;"
+    "uint nit=nfull+(rem>0u?1u:0u);";
+
 static const char metal_attn_flash_sg_f16_source_b[] =
     "for(uint it=0u;it<nit;it++){"
     "uint t0=(it<nfull)?tlo+it*32u:(thi+1u>=32u?thi+1u-32u:0u);"
@@ -2295,6 +2326,11 @@ static void metal_destroy_state(struct geist_backend *be,
     metal_buffer_destroy_internal(be, st->q4k_w4a8_scale_buffer);
     metal_buffer_destroy_internal(be, st->attn_dec_partials_buffer);
     st->attn_dec_partials_buffer = nullptr;
+    metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
+    metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
+    st->attn_kf16_buffer = nullptr;
+    st->attn_vf16_buffer = nullptr;
+    st->attn_kvf16_capacity = 0;
     st->attn_dec_partials_capacity = 0;
     st->q4k_w4a8_xq_buffer = nullptr;
     st->q4k_w4a8_scale_buffer = nullptr;
@@ -2345,6 +2381,10 @@ static void metal_destroy_state(struct geist_backend *be,
         metal_msg_send_void0(st, st->attention_qnorm_flash_sg_f16_pipeline,
                              "release");
         metal_msg_send_void0(st, st->attention_qnorm_flash_sg_f16_function,
+                             "release");
+        metal_msg_send_void0(st, st->attention_flash_sg_f16_pipeline,
+                             "release");
+        metal_msg_send_void0(st, st->attention_flash_sg_f16_function,
                              "release");
         metal_msg_send_void0(st, st->kv_append_rows_pipeline, "release");
         metal_msg_send_void0(st, st->kv_append_rows_function, "release");
@@ -4527,7 +4567,8 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
     if (s == GEIST_OK) {
         const size_t len_a = strlen(metal_attn_flash_sg_f16_source_a);
         const size_t len_b = strlen(metal_attn_flash_sg_f16_source_b);
-        char *flash_src = malloc(len_a + len_b + 1u);
+        const size_t len_c = strlen(metal_attn_flash_sg_f16_plain_head);
+        char *flash_src = malloc(len_a + 2u * len_b + len_c + 1u);
         if (flash_src == nullptr) {
             geist_backend_set_error(
                 be, GEIST_E_OOM,
@@ -4535,8 +4576,11 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
             return GEIST_E_OOM;
         }
         memcpy(flash_src, metal_attn_flash_sg_f16_source_a, len_a);
-        memcpy(flash_src + len_a, metal_attn_flash_sg_f16_source_b,
-               len_b + 1u);
+        memcpy(flash_src + len_a, metal_attn_flash_sg_f16_source_b, len_b);
+        memcpy(flash_src + len_a + len_b, metal_attn_flash_sg_f16_plain_head,
+               len_c);
+        memcpy(flash_src + len_a + len_b + len_c,
+               metal_attn_flash_sg_f16_source_b, len_b + 1u);
         source = metal_msg_send_id_cstr(
             st, ns_string, "stringWithUTF8String:", flash_src);
         free(flash_src);
@@ -4564,6 +4608,13 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
             "attention_qnorm_flash_sg_f16",
             &st->attention_qnorm_flash_sg_f16_function,
             &st->attention_qnorm_flash_sg_f16_pipeline);
+        if (s == GEIST_OK) {
+            s = metal_create_named_pipeline(
+                be, st->attn_flash_sg_f16_library, ns_string,
+                "attention_flash_sg_f16",
+                &st->attention_flash_sg_f16_function,
+                &st->attention_flash_sg_f16_pipeline);
+        }
     }
     return s;
 }
@@ -6431,6 +6482,113 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     return GEIST_OK;
 }
 
+/* rows>1 f32-KV fast path: convert K/V to persistent f16 staging (one
+ * kv_append_rows_f16 dispatch) and run the no-norm simdgroup flash kernel.
+ * The scalar f32 kernel this replaces is the dominant prefill cost; the
+ * conversion is ~1%% of the savings. Serial-encoder ordering makes the
+ * staging reuse across layers safe. */
+[[nodiscard]] static enum geist_status metal_attention_flash_f32kv(
+    struct geist_backend *be,
+    struct metal_state *st,
+    const struct geist_tensor *q,
+    const struct geist_tensor *k,
+    const struct geist_tensor *value,
+    struct geist_tensor *out,
+    size_t q_rows, size_t k_rows, size_t q_heads, size_t k_heads,
+    size_t head_dim, size_t q_offset, size_t sliding_window,
+    size_t q_off, size_t k_off, size_t v_off, size_t out_off) {
+
+    const size_t kv_out = k_heads * head_dim;
+    const size_t elems = k_rows * kv_out;
+    const size_t f16_bytes = elems * 2u;
+    if (st->attn_kvf16_capacity < f16_bytes) {
+        metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
+        metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
+        st->attn_kf16_buffer = nullptr;
+        st->attn_vf16_buffer = nullptr;
+        st->attn_kvf16_capacity = 0;
+        const size_t cap = f16_bytes * 2u; /* headroom: no regrow per chunk */
+        enum geist_status bs = metal_new_buffer(
+            be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_kf16_buffer);
+        if (bs == GEIST_OK) {
+            bs = metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true,
+                                  &st->attn_vf16_buffer);
+        }
+        if (bs != GEIST_OK) {
+            metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
+            st->attn_kf16_buffer = nullptr;
+            return bs;
+        }
+        st->attn_kvf16_capacity = cap;
+    }
+    struct {
+        uint32_t elems, kv_out, k_offset, v_offset, k_cache_offset,
+            v_cache_offset, q_position;
+    } ap = {(uint32_t) elems, (uint32_t) kv_out, (uint32_t) k_off,
+            (uint32_t) v_off, 0u, 0u, 0u};
+    struct {
+        uint32_t rows, kv_len, qh, kvh, hd, qpos, sw, qo, kco, vco, yo;
+    } fp = {(uint32_t) q_rows, (uint32_t) k_rows, (uint32_t) q_heads,
+            (uint32_t) k_heads, (uint32_t) head_dim, (uint32_t) q_offset,
+            (uint32_t) sliding_window, (uint32_t) q_off, 0u, 0u,
+            (uint32_t) out_off};
+
+    void *cmd = nullptr;
+    void *enc = nullptr;
+    if (st->sequence_active) {
+        if (st->sequence_compute_encoder == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+        enc = st->sequence_compute_encoder;
+    } else {
+        cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+        enc = cmd != nullptr
+                  ? metal_msg_send_id0(st, cmd, "computeCommandEncoder")
+                  : nullptr;
+        if (cmd == nullptr || enc == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+    }
+    (void) metal_msg_send_id_id(st, enc, "setComputePipelineState:",
+                                st->kv_append_rows_f16_pipeline);
+    metal_msg_send_set_buffer(st, enc, k->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, value->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, st->attn_kf16_buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, st->attn_vf16_buffer->buffer, 0, 3);
+    metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 4);
+    const struct metal_size cgroups = {(elems + 255u) / 256u, 1, 1};
+    const struct metal_size cthreads = {256, 1, 1};
+    metal_msg_send_dispatch(st, enc, cgroups, cthreads);
+
+    (void) metal_msg_send_id_id(st, enc, "setComputePipelineState:",
+                                st->attention_flash_sg_f16_pipeline);
+    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, st->attn_kf16_buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, st->attn_vf16_buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, 0, 3);
+    metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
+    const struct metal_size fgroups = {q_rows / 8u, q_heads, 1};
+    const struct metal_size fthreads = {128, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS,
+                               fgroups);
+    metal_msg_send_dispatch(st, enc, fgroups, fthreads);
+
+    if (st->sequence_active) {
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    metal_msg_send_void0(st, enc, "endEncoding");
+    metal_msg_send_void0(st, cmd, "commit");
+    metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    void *err = metal_msg_send_id0(st, cmd, "error");
+    if (err != nullptr) {
+        geist_backend_set_error(be, GEIST_E_BACKEND,
+                                "metal flash attention: command failed");
+        return GEIST_E_BACKEND;
+    }
+    return GEIST_OK;
+}
+
 [[nodiscard]] static enum geist_status metal_attention(
     struct geist_backend *be,
     const struct geist_tensor *q,
@@ -6526,6 +6684,20 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     enum geist_status s = metal_ensure_attention_pipeline(be);
     if (s != GEIST_OK) { return s; }
     struct metal_state *st = be->state;
+    if (kv_is_f32 && q_rows > 1u && (q_rows % 8u) == 0u &&
+        head_dim <= 256u && (head_dim % 32u) == 0u && k_rows >= 32u &&
+        st->attention_flash_sg_f16_pipeline != nullptr &&
+        st->kv_append_rows_f16_pipeline != nullptr &&
+        !metal_env_disabled("GEIST_METAL_FLASH")) {
+        s = metal_attention_flash_f32kv(be, st, q, k, value, out, q_rows,
+                                        k_rows, q_heads, k_heads, head_dim,
+                                        q_offset, sliding_window, q_off,
+                                        k_off, v_off, out_off);
+        if (s == GEIST_OK) {
+            return GEIST_OK;
+        }
+        /* fall through to the scalar kernel on failure */
+    }
     const struct metal_attention_params params = {
         .rows = (uint32_t) q_rows,
         .kv_len = (uint32_t) k_rows,
