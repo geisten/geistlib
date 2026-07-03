@@ -14,6 +14,7 @@
 #include "quant.h"
 #include "heap.h"
 #include "metal_legacy_ops.h"
+#include <math.h>
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -514,12 +515,25 @@ struct metal_decode_replay_op {
     } u;
 };
 
+/* Registry entry mapping a live buffer's host contents range back to its
+ * geist_buffer, so resolver-installed linear kernels can translate the raw
+ * host pointers main's engine passes (buffer_map aliases, w->raw) into
+ * (MTLBuffer, offset) pairs for GPU dispatch. */
+struct metal_buf_reg_entry {
+    const uint8_t *base;
+    size_t bytes;
+    struct geist_buffer *buf;
+};
+
 struct metal_state {
     struct geist_backend *backend;
     void *metal_handle;
     void *objc_handle;
     void *device;
     void *command_queue;
+    struct metal_buf_reg_entry *buf_reg;
+    size_t buf_reg_count;
+    size_t buf_reg_cap;
     void *q4k_library;
     void *q4k_n4_library;
     void *q4k_nt4_library;
@@ -1209,7 +1223,7 @@ static const char metal_q4k_ple_gate_nt8_source[] =
     "static inline uint u32(device const uchar*w,uint o){return uint(w[o])|(uint(w[o+1])<<8)|(uint(w[o+2])<<16)|(uint(w[o+3])<<24);}\n"
     "static inline float f32(device const uchar*w,uint o){return as_type<float>(u32(w,o));}\n"
     "static inline float dq(device const uchar*w,constant P&p,uint r,uint k){uint nt=r>>2u,nr=r&3u,br=k>>8u,ib=k&255u,sub=ib>>5u,bo=p.wo+24u+((nt*p.bpr+br)*4u+nr)*280u;float d=f32(w,bo),dm=f32(w,bo+4u),sc=float(w[bo+8u+sub]),mn=float(w[bo+16u+sub]),q=float(w[bo+24u+ib]);return d*sc*q-dm*mn;}\n"
-    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(0.7978845608028654f*(x+0.044715f*x*x*x)));}\n"
+    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(clamp(0.7978845608028654f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}\n"
     "kernel void ple_gate_q4k_nt8(device const float*x[[buffer(0)]],device const uchar*w[[buffer(1)]],device const float*ple[[buffer(2)]],device float*y[[buffer(3)]],constant P&p[[buffer(4)]],uint3 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint sg[[simdgroup_index_in_threadgroup]],uint sl[[thread_index_in_simdgroup]]){threadgroup float p0[4],p1[4],p2[4],p3[4],p4[4],p5[4],p6[4],p7[4];uint r0=tg.x*8u,b=tg.y;if(r0>=p.no||b>=p.rows)return;if(lid<4u){p0[lid]=0.0f;p1[lid]=0.0f;p2[lid]=0.0f;p3[lid]=0.0f;p4[lid]=0.0f;p5[lid]=0.0f;p6[lid]=0.0f;p7[lid]=0.0f;}threadgroup_barrier(mem_flags::mem_threadgroup);bool h1=r0+1u<p.no,h2=r0+2u<p.no,h3=r0+3u<p.no,h4=r0+4u<p.no,h5=r0+5u<p.no,h6=r0+6u<p.no,h7=r0+7u<p.no;float s0=0.0f,s1=0.0f,s2=0.0f,s3=0.0f,s4=0.0f,s5=0.0f,s6=0.0f,s7=0.0f;for(uint k=lid;k<p.ni;k+=64u){float xv=x[p.xo+b*p.xs+k];s0+=xv*dq(w,p,r0,k);if(h1)s1+=xv*dq(w,p,r0+1u,k);if(h2)s2+=xv*dq(w,p,r0+2u,k);if(h3)s3+=xv*dq(w,p,r0+3u,k);if(h4)s4+=xv*dq(w,p,r0+4u,k);if(h5)s5+=xv*dq(w,p,r0+5u,k);if(h6)s6+=xv*dq(w,p,r0+6u,k);if(h7)s7+=xv*dq(w,p,r0+7u,k);}float t0=simd_sum(s0),t1=simd_sum(s1),t2=simd_sum(s2),t3=simd_sum(s3),t4=simd_sum(s4),t5=simd_sum(s5),t6=simd_sum(s6),t7=simd_sum(s7);if(sl==0u&&sg<4u){p0[sg]=t0;p1[sg]=t1;p2[sg]=t2;p3[sg]=t3;p4[sg]=t4;p5[sg]=t5;p6[sg]=t6;p7[sg]=t7;}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid==0u){uint po=p.po+b*p.ps+r0,o=p.yo+b*p.ys+r0;y[o]=gelu(p0[0]+p0[1]+p0[2]+p0[3])*ple[po];if(h1)y[o+1u]=gelu(p1[0]+p1[1]+p1[2]+p1[3])*ple[po+1u];if(h2)y[o+2u]=gelu(p2[0]+p2[1]+p2[2]+p2[3])*ple[po+2u];if(h3)y[o+3u]=gelu(p3[0]+p3[1]+p3[2]+p3[3])*ple[po+3u];if(h4)y[o+4u]=gelu(p4[0]+p4[1]+p4[2]+p4[3])*ple[po+4u];if(h5)y[o+5u]=gelu(p5[0]+p5[1]+p5[2]+p5[3])*ple[po+5u];if(h6)y[o+6u]=gelu(p6[0]+p6[1]+p6[2]+p6[3])*ple[po+6u];if(h7)y[o+7u]=gelu(p7[0]+p7[1]+p7[2]+p7[3])*ple[po+7u];}}\n";
 
 static const char metal_q6k_source[] =
@@ -1369,7 +1383,7 @@ static const char metal_q4k_gate_up_w4a8_source[] =
     "static inline float f32(device const uchar*w,uint o){return as_type<float>(u32(w,o));}\n"
     "static inline int lx(device const uint*xq,uint i){uint word=xq[i>>2u],u=(word>>((i&3u)*8u))&255u;return u<128u?int(u):int(u)-256;}\n"
     "static inline float qw(device const uchar*w,uint wo,uint bpr,uint r,uint k){uint nt=r>>2u,nr=r&3u,br=k>>8u,ib=k&255u,sub=ib>>5u,bo=wo+24u+((nt*bpr+br)*4u+nr)*280u;float d=f32(w,bo),dm=f32(w,bo+4u),sc=float(w[bo+8u+sub]),mn=float(w[bo+16u+sub]),q=float(w[bo+24u+ib]);return d*sc*q-dm*mn;}\n"
-    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(0.7978845608f*(x+0.044715f*x*x*x)));}\n"
+    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(clamp(0.7978845608f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}\n"
     "kernel void gate_up_q4k_nt4_w4a8(device const uint*xq[[buffer(0)]],device const uchar*wg[[buffer(1)]],device const uchar*wu[[buffer(2)]],device float*gy[[buffer(3)]],device const float*scale[[buffer(4)]],constant GP&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup float g0[64],g1[64],g2[64],g3[64],u0[64],u1[64],u2[64],u3[64];uint r0=tg.x*4u,b=tg.y;if(r0>=p.no||b>=p.rows)return;bool h1=r0+1u<p.no,h2=r0+2u<p.no,h3=r0+3u<p.no;float gs0=0.0f,gs1=0.0f,gs2=0.0f,gs3=0.0f,us0=0.0f,us1=0.0f,us2=0.0f,us3=0.0f;for(uint k=lid;k<p.ni;k+=64u){float xv=float(lx(xq,k));gs0+=xv*qw(wg,p.gw,p.bpr,r0,k);us0+=xv*qw(wu,p.uw,p.bpr,r0,k);if(h1){gs1+=xv*qw(wg,p.gw,p.bpr,r0+1u,k);us1+=xv*qw(wu,p.uw,p.bpr,r0+1u,k);}if(h2){gs2+=xv*qw(wg,p.gw,p.bpr,r0+2u,k);us2+=xv*qw(wu,p.uw,p.bpr,r0+2u,k);}if(h3){gs3+=xv*qw(wg,p.gw,p.bpr,r0+3u,k);us3+=xv*qw(wu,p.uw,p.bpr,r0+3u,k);}}g0[lid]=gs0;g1[lid]=gs1;g2[lid]=gs2;g3[lid]=gs3;u0[lid]=us0;u1[lid]=us1;u2[lid]=us2;u3[lid]=us3;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=32u;st>0u;st>>=1u){if(lid<st){g0[lid]+=g0[lid+st];g1[lid]+=g1[lid+st];g2[lid]+=g2[lid+st];g3[lid]+=g3[lid+st];u0[lid]+=u0[lid+st];u1[lid]+=u1[lid+st];u2[lid]+=u2[lid+st];u3[lid]+=u3[lid+st];}threadgroup_barrier(mem_flags::mem_threadgroup);}float sx=scale[0];if(lid==0u){uint o=p.gy+b*p.ys+r0;gy[o]=gelu(sx*g0[0])*(sx*u0[0]);if(h1)gy[o+1u]=gelu(sx*g1[0])*(sx*u1[0]);if(h2)gy[o+2u]=gelu(sx*g2[0])*(sx*u2[0]);if(h3)gy[o+3u]=gelu(sx*g3[0])*(sx*u3[0]);}}\n";
 
 static const char metal_q4k_gate_up_source[] =
@@ -1379,14 +1393,14 @@ static const char metal_q4k_gate_up_source[] =
     "static inline float lf16(device const uchar*w,uint o){ushort b=ushort(w[o])|(ushort(w[o+1])<<8);return float(as_type<half>(b));}\n"
     "static inline void sm(uint j,device const uchar*q,thread uint&s,thread uint&m){if(j<4){s=uint(q[j])&63u;m=uint(q[j+4])&63u;}else{uint a=uint(q[j+4]),b=uint(q[j-4]),c=uint(q[j]);s=(a&15u)|((b>>6u)<<4u);m=(a>>4u)|((c>>6u)<<4u);}}\n"
     "static inline float dq(device const uchar*w,uint off,uint bpr,uint row,uint k){uint br=k/256u,ib=k-br*256u,sub=ib/32u,idx=ib-sub*32u;uint bo=off+(row*bpr+br)*144u;float d=lf16(w,bo),dm=lf16(w,bo+2u);uint s,m;sm(sub,w+bo+4u,s,m);uint qb=uint(w[bo+16u+(sub/2u)*32u+idx]);uint q=(sub&1u)==0u?(qb&15u):(qb>>4u);return d*float(s)*float(q)-dm*float(m);}\n"
-    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(0.7978845608028654f*(x+0.044715f*x*x*x)));}\n"
+    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(clamp(0.7978845608028654f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}\n"
     "kernel void gate_up_q4k_m8(device const float*x[[buffer(0)]],device const uchar*gw[[buffer(1)]],device const uchar*uw[[buffer(2)]],device float*gy[[buffer(3)]],device float*uy[[buffer(4)]],constant P&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){(void)uy;threadgroup float gp[8][256];threadgroup float up[8][256];uint row=tg.x,bb=tg.y*8u;if(row>=p.n_out||bb>=p.rows){return;}float gs[8],us[8];for(uint m=0u;m<8u;m++){gs[m]=0.0f;us[m]=0.0f;}for(uint k=lid;k<p.n_in;k+=256u){float g=dq(gw,p.gw,p.blocks_per_row,row,k),u=dq(uw,p.uw,p.blocks_per_row,row,k);for(uint m=0u;m<8u;m++){uint b=bb+m;if(b<p.rows){float xv=x[p.x_offset+b*p.xs+k];gs[m]+=xv*g;us[m]+=xv*u;}}}for(uint m=0u;m<8u;m++){gp[m][lid]=gs[m];up[m][lid]=us[m];}threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st){for(uint m=0u;m<8u;m++){gp[m][lid]+=gp[m][lid+st];up[m][lid]+=up[m][lid+st];}}threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid==0u){for(uint m=0u;m<8u;m++){uint b=bb+m;if(b<p.rows){gy[p.gy+b*p.ys+row]=gelu(gp[m][0])*up[m][0];}}}}\n";
 
 static const char metal_q4k_gate_up_n4_source[] =
     "#include <metal_stdlib>\n"
     "using namespace metal;\n"
     "struct P{uint n_in,n_out,rows,bpr,xo,gw,uw,gy,uy,xs,ys;};\n"
-    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(0.7978845608028654f*(x+0.044715f*x*x*x)));}\n"
+    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(clamp(0.7978845608028654f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}\n"
     "static inline float dotb(device const uchar*w,uint off,uint bpr,uint row,uint ib,uint iq,uint ir,thread const float*yl,thread const float*yh,float4 sumy){constexpr ushort km1=0x3f3f,km2=0x0f0f,km3=0xc0c0;device const uchar*wb=w+off+(row*bpr+ib)*144u;device const ushort*sc=(device const ushort*)(wb+4u)+iq;device const ushort*q1=(device const ushort*)(wb+16u)+16u*iq+4u*ir;device const half*dh=(device const half*)wb;ushort sc16[4];thread const uchar*sc8=(thread const uchar*)sc16;sc16[0]=sc[0]&km1;sc16[1]=sc[2]&km1;sc16[2]=((sc[4]>>0)&km2)|((sc[0]&km3)>>2);sc16[3]=((sc[4]>>4)&km2)|((sc[2]&km3)>>2);device const ushort*q2=q1+32u;float4 a1=float4(0.0f),a2=float4(0.0f);for(uint i=0u;i<4u;i++){ushort q=q1[i];a1[0]+=yl[2u*i+0u]*float(q&0x000f);a1[1]+=yl[2u*i+1u]*float(q&0x0f00);a1[2]+=yl[2u*i+8u]*float(q&0x00f0);a1[3]+=yl[2u*i+9u]*float(q&0xf000);q=q2[i];a2[0]+=yh[2u*i+0u]*float(q&0x000f);a2[1]+=yh[2u*i+1u]*float(q&0x0f00);a2[2]+=yh[2u*i+8u]*float(q&0x00f0);a2[3]+=yh[2u*i+9u]*float(q&0xf000);}return float(dh[0])*((a1[0]+(1.0f/256.0f)*a1[1])*float(sc8[0])+(a1[2]+(1.0f/256.0f)*a1[3])*float(sc8[1])*(1.0f/16.0f)+(a2[0]+(1.0f/256.0f)*a2[1])*float(sc8[4])+(a2[2]+(1.0f/256.0f)*a2[3])*float(sc8[5])*(1.0f/16.0f))-float(dh[1])*(sumy[0]*float(sc8[2])+sumy[1]*float(sc8[3])+sumy[2]*float(sc8[6])+sumy[3]*float(sc8[7]));}\n"
     "kernel void gate_up_q4k_n4(device const float*x[[buffer(0)]],device const uchar*wg[[buffer(1)]],device const uchar*wu[[buffer(2)]],device float*gy[[buffer(3)]],device float*uy[[buffer(4)]],constant P&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){(void)uy;uint ix=uint(ti)/8u,it=uint(ti)&7u,iq=it>>2u,ir=it&3u,b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.n_out||b>=p.rows)return;uint nb=p.n_in>>8u;float g0=0.0f,g1=0.0f,u0=0.0f,u1=0.0f;device const float*y4=x+p.xo+b*p.xs+ix*256u+64u*iq+8u*ir;for(uint ib=ix;ib<nb;ib+=4u){float yl[16],yh[16];float4 sumy=float4(0.0f);for(uint i=0u;i<8u;i++){yl[i]=y4[i];sumy[0]+=yl[i];yl[i+8u]=y4[i+32u];sumy[1]+=yl[i+8u];yh[i]=y4[i+128u];sumy[2]+=yh[i];yh[i+8u]=y4[i+160u];sumy[3]+=yh[i+8u];}if(fr<p.n_out){g0+=dotb(wg,p.gw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);u0+=dotb(wu,p.uw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);}if(fr+1u<p.n_out){g1+=dotb(wg,p.gw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);u1+=dotb(wu,p.uw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);}y4+=1024u;}float ag0=simd_sum(g0),au0=simd_sum(u0),ag1=simd_sum(g1),au1=simd_sum(u1);if(ti==0){uint go=p.gy+b*p.ys+fr;gy[go]=gelu(ag0)*au0;if(fr+1u<p.n_out)gy[go+1u]=gelu(ag1)*au1;}}\n";
 
@@ -1397,7 +1411,7 @@ static const char metal_q4k_gate_up_nt4_source[] =
     "static inline uint u32(device const uchar*w,uint o){return uint(w[o])|(uint(w[o+1])<<8)|(uint(w[o+2])<<16)|(uint(w[o+3])<<24);}\n"
     "static inline float f32(device const uchar*w,uint o){return as_type<float>(u32(w,o));}\n"
     "static inline float dq(device const uchar*w,uint off,uint bpr,uint r,uint k){uint nt=r>>2u,nr=r&3u,br=k>>8u,ib=k&255u,sub=ib>>5u,bo=off+24u+((nt*bpr+br)*4u+nr)*280u;float d=f32(w,bo),dm=f32(w,bo+4u),sc=float(w[bo+8u+sub]),mn=float(w[bo+16u+sub]),q=float(w[bo+24u+ib]);return d*sc*q-dm*mn;}\n"
-    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(0.7978845608028654f*(x+0.044715f*x*x*x)));}\n"
+    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(clamp(0.7978845608028654f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}\n"
     "kernel void gate_up_q4k_nt4(device const float*x[[buffer(0)]],device const uchar*wg[[buffer(1)]],device const uchar*wu[[buffer(2)]],device float*gy[[buffer(3)]],device float*uy[[buffer(4)]],constant P&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){(void)uy;threadgroup float g0[64],g1[64],g2[64],g3[64],u0[64],u1[64],u2[64],u3[64];uint r0=tg.x*4u,b=tg.y;if(r0>=p.n_out||b>=p.rows)return;bool h1=r0+1u<p.n_out,h2=r0+2u<p.n_out,h3=r0+3u<p.n_out;float gs0=0.0f,gs1=0.0f,gs2=0.0f,gs3=0.0f,us0=0.0f,us1=0.0f,us2=0.0f,us3=0.0f;for(uint k=lid;k<p.n_in;k+=64u){float xv=x[p.xo+b*p.xs+k];gs0+=xv*dq(wg,p.gw,p.bpr,r0,k);us0+=xv*dq(wu,p.uw,p.bpr,r0,k);if(h1){gs1+=xv*dq(wg,p.gw,p.bpr,r0+1u,k);us1+=xv*dq(wu,p.uw,p.bpr,r0+1u,k);}if(h2){gs2+=xv*dq(wg,p.gw,p.bpr,r0+2u,k);us2+=xv*dq(wu,p.uw,p.bpr,r0+2u,k);}if(h3){gs3+=xv*dq(wg,p.gw,p.bpr,r0+3u,k);us3+=xv*dq(wu,p.uw,p.bpr,r0+3u,k);}}g0[lid]=gs0;g1[lid]=gs1;g2[lid]=gs2;g3[lid]=gs3;u0[lid]=us0;u1[lid]=us1;u2[lid]=us2;u3[lid]=us3;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=32u;st>0u;st>>=1u){if(lid<st){g0[lid]+=g0[lid+st];g1[lid]+=g1[lid+st];g2[lid]+=g2[lid+st];g3[lid]+=g3[lid+st];u0[lid]+=u0[lid+st];u1[lid]+=u1[lid+st];u2[lid]+=u2[lid+st];u3[lid]+=u3[lid+st];}threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid==0u){uint go=p.gy+b*p.ys+r0;gy[go]=gelu(g0[0])*u0[0];if(h1)gy[go+1u]=gelu(g1[0])*u1[0];if(h2)gy[go+2u]=gelu(g2[0])*u2[0];if(h3)gy[go+3u]=gelu(g3[0])*u3[0];}}\n";
 
 static const char metal_q4k_gate_up_nt8_source[] =
@@ -1407,7 +1421,7 @@ static const char metal_q4k_gate_up_nt8_source[] =
     "static inline uint u32(device const uchar*w,uint o){return uint(w[o])|(uint(w[o+1])<<8)|(uint(w[o+2])<<16)|(uint(w[o+3])<<24);}\n"
     "static inline float f32(device const uchar*w,uint o){return as_type<float>(u32(w,o));}\n"
     "static inline float dq(device const uchar*w,uint off,uint bpr,uint r,uint k){uint nt=r>>2u,nr=r&3u,br=k>>8u,ib=k&255u,sub=ib>>5u,bo=off+24u+((nt*bpr+br)*4u+nr)*280u;float d=f32(w,bo),dm=f32(w,bo+4u),sc=float(w[bo+8u+sub]),mn=float(w[bo+16u+sub]),q=float(w[bo+24u+ib]);return d*sc*q-dm*mn;}\n"
-    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(0.7978845608028654f*(x+0.044715f*x*x*x)));}\n"
+    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(clamp(0.7978845608028654f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}\n"
     "kernel void gate_up_q4k_nt8(device const float*x[[buffer(0)]],device const uchar*wg[[buffer(1)]],device const uchar*wu[[buffer(2)]],device float*gy[[buffer(3)]],device float*uy[[buffer(4)]],constant P&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint sg[[simdgroup_index_in_threadgroup]],uint sl[[thread_index_in_simdgroup]]){(void)uy;threadgroup float g0[4],g1[4],g2[4],g3[4],g4[4],g5[4],g6[4],g7[4],u0[4],u1[4],u2[4],u3[4],u4[4],u5[4],u6[4],u7[4];uint r0=tg.x*8u,b=tg.y;if(r0>=p.n_out||b>=p.rows)return;if(lid<4u){g0[lid]=0.0f;g1[lid]=0.0f;g2[lid]=0.0f;g3[lid]=0.0f;g4[lid]=0.0f;g5[lid]=0.0f;g6[lid]=0.0f;g7[lid]=0.0f;u0[lid]=0.0f;u1[lid]=0.0f;u2[lid]=0.0f;u3[lid]=0.0f;u4[lid]=0.0f;u5[lid]=0.0f;u6[lid]=0.0f;u7[lid]=0.0f;}threadgroup_barrier(mem_flags::mem_threadgroup);bool h1=r0+1u<p.n_out,h2=r0+2u<p.n_out,h3=r0+3u<p.n_out,h4=r0+4u<p.n_out,h5=r0+5u<p.n_out,h6=r0+6u<p.n_out,h7=r0+7u<p.n_out;float gs0=0.0f,gs1=0.0f,gs2=0.0f,gs3=0.0f,gs4=0.0f,gs5=0.0f,gs6=0.0f,gs7=0.0f,us0=0.0f,us1=0.0f,us2=0.0f,us3=0.0f,us4=0.0f,us5=0.0f,us6=0.0f,us7=0.0f;for(uint k=lid;k<p.n_in;k+=64u){float xv=x[p.xo+b*p.xs+k];gs0+=xv*dq(wg,p.gw,p.bpr,r0,k);us0+=xv*dq(wu,p.uw,p.bpr,r0,k);if(h1){gs1+=xv*dq(wg,p.gw,p.bpr,r0+1u,k);us1+=xv*dq(wu,p.uw,p.bpr,r0+1u,k);}if(h2){gs2+=xv*dq(wg,p.gw,p.bpr,r0+2u,k);us2+=xv*dq(wu,p.uw,p.bpr,r0+2u,k);}if(h3){gs3+=xv*dq(wg,p.gw,p.bpr,r0+3u,k);us3+=xv*dq(wu,p.uw,p.bpr,r0+3u,k);}if(h4){gs4+=xv*dq(wg,p.gw,p.bpr,r0+4u,k);us4+=xv*dq(wu,p.uw,p.bpr,r0+4u,k);}if(h5){gs5+=xv*dq(wg,p.gw,p.bpr,r0+5u,k);us5+=xv*dq(wu,p.uw,p.bpr,r0+5u,k);}if(h6){gs6+=xv*dq(wg,p.gw,p.bpr,r0+6u,k);us6+=xv*dq(wu,p.uw,p.bpr,r0+6u,k);}if(h7){gs7+=xv*dq(wg,p.gw,p.bpr,r0+7u,k);us7+=xv*dq(wu,p.uw,p.bpr,r0+7u,k);}}float tg0=simd_sum(gs0),tg1=simd_sum(gs1),tg2=simd_sum(gs2),tg3=simd_sum(gs3),tg4=simd_sum(gs4),tg5=simd_sum(gs5),tg6=simd_sum(gs6),tg7=simd_sum(gs7),tu0=simd_sum(us0),tu1=simd_sum(us1),tu2=simd_sum(us2),tu3=simd_sum(us3),tu4=simd_sum(us4),tu5=simd_sum(us5),tu6=simd_sum(us6),tu7=simd_sum(us7);if(sl==0u&&sg<4u){g0[sg]=tg0;g1[sg]=tg1;g2[sg]=tg2;g3[sg]=tg3;g4[sg]=tg4;g5[sg]=tg5;g6[sg]=tg6;g7[sg]=tg7;u0[sg]=tu0;u1[sg]=tu1;u2[sg]=tu2;u3[sg]=tu3;u4[sg]=tu4;u5[sg]=tu5;u6[sg]=tu6;u7[sg]=tu7;}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid==0u){uint go=p.gy+b*p.ys+r0;gy[go]=gelu(g0[0]+g0[1]+g0[2]+g0[3])*(u0[0]+u0[1]+u0[2]+u0[3]);if(h1)gy[go+1u]=gelu(g1[0]+g1[1]+g1[2]+g1[3])*(u1[0]+u1[1]+u1[2]+u1[3]);if(h2)gy[go+2u]=gelu(g2[0]+g2[1]+g2[2]+g2[3])*(u2[0]+u2[1]+u2[2]+u2[3]);if(h3)gy[go+3u]=gelu(g3[0]+g3[1]+g3[2]+g3[3])*(u3[0]+u3[1]+u3[2]+u3[3]);if(h4)gy[go+4u]=gelu(g4[0]+g4[1]+g4[2]+g4[3])*(u4[0]+u4[1]+u4[2]+u4[3]);if(h5)gy[go+5u]=gelu(g5[0]+g5[1]+g5[2]+g5[3])*(u5[0]+u5[1]+u5[2]+u5[3]);if(h6)gy[go+6u]=gelu(g6[0]+g6[1]+g6[2]+g6[3])*(u6[0]+u6[1]+u6[2]+u6[3]);if(h7)gy[go+7u]=gelu(g7[0]+g7[1]+g7[2]+g7[3])*(u7[0]+u7[1]+u7[2]+u7[3]);}}\n";
 
 static const char metal_q4k_qk_source[] =
@@ -1430,7 +1444,7 @@ static const char metal_elem_source[] =
     "struct Bin{uint rows,cols,a_offset,b_offset,y_offset,a_row_stride,b_row_stride,y_row_stride;};\n"
     "struct Sc{uint rows,cols,x_offset,y_offset,x_row_stride,y_row_stride;float scale;};\n"
     "struct Post{uint rows,cols,residual_offset,x_offset,w_offset,y_offset,residual_row_stride,x_row_stride,y_row_stride;float eps;};\n"
-    "static inline float gelu_tanh_f(float x){return 0.5f*x*(1.0f+tanh(0.7978845608028654f*(x+0.044715f*x*x*x)));}\n"
+    "static inline float gelu_tanh_f(float x){return 0.5f*x*(1.0f+tanh(clamp(0.7978845608028654f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}\n"
     "kernel void rmsnorm_rows(device const float*x[[buffer(0)]],device const float*w[[buffer(1)]],device float*y[[buffer(2)]],constant Rows&p[[buffer(3)]],uint row[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){\n"
     "    threadgroup float partial[256];if(row>=p.rows){return;}float ss=0.0f;for(uint c=lid;c<p.cols;c+=256u){float v=x[p.x_offset+row*p.x_row_stride+c];ss+=v*v;}partial[lid]=ss;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint s=128u;s>0u;s>>=1u){if(lid<s){partial[lid]+=partial[lid+s];}threadgroup_barrier(mem_flags::mem_threadgroup);}float inv=rsqrt(partial[0]/float(p.cols)+p.eps);for(uint c=lid;c<p.cols;c+=256u){y[p.y_offset+row*p.y_row_stride+c]=x[p.x_offset+row*p.x_row_stride+c]*inv*w[p.w_offset+c];}\n"
     "}\n"
@@ -1484,7 +1498,7 @@ static const char metal_f32_source[] =
     "struct P{uint ni,no,rows,xo,wo,yo,xs,ys;};\n"
     "struct GP{uint ni,no,rows,xo,wo,po,yo,xs,ps,ys;};\n"
     "struct PN{uint ni,no,rows,xo,wo,ro,nwo,yo,xs,rs,ys;float eps;};\n"
-    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(0.7978845608028654f*(x+0.044715f*x*x*x)));}\n"
+    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(clamp(0.7978845608028654f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}\n"
     "kernel void matmul_f32(device const float*x[[buffer(0)]],device const float*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup float part[256];uint row=tg.x,b=tg.y;if(row>=p.no||b>=p.rows)return;float s=0.0f;for(uint k=lid;k<p.ni;k+=256u){s+=x[p.xo+b*p.xs+k]*w[p.wo+row*p.ni+k];}part[lid]=s;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st){part[lid]+=part[lid+st];}threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid==0u){y[p.yo+b*p.ys+row]=part[0];}}\n"
     "kernel void matmul_f32_sg(device const float*x[[buffer(0)]],device const float*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup float as[64];threadgroup float bs[64];threadgroup float cs[64];uint b0=tg.y*8u,o0=tg.x*8u;simdgroup_float8x8 acc=make_filled_simdgroup_matrix<float,8>(0.0f);for(uint k0=0u;k0<p.ni;k0+=8u){for(uint i=lid;i<64u;i+=32u){uint r=i/8u,c=i%8u;as[i]=(b0+r<p.rows&&k0+c<p.ni)?x[p.xo+(b0+r)*p.xs+k0+c]:0.0f;}for(uint i=lid;i<64u;i+=32u){uint kk=i/8u,c=i%8u;bs[i]=(o0+c<p.no&&k0+kk<p.ni)?w[p.wo+(o0+c)*p.ni+k0+kk]:0.0f;}threadgroup_barrier(mem_flags::mem_threadgroup);simdgroup_float8x8 ma,mb;simdgroup_load(ma,as,8);simdgroup_load(mb,bs,8);simdgroup_multiply_accumulate(acc,ma,mb,acc);threadgroup_barrier(mem_flags::mem_threadgroup);}simdgroup_store(acc,cs,8);threadgroup_barrier(mem_flags::mem_threadgroup);for(uint i=lid;i<64u;i+=32u){uint r=i/8u,c=i%8u;if(b0+r<p.rows&&o0+c<p.no)y[p.yo+(b0+r)*p.ys+o0+c]=cs[i];}}\n"
     "kernel void ple_gate_f32(device const float*x[[buffer(0)]],device const float*w[[buffer(1)]],device const float*ple[[buffer(2)]],device float*y[[buffer(3)]],constant GP&p[[buffer(4)]],uint3 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup float part[256];uint row=tg.x,b=tg.y;if(row>=p.no||b>=p.rows)return;float s=0.0f;for(uint k=lid;k<p.ni;k+=256u){s+=x[p.xo+b*p.xs+k]*w[p.wo+row*p.ni+k];}part[lid]=s;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st){part[lid]+=part[lid+st];}threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid==0u){uint po=p.po+b*p.ps+row;y[p.yo+b*p.ys+row]=gelu(part[0])*ple[po];}}\n"
@@ -2882,6 +2896,10 @@ static void metal_destroy_state(struct geist_backend *be,
         return;
     }
     metal_profile_print_summary(st);
+    free(st->buf_reg);
+    st->buf_reg = nullptr;
+    st->buf_reg_count = 0;
+    st->buf_reg_cap = 0;
     metal_destroy_q4k_nt4_cache(be);
     metal_destroy_q6k_nt4_cache(be);
     metal_buffer_destroy_internal(be, st->q4k_w4a8_xq_buffer);
@@ -3277,6 +3295,59 @@ static bool metal_buffer_wants_host_visible(enum geist_buffer_role role,
     return true;
 }
 
+/* ---- Buffer registry (host contents pointer -> geist_buffer) ---------- */
+
+static void metal_buf_reg_add(struct metal_state *st,
+                              struct geist_buffer *buf) {
+    if (st == nullptr || buf == nullptr || buf->mapped == nullptr) {
+        return;
+    }
+    if (st->buf_reg_count == st->buf_reg_cap) {
+        const size_t ncap = st->buf_reg_cap != 0 ? st->buf_reg_cap * 2 : 64;
+        void *grown = realloc(st->buf_reg, ncap * sizeof(*st->buf_reg));
+        if (grown == nullptr) {
+            return; /* lookup will miss and report loudly */
+        }
+        st->buf_reg = grown;
+        st->buf_reg_cap = ncap;
+    }
+    st->buf_reg[st->buf_reg_count++] = (struct metal_buf_reg_entry){
+        .base = buf->mapped,
+        .bytes = buf->bytes,
+        .buf = buf,
+    };
+}
+
+static void metal_buf_reg_remove(struct metal_state *st,
+                                 const struct geist_buffer *buf) {
+    if (st == nullptr || st->buf_reg == nullptr) {
+        return;
+    }
+    for (size_t i = 0; i < st->buf_reg_count; i++) {
+        if (st->buf_reg[i].buf == buf) {
+            st->buf_reg[i] = st->buf_reg[--st->buf_reg_count];
+            return;
+        }
+    }
+}
+
+static struct geist_buffer *metal_buf_reg_find(struct metal_state *st,
+                                               const void *p,
+                                               size_t *out_off) {
+    if (st == nullptr || p == nullptr) {
+        return nullptr;
+    }
+    const uint8_t *q = p;
+    for (size_t i = 0; i < st->buf_reg_count; i++) {
+        const struct metal_buf_reg_entry *e = &st->buf_reg[i];
+        if (q >= e->base && q < e->base + e->bytes) {
+            *out_off = (size_t) (q - e->base);
+            return e->buf;
+        }
+    }
+    return nullptr;
+}
+
 [[nodiscard]] static enum geist_status metal_new_buffer(
     struct geist_backend *be,
     size_t bytes,
@@ -3343,6 +3414,7 @@ static bool metal_buffer_wants_host_visible(enum geist_buffer_role role,
         .memory_flags = actual_flags,
         .host_visible = host_visible,
     };
+    metal_buf_reg_add(st, buf);
     *out = buf;
     return GEIST_OK;
 }
@@ -3353,6 +3425,7 @@ static void metal_buffer_destroy_internal(struct geist_backend *be,
         return;
     }
     struct metal_state *st = buf->owner;
+    metal_buf_reg_remove(st, buf);
     if (be == nullptr && st != nullptr) {
         be = st->backend;
     }
@@ -3545,6 +3618,7 @@ static void metal_buffer_destroy_internal(struct geist_backend *be,
                         GEIST_MEMORY_ALIASED,
         .host_visible = true,
     };
+    metal_buf_reg_add(st, buf);
     *out = buf;
     return GEIST_OK;
 }
@@ -6195,8 +6269,13 @@ static void metal_encode_q6k_linear(struct metal_state *st,
                              packed != nullptr ? &packed_params : params,
                              sizeof(*params), 3);
 
+    /* The q6k sg kernels are 128-thread / 4-simdgroup with a 32-output x
+     * 64-batch-row tile (b0=tg.y*64, o0=tg.x*32). The old (n_out+7)/8 x
+     * 32-thread dispatch here only ever ran simdgroup 0 — a latent bug the
+     * old engine never hit because its prefill routed q6k through the
+     * fused blocks, not this vtbl op. */
     const struct metal_size groups = {
-        .width = m_tile_sg ? (params->n_out + 7u) / 8u
+        .width = m_tile_sg ? (params->n_out + 31u) / 32u
                  : n_tile8 ? (params->n_out + 7u) / 8u
                  : n_tile4 ? (params->n_out + 3u) / 4u
                          : params->n_out,
@@ -6215,7 +6294,7 @@ static void metal_encode_q6k_linear(struct metal_state *st,
         .width = m_tile_sg ? 32u
                  : (n_tile8 || n_tile4) ? METAL_Q4K_N4_THREADS
                          : METAL_Q4K_THREADS_PER_ROW,
-        .height = 1,
+        .height = m_tile_sg ? 4u : 1,
         .depth = 1,
     };
     const enum metal_profile_stage profile_stage =
@@ -9028,6 +9107,28 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         return GEIST_E_INVALID_ARG;
     }
 
+    {
+        static int dbg = -1;
+        if (dbg < 0) {
+            const char *e = getenv("GEIST_METAL_DEBUG_LINEAR");
+            dbg = (e != nullptr && e[0] != '\0' && strcmp(e, "0") != 0) ? 1 : 0;
+        }
+        if (dbg && x->buffer != nullptr && x->buffer->mapped != nullptr &&
+            cos->buffer != nullptr && cos->buffer->mapped != nullptr) {
+            const float *xp = (const float *) ((const uint8_t *) x->buffer->mapped + x->offset);
+            const float *cp = (const float *) ((const uint8_t *) cos->buffer->mapped + cos->offset);
+            size_t nx = 1, nc = 1;
+            for (int i = 0; i < x->ndim; i++) nx *= (size_t) x->shape[i];
+            for (int i = 0; i < cos->ndim; i++) nc *= (size_t) cos->shape[i];
+            size_t nanx = 0, nanc = 0;
+            for (size_t i = 0; i < nx; i++) if (isnan(xp[i])) nanx++;
+            for (size_t i = 0; i < nc; i++) if (isnan(cp[i])) nanc++;
+            fprintf(stderr, "rope_in x[%lld,%lld,%lld] nanx=%zu cos[%lld,%lld] nanc=%zu xoff=%zu coff=%zu\n",
+                    (long long) x->shape[0], (long long) x->shape[1], (long long) x->shape[2],
+                    nanx, (long long) cos->shape[0], (long long) cos->shape[1], nanc,
+                    x->offset, cos->offset);
+        }
+    }
     size_t rows = 0, heads = 0, head_dim = 0, x_offset = 0;
     size_t cos_rows = 0, cos_cols = 0, cos_offset = 0, cos_stride = 0;
     size_t sin_rows = 0, sin_cols = 0, sin_offset = 0, sin_stride = 0;
@@ -9120,6 +9221,33 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         return GEIST_E_INVALID_ARG;
     }
 
+    {
+        static int dbg = -1;
+        if (dbg < 0) {
+            const char *e = getenv("GEIST_METAL_DEBUG_LINEAR");
+            dbg = (e != nullptr && e[0] != '\0' && strcmp(e, "0") != 0) ? 1 : 0;
+        }
+        if (dbg && q->buffer != nullptr && q->buffer->mapped != nullptr &&
+            k->buffer != nullptr && k->buffer->mapped != nullptr) {
+            const float *qp = (const float *) ((const uint8_t *) q->buffer->mapped + q->offset);
+            const float *kp = (const float *) ((const uint8_t *) k->buffer->mapped + k->offset);
+            size_t nq = 1, nk = 1;
+            for (int i = 0; i < q->ndim; i++) nq *= (size_t) q->shape[i];
+            for (int i = 0; i < k->ndim; i++) nk *= (size_t) k->shape[i];
+            float aq = 0, ak = 0; size_t nanq = 0, nank = 0;
+            for (size_t i = 0; i < nq; i++) { if (isnan(qp[i])) nanq++; else if (fabsf(qp[i]) > aq) aq = fabsf(qp[i]); }
+            for (size_t i = 0; i < nk; i++) { if (isnan(kp[i])) nank++; else if (fabsf(kp[i]) > ak) ak = fabsf(kp[i]); }
+            size_t firstnan = (size_t) -1;
+            for (size_t i = 0; i < nq && firstnan == (size_t) -1; i++)
+                if (isnan(qp[i])) firstnan = i;
+            fprintf(stderr, "attn firstnan_q=%zd (row %zd) ", (ssize_t) firstnan,
+                    firstnan == (size_t) -1 ? (ssize_t) -1 : (ssize_t) (firstnan / ((size_t) q->shape[1] * (size_t) q->shape[2])));
+            fprintf(stderr, "attn q[%lld,%lld,%lld] |q|=%g nanq=%zu k[%lld,..] |k|=%g nank=%zu qoff=%zu sw=%zu kdt=%d\n",
+                    (long long) q->shape[0], (long long) q->shape[1], (long long) q->shape[2],
+                    (double) aq, nanq, (long long) k->shape[0], (double) ak, nank,
+                    q_offset, sliding_window, (int) k->dtype);
+        }
+    }
     size_t q_rows = 0, q_heads = 0, head_dim = 0, q_off = 0;
     size_t k_rows = 0, k_heads = 0, k_head_dim = 0, k_off = 0;
     size_t v_rows = 0, v_heads = 0, v_head_dim = 0, v_off = 0;
@@ -12163,16 +12291,184 @@ static enum geist_support metal_supports_op(
     return GEIST_OK;
 }
 
-/* Stage-1 stub: main resolves each weight to host linear kernels via this
- * hook. Installing nothing leaves linear_m1/mN null → linear_w_or_legacy
- * reports GEIST_E_UNSUPPORTED (clean, no crash). Stage 4 installs GPU
- * GEMM kernels here (wrap w->raw + x/y no-copy as MTLBuffers, encode the
- * mm_sg / q6k kernel, commit, wait — correct on Apple unified memory). */
+/* Resolver-installed GPU linear (main contract). main's engine passes raw
+ * host pointers (buffer_map aliases; w->raw = buffer_map(weight buf) +
+ * view offset). On Apple unified memory every such pointer lives inside a
+ * metal-created SHARED MTLBuffer, so translate them back to (buffer,
+ * offset) via the registry and dispatch the existing GEMM ops (mm_sg /
+ * q6k / f32 simdgroup kernels; standalone command buffer, commit + wait).
+ * rows==1 routes to the matvec kernels inside metal_matmul_*. The kernel
+ * signature has no error path: failures report to stderr and zero y so a
+ * defect is loud in the token-parity gate rather than silent garbage. */
+static void metal_linear_debug_stats(const float *x, size_t nx,
+                                     const float *y, size_t ny,
+                                     const struct geist_weight *w, size_t m);
+
+static void metal_linear_mN(const float *x, const struct geist_weight *w,
+                            size_t m, struct geist_backend *be, float *y) {
+    struct metal_state *st = be->state;
+    const size_t n_in = (size_t) w->n_in;
+    const size_t n_out = (size_t) w->n_out;
+    size_t xo = 0;
+    size_t wo = 0;
+    size_t yo = 0;
+    struct geist_buffer *bx = metal_buf_reg_find(st, x, &xo);
+    struct geist_buffer *bw = metal_buf_reg_find(st, w->raw, &wo);
+    struct geist_buffer *by = metal_buf_reg_find(st, y, &yo);
+    if (bx == nullptr || bw == nullptr || by == nullptr) {
+        /* One of the pointers is plain host memory (the engine passes heap
+         * scratch for small helper projections, e.g. single-row views).
+         * Compute on host — same math as cpu_scalar (dequant row, double
+         * accumulator), so token parity with the CPU backends holds. */
+        float *row = malloc(n_in * sizeof(float));
+        if (row == nullptr) {
+            memset(y, 0, m * n_out * sizeof(float));
+            return;
+        }
+        const uint8_t *base = (const uint8_t *) w->raw;
+        for (size_t j = 0; j < n_out; j++) {
+            switch ((enum geist_dtype) w->dtype) {
+            case GEIST_DTYPE_F32:
+                memcpy(row, base + j * n_in * sizeof(float),
+                       n_in * sizeof(float));
+                break;
+            case GEIST_DTYPE_Q4_K:
+                dequant_q4_K_row(
+                    base + j * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES,
+                    row, n_in);
+                break;
+            case GEIST_DTYPE_Q6_K:
+                dequant_q6_K_row(
+                    base + j * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES,
+                    row, n_in);
+                break;
+            default:
+                memset(row, 0, n_in * sizeof(float));
+                break;
+            }
+            for (size_t i = 0; i < m; i++) {
+                double acc = 0.0;
+                for (size_t k = 0; k < n_in; k++) {
+                    acc += (double) x[i * n_in + k] * (double) row[k];
+                }
+                y[i * n_out + j] = (float) acc;
+            }
+        }
+        free(row);
+        metal_linear_debug_stats(x, m * n_in, y, m * n_out, w, m);
+        return;
+    }
+    struct geist_tensor tx = {
+        .buffer = bx,
+        .offset = xo,
+        .dtype = GEIST_DTYPE_F32,
+        .layout = GEIST_LAYOUT_DENSE,
+        .ndim = 2,
+        .shape = {(int64_t) m, (int64_t) n_in},
+        .stride = {(int64_t) n_in, 1},
+    };
+    struct geist_tensor ty = {
+        .buffer = by,
+        .offset = yo,
+        .dtype = GEIST_DTYPE_F32,
+        .layout = GEIST_LAYOUT_DENSE,
+        .ndim = 2,
+        .shape = {(int64_t) m, (int64_t) n_out},
+        .stride = {(int64_t) n_out, 1},
+    };
+    struct geist_tensor tw = {
+        .buffer = bw,
+        .offset = wo,
+        .dtype = (enum geist_dtype) w->dtype,
+        .layout = GEIST_LAYOUT_BLOCK_QUANTIZED,
+        .ndim = 2,
+        .shape = {(int64_t) n_out, (int64_t) n_in},
+        .stride = {0, 0},
+    };
+    enum geist_status s;
+    switch ((enum geist_dtype) w->dtype) {
+    case GEIST_DTYPE_Q4_K:
+        s = metal_matmul_q4k(be, &tx, &tw, &ty);
+        break;
+    case GEIST_DTYPE_Q6_K:
+        s = metal_matmul_q6k(be, &tx, &tw, &ty);
+        break;
+    case GEIST_DTYPE_F32:
+        tw.layout = GEIST_LAYOUT_DENSE;
+        tw.stride[0] = (int64_t) n_in;
+        tw.stride[1] = 1;
+        s = metal_matmul_f32_dense(be, &tx, &tw, &ty);
+        break;
+    default:
+        s = GEIST_E_UNSUPPORTED;
+        break;
+    }
+    if (s != GEIST_OK) {
+        fprintf(stderr,
+                "geist metal: linear dispatch failed "
+                "(dtype=%u m=%zu %zux%zu xo=%zu wo=%zu yo=%zu): %s\n",
+                (unsigned) w->dtype, m, n_out, n_in, xo, wo, yo,
+                geist_backend_errmsg(be));
+        memset(y, 0, m * n_out * sizeof(float));
+    }
+    metal_linear_debug_stats(x, m * n_in, y, m * n_out, w, m);
+}
+
+static void metal_linear_m1(const float *x, const struct geist_weight *w,
+                            struct geist_backend *be, float *y) {
+    metal_linear_mN(x, w, 1, be, y);
+}
+
+/* GEIST_METAL_DEBUG_LINEAR=1: per-linear x/y absmax trace. Every layer
+ * stage flows through linear, so the first all-zero input pinpoints which
+ * in-between op (rmsnorm/rope/attention/add/mul) lost the data. */
+static void metal_linear_debug_stats(const float *x, size_t nx,
+                                     const float *y, size_t ny,
+                                     const struct geist_weight *w, size_t m) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("GEIST_METAL_DEBUG_LINEAR");
+        enabled = (e != nullptr && e[0] != '\0' && strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    if (!enabled) {
+        return;
+    }
+    float ax = 0.0f;
+    float ay = 0.0f;
+    size_t nanx = 0;
+    size_t nany = 0;
+    for (size_t i = 0; i < nx; i++) {
+        if (isnan(x[i])) { nanx++; continue; }
+        const float a = fabsf(x[i]);
+        if (a > ax) { ax = a; }
+    }
+    for (size_t i = 0; i < ny; i++) {
+        if (isnan(y[i])) { nany++; continue; }
+        const float a = fabsf(y[i]);
+        if (a > ay) { ay = a; }
+    }
+    fprintf(stderr, "linear dtype=%u m=%zu %dx%d |x|=%g |y|=%g nanx=%zu nany=%zu\n",
+            (unsigned) w->dtype, m, w->n_out, w->n_in, (double) ax,
+            (double) ay, nanx, nany);
+}
+
 [[nodiscard]] static enum geist_status metal_resolve_weight(
     struct geist_backend *be, struct geist_weight *w) {
     (void) be;
-    (void) w;
-    return GEIST_OK;
+    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    switch ((enum geist_dtype) w->dtype) {
+    case GEIST_DTYPE_Q4_K:
+    case GEIST_DTYPE_Q6_K:
+    case GEIST_DTYPE_F32:
+        w->linear_m1 = metal_linear_m1;
+        w->linear_mN = metal_linear_mN;
+        return GEIST_OK;
+    default:
+        /* Callers fall back per weight (linear_m1 stays null). */
+        return GEIST_E_UNSUPPORTED;
+    }
 }
 
 /* main-contract vtbl. The old fine-grained GPU ops (command_sequence_*,
