@@ -700,6 +700,8 @@ struct metal_state {
     void *attn_qnorm_dec_f16_library;
     void *attention_qnorm_dec_f16_function;
     void *attention_qnorm_dec_f16_pipeline;
+    void *attention_dec_f16_function;
+    void *attention_dec_f16_pipeline;
     void *attn_flash_sg_f16_library;
     void *attention_qnorm_flash_sg_f16_function;
     void *attention_qnorm_flash_sg_f16_pipeline;
@@ -1626,6 +1628,12 @@ static const char metal_attn_qnorm_dec_f16_source[] =
     "uint hd2=hd/2u,rr=nr.ro;"
     "for(uint i=lid;i<hd2;i+=256u){float x0=q[base+i]*invn*qw[nr.wo+i],x1=q[base+i+hd2]*invn*qw[nr.wo+i+hd2];float co=c[nr.co+rr*nr.rs+i],si=s[nr.so+rr*nr.rs+i];qv[i]=x0*co-x1*si;qv[i+hd2]=x0*si+x1*co;}"
     "threadgroup_barrier(mem_flags::mem_threadgroup);"
+;
+
+/* Split-KV decode body shared by the qnorm and the no-norm variants (the
+ * array above ends mid-kernel; this body closes it and is appended a second
+ * time after the plain head below at library init). */
+static const char metal_attn_dec_f16_body[] =
     "uint kvh=h/(p.qh/p.kvh),qp=p.qpos;"
     "uint slo=(p.sw>0u&&qp+1u>p.sw)?qp+1u-p.sw:0u;uint shi=qp<p.kv_len?qp:p.kv_len-1u;"
     /* fixed 8-chunk unroll (hd<=256) keeps a[] in registers — a runtime
@@ -1774,6 +1782,16 @@ static const char metal_attn_flash_sg_f16_source_b[] =
     "for(uint cc=0u;cc<nO;cc++){simdgroup_float8x8 t;simdgroup_multiply(t,mfin,O[cc]);"
     "simdgroup_store(t,y+p.yo+q0*p.qh*hd+h*hd+c0+cc*8u,p.qh*hd);}"
     "}\n";
+
+/* No-norm head for main's contract (the engine applies q-norm and rope as
+ * separate ops): plain Q load into qv, then the shared split-KV body. */
+static const char metal_attn_dec_f16_plain_head[] =
+    "kernel void attention_dec_f16(device const float*q[[buffer(0)]],device const half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device float*pb[[buffer(3)]],constant A&p[[buffer(4)]],constant SP&sp[[buffer(5)]],uint2 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint sg[[simdgroup_index_in_threadgroup]],uint ln[[thread_index_in_simdgroup]]){"
+    "threadgroup float qv[256];threadgroup float red[8];threadgroup float tm[8];threadgroup float tl[8];threadgroup float ta[2048];"
+    "uint h=tg.y,ss=tg.x,hd=p.hd;if(h>=p.qh||hd>256u)return;"
+    "for(uint i=lid;i<hd;i+=256u){qv[i]=q[p.qo+h*hd+i];}"
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"
+    ;
 
 /* Pass 2: merge the per-split partials (m, l, unnormalized acc) into y. */
 static const char metal_attn_dec_combine_source[] =
@@ -2376,6 +2394,8 @@ static void metal_destroy_state(struct geist_backend *be,
         metal_msg_send_void0(st, st->attention_qnorm_rows_f16_function, "release");
         metal_msg_send_void0(st, st->attention_qnorm_dec_f16_pipeline, "release");
         metal_msg_send_void0(st, st->attention_qnorm_dec_f16_function, "release");
+        metal_msg_send_void0(st, st->attention_dec_f16_pipeline, "release");
+        metal_msg_send_void0(st, st->attention_dec_f16_function, "release");
         metal_msg_send_void0(st, st->attention_dec_combine_pipeline, "release");
         metal_msg_send_void0(st, st->attention_dec_combine_function, "release");
         metal_msg_send_void0(st, st->attention_qnorm_flash_sg_f16_pipeline,
@@ -4507,9 +4527,24 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
             &st->attention_qnorm_rows_f16_pipeline);
     }
     if (s == GEIST_OK) {
+        const size_t dl_h = strlen(metal_attn_qnorm_dec_f16_source);
+        const size_t dl_b = strlen(metal_attn_dec_f16_body);
+        const size_t dl_p = strlen(metal_attn_dec_f16_plain_head);
+        char *dec_src = malloc(dl_h + 2u * dl_b + dl_p + 1u);
+        if (dec_src == nullptr) {
+            geist_backend_set_error(
+                be, GEIST_E_OOM,
+                "metal: decode attention shader source alloc failed");
+            return GEIST_E_OOM;
+        }
+        memcpy(dec_src, metal_attn_qnorm_dec_f16_source, dl_h);
+        memcpy(dec_src + dl_h, metal_attn_dec_f16_body, dl_b);
+        memcpy(dec_src + dl_h + dl_b, metal_attn_dec_f16_plain_head, dl_p);
+        memcpy(dec_src + dl_h + dl_b + dl_p, metal_attn_dec_f16_body,
+               dl_b + 1u);
         source = metal_msg_send_id_cstr(
-            st, ns_string, "stringWithUTF8String:",
-            metal_attn_qnorm_dec_f16_source);
+            st, ns_string, "stringWithUTF8String:", dec_src);
+        free(dec_src);
         if (source == nullptr) {
             geist_backend_set_error(
                 be, GEIST_E_BACKEND,
@@ -4534,6 +4569,13 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
             "attention_qnorm_dec_f16",
             &st->attention_qnorm_dec_f16_function,
             &st->attention_qnorm_dec_f16_pipeline);
+        if (s == GEIST_OK) {
+            s = metal_create_named_pipeline(
+                be, st->attn_qnorm_dec_f16_library, ns_string,
+                "attention_dec_f16",
+                &st->attention_dec_f16_function,
+                &st->attention_dec_f16_pipeline);
+        }
     }
     if (s == GEIST_OK) {
         source = metal_msg_send_id_cstr(
@@ -6589,6 +6631,149 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     return GEIST_OK;
 }
 
+/* rows==1 (decode) f32-KV fast path: convert K/V to the f16 staging and run
+ * the split-KV decode kernel — the scalar kernel uses one threadgroup per
+ * head (8 tgs on a 32-core GPU) and its cost grows linearly with kv_len. */
+[[nodiscard]] static enum geist_status metal_attention_dec_f32kv(
+    struct geist_backend *be,
+    struct metal_state *st,
+    const struct geist_tensor *q,
+    const struct geist_tensor *k,
+    const struct geist_tensor *value,
+    struct geist_tensor *out,
+    size_t k_rows, size_t q_heads, size_t k_heads, size_t head_dim,
+    size_t q_offset, size_t sliding_window,
+    size_t q_off, size_t k_off, size_t v_off, size_t out_off) {
+
+    const size_t kv_out = k_heads * head_dim;
+    const size_t elems = k_rows * kv_out;
+    const size_t f16_bytes = elems * 2u;
+    if (st->attn_kvf16_capacity < f16_bytes) {
+        metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
+        metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
+        st->attn_kf16_buffer = nullptr;
+        st->attn_vf16_buffer = nullptr;
+        st->attn_kvf16_capacity = 0;
+        const size_t cap = f16_bytes * 2u;
+        enum geist_status bs = metal_new_buffer(
+            be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_kf16_buffer);
+        if (bs == GEIST_OK) {
+            bs = metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true,
+                                  &st->attn_vf16_buffer);
+        }
+        if (bs != GEIST_OK) {
+            metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
+            st->attn_kf16_buffer = nullptr;
+            return bs;
+        }
+        st->attn_kvf16_capacity = cap;
+    }
+    uint32_t window = (uint32_t) q_offset + 1u;
+    if ((uint32_t) k_rows < window) {
+        window = (uint32_t) k_rows;
+    }
+    if (sliding_window > 0u && (uint32_t) sliding_window < window) {
+        window = (uint32_t) sliding_window;
+    }
+    uint32_t nsplit = window / 32u;
+    if (nsplit < 1u) { nsplit = 1u; }
+    if (nsplit > 16u) { nsplit = 16u; }
+    const size_t partial_bytes =
+        q_heads * 16u * (head_dim + 2u) * sizeof(float);
+    if (st->attn_dec_partials_buffer != nullptr &&
+        st->attn_dec_partials_capacity < partial_bytes) {
+        metal_buffer_destroy_internal(be, st->attn_dec_partials_buffer);
+        st->attn_dec_partials_buffer = nullptr;
+        st->attn_dec_partials_capacity = 0;
+    }
+    if (st->attn_dec_partials_buffer == nullptr) {
+        if (metal_new_buffer(be, partial_bytes, GEIST_BUFFER_SCRATCH,
+                             GEIST_MEMORY_DEVICE, false,
+                             &st->attn_dec_partials_buffer) != GEIST_OK) {
+            return GEIST_E_BACKEND;
+        }
+        st->attn_dec_partials_capacity = partial_bytes;
+    }
+    struct {
+        uint32_t elems, kv_out, k_offset, v_offset, k_cache_offset,
+            v_cache_offset, q_position;
+    } ap = {(uint32_t) elems, (uint32_t) kv_out, (uint32_t) k_off,
+            (uint32_t) v_off, 0u, 0u, 0u};
+    struct {
+        uint32_t rows, kv_len, qh, kvh, hd, qpos, sw, qo, kco, vco, yo;
+    } fp = {1u, (uint32_t) k_rows, (uint32_t) q_heads, (uint32_t) k_heads,
+            (uint32_t) head_dim, (uint32_t) q_offset,
+            (uint32_t) sliding_window, (uint32_t) q_off, 0u, 0u,
+            (uint32_t) out_off};
+
+    void *cmd = nullptr;
+    void *enc = nullptr;
+    if (st->sequence_active) {
+        if (st->sequence_compute_encoder == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+        enc = st->sequence_compute_encoder;
+    } else {
+        cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+        enc = cmd != nullptr
+                  ? metal_msg_send_id0(st, cmd, "computeCommandEncoder")
+                  : nullptr;
+        if (cmd == nullptr || enc == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+    }
+    (void) metal_msg_send_id_id(st, enc, "setComputePipelineState:",
+                                st->kv_append_rows_f16_pipeline);
+    metal_msg_send_set_buffer(st, enc, k->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, value->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, st->attn_kf16_buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, st->attn_vf16_buffer->buffer, 0, 3);
+    metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 4);
+    const struct metal_size cgroups = {(elems + 255u) / 256u, 1, 1};
+    const struct metal_size threads256 = {256, 1, 1};
+    metal_msg_send_dispatch(st, enc, cgroups, threads256);
+
+    (void) metal_msg_send_id_id(st, enc, "setComputePipelineState:",
+                                st->attention_dec_f16_pipeline);
+    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, st->attn_kf16_buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, st->attn_vf16_buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, st->attn_dec_partials_buffer->buffer,
+                              0, 3);
+    metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
+    metal_msg_send_set_bytes(st, enc, &nsplit, sizeof(nsplit), 5);
+    const struct metal_size dgroups = {nsplit, q_heads, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS,
+                               dgroups);
+    metal_msg_send_dispatch(st, enc, dgroups, threads256);
+
+    const uint32_t cb[4] = {(uint32_t) q_heads, (uint32_t) head_dim, nsplit,
+                            (uint32_t) out_off};
+    (void) metal_msg_send_id_id(st, enc, "setComputePipelineState:",
+                                st->attention_dec_combine_pipeline);
+    metal_msg_send_set_buffer(st, enc, st->attn_dec_partials_buffer->buffer,
+                              0, 0);
+    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, 0, 1);
+    metal_msg_send_set_bytes(st, enc, cb, sizeof(cb), 2);
+    const struct metal_size ggroups = {1, q_heads, 1};
+    metal_msg_send_dispatch(st, enc, ggroups, threads256);
+
+    if (st->sequence_active) {
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    metal_msg_send_void0(st, enc, "endEncoding");
+    metal_msg_send_void0(st, cmd, "commit");
+    metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    void *err = metal_msg_send_id0(st, cmd, "error");
+    if (err != nullptr) {
+        geist_backend_set_error(be, GEIST_E_BACKEND,
+                                "metal decode attention: command failed");
+        return GEIST_E_BACKEND;
+    }
+    return GEIST_OK;
+}
+
 [[nodiscard]] static enum geist_status metal_attention(
     struct geist_backend *be,
     const struct geist_tensor *q,
@@ -6684,6 +6869,21 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     enum geist_status s = metal_ensure_attention_pipeline(be);
     if (s != GEIST_OK) { return s; }
     struct metal_state *st = be->state;
+    if (kv_is_f32 && q_rows == 1u && head_dim <= 256u &&
+        k_rows >= 32u &&
+        st->attention_dec_f16_pipeline != nullptr &&
+        st->attention_dec_combine_pipeline != nullptr &&
+        st->kv_append_rows_f16_pipeline != nullptr &&
+        !metal_env_disabled("GEIST_METAL_FLASH")) {
+        s = metal_attention_dec_f32kv(be, st, q, k, value, out, k_rows,
+                                      q_heads, k_heads, head_dim, q_offset,
+                                      sliding_window, q_off, k_off, v_off,
+                                      out_off);
+        if (s == GEIST_OK) {
+            return GEIST_OK;
+        }
+        /* fall through to the scalar kernel on failure */
+    }
     if (kv_is_f32 && q_rows > 1u && (q_rows % 8u) == 0u &&
         head_dim <= 256u && (head_dim % 32u) == 0u && k_rows >= 32u &&
         st->attention_flash_sg_f16_pipeline != nullptr &&
