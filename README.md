@@ -314,8 +314,12 @@ exceeds the 2 GB GitHub-release limit. (Runs real-time on a Pi 5 —
 | Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | decode t/s | **48.6** | 44.1 *(llama.cpp)* |
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | prefill t/s | **351** | 346 *(llama.cpp)* |
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | decode t/s | 34.1 | 34.5 *(llama.cpp)* |
+| Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | prefill t/s (pp512) | 188 | 1551 *(llama.cpp Metal)* |
+| Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | decode t/s (tg64) | 3.7 | 95.5 *(llama.cpp Metal)* |
 
 <sub>**Baseline versions:** llama.cpp `d05fe1d` (Pi 5, M1 Max) · `b9827` (x86) — bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `master` (its bundled llama.cpp fork, unpinned `--depth 1` clone). Full methodology: [`benchmark/`](benchmark/README.md).</sub>
+
+<sub>**Metal backend status** (`BACKENDS="… metal"`): correctness-first port — greedy-decode tokens verified identical to the `cpu_scalar` reference. Every op currently submits its own synchronous Metal command buffer, so per-op round-trips dominate (decode especially); batched submission is the next step. The same GPU kernels with batched submission reach **1072 pp512 / 61 tg128** (0.7×/0.74× of llama.cpp Metal; branch `gpu-backends-wip`), so the row above measures dispatch overhead, not kernel capability. Cool-state protocol (240 s idle), geist and llama.cpp measured back-to-back (Homebrew llama.cpp, `BLAS,MTL`), M1 Max 32-core.</sub>
 </details>
 
 ---
