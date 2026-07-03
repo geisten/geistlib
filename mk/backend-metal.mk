@@ -10,3 +10,11 @@ BACKEND_SOURCES += \
     src/backends/metal/backend.c
 
 LDLIBS += -ldl
+
+# The old fine-grained GPU op implementations (command_sequence_*, ple_block,
+# ffn_geglu_block, attention_block, greedy_head, matmul_q4k/q6k) are kept
+# compilable in backend.c during the port but are not yet all wired into the
+# main-contract vtbl (the GEMM encoders get reused by resolve_weight in a later
+# stage; the rest are removed in the Stage-6 cleanup). Suppress unused-function
+# only for this TU until then. ponytail: drop this line once Stage 6 lands.
+$(BUILD_DIR)/src/backends/metal/backend.o: CFLAGS_STRICT += -Wno-unused-function

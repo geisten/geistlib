@@ -13,6 +13,7 @@
 #include <geist_backend.h>
 #include "quant.h"
 #include "heap.h"
+#include "metal_legacy_ops.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -12080,53 +12081,50 @@ static enum geist_support metal_supports_op(
     return GEIST_OK;
 }
 
+/* Stage-1 stub: main resolves each weight to host linear kernels via this
+ * hook. Installing nothing leaves linear_m1/mN null → linear_w_or_legacy
+ * reports GEIST_E_UNSUPPORTED (clean, no crash). Stage 4 installs GPU
+ * GEMM kernels here (wrap w->raw + x/y no-copy as MTLBuffers, encode the
+ * mm_sg / q6k kernel, commit, wait — correct on Apple unified memory). */
+[[nodiscard]] static enum geist_status metal_resolve_weight(
+    struct geist_backend *be, struct geist_weight *w) {
+    (void) be;
+    (void) w;
+    return GEIST_OK;
+}
+
+/* main-contract vtbl. The old fine-grained GPU ops (command_sequence_*,
+ * ffn_geglu_block, ple_block, attention_block, greedy_head, matmul_q4k)
+ * are not part of main's contract; their impls remain in this file as
+ * internal/dead code (behind metal_legacy_ops.h) pending the Stage-6
+ * cleanup, but are not exposed here. */
 static const struct geist_backend_vtbl metal_vtbl = {
     .create = metal_create,
     .destroy = metal_destroy,
     .supports_op = metal_supports_op,
-    .query_accel_caps = metal_query_accel_caps,
-    .profile_reset = metal_profile_reset,
-    .profile_dump = metal_profile_dump,
     .buffer_create = metal_buffer_create,
     .buffer_destroy = metal_buffer_destroy,
     .buffer_create_aliased = nullptr,
     .buffer_upload = metal_buffer_upload,
     .buffer_download = metal_buffer_download,
-    .buffer_copy = metal_buffer_copy,
     .buffer_map = metal_buffer_map,
     .buffer_unmap = metal_buffer_unmap,
-    .prepare_weight_layout = metal_prepare_weight_layout,
-    .prepare_weight_layout_from_host = metal_prepare_weight_layout_from_host,
-    .embedding_lookup = metal_embedding_lookup,
-    .embedding_lookup_scaled = metal_embedding_lookup_scaled,
-    .attention = metal_attention,
-    .argmax_f32 = metal_argmax_f32,
-    .argmax_f32_batch = metal_argmax_f32_batch,
-    .greedy_head = metal_greedy_head,
-    .greedy_head_batch = metal_greedy_head_batch,
-    .matvec_f32_dense = metal_matvec_f32_dense,
-    .matmul_f32_dense = metal_matmul_f32_dense,
+    .resolve_weight = metal_resolve_weight,
     .rmsnorm = metal_rmsnorm,
     .add = metal_add,
     .mul = metal_mul,
-    .scale_f32 = metal_scale_f32,
     .gelu_tanh = metal_gelu_tanh,
     .gelu_tanh_mul = metal_gelu_tanh_mul,
+    .gelu_tanh_mul_scaled = nullptr,
+    .relu_squared = nullptr,
+    .silu = nullptr,
     .rope_apply = metal_rope_apply,
-    .matvec_q4k = metal_matvec_q4k,
-    .matmul_q4k = metal_matmul_q4k,
-    .matvec_q6k = metal_matvec_q6k,
-    .matmul_q6k = metal_matmul_q6k,
-    .ffn_geglu_block = metal_ffn_geglu_block,
-    .attention_block = metal_attention_block,
-    .attention_query_block = metal_attention_query_block,
-    .ple_block = metal_ple_block,
-    .command_sequence_begin = metal_command_sequence_begin,
-    .command_sequence_end = metal_command_sequence_end,
-    .command_sequence_read_token = metal_command_sequence_read_token,
-    .command_sequence_read_tokens = metal_command_sequence_read_tokens,
-    .command_sequence_replay_decode_greedy_step =
-        metal_command_sequence_replay_decode_greedy_step,
+    .embedding_lookup = metal_embedding_lookup,
+    .attention = metal_attention,
+    .ffn_geglu_q4q6_mN = nullptr,
+    .transformer_block = nullptr,
+    .parallel_region_begin = nullptr,
+    .parallel_region_end = nullptr,
 };
 
 const struct geist_backend_descriptor geist_backend_metal = {
