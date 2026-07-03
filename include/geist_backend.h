@@ -294,6 +294,18 @@ struct geist_backend_vtbl {
                                    const struct geist_tensor *x,
                                    float                      scale,
                                    struct geist_tensor       *y);
+
+    /* Optional fused out = embed_table[token_id, :] * scale. Same contract
+     * as embedding_lookup plus a scalar multiply; batched-submit backends
+     * keep the per-token embed/PLE-table lookups (and their scaling)
+     * on-device instead of dequantizing through a mapped host pointer.
+     * nullptr = arch dequantizes on the host. */
+    enum geist_status (*embedding_lookup_scaled)(
+        struct geist_backend      *be,
+        const struct geist_tensor *embed_table,
+        geist_token_t              token_id,
+        float                      scale,
+        struct geist_tensor       *out);
 };
 
 /* ====================================================================== */

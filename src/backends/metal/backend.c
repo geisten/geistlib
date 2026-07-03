@@ -7745,6 +7745,7 @@ static const struct geist_backend_vtbl metal_vtbl = {
     .linear_t = metal_linear_t,
     .buffer_copy = metal_buffer_copy,
     .scale_f32 = metal_scale_f32,
+    .embedding_lookup_scaled = metal_embedding_lookup_scaled,
 };
 
 const struct geist_backend_descriptor geist_backend_metal = {

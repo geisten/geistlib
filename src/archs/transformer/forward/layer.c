@@ -344,16 +344,26 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
     /* 1. Dequant one row of the PLE table into scratch_ple_lookup, then
      *    multiply by PLE_TABLE_SCALE (16). */
     {
-        float *dst = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
-        s          = dequant_one_row(be, &st->ple_table, (size_t) token_id, dst);
-        if (s != GEIST_OK) {
+        bool on_device = false;
+        if (v->embedding_lookup_scaled != nullptr) {
+            struct geist_tensor t_row =
+                    view_1d(st->sess->scratch_ple_lookup, st->ple_out);
+            on_device = v->embedding_lookup_scaled(
+                                be, &st->ple_table, token_id,
+                                st->config.ple_table_scale, &t_row) == GEIST_OK;
+        }
+        if (!on_device) {
+            float *dst = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
+            s          = dequant_one_row(be, &st->ple_table, (size_t) token_id, dst);
+            if (s != GEIST_OK) {
+                v->buffer_unmap(st->sess->scratch_ple_lookup);
+                return s;
+            }
+            for (size_t i = 0; i < (size_t) st->ple_out; i++) {
+                dst[i] *= st->config.ple_table_scale;
+            }
             v->buffer_unmap(st->sess->scratch_ple_lookup);
-            return s;
         }
-        for (size_t i = 0; i < (size_t) st->ple_out; i++) {
-            dst[i] *= st->config.ple_table_scale;
-        }
-        v->buffer_unmap(st->sess->scratch_ple_lookup);
     }
 
     /* 2. linear(h, model_proj) → per_layer_input (reused as scratch).

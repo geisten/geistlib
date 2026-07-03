@@ -113,11 +113,15 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
 
     /* Seed scratch_h_a with seq rows of HIDDEN. */
     {
-        const uint8_t *src = (const uint8_t *) v->buffer_map(initial_h_buf);
-        uint8_t       *dst = (uint8_t *) v->buffer_map(st->sess->scratch_h_a);
-        memcpy(dst, src, seq * row_bytes_h);
+        if (v->buffer_copy == nullptr ||
+            v->buffer_copy(st->sess->scratch_h_a, 0, initial_h_buf, 0,
+                           seq * row_bytes_h) != GEIST_OK) {
+            const uint8_t *src = (const uint8_t *) v->buffer_map(initial_h_buf);
+            uint8_t       *dst = (uint8_t *) v->buffer_map(st->sess->scratch_h_a);
+            memcpy(dst, src, seq * row_bytes_h);
         v->buffer_unmap(initial_h_buf);
         v->buffer_unmap(st->sess->scratch_h_a);
+        }
     }
 
     struct geist_buffer *h_in  = st->sess->scratch_h_a;
@@ -190,11 +194,15 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
     /* After the loop, h_in is the latest output (post-swap). Copy seq rows
      * to out_h_buf. */
     {
-        const uint8_t *src = (const uint8_t *) v->buffer_map(h_in);
-        uint8_t       *dst = (uint8_t *) v->buffer_map(out_h_buf);
-        memcpy(dst, src, seq * row_bytes_h);
+        if (v->buffer_copy == nullptr ||
+            v->buffer_copy(out_h_buf, 0, h_in, 0, seq * row_bytes_h) !=
+                GEIST_OK) {
+            const uint8_t *src = (const uint8_t *) v->buffer_map(h_in);
+            uint8_t       *dst = (uint8_t *) v->buffer_map(out_h_buf);
+            memcpy(dst, src, seq * row_bytes_h);
         v->buffer_unmap(h_in);
         v->buffer_unmap(out_h_buf);
+        }
     }
     return GEIST_OK;
 }
@@ -213,6 +221,22 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
     }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
+
+    /* Device path: fused lookup+scale keeps batched GPU backends from
+     * dequantizing through a mapped host pointer every token. */
+    if (v->embedding_lookup_scaled != nullptr) {
+        struct geist_tensor t_out = view_1d(out_h_buf, st->d_model);
+        const float         scale =
+                st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
+        enum geist_status es = v->embedding_lookup_scaled(
+                be, &st->embed_table, token_id, scale, &t_out);
+        if (es == GEIST_OK) {
+            return GEIST_OK;
+        }
+        if (es != GEIST_E_UNSUPPORTED) {
+            return es;
+        }
+    }
 
     float            *dst = (float *) v->buffer_map(out_h_buf);
     enum geist_status s   = dequant_one_row(be, &st->embed_table, (size_t) token_id, dst);
