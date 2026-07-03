@@ -1849,6 +1849,21 @@ static void *metal_msg_send_id_size_uint(struct metal_state *st,
     return send.fn(receiver, sel, a, b);
 }
 
+/* newBufferWithBytes:length:options: — copies host bytes into a new MTLBuffer. */
+static void *metal_msg_send_id_ptr_size_uint(struct metal_state *st,
+                                             void *receiver,
+                                             const char *selector,
+                                             const void *ptr,
+                                             size_t len,
+                                             unsigned long opts) {
+    void *sel = metal_sel_register_name(st, selector);
+    union {
+        void *raw;
+        void *(*fn)(void *, void *, const void *, size_t, unsigned long);
+    } send = {.raw = st->objc_msgSend};
+    return send.fn(receiver, sel, ptr, len, opts);
+}
+
 static void *metal_msg_send_id_cstr(struct metal_state *st,
                                     void *receiver,
                                     const char *selector,
@@ -3252,11 +3267,14 @@ static void metal_destroy(struct geist_backend *be) {
 
 static bool metal_buffer_wants_host_visible(enum geist_buffer_role role,
                                             unsigned int memory_flags) {
-    const unsigned int host_bits =
-        GEIST_MEMORY_HOST | GEIST_MEMORY_HOST_VISIBLE | GEIST_MEMORY_MAPPED;
-    return (memory_flags & host_bits) != 0 ||
-           role == GEIST_BUFFER_STAGING ||
-           role == GEIST_BUFFER_IO;
+    (void) role;
+    (void) memory_flags;
+    /* main's contract maps weights and scratch to host pointers (resolve_
+     * weight reads w->raw; linear_w_or_legacy buffer_maps x/y). On Apple
+     * unified memory SHARED storage is the same physical memory as PRIVATE
+     * with zero perf cost, so make every buffer host-visible — otherwise
+     * buffer_map returns null and state_create fails. */
+    return true;
 }
 
 [[nodiscard]] static enum geist_status metal_new_buffer(
@@ -3465,6 +3483,70 @@ static void metal_buffer_destroy_internal(struct geist_backend *be,
     const bool host_visible =
         metal_buffer_wants_host_visible(role, memory_flags);
     return metal_new_buffer(be, bytes, role, memory_flags, host_visible, out);
+}
+
+/* Alias a host-resident region (mmap'd weight or an arena sub-range) as a
+ * device buffer. main's memory model hands the backend arbitrary host
+ * sub-pointers (64-byte aligned), which Metal's newBufferWithBytesNoCopy
+ * cannot wrap (it needs page alignment). Correctness-first: copy the bytes
+ * into a SHARED MTLBuffer (unified memory, host+GPU coherent). Weights are
+ * read-only; arena scratch is always accessed via this handle, so a per-
+ * buffer copy stays coherent. ponytail: zero-copy via a per-arena MTLBuffer
+ * + offset is the Stage-6 memory optimization (saves the weight duplication). */
+[[nodiscard]] static enum geist_status metal_buffer_create_aliased(
+    struct geist_backend *be,
+    void *host_ptr,
+    size_t n_bytes,
+    enum geist_buffer_role role,
+    struct geist_buffer **out) {
+
+    if (out == nullptr) { return GEIST_E_INVALID_ARG; }
+    *out = nullptr;
+    if (be == nullptr || be->state == nullptr || host_ptr == nullptr ||
+        n_bytes == 0) {
+        if (be != nullptr) {
+            geist_backend_set_error(be, GEIST_E_INVALID_ARG,
+                                    "metal: invalid aliased buffer request");
+        }
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st = be->state;
+    struct geist_buffer *buf =
+        geist_backend_alloc(be, sizeof(*buf), alignof(struct geist_buffer));
+    if (buf == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM,
+                                "metal: failed to allocate buffer handle");
+        return GEIST_E_OOM;
+    }
+    void *mtl_buffer = metal_msg_send_id_ptr_size_uint(
+        st, st->device, "newBufferWithBytes:length:options:",
+        host_ptr, n_bytes, METAL_RESOURCE_STORAGE_MODE_SHARED);
+    if (mtl_buffer == nullptr) {
+        geist_backend_free(be, buf);
+        geist_backend_set_error(be, GEIST_E_BACKEND,
+                                "metal: failed to alias %zu bytes", n_bytes);
+        return GEIST_E_BACKEND;
+    }
+    void *mapped = metal_msg_send_ptr0(st, mtl_buffer, "contents");
+    if (mapped == nullptr) {
+        metal_msg_send_void0(st, mtl_buffer, "release");
+        geist_backend_free(be, buf);
+        geist_backend_set_error(be, GEIST_E_BACKEND,
+                                "metal: aliased buffer has no contents");
+        return GEIST_E_BACKEND;
+    }
+    *buf = (struct geist_buffer){
+        .owner = st,
+        .buffer = mtl_buffer,
+        .mapped = mapped,
+        .bytes = n_bytes,
+        .role = role,
+        .memory_flags = GEIST_MEMORY_HOST_VISIBLE | GEIST_MEMORY_MAPPED |
+                        GEIST_MEMORY_ALIASED,
+        .host_visible = true,
+    };
+    *out = buf;
+    return GEIST_OK;
 }
 
 static void metal_buffer_destroy(struct geist_backend *be,
@@ -12104,7 +12186,7 @@ static const struct geist_backend_vtbl metal_vtbl = {
     .supports_op = metal_supports_op,
     .buffer_create = metal_buffer_create,
     .buffer_destroy = metal_buffer_destroy,
-    .buffer_create_aliased = nullptr,
+    .buffer_create_aliased = metal_buffer_create_aliased,
     .buffer_upload = metal_buffer_upload,
     .buffer_download = metal_buffer_download,
     .buffer_map = metal_buffer_map,

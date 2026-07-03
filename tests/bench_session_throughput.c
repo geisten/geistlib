@@ -47,9 +47,17 @@ int main(void) {
 
     /* ---- Setup ---- */
     struct geist_backend *be = nullptr;
-    enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
-    if (s != GEIST_OK) {
-        s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
+    /* GEIST_BENCH_BACKEND=<name> forces a backend (e.g. metal); default
+     * probes cpu_neon then cpu_scalar. */
+    const char       *bench_backend = getenv("GEIST_BENCH_BACKEND");
+    enum geist_status s;
+    if (bench_backend != nullptr && bench_backend[0] != '\0') {
+        s = geist_backend_create(bench_backend, nullptr, nullptr, &be);
+    } else {
+        s = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+        if (s != GEIST_OK) {
+            s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
+        }
     }
     if (s != GEIST_OK) {
         fprintf(stderr, "backend create failed: %s\n", geist_last_create_error());
