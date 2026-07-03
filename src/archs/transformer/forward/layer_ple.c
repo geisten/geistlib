@@ -128,6 +128,16 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
 }
 
 void transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
+    /* Device path first: batched GPU backends keep the per-layer scale
+     * on-device instead of flushing their pipeline for a host loop. */
+    if (ctx->v->scale_f32 != nullptr) {
+        struct geist_tensor t_h =
+                view_2d(ctx->h_out_buf, ctx->SEQ, ctx->st->d_model);
+        if (ctx->v->scale_f32(ctx->be, &t_h, ctx->L->layer_scalar, &t_h) ==
+            GEIST_OK) {
+            return;
+        }
+    }
     float       *hout    = (float *) ctx->v->buffer_map(ctx->h_out_buf);
     const size_t n_total = ctx->seq * ctx->st->d_model;
     for (size_t i = 0; i < n_total; i++) {

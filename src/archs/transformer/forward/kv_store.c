@@ -53,6 +53,25 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
     const size_t                     hd         = ctx->hd;
     const size_t                     kv_out     = ctx->kv_out;
 
+    /* Plain f32 cache + device-copy-capable backend: append on-device so
+     * batched GPU backends need no host round-trip (mapping scratch_k/v
+     * here would force them to flush the pending pipeline). */
+    if (!ctx->kv_kivi_enabled && !ctx->kv_int8_enabled &&
+        v->buffer_copy != nullptr) {
+        const size_t      row_bytes  = kv_out * sizeof(float);
+        const size_t      span_bytes = seq * row_bytes;
+        enum geist_status cs         = v->buffer_copy(
+                ctx->k_cache_buf, q_position * row_bytes, st->sess->scratch_k, 0, span_bytes);
+        if (cs == GEIST_OK) {
+            cs = v->buffer_copy(
+                    ctx->v_cache_buf, q_position * row_bytes, st->sess->scratch_v, 0, span_bytes);
+        }
+        if (cs == GEIST_OK) {
+            return GEIST_OK;
+        }
+        /* fall through to the host path on failure */
+    }
+
     const float *k_src = (const float *) v->buffer_map(st->sess->scratch_k);
     const float *v_src = (const float *) v->buffer_map(st->sess->scratch_v);
     if (ctx->kv_kivi_enabled) {

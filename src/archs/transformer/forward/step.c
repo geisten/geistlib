@@ -131,15 +131,34 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
          * which then skips the PLE injection block. */
         struct geist_buffer *layer_ple_buf = nullptr;
         if (per_layer_input_buf != nullptr) {
-            const uint8_t *src = (const uint8_t *) v->buffer_map(per_layer_input_buf);
-            uint8_t       *dst = (uint8_t *) v->buffer_map(st->sess->scratch_ple_lookup);
-            for (size_t t = 0; t < seq; t++) {
-                memcpy(dst + t * row_bytes_ple,
-                       src + t * row_bytes_per_tok_ple + li * row_bytes_ple,
-                       row_bytes_ple);
+            if (v->buffer_copy != nullptr) {
+                /* Device-side gather: keeps batched GPU backends from
+                 * flushing their pipeline for a host memcpy each layer. */
+                enum geist_status cs = GEIST_OK;
+                for (size_t t = 0; cs == GEIST_OK && t < seq; t++) {
+                    cs = v->buffer_copy(st->sess->scratch_ple_lookup,
+                                        t * row_bytes_ple,
+                                        per_layer_input_buf,
+                                        t * row_bytes_per_tok_ple +
+                                            li * row_bytes_ple,
+                                        row_bytes_ple);
+                }
+                if (cs != GEIST_OK) {
+                    return cs;
+                }
+            } else {
+                const uint8_t *src =
+                        (const uint8_t *) v->buffer_map(per_layer_input_buf);
+                uint8_t *dst =
+                        (uint8_t *) v->buffer_map(st->sess->scratch_ple_lookup);
+                for (size_t t = 0; t < seq; t++) {
+                    memcpy(dst + t * row_bytes_ple,
+                           src + t * row_bytes_per_tok_ple + li * row_bytes_ple,
+                           row_bytes_ple);
+                }
+                v->buffer_unmap(per_layer_input_buf);
+                v->buffer_unmap(st->sess->scratch_ple_lookup);
             }
-            v->buffer_unmap(per_layer_input_buf);
-            v->buffer_unmap(st->sess->scratch_ple_lookup);
             layer_ple_buf = st->sess->scratch_ple_lookup;
         }
 

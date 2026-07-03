@@ -17,13 +17,19 @@ enum geist_status linear_w_or_legacy(struct geist_backend            *be,
                                      const struct geist_tensor       *t_x,
                                      const struct geist_tensor       *t_w,
                                      struct geist_tensor             *t_y) {
-    (void) t_x;
-    (void) t_w;
-    (void) t_y;
-
     if (w == nullptr) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "linear_w: null geist_weight");
         return GEIST_E_INVALID_ARG;
+    }
+    /* Batched-submit backends (GPU) take the tensor path so the engine
+     * never materializes host pointers here; UNSUPPORTED falls through to
+     * the resolved host-pointer kernels below. */
+    if (v->linear_t != nullptr && t_x != nullptr && t_w != nullptr &&
+        t_y != nullptr) {
+        enum geist_status ts = v->linear_t(be, t_x, w, t_w, seq, t_y);
+        if (ts != GEIST_E_UNSUPPORTED) {
+            return ts;
+        }
     }
     if ((seq == 1 && w->linear_m1 == nullptr) || (seq > 1 && w->linear_mN == nullptr)) {
         geist_backend_set_error(be,
@@ -83,15 +89,20 @@ enum geist_status linear_w_pair_or_legacy(struct geist_backend            *be,
                                           const struct geist_tensor       *t_w1,
                                           struct geist_tensor             *t_y0,
                                           struct geist_tensor             *t_y1) {
-    (void) t_x;
-    (void) t_w0;
-    (void) t_w1;
-    (void) t_y0;
-    (void) t_y1;
-
     if (w0 == nullptr || w1 == nullptr) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "linear_w_pair: null geist_weight");
         return GEIST_E_INVALID_ARG;
+    }
+    /* Batched-submit backends: two tensor-path linears, no host pointers. */
+    if (v->linear_t != nullptr && t_x != nullptr && t_w0 != nullptr &&
+        t_w1 != nullptr && t_y0 != nullptr && t_y1 != nullptr) {
+        enum geist_status ts = v->linear_t(be, t_x, w0, t_w0, seq, t_y0);
+        if (ts == GEIST_OK) {
+            ts = v->linear_t(be, t_x, w1, t_w1, seq, t_y1);
+        }
+        if (ts != GEIST_E_UNSUPPORTED) {
+            return ts;
+        }
     }
     if ((seq == 1 && (w0->linear_m1 == nullptr || w1->linear_m1 == nullptr)) ||
         (seq > 1 && (w0->linear_mN == nullptr || w1->linear_mN == nullptr))) {
@@ -158,17 +169,24 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
                                             struct geist_tensor             *t_y0,
                                             struct geist_tensor             *t_y1,
                                             struct geist_tensor             *t_y2) {
-    (void) t_x;
-    (void) t_w0;
-    (void) t_w1;
-    (void) t_w2;
-    (void) t_y0;
-    (void) t_y1;
-    (void) t_y2;
-
     if (w0 == nullptr || w1 == nullptr || w2 == nullptr) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "linear_w_triple: null geist_weight");
         return GEIST_E_INVALID_ARG;
+    }
+    /* Batched-submit backends: three tensor-path linears, no host pointers. */
+    if (v->linear_t != nullptr && t_x != nullptr && t_w0 != nullptr &&
+        t_w1 != nullptr && t_w2 != nullptr && t_y0 != nullptr &&
+        t_y1 != nullptr && t_y2 != nullptr) {
+        enum geist_status ts = v->linear_t(be, t_x, w0, t_w0, seq, t_y0);
+        if (ts == GEIST_OK) {
+            ts = v->linear_t(be, t_x, w1, t_w1, seq, t_y1);
+        }
+        if (ts == GEIST_OK) {
+            ts = v->linear_t(be, t_x, w2, t_w2, seq, t_y2);
+        }
+        if (ts != GEIST_E_UNSUPPORTED) {
+            return ts;
+        }
     }
     if ((seq == 1 &&
          (w0->linear_m1 == nullptr || w1->linear_m1 == nullptr || w2->linear_m1 == nullptr)) ||

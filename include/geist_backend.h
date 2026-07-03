@@ -261,6 +261,39 @@ struct geist_backend_vtbl {
     int  (*parallel_region_begin)(struct geist_backend       *be,
                                   enum geist_parallel_region  region);
     void (*parallel_region_end)(struct geist_backend *be, int token);
+
+    /* Optional tensor-based linear for batched-submit (GPU) backends. The
+     * engine passes the x/weight/y views it already builds alongside the
+     * resolved weight, letting the backend encode the GEMM asynchronously
+     * instead of receiving host pointers (which force a pipeline flush per
+     * call). Return GEIST_E_UNSUPPORTED to fall back to the resolved
+     * linear_m1/linear_mN host-pointer kernels. nullptr = resolved kernels
+     * only. */
+    enum geist_status (*linear_t)(struct geist_backend      *be,
+                                  const struct geist_tensor *x,
+                                  const struct geist_weight *w,
+                                  const struct geist_tensor *t_w,
+                                  size_t                     m,
+                                  struct geist_tensor       *y);
+
+    /* Optional device-side buffer copy. Lets the arch layer move data
+     * between two buffers of the same backend without mapping host
+     * pointers, so batched-submit (GPU) backends keep the copy on-device
+     * and avoid a pipeline flush. Both buffers must belong to this
+     * backend. nullptr = arch falls back to buffer_map + memcpy. */
+    enum geist_status (*buffer_copy)(struct geist_buffer       *dst,
+                                     size_t                     dst_offset,
+                                     const struct geist_buffer *src,
+                                     size_t                     src_offset,
+                                     size_t                     n_bytes);
+
+    /* Optional y = x * scale (scalar). F32 DENSE; y may alias x. Keeps the
+     * per-layer output scaling on-device for batched-submit backends.
+     * nullptr = arch scales through a mapped host pointer. */
+    enum geist_status (*scale_f32)(struct geist_backend      *be,
+                                   const struct geist_tensor *x,
+                                   float                      scale,
+                                   struct geist_tensor       *y);
 };
 
 /* ====================================================================== */

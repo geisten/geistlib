@@ -534,6 +534,12 @@ struct metal_state {
     struct metal_buf_reg_entry *buf_reg;
     size_t buf_reg_count;
     size_t buf_reg_cap;
+    /* MTLBuffers referenced by ops encoded on the open (unflushed) batch;
+     * a host map/upload/download of a referenced buffer forces a flush.
+     * Open-addressed pointer set; overflow degrades to always-flush. */
+    void *seq_ref[4096];
+    size_t seq_ref_count;
+    bool seq_ref_overflow;
     void *q4k_library;
     void *q4k_n4_library;
     void *q4k_nt4_library;
@@ -2017,12 +2023,15 @@ static void metal_msg_send_copy_buffer(struct metal_state *st,
     send.fn(receiver, sel, src, src_offset, dst, dst_offset, bytes);
 }
 
+static void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf);
+
 static void metal_msg_send_set_buffer(struct metal_state *st,
                                       void *receiver,
                                       void *buffer,
                                       size_t offset,
                                       size_t index) {
     void *sel = metal_sel_register_name(st, "setBuffer:offset:atIndex:");
+    metal_seq_mark_buffer(st, buffer);
     union {
         void *raw;
         void (*fn)(void *, void *, void *, size_t, size_t);
@@ -3348,6 +3357,87 @@ static struct geist_buffer *metal_buf_reg_find(struct metal_state *st,
     return nullptr;
 }
 
+/* ---- Batched-submit reference tracking + flush ------------------------ */
+
+[[nodiscard]] static enum geist_status metal_command_sequence_begin(
+    struct geist_backend *be, enum geist_command_sequence_kind kind,
+    int *out_token);
+[[nodiscard]] static enum geist_status metal_command_sequence_end(
+    struct geist_backend *be, int token, bool submit);
+
+static void metal_seq_ref_clear(struct metal_state *st) {
+    memset(st->seq_ref, 0, sizeof(st->seq_ref));
+    st->seq_ref_count = 0;
+    st->seq_ref_overflow = false;
+}
+
+static void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf) {
+    if (st == nullptr || !st->sequence_active || mtl_buf == nullptr) {
+        return;
+    }
+    const size_t mask = (sizeof(st->seq_ref) / sizeof(st->seq_ref[0])) - 1u;
+    size_t h = ((uintptr_t) mtl_buf >> 4) & mask;
+    for (size_t i = 0; i <= mask; i++) {
+        const size_t slot = (h + i) & mask;
+        if (st->seq_ref[slot] == mtl_buf) {
+            return;
+        }
+        if (st->seq_ref[slot] == nullptr) {
+            st->seq_ref[slot] = mtl_buf;
+            if (++st->seq_ref_count > mask - 256u) {
+                st->seq_ref_overflow = true;
+            }
+            return;
+        }
+    }
+    st->seq_ref_overflow = true;
+}
+
+static bool metal_seq_references(struct metal_state *st, const void *mtl_buf) {
+    if (st == nullptr || !st->sequence_active || mtl_buf == nullptr) {
+        return false;
+    }
+    if (st->seq_ref_overflow) {
+        return true;
+    }
+    const size_t mask = (sizeof(st->seq_ref) / sizeof(st->seq_ref[0])) - 1u;
+    size_t h = ((uintptr_t) mtl_buf >> 4) & mask;
+    for (size_t i = 0; i <= mask; i++) {
+        const size_t slot = (h + i) & mask;
+        if (st->seq_ref[slot] == mtl_buf) {
+            return true;
+        }
+        if (st->seq_ref[slot] == nullptr) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Submit the open batch and start a fresh one of the same kind. Called
+ * whenever the host is about to read or overwrite GPU-referenced memory. */
+static void metal_batch_flush(struct metal_state *st) {
+    if (st == nullptr || !st->sequence_active || !st->sequence_has_work) {
+        return;
+    }
+    struct geist_backend *be = st->backend;
+    const enum geist_command_sequence_kind kind = st->sequence_kind;
+    (void) metal_command_sequence_end(be, st->sequence_token, true);
+    metal_seq_ref_clear(st);
+    int tok = 0;
+    (void) metal_command_sequence_begin(be, kind, &tok);
+}
+
+static void metal_flush_if_referenced(struct metal_state *st,
+                                      const void *mtl_buf) {
+    if (metal_seq_references(st, mtl_buf)) {
+        static int dbg = -1;
+        if (dbg < 0) { const char *e = getenv("GEIST_SEQ_COUNT"); dbg = (e && e[0]) ? 1 : 0; }
+        if (dbg) { fprintf(stderr, "[flush] buf=%p\n", mtl_buf); }
+        metal_batch_flush(st);
+    }
+}
+
 [[nodiscard]] static enum geist_status metal_new_buffer(
     struct geist_backend *be,
     size_t bytes,
@@ -3683,6 +3773,7 @@ static void metal_buffer_destroy(struct geist_backend *be,
     if (n_bytes == 0) {
         return GEIST_OK;
     }
+    metal_flush_if_referenced(buf->owner, buf->buffer);
 
     if (buf->host_visible) {
         memcpy(buf->mapped, src, n_bytes);
@@ -3715,6 +3806,7 @@ static void metal_buffer_destroy(struct geist_backend *be,
     if (n_bytes == 0) {
         return GEIST_OK;
     }
+    metal_flush_if_referenced(buf->owner, buf->buffer);
 
     if (buf->host_visible) {
         memcpy(dst, buf->mapped, n_bytes);
@@ -4337,7 +4429,22 @@ static int metal_pack_raw_ntile4(const uint8_t *raw,
 }
 
 static void *metal_buffer_map(struct geist_buffer *buf) {
-    return buf != nullptr && buf->host_visible ? buf->mapped : nullptr;
+    if (buf == nullptr || !buf->host_visible) {
+        return nullptr;
+    }
+    /* The engine reads/writes through this pointer; if pending batched GPU
+     * work references the buffer, submit it first (read: results must be
+     * visible; write: encoded ops must not observe the new contents). */
+    {
+        struct metal_state *st = buf->owner;
+        if (metal_seq_references(st, buf->buffer)) {
+            static int dbg = -1;
+            if (dbg < 0) { const char *e = getenv("GEIST_SEQ_COUNT"); dbg = (e && e[0]) ? 1 : 0; }
+            if (dbg) { fprintf(stderr, "[flushmap] bytes=%zu role=%d\n", buf->bytes, (int) buf->role); }
+            metal_batch_flush(st);
+        }
+    }
+    return buf->mapped;
 }
 
 static void metal_buffer_unmap(struct geist_buffer *buf) {
@@ -11036,6 +11143,8 @@ static void metal_capture_end(struct metal_state *st) {
 
     metal_capture_begin(st, kind);
 
+    static int g_seq_created; g_seq_created++;
+    if (getenv("GEIST_SEQ_COUNT") && (g_seq_created % 16) == 0) fprintf(stderr, "[seqdbg] created=%d\n", g_seq_created);
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
         geist_backend_set_error(be, GEIST_E_BACKEND,
@@ -11115,7 +11224,12 @@ static void metal_capture_end(struct metal_state *st) {
 
     metal_msg_send_void0(st, enc, "endEncoding");
     enum geist_status out = GEIST_OK;
-    if (submit && has_work) {
+    /* Commit even when no work was encoded: an uncommitted command buffer
+     * permanently occupies one of the queue's (default 64) slots, and the
+     * batched-submit region hooks legitimately close empty sequences. */
+    { static int g_seq_ended; g_seq_ended++;
+      if (getenv("GEIST_SEQ_COUNT") && (g_seq_ended % 16) == 0) fprintf(stderr, "[seqdbg] ended=%d submit=%d\n", g_seq_ended, (int) submit); }
+    if (submit) {
         const enum metal_profile_stage wait_stage =
             metal_profile_wait_stage_for_sequence(st->sequence_kind);
         const uint64_t wait_start_ns =
@@ -12319,7 +12433,9 @@ static void metal_linear_mN(const float *x, const struct geist_weight *w,
         /* One of the pointers is plain host memory (the engine passes heap
          * scratch for small helper projections, e.g. single-row views).
          * Compute on host — same math as cpu_scalar (dequant row, double
-         * accumulator), so token parity with the CPU backends holds. */
+         * accumulator), so token parity with the CPU backends holds. The
+         * inputs may be GPU-pending, so drain the batch first. */
+        metal_batch_flush(st);
         float *row = malloc(n_in * sizeof(float));
         if (row == nullptr) {
             memset(y, 0, m * n_out * sizeof(float));
@@ -12452,6 +12568,103 @@ static void metal_linear_debug_stats(const float *x, size_t nx,
             (double) ay, nanx, nany);
 }
 
+/* Tensor-based linear (main's optional vtbl slot): dispatch the GEMM from
+ * the engine's existing tensor views — no host pointers, so the op encodes
+ * onto the open batch when one is active. UNSUPPORTED falls back to the
+ * resolved host-pointer kernels. */
+[[nodiscard]] static enum geist_status metal_linear_t(
+    struct geist_backend *be,
+    const struct geist_tensor *x,
+    const struct geist_weight *w,
+    const struct geist_tensor *t_w,
+    size_t m,
+    struct geist_tensor *y) {
+
+    if (w == nullptr || t_w == nullptr || x == nullptr || y == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* m == 1 (decode) routes to the matvec ops — the GEMM tile kernels are
+     * an order of magnitude slower for a single row than the llama-style
+     * mul_mv kernels. The engine passes [1, n] 2D views; rebuild them 1D. */
+    if (m == 1) {
+        struct geist_tensor x1 = *x;
+        struct geist_tensor y1 = *y;
+        if (x1.ndim == 2 && x1.shape[0] == 1) {
+            x1.ndim = 1;
+            x1.shape[0] = x1.shape[1];
+            x1.stride[0] = x1.stride[1];
+            x1.shape[1] = 0;
+            x1.stride[1] = 0;
+        }
+        if (y1.ndim == 2 && y1.shape[0] == 1) {
+            y1.ndim = 1;
+            y1.shape[0] = y1.shape[1];
+            y1.stride[0] = y1.stride[1];
+            y1.shape[1] = 0;
+            y1.stride[1] = 0;
+        }
+        switch ((enum geist_dtype) w->dtype) {
+        case GEIST_DTYPE_Q4_K:
+            return metal_matvec_q4k(be, &x1, t_w, &y1);
+        case GEIST_DTYPE_Q6_K:
+            return metal_matvec_q6k(be, &x1, t_w, &y1);
+        case GEIST_DTYPE_F32:
+            return metal_matvec_f32_dense(be, &x1, t_w, &y1);
+        default:
+            return GEIST_E_UNSUPPORTED;
+        }
+    }
+    switch ((enum geist_dtype) w->dtype) {
+    case GEIST_DTYPE_Q4_K:
+        return metal_matmul_q4k(be, x, t_w, y);
+    case GEIST_DTYPE_Q6_K:
+        return metal_matmul_q6k(be, x, t_w, y);
+    case GEIST_DTYPE_F32:
+        return metal_matmul_f32_dense(be, x, t_w, y);
+    default:
+        return GEIST_E_UNSUPPORTED;
+    }
+}
+
+/* Batched-submit region hooks. main brackets each prefill batch and each
+ * decode step with these; we open one command buffer per region and encode
+ * every op onto it. Host access to GPU-referenced buffers flushes early
+ * (see metal_flush_if_referenced). The engine treats the token as opaque;
+ * flushes rotate st->sequence_token, so region_end closes the CURRENT
+ * sequence, not the original token. */
+static int metal_parallel_region_begin(struct geist_backend *be,
+                                       enum geist_parallel_region region) {
+    if (be == nullptr || be->state == nullptr) {
+        return 0;
+    }
+    struct metal_state *st = be->state;
+    if (st->sequence_active) {
+        return 0; /* nested region: leave the outer batch in charge */
+    }
+    const enum geist_command_sequence_kind kind =
+        region == GEIST_REGION_PREFILL_BATCH
+            ? GEIST_COMMAND_SEQUENCE_PREFILL_TEXT
+            : GEIST_COMMAND_SEQUENCE_DECODE_LAYER_LOOP;
+    int tok = 0;
+    if (metal_command_sequence_begin(be, kind, &tok) != GEIST_OK) {
+        return 0;
+    }
+    metal_seq_ref_clear(st);
+    return tok;
+}
+
+static void metal_parallel_region_end(struct geist_backend *be, int token) {
+    if (be == nullptr || be->state == nullptr || token == 0) {
+        return;
+    }
+    struct metal_state *st = be->state;
+    if (!st->sequence_active) {
+        return;
+    }
+    (void) metal_command_sequence_end(be, st->sequence_token, true);
+    metal_seq_ref_clear(st);
+}
+
 [[nodiscard]] static enum geist_status metal_resolve_weight(
     struct geist_backend *be, struct geist_weight *w) {
     (void) be;
@@ -12501,8 +12714,11 @@ static const struct geist_backend_vtbl metal_vtbl = {
     .attention = metal_attention,
     .ffn_geglu_q4q6_mN = nullptr,
     .transformer_block = nullptr,
-    .parallel_region_begin = nullptr,
-    .parallel_region_end = nullptr,
+    .parallel_region_begin = metal_parallel_region_begin,
+    .parallel_region_end = metal_parallel_region_end,
+    .linear_t = metal_linear_t,
+    .buffer_copy = metal_buffer_copy,
+    .scale_f32 = metal_scale_f32,
 };
 
 const struct geist_backend_descriptor geist_backend_metal = {

@@ -461,6 +461,13 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
     if (spec_head_env() == 0) {
         return false;
     }
+    /* The sketch is a HOST optimization (int8 dots + per-candidate dequant
+     * on the CPU). On a batched-submit GPU backend (linear_t set) it would
+     * stall the pipeline with host work per token — the on-device dense
+     * head is faster there. */
+    if (st->backend->desc->vtbl->linear_t != nullptr) {
+        return false;
+    }
     if (st->spec_state == 0) {
         st->spec_state = spec_head_build(st) ? 1 : -1;
     }
