@@ -306,6 +306,30 @@ struct geist_backend_vtbl {
         geist_token_t              token_id,
         float                      scale,
         struct geist_tensor       *out);
+
+    /* Optional fused f32→f16 KV-cache append: convert k_src/v_src (F32
+     * DENSE [seq, kv_heads, head_dim]) and store them at row q_position
+     * of the F16 caches (F16 DENSE 3D views onto the cache buffers).
+     * Presence of this slot signals that the backend's attention accepts
+     * F16 K/V — GEIST_KV_AUTO resolves to an F16 cache when it is set
+     * (env GEIST_KV_F16=0 forces FP32). nullptr = FP32 KV cache. */
+    enum geist_status (*kv_append_f16)(struct geist_backend      *be,
+                                       const struct geist_tensor *k_src,
+                                       const struct geist_tensor *v_src,
+                                       size_t                     q_position,
+                                       struct geist_tensor       *k_cache,
+                                       struct geist_tensor       *v_cache);
+
+    /* Optional fused y = res + rmsnorm(x) * w — the post-norm residual
+     * step. Same contract as rmsnorm followed by add; all F32 DENSE with
+     * matching shapes, y may alias res or x. nullptr = arch issues
+     * separate rmsnorm + add ops. */
+    enum geist_status (*rmsnorm_add)(struct geist_backend      *be,
+                                     const struct geist_tensor *res,
+                                     const struct geist_tensor *x,
+                                     const struct geist_tensor *w,
+                                     float                      eps,
+                                     struct geist_tensor       *y);
 };
 
 /* ====================================================================== */

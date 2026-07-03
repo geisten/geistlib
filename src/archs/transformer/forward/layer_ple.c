@@ -118,16 +118,23 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             return s;
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
-        s  = v->rmsnorm(be, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_proj_ple_2d);
-        transformer_profile_add(&g_ple_profile, PLE_RMSNORM, t0);
-        if (s != GEIST_OK) {
-            return s;
-        }
-        t0 = prof ? transformer_profile_now_ns() : 0;
-        s  = v->add(be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_h_out_2d);
-        transformer_profile_add(&g_ple_profile, PLE_ADD, t0);
-        if (s != GEIST_OK) {
-            return s;
+        if (v->rmsnorm_add != nullptr &&
+            v->rmsnorm_add(be, &t_h_post_ff_2d, &t_proj_ple_2d,
+                           &t_w_post_per, ctx->eps, &t_h_out_2d) ==
+                GEIST_OK) {
+            transformer_profile_add(&g_ple_profile, PLE_RMSNORM, t0);
+        } else {
+            s = v->rmsnorm(be, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_proj_ple_2d);
+            transformer_profile_add(&g_ple_profile, PLE_RMSNORM, t0);
+            if (s != GEIST_OK) {
+                return s;
+            }
+            t0 = prof ? transformer_profile_now_ns() : 0;
+            s  = v->add(be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_h_out_2d);
+            transformer_profile_add(&g_ple_profile, PLE_ADD, t0);
+            if (s != GEIST_OK) {
+                return s;
+            }
         }
     } else {
         const size_t bytes = ctx->seq * st->d_model * sizeof(float);

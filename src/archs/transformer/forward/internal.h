@@ -63,6 +63,7 @@ struct transformer_layer_forward_ctx {
     bool                           apply_ple;
     bool                           kv_int8_enabled;
     bool                           kv_kivi_enabled;
+    bool                           kv_f16_enabled;
     enum geist_ffn_activation_kind ffn_activation;
 
     float   eps;
@@ -138,6 +139,14 @@ view_3d(struct geist_buffer *b, int64_t s0, int64_t s1, int64_t s2) {
             .shape  = {s0, s1, s2, 0, 0, 0, 0, 0},
             .stride = {s1 * s2, s2, 1, 0, 0, 0, 0, 0},
     };
+    return t;
+}
+
+/* F16 variant — used for the half-float KV cache views. */
+static inline struct geist_tensor
+view_3d_f16(struct geist_buffer *b, int64_t s0, int64_t s1, int64_t s2) {
+    struct geist_tensor t = view_3d(b, s0, s1, s2);
+    t.dtype              = GEIST_DTYPE_F16;
     return t;
 }
 

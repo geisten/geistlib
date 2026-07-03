@@ -302,13 +302,18 @@ ffn_post:
         struct geist_tensor t_post_ff_2d =
                 view_2d(st->sess->scratch_post_ff, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_ffw = view_1d(L->post_ffw_norm.buffer, st->d_model);
-        s = v->rmsnorm(be, &t_ffn_out_2d, &t_w_post_ffw, ctx->eps, &t_post_ff_2d);
-        if (s != GEIST_OK) {
-            return s;
-        }
-        s = v->add(be, &t_h_post_attn_2d, &t_post_ff_2d, &t_h_post_ff_2d);
-        if (s != GEIST_OK) {
-            return s;
+        if (v->rmsnorm_add == nullptr ||
+            v->rmsnorm_add(be, &t_h_post_attn_2d, &t_ffn_out_2d,
+                           &t_w_post_ffw, ctx->eps, &t_h_post_ff_2d) !=
+                GEIST_OK) {
+            s = v->rmsnorm(be, &t_ffn_out_2d, &t_w_post_ffw, ctx->eps, &t_post_ff_2d);
+            if (s != GEIST_OK) {
+                return s;
+            }
+            s = v->add(be, &t_h_post_attn_2d, &t_post_ff_2d, &t_h_post_ff_2d);
+            if (s != GEIST_OK) {
+                return s;
+            }
         }
     } else {
         s = v->add(be, &t_h_post_attn_2d, &t_ffn_out_2d, &t_h_post_ff_2d);

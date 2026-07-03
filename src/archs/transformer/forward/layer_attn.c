@@ -282,13 +282,17 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         struct geist_tensor t_post_attn_2d =
                 view_2d(st->sess->scratch_post_attn, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_attn = view_1d(L->post_attn_norm.buffer, st->d_model);
-        s = v->rmsnorm(be, &t_o_2d, &t_w_post_attn, ctx->eps, &t_post_attn_2d);
-        if (s != GEIST_OK) {
-            return s;
-        }
-        s = v->add(be, &t_h_in_2d, &t_post_attn_2d, &t_h_post_attn_2d);
-        if (s != GEIST_OK) {
-            return s;
+        if (v->rmsnorm_add == nullptr ||
+            v->rmsnorm_add(be, &t_h_in_2d, &t_o_2d, &t_w_post_attn,
+                           ctx->eps, &t_h_post_attn_2d) != GEIST_OK) {
+            s = v->rmsnorm(be, &t_o_2d, &t_w_post_attn, ctx->eps, &t_post_attn_2d);
+            if (s != GEIST_OK) {
+                return s;
+            }
+            s = v->add(be, &t_h_in_2d, &t_post_attn_2d, &t_h_post_attn_2d);
+            if (s != GEIST_OK) {
+                return s;
+            }
         }
     } else {
         s = v->add(be, &t_h_in_2d, &t_o_2d, &t_h_post_attn_2d);

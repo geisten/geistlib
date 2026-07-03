@@ -53,6 +53,21 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
     const size_t                     hd         = ctx->hd;
     const size_t                     kv_out     = ctx->kv_out;
 
+    /* F16 cache: fused f32→f16 converting append on-device. The mode is
+     * only enabled when the backend provides the slot (arch_state.c). */
+    if (ctx->kv_f16_enabled) {
+        struct geist_tensor t_k_src =
+                view_3d(st->sess->scratch_k, (int64_t) seq, st->n_kv_heads, (int64_t) hd);
+        struct geist_tensor t_v_src =
+                view_3d(st->sess->scratch_v, (int64_t) seq, st->n_kv_heads, (int64_t) hd);
+        struct geist_tensor t_k_dst = view_3d_f16(
+                ctx->k_cache_buf, (int64_t) (q_position + seq), st->n_kv_heads, (int64_t) hd);
+        struct geist_tensor t_v_dst = view_3d_f16(
+                ctx->v_cache_buf, (int64_t) (q_position + seq), st->n_kv_heads, (int64_t) hd);
+        return v->kv_append_f16(
+                ctx->be, &t_k_src, &t_v_src, q_position, &t_k_dst, &t_v_dst);
+    }
+
     /* Plain f32 cache + device-copy-capable backend: append on-device so
      * batched GPU backends need no host round-trip (mapping scratch_k/v
      * here would force them to flush the pending pipeline). */
@@ -229,9 +244,17 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         v->buffer_unmap(st->sess->scratch_attn);
     } else {
         struct geist_tensor t_kcache_3d =
-                view_3d(ctx->k_cache_buf, (int64_t) kv_len_now, st->n_kv_heads, (int64_t) ctx->hd);
+                ctx->kv_f16_enabled
+                        ? view_3d_f16(ctx->k_cache_buf, (int64_t) kv_len_now,
+                                      st->n_kv_heads, (int64_t) ctx->hd)
+                        : view_3d(ctx->k_cache_buf, (int64_t) kv_len_now,
+                                  st->n_kv_heads, (int64_t) ctx->hd);
         struct geist_tensor t_vcache_3d =
-                view_3d(ctx->v_cache_buf, (int64_t) kv_len_now, st->n_kv_heads, (int64_t) ctx->hd);
+                ctx->kv_f16_enabled
+                        ? view_3d_f16(ctx->v_cache_buf, (int64_t) kv_len_now,
+                                      st->n_kv_heads, (int64_t) ctx->hd)
+                        : view_3d(ctx->v_cache_buf, (int64_t) kv_len_now,
+                                  st->n_kv_heads, (int64_t) ctx->hd);
         enum geist_status s = v->attention(be,
                                            t_q_3d,
                                            &t_kcache_3d,

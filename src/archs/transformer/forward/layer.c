@@ -157,6 +157,7 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     ctx->apply_ple        = P != nullptr ? P->apply_ple : st->config.has_ple;
     ctx->kv_int8_enabled  = ctx->SP->kv_int8_enabled;
     ctx->kv_kivi_enabled  = ctx->SP->kv_kivi_enabled;
+    ctx->kv_f16_enabled   = ctx->SP->kv_f16_enabled;
     ctx->ffn_activation   = P != nullptr ? P->ffn_activation : st->config.ffn_activation;
     ctx->eps              = st->config.rms_eps;
     ctx->hd               = L->head_dim;

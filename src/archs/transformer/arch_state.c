@@ -307,11 +307,13 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
                 return s;
             }
         } else {
-            s = alloc_scratch(be, n_elems * sizeof(float), &st->sess->k_cache[li]);
+            const size_t kv_elem_bytes =
+                    st->sess->kv_f16_enabled ? 2u : sizeof(float);
+            s = alloc_scratch(be, n_elems * kv_elem_bytes, &st->sess->k_cache[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, n_elems * sizeof(float), &st->sess->v_cache[li]);
+            s = alloc_scratch(be, n_elems * kv_elem_bytes, &st->sess->v_cache[li]);
             if (s != GEIST_OK) {
                 return s;
             }
@@ -941,6 +943,22 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     const enum geist_kv_mode mode = resolve_kv_mode(opts);
     sess->kv_kivi_enabled         = (mode == GEIST_KV_KIVI);
     sess->kv_int8_enabled         = (mode == GEIST_KV_INT8);
+    /* F16 cache: explicit request, or AUTO-resolved FP32 upgraded when the
+     * backend has the fused converting append (env GEIST_KV_F16=0 forces
+     * FP32, =1 requests it under AUTO). Without the slot F16 silently
+     * degrades to FP32 — no host-side half-float path exists. */
+    {
+        const bool slot_ok = state->backend != nullptr &&
+                             state->backend->desc->vtbl->kv_append_f16 != nullptr;
+        const char *env_f16 = getenv("GEIST_KV_F16");
+        bool want = mode == GEIST_KV_F16;
+        if (mode == GEIST_KV_FP32 &&
+            (opts == nullptr || opts->kv_mode == GEIST_KV_AUTO)) {
+            want = env_f16 == nullptr || env_f16[0] != '0';
+        }
+        sess->kv_f16_enabled = want && slot_ok &&
+                               !(env_f16 != nullptr && env_f16[0] == '0');
+    }
     transformer_session_exec_plan_build(sess);
     sess->kivi_residual_count = 0;
     sess->kivi_drained_count  = 0;

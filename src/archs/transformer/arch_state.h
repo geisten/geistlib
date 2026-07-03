@@ -175,6 +175,10 @@ struct transformer_arch_session {
      *        shared across layers (lock-step drain). */
     bool                                 kv_int8_enabled;
     bool                                 kv_kivi_enabled;
+    /* F16 KV cache: k_cache[]/v_cache[] hold half floats (2 bytes/elem);
+     * appends convert through the backend's kv_append_f16 slot and
+     * attention reads F16 views. Only set when that slot is non-null. */
+    bool                                 kv_f16_enabled;
     struct transformer_session_exec_plan exec_plan;
     /* P1.4.c: per-layer KV slot arrays are heap-allocated at
      * session_alloc, sized to state->n_layers. Exactly one of the
