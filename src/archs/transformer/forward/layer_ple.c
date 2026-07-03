@@ -57,8 +57,21 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
         uint64_t            t0;
         struct geist_tensor t_gate_ple_2d =
                 view_2d(st->sess->scratch_gate_ple, ctx->SEQ, st->hidden_per_layer);
-        struct geist_tensor t_ple_in_2d =
-                view_2d(ctx->per_layer_input_buf, ctx->SEQ, st->hidden_per_layer);
+        /* When the full per-token slab [seq, n_layers*hpl] is passed
+         * through (batched GPU backends skip the per-layer gather), read
+         * this layer's slice as a strided view; a pre-gathered buffer is
+         * contiguous. */
+        const bool ple_slab =
+                ctx->per_layer_input_buf == st->sess->scratch_per_layer_input;
+        struct geist_tensor t_ple_in_2d = view_2d_at(
+                ctx->per_layer_input_buf,
+                ple_slab ? (size_t) ctx->layer_idx *
+                                   (size_t) st->hidden_per_layer * sizeof(float)
+                         : 0u,
+                ctx->SEQ, st->hidden_per_layer);
+        if (ple_slab) {
+            t_ple_in_2d.stride[0] = (int64_t) st->ple_out;
+        }
 
         t0 = prof ? transformer_profile_now_ns() : 0;
         s  = linear_w_or_legacy(be,

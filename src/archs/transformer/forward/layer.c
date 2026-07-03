@@ -375,13 +375,19 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
         return s;
     }
 
-    /* 3. *= PLE_MODEL_PROJ_SCALE (in-place). */
+    /* 3. *= PLE_MODEL_PROJ_SCALE (in-place; device op keeps batched GPU
+     *    backends from flushing for a host loop). */
     {
-        float *p = (float *) v->buffer_map(per_layer_input_buf);
-        for (size_t i = 0; i < (size_t) st->ple_out; i++) {
-            p[i] *= st->config.ple_model_proj_scale;
+        struct geist_tensor t_all = view_1d(per_layer_input_buf, st->ple_out);
+        if (v->scale_f32 == nullptr ||
+            v->scale_f32(be, &t_all, st->config.ple_model_proj_scale,
+                         &t_all) != GEIST_OK) {
+            float *p = (float *) v->buffer_map(per_layer_input_buf);
+            for (size_t i = 0; i < (size_t) st->ple_out; i++) {
+                p[i] *= st->config.ple_model_proj_scale;
+            }
+            v->buffer_unmap(per_layer_input_buf);
         }
-        v->buffer_unmap(per_layer_input_buf);
     }
 
     /* 4. rmsnorm as [NUM_LAYERS, HIDDEN_PER_LAYER] with model_proj_norm. */
@@ -401,11 +407,16 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
         return s;
     }
     {
-        float *p = (float *) v->buffer_map(per_layer_input_buf);
-        for (size_t i = 0; i < (size_t) st->ple_out; i++) {
-            p[i] *= st->config.ple_input_scale;
+        struct geist_tensor t_all = view_1d(per_layer_input_buf, st->ple_out);
+        if (v->scale_f32 == nullptr ||
+            v->scale_f32(be, &t_all, st->config.ple_input_scale, &t_all) !=
+                GEIST_OK) {
+            float *p = (float *) v->buffer_map(per_layer_input_buf);
+            for (size_t i = 0; i < (size_t) st->ple_out; i++) {
+                p[i] *= st->config.ple_input_scale;
+            }
+            v->buffer_unmap(per_layer_input_buf);
         }
-        v->buffer_unmap(per_layer_input_buf);
     }
     return GEIST_OK;
 }

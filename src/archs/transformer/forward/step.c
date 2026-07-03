@@ -130,7 +130,14 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
          * (Llama / Mistral) pass nullptr through to forward_one_layer
          * which then skips the PLE injection block. */
         struct geist_buffer *layer_ple_buf = nullptr;
-        if (per_layer_input_buf != nullptr) {
+        if (per_layer_input_buf != nullptr &&
+            v->linear_t != nullptr &&
+            per_layer_input_buf == st->sess->scratch_per_layer_input) {
+            /* Batched GPU backends read the layer's PLE slice directly from
+             * the slab as a strided view (see layer_ple.c) — the per-layer
+             * gather would be seq*n_layers copy dispatches per chunk. */
+            layer_ple_buf = per_layer_input_buf;
+        } else if (per_layer_input_buf != nullptr) {
             if (v->buffer_copy != nullptr) {
                 /* Device-side gather: keeps batched GPU backends from
                  * flushing their pipeline for a host memcpy each layer. */
