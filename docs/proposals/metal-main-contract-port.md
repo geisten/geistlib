@@ -36,6 +36,28 @@ KEEP their MSL kernels + low-level encode fns for the new ops:
 - `geist_command_sequence_kind` + `GEIST_COMMAND_SEQUENCE_*` → the whole
   command-sequence batching machinery (~20 refs)
 
+## Progress (2026-07-03)
+- **Stage 1 DONE** (commit 36ce89b): compiles/links/registers; device creates;
+  buffer_create works. Descriptor rewritten to main's 25 fields; old op impls
+  kept compilable via metal_legacy_ops.h (backend-private struct copies).
+- **Stage 2 DONE** (commit ff9603b): full gemma-E2B model LOADS on metal (717ms).
+  metal_buffer_create_aliased (copy into SHARED MTLBuffer) + all buffers made
+  host-visible (buffer_map must work for weights/scratch on main's contract).
+- **Stage 4 NEXT — design resolved.** Blocker: metal_resolve_weight is a stub,
+  so linear reports UNSUPPORTED and prefill returns 0. KEY FACT: every weight's
+  `w->raw = buffer_map(buf) + offset` (layer_wiring.c) → w->raw ALWAYS points
+  into a metal-created MTLBuffer's contents. x/y in linear come from
+  buffer_map of metal scratch buffers. So:
+  1. Add a registry to metal_state: {contents_ptr, size, MTLBuffer} filled in
+     metal_new_buffer AND metal_buffer_create_aliased, cleared on destroy.
+  2. metal_resolve_weight installs metal_linear_m1/mN for Q4_K/Q6_K/F32.
+  3. metal_linear_mN(x,w,m,be,y): range-lookup x, w->raw, y in the registry →
+     (MTLBuffer, offset); build geist_tensors; reuse the existing GEMM encode
+     fns (metal_encode_matmul_q4k / _q6k / _f32) on a standalone command buffer;
+     commit + wait. m==1 uses the matvec kernels.
+  Gate: matmul parity vs cpu_scalar (buffer_download), then decode checksum
+  0x609900994dc13840. Then benchmark + llama compare + README.
+
 ## Stages (verify after each)
 1. **Compile skeleton.** Delete the 6 old-contract op impls + command-sequence
    machinery. Rewrite the metal descriptor to main's 25-field vtbl. Stub the
