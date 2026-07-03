@@ -1,0 +1,10 @@
+# geist Metal (main contract) stage-6 batched submission — cool benchmark 2026-07-03
+# branch gpu-backends-main-port @ c028762, gate: token parity with cpu_scalar (24/24)
+=== COOL geist metal (stage 6, GEIST_M_MAX=128) pp512/tg64 ===
+  prefill (512 tok):    1101.2 ms  =   2.15 ms/tok  =   465.0 tok/s
+  decode  (64 tok):     2065.1 ms  =  32.27 ms/tok  =    31.0 tok/s
+  total   (576 tok):    3166.3 ms  =   5.50 ms/tok  =   181.9 tok/s  (pp512+tg64, user-facing)
+=== llama-bench back-to-back ===
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |           pp512 |       1553.01 ± 3.21 |
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |            tg64 |         93.94 ± 0.49 |
+BENCH3_DONE
