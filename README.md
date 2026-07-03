@@ -314,12 +314,12 @@ exceeds the 2 GB GitHub-release limit. (Runs real-time on a Pi 5 —
 | Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | decode t/s | **48.6** | 44.1 *(llama.cpp)* |
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | prefill t/s | **351** | 346 *(llama.cpp)* |
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | decode t/s | 34.1 | 34.5 *(llama.cpp)* |
-| Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | prefill t/s (pp512) | 735 | 1540 *(llama.cpp Metal)* |
-| Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | decode t/s (tg64) | 50.8 | 93.1 *(llama.cpp Metal)* |
+| Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | prefill t/s (pp512) | 743 | 1540 *(llama.cpp Metal)* |
+| Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | decode t/s (tg64) | 54.0 | 93.1 *(llama.cpp Metal)* |
 
 <sub>**Baseline versions:** llama.cpp `d05fe1d` (Pi 5, M1 Max) · `b9827` (x86) — bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `master` (its bundled llama.cpp fork, unpinned `--depth 1` clone). Full methodology: [`benchmark/`](benchmark/README.md).</sub>
 
-<sub>**Metal backend status** (`BACKENDS="… metal"`): experimental — greedy-decode tokens verified identical to the `cpu_scalar` reference at every optimization step. Ops batch into one Metal command buffer per prefill batch / decode step and submit only when the host touches GPU-referenced memory. Prefill runs the simdgroup flash-attention kernels and decode the split-KV flash kernels (K/V converted to f16 on the fly); the remaining gap to llama.cpp is known headroom (device argmax head, fused matvec chains, kernel-level GEMM work) — the roadmap with measured targets lives in `docs/proposals/metal-beat-llamacpp-plan.md`. Cool-state protocol (240 s idle), geist (`GEIST_M_MAX=128`) and llama.cpp measured back-to-back (Homebrew llama.cpp, `BLAS,MTL`), M1 Max 32-core.</sub>
+<sub>**Metal backend status** (`BACKENDS="… metal"`): experimental — greedy-decode tokens verified identical to the `cpu_scalar` reference at every optimization step. Ops batch into one Metal command buffer per prefill batch / decode step and submit only when the host touches GPU-referenced memory. Prefill runs the simdgroup flash-attention kernels and decode the split-KV flash kernels on a native f16 KV cache (half the KV memory, zero per-call conversion); the remaining gap to llama.cpp is known headroom (device argmax head, fused matvec chains, kernel-level GEMM work) — the roadmap with measured targets lives in `docs/proposals/metal-beat-llamacpp-plan.md`. Cool-state protocol (240 s idle), geist (`GEIST_M_MAX=128`) and llama.cpp measured back-to-back (Homebrew llama.cpp, `BLAS,MTL`), M1 Max 32-core.</sub>
 </details>
 
 ---
