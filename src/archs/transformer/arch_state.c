@@ -307,11 +307,12 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
                 return s;
             }
         } else {
-            s = alloc_scratch(be, n_elems * sizeof(float), &st->sess->k_cache[li]);
+            const size_t kv_elem_bytes = st->sess->kv_f16_enabled ? 2u : sizeof(float);
+            s = alloc_scratch(be, n_elems * kv_elem_bytes, &st->sess->k_cache[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, n_elems * sizeof(float), &st->sess->v_cache[li]);
+            s = alloc_scratch(be, n_elems * kv_elem_bytes, &st->sess->v_cache[li]);
             if (s != GEIST_OK) {
                 return s;
             }
@@ -549,13 +550,24 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                      * predecoded SGEMM path scales up to m=128 (m=32
                      * regresses Accelerate). 64 keeps scratch under ~30 MB
                      * while feeding Accelerate a decent batch. */
+    if (be->desc != nullptr && be->desc->name != nullptr && strcmp(be->desc->name, "metal") == 0) {
+        st->m_max = 128; /* GPU sweet spot (measured, M1 Max): the mm_sg
+                          * GEMM fast paths want rows%64==0 and fewer,
+                          * larger chunks; 128 was the bench default via
+                          * GEIST_M_MAX all along. */
+    }
 #endif
     { /* GEIST_M_MAX override — for tuning the prefill activation tile vs L1
-       * fit (m×n_in int8 should fit the 64 KB L1: m=32→48 KB, m=64→96 KB). */
-        const char *mm = getenv("GEIST_M_MAX");
+       * fit (m×n_in int8 should fit the 64 KB L1: m=32→48 KB, m=64→96 KB).
+       * GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; the metal
+       * path never runs those in prefill, so the GPU may batch larger. */
+        const bool  is_metal = be->desc != nullptr && be->desc->name != nullptr &&
+                               strcmp(be->desc->name, "metal") == 0;
+        const int   cap      = is_metal ? 512 : (int) GEIST_QUANT_M_CAP;
+        const char *mm       = getenv("GEIST_M_MAX");
         if (mm != nullptr && mm[0] != '\0') {
             const int v = atoi(mm);
-            if (v > 0 && v <= (int) GEIST_QUANT_M_CAP)
+            if (v > 0 && v <= cap)
                 st->m_max = (size_t) v;
         }
     }
@@ -890,13 +902,19 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     }
     memset(sess, 0, sizeof(*sess));
     sess->m_max = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
-    if (sess->m_max == 0 || sess->m_max > GEIST_QUANT_M_CAP) {
+    /* GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; metal's
+     * prefill never runs those, so its sessions may batch up to 512. */
+    const size_t m_cap = (be->desc != nullptr && be->desc->name != nullptr &&
+                          strcmp(be->desc->name, "metal") == 0)
+                                 ? 512u
+                                 : (size_t) GEIST_QUANT_M_CAP;
+    if (sess->m_max == 0 || sess->m_max > m_cap) {
         geist_backend_set_error(
                 be,
                 GEIST_E_INVALID_ARG,
                 "transformer_session_alloc: m_max=%zu outside supported range 1..%zu",
                 sess->m_max,
-                (size_t) GEIST_QUANT_M_CAP);
+                m_cap);
         void *p_sess = sess;
         safe_free(&p_sess);
         return nullptr;
@@ -941,6 +959,20 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     const enum geist_kv_mode mode = resolve_kv_mode(opts);
     sess->kv_kivi_enabled         = (mode == GEIST_KV_KIVI);
     sess->kv_int8_enabled         = (mode == GEIST_KV_INT8);
+    /* F16 cache: explicit request, or AUTO-resolved FP32 upgraded when the
+     * backend has the fused converting append (env GEIST_KV_F16=0 forces
+     * FP32, =1 requests it under AUTO). Without the slot F16 silently
+     * degrades to FP32 — no host-side half-float path exists. */
+    {
+        const bool slot_ok =
+                state->backend != nullptr && state->backend->desc->vtbl->kv_append_f16 != nullptr;
+        const char *env_f16 = getenv("GEIST_KV_F16");
+        bool        want    = mode == GEIST_KV_F16;
+        if (mode == GEIST_KV_FP32 && (opts == nullptr || opts->kv_mode == GEIST_KV_AUTO)) {
+            want = env_f16 == nullptr || env_f16[0] != '0';
+        }
+        sess->kv_f16_enabled = want && slot_ok && !(env_f16 != nullptr && env_f16[0] == '0');
+    }
     transformer_session_exec_plan_build(sess);
     sess->kivi_residual_count = 0;
     sess->kivi_drained_count  = 0;

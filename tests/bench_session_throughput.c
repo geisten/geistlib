@@ -47,9 +47,17 @@ int main(void) {
 
     /* ---- Setup ---- */
     struct geist_backend *be = nullptr;
-    enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
-    if (s != GEIST_OK) {
-        s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
+    /* GEIST_BENCH_BACKEND=<name> forces a backend (e.g. metal); default
+     * probes cpu_neon then cpu_scalar. */
+    const char       *bench_backend = getenv("GEIST_BENCH_BACKEND");
+    enum geist_status s;
+    if (bench_backend != nullptr && bench_backend[0] != '\0') {
+        s = geist_backend_create(bench_backend, nullptr, nullptr, &be);
+    } else {
+        s = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+        if (s != GEIST_OK) {
+            s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
+        }
     }
     if (s != GEIST_OK) {
         fprintf(stderr, "backend create failed: %s\n", geist_last_create_error());
@@ -66,9 +74,15 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
 
-    struct geist_session_opts opts = {.max_seq_len = 2048, .temperature = 0.0f};
-    struct geist_session     *sess = nullptr;
-    s                              = geist_session_create(model, be, &opts, &sess);
+    /* Size the KV window to the workload so long-context runs (pp2048+)
+     * fit; 2048 stays the floor to keep short runs comparable. */
+    const size_t want_seq = env_size("GEIST_BENCH_PP", 200) + env_size("GEIST_BENCH_TG", 50) + 64;
+    struct geist_session_opts opts = {
+            .max_seq_len = want_seq > 2048 ? want_seq : 2048,
+            .temperature = 0.0f,
+    };
+    struct geist_session *sess = nullptr;
+    s                          = geist_session_create(model, be, &opts, &sess);
     if (s != GEIST_OK) {
         fprintf(stderr, "session_create failed\n");
         geist_model_destroy(model);

@@ -173,8 +173,12 @@ struct transformer_arch_session {
      *        token V + R-token FP32 residual ring (k_residual /
      *        v_residual); kivi_residual_count + kivi_drained_count
      *        shared across layers (lock-step drain). */
-    bool                                 kv_int8_enabled;
-    bool                                 kv_kivi_enabled;
+    bool kv_int8_enabled;
+    bool kv_kivi_enabled;
+    /* F16 KV cache: k_cache[]/v_cache[] hold half floats (2 bytes/elem);
+     * appends convert through the backend's kv_append_f16 slot and
+     * attention reads F16 views. Only set when that slot is non-null. */
+    bool                                 kv_f16_enabled;
     struct transformer_session_exec_plan exec_plan;
     /* P1.4.c: per-layer KV slot arrays are heap-allocated at
      * session_alloc, sized to state->n_layers. Exactly one of the
@@ -236,7 +240,12 @@ struct transformer_arch_session {
     size_t             scratch_pool_used;
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
-    bool          logits_valid;
+    bool logits_valid;
+    /* Whether scratch_logits already carries the Gemma final-logit softcap.
+     * The greedy argmax path skips the softcap (monotonic → argmax
+     * invariant), so peek_logits applies it lazily for value consumers
+     * (scoring/perplexity). Reset per forward in finalize_logits_one_row. */
+    bool          logits_softcapped;
     geist_token_t next_token_pending;
 
     /* ---- Sampler state.

@@ -58,8 +58,30 @@ prefill_text_batch_inner(struct transformer_arch_state *st, size_t n, const geis
     for (size_t off = 0; off < n; off += st->m_max) {
         const size_t chunk = (n - off > st->m_max) ? st->m_max : (n - off);
 
-        /* 1. Embed all chunk tokens into scratch_h_a [chunk, HIDDEN]. */
-        {
+        /* 1. Embed all chunk tokens into scratch_h_a [chunk, HIDDEN].
+         * Device path first: per-row fused lookup+scale dispatches keep
+         * batched GPU backends from flushing the pipeline through a
+         * mapped host pointer (and skip the host dequant loop). */
+        bool embed_on_device = v->embedding_lookup_scaled != nullptr;
+        if (embed_on_device) {
+            for (size_t t = 0; t < chunk; t++) {
+                struct geist_tensor t_row = {
+                        .buffer = st->sess->scratch_h_a,
+                        .offset = t * st->d_model * sizeof(float),
+                        .dtype  = GEIST_DTYPE_F32,
+                        .layout = GEIST_LAYOUT_DENSE,
+                        .ndim   = 1,
+                        .shape  = {(int64_t) st->d_model, 0, 0, 0, 0, 0, 0, 0},
+                        .stride = {1, 0, 0, 0, 0, 0, 0, 0},
+                };
+                if (v->embedding_lookup_scaled(
+                            be, &st->embed_table, ids[off + t], embed_scale, &t_row) != GEIST_OK) {
+                    embed_on_device = false;
+                    break;
+                }
+            }
+        }
+        if (!embed_on_device) {
             float *h_dst = (float *) v->buffer_map(st->sess->scratch_h_a);
             for (size_t t = 0; t < chunk; t++) {
                 enum geist_status s = dequant_one_row(

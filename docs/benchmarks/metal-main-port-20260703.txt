@@ -1,0 +1,14 @@
+# geist Metal backend on main contract — post-port benchmark (2026-07-03)
+# branch gpu-backends-main-port @ 9da1344+README, M1 Max, gemma-4-E2B-it-Q4_K_M
+# protocol: 240s cooldown, geist and llama.cpp back-to-back
+# gate: greedy tokens identical to cpu_scalar (24/24)
+
+=== COOL geist metal (main-port) pp512/tg64 ===
+  prefill (512 tok):    2727.9 ms  =   5.33 ms/tok  =   187.7 tok/s
+  decode  (64 tok):    17449.6 ms  =  272.65 ms/tok  =     3.7 tok/s
+  total   (576 tok):   20177.6 ms  =  35.03 ms/tok  =    28.5 tok/s  (pp512+tg64, user-facing)
+=== llama-bench back-to-back ===
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |           pp512 |       1550.67 ± 1.49 |
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |            tg64 |         95.47 ± 0.45 |
+=== COOL geist cpu_neon reference (same engine) ===
+BENCH2_DONE
