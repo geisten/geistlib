@@ -320,6 +320,15 @@ struct geist_backend_vtbl {
                                        struct geist_tensor       *k_cache,
                                        struct geist_tensor       *v_cache);
 
+    /* Optional device greedy argmax over a [1, n] F32 logits row. The
+     * backend flushes its pending pipeline for a 4-byte index read instead
+     * of the arch mapping the whole logits row. Tie-break = lowest index
+     * (matches geist_sampler_argmax). GEIST_E_UNSUPPORTED = arch scans on
+     * the host. nullptr = always host. */
+    enum geist_status (*argmax_f32)(struct geist_backend      *be,
+                                    const struct geist_tensor *logits,
+                                    int32_t                   *out_index);
+
     /* Optional fused two-weight linear: y0 = x·w0^T, y1 = x·w1^T with one
      * pass over the activations. w0/w1 must share dtype and shape (used
      * for the k/v projections). Backends may support only a subset (e.g.

@@ -1618,6 +1618,15 @@ static const char metal_q4k_pair_n4_source[] =
     "static inline float dotb(device const uchar*w,uint off,uint bpr,uint row,uint ib,uint iq,uint ir,thread const float*yl,thread const float*yh,float4 sumy){constexpr ushort km1=0x3f3f,km2=0x0f0f,km3=0xc0c0;device const uchar*wb=w+off+(row*bpr+ib)*144u;device const ushort*sc=(device const ushort*)(wb+4u)+iq;device const ushort*q1=(device const ushort*)(wb+16u)+16u*iq+4u*ir;device const half*dh=(device const half*)wb;ushort sc16[4];thread const uchar*sc8=(thread const uchar*)sc16;sc16[0]=sc[0]&km1;sc16[1]=sc[2]&km1;sc16[2]=((sc[4]>>0)&km2)|((sc[0]&km3)>>2);sc16[3]=((sc[4]>>4)&km2)|((sc[2]&km3)>>2);device const ushort*q2=q1+32u;float4 a1=float4(0.0f),a2=float4(0.0f);for(uint i=0u;i<4u;i++){ushort q=q1[i];a1[0]+=yl[2u*i+0u]*float(q&0x000f);a1[1]+=yl[2u*i+1u]*float(q&0x0f00);a1[2]+=yl[2u*i+8u]*float(q&0x00f0);a1[3]+=yl[2u*i+9u]*float(q&0xf000);q=q2[i];a2[0]+=yh[2u*i+0u]*float(q&0x000f);a2[1]+=yh[2u*i+1u]*float(q&0x0f00);a2[2]+=yh[2u*i+8u]*float(q&0x00f0);a2[3]+=yh[2u*i+9u]*float(q&0xf000);}return float(dh[0])*((a1[0]+(1.0f/256.0f)*a1[1])*float(sc8[0])+(a1[2]+(1.0f/256.0f)*a1[3])*float(sc8[1])*(1.0f/16.0f)+(a2[0]+(1.0f/256.0f)*a2[1])*float(sc8[4])+(a2[2]+(1.0f/256.0f)*a2[3])*float(sc8[5])*(1.0f/16.0f))-float(dh[1])*(sumy[0]*float(sc8[2])+sumy[1]*float(sc8[3])+sumy[2]*float(sc8[6])+sumy[3]*float(sc8[7]));}\n"
     "kernel void pair_q4k_n4(device const float*x[[buffer(0)]],device const uchar*wg[[buffer(1)]],device const uchar*wu[[buffer(2)]],device float*gy[[buffer(3)]],device float*uy[[buffer(4)]],constant P&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){uint ix=uint(ti)/8u,it=uint(ti)&7u,iq=it>>2u,ir=it&3u,b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.n_out||b>=p.rows)return;uint nb=p.n_in>>8u;float g0=0.0f,g1=0.0f,u0=0.0f,u1=0.0f;device const float*y4=x+p.xo+b*p.xs+ix*256u+64u*iq+8u*ir;for(uint ib=ix;ib<nb;ib+=4u){float yl[16],yh[16];float4 sumy=float4(0.0f);for(uint i=0u;i<8u;i++){yl[i]=y4[i];sumy[0]+=yl[i];yl[i+8u]=y4[i+32u];sumy[1]+=yl[i+8u];yh[i]=y4[i+128u];sumy[2]+=yh[i];yh[i+8u]=y4[i+160u];sumy[3]+=yh[i+8u];}if(fr<p.n_out){g0+=dotb(wg,p.gw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);u0+=dotb(wu,p.uw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);}if(fr+1u<p.n_out){g1+=dotb(wg,p.gw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);u1+=dotb(wu,p.uw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);}y4+=1024u;}float ag0=simd_sum(g0),au0=simd_sum(u0),ag1=simd_sum(g1),au1=simd_sum(u1);if(ti==0){uint go=p.gy+b*p.ys+fr,uo=p.uy+b*p.ys+fr;gy[go]=ag0;uy[uo]=au0;if(fr+1u<p.n_out){gy[go+1u]=ag1;uy[uo+1u]=au1;}}}\n";
 
+static const char metal_argmax_source[] =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct P{uint n,xo;};\n"
+    "struct PB{uint rows,n,xo,xs,oo;};\n"
+    "kernel void argmax_f32(device const float*x[[buffer(0)]],device uint*out[[buffer(1)]],constant P&p[[buffer(2)]],uint lid[[thread_index_in_threadgroup]]){threadgroup float bv[256];threadgroup uint bi[256];float best=-3.402823466e+38f;uint idx=0u;for(uint i=lid;i<p.n;i+=256u){float v=x[p.xo+i];if(v>best||(v==best&&i<idx)){best=v;idx=i;}}bv[lid]=best;bi[lid]=idx;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st){float ov=bv[lid+st];uint oi=bi[lid+st];if(ov>bv[lid]||(ov==bv[lid]&&oi<bi[lid])){bv[lid]=ov;bi[lid]=oi;}}threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid==0u){out[0]=bi[0];}}\n"
+    "kernel void argmax_f32_batch(device const float*x[[buffer(0)]],device uint*out[[buffer(1)]],constant PB&p[[buffer(2)]],uint row[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup float bv[256];threadgroup uint bi[256];if(row>=p.rows)return;uint base=p.xo+row*p.xs;float best=-3.402823466e+38f;uint idx=0u;for(uint i=lid;i<p.n;i+=256u){float v=x[base+i];if(v>best||(v==best&&i<idx)){best=v;idx=i;}}bv[lid]=best;bi[lid]=idx;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st){float ov=bv[lid+st];uint oi=bi[lid+st];if(ov>bv[lid]||(ov==bv[lid]&&oi<bi[lid])){bv[lid]=ov;bi[lid]=oi;}}threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid==0u){out[p.oo+row]=bi[0];}}\n";
+
+
 static const char metal_attn_f16_source[] =
     "#include <metal_stdlib>\n"
     "using namespace metal;\n"
@@ -7638,6 +7647,153 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     return metal_rmsnorm_add(be, res, proj_scratch, norm_w, eps, y);
 }
 
+[[nodiscard]] static enum geist_status metal_ensure_argmax_pipeline(
+    struct geist_backend *be) {
+
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st = be->state;
+    if (st->argmax_pipeline != nullptr &&
+        st->argmax_batch_pipeline != nullptr &&
+        st->argmax_result_buffer != nullptr &&
+        st->argmax_result_mapped != nullptr &&
+        st->argmax_result_capacity >= 1u) {
+        return GEIST_OK;
+    }
+
+    void *ns_string = metal_objc_get_class(st, "NSString");
+    if (ns_string == nullptr) {
+        geist_backend_set_error(be, GEIST_E_BACKEND,
+                                "metal: NSString class unavailable");
+        return GEIST_E_BACKEND;
+    }
+    if (st->argmax_pipeline == nullptr ||
+        st->argmax_batch_pipeline == nullptr) {
+        void *source = metal_msg_send_id_cstr(
+            st, ns_string, "stringWithUTF8String:", metal_argmax_source);
+        if (source == nullptr) {
+            geist_backend_set_error(
+                be, GEIST_E_BACKEND,
+                "metal: failed to create argmax shader source");
+            return GEIST_E_BACKEND;
+        }
+        void *err = nullptr;
+        st->argmax_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:",
+            source, nullptr, &err);
+        if (st->argmax_library == nullptr) {
+            const char *msg = metal_nserror_message(st, err);
+            geist_backend_set_error(be, GEIST_E_BACKEND,
+                                    "metal: argmax shader compile failed%s%s",
+                                    msg != nullptr ? ": " : "",
+                                    msg != nullptr ? msg : "");
+            return GEIST_E_BACKEND;
+        }
+        enum geist_status s = metal_create_named_pipeline(
+            be, st->argmax_library, ns_string, "argmax_f32",
+            &st->argmax_function, &st->argmax_pipeline);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        s = metal_create_named_pipeline(
+            be, st->argmax_library, ns_string, "argmax_f32_batch",
+            &st->argmax_batch_function, &st->argmax_batch_pipeline);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    if (st->argmax_result_buffer == nullptr) {
+        st->argmax_result_buffer = metal_msg_send_id_size_uint(
+            st, st->device, "newBufferWithLength:options:",
+            sizeof(uint32_t), METAL_RESOURCE_STORAGE_MODE_SHARED);
+        if (st->argmax_result_buffer == nullptr) {
+            geist_backend_set_error(be, GEIST_E_BACKEND,
+                                    "metal argmax: result buffer allocation failed");
+            return GEIST_E_BACKEND;
+        }
+        st->argmax_result_mapped =
+            metal_msg_send_ptr0(st, st->argmax_result_buffer, "contents");
+        if (st->argmax_result_mapped == nullptr) {
+            geist_backend_set_error(be, GEIST_E_BACKEND,
+                                    "metal argmax: result buffer is not mappable");
+            return GEIST_E_BACKEND;
+        }
+        st->argmax_result_capacity = 1u;
+    }
+    return GEIST_OK;
+}
+
+/* Device greedy argmax (vtbl slot): one 256-thread threadgroup scans the
+ * [1, n] logits row on the GPU; the host flush then reads a 4-byte token
+ * instead of mapping the whole 1 MB logits row (plan Phase A1). Tie-break
+ * = lowest index, matching geist_sampler_argmax. */
+[[nodiscard]] static enum geist_status metal_argmax_f32(
+    struct geist_backend *be,
+    const struct geist_tensor *logits,
+    int32_t *out_index) {
+
+    if (be == nullptr || be->state == nullptr || logits == nullptr ||
+        out_index == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t rows = 0, n = 0, x_off = 0, x_stride = 0;
+    if (!metal_tensor_is_f32_rows(logits, &rows, &n, &x_off, &x_stride) ||
+        rows != 1u || n == 0 || n > UINT32_MAX || x_off > UINT32_MAX ||
+        logits->buffer->owner != be->state) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    enum geist_status s = metal_ensure_argmax_pipeline(be);
+    if (s != GEIST_OK) { return s; }
+    struct metal_state *st = be->state;
+
+    struct {
+        uint32_t n, xo;
+    } ap = {(uint32_t) n, (uint32_t) x_off};
+    void *cmd = nullptr;
+    void *enc = nullptr;
+    if (st->sequence_active) {
+        if (st->sequence_compute_encoder == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+        enc = metal_sequence_encoder(st);
+        if (metal_decode_replay_can_record(st)) {
+            st->decode_replay_failed = true;
+            st->decode_replay_valid = false;
+        }
+    } else {
+        cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+        enc = cmd != nullptr
+                  ? metal_msg_send_id0(st, cmd, "computeCommandEncoder")
+                  : nullptr;
+        if (cmd == nullptr || enc == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+    }
+    metal_msg_send_set_pipeline(st, enc, st->argmax_pipeline);
+    metal_msg_send_set_buffer(st, enc, logits->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, st->argmax_result_buffer, 0, 1);
+    metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 2);
+    const struct metal_size groups = {1, 1, 1};
+    const struct metal_size threads = {256, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ARGMAX, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+    if (st->sequence_active) {
+        st->sequence_has_work = true;
+        /* The 4-byte result read is the token's only host sync point. */
+        metal_flush_if_referenced(st, st->argmax_result_buffer);
+    } else {
+        metal_msg_send_void0(st, enc, "endEncoding");
+        metal_msg_send_void0(st, cmd, "commit");
+        metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+        if (metal_msg_send_id0(st, cmd, "error") != nullptr) {
+            return GEIST_E_BACKEND;
+        }
+    }
+    *out_index = (int32_t) ((const uint32_t *) st->argmax_result_mapped)[0];
+    return GEIST_OK;
+}
+
 /* Fused f32→f16 KV append (vtbl slot): convert seq rows of scratch K/V and
  * store them at row q_position of the f16 caches — the kernel the f32-KV
  * flash paths use for their staging, aimed at the cache instead. */
@@ -8746,6 +8902,7 @@ static const struct geist_backend_vtbl metal_vtbl = {
     .attn_qkv_prep = metal_attn_qkv_prep,
     .ffn_gate_up = metal_ffn_gate_up,
     .linear_t_pair = metal_linear_t_pair,
+    .argmax_f32 = metal_argmax_f32,
 };
 
 const struct geist_backend_descriptor geist_backend_metal = {

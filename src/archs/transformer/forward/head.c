@@ -121,6 +121,19 @@ static struct transformer_forward_profile g_head_profile = {
         return s;
     }
 
+    /* Greedy fast path: device argmax reads back a 4-byte index instead
+     * of mapping the 1 MB logits row (softcap skipped — tanh monotonic). */
+    if (st->sess->temperature == 0.0f && v->argmax_f32 != nullptr) {
+        t0          = profile ? transformer_profile_now_ns() : 0;
+        int32_t idx = -1;
+        if (v->argmax_f32(be, &t_logits_2d, &idx) == GEIST_OK && idx >= 0 &&
+            (size_t) idx < (size_t) st->vocab_size) {
+            *out_token = (geist_token_t) idx;
+            transformer_profile_add(&g_head_profile, HEAD_PROFILE_SAMPLE, t0);
+            return GEIST_OK;
+        }
+    }
+
     /* Softcap. P1.5: family-conditional. H1: skip in greedy mode — tanh is
      * monotonic so argmax is identical with or without softcap. Saves
      * ~262 144 × tanhf calls per token (~5% of decode on Gemma 4). */
