@@ -130,3 +130,24 @@ prompt whose tail chunk hit the scalar kernel. 0-shot was never affected
   llama.cpp:      54.0%  (270/500)   <- identical count, same questions/seed
 Gap closed completely. Timeline: 46.2% (raw, racy) -> 43.8% (softcapped, racy)
 -> 54.0% (softcapped, race fixed) == llama.cpp.
+
+=== FOLLOW-UP: barrier audit + regression test (post 7b5fbcb) ===
+Audited every Metal kernel with threadgroup reductions for the same
+read-then-overwrite-without-barrier pattern:
+  - attention_flash_sg_f16 / attention_qnorm_flash_sg_f16 / attention_flash_
+    sg8_f16: separate arrays per softmax phase (Sred -> Sf -> Mn/Mt/Lt/Dg),
+    barrier at every phase transition, incl. end-of-tile barrier before the
+    next iteration's Sred store. CLEAN.
+  - attention_dec_f16 / attention_dec512_f16: online softmax entirely in
+    registers (simd_sum), single tm/tl/ta store before the single barrier,
+    reads only after. CLEAN.
+  - attention_dec_combine: device-memory reads only, serial sums. CLEAN.
+  - rmsnorm/kv-norm part[]/kr[]/vr[] tree-reductions, argmax bv[]/bi[]:
+    one-way reductions, no overwrite-after-read. CLEAN.
+The race pattern existed ONLY in attention_rows/_f16 (the one kernel that
+REUSES one shared array for both the max and the sum reduction).
+Regression guard: tests/test_prefill_determinism_int.c — 301-token prefill
+(tail chunk 45%8!=0 -> scalar kernel; kv 301>256 -> multi-tile) x3 in one
+process, logits memcmp'd bit-exact. Validated both ways: PASS on the fixed
+build, FAIL (first diff at logit[0]) with the barrier temporarily removed.
+Runs under make test-int, skips (77) without a model.
