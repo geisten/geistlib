@@ -61,14 +61,13 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
          * through (batched GPU backends skip the per-layer gather), read
          * this layer's slice as a strided view; a pre-gathered buffer is
          * contiguous. */
-        const bool ple_slab =
-                ctx->per_layer_input_buf == st->sess->scratch_per_layer_input;
+        const bool ple_slab = ctx->per_layer_input_buf == st->sess->scratch_per_layer_input;
         struct geist_tensor t_ple_in_2d = view_2d_at(
                 ctx->per_layer_input_buf,
-                ple_slab ? (size_t) ctx->layer_idx *
-                                   (size_t) st->hidden_per_layer * sizeof(float)
+                ple_slab ? (size_t) ctx->layer_idx * (size_t) st->hidden_per_layer * sizeof(float)
                          : 0u,
-                ctx->SEQ, st->hidden_per_layer);
+                ctx->SEQ,
+                st->hidden_per_layer);
         if (ple_slab) {
             t_ple_in_2d.stride[0] = (int64_t) st->ple_out;
         }
@@ -116,8 +115,7 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
         if (v->gelu_tanh_mul != nullptr &&
-            v->gelu_tanh_mul(be, &t_gate_ple_2d, &t_ple_in_2d,
-                             &t_gate_ple_2d) == GEIST_OK) {
+            v->gelu_tanh_mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d) == GEIST_OK) {
             transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
         } else {
             s = v->gelu_tanh(be, &t_gate_ple_2d, &t_gate_ple_2d);
@@ -152,9 +150,9 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
         if (v->rmsnorm_add != nullptr &&
-            v->rmsnorm_add(be, &t_h_post_ff_2d, &t_proj_ple_2d,
-                           &t_w_post_per, ctx->eps, &t_h_out_2d) ==
-                GEIST_OK) {
+            v->rmsnorm_add(
+                    be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_h_out_2d) ==
+                    GEIST_OK) {
             transformer_profile_add(&g_ple_profile, PLE_RMSNORM, t0);
         } else {
             s = v->rmsnorm(be, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_proj_ple_2d);
@@ -184,10 +182,8 @@ void transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
     /* Device path first: batched GPU backends keep the per-layer scale
      * on-device instead of flushing their pipeline for a host loop. */
     if (ctx->v->scale_f32 != nullptr) {
-        struct geist_tensor t_h =
-                view_2d(ctx->h_out_buf, ctx->SEQ, ctx->st->d_model);
-        if (ctx->v->scale_f32(ctx->be, &t_h, ctx->L->layer_scalar, &t_h) ==
-            GEIST_OK) {
+        struct geist_tensor t_h = view_2d(ctx->h_out_buf, ctx->SEQ, ctx->st->d_model);
+        if (ctx->v->scale_f32(ctx->be, &t_h, ctx->L->layer_scalar, &t_h) == GEIST_OK) {
             return;
         }
     }

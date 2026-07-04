@@ -72,17 +72,16 @@ static struct transformer_forward_profile g_head_profile = {
     /* Copy chosen row of scratch_h_b into scratch_h_a (reuse as a clean
      * [1, HIDDEN] buffer for the output head). */
     {
-        const size_t bytes = st->d_model * sizeof(float);
-        enum geist_status cs = GEIST_E_UNSUPPORTED;
+        const size_t      bytes = st->d_model * sizeof(float);
+        enum geist_status cs    = GEIST_E_UNSUPPORTED;
         if (v->buffer_copy != nullptr) {
             /* device copy keeps batched GPU backends from flushing */
-            cs = v->buffer_copy(st->sess->scratch_h_a, 0,
-                                st->sess->scratch_h_b, row_idx * bytes, bytes);
+            cs = v->buffer_copy(
+                    st->sess->scratch_h_a, 0, st->sess->scratch_h_b, row_idx * bytes, bytes);
         }
         if (cs != GEIST_OK) {
-            const uint8_t *src =
-                    (const uint8_t *) v->buffer_map(st->sess->scratch_h_b);
-            uint8_t *dst = (uint8_t *) v->buffer_map(st->sess->scratch_h_a);
+            const uint8_t *src = (const uint8_t *) v->buffer_map(st->sess->scratch_h_b);
+            uint8_t       *dst = (uint8_t *) v->buffer_map(st->sess->scratch_h_a);
             memcpy(dst, src + row_idx * bytes, bytes);
             v->buffer_unmap(st->sess->scratch_h_b);
             v->buffer_unmap(st->sess->scratch_h_a);

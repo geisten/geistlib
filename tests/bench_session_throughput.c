@@ -76,14 +76,13 @@ int main(void) {
 
     /* Size the KV window to the workload so long-context runs (pp2048+)
      * fit; 2048 stays the floor to keep short runs comparable. */
-    const size_t want_seq =
-            env_size("GEIST_BENCH_PP", 200) + env_size("GEIST_BENCH_TG", 50) + 64;
+    const size_t want_seq = env_size("GEIST_BENCH_PP", 200) + env_size("GEIST_BENCH_TG", 50) + 64;
     struct geist_session_opts opts = {
             .max_seq_len = want_seq > 2048 ? want_seq : 2048,
             .temperature = 0.0f,
     };
-    struct geist_session     *sess = nullptr;
-    s                              = geist_session_create(model, be, &opts, &sess);
+    struct geist_session *sess = nullptr;
+    s                          = geist_session_create(model, be, &opts, &sess);
     if (s != GEIST_OK) {
         fprintf(stderr, "session_create failed\n");
         geist_model_destroy(model);

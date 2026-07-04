@@ -24,8 +24,7 @@ enum geist_status linear_w_or_legacy(struct geist_backend            *be,
     /* Batched-submit backends (GPU) take the tensor path so the engine
      * never materializes host pointers here; UNSUPPORTED falls through to
      * the resolved host-pointer kernels below. */
-    if (v->linear_t != nullptr && t_x != nullptr && t_w != nullptr &&
-        t_y != nullptr) {
+    if (v->linear_t != nullptr && t_x != nullptr && t_w != nullptr && t_y != nullptr) {
         enum geist_status ts = v->linear_t(be, t_x, w, t_w, seq, t_y);
         if (ts != GEIST_E_UNSUPPORTED) {
             return ts;
@@ -94,8 +93,8 @@ enum geist_status linear_w_pair_or_legacy(struct geist_backend            *be,
         return GEIST_E_INVALID_ARG;
     }
     /* Batched-submit backends: two tensor-path linears, no host pointers. */
-    if (v->linear_t != nullptr && t_x != nullptr && t_w0 != nullptr &&
-        t_w1 != nullptr && t_y0 != nullptr && t_y1 != nullptr) {
+    if (v->linear_t != nullptr && t_x != nullptr && t_w0 != nullptr && t_w1 != nullptr &&
+        t_y0 != nullptr && t_y1 != nullptr) {
         enum geist_status ts = v->linear_t(be, t_x, w0, t_w0, seq, t_y0);
         if (ts == GEIST_OK) {
             ts = v->linear_t(be, t_x, w1, t_w1, seq, t_y1);
@@ -176,13 +175,11 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
     /* Batched-submit backends: three tensor-path linears, no host pointers.
      * w1/w2 (k/v projections) share dtype+shape — a fused pair matvec
      * reads the activations once for both when the backend offers it. */
-    if (v->linear_t != nullptr && t_x != nullptr && t_w0 != nullptr &&
-        t_w1 != nullptr && t_w2 != nullptr && t_y0 != nullptr &&
-        t_y1 != nullptr && t_y2 != nullptr) {
+    if (v->linear_t != nullptr && t_x != nullptr && t_w0 != nullptr && t_w1 != nullptr &&
+        t_w2 != nullptr && t_y0 != nullptr && t_y1 != nullptr && t_y2 != nullptr) {
         enum geist_status ts = v->linear_t(be, t_x, w0, t_w0, seq, t_y0);
         if (ts == GEIST_OK && v->linear_t_pair != nullptr &&
-            v->linear_t_pair(be, t_x, w1, t_w1, w2, t_w2, seq,
-                             t_y1, t_y2) == GEIST_OK) {
+            v->linear_t_pair(be, t_x, w1, t_w1, w2, t_w2, seq, t_y1, t_y2) == GEIST_OK) {
             return GEIST_OK;
         }
         if (ts == GEIST_OK) {

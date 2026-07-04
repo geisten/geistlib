@@ -150,12 +150,10 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
          * one kernel, one activation pass over x, gelu(gate)*up written
          * directly. Only for the plain GeGLU activation without an AWQ
          * down-scale; anything unsupported falls through. */
-        if (v->ffn_gate_up != nullptr &&
-            ctx->ffn_activation == GEIST_FFN_GEGLU &&
+        if (v->ffn_gate_up != nullptr && ctx->ffn_activation == GEIST_FFN_GEGLU &&
             L->down_awq_inv_scale == nullptr) {
             t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = v->ffn_gate_up(be, &t_pre_ff_2d, &L->gate_proj,
-                                &L->up_proj, &t_gate_2d);
+            s  = v->ffn_gate_up(be, &t_pre_ff_2d, &L->gate_proj, &L->up_proj, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
             if (s == GEIST_OK) {
                 mid_buf  = st->sess->scratch_gate;
@@ -233,7 +231,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         }
         mid_buf  = st->sess->scratch_gate;
         t_mid_2d = t_gate_2d;
-ffn_mid_done:;
+    ffn_mid_done:;
     }
 
     if (has_ffn_sub_norm) {
@@ -320,10 +318,12 @@ ffn_post:
         struct geist_tensor t_post_ff_2d =
                 view_2d(st->sess->scratch_post_ff, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_ffw = view_1d(L->post_ffw_norm.buffer, st->d_model);
-        if (v->rmsnorm_add == nullptr ||
-            v->rmsnorm_add(be, &t_h_post_attn_2d, &t_ffn_out_2d,
-                           &t_w_post_ffw, ctx->eps, &t_h_post_ff_2d) !=
-                GEIST_OK) {
+        if (v->rmsnorm_add == nullptr || v->rmsnorm_add(be,
+                                                        &t_h_post_attn_2d,
+                                                        &t_ffn_out_2d,
+                                                        &t_w_post_ffw,
+                                                        ctx->eps,
+                                                        &t_h_post_ff_2d) != GEIST_OK) {
             s = v->rmsnorm(be, &t_ffn_out_2d, &t_w_post_ffw, ctx->eps, &t_post_ff_2d);
             if (s != GEIST_OK) {
                 return s;

@@ -115,7 +115,10 @@ int main(void) {
             fprintf(stderr,
                     "NONDETERMINISTIC PREFILL (rep %d): logits differ at index %zu "
                     "(%.9g vs %.9g) — kernel race on the prefill path?\n",
-                    rep, first, (double) ref[first], (double) logits[first]);
+                    rep,
+                    first,
+                    (double) ref[first],
+                    (double) logits[first]);
             result = GEIST_TEST_FAIL;
             break;
         }

@@ -152,13 +152,12 @@ static const float *op_peek_logits(void *arch_state, size_t *n_logits) {
         return nullptr;
     }
     *n_logits = (size_t) st->vocab_size;
-    float *p = (float *) st->backend->desc->vtbl->buffer_map(st->sess->scratch_logits);
+    float *p  = (float *) st->backend->desc->vtbl->buffer_map(st->sess->scratch_logits);
     /* The greedy argmax path skips the Gemma final-logit softcap (monotonic,
      * so the argmax is invariant and it saves ~262k tanhf/token on decode).
      * peek_logits exposes the VALUES to scoring/perplexity consumers, which
      * need the model-conformant softcapped logits — apply it lazily, once. */
-    if (p != nullptr && st->config.logit_softcap > 0.0f &&
-        !st->sess->logits_softcapped) {
+    if (p != nullptr && st->config.logit_softcap > 0.0f && !st->sess->logits_softcapped) {
         const float c = st->config.logit_softcap;
         for (size_t i = 0; i < (size_t) st->vocab_size; i++) {
             p[i] = tanhf(p[i] / c) * c;

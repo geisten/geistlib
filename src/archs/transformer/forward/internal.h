@@ -146,7 +146,7 @@ view_3d(struct geist_buffer *b, int64_t s0, int64_t s1, int64_t s2) {
 static inline struct geist_tensor
 view_3d_f16(struct geist_buffer *b, int64_t s0, int64_t s1, int64_t s2) {
     struct geist_tensor t = view_3d(b, s0, s1, s2);
-    t.dtype              = GEIST_DTYPE_F16;
+    t.dtype               = GEIST_DTYPE_F16;
     return t;
 }
 

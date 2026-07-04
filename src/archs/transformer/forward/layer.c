@@ -347,11 +347,10 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
     {
         bool on_device = false;
         if (v->embedding_lookup_scaled != nullptr) {
-            struct geist_tensor t_row =
-                    view_1d(st->sess->scratch_ple_lookup, st->ple_out);
-            on_device = v->embedding_lookup_scaled(
-                                be, &st->ple_table, token_id,
-                                st->config.ple_table_scale, &t_row) == GEIST_OK;
+            struct geist_tensor t_row = view_1d(st->sess->scratch_ple_lookup, st->ple_out);
+            on_device                 = v->embedding_lookup_scaled(
+                                                be, &st->ple_table, token_id, st->config.ple_table_scale, &t_row) ==
+                                        GEIST_OK;
         }
         if (!on_device) {
             float *dst = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
@@ -391,8 +390,7 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
     {
         struct geist_tensor t_all = view_1d(per_layer_input_buf, st->ple_out);
         if (v->scale_f32 == nullptr ||
-            v->scale_f32(be, &t_all, st->config.ple_model_proj_scale,
-                         &t_all) != GEIST_OK) {
+            v->scale_f32(be, &t_all, st->config.ple_model_proj_scale, &t_all) != GEIST_OK) {
             float *p = (float *) v->buffer_map(per_layer_input_buf);
             for (size_t i = 0; i < (size_t) st->ple_out; i++) {
                 p[i] *= st->config.ple_model_proj_scale;
@@ -420,8 +418,7 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
     {
         struct geist_tensor t_all = view_1d(per_layer_input_buf, st->ple_out);
         if (v->scale_f32 == nullptr ||
-            v->scale_f32(be, &t_all, st->config.ple_input_scale, &t_all) !=
-                GEIST_OK) {
+            v->scale_f32(be, &t_all, st->config.ple_input_scale, &t_all) != GEIST_OK) {
             float *p = (float *) v->buffer_map(per_layer_input_buf);
             for (size_t i = 0; i < (size_t) st->ple_out; i++) {
                 p[i] *= st->config.ple_input_scale;
@@ -529,7 +526,7 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
     /* 1+2. Dequant n PLE rows + scale by 16. Device path: per-row fused
      * lookup+scale dispatches — no host dequant, no pipeline flush from
      * mapping the scratch mid-batch. */
-    t0 = prof ? transformer_profile_now_ns() : 0;
+    t0                    = prof ? transformer_profile_now_ns() : 0;
     bool gather_on_device = v->embedding_lookup_scaled != nullptr;
     if (gather_on_device) {
         for (size_t t = 0; t < n; t++) {
@@ -542,9 +539,9 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
                     .shape  = {(int64_t) PLE_OUT, 0, 0, 0, 0, 0, 0, 0},
                     .stride = {1, 0, 0, 0, 0, 0, 0, 0},
             };
-            if (v->embedding_lookup_scaled(be, &st->ple_table, ple_ids[t],
-                                           st->config.ple_table_scale,
-                                           &t_row) != GEIST_OK) {
+            if (v->embedding_lookup_scaled(
+                        be, &st->ple_table, ple_ids[t], st->config.ple_table_scale, &t_row) !=
+                GEIST_OK) {
                 gather_on_device = false;
                 break;
             }
@@ -582,8 +579,7 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
     /* 4. *= PLE_MODEL_PROJ_SCALE. */
     t0 = prof ? transformer_profile_now_ns() : 0;
     if (v->scale_f32 == nullptr ||
-        v->scale_f32(be, &t_out_2d, st->config.ple_model_proj_scale,
-                     &t_out_2d) != GEIST_OK) {
+        v->scale_f32(be, &t_out_2d, st->config.ple_model_proj_scale, &t_out_2d) != GEIST_OK) {
         float *p = (float *) v->buffer_map(out_buf);
         for (size_t i = 0; i < n * PLE_OUT; i++) {
             p[i] *= st->config.ple_model_proj_scale;
@@ -608,13 +604,12 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
     {
         bool combined_on_device = false;
         if (v->add != nullptr && v->scale_f32 != nullptr) {
-            struct geist_tensor t_plu_2d = view_2d(
-                    st->sess->scratch_ple_lookup, (int64_t) n, (int64_t) PLE_OUT);
+            struct geist_tensor t_plu_2d =
+                    view_2d(st->sess->scratch_ple_lookup, (int64_t) n, (int64_t) PLE_OUT);
             /* add validates before encoding; once it succeeded out_buf is
              * mutated and the host fallback must NOT rerun the combine. */
             if (v->add(be, &t_out_2d, &t_plu_2d, &t_out_2d) == GEIST_OK) {
-                s = v->scale_f32(be, &t_out_2d, st->config.ple_input_scale,
-                                 &t_out_2d);
+                s = v->scale_f32(be, &t_out_2d, st->config.ple_input_scale, &t_out_2d);
                 if (s != GEIST_OK) {
                     return s;
                 }

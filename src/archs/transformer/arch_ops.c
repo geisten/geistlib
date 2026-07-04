@@ -74,9 +74,8 @@ prefill_text_batch_inner(struct transformer_arch_state *st, size_t n, const geis
                         .shape  = {(int64_t) st->d_model, 0, 0, 0, 0, 0, 0, 0},
                         .stride = {1, 0, 0, 0, 0, 0, 0, 0},
                 };
-                if (v->embedding_lookup_scaled(be, &st->embed_table,
-                                               ids[off + t], embed_scale,
-                                               &t_row) != GEIST_OK) {
+                if (v->embedding_lookup_scaled(
+                            be, &st->embed_table, ids[off + t], embed_scale, &t_row) != GEIST_OK) {
                     embed_on_device = false;
                     break;
                 }

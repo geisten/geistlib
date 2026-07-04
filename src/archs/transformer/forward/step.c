@@ -114,13 +114,13 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
     /* Seed scratch_h_a with seq rows of HIDDEN. */
     {
         if (v->buffer_copy == nullptr ||
-            v->buffer_copy(st->sess->scratch_h_a, 0, initial_h_buf, 0,
-                           seq * row_bytes_h) != GEIST_OK) {
+            v->buffer_copy(st->sess->scratch_h_a, 0, initial_h_buf, 0, seq * row_bytes_h) !=
+                    GEIST_OK) {
             const uint8_t *src = (const uint8_t *) v->buffer_map(initial_h_buf);
             uint8_t       *dst = (uint8_t *) v->buffer_map(st->sess->scratch_h_a);
             memcpy(dst, src, seq * row_bytes_h);
-        v->buffer_unmap(initial_h_buf);
-        v->buffer_unmap(st->sess->scratch_h_a);
+            v->buffer_unmap(initial_h_buf);
+            v->buffer_unmap(st->sess->scratch_h_a);
         }
     }
 
@@ -134,8 +134,7 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
          * (Llama / Mistral) pass nullptr through to forward_one_layer
          * which then skips the PLE injection block. */
         struct geist_buffer *layer_ple_buf = nullptr;
-        if (per_layer_input_buf != nullptr &&
-            v->linear_t != nullptr &&
+        if (per_layer_input_buf != nullptr && v->linear_t != nullptr &&
             per_layer_input_buf == st->sess->scratch_per_layer_input) {
             /* Batched GPU backends read the layer's PLE slice directly from
              * the slab as a strided view (see layer_ple.c) — the per-layer
@@ -150,18 +149,15 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
                     cs = v->buffer_copy(st->sess->scratch_ple_lookup,
                                         t * row_bytes_ple,
                                         per_layer_input_buf,
-                                        t * row_bytes_per_tok_ple +
-                                            li * row_bytes_ple,
+                                        t * row_bytes_per_tok_ple + li * row_bytes_ple,
                                         row_bytes_ple);
                 }
                 if (cs != GEIST_OK) {
                     return cs;
                 }
             } else {
-                const uint8_t *src =
-                        (const uint8_t *) v->buffer_map(per_layer_input_buf);
-                uint8_t *dst =
-                        (uint8_t *) v->buffer_map(st->sess->scratch_ple_lookup);
+                const uint8_t *src = (const uint8_t *) v->buffer_map(per_layer_input_buf);
+                uint8_t       *dst = (uint8_t *) v->buffer_map(st->sess->scratch_ple_lookup);
                 for (size_t t = 0; t < seq; t++) {
                     memcpy(dst + t * row_bytes_ple,
                            src + t * row_bytes_per_tok_ple + li * row_bytes_ple,
@@ -195,13 +191,12 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
      * to out_h_buf. */
     {
         if (v->buffer_copy == nullptr ||
-            v->buffer_copy(out_h_buf, 0, h_in, 0, seq * row_bytes_h) !=
-                GEIST_OK) {
+            v->buffer_copy(out_h_buf, 0, h_in, 0, seq * row_bytes_h) != GEIST_OK) {
             const uint8_t *src = (const uint8_t *) v->buffer_map(h_in);
             uint8_t       *dst = (uint8_t *) v->buffer_map(out_h_buf);
             memcpy(dst, src, seq * row_bytes_h);
-        v->buffer_unmap(h_in);
-        v->buffer_unmap(out_h_buf);
+            v->buffer_unmap(h_in);
+            v->buffer_unmap(out_h_buf);
         }
     }
     return GEIST_OK;
@@ -226,10 +221,9 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
      * dequantizing through a mapped host pointer every token. */
     if (v->embedding_lookup_scaled != nullptr) {
         struct geist_tensor t_out = view_1d(out_h_buf, st->d_model);
-        const float         scale =
-                st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
-        enum geist_status es = v->embedding_lookup_scaled(
-                be, &st->embed_table, token_id, scale, &t_out);
+        const float         scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
+        enum geist_status   es =
+                v->embedding_lookup_scaled(be, &st->embed_table, token_id, scale, &t_out);
         if (es == GEIST_OK) {
             return GEIST_OK;
         }
