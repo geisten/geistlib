@@ -40,3 +40,25 @@ accumulation order / attention f32) flipping close A/B/C/D margins on ~40
 of 500 questions; llama's mature kernels carry less rounding error. Next
 step: log per-question picks for both (--verbose), diff to the disagreement
 set, deep-dive one close question op-by-op (embed -> per-layer -> logits).
+
+=== SOFTCAP FIX (e965a2c) + APPLES-TO-APPLES RE-COMPARE ===
+peek_logits now applies the Gemma final-logit softcap lazily (model-conformant
+values). Anatomy probe: geist B=-15.893 now matches llama B=-15.852 (was
+-19.534) — the ~4-nat spread collapsed to ~0.04 nat.
+MMLU (same 500 Q, same seed):
+  geist RAW-logit argmax  (pre-fix):   46.2%  (231/500)
+  geist SOFTCAPPED argmax (post-fix):  43.8%  (219/500)
+  llama SOFTCAPPED argmax:             54.0%  (270/500)
+Finding: softcap is argmax-invariant in EXACT arithmetic, but tanh(x/30)*30
+SATURATES large logits, and fp rounding on the compressed values flips ~12
+near-tie questions (46.2 -> 43.8). So:
+  - The apples-to-apples comparison (both engines softcapped, as the model
+    intends and as llama scores) is 43.8 vs 54.0 = -10.2 points. The pre-fix
+    46.2 flattered geist: raw logits have extra dynamic range for tie-breaks
+    the model doesn't actually have.
+  - geist's greedy DECODE correctly keeps raw logits (argmax precision + perf);
+    the fix only touches exposed VALUES (peek_logits) — correct for sampling/
+    perplexity/scoring, which is why it stays.
+  - The true gap to llama is ~10 points and is underlying forward-pass
+    numerics (Q4_K dequant / accumulation / attention), now cleanly isolated
+    with softcap and tokenization both controlled for.
