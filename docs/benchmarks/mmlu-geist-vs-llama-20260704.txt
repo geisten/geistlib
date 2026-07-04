@@ -124,3 +124,9 @@ Fix: one threadgroup_barrier between the mnew read and the red[lid]=e write
 The entire "quality gap" was this race corrupting attention on every 5-shot
 prompt whose tail chunk hit the scalar kernel. 0-shot was never affected
 (single chunk, single KV tile). Full 500-question confirmation pending.
+
+=== FULL 500-QUESTION CONFIRMATION (post-fix 7b5fbcb) ===
+  geist (Metal):  54.0%  (270/500)
+  llama.cpp:      54.0%  (270/500)   <- identical count, same questions/seed
+Gap closed completely. Timeline: 46.2% (raw, racy) -> 43.8% (softcapped, racy)
+-> 54.0% (softcapped, race fixed) == llama.cpp.
