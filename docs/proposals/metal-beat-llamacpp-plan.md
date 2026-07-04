@@ -180,6 +180,41 @@ already leads once decode > llama.
 | C q4_K GEMM >6.5 TF | ⏸ M3/M4-gated research (M1 has no per-dispatch shader counters) — the only remaining path past llama prefill |
 | long-context front (8k+) | ⏸ not re-benchmarked on this branch yet — f16-KV + flash should scale better than llama's f32 path |
 
+## 6. Long-context root cause FOUND (2026-07-04 s5) — MQA K/V re-streaming
+
+Cool prefill scales O(n²): ms/tok = 0.87 + 0.00088·pp (256→3072 all fit).
+At pp2048 the linear-in-seq term is 1.80 ms/tok = **69% of prefill**.
+**geist's long-context attention slope is 10.7× steeper than llama's**
+(geist +1.26 ms/tok over pp512→2048; llama +0.118).
+
+Not clock (powermetrics: both pinned at 1296 MHz max, geist 9% idle-res vs
+llama 5%). Not the sliding window (correctly clamped, 28 of 35 layers cap at
+512). Not a head_dim bug (GGUF key_length=512 is real gemma-3n; the 7 full
+layers at indices 4,9,…,34 genuinely do head_dim-512 O(seq²) attention).
+
+**The mechanism: MQA K/V re-streaming.** gemma-3n is `head_count=8,
+head_count_kv=1` (pure MQA). The prefill flash kernel `attention_flash_sg_f16`
+dispatches `fgroups={q_rows/8, q_heads}` = one threadgroup per (query-tile,
+head) with `kvh = h/(qh/kvh) = 0` for all 8 heads. So **all 8 query heads
+stream the same K/V independently** — up to 8× the K/V device-memory
+bandwidth. On the 7 full layers at kv=2048 that is ~235 MB of redundant K/V
+reads per query-tile pass (vs ~29 MB shared). llama's flash_attn_ext groups
+the GQA/MQA heads that share K/V into one threadgroup and loads K/V once.
+
+**The lever (concrete, M1-executable, biggest remaining win): head-grouped
+flash.** Rewrite the prefill flash so one threadgroup handles a query tile
+across MULTIPLE q-heads that share a kv-head, loading each K/V tile into
+threadgroup memory once and reusing it for all grouped heads' QK/PV. For
+pure MQA that is all 8 heads → up to 8× less K/V traffic on the full layers,
+directly attacking the 10.7× slope. Same simdgroup-matmul structure, just
+an extra head loop inside the kv-tile loop + wider accumulator set. Gated on
+token parity + the pp512/1024/2048 scaling curve (must flatten toward
+llama's slope). Decode split-KV attention has the same MQA structure — the
+grouping helps decode long-context too (tg64@kv2100 is 3.0× off llama).
+
+This reorders the roadmap: head-grouped flash is now the #1 lever (was
+"prefill fusion"). It needs no M3 and compounds with every context token.
+
 ## 5. Now vs the pre-merge wip engine — the complete diff
 
 **Recovered from wip** (same capability, different form — optional nullable
