@@ -610,6 +610,9 @@ struct metal_state {
     void *q4k_qk_nt4_pipeline;
     void *q4k_gate_up_library;
     void *q4k_gate_up_n4_library;
+    void *q4k_pair_n4_library;
+    void *q4k_pair_n4_function;
+    void *q4k_pair_n4_pipeline;
     void *q4k_gate_up_nt4_library;
     void *q4k_gate_up_nt8_library;
     void *embed_library;
@@ -1605,6 +1608,15 @@ static const char metal_q4k_gate_up_n4_source[] =
     "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(clamp(0.7978845608028654f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}\n"
     "static inline float dotb(device const uchar*w,uint off,uint bpr,uint row,uint ib,uint iq,uint ir,thread const float*yl,thread const float*yh,float4 sumy){constexpr ushort km1=0x3f3f,km2=0x0f0f,km3=0xc0c0;device const uchar*wb=w+off+(row*bpr+ib)*144u;device const ushort*sc=(device const ushort*)(wb+4u)+iq;device const ushort*q1=(device const ushort*)(wb+16u)+16u*iq+4u*ir;device const half*dh=(device const half*)wb;ushort sc16[4];thread const uchar*sc8=(thread const uchar*)sc16;sc16[0]=sc[0]&km1;sc16[1]=sc[2]&km1;sc16[2]=((sc[4]>>0)&km2)|((sc[0]&km3)>>2);sc16[3]=((sc[4]>>4)&km2)|((sc[2]&km3)>>2);device const ushort*q2=q1+32u;float4 a1=float4(0.0f),a2=float4(0.0f);for(uint i=0u;i<4u;i++){ushort q=q1[i];a1[0]+=yl[2u*i+0u]*float(q&0x000f);a1[1]+=yl[2u*i+1u]*float(q&0x0f00);a1[2]+=yl[2u*i+8u]*float(q&0x00f0);a1[3]+=yl[2u*i+9u]*float(q&0xf000);q=q2[i];a2[0]+=yh[2u*i+0u]*float(q&0x000f);a2[1]+=yh[2u*i+1u]*float(q&0x0f00);a2[2]+=yh[2u*i+8u]*float(q&0x00f0);a2[3]+=yh[2u*i+9u]*float(q&0xf000);}return float(dh[0])*((a1[0]+(1.0f/256.0f)*a1[1])*float(sc8[0])+(a1[2]+(1.0f/256.0f)*a1[3])*float(sc8[1])*(1.0f/16.0f)+(a2[0]+(1.0f/256.0f)*a2[1])*float(sc8[4])+(a2[2]+(1.0f/256.0f)*a2[3])*float(sc8[5])*(1.0f/16.0f))-float(dh[1])*(sumy[0]*float(sc8[2])+sumy[1]*float(sc8[3])+sumy[2]*float(sc8[6])+sumy[3]*float(sc8[7]));}\n"
     "kernel void gate_up_q4k_n4(device const float*x[[buffer(0)]],device const uchar*wg[[buffer(1)]],device const uchar*wu[[buffer(2)]],device float*gy[[buffer(3)]],device float*uy[[buffer(4)]],constant P&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){(void)uy;uint ix=uint(ti)/8u,it=uint(ti)&7u,iq=it>>2u,ir=it&3u,b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.n_out||b>=p.rows)return;uint nb=p.n_in>>8u;float g0=0.0f,g1=0.0f,u0=0.0f,u1=0.0f;device const float*y4=x+p.xo+b*p.xs+ix*256u+64u*iq+8u*ir;for(uint ib=ix;ib<nb;ib+=4u){float yl[16],yh[16];float4 sumy=float4(0.0f);for(uint i=0u;i<8u;i++){yl[i]=y4[i];sumy[0]+=yl[i];yl[i+8u]=y4[i+32u];sumy[1]+=yl[i+8u];yh[i]=y4[i+128u];sumy[2]+=yh[i];yh[i+8u]=y4[i+160u];sumy[3]+=yh[i+8u];}if(fr<p.n_out){g0+=dotb(wg,p.gw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);u0+=dotb(wu,p.uw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);}if(fr+1u<p.n_out){g1+=dotb(wg,p.gw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);u1+=dotb(wu,p.uw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);}y4+=1024u;}float ag0=simd_sum(g0),au0=simd_sum(u0),ag1=simd_sum(g1),au1=simd_sum(u1);if(ti==0){uint go=p.gy+b*p.ys+fr;gy[go]=gelu(ag0)*au0;if(fr+1u<p.n_out)gy[go+1u]=gelu(ag1)*au1;}}\n";
+
+
+static const char metal_q4k_pair_n4_source[] =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct P{uint n_in,n_out,rows,bpr,xo,gw,uw,gy,uy,xs,ys;};\n"
+    "static inline float gelu(float x){return 0.5f*x*(1.0f+tanh(clamp(0.7978845608028654f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}\n"
+    "static inline float dotb(device const uchar*w,uint off,uint bpr,uint row,uint ib,uint iq,uint ir,thread const float*yl,thread const float*yh,float4 sumy){constexpr ushort km1=0x3f3f,km2=0x0f0f,km3=0xc0c0;device const uchar*wb=w+off+(row*bpr+ib)*144u;device const ushort*sc=(device const ushort*)(wb+4u)+iq;device const ushort*q1=(device const ushort*)(wb+16u)+16u*iq+4u*ir;device const half*dh=(device const half*)wb;ushort sc16[4];thread const uchar*sc8=(thread const uchar*)sc16;sc16[0]=sc[0]&km1;sc16[1]=sc[2]&km1;sc16[2]=((sc[4]>>0)&km2)|((sc[0]&km3)>>2);sc16[3]=((sc[4]>>4)&km2)|((sc[2]&km3)>>2);device const ushort*q2=q1+32u;float4 a1=float4(0.0f),a2=float4(0.0f);for(uint i=0u;i<4u;i++){ushort q=q1[i];a1[0]+=yl[2u*i+0u]*float(q&0x000f);a1[1]+=yl[2u*i+1u]*float(q&0x0f00);a1[2]+=yl[2u*i+8u]*float(q&0x00f0);a1[3]+=yl[2u*i+9u]*float(q&0xf000);q=q2[i];a2[0]+=yh[2u*i+0u]*float(q&0x000f);a2[1]+=yh[2u*i+1u]*float(q&0x0f00);a2[2]+=yh[2u*i+8u]*float(q&0x00f0);a2[3]+=yh[2u*i+9u]*float(q&0xf000);}return float(dh[0])*((a1[0]+(1.0f/256.0f)*a1[1])*float(sc8[0])+(a1[2]+(1.0f/256.0f)*a1[3])*float(sc8[1])*(1.0f/16.0f)+(a2[0]+(1.0f/256.0f)*a2[1])*float(sc8[4])+(a2[2]+(1.0f/256.0f)*a2[3])*float(sc8[5])*(1.0f/16.0f))-float(dh[1])*(sumy[0]*float(sc8[2])+sumy[1]*float(sc8[3])+sumy[2]*float(sc8[6])+sumy[3]*float(sc8[7]));}\n"
+    "kernel void pair_q4k_n4(device const float*x[[buffer(0)]],device const uchar*wg[[buffer(1)]],device const uchar*wu[[buffer(2)]],device float*gy[[buffer(3)]],device float*uy[[buffer(4)]],constant P&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){uint ix=uint(ti)/8u,it=uint(ti)&7u,iq=it>>2u,ir=it&3u,b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.n_out||b>=p.rows)return;uint nb=p.n_in>>8u;float g0=0.0f,g1=0.0f,u0=0.0f,u1=0.0f;device const float*y4=x+p.xo+b*p.xs+ix*256u+64u*iq+8u*ir;for(uint ib=ix;ib<nb;ib+=4u){float yl[16],yh[16];float4 sumy=float4(0.0f);for(uint i=0u;i<8u;i++){yl[i]=y4[i];sumy[0]+=yl[i];yl[i+8u]=y4[i+32u];sumy[1]+=yl[i+8u];yh[i]=y4[i+128u];sumy[2]+=yh[i];yh[i+8u]=y4[i+160u];sumy[3]+=yh[i+8u];}if(fr<p.n_out){g0+=dotb(wg,p.gw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);u0+=dotb(wu,p.uw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);}if(fr+1u<p.n_out){g1+=dotb(wg,p.gw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);u1+=dotb(wu,p.uw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);}y4+=1024u;}float ag0=simd_sum(g0),au0=simd_sum(u0),ag1=simd_sum(g1),au1=simd_sum(u1);if(ti==0){uint go=p.gy+b*p.ys+fr,uo=p.uy+b*p.ys+fr;gy[go]=ag0;uy[uo]=au0;if(fr+1u<p.n_out){gy[go+1u]=ag1;uy[uo+1u]=au1;}}}\n";
 
 static const char metal_attn_f16_source[] =
     "#include <metal_stdlib>\n"
@@ -2603,6 +2615,8 @@ static void metal_destroy_state(struct geist_backend *be,
         metal_msg_send_void0(st, st->q4k_gate_up_w4a8_function, "release");
         metal_msg_send_void0(st, st->q4k_gate_up_n4_pipeline, "release");
         metal_msg_send_void0(st, st->q4k_gate_up_n4_function, "release");
+        metal_msg_send_void0(st, st->q4k_pair_n4_pipeline, "release");
+        metal_msg_send_void0(st, st->q4k_pair_n4_function, "release");
         metal_msg_send_void0(st, st->q4k_w4a8_pipeline, "release");
         metal_msg_send_void0(st, st->q4k_w4a8_function, "release");
         metal_msg_send_void0(st, st->q4k_quant_x_pipeline, "release");
@@ -2637,6 +2651,7 @@ static void metal_destroy_state(struct geist_backend *be,
         metal_msg_send_void0(st, st->q4k_gate_up_nt8_library, "release");
         metal_msg_send_void0(st, st->q4k_gate_up_nt4_library, "release");
         metal_msg_send_void0(st, st->q4k_gate_up_n4_library, "release");
+        metal_msg_send_void0(st, st->q4k_pair_n4_library, "release");
         metal_msg_send_void0(st, st->q4k_gate_up_library, "release");
         metal_msg_send_void0(st, st->q4k_gate_up_w4a8_library, "release");
         metal_msg_send_void0(st, st->q4k_w4a8_library, "release");
@@ -2683,6 +2698,8 @@ static void metal_destroy_state(struct geist_backend *be,
     st->q4k_gate_up_w4a8_function = nullptr;
     st->q4k_gate_up_n4_pipeline = nullptr;
     st->q4k_gate_up_n4_function = nullptr;
+    st->q4k_pair_n4_pipeline = nullptr;
+    st->q4k_pair_n4_function = nullptr;
     st->q4k_w4a8_pipeline = nullptr;
     st->q4k_w4a8_function = nullptr;
     st->q4k_quant_x_pipeline = nullptr;
@@ -2809,6 +2826,7 @@ static void metal_destroy_state(struct geist_backend *be,
     st->embed_library = nullptr;
     st->f32_library = nullptr;
     st->q4k_gate_up_n4_library = nullptr;
+    st->q4k_pair_n4_library = nullptr;
     st->q4k_gate_up_nt4_library = nullptr;
     st->q4k_gate_up_nt8_library = nullptr;
     st->q4k_gate_up_library = nullptr;
@@ -3818,6 +3836,9 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
     void *q4k_gate_up_n4_src = metal_msg_send_id_cstr(
         st, ns_string, "stringWithUTF8String:",
         metal_q4k_gate_up_n4_source);
+    void *q4k_pair_n4_src = metal_msg_send_id_cstr(
+        st, ns_string, "stringWithUTF8String:",
+        metal_q4k_pair_n4_source);
     void *q6_source = metal_msg_send_id_cstr(
         st, ns_string, "stringWithUTF8String:", metal_q6k_source);
     void *q6_mm_sg_source = metal_msg_send_id_cstr(
@@ -3864,6 +3885,7 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
         q4k_w4a8_source == nullptr ||
         q4k_gate_up_w4a8_source == nullptr ||
         q4k_gate_up_n4_src == nullptr ||
+        q4k_pair_n4_src == nullptr ||
         q6_source == nullptr || q6_n4_source == nullptr ||
         q6_m16_source == nullptr ||
         q6_nt4_source == nullptr ||
@@ -3959,6 +3981,19 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
         geist_backend_set_error(
             be, GEIST_E_BACKEND,
             "metal: Q4_K gate/up n4 shader compile failed%s%s",
+            msg != nullptr ? ": " : "",
+            msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    err = nullptr;
+    st->q4k_pair_n4_library = metal_msg_send_id_id_id_err(
+        st, st->device, "newLibraryWithSource:options:error:",
+        q4k_pair_n4_src, nullptr, &err);
+    if (st->q4k_pair_n4_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(
+            be, GEIST_E_BACKEND,
+            "metal: Q4_K pair n4 shader compile failed%s%s",
             msg != nullptr ? ": " : "",
             msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
@@ -4195,6 +4230,12 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
             be, st->q4k_gate_up_n4_library, ns_string, "gate_up_q4k_n4",
             &st->q4k_gate_up_n4_function,
             &st->q4k_gate_up_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(
+            be, st->q4k_pair_n4_library, ns_string, "pair_q4k_n4",
+            &st->q4k_pair_n4_function,
+            &st->q4k_pair_n4_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(
@@ -7044,6 +7085,120 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     return GEIST_OK;
 }
 
+/* Fused two-weight matvec (vtbl slot linear_t_pair): same structure as
+ * ffn_gate_up but with a raw two-output epilogue — one activation pass
+ * feeds both weights (used for the k/v projections, which share shape).
+ * rows==1 + Q4_K + equal shapes only. */
+[[nodiscard]] static enum geist_status metal_linear_t_pair(
+    struct geist_backend *be,
+    const struct geist_tensor *x,
+    const struct geist_weight *w0,
+    const struct geist_tensor *t_w0,
+    const struct geist_weight *w1,
+    const struct geist_tensor *t_w1,
+    size_t m,
+    struct geist_tensor *y0,
+    struct geist_tensor *y1) {
+
+    if (be == nullptr || be->state == nullptr || x == nullptr ||
+        w0 == nullptr || t_w0 == nullptr || w1 == nullptr ||
+        t_w1 == nullptr || y0 == nullptr || y1 == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (m != 1u || w0->dtype != GEIST_DTYPE_Q4_K ||
+        w1->dtype != GEIST_DTYPE_Q4_K) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    size_t rows = 0, d_in = 0, x_off = 0, x_stride = 0;
+    size_t a_out = 0, a_in = 0, a_woff = 0;
+    size_t b_out = 0, b_in = 0, b_woff = 0;
+    size_t y0_rows = 0, y0_cols = 0, y0_off = 0, y0_stride = 0;
+    size_t y1_rows = 0, y1_cols = 0, y1_off = 0, y1_stride = 0;
+    if (!metal_tensor_is_f32_rows(x, &rows, &d_in, &x_off, &x_stride) ||
+        !metal_tensor_is_q4k_matrix(t_w0, &a_out, &a_in, &a_woff) ||
+        !metal_tensor_is_q4k_matrix(t_w1, &b_out, &b_in, &b_woff) ||
+        !metal_tensor_is_f32_rows(y0, &y0_rows, &y0_cols, &y0_off, &y0_stride) ||
+        !metal_tensor_is_f32_rows(y1, &y1_rows, &y1_cols, &y1_off, &y1_stride) ||
+        rows != 1u || a_in != d_in || b_in != d_in || b_out != a_out ||
+        (d_in % 256u) != 0u ||
+        y0_rows != rows || y1_rows != rows ||
+        y0_cols != a_out || y1_cols != a_out ||
+        y0_stride != y1_stride) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (d_in > UINT32_MAX || a_out > UINT32_MAX || x_off > UINT32_MAX ||
+        a_woff > UINT32_MAX || b_woff > UINT32_MAX ||
+        y0_off > UINT32_MAX || y1_off > UINT32_MAX ||
+        x->buffer->owner != be->state ||
+        t_w0->buffer->owner != be->state ||
+        t_w1->buffer->owner != be->state ||
+        y0->buffer->owner != be->state ||
+        y1->buffer->owner != be->state) {
+        return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    if (s != GEIST_OK) { return s; }
+    struct metal_state *st = be->state;
+    if (st->q4k_pair_n4_pipeline == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const struct metal_q4k_gate_up_params params = {
+        .n_in = (uint32_t) d_in,
+        .n_out = (uint32_t) a_out,
+        .rows = (uint32_t) rows,
+        .blocks_per_row = (uint32_t) (d_in / 256u),
+        .x_offset = (uint32_t) x_off,
+        .gate_w_byte_offset = (uint32_t) a_woff,
+        .up_w_byte_offset = (uint32_t) b_woff,
+        .gate_y_offset = (uint32_t) y0_off,
+        .up_y_offset = (uint32_t) y1_off,
+        .x_row_stride = (uint32_t) x_stride,
+        .y_row_stride = (uint32_t) y0_stride,
+    };
+    void *cmd = nullptr;
+    void *enc = nullptr;
+    if (st->sequence_active) {
+        if (st->sequence_compute_encoder == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+        enc = metal_sequence_encoder(st);
+        if (metal_decode_replay_can_record(st)) {
+            st->decode_replay_failed = true;
+            st->decode_replay_valid = false;
+        }
+    } else {
+        cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+        enc = cmd != nullptr
+                  ? metal_msg_send_id0(st, cmd, "computeCommandEncoder")
+                  : nullptr;
+        if (cmd == nullptr || enc == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+    }
+    metal_msg_send_set_pipeline(st, enc, st->q4k_pair_n4_pipeline);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, t_w0->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, t_w1->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, y0->buffer->buffer, 0, 3);
+    metal_msg_send_set_buffer(st, enc, y1->buffer->buffer, 0, 4);
+    metal_msg_send_set_bytes(st, enc, &params, sizeof(params), 5);
+    const struct metal_size groups = {
+        (uint32_t) ((a_out + 3u) / 4u), (uint32_t) rows, 1};
+    const struct metal_size threads = {METAL_Q4K_N4_THREADS, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q4K_QK_BASE,
+                               groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+    if (st->sequence_active) {
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    metal_msg_send_void0(st, enc, "endEncoding");
+    metal_msg_send_void0(st, cmd, "commit");
+    metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK
+                                                           : GEIST_E_BACKEND;
+}
+
 /* Fused FFN gate+up matvec with GeGLU epilogue (vtbl slot): the restored
  * wip gate_up_q4k_n4 kernel — llama mul_mv structure, 2 rows/simdgroup,
  * both weights against one activation pass, gelu(g)*u written directly.
@@ -8590,6 +8745,7 @@ static const struct geist_backend_vtbl metal_vtbl = {
     .ple_block = metal_ple_block,
     .attn_qkv_prep = metal_attn_qkv_prep,
     .ffn_gate_up = metal_ffn_gate_up,
+    .linear_t_pair = metal_linear_t_pair,
 };
 
 const struct geist_backend_descriptor geist_backend_metal = {

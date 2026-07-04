@@ -551,6 +551,13 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                      * predecoded SGEMM path scales up to m=128 (m=32
                      * regresses Accelerate). 64 keeps scratch under ~30 MB
                      * while feeding Accelerate a decent batch. */
+    if (be->desc != nullptr && be->desc->name != nullptr &&
+        strcmp(be->desc->name, "metal") == 0) {
+        st->m_max = 128; /* GPU sweet spot (measured, M1 Max): the mm_sg
+                          * GEMM fast paths want rows%64==0 and fewer,
+                          * larger chunks; 128 was the bench default via
+                          * GEIST_M_MAX all along. */
+    }
 #endif
     { /* GEIST_M_MAX override — for tuning the prefill activation tile vs L1
        * fit (m×n_in int8 should fit the 64 KB L1: m=32→48 KB, m=64→96 KB). */

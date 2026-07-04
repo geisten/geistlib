@@ -173,11 +173,18 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "linear_w_triple: null geist_weight");
         return GEIST_E_INVALID_ARG;
     }
-    /* Batched-submit backends: three tensor-path linears, no host pointers. */
+    /* Batched-submit backends: three tensor-path linears, no host pointers.
+     * w1/w2 (k/v projections) share dtype+shape — a fused pair matvec
+     * reads the activations once for both when the backend offers it. */
     if (v->linear_t != nullptr && t_x != nullptr && t_w0 != nullptr &&
         t_w1 != nullptr && t_w2 != nullptr && t_y0 != nullptr &&
         t_y1 != nullptr && t_y2 != nullptr) {
         enum geist_status ts = v->linear_t(be, t_x, w0, t_w0, seq, t_y0);
+        if (ts == GEIST_OK && v->linear_t_pair != nullptr &&
+            v->linear_t_pair(be, t_x, w1, t_w1, w2, t_w2, seq,
+                             t_y1, t_y2) == GEIST_OK) {
+            return GEIST_OK;
+        }
         if (ts == GEIST_OK) {
             ts = v->linear_t(be, t_x, w1, t_w1, seq, t_y1);
         }

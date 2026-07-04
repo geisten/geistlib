@@ -320,6 +320,21 @@ struct geist_backend_vtbl {
                                        struct geist_tensor       *k_cache,
                                        struct geist_tensor       *v_cache);
 
+    /* Optional fused two-weight linear: y0 = x·w0^T, y1 = x·w1^T with one
+     * pass over the activations. w0/w1 must share dtype and shape (used
+     * for the k/v projections). Backends may support only a subset (e.g.
+     * seq==1, Q4_K) — GEIST_E_UNSUPPORTED falls back to two linear_t
+     * calls. nullptr = always separate. */
+    enum geist_status (*linear_t_pair)(struct geist_backend      *be,
+                                       const struct geist_tensor *x,
+                                       const struct geist_weight *w0,
+                                       const struct geist_tensor *t_w0,
+                                       const struct geist_weight *w1,
+                                       const struct geist_tensor *t_w1,
+                                       size_t                     m,
+                                       struct geist_tensor       *y0,
+                                       struct geist_tensor       *y1);
+
     /* Optional fused FFN gate+up matvec with GeGLU epilogue:
      *   y = gelu_tanh(x · gate_w^T) * (x · up_w^T)
      * One kernel reads x once for both weights and applies the activation
