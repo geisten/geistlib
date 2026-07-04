@@ -722,6 +722,9 @@ struct metal_state {
     void *attention_qnorm_flash_sg_f16_pipeline;
     void *attention_flash_sg_f16_function;
     void *attention_flash_sg_f16_pipeline;
+    void *attention_dec512_f16_function;
+    void *attention_dec512_f16_pipeline;
+    void *attn_dec512_f16_library;
     void *attention_flash_sg8_f16_function;
     void *attention_flash_sg8_f16_pipeline;
     void *attn_flash_sg8_f16_library;
@@ -1847,6 +1850,15 @@ static const char metal_attn_flash_sg8_f16_source_a[] =
 static const char metal_attn_flash_sg8_f16_source_b[] =
     "kk<4u;kk++)simdgroup_store(S4[kk],Sred+sg*256u+kk*64u,8);threadgroup_barrier(mem_flags::mem_threadgroup);for(uint e=lid;e<256u;e+=256u){uint r=e/32u,j=e%32u,t=t0+j;float v=Sred[(j/8u)*64u+r*8u+(j%8u)]+Sred[256u+(j/8u)*64u+r*8u+(j%8u)]+Sred[512u+(j/8u)*64u+r*8u+(j%8u)]+Sred[768u+(j/8u)*64u+r*8u+(j%8u)]+Sred[1024u+(j/8u)*64u+r*8u+(j%8u)]+Sred[1280u+(j/8u)*64u+r*8u+(j%8u)]+Sred[1536u+(j/8u)*64u+r*8u+(j%8u)]+Sred[1792u+(j/8u)*64u+r*8u+(j%8u)];uint qp=p.qpos+q0+r;uint slr=(p.sw>0u&&qp+1u>p.sw)?qp+1u-p.sw:0u;bool ok=t>=slr&&t<=qp&&t>=skipb;Sf[e]=ok?v:-3.402823466e+38f;}threadgroup_barrier(mem_flags::mem_threadgroup);{uint r=sg;float tm=simd_max(Sf[r*32u+ln]);if(ln==0u)Mn[r]=max(Mt[r],tm);}threadgroup_barrier(mem_flags::mem_threadgroup);for(uint e=lid;e<256u;e+=256u){uint r=e/32u;float e2=exp(Sf[e]-Mn[r]);Sf[e]=e2;Pt[e]=half(e2);}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid<8u){uint r=lid;float mn=Mn[r],corr=exp(Mt[r]-mn),ls=0.0f;for(uint j=0u;j<32u;j++){ls+=Sf[r*32u+j];}Mt[r]=mn;Lt[r]=Lt[r]*corr+ls;Dg[r*9u]=corr;}threadgroup_barrier(mem_flags::mem_threadgroup);simdgroup_float8x8 mco;simdgroup_load(mco,Dg,8);for(uint cc=0u;cc<nO;cc++)simdgroup_multiply(O[cc],mco,O[cc]);simdgroup_half8x8 mp,mv;for(uint kk=0u;kk<4u;kk++){simdgroup_load(mp,Pt+kk*8u,32);for(uint cc=0u;cc<nO;cc++){simdgroup_load(mv,vc+p.vco+(t0+kk*8u)*kstr+kvh*hd+c0+cc*8u,kstr);simdgroup_multiply_accumulate(O[cc],mp,mv,O[cc]);}}threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid<8u)Dg[lid*9u]=1.0f/Lt[lid];threadgroup_barrier(mem_flags::mem_threadgroup);simdgroup_float8x8 mfin;simdgroup_load(mfin,Dg,8);for(uint cc=0u;cc<nO;cc++){simdgroup_float8x8 t;simdgroup_multiply(t,mfin,O[cc]);simdgroup_store(t,y+p.yo+q0*p.qh*hd+h*hd+c0+cc*8u,p.qh*hd);}}\n";
 
+/* Split-KV decode flash for 256 < head_dim <= 512 (the gemma-3n
+ * full-attention layers): 16-chunk QK/PV lane unroll (a0..a15),
+ * qv[512]/ta[4096]; same split/combine contract as attention_dec_f16.
+ * Those layers previously took the scalar O(kv) kernel every token. */
+static const char metal_attn_dec512_f16_source_a[] =
+    "#include <metal_stdlib>\nusing namespace metal;\nstruct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\nstruct SP{uint ns;};\nkernel void attention_dec512_f16(device const float*q[[buffer(0)]],device const half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device float*pb[[buffer(3)]],constant A&p[[buffer(4)]],constant SP&sp[[buffer(5)]],uint2 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint sg[[simdgroup_index_in_threadgroup]],uint ln[[thread_index_in_simdgroup]]){threadgroup float qv[512];threadgroup float red[8];threadgroup float tm[8];threadgroup float tl[8];threadgroup float ta[4096];uint h=tg.y,ss=tg.x,hd=p.hd;if(h>=p.qh||hd>512u)return;for(uint i=lid;i<hd;i+=256u){qv[i]=q[p.qo+h*hd+i];}threadgroup_barrier(mem_flags::mem_threadgroup);uint kvh=h/(p.qh/p.kvh),qp=p.qpos;uint slo=(p.sw>0u&&qp+1u>p.sw)?qp+1u-p.sw:0u;uint shi=qp<p.kv_len?qp:p.kv_len-1u;float m=-3.402823466e+38f,l=0.0f,a0=0,a1=0,a2=0,a3=0,a4=0,a5=0,a6=0,a7=0,a8=0,a9=0,a10=0,a11=0,a12=0,a13=0,a14=0,a15=0;bool g1=ln+32u<hd,g2=ln+64u<hd,g3=ln+96u<hd,g4=ln+128u<hd,g5=ln+160u<hd,g6=ln+192u<hd,g7=ln+224u<hd,g8=ln+256u<hd,g9=ln+288u<hd,g10=ln+320u<hd,g11=ln+352u<hd,g12=ln+384u<hd,g13=ln+416u<hd,g14=ln+448u<hd,g15=ln+480u<hd;for(uint t=slo+ss*8u+sg;t<=shi;t+=sp.ns*8u){uint kb=p.kco+t*p.kvh*hd+kvh*hd;float d=qv[ln]*float(kc[kb+ln]);if(g1)d+=qv[ln+32u]*float(kc[kb+ln+32u]);if(g2)d+=qv[ln+64u]*float(kc[kb+ln+64u]);if(g3)d+=qv[ln+96u]*float(kc[kb+ln+96u]);if(g4)d+=qv[ln+128u]*float(kc[kb+ln+128u]);if(g5)d+=qv[ln+160u]*float(kc[kb+ln+160u]);if(g6)d+=qv[ln+192u]*float(kc[kb+ln+192u]);if(g7)d+=qv[ln+224u]*float(kc[kb+ln+224u]);if(g8)d+=qv[ln+256u]*float(kc[kb+ln+256u]);if(g9)d+=qv[ln+288u]*float(kc[kb+ln+288u]);if(g10)d+=qv[ln+320u]*float(kc[kb+ln+320u]);";
+static const char metal_attn_dec512_f16_source_b[] =
+    "if(g11)d+=qv[ln+352u]*float(kc[kb+ln+352u]);if(g12)d+=qv[ln+384u]*float(kc[kb+ln+384u]);if(g13)d+=qv[ln+416u]*float(kc[kb+ln+416u]);if(g14)d+=qv[ln+448u]*float(kc[kb+ln+448u]);if(g15)d+=qv[ln+480u]*float(kc[kb+ln+480u]);d=simd_sum(d);float mn=max(m,d),corr=exp(m-mn),e=exp(d-mn);l=l*corr+e;uint vb=p.vco+t*p.kvh*hd+kvh*hd;a0=a0*corr+e*float(vc[vb+ln]);if(g1)a1=a1*corr+e*float(vc[vb+ln+32u]);if(g2)a2=a2*corr+e*float(vc[vb+ln+64u]);if(g3)a3=a3*corr+e*float(vc[vb+ln+96u]);if(g4)a4=a4*corr+e*float(vc[vb+ln+128u]);if(g5)a5=a5*corr+e*float(vc[vb+ln+160u]);if(g6)a6=a6*corr+e*float(vc[vb+ln+192u]);if(g7)a7=a7*corr+e*float(vc[vb+ln+224u]);if(g8)a8=a8*corr+e*float(vc[vb+ln+256u]);if(g9)a9=a9*corr+e*float(vc[vb+ln+288u]);if(g10)a10=a10*corr+e*float(vc[vb+ln+320u]);if(g11)a11=a11*corr+e*float(vc[vb+ln+352u]);if(g12)a12=a12*corr+e*float(vc[vb+ln+384u]);if(g13)a13=a13*corr+e*float(vc[vb+ln+416u]);if(g14)a14=a14*corr+e*float(vc[vb+ln+448u]);if(g15)a15=a15*corr+e*float(vc[vb+ln+480u]);m=mn;}if(ln==0u){tm[sg]=m;tl[sg]=l;}uint tb=sg*hd+ln;ta[tb]=a0;if(g1)ta[tb+32u]=a1;if(g2)ta[tb+64u]=a2;if(g3)ta[tb+96u]=a3;if(g4)ta[tb+128u]=a4;if(g5)ta[tb+160u]=a5;if(g6)ta[tb+192u]=a6;if(g7)ta[tb+224u]=a7;if(g8)ta[tb+256u]=a8;if(g9)ta[tb+288u]=a9;if(g10)ta[tb+320u]=a10;if(g11)ta[tb+352u]=a11;if(g12)ta[tb+384u]=a12;if(g13)ta[tb+416u]=a13;if(g14)ta[tb+448u]=a14;if(g15)ta[tb+480u]=a15;threadgroup_barrier(mem_flags::mem_threadgroup);float M=tm[0];for(uint j=1u;j<8u;j++)M=max(M,tm[j]);float L=0.0f;for(uint j=0u;j<8u;j++)L+=tl[j]*exp(tm[j]-M);uint pbb=(h*16u+ss)*(hd+2u);if(lid==0u){pb[pbb]=M;pb[pbb+1u]=L;}for(uint i=lid;i<hd;i+=256u){float acc=0.0f;for(uint j=0u;j<8u;j++)acc+=ta[j*hd+i]*exp(tm[j]-M);pb[pbb+2u+i]=acc;}}";
+
 /* No-norm head for main's contract (the engine applies q-norm and rope as
  * separate ops): plain Q load into qv, then the shared split-KV body. */
 static const char metal_attn_dec_f16_plain_head[] =
@@ -2543,6 +2555,11 @@ static void metal_destroy_state(struct geist_backend *be,
         metal_msg_send_void0(st, st->attention_dec_f16_function, "release");
         metal_msg_send_void0(st, st->attention_dec_combine_pipeline, "release");
         metal_msg_send_void0(st, st->attention_dec_combine_function, "release");
+        metal_msg_send_void0(st, st->attention_dec512_f16_pipeline,
+                             "release");
+        metal_msg_send_void0(st, st->attention_dec512_f16_function,
+                             "release");
+        metal_msg_send_void0(st, st->attn_dec512_f16_library, "release");
         metal_msg_send_void0(st, st->attention_flash_sg8_f16_pipeline,
                              "release");
         metal_msg_send_void0(st, st->attention_flash_sg8_f16_function,
@@ -2834,6 +2851,9 @@ static void metal_destroy_state(struct geist_backend *be,
     st->attention_qnorm_dec_f16_function = nullptr;
     st->attention_dec_combine_pipeline = nullptr;
     st->attention_dec_combine_function = nullptr;
+    st->attention_dec512_f16_pipeline = nullptr;
+    st->attention_dec512_f16_function = nullptr;
+    st->attn_dec512_f16_library = nullptr;
     st->attention_flash_sg8_f16_pipeline = nullptr;
     st->attention_flash_sg8_f16_function = nullptr;
     st->attn_flash_sg8_f16_library = nullptr;
@@ -4906,6 +4926,46 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
             "attention_flash_sg8_f16",
             &st->attention_flash_sg8_f16_function,
             &st->attention_flash_sg8_f16_pipeline);
+    }
+    if (s == GEIST_OK) {
+        const size_t d_a = strlen(metal_attn_dec512_f16_source_a);
+        const size_t d_b = strlen(metal_attn_dec512_f16_source_b);
+        char *dec512_src = malloc(d_a + d_b + 1u);
+        if (dec512_src == nullptr) {
+            geist_backend_set_error(
+                be, GEIST_E_OOM,
+                "metal: dec512 shader source alloc failed");
+            return GEIST_E_OOM;
+        }
+        memcpy(dec512_src, metal_attn_dec512_f16_source_a, d_a);
+        memcpy(dec512_src + d_a, metal_attn_dec512_f16_source_b, d_b + 1u);
+        source = metal_msg_send_id_cstr(
+            st, ns_string, "stringWithUTF8String:", dec512_src);
+        free(dec512_src);
+        if (source == nullptr) {
+            geist_backend_set_error(
+                be, GEIST_E_BACKEND,
+                "metal: failed to create dec512 shader source");
+            return GEIST_E_BACKEND;
+        }
+        err = nullptr;
+        st->attn_dec512_f16_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:",
+            source, nullptr, &err);
+        if (st->attn_dec512_f16_library == nullptr) {
+            const char *msg = metal_nserror_message(st, err);
+            geist_backend_set_error(
+                be, GEIST_E_BACKEND,
+                "metal: dec512 shader compile failed%s%s",
+                msg != nullptr ? ": " : "",
+                msg != nullptr ? msg : "");
+            return GEIST_E_BACKEND;
+        }
+        s = metal_create_named_pipeline(
+            be, st->attn_dec512_f16_library, ns_string,
+            "attention_dec512_f16",
+            &st->attention_dec512_f16_function,
+            &st->attention_dec512_f16_pipeline);
     }
     return s;
 }
@@ -7122,8 +7182,12 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         metal_msg_send_dispatch(st, enc, cgroups, threads256);
     }
 
+    /* head_dim <= 256: 8-chunk lane unroll; 256 < hd <= 512 (gemma-3n
+     * full-attention layers): the 16-chunk dec512 variant. */
     metal_msg_send_set_pipeline(st, enc,
-                                st->attention_dec_f16_pipeline);
+                                head_dim > 256u
+                                    ? st->attention_dec512_f16_pipeline
+                                    : st->attention_dec_f16_pipeline);
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, 0, 0);
     metal_msg_send_set_buffer(st, enc, kf16, 0, 1);
     metal_msg_send_set_buffer(st, enc, vf16, 0, 2);
@@ -8057,7 +8121,10 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     enum geist_status s = metal_ensure_attention_pipeline(be);
     if (s != GEIST_OK) { return s; }
     struct metal_state *st = be->state;
-    if (q_rows == 1u && head_dim <= 256u &&
+    if (q_rows == 1u &&
+        (head_dim <= 256u ||
+         (head_dim <= 512u &&
+          st->attention_dec512_f16_pipeline != nullptr)) &&
         k_rows >= 32u &&
         st->attention_dec_f16_pipeline != nullptr &&
         st->attention_dec_combine_pipeline != nullptr &&
