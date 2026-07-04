@@ -117,15 +117,23 @@ GPU time; small ops were latency-hidden. What's left is not more fusion.
 q4k matvec **5.2** | serial command-stream floor **~6.0** | norms 1.76 |
 q6k 1.05 | f32-PLE 1.05 | attention 0.74 | host tail ~1.2 | elem/copy 0.3.
 
-1. **Indirect Command Buffer (ICB) — THE decode lever, attacks the ~6 ms
-   floor.** A zero-work decode sequence (7 dispatches) still costs 5.9 ms
-   GPU: the M1 front-end pays per *encoded* op, ~540/token. ICB pre-encodes
-   the token graph once and re-executes per token (the decode-replay idea,
-   but on-GPU instead of re-encoding on the CPU). **Prerequisite:** every
-   per-dispatch `setBytes` param must become a real buffer (ICB can't encode
-   setBytes) — a bounded but real refactor of ~15 encode helpers. Estimated
-   payoff: if it halves the floor, decode → ~15 ms (past wip, nearing llama).
-   The single highest-value remaining item; nothing else touches the floor.
+1. **Command-buffer pipelining à la llama (n_cb) — THE decode lever,
+   attacks the ~6 ms floor and is PROVEN on this hardware.** Source
+   analysis of llama's ggml-metal (2026-07-04): per graph it splits the
+   node list into n_cb+1 command buffers (optimal n_cb=1–2 on M-series,
+   their comment), **enqueues them all up front**, commits the first
+   immediately so the GPU starts while worker threads still encode the
+   rest (`dispatch_apply` + `commandBufferWithUnretainedReferences`), and
+   **never calls waitUntilCompleted after compute** — sync happens lazily
+   at the logits read. Net effect: encode cost AND front-end stream
+   parsing of buffer k+1 overlap kernel execution of buffer k. geist
+   instead encodes → commits → waits one serial buffer, exposing the
+   whole ~6 ms parse/schedule floor. Port: rotate the sequence buffer
+   every ~N layers WITHOUT waiting (enqueue up front, commit as encoding
+   passes the boundary), keep the existing flush-on-map as the only sync
+   point. Bounded change in the sequence machinery, no kernel work, no
+   ICB setBytes refactor needed. ICB stays the fallback idea if buffer
+   splitting recovers less than llama's overlap suggests.
 2. **Fused q/k/v projection matvec** (like ffn_gate_up): q_proj/k_proj/v_proj
    are still 3 separate GEMVs reading `normed` 3×. One kernel, one read →
    part of the 5.2 ms q4k / 1.9 ms-over-floor headroom. ~M1-executable,
@@ -147,8 +155,24 @@ q6k 1.05 | f32-PLE 1.05 | attention 0.74 | host tail ~1.2 | elem/copy 0.3.
    capture to target (M1 has no per-dispatch shader counters). Timeboxed.
 
 ### Recommended order
-4 (prefill fusion → recover most of the wip prefill gap) → 1 (ICB → the
-decode floor, past wip decode, toward llama) → 2 (q/k/v projection) → 5
-(GEMM research, needs M3). After 4+1 geist should sit ~wip level on the
-authoritative graph; 5 is the only path to actually *beat* llama prefill,
-and end-to-end total already leads once decode > llama.
+1 (command-buffer pipelining → the decode floor, llama-proven) → 4
+(prefill fusion → recover most of the wip prefill gap; pipelining helps
+prefill chunks too) → 2 (q/k/v projection) → 5 (GEMM research, needs M3).
+5 is the only path to actually *beat* llama prefill; end-to-end total
+already leads once decode > llama.
+
+### Why llama is beatable (source-analysis 2026-07-04)
+- Its q4_K kernels are NOT faster (measured shape-for-shape equal, both
+  ~6 TF); its decode matvecs run ~287 GB/s effective on a ~400 GB/s part
+  — kernel headroom exists for BOTH engines.
+- It computes MORE per token than geist: the full gemma-3n AltUp/Laurel
+  graph (~110 extra op sites in its layer builder) — and still decodes at
+  10.8 ms. Its lead is 100% engine overlap, not math or kernels.
+- Its own fusion/concurrency features measured NEGATIVE for decode on M1
+  (tg 76.5→92.9 with CONCURRENCY_DISABLE) — its best decode config is a
+  serial encoder, same as geist's. The overlap machinery (n_cb + async
+  completion) is the entire difference, and geist can adopt it AND keep
+  its leaner graph (no AltUp cost) + f16-KV long-context scaling.
+- It re-encodes every token on the CPU (no replay/ICB) and swings 77–93
+  tg across cool runs; a pipelined geist decode has a realistic shot at
+  a STABLE >93.
