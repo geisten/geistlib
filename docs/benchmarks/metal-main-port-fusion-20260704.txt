@@ -1,0 +1,12 @@
+# geist Metal (main contract) fusion batch — cool benchmark 2026-07-04 (session 2)
+# levers: ple_block, attn_qkv_prep (q_norm_rope + kv_norm_append), ffn_gate_up
+# (gate_up_q4k_n4 restored), device prefill embed/PLE-prep, empty-seq wait skip.
+# gate: token parity with cpu_scalar (24/24, long prompt; short-prompt identical)
+=== COOL geist metal pp512/tg64, GEIST_M_MAX=128, 240s cooldown ===
+  prefill (512 tok):     677.3 ms  =   1.32 ms/tok  =   756.0 tok/s
+  decode  (64 tok):     1167.6 ms  =  18.24 ms/tok  =    54.8 tok/s
+  total   (576 tok):    1844.9 ms  =   3.20 ms/tok  =   312.2 tok/s  (pp512+tg64, user-facing)
+=== llama-bench back-to-back ===
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |           pp512 |       1548.25 ± 2.30 |
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |            tg64 |         93.02 ± 0.24 |
+DONE-COOL-AB2
