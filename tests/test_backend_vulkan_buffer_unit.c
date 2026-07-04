@@ -67,9 +67,11 @@ int main(void) {
         v->buffer_destroy(be, scratch);
     }
 
-    /* 2. device-local weight (staged copies through VRAM) */
+    /* 2. device-local weight (staged copies through VRAM) — DEVICE_LOCAL
+     * needs the explicit flag; role alone stays host-visible because the
+     * arch layer maps WEIGHT-role buffers (cos/sin tables). */
     struct geist_buffer *weight = nullptr;
-    s = v->buffer_create(be, N, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_AUTO, &weight);
+    s = v->buffer_create(be, N, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_DEVICE, &weight);
     fails += check(s == GEIST_OK, "weight buffer_create");
     if (s == GEIST_OK) {
         fails += check(v->buffer_map(weight) == nullptr,

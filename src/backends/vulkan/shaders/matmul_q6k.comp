@@ -1,0 +1,101 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { float x[]; };
+layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+shared float partial[256];
+
+uint load_u8(uint byte_offset) {
+    uint word = w[byte_offset >> 2];
+    return (word >> ((byte_offset & 3u) * 8u)) & 0xffu;
+}
+
+int load_i8(uint byte_offset) {
+    uint u = load_u8(byte_offset);
+    return u < 128u ? int(u) : int(u) - 256;
+}
+
+float load_f16(uint byte_offset) {
+    uint lo = load_u8(byte_offset);
+    uint hi = load_u8(byte_offset + 1u);
+    return unpackHalf2x16(lo | (hi << 8u)).x;
+}
+
+void main() {
+    uint out_row = gl_WorkGroupID.x;
+    uint batch_row = gl_WorkGroupID.y;
+    uint lid = gl_LocalInvocationID.x;
+
+    if (out_row >= pc.n_out || batch_row >= pc.rows) {
+        return;
+    }
+
+    float sum = 0.0;
+    uint x_base = pc.x_offset + batch_row * pc.x_stride;
+    for (uint k = lid; k < pc.n_in; k += 256u) {
+        uint block_in_row = k / 256u;
+        uint in_block = k - block_in_row * 256u;
+        uint half_idx = in_block / 128u;
+        uint in_half = in_block - half_idx * 128u;
+        uint stream = in_half / 32u;
+        uint l = in_half - stream * 32u;
+        uint is = l / 16u;
+        uint block_byte = pc.w_offset +
+            (out_row * pc.blocks_per_row + block_in_row) * 210u;
+        uint ql_base = block_byte + half_idx * 64u;
+        uint qh_base = block_byte + 128u + half_idx * 32u;
+        uint sc_base = block_byte + 192u + half_idx * 8u;
+
+        uint ql0 = load_u8(ql_base + l);
+        uint ql1 = load_u8(ql_base + l + 32u);
+        uint qh = load_u8(qh_base + l);
+        uint q_u;
+        uint sc_idx;
+        if (stream == 0u) {
+            q_u = (ql0 & 15u) | (((qh >> 0u) & 3u) << 4u);
+            sc_idx = is + 0u;
+        } else if (stream == 1u) {
+            q_u = (ql1 & 15u) | (((qh >> 2u) & 3u) << 4u);
+            sc_idx = is + 2u;
+        } else if (stream == 2u) {
+            q_u = (ql0 >> 4u) | (((qh >> 4u) & 3u) << 4u);
+            sc_idx = is + 4u;
+        } else {
+            q_u = (ql1 >> 4u) | (((qh >> 6u) & 3u) << 4u);
+            sc_idx = is + 6u;
+        }
+
+        float d = load_f16(block_byte + 208u);
+        int sc = load_i8(sc_base + sc_idx);
+        int q = int(q_u) - 32;
+        sum += x[x_base + k] * d * float(sc) * float(q);
+    }
+    partial[lid] = sum;
+    barrier();
+
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (lid < stride) {
+            partial[lid] += partial[lid + stride];
+        }
+        barrier();
+    }
+
+    if (lid == 0u) {
+        y[pc.y_offset + batch_row * pc.y_stride + out_row] = partial[0];
+    }
+}

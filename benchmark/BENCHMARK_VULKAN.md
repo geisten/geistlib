@@ -50,3 +50,9 @@ OMP_NUM_THREADS=16 GEIST_GGUF_PATH=~/models/gemma/gemma-4-E2B-it-Q4_K_M.gguf \
   GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_PP=512 GEIST_BENCH_TG=128 \
   bin/linux/release/tests/bench_session_throughput
 ```
+
+## Progress log
+
+| stage | pp512 | tg128 | E2E | notes |
+| :-- | --: | --: | --: | :-- |
+| Phase 2 — correctness (sync per-linear dispatch) | 27.3 | 2.2 | 8.2 | Q4_K/Q6_K/F32 linears on GPU, parity bit-exact; everything else CPU; one submit+fence per linear |
