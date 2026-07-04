@@ -736,6 +736,16 @@ struct metal_state {
     int capture_skipped;
     /* diag: GEIST_METAL_SEQ_TRACE=1 — per-sequence encode/GPU timing. */
     uint64_t seq_dispatch_count;
+    /* Command-buffer pipelining (llama.cpp n_cb-style): the sequence
+     * rotates to a fresh command buffer every seq_rotate_every dispatches,
+     * committing the old one WITHOUT waiting — the GPU starts executing
+     * (and its front-end starts parsing) buffer k while the CPU still
+     * encodes buffer k+1. Buffers on one queue execute in commit order,
+     * so cross-buffer data deps hold. 0 = pipelining off. */
+    uint32_t seq_rotate_every;
+    uint32_t seq_disp_at_rotate;
+    uint32_t seq_pending_count;
+    void *seq_pending_cmds[16];
     uint64_t seq_begin_ns;
     int sequence_token;
     enum geist_command_sequence_kind sequence_kind;
@@ -2349,10 +2359,73 @@ static bool metal_ranges_overlap(size_t a_offset,
     return a_offset < b_offset + n_bytes && b_offset < a_offset + n_bytes;
 }
 
+/* Drain the pipelined (committed, unwaited) command buffers: optionally
+ * surface their errors, always release. Buffers execute in commit order,
+ * so when the caller has waited on the FINAL buffer these are complete. */
+static void metal_sequence_drain_pending(struct metal_state *st,
+                                         bool *out_failed) {
+    for (uint32_t i = 0; i < st->seq_pending_count; i++) {
+        void *cmd = st->seq_pending_cmds[i];
+        if (out_failed != nullptr &&
+            metal_msg_send_id0(st, cmd, "error") != nullptr) {
+            *out_failed = true;
+        }
+        metal_msg_send_void0(st, cmd, "release");
+        st->seq_pending_cmds[i] = nullptr;
+    }
+    st->seq_pending_count = 0;
+}
+
+/* Op-start encoder accessor with pipelined rotation. Called ONLY at op
+ * boundaries — never mid-op, an op's local `enc` must stay valid across
+ * its own dispatches. Returns the current encoder (possibly fresh). */
+static void *metal_sequence_encoder(struct metal_state *st) {
+    if (st == nullptr || !st->sequence_active) {
+        return nullptr;
+    }
+    if (st->seq_rotate_every == 0u ||
+        st->sequence_compute_encoder == nullptr ||
+        (uint32_t) st->seq_dispatch_count - st->seq_disp_at_rotate <
+            st->seq_rotate_every) {
+        return st->sequence_compute_encoder;
+    }
+    if (st->seq_pending_count >=
+        (uint32_t) (sizeof(st->seq_pending_cmds) /
+                    sizeof(st->seq_pending_cmds[0]))) {
+        /* Backpressure: encode has outrun the GPU by 16 buffers — wait
+         * for the oldest before opening another. */
+        metal_msg_send_void0(st, st->seq_pending_cmds[0],
+                             "waitUntilCompleted");
+        metal_msg_send_void0(st, st->seq_pending_cmds[0], "release");
+        st->seq_pending_count--;
+        memmove(&st->seq_pending_cmds[0], &st->seq_pending_cmds[1],
+                st->seq_pending_count * sizeof(st->seq_pending_cmds[0]));
+    }
+    void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    void *enc = cmd != nullptr
+                    ? metal_msg_send_id0(st, cmd, "computeCommandEncoder")
+                    : nullptr;
+    if (cmd == nullptr || enc == nullptr) {
+        return st->sequence_compute_encoder; /* keep the old buffer */
+    }
+    metal_msg_send_void0(st, cmd, "retain");
+    metal_msg_send_void0(st, enc, "retain");
+    metal_msg_send_void0(st, st->sequence_compute_encoder, "endEncoding");
+    metal_msg_send_void0(st, st->sequence_command_buffer, "commit");
+    metal_msg_send_void0(st, st->sequence_compute_encoder, "release");
+    st->seq_pending_cmds[st->seq_pending_count++] =
+        st->sequence_command_buffer; /* stays retained until drain */
+    st->sequence_command_buffer = cmd;
+    st->sequence_compute_encoder = enc;
+    st->seq_disp_at_rotate = (uint32_t) st->seq_dispatch_count;
+    return enc;
+}
+
 static void metal_release_sequence_objects(struct metal_state *st) {
     if (st == nullptr) {
         return;
     }
+    metal_sequence_drain_pending(st, nullptr);
     metal_msg_send_void0(st, st->sequence_compute_encoder, "release");
     metal_msg_send_void0(st, st->sequence_command_buffer, "release");
     st->sequence_compute_encoder = nullptr;
@@ -3069,7 +3142,7 @@ static void metal_buffer_destroy_internal(struct geist_backend *be,
         st->copy_u32_pipeline != nullptr &&
         (src_offset % 4u) == 0 && (dst_offset % 4u) == 0 &&
         (n_bytes % 4u) == 0) {
-        void *enc = st->sequence_compute_encoder;
+        void *enc = metal_sequence_encoder(st);
         struct {
             uint32_t so, dof, n;
         } cp = {(uint32_t) (src_offset / 4u), (uint32_t) (dst_offset / 4u),
@@ -5478,7 +5551,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
                 },
             };
         }
-        metal_encode_f32_matmul(st, st->sequence_compute_encoder,
+        metal_encode_f32_matmul(st, metal_sequence_encoder(st),
                                 x, w, y, &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5590,7 +5663,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
                 },
             };
         }
-        metal_encode_rmsnorm_rows(st, st->sequence_compute_encoder, x, w, y,
+        metal_encode_rmsnorm_rows(st, metal_sequence_encoder(st), x, w, y,
                                   &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5663,7 +5736,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
             st->decode_replay_failed = true;
             st->decode_replay_valid = false;
         }
-        metal_encode_rmsnorm_add_rows(st, st->sequence_compute_encoder, res,
+        metal_encode_rmsnorm_add_rows(st, metal_sequence_encoder(st), res,
                                       x, w, y, &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5742,7 +5815,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
                 },
             };
         }
-        metal_encode_add_rows(st, st->sequence_compute_encoder, a, b, y,
+        metal_encode_add_rows(st, metal_sequence_encoder(st), a, b, y,
                               &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5802,7 +5875,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
         .y_row_stride = (uint32_t) y_stride,
     };
     if (st->sequence_active) {
-        metal_encode_mul_rows(st, st->sequence_compute_encoder, a, b, y,
+        metal_encode_mul_rows(st, metal_sequence_encoder(st), a, b, y,
                               &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5873,7 +5946,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
                 },
             };
         }
-        metal_encode_scale_rows(st, st->sequence_compute_encoder, x, y,
+        metal_encode_scale_rows(st, metal_sequence_encoder(st), x, y,
                                 &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5926,7 +5999,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
         .scale = 0.0f,
     };
     if (st->sequence_active) {
-        metal_encode_gelu_rows(st, st->sequence_compute_encoder, x, y,
+        metal_encode_gelu_rows(st, metal_sequence_encoder(st), x, y,
                                &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5986,7 +6059,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
         .y_row_stride = (uint32_t) y_stride,
     };
     if (st->sequence_active) {
-        metal_encode_gelu_mul_rows(st, st->sequence_compute_encoder, x, z, y,
+        metal_encode_gelu_mul_rows(st, metal_sequence_encoder(st), x, z, y,
                                    &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -6141,7 +6214,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
                 },
             };
         }
-        metal_encode_embed_lookup_scaled(st, st->sequence_compute_encoder,
+        metal_encode_embed_lookup_scaled(st, metal_sequence_encoder(st),
                                          embed_table, out, &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -6256,7 +6329,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
                 "metal Q4_K matvec: command sequence has no encoder");
             return GEIST_E_BACKEND;
         }
-        metal_encode_q4k_linear(st, st->sequence_compute_encoder,
+        metal_encode_q4k_linear(st, metal_sequence_encoder(st),
                                 x, w, y, &params, false);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -6358,7 +6431,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
                 "metal Q4_K matmul: command sequence has no encoder");
             return GEIST_E_BACKEND;
         }
-        metal_encode_q4k_linear(st, st->sequence_compute_encoder,
+        metal_encode_q4k_linear(st, metal_sequence_encoder(st),
                                 x, w, y, &params, true);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -6473,7 +6546,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
                 "metal Q6_K linear: command sequence has no encoder");
             return GEIST_E_BACKEND;
         }
-        metal_encode_q6k_linear(st, st->sequence_compute_encoder,
+        metal_encode_q6k_linear(st, metal_sequence_encoder(st),
                                 x, w, y, &params, matrix);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -6675,7 +6748,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
                                     "metal rope_apply: sequence has no encoder");
             return GEIST_E_BACKEND;
         }
-        metal_encode_rope_rows(st, st->sequence_compute_encoder, x, cos, sin,
+        metal_encode_rope_rows(st, metal_sequence_encoder(st), x, cos, sin,
                                &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -6765,7 +6838,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
         }
-        enc = st->sequence_compute_encoder;
+        enc = metal_sequence_encoder(st);
     } else {
         cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
         enc = cmd != nullptr
@@ -6905,7 +6978,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
         }
-        enc = st->sequence_compute_encoder;
+        enc = metal_sequence_encoder(st);
     } else {
         cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
         enc = cmd != nullptr
@@ -7033,7 +7106,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
         }
-        enc = st->sequence_compute_encoder;
+        enc = metal_sequence_encoder(st);
         /* Not represented in the (dormant) replay op stream. */
         if (metal_decode_replay_can_record(st)) {
             st->decode_replay_failed = true;
@@ -7203,7 +7276,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
         }
-        enc = st->sequence_compute_encoder;
+        enc = metal_sequence_encoder(st);
         /* Not represented in the (dormant) replay op stream. */
         if (metal_decode_replay_can_record(st)) {
             st->decode_replay_failed = true;
@@ -7345,7 +7418,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
         }
-        enc = st->sequence_compute_encoder;
+        enc = metal_sequence_encoder(st);
         /* Not represented in the (dormant) replay op stream. */
         if (metal_decode_replay_can_record(st)) {
             st->decode_replay_failed = true;
@@ -7469,7 +7542,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
         }
-        enc = st->sequence_compute_encoder;
+        enc = metal_sequence_encoder(st);
         /* Not represented in the (dormant) replay op stream. */
         if (metal_decode_replay_can_record(st)) {
             st->decode_replay_failed = true;
@@ -7650,7 +7723,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
                                     "metal attention: sequence has no encoder");
             return GEIST_E_BACKEND;
         }
-        metal_encode_attention_rows(st, st->sequence_compute_encoder, q, k,
+        metal_encode_attention_rows(st, metal_sequence_encoder(st), q, k,
                                     value, out, &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -7800,6 +7873,7 @@ static void metal_capture_end(struct metal_state *st) {
     st->sequence_active = true;
     st->sequence_has_work = false;
     st->seq_dispatch_count = 0;
+    st->seq_disp_at_rotate = 0;
     st->seq_begin_ns = metal_now_ns();
     st->captured_greedy_token_pending = false;
     st->captured_greedy_vocab_size = 0;
@@ -7871,6 +7945,16 @@ static void metal_capture_end(struct metal_state *st) {
         const uint64_t commit_ns = seq_trace ? metal_now_ns() : 0;
         metal_msg_send_void0(st, cmd, "commit");
         metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+        /* Pipelined buffers committed before this one are complete now
+         * (same queue, commit order); surface their errors and release. */
+        bool pending_failed = false;
+        metal_sequence_drain_pending(st, &pending_failed);
+        if (pending_failed && out == GEIST_OK) {
+            geist_backend_set_error(
+                be, GEIST_E_BACKEND,
+                "metal command sequence: pipelined buffer failed");
+            out = GEIST_E_BACKEND;
+        }
         metal_profile_add_wait(st, wait_stage, wait_start_ns);
         if (seq_trace) {
             const uint64_t done_ns = metal_now_ns();
@@ -7937,6 +8021,10 @@ static void metal_capture_end(struct metal_state *st) {
         st->decode_replay_token_count = st->captured_greedy_token_count;
     }
 
+    /* No-op on the normal submit path (already drained after the wait);
+     * covers the empty/!submit paths where pendings were committed but
+     * never waited on — release only, Metal keeps its internal refs. */
+    metal_sequence_drain_pending(st, nullptr);
     metal_capture_end(st);
 
     metal_msg_send_void0(st, enc, "release");
@@ -8118,6 +8206,13 @@ static void metal_capture_end(struct metal_state *st) {
     const char *decode_replay = getenv("GEIST_METAL_DECODE_REPLAY");
     st->decode_replay_enabled =
         decode_replay != nullptr && strcmp(decode_replay, "0") != 0;
+    /* Command-buffer pipelining (llama n_cb-style): rotate every N
+     * dispatches, default 192 (~3 buffers per decode token — llama's
+     * measured optimum on M-series is 2-3 buffers per graph).
+     * GEIST_METAL_PIPELINE=0 disables, =N sets the rotation period. */
+    const char *pipeline_env = getenv("GEIST_METAL_PIPELINE");
+    st->seq_rotate_every =
+        pipeline_env != nullptr ? (uint32_t) atoi(pipeline_env) : 192u;
     st->profile_enabled = metal_env_enabled("GEIST_METAL_PROFILE");
 
     enum geist_status s = metal_load_runtime(be, st);
