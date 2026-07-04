@@ -291,3 +291,25 @@ shorter context. It buys correctness, mergeability, and every CPU backend.
 - It re-encodes every token on the CPU (no replay/ICB) and swings 77–93
   tg across cool runs; a pipelined geist decode has a realistic shot at
   a STABLE >93.
+
+---
+
+## 6. M1 program closed (2026-07-04, evening)
+
+Final cool numbers: **987 pp512 / 81.2 tg64 / 441 total** vs llama same-run
+1542 / 91.3. Decode gap 1.12× (wip's 61 passed by 33%); prefill 1.56×;
+tg64@kv2100 73 t/s (was 27).
+
+The two invisible-scalar-kernel fixes (sg8 prefill flash + dec512 split-KV,
+head_dim-512 full-attention layers) were the day's breakthroughs — found by
+scaling-curve triage + `sample`, after the clock, chunking and MQA theories
+were each falsified by measurement (powermetrics: both engines pinned at
+1296 MHz; m_max 512: regression; MQA K/V redundancy: 23 ms of 671 ms
+attention — the flash kernel is compute-bound at ~0.7 TF effective).
+
+What remains is measured to be kernel-efficiency territory: the q4_K GEMM
+plateau (~6 TF, shared with llama) and flash-kernel throughput (~0.7 vs
+llama-class ~2 TF). Both are limiter/occupancy WHY-questions; M1 exposes
+per-dispatch durations but no limiter counters (M3/A17+). Every
+measurable-on-M1 lever in this document has been executed, measured, and
+either landed or reverted with numbers.
