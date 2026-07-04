@@ -560,11 +560,17 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
 #endif
     { /* GEIST_M_MAX override — for tuning the prefill activation tile vs L1
-       * fit (m×n_in int8 should fit the 64 KB L1: m=32→48 KB, m=64→96 KB). */
+       * fit (m×n_in int8 should fit the 64 KB L1: m=32→48 KB, m=64→96 KB).
+       * GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; the metal
+       * path never runs those in prefill, so the GPU may batch larger. */
+        const bool is_metal = be->desc != nullptr &&
+                              be->desc->name != nullptr &&
+                              strcmp(be->desc->name, "metal") == 0;
+        const int cap = is_metal ? 512 : (int) GEIST_QUANT_M_CAP;
         const char *mm = getenv("GEIST_M_MAX");
         if (mm != nullptr && mm[0] != '\0') {
             const int v = atoi(mm);
-            if (v > 0 && v <= (int) GEIST_QUANT_M_CAP)
+            if (v > 0 && v <= cap)
                 st->m_max = (size_t) v;
         }
     }
@@ -899,13 +905,20 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     }
     memset(sess, 0, sizeof(*sess));
     sess->m_max = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
-    if (sess->m_max == 0 || sess->m_max > GEIST_QUANT_M_CAP) {
+    /* GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; metal's
+     * prefill never runs those, so its sessions may batch up to 512. */
+    const size_t m_cap =
+            (be->desc != nullptr && be->desc->name != nullptr &&
+             strcmp(be->desc->name, "metal") == 0)
+                    ? 512u
+                    : (size_t) GEIST_QUANT_M_CAP;
+    if (sess->m_max == 0 || sess->m_max > m_cap) {
         geist_backend_set_error(
                 be,
                 GEIST_E_INVALID_ARG,
                 "transformer_session_alloc: m_max=%zu outside supported range 1..%zu",
                 sess->m_max,
-                (size_t) GEIST_QUANT_M_CAP);
+                m_cap);
         void *p_sess = sess;
         safe_free(&p_sess);
         return nullptr;

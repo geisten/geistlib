@@ -180,6 +180,52 @@ already leads once decode > llama.
 | C q4_K GEMM >6.5 TF | ⏸ M3/M4-gated research (M1 has no per-dispatch shader counters) — the only remaining path past llama prefill |
 | long-context front (8k+) | ⏸ not re-benchmarked on this branch yet — f16-KV + flash should scale better than llama's f32 path |
 
+## 5. Now vs the pre-merge wip engine — the complete diff
+
+**Recovered from wip** (same capability, different form — optional nullable
+vtbl slots on main's contract instead of wip's co-designed block ops):
+f16 KV cache (now a proper `GEIST_KV_F16` session mode, AUTO-upgraded via
+slot presence, half the KV memory) · fused q/k/v prep = norm+RoPE+KV-append
+(`attn_qkv_prep`, 2 dispatches; wip: inside `attention_query_block`) ·
+fused PLE (`ple_block`, 3 dispatches; wip: 1 block op — the historical
+proj_norm kernel measured unusable and is bypassed) · fused gate+up GeGLU
+(`ffn_gate_up`, the restored n4 kernel) · fused post-norm residual
+(`rmsnorm_add`) · device greedy argmax (`argmax_f32`, 4-byte readback) ·
+device embed/PLE lookups · batched submission · split-KV flash decode ·
+simdgroup flash prefill · strided PLE slab views · the fast f32/q4k/q6k
+GEMM kernels.
+
+**Beyond wip** (the current engine has, wip never did):
+command-buffer pipelining (llama n_cb-style — wip was strictly
+encode→commit→wait serial; its replay only saved CPU encode, pipelining
+also hides the GPU front-end stream cost, measured −1.85 ms/tok) · fused
+k/v projection pair (`linear_t_pair`; wip ran k/v separately, its fused
+qk variant lost and was opt-in) · empty-sequence commit-without-wait ·
+full dispatch-profile attribution + GEIST_SKIP_* subtractive categories ·
+`benchmark/compare_metal.sh` · m_max=128 as the metal default · device
+prefill embed + PLE-prep phases (no host map flushes mid-batch).
+
+**Deliberately NOT carried over** (measured decisions):
+decode replay record+execute (prize re-measured at <0.8 ms — superseded
+by pipelining) · packed nt4/nt8 weight layouts + prepare_weight_layout
+pack-cache (plain layout beats packed, wip's own late finding; packed
+paths remain env-gated experiments) · w4a8 (no bandwidth win on Apple) ·
+the block-op backend contract itself (unmergeable with main — the reason
+the re-port exists).
+
+**Structural differences** (the fundamentals):
+every step token-parity-gated against cpu_scalar on main's authoritative
+graph (wip: self-checksums only) · 100% additive nullable slots, CPU
+backends untouched, branch fast-forwardable onto origin/main (wip:
+permanently divergent) · f16 KV integrated beside FP32/INT8/KIVI in the
+public session enum · every new path has an env kill switch.
+
+**Remaining measured gap to wip** (cool): prefill 762 vs 1072 (1.41×),
+decode 55.2 vs 61 (1.11×). The residue is main's CPU-first graph shape —
+more ops and intermediate passes per token than the co-designed wip graph
+(~540 vs ~450 dispatches) — plus wip's decode number being measured at
+shorter context. It buys correctness, mergeability, and every CPU backend.
+
 ### Why llama is beatable (source-analysis 2026-07-04)
 - Its q4_K kernels are NOT faster (measured shape-for-shape equal, both
   ~6 TF); its decode matvecs run ~287 GB/s effective on a ~400 GB/s part
