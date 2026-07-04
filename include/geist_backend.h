@@ -320,6 +320,28 @@ struct geist_backend_vtbl {
                                        struct geist_tensor       *k_cache,
                                        struct geist_tensor       *v_cache);
 
+    /* Optional fused gemma-3n PLE block:
+     *   gate = gelu_tanh(x · gate_w^T) * ple_in
+     *   y    = res + rmsnorm(gate · proj_w^T) * norm_w
+     * x [rows, d_in], gate_w [hpl, d_in], ple_in [rows, hpl] (row stride
+     * may exceed hpl — slab views), proj_w [d_model, hpl], res/y
+     * [rows, d_model], norm_w [d_model]; weights are resolved tensors.
+     * gate_scratch [rows, hpl] and proj_scratch [rows, d_model] hold the
+     * intermediates. Backends may support only a subset (e.g. rows==1,
+     * F32 weights) — anything else returns GEIST_E_UNSUPPORTED and the
+     * arch runs the decomposed ops. nullptr = always decomposed. */
+    enum geist_status (*ple_block)(struct geist_backend      *be,
+                                   const struct geist_tensor *x,
+                                   const struct geist_tensor *gate_w,
+                                   const struct geist_tensor *ple_in,
+                                   const struct geist_tensor *proj_w,
+                                   const struct geist_tensor *res,
+                                   const struct geist_tensor *norm_w,
+                                   float                      eps,
+                                   struct geist_tensor       *gate_scratch,
+                                   struct geist_tensor       *proj_scratch,
+                                   struct geist_tensor       *y);
+
     /* Optional fused y = res + rmsnorm(x) * w — the post-norm residual
      * step. Same contract as rmsnorm followed by add; all F32 DENSE with
      * matching shapes, y may alias res or x. nullptr = arch issues

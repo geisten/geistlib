@@ -73,6 +73,33 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             t_ple_in_2d.stride[0] = (int64_t) st->ple_out;
         }
 
+        /* Fused PLE block (GPU decode fast path): gate GEMV + gelu*ple and
+         * proj GEMV + rmsnorm + residual add in two dispatches. Anything
+         * the backend doesn't support falls through to the decomposed
+         * ops below. */
+        if (v->ple_block != nullptr) {
+            struct geist_tensor t_w_post_per_1d =
+                    view_1d(L->post_per_layer_norm.buffer, st->d_model);
+            struct geist_tensor t_proj_scratch_2d =
+                    view_2d(st->sess->scratch_proj_ple, ctx->SEQ, st->d_model);
+            t0 = prof ? transformer_profile_now_ns() : 0;
+            s  = v->ple_block(be,
+                              &t_h_post_ff_2d,
+                              &L->per_layer_gate,
+                              &t_ple_in_2d,
+                              &L->per_layer_proj,
+                              &t_h_post_ff_2d,
+                              &t_w_post_per_1d,
+                              ctx->eps,
+                              &t_gate_ple_2d,
+                              &t_proj_scratch_2d,
+                              &t_h_out_2d);
+            transformer_profile_add(&g_ple_profile, PLE_GATE, t0);
+            if (s == GEIST_OK) {
+                return GEIST_OK;
+            }
+        }
+
         t0 = prof ? transformer_profile_now_ns() : 0;
         s  = linear_w_or_legacy(be,
                                 v,
@@ -88,16 +115,22 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             return s;
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
-        s  = v->gelu_tanh(be, &t_gate_ple_2d, &t_gate_ple_2d);
-        transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
-        if (s != GEIST_OK) {
-            return s;
-        }
-        t0 = prof ? transformer_profile_now_ns() : 0;
-        s  = v->mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d);
-        transformer_profile_add(&g_ple_profile, PLE_MUL, t0);
-        if (s != GEIST_OK) {
-            return s;
+        if (v->gelu_tanh_mul != nullptr &&
+            v->gelu_tanh_mul(be, &t_gate_ple_2d, &t_ple_in_2d,
+                             &t_gate_ple_2d) == GEIST_OK) {
+            transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
+        } else {
+            s = v->gelu_tanh(be, &t_gate_ple_2d, &t_gate_ple_2d);
+            transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
+            if (s != GEIST_OK) {
+                return s;
+            }
+            t0 = prof ? transformer_profile_now_ns() : 0;
+            s  = v->mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d);
+            transformer_profile_add(&g_ple_profile, PLE_MUL, t0);
+            if (s != GEIST_OK) {
+                return s;
+            }
         }
 
         struct geist_tensor t_proj_ple_2d =
