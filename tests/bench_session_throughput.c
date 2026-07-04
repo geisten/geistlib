@@ -46,8 +46,12 @@ int main(void) {
     GEIST_REQUIRE_GGUF(model_path);
 
     /* ---- Setup ---- */
+    const char *backend_name = getenv("GEIST_BENCH_BACKEND");
+    if (backend_name == nullptr || backend_name[0] == '\0') {
+        backend_name = "cpu_neon";
+    }
     struct geist_backend *be = nullptr;
-    enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    enum geist_status     s  = geist_backend_create(backend_name, nullptr, nullptr, &be);
     if (s != GEIST_OK) {
         s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
     }
@@ -66,7 +70,15 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
 
-    struct geist_session_opts opts = {.max_seq_len = 2048, .temperature = 0.0f};
+    /* Size the session window to the requested workload — positions past
+     * max_seq_len are rejected with GEIST_E_TOO_MANY_TOKENS. Keep the
+     * historical 2048 floor for the default 200/50 run. */
+    const size_t prefill_n = env_size("GEIST_BENCH_PP", 200);
+    const int    decode_n  = (int) env_size("GEIST_BENCH_TG", 50);
+    const size_t need      = prefill_n + (size_t) decode_n;
+
+    struct geist_session_opts opts = {.max_seq_len = need > 2048 ? need : 2048,
+                                      .temperature = 0.0f};
     struct geist_session     *sess = nullptr;
     s                              = geist_session_create(model, be, &opts, &sess);
     if (s != GEIST_OK) {
@@ -96,7 +108,6 @@ int main(void) {
     }
 
     /* ---- Measured: prefill (GEIST_BENCH_PP, default 200) ---- */
-    const size_t   prefill_n   = env_size("GEIST_BENCH_PP", 200);
     geist_token_t *prefill_ids = malloc(prefill_n * sizeof(geist_token_t));
     for (size_t i = 0; i < prefill_n; i++) {
         prefill_ids[i] = 2 + (geist_token_t) ((i * 37) & 0xff);
@@ -112,9 +123,8 @@ int main(void) {
     free(prefill_ids);
 
     /* ---- Measured: decode (GEIST_BENCH_TG, default 50) ---- */
-    const int     decode_n = (int) env_size("GEIST_BENCH_TG", 50);
-    geist_token_t tok      = 0;
-    t0                     = monotonic_ms();
+    geist_token_t tok = 0;
+    t0                = monotonic_ms();
     for (int i = 0; i < decode_n; i++) {
         s = geist_session_decode_step(sess, &tok);
         if (s != GEIST_OK) {

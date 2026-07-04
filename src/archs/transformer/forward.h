@@ -17,7 +17,27 @@
 #endif
 
 #include "arch_state.h"
+#include <geist_backend.h>
 #include <geist_types.h>
+
+/* Bounds guard: every KV-appending entry point (prefill text/audio,
+ * decode, verify) must call this before writing. Positions past
+ * sess->max_seq_len have no KV rows and no RoPE table entries — writing
+ * there is heap corruption on CPU and garbage/aborted forwards on GPU. */
+[[nodiscard]] static inline enum geist_status
+transformer_check_kv_room(struct transformer_arch_state *st, size_t n_new) {
+    if (st->sess->kv_len + n_new <= st->sess->max_seq_len) {
+        return GEIST_OK;
+    }
+    geist_backend_set_error(st->backend,
+                            GEIST_E_TOO_MANY_TOKENS,
+                            "transformer: kv_len %zu + %zu tokens exceeds session "
+                            "max_seq_len %zu (raise geist_session_opts.max_seq_len)",
+                            st->sess->kv_len,
+                            n_new,
+                            st->sess->max_seq_len);
+    return GEIST_E_TOO_MANY_TOKENS;
+}
 
 /* Layer loop: feed `seq` token rows through all GEIST_GEMMA4_NUM_LAYERS
  * layers. Writes into out_h_buf (residual stream). KV slot is at

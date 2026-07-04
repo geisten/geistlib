@@ -69,6 +69,26 @@ static inline struct geist_session_full *as_full(struct geist_session *s) {
     return (struct geist_session_full *) s;
 }
 
+/* The arch prefill hook is void (errors were historically swallowed and
+ * left for "the next decode_step" — which also swallowed them). Detect
+ * failure deterministically: a successful prefill of n tokens advances
+ * kv_len by exactly n. On shortfall, surface the backend's recorded
+ * error (e.g. GEIST_E_TOO_MANY_TOKENS past the session window). */
+static enum geist_status
+check_prefill_advanced(struct geist_session_full *sf, size_t kv_before, size_t n) {
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    if (ops->kv_len == nullptr || ops->kv_len(sf->model->text_decoder.arch_meta) == kv_before + n) {
+        return GEIST_OK;
+    }
+    const enum geist_status ec = geist_backend_errcode(sf->backend);
+    sf->err_code               = (ec != GEIST_OK) ? ec : GEIST_E_INVALID_STATE;
+    snprintf(sf->err_msg,
+             sizeof(sf->err_msg),
+             "prefill failed: %s",
+             geist_backend_errmsg(sf->backend));
+    return sf->err_code;
+}
+
 /* P1.2.f: bind this session's per-session arch state as the active one
  * on the model before any vtable dispatch. No-op if the architecture
  * doesn't support multi-session (arch_session is then nullptr and the
@@ -259,11 +279,14 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     /* sp_bpe yields uint32_t; bit-pattern of u32 ≡ i32 for IDs in 21-bit
      * vocab range. arch->prefill takes geist_token_t (int32_t). */
     session_attach(sf);
+    const size_t kv_before =
+            ops->kv_len != nullptr ? ops->kv_len(sf->model->text_decoder.arch_meta) : 0;
     const uint64_t t0 = monotonic_ns();
     ops->prefill(sf->model->text_decoder.arch_meta, n_ids, (const geist_token_t *) ids);
     sf->total_prefill_ns += monotonic_ns() - t0;
+    const size_t n_prefilled = n_ids;
     safe_free((void **) &ids);
-    return GEIST_OK;
+    return check_prefill_advanced(sf, kv_before, n_prefilled);
 }
 
 [[nodiscard]] enum geist_status geist_session_tokenize(struct geist_session *s,
@@ -349,10 +372,12 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
         return GEIST_E_INVALID_STATE;
     }
     session_attach(sf);
+    const size_t kv_before =
+            ops->kv_len != nullptr ? ops->kv_len(sf->model->text_decoder.arch_meta) : 0;
     const uint64_t t0 = monotonic_ns();
     ops->prefill(sf->model->text_decoder.arch_meta, n, ids);
     sf->total_prefill_ns += monotonic_ns() - t0;
-    return GEIST_OK;
+    return check_prefill_advanced(sf, kv_before, n);
 }
 
 [[nodiscard]] enum geist_status geist_session_decode_step(struct geist_session *s,
@@ -369,6 +394,18 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
     const uint64_t t0 = monotonic_ns();
     *out_token        = ops->decode_step(sf->model->text_decoder.arch_meta);
     sf->total_decode_ns += monotonic_ns() - t0;
+    if (*out_token < 0) {
+        /* -1 is the arch-level failure sentinel (no pending logits, or the
+         * forward itself failed — e.g. GEIST_E_TOO_MANY_TOKENS past the
+         * session window). Do not report GEIST_OK with a garbage token. */
+        const enum geist_status ec = geist_backend_errcode(sf->backend);
+        sf->err_code               = (ec != GEIST_OK) ? ec : GEIST_E_INVALID_STATE;
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "decode_step failed: %s",
+                 geist_backend_errmsg(sf->backend));
+        return sf->err_code;
+    }
     sf->n_tokens_decoded++;
     return GEIST_OK;
 }

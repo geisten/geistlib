@@ -199,6 +199,9 @@ struct transformer_arch_session {
     size_t                kv_len;        /* valid prefix across all caches */
     size_t                prefix_length; /* pinned prefix; reset truncates here */
     size_t                m_max;         /* prefill chunk size for this session */
+    size_t                max_seq_len;   /* KV-cache capacity in rows — the state
+                                          * max_seq_len at alloc time; forward paths
+                                          * reject writes past this */
 
     /* ---- Scratch buffers (per-forward-pass workspace).
      * 21 buffers backed by the consolidated scratch pool (P1.2.c). */
@@ -333,7 +336,8 @@ struct transformer_arch_state {
 
     /* ---- Precomputed RoPE cos/sin tables. Gemma 4 has two layer types
      * with different (rope_theta, n_rotated_dims) → two tables. Shape
-     * each: [max_seq_len, head_dim]. Immutable post-load. */
+     * each: [max_seq_len, head_dim]. Shared across sessions; rebuilt
+     * (grow-only) when session_alloc sees a larger opts.max_seq_len. */
     struct geist_buffer *rope_cos_sliding;
     struct geist_buffer *rope_sin_sliding;
     struct geist_buffer *rope_cos_full;
