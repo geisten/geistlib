@@ -241,6 +241,11 @@ struct transformer_arch_session {
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool          logits_valid;
+    /* Whether scratch_logits already carries the Gemma final-logit softcap.
+     * The greedy argmax path skips the softcap (monotonic → argmax
+     * invariant), so peek_logits applies it lazily for value consumers
+     * (scoring/perplexity). Reset per forward in finalize_logits_one_row. */
+    bool          logits_softcapped;
     geist_token_t next_token_pending;
 
     /* ---- Sampler state.

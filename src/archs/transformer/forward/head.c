@@ -65,6 +65,10 @@ static struct transformer_forward_profile g_head_profile = {
     const bool                       profile = transformer_profile_enabled(&g_head_profile);
     uint64_t                         t0      = profile ? transformer_profile_now_ns() : 0;
 
+    /* Fresh logits this forward — not yet softcapped (peek_logits applies
+     * it lazily unless the temp>0 path below does it in place). */
+    st->sess->logits_softcapped = false;
+
     /* Copy chosen row of scratch_h_b into scratch_h_a (reuse as a clean
      * [1, HIDDEN] buffer for the output head). */
     {
@@ -146,6 +150,7 @@ static struct transformer_forward_profile g_head_profile = {
             p[i] = tanhf(p[i] / c) * c;
         }
         v->buffer_unmap(st->sess->scratch_logits);
+        st->sess->logits_softcapped = true;
         transformer_profile_add(&g_head_profile, HEAD_PROFILE_SOFTCAP, t0);
     }
 
