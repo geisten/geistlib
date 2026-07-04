@@ -722,6 +722,9 @@ struct metal_state {
     void *attention_qnorm_flash_sg_f16_pipeline;
     void *attention_flash_sg_f16_function;
     void *attention_flash_sg_f16_pipeline;
+    void *attention_flash_sg8_f16_function;
+    void *attention_flash_sg8_f16_pipeline;
+    void *attn_flash_sg8_f16_library;
     /* persistent f32->f16 K/V staging for the plain flash path (main's
      * engine keeps the KV cache f32). */
     struct geist_buffer *attn_kf16_buffer;
@@ -1834,6 +1837,16 @@ static const char metal_attn_flash_sg_f16_source_b[] =
     "simdgroup_store(t,y+p.yo+q0*p.qh*hd+h*hd+c0+cc*8u,p.qh*hd);}"
     "}\n";
 
+/* 8-simdgroup / 256-thread variant of the prefill flash for head_dim
+ * up to 512: each simdgroup owns one query row and a 64-column output
+ * slice; scores reduce across 8 Sred banks. The gemma-3n full-attention
+ * layers (head_dim 512) previously fell to the scalar two-pass kernel
+ * and were 67% of pp2048 (measured 2026-07-04). */
+static const char metal_attn_flash_sg8_f16_source_a[] =
+    "#include <metal_stdlib>\nusing namespace metal;\nstruct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\nkernel void attention_flash_sg8_f16(device const float*q[[buffer(0)]],device const half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device float*y[[buffer(3)]],constant A&p[[buffer(4)]],uint2 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint sg[[simdgroup_index_in_threadgroup]],uint ln[[thread_index_in_simdgroup]]){threadgroup half Qt[4096];threadgroup float Sred[2048];threadgroup float Sf[256];threadgroup half Pt[256];threadgroup float Mt[8];threadgroup float Lt[8];threadgroup float Dg[64];threadgroup float Mn[8];uint hd=p.hd,h=tg.y,q0=tg.x*8u;uint kvh=h/(p.qh/p.kvh),kstr=p.kvh*hd;{uint r=sg,row=q0+r,base=p.qo+row*p.qh*hd+h*hd;for(uint i=ln;i<hd;i+=32u){Qt[r*hd+i]=half(q[base+i]);}}if(lid<8u){Mt[lid]=-3.402823466e+38f;Lt[lid]=0.0f;}if(lid<64u)Dg[lid]=0.0f;threadgroup_barrier(mem_flags::mem_threadgroup);uint slc=hd/8u,c0=sg*slc,nO=slc/8u;simdgroup_float8x8 O[8];for(uint i=0u;i<8u;i++)O[i]=make_filled_simdgroup_matrix<float,8>(0.0f);uint qmax=p.qpos+q0+7u;uint thi=qmax<p.kv_len?qmax:p.kv_len-1u;uint qp0=p.qpos+q0;uint tlo=(p.sw>0u&&qp0+1u>p.sw)?qp0+1u-p.sw:0u;uint span=thi+1u-tlo,nfull=span/32u,rem=span%32u;uint nit=nfull+(rem>0u?1u:0u);for(uint it=0u;it<nit;it++){uint t0=(it<nfull)?tlo+it*32u:(thi+1u>=32u?thi+1u-32u:0u);uint skipb=(it<nfull)?0u:tlo+nfull*32u;simdgroup_float8x8 S4[4];for(uint i=0u;i<4u;i++)S4[i]=make_filled_simdgroup_matrix<float,8>(0.0f);simdgroup_half8x8 mq,mk;for(uint kk=0u;kk<4u;kk++){for(uint cc=0u;cc<nO;cc++){simdgroup_load(mq,Qt+c0+cc*8u,hd);simdgroup_load(mk,kc+p.kco+(t0+kk*8u)*kstr+kvh*hd+c0+cc*8u,kstr,0,true);simdgroup_multiply_accumulate(S4[kk],mq,mk,S4[kk]);}}for(uint kk=0u;";
+static const char metal_attn_flash_sg8_f16_source_b[] =
+    "kk<4u;kk++)simdgroup_store(S4[kk],Sred+sg*256u+kk*64u,8);threadgroup_barrier(mem_flags::mem_threadgroup);for(uint e=lid;e<256u;e+=256u){uint r=e/32u,j=e%32u,t=t0+j;float v=Sred[(j/8u)*64u+r*8u+(j%8u)]+Sred[256u+(j/8u)*64u+r*8u+(j%8u)]+Sred[512u+(j/8u)*64u+r*8u+(j%8u)]+Sred[768u+(j/8u)*64u+r*8u+(j%8u)]+Sred[1024u+(j/8u)*64u+r*8u+(j%8u)]+Sred[1280u+(j/8u)*64u+r*8u+(j%8u)]+Sred[1536u+(j/8u)*64u+r*8u+(j%8u)]+Sred[1792u+(j/8u)*64u+r*8u+(j%8u)];uint qp=p.qpos+q0+r;uint slr=(p.sw>0u&&qp+1u>p.sw)?qp+1u-p.sw:0u;bool ok=t>=slr&&t<=qp&&t>=skipb;Sf[e]=ok?v:-3.402823466e+38f;}threadgroup_barrier(mem_flags::mem_threadgroup);{uint r=sg;float tm=simd_max(Sf[r*32u+ln]);if(ln==0u)Mn[r]=max(Mt[r],tm);}threadgroup_barrier(mem_flags::mem_threadgroup);for(uint e=lid;e<256u;e+=256u){uint r=e/32u;float e2=exp(Sf[e]-Mn[r]);Sf[e]=e2;Pt[e]=half(e2);}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid<8u){uint r=lid;float mn=Mn[r],corr=exp(Mt[r]-mn),ls=0.0f;for(uint j=0u;j<32u;j++){ls+=Sf[r*32u+j];}Mt[r]=mn;Lt[r]=Lt[r]*corr+ls;Dg[r*9u]=corr;}threadgroup_barrier(mem_flags::mem_threadgroup);simdgroup_float8x8 mco;simdgroup_load(mco,Dg,8);for(uint cc=0u;cc<nO;cc++)simdgroup_multiply(O[cc],mco,O[cc]);simdgroup_half8x8 mp,mv;for(uint kk=0u;kk<4u;kk++){simdgroup_load(mp,Pt+kk*8u,32);for(uint cc=0u;cc<nO;cc++){simdgroup_load(mv,vc+p.vco+(t0+kk*8u)*kstr+kvh*hd+c0+cc*8u,kstr);simdgroup_multiply_accumulate(O[cc],mp,mv,O[cc]);}}threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid<8u)Dg[lid*9u]=1.0f/Lt[lid];threadgroup_barrier(mem_flags::mem_threadgroup);simdgroup_float8x8 mfin;simdgroup_load(mfin,Dg,8);for(uint cc=0u;cc<nO;cc++){simdgroup_float8x8 t;simdgroup_multiply(t,mfin,O[cc]);simdgroup_store(t,y+p.yo+q0*p.qh*hd+h*hd+c0+cc*8u,p.qh*hd);}}\n";
+
 /* No-norm head for main's contract (the engine applies q-norm and rope as
  * separate ops): plain Q load into qv, then the shared split-KV body. */
 static const char metal_attn_dec_f16_plain_head[] =
@@ -2530,6 +2543,11 @@ static void metal_destroy_state(struct geist_backend *be,
         metal_msg_send_void0(st, st->attention_dec_f16_function, "release");
         metal_msg_send_void0(st, st->attention_dec_combine_pipeline, "release");
         metal_msg_send_void0(st, st->attention_dec_combine_function, "release");
+        metal_msg_send_void0(st, st->attention_flash_sg8_f16_pipeline,
+                             "release");
+        metal_msg_send_void0(st, st->attention_flash_sg8_f16_function,
+                             "release");
+        metal_msg_send_void0(st, st->attn_flash_sg8_f16_library, "release");
         metal_msg_send_void0(st, st->attention_qnorm_flash_sg_f16_pipeline,
                              "release");
         metal_msg_send_void0(st, st->attention_qnorm_flash_sg_f16_function,
@@ -2816,6 +2834,9 @@ static void metal_destroy_state(struct geist_backend *be,
     st->attention_qnorm_dec_f16_function = nullptr;
     st->attention_dec_combine_pipeline = nullptr;
     st->attention_dec_combine_function = nullptr;
+    st->attention_flash_sg8_f16_pipeline = nullptr;
+    st->attention_flash_sg8_f16_function = nullptr;
+    st->attn_flash_sg8_f16_library = nullptr;
     st->attention_qnorm_flash_sg_f16_pipeline = nullptr;
     st->attention_qnorm_flash_sg_f16_function = nullptr;
     st->attn_library = nullptr;
@@ -4846,6 +4867,46 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
                 &st->attention_flash_sg_f16_pipeline);
         }
     }
+    if (s == GEIST_OK) {
+        const size_t l_a = strlen(metal_attn_flash_sg8_f16_source_a);
+        const size_t l_b = strlen(metal_attn_flash_sg8_f16_source_b);
+        char *sg8_src = malloc(l_a + l_b + 1u);
+        if (sg8_src == nullptr) {
+            geist_backend_set_error(
+                be, GEIST_E_OOM,
+                "metal: sg8 flash shader source alloc failed");
+            return GEIST_E_OOM;
+        }
+        memcpy(sg8_src, metal_attn_flash_sg8_f16_source_a, l_a);
+        memcpy(sg8_src + l_a, metal_attn_flash_sg8_f16_source_b, l_b + 1u);
+        source = metal_msg_send_id_cstr(
+            st, ns_string, "stringWithUTF8String:", sg8_src);
+        free(sg8_src);
+        if (source == nullptr) {
+            geist_backend_set_error(
+                be, GEIST_E_BACKEND,
+                "metal: failed to create sg8 flash shader source");
+            return GEIST_E_BACKEND;
+        }
+        err = nullptr;
+        st->attn_flash_sg8_f16_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:",
+            source, nullptr, &err);
+        if (st->attn_flash_sg8_f16_library == nullptr) {
+            const char *msg = metal_nserror_message(st, err);
+            geist_backend_set_error(
+                be, GEIST_E_BACKEND,
+                "metal: sg8 flash shader compile failed%s%s",
+                msg != nullptr ? ": " : "",
+                msg != nullptr ? msg : "");
+            return GEIST_E_BACKEND;
+        }
+        s = metal_create_named_pipeline(
+            be, st->attn_flash_sg8_f16_library, ns_string,
+            "attention_flash_sg8_f16",
+            &st->attention_flash_sg8_f16_function,
+            &st->attention_flash_sg8_f16_pipeline);
+    }
     return s;
 }
 
@@ -5446,6 +5507,11 @@ static void metal_encode_attention_rows(
         .height = 1,
         .depth = 1,
     };
+    /* Books the SCALAR stage: this two-pass kernel is the O(kv) fallback
+     * the head_dim-512 full-attention layers take (flash gate is <=256) —
+     * it was invisible to the profiler/skips until 2026-07-04. */
+    metal_profile_add_dispatch(
+        st, METAL_PROFILE_DISPATCH_ATTENTION_QNORM_ROWS, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
@@ -6911,15 +6977,20 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         metal_msg_send_dispatch(st, enc, cgroups, cthreads);
     }
 
+    /* head_dim <= 256: 4-simdgroup kernel (128 threads). 256 < hd <= 512
+     * (gemma-3n full-attention layers): 8-simdgroup variant (256 threads),
+     * one query row + one 64-column output slice per simdgroup. */
+    const bool sg8 = head_dim > 256u;
     metal_msg_send_set_pipeline(st, enc,
-                                st->attention_flash_sg_f16_pipeline);
+                                sg8 ? st->attention_flash_sg8_f16_pipeline
+                                    : st->attention_flash_sg_f16_pipeline);
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, 0, 0);
     metal_msg_send_set_buffer(st, enc, kf16, 0, 1);
     metal_msg_send_set_buffer(st, enc, vf16, 0, 2);
     metal_msg_send_set_buffer(st, enc, out->buffer->buffer, 0, 3);
     metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
     const struct metal_size fgroups = {q_rows / 8u, q_heads, 1};
-    const struct metal_size fthreads = {128, 1, 1};
+    const struct metal_size fthreads = {sg8 ? 256u : 128u, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS,
                                fgroups);
     metal_msg_send_dispatch(st, enc, fgroups, fthreads);
@@ -8002,7 +8073,10 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
         /* fall through to the scalar kernel on failure */
     }
     if (q_rows > 1u && (q_rows % 8u) == 0u &&
-        head_dim <= 256u && (head_dim % 32u) == 0u && k_rows >= 32u &&
+        ((head_dim <= 256u && (head_dim % 32u) == 0u) ||
+         (head_dim <= 512u && (head_dim % 64u) == 0u &&
+          st->attention_flash_sg8_f16_pipeline != nullptr)) &&
+        k_rows >= 32u &&
         st->attention_flash_sg_f16_pipeline != nullptr &&
         st->kv_append_rows_f16_pipeline != nullptr &&
         !metal_env_disabled("GEIST_METAL_FLASH")) {
