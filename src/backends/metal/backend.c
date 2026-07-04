@@ -525,8 +525,6 @@ struct metal_state {
     void *elem_simd_library;
     void *attn_library;
     void *attn_f16_library;
-    void *attn_qnorm_library;
-    void *attn_qnorm_f16_library;
     void *q_norm_rope_library;
     void *k_norm_rope_append_library;
     void *v_norm_append_library;
@@ -643,10 +641,6 @@ struct metal_state {
     void *attention_rows_pipeline;
     void *attention_rows_f16_function;
     void *attention_rows_f16_pipeline;
-    void *attention_qnorm_rows_function;
-    void *attention_qnorm_rows_pipeline;
-    void *attention_qnorm_rows_f16_function;
-    void *attention_qnorm_rows_f16_pipeline;
     void *attn_qnorm_dec_f16_library;
     void *attention_qnorm_dec_f16_function;
     void *attention_qnorm_dec_f16_pipeline;
@@ -1505,23 +1499,7 @@ static const char metal_attn_f16_source[] =
     " threadgroup float qv[512];threadgroup float pt[256];threadgroup float red[256];threadgroup float mls[2];uint r=tg.x,h=tg.y,hd=p.head_dim;if(r>=p.rows||h>=p.q_heads||hd>512u){return;}uint kvh=h/(p.q_heads/p.kv_heads),qpos=p.q_position+r,qb=p.q_offset+r*p.q_heads*hd+h*hd;for(uint i=lid;i<hd;i+=256u)qv[i]=q[qb+i];uint slo=(p.sliding_window>0u&&qpos+1u>p.sliding_window)?qpos+1u-p.sliding_window:0u;uint shi=qpos<p.kv_len?qpos:p.kv_len-1u;float a0=0.0f,a1=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_barrier(mem_flags::mem_threadgroup);for(uint tb=slo;tb<=shi;tb+=256u){uint t=tb+lid;float sc=-3.402823466e+38f;if(t<=shi){float d=0.0f;for(uint i=0u;i<hd;i++)d+=qv[i]*float(kc[p.k_cache_offset+t*p.kv_heads*hd+kvh*hd+i]);sc=d;}red[lid]=sc;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]=red[lid]>red[lid+st]?red[lid]:red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float mold=mls[0],mnew=mold>red[0]?mold:red[0],corr=exp(mold-mnew);float e=t<=shi?exp(sc-mnew):0.0f;pt[lid]=e;red[lid]=e;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]+=red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float tsum=red[0];uint tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;for(uint j=0u;j<tw;j++){float pv=pt[j];uint vb=p.v_cache_offset+(tb+j)*p.kv_heads*hd+kvh*hd;if(lid<hd)a0+=pv*float(vc[vb+lid]);if(lid+256u<hd)a1+=pv*float(vc[vb+lid+256u]);}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid==0u){mls[0]=mnew;mls[1]=mls[1]*corr+tsum;}threadgroup_barrier(mem_flags::mem_threadgroup);}float inv=1.0f/mls[1];uint yb=p.y_offset+r*p.q_heads*hd+h*hd;if(lid<hd)y[yb+lid]=a0*inv;if(lid+256u<hd)y[yb+lid+256u]=a1*inv;\n"
     "}\n";
 
-static const char metal_attn_qnorm_source[] =
-    "#include <metal_stdlib>\n"
-    "using namespace metal;\n"
-    "struct NR{uint rows,heads,hd,xo,wo,co,so,xs,rs,ro;float eps;};\n"
-    "struct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\n"
-    "kernel void attention_qnorm_rows(device const float*q[[buffer(0)]],device const float*qw[[buffer(1)]],device const float*c[[buffer(2)]],device const float*s[[buffer(3)]],device const float*kc[[buffer(4)]],device const float*vc[[buffer(5)]],device float*y[[buffer(6)]],constant NR&nr[[buffer(7)]],constant A&p[[buffer(8)]],uint2 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){\n"
-    " threadgroup float red[256];threadgroup float qv[512];threadgroup float pt[256];threadgroup float mls[2];uint r=tg.x,h=tg.y;if(r>=p.rows||h>=p.qh||p.hd>512u){return;}uint base=nr.xo+r*nr.xs+h*nr.hd;float ssq=0.0f;for(uint i=lid;i<nr.hd;i+=256u){float v=q[base+i];ssq+=v*v;}red[lid]=ssq;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st){red[lid]+=red[lid+st];}threadgroup_barrier(mem_flags::mem_threadgroup);}float invn=rsqrt(red[0]/float(nr.hd)+nr.eps);uint hd2=nr.hd/2u,rr=nr.ro+r;for(uint i=lid;i<hd2;i+=256u){float x0=q[base+i]*invn*qw[nr.wo+i],x1=q[base+i+hd2]*invn*qw[nr.wo+i+hd2];float co=c[nr.co+rr*nr.rs+i],si=s[nr.so+rr*nr.rs+i];qv[i]=x0*co-x1*si;qv[i+hd2]=x0*si+x1*co;}threadgroup_barrier(mem_flags::mem_threadgroup);uint kvh=h/(p.qh/p.kvh),qp=p.qpos+r,hd=p.hd;uint slo=(p.sw>0u&&qp+1u>p.sw)?qp+1u-p.sw:0u;uint shi=qp<p.kv_len?qp:p.kv_len-1u;float a0=0.0f,a1=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_barrier(mem_flags::mem_threadgroup);for(uint tb=slo;tb<=shi;tb+=256u){uint t=tb+lid;float sc=-3.402823466e+38f;if(t<=shi){float d=0.0f;uint kb=p.kco+t*p.kvh*hd+kvh*hd;uint i=0u;for(;i+4u<=hd;i+=4u){d+=dot(*(threadgroup float4*)(qv+i),*(device const float4*)(kc+kb+i));}for(;i<hd;i++)d+=qv[i]*kc[kb+i];sc=d;}red[lid]=sc;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]=red[lid]>red[lid+st]?red[lid]:red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float mold=mls[0],mnew=mold>red[0]?mold:red[0],corr=exp(mold-mnew);float e=t<=shi?exp(sc-mnew):0.0f;pt[lid]=e;red[lid]=e;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]+=red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float tsum=red[0];uint tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;for(uint j=0u;j<tw;j++){float pv=pt[j];uint vb=p.vco+(tb+j)*p.kvh*hd+kvh*hd;if(lid<hd)a0+=pv*vc[vb+lid];if(lid+256u<hd)a1+=pv*vc[vb+lid+256u];}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid==0u){mls[0]=mnew;mls[1]=mls[1]*corr+tsum;}threadgroup_barrier(mem_flags::mem_threadgroup);}float invs=1.0f/mls[1];uint yb=p.yo+r*p.qh*hd+h*hd;if(lid<hd)y[yb+lid]=a0*invs;if(lid+256u<hd)y[yb+lid+256u]=a1*invs;\n"
-    "}\n";
 
-static const char metal_attn_qnorm_f16_source[] =
-    "#include <metal_stdlib>\n"
-    "using namespace metal;\n"
-    "struct NR{uint rows,heads,hd,xo,wo,co,so,xs,rs,ro;float eps;};\n"
-    "struct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\n"
-    "kernel void attention_qnorm_rows_f16(device const float*q[[buffer(0)]],device const float*qw[[buffer(1)]],device const float*c[[buffer(2)]],device const float*s[[buffer(3)]],device const half*kc[[buffer(4)]],device const half*vc[[buffer(5)]],device float*y[[buffer(6)]],constant NR&nr[[buffer(7)]],constant A&p[[buffer(8)]],uint2 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){\n"
-    " threadgroup float red[256];threadgroup float qv[512];threadgroup float pt[256];threadgroup float mls[2];uint r=tg.x,h=tg.y;if(r>=p.rows||h>=p.qh||p.hd>512u){return;}uint base=nr.xo+r*nr.xs+h*nr.hd;float ssq=0.0f;for(uint i=lid;i<nr.hd;i+=256u){float v=q[base+i];ssq+=v*v;}red[lid]=ssq;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st){red[lid]+=red[lid+st];}threadgroup_barrier(mem_flags::mem_threadgroup);}float invn=rsqrt(red[0]/float(nr.hd)+nr.eps);uint hd2=nr.hd/2u,rr=nr.ro+r;for(uint i=lid;i<hd2;i+=256u){float x0=q[base+i]*invn*qw[nr.wo+i],x1=q[base+i+hd2]*invn*qw[nr.wo+i+hd2];float co=c[nr.co+rr*nr.rs+i],si=s[nr.so+rr*nr.rs+i];qv[i]=x0*co-x1*si;qv[i+hd2]=x0*si+x1*co;}threadgroup_barrier(mem_flags::mem_threadgroup);uint kvh=h/(p.qh/p.kvh),qp=p.qpos+r,hd=p.hd;uint slo=(p.sw>0u&&qp+1u>p.sw)?qp+1u-p.sw:0u;uint shi=qp<p.kv_len?qp:p.kv_len-1u;float a0=0.0f,a1=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_barrier(mem_flags::mem_threadgroup);for(uint tb=slo;tb<=shi;tb+=256u){uint t=tb+lid;float sc=-3.402823466e+38f;if(t<=shi){float d=0.0f;uint kb=p.kco+t*p.kvh*hd+kvh*hd;uint i=0u;for(;i+4u<=hd;i+=4u){half4 k4=*(device const half4*)(kc+kb+i);d+=dot(*(threadgroup float4*)(qv+i),float4(k4));}for(;i<hd;i++)d+=qv[i]*float(kc[kb+i]);sc=d;}red[lid]=sc;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]=red[lid]>red[lid+st]?red[lid]:red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float mold=mls[0],mnew=mold>red[0]?mold:red[0],corr=exp(mold-mnew);float e=t<=shi?exp(sc-mnew):0.0f;pt[lid]=e;red[lid]=e;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]+=red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float tsum=red[0];uint tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;for(uint j=0u;j<tw;j++){float pv=pt[j];uint vb=p.vco+(tb+j)*p.kvh*hd+kvh*hd;if(lid<hd)a0+=pv*float(vc[vb+lid]);if(lid+256u<hd)a1+=pv*float(vc[vb+lid+256u]);}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid==0u){mls[0]=mnew;mls[1]=mls[1]*corr+tsum;}threadgroup_barrier(mem_flags::mem_threadgroup);}float invs=1.0f/mls[1];uint yb=p.yo+r*p.qh*hd+h*hd;if(lid<hd)y[yb+lid]=a0*invs;if(lid+256u<hd)y[yb+lid+256u]=a1*invs;\n"
-    "}\n";
 
 /* Decode-specialized fused qnorm+rope+attention (rows==1, f16 KV): tokens are
  * split across the 8 simdgroups with per-simdgroup online softmax kept in
@@ -2382,10 +2360,6 @@ static void metal_destroy_state(struct geist_backend *be,
         metal_msg_send_void0(st, st->attention_rows_function, "release");
         metal_msg_send_void0(st, st->attention_rows_f16_pipeline, "release");
         metal_msg_send_void0(st, st->attention_rows_f16_function, "release");
-        metal_msg_send_void0(st, st->attention_qnorm_rows_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_qnorm_rows_function, "release");
-        metal_msg_send_void0(st, st->attention_qnorm_rows_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_qnorm_rows_f16_function, "release");
         metal_msg_send_void0(st, st->attention_qnorm_dec_f16_pipeline, "release");
         metal_msg_send_void0(st, st->attention_qnorm_dec_f16_function, "release");
         metal_msg_send_void0(st, st->attention_dec_f16_pipeline, "release");
@@ -2491,8 +2465,6 @@ static void metal_destroy_state(struct geist_backend *be,
         metal_msg_send_void0(st, st->q4k_pipeline, "release");
         metal_msg_send_void0(st, st->q4k_function, "release");
         metal_msg_send_void0(st, st->attn_library, "release");
-        metal_msg_send_void0(st, st->attn_qnorm_library, "release");
-        metal_msg_send_void0(st, st->attn_qnorm_f16_library, "release");
         metal_msg_send_void0(st, st->attn_qnorm_dec_f16_library, "release");
         metal_msg_send_void0(st, st->attn_dec_combine_library, "release");
         metal_msg_send_void0(st, st->attn_flash_sg_f16_library, "release");
@@ -2628,10 +2600,6 @@ static void metal_destroy_state(struct geist_backend *be,
     st->attention_rows_function = nullptr;
     st->attention_rows_f16_pipeline = nullptr;
     st->attention_rows_f16_function = nullptr;
-    st->attention_qnorm_rows_pipeline = nullptr;
-    st->attention_qnorm_rows_function = nullptr;
-    st->attention_qnorm_rows_f16_pipeline = nullptr;
-    st->attention_qnorm_rows_f16_function = nullptr;
     st->attention_qnorm_dec_f16_pipeline = nullptr;
     st->attention_qnorm_dec_f16_function = nullptr;
     st->attention_dec_combine_pipeline = nullptr;
@@ -2646,8 +2614,6 @@ static void metal_destroy_state(struct geist_backend *be,
     st->attention_qnorm_flash_sg_f16_function = nullptr;
     st->attn_library = nullptr;
     st->attn_f16_library = nullptr;
-    st->attn_qnorm_library = nullptr;
-    st->attn_qnorm_f16_library = nullptr;
     st->attn_qnorm_dec_f16_library = nullptr;
     st->attn_dec_combine_library = nullptr;
     st->attn_flash_sg_f16_library = nullptr;
@@ -3955,9 +3921,7 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
         st->kv_append_rows_pipeline != nullptr &&
         st->kv_append_rows_f16_pipeline != nullptr &&
         st->attention_rows_pipeline != nullptr &&
-        st->attention_rows_f16_pipeline != nullptr &&
-        st->attention_qnorm_rows_pipeline != nullptr &&
-        st->attention_qnorm_rows_f16_pipeline != nullptr) {
+        st->attention_rows_f16_pipeline != nullptr) {
         return GEIST_OK;
     }
 
@@ -4197,62 +4161,6 @@ static bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
             be, st->attn_f16_library, ns_string, "attention_rows_f16",
             &st->attention_rows_f16_function,
             &st->attention_rows_f16_pipeline);
-    }
-    if (s == GEIST_OK) {
-        source = metal_msg_send_id_cstr(
-            st, ns_string, "stringWithUTF8String:", metal_attn_qnorm_source);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                be, GEIST_E_BACKEND,
-                "metal: failed to create Q-norm attention shader source");
-            return GEIST_E_BACKEND;
-        }
-        err = nullptr;
-        st->attn_qnorm_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:",
-            source, nullptr, &err);
-        if (st->attn_qnorm_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(
-                be, GEIST_E_BACKEND,
-                "metal: Q-norm attention shader compile failed%s%s",
-                msg != nullptr ? ": " : "",
-                msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(
-            be, st->attn_qnorm_library, ns_string, "attention_qnorm_rows",
-            &st->attention_qnorm_rows_function,
-            &st->attention_qnorm_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        source = metal_msg_send_id_cstr(
-            st, ns_string, "stringWithUTF8String:",
-            metal_attn_qnorm_f16_source);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                be, GEIST_E_BACKEND,
-                "metal: failed to create F16 Q-norm attention shader source");
-            return GEIST_E_BACKEND;
-        }
-        err = nullptr;
-        st->attn_qnorm_f16_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:",
-            source, nullptr, &err);
-        if (st->attn_qnorm_f16_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(
-                be, GEIST_E_BACKEND,
-                "metal: F16 Q-norm attention shader compile failed%s%s",
-                msg != nullptr ? ": " : "",
-                msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(
-            be, st->attn_qnorm_f16_library, ns_string,
-            "attention_qnorm_rows_f16",
-            &st->attention_qnorm_rows_f16_function,
-            &st->attention_qnorm_rows_f16_pipeline);
     }
     if (s == GEIST_OK) {
         const size_t dl_h = strlen(metal_attn_qnorm_dec_f16_source);
@@ -8041,7 +7949,7 @@ static void metal_linear_mN(const float *x, const struct geist_weight *w,
          * accumulator), so token parity with the CPU backends holds. The
          * inputs may be GPU-pending, so drain the batch first. */
         metal_batch_flush(st);
-        float *row = malloc(n_in * sizeof(float));
+        float *row = heap_alloc_array_aligned(float, n_in);
         if (row == nullptr) {
             memset(y, 0, m * n_out * sizeof(float));
             return;
@@ -8075,7 +7983,7 @@ static void metal_linear_mN(const float *x, const struct geist_weight *w,
                 y[i * n_out + j] = (float) acc;
             }
         }
-        free(row);
+        safe_free((void **) &row);
         metal_linear_debug_stats(x, m * n_in, y, m * n_out, w, m);
         return;
     }
