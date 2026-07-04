@@ -62,3 +62,36 @@ near-tie questions (46.2 -> 43.8). So:
   - The true gap to llama is ~10 points and is underlying forward-pass
     numerics (Q4_K dequant / accumulation / attention), now cleanly isolated
     with softcap and tokenization both controlled for.
+
+=== DISAGREEMENT ANALYSIS (200 Q, both softcapped) -> SYSTEMATIC BUG, not fp noise ===
+geist 91/200, llama 104/200. 60 disagreements: 28 geist-wrong/llama-right, 15 reverse.
+On the 28 geist-loses questions, geist is CONFIDENTLY wrong:
+  median wrong-margin 2.25 nat, 21/28 >1 nat, only 3/28 near-ties (<0.3 nat).
+  examples: nutrition geist C>D +6.13nat (llama gold -0.06), accounting D>B +7.84,
+  government A>B +5.94 -- geist 6-8 nat confidently wrong where llama is confident-right.
+Meanwhile the median gold-token logprob delta over all 200 is -0.012 nat (near-zero)
+-> BIMODAL: geist agrees closely with llama on most Q but is wildly off on ~14%.
+This is NOT fp accumulation noise (<0.1 nat); it is a SYSTEMATIC divergence hitting
+a subset of questions. Leading hypothesis: context-length / sliding-window boundary
+(5-shot MMLU prompts are 300-600 tok; gemma sliding window 512). Probe: 0-shot vs
+5-shot accuracy gap.
+
+=== ROOT CAUSE LOCALIZED: long-context bug (0-shot IDENTICAL, 5-shot diverges) ===
+0-shot (short prompts, no exemplars): geist 57/100 == llama 57/100, EXACT tie.
+5-shot (300-1200 tok prompts): geist 91/200 vs llama 104/200, and on the 28
+geist-loses questions geist is 6-8 nat CONFIDENTLY wrong (median 2.25 nat,
+21/28 >1 nat) -- not fp noise. => the divergence is triggered by CONTEXT LENGTH:
+a bug in the long-context attention / positional path, invisible at short ctx.
+Hypothesis TESTED + REJECTED by measurement: RoPE full-rotation on global layers.
+  geist uses 25% partial RoPE on the 7 global layers (n_rotated_dims=128 of 512)
+  -- this is INTENTIONAL (arch_family.c comment: "Gemma's 25% on full layers")
+  and GGUF-plausible. Forcing full 512 rotation REGRESSED 5-shot 91->82/200, so
+  128 is correct. Rejected.
+Still-open candidates (all long-context-gated):
+  - sliding-window mask boundary on the 28 local layers (window 512; only bites
+    prompts > 512 tokens);
+  - attention softmax / accumulation over many keys at long range;
+  - shared_kv_layers: GGUF says 20, geist hardcodes threshold 15 (but this would
+    be short-ctx-visible, and 0-shot is identical, so likely a different meaning).
+Next probe: bisect by prompt length (run 5-shot but truncate context at 512) or
+dump per-layer hidden for one long geist-confidently-wrong question vs llama.
