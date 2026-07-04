@@ -2315,6 +2315,7 @@ static void metal_profile_print_summary(const struct metal_state *st) {
 
 static bool metal_decode_replay_can_record(const struct metal_state *st) {
     return st != nullptr &&
+           st->decode_replay_enabled &&
            st->sequence_active &&
            st->sequence_kind == GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP &&
            !st->decode_replay_replaying &&
@@ -7856,9 +7857,12 @@ static void metal_capture_end(struct metal_state *st) {
     /* Commit even when no work was encoded: an uncommitted command buffer
      * permanently occupies one of the queue's (default 64) slots, and the
      * batched-submit region hooks legitimately close empty sequences. */
-    { static int g_seq_ended; g_seq_ended++;
-      if (getenv("GEIST_SEQ_COUNT") && (g_seq_ended % 16) == 0) fprintf(stderr, "[seqdbg] ended=%d submit=%d\n", g_seq_ended, (int) submit); }
-    if (submit) {
+    if (submit && !has_work) {
+        /* Empty sequence (e.g. the rotation right after a flush): commit
+         * to free the queue slot, but skip the ~0.4 ms wait handshake —
+         * nothing observes its completion. */
+        metal_msg_send_void0(st, cmd, "commit");
+    } else if (submit) {
         const enum metal_profile_stage wait_stage =
             metal_profile_wait_stage_for_sequence(st->sequence_kind);
         const uint64_t wait_start_ns =
@@ -8103,9 +8107,17 @@ static void metal_capture_end(struct metal_state *st) {
     const char *q6k_linear_raw = getenv("GEIST_METAL_Q6K_LINEAR_RAW");
     st->use_q6k_linear_raw =
         q6k_linear_raw != nullptr && strcmp(q6k_linear_raw, "1") == 0;
+    /* Decode replay: the execute path was deleted in cccba03; only the
+     * recording scaffolding survives. Re-measured 2026-07-04: the whole
+     * per-token non-GPU tail is ~1.2 ms (encode 0.3 + host glue), so a
+     * restored re-encode replay would buy <0.8 ms — not worth the ~500
+     * adapted lines. Default OFF so the dead recording costs nothing;
+     * the successor idea is a Metal indirect command buffer (ICB) to
+     * attack the ~6 ms GPU command-stream floor instead (setBytes is
+     * not ICB-encodable — params would need real buffers first). */
     const char *decode_replay = getenv("GEIST_METAL_DECODE_REPLAY");
     st->decode_replay_enabled =
-        decode_replay == nullptr || strcmp(decode_replay, "0") != 0;
+        decode_replay != nullptr && strcmp(decode_replay, "0") != 0;
     st->profile_enabled = metal_env_enabled("GEIST_METAL_PROFILE");
 
     enum geist_status s = metal_load_runtime(be, st);

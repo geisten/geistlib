@@ -526,9 +526,31 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
     const bool                       prof    = plepre_enabled();
     uint64_t                         t0;
 
-    /* 1+2. Dequant n PLE rows + scale by 16. */
+    /* 1+2. Dequant n PLE rows + scale by 16. Device path: per-row fused
+     * lookup+scale dispatches — no host dequant, no pipeline flush from
+     * mapping the scratch mid-batch. */
     t0 = prof ? transformer_profile_now_ns() : 0;
-    {
+    bool gather_on_device = v->embedding_lookup_scaled != nullptr;
+    if (gather_on_device) {
+        for (size_t t = 0; t < n; t++) {
+            struct geist_tensor t_row = {
+                    .buffer = st->sess->scratch_ple_lookup,
+                    .offset = t * PLE_OUT * sizeof(float),
+                    .dtype  = GEIST_DTYPE_F32,
+                    .layout = GEIST_LAYOUT_DENSE,
+                    .ndim   = 1,
+                    .shape  = {(int64_t) PLE_OUT, 0, 0, 0, 0, 0, 0, 0},
+                    .stride = {1, 0, 0, 0, 0, 0, 0, 0},
+            };
+            if (v->embedding_lookup_scaled(be, &st->ple_table, ple_ids[t],
+                                           st->config.ple_table_scale,
+                                           &t_row) != GEIST_OK) {
+                gather_on_device = false;
+                break;
+            }
+        }
+    }
+    if (!gather_on_device) {
         float *dst = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
         for (size_t t = 0; t < n; t++) {
             enum geist_status s =
@@ -559,7 +581,9 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
 
     /* 4. *= PLE_MODEL_PROJ_SCALE. */
     t0 = prof ? transformer_profile_now_ns() : 0;
-    {
+    if (v->scale_f32 == nullptr ||
+        v->scale_f32(be, &t_out_2d, st->config.ple_model_proj_scale,
+                     &t_out_2d) != GEIST_OK) {
         float *p = (float *) v->buffer_map(out_buf);
         for (size_t i = 0; i < n * PLE_OUT; i++) {
             p[i] *= st->config.ple_model_proj_scale;
@@ -582,13 +606,30 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
     /* 6. out_buf = (out_buf + ple_lookup) * PLE_INPUT_SCALE. */
     t0 = prof ? transformer_profile_now_ns() : 0;
     {
-        float *p   = (float *) v->buffer_map(out_buf);
-        float *plu = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
-        for (size_t i = 0; i < n * PLE_OUT; i++) {
-            p[i] = (p[i] + plu[i]) * st->config.ple_input_scale;
+        bool combined_on_device = false;
+        if (v->add != nullptr && v->scale_f32 != nullptr) {
+            struct geist_tensor t_plu_2d = view_2d(
+                    st->sess->scratch_ple_lookup, (int64_t) n, (int64_t) PLE_OUT);
+            /* add validates before encoding; once it succeeded out_buf is
+             * mutated and the host fallback must NOT rerun the combine. */
+            if (v->add(be, &t_out_2d, &t_plu_2d, &t_out_2d) == GEIST_OK) {
+                s = v->scale_f32(be, &t_out_2d, st->config.ple_input_scale,
+                                 &t_out_2d);
+                if (s != GEIST_OK) {
+                    return s;
+                }
+                combined_on_device = true;
+            }
         }
-        v->buffer_unmap(st->sess->scratch_ple_lookup);
-        v->buffer_unmap(out_buf);
+        if (!combined_on_device) {
+            float *p   = (float *) v->buffer_map(out_buf);
+            float *plu = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
+            for (size_t i = 0; i < n * PLE_OUT; i++) {
+                p[i] = (p[i] + plu[i]) * st->config.ple_input_scale;
+            }
+            v->buffer_unmap(st->sess->scratch_ple_lookup);
+            v->buffer_unmap(out_buf);
+        }
     }
     plepre_add(PLEPRE_COMBINE, t0);
     return GEIST_OK;
