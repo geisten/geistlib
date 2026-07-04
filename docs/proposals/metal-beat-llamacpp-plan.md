@@ -95,3 +95,60 @@ A1 → A2 → B1 (each ~1 session, parity + cool A/B after each) → B2/B3/A3
 (one session) → C-decode (replay + fused matvecs) → C-prefill (GEMM research,
 timeboxed). Every engine change stays additive (nullable vtbl slot + host
 fallback), CPU backends untouched — the pattern proven six times this session.
+
+---
+
+## 3. State 2026-07-04 s2 & the next options (fusion batch landed)
+
+Cool, M1 Max, gemma-4-E2B Q4_K_M (`benchmark/compare_metal.sh`):
+
+| | port start | **now (05bbbe5)** | wip (pre-re-port) | llama.cpp |
+|---|---|---|---|---|
+| prefill pp512 t/s | 188 | **756** | 1072 | 1548 |
+| decode tg64 t/s | 3.7 | **54.8** | 61 (84 short-ctx) | 93 |
+| total pp512+tg64 | 28.5 | **312** | — | — |
+
+**All roadmap fusion slots landed** (rmsnorm_add, f16-KV, ple_block,
+attn_qkv_prep, ffn_gate_up, device embed/PLE-prep). Decode ops/tok 945→~540.
+**The measured lesson: op-count reduction is spent** — −43% ops bought −3%
+GPU time; small ops were latency-hidden. What's left is not more fusion.
+
+### Decode: 18.2 ms/tok → wip 16.4 → llama 10.8. Measured split:
+q4k matvec **5.2** | serial command-stream floor **~6.0** | norms 1.76 |
+q6k 1.05 | f32-PLE 1.05 | attention 0.74 | host tail ~1.2 | elem/copy 0.3.
+
+1. **Indirect Command Buffer (ICB) — THE decode lever, attacks the ~6 ms
+   floor.** A zero-work decode sequence (7 dispatches) still costs 5.9 ms
+   GPU: the M1 front-end pays per *encoded* op, ~540/token. ICB pre-encodes
+   the token graph once and re-executes per token (the decode-replay idea,
+   but on-GPU instead of re-encoding on the CPU). **Prerequisite:** every
+   per-dispatch `setBytes` param must become a real buffer (ICB can't encode
+   setBytes) — a bounded but real refactor of ~15 encode helpers. Estimated
+   payoff: if it halves the floor, decode → ~15 ms (past wip, nearing llama).
+   The single highest-value remaining item; nothing else touches the floor.
+2. **Fused q/k/v projection matvec** (like ffn_gate_up): q_proj/k_proj/v_proj
+   are still 3 separate GEMVs reading `normed` 3×. One kernel, one read →
+   part of the 5.2 ms q4k / 1.9 ms-over-floor headroom. ~M1-executable,
+   small win (~0.5 ms).
+3. **q6k down_proj** (1.05 ms) already at ~6 TF structure — leave it.
+
+### Prefill: 756 → wip 1072 → llama 1548.
+4. **Extend the fusion slots to prefill (rows>1) — THE prefill lever.**
+   attn_qkv_prep, ple_block and ffn_gate_up all bail on rows>1 today, so
+   the *prefill* graph is still fully decomposed (separate rmsnorm+rope+
+   norms per chunk, 6-op PLE) — exactly wip's 340-ms-over advantage. The
+   kernels are per-row already; batching the dispatch grid (or looping rows
+   in-kernel) closes most of 756→1072. Biggest prefill win, M1-executable,
+   same additive pattern.
+5. **q4k GEMM > 6.5 TF** — the one genuine research item, the only lever to
+   pass llama on prefill. Both engines sit on the SAME ~6 TF plateau
+   (measured, isolated). Double-buffered threadgroup staging / wider NR1 with
+   register-tiled accumulators. Unproven on M1; needs an M3/M4 GPU-limiter
+   capture to target (M1 has no per-dispatch shader counters). Timeboxed.
+
+### Recommended order
+4 (prefill fusion → recover most of the wip prefill gap) → 1 (ICB → the
+decode floor, past wip decode, toward llama) → 2 (q/k/v projection) → 5
+(GEMM research, needs M3). After 4+1 geist should sit ~wip level on the
+authoritative graph; 5 is the only path to actually *beat* llama prefill,
+and end-to-end total already leads once decode > llama.
