@@ -15,6 +15,14 @@
 # from docs/proposals/metal-beat-llamacpp-plan.md — update it there, not here.
 set -euo pipefail
 
+# Self-check the llama-bench field parse (the format is easy to mis-grep —
+# the model-size "2.88 GiB" column bit us once). Run: compare_metal.sh --test
+if [ "${1:-}" = "--test" ]; then
+  _t='| m | 2.88 GiB | 4.65 B | BLAS,MTL | 8 | pp512 | 1548.25 ± 2.30 |'
+  _v=$(echo "$_t" | awk -F'|' '/pp512/{split($(NF-1),a,"±");gsub(/ /,"",a[1]);print a[1]}')
+  [ "$_v" = "1548.25" ] && { echo "parse OK"; exit 0; } || { echo "parse BROKEN: $_v"; exit 1; }
+fi
+
 MODEL="${1:-models/gemma-4-E2B-it-Q4_K_M.gguf}"
 COOLDOWN="${2:-240}"
 M_MAX="${GEIST_M_MAX:-128}"
@@ -47,8 +55,10 @@ L_PP="$REF_LLAMA_PP"; L_TG="$REF_LLAMA_TG"
 if [ "${SKIP_LLAMA:-0}" != "1" ] && command -v llama-bench >/dev/null; then
   echo "llama-bench back-to-back…" >&2
   LOUT=$(llama-bench -m "$MODEL" -p "$PP" -n "$TG" 2>/dev/null || true)
-  LP=$(echo "$LOUT" | grep "pp${PP}" | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
-  LT=$(echo "$LOUT" | grep "tg${TG}" | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
+  # tok/s sits in the second-to-last pipe field as "<val> ± <stddev>".
+  lval() { echo "$1" | awk -F'|' -v pat="$2" \
+    '$0 ~ pat { split($(NF-1),a,"±"); gsub(/ /,"",a[1]); print a[1]; exit }'; }
+  LP=$(lval "$LOUT" "pp${PP}"); LT=$(lval "$LOUT" "tg${TG}")
   [ -n "$LP" ] && L_PP="$LP"; [ -n "$LT" ] && L_TG="$LT"
 fi
 
