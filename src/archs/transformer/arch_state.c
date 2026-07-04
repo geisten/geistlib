@@ -168,6 +168,22 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
 
     struct geist_backend *be = st->backend;
 
+    /* Re-runnable: session_alloc rebuilds the tables when a session
+     * requests a larger max_seq_len than currently covered. Tables are
+     * shared across sessions; a bigger table serves smaller windows too. */
+    struct geist_buffer **old[] = {
+            &st->rope_cos_sliding,
+            &st->rope_sin_sliding,
+            &st->rope_cos_full,
+            &st->rope_sin_full,
+    };
+    for (size_t i = 0; i < sizeof old / sizeof old[0]; i++) {
+        if (*old[i] != nullptr) {
+            be->desc->vtbl->buffer_destroy(be, *old[i]);
+            *old[i] = nullptr;
+        }
+    }
+
     /* Find a representative sliding-attn and full-attn layer. Families
      * without sliding (BitNet / Llama / Mistral) fall back to layer 0's
      * params for the sliding table too — the table won't be indexed at
@@ -462,7 +478,10 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
      *   scores  : max_seq_len floats = 16 KB on default config
      *   slack   : a few KB for alignment + future small allocs
      *
-     * Round to 64 KB so the cap is comfortable for P1.2.c growth. */
+     * Round to 64 KB so the cap is comfortable for P1.2.c growth.
+     * ponytail: fixed 64 KB caps the KIVI scores path at max_seq_len
+     * 16384; frame_arena_alloc fails cleanly past that — size this
+     * from max_seq_len if KIVI needs longer windows. */
     st->sess->scratch_arena_bytes = 64u * 1024u;
     st->sess->scratch_arena_base  = heap_alloc_aligned(st->sess->scratch_arena_bytes, 64);
     if (st->sess->scratch_arena_base == nullptr) {
@@ -919,6 +938,26 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         safe_free(&p_sess);
         return nullptr;
     }
+
+    /* Honor opts->max_seq_len: sessions may request a larger window than
+     * the state's tables currently cover (state default is set at model
+     * load, typically 4096). Grow-only: bump the state max and rebuild
+     * the shared RoPE cos/sin tables BEFORE sizing this session's KV
+     * caches below. Existing sessions keep their smaller KV caches and
+     * their own sess->max_seq_len bound; the bigger shared tables serve
+     * them unchanged. On rebuild failure the state's rope tables are
+     * gone — the model is unusable, matching other fatal-OOM paths. */
+    const size_t req_seq =
+            (opts != nullptr && opts->max_seq_len > 0) ? opts->max_seq_len : state->max_seq_len;
+    if (req_seq > state->max_seq_len) {
+        state->max_seq_len = req_seq;
+        if (allocate_runtime_rope(state) != GEIST_OK) {
+            void *p_sess = sess;
+            safe_free(&p_sess);
+            return nullptr;
+        }
+    }
+    sess->max_seq_len = state->max_seq_len;
 
     /* P1.4.c: heap-allocate the 14 per-layer KV slot arrays. One
      * combined allocation, partitioned across the 14 pointer-array

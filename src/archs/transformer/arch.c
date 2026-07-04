@@ -75,8 +75,8 @@ static void op_prefill(void *arch_state, size_t n, const geist_token_t ids[stati
         return;
     }
     (void) transformer_prefill_text_batch(st, n, ids);
-    /* On failure the next decode_step will surface the error indirectly
-     * via the engine. */
+    /* On failure kv_len doesn't advance by n; the engine detects the
+     * shortfall and surfaces the backend's recorded error. */
 }
 
 /* Append `n` audio soft-tokens to the KV cache via the batched seq>1
