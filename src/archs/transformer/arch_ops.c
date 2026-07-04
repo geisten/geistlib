@@ -48,6 +48,10 @@ prefill_text_batch_inner(struct transformer_arch_state *st, size_t n, const geis
     if (n == 0) {
         return GEIST_OK;
     }
+    enum geist_status room = transformer_check_kv_room(st, n);
+    if (room != GEIST_OK) {
+        return room;
+    }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
 
@@ -176,6 +180,10 @@ enum geist_status transformer_verify_forward(struct transformer_arch_state *st,
         /* Spec K should fit in one prefill chunk. Larger requires chunking. */
         return GEIST_E_INVALID_ARG;
     }
+    enum geist_status room = transformer_check_kv_room(st, k);
+    if (room != GEIST_OK) {
+        return room;
+    }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
     const float embed_scale             = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
@@ -293,6 +301,10 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_state 
     }
     if (n == 0) {
         return GEIST_OK;
+    }
+    enum geist_status room = transformer_check_kv_room(st, n);
+    if (room != GEIST_OK) {
+        return room;
     }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
