@@ -180,6 +180,21 @@ already leads once decode > llama.
 | C q4_K GEMM >6.5 TF | ⏸ M3/M4-gated research (M1 has no per-dispatch shader counters) — the only remaining path past llama prefill |
 | long-context front (8k+) | ⏸ not re-benchmarked on this branch yet — f16-KV + flash should scale better than llama's f32 path |
 
+## Known issue: decode no-ops at context ≥ 4096 (found 2026-07-04 s5)
+
+After a prefill that fills ≥4096 positions, `decode_step` returns OK but
+runs no real forward (measured 0.54 ms/tok vs ~50 at kv~3072). Root cause:
+the RoPE cos/sin tables are built in `allocate_runtime_rope` sized to
+`st->max_seq_len`, which is set at **state create** (model-load time,
+`transformer_state_create`) from the *model-load* opts — default 4096. A
+session created later with a larger `max_seq_len` never resizes the
+state-level tables, so position ≥4096 indexes past them and the forward
+degenerates. Correct up to ~3072; the product regime (≤2048) is unaffected.
+Fix scope (separate, needs multi-session parity): size the state RoPE tables
+(and any position-indexed state buffer) to cover the max session window —
+either raise the state default or resize on session-create when a larger
+window is requested. Not Metal-specific (engine-level).
+
 ## 6. Long-context root cause FOUND (2026-07-04 s5) — MQA K/V re-streaming
 
 Cool prefill scales O(n²): ms/tok = 0.87 + 0.00088·pp (256→3072 all fit).
