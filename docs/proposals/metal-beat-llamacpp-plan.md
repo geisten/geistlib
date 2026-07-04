@@ -161,6 +161,25 @@ prefill chunks too) → 2 (q/k/v projection) → 5 (GEMM research, needs M3).
 5 is the only path to actually *beat* llama prefill; end-to-end total
 already leads once decode > llama.
 
+## 4. Execution ledger (2026-07-04 s4) — every plan item accounted for
+
+| item | status |
+|---|---|
+| A1 device greedy head/argmax | ✅ 084cec3 (restored argmax_f32 kernel, 4-byte readback) |
+| A2 device embed + PLE lookups | ✅ 9adc04a + 2bd7664 |
+| A3 fused q/k norm+rope | ✅ 9ed7d8c (attn_qkv_prep — also active for prefill, §3.4's "bails on rows>1" was wrong for this slot) |
+| A4 decode replay | ✅ re-measured (<0.8 ms prize) → retired; superseded by pipelining |
+| B1 f16 KV mode | ✅ a175cec |
+| B2 fused PLE block | ✅ d97545b (6→3 ops; ple_proj_norm_f32 kernel measured unusable — 400 µs 1-tg GEMV) |
+| B3 embed batching | ✅ 2bd7664 (device per-row lookups; literal 576→5 batching worthless — dispatches are latency-hidden, wip measurement) |
+| B4 m_max=128 metal default | ✅ 91d6923 |
+| B5 cool re-measure | ✅ compare_metal.sh, every step |
+| C fused matvec chains | ✅ ffn_gate_up (9ed7d8c) + linear_t_pair k/v (91d6923); plain layout beats packed nt8 (measured) |
+| C pipelining (replay successor) | ✅ 9a33ade (−1.85 ms/tok, sweep-tuned N=192) |
+| C gemma-3n layer-scale into down-GEMM epilogue | ❌ declined with measurement: all elementwise incl. scale_rows = 0.23 ms total, latency-hidden — no lever |
+| C q4_K GEMM >6.5 TF | ⏸ M3/M4-gated research (M1 has no per-dispatch shader counters) — the only remaining path past llama prefill |
+| long-context front (8k+) | ⏸ not re-benchmarked on this branch yet — f16-KV + flash should scale better than llama's f32 path |
+
 ### Why llama is beatable (source-analysis 2026-07-04)
 - Its q4_K kernels are NOT faster (measured shape-for-shape equal, both
   ~6 TF); its decode matvecs run ~287 GB/s effective on a ~400 GB/s part
