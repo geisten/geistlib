@@ -320,6 +320,46 @@ struct geist_backend_vtbl {
                                        struct geist_tensor       *k_cache,
                                        struct geist_tensor       *v_cache);
 
+    /* Optional fused FFN gate+up matvec with GeGLU epilogue:
+     *   y = gelu_tanh(x · gate_w^T) * (x · up_w^T)
+     * One kernel reads x once for both weights and applies the activation
+     * in the epilogue — replaces two linears + gelu_mul. x [rows, d_in],
+     * gate_w/up_w resolved weight tensors [inter, d_in] (same dtype and
+     * shape), y [rows, inter]. Backends may support only a subset (e.g.
+     * rows==1, Q4_K) — GEIST_E_UNSUPPORTED falls back to the decomposed
+     * ops. nullptr = always decomposed. */
+    enum geist_status (*ffn_gate_up)(struct geist_backend      *be,
+                                     const struct geist_tensor *x,
+                                     const struct geist_tensor *gate_w,
+                                     const struct geist_tensor *up_w,
+                                     struct geist_tensor       *y);
+
+    /* Optional fused gemma attention q/k/v prep:
+     *   q: per-head rmsnorm(q)*q_norm_w, then RoPE — in place.
+     *   k (when non-null): per-head rmsnorm*k_norm_w + RoPE, written back
+     *      AND appended at row q_position of k_cache.
+     *   v (when non-null): per-head rmsnorm*v_norm_w, written back AND
+     *      appended to v_cache.
+     * q [seq, n_q_heads, hd], k/v [seq, n_kv_heads, hd], norm weights
+     * [hd], cos/sin [seq, hd] views already positioned at q_position,
+     * caches F32 or F16 DENSE 3D views. Half-split (non-interleaved)
+     * RoPE only. Replaces up to six decomposed ops (2 norms + 2 ropes +
+     * append) with two dispatches. GEIST_E_UNSUPPORTED = arch falls back
+     * to the decomposed ops. nullptr = always decomposed. */
+    enum geist_status (*attn_qkv_prep)(struct geist_backend      *be,
+                                       struct geist_tensor       *q,
+                                       struct geist_tensor       *k,
+                                       struct geist_tensor       *v,
+                                       const struct geist_tensor *q_norm_w,
+                                       const struct geist_tensor *k_norm_w,
+                                       const struct geist_tensor *v_norm_w,
+                                       const struct geist_tensor *cos,
+                                       const struct geist_tensor *sin,
+                                       float                      eps,
+                                       size_t                     q_position,
+                                       struct geist_tensor       *k_cache,
+                                       struct geist_tensor       *v_cache);
+
     /* Optional fused gemma-3n PLE block:
      *   gate = gelu_tanh(x · gate_w^T) * ple_in
      *   y    = res + rmsnorm(gate · proj_w^T) * norm_w

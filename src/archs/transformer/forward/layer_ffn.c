@@ -146,6 +146,23 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     } else {
         struct geist_tensor t_gate_2d =
                 view_2d(st->sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
+        /* Fused gate+up matvec with GeGLU epilogue (GPU decode fast path):
+         * one kernel, one activation pass over x, gelu(gate)*up written
+         * directly. Only for the plain GeGLU activation without an AWQ
+         * down-scale; anything unsupported falls through. */
+        if (v->ffn_gate_up != nullptr &&
+            ctx->ffn_activation == GEIST_FFN_GEGLU &&
+            L->down_awq_inv_scale == nullptr) {
+            t0 = profile ? transformer_profile_now_ns() : 0;
+            s  = v->ffn_gate_up(be, &t_pre_ff_2d, &L->gate_proj,
+                                &L->up_proj, &t_gate_2d);
+            transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
+            if (s == GEIST_OK) {
+                mid_buf  = st->sess->scratch_gate;
+                t_mid_2d = t_gate_2d;
+                goto ffn_mid_done;
+            }
+        }
         t0 = profile ? transformer_profile_now_ns() : 0;
         s  = linear_w_pair_or_legacy(be,
                                      v,
@@ -216,6 +233,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         }
         mid_buf  = st->sess->scratch_gate;
         t_mid_2d = t_gate_2d;
+ffn_mid_done:;
     }
 
     if (has_ffn_sub_norm) {
