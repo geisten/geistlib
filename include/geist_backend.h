@@ -261,6 +261,161 @@ struct geist_backend_vtbl {
     int  (*parallel_region_begin)(struct geist_backend       *be,
                                   enum geist_parallel_region  region);
     void (*parallel_region_end)(struct geist_backend *be, int token);
+
+    /* Optional tensor-based linear for batched-submit (GPU) backends. The
+     * engine passes the x/weight/y views it already builds alongside the
+     * resolved weight, letting the backend encode the GEMM asynchronously
+     * instead of receiving host pointers (which force a pipeline flush per
+     * call). Return GEIST_E_UNSUPPORTED to fall back to the resolved
+     * linear_m1/linear_mN host-pointer kernels. nullptr = resolved kernels
+     * only. */
+    enum geist_status (*linear_t)(struct geist_backend      *be,
+                                  const struct geist_tensor *x,
+                                  const struct geist_weight *w,
+                                  const struct geist_tensor *t_w,
+                                  size_t                     m,
+                                  struct geist_tensor       *y);
+
+    /* Optional device-side buffer copy. Lets the arch layer move data
+     * between two buffers of the same backend without mapping host
+     * pointers, so batched-submit (GPU) backends keep the copy on-device
+     * and avoid a pipeline flush. Both buffers must belong to this
+     * backend. nullptr = arch falls back to buffer_map + memcpy. */
+    enum geist_status (*buffer_copy)(struct geist_buffer       *dst,
+                                     size_t                     dst_offset,
+                                     const struct geist_buffer *src,
+                                     size_t                     src_offset,
+                                     size_t                     n_bytes);
+
+    /* Optional y = x * scale (scalar). F32 DENSE; y may alias x. Keeps the
+     * per-layer output scaling on-device for batched-submit backends.
+     * nullptr = arch scales through a mapped host pointer. */
+    enum geist_status (*scale_f32)(struct geist_backend      *be,
+                                   const struct geist_tensor *x,
+                                   float                      scale,
+                                   struct geist_tensor       *y);
+
+    /* Optional fused out = embed_table[token_id, :] * scale. Same contract
+     * as embedding_lookup plus a scalar multiply; batched-submit backends
+     * keep the per-token embed/PLE-table lookups (and their scaling)
+     * on-device instead of dequantizing through a mapped host pointer.
+     * nullptr = arch dequantizes on the host. */
+    enum geist_status (*embedding_lookup_scaled)(
+        struct geist_backend      *be,
+        const struct geist_tensor *embed_table,
+        geist_token_t              token_id,
+        float                      scale,
+        struct geist_tensor       *out);
+
+    /* Optional fused f32→f16 KV-cache append: convert k_src/v_src (F32
+     * DENSE [seq, kv_heads, head_dim]) and store them at row q_position
+     * of the F16 caches (F16 DENSE 3D views onto the cache buffers).
+     * Presence of this slot signals that the backend's attention accepts
+     * F16 K/V — GEIST_KV_AUTO resolves to an F16 cache when it is set
+     * (env GEIST_KV_F16=0 forces FP32). nullptr = FP32 KV cache. */
+    enum geist_status (*kv_append_f16)(struct geist_backend      *be,
+                                       const struct geist_tensor *k_src,
+                                       const struct geist_tensor *v_src,
+                                       size_t                     q_position,
+                                       struct geist_tensor       *k_cache,
+                                       struct geist_tensor       *v_cache);
+
+    /* Optional device greedy argmax over a [1, n] F32 logits row. The
+     * backend flushes its pending pipeline for a 4-byte index read instead
+     * of the arch mapping the whole logits row. Tie-break = lowest index
+     * (matches geist_sampler_argmax). GEIST_E_UNSUPPORTED = arch scans on
+     * the host. nullptr = always host. */
+    enum geist_status (*argmax_f32)(struct geist_backend      *be,
+                                    const struct geist_tensor *logits,
+                                    int32_t                   *out_index);
+
+    /* Optional fused two-weight linear: y0 = x·w0^T, y1 = x·w1^T with one
+     * pass over the activations. w0/w1 must share dtype and shape (used
+     * for the k/v projections). Backends may support only a subset (e.g.
+     * seq==1, Q4_K) — GEIST_E_UNSUPPORTED falls back to two linear_t
+     * calls. nullptr = always separate. */
+    enum geist_status (*linear_t_pair)(struct geist_backend      *be,
+                                       const struct geist_tensor *x,
+                                       const struct geist_weight *w0,
+                                       const struct geist_tensor *t_w0,
+                                       const struct geist_weight *w1,
+                                       const struct geist_tensor *t_w1,
+                                       size_t                     m,
+                                       struct geist_tensor       *y0,
+                                       struct geist_tensor       *y1);
+
+    /* Optional fused FFN gate+up matvec with GeGLU epilogue:
+     *   y = gelu_tanh(x · gate_w^T) * (x · up_w^T)
+     * One kernel reads x once for both weights and applies the activation
+     * in the epilogue — replaces two linears + gelu_mul. x [rows, d_in],
+     * gate_w/up_w resolved weight tensors [inter, d_in] (same dtype and
+     * shape), y [rows, inter]. Backends may support only a subset (e.g.
+     * rows==1, Q4_K) — GEIST_E_UNSUPPORTED falls back to the decomposed
+     * ops. nullptr = always decomposed. */
+    enum geist_status (*ffn_gate_up)(struct geist_backend      *be,
+                                     const struct geist_tensor *x,
+                                     const struct geist_tensor *gate_w,
+                                     const struct geist_tensor *up_w,
+                                     struct geist_tensor       *y);
+
+    /* Optional fused gemma attention q/k/v prep:
+     *   q: per-head rmsnorm(q)*q_norm_w, then RoPE — in place.
+     *   k (when non-null): per-head rmsnorm*k_norm_w + RoPE, written back
+     *      AND appended at row q_position of k_cache.
+     *   v (when non-null): per-head rmsnorm*v_norm_w, written back AND
+     *      appended to v_cache.
+     * q [seq, n_q_heads, hd], k/v [seq, n_kv_heads, hd], norm weights
+     * [hd], cos/sin [seq, hd] views already positioned at q_position,
+     * caches F32 or F16 DENSE 3D views. Half-split (non-interleaved)
+     * RoPE only. Replaces up to six decomposed ops (2 norms + 2 ropes +
+     * append) with two dispatches. GEIST_E_UNSUPPORTED = arch falls back
+     * to the decomposed ops. nullptr = always decomposed. */
+    enum geist_status (*attn_qkv_prep)(struct geist_backend      *be,
+                                       struct geist_tensor       *q,
+                                       struct geist_tensor       *k,
+                                       struct geist_tensor       *v,
+                                       const struct geist_tensor *q_norm_w,
+                                       const struct geist_tensor *k_norm_w,
+                                       const struct geist_tensor *v_norm_w,
+                                       const struct geist_tensor *cos,
+                                       const struct geist_tensor *sin,
+                                       float                      eps,
+                                       size_t                     q_position,
+                                       struct geist_tensor       *k_cache,
+                                       struct geist_tensor       *v_cache);
+
+    /* Optional fused gemma-3n PLE block:
+     *   gate = gelu_tanh(x · gate_w^T) * ple_in
+     *   y    = res + rmsnorm(gate · proj_w^T) * norm_w
+     * x [rows, d_in], gate_w [hpl, d_in], ple_in [rows, hpl] (row stride
+     * may exceed hpl — slab views), proj_w [d_model, hpl], res/y
+     * [rows, d_model], norm_w [d_model]; weights are resolved tensors.
+     * gate_scratch [rows, hpl] and proj_scratch [rows, d_model] hold the
+     * intermediates. Backends may support only a subset (e.g. rows==1,
+     * F32 weights) — anything else returns GEIST_E_UNSUPPORTED and the
+     * arch runs the decomposed ops. nullptr = always decomposed. */
+    enum geist_status (*ple_block)(struct geist_backend      *be,
+                                   const struct geist_tensor *x,
+                                   const struct geist_tensor *gate_w,
+                                   const struct geist_tensor *ple_in,
+                                   const struct geist_tensor *proj_w,
+                                   const struct geist_tensor *res,
+                                   const struct geist_tensor *norm_w,
+                                   float                      eps,
+                                   struct geist_tensor       *gate_scratch,
+                                   struct geist_tensor       *proj_scratch,
+                                   struct geist_tensor       *y);
+
+    /* Optional fused y = res + rmsnorm(x) * w — the post-norm residual
+     * step. Same contract as rmsnorm followed by add; all F32 DENSE with
+     * matching shapes, y may alias res or x. nullptr = arch issues
+     * separate rmsnorm + add ops. */
+    enum geist_status (*rmsnorm_add)(struct geist_backend      *be,
+                                     const struct geist_tensor *res,
+                                     const struct geist_tensor *x,
+                                     const struct geist_tensor *w,
+                                     float                      eps,
+                                     struct geist_tensor       *y);
 };
 
 /* ====================================================================== */

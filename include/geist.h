@@ -187,12 +187,15 @@ struct geist_session;
 typedef int32_t geist_token_t;
 
 /* @stability EXPERIMENTAL — per-session KV-cache quantization mode.
- * AUTO = env / platform default; FP32/INT8/KIVI = explicit override. */
+ * AUTO = env / platform default; FP32/INT8/KIVI/F16 = explicit override.
+ * F16 requires a backend with a fused f32→f16 KV append (GPU backends);
+ * on other backends it silently falls back to FP32. */
 enum geist_kv_mode {
     GEIST_KV_AUTO = 0,
     GEIST_KV_FP32 = 1,
     GEIST_KV_INT8 = 2,
     GEIST_KV_KIVI = 3,
+    GEIST_KV_F16  = 4,
 };
 
 struct geist_session_opts {
