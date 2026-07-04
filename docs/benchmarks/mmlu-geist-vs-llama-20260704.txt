@@ -95,3 +95,32 @@ Still-open candidates (all long-context-gated):
     be short-ctx-visible, and 0-shot is identical, so likely a different meaning).
 Next probe: bisect by prompt length (run 5-shot but truncate context at 512) or
 dump per-layer hidden for one long geist-confidently-wrong question vs llama.
+
+=== ROOT CAUSE FOUND AND FIXED: threadgroup race in scalar attention kernels ===
+Hunt (all measured, metal vs cpu_scalar, SCOREALT probes on identical token ids):
+  1. Fresh-build cpu_scalar is fully DETERMINISTIC at all lengths — the earlier
+     "cpu nondet" was a stale-object build artifact (the known BACKENDS-switch
+     trap). The real bug was Metal-only.
+  2. Metal nondeterministic across fresh processes, but ONLY when the prefill
+     tail chunk misses the flash gate (seq%8!=0 -> scalar kernel) AND kv_len
+     spans >1 KV tile (>256). Full 128-multiples (384/512) deterministic ->
+     that's why the 24-token/90-token parity gate (kv=90, single tile) and
+     pp512 benches (flash path) never caught it.
+  3. Layer-sum probes: all full chunks bit-identical between runs; divergence
+     starts at the FIRST layer of the partial chunk. Sub-op probes: Q after
+     norm+rope identical, K-cache identical, V-cache identical -> attn.out
+     differs => the attention kernel itself.
+  4. The race (attention_rows + attention_rows_f16, online-softmax tile loop):
+     after the max tree-reduction, every thread reads red[0] to compute mnew,
+     then immediately overwrites red[lid]=e for the sum reduction WITHOUT a
+     barrier between the read and the write. Thread 0 can clobber red[0]
+     before other simdgroups have read the max -> wrong mnew -> wrong exp
+     scaling, varying with GPU scheduling.
+Fix: one threadgroup_barrier between the mnew read and the red[lid]=e write
+(both kernel variants). Post-fix: fresh-process determinism at 200/288/448/
+600/708 (was nondet at all of these); greedy parity PASS; warm decode
+11.7 ms/tok (unchanged).
+=== RESULT: MMLU 5-shot 200Q: geist 104/200 (52.0%) == llama.cpp 104/200 ===
+The entire "quality gap" was this race corrupting attention on every 5-shot
+prompt whose tail chunk hit the scalar kernel. 0-shot was never affected
+(single chunk, single KV tile). Full 500-question confirmation pending.

@@ -1458,7 +1458,7 @@ static const char metal_attn_source[] =
     "struct CP{uint so,dof,n;};\n"
     "kernel void copy_u32(device const uint*src[[buffer(0)]],device uint*dst[[buffer(1)]],constant CP&p[[buffer(2)]],uint gid[[thread_position_in_grid]]){if(gid>=p.n){return;}dst[p.dof+gid]=src[p.so+gid];}\n"
     "kernel void attention_rows(device const float*q[[buffer(0)]],device const float*kc[[buffer(1)]],device const float*vc[[buffer(2)]],device float*y[[buffer(3)]],constant Attn&p[[buffer(4)]],uint2 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){\n"
-    " threadgroup float qv[512];threadgroup float pt[256];threadgroup float red[256];threadgroup float mls[2];uint r=tg.x,h=tg.y,hd=p.head_dim;if(r>=p.rows||h>=p.q_heads||hd>512u){return;}uint kvh=h/(p.q_heads/p.kv_heads),qpos=p.q_position+r,qb=p.q_offset+r*p.q_heads*hd+h*hd;for(uint i=lid;i<hd;i+=256u)qv[i]=q[qb+i];uint slo=(p.sliding_window>0u&&qpos+1u>p.sliding_window)?qpos+1u-p.sliding_window:0u;uint shi=qpos<p.kv_len?qpos:p.kv_len-1u;float a0=0.0f,a1=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_barrier(mem_flags::mem_threadgroup);for(uint tb=slo;tb<=shi;tb+=256u){uint t=tb+lid;float sc=-3.402823466e+38f;if(t<=shi){float d=0.0f;for(uint i=0u;i<hd;i++)d+=qv[i]*kc[p.k_cache_offset+t*p.kv_heads*hd+kvh*hd+i];sc=d;}red[lid]=sc;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]=red[lid]>red[lid+st]?red[lid]:red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float mold=mls[0],mnew=mold>red[0]?mold:red[0],corr=exp(mold-mnew);float e=t<=shi?exp(sc-mnew):0.0f;pt[lid]=e;red[lid]=e;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]+=red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float tsum=red[0];uint tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;for(uint j=0u;j<tw;j++){float pv=pt[j];uint vb=p.v_cache_offset+(tb+j)*p.kv_heads*hd+kvh*hd;if(lid<hd)a0+=pv*vc[vb+lid];if(lid+256u<hd)a1+=pv*vc[vb+lid+256u];}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid==0u){mls[0]=mnew;mls[1]=mls[1]*corr+tsum;}threadgroup_barrier(mem_flags::mem_threadgroup);}float inv=1.0f/mls[1];uint yb=p.y_offset+r*p.q_heads*hd+h*hd;if(lid<hd)y[yb+lid]=a0*inv;if(lid+256u<hd)y[yb+lid+256u]=a1*inv;\n"
+    " threadgroup float qv[512];threadgroup float pt[256];threadgroup float red[256];threadgroup float mls[2];uint r=tg.x,h=tg.y,hd=p.head_dim;if(r>=p.rows||h>=p.q_heads||hd>512u){return;}uint kvh=h/(p.q_heads/p.kv_heads),qpos=p.q_position+r,qb=p.q_offset+r*p.q_heads*hd+h*hd;for(uint i=lid;i<hd;i+=256u)qv[i]=q[qb+i];uint slo=(p.sliding_window>0u&&qpos+1u>p.sliding_window)?qpos+1u-p.sliding_window:0u;uint shi=qpos<p.kv_len?qpos:p.kv_len-1u;float a0=0.0f,a1=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_barrier(mem_flags::mem_threadgroup);for(uint tb=slo;tb<=shi;tb+=256u){uint t=tb+lid;float sc=-3.402823466e+38f;if(t<=shi){float d=0.0f;for(uint i=0u;i<hd;i++)d+=qv[i]*kc[p.k_cache_offset+t*p.kv_heads*hd+kvh*hd+i];sc=d;}red[lid]=sc;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]=red[lid]>red[lid+st]?red[lid]:red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float mold=mls[0],mnew=mold>red[0]?mold:red[0],corr=exp(mold-mnew);threadgroup_barrier(mem_flags::mem_threadgroup);float e=t<=shi?exp(sc-mnew):0.0f;pt[lid]=e;red[lid]=e;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]+=red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float tsum=red[0];uint tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;for(uint j=0u;j<tw;j++){float pv=pt[j];uint vb=p.v_cache_offset+(tb+j)*p.kv_heads*hd+kvh*hd;if(lid<hd)a0+=pv*vc[vb+lid];if(lid+256u<hd)a1+=pv*vc[vb+lid+256u];}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid==0u){mls[0]=mnew;mls[1]=mls[1]*corr+tsum;}threadgroup_barrier(mem_flags::mem_threadgroup);}float inv=1.0f/mls[1];uint yb=p.y_offset+r*p.q_heads*hd+h*hd;if(lid<hd)y[yb+lid]=a0*inv;if(lid+256u<hd)y[yb+lid+256u]=a1*inv;\n"
     "}\n";
 
 static const char metal_q4k_gate_up_n4_source[] =
@@ -1496,7 +1496,7 @@ static const char metal_attn_f16_source[] =
     " if(gid>=p.elems){return;}uint r=gid/p.kv_out,c=gid-r*p.kv_out;uint dst=(p.q_position+r)*p.kv_out+c;kc[p.k_cache_offset+dst]=half(k[p.k_offset+gid]);vc[p.v_cache_offset+dst]=half(v[p.v_offset+gid]);\n"
     "}\n"
     "kernel void attention_rows_f16(device const float*q[[buffer(0)]],device const half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device float*y[[buffer(3)]],constant Attn&p[[buffer(4)]],uint2 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){\n"
-    " threadgroup float qv[512];threadgroup float pt[256];threadgroup float red[256];threadgroup float mls[2];uint r=tg.x,h=tg.y,hd=p.head_dim;if(r>=p.rows||h>=p.q_heads||hd>512u){return;}uint kvh=h/(p.q_heads/p.kv_heads),qpos=p.q_position+r,qb=p.q_offset+r*p.q_heads*hd+h*hd;for(uint i=lid;i<hd;i+=256u)qv[i]=q[qb+i];uint slo=(p.sliding_window>0u&&qpos+1u>p.sliding_window)?qpos+1u-p.sliding_window:0u;uint shi=qpos<p.kv_len?qpos:p.kv_len-1u;float a0=0.0f,a1=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_barrier(mem_flags::mem_threadgroup);for(uint tb=slo;tb<=shi;tb+=256u){uint t=tb+lid;float sc=-3.402823466e+38f;if(t<=shi){float d=0.0f;for(uint i=0u;i<hd;i++)d+=qv[i]*float(kc[p.k_cache_offset+t*p.kv_heads*hd+kvh*hd+i]);sc=d;}red[lid]=sc;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]=red[lid]>red[lid+st]?red[lid]:red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float mold=mls[0],mnew=mold>red[0]?mold:red[0],corr=exp(mold-mnew);float e=t<=shi?exp(sc-mnew):0.0f;pt[lid]=e;red[lid]=e;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]+=red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float tsum=red[0];uint tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;for(uint j=0u;j<tw;j++){float pv=pt[j];uint vb=p.v_cache_offset+(tb+j)*p.kv_heads*hd+kvh*hd;if(lid<hd)a0+=pv*float(vc[vb+lid]);if(lid+256u<hd)a1+=pv*float(vc[vb+lid+256u]);}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid==0u){mls[0]=mnew;mls[1]=mls[1]*corr+tsum;}threadgroup_barrier(mem_flags::mem_threadgroup);}float inv=1.0f/mls[1];uint yb=p.y_offset+r*p.q_heads*hd+h*hd;if(lid<hd)y[yb+lid]=a0*inv;if(lid+256u<hd)y[yb+lid+256u]=a1*inv;\n"
+    " threadgroup float qv[512];threadgroup float pt[256];threadgroup float red[256];threadgroup float mls[2];uint r=tg.x,h=tg.y,hd=p.head_dim;if(r>=p.rows||h>=p.q_heads||hd>512u){return;}uint kvh=h/(p.q_heads/p.kv_heads),qpos=p.q_position+r,qb=p.q_offset+r*p.q_heads*hd+h*hd;for(uint i=lid;i<hd;i+=256u)qv[i]=q[qb+i];uint slo=(p.sliding_window>0u&&qpos+1u>p.sliding_window)?qpos+1u-p.sliding_window:0u;uint shi=qpos<p.kv_len?qpos:p.kv_len-1u;float a0=0.0f,a1=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_barrier(mem_flags::mem_threadgroup);for(uint tb=slo;tb<=shi;tb+=256u){uint t=tb+lid;float sc=-3.402823466e+38f;if(t<=shi){float d=0.0f;for(uint i=0u;i<hd;i++)d+=qv[i]*float(kc[p.k_cache_offset+t*p.kv_heads*hd+kvh*hd+i]);sc=d;}red[lid]=sc;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]=red[lid]>red[lid+st]?red[lid]:red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float mold=mls[0],mnew=mold>red[0]?mold:red[0],corr=exp(mold-mnew);threadgroup_barrier(mem_flags::mem_threadgroup);float e=t<=shi?exp(sc-mnew):0.0f;pt[lid]=e;red[lid]=e;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st)red[lid]+=red[lid+st];threadgroup_barrier(mem_flags::mem_threadgroup);}float tsum=red[0];uint tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;for(uint j=0u;j<tw;j++){float pv=pt[j];uint vb=p.v_cache_offset+(tb+j)*p.kv_heads*hd+kvh*hd;if(lid<hd)a0+=pv*float(vc[vb+lid]);if(lid+256u<hd)a1+=pv*float(vc[vb+lid+256u]);}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid==0u){mls[0]=mnew;mls[1]=mls[1]*corr+tsum;}threadgroup_barrier(mem_flags::mem_threadgroup);}float inv=1.0f/mls[1];uint yb=p.y_offset+r*p.q_heads*hd+h*hd;if(lid<hd)y[yb+lid]=a0*inv;if(lid+256u<hd)y[yb+lid+256u]=a1*inv;\n"
     "}\n";
 
 
@@ -5505,6 +5505,7 @@ static void metal_encode_f32_matmul(struct metal_state *st,
     float scale,
     struct geist_tensor *out) {
 
+
     if (be == nullptr || be->state == nullptr ||
         embed_table == nullptr || out == nullptr) {
         return GEIST_E_INVALID_ARG;
@@ -6482,6 +6483,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     struct geist_tensor *y0,
     struct geist_tensor *y1) {
 
+
     if (be == nullptr || be->state == nullptr || x == nullptr ||
         w0 == nullptr || t_w0 == nullptr || w1 == nullptr ||
         t_w1 == nullptr || y0 == nullptr || y1 == nullptr) {
@@ -6592,6 +6594,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     const struct geist_tensor *up_w,
     struct geist_tensor *y) {
 
+
     if (be == nullptr || be->state == nullptr || x == nullptr ||
         gate_w == nullptr || up_w == nullptr || y == nullptr) {
         return GEIST_E_INVALID_ARG;
@@ -6699,6 +6702,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     size_t q_position,
     struct geist_tensor *k_cache,
     struct geist_tensor *v_cache) {
+
 
     if (be == nullptr || be->state == nullptr || q == nullptr ||
         q_norm_w == nullptr || cos == nullptr || sin == nullptr) {
