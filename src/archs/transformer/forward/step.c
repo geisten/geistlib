@@ -218,7 +218,10 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
                                                                 geist_token_t  ple_token_id,
                                                                 geist_token_t *out_token) {
 
-    enum geist_status s;
+    enum geist_status s = transformer_check_kv_room(st, 1);
+    if (s != GEIST_OK) {
+        return s;
+    }
 
     /* 1. PLE precompute for this token using the seeded h. P1.5.b:
      *    family-conditional — non-PLE families skip the precompute and

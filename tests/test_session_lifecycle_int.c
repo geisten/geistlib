@@ -113,6 +113,38 @@ int main(void) {
     }
 
     geist_session_destroy(sess);
+
+    /* Capacity guard: a prefill that can't fit the session window must be
+     * rejected up-front with TOO_MANY_TOKENS, not silently no-op'd (the
+     * pp>=4096 decode bug). The over-large prefill is rejected before any
+     * forward runs, so this is cheap. */
+    {
+        struct geist_session_opts small = {.max_seq_len = 512, .temperature = 0.0f};
+        struct geist_session     *s2    = nullptr;
+        s                               = geist_session_create(model, be, &small, &s2);
+        if (s != GEIST_OK) {
+            fprintf(stderr, "capacity: session_create failed\n");
+            fails++;
+        } else {
+            const size_t   n_big = 8192; /* > any state-level default */
+            geist_token_t *big   = malloc(n_big * sizeof(geist_token_t));
+            for (size_t i = 0; i < n_big; i++) {
+                big[i] = 2;
+            }
+            s = geist_session_prefill_tokens(s2, n_big, big);
+            free(big);
+            if (s != GEIST_E_TOO_MANY_TOKENS) {
+                fprintf(stderr,
+                        "capacity: expected GEIST_E_TOO_MANY_TOKENS, got %s\n",
+                        geist_status_to_string(s));
+                fails++;
+            } else {
+                printf("capacity: oversized prefill rejected (%s)\n", geist_session_errmsg(s2));
+            }
+            geist_session_destroy(s2);
+        }
+    }
+
     geist_model_destroy(model);
     geist_backend_destroy(be);
 
