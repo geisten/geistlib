@@ -151,17 +151,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         }
     }
 
-    t0 = profile ? transformer_profile_now_ns() : 0;
-    if (ctx->apply_gemma_attn_norms) {
-        struct geist_tensor t_q_perhead =
-                view_2d(st->sess->scratch_q, ctx->SEQ * st->n_q_heads, (int64_t) ctx->hd);
-        struct geist_tensor t_q_norm_w = view_1d(L->q_norm.buffer, (int64_t) ctx->hd);
-        s = v->rmsnorm(be, &t_q_perhead, &t_q_norm_w, ctx->eps, &t_q_perhead);
-        if (s != GEIST_OK) {
-            return s;
-        }
-    }
-
+    t0                                 = profile ? transformer_profile_now_ns() : 0;
     struct geist_buffer *cos_buf       = L->is_full ? st->rope_cos_full : st->rope_cos_sliding;
     struct geist_buffer *sin_buf       = L->is_full ? st->rope_sin_full : st->rope_sin_sliding;
     const size_t         cos_row_bytes = ctx->hd * sizeof(float);
@@ -171,16 +161,91 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
             view_2d_at(sin_buf, ctx->q_position * cos_row_bytes, ctx->SEQ, (int64_t) ctx->hd);
     struct geist_tensor t_q_3d =
             view_3d(st->sess->scratch_q, ctx->SEQ, st->n_q_heads, (int64_t) ctx->hd);
-    if (ctx->rope_interleaved) {
-        s = permute_interleaved_rope_inplace(
-                v, st->sess->scratch_q, ctx->seq, st->n_q_heads, ctx->hd);
+
+    /* Fused q/k/v prep (GPU): per-head norms + RoPE + KV-cache append in
+     * two dispatches. Covers the gemma half-split-RoPE path on the plain
+     * (f32/f16) cache; anything else falls back to the decomposed ops. */
+    bool fused_qkv_prep = false;
+    if (ctx->apply_gemma_attn_norms && !ctx->rope_interleaved && v->attn_qkv_prep != nullptr &&
+        !ctx->kv_kivi_enabled && !ctx->kv_int8_enabled) {
+        struct geist_tensor t_q_norm_w = view_1d(L->q_norm.buffer, (int64_t) ctx->hd);
+        if (ctx->compute_kv) {
+            struct geist_tensor t_k_3d =
+                    view_3d(st->sess->scratch_k, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
+            struct geist_tensor t_v_3d =
+                    view_3d(st->sess->scratch_v, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
+            struct geist_tensor t_k_norm_w = view_1d(L->k_norm.buffer, (int64_t) ctx->hd);
+            struct geist_tensor t_ones_hd =
+                    view_1d(st->sess->scratch_ones_headdim_max, (int64_t) ctx->hd);
+            const int64_t       cache_rows = (int64_t) (ctx->q_position + ctx->seq);
+            struct geist_tensor t_kc       = ctx->kv_f16_enabled ? view_3d_f16(ctx->k_cache_buf,
+                                                                               cache_rows,
+                                                                               st->n_kv_heads,
+                                                                               (int64_t) ctx->hd)
+                                                                 : view_3d(ctx->k_cache_buf,
+                                                                           cache_rows,
+                                                                           st->n_kv_heads,
+                                                                           (int64_t) ctx->hd);
+            struct geist_tensor t_vc       = ctx->kv_f16_enabled ? view_3d_f16(ctx->v_cache_buf,
+                                                                               cache_rows,
+                                                                               st->n_kv_heads,
+                                                                               (int64_t) ctx->hd)
+                                                                 : view_3d(ctx->v_cache_buf,
+                                                                           cache_rows,
+                                                                           st->n_kv_heads,
+                                                                           (int64_t) ctx->hd);
+            s                              = v->attn_qkv_prep(be,
+                                                              &t_q_3d,
+                                                              &t_k_3d,
+                                                              &t_v_3d,
+                                                              &t_q_norm_w,
+                                                              &t_k_norm_w,
+                                                              &t_ones_hd,
+                                                              &t_cos,
+                                                              &t_sin,
+                                                              ctx->eps,
+                                                              ctx->q_position,
+                                                              &t_kc,
+                                                              &t_vc);
+        } else {
+            s = v->attn_qkv_prep(be,
+                                 &t_q_3d,
+                                 nullptr,
+                                 nullptr,
+                                 &t_q_norm_w,
+                                 nullptr,
+                                 nullptr,
+                                 &t_cos,
+                                 &t_sin,
+                                 ctx->eps,
+                                 ctx->q_position,
+                                 nullptr,
+                                 nullptr);
+        }
+        fused_qkv_prep = (s == GEIST_OK);
+    }
+
+    if (!fused_qkv_prep) {
+        if (ctx->apply_gemma_attn_norms) {
+            struct geist_tensor t_q_perhead =
+                    view_2d(st->sess->scratch_q, ctx->SEQ * st->n_q_heads, (int64_t) ctx->hd);
+            struct geist_tensor t_q_norm_w = view_1d(L->q_norm.buffer, (int64_t) ctx->hd);
+            s = v->rmsnorm(be, &t_q_perhead, &t_q_norm_w, ctx->eps, &t_q_perhead);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        }
+        if (ctx->rope_interleaved) {
+            s = permute_interleaved_rope_inplace(
+                    v, st->sess->scratch_q, ctx->seq, st->n_q_heads, ctx->hd);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        }
+        s = v->rope_apply(be, &t_q_3d, &t_cos, &t_sin);
         if (s != GEIST_OK) {
             return s;
         }
-    }
-    s = v->rope_apply(be, &t_q_3d, &t_cos, &t_sin);
-    if (s != GEIST_OK) {
-        return s;
     }
 
     if (!ctx->apply_gemma_attn_norms) {
@@ -193,7 +258,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     }
     transformer_profile_add(&g_attn_profile, ATTN_PROFILE_Q_PREP, t0);
 
-    if (ctx->compute_kv) {
+    if (ctx->compute_kv && !fused_qkv_prep) {
         t0 = profile ? transformer_profile_now_ns() : 0;
         struct geist_tensor t_k_3d =
                 view_3d(st->sess->scratch_k, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
@@ -282,13 +347,17 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         struct geist_tensor t_post_attn_2d =
                 view_2d(st->sess->scratch_post_attn, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_attn = view_1d(L->post_attn_norm.buffer, st->d_model);
-        s = v->rmsnorm(be, &t_o_2d, &t_w_post_attn, ctx->eps, &t_post_attn_2d);
-        if (s != GEIST_OK) {
-            return s;
-        }
-        s = v->add(be, &t_h_in_2d, &t_post_attn_2d, &t_h_post_attn_2d);
-        if (s != GEIST_OK) {
-            return s;
+        if (v->rmsnorm_add == nullptr ||
+            v->rmsnorm_add(be, &t_h_in_2d, &t_o_2d, &t_w_post_attn, ctx->eps, &t_h_post_attn_2d) !=
+                    GEIST_OK) {
+            s = v->rmsnorm(be, &t_o_2d, &t_w_post_attn, ctx->eps, &t_post_attn_2d);
+            if (s != GEIST_OK) {
+                return s;
+            }
+            s = v->add(be, &t_h_in_2d, &t_post_attn_2d, &t_h_post_attn_2d);
+            if (s != GEIST_OK) {
+                return s;
+            }
         }
     } else {
         s = v->add(be, &t_h_in_2d, &t_o_2d, &t_h_post_attn_2d);
