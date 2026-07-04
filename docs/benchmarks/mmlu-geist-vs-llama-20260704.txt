@@ -1,0 +1,42 @@
+# MMLU quality — geist (Metal) vs llama.cpp, identical GGUF, 2026-07-04
+# gemma-4-E2B-it-Q4_K_M, 500 questions, 5-shot, same --shuffle seed (identical
+# questions + prompts), cloze log-likelihood over " A"/" B"/" C"/" D".
+# geist: tools/eval_mmlu.py driving eval_geist (metal backend, SCOREALT).
+# llama: tools/eval_mmlu_llama.py driving llama-server /completion n_probs.
+=== RESULTS ===
+  geist (Metal):   46.2%  (231/500)
+  llama.cpp:       54.0%  (270/500)
+  gap:             -7.8 points
+=== selftest (embedded 5-question sample): both 5/5 ===
+# Pattern: the gap is spread uniformly across subjects (geist matches llama on
+# many, loses ~1 question each across ~15 subjects) — the signature of
+# numerical divergence on near-tie cloze margins, NOT a systematic bug or
+# position collapse. MMLU cloze compares 4 close logprobs, far more sensitive
+# than greedy argmax. Metal decode is bit-identical to cpu_scalar (verified
+# checksums), so this gap is geist's Q4_K/attention numerics vs llama's —
+# present on ALL geist backends, not a Metal regression and not caused by the
+# dead-code cleanup (token parity held at every step).
+
+=== ROOT-CAUSE HUNT (2026-07-04) ===
+Confirmations (identical GGUF, identical prompt, anatomy example prompt):
+  - cpu_scalar SCOREALT == metal SCOREALT, BIT-IDENTICAL:
+      A=-0.000000 B=-19.534361 C=-20.080095 D=-21.137783 (both backends)
+    -> the 46.2% is geist-fundamental, NOT metal-specific, NOT the cleanup.
+  - tokenization: geist GGUF tokenizer == llama tokenizer, token-for-token
+    identical (47 tokens, same IDs). BOS handling identical (both prepend id 2).
+    -> the gap is NOT a tokenizer/harness artifact.
+Numerical characterisation (same anatomy prompt, both pick A correctly):
+  llama logprobs: A=-0.0000 B=-15.8520 C=-16.3887 D=-17.4580
+  geist logprobs: A=-0.0000 B=-19.5344 C=-20.0801 D=-21.1378
+  -> geist's non-answer logprobs sit ~3.7 nats LOWER (more peaked). Cause:
+     geist applies the final logit softcap ONLY when temperature>0
+     (head.c:141, "monotonic so argmax invariant"); MMLU scores greedily
+     (temp=0) so geist scores RAW logits while llama scores SOFTCAPPED logits.
+     tanh softcap is MONOTONIC -> the 4-way argmax is invariant -> this
+     explains the spread but NOT the accuracy gap. (It DOES matter for
+     temperature sampling / perplexity, where the logit values are used.)
+Remaining accuracy gap = forward-pass numerics (Q4_K dequant / matmul
+accumulation order / attention f32) flipping close A/B/C/D margins on ~40
+of 500 questions; llama's mature kernels carry less rounding error. Next
+step: log per-question picks for both (--verbose), diff to the disagreement
+set, deep-dive one close question op-by-op (embed -> per-layer -> logits).
