@@ -56,3 +56,4 @@ OMP_NUM_THREADS=16 GEIST_GGUF_PATH=~/models/gemma/gemma-4-E2B-it-Q4_K_M.gguf \
 | stage | pp512 | tg128 | E2E | notes |
 | :-- | --: | --: | --: | :-- |
 | Phase 2 — correctness (sync per-linear dispatch) | 27.3 | 2.2 | 8.2 | Q4_K/Q6_K/F32 linears on GPU, parity bit-exact; everything else CPU; one submit+fence per linear |
+| Phase 3a — batched sequence (1 flush/token) | 39.3 | 4.2 | 14.8 | full per-token op batch on GPU (linear_t, level-2 shaders, GPU argmax, device KV, x ring); ~590 dispatches/token in one submit. Next: matvec/attention shader efficiency + tiled prefill GEMM |

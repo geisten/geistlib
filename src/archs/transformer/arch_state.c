@@ -328,15 +328,35 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
                 return s;
             }
         } else {
+            /* Dense KV caches carry the KV_CACHE role: after the append/
+             * attention ops went on-device (P3), GPU backends keep them in
+             * VRAM — the arch only touches them through buffer_copy and
+             * v->attention, never through buffer_map. The memset skip in
+             * alloc_scratch is safe: causal attention reads only rows that
+             * a prior append wrote. */
             const size_t kv_elem_bytes = st->sess->kv_f16_enabled ? 2u : sizeof(float);
-            s = alloc_scratch(be, n_elems * kv_elem_bytes, &st->sess->k_cache[li]);
+            s = be->desc->vtbl->buffer_create(be, n_elems * kv_elem_bytes,
+                                              GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO,
+                                              &st->sess->k_cache[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, n_elems * kv_elem_bytes, &st->sess->v_cache[li]);
+            s = be->desc->vtbl->buffer_create(be, n_elems * kv_elem_bytes,
+                                              GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO,
+                                              &st->sess->v_cache[li]);
             if (s != GEIST_OK) {
                 return s;
             }
+            void *pk = be->desc->vtbl->buffer_map(st->sess->k_cache[li]);
+            if (pk != nullptr) {
+                memset(pk, 0, n_elems * kv_elem_bytes);
+            }
+            be->desc->vtbl->buffer_unmap(st->sess->k_cache[li]);
+            void *pv = be->desc->vtbl->buffer_map(st->sess->v_cache[li]);
+            if (pv != nullptr) {
+                memset(pv, 0, n_elems * kv_elem_bytes);
+            }
+            be->desc->vtbl->buffer_unmap(st->sess->v_cache[li]);
         }
     }
     st->sess->kv_len = 0;
@@ -354,7 +374,16 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
     const size_t F               = sizeof(float);
     const size_t head_dim_max    = 512;
     st->sess->scratch_pool_bytes = scratch_plan.pool_bytes;
-    st->sess->scratch_pool_base  = heap_alloc_aligned(st->sess->scratch_pool_bytes, 64);
+    /* Route the pool through the backend so GPU backends hand out memory
+     * they can bind (host-visible VkBuffer / shared MTLBuffer); CPU
+     * backends malloc. Slices still wrap via buffer_create_aliased. */
+    s = be->desc->vtbl->buffer_create(be,
+                                      st->sess->scratch_pool_bytes,
+                                      GEIST_BUFFER_SCRATCH,
+                                      GEIST_MEMORY_MAPPED,
+                                      &st->sess->scratch_pool_buf);
+    st->sess->scratch_pool_base =
+            s == GEIST_OK ? be->desc->vtbl->buffer_map(st->sess->scratch_pool_buf) : nullptr;
     if (st->sess->scratch_pool_base == nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_OOM,
@@ -362,6 +391,7 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
                                 st->sess->scratch_pool_bytes);
         return GEIST_E_OOM;
     }
+    memset(st->sess->scratch_pool_base, 0, st->sess->scratch_pool_bytes);
     st->sess->scratch_pool_used = 0;
 
     s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_normed);
@@ -663,7 +693,10 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
      * GEIST_WEIGHT_MMAP=0 forces legacy β-mode (single backend arena, full
      * copy, mmap dropped post-load — full backend ownership, no retained
      * fd). Any other value (or unset) keeps the mmap-alias default. */
-    bool mmap_alias_mode = true;
+    /* GPU backends default to the backend-arena mode: norm weights and
+     * embed tables must live inside a backend buffer to be GPU-bindable;
+     * mmap pages are not (every touching op would flush + run on CPU). */
+    bool mmap_alias_mode = strcmp(be->desc->name, "vulkan") != 0;
     {
         const char *env = getenv("GEIST_WEIGHT_MMAP");
         if (env != nullptr && env[0] != '\0') {
@@ -681,7 +714,12 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
             transformer_state_destroy(st);
             return cs;
         }
-        st->weight_arena = heap_alloc_aligned(cap, 64);
+        /* Arena through the backend (see scratch pool): GPU backends can
+         * then bind norm weights / embed tables that live inside it. */
+        enum geist_status as = be->desc->vtbl->buffer_create(
+                be, cap, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_MAPPED, &st->weight_arena_buf);
+        st->weight_arena =
+                as == GEIST_OK ? be->desc->vtbl->buffer_map(st->weight_arena_buf) : nullptr;
         if (st->weight_arena == nullptr) {
             geist_backend_set_error(
                     be, GEIST_E_OOM, "transformer: weight arena alloc failed (%zu bytes)", cap);
@@ -872,7 +910,13 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
      * were GEIST_MEMORY_ALIASED wrappers around slices of this arena
      * — their buffer_destroy already ran above and skipped the free,
      * so the underlying bytes are reachable here exactly. */
-    if (st->weight_arena != nullptr) {
+    if (st->weight_arena_buf != nullptr) {
+        st->backend->desc->vtbl->buffer_destroy(st->backend, st->weight_arena_buf);
+        st->weight_arena_buf      = nullptr;
+        st->weight_arena          = nullptr;
+        st->weight_arena_capacity = 0;
+        st->weight_arena_used     = 0;
+    } else if (st->weight_arena != nullptr) {
         safe_free(&st->weight_arena);
         st->weight_arena_capacity = 0;
         st->weight_arena_used     = 0;
@@ -890,7 +934,8 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
 
 /* ---- Multi-session API (P1.2.f) --------------------------------------- */
 
-[[nodiscard]] static enum geist_kv_mode resolve_kv_mode(const struct geist_session_opts *opts) {
+[[nodiscard]] static enum geist_kv_mode resolve_kv_mode(const struct geist_backend      *be,
+                                                        const struct geist_session_opts *opts) {
     enum geist_kv_mode m = (opts != nullptr) ? opts->kv_mode : GEIST_KV_AUTO;
     if (m != GEIST_KV_AUTO) {
         return m;
@@ -906,6 +951,12 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     }
     if (env_int8 != nullptr) {
         return (env_int8[0] == '1') ? GEIST_KV_INT8 : GEIST_KV_FP32;
+    }
+    /* Batched-submit GPU backends keep dense KV on-device (buffer_copy
+     * append + v->attention); the INT8 cache would force a host round-trip
+     * per layer. */
+    if (be != nullptr && strcmp(be->desc->name, "vulkan") == 0) {
+        return GEIST_KV_FP32;
     }
 #if defined(__APPLE__)
     return GEIST_KV_FP32;
@@ -1003,8 +1054,8 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     sess->k_residual    = kv_block + 12 * n_layers;
     sess->v_residual    = kv_block + 13 * n_layers;
 
-    /* KV-mode resolution: opts override > env > platform default. */
-    const enum geist_kv_mode mode = resolve_kv_mode(opts);
+    /* KV-mode resolution: opts override > env > backend/platform default. */
+    const enum geist_kv_mode mode = resolve_kv_mode(be, opts);
     sess->kv_kivi_enabled         = (mode == GEIST_KV_KIVI);
     sess->kv_int8_enabled         = (mode == GEIST_KV_INT8);
     /* Issue #61: packed 4-bit KV rides the INT8 storage path (buffer alloc +
@@ -1180,8 +1231,14 @@ void transformer_session_free(struct transformer_arch_state   *state,
         sess->scratch_arena_bytes = 0;
         sess->scratch_arena       = (struct frame_arena) {0};
     }
-    /* Scratch pool backing store. */
-    if (sess->scratch_pool_base != nullptr) {
+    /* Scratch pool backing store — a backend buffer since P3. */
+    if (sess->scratch_pool_buf != nullptr) {
+        be->desc->vtbl->buffer_destroy(be, sess->scratch_pool_buf);
+        sess->scratch_pool_buf   = nullptr;
+        sess->scratch_pool_base  = nullptr;
+        sess->scratch_pool_bytes = 0;
+        sess->scratch_pool_used  = 0;
+    } else if (sess->scratch_pool_base != nullptr) {
         safe_free(&sess->scratch_pool_base);
         sess->scratch_pool_bytes = 0;
         sess->scratch_pool_used  = 0;

@@ -1,0 +1,138 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Q { float q[]; };
+layout(set = 0, binding = 1) readonly buffer K { float k[]; };
+layout(set = 0, binding = 2) readonly buffer V { float v[]; };
+layout(set = 0, binding = 3) writeonly buffer Out { float out_v[]; };
+
+layout(push_constant) uniform Push {
+    uint n_q;
+    uint n_kv;
+    uint n_q_heads;
+    uint n_kv_heads;
+    uint head_dim;
+    uint q_offset_abs;
+    uint sliding_window;
+    uint q_offset;
+    uint k_offset;
+    uint v_offset;
+    uint out_offset;
+} pc;
+
+shared float partial[256];
+shared float max_score_shared;
+shared float denom_shared;
+shared float weight_shared;
+
+float dot_qk(uint q_pos, uint q_head, uint kv_pos, uint kv_head) {
+    uint q_base = pc.q_offset +
+        (q_pos * pc.n_q_heads + q_head) * pc.head_dim;
+    uint k_base = pc.k_offset +
+        (kv_pos * pc.n_kv_heads + kv_head) * pc.head_dim;
+    float sum = 0.0;
+    for (uint i = 0; i < pc.head_dim; i++) {
+        sum += q[q_base + i] * k[k_base + i];
+    }
+    return sum;
+}
+
+void main() {
+    uint q_pos = gl_WorkGroupID.x;
+    uint q_head = gl_WorkGroupID.y;
+    uint lid = gl_LocalInvocationID.x;
+    if (q_pos >= pc.n_q || q_head >= pc.n_q_heads ||
+        pc.n_kv == 0 || pc.head_dim == 0 || pc.head_dim > 512) {
+        return;
+    }
+
+    uint kv_group = pc.n_q_heads / pc.n_kv_heads;
+    uint kv_head = q_head / kv_group;
+    uint q_abs = pc.q_offset_abs + q_pos;
+    uint s_lo = 0;
+    if (pc.sliding_window > 0 && q_abs + 1 > pc.sliding_window) {
+        s_lo = q_abs + 1 - pc.sliding_window;
+    }
+    uint s_hi = q_abs;
+    if (s_hi >= pc.n_kv) {
+        s_hi = pc.n_kv - 1;
+    }
+
+    if (s_lo > s_hi) {
+        if (lid < pc.head_dim) {
+            uint out_base = pc.out_offset +
+                (q_pos * pc.n_q_heads + q_head) * pc.head_dim;
+            out_v[out_base + lid] = 0.0;
+        }
+        if (pc.head_dim > 256 && lid + 256 < pc.head_dim) {
+            uint out_base = pc.out_offset +
+                (q_pos * pc.n_q_heads + q_head) * pc.head_dim;
+            out_v[out_base + lid + 256] = 0.0;
+        }
+        return;
+    }
+
+    float local_max = uintBitsToFloat(0xff800000u);
+    for (uint s = s_lo + lid; s <= s_hi; s += 256) {
+        float score = dot_qk(q_pos, q_head, s, kv_head);
+        if (score > local_max) {
+            local_max = score;
+        }
+    }
+    partial[lid] = local_max;
+    barrier();
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lid < stride && partial[lid + stride] > partial[lid]) {
+            partial[lid] = partial[lid + stride];
+        }
+        barrier();
+    }
+    if (lid == 0) {
+        max_score_shared = partial[0];
+    }
+    barrier();
+
+    float local_sum = 0.0;
+    for (uint s = s_lo + lid; s <= s_hi; s += 256) {
+        local_sum += exp(dot_qk(q_pos, q_head, s, kv_head) -
+                         max_score_shared);
+    }
+    partial[lid] = local_sum;
+    barrier();
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lid < stride) {
+            partial[lid] += partial[lid + stride];
+        }
+        barrier();
+    }
+    if (lid == 0) {
+        denom_shared = partial[0];
+    }
+    barrier();
+
+    uint chunks = (pc.head_dim + 255u) / 256u;
+    for (uint chunk = 0; chunk < chunks; chunk++) {
+        uint dim = chunk * 256u + lid;
+        bool active_dim = dim < pc.head_dim;
+        float acc = 0.0;
+        for (uint s = s_lo; s <= s_hi; s++) {
+            if (lid == 0) {
+                weight_shared = exp(dot_qk(q_pos, q_head, s, kv_head) -
+                                    max_score_shared) / denom_shared;
+            }
+            barrier();
+            if (active_dim) {
+                uint v_base = pc.v_offset +
+                    (s * pc.n_kv_heads + kv_head) * pc.head_dim;
+                acc += weight_shared * v[v_base + dim];
+            }
+            barrier();
+        }
+        if (active_dim) {
+            uint out_base = pc.out_offset +
+                (q_pos * pc.n_q_heads + q_head) * pc.head_dim;
+            out_v[out_base + dim] = acc;
+        }
+    }
+}
