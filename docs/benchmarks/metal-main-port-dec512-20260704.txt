@@ -1,0 +1,17 @@
+# geist Metal (main contract) dec512 flash — cool benchmark 2026-07-04 (session 6b)
+# lever: attention_dec512_f16 (split-KV decode for the head_dim-512 full-attention
+# layers; previously the invisible scalar O(kv) kernel, every token).
+# gate: token parity with cpu_scalar (24/24 long prompt; kv~850 generation sane)
+# tool: benchmark/compare_metal.sh (240s cooldown, llama-bench back-to-back)
+=== COOL geist metal pp512/tg64 ===
+  prefill pp512:  987.4 tok/s
+  decode  tg64:    81.2 tok/s   (day start: 50.8 — +60%)
+  total (pp+tg):  440.9 tok/s   (day start: 294 — +50%)
+=== llama-bench back-to-back (same run) ===
+  pp512: 1542.42 tok/s
+  tg64:    91.30 tok/s
+=== gaps ===
+  prefill 1.56x | decode 1.12x | vs wip(1072/61): 1.09x / 0.75x (wip decode PASSED by 33%)
+=== decode long-context (warm) ===
+  tg64 @kv~516:  17.8 -> 12.33 ms/tok | tg64 @kv~2100: 36.99 -> 13.64 ms/tok (27 -> 73 t/s)
+DONE-COOL-DEC512

@@ -66,6 +66,7 @@ enum transformer_attention_kind {
 struct transformer_session_exec_plan {
     bool                            kv_int8_enabled;
     bool                            kv_kivi_enabled;
+    bool                            kv_f16_enabled;
     enum transformer_kv_append_kind kv_append_kind;
     enum transformer_attention_kind attention_kind;
 };

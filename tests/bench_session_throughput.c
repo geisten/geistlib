@@ -71,11 +71,11 @@ int main(void) {
     }
 
     /* Size the session window to the requested workload — positions past
-     * max_seq_len are rejected with GEIST_E_TOO_MANY_TOKENS. Keep the
-     * historical 2048 floor for the default 200/50 run. */
+     * max_seq_len are rejected with GEIST_E_TOO_MANY_TOKENS. The +64 covers
+     * the warm-up prefill; 2048 stays the floor for the default 200/50 run. */
     const size_t prefill_n = env_size("GEIST_BENCH_PP", 200);
     const int    decode_n  = (int) env_size("GEIST_BENCH_TG", 50);
-    const size_t need      = prefill_n + (size_t) decode_n;
+    const size_t need      = prefill_n + (size_t) decode_n + 64;
 
     struct geist_session_opts opts = {.max_seq_len = need > 2048 ? need : 2048,
                                       .temperature = 0.0f};

@@ -60,6 +60,7 @@ void transformer_session_exec_plan_build(struct transformer_arch_session *sess) 
     sess->exec_plan = (struct transformer_session_exec_plan) {
             .kv_int8_enabled = sess->kv_int8_enabled,
             .kv_kivi_enabled = sess->kv_kivi_enabled,
+            .kv_f16_enabled  = sess->kv_f16_enabled,
             .kv_append_kind  = TRANSFORMER_KV_APPEND_FP32,
             .attention_kind  = TRANSFORMER_ATTENTION_FP32,
     };

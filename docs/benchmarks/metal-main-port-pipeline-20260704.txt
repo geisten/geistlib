@@ -1,0 +1,17 @@
+# geist Metal (main contract) strategy batch — cool benchmark 2026-07-04 (session 4)
+# levers this batch: command-buffer pipelining (llama n_cb-style, GEIST_METAL_PIPELINE=192),
+# fused k/v projection pair matvec, m_max=128 metal default, device greedy argmax (plan A1).
+# gate: token parity with cpu_scalar (24/24) after every step
+# tool: benchmark/compare_metal.sh (240s cooldown, llama-bench back-to-back)
+=== COOL geist metal pp512/tg64 ===
+  prefill pp512:  762.3 tok/s
+  decode  tg64:    55.2 tok/s
+  total (pp+tg):  314.5 tok/s
+=== llama-bench back-to-back (same run) ===
+  pp512: 1551.43 tok/s
+  tg64:    92.68 tok/s
+=== gaps ===
+  prefill 2.04x | decode 1.68x | vs wip(1072/61): 1.41x / 1.11x
+# pipelining sweep (warm, same-state): off 19.42 ms/tok -> N=128 17.57 / N=192 17.65
+# -> default 192 (~3 buffers/token). Decode day-trajectory (cool): 50.8 -> 54.0 -> 54.8 -> 55.2.
+DONE-COOL-STRATEGY

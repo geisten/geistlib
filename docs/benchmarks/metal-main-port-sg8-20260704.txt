@@ -1,0 +1,18 @@
+# geist Metal (main contract) sg8 flash — cool benchmark 2026-07-04 (session 6)
+# lever: attention_flash_sg8_f16 for the 7 head_dim-512 full-attention layers
+# (previously invisible scalar two-pass kernel: 36% of pp512, 67% of pp2048).
+# gate: token parity with cpu_scalar (24/24 long prompt + short prompt)
+# tool: benchmark/compare_metal.sh (240s cooldown, llama-bench back-to-back)
+=== COOL geist metal pp512/tg64 ===
+  prefill pp512:  997.7 tok/s   (day start: 735 / pre-sg8: 762)
+  decode  tg64:    57.1 tok/s   (day start: 50.8)
+  total (pp+tg):  352.5 tok/s   (day start: 294)
+=== llama-bench back-to-back (same run) ===
+  pp512: 1547.86 tok/s
+  tg64:    93.20 tok/s
+=== gaps ===
+  prefill 1.55x (was 2.04x) | decode 1.63x | vs wip(1072/61): 1.07x / 1.07x
+=== long-context scaling (warm ms/tok, before -> after sg8) ===
+  pp512  1.35 -> 1.00 | pp1024 1.78 -> 1.34 | pp2048 2.61 -> 1.73 | pp3072 3.58 -> 1.90
+  slope 0.00088 -> 0.00025 ms/tok/token (3.5x flatter)
+DONE-COOL-SG8

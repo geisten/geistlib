@@ -65,15 +65,27 @@ static struct transformer_forward_profile g_head_profile = {
     const bool                       profile = transformer_profile_enabled(&g_head_profile);
     uint64_t                         t0      = profile ? transformer_profile_now_ns() : 0;
 
+    /* Fresh logits this forward — not yet softcapped (peek_logits applies
+     * it lazily unless the temp>0 path below does it in place). */
+    st->sess->logits_softcapped = false;
+
     /* Copy chosen row of scratch_h_b into scratch_h_a (reuse as a clean
      * [1, HIDDEN] buffer for the output head). */
     {
-        const size_t   bytes = st->d_model * sizeof(float);
-        const uint8_t *src   = (const uint8_t *) v->buffer_map(st->sess->scratch_h_b);
-        uint8_t       *dst   = (uint8_t *) v->buffer_map(st->sess->scratch_h_a);
-        memcpy(dst, src + row_idx * bytes, bytes);
-        v->buffer_unmap(st->sess->scratch_h_b);
-        v->buffer_unmap(st->sess->scratch_h_a);
+        const size_t      bytes = st->d_model * sizeof(float);
+        enum geist_status cs    = GEIST_E_UNSUPPORTED;
+        if (v->buffer_copy != nullptr) {
+            /* device copy keeps batched GPU backends from flushing */
+            cs = v->buffer_copy(
+                    st->sess->scratch_h_a, 0, st->sess->scratch_h_b, row_idx * bytes, bytes);
+        }
+        if (cs != GEIST_OK) {
+            const uint8_t *src = (const uint8_t *) v->buffer_map(st->sess->scratch_h_b);
+            uint8_t       *dst = (uint8_t *) v->buffer_map(st->sess->scratch_h_a);
+            memcpy(dst, src + row_idx * bytes, bytes);
+            v->buffer_unmap(st->sess->scratch_h_b);
+            v->buffer_unmap(st->sess->scratch_h_a);
+        }
     }
     transformer_profile_add(&g_head_profile, HEAD_PROFILE_COPY, t0);
 
@@ -112,6 +124,19 @@ static struct transformer_forward_profile g_head_profile = {
         return s;
     }
 
+    /* Greedy fast path: device argmax reads back a 4-byte index instead
+     * of mapping the 1 MB logits row (softcap skipped — tanh monotonic). */
+    if (st->sess->temperature == 0.0f && v->argmax_f32 != nullptr) {
+        t0          = profile ? transformer_profile_now_ns() : 0;
+        int32_t idx = -1;
+        if (v->argmax_f32(be, &t_logits_2d, &idx) == GEIST_OK && idx >= 0 &&
+            (size_t) idx < (size_t) st->vocab_size) {
+            *out_token = (geist_token_t) idx;
+            transformer_profile_add(&g_head_profile, HEAD_PROFILE_SAMPLE, t0);
+            return GEIST_OK;
+        }
+    }
+
     /* Softcap. P1.5: family-conditional. H1: skip in greedy mode — tanh is
      * monotonic so argmax is identical with or without softcap. Saves
      * ~262 144 × tanhf calls per token (~5% of decode on Gemma 4). */
@@ -124,6 +149,7 @@ static struct transformer_forward_profile g_head_profile = {
             p[i] = tanhf(p[i] / c) * c;
         }
         v->buffer_unmap(st->sess->scratch_logits);
+        st->sess->logits_softcapped = true;
         transformer_profile_add(&g_head_profile, HEAD_PROFILE_SOFTCAP, t0);
     }
 

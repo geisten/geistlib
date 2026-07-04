@@ -1,0 +1,10 @@
+# geist Metal (main contract) flash-attention — cool benchmark 2026-07-03
+# gate: token parity with cpu_scalar (24/24, long-prompt harness covering flash chunks)
+=== COOL geist metal (flash) pp512/tg64, GEIST_M_MAX=128 ===
+  prefill (512 tok):     700.7 ms  =   1.37 ms/tok  =   730.7 tok/s
+  decode  (64 tok):     2001.0 ms  =  31.27 ms/tok  =    32.0 tok/s
+  total   (576 tok):    2701.7 ms  =   4.69 ms/tok  =   213.2 tok/s  (pp512+tg64, user-facing)
+=== llama-bench back-to-back ===
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |           pp512 |       1545.97 ± 5.13 |
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |            tg64 |         93.96 ± 0.15 |
+COOLDONE

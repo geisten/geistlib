@@ -1,0 +1,17 @@
+# geist Metal (main contract) rmsnorm_add + native f16 KV — cool benchmark 2026-07-04
+# gate: token parity with cpu_scalar (24/24, long prompt → split-KV decode path;
+#       short-prompt f16-vs-f32 identical)
+=== COOL geist metal (rmsnorm_add + f16 KV) pp512/tg64, GEIST_M_MAX=128, 240s cooldown ===
+  prefill (512 tok):     688.8 ms  =   1.35 ms/tok  =   743.3 tok/s
+  decode  (64 tok):     1185.7 ms  =  18.53 ms/tok  =    54.0 tok/s
+  total   (576 tok):    1874.5 ms  =   3.25 ms/tok  =   307.3 tok/s  (pp512+tg64, user-facing)
+=== llama-bench back-to-back (same session, right after geist) ===
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |           pp512 |       1542.98 ± 2.68 |
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |            tg64 |         76.93 ± 1.66 |
+=== llama-bench re-check (fresh 240s cooldown, llama only) ===
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |           pp512 |       1536.71 ± 4.74 |
+| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | BLAS,MTL   |       8 |            tg64 |         86.06 ± 6.85 |
+# llama tg64 swings 77-93 across cool runs (known; pp512 is stable ~1540).
+# README keeps llama's best stable cool tg64 (93.1, 2026-07-04 earlier run) as the
+# baseline — conservative for geist's relative numbers.
+DONE-COOL-AB

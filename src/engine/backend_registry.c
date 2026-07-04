@@ -30,6 +30,9 @@ extern const struct geist_backend_descriptor geist_backend_cpu_x86;
 #if defined(GEIST_BACKEND_CPU_SCALAR) && GEIST_BACKEND_CPU_SCALAR
 extern const struct geist_backend_descriptor geist_backend_cpu_scalar;
 #endif
+#if defined(GEIST_BACKEND_METAL) && GEIST_BACKEND_METAL
+extern const struct geist_backend_descriptor geist_backend_metal;
+#endif
 
 const struct geist_backend_descriptor *const geist_backend_registry[] = {
 #if defined(GEIST_BACKEND_CPU_NEON) && GEIST_BACKEND_CPU_NEON
@@ -40,6 +43,9 @@ const struct geist_backend_descriptor *const geist_backend_registry[] = {
 #endif
 #if defined(GEIST_BACKEND_CPU_SCALAR) && GEIST_BACKEND_CPU_SCALAR
         &geist_backend_cpu_scalar,
+#endif
+#if defined(GEIST_BACKEND_METAL) && GEIST_BACKEND_METAL
+        &geist_backend_metal,
 #endif
         nullptr,
 };

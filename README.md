@@ -314,8 +314,12 @@ exceeds the 2 GB GitHub-release limit. (Runs real-time on a Pi 5 —
 | Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | decode t/s | **48.6** | 44.1 *(llama.cpp)* |
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | prefill t/s | **351** | 346 *(llama.cpp)* |
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | decode t/s | 34.1 | 34.5 *(llama.cpp)* |
+| Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | prefill t/s (pp512) | 987 | 1542 *(llama.cpp Metal)* |
+| Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | decode t/s (tg64) | 81.2 | 91.3 *(llama.cpp Metal)* |
 
 <sub>**Baseline versions:** llama.cpp `d05fe1d` (Pi 5, M1 Max) · `b9827` (x86) — bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `master` (its bundled llama.cpp fork, unpinned `--depth 1` clone). Full methodology: [`benchmark/`](benchmark/README.md).</sub>
+
+<sub>**Metal backend status** (`BACKENDS="… metal"`): experimental — greedy-decode tokens verified identical to the `cpu_scalar` reference at every optimization step. Decode is within **12 %** of llama.cpp (81.2 vs 91.3 t/s) and holds up at long context (73 t/s at kv≈2100, vs 27 before the head_dim-512 flash kernels). All attention — including the head_dim-512 full-attention layers — runs simdgroup flash (8-simdgroup prefill variant + 16-chunk split-KV decode variant) on a native f16 KV cache (half the KV memory, zero per-call conversion), with fused per-layer blocks (q/k/v norm+RoPE+KV-append, gate+up GeGLU matvec, k/v pair, PLE), llama-style pipelined command buffers, and a device greedy argmax (4-byte token readback). The remaining prefill gap is the shared ~6-TF q4_K GEMM plateau plus flash-kernel efficiency — kernel-level work that needs M3+ profiler counters to attribute; the full measurement ledger lives in `docs/proposals/metal-beat-llamacpp-plan.md`. Known issue: decode after a ≥4096-token prefill no-ops (RoPE table sizing, fix in progress). Cool-state protocol (240 s idle), geist and llama.cpp measured back-to-back (Homebrew llama.cpp, `BLAS,MTL`), M1 Max 32-core.</sub>
 </details>
 
 ---
