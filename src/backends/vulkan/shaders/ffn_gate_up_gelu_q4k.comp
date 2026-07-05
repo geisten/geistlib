@@ -1,13 +1,13 @@
 #version 450
-#extension GL_KHR_shader_subgroup_ballot : enable
-#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_control_flow_attributes : enable
 
 /* Fused decode FFN front: y = gelu_tanh(x . gate^T) * (x . up^T), both
- * weights Q4_K, m == 1. Structure of matvec_q4k v4, two weight streams
- * sharing the x loads. 8 rows per 256-thread workgroup.
- * Dispatch: gx = ceil(n_out / 8). */
+ * weights Q4_K, m == 1. Same 32-thread/4-row structure as matvec_q4k:
+ * every x load feeds 4 rows x 2 weight streams (8-way reuse).
+ * Dispatch: gx = ceil(n_out / 4). */
 
-layout(local_size_x = 256) in;
+layout(local_size_x = 32) in;
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer WG { uint wg[]; };
@@ -26,91 +26,104 @@ layout(push_constant) uniform Push {
     uint y_stride;
 } pc;
 
-shared vec4 xsh[1536];
+const uint NUM_ROWS = 4;
+shared float tmpg[NUM_ROWS][32];
+shared float tmpu[NUM_ROWS][32];
 
 void main() {
-    uint warp = gl_SubgroupID;
-    uint lane = gl_SubgroupInvocationID;
-    uint lid = gl_LocalInvocationID.x;
-    uint row = gl_WorkGroupID.x * gl_NumSubgroups + warp;
+    uint first_row = gl_WorkGroupID.x * NUM_ROWS;
+    uint tid = gl_LocalInvocationID.x;
+    uint itid = tid & 15u;
+    uint ix = tid >> 4u;
 
-    uint nv = pc.n_in >> 2u;
-    bool x_shared = nv <= 1536u;
-    if (x_shared) {
-        uint xbase = pc.x_offset >> 2u;
-        for (uint i = lid; i < nv; i += 256u) {
-            xsh[i] = x4[xbase + i];
-        }
-        barrier();
+    uint il = itid >> 2u;
+    uint ir = itid & 3u;
+    uint v_im = il >> 1u;
+    uint v_in = il & 1u;
+    uint l0 = 4u * (2u * ir + v_in);
+    uint q_offset = 32u * v_im + l0;
+    uint y_offset = 64u * v_im + l0;
+
+    uint num_rows = min(NUM_ROWS, pc.n_out - first_row);
+    float tg[NUM_ROWS];
+    float tu[NUM_ROWS];
+    [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+        tg[n] = 0.0;
+        tu[n] = 0.0;
     }
 
-    float sum_g = 0.0;
-    float sum_u = 0.0;
-    if (row < pc.n_out) {
-        uint sub = lane >> 2;
-        uint idx8 = (lane & 3u) * 8u;
-        uint shift = (sub & 1u) * 4u;
-        uint row_word = (row * pc.blocks_per_row * 144u) >> 2u;
+    uint xbase = pc.x_offset >> 2u;
+    for (uint i = ix; i < pc.blocks_per_row; i += 2u) {
+        uint y1 = i * 256u + y_offset;
+        uint y2 = y1 + 128u;
+        vec4 by10 = x4[xbase + (y1 >> 2u)];
+        vec4 by132 = x4[xbase + (y1 >> 2u) + 8u];
+        vec4 by20 = x4[xbase + (y2 >> 2u)];
+        vec4 by232 = x4[xbase + (y2 >> 2u) + 8u];
+        float s10 = by10.x + by10.y + by10.z + by10.w;
+        float s132 = by132.x + by132.y + by132.z + by132.w;
+        float s20 = by20.x + by20.y + by20.z + by20.w;
+        float s232 = by232.x + by232.y + by232.z + by232.w;
 
-        for (uint b = 0; b < pc.blocks_per_row; b++) {
-            uint blk = row_word + b * 36u;
-            uint xe = (b * 256u + sub * 32u + idx8) >> 2u;
-            vec4 xa = x_shared ? xsh[xe] : x4[(pc.x_offset >> 2u) + xe];
-            vec4 xb = x_shared ? xsh[xe + 1u] : x4[(pc.x_offset >> 2u) + xe + 1u];
-            float xs = dot(xa + xb, vec4(1.0));
+        [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+            uint blk = ((first_row + n) * pc.blocks_per_row + i) * 36u;
+            [[unroll]] for (uint which = 0; which < 2u; ++which) {
+                vec2 dm = which == 0u ? unpackHalf2x16(wg[blk]) : unpackHalf2x16(wu[blk]);
+                uint s01 = which == 0u ? wg[blk + 1u] : wu[blk + 1u];
+                uint s23 = which == 0u ? wg[blk + 2u] : wu[blk + 2u];
+                uint s45 = which == 0u ? wg[blk + 3u] : wu[blk + 3u];
+                uint scale0_u32 = v_im == 0u ? (s01 & 0xffffu) : (s01 >> 16u);
+                uint scale4_u32 = v_im == 0u ? (s23 & 0xffffu) : (s23 >> 16u);
+                uint scale8_u32 = v_im == 0u ? (s45 & 0xffffu) : (s45 >> 16u);
+                uint scale_0_4_l = (scale4_u32 << 16) | scale0_u32;
+                uint scale_0_4_h = (scale_0_4_l & 0xC0C0C0C0u) >> 2u;
+                vec4 scl = vec4(unpack8(scale_0_4_l & 0x3F3F3F3Fu));
+                vec4 sch = vec4(unpack8((((scale8_u32 << 12) | scale8_u32) & 0x0F0F0F0Fu) |
+                                        scale_0_4_h));
 
-            for (uint which = 0u; which < 2u; which++) {
-                uint h0 = 0u, h1 = 0u, h2 = 0u, h3 = 0u;
-                if (lane == 0u) {
-                    h0 = which == 0u ? wg[blk] : wu[blk];
-                    h1 = which == 0u ? wg[blk + 1u] : wu[blk + 1u];
-                    h2 = which == 0u ? wg[blk + 2u] : wu[blk + 2u];
-                    h3 = which == 0u ? wg[blk + 3u] : wu[blk + 3u];
-                }
-                h0 = subgroupBroadcast(h0, 0);
-                h1 = subgroupBroadcast(h1, 0);
-                h2 = subgroupBroadcast(h2, 0);
-                h3 = subgroupBroadcast(h3, 0);
+                uint qsw = blk + 4u + (q_offset >> 2u);
+                uint qs0 = which == 0u ? wg[qsw] : wu[qsw];
+                uint qs64 = which == 0u ? wg[qsw + 16u] : wu[qsw + 16u];
+                vec4 q0l = vec4(unpack8(qs0 & 0x0F0F0F0Fu));
+                vec4 q0h = vec4(unpack8((qs0 >> 4u) & 0x0F0F0F0Fu));
+                vec4 q6l = vec4(unpack8(qs64 & 0x0F0F0F0Fu));
+                vec4 q6h = vec4(unpack8((qs64 >> 4u) & 0x0F0F0F0Fu));
 
-                vec2 dd = unpackHalf2x16(h0);
-                uint sc_u, mn_u;
-                if (sub < 4u) {
-                    sc_u = (h1 >> (8u * sub)) & 63u;
-                    mn_u = (h2 >> (8u * sub)) & 63u;
-                } else {
-                    uint j = sub - 4u;
-                    uint q_j4 = (h3 >> (8u * j)) & 0xffu;
-                    sc_u = (q_j4 & 15u) | ((((h1 >> (8u * j)) & 0xffu) >> 6u) << 4u);
-                    mn_u = (q_j4 >> 4u) | ((((h2 >> (8u * j)) & 0xffu) >> 6u) << 4u);
-                }
-
-                uint qs = blk + 4u + (sub >> 1u) * 8u + (idx8 >> 2u);
-                uint q0 = which == 0u ? wg[qs] : wu[qs];
-                uint q1 = which == 0u ? wg[qs + 1u] : wu[qs + 1u];
-                vec4 qv0 = vec4(float((q0 >> shift) & 15u),
-                                float((q0 >> (8u + shift)) & 15u),
-                                float((q0 >> (16u + shift)) & 15u),
-                                float((q0 >> (24u + shift)) & 15u));
-                vec4 qv1 = vec4(float((q1 >> shift) & 15u),
-                                float((q1 >> (8u + shift)) & 15u),
-                                float((q1 >> (16u + shift)) & 15u),
-                                float((q1 >> (24u + shift)) & 15u));
-                float xq = dot(qv0, xa) + dot(qv1, xb);
-                float v = dd.x * float(sc_u) * xq - dd.y * float(mn_u) * xs;
+                float sx = dot(by10, q0l);
+                float sy = dot(by132, q0h);
+                float sz = dot(by20, q6l);
+                float sw = dot(by232, q6h);
+                float smin = s10 * scl.z + s132 * scl.w + s20 * sch.z + s232 * sch.w;
+                float v = fma(dm.x,
+                              fma(sx, scl.x, fma(sy, scl.y, fma(sz, sch.x, sw * sch.y))),
+                              -dm.y * smin);
                 if (which == 0u) {
-                    sum_g += v;
+                    tg[n] += v;
                 } else {
-                    sum_u += v;
+                    tu[n] += v;
                 }
             }
         }
     }
 
-    sum_g = subgroupAdd(sum_g);
-    sum_u = subgroupAdd(sum_u);
-    if (subgroupElect() && row < pc.n_out) {
-        float g = sum_g;
-        float u = 0.7978845608028654 * (g + 0.044715 * g * g * g);
-        y[pc.y_offset + row] = (0.5 * g * (1.0 + tanh(u))) * sum_u;
+    [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+        tmpg[n][tid] = tg[n];
+        tmpu[n][tid] = tu[n];
+    }
+    barrier();
+    [[unroll]] for (uint s = 16u; s > 0u; s >>= 1u) {
+        if (tid < s) {
+            [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+                tmpg[n][tid] += tmpg[n][tid + s];
+                tmpu[n][tid] += tmpu[n][tid + s];
+            }
+        }
+        barrier();
+    }
+    if (tid < num_rows) {
+        float g = tmpg[tid][0];
+        float uu = tmpu[tid][0];
+        float t = 0.7978845608028654 * (g + 0.044715 * g * g * g);
+        y[pc.y_offset + first_row + tid] = (0.5 * g * (1.0 + tanh(t))) * uu;
     }
 }

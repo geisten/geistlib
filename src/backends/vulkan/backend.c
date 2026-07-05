@@ -36,6 +36,7 @@
 
 #include <dlfcn.h>
 #include <math.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -187,7 +188,20 @@ struct vk_dirty {
     bool     write;
 };
 
-enum { VK_DIRTY_CAP = 96 };
+enum {
+    VK_DIRTY_CAP    = 96,
+    VK_DSET_CACHE   = 4096,
+    VK_SEQ_CMDBUFS  = 64, /* rolling submission ring */
+    VK_SEQ_ROTATE   = 64, /* dispatches per submit — keeps the GPU fed */
+};
+
+/* Cached descriptor set: decode re-binds the same (pipeline-layout,
+ * buffers) tuple every token — building sets once kills the dominant
+ * CPU cost of the encode loop (alloc + update per dispatch). */
+struct vk_dset_entry {
+    uint64_t        key; /* hash of nbind + buffer handles; 0 = empty */
+    VkDescriptorSet set;
+};
 
 enum {
     VK_SEQ_MAX_SETS      = 4096, /* descriptor sets per flush window */
@@ -272,7 +286,10 @@ struct vk_state {
      * flush = submit + fence-wait, triggered by any host data access
      * (buffer_map / CPU-op fallback / argmax readback). Descriptor sets
      * are allocated per dispatch from seq_pool and bulk-freed at flush. */
-    VkCommandBuffer       seq_cmd;
+    VkCommandBuffer       seq_cmds[VK_SEQ_CMDBUFS];
+    VkCommandBuffer       seq_cmd;      /* currently recording */
+    uint32_t              seq_cmd_idx;  /* next ring slot */
+    uint32_t              seq_in_cmd;   /* dispatches in the open cmd buffer */
     VkFence               seq_fence;
     bool                  seq_open;
     uint32_t              seq_dispatches;
@@ -289,6 +306,11 @@ struct vk_state {
 
     struct geist_buffer *argmax_out; /* 4-byte host-visible argmax result */
 
+    VkDescriptorPool     dset_cache_pool; /* never reset; cache lives here */
+    struct vk_dset_entry dset_cache[VK_DSET_CACHE];
+    uint64_t             stat_dset_hits;
+    uint64_t             stat_dset_miss;
+
     /* Hazard tracking: read/write ranges recorded since the last barrier.
      * A new dispatch inserts a barrier only when it conflicts (RAW / WAR /
      * WAW); independent dispatches overlap on the GPU. */
@@ -297,6 +319,7 @@ struct vk_state {
 
     uint64_t stat_barriers;
     uint64_t stat_barriers_elided;
+    uint64_t stat_wait_ns;
 };
 
 /* binding count per pipeline (descriptor set layout selector) */
@@ -470,6 +493,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         }
         if (st->seq_pool != VK_NULL_HANDLE) {
             st->fn.DestroyDescriptorPool(st->device, st->seq_pool, nullptr);
+        }
+        if (st->dset_cache_pool != VK_NULL_HANDLE) {
+            st->fn.DestroyDescriptorPool(st->device, st->dset_cache_pool, nullptr);
         }
         for (int i = 0; i < 5; ++i) {
             if (st->seq_playouts[i] != VK_NULL_HANDLE) {
@@ -782,13 +808,25 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: descriptor pool failed");
         return GEIST_E_BACKEND;
     }
+    VkDescriptorPoolSize       csize  = {.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                         .descriptorCount = VK_DSET_CACHE * 6};
+    VkDescriptorPoolCreateInfo dcinfo = {
+            .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets       = VK_DSET_CACHE,
+            .poolSizeCount = 1,
+            .pPoolSizes    = &csize};
+    if (st->fn.CreateDescriptorPool(st->device, &dcinfo, nullptr, &st->dset_cache_pool) !=
+        VK_SUCCESS) {
+        geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: dset cache pool failed");
+        return GEIST_E_BACKEND;
+    }
     VkCommandBufferAllocateInfo cainfo = {
             .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .commandPool        = st->cmd_pool,
             .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1};
-    if (st->fn.AllocateCommandBuffers(st->device, &cainfo, &st->seq_cmd) != VK_SUCCESS) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: seq command buffer failed");
+            .commandBufferCount = VK_SEQ_CMDBUFS};
+    if (st->fn.AllocateCommandBuffers(st->device, &cainfo, st->seq_cmds) != VK_SUCCESS) {
+        geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: seq command buffers failed");
         return GEIST_E_BACKEND;
     }
     VkFenceCreateInfo finfo = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -918,6 +956,11 @@ static void vk_destroy(struct geist_backend *be) {
                     (unsigned long long) st->stat_cpu_falls,
                     (unsigned long long) st->stat_barriers,
                     (unsigned long long) st->stat_barriers_elided);
+            fprintf(stderr,
+                    "geist vulkan dset cache: %llu hits, %llu misses; submit+wait %.1f ms\n",
+                    (unsigned long long) st->stat_dset_hits,
+                    (unsigned long long) st->stat_dset_miss,
+                    (double) st->stat_wait_ns / 1e6);
         }
         if (st->profile_enabled) {
             static const char *const names[VK_PIPE_COUNT + 1] = {
@@ -1146,6 +1189,13 @@ static void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf
     struct vk_state *st = buf->owner;
     vk_seq_flush(st); /* the open batch may reference this buffer */
     if (buf->buf != VK_NULL_HANDLE && !buf->borrowed) {
+        /* drop cached descriptor sets that reference this buffer — the
+         * driver may recycle the handle value for a future buffer */
+        for (uint32_t i = 0; i < VK_DSET_CACHE; ++i) {
+            if (st->dset_cache[i].key != 0) {
+                st->dset_cache[i].key = UINT64_MAX; /* tombstone: never matches */
+            }
+        }
         for (size_t i = 0; i < st->n_hostbufs; ++i) {
             if (st->hostbufs[i] == buf) {
                 st->hostbufs[i] = st->hostbufs[--st->n_hostbufs];
@@ -1359,9 +1409,14 @@ static void vk_seq_flush(struct vk_state *st) {
         VkSubmitInfo submit = {.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                                .commandBufferCount = 1,
                                .pCommandBuffers    = &st->seq_cmd};
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
         ok = st->fn.QueueSubmit(st->queue, 1, &submit, st->seq_fence) == VK_SUCCESS &&
              st->fn.WaitForFences(st->device, 1, &st->seq_fence, VK_TRUE, UINT64_MAX) ==
                      VK_SUCCESS;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        st->stat_wait_ns += (uint64_t) (t1.tv_sec - t0.tv_sec) * 1000000000ull +
+                            (uint64_t) (t1.tv_nsec - t0.tv_nsec);
         (void) st->fn.ResetFences(st->device, 1, &st->seq_fence);
     }
     if (!ok) {
@@ -1394,6 +1449,9 @@ static void vk_seq_flush(struct vk_state *st) {
     if (st->seq_open) {
         return GEIST_OK;
     }
+    st->seq_cmd_idx = 0;
+    st->seq_in_cmd  = 0;
+    st->seq_cmd     = st->seq_cmds[0];
     VkCommandBufferBeginInfo begin = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
@@ -1409,6 +1467,29 @@ static void vk_seq_flush(struct vk_state *st) {
         st->ts_count = 1;
     }
     return GEIST_OK;
+}
+
+/* Rolling submission: close the open command buffer, hand it to the GPU
+ * WITHOUT waiting, and keep recording in the next ring slot. Keeps the
+ * GPU fed (and boosted) while the CPU encodes the rest of the token. */
+static void vk_seq_roll(struct vk_state *st) {
+    if (!st->seq_open || st->seq_in_cmd == 0 || st->seq_cmd_idx + 1 >= VK_SEQ_CMDBUFS) {
+        return;
+    }
+    if (st->fn.EndCommandBuffer(st->seq_cmd) != VK_SUCCESS) {
+        return; /* keep recording — flush will fail loudly if truly broken */
+    }
+    VkSubmitInfo submit = {.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                           .commandBufferCount = 1,
+                           .pCommandBuffers    = &st->seq_cmd};
+    (void) st->fn.QueueSubmit(st->queue, 1, &submit, VK_NULL_HANDLE);
+    st->seq_cmd_idx++;
+    st->seq_cmd    = st->seq_cmds[st->seq_cmd_idx];
+    st->seq_in_cmd = 0;
+    VkCommandBufferBeginInfo begin = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    (void) st->fn.BeginCommandBuffer(st->seq_cmd, &begin);
 }
 
 /* Record a per-dispatch timestamp attributed to `slot` (pipe index, or
@@ -1512,34 +1593,79 @@ static void vk_seq_hazard(struct vk_state              *st,
     if (s != GEIST_OK) {
         return s;
     }
-    const uint32_t              nbind  = vk_pipe_nbind[pipe];
-    VkDescriptorSetAllocateInfo dainfo = {
-            .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool     = st->seq_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts        = &st->seq_dlayouts[nbind - 2]};
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (st->fn.AllocateDescriptorSets(st->device, &dainfo, &set) != VK_SUCCESS) {
-        /* pool dry — rotate the batch once and retry */
-        vk_seq_flush(st);
-        s = vk_seq_open_cmd(st);
-        if (s != GEIST_OK ||
-            st->fn.AllocateDescriptorSets(st->device, &dainfo, &set) != VK_SUCCESS) {
-            geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: descriptor alloc failed");
-            return GEIST_E_BACKEND;
+    const uint32_t nbind = vk_pipe_nbind[pipe];
+    /* descriptor-set cache: same (nbind, buffers) tuple recurs every token */
+    uint64_t h = 1469598103934665603ull ^ nbind;
+    for (uint32_t i = 0; i < nbind; ++i) {
+        h = (h ^ (uint64_t) infos[i].buffer) * 1099511628211ull;
+    }
+    if (h == 0) {
+        h = 1;
+    }
+    VkDescriptorSet set    = VK_NULL_HANDLE;
+    uint32_t        islot  = UINT32_MAX; /* first reusable slot (empty/tombstone) */
+    bool            iempty = false;
+    uint32_t        slot   = (uint32_t) (h & (VK_DSET_CACHE - 1));
+    for (uint32_t probe = 0; probe < 16; ++probe, slot = (slot + 1) & (VK_DSET_CACHE - 1)) {
+        const uint64_t k = st->dset_cache[slot].key;
+        if (k == h) {
+            set = st->dset_cache[slot].set;
+            st->stat_dset_hits++;
+            break;
+        }
+        if (islot == UINT32_MAX && (k == 0 || k == UINT64_MAX)) {
+            islot  = slot;
+            iempty = k == 0;
+        }
+        if (k == 0) {
+            break;
         }
     }
-    VkWriteDescriptorSet writes[6];
-    for (uint32_t i = 0; i < nbind; ++i) {
-        writes[i] = (VkWriteDescriptorSet) {
-                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet          = set,
-                .dstBinding      = i,
-                .descriptorCount = 1,
-                .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pBufferInfo     = &infos[i]};
+    if (set == VK_NULL_HANDLE) {
+        st->stat_dset_miss++;
+        slot = islot != UINT32_MAX ? islot : slot;
+        /* tombstoned slots reuse their old set object; empty slots get a
+         * fresh one from the cache pool */
+        const bool cacheable = islot != UINT32_MAX;
+        if (cacheable && !iempty && st->dset_cache[slot].set != VK_NULL_HANDLE) {
+            set = st->dset_cache[slot].set;
+            st->dset_cache[slot].key = h;
+        }
+        if (set == VK_NULL_HANDLE) {
+            VkDescriptorSetAllocateInfo ainfo2 = {
+                    .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                    .descriptorPool     = cacheable ? st->dset_cache_pool : st->seq_pool,
+                    .descriptorSetCount = 1,
+                    .pSetLayouts        = &st->seq_dlayouts[nbind - 2]};
+            if (st->fn.AllocateDescriptorSets(st->device, &ainfo2, &set) != VK_SUCCESS) {
+                /* cache pool dry — transient set from the per-flush pool */
+                ainfo2.descriptorPool = st->seq_pool;
+                if (st->fn.AllocateDescriptorSets(st->device, &ainfo2, &set) != VK_SUCCESS) {
+                    vk_seq_flush(st);
+                    s = vk_seq_open_cmd(st);
+                    if (s != GEIST_OK || st->fn.AllocateDescriptorSets(st->device, &ainfo2,
+                                                                       &set) != VK_SUCCESS) {
+                        geist_backend_set_error(be, GEIST_E_BACKEND,
+                                                "vulkan: descriptor alloc failed");
+                        return GEIST_E_BACKEND;
+                    }
+                }
+            } else if (cacheable) {
+                st->dset_cache[slot] = (struct vk_dset_entry) {.key = h, .set = set};
+            }
+        }
+        VkWriteDescriptorSet writes[6];
+        for (uint32_t i = 0; i < nbind; ++i) {
+            writes[i] = (VkWriteDescriptorSet) {
+                    .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet          = set,
+                    .dstBinding      = i,
+                    .descriptorCount = 1,
+                    .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .pBufferInfo     = &infos[i]};
+        }
+        st->fn.UpdateDescriptorSets(st->device, nbind, writes, 0, nullptr);
     }
-    st->fn.UpdateDescriptorSets(st->device, nbind, writes, 0, nullptr);
     vk_seq_hazard(st, infos, acc, nbind);
     st->fn.CmdBindPipeline(st->seq_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, st->pipes[pipe]);
     st->fn.CmdBindDescriptorSets(st->seq_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1548,8 +1674,12 @@ static void vk_seq_hazard(struct vk_state              *st,
                             VK_SHADER_STAGE_COMPUTE_BIT, 0, push_bytes, push);
     st->fn.CmdDispatch(st->seq_cmd, gx, gy, gz);
     st->seq_dispatches++;
+    st->seq_in_cmd++;
     st->stat_dispatches++;
     vk_prof_stamp(st, (uint32_t) pipe);
+    if (st->seq_in_cmd >= VK_SEQ_ROTATE) {
+        vk_seq_roll(st);
+    }
     return GEIST_OK;
 }
 
@@ -2533,6 +2663,7 @@ static constexpr float VK_GELU_K1 = 0.044715f;
                                      .size      = n_bytes};
         st->fn.CmdCopyBuffer(st->seq_cmd, src->buf, dst->buf, 1, &region);
         st->seq_dispatches++;
+        st->seq_in_cmd++;
         vk_prof_stamp(st, VK_PIPE_COUNT);
         return GEIST_OK;
     }
@@ -2606,6 +2737,7 @@ enum { VK_XRING_CAP = 192u << 20 }; /* a full prefill chunk stages ~124 MB */
         }
     }
     st->seq_dispatches++;
+    st->seq_in_cmd++;
     vk_prof_stamp(st, VK_PIPE_COUNT);
     *out_elem_off = (uint32_t) (st->xring_used / sizeof(float));
     st->xring_used = (st->xring_used + bytes + 63) & ~(size_t) 63;
@@ -2839,7 +2971,7 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     const struct vk_access acc[4] = {vk_acc_tensor(t_x, false), vk_acc_all(false),
                                      vk_acc_all(false), vk_acc_tensor(y, true)};
     return vk_seq_dispatch_acc(be, VK_PIPE_FFN_GATE_UP, bi, acc, &push, sizeof(push),
-                               (n_out + 7u) / 8u, 1, 1);
+                               (n_out + 3u) / 4u, 1, 1);
 }
 
 /* Fused q/k/v prep: per-head norms + rope + F32 cache append in ONE
