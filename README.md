@@ -4,16 +4,21 @@
 
 # geist 👻
 
-> **Your LLM should be a file you own, not a service you rent.** geist runs capable
-> LLMs **entirely on the CPU — private, offline, dependency-free** — on hardware you
-> already have, down to a Raspberry Pi. No cloud, no Python, no CUDA, nothing to
-> install.
+> **We want AI to belong to everyone.** Not rented from a data center, but running on
+> the hardware you already have — your laptop, a Raspberry Pi, an old CPU with no GPU
+> in sight. geist squeezes the most out of today's models to make that real: capable
+> LLMs running **entirely on the CPU — private, offline, dependency-free**, with
+> nothing to install.
 >
-> The proof is `geist-bitnet`: **one binary with Microsoft's ternary BitNet 2B-4T
-> baked in.** Copy it to a Pi and it generates text, **drives tools**, and searches
-> the web — all locally, and it decodes **~2× faster than Microsoft's own
-> bitnet.cpp**. Need more? The same engine runs **Gemma 4 with vision + audio** from
-> one model file.
+> It began as one developer's attempt to actually *understand* how these models work
+> — by building the engine from scratch, kernel by kernel. It's still that: an
+> experiment, and an open invitation to join in.
+>
+> The proof so far is `geist-bitnet`: **one binary with Microsoft's ternary BitNet
+> 2B-4T baked in** — [**download it**](#run-it-now--model-baked-in) and run it right
+> away. Copy it to a Pi and it generates text, **drives tools**, and searches the web
+> — all locally, and it decodes **~2× faster than Microsoft's own bitnet.cpp**. Need
+> more? The same engine runs **Gemma 4 with vision + audio** from one model file.
 
 <p align="center">
   <strong>2.1×</strong> BitNet decode vs bitnet.cpp <sub>(Pi 5)</sub> &nbsp;·&nbsp;
@@ -107,7 +112,7 @@ in too (`make EMBED_MODEL=…`) and deployment is *literally one file*.
 
 ### Faster where it counts
 Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5,
-**prefill** on Apple's matrix unit, **matches-to-beats llama.cpp on AMD x86**
+**prefill** on Apple's matrix unit, **matches-to-beats [llama.cpp](https://github.com/ggml-org/llama.cpp) on AMD x86**
 (AVX-512), and **beats Microsoft's bitnet.cpp on ternary BitNet on both Pi 5 and
 x86** (9950X: prefill +30 %, decode +38 %) — across edge and desktop:
 
@@ -331,6 +336,38 @@ to end on the CPU backends and has a broad C test suite (`make test`). The
 `STABLE` core (load → session → decode → tokenize) is the part to build on;
 `EXPERIMENTAL`-tagged surfaces (KV-cache modes, speculative decode, multimodal
 attach) may still change between minor versions.
+
+---
+
+## Where this is going
+
+geist isn't trying to out-benchmark llama.cpp or replace anyone's toolchain. It
+started as one developer's way of understanding how these models actually work — by
+building the engine, kernel by kernel, from scratch. That spirit still drives it:
+we'd rather open new doors than race down someone else's track.
+
+The throughline is one belief — **small, heavily quantized models can do far more
+than people assume, if the whole stack is built around them.** So that's what we're
+building:
+
+- **Squeeze the model, not the user** — quantize aggressively and run the most
+  extreme quantizations (ternary and binary) as first-class citizens, not
+  afterthoughts.
+- **Research ternary / binary models** — [BitNet](benchmark/TERNARY_BITNET.md) is
+  just the start; 1.58-bit is where the interesting math lives.
+- **Optimized for what people actually own** — CPUs and small GPUs, all the way down
+  to a Raspberry Pi 5.
+- **One-step install** — engine plus model, nothing else to set up.
+- **Agents built for small models** — a tight harness, fixed algorithms where they
+  beat a forward pass, conversion to markdown, and more, so a 2 B model can match a
+  much bigger one on a narrow, well-defined task.
+- **A memory that fits a small model** — recall shaped for what these models can
+  actually hold, not a bolt-on vector store.
+- **Models that adapt** — dynamically specializing to a task, learning,
+  self-organizing over time.
+
+Most of this is barely started. That's the point — [come build it with
+us](#contributing).
 
 ---
 
