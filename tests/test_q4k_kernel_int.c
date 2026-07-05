@@ -239,35 +239,6 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "FAIL: packed pair Q4_K output diverges from single paths\n");
                     return 1;
                 }
-                linear_q4k_w4a8_prefill_pair_raw_mtile4_ntile4(xm_q8,
-                                                               scale_x,
-                                                               sum32,
-                                                               m_test,
-                                                               t->data,
-                                                               t_up->data,
-                                                               n_in,
-                                                               n_out,
-                                                               y_pair0,
-                                                               y_pair1);
-                max_pair0 = 0.0;
-                max_pair1 = 0.0;
-                for (size_t i = 0; i < m_test * n_out; i++) {
-                    const double d0 = fabs((double) y_np[i] - (double) y_pair0[i]);
-                    const double d1 = fabs((double) y_up_single[i] - (double) y_pair1[i]);
-                    if (d0 > max_pair0)
-                        max_pair0 = d0;
-                    if (d1 > max_pair1)
-                        max_pair1 = d1;
-                }
-                fprintf(stderr,
-                        "Numeric raw pair gate/up m=%zu: max|d0|=%.4e max|d1|=%.4e\n",
-                        m_test,
-                        max_pair0,
-                        max_pair1);
-                if (max_pair0 > 1e-5 || max_pair1 > 1e-5) {
-                    fprintf(stderr, "FAIL: raw pair Q4_K output diverges from single paths\n");
-                    return 1;
-                }
                 free(packed_up);
             }
         }

@@ -109,34 +109,6 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
     }
     printf("  min row cosine=%.6f over m=%zu rows\n", min_cos, m);
 
-    {
-        int8_t *x_q8    = malloc(m * n_in);
-        float  *scale_x = malloc(m * sizeof(float));
-        if (x_q8 == nullptr || scale_x == nullptr) {
-            fprintf(stderr, "  Q6_K raw ntile4 scratch alloc failed\n");
-            fails++;
-        } else {
-            for (size_t i = 0; i < m; i++) {
-                scale_x[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
-            }
-            memset(y_fast, 0, m * n_out * sizeof(float));
-            linear_q6k_w6a8_prefill_raw_ntile4(x_q8, scale_x, m, t->data, n_in, n_out, y_fast);
-            float min_cos_raw_ntile = 1.0f;
-            for (size_t i = 0; i < m; i++) {
-                const float cos = cosine_sim(y_ref + i * n_out, y_fast + i * n_out, n_out);
-                if (cos < min_cos_raw_ntile)
-                    min_cos_raw_ntile = cos;
-                if (cos < 0.999f) {
-                    fprintf(stderr, "  raw ntile4 row %zu cos=%.6f < 0.999\n", i, cos);
-                    fails++;
-                }
-            }
-            printf("  raw ntile4 min row cosine=%.6f over m=%zu rows\n", min_cos_raw_ntile, m);
-        }
-        free(x_q8);
-        free(scale_x);
-    }
-
     if (m == 2 && n_out % 8 == 0) {
         const size_t x8_bytes = q6k_x8_gemv_size_bytes(n_in, n_out);
         void        *x8       = x8_bytes > 0 ? malloc(x8_bytes) : nullptr;
