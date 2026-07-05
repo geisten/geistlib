@@ -300,6 +300,11 @@ Final cool numbers: **987 pp512 / 81.2 tg64 / 441 total** vs llama same-run
 1542 / 91.3. Decode gap 1.12× (wip's 61 passed by 33%); prefill 1.56×;
 tg64@kv2100 73 t/s (was 27).
 
+**Re-confirmed 2026-07-05** (`1020d45`, after the #58/#60 Metal work and the
+#62/#63 dead-flag cleanup): cool `compare_metal.sh` reads **1006 pp512 / 81.6
+tg64 / 445 total** vs llama same-run 1540 / 92.8 — within noise of the close.
+Metal performance held across the flag/kernel/replay removals; no regression.
+
 The two invisible-scalar-kernel fixes (sg8 prefill flash + dec512 split-KV,
 head_dim-512 full-attention layers) were the day's breakthroughs — found by
 scaling-curve triage + `sample`, after the clock, chunking and MQA theories
