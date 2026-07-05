@@ -686,20 +686,14 @@ struct metal_state {
     bool                             decode_replay_valid;
     bool                             decode_replay_failed;
     bool                             decode_replay_replaying;
-    bool                             decode_replay_enabled;
     uint32_t                         decode_replay_vocab_size;
     uint32_t                         decode_replay_token_count;
     size_t                           decode_replay_op_count;
     struct metal_decode_replay_op    decode_replay_ops[METAL_DECODE_REPLAY_MAX_OPS];
-    bool                             use_fused_attention_norm;
-    bool                             use_fused_kv_norm_append;
-    bool                             use_fused_attention_qk;
-    bool                             use_fused_attention_qk_nt4;
     bool                             use_ple_block;
     bool                             use_q4k_n4;
     bool                             use_q4k_m16_n2;
     bool                             use_q4k_mm_sg;
-    bool                             use_ple_proj_norm_fused;
     bool                             use_rmsnorm_simd;
     bool                             use_q6k_n4;
     bool                             profile_enabled;
@@ -2960,9 +2954,11 @@ static void metal_profile_print_summary(const struct metal_state *st) {
 }
 
 static bool metal_decode_replay_can_record(const struct metal_state *st) {
-    return st != nullptr && st->decode_replay_enabled && st->sequence_active &&
-           st->sequence_kind == GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP &&
-           !st->decode_replay_replaying && !st->decode_replay_failed;
+    /* Permanently disabled: the replay execute path was deleted in cccba03 and
+     * the GEIST_METAL_DECODE_REPLAY flag removed. The recording scaffolding
+     * below stays dead until an indirect-command-buffer successor lands. */
+    (void) st;
+    return false;
 }
 
 static struct metal_decode_replay_op *
@@ -8367,52 +8363,28 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
                 be, GEIST_E_OOM, "metal: failed to allocate %zu-byte state", sizeof(*st));
         return GEIST_E_OOM;
     }
-    *st                          = (struct metal_state) {0};
-    st->backend                  = be;
-    st->use_fused_attention_norm = getenv("GEIST_METAL_ATTENTION_FUSED_NORM") != nullptr;
-    const char *fused_kv_norm    = getenv("GEIST_METAL_ATTENTION_FUSED_KV_NORM");
-    st->use_fused_kv_norm_append = fused_kv_norm != nullptr && strcmp(fused_kv_norm, "1") == 0;
-    /* Prefill q/k projections default to the tiled mm_sg GEMM (the separate
-     * q/k matmul_q4k path, parity-gated). The fused reduction QK kernel is
-     * compute-bound for batched prefill; set GEIST_METAL_ATTENTION_FUSED_QK=1
-     * to restore it. (This flag only affects rows>1; decode is unaffected.) */
-    const char *fused_qk           = getenv("GEIST_METAL_ATTENTION_FUSED_QK");
-    st->use_fused_attention_qk     = fused_qk != nullptr && strcmp(fused_qk, "1") == 0;
-    const char *fused_qk_nt4       = getenv("GEIST_METAL_ATTENTION_FUSED_QK_NT4");
-    st->use_fused_attention_qk_nt4 = fused_qk_nt4 != nullptr && strcmp(fused_qk_nt4, "1") == 0;
-    const char *ple_block          = getenv("GEIST_METAL_PLE_BLOCK");
-    st->use_ple_block              = ple_block == nullptr || strcmp(ple_block, "0") != 0;
-    const char *q4k_n4             = getenv("GEIST_METAL_Q4K_N4");
-    st->use_q4k_n4                 = q4k_n4 == nullptr || strcmp(q4k_n4, "0") != 0;
-    const char *q4k_m16_n2         = getenv("GEIST_METAL_Q4K_M16_N2");
-    st->use_q4k_m16_n2             = q4k_m16_n2 != nullptr && strcmp(q4k_m16_n2, "1") == 0;
+    *st                    = (struct metal_state) {0};
+    st->backend            = be;
+    const char *ple_block  = getenv("GEIST_METAL_PLE_BLOCK");
+    st->use_ple_block      = ple_block == nullptr || strcmp(ple_block, "0") != 0;
+    const char *q4k_n4     = getenv("GEIST_METAL_Q4K_N4");
+    st->use_q4k_n4         = q4k_n4 == nullptr || strcmp(q4k_n4, "0") != 0;
+    const char *q4k_m16_n2 = getenv("GEIST_METAL_Q4K_M16_N2");
+    st->use_q4k_m16_n2     = q4k_m16_n2 != nullptr && strcmp(q4k_m16_n2, "1") == 0;
     /* Simdgroup-matmul Q4_K GEMM (llama.cpp mul_mm-derived). Default ON: only
      * runs for full tiles (dispatch guard requires rows%32==0 && n_out%64==0),
      * so the partial-tile path never executes and non-conforming shapes fall
      * back to the m16 kernel. Numerical parity for both paths is covered by
      * tests/test_backend_metal_q4k_matmul_parity.c. Set
      * GEIST_METAL_Q4K_MM_SG=0 to disable. */
-    const char *q4k_mm_sg           = getenv("GEIST_METAL_Q4K_MM_SG");
-    st->use_q4k_mm_sg               = q4k_mm_sg == nullptr || strcmp(q4k_mm_sg, "0") != 0;
-    const char *ple_proj_norm_fused = getenv("GEIST_METAL_PLE_PROJ_NORM_FUSED");
-    st->use_ple_proj_norm_fused =
-            ple_proj_norm_fused != nullptr && strcmp(ple_proj_norm_fused, "1") == 0;
+    const char *q4k_mm_sg    = getenv("GEIST_METAL_Q4K_MM_SG");
+    st->use_q4k_mm_sg        = q4k_mm_sg == nullptr || strcmp(q4k_mm_sg, "0") != 0;
     const char *rmsnorm_simd = getenv("GEIST_METAL_RMSNORM_SIMD");
     st->use_rmsnorm_simd     = rmsnorm_simd == nullptr || strcmp(rmsnorm_simd, "0") != 0;
     const char *q6k_n4       = getenv("GEIST_METAL_Q6K_N4");
     st->use_q6k_n4           = q6k_n4 == nullptr || strcmp(q6k_n4, "0") != 0;
     /* Off by default: the plain-layout n4 kernel (llama mul_mv structure)
      * outruns the packed nt4 path and needs no load-time repack. */
-    /* Decode replay: the execute path was deleted in cccba03; only the
-     * recording scaffolding survives. Re-measured 2026-07-04: the whole
-     * per-token non-GPU tail is ~1.2 ms (encode 0.3 + host glue), so a
-     * restored re-encode replay would buy <0.8 ms — not worth the ~500
-     * adapted lines. Default OFF so the dead recording costs nothing;
-     * the successor idea is a Metal indirect command buffer (ICB) to
-     * attack the ~6 ms GPU command-stream floor instead (setBytes is
-     * not ICB-encodable — params would need real buffers first). */
-    const char *decode_replay = getenv("GEIST_METAL_DECODE_REPLAY");
-    st->decode_replay_enabled = decode_replay != nullptr && strcmp(decode_replay, "0") != 0;
     /* Command-buffer pipelining (llama n_cb-style): rotate every N
      * dispatches, default 192 (~3 buffers per decode token — llama's
      * measured optimum on M-series is 2-3 buffers per graph).
