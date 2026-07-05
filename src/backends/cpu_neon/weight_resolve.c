@@ -1313,6 +1313,29 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
     }
 }
 
+/* Runtime ISA mask for the current host, from the backend policy. The
+ * resolver and the capability query both gate kernel rows against this. */
+static cpu_neon_isa_mask cpu_neon_host_isa(const struct cpu_neon_state *bst) {
+    return (bst->policy.has_dotprod ? CPU_NEON_ISA_DOTPROD : 0u) |
+           (bst->policy.has_fp16 ? CPU_NEON_ISA_FP16 : 0u) |
+           CPU_NEON_ISA_NEON; /* cpu_neon backend only registers on NEON */
+}
+
+bool cpu_neon_weight_dtype_supported(const struct geist_backend *be, enum geist_dtype dtype) {
+    if (be == nullptr || be->state == nullptr) {
+        return false;
+    }
+    const cpu_neon_isa_mask host_isa = cpu_neon_host_isa((const struct cpu_neon_state *) be->state);
+    const size_t            n        = sizeof(CPU_NEON_KERNELS) / sizeof(CPU_NEON_KERNELS[0]);
+    for (size_t i = 0; i < n; i++) {
+        const struct cpu_neon_kernel_entry *e = &CPU_NEON_KERNELS[i];
+        if (e->dtype == dtype && (e->requires & host_isa) == e->requires) {
+            return true;
+        }
+    }
+    return false;
+}
+
 [[nodiscard]] enum geist_status cpu_neon_resolve_weight(struct geist_backend *be,
                                                         struct geist_weight  *w) {
     if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
@@ -1327,12 +1350,9 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    const struct cpu_neon_state        *bst    = (const struct cpu_neon_state *) be->state;
-    const struct cpu_neon_kernel_policy policy = bst->policy;
-    const cpu_neon_isa_mask             host_isa =
-            (policy.has_dotprod ? CPU_NEON_ISA_DOTPROD : 0u) |
-            (policy.has_fp16 ? CPU_NEON_ISA_FP16 : 0u) |
-            CPU_NEON_ISA_NEON; /* cpu_neon backend only registers on NEON */
+    const struct cpu_neon_state        *bst      = (const struct cpu_neon_state *) be->state;
+    const struct cpu_neon_kernel_policy policy   = bst->policy;
+    const cpu_neon_isa_mask             host_isa = cpu_neon_host_isa(bst);
 
     const size_t n = sizeof(CPU_NEON_KERNELS) / sizeof(CPU_NEON_KERNELS[0]);
     for (size_t i = 0; i < n; i++) {
