@@ -165,14 +165,17 @@ static double kl_div(const float *lr, const float *lm, size_t n) {
     return kl < 0.0 ? 0.0 : kl; /* clamp fp noise on identical dists */
 }
 
-/* Teacher-force `ids` through both sessions in lockstep; fill top-1 acc and
- * mean KL(ref||mode). Returns false on a session error. */
+/* Teacher-force `ids` through both sessions in lockstep; fill top-1 acc, mean
+ * KL(ref||mode), and mean KL split at the sequence midpoint (issue #69: does
+ * quality degrade with context depth?). Returns false on a session error. */
 static bool score_mode(struct geist_session *ref,
                        struct geist_session *mode,
                        const uint32_t       *ids,
                        size_t                n_ids,
                        double               *acc_out,
-                       double               *kl_out) {
+                       double               *kl_out,
+                       double               *kl_early_out,
+                       double               *kl_late_out) {
     if (geist_session_reset(ref) != GEIST_OK || geist_session_reset(mode) != GEIST_OK)
         return false;
     const geist_token_t t0 = (geist_token_t) ids[0];
@@ -180,25 +183,36 @@ static bool score_mode(struct geist_session *ref,
         geist_session_prefill_tokens(mode, 1, &t0) != GEIST_OK)
         return false;
 
-    double kl_sum  = 0.0;
-    size_t correct = 0, n_eval = 0;
+    const size_t mid      = n_ids / 2; /* positions < mid = early, >= mid = late */
+    double       kl_early = 0.0, kl_late = 0.0;
+    size_t       n_early = 0, n_late = 0;
+    size_t       correct = 0;
     for (size_t i = 1; i < n_ids; i++) {
         size_t       nr = 0, nm = 0;
         const float *lr = geist_session_peek_logits(ref, &nr);
         const float *lm = geist_session_peek_logits(mode, &nm);
         if (lr == nullptr || lm == nullptr || nr != nm || nr == 0)
             return false;
-        kl_sum += kl_div(lr, lm, nr);
+        const double kl = kl_div(lr, lm, nr);
+        if (i < mid) {
+            kl_early += kl;
+            n_early++;
+        } else {
+            kl_late += kl;
+            n_late++;
+        }
         if (argmax_f32(lm, nm) == ids[i])
             correct++;
-        n_eval++;
         const geist_token_t ti = (geist_token_t) ids[i];
         if (geist_session_prefill_tokens(ref, 1, &ti) != GEIST_OK ||
             geist_session_prefill_tokens(mode, 1, &ti) != GEIST_OK)
             return false;
     }
-    *acc_out = n_eval > 0 ? (double) correct / (double) n_eval : 0.0;
-    *kl_out  = n_eval > 0 ? kl_sum / (double) n_eval : 0.0;
+    const size_t n_eval = n_early + n_late;
+    *acc_out            = n_eval > 0 ? (double) correct / (double) n_eval : 0.0;
+    *kl_out             = n_eval > 0 ? (kl_early + kl_late) / (double) n_eval : 0.0;
+    *kl_early_out       = n_early > 0 ? kl_early / (double) n_early : 0.0;
+    *kl_late_out        = n_late > 0 ? kl_late / (double) n_late : 0.0;
     return true;
 }
 
@@ -293,13 +307,19 @@ int main(int argc, char **argv) {
     const size_t n_modes = sizeof(MODES) / sizeof(MODES[0]);
     double       acc[sizeof(MODES) / sizeof(MODES[0])];
     double       kl[sizeof(MODES) / sizeof(MODES[0])];
-    printf("%-10s  %-9s  %s\n", "kv_mode", "top-1", "mean KL(fp32||·) [nats]");
-    printf("%-10s  %-9s  %s\n", "-------", "-----", "-----------------------");
+    printf("%-10s  %-7s  %-9s  %-9s  %s\n",
+           "kv_mode",
+           "top-1",
+           "mean KL",
+           "KL early",
+           "KL late  (fp32||·, nats; #69 depth check)");
+    printf("%-10s  %-7s  %-9s  %-9s  %s\n", "-------", "-----", "-------", "--------", "-------");
     for (size_t m = 0; m < n_modes; m++) {
         apply_mode_env(&MODES[m]);
-        struct geist_session *sess = nullptr;
+        struct geist_session *sess     = nullptr;
+        double                kl_early = 0.0, kl_late = 0.0;
         if (geist_session_create(model, be, &opts, &sess) != GEIST_OK ||
-            !score_mode(ref, sess, ids, n_ids, &acc[m], &kl[m])) {
+            !score_mode(ref, sess, ids, n_ids, &acc[m], &kl[m], &kl_early, &kl_late)) {
             fprintf(stderr, "mode %s failed\n", MODES[m].label);
             geist_session_destroy(sess);
             geist_session_destroy(ref);
@@ -309,7 +329,12 @@ int main(int argc, char **argv) {
             return GEIST_TEST_FAIL;
         }
         geist_session_destroy(sess);
-        printf("%-10s  %.4f     %.5f\n", MODES[m].label, acc[m], kl[m]);
+        printf("%-10s  %.4f   %.5f    %.5f    %.5f\n",
+               MODES[m].label,
+               acc[m],
+               kl[m],
+               kl_early,
+               kl_late);
     }
     geist_session_destroy(ref);
 
