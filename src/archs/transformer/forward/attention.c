@@ -376,7 +376,7 @@ void attention_int4_via_buffers(const float   *q,
             }
 
             for (size_t s = s_lo; s <= s_hi; s++) {
-                int8_t k[512];
+                int8_t k[512] = {0}; /* zero-init: silence GCC maybe-uninitialized on the NEON tail */
                 int4_unpack_row(k_q4 + (s * n_kv_heads + kv_h) * packed, k, head_dim);
                 const float ks      = k_scale[s * n_kv_heads + kv_h];
                 int32_t     int_dot = 0;
@@ -417,7 +417,7 @@ void attention_int4_via_buffers(const float   *q,
                 outv[i] = 0.0f;
             }
             for (size_t s = s_lo; s <= s_hi; s++) {
-                int8_t vv[512];
+                int8_t vv[512] = {0};
                 int4_unpack_row(v_q4 + (s * n_kv_heads + kv_h) * packed, vv, head_dim);
                 const float vs  = v_scale[s * n_kv_heads + kv_h];
                 const float wvs = scores[s] * inv_sum * vs;
