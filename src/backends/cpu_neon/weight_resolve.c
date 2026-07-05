@@ -429,28 +429,6 @@ static void cpu_neon_w_q4k_mN(const float               *x,
     }
 }
 
-#if defined(GEIST_TARGET_PI5)
-static bool q4k_raw_pair_prefill_enabled(void) {
-    static int enabled = -1;
-    if (enabled >= 0)
-        return enabled != 0;
-    const char *env = getenv("GEIST_Q4K_RAW_PAIR_PREFILL");
-    enabled         = (env != nullptr && env[0] == '1') ? 1 : 0;
-    return enabled != 0;
-}
-#endif
-
-#if defined(GEIST_TARGET_PI5)
-static bool q6k_raw_ntile_prefill_enabled(void) {
-    static int enabled = -1;
-    if (enabled >= 0)
-        return enabled != 0;
-    const char *env = getenv("GEIST_Q6K_RAW_NTILE_PREFILL");
-    enabled         = (env != nullptr && env[0] == '1') ? 1 : 0;
-    return enabled != 0;
-}
-#endif
-
 static void cpu_neon_w_q4k_pair_mN(const float               *x,
                                    const struct geist_weight *w0,
                                    const struct geist_weight *w1,
@@ -486,23 +464,6 @@ static void cpu_neon_w_q4k_pair_mN(const float               *x,
     } else {
         cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
     }
-
-#if defined(GEIST_TARGET_PI5)
-    if (!use_block_scales && q4k_raw_pair_prefill_enabled() && !q4k_weight_predecoded(w0) &&
-        !q4k_weight_predecoded(w1) && w0->n_out == w1->n_out) {
-        linear_q4k_w4a8_prefill_pair_raw_mtile4_ntile4(ws->qk_mN_xq,
-                                                       ws->qk_mN_sc,
-                                                       ws->qk_mN_sum32,
-                                                       m,
-                                                       w0->raw,
-                                                       w1->raw,
-                                                       n_in,
-                                                       (size_t) w0->n_out,
-                                                       y0,
-                                                       y1);
-        return;
-    }
-#endif
 
     if (!use_block_scales && q4k_weight_ntile4(w0) && q4k_weight_ntile4(w1) &&
         w0->n_out == w1->n_out) {
@@ -557,11 +518,6 @@ static void cpu_neon_w_q6k_mN(const float               *x,
     } else if (q6k_weight_ntile4(w)) {
         linear_q6k_w6a8_prefill_predecoded_ntile4(
                 ws->qk_mN_xq, ws->qk_mN_sc, m, w->aux_fp32, n_in, (size_t) w->n_out, y);
-#if defined(GEIST_TARGET_PI5)
-    } else if (q6k_raw_ntile_prefill_enabled()) {
-        linear_q6k_w6a8_prefill_raw_ntile4(
-                ws->qk_mN_xq, ws->qk_mN_sc, m, w->raw, n_in, (size_t) w->n_out, y);
-#endif
     } else {
         linear_q6k_w6a8_prefill_pre(
                 ws->qk_mN_xq, ws->qk_mN_sc, m, w->raw, n_in, (size_t) w->n_out, y);
@@ -1139,22 +1095,11 @@ install_tq2_0_tl1_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
     w->backend_layout    = GEIST_W_LAYOUT_TQ2_0_TL1;
     w->backend_alignment = 64;
     w->linear_m1         = cpu_neon_w_tl1_m1;
-    /* Ternary prefill (m>1) LUT-GEMM via the token-tiled mN kernel — OPT-IN,
-     * default OFF on this (A76) target. The kernel itself is 3.2× over the
-     * naive LUT-GEMM form, but end-to-end it loses to the mature SDOT q8a_mN
-     * prefill: measured Pi 5 4t BitNet 2B-4T seq128 prefill 21.0 (TL1) vs 33.6
-     * (q8a), seq256 19.9 vs 31.4. The microbench's "60 vs 17 GMAC/s" compared
-     * against the m1-decode-per-token loop, NOT q8a_mN; the SDOT prefill is
-     * already well-tuned, and the LUT path pays LUT-build overhead + ~383 MB
-     * extra RSS (DRAM pressure) + lower vqtbl1q throughput than SDOT's 32
-     * MAC/cyc. Kept behind GEIST_TL1_PREFILL for Apple-Silicon / future i8mm-
-     * free hosts where vqtbl1q is comparatively faster. */
-    {
-        const char *pf = getenv("GEIST_TL1_PREFILL");
-        if (pf != nullptr && pf[0] == '1') {
-            w->linear_mN = cpu_neon_w_tl1_mN;
-        }
-    }
+    /* Ternary prefill (m>1) stays on the mature SDOT q8a_mN path. The TL1
+     * LUT-GEMM mN kernel loses end-to-end on A76 (Pi 5 4t BitNet 2B-4T seq128
+     * prefill 21.0 TL1 vs 33.6 q8a) and paid ~383 MB extra RSS, so its opt-in
+     * flag (GEIST_TL1_PREFILL) was removed. cpu_neon_w_tl1_mN remains for a
+     * future i8mm-free host if one ever needs it. */
     return GEIST_OK;
 }
 
