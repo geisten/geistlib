@@ -1,6 +1,16 @@
 /*
  * src/archs/transformer/forward/kv_store.c - KV-cache append and
  * attention dispatch for transformer layers.
+ *
+ * ponytail (issue #71): the Hadamard rotation (GEIST_KV_ROT) and packed INT4
+ * store K in the cache AFTER RoPE, rotated. This is safe only because geist
+ * never re-bases cached positions — the sliding window merely masks, it does
+ * not re-RoPE the cache. If a future KV context-shift / RoPE-rebase lands, it
+ * CANNOT simply re-rotate cached K/V: rotated (and 4-bit-packed) rows must be
+ * unpacked → un-rotated → re-RoPE'd → re-rotated → re-packed, or the cache
+ * silently corrupts. Guard or handle that path before enabling cache-shift
+ * while rotation / INT4 is active. (llama.cpp#21038 had to add explicit cache-
+ * shift support for exactly this reason.)
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 

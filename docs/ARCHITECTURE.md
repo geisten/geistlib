@@ -170,6 +170,11 @@ and prefix pinning
 amortize a constant system prompt across chat turns. Speculative decode drafts
 via an n-gram lookup over history and verifies in one batched forward.
 
+The rotation and packed-INT4 modes store K post-RoPE and rotated; this is only
+safe because geist never re-bases cached positions (the sliding window masks,
+it does not re-RoPE the cache). A future KV context-shift feature would have to
+un-rotate/unpack before re-RoPE-ing — see the note atop `forward/kv_store.c`.
+
 ## Multimodal: soft-token prefixes
 
 Instead of a "Whisper → text → LLM" cascade, the audio/vision towers produce
