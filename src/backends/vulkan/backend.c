@@ -1257,6 +1257,7 @@ static void vk_buffer_unmap(struct geist_buffer *buf) {
 /* ====================================================================== */
 
 static uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out);
+static uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m);
 
 [[nodiscard]] static enum geist_status vk_stage_reserve(struct geist_backend *be,
                                                         struct geist_buffer **slot,
@@ -1487,7 +1488,8 @@ static bool vk_tensor_gpu(const struct geist_tensor *t, VkDescriptorBufferInfo *
                                  .x_stride       = (uint32_t) n_in,
                                  .y_stride       = (uint32_t) n_out};
     s = vk_seq_dispatch(be, pipe, binfo, &push, sizeof(push),
-                        vk_linear_gx(pipe, (uint32_t) n_out), (uint32_t) m, 1);
+                        vk_linear_gx(pipe, (uint32_t) n_out),
+                        vk_linear_gy(pipe, (uint32_t) m), 1);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1767,11 +1769,20 @@ static uint32_t vk_groups(size_t n) {
     return (uint32_t) ((n + 255) / 256);
 }
 
-/* Workgroup count along n_out for the linear pipes (matvec_q4k computes
- * 8 rows per workgroup; the rest are one row per workgroup). */
+/* Dispatch geometry of the linear pipes. matvec q4k/q6k: 8 rows per
+ * workgroup. matmul_q4k: 4 output rows x 16 batch rows per workgroup. */
 static uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
-    return (pipe == VK_PIPE_MATVEC_Q4K || pipe == VK_PIPE_MATVEC_Q6K) ? (n_out + 7u) / 8u
-                                                                      : n_out;
+    if (pipe == VK_PIPE_MATVEC_Q4K || pipe == VK_PIPE_MATVEC_Q6K) {
+        return (n_out + 7u) / 8u;
+    }
+    if (pipe == VK_PIPE_MATMUL_Q4K || pipe == VK_PIPE_MATMUL_Q6K) {
+        return (n_out + 3u) / 4u;
+    }
+    return n_out;
+}
+
+static uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m) {
+    return (pipe == VK_PIPE_MATMUL_Q4K || pipe == VK_PIPE_MATMUL_Q6K) ? (m + 15u) / 16u : m;
 }
 
 #define VK_OPS(be, bit) ((((struct vk_state *) (be)->state)->gpu_ops & (bit)) != 0)
@@ -2459,7 +2470,7 @@ enum { VK_XRING_CAP = 192u << 20 }; /* a full prefill chunk stages ~124 MB */
                                  .y_stride       = y_stride};
     const enum vk_pipe lpipe = m == 1 ? mv : mm;
     return vk_seq_dispatch(be, lpipe, bi, &push, sizeof(push), vk_linear_gx(lpipe, n_out),
-                           (uint32_t) m, 1);
+                           vk_linear_gy(lpipe, (uint32_t) m), 1);
 }
 
 [[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,

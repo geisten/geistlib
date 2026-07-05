@@ -7,7 +7,7 @@
 
 layout(local_size_x = 256) in;
 
-layout(set = 0, binding = 0) readonly buffer X { float x[]; };
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
 layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
 
@@ -67,16 +67,18 @@ void main() {
             float d = load_f16(block_byte + 208u);
             int sc = load_i8(block_byte + 192u + half_idx * 8u + sc_idx);
 
-            uint x_base = pc.x_offset + b * 256u + e0;
-            float xq = 0.0;
-            float xs = 0.0;
-            for (uint j = 0; j < 8u; j++) {
-                uint qlv = (load_u8(ql_byte + j) >> ql_shift) & 15u;
-                uint qhv = (load_u8(qh_byte + j) >> qh_shift) & 3u;
-                float xv = x[x_base + j];
-                xq += xv * float(qlv | (qhv << 4u));
-                xs += xv;
+            vec4 q_lo, q_hi;
+            for (uint j = 0; j < 4u; j++) {
+                q_lo[j] = float(((load_u8(ql_byte + j) >> ql_shift) & 15u) |
+                                (((load_u8(qh_byte + j) >> qh_shift) & 3u) << 4u));
+                q_hi[j] = float(((load_u8(ql_byte + 4u + j) >> ql_shift) & 15u) |
+                                (((load_u8(qh_byte + 4u + j) >> qh_shift) & 3u) << 4u));
             }
+            uint xv = (pc.x_offset + b * 256u + e0) >> 2u;
+            vec4 xa = x4[xv];
+            vec4 xb = x4[xv + 1u];
+            float xq = dot(q_lo, xa) + dot(q_hi, xb);
+            float xs = dot(xa + xb, vec4(1.0));
             sum += d * float(sc) * (xq - 32.0 * xs);
         }
     }
