@@ -12,6 +12,7 @@
 #include "internal.h"
 #include "../arch_state.h"
 
+#include "int4_kv.h"
 #include "kivi.h"
 
 #include <math.h>
@@ -323,3 +324,118 @@ void attention_int8_via_buffers(const float  *q,
         }
     }
 }
+
+/* Packed-INT4 attention. Identical to attention_int8_via_buffers except each
+ * K/V cache row is unpacked from head_dim/2 bytes into a stack int8 row
+ * before the (reused) int8 dot / weighted-sum. See internal.h.
+ *
+ * int4_unpack_row fully writes [0,head_dim); the NEON tail reads only that
+ * range, so GCC's -Wmaybe-uninitialized on the unpack buffers is a false
+ * positive — suppressed here rather than paid for with a per-row zero-init. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+void attention_int4_via_buffers(const float   *q,
+                                size_t         n_q,
+                                size_t         n_q_heads,
+                                size_t         head_dim,
+                                const uint8_t *k_q4,
+                                const float   *k_scale,
+                                const uint8_t *v_q4,
+                                const float   *v_scale,
+                                size_t         n_kv,
+                                size_t         n_kv_heads,
+                                size_t         q_offset,
+                                size_t         sliding_window,
+                                float         *out) {
+
+    const size_t kv_group_size = n_q_heads / n_kv_heads;
+    const size_t packed        = head_dim / 2; /* bytes per cache row */
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic)
+#endif
+    for (size_t t = 0; t < n_q; t++) {
+        const size_t q_pos = q_offset + t;
+        const size_t s_lo =
+                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
+        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
+        float        scores[n_kv];
+
+        for (size_t h = 0; h < n_q_heads; h++) {
+            const size_t kv_h = h / kv_group_size;
+            const float *qv   = q + (t * n_q_heads + h) * head_dim;
+
+            int8_t q_q8[512];
+            float  amax = 0.0f;
+            for (size_t i = 0; i < head_dim; i++) {
+                float a = fabsf(qv[i]);
+                if (a > amax) {
+                    amax = a;
+                }
+            }
+            float scale_q = amax / 127.0f;
+            if (scale_q == 0.0f) {
+                scale_q = 1.0f;
+            }
+            const float inv_q = 1.0f / scale_q;
+            for (size_t i = 0; i < head_dim; i++) {
+                q_q8[i] = (int8_t) lrintf(qv[i] * inv_q);
+            }
+
+            for (size_t s = s_lo; s <= s_hi; s++) {
+                int8_t k[512];
+                int4_unpack_row(k_q4 + (s * n_kv_heads + kv_h) * packed, k, head_dim);
+                const float ks      = k_scale[s * n_kv_heads + kv_h];
+                int32_t     int_dot = 0;
+#if defined(__ARM_NEON)
+                int32x4_t acc = vdupq_n_s32(0);
+                size_t    i   = 0;
+                for (; i + 16 <= head_dim; i += 16) {
+                    acc = vdotq_s32(acc, vld1q_s8(q_q8 + i), vld1q_s8(k + i));
+                }
+                int_dot = vaddvq_s32(acc);
+                for (; i < head_dim; i++) {
+                    int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
+                }
+#else
+                for (size_t i = 0; i < head_dim; i++) {
+                    int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
+                }
+#endif
+                scores[s] = (float) int_dot * scale_q * ks;
+            }
+
+            float max_score = scores[s_lo];
+            for (size_t s = s_lo + 1; s <= s_hi; s++) {
+                if (scores[s] > max_score) {
+                    max_score = scores[s];
+                }
+            }
+            double sum_exp = 0.0;
+            for (size_t s = s_lo; s <= s_hi; s++) {
+                float e   = expf(scores[s] - max_score);
+                scores[s] = e;
+                sum_exp += e;
+            }
+            const float inv_sum = (float) (1.0 / sum_exp);
+
+            float *outv = out + (t * n_q_heads + h) * head_dim;
+            for (size_t i = 0; i < head_dim; i++) {
+                outv[i] = 0.0f;
+            }
+            for (size_t s = s_lo; s <= s_hi; s++) {
+                int8_t vv[512];
+                int4_unpack_row(v_q4 + (s * n_kv_heads + kv_h) * packed, vv, head_dim);
+                const float vs  = v_scale[s * n_kv_heads + kv_h];
+                const float wvs = scores[s] * inv_sum * vs;
+                for (size_t i = 0; i < head_dim; i++) {
+                    outv[i] += wvs * (float) vv[i];
+                }
+            }
+        }
+    }
+}
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
