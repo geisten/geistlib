@@ -402,14 +402,50 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr, "loaded %s (arch: %s)\n", src, geist_model_arch(model));
 
-    /* Zero-initialized opts == greedy decode (temperature 0). */
+    /* max_new is a hard cap when the user passed -n; otherwise it's a soft target:
+     * keep going past it until a sentence ends (capped at 2x), so a bare completion
+     * prompt — the base model never emits an end token for one — stops on a clean
+     * boundary instead of mid-word. */
+    int budget = n_explicit ? max_new : max_new * 2;
+
+    /* Zero-initialized opts == greedy decode (temperature 0). Size the KV
+     * window to prompt + decode budget so long prompts clear the default
+     * 4096 ceiling (otherwise prefill returns GEIST_E_TOO_MANY_TOKENS).
+     * A throwaway default session tokenizes first — tokenize touches no KV
+     * cache, so this only pays for the tokenizer pass. */
     struct geist_session_opts opts = {0};
-    struct geist_session *sess = nullptr;
+    struct geist_session     *sess = nullptr;
     if (geist_session_create(model, be, &opts, &sess) != GEIST_OK) {
         fprintf(stderr, "session_create failed\n");
         geist_model_destroy(model);
         geist_backend_destroy(be);
         return 1;
+    }
+    {
+        const size_t   cap  = strlen(prompt) + 8; /* one token/byte upper bound + BOS */
+        size_t         np   = 0;
+        geist_token_t *tmp  = malloc(cap * sizeof(geist_token_t));
+        if (tmp != nullptr &&
+            geist_session_tokenize(sess, prompt, cap, tmp, &np) == GEIST_OK) {
+            const size_t need = np + (size_t) budget + 8;
+            /* 4096 = the state-default window (arch_state.c). Only rebuild
+             * when the workload exceeds it, so short/medium prompts keep
+             * the single-session fast path. */
+            if (need > 4096u) {
+                geist_session_destroy(sess);
+                opts.max_seq_len = need;
+                sess             = nullptr;
+                if (geist_session_create(model, be, &opts, &sess) != GEIST_OK) {
+                    fprintf(stderr, "session_create (ctx=%zu) failed: %s\n", need,
+                            geist_last_create_error());
+                    free(tmp);
+                    geist_model_destroy(model);
+                    geist_backend_destroy(be);
+                    return 1;
+                }
+            }
+        }
+        free(tmp);
     }
 
     if (geist_session_set_prompt(sess, prompt) != GEIST_OK) {
@@ -420,12 +456,6 @@ int main(int argc, char **argv) {
 
     printf("%s", prompt);
     fflush(stdout);
-
-    /* max_new is a hard cap when the user passed -n; otherwise it's a soft target:
-     * keep going past it until a sentence ends (capped at 2x), so a bare completion
-     * prompt — the base model never emits an end token for one — stops on a clean
-     * boundary instead of mid-word. */
-    int budget = n_explicit ? max_new : max_new * 2;
     for (int i = 0; i < budget; i++) {
         geist_token_t tok = 0;
         if (geist_session_decode_step(sess, &tok) != GEIST_OK) {
