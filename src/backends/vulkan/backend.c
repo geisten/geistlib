@@ -120,6 +120,11 @@ struct vk_fns {
     PFN_vkCmdDispatch               CmdDispatch;
     PFN_vkCmdPipelineBarrier        CmdPipelineBarrier;
     PFN_vkResetDescriptorPool       ResetDescriptorPool;
+    PFN_vkCreateQueryPool           CreateQueryPool;
+    PFN_vkDestroyQueryPool          DestroyQueryPool;
+    PFN_vkCmdResetQueryPool         CmdResetQueryPool;
+    PFN_vkCmdWriteTimestamp         CmdWriteTimestamp;
+    PFN_vkGetQueryPoolResults       GetQueryPoolResults;
 };
 
 /* One compute pipeline per (op, dtype) pair; all share a single
@@ -157,6 +162,12 @@ struct vk_weight_entry {
     struct geist_buffer *gpu;
 };
 
+enum {
+    VK_SEQ_MAX_SETS      = 4096, /* descriptor sets per flush window */
+    VK_SEQ_MAX_DISPATCH  = 4000, /* rotate the sequence before pool runs dry */
+    VK_PUSH_RANGE        = 128,  /* one push range covers every shader block */
+};
+
 struct vk_state {
     struct geist_backend *backend;
     void                 *lib; /* dlopen handle, may be nullptr after create */
@@ -189,6 +200,17 @@ struct vk_state {
     uint64_t stat_flushes;
     uint64_t stat_dispatches;
     uint64_t stat_cpu_falls;
+
+    /* GEIST_VK_PROFILE=1: GPU timestamps per dispatch, attributed by
+     * pipeline (copies land in the extra slot). Execution is serialized by
+     * the per-dispatch barriers, so consecutive deltas are exact. */
+    bool         profile_enabled;
+    float        ts_period_ns;
+    VkQueryPool  ts_pool;
+    uint32_t     ts_count;
+    uint8_t      ts_pipe[VK_SEQ_MAX_DISPATCH + 8];
+    uint64_t     prof_ns[VK_PIPE_COUNT + 1];
+    uint64_t     prof_calls[VK_PIPE_COUNT + 1];
 
     /* Compute pipelines (Phase 2). */
     VkDescriptorSetLayout dset_layout;
@@ -262,7 +284,8 @@ struct geist_buffer {
     enum geist_buffer_role role;
     unsigned int           memory_flags;
     bool                   host_visible;
-    bool                   borrowed; /* buf/mem owned by a parent buffer */
+    bool                   device_mem; /* memory type has DEVICE_LOCAL */
+    bool                   borrowed;   /* buf/mem owned by a parent buffer */
 };
 
 /* ====================================================================== */
@@ -370,6 +393,11 @@ static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     VK_LOAD_I(st, CmdDispatch);
     VK_LOAD_I(st, CmdPipelineBarrier);
     VK_LOAD_I(st, ResetDescriptorPool);
+    VK_LOAD_I(st, CreateQueryPool);
+    VK_LOAD_I(st, DestroyQueryPool);
+    VK_LOAD_I(st, CmdResetQueryPool);
+    VK_LOAD_I(st, CmdWriteTimestamp);
+    VK_LOAD_I(st, GetQueryPoolResults);
     return GEIST_OK;
 }
 
@@ -413,6 +441,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             if (st->seq_dlayouts[i] != VK_NULL_HANDLE) {
                 st->fn.DestroyDescriptorSetLayout(st->device, st->seq_dlayouts[i], nullptr);
             }
+        }
+        if (st->ts_pool != VK_NULL_HANDLE) {
+            st->fn.DestroyQueryPool(st->device, st->ts_pool, nullptr);
         }
         if (st->seq_fence != VK_NULL_HANDLE) {
             st->fn.DestroyFence(st->device, st->seq_fence, nullptr);
@@ -479,6 +510,10 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     }
     st->phys = devs[pick];
     st->fn.GetPhysicalDeviceMemoryProperties(st->phys, &st->mem_props);
+    VkPhysicalDeviceProperties2 pprops = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    st->fn.GetPhysicalDeviceProperties2(st->phys, &pprops);
+    st->ts_period_ns = pprops.properties.limits.timestampPeriod;
     return GEIST_OK;
 }
 
@@ -662,12 +697,6 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     return GEIST_OK;
 }
 
-enum {
-    VK_SEQ_MAX_SETS      = 4096, /* descriptor sets per flush window */
-    VK_SEQ_MAX_DISPATCH  = 4000, /* rotate the sequence before pool runs dry */
-    VK_PUSH_RANGE        = 128,  /* one push range covers every shader block */
-};
-
 [[nodiscard]] static enum geist_status vk_create_pipelines(struct geist_backend *be,
                                                            struct vk_state      *st) {
     /* Set/pipeline layouts for 2, 3 and 4 storage-buffer bindings; every
@@ -730,6 +759,14 @@ enum {
         geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: seq fence failed");
         return GEIST_E_BACKEND;
     }
+    if (st->profile_enabled) {
+        VkQueryPoolCreateInfo qinfo = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                                       .queryType  = VK_QUERY_TYPE_TIMESTAMP,
+                                       .queryCount = VK_SEQ_MAX_DISPATCH + 8};
+        if (st->fn.CreateQueryPool(st->device, &qinfo, nullptr, &st->ts_pool) != VK_SUCCESS) {
+            st->profile_enabled = false; /* profiling is best-effort */
+        }
+    }
 
     static const struct {
         const uint32_t *code;
@@ -774,6 +811,7 @@ enum {
     }
     *st         = (struct vk_state) {0};
     st->backend = be;
+    st->profile_enabled = getenv("GEIST_VK_PROFILE") != nullptr;
     const char *ops_env = getenv("GEIST_VK_GPU_OPS");
     st->gpu_ops         = ops_env != nullptr ? (uint32_t) strtoul(ops_env, nullptr, 0)
                                              : 0xffffffffu;
@@ -820,12 +858,28 @@ enum {
 static void vk_destroy(struct geist_backend *be) {
     if (be->state != nullptr) {
         struct vk_state *st = be->state;
-        if (getenv("GEIST_VK_VERBOSE") != nullptr) {
+        if (getenv("GEIST_VK_VERBOSE") != nullptr || st->profile_enabled) {
             fprintf(stderr,
                     "geist vulkan stats: dispatches %llu, flushes %llu, host-op accesses %llu\n",
                     (unsigned long long) st->stat_dispatches,
                     (unsigned long long) st->stat_flushes,
                     (unsigned long long) st->stat_cpu_falls);
+        }
+        if (st->profile_enabled) {
+            static const char *const names[VK_PIPE_COUNT + 1] = {
+                    "matvec_q4k", "matmul_q4k", "matvec_q6k", "matmul_q6k", "matvec_f32",
+                    "matmul_f32", "add",        "mul",        "gelu",       "gelu_mul",
+                    "scale",      "rmsnorm",    "rmsnorm_add", "rope",      "attention",
+                    "argmax",     "embed",      "copy"};
+            fprintf(stderr, "geist vulkan gpu profile:\n");
+            for (int i = 0; i <= VK_PIPE_COUNT; ++i) {
+                if (st->prof_calls[i] > 0) {
+                    fprintf(stderr, "  %-12s %8.1f ms  %8llu calls  %6.1f us/call\n",
+                            names[i], (double) st->prof_ns[i] / 1e6,
+                            (unsigned long long) st->prof_calls[i],
+                            (double) st->prof_ns[i] / 1e3 / (double) st->prof_calls[i]);
+                }
+            }
         }
         vk_destroy_state(be, be->state);
         be->state = nullptr;
@@ -901,7 +955,25 @@ static void vk_destroy(struct geist_backend *be) {
             device_local ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
                          : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    uint32_t mem_type = vk_find_mem_type(st, req.memoryTypeBits, want);
+    uint32_t mem_type = UINT32_MAX;
+    if (!device_local && bytes <= (200u << 20) && role != GEIST_BUFFER_STAGING &&
+        role != GEIST_BUFFER_IO) {
+        /* BAR helps buffers the GPU reads hot and the host rarely touches
+         * (scratch pool, rope tables). Staging/IO stay in system RAM: the
+         * host READS those, and CPU reads from BAR are uncached PCIe. */
+        /* Small host-visible buffers (scratch pool, staging, tables) go
+         * into the BAR window when available: DEVICE_LOCAL + HOST_VISIBLE
+         * means GPU ops touch activations at VRAM speed while the arch's
+         * buffer_map contract still holds. The 256 MB heap is precious —
+         * big allocations (weight arena) stay in system RAM. */
+        mem_type = vk_find_mem_type(st, req.memoryTypeBits,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
+    if (mem_type == UINT32_MAX) {
+        mem_type = vk_find_mem_type(st, req.memoryTypeBits, want);
+    }
     if (mem_type == UINT32_MAX && device_local) {
         /* VRAM exhausted or odd heap layout — host-visible still works. */
         mem_type          = vk_find_mem_type(st, req.memoryTypeBits,
@@ -934,6 +1006,13 @@ static void vk_destroy(struct geist_backend *be) {
         geist_backend_set_error(be, GEIST_E_OOM, "vulkan: allocating %zu bytes failed (%d)",
                                 bytes, (int) r);
         return GEIST_E_OOM;
+    }
+    buf->device_mem =
+            (st->mem_props.memoryTypes[mem_type].propertyFlags &
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    if (getenv("GEIST_VK_VERBOSE") != nullptr && buf->host_visible) {
+        fprintf(stderr, "  buffer %zu KiB role=%d bar=%d\n", bytes >> 10, (int) role,
+                buf->device_mem);
     }
     /* Register mapped buffers for the alias-containment lookup (arch pools
      * hand out slices of these; buffer_create_aliased resolves them back
@@ -993,9 +1072,10 @@ static void vk_destroy(struct geist_backend *be) {
         struct geist_buffer *p = st->hostbufs[i];
         const uint8_t       *lo = p->mapped, *ptr = host_ptr;
         if (ptr >= lo && ptr + n_bytes <= lo + p->bytes) {
-            buf->buf      = p->buf;
-            buf->base_off = (size_t) (ptr - lo);
-            buf->borrowed = true;
+            buf->buf        = p->buf;
+            buf->base_off   = (size_t) (ptr - lo);
+            buf->borrowed   = true;
+            buf->device_mem = p->device_mem;
             break;
         }
     }
@@ -1176,6 +1256,8 @@ static void vk_buffer_unmap(struct geist_buffer *buf) {
 /* with device-resident activations and batched submits.                   */
 /* ====================================================================== */
 
+static uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out);
+
 [[nodiscard]] static enum geist_status vk_stage_reserve(struct geist_backend *be,
                                                         struct geist_buffer **slot,
                                                         size_t                bytes) {
@@ -1228,6 +1310,21 @@ static void vk_seq_flush(struct vk_state *st) {
         fprintf(stderr, "geist vulkan: sequence flush failed — batch dropped\n");
         geist_backend_set_error(st->backend, GEIST_E_BACKEND, "vulkan: sequence flush failed");
     }
+    if (ok && st->profile_enabled && st->ts_count > 1) {
+        uint64_t ts[VK_SEQ_MAX_DISPATCH + 8];
+        if (st->fn.GetQueryPoolResults(st->device, st->ts_pool, 0, st->ts_count,
+                                       sizeof(uint64_t) * st->ts_count, ts, sizeof(uint64_t),
+                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) ==
+            VK_SUCCESS) {
+            for (uint32_t i = 1; i < st->ts_count; ++i) {
+                const uint64_t d = ts[i] - ts[i - 1];
+                st->prof_ns[st->ts_pipe[i]] +=
+                        (uint64_t) ((double) d * (double) st->ts_period_ns);
+                st->prof_calls[st->ts_pipe[i]]++;
+            }
+        }
+    }
+    st->ts_count = 0;
     (void) st->fn.ResetDescriptorPool(st->device, st->seq_pool, 0);
     st->xring_used = 0;
 }
@@ -1244,7 +1341,25 @@ static void vk_seq_flush(struct vk_state *st) {
         return GEIST_E_BACKEND;
     }
     st->seq_open = true;
+    if (st->profile_enabled) {
+        st->fn.CmdResetQueryPool(st->seq_cmd, st->ts_pool, 0, VK_SEQ_MAX_DISPATCH + 8);
+        st->fn.CmdWriteTimestamp(st->seq_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, st->ts_pool,
+                                 0);
+        st->ts_count = 1;
+    }
     return GEIST_OK;
+}
+
+/* Record a per-dispatch timestamp attributed to `slot` (pipe index, or
+ * VK_PIPE_COUNT for transfer copies). */
+static void vk_prof_stamp(struct vk_state *st, uint32_t slot) {
+    if (!st->profile_enabled || st->ts_count >= VK_SEQ_MAX_DISPATCH + 8) {
+        return;
+    }
+    st->fn.CmdWriteTimestamp(st->seq_cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, st->ts_pool,
+                             st->ts_count);
+    st->ts_pipe[st->ts_count] = (uint8_t) slot;
+    st->ts_count++;
 }
 
 /* Execution barrier between dependent dispatches/copies in the batch. One
@@ -1321,6 +1436,7 @@ static void vk_seq_barrier(struct vk_state *st) {
     st->fn.CmdDispatch(st->seq_cmd, gx, gy, gz);
     st->seq_dispatches++;
     st->stat_dispatches++;
+    vk_prof_stamp(st, (uint32_t) pipe);
     return GEIST_OK;
 }
 
@@ -1370,8 +1486,8 @@ static bool vk_tensor_gpu(const struct geist_tensor *t, VkDescriptorBufferInfo *
                                  .rows           = (uint32_t) m,
                                  .x_stride       = (uint32_t) n_in,
                                  .y_stride       = (uint32_t) n_out};
-    s = vk_seq_dispatch(be, pipe, binfo, &push, sizeof(push), (uint32_t) n_out, (uint32_t) m,
-                        1);
+    s = vk_seq_dispatch(be, pipe, binfo, &push, sizeof(push),
+                        vk_linear_gx(pipe, (uint32_t) n_out), (uint32_t) m, 1);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1649,6 +1765,13 @@ static void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
 
 static uint32_t vk_groups(size_t n) {
     return (uint32_t) ((n + 255) / 256);
+}
+
+/* Workgroup count along n_out for the linear pipes (matvec_q4k computes
+ * 8 rows per workgroup; the rest are one row per workgroup). */
+static uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
+    return (pipe == VK_PIPE_MATVEC_Q4K || pipe == VK_PIPE_MATVEC_Q6K) ? (n_out + 7u) / 8u
+                                                                      : n_out;
 }
 
 #define VK_OPS(be, bit) ((((struct vk_state *) (be)->state)->gpu_ops & (bit)) != 0)
@@ -2203,6 +2326,7 @@ static constexpr float VK_GELU_K1 = 0.044715f;
                                      .size      = n_bytes};
         st->fn.CmdCopyBuffer(st->seq_cmd, src->buf, dst->buf, 1, &region);
         st->seq_dispatches++;
+        vk_prof_stamp(st, VK_PIPE_COUNT);
         return GEIST_OK;
     }
     /* Host fallback. */
@@ -2271,6 +2395,7 @@ enum { VK_XRING_CAP = 192u << 20 }; /* a full prefill chunk stages ~124 MB */
         }
     }
     st->seq_dispatches++;
+    vk_prof_stamp(st, VK_PIPE_COUNT);
     *out_elem_off = (uint32_t) (st->xring_used / sizeof(float));
     st->xring_used = (st->xring_used + bytes + 63) & ~(size_t) 63;
     return true;
@@ -2306,10 +2431,21 @@ enum { VK_XRING_CAP = 192u << 20 }; /* a full prefill chunk stages ~124 MB */
     }
     const uint32_t n_in  = (uint32_t) w->n_in;
     const uint32_t n_out = (uint32_t) w->n_out;
-    if (!vk_xring_stage(be, t_x, m, n_in, &xo)) {
-        return GEIST_E_UNSUPPORTED;
+    uint32_t       x_stride;
+    if (t_x->buffer->device_mem) {
+        /* BAR-resident activations: bind in place, no staging copy. */
+        if (!vk_tensor_gpu(t_x, &bi[0], &xo)) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        x_stride = t_x->ndim >= 2 ? (uint32_t) t_x->stride[t_x->ndim - 2] : n_in;
+    } else {
+        if (!vk_xring_stage(be, t_x, m, n_in, &xo)) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        bi[0]    = (VkDescriptorBufferInfo) {.buffer = st->xring->buf,
+                                             .range  = VK_WHOLE_SIZE};
+        x_stride = n_in; /* ring copy is contiguous */
     }
-    bi[0] = (VkDescriptorBufferInfo) {.buffer = st->xring->buf, .range = VK_WHOLE_SIZE};
     bi[1] = (VkDescriptorBufferInfo) {.buffer = wbuf->buf, .range = VK_WHOLE_SIZE};
     const uint32_t y_stride = t_y->ndim >= 2 ? (uint32_t) t_y->stride[t_y->ndim - 2]
                                              : n_out;
@@ -2319,9 +2455,10 @@ enum { VK_XRING_CAP = 192u << 20 }; /* a full prefill chunk stages ~124 MB */
                                  .rows           = (uint32_t) m,
                                  .x_offset       = xo,
                                  .y_offset       = yo,
-                                 .x_stride       = n_in, /* ring copy is contiguous */
+                                 .x_stride       = x_stride,
                                  .y_stride       = y_stride};
-    return vk_seq_dispatch(be, m == 1 ? mv : mm, bi, &push, sizeof(push), n_out,
+    const enum vk_pipe lpipe = m == 1 ? mv : mm;
+    return vk_seq_dispatch(be, lpipe, bi, &push, sizeof(push), vk_linear_gx(lpipe, n_out),
                            (uint32_t) m, 1);
 }
 

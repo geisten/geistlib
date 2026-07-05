@@ -1,4 +1,13 @@
 #version 450
+#extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+/* Q4_K matvec v3: one row per subgroup (8 rows per 256-thread workgroup at
+ * subgroup size 32). Block headers (d/dmin + 12 scale bytes = 4 u32) are
+ * loaded once by lane 0 and broadcast — the v2 kernel issued 7 byte-loads
+ * per lane per block and was instruction-bound at ~15 GB/s. Final reduce
+ * via subgroupAdd. Assumes subgroup size 32 (2080-Ti-first; RADV wave64
+ * needs a lane remap). Dispatch: gx = ceil(n_out / 8). */
 
 layout(local_size_x = 256) in;
 
@@ -18,72 +27,72 @@ layout(push_constant) uniform Push {
     uint y_stride;
 } pc;
 
-shared float partial[256];
-
-uint load_u8(uint byte_offset) {
-    uint word = w[byte_offset >> 2];
-    return (word >> ((byte_offset & 3u) * 8u)) & 0xffu;
-}
-
-float load_f16(uint byte_offset) {
-    uint lo = load_u8(byte_offset);
-    uint hi = load_u8(byte_offset + 1u);
-    return unpackHalf2x16(lo | (hi << 8u)).x;
-}
-
-void get_scale_min(uint j, uint scales_base, out uint sc, out uint mn) {
-    if (j < 4u) {
-        sc = load_u8(scales_base + j) & 63u;
-        mn = load_u8(scales_base + j + 4u) & 63u;
-    } else {
-        uint q_j4 = load_u8(scales_base + j + 4u);
-        uint q_jm4 = load_u8(scales_base + j - 4u);
-        uint q_j = load_u8(scales_base + j);
-        sc = (q_j4 & 15u) | ((q_jm4 >> 6u) << 4u);
-        mn = (q_j4 >> 4u) | ((q_j >> 6u) << 4u);
-    }
-}
-
 void main() {
-    uint row = gl_WorkGroupID.x;
-    uint lid = gl_LocalInvocationID.x;
-
-    if (row >= pc.n_out) {
-        return;
-    }
+    uint warp = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint row = gl_WorkGroupID.x * gl_NumSubgroups + warp;
 
     float sum = 0.0;
-    for (uint k = lid; k < pc.n_in; k += 256u) {
-        uint block_in_row = k / 256u;
-        uint in_block = k - block_in_row * 256u;
-        uint sub = in_block / 32u;
-        uint idx = in_block - sub * 32u;
-        uint block_byte = pc.w_offset +
-            (row * pc.blocks_per_row + block_in_row) * 144u;
+    if (row < pc.n_out) {
+        uint sub = lane >> 2;
+        uint idx8 = (lane & 3u) * 8u;
+        uint shift = (sub & 1u) * 4u;
+        uint row_word = (pc.w_offset + row * pc.blocks_per_row * 144u) >> 2u;
 
-        float d = load_f16(block_byte);
-        float dmin = load_f16(block_byte + 2u);
+        for (uint b = 0; b < pc.blocks_per_row; b++) {
+            uint blk = row_word + b * 36u; /* 144 bytes = 36 words */
 
-        uint sc_u;
-        uint mn_u;
-        get_scale_min(sub, block_byte + 4u, sc_u, mn_u);
+            uint h0 = 0u, h1 = 0u, h2 = 0u, h3 = 0u;
+            if (lane == 0u) {
+                h0 = w[blk];
+                h1 = w[blk + 1u];
+                h2 = w[blk + 2u];
+                h3 = w[blk + 3u];
+            }
+            h0 = subgroupBroadcast(h0, 0);
+            h1 = subgroupBroadcast(h1, 0);
+            h2 = subgroupBroadcast(h2, 0);
+            h3 = subgroupBroadcast(h3, 0);
 
-        uint q_byte = load_u8(block_byte + 16u + (sub / 2u) * 32u + idx);
-        uint q = (sub & 1u) == 0u ? (q_byte & 15u) : (q_byte >> 4u);
-        float wv = d * float(sc_u) * float(q) - dmin * float(mn_u);
-        sum += x[pc.x_offset + k] * wv;
-    }
-    partial[lid] = sum;
-    barrier();
+            vec2 dd = unpackHalf2x16(h0); /* d, dmin */
+            uint sc_u, mn_u;
+            if (sub < 4u) {
+                uint qs_b = (h1 >> (8u * sub)) & 0xffu;
+                uint qm_b = (h2 >> (8u * sub)) & 0xffu;
+                sc_u = qs_b & 63u;
+                mn_u = qm_b & 63u;
+            } else {
+                uint j = sub - 4u;
+                uint q_j4 = (h3 >> (8u * j)) & 0xffu;
+                uint q_jm4 = (h1 >> (8u * j)) & 0xffu;
+                uint q_j = (h2 >> (8u * j)) & 0xffu;
+                sc_u = (q_j4 & 15u) | ((q_jm4 >> 6u) << 4u);
+                mn_u = (q_j4 >> 4u) | ((q_j >> 6u) << 4u);
+            }
 
-    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
-        if (lid < stride) {
-            partial[lid] += partial[lid + stride];
+            uint qs = blk + 4u + (sub >> 1u) * 8u + (idx8 >> 2u);
+            uint q0 = w[qs];
+            uint q1 = w[qs + 1u];
+
+            uint x_base = pc.x_offset + b * 256u + sub * 32u + idx8;
+            float xq = 0.0;
+            float xs = 0.0;
+            for (uint j = 0; j < 4u; j++) {
+                float xv = x[x_base + j];
+                xq += xv * float((q0 >> (8u * j + shift)) & 15u);
+                xs += xv;
+            }
+            for (uint j = 0; j < 4u; j++) {
+                float xv = x[x_base + 4u + j];
+                xq += xv * float((q1 >> (8u * j + shift)) & 15u);
+                xs += xv;
+            }
+            sum += dd.x * float(sc_u) * xq - dd.y * float(mn_u) * xs;
         }
-        barrier();
     }
 
-    if (lid == 0u) {
-        y[pc.y_offset + row] = partial[0];
+    sum = subgroupAdd(sum);
+    if (subgroupElect() && row < pc.n_out) {
+        y[pc.y_offset + row] = sum;
     }
 }

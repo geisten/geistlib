@@ -1,5 +1,10 @@
 #version 450
 
+/* Q6_K matvec, 8 rows per 256-thread workgroup (8 virtual warps of 32).
+ * Lane owns 8 consecutive elements — one (half, stream, l-run), so scale,
+ * d and the shift constants are per-lane-per-block, and ql/qh arrive as
+ * aligned u32 pairs. Dispatch: gx = ceil(n_out / 8). */
+
 layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0) readonly buffer X { float x[]; };
@@ -18,16 +23,10 @@ layout(push_constant) uniform Push {
     uint y_stride;
 } pc;
 
-shared float partial[256];
+shared float red[256];
 
 uint load_u8(uint byte_offset) {
-    uint word = w[byte_offset >> 2];
-    return (word >> ((byte_offset & 3u) * 8u)) & 0xffu;
-}
-
-int load_i8(uint byte_offset) {
-    uint u = load_u8(byte_offset);
-    return u < 128u ? int(u) : int(u) - 256;
+    return (w[byte_offset >> 2] >> ((byte_offset & 3u) * 8u)) & 0xffu;
 }
 
 float load_f16(uint byte_offset) {
@@ -36,64 +35,61 @@ float load_f16(uint byte_offset) {
     return unpackHalf2x16(lo | (hi << 8u)).x;
 }
 
-void main() {
-    uint row = gl_WorkGroupID.x;
-    uint lid = gl_LocalInvocationID.x;
+int load_i8(uint byte_offset) {
+    return int(load_u8(byte_offset) ^ 0x80u) - 0x80;
+}
 
-    if (row >= pc.n_out) {
-        return;
-    }
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint warp = lid >> 5;
+    uint lane = lid & 31u;
+    uint row = gl_WorkGroupID.x * 8u + warp;
 
     float sum = 0.0;
-    for (uint k = lid; k < pc.n_in; k += 256u) {
-        uint block_in_row = k / 256u;
-        uint in_block = k - block_in_row * 256u;
-        uint half_idx = in_block / 128u;
-        uint in_half = in_block - half_idx * 128u;
-        uint stream = in_half / 32u;
-        uint l = in_half - stream * 32u;
-        uint is = l / 16u;
-        uint block_byte = pc.w_offset +
-            (row * pc.blocks_per_row + block_in_row) * 210u;
-        uint ql_base = block_byte + half_idx * 64u;
-        uint qh_base = block_byte + 128u + half_idx * 32u;
-        uint sc_base = block_byte + 192u + half_idx * 8u;
+    if (row < pc.n_out) {
+        uint e0 = lane * 8u;             /* first owned element in block */
+        uint half_idx = e0 >> 7;
+        uint in_half = e0 & 127u;
+        uint stream = in_half >> 5;      /* quadrant 0..3 */
+        uint l0 = in_half & 31u;         /* 0, 8, 16, 24 */
+        uint ql_shift = (stream >= 2u) ? 4u : 0u;
+        uint qh_shift = stream * 2u;
+        uint sc_idx = stream * 2u + (l0 >> 4);
+        uint row_byte = pc.w_offset + row * pc.blocks_per_row * 210u;
 
-        uint ql0 = load_u8(ql_base + l);
-        uint ql1 = load_u8(ql_base + l + 32u);
-        uint qh = load_u8(qh_base + l);
-        uint q_u;
-        uint sc_idx;
-        if (stream == 0u) {
-            q_u = (ql0 & 15u) | (((qh >> 0u) & 3u) << 4u);
-            sc_idx = is + 0u;
-        } else if (stream == 1u) {
-            q_u = (ql1 & 15u) | (((qh >> 2u) & 3u) << 4u);
-            sc_idx = is + 2u;
-        } else if (stream == 2u) {
-            q_u = (ql0 >> 4u) | (((qh >> 4u) & 3u) << 4u);
-            sc_idx = is + 4u;
-        } else {
-            q_u = (ql1 >> 4u) | (((qh >> 6u) & 3u) << 4u);
-            sc_idx = is + 6u;
+        for (uint b = 0; b < pc.blocks_per_row; b++) {
+            uint block_byte = row_byte + b * 210u;
+            uint ql_byte = block_byte + half_idx * 64u + (stream & 1u) * 32u + l0;
+            uint qh_byte = block_byte + 128u + half_idx * 32u + l0;
+
+            /* ql/qh byte runs; block stride 210 breaks 4-byte alignment on
+             * odd blocks, so assemble from the byte loader (L1-hit heavy). */
+            float d = load_f16(block_byte + 208u);
+            int sc = load_i8(block_byte + 192u + half_idx * 8u + sc_idx);
+
+            uint x_base = pc.x_offset + b * 256u + e0;
+            float xq = 0.0;
+            float xs = 0.0;
+            for (uint j = 0; j < 8u; j++) {
+                uint qlv = (load_u8(ql_byte + j) >> ql_shift) & 15u;
+                uint qhv = (load_u8(qh_byte + j) >> qh_shift) & 3u;
+                float xv = x[x_base + j];
+                xq += xv * float(qlv | (qhv << 4u));
+                xs += xv;
+            }
+            sum += d * float(sc) * (xq - 32.0 * xs);
         }
-
-        float d = load_f16(block_byte + 208u);
-        int sc = load_i8(sc_base + sc_idx);
-        int q = int(q_u) - 32;
-        sum += x[pc.x_offset + k] * d * float(sc) * float(q);
     }
-    partial[lid] = sum;
-    barrier();
 
-    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
-        if (lid < stride) {
-            partial[lid] += partial[lid + stride];
+    red[lid] = sum;
+    barrier();
+    for (uint stride = 16u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) {
+            red[lid] += red[lid + stride];
         }
         barrier();
     }
-
-    if (lid == 0u) {
-        y[pc.y_offset + row] = partial[0];
+    if (lane == 0u && row < pc.n_out) {
+        y[pc.y_offset + row] = red[warp * 32u];
     }
 }
