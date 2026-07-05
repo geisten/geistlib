@@ -46,6 +46,8 @@
 #include "shaders/attention_f32_spv.h"
 #include "shaders/embed_lookup_scaled_spv.h"
 #include "shaders/ffn_gate_up_gelu_q4k_spv.h"
+#include "shaders/matmul_q4k_cm_spv.h"
+#include "shaders/matmul_q6k_cm_spv.h"
 #include "shaders/qkv_prep_f32_spv.h"
 #include "shaders/gelu_tanh_f32_spv.h"
 #include "shaders/gelu_tanh_mul_f32_spv.h"
@@ -151,6 +153,8 @@ enum vk_pipe {
     VK_PIPE_EMBED,
     VK_PIPE_FFN_GATE_UP,
     VK_PIPE_QKV_PREP,
+    VK_PIPE_MM_Q4K_CM, /* tensor-core GEMMs; created only with coopmat */
+    VK_PIPE_MM_Q6K_CM,
     VK_PIPE_COUNT,
 };
 
@@ -275,7 +279,7 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_GELU_MUL] = 3,   [VK_PIPE_SCALE] = 2,      [VK_PIPE_RMSNORM] = 3,
         [VK_PIPE_RMSNORM_ADD] = 4, [VK_PIPE_ROPE] = 3,      [VK_PIPE_ATTENTION] = 4,
         [VK_PIPE_ARGMAX] = 2,     [VK_PIPE_EMBED] = 2,      [VK_PIPE_FFN_GATE_UP] = 4,
-        [VK_PIPE_QKV_PREP] = 6,
+        [VK_PIPE_QKV_PREP] = 6, [VK_PIPE_MM_Q4K_CM] = 3, [VK_PIPE_MM_Q6K_CM] = 3,
 };
 
 struct geist_buffer {
@@ -797,12 +801,23 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             [VK_PIPE_FFN_GATE_UP] = {ffn_gate_up_gelu_q4k_spv,
                                      sizeof(ffn_gate_up_gelu_q4k_spv)},
             [VK_PIPE_QKV_PREP]    = {qkv_prep_f32_spv, sizeof(qkv_prep_f32_spv)},
+            [VK_PIPE_MM_Q4K_CM]   = {matmul_q4k_cm_spv, sizeof(matmul_q4k_cm_spv)},
+            [VK_PIPE_MM_Q6K_CM]   = {matmul_q6k_cm_spv, sizeof(matmul_q6k_cm_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
+        if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM) && !st->has_coopmat) {
+            continue; /* stays VK_NULL_HANDLE; linear_t falls back */
+        }
         enum geist_status s = vk_make_pipeline(be, st, blobs[i].code, blobs[i].bytes,
                                                st->seq_playouts[vk_pipe_nbind[i] - 2],
                                                &st->pipes[i]);
         if (s != GEIST_OK) {
+            if (i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM) {
+                fprintf(stderr, "geist vulkan: coopmat pipeline unavailable — using the "
+                                "register-tiled GEMM\n");
+                st->pipes[i] = VK_NULL_HANDLE;
+                continue;
+            }
             return s;
         }
     }
@@ -878,7 +893,7 @@ static void vk_destroy(struct geist_backend *be) {
                     "matvec_q4k", "matmul_q4k", "matvec_q6k", "matmul_q6k", "matvec_f32",
                     "matmul_f32", "add",        "mul",        "gelu",       "gelu_mul",
                     "scale",      "rmsnorm",    "rmsnorm_add", "rope",      "attention",
-                    "argmax",     "embed",      "ffn_gate_up", "qkv_prep", "copy"};
+                    "argmax",     "embed",      "ffn_gate_up", "qkv_prep", "mm_q4k_cm", "mm_q6k_cm", "copy"};
             fprintf(stderr, "geist vulkan gpu profile:\n");
             for (int i = 0; i <= VK_PIPE_COUNT; ++i) {
                 if (st->prof_calls[i] > 0) {
@@ -1266,6 +1281,8 @@ static void vk_buffer_unmap(struct geist_buffer *buf) {
 
 static uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out);
 static uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m);
+static void     vk_linear_cm_route(struct vk_state *st, enum vk_pipe *pipe, uint32_t m,
+                                   uint32_t n_out, uint32_t *gx, uint32_t *gy);
 
 [[nodiscard]] static enum geist_status vk_stage_reserve(struct geist_backend *be,
                                                         struct geist_buffer **slot,
@@ -1495,9 +1512,11 @@ static bool vk_tensor_gpu(const struct geist_tensor *t, VkDescriptorBufferInfo *
                                  .rows           = (uint32_t) m,
                                  .x_stride       = (uint32_t) n_in,
                                  .y_stride       = (uint32_t) n_out};
-    s = vk_seq_dispatch(be, pipe, binfo, &push, sizeof(push),
-                        vk_linear_gx(pipe, (uint32_t) n_out),
-                        vk_linear_gy(pipe, (uint32_t) m), 1);
+    enum vk_pipe eff = pipe;
+    uint32_t     gx  = vk_linear_gx(pipe, (uint32_t) n_out);
+    uint32_t     gy  = vk_linear_gy(pipe, (uint32_t) m);
+    vk_linear_cm_route(st, &eff, (uint32_t) m, (uint32_t) n_out, &gx, &gy);
+    s = vk_seq_dispatch(be, eff, binfo, &push, sizeof(push), gx, gy, 1);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1797,6 +1816,25 @@ static uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m) {
         return (m + 31u) / 32u;
     }
     return (pipe == VK_PIPE_MATMUL_Q6K || pipe == VK_PIPE_MATMUL_F32) ? (m + 15u) / 16u : m;
+}
+
+/* Reroute conforming quant GEMMs onto the tensor-core pipelines. */
+static void vk_linear_cm_route(struct vk_state *st, enum vk_pipe *pipe, uint32_t m,
+                               uint32_t n_out, uint32_t *gx, uint32_t *gy) {
+    enum vk_pipe cm;
+    if (*pipe == VK_PIPE_MATMUL_Q4K) {
+        cm = VK_PIPE_MM_Q4K_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_Q6K) {
+        cm = VK_PIPE_MM_Q6K_CM;
+    } else {
+        return;
+    }
+    if ((m & 15u) != 0 || n_out % 64u != 0 || st->pipes[cm] == VK_NULL_HANDLE) {
+        return;
+    }
+    *pipe = cm;
+    *gx   = n_out / 64u;
+    *gy   = (m + 63u) / 64u;
 }
 
 #define VK_OPS(be, bit) ((((struct vk_state *) (be)->state)->gpu_ops & (bit)) != 0)
@@ -2482,9 +2520,15 @@ enum { VK_XRING_CAP = 192u << 20 }; /* a full prefill chunk stages ~124 MB */
                                  .y_offset       = yo,
                                  .x_stride       = x_stride,
                                  .y_stride       = y_stride};
-    const enum vk_pipe lpipe = m == 1 ? mv : mm;
-    return vk_seq_dispatch(be, lpipe, bi, &push, sizeof(push), vk_linear_gx(lpipe, n_out),
-                           vk_linear_gy(lpipe, (uint32_t) m), 1);
+    enum vk_pipe lpipe = m == 1 ? mv : mm;
+    uint32_t     gx    = vk_linear_gx(lpipe, n_out);
+    uint32_t     gy    = vk_linear_gy(lpipe, (uint32_t) m);
+    /* Tensor-core path for conforming GEMMs (shaders assume w_offset == 0,
+     * which holds for all registry uploads). */
+    if (m > 1) {
+        vk_linear_cm_route(st, &lpipe, (uint32_t) m, n_out, &gx, &gy);
+    }
+    return vk_seq_dispatch(be, lpipe, bi, &push, sizeof(push), gx, gy, 1);
 }
 
 [[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,

@@ -66,13 +66,14 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
     }
 }
 
-static void run_case(struct geist_backend *vk,
-                     struct geist_backend *ref,
-                     int                   dtype,
-                     const char           *name,
-                     size_t                n_in,
-                     size_t                n_out,
-                     size_t                m) {
+static void run_case_tol(struct geist_backend *vk,
+                         struct geist_backend *ref,
+                         int                   dtype,
+                         const char           *name,
+                         size_t                n_in,
+                         size_t                n_out,
+                         size_t                m,
+                         double                tol) {
     size_t w_bytes;
     if (dtype == GEIST_DTYPE_F32) {
         w_bytes = n_in * n_out * sizeof(float);
@@ -130,9 +131,9 @@ static void run_case(struct geist_backend *vk,
     char label[128];
     snprintf(label, sizeof label, "%s m=%zu (%zux%zu) parity, max_rel=%.2e", name, m, n_out,
              n_in, max_rel);
-    check(max_rel < 1e-3, label);
+    check(max_rel < tol, label);
     printf("  %-10s m=%-3zu  max_rel %.2e %s\n", name, m, max_rel,
-           max_rel < 1e-3 ? "OK" : "FAIL");
+           max_rel < tol ? "OK" : "FAIL");
 
     free(blob);
     free(x);
@@ -154,6 +155,7 @@ int main(void) {
         return 1;
     }
 
+#define run_case(vk, ref, dt, name, ni, no, m) run_case_tol(vk, ref, dt, name, ni, no, m, 1e-3)
     /* n_in must be a multiple of 256 for k-quants; n_out deliberately not a
      * multiple of the workgroup count to catch tail bugs. */
     run_case(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 1);
@@ -162,6 +164,11 @@ int main(void) {
     run_case(vk, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(vk, ref, GEIST_DTYPE_F32, "F32", 200, 130, 1);
     run_case(vk, ref, GEIST_DTYPE_F32, "F32", 200, 130, 8);
+    /* coopmat tensor-core path (m%16==0, n_out%64==0): f16 inputs, f32
+     * accumulate — looser tolerance by design (prefill-only path; the
+     * MMLU gate judges end-to-end). */
+    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 16, 2e-2);
+    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 768, 128, 64, 2e-2);
 
     geist_backend_destroy(vk);
     geist_backend_destroy(ref);

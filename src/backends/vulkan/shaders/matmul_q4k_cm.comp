@@ -1,0 +1,146 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_memory_scope_semantics : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+
+/* Q4_K GEMM on tensor cores (VK_KHR_cooperative_matrix).
+ * Tile: 64 output rows x 64 batch per 128-thread workgroup (4 subgroups,
+ * each owns a 16-row strip). BK = 32 aligns with the Q4_K 32-element
+ * sub-block, so scale/min resolve once per (row, k-step). Weights are
+ * dequantized to f16 in shared; x transposes into shared as f16; MMAs
+ * accumulate in f32. Column-major stores write y[t][row] directly.
+ * Requires: n_out % 64 == 0, rows % 16 == 0, n_in % 256 == 0, subgroup 32.
+ * Dispatch: gx = n_out/64, gy = ceil(rows/64). */
+
+layout(local_size_x = 128) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+const uint BM = 64;
+const uint BN = 64;
+const uint BK = 32;
+const uint ASTRIDE = BK + 8u;  /* f16 elems, pad against bank conflicts */
+const uint BSTRIDE = BN + 8u;
+
+shared float16_t Ash[BM * ASTRIDE];
+shared float16_t Bsh[BK * BSTRIDE];
+
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint row0 = gl_WorkGroupID.x * BM;
+    uint tb0 = gl_WorkGroupID.y * BN;
+    uint sg = gl_SubgroupID;
+
+    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc[4];
+    for (uint j = 0; j < 4u; j++) {
+        acc[j] = coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+    }
+
+    uint ksteps = pc.n_in / BK;
+    for (uint ks = 0; ks < ksteps; ks++) {
+        uint k0 = ks * BK;
+
+        /* ---- A tile: dequant 64 rows x 32 k of Q4_K into shared f16.
+         * thread -> (row = lid/2, half-k = lid&1): 16 elements. */
+        {
+            uint row = lid >> 1u;
+            uint hk = lid & 1u;
+            uint r = row0 + row;
+            uint b = k0 >> 8u;
+            uint sub = (k0 & 255u) >> 5u;
+            uint blk = ((r * pc.blocks_per_row + b) * 144u) >> 2u; /* w_offset==0 */
+            uint h0 = w[blk];
+            uint h1 = w[blk + 1u];
+            uint h2 = w[blk + 2u];
+            uint h3 = w[blk + 3u];
+            vec2 dd = unpackHalf2x16(h0);
+            uint sc_u, mn_u;
+            if (sub < 4u) {
+                sc_u = (h1 >> (8u * sub)) & 63u;
+                mn_u = (h2 >> (8u * sub)) & 63u;
+            } else {
+                uint j = sub - 4u;
+                uint q_j4 = (h3 >> (8u * j)) & 0xffu;
+                sc_u = (q_j4 & 15u) | ((((h1 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+                mn_u = (q_j4 >> 4u) | ((((h2 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+            }
+            float dsc = dd.x * float(sc_u);
+            float dmn = dd.y * float(mn_u);
+            uint shift = (sub & 1u) * 4u;
+            /* 16 nibbles = 4 u32 of packed qs */
+            uint qsw = blk + 4u + (sub >> 1u) * 8u + hk * 4u;
+            uint abase = row * ASTRIDE + hk * 16u;
+            for (uint u = 0; u < 4u; u++) {
+                uint qw = w[qsw + u];
+                for (uint j = 0; j < 4u; j++) {
+                    float q = float((qw >> (8u * j + shift)) & 15u);
+                    Ash[abase + u * 4u + j] = float16_t(dsc * q - dmn);
+                }
+            }
+        }
+
+        /* ---- B tile: x[t][k0..k0+32] -> Bsh[k][t] (f16, transposed).
+         * thread -> (col = lid&63, half-k = lid>>6): 16 elements. */
+        {
+            uint col = lid & 63u;
+            uint hk = lid >> 6u;
+            uint t = tb0 + col;
+            if (t < pc.rows) {
+                uint xv = (pc.x_offset + t * pc.x_stride + k0 + hk * 16u) >> 2u;
+                for (uint u = 0; u < 4u; u++) {
+                    vec4 xw = x4[xv + u];
+                    uint kb = hk * 16u + u * 4u;
+                    Bsh[(kb + 0u) * BSTRIDE + col] = float16_t(xw.x);
+                    Bsh[(kb + 1u) * BSTRIDE + col] = float16_t(xw.y);
+                    Bsh[(kb + 2u) * BSTRIDE + col] = float16_t(xw.z);
+                    Bsh[(kb + 3u) * BSTRIDE + col] = float16_t(xw.w);
+                }
+            } else {
+                for (uint u = 0; u < 16u; u++) {
+                    Bsh[(hk * 16u + u) * BSTRIDE + col] = float16_t(0.0);
+                }
+            }
+        }
+        barrier();
+
+        for (uint kk = 0; kk < BK; kk += 16u) {
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
+            coopMatLoad(matA, Ash, sg * 16u * ASTRIDE + kk, ASTRIDE,
+                        gl_CooperativeMatrixLayoutRowMajor);
+            for (uint j = 0; j < 4u; j++) {
+                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matB;
+                coopMatLoad(matB, Bsh, kk * BSTRIDE + j * 16u, BSTRIDE,
+                            gl_CooperativeMatrixLayoutRowMajor);
+                acc[j] = coopMatMulAdd(matA, matB, acc[j]);
+            }
+        }
+        barrier();
+    }
+
+    /* store: acc[j] is 16 rows x 16 batch; column-major store lands it as
+     * y[t][row] with stride y_stride. Guard whole 16-col blocks (rows%16==0
+     * is a C-side precondition). */
+    uint out_row = row0 + sg * 16u;
+    for (uint j = 0; j < 4u; j++) {
+        uint t = tb0 + j * 16u;
+        if (t < pc.rows) {
+            coopMatStore(acc[j], y, pc.y_offset + t * pc.y_stride + out_row, pc.y_stride,
+                         gl_CooperativeMatrixLayoutColumnMajor);
+        }
+    }
+}
