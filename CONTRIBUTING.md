@@ -1,9 +1,11 @@
 # Contributing to geist
 
-Thanks for your interest! geist is a lean C23 inference runtime, and the most
-valuable contributions right now are in **NEON/AMX microkernels**, **low-bit
-quantization** (IQ/TQ/ternary), and **portability** (Windows, wider x86-64 quant
-coverage, GPU backends).
+Thanks for your interest! geist is a lean C23 inference runtime and an open
+experiment in how far small, heavily quantized models go on everyday hardware —
+the [roadmap](ROADMAP.md) lays out the tracks. The most valuable contributions
+right now are in **NEON/AMX microkernels**, **low-bit quantization**
+(IQ/TQ/ternary), and **portability** (Windows, wider x86-64 quant coverage, GPU
+backends).
 
 ## Ground rules
 

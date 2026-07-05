@@ -1,5 +1,13 @@
 # Agent, CLI & memory palace
 
+**Why this layer exists.** A 2 B model won't reliably drive tools or carry a
+long memory on its own. geist's answer isn't a bigger model — it's a tight
+harness around a small one: a bounded tool loop, routing and forced calls that
+extract a valid action from an *untrained* model, and a file-based memory sized
+to what the model can hold. The goal is big-model usefulness on a narrow,
+well-defined task — entirely on-device. It's an open, active track (see the
+[roadmap](../ROADMAP.md)).
+
 The interaction layer that sits **above** the public ABI (`include/geist.h`).
 Everything here lives in `tools/` as **header-only** modules (`static inline`),
 so the desktop binaries and an embedded host (iOS/Android) compile the same code
