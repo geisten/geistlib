@@ -109,7 +109,7 @@ float dequant_q6k(uint row_base, uint k) {
     uint stream = in_half / 32u;
     uint l = in_half - stream * 32u;
     uint is = l / 16u;
-    uint block_byte = row_base + block_in_row * 210u;
+    uint block_byte = row_base + block_in_row * 216u;
     uint ql_base = block_byte + half_idx * 64u;
     uint qh_base = block_byte + 128u + half_idx * 32u;
     uint sc_base = block_byte + 192u + half_idx * 8u;
@@ -165,7 +165,7 @@ void main() {
         value = dequant_q5k(row_base, k);
     } else if (pc.dtype == DTYPE_Q6_K) {
         uint row_base = pc.w_byte_offset +
-            pc.token_id * pc.blocks_per_row * 210u;
+            pc.token_id * pc.blocks_per_row * 216u;
         value = dequant_q6k(row_base, k);
     }
 

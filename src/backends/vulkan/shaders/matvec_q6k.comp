@@ -66,24 +66,26 @@ void main() {
         uint ql_shift = (stream >= 2u) ? 4u : 0u;
         uint qh_shift = stream * 2u;
         uint sc_idx = stream * 2u + (l0 >> 4);
-        uint row_byte = pc.w_offset + row * pc.blocks_per_row * 210u;
+        uint row_byte = pc.w_offset + row * pc.blocks_per_row * 216u;
 
         for (uint b = 0; b < pc.blocks_per_row; b++) {
-            uint block_byte = row_byte + b * 210u;
-            uint ql_byte = block_byte + half_idx * 64u + (stream & 1u) * 32u + l0;
-            uint qh_byte = block_byte + 128u + half_idx * 32u + l0;
+            uint block_byte = row_byte + b * 216u; /* GPU copy: 216-B aligned blocks */
+            uint qlw = (block_byte + half_idx * 64u + (stream & 1u) * 32u + l0) >> 2u;
+            uint qhw = (block_byte + 128u + half_idx * 32u + l0) >> 2u;
+            uint ql0 = w[qlw];
+            uint ql1 = w[qlw + 1u];
+            uint qh0 = w[qhw];
+            uint qh1 = w[qhw + 1u];
 
-            /* ql/qh byte runs; block stride 210 breaks 4-byte alignment on
-             * odd blocks, so assemble from the byte loader (L1-hit heavy). */
             float d = load_f16(block_byte + 208u);
             int sc = load_i8(block_byte + 192u + half_idx * 8u + sc_idx);
 
             vec4 q_lo, q_hi;
             for (uint j = 0; j < 4u; j++) {
-                q_lo[j] = float(((load_u8(ql_byte + j) >> ql_shift) & 15u) |
-                                (((load_u8(qh_byte + j) >> qh_shift) & 3u) << 4u));
-                q_hi[j] = float(((load_u8(ql_byte + 4u + j) >> ql_shift) & 15u) |
-                                (((load_u8(qh_byte + 4u + j) >> qh_shift) & 3u) << 4u));
+                q_lo[j] = float((((ql0 >> (8u * j)) >> ql_shift) & 15u) |
+                                ((((qh0 >> (8u * j)) >> qh_shift) & 3u) << 4u));
+                q_hi[j] = float((((ql1 >> (8u * j)) >> ql_shift) & 15u) |
+                                ((((qh1 >> (8u * j)) >> qh_shift) & 3u) << 4u));
             }
             uint xe = (b * 256u + e0) >> 2u;
             vec4 xa = x_shared ? xsh[xe] : x4[(pc.x_offset >> 2u) + xe];

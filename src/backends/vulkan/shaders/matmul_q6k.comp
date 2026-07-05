@@ -62,10 +62,10 @@ void main() {
         uint ql_shift = (stream >= 2u) ? 4u : 0u;
         uint qh_shift = stream * 2u;
         uint sc_idx = stream * 2u + (l0 >> 4);
-        uint row_byte = pc.w_offset + row * pc.blocks_per_row * 210u;
+        uint row_byte = pc.w_offset + row * pc.blocks_per_row * 216u;
 
         for (uint b = 0; b < pc.blocks_per_row; b++) {
-            uint block_byte = row_byte + b * 210u;
+            uint block_byte = row_byte + b * 216u;
             uint ql_byte = block_byte + half_idx * 64u + (stream & 1u) * 32u + l0;
             uint qh_byte = block_byte + 128u + half_idx * 32u + l0;
             float d = load_f16(block_byte + 208u);

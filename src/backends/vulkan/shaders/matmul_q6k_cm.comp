@@ -81,20 +81,25 @@ void main() {
             uint in_block = k0 & 255u;
             uint half_idx = in_block >> 7u;
             uint stream = (in_block & 127u) >> 5u;
-            uint block_byte = (r * pc.blocks_per_row + b) * 210u; /* w_offset==0 */
+            uint block_byte = (r * pc.blocks_per_row + b) * 216u; /* w_offset==0 */
             float d = load_f16(block_byte + 208u);
             uint l0 = hk * 16u;
             int sc = load_i8(block_byte + 192u + half_idx * 8u + stream * 2u + (l0 >> 4u));
             float dsc = d * float(sc);
-            uint ql_byte = block_byte + half_idx * 64u + (stream & 1u) * 32u + l0;
-            uint qh_byte = block_byte + 128u + half_idx * 32u + l0;
+            /* 216-byte GPU blocks: ql/qh runs are 4-byte aligned words */
+            uint qlw = (block_byte + half_idx * 64u + (stream & 1u) * 32u + l0) >> 2u;
+            uint qhw = (block_byte + 128u + half_idx * 32u + l0) >> 2u;
             uint ql_shift = (stream >= 2u) ? 4u : 0u;
             uint qh_shift = stream * 2u;
             uint abase = row * ASTRIDE + hk * 16u;
-            for (uint i = 0; i < 16u; i++) {
-                uint q = ((load_u8(ql_byte + i) >> ql_shift) & 15u) |
-                         (((load_u8(qh_byte + i) >> qh_shift) & 3u) << 4u);
-                Ash[abase + i] = float16_t(dsc * (float(q) - 32.0));
+            for (uint u = 0; u < 4u; u++) {
+                uint qlv = w[qlw + u];
+                uint qhv = w[qhw + u];
+                for (uint j = 0; j < 4u; j++) {
+                    uint q = (((qlv >> (8u * j)) >> ql_shift) & 15u) |
+                             ((((qhv >> (8u * j)) >> qh_shift) & 3u) << 4u);
+                    Ash[abase + u * 4u + j] = float16_t(dsc * (float(q) - 32.0));
+                }
             }
         }
 

@@ -1896,11 +1896,15 @@ static void vk_w_cpu_m1(const float *x, const struct geist_weight *w,
 /* ---- resolve_weight: upload GPU-supported dtypes to VRAM, register,     */
 /*      install kernels; CPU fallback for the rest.                        */
 
+/* GPU copies of Q6_K are repacked to 216-byte blocks (210 + 6 pad) so
+ * every field sits 4-byte aligned and the kernels use word loads. */
+enum { VK_Q6K_GPU_BLOCK = 216 };
+
 [[nodiscard]] static size_t vk_weight_bytes(const struct geist_weight *w) {
     const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_K: return n_out * (n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES;
-    case GEIST_DTYPE_Q6_K: return n_out * (n_in / Q6_K_BLOCK_ELEMS) * Q6_K_BLOCK_BYTES;
+    case GEIST_DTYPE_Q6_K: return n_out * (n_in / Q6_K_BLOCK_ELEMS) * VK_Q6K_GPU_BLOCK;
     case GEIST_DTYPE_F32: return n_out * n_in * sizeof(float);
     default: return 0;
     }
@@ -1977,7 +1981,23 @@ static void vk_w_cpu_m1(const float *x, const struct geist_weight *w,
     struct geist_buffer *gpu   = nullptr;
     enum geist_status    s =
             vk_buffer_create(be, bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_DEVICE, &gpu);
-    if (s == GEIST_OK) {
+    if (s == GEIST_OK && w->dtype == GEIST_DTYPE_Q6_K) {
+        const size_t n_blocks = bytes / VK_Q6K_GPU_BLOCK;
+        uint8_t     *packed   = heap_alloc_aligned(bytes, 64);
+        if (packed == nullptr) {
+            s = GEIST_E_OOM;
+        } else {
+            const uint8_t *srcb = (const uint8_t *) w->raw;
+            for (size_t i = 0; i < n_blocks; ++i) {
+                memcpy(packed + i * VK_Q6K_GPU_BLOCK, srcb + i * Q6_K_BLOCK_BYTES,
+                       Q6_K_BLOCK_BYTES);
+                memset(packed + i * VK_Q6K_GPU_BLOCK + Q6_K_BLOCK_BYTES, 0,
+                       VK_Q6K_GPU_BLOCK - Q6_K_BLOCK_BYTES);
+            }
+            s = vk_buffer_upload(gpu, bytes, packed);
+            safe_free((void **) &packed);
+        }
+    } else if (s == GEIST_OK) {
         s = vk_buffer_upload(gpu, bytes, (const uint8_t *) w->raw);
     }
     if (s != GEIST_OK) {
@@ -2883,6 +2903,11 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     if (wbuf != nullptr) {
         bi[0] = (VkDescriptorBufferInfo) {.buffer = wbuf->buf, .range = VK_WHOLE_SIZE};
     } else {
+        if (dtype_code == 10) {
+            /* Q6_K GPU copies are repacked to 216-byte blocks; the arena
+             * holds canonical 210-byte blocks the shader can't read. */
+            return GEIST_E_UNSUPPORTED;
+        }
         struct geist_tensor bytes_view = *embed_table;
         bytes_view.dtype               = GEIST_DTYPE_F32; /* only for the offset calc */
         if (embed_table->buffer->buf == VK_NULL_HANDLE ||
