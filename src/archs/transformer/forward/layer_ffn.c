@@ -73,10 +73,28 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     struct geist_tensor t_w_ffn_norm = view_1d(L->ffn_norm.buffer, st->d_model);
     const bool          profile      = transformer_profile_enabled(&g_ffn_profile);
     uint64_t            t0           = profile ? transformer_profile_now_ns() : 0;
-    s = v->rmsnorm(be, &t_h_post_attn_2d, &t_w_ffn_norm, ctx->eps, &t_pre_ff_2d);
-    transformer_profile_add(&g_ffn_profile, FFN_PROFILE_NORM, t0);
-    if (s != GEIST_OK) {
-        return s;
+
+    /* Fused norm + gate/up front (GPU decode fast path): the pre-FFN
+     * rmsnorm folds into the matvec's x loads — one dispatch replaces
+     * rmsnorm + ffn_gate_up. Anything unsupported falls through to the
+     * decomposed path below. */
+    bool ffn_front_fused = false;
+    if (v->ffn_norm_gate_up != nullptr && ctx->ffn_activation == GEIST_FFN_GEGLU &&
+        L->down_awq_inv_scale == nullptr) {
+        struct geist_tensor t_gate_f_2d =
+                view_2d(st->sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
+        ffn_front_fused = v->ffn_norm_gate_up(be, &t_h_post_attn_2d, &t_w_ffn_norm, ctx->eps,
+                                              &L->gate_proj, &L->up_proj,
+                                              &t_gate_f_2d) == GEIST_OK;
+        transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
+    }
+    if (!ffn_front_fused) {
+        t0 = profile ? transformer_profile_now_ns() : 0;
+        s  = v->rmsnorm(be, &t_h_post_attn_2d, &t_w_ffn_norm, ctx->eps, &t_pre_ff_2d);
+        transformer_profile_add(&g_ffn_profile, FFN_PROFILE_NORM, t0);
+        if (s != GEIST_OK) {
+            return s;
+        }
     }
 
     const bool          has_ffn_sub_norm = ctx->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr;
@@ -146,6 +164,11 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     } else {
         struct geist_tensor t_gate_2d =
                 view_2d(st->sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
+        if (ffn_front_fused) {
+            mid_buf  = st->sess->scratch_gate;
+            t_mid_2d = t_gate_2d;
+            goto ffn_mid_done;
+        }
         /* Fused gate+up matvec with GeGLU epilogue (GPU decode fast path):
          * one kernel, one activation pass over x, gelu(gate)*up written
          * directly. Only for the plain GeGLU activation without an AWQ
