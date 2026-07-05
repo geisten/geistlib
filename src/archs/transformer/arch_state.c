@@ -615,9 +615,10 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
        * fit (m×n_in int8 should fit the 64 KB L1: m=32→48 KB, m=64→96 KB).
        * GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; the metal
        * path never runs those in prefill, so the GPU may batch larger. */
-        const bool  is_metal = be->desc != nullptr && be->desc->name != nullptr &&
-                               strcmp(be->desc->name, "metal") == 0;
-        const int   cap      = is_metal ? 512 : (int) GEIST_QUANT_M_CAP;
+        const bool  is_gpu = be->desc != nullptr && be->desc->name != nullptr &&
+                             (strcmp(be->desc->name, "metal") == 0 ||
+                              strcmp(be->desc->name, "vulkan") == 0);
+        const int   cap    = is_gpu ? 512 : (int) GEIST_QUANT_M_CAP;
         const char *mm       = getenv("GEIST_M_MAX");
         if (mm != nullptr && mm[0] != '\0') {
             const int v = atoi(mm);

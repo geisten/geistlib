@@ -12,7 +12,7 @@ vulkan-shaders:
 	@set -e; for f in $(VULKAN_COMP); do \
 	  out="$${f%.comp}_spv.h"; sym=$$(basename $${f%.comp})_spv; \
 	  case "$$f" in \
-	    *_cm.comp) opt="" ;; \
+	    *_cm.comp|*_cm32.comp) opt="" ;; \
 	    *) opt="-O" ;; \
 	  esac; \
 	  glslc $$opt --target-env=vulkan1.3 -mfmt=num "$$f" -o "$$out.tmp"; \

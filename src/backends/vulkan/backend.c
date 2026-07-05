@@ -51,6 +51,7 @@
 #include "shaders/attn_comb_spv.h"
 #include "shaders/attn_part_f16_spv.h"
 #include "shaders/kv_append_f16_spv.h"
+#include "shaders/matmul_q4k_cm32_spv.h"
 #include "shaders/matmul_q4k_cm_spv.h"
 #include "shaders/matmul_q6k_cm_spv.h"
 #include "shaders/qkv_prep_f16_spv.h"
@@ -166,6 +167,7 @@ enum vk_pipe {
     VK_PIPE_KV_APPEND_F16,
     VK_PIPE_ATTN_PART_F16,
     VK_PIPE_ATTN_COMB,
+    VK_PIPE_MM_Q4K_CM32, /* small-n_out tensor-core tile */
     VK_PIPE_COUNT,
 };
 
@@ -344,7 +346,7 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_QKV_PREP] = 6, [VK_PIPE_MM_Q4K_CM] = 3, [VK_PIPE_MM_Q6K_CM] = 3,
         [VK_PIPE_ATTENTION_F16] = 4, [VK_PIPE_QKV_PREP_F16] = 6,
         [VK_PIPE_KV_APPEND_F16] = 4, [VK_PIPE_ATTN_PART_F16] = 4,
-        [VK_PIPE_ATTN_COMB] = 2,
+        [VK_PIPE_ATTN_COMB] = 2,     [VK_PIPE_MM_Q4K_CM32] = 3,
 };
 
 struct geist_buffer {
@@ -888,16 +890,19 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             [VK_PIPE_KV_APPEND_F16] = {kv_append_f16_spv, sizeof(kv_append_f16_spv)},
             [VK_PIPE_ATTN_PART_F16] = {attn_part_f16_spv, sizeof(attn_part_f16_spv)},
             [VK_PIPE_ATTN_COMB]     = {attn_comb_spv, sizeof(attn_comb_spv)},
+            [VK_PIPE_MM_Q4K_CM32]   = {matmul_q4k_cm32_spv, sizeof(matmul_q4k_cm32_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
-        if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM) && !st->has_coopmat) {
+        if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM ||
+             i == VK_PIPE_MM_Q4K_CM32) && !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */
         }
         enum geist_status s = vk_make_pipeline(be, st, blobs[i].code, blobs[i].bytes,
                                                st->seq_playouts[vk_pipe_nbind[i] - 2],
                                                &st->pipes[i]);
         if (s != GEIST_OK) {
-            if (i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM) {
+            if (i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM ||
+                i == VK_PIPE_MM_Q4K_CM32) {
                 fprintf(stderr, "geist vulkan: coopmat pipeline unavailable — using the "
                                 "register-tiled GEMM\n");
                 st->pipes[i] = VK_NULL_HANDLE;
@@ -987,7 +992,7 @@ static void vk_destroy(struct geist_backend *be) {
                     "matmul_f32", "add",        "mul",        "gelu",       "gelu_mul",
                     "scale",      "rmsnorm",    "rmsnorm_add", "rope",      "attention",
                     "argmax",     "embed",      "ffn_gate_up", "qkv_prep", "mm_q4k_cm", "mm_q6k_cm",
-                    "attn_f16",   "qkv_f16",    "kv_app_f16", "attn_part", "attn_comb", "copy"};
+                    "attn_f16",   "qkv_f16",    "kv_app_f16", "attn_part", "attn_comb", "mm_cm32", "copy"};
             fprintf(stderr, "geist vulkan gpu profile:\n");
             for (int i = 0; i <= VK_PIPE_COUNT; ++i) {
                 if (st->prof_calls[i] > 0) {
@@ -1108,6 +1113,18 @@ static void vk_destroy(struct geist_backend *be) {
                                   .allocationSize  = req.size,
                                   .memoryTypeIndex = mem_type};
     VkResult             r     = st->fn.AllocateMemory(st->device, &minfo, nullptr, &buf->mem);
+    if (r != VK_SUCCESS && !device_local) {
+        /* BAR heap exhausted (it is only 256 MB) — fall back to plain
+         * host-visible system memory. */
+        const uint32_t fb = vk_find_mem_type(st, req.memoryTypeBits,
+                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (fb != UINT32_MAX && fb != mem_type) {
+            minfo.memoryTypeIndex = fb;
+            mem_type              = fb;
+            r = st->fn.AllocateMemory(st->device, &minfo, nullptr, &buf->mem);
+        }
+    }
     if (r == VK_SUCCESS) {
         r = st->fn.BindBufferMemory(st->device, buf->buf, buf->mem, 0);
     }
@@ -2170,6 +2187,14 @@ static void vk_linear_cm_route(struct vk_state *st, enum vk_pipe *pipe, uint32_t
         return;
     }
     if ((m & 15u) != 0 || n_out % 64u != 0 || st->pipes[cm] == VK_NULL_HANDLE) {
+        return;
+    }
+    /* small n_out starves the SMs on the 64-row tile — use the 32-row one */
+    if (cm == VK_PIPE_MM_Q4K_CM && n_out < 4096u &&
+        st->pipes[VK_PIPE_MM_Q4K_CM32] != VK_NULL_HANDLE) {
+        *pipe = VK_PIPE_MM_Q4K_CM32;
+        *gx   = n_out / 32u;
+        *gy   = (m + 63u) / 64u;
         return;
     }
     *pipe = cm;
