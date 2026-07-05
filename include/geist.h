@@ -196,6 +196,11 @@ enum geist_kv_mode {
     GEIST_KV_INT8 = 2,
     GEIST_KV_KIVI = 3,
     GEIST_KV_F16  = 4,
+    /* Packed symmetric 4-bit KV cache (2 values/byte, per-token per-head
+     * scale). Half the INT8 footprint, near-lossless — especially with the
+     * Hadamard rotation (GEIST_KV_ROT=1, issue #61). No per-channel/group
+     * bookkeeping (unlike KIVI). Env: GEIST_KV_INT4=1. */
+    GEIST_KV_INT4 = 5,
 };
 
 struct geist_session_opts {

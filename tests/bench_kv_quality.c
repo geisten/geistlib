@@ -1,37 +1,46 @@
 /*
- * bench_kv_quality — KV-quant quality A/B via single-pass top-1 prediction.
+ * bench_kv_quality — KV-quant quality sweep via top-1 accuracy AND KL
+ * divergence vs an FP32 reference.
  *
- * Tokenizes a fixed paragraph, then calls verify_forward on the WHOLE
- * sequence in one batched pass. verify_forward produces the model's
- * argmax at each position simultaneously, so we get N-1 predictions for
- * the cost of one forward pass.
+ * Tokenizes a fixed paragraph, then for each KV mode teacher-forces the
+ * sequence one token at a time through the public session API, reading the
+ * full next-token distribution at every position with peek_logits. Two
+ * quality signals per mode:
  *
- * Reports top-1 accuracy: fraction of positions where the model's argmax
- * matches the actual next token in the text. A monotonic scalar quality
- * signal sensitive to KV-cache quantization noise.
+ *   top-1 acc : fraction of positions where the mode's argmax matches the
+ *               actual next token. Coarse — saturates, sub-1% noise.
+ *   mean KL   : mean KL(P_fp32 || P_mode) over all positions, in nats.
+ *               Sensitive — resolves quality differences top-1 cannot.
  *
- * Run with different GEIST_KV_* env vars to compare modes:
- *   GEIST_KV_INT8=0  ./bench_kv_quality   # FP32 KV (reference)
- *   GEIST_KV_INT8=1  ./bench_kv_quality   # INT8 KV
- *   GEIST_KV_KIVI=1  ./bench_kv_quality   # KIVI (future)
+ * Modes: FP32 / INT8 / INT8+ROT / INT4 / INT4+ROT / INT2 / INT2+ROT / KIVI.
+ * INT4/INT2 are the issue-#61 low-bit quality-sims (GEIST_KV_INT4 /
+ * GEIST_KV_QBITS) that reuse the INT8 storage path with an N-bit grid. The
+ * KV mode is resolved per session from GEIST_KV_* env vars, so the model
+ * loads once and each mode just creates a session with those vars set. An
+ * FP32 reference session runs in lockstep to supply P_fp32 for the KL.
  *
- * Uses arch_ops->verify_forward via geist_model_internal_arch_meta — a
- * test-only accessor that bypasses the public session API to keep the
- * harness independent of the live spec_step plumbing. SKIPs if no GGUF
- * or tokenizer is reachable.
+ * SKIPs if no GGUF or tokenizer is reachable.
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 #define GEIST_INTERNAL_ARCH_LAYER
 
+/* setenv/unsetenv need a POSIX feature macro on glibc (Pi5); no-op on macOS.
+ * Must precede any system header. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "test_helpers.h"
 
+#include "src/engine/gguf_tokenizer.h"
 #include "src/engine/model.h"
 #include "src/engine/sp_bpe_tokenizer.h"
-#include "src/archs/transformer/arch.h" /* geist_arch_transformer descriptor */
 
 #include <geist.h>
 #include <geist_backend.h>
+#include <geist_util.h>
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,17 +75,173 @@ static const char *DEFAULT_TEXT =
         "also exposes a PCI Express interface via a flat ribbon connector "
         "for high-speed peripherals such as NVMe storage.";
 
+/* One KV mode: which GEIST_KV_* vars to set before creating its session.
+ * A nullptr field means unset that var. */
+struct kv_mode_cfg {
+    const char *label;
+    const char *int8;  /* GEIST_KV_INT8 */
+    const char *kivi;  /* GEIST_KV_KIVI */
+    const char *rot;   /* GEIST_KV_ROT  */
+    const char *int4;  /* GEIST_KV_INT4 (4-bit quality-sim on the INT8 path) */
+    const char *qbits; /* GEIST_KV_QBITS (N-bit quality-sim; overrides int4) */
+};
+
+static const struct kv_mode_cfg MODES[] = {
+        {"FP32", "0", nullptr, nullptr, nullptr, nullptr},
+        {"INT8", "1", nullptr, "0", nullptr, nullptr},
+        {"INT8+ROT", "1", nullptr, "1", nullptr, nullptr},
+        {"INT4", nullptr, nullptr, "0", "1", nullptr},
+        {"INT4+ROT", nullptr, nullptr, "1", "1", nullptr},
+        {"INT2", nullptr, nullptr, "0", nullptr, "2"},
+        {"INT2+ROT", nullptr, nullptr, "1", nullptr, "2"},
+        {"KIVI", nullptr, "1", nullptr, nullptr, nullptr},
+};
+
+static size_t mode_index(const char *label) {
+    for (size_t i = 0; i < sizeof(MODES) / sizeof(MODES[0]); i++)
+        if (strcmp(MODES[i].label, label) == 0)
+            return i;
+    return 0; /* labels are compile-time constants — unreachable */
+}
+
+static void set_or_unset(const char *name, const char *val) {
+    if (val != nullptr)
+        setenv(name, val, 1);
+    else
+        unsetenv(name);
+}
+
+static void apply_mode_env(const struct kv_mode_cfg *m) {
+    set_or_unset("GEIST_KV_INT8", m->int8);
+    set_or_unset("GEIST_KV_KIVI", m->kivi);
+    set_or_unset("GEIST_KV_ROT", m->rot);
+    set_or_unset("GEIST_KV_INT4", m->int4);
+    set_or_unset("GEIST_KV_QBITS", m->qbits);
+}
+
+static uint32_t argmax_f32(const float *x, size_t n) {
+    uint32_t best = 0;
+    for (size_t i = 1; i < n; i++)
+        if (x[i] > x[best])
+            best = (uint32_t) i;
+    return best;
+}
+
+/* KL(P_ref || P_mode) in nats over the shared finite support. Some models
+ * (e.g. BitNet) leave non-finite garbage in unused vocab slots; a slot that
+ * is non-finite in EITHER distribution is dropped from both before
+ * normalizing, so the two softmaxes are over the same token set. Streaming
+ * log-sum-exp — no full-vocab buffers. */
+static double kl_div(const float *lr, const float *lm, size_t n) {
+    bool   have = false;
+    double maxr = 0.0, maxm = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        if (!isfinite(lr[i]) || !isfinite(lm[i]))
+            continue;
+        if (!have || lr[i] > maxr)
+            maxr = lr[i];
+        if (!have || lm[i] > maxm)
+            maxm = lm[i];
+        have = true;
+    }
+    if (!have)
+        return 0.0;
+    double sr = 0.0, sm = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        if (!isfinite(lr[i]) || !isfinite(lm[i]))
+            continue;
+        sr += exp((double) lr[i] - maxr);
+        sm += exp((double) lm[i] - maxm);
+    }
+    const double logZr = maxr + log(sr);
+    const double logZm = maxm + log(sm);
+    double       kl    = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        if (!isfinite(lr[i]) || !isfinite(lm[i]))
+            continue;
+        const double lp_r = (double) lr[i] - logZr;
+        kl += exp(lp_r) * (lp_r - ((double) lm[i] - logZm));
+    }
+    return kl < 0.0 ? 0.0 : kl; /* clamp fp noise on identical dists */
+}
+
+/* Teacher-force `ids` through both sessions in lockstep; fill top-1 acc and
+ * mean KL(ref||mode). Returns false on a session error. */
+static bool score_mode(struct geist_session *ref,
+                       struct geist_session *mode,
+                       const uint32_t       *ids,
+                       size_t                n_ids,
+                       double               *acc_out,
+                       double               *kl_out) {
+    if (geist_session_reset(ref) != GEIST_OK || geist_session_reset(mode) != GEIST_OK)
+        return false;
+    const geist_token_t t0 = (geist_token_t) ids[0];
+    if (geist_session_prefill_tokens(ref, 1, &t0) != GEIST_OK ||
+        geist_session_prefill_tokens(mode, 1, &t0) != GEIST_OK)
+        return false;
+
+    double kl_sum  = 0.0;
+    size_t correct = 0, n_eval = 0;
+    for (size_t i = 1; i < n_ids; i++) {
+        size_t       nr = 0, nm = 0;
+        const float *lr = geist_session_peek_logits(ref, &nr);
+        const float *lm = geist_session_peek_logits(mode, &nm);
+        if (lr == nullptr || lm == nullptr || nr != nm || nr == 0)
+            return false;
+        kl_sum += kl_div(lr, lm, nr);
+        if (argmax_f32(lm, nm) == ids[i])
+            correct++;
+        n_eval++;
+        const geist_token_t ti = (geist_token_t) ids[i];
+        if (geist_session_prefill_tokens(ref, 1, &ti) != GEIST_OK ||
+            geist_session_prefill_tokens(mode, 1, &ti) != GEIST_OK)
+            return false;
+    }
+    *acc_out = n_eval > 0 ? (double) correct / (double) n_eval : 0.0;
+    *kl_out  = n_eval > 0 ? kl_sum / (double) n_eval : 0.0;
+    return true;
+}
+
+/* Tokenize via the sp_bpe tokenizer, else the GGUF-embedded one. */
+static bool tokenize(struct geist_model *model,
+                     const char         *text,
+                     uint32_t          **ids_out,
+                     size_t             *n_out,
+                     bool               *had_tokenizer) {
+    *had_tokenizer               = false;
+    struct sp_bpe_tokenizer *tok = geist_model_internal_tokenizer(model);
+    if (tok != nullptr) {
+        *had_tokenizer = true;
+        return sp_bpe_tokenizer_encode(tok, text, ids_out, n_out);
+    }
+    struct gguf_tokenizer *gtok = geist_model_internal_gguf_tokenizer(model);
+    if (gtok == nullptr)
+        return false;
+    *had_tokenizer   = true;
+    const size_t cap = strlen(text) + 16;
+    int32_t     *tmp = (int32_t *) malloc(cap * sizeof(int32_t));
+    bool         ok  = false;
+    if (tmp != nullptr && gguf_tokenizer_encode(gtok, text, tmp, cap, n_out)) {
+        *ids_out = (uint32_t *) malloc(*n_out * sizeof(uint32_t));
+        if (*ids_out != nullptr) {
+            for (size_t i = 0; i < *n_out; i++)
+                (*ids_out)[i] = (uint32_t) tmp[i];
+            ok = true;
+        }
+    }
+    free(tmp);
+    return ok;
+}
+
 int main(int argc, char **argv) {
     const char *model_path = argc > 1 ? argv[1] : geist_test_find_gguf();
     GEIST_SKIP_IF(model_path == nullptr, "no GGUF model found — pass path or set GEIST_GGUF_PATH");
-
     const char *text = (argc > 2) ? argv[2] : DEFAULT_TEXT;
 
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
-    if (s != GEIST_OK) {
+    if (s != GEIST_OK)
         s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
-    }
     if (s != GEIST_OK) {
         fprintf(stderr, "backend create: %s\n", geist_last_create_error());
         return GEIST_TEST_ERROR;
@@ -85,121 +250,87 @@ int main(int argc, char **argv) {
     struct geist_model *model = nullptr;
     s                         = geist_model_load(model_path, be, &model);
     if (s != GEIST_OK) {
-        fprintf(stderr,
-                "model_load(%s): %s — %s\n",
-                model_path,
-                geist_status_to_string(s),
-                geist_last_create_error());
+        fprintf(stderr, "model_load(%s): %s\n", model_path, geist_status_to_string(s));
         geist_backend_destroy(be);
         return GEIST_TEST_FAIL;
     }
 
-    struct sp_bpe_tokenizer *tok = geist_model_internal_tokenizer(model);
-    GEIST_SKIP_IF(tok == nullptr, "no tokenizer.bin reachable — set GEIST_TOKENIZER_PATH");
-
-    uint32_t *ids   = nullptr;
-    size_t    n_ids = 0;
-    if (!sp_bpe_tokenizer_encode(tok, text, &ids, &n_ids)) {
-        fprintf(stderr, "tokenizer encode failed\n");
+    uint32_t  *ids           = nullptr;
+    size_t     n_ids         = 0;
+    bool       had_tokenizer = false;
+    const bool enc_ok        = tokenize(model, text, &ids, &n_ids, &had_tokenizer);
+    if (!had_tokenizer) {
+        free(ids);
         geist_model_destroy(model);
         geist_backend_destroy(be);
-        return GEIST_TEST_FAIL;
+        GEIST_SKIP_IF(true, "model carries no usable tokenizer");
     }
-    if (n_ids < 2) {
-        fprintf(stderr, "text too short (n_ids=%zu)\n", n_ids);
+    if (!enc_ok || n_ids < 2) {
+        fprintf(stderr, "tokenizer encode failed or text too short (n_ids=%zu)\n", n_ids);
         free(ids);
         geist_model_destroy(model);
         geist_backend_destroy(be);
         return GEIST_TEST_FAIL;
     }
 
-    /* verify_forward runs the WHOLE input through the layer stack in one
-     * batched pass (using prefill chunks of m_max internally) and writes
-     * argmax at each position. We don't need a session — go straight to
-     * arch_ops + arch_meta. */
-    void                                *arch_meta = geist_model_internal_arch_meta(model);
-    const struct geist_arch_ops_decoder *ops       = &geist_arch_transformer;
-
-    if (ops->state_reset == nullptr || ops->verify_forward == nullptr ||
-        ops->kv_truncate == nullptr) {
-        fprintf(stderr,
-                "arch lacks state_reset / verify_forward / kv_truncate — "
-                "expected from transformer decoder\n");
+    /* FP32 reference session, created once with FP32 env, reused for every
+     * mode's KL. Greedy opts (all-zero) → AUTO mode, env resolves the rest. */
+    struct geist_session_opts opts = {0};
+    apply_mode_env(&MODES[mode_index("FP32")]);
+    struct geist_session *ref = nullptr;
+    if (geist_session_create(model, be, &opts, &ref) != GEIST_OK) {
+        fprintf(stderr, "ref session create failed\n");
         free(ids);
         geist_model_destroy(model);
         geist_backend_destroy(be);
         return GEIST_TEST_FAIL;
     }
 
-    ops->state_reset(arch_meta);
-    ops->kv_truncate(arch_meta, 0); /* belt-and-braces: prefix_length may be nonzero */
+    printf("model:    %s\n", model_path);
+    printf("backend:  %s\n", geist_backend_name(be));
+    printf("n_tokens: %zu (n_eval=%zu)\n\n", n_ids, n_ids - 1);
 
-    const size_t   k     = n_ids - 1; /* we predict positions 1..N-1 from inputs 0..N-2 */
-    geist_token_t *preds = (geist_token_t *) calloc(k, sizeof *preds);
-    if (preds == nullptr) {
-        fprintf(stderr, "alloc preds (%zu) failed\n", k);
-        free(ids);
-        geist_model_destroy(model);
-        geist_backend_destroy(be);
-        return GEIST_TEST_FAIL;
-    }
-    /* Chunk because verify_forward caps at m_max (default 64). Each chunk
-     * extends the KV cache; predictions are appended in order.
-     *
-     * verify_forward does NOT drain KIVI residuals (it's the tentative-
-     * write path), so we follow each chunk with kv_truncate(kv_len) —
-     * which is a no-op on kv_len but forces a drain if the residual
-     * grew past R. This makes the harness exercise the actual 2-bit
-     * drained-cache attention path for KIVI mode, matching what an
-     * accept-only decode_step stream would do. For non-KIVI modes the
-     * truncate is harmless. */
-    const size_t M_MAX      = 64;
-    size_t       kv_len_acc = 0;
-    for (size_t off = 0; off < k; off += M_MAX) {
-        const size_t      chunk = (k - off > M_MAX) ? M_MAX : (k - off);
-        enum geist_status vs    = ops->verify_forward(
-                arch_meta, chunk, (const geist_token_t *) ids + off, preds + off);
-        if (vs != GEIST_OK) {
-            fprintf(stderr,
-                    "verify_forward(chunk@%zu, %zu): %s\n",
-                    off,
-                    chunk,
-                    geist_status_to_string(vs));
-            free(preds);
+    const size_t n_modes = sizeof(MODES) / sizeof(MODES[0]);
+    double       acc[sizeof(MODES) / sizeof(MODES[0])];
+    double       kl[sizeof(MODES) / sizeof(MODES[0])];
+    printf("%-10s  %-9s  %s\n", "kv_mode", "top-1", "mean KL(fp32||·) [nats]");
+    printf("%-10s  %-9s  %s\n", "-------", "-----", "-----------------------");
+    for (size_t m = 0; m < n_modes; m++) {
+        apply_mode_env(&MODES[m]);
+        struct geist_session *sess = nullptr;
+        if (geist_session_create(model, be, &opts, &sess) != GEIST_OK ||
+            !score_mode(ref, sess, ids, n_ids, &acc[m], &kl[m])) {
+            fprintf(stderr, "mode %s failed\n", MODES[m].label);
+            geist_session_destroy(sess);
+            geist_session_destroy(ref);
             free(ids);
             geist_model_destroy(model);
             geist_backend_destroy(be);
             return GEIST_TEST_FAIL;
         }
-        kv_len_acc += chunk;
-        ops->kv_truncate(arch_meta, kv_len_acc);
+        geist_session_destroy(sess);
+        printf("%-10s  %.4f     %.5f\n", MODES[m].label, acc[m], kl[m]);
     }
+    geist_session_destroy(ref);
 
-    /* preds[i] is the model's argmax given prefix ids[0..i]; the target
-     * for position i+1 in the text is ids[i+1]. */
-    size_t n_correct = 0;
-    for (size_t i = 0; i < k - 1; i++) {
-        if ((uint32_t) preds[i] == ids[i + 1])
-            n_correct++;
-    }
-    const size_t n_eval = k - 1;
-    const double acc    = n_eval > 0 ? (double) n_correct / (double) n_eval : 0.0;
+    /* Issue #61 headlines: rotation's effect where it matters (low bit),
+     * measured by KL reduction (lower KL = closer to FP32). */
+    const double kl_i4   = kl[mode_index("INT4")];
+    const double kl_i4r  = kl[mode_index("INT4+ROT")];
+    const double kl_i2   = kl[mode_index("INT2")];
+    const double kl_i2r  = kl[mode_index("INT2+ROT")];
+    const double kl_kivi = kl[mode_index("KIVI")];
+    printf("\n");
+    printf("4-bit: rotation cuts KL %.5f → %.5f  (%+.0f%%)\n",
+           kl_i4,
+           kl_i4r,
+           kl_i4 > 0.0 ? 100.0 * (kl_i4r - kl_i4) / kl_i4 : 0.0);
+    printf("2-bit: rotation cuts KL %.5f → %.5f  (%+.0f%%)   vs KIVI(asym) %.5f\n",
+           kl_i2,
+           kl_i2r,
+           kl_i2 > 0.0 ? 100.0 * (kl_i2r - kl_i2) / kl_i2 : 0.0,
+           kl_kivi);
 
-    const char *mode_kivi  = getenv("GEIST_KV_KIVI");
-    const char *mode_int8  = getenv("GEIST_KV_INT8");
-    const char *mode_label = (mode_kivi != nullptr && mode_kivi[0] == '1')   ? "KIVI"
-                             : (mode_int8 != nullptr && mode_int8[0] == '1') ? "INT8"
-                             : (mode_int8 != nullptr && mode_int8[0] == '0')
-                                     ? "FP32"
-                                     : "FP32 (Apple-default)";
-
-    printf("model:    %s\n", model_path);
-    printf("backend:  %s\n", geist_backend_name(be));
-    printf("kv_mode:  %s\n", mode_label);
-    printf("n_tokens: %zu (n_eval=%zu)\n", n_ids, n_eval);
-    printf("top-1 acc: %zu / %zu = %.4f\n", n_correct, n_eval, acc);
-
-    free(preds);
     free(ids);
     geist_model_destroy(model);
     geist_backend_destroy(be);

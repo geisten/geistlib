@@ -260,6 +260,22 @@ void attention_int8_via_buffers(const float  *q,
                                 size_t        sliding_window,
                                 float        *out);
 
+/* Packed-INT4 variant (issue #61): k_q4/v_q4 hold two 4-bit values per byte
+ * (head_dim/2 bytes per row); otherwise identical to the INT8 kernel. */
+void attention_int4_via_buffers(const float   *q,
+                                size_t         n_q,
+                                size_t         n_q_heads,
+                                size_t         head_dim,
+                                const uint8_t *k_q4,
+                                const float   *k_scale,
+                                const uint8_t *v_q4,
+                                const float   *v_scale,
+                                size_t         n_kv,
+                                size_t         n_kv_heads,
+                                size_t         q_offset,
+                                size_t         sliding_window,
+                                float         *out);
+
 /* forward/layer_attn.c */
 [[nodiscard]] enum geist_status
 transformer_layer_run_attention_block(struct transformer_layer_forward_ctx *ctx);
