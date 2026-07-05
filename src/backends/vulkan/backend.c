@@ -170,6 +170,25 @@ struct vk_weight_entry {
     struct geist_buffer *gpu;
 };
 
+/* Per-binding access range for hazard tracking (byte offsets within the
+ * bound VkBuffer). Ops that can't describe a binding precisely use
+ * lo=0, hi=UINT64_MAX (whole buffer). */
+struct vk_access {
+    uint64_t lo;
+    uint64_t hi;
+    bool     write;
+};
+
+/* One tracked range since the last barrier. */
+struct vk_dirty {
+    VkBuffer buf;
+    uint64_t lo;
+    uint64_t hi;
+    bool     write;
+};
+
+enum { VK_DIRTY_CAP = 96 };
+
 enum {
     VK_SEQ_MAX_SETS      = 4096, /* descriptor sets per flush window */
     VK_SEQ_MAX_DISPATCH  = 4000, /* rotate the sequence before pool runs dry */
@@ -269,6 +288,15 @@ struct vk_state {
     size_t                cap_hostbufs;
 
     struct geist_buffer *argmax_out; /* 4-byte host-visible argmax result */
+
+    /* Hazard tracking: read/write ranges recorded since the last barrier.
+     * A new dispatch inserts a barrier only when it conflicts (RAW / WAR /
+     * WAW); independent dispatches overlap on the GPU. */
+    struct vk_dirty dirty[VK_DIRTY_CAP];
+    uint32_t        n_dirty;
+
+    uint64_t stat_barriers;
+    uint64_t stat_barriers_elided;
 };
 
 /* binding count per pipeline (descriptor set layout selector) */
@@ -883,10 +911,13 @@ static void vk_destroy(struct geist_backend *be) {
         struct vk_state *st = be->state;
         if (getenv("GEIST_VK_VERBOSE") != nullptr || st->profile_enabled) {
             fprintf(stderr,
-                    "geist vulkan stats: dispatches %llu, flushes %llu, host-op accesses %llu\n",
+                    "geist vulkan stats: dispatches %llu, flushes %llu, host-op accesses "
+                    "%llu, barriers %llu (elided %llu)\n",
                     (unsigned long long) st->stat_dispatches,
                     (unsigned long long) st->stat_flushes,
-                    (unsigned long long) st->stat_cpu_falls);
+                    (unsigned long long) st->stat_cpu_falls,
+                    (unsigned long long) st->stat_barriers,
+                    (unsigned long long) st->stat_barriers_elided);
         }
         if (st->profile_enabled) {
             static const char *const names[VK_PIPE_COUNT + 1] = {
@@ -1281,6 +1312,9 @@ static void vk_buffer_unmap(struct geist_buffer *buf) {
 
 static uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out);
 static uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m);
+static size_t   vk_t_n(const struct geist_tensor *t);
+static bool     vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols,
+                          size_t *stride);
 static void     vk_linear_cm_route(struct vk_state *st, enum vk_pipe *pipe, uint32_t m,
                                    uint32_t n_out, uint32_t *gx, uint32_t *gy);
 
@@ -1319,6 +1353,7 @@ static void vk_seq_flush(struct vk_state *st) {
     st->stat_flushes++;
     st->seq_open       = false;
     st->seq_dispatches = 0;
+    st->n_dirty        = 0;
     bool ok            = st->fn.EndCommandBuffer(st->seq_cmd) == VK_SUCCESS;
     if (ok) {
         VkSubmitInfo submit = {.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -1392,6 +1427,8 @@ static void vk_prof_stamp(struct vk_state *st, uint32_t slot) {
  * global memory barrier — coarse but correct on a single compute queue.
  * ponytail: per-buffer barriers if the profiler ever blames this. */
 static void vk_seq_barrier(struct vk_state *st) {
+    st->n_dirty = 0;
+    st->stat_barriers++;
     static int no_bar = -1;
     if (no_bar < 0) {
         no_bar = getenv("GEIST_VK_NO_BARRIER") != nullptr; /* perf probe: WRONG results */
@@ -1412,16 +1449,61 @@ static void vk_seq_barrier(struct vk_state *st) {
                               0, 1, &mb, 0, nullptr, 0, nullptr);
 }
 
+/* Barrier iff the new accesses conflict with anything recorded since the
+ * last barrier, then record them. acc == nullptr → conservative (always
+ * barrier when the batch is non-empty, like the pre-tracking behavior). */
+static void vk_seq_hazard(struct vk_state              *st,
+                          const VkDescriptorBufferInfo *infos,
+                          const struct vk_access       *acc,
+                          uint32_t                      n) {
+    if (st->seq_dispatches == 0) {
+        st->n_dirty = 0;
+    }
+    bool conflict = acc == nullptr && st->seq_dispatches > 0;
+    if (acc != nullptr) {
+        for (uint32_t i = 0; i < n && !conflict; ++i) {
+            for (uint32_t d = 0; d < st->n_dirty; ++d) {
+                const struct vk_dirty *e = &st->dirty[d];
+                if (e->buf != infos[i].buffer || (!e->write && !acc[i].write)) {
+                    continue; /* different buffer or read-read */
+                }
+                if (acc[i].lo < e->hi && e->lo < acc[i].hi) {
+                    conflict = true;
+                    break;
+                }
+            }
+        }
+        if (!conflict && st->n_dirty + n > VK_DIRTY_CAP) {
+            conflict = true; /* table full — degrade to the old behavior */
+        }
+    }
+    if (conflict && st->seq_dispatches > 0) {
+        vk_seq_barrier(st);
+    } else if (st->seq_dispatches > 0) {
+        st->stat_barriers_elided++;
+    }
+    if (acc != nullptr) {
+        for (uint32_t i = 0; i < n && st->n_dirty < VK_DIRTY_CAP; ++i) {
+            st->dirty[st->n_dirty++] = (struct vk_dirty) {
+                    .buf = infos[i].buffer, .lo = acc[i].lo, .hi = acc[i].hi,
+                    .write = acc[i].write};
+        }
+    } else {
+        st->n_dirty = 0; /* unknown writes — next dispatch must barrier */
+    }
+}
+
 /* Append one compute dispatch to the open sequence. infos[] length must
  * equal the pipeline's binding count. */
-[[nodiscard]] static enum geist_status vk_seq_dispatch(struct geist_backend         *be,
-                                                       enum vk_pipe                  pipe,
-                                                       const VkDescriptorBufferInfo *infos,
-                                                       const void                   *push,
-                                                       uint32_t                      push_bytes,
-                                                       uint32_t                      gx,
-                                                       uint32_t                      gy,
-                                                       uint32_t                      gz) {
+[[nodiscard]] static enum geist_status vk_seq_dispatch_acc(struct geist_backend  *be,
+                                                           enum vk_pipe           pipe,
+                                                           const VkDescriptorBufferInfo *infos,
+                                                           const struct vk_access *acc,
+                                                           const void             *push,
+                                                           uint32_t                push_bytes,
+                                                           uint32_t                gx,
+                                                           uint32_t                gy,
+                                                           uint32_t                gz) {
     struct vk_state *st = be->state;
     if (st->seq_dispatches >= VK_SEQ_MAX_DISPATCH) {
         vk_seq_flush(st);
@@ -1458,9 +1540,7 @@ static void vk_seq_barrier(struct vk_state *st) {
                 .pBufferInfo     = &infos[i]};
     }
     st->fn.UpdateDescriptorSets(st->device, nbind, writes, 0, nullptr);
-    if (st->seq_dispatches > 0) {
-        vk_seq_barrier(st);
-    }
+    vk_seq_hazard(st, infos, acc, nbind);
     st->fn.CmdBindPipeline(st->seq_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, st->pipes[pipe]);
     st->fn.CmdBindDescriptorSets(st->seq_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                  st->seq_playouts[nbind - 2], 0, 1, &set, 0, nullptr);
@@ -1471,6 +1551,39 @@ static void vk_seq_barrier(struct vk_state *st) {
     st->stat_dispatches++;
     vk_prof_stamp(st, (uint32_t) pipe);
     return GEIST_OK;
+}
+
+[[nodiscard]] static enum geist_status vk_seq_dispatch(struct geist_backend         *be,
+                                                       enum vk_pipe                  pipe,
+                                                       const VkDescriptorBufferInfo *infos,
+                                                       const void                   *push,
+                                                       uint32_t                      push_bytes,
+                                                       uint32_t                      gx,
+                                                       uint32_t                      gy,
+                                                       uint32_t                      gz) {
+    return vk_seq_dispatch_acc(be, pipe, infos, nullptr, push, push_bytes, gx, gy, gz);
+}
+
+/* Access-range helpers: byte spans inside the bound VkBuffer. */
+static struct vk_access vk_acc(uint64_t lo_bytes, uint64_t n_bytes, bool write) {
+    return (struct vk_access) {.lo = lo_bytes, .hi = lo_bytes + n_bytes, .write = write};
+}
+
+static struct vk_access vk_acc_all(bool write) {
+    return (struct vk_access) {.lo = 0, .hi = UINT64_MAX, .write = write};
+}
+
+/* Byte span of an F32 DENSE tensor inside its VkBuffer (slab-stride aware). */
+static struct vk_access vk_acc_tensor(const struct geist_tensor *t, bool write) {
+    const uint64_t lo = t->buffer->base_off + t->offset;
+    uint64_t       span;
+    size_t         rows, cols, stride;
+    if (vk_t_geom(t, &rows, &cols, &stride)) {
+        span = ((uint64_t) (rows - 1) * stride + cols) * 4u;
+    } else {
+        span = (uint64_t) vk_t_n(t) * 4u;
+    }
+    return vk_acc(lo, span, write);
 }
 
 /* GPU view of a tensor: VkBuffer + f32 element offset. False when the
@@ -1911,7 +2024,10 @@ static bool vk_try_ew3(struct geist_backend *be, enum vk_pipe pipe,
     }
     const uint32_t push[8] = {(uint32_t) n, off[0],        off[1],        off[2],
                               cols,         (uint32_t) sa, (uint32_t) sb, (uint32_t) sy};
-    return vk_seq_dispatch(be, pipe, bi, push, sizeof(push), vk_groups(n), 1, 1) == GEIST_OK;
+    const struct vk_access acc[3] = {vk_acc_tensor(a, false), vk_acc_tensor(b, false),
+                                     vk_acc_tensor(y, true)};
+    return vk_seq_dispatch_acc(be, pipe, bi, acc, push, sizeof(push), vk_groups(n), 1, 1) ==
+           GEIST_OK;
 }
 
 /* Strided-aware CPU fallback core for the elementwise trio. op: 0=add,
@@ -1995,9 +2111,10 @@ static constexpr float VK_GELU_K1 = 0.044715f;
         uint32_t               off[2];
         if (VK_OPS(be, 2u) && n != 0 && n == vk_t_n(y) && vk_tensor_gpu(x, &bi[0], &off[0]) &&
             vk_tensor_gpu(y, &bi[1], &off[1])) {
-            const uint32_t push[4] = {(uint32_t) n, off[0], off[1], 0};
-            if (vk_seq_dispatch(be, VK_PIPE_GELU, bi, push, sizeof(push), vk_groups(n), 1,
-                                1) == GEIST_OK) {
+            const uint32_t         push[4] = {(uint32_t) n, off[0], off[1], 0};
+            const struct vk_access acc[2]  = {vk_acc_tensor(x, false), vk_acc_tensor(y, true)};
+            if (vk_seq_dispatch_acc(be, VK_PIPE_GELU, bi, acc, push, sizeof(push),
+                                    vk_groups(n), 1, 1) == GEIST_OK) {
                 return GEIST_OK;
             }
         }
@@ -2112,8 +2229,10 @@ static constexpr float VK_GELU_K1 = 0.044715f;
                 uint32_t rows, feat, x, w, y;
                 float    eps;
             } push = {(uint32_t) (n / feat), (uint32_t) feat, off[0], off[1], off[2], eps};
-            if (vk_seq_dispatch(be, VK_PIPE_RMSNORM, bi, &push, sizeof(push),
-                                (uint32_t) (n / feat), 1, 1) == GEIST_OK) {
+            const struct vk_access acc[3] = {vk_acc_tensor(x, false), vk_acc_tensor(w, false),
+                                             vk_acc_tensor(y, true)};
+            if (vk_seq_dispatch_acc(be, VK_PIPE_RMSNORM, bi, acc, &push, sizeof(push),
+                                    (uint32_t) (n / feat), 1, 1) == GEIST_OK) {
                 return GEIST_OK;
             }
         }
@@ -2163,8 +2282,11 @@ static constexpr float VK_GELU_K1 = 0.044715f;
             const size_t   pairs = seq * heads * hd / 2;
             const uint32_t push[6] = {(uint32_t) pairs, (uint32_t) heads, (uint32_t) hd,
                                       off[0], off[1], off[2]};
-            if (vk_seq_dispatch(be, VK_PIPE_ROPE, bi, push, sizeof(push), vk_groups(pairs),
-                                1, 1) == GEIST_OK) {
+            const struct vk_access acc[3] = {vk_acc_tensor(x, true),
+                                             vk_acc_tensor(cos, false),
+                                             vk_acc_tensor(sin, false)};
+            if (vk_seq_dispatch_acc(be, VK_PIPE_ROPE, bi, acc, push, sizeof(push),
+                                    vk_groups(pairs), 1, 1) == GEIST_OK) {
                 return GEIST_OK;
             }
         }
@@ -2235,8 +2357,12 @@ static constexpr float VK_GELU_K1 = 0.044715f;
                                        off[1],
                                        off[2],
                                        off[3]};
-            if (vk_seq_dispatch(be, VK_PIPE_ATTENTION, bi, push, sizeof(push), n_q, qh, 1) ==
-                GEIST_OK) {
+            const struct vk_access acc[4] = {vk_acc_tensor(q, false),
+                                             vk_acc_tensor(k, false),
+                                             vk_acc_tensor(v, false),
+                                             vk_acc_tensor(out, true)};
+            if (vk_seq_dispatch_acc(be, VK_PIPE_ATTENTION, bi, acc, push, sizeof(push), n_q,
+                                    qh, 1) == GEIST_OK) {
                 return GEIST_OK;
             }
         }
@@ -2279,8 +2405,11 @@ static constexpr float VK_GELU_K1 = 0.044715f;
                 float    eps;
             } push = {(uint32_t) (n / feat), (uint32_t) feat, off[0], off[1], off[2],
                       off[3],                eps};
-            if (vk_seq_dispatch(be, VK_PIPE_RMSNORM_ADD, bi, &push, sizeof(push),
-                                (uint32_t) (n / feat), 1, 1) == GEIST_OK) {
+            const struct vk_access acc[4] = {vk_acc_tensor(x, false), vk_acc_tensor(w, false),
+                                             vk_acc_tensor(res, false),
+                                             vk_acc_tensor(y, true)};
+            if (vk_seq_dispatch_acc(be, VK_PIPE_RMSNORM_ADD, bi, acc, &push, sizeof(push),
+                                    (uint32_t) (n / feat), 1, 1) == GEIST_OK) {
                 return GEIST_OK;
             }
         }
@@ -2326,8 +2455,9 @@ static constexpr float VK_GELU_K1 = 0.044715f;
                 uint32_t n, x, y;
                 float    scale;
             } push = {(uint32_t) n, off[0], off[1], scale};
-            if (vk_seq_dispatch(be, VK_PIPE_SCALE, bi, &push, sizeof(push), vk_groups(n), 1,
-                                1) == GEIST_OK) {
+            const struct vk_access acc[2] = {vk_acc_tensor(x, false), vk_acc_tensor(y, true)};
+            if (vk_seq_dispatch_acc(be, VK_PIPE_SCALE, bi, acc, &push, sizeof(push),
+                                    vk_groups(n), 1, 1) == GEIST_OK) {
                 return GEIST_OK;
             }
         }
@@ -2365,8 +2495,10 @@ static constexpr float VK_GELU_K1 = 0.044715f;
         }
     }
     bi[1] = (VkDescriptorBufferInfo) {.buffer = st->argmax_out->buf, .range = VK_WHOLE_SIZE};
-    const uint32_t push[3] = {(uint32_t) n, off[0], 0};
-    enum geist_status s = vk_seq_dispatch(be, VK_PIPE_ARGMAX, bi, push, sizeof(push), 1, 1, 1);
+    const uint32_t         push[3] = {(uint32_t) n, off[0], 0};
+    const struct vk_access acc[2]  = {vk_acc_tensor(logits, false), vk_acc_all(true)};
+    enum geist_status      s =
+            vk_seq_dispatch_acc(be, VK_PIPE_ARGMAX, bi, acc, push, sizeof(push), 1, 1, 1);
     if (s != GEIST_OK) {
         return GEIST_E_UNSUPPORTED;
     }
@@ -2391,9 +2523,11 @@ static constexpr float VK_GELU_K1 = 0.044715f;
         if (s != GEIST_OK) {
             return s;
         }
-        if (st->seq_dispatches > 0) {
-            vk_seq_barrier(st);
-        }
+        const VkDescriptorBufferInfo cinf[2] = {{.buffer = src->buf}, {.buffer = dst->buf}};
+        const struct vk_access       cacc[2] = {
+                vk_acc(src->base_off + src_offset, n_bytes, false),
+                vk_acc(dst->base_off + dst_offset, n_bytes, true)};
+        vk_seq_hazard(st, cinf, cacc, 2);
         const VkBufferCopy region = {.srcOffset = src->base_off + src_offset,
                                      .dstOffset = dst->base_off + dst_offset,
                                      .size      = n_bytes};
@@ -2444,8 +2578,12 @@ enum { VK_XRING_CAP = 192u << 20 }; /* a full prefill chunk stages ~124 MB */
     if (vk_seq_open_cmd(st) != GEIST_OK) {
         return false;
     }
-    if (st->seq_dispatches > 0) {
-        vk_seq_barrier(st);
+    {
+        const VkDescriptorBufferInfo cinf[2] = {{.buffer = t_x->buffer->buf},
+                                                {.buffer = st->xring->buf}};
+        const struct vk_access       cacc[2] = {vk_acc_tensor(t_x, false),
+                                                vk_acc(st->xring_used, bytes, true)};
+        vk_seq_hazard(st, cinf, cacc, 2);
     }
     const size_t x_stride = t_x->ndim >= 2 ? (size_t) t_x->stride[t_x->ndim - 2] : n_in;
     const size_t src_byte = t_x->buffer->base_off + t_x->offset;
@@ -2538,7 +2676,12 @@ enum { VK_XRING_CAP = 192u << 20 }; /* a full prefill chunk stages ~124 MB */
     if (m > 1) {
         vk_linear_cm_route(st, &lpipe, (uint32_t) m, n_out, &gx, &gy);
     }
-    return vk_seq_dispatch(be, lpipe, bi, &push, sizeof(push), gx, gy, 1);
+    const struct vk_access acc[3] = {
+            t_x->buffer->device_mem ? vk_acc_tensor(t_x, false)
+                                    : vk_acc((uint64_t) xo * 4u, (uint64_t) m * n_in * 4u,
+                                             false),
+            vk_acc_all(false), vk_acc_tensor(t_y, true)};
+    return vk_seq_dispatch_acc(be, lpipe, bi, acc, &push, sizeof(push), gx, gy, 1);
 }
 
 [[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,
@@ -2634,8 +2777,9 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         uint32_t n_in, token, dtype, bpr, w_byte, y;
         float    scale;
     } push = {(uint32_t) d, (uint32_t) token_id, dtype_code, bpr, w_elem_off, yo, scale};
-    return vk_seq_dispatch(be, VK_PIPE_EMBED, bi, &push, sizeof(push),
-                           vk_groups((size_t) d), 1, 1);
+    const struct vk_access acc[2] = {vk_acc_all(false), vk_acc_tensor(out, true)};
+    return vk_seq_dispatch_acc(be, VK_PIPE_EMBED, bi, acc, &push, sizeof(push),
+                               vk_groups((size_t) d), 1, 1);
 }
 
 /* Fused decode FFN front (m == 1, both weights Q4_K): one dispatch for
@@ -2692,8 +2836,10 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
                                  .y_offset       = yo,
                                  .x_stride       = n_in,
                                  .y_stride       = n_out};
-    return vk_seq_dispatch(be, VK_PIPE_FFN_GATE_UP, bi, &push, sizeof(push),
-                           (n_out + 7u) / 8u, 1, 1);
+    const struct vk_access acc[4] = {vk_acc_tensor(t_x, false), vk_acc_all(false),
+                                     vk_acc_all(false), vk_acc_tensor(y, true)};
+    return vk_seq_dispatch_acc(be, VK_PIPE_FFN_GATE_UP, bi, acc, &push, sizeof(push),
+                               (n_out + 7u) / 8u, 1, 1);
 }
 
 /* Fused q/k/v prep: per-head norms + rope + F32 cache append in ONE
@@ -2761,7 +2907,25 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         float    eps;
     } push = {seq, qh,  kvh, hd,  (uint32_t) q_position,
               has_kv ? 1u : 0u, qo,  ko,  vo,  qwo, kwo, vwo, co, so, kco, vco, eps};
-    return vk_seq_dispatch(be, VK_PIPE_QKV_PREP, bi, &push, sizeof(push), seq, qh, 3);
+    struct vk_access a0 = vk_acc_tensor(q, true);
+    if (has_kv) {
+        const struct vk_access ak = vk_acc_tensor(k, true);
+        const struct vk_access av = vk_acc_tensor(v, true);
+        a0.lo = a0.lo < ak.lo ? a0.lo : ak.lo;
+        a0.lo = a0.lo < av.lo ? a0.lo : av.lo;
+        a0.hi = a0.hi > ak.hi ? a0.hi : ak.hi;
+        a0.hi = a0.hi > av.hi ? a0.hi : av.hi;
+    }
+    const struct vk_access acc[6] = {
+            a0,
+            vk_acc_all(false),
+            vk_acc_tensor(cos, false),
+            vk_acc_tensor(sin, false),
+            has_kv ? vk_acc_tensor(k_cache, true) : vk_acc(0, 0, false),
+            has_kv ? vk_acc_tensor(v_cache, true) : vk_acc(0, 0, false),
+    };
+    return vk_seq_dispatch_acc(be, VK_PIPE_QKV_PREP, bi, acc, &push, sizeof(push), seq, qh,
+                               3);
 }
 
 /* ====================================================================== */
