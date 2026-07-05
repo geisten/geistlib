@@ -169,6 +169,9 @@ int main(void) {
      * MMLU gate judges end-to-end). */
     run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 16, 2e-2);
     run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 768, 128, 64, 2e-2);
+    /* wide n_out routes to the 128-row register-tiled kernel */
+    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 16, 2e-2);
+    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 64, 2e-2);
 
     geist_backend_destroy(vk);
     geist_backend_destroy(ref);

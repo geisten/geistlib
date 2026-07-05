@@ -62,6 +62,7 @@
 #include "shaders/matmul_q4k_spv.h"
 #include "shaders/matmul_q6k_spv.h"
 #include "shaders/matvec_f32_spv.h"
+#include "shaders/ple_gate_f32_spv.h"
 #include "shaders/matvec_q4k_spv.h"
 #include "shaders/matvec_q6k_spv.h"
 #include "shaders/mul_f32_spv.h"
@@ -168,6 +169,7 @@ enum vk_pipe {
     VK_PIPE_ATTN_PART_F16,
     VK_PIPE_ATTN_COMB,
     VK_PIPE_MM_Q4K_CM32, /* small-n_out tensor-core tile */
+    VK_PIPE_PLE_GATE,    /* fused PLE gate: gelu(x.gate_w) * ple_in */
     VK_PIPE_COUNT,
 };
 
@@ -347,6 +349,7 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_ATTENTION_F16] = 4, [VK_PIPE_QKV_PREP_F16] = 6,
         [VK_PIPE_KV_APPEND_F16] = 4, [VK_PIPE_ATTN_PART_F16] = 4,
         [VK_PIPE_ATTN_COMB] = 2,     [VK_PIPE_MM_Q4K_CM32] = 3,
+        [VK_PIPE_PLE_GATE] = 4,
 };
 
 struct geist_buffer {
@@ -891,6 +894,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             [VK_PIPE_ATTN_PART_F16] = {attn_part_f16_spv, sizeof(attn_part_f16_spv)},
             [VK_PIPE_ATTN_COMB]     = {attn_comb_spv, sizeof(attn_comb_spv)},
             [VK_PIPE_MM_Q4K_CM32]   = {matmul_q4k_cm32_spv, sizeof(matmul_q4k_cm32_spv)},
+            [VK_PIPE_PLE_GATE]      = {ple_gate_f32_spv, sizeof(ple_gate_f32_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
         if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM ||
@@ -992,7 +996,8 @@ static void vk_destroy(struct geist_backend *be) {
                     "matmul_f32", "add",        "mul",        "gelu",       "gelu_mul",
                     "scale",      "rmsnorm",    "rmsnorm_add", "rope",      "attention",
                     "argmax",     "embed",      "ffn_gate_up", "qkv_prep", "mm_q4k_cm", "mm_q6k_cm",
-                    "attn_f16",   "qkv_f16",    "kv_app_f16", "attn_part", "attn_comb", "mm_cm32", "copy"};
+                    "attn_f16",   "qkv_f16",    "kv_app_f16", "attn_part", "attn_comb", "mm_cm32",
+                    "ple_gate",   "copy"};
             fprintf(stderr, "geist vulkan gpu profile:\n");
             for (int i = 0; i <= VK_PIPE_COUNT; ++i) {
                 if (st->prof_calls[i] > 0) {
@@ -3149,6 +3154,91 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
                                (n_out + 3u) / 4u, 1, 1);
 }
 
+/* Gemma-3n PLE block in THREE dispatches (replaces gate matvec +
+ * gelu_mul + proj matvec + rmsnorm_add): the gate GEMV gets the gelu*ple
+ * epilogue folded in; the proj tail keeps the multi-workgroup matvec +
+ * rmsnorm_add pair. A single-workgroup proj+norm fusion was measured at
+ * 68 us vs 19 us for the pair — one SM streaming the 1.5 MB proj weight
+ * is a bandwidth wall, so the norm's full-vector reduction stays a
+ * separate dispatch. Decode only (rows == 1), F32 weights. */
+[[nodiscard]] static enum geist_status vk_ple_block(struct geist_backend      *be,
+                                                    const struct geist_tensor *x,
+                                                    const struct geist_tensor *gate_w,
+                                                    const struct geist_tensor *ple_in,
+                                                    const struct geist_tensor *proj_w,
+                                                    const struct geist_tensor *res,
+                                                    const struct geist_tensor *norm_w,
+                                                    float                      eps,
+                                                    struct geist_tensor       *gate_scratch,
+                                                    struct geist_tensor       *proj_scratch,
+                                                    struct geist_tensor       *y) {
+    struct vk_state *st = be->state;
+    if (!VK_OPS(be, 1u) || x == nullptr || gate_w == nullptr || proj_w == nullptr ||
+        x->ndim != 2 || x->shape[0] != 1 || gate_w->dtype != GEIST_DTYPE_F32 ||
+        proj_w->dtype != GEIST_DTYPE_F32 || gate_w->ndim != 2 || proj_w->ndim != 2) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const uint32_t d_in = (uint32_t) gate_w->shape[1];
+    const uint32_t hpl  = (uint32_t) gate_w->shape[0];
+    const uint32_t feat = (uint32_t) proj_w->shape[0];
+    if ((uint32_t) x->shape[1] != d_in || (uint32_t) proj_w->shape[1] != hpl ||
+        vk_t_n(norm_w) != feat || vk_t_n(res) < feat || vk_t_n(y) < feat ||
+        vk_t_n(gate_scratch) < hpl || vk_t_n(proj_scratch) < feat) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const uint8_t *g_host = gate_w->buffer != nullptr && gate_w->buffer->host_alias != nullptr
+                                    ? (const uint8_t *) gate_w->buffer->host_alias +
+                                              gate_w->offset
+                                    : nullptr;
+    const uint8_t *p_host = proj_w->buffer != nullptr && proj_w->buffer->host_alias != nullptr
+                                    ? (const uint8_t *) proj_w->buffer->host_alias +
+                                              proj_w->offset
+                                    : nullptr;
+    struct geist_buffer *gwbuf = g_host != nullptr ? vk_weight_lookup(st, g_host) : nullptr;
+    struct geist_buffer *pwbuf = p_host != nullptr ? vk_weight_lookup(st, p_host) : nullptr;
+    VkDescriptorBufferInfo b_x, b_ple, b_gs, b_ps;
+    uint32_t               xo, po, gso, pso;
+    if (gwbuf == nullptr || pwbuf == nullptr || !vk_tensor_gpu(x, &b_x, &xo) ||
+        !vk_tensor_gpu(ple_in, &b_ple, &po) || !vk_tensor_gpu(gate_scratch, &b_gs, &gso) ||
+        !vk_tensor_gpu(proj_scratch, &b_ps, &pso)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    {
+        const VkDescriptorBufferInfo bi[4] = {
+                b_x, {.buffer = gwbuf->buf, .range = VK_WHOLE_SIZE}, b_ple, b_gs};
+        const struct {
+            uint32_t n_in, x_offset, p_offset, y_offset;
+        } push = {d_in, xo, po, gso};
+        const struct vk_access acc[4] = {vk_acc_tensor(x, false), vk_acc_all(false),
+                                         vk_acc_tensor(ple_in, false),
+                                         vk_acc_tensor(gate_scratch, true)};
+        enum geist_status s = vk_seq_dispatch_acc(be, VK_PIPE_PLE_GATE, bi, acc, &push,
+                                                  sizeof(push), hpl, 1, 1);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    {
+        const VkDescriptorBufferInfo bi[3] = {
+                b_gs, {.buffer = pwbuf->buf, .range = VK_WHOLE_SIZE}, b_ps};
+        const struct vk_push push = {.n_in     = hpl,
+                                     .n_out    = feat,
+                                     .rows     = 1,
+                                     .x_offset = gso,
+                                     .y_offset = pso,
+                                     .x_stride = hpl,
+                                     .y_stride = feat};
+        const struct vk_access acc[3] = {vk_acc_tensor(gate_scratch, false), vk_acc_all(false),
+                                         vk_acc_tensor(proj_scratch, true)};
+        enum geist_status s = vk_seq_dispatch_acc(be, VK_PIPE_MATVEC_F32, bi, acc, &push,
+                                                  sizeof(push), feat, 1, 1);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    return vk_rmsnorm_add(be, res, proj_scratch, norm_w, eps, y);
+}
+
 /* Fused q/k/v prep: per-head norms + rope + F32 cache append in ONE
  * dispatch (which-axis on WorkGroupID.z). Falls back (UNSUPPORTED) when
  * the tensors don't share the expected pool/arena buffers. */
@@ -3348,6 +3438,7 @@ static const struct geist_backend_vtbl vk_vtbl = {
         .argmax_f32              = vk_argmax_f32,
 #endif
         .ffn_gate_up             = vk_ffn_gate_up,
+        .ple_block               = vk_ple_block,
         .attn_qkv_prep           = vk_attn_qkv_prep,
         .kv_append_f16           = vk_kv_append_f16,
 };
