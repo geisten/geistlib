@@ -33,7 +33,7 @@ layout(push_constant) uniform Push {
 
 const uint BM = 64;
 const uint BN = 64;
-const uint BK = 32;
+const uint BK = 64;
 const uint ASTRIDE = BK + 8u;  /* f16 elems, pad against bank conflicts */
 const uint BSTRIDE = BN + 8u;
 
@@ -55,14 +55,16 @@ void main() {
     for (uint ks = 0; ks < ksteps; ks++) {
         uint k0 = ks * BK;
 
-        /* ---- A tile: dequant 64 rows x 32 k of Q4_K into shared f16.
-         * thread -> (row = lid/2, half-k = lid&1): 16 elements. */
-        {
+        /* ---- A tile: dequant 64 rows x 64 k of Q4_K into shared f16.
+         * thread -> (row = lid/2, half-k = lid&1): 32 elements spanning
+         * two consecutive 32-element sub-blocks. */
+        for (uint half32 = 0; half32 < 2u; half32++) {
             uint row = lid >> 1u;
             uint hk = lid & 1u;
             uint r = row0 + row;
-            uint b = k0 >> 8u;
-            uint sub = (k0 & 255u) >> 5u;
+            uint kk0 = k0 + half32 * 32u;
+            uint b = kk0 >> 8u;
+            uint sub = (kk0 & 255u) >> 5u;
             uint blk = ((r * pc.blocks_per_row + b) * 144u) >> 2u; /* w_offset==0 */
             uint h0 = w[blk];
             uint h1 = w[blk + 1u];
@@ -84,7 +86,7 @@ void main() {
             uint shift = (sub & 1u) * 4u;
             /* 16 nibbles = 4 u32 of packed qs */
             uint qsw = blk + 4u + (sub >> 1u) * 8u + hk * 4u;
-            uint abase = row * ASTRIDE + hk * 16u;
+            uint abase = row * ASTRIDE + half32 * 32u + hk * 16u;
             for (uint u = 0; u < 4u; u++) {
                 uint qw = w[qsw + u];
                 for (uint j = 0; j < 4u; j++) {
@@ -94,25 +96,25 @@ void main() {
             }
         }
 
-        /* ---- B tile: x[t][k0..k0+32] -> Bsh[k][t] (f16, transposed).
-         * thread -> (col = lid&63, half-k = lid>>6): 16 elements. */
+        /* ---- B tile: x[t][k0..k0+64] -> Bsh[k][t] (f16, transposed).
+         * thread -> (col = lid&63, half-k = lid>>6): 32 elements. */
         {
             uint col = lid & 63u;
             uint hk = lid >> 6u;
             uint t = tb0 + col;
             if (t < pc.rows) {
-                uint xv = (pc.x_offset + t * pc.x_stride + k0 + hk * 16u) >> 2u;
-                for (uint u = 0; u < 4u; u++) {
+                uint xv = (pc.x_offset + t * pc.x_stride + k0 + hk * 32u) >> 2u;
+                for (uint u = 0; u < 8u; u++) {
                     vec4 xw = x4[xv + u];
-                    uint kb = hk * 16u + u * 4u;
+                    uint kb = hk * 32u + u * 4u;
                     Bsh[(kb + 0u) * BSTRIDE + col] = float16_t(xw.x);
                     Bsh[(kb + 1u) * BSTRIDE + col] = float16_t(xw.y);
                     Bsh[(kb + 2u) * BSTRIDE + col] = float16_t(xw.z);
                     Bsh[(kb + 3u) * BSTRIDE + col] = float16_t(xw.w);
                 }
             } else {
-                for (uint u = 0; u < 16u; u++) {
-                    Bsh[(hk * 16u + u) * BSTRIDE + col] = float16_t(0.0);
+                for (uint u = 0; u < 32u; u++) {
+                    Bsh[(hk * 32u + u) * BSTRIDE + col] = float16_t(0.0);
                 }
             }
         }

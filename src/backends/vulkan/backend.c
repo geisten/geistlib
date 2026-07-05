@@ -1388,9 +1388,10 @@ static bool     vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *co
 static void     vk_linear_cm_route(struct vk_state *st, enum vk_pipe *pipe, uint32_t m,
                                    uint32_t n_out, uint32_t *gx, uint32_t *gy);
 
-[[nodiscard]] static enum geist_status vk_stage_reserve(struct geist_backend *be,
-                                                        struct geist_buffer **slot,
-                                                        size_t                bytes) {
+[[nodiscard]] static enum geist_status vk_stage_reserve_role(struct geist_backend  *be,
+                                                             struct geist_buffer  **slot,
+                                                             size_t                 bytes,
+                                                             enum geist_buffer_role role) {
     if (*slot != nullptr && (*slot)->bytes >= bytes) {
         return GEIST_OK;
     }
@@ -1402,7 +1403,13 @@ static void     vk_linear_cm_route(struct vk_state *st, enum vk_pipe *pipe, uint
     while (cap < bytes) {
         cap *= 2;
     }
-    return vk_buffer_create(be, cap, GEIST_BUFFER_STAGING, GEIST_MEMORY_AUTO, slot);
+    return vk_buffer_create(be, cap, role, GEIST_MEMORY_AUTO, slot);
+}
+
+[[nodiscard]] static enum geist_status vk_stage_reserve(struct geist_backend *be,
+                                                        struct geist_buffer **slot,
+                                                        size_t                bytes) {
+    return vk_stage_reserve_role(be, slot, bytes, GEIST_BUFFER_STAGING);
 }
 
 static struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host) {
@@ -1797,7 +1804,12 @@ static struct vk_access vk_acc_tensor16(const struct geist_tensor *t, bool write
                                                           size_t                n_out) {
     struct vk_state *st = be->state;
     vk_seq_flush(st); /* host x/y round-trip — must not interleave with a batch */
-    enum geist_status s = vk_stage_reserve(be, &st->x_stage, m * n_in * sizeof(float));
+    /* x_stage: the GPU reads it hot (GEMM B tiles), the host only writes —
+     * SCRATCH role makes it BAR-eligible. y_stage stays in system RAM
+     * (the host reads results back; CPU reads from BAR are uncached). */
+    enum geist_status s =
+            vk_stage_reserve_role(be, &st->x_stage, m * n_in * sizeof(float),
+                                  GEIST_BUFFER_SCRATCH);
     if (s == GEIST_OK) {
         s = vk_stage_reserve(be, &st->y_stage, m * n_out * sizeof(float));
     }
