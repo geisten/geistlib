@@ -130,14 +130,14 @@ LLAMA_PN=( -p "$SEQ_LENS" -n "$DECODE_N" -t "$THREADS" -r "$REPEATS" )
 
 echo
 note "=== geist (TQ2_0, SDOT default) ==="
-GEIST_WEIGHT_MMAP=1 OMP_WAIT_POLICY=active OMP_NUM_THREADS="$THREADS" \
+OMP_WAIT_POLICY=active OMP_NUM_THREADS="$THREADS" \
   "$GEIST_BIN" --gguf "$MODEL" --seq-lens "$SEQ_LENS" \
   --decode-n "$DECODE_N" --warmup "$DECODE_N" --repeats "$REPEATS" \
   | tee "$OUT/geist.jsonl"
 
 # Optional: geist with TL1 LUT decode (Apple-tuned path; measure on A76 too).
 note "=== geist (TQ2_0, GEIST_TL1=1 decode) ==="
-GEIST_TL1=1 GEIST_WEIGHT_MMAP=1 OMP_WAIT_POLICY=active OMP_NUM_THREADS="$THREADS" \
+GEIST_TL1=1 OMP_WAIT_POLICY=active OMP_NUM_THREADS="$THREADS" \
   "$GEIST_BIN" --gguf "$MODEL" --seq-lens "$SEQ_LENS" \
   --decode-n "$DECODE_N" --warmup "$DECODE_N" --repeats "$REPEATS" \
   | tee "$OUT/geist-tl1.jsonl"

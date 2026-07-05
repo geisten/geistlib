@@ -170,8 +170,9 @@ the unmodified f16 dot products — only *which* rows get scored is approximate.
 lm_head drops **49.9 → 9.2 ms/token (5.4×)**; RSS +82 MB.
 
 Greedy output is **byte-identical** to the exact dense head (verified, multiple
-prompts) — the true argmax is always inside the 512 candidates. Opt-in; default
-off keeps the exact head (and non-greedy sampling falls back automatically).
+prompts) — the true argmax is always inside the 512 candidates. **Default on**
+for greedy decode on an eligible tied lm_head; `GEIST_SPEC_HEAD=0` forces the
+exact head, and non-greedy sampling falls back automatically.
 
 ### Result — geist vs Cougar vs bitnet.cpp (same Pi, same i2_s model)
 
