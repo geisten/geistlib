@@ -34,7 +34,7 @@ M=gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
 # geist auto-runs prefill on all 4 cores and decode on 3.
 # Each point is the MEAN of 10 measured repeats, taken AFTER a discarded
 # warm-up run (--warmup) that pages weights resident and spins up the OMP pool:
-GEIST_WEIGHT_MMAP=1 OMP_WAIT_POLICY=active \
+OMP_WAIT_POLICY=active \
   bin/pi5/release/tests/bench_perf_sweep --gguf $M --seq-lens 128,256,512,1024 --decode-n 16 --warmup 16 --repeats 10
 # llama.cpp reference (4 threads, prefill sweep; llama-bench warms up internally):
 llama-bench -m $M -p 128,256,512,1024 -n 32 -t 4
