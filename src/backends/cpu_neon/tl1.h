@@ -82,10 +82,4 @@ void cpu_neon_w_tl1_m1(const float               *x,
                        struct geist_backend      *be,
                        float                     *y);
 
-/* M>1 prefill LUT-GEMM: y[m][n_out] = (W · x[m])[…] via the TL1 LUT path —
- * builds m per-token activation LUTs (amortized) and reuses each weight tile
- * across all m tokens. `w->aux_fp32` is the tl1_pack_from_tq2_0 buffer. */
-void cpu_neon_w_tl1_mN(
-        const float *x, const struct geist_weight *w, size_t m, struct geist_backend *be, float *y);
-
 #endif /* GEIST_INTERNAL_BACKEND_CPU_NEON_TL1_H */
