@@ -1,0 +1,103 @@
+#version 450
+#extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+/* Fused decode FFN front: y = gelu_tanh(x . gate^T) * (x . up^T), both
+ * weights Q4_K, m == 1. Structure of matvec_q4k v4, two weight streams
+ * sharing the x loads. 8 rows per 256-thread workgroup.
+ * Dispatch: gx = ceil(n_out / 8). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer WG { uint wg[]; };
+layout(set = 0, binding = 2) readonly buffer WU { uint wu[]; };
+layout(set = 0, binding = 3) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+void main() {
+    uint warp = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint row = gl_WorkGroupID.x * gl_NumSubgroups + warp;
+
+    float sum_g = 0.0;
+    float sum_u = 0.0;
+    if (row < pc.n_out) {
+        uint sub = lane >> 2;
+        uint idx8 = (lane & 3u) * 8u;
+        uint shift = (sub & 1u) * 4u;
+        uint row_word = (row * pc.blocks_per_row * 144u) >> 2u;
+
+        for (uint b = 0; b < pc.blocks_per_row; b++) {
+            uint blk = row_word + b * 36u;
+            uint xv = (pc.x_offset + b * 256u + sub * 32u + idx8) >> 2u;
+            vec4 xa = x4[xv];
+            vec4 xb = x4[xv + 1u];
+            float xs = dot(xa + xb, vec4(1.0));
+
+            for (uint which = 0u; which < 2u; which++) {
+                uint h0 = 0u, h1 = 0u, h2 = 0u, h3 = 0u;
+                if (lane == 0u) {
+                    h0 = which == 0u ? wg[blk] : wu[blk];
+                    h1 = which == 0u ? wg[blk + 1u] : wu[blk + 1u];
+                    h2 = which == 0u ? wg[blk + 2u] : wu[blk + 2u];
+                    h3 = which == 0u ? wg[blk + 3u] : wu[blk + 3u];
+                }
+                h0 = subgroupBroadcast(h0, 0);
+                h1 = subgroupBroadcast(h1, 0);
+                h2 = subgroupBroadcast(h2, 0);
+                h3 = subgroupBroadcast(h3, 0);
+
+                vec2 dd = unpackHalf2x16(h0);
+                uint sc_u, mn_u;
+                if (sub < 4u) {
+                    sc_u = (h1 >> (8u * sub)) & 63u;
+                    mn_u = (h2 >> (8u * sub)) & 63u;
+                } else {
+                    uint j = sub - 4u;
+                    uint q_j4 = (h3 >> (8u * j)) & 0xffu;
+                    sc_u = (q_j4 & 15u) | ((((h1 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+                    mn_u = (q_j4 >> 4u) | ((((h2 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+                }
+
+                uint qs = blk + 4u + (sub >> 1u) * 8u + (idx8 >> 2u);
+                uint q0 = which == 0u ? wg[qs] : wu[qs];
+                uint q1 = which == 0u ? wg[qs + 1u] : wu[qs + 1u];
+                vec4 qv0 = vec4(float((q0 >> shift) & 15u),
+                                float((q0 >> (8u + shift)) & 15u),
+                                float((q0 >> (16u + shift)) & 15u),
+                                float((q0 >> (24u + shift)) & 15u));
+                vec4 qv1 = vec4(float((q1 >> shift) & 15u),
+                                float((q1 >> (8u + shift)) & 15u),
+                                float((q1 >> (16u + shift)) & 15u),
+                                float((q1 >> (24u + shift)) & 15u));
+                float xq = dot(qv0, xa) + dot(qv1, xb);
+                float v = dd.x * float(sc_u) * xq - dd.y * float(mn_u) * xs;
+                if (which == 0u) {
+                    sum_g += v;
+                } else {
+                    sum_u += v;
+                }
+            }
+        }
+    }
+
+    sum_g = subgroupAdd(sum_g);
+    sum_u = subgroupAdd(sum_u);
+    if (subgroupElect() && row < pc.n_out) {
+        float g = sum_g;
+        float u = 0.7978845608028654 * (g + 0.044715 * g * g * g);
+        y[pc.y_offset + row] = (0.5 * g * (1.0 + tanh(u))) * sum_u;
+    }
+}
