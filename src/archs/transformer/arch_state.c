@@ -1031,10 +1031,15 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
             sess->kv_kivi_enabled = false;
         }
     }
-    /* Issue #61: opt-in Hadamard rotation, only meaningful on the INT8 path. */
+    /* Issue #61: Hadamard rotation, only meaningful on the INT8 storage path.
+     * Packed INT4 rotates by DEFAULT (INT4-without-rotation is a real quality
+     * cliff and the rotation is ~free / a net win at long context); plain
+     * INT8 stays opt-in. GEIST_KV_ROT=0 opts out, =1 forces on. */
     {
-        const char *env_rot  = getenv("GEIST_KV_ROT");
-        sess->kv_rot_enabled = sess->kv_int8_enabled && env_rot != nullptr && env_rot[0] == '1';
+        const char *env_rot     = getenv("GEIST_KV_ROT");
+        const bool  rot_default = sess->kv_int4_packed_enabled;
+        const bool  rot_on      = (env_rot != nullptr) ? (env_rot[0] == '1') : rot_default;
+        sess->kv_rot_enabled    = sess->kv_int8_enabled && rot_on;
     }
     /* F16 cache: explicit request, or AUTO-resolved FP32 upgraded when the
      * backend has the fused converting append (env GEIST_KV_F16=0 forces
