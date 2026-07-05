@@ -998,6 +998,29 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     const enum geist_kv_mode mode = resolve_kv_mode(opts);
     sess->kv_kivi_enabled         = (mode == GEIST_KV_KIVI);
     sess->kv_int8_enabled         = (mode == GEIST_KV_INT8);
+    /* Issue #61: low-bit quality-sim reuses the INT8 storage path with an
+     * N-bit quant grid. GEIST_KV_INT4=1 → 4 bits; GEIST_KV_QBITS=N (2..8)
+     * overrides. Any sim (2..7) forces INT8 storage on regardless of the
+     * resolved mode. Resolve before the rot flag so rotation sees it. */
+    {
+        int         qbits     = 0;
+        const char *env_int4  = getenv("GEIST_KV_INT4");
+        const char *env_qbits = getenv("GEIST_KV_QBITS");
+        if (env_int4 != nullptr && env_int4[0] == '1') {
+            qbits = 4;
+        }
+        if (env_qbits != nullptr) {
+            const int q = atoi(env_qbits);
+            if (q >= 2 && q <= 8) {
+                qbits = (q == 8) ? 0 : q; /* 8-bit is the native path */
+            }
+        }
+        sess->kv_sim_qbits = qbits;
+        if (qbits != 0) {
+            sess->kv_int8_enabled = true;
+            sess->kv_kivi_enabled = false;
+        }
+    }
     /* Issue #61: opt-in Hadamard rotation, only meaningful on the INT8 path. */
     {
         const char *env_rot  = getenv("GEIST_KV_ROT");

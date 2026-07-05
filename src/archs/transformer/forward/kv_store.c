@@ -111,6 +111,12 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
         const bool rot = st->sess->kv_rot_enabled && fwht_supported(hd) && hd <= 512;
         float      krot[512];
         float      vrot[512];
+        /* Issue #61: low-bit quality-sim quantizes on an N-bit grid
+         * (amax / (2^(N-1)-1)); the int8 container then holds values in
+         * [-(2^(N-1)-1), +...]. Rounding stays in range (|x| <= amax), so no
+         * clamp is needed. qbits==0 is the native 8-bit path (denom 127). */
+        const int   qbits = st->sess->kv_sim_qbits;
+        const float denom = qbits != 0 ? (float) ((1 << (qbits - 1)) - 1) : 127.0f;
         for (size_t t = 0; t < seq; t++) {
             const size_t slot = q_position + t;
             for (size_t h = 0; h < st->n_kv_heads; h++) {
@@ -126,11 +132,11 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
                 }
                 const float k_amax  = kv_row_absmax(k_row, hd);
                 const float v_amax  = kv_row_absmax(v_row, hd);
-                float       k_scale = k_amax / 127.0f;
+                float       k_scale = k_amax / denom;
                 if (k_scale == 0.0f) {
                     k_scale = 1.0f;
                 }
-                float v_scale = v_amax / 127.0f;
+                float v_scale = v_amax / denom;
                 if (v_scale == 0.0f) {
                     v_scale = 1.0f;
                 }

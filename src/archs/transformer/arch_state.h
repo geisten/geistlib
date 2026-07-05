@@ -179,6 +179,13 @@ struct transformer_arch_session {
      * suppress activation outliers. Honored only in the INT8 path and
      * only when head_dim is a power of two. Env: GEIST_KV_ROT=1. */
     bool kv_rot_enabled;
+    /* Experiment (issue #61): quantize the INT8 K/V cache on an N-bit grid
+     * (scale = amax / (2^(N-1)-1)) — quality-only simulation of a symmetric
+     * low-bit cache that reuses the INT8 storage + kernel (no packing, no
+     * memory win yet). Measures whether rotation rescues low-bit quality.
+     * 0 = native 8-bit; 2..7 forces the INT8 storage path on. Env:
+     * GEIST_KV_INT4=1 (→4) or GEIST_KV_QBITS=N. */
+    int kv_sim_qbits;
     /* F16 KV cache: k_cache[]/v_cache[] hold half floats (2 bytes/elem);
      * appends convert through the backend's kv_append_f16 slot and
      * attention reads F16 views. Only set when that slot is non-null. */

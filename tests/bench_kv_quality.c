@@ -74,17 +74,30 @@ static const char *DEFAULT_TEXT =
  * resolves it. A nullptr field means unset that var. */
 struct kv_mode_cfg {
     const char *label;
-    const char *int8; /* GEIST_KV_INT8 */
-    const char *kivi; /* GEIST_KV_KIVI */
-    const char *rot;  /* GEIST_KV_ROT  */
+    const char *int8;  /* GEIST_KV_INT8 */
+    const char *kivi;  /* GEIST_KV_KIVI */
+    const char *rot;   /* GEIST_KV_ROT  */
+    const char *int4;  /* GEIST_KV_INT4 (4-bit quality-sim on the INT8 path) */
+    const char *qbits; /* GEIST_KV_QBITS (N-bit quality-sim; overrides int4) */
 };
 
 static const struct kv_mode_cfg MODES[] = {
-        {"FP32", "0", nullptr, nullptr},
-        {"INT8", "1", nullptr, "0"},
-        {"INT8+ROT", "1", nullptr, "1"},
-        {"KIVI", nullptr, "1", nullptr},
+        {"FP32", "0", nullptr, nullptr, nullptr, nullptr},
+        {"INT8", "1", nullptr, "0", nullptr, nullptr},
+        {"INT8+ROT", "1", nullptr, "1", nullptr, nullptr},
+        {"INT4", nullptr, nullptr, "0", "1", nullptr},
+        {"INT4+ROT", nullptr, nullptr, "1", "1", nullptr},
+        {"INT2", nullptr, nullptr, "0", nullptr, "2"},
+        {"INT2+ROT", nullptr, nullptr, "1", nullptr, "2"},
+        {"KIVI", nullptr, "1", nullptr, nullptr, nullptr},
 };
+
+static size_t mode_index(const char *label) {
+    for (size_t i = 0; i < sizeof(MODES) / sizeof(MODES[0]); i++)
+        if (strcmp(MODES[i].label, label) == 0)
+            return i;
+    return 0; /* labels are compile-time constants — unreachable */
+}
 
 static void set_or_unset(const char *name, const char *val) {
     if (val != nullptr)
@@ -238,6 +251,8 @@ int main(int argc, char **argv) {
         set_or_unset("GEIST_KV_INT8", MODES[m].int8);
         set_or_unset("GEIST_KV_KIVI", MODES[m].kivi);
         set_or_unset("GEIST_KV_ROT", MODES[m].rot);
+        set_or_unset("GEIST_KV_INT4", MODES[m].int4);
+        set_or_unset("GEIST_KV_QBITS", MODES[m].qbits);
         acc[m] = run_one(model_path, be, ids, n_ids, nullptr);
         if (acc[m] < 0.0) {
             free(ids);
@@ -247,22 +262,32 @@ int main(int argc, char **argv) {
         printf("%-10s  %.4f\n", MODES[m].label, acc[m]);
     }
 
-    /* Issue #61 headline: fraction of the INT8→KIVI gap that ROT recovers.
-     * MODES order is FP32, INT8, INT8+ROT, KIVI. */
-    const double gap = acc[3] - acc[1]; /* KIVI - INT8 */
+    /* Issue #61 headline (option A): does rotation rescue the low-bit INT4
+     * cache? Report the fraction of the INT4→INT8 quality drop that ROT
+     * recovers — INT8 is the lossless ceiling, INT4 the degraded floor. */
+    const double a_int8    = acc[mode_index("INT8")];
+    const double a_int4    = acc[mode_index("INT4")];
+    const double a_int4rot = acc[mode_index("INT4+ROT")];
+    const double gap       = a_int8 - a_int4; /* low-bit penalty */
+    printf("\n");
     if (gap > 1e-6) {
-        const double recovered = (acc[2] - acc[1]) / gap;
-        printf("\nINT8→KIVI gap recovered by rotation: %.0f%%  (INT8 %.4f → ROT %.4f → KIVI "
-               "%.4f)\n",
+        const double recovered = (a_int4rot - a_int4) / gap;
+        printf("INT4→INT8 gap recovered by rotation: %.0f%%  (INT4 %.4f → +ROT %.4f → INT8 %.4f)\n",
                100.0 * recovered,
-               acc[1],
-               acc[2],
-               acc[3]);
+               a_int4,
+               a_int4rot,
+               a_int8);
     } else {
-        printf("\nINT8 already within noise of KIVI (gap=%.4f) — rotation headroom is negligible "
-               "here.\n",
+        printf("INT4 already within noise of INT8 (gap=%.4f) — no low-bit penalty to recover.\n",
                gap);
     }
+
+    /* The lazier-KIVI question: can symmetric 2-bit + rotation rival KIVI's
+     * asymmetric per-channel 2-bit? */
+    printf("2-bit: symmetric INT2 %.4f → +ROT %.4f  vs  KIVI(asym) %.4f\n",
+           acc[mode_index("INT2")],
+           acc[mode_index("INT2+ROT")],
+           acc[mode_index("KIVI")]);
 
     free(ids);
     geist_backend_destroy(be);
