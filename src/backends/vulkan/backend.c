@@ -47,8 +47,13 @@
 #include "shaders/attention_f32_spv.h"
 #include "shaders/embed_lookup_scaled_spv.h"
 #include "shaders/ffn_gate_up_gelu_q4k_spv.h"
+#include "shaders/attention_f16_spv.h"
+#include "shaders/attn_comb_spv.h"
+#include "shaders/attn_part_f16_spv.h"
+#include "shaders/kv_append_f16_spv.h"
 #include "shaders/matmul_q4k_cm_spv.h"
 #include "shaders/matmul_q6k_cm_spv.h"
+#include "shaders/qkv_prep_f16_spv.h"
 #include "shaders/qkv_prep_f32_spv.h"
 #include "shaders/gelu_tanh_f32_spv.h"
 #include "shaders/gelu_tanh_mul_f32_spv.h"
@@ -156,6 +161,11 @@ enum vk_pipe {
     VK_PIPE_QKV_PREP,
     VK_PIPE_MM_Q4K_CM, /* tensor-core GEMMs; created only with coopmat */
     VK_PIPE_MM_Q6K_CM,
+    VK_PIPE_ATTENTION_F16,
+    VK_PIPE_QKV_PREP_F16,
+    VK_PIPE_KV_APPEND_F16,
+    VK_PIPE_ATTN_PART_F16,
+    VK_PIPE_ATTN_COMB,
     VK_PIPE_COUNT,
 };
 
@@ -189,6 +199,7 @@ struct vk_dirty {
 };
 
 enum {
+    VK_XRING_CAP    = 192u << 20, /* a full prefill chunk stages ~124 MB */
     VK_DIRTY_CAP    = 96,
     VK_DSET_CACHE   = 4096,
     VK_SEQ_CMDBUFS  = 64, /* rolling submission ring */
@@ -331,6 +342,9 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_RMSNORM_ADD] = 4, [VK_PIPE_ROPE] = 3,      [VK_PIPE_ATTENTION] = 4,
         [VK_PIPE_ARGMAX] = 2,     [VK_PIPE_EMBED] = 2,      [VK_PIPE_FFN_GATE_UP] = 4,
         [VK_PIPE_QKV_PREP] = 6, [VK_PIPE_MM_Q4K_CM] = 3, [VK_PIPE_MM_Q6K_CM] = 3,
+        [VK_PIPE_ATTENTION_F16] = 4, [VK_PIPE_QKV_PREP_F16] = 6,
+        [VK_PIPE_KV_APPEND_F16] = 4, [VK_PIPE_ATTN_PART_F16] = 4,
+        [VK_PIPE_ATTN_COMB] = 2,
 };
 
 struct geist_buffer {
@@ -869,6 +883,11 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             [VK_PIPE_QKV_PREP]    = {qkv_prep_f32_spv, sizeof(qkv_prep_f32_spv)},
             [VK_PIPE_MM_Q4K_CM]   = {matmul_q4k_cm_spv, sizeof(matmul_q4k_cm_spv)},
             [VK_PIPE_MM_Q6K_CM]   = {matmul_q6k_cm_spv, sizeof(matmul_q6k_cm_spv)},
+            [VK_PIPE_ATTENTION_F16] = {attention_f16_spv, sizeof(attention_f16_spv)},
+            [VK_PIPE_QKV_PREP_F16]  = {qkv_prep_f16_spv, sizeof(qkv_prep_f16_spv)},
+            [VK_PIPE_KV_APPEND_F16] = {kv_append_f16_spv, sizeof(kv_append_f16_spv)},
+            [VK_PIPE_ATTN_PART_F16] = {attn_part_f16_spv, sizeof(attn_part_f16_spv)},
+            [VK_PIPE_ATTN_COMB]     = {attn_comb_spv, sizeof(attn_comb_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
         if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM) && !st->has_coopmat) {
@@ -967,7 +986,8 @@ static void vk_destroy(struct geist_backend *be) {
                     "matvec_q4k", "matmul_q4k", "matvec_q6k", "matmul_q6k", "matvec_f32",
                     "matmul_f32", "add",        "mul",        "gelu",       "gelu_mul",
                     "scale",      "rmsnorm",    "rmsnorm_add", "rope",      "attention",
-                    "argmax",     "embed",      "ffn_gate_up", "qkv_prep", "mm_q4k_cm", "mm_q6k_cm", "copy"};
+                    "argmax",     "embed",      "ffn_gate_up", "qkv_prep", "mm_q4k_cm", "mm_q6k_cm",
+                    "attn_f16",   "qkv_f16",    "kv_app_f16", "attn_part", "attn_comb", "copy"};
             fprintf(stderr, "geist vulkan gpu profile:\n");
             for (int i = 0; i <= VK_PIPE_COUNT; ++i) {
                 if (st->prof_calls[i] > 0) {
@@ -1732,6 +1752,41 @@ static bool vk_tensor_gpu(const struct geist_tensor *t, VkDescriptorBufferInfo *
     return true;
 }
 
+/* Same, but offsets in f16 elements (for F16 KV-cache views). */
+static bool vk_tensor_gpu_f16(const struct geist_tensor *t, VkDescriptorBufferInfo *out,
+                              uint32_t *elem_off) {
+    if (t == nullptr || t->buffer == nullptr || t->buffer->buf == VK_NULL_HANDLE) {
+        return false;
+    }
+    const size_t byte_off = t->buffer->base_off + t->offset;
+    if (byte_off % 2 != 0) {
+        return false;
+    }
+    *out      = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
+    *elem_off = (uint32_t) (byte_off / 2);
+    return true;
+}
+
+/* Element count of an F16 DENSE tensor (metadata only). */
+static size_t vk_t_n16(const struct geist_tensor *t) {
+    if (t == nullptr || t->dtype != GEIST_DTYPE_F16 || t->layout != GEIST_LAYOUT_DENSE ||
+        t->buffer == nullptr || t->ndim < 1) {
+        return 0;
+    }
+    size_t n = 1;
+    for (int d = 0; d < t->ndim; d++) {
+        if (t->shape[d] <= 0) {
+            return 0;
+        }
+        n *= (size_t) t->shape[d];
+    }
+    return n;
+}
+
+static struct vk_access vk_acc_tensor16(const struct geist_tensor *t, bool write) {
+    return vk_acc(t->buffer->base_off + t->offset, vk_t_n16(t) * 2u, write);
+}
+
 [[nodiscard]] static enum geist_status vk_dispatch_linear(struct geist_backend *be,
                                                           enum vk_pipe          pipe,
                                                           struct geist_buffer  *wbuf,
@@ -2484,13 +2539,71 @@ static constexpr float VK_GELU_K1 = 0.044715f;
                                                     size_t q_offset,
                                                     size_t sliding_window,
                                                     struct geist_tensor *out) {
+    /* Flash-decoding: n_q == 1 with f16 KV and enough context to make the
+     * 8-workgroup direct kernel starve the GPU. Partials go into the
+     * device x-ring; a combine pass reduces per head. */
+    struct vk_state *stt = be->state;
+    if (VK_OPS(be, 16u) && q != nullptr && k != nullptr && v != nullptr && out != nullptr &&
+        q->ndim == 3 && q->shape[0] == 1 && k->dtype == GEIST_DTYPE_F16 &&
+        (size_t) k->shape[0] > 192 && q->shape[2] <= 512 && vk_t_n(q) != 0 &&
+        vk_t_n16(k) != 0 && stt->pipes[VK_PIPE_ATTN_PART_F16] != VK_NULL_HANDLE) {
+        const uint32_t qh   = (uint32_t) q->shape[1];
+        const uint32_t hd   = (uint32_t) q->shape[2];
+        const uint32_t n_kv = (uint32_t) k->shape[0];
+        const uint32_t kvh  = (uint32_t) k->shape[1];
+        const uint32_t n_chunks = (n_kv + 127u) / 128u;
+        const size_t   part_bytes = (size_t) qh * n_chunks * (hd + 2u) * 4u;
+        VkDescriptorBufferInfo bq, bk, bv, bo;
+        uint32_t               qo, ko, vo, oo;
+        if (stt->xring == nullptr &&
+            vk_buffer_create(be, VK_XRING_CAP, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE,
+                             &stt->xring) != GEIST_OK) {
+            goto attn_generic;
+        }
+        if (stt->xring_used + part_bytes > stt->xring->bytes) {
+            vk_seq_flush(stt);
+        }
+        if (part_bytes > stt->xring->bytes || !vk_tensor_gpu(q, &bq, &qo) ||
+            !vk_tensor_gpu_f16(k, &bk, &ko) || !vk_tensor_gpu_f16(v, &bv, &vo) ||
+            !vk_tensor_gpu(out, &bo, &oo)) {
+            goto attn_generic;
+        }
+        const uint32_t po = (uint32_t) (stt->xring_used / 4u);
+        const uint32_t push1[11] = {n_kv, qh, kvh, hd, (uint32_t) q_offset,
+                                    (uint32_t) sliding_window, qo, ko, vo, po, n_chunks};
+        VkDescriptorBufferInfo bi1[4] = {bq, bk, bv,
+                                         {.buffer = stt->xring->buf, .range = VK_WHOLE_SIZE}};
+        const struct vk_access acc1[4] = {vk_acc_tensor(q, false), vk_acc_tensor16(k, false),
+                                          vk_acc_tensor16(v, false),
+                                          vk_acc(stt->xring_used, part_bytes, true)};
+        if (vk_seq_dispatch_acc(be, VK_PIPE_ATTN_PART_F16, bi1, acc1, push1, sizeof(push1),
+                                n_chunks, qh, 1) != GEIST_OK) {
+            goto attn_generic;
+        }
+        const uint32_t push2[5] = {qh, hd, n_chunks, po, oo};
+        VkDescriptorBufferInfo bi2[2] = {{.buffer = stt->xring->buf, .range = VK_WHOLE_SIZE},
+                                         bo};
+        const struct vk_access acc2[2] = {vk_acc(stt->xring_used, part_bytes, false),
+                                          vk_acc_tensor(out, true)};
+        stt->xring_used = (stt->xring_used + part_bytes + 63u) & ~(size_t) 63u;
+        if (vk_seq_dispatch_acc(be, VK_PIPE_ATTN_COMB, bi2, acc2, push2, sizeof(push2), qh, 1,
+                                1) == GEIST_OK) {
+            return GEIST_OK;
+        }
+    }
+attn_generic:;
     {
         VkDescriptorBufferInfo bi[4];
         uint32_t               off[4];
+        const bool kv16 = k != nullptr && k->dtype == GEIST_DTYPE_F16;
         if (VK_OPS(be, 16u) && q != nullptr && k != nullptr && q->ndim == 3 && k->ndim == 3 && vk_t_n(q) != 0 &&
-            vk_t_n(k) != 0 && vk_t_n(v) != 0 && vk_t_n(out) != 0 &&
-            vk_tensor_gpu(q, &bi[0], &off[0]) && vk_tensor_gpu(k, &bi[1], &off[1]) &&
-            vk_tensor_gpu(v, &bi[2], &off[2]) && vk_tensor_gpu(out, &bi[3], &off[3])) {
+            (kv16 ? (vk_t_n16(k) != 0 && vk_t_n16(v) != 0 &&
+                     vk_tensor_gpu_f16(k, &bi[1], &off[1]) &&
+                     vk_tensor_gpu_f16(v, &bi[2], &off[2]))
+                  : (vk_t_n(k) != 0 && vk_t_n(v) != 0 && vk_tensor_gpu(k, &bi[1], &off[1]) &&
+                     vk_tensor_gpu(v, &bi[2], &off[2]))) &&
+            vk_t_n(out) != 0 &&
+            vk_tensor_gpu(q, &bi[0], &off[0]) && vk_tensor_gpu(out, &bi[3], &off[3])) {
             const uint32_t n_q  = (uint32_t) q->shape[0];
             const uint32_t qh   = (uint32_t) q->shape[1];
             const uint32_t hd   = (uint32_t) q->shape[2];
@@ -2507,12 +2620,13 @@ static constexpr float VK_GELU_K1 = 0.044715f;
                                        off[1],
                                        off[2],
                                        off[3]};
-            const struct vk_access acc[4] = {vk_acc_tensor(q, false),
-                                             vk_acc_tensor(k, false),
-                                             vk_acc_tensor(v, false),
-                                             vk_acc_tensor(out, true)};
-            if (vk_seq_dispatch_acc(be, VK_PIPE_ATTENTION, bi, acc, push, sizeof(push), n_q,
-                                    qh, 1) == GEIST_OK) {
+            const struct vk_access acc[4] = {
+                    vk_acc_tensor(q, false),
+                    kv16 ? vk_acc_tensor16(k, false) : vk_acc_tensor(k, false),
+                    kv16 ? vk_acc_tensor16(v, false) : vk_acc_tensor(v, false),
+                    vk_acc_tensor(out, true)};
+            if (vk_seq_dispatch_acc(be, kv16 ? VK_PIPE_ATTENTION_F16 : VK_PIPE_ATTENTION, bi,
+                                    acc, push, sizeof(push), n_q, qh, 1) == GEIST_OK) {
                 return GEIST_OK;
             }
         }
@@ -2699,7 +2813,6 @@ static constexpr float VK_GELU_K1 = 0.044715f;
     return GEIST_OK;
 }
 
-enum { VK_XRING_CAP = 192u << 20 }; /* a full prefill chunk stages ~124 MB */
 
 /* Stage x into the device-local ring (one in-batch CmdCopyBuffer). Returns
  * the ring element offset; false = not stageable (caller falls back). */
@@ -3020,9 +3133,11 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         return GEIST_E_UNSUPPORTED;
     }
     const bool has_kv = k != nullptr;
+    const bool kv16   = has_kv && k_cache != nullptr && k_cache->dtype == GEIST_DTYPE_F16;
     if (has_kv && (v == nullptr || k_norm_w == nullptr || v_norm_w == nullptr ||
                    k_cache == nullptr || v_cache == nullptr ||
-                   k_cache->dtype != GEIST_DTYPE_F32 || v_cache->dtype != GEIST_DTYPE_F32)) {
+                   (!kv16 && (k_cache->dtype != GEIST_DTYPE_F32 ||
+                              v_cache->dtype != GEIST_DTYPE_F32)))) {
         return GEIST_E_UNSUPPORTED;
     }
     const uint32_t seq = (uint32_t) q->shape[0];
@@ -3041,10 +3156,14 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     uint32_t kvh = 1;
     if (has_kv) {
         VkDescriptorBufferInfo b_k, b_v, b_kw, b_vw;
+        const bool caches_ok =
+                kv16 ? (vk_tensor_gpu_f16(k_cache, &bi[4], &kco) &&
+                        vk_tensor_gpu_f16(v_cache, &bi[5], &vco))
+                     : (vk_tensor_gpu(k_cache, &bi[4], &kco) &&
+                        vk_tensor_gpu(v_cache, &bi[5], &vco));
         if (vk_t_n(k) == 0 || vk_t_n(v) == 0 || !vk_tensor_gpu(k, &b_k, &ko) ||
             !vk_tensor_gpu(v, &b_v, &vo) || !vk_tensor_gpu(k_norm_w, &b_kw, &kwo) ||
-            !vk_tensor_gpu(v_norm_w, &b_vw, &vwo) || !vk_tensor_gpu(k_cache, &bi[4], &kco) ||
-            !vk_tensor_gpu(v_cache, &bi[5], &vco)) {
+            !vk_tensor_gpu(v_norm_w, &b_vw, &vwo) || !caches_ok) {
             return GEIST_E_UNSUPPORTED;
         }
         /* q/k/v + ones share the pool buffer; q/k gammas share the arena */
@@ -3078,11 +3197,50 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
             vk_acc_all(false),
             vk_acc_tensor(cos, false),
             vk_acc_tensor(sin, false),
-            has_kv ? vk_acc_tensor(k_cache, true) : vk_acc(0, 0, false),
-            has_kv ? vk_acc_tensor(v_cache, true) : vk_acc(0, 0, false),
+            has_kv ? (kv16 ? vk_acc_tensor16(k_cache, true) : vk_acc_tensor(k_cache, true))
+                   : vk_acc(0, 0, false),
+            has_kv ? (kv16 ? vk_acc_tensor16(v_cache, true) : vk_acc_tensor(v_cache, true))
+                   : vk_acc(0, 0, false),
     };
-    return vk_seq_dispatch_acc(be, VK_PIPE_QKV_PREP, bi, acc, &push, sizeof(push), seq, qh,
-                               3);
+    return vk_seq_dispatch_acc(be, kv16 ? VK_PIPE_QKV_PREP_F16 : VK_PIPE_QKV_PREP, bi, acc,
+                               &push, sizeof(push), seq, qh, 3);
+}
+
+/* F32 -> F16 converting KV append (enables the F16 cache: GEIST_KV_AUTO
+ * upgrades when this slot exists). */
+[[nodiscard]] static enum geist_status vk_kv_append_f16(struct geist_backend      *be,
+                                                        const struct geist_tensor *k_src,
+                                                        const struct geist_tensor *v_src,
+                                                        size_t                     q_position,
+                                                        struct geist_tensor       *k_cache,
+                                                        struct geist_tensor       *v_cache) {
+    if (k_src == nullptr || v_src == nullptr || k_cache == nullptr || v_cache == nullptr ||
+        k_src->ndim != 3) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t seq    = (size_t) k_src->shape[0];
+    const size_t kv_row = (size_t) (k_src->shape[1] * k_src->shape[2]);
+    const size_t n      = seq * kv_row;
+    VkDescriptorBufferInfo bi[4];
+    uint32_t               kso, vso, kdo, vdo;
+    if (n == 0 || vk_t_n(k_src) == 0 || vk_t_n(v_src) == 0 ||
+        !vk_tensor_gpu(k_src, &bi[0], &kso) || !vk_tensor_gpu(v_src, &bi[1], &vso) ||
+        !vk_tensor_gpu_f16(k_cache, &bi[2], &kdo) ||
+        !vk_tensor_gpu_f16(v_cache, &bi[3], &vdo)) {
+        geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "vulkan kv_append_f16: bad inputs");
+        return GEIST_E_UNSUPPORTED;
+    }
+    const uint32_t push[5] = {(uint32_t) n, kso, vso,
+                              kdo + (uint32_t) (q_position * kv_row),
+                              vdo + (uint32_t) (q_position * kv_row)};
+    const struct vk_access acc[4] = {
+            vk_acc_tensor(k_src, false), vk_acc_tensor(v_src, false),
+            vk_acc(k_cache->buffer->base_off + k_cache->offset + q_position * kv_row * 2,
+                   n * 2, true),
+            vk_acc(v_cache->buffer->base_off + v_cache->offset + q_position * kv_row * 2,
+                   n * 2, true)};
+    return vk_seq_dispatch_acc(be, VK_PIPE_KV_APPEND_F16, bi, acc, push, sizeof(push),
+                               vk_groups(n), 1, 1);
 }
 
 /* ====================================================================== */
@@ -3154,6 +3312,7 @@ static const struct geist_backend_vtbl vk_vtbl = {
 #endif
         .ffn_gate_up             = vk_ffn_gate_up,
         .attn_qkv_prep           = vk_attn_qkv_prep,
+        .kv_append_f16           = vk_kv_append_f16,
 };
 
 const struct geist_backend_descriptor geist_backend_vulkan = {
