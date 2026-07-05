@@ -24,6 +24,12 @@
 #define GEIST_INTERNAL_ENGINE_LAYER
 #define GEIST_INTERNAL_ARCH_LAYER
 
+/* setenv/unsetenv need a POSIX feature macro on glibc (Pi5); no-op on macOS.
+ * Must precede any system header. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "test_helpers.h"
 
 #include "src/engine/gguf_tokenizer.h"
