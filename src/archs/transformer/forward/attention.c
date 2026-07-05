@@ -327,7 +327,15 @@ void attention_int8_via_buffers(const float  *q,
 
 /* Packed-INT4 attention. Identical to attention_int8_via_buffers except each
  * K/V cache row is unpacked from head_dim/2 bytes into a stack int8 row
- * before the (reused) int8 dot / weighted-sum. See internal.h. */
+ * before the (reused) int8 dot / weighted-sum. See internal.h.
+ *
+ * int4_unpack_row fully writes [0,head_dim); the NEON tail reads only that
+ * range, so GCC's -Wmaybe-uninitialized on the unpack buffers is a false
+ * positive — suppressed here rather than paid for with a per-row zero-init. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
 void attention_int4_via_buffers(const float   *q,
                                 size_t         n_q,
                                 size_t         n_q_heads,
@@ -376,7 +384,7 @@ void attention_int4_via_buffers(const float   *q,
             }
 
             for (size_t s = s_lo; s <= s_hi; s++) {
-                int8_t k[512] = {0}; /* zero-init: silence GCC maybe-uninitialized on the NEON tail */
+                int8_t k[512];
                 int4_unpack_row(k_q4 + (s * n_kv_heads + kv_h) * packed, k, head_dim);
                 const float ks      = k_scale[s * n_kv_heads + kv_h];
                 int32_t     int_dot = 0;
@@ -417,7 +425,7 @@ void attention_int4_via_buffers(const float   *q,
                 outv[i] = 0.0f;
             }
             for (size_t s = s_lo; s <= s_hi; s++) {
-                int8_t vv[512] = {0};
+                int8_t vv[512];
                 int4_unpack_row(v_q4 + (s * n_kv_heads + kv_h) * packed, vv, head_dim);
                 const float vs  = v_scale[s * n_kv_heads + kv_h];
                 const float wvs = scores[s] * inv_sum * vs;
@@ -428,3 +436,6 @@ void attention_int4_via_buffers(const float   *q,
         }
     }
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
