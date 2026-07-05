@@ -7,6 +7,7 @@
 #include "internal.h"
 #include <geist_types.h>
 
+#include "fwht.h"
 #include "kivi.h"
 
 #include <math.h>
@@ -105,14 +106,27 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
         float       *v_sca          = (float *) v->buffer_map(ctx->v_cache_scale_buf);
         const size_t row_elems      = kv_out;
         const size_t scales_per_row = st->n_kv_heads;
+        /* Issue #61: rotate each K/V head row before quantizing. Q is
+         * rotated symmetrically at attention time (kv_store_attention). */
+        const bool rot = st->sess->kv_rot_enabled && fwht_supported(hd) && hd <= 512;
+        float      krot[512];
+        float      vrot[512];
         for (size_t t = 0; t < seq; t++) {
             const size_t slot = q_position + t;
             for (size_t h = 0; h < st->n_kv_heads; h++) {
-                const float *k_row   = k_src + t * row_elems + h * hd;
-                const float *v_row   = v_src + t * row_elems + h * hd;
-                const float  k_amax  = kv_row_absmax(k_row, hd);
-                const float  v_amax  = kv_row_absmax(v_row, hd);
-                float        k_scale = k_amax / 127.0f;
+                const float *k_row = k_src + t * row_elems + h * hd;
+                const float *v_row = v_src + t * row_elems + h * hd;
+                if (rot) {
+                    memcpy(krot, k_row, hd * sizeof(float));
+                    memcpy(vrot, v_row, hd * sizeof(float));
+                    fwht_orthonormal(krot, hd);
+                    fwht_orthonormal(vrot, hd);
+                    k_row = krot;
+                    v_row = vrot;
+                }
+                const float k_amax  = kv_row_absmax(k_row, hd);
+                const float v_amax  = kv_row_absmax(v_row, hd);
+                float       k_scale = k_amax / 127.0f;
                 if (k_scale == 0.0f) {
                     k_scale = 1.0f;
                 }
@@ -213,12 +227,22 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         v->buffer_unmap(ctx->v_residual_buf);
         v->buffer_unmap(st->sess->scratch_attn);
     } else if (ctx->kv_int8_enabled) {
-        const float  *qp       = (const float *) v->buffer_map(st->sess->scratch_q);
+        float        *qp       = (float *) v->buffer_map(st->sess->scratch_q);
         const int8_t *k_q8p    = (const int8_t *) v->buffer_map(ctx->k_cache_q8_buf);
         const int8_t *v_q8p    = (const int8_t *) v->buffer_map(ctx->v_cache_q8_buf);
         const float  *k_scalep = (const float *) v->buffer_map(ctx->k_cache_scale_buf);
         const float  *v_scalep = (const float *) v->buffer_map(ctx->v_cache_scale_buf);
         float        *outp     = (float *) v->buffer_map(st->sess->scratch_attn);
+        /* Issue #61: rotate Q by the same H used on K/V so QK scores are
+         * unchanged; the kernel then quantizes rotated Q, and we rotate the
+         * (V-rotated) output back below. H is its own inverse. */
+        const bool   rot    = st->sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
+        const size_t n_rows = ctx->seq * st->n_q_heads;
+        if (rot) {
+            for (size_t r = 0; r < n_rows; r++) {
+                fwht_orthonormal(qp + r * ctx->hd, ctx->hd);
+            }
+        }
         /* `scores` scratch is now private per query position inside the kernel
          * (the loop is parallelized), so no shared arena buffer is needed. */
         attention_int8_via_buffers(qp,
@@ -234,6 +258,11 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                    ctx->q_position,
                                    L->sliding_window,
                                    outp);
+        if (rot) {
+            for (size_t r = 0; r < n_rows; r++) {
+                fwht_orthonormal(outp + r * ctx->hd, ctx->hd);
+            }
+        }
         v->buffer_unmap(st->sess->scratch_q);
         v->buffer_unmap(ctx->k_cache_q8_buf);
         v->buffer_unmap(ctx->v_cache_q8_buf);

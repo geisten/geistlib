@@ -175,6 +175,10 @@ struct transformer_arch_session {
      *        shared across layers (lock-step drain). */
     bool kv_int8_enabled;
     bool kv_kivi_enabled;
+    /* Experiment (issue #61): FWHT-rotate Q/K/V before INT8 quant to
+     * suppress activation outliers. Honored only in the INT8 path and
+     * only when head_dim is a power of two. Env: GEIST_KV_ROT=1. */
+    bool kv_rot_enabled;
     /* F16 KV cache: k_cache[]/v_cache[] hold half floats (2 bytes/elem);
      * appends convert through the backend's kv_append_f16 slot and
      * attention reads F16 views. Only set when that slot is non-null. */

@@ -998,6 +998,11 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     const enum geist_kv_mode mode = resolve_kv_mode(opts);
     sess->kv_kivi_enabled         = (mode == GEIST_KV_KIVI);
     sess->kv_int8_enabled         = (mode == GEIST_KV_INT8);
+    /* Issue #61: opt-in Hadamard rotation, only meaningful on the INT8 path. */
+    {
+        const char *env_rot  = getenv("GEIST_KV_ROT");
+        sess->kv_rot_enabled = sess->kv_int8_enabled && env_rot != nullptr && env_rot[0] == '1';
+    }
     /* F16 cache: explicit request, or AUTO-resolved FP32 upgraded when the
      * backend has the fused converting append (env GEIST_KV_F16=0 forces
      * FP32, =1 requests it under AUTO). Without the slot F16 silently
