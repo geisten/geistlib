@@ -24,6 +24,7 @@ layout(push_constant) uniform Push {
 } pc;
 
 shared float red[256];
+shared vec4 xsh[1536];
 
 uint load_u8(uint byte_offset) {
     return (w[byte_offset >> 2] >> ((byte_offset & 3u) * 8u)) & 0xffu;
@@ -44,6 +45,16 @@ void main() {
     uint warp = lid >> 5;
     uint lane = lid & 31u;
     uint row = gl_WorkGroupID.x * 8u + warp;
+
+    uint nv = pc.n_in >> 2u;
+    bool x_shared = nv <= 1536u;
+    if (x_shared) {
+        uint xbase = pc.x_offset >> 2u;
+        for (uint i = lid; i < nv; i += 256u) {
+            xsh[i] = x4[xbase + i];
+        }
+        barrier();
+    }
 
     float sum = 0.0;
     if (row < pc.n_out) {
@@ -74,9 +85,9 @@ void main() {
                 q_hi[j] = float(((load_u8(ql_byte + 4u + j) >> ql_shift) & 15u) |
                                 (((load_u8(qh_byte + 4u + j) >> qh_shift) & 3u) << 4u));
             }
-            uint xv = (pc.x_offset + b * 256u + e0) >> 2u;
-            vec4 xa = x4[xv];
-            vec4 xb = x4[xv + 1u];
+            uint xe = (b * 256u + e0) >> 2u;
+            vec4 xa = x_shared ? xsh[xe] : x4[(pc.x_offset >> 2u) + xe];
+            vec4 xb = x_shared ? xsh[xe + 1u] : x4[(pc.x_offset >> 2u) + xe + 1u];
             float xq = dot(q_lo, xa) + dot(q_hi, xb);
             float xs = dot(xa + xb, vec4(1.0));
             sum += d * float(sc) * (xq - 32.0 * xs);

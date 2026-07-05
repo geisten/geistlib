@@ -26,10 +26,23 @@ layout(push_constant) uniform Push {
     uint y_stride;
 } pc;
 
+shared vec4 xsh[1536];
+
 void main() {
     uint warp = gl_SubgroupID;
     uint lane = gl_SubgroupInvocationID;
+    uint lid = gl_LocalInvocationID.x;
     uint row = gl_WorkGroupID.x * gl_NumSubgroups + warp;
+
+    uint nv = pc.n_in >> 2u;
+    bool x_shared = nv <= 1536u;
+    if (x_shared) {
+        uint xbase = pc.x_offset >> 2u;
+        for (uint i = lid; i < nv; i += 256u) {
+            xsh[i] = x4[xbase + i];
+        }
+        barrier();
+    }
 
     float sum_g = 0.0;
     float sum_u = 0.0;
@@ -41,9 +54,9 @@ void main() {
 
         for (uint b = 0; b < pc.blocks_per_row; b++) {
             uint blk = row_word + b * 36u;
-            uint xv = (pc.x_offset + b * 256u + sub * 32u + idx8) >> 2u;
-            vec4 xa = x4[xv];
-            vec4 xb = x4[xv + 1u];
+            uint xe = (b * 256u + sub * 32u + idx8) >> 2u;
+            vec4 xa = x_shared ? xsh[xe] : x4[(pc.x_offset >> 2u) + xe];
+            vec4 xb = x_shared ? xsh[xe + 1u] : x4[(pc.x_offset >> 2u) + xe + 1u];
             float xs = dot(xa + xb, vec4(1.0));
 
             for (uint which = 0u; which < 2u; which++) {

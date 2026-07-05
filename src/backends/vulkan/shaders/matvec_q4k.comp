@@ -1,15 +1,15 @@
 #version 450
-#extension GL_KHR_shader_subgroup_ballot : enable
-#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_control_flow_attributes : enable
 
-/* Q4_K matvec v3: one row per subgroup (8 rows per 256-thread workgroup at
- * subgroup size 32). Block headers (d/dmin + 12 scale bytes = 4 u32) are
- * loaded once by lane 0 and broadcast — the v2 kernel issued 7 byte-loads
- * per lane per block and was instruction-bound at ~15 GB/s. Final reduce
- * via subgroupAdd. Assumes subgroup size 32 (2080-Ti-first; RADV wave64
- * needs a lane remap). Dispatch: gx = ceil(n_out / 8). */
+/* Q4_K matvec, structure ported from llama.cpp's mul_mat_vec_q4_k
+ * (MIT; see ggml-vulkan) onto geist's push/binding ABI: 32-thread
+ * workgroups compute 4 rows together, so every x load is reused 4x;
+ * 16 threads cover one 256-element superblock (each owns 4+4 elements
+ * in both 128-halves), two block streams in flight.
+ * Dispatch: gx = ceil(n_out / 4). */
 
-layout(local_size_x = 256) in;
+layout(local_size_x = 32) in;
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
@@ -27,70 +27,88 @@ layout(push_constant) uniform Push {
     uint y_stride;
 } pc;
 
+const uint NUM_ROWS = 4;
+shared float tmpsh[NUM_ROWS][32];
+
 void main() {
-    uint warp = gl_SubgroupID;
-    uint lane = gl_SubgroupInvocationID;
-    uint row = gl_WorkGroupID.x * gl_NumSubgroups + warp;
+    uint first_row = gl_WorkGroupID.x * NUM_ROWS;
+    uint tid = gl_LocalInvocationID.x;
+    uint itid = tid & 15u; /* thread within superblock */
+    uint ix = tid >> 4u;   /* block stream 0/1 */
 
-    float sum = 0.0;
-    if (row < pc.n_out) {
-        uint sub = lane >> 2;
-        uint idx8 = (lane & 3u) * 8u;
-        uint shift = (sub & 1u) * 4u;
-        uint row_word = (pc.w_offset + row * pc.blocks_per_row * 144u) >> 2u;
+    uint il = itid >> 2u;      /* 0..3 */
+    uint ir = itid & 3u;       /* 0..3 */
+    uint v_im = il >> 1u;      /* half selector */
+    uint v_in = il & 1u;
+    uint l0 = 4u * (2u * ir + v_in); /* 0..28 */
+    uint q_offset = 32u * v_im + l0; /* byte into qs */
+    uint y_offset = 64u * v_im + l0; /* element into x */
 
-        for (uint b = 0; b < pc.blocks_per_row; b++) {
-            uint blk = row_word + b * 36u; /* 144 bytes = 36 words */
+    uint num_rows = min(NUM_ROWS, pc.n_out - first_row);
+    float temp[NUM_ROWS];
+    [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+        temp[n] = 0.0;
+    }
 
-            uint h0 = 0u, h1 = 0u, h2 = 0u, h3 = 0u;
-            if (lane == 0u) {
-                h0 = w[blk];
-                h1 = w[blk + 1u];
-                h2 = w[blk + 2u];
-                h3 = w[blk + 3u];
-            }
-            h0 = subgroupBroadcast(h0, 0);
-            h1 = subgroupBroadcast(h1, 0);
-            h2 = subgroupBroadcast(h2, 0);
-            h3 = subgroupBroadcast(h3, 0);
+    uint xbase = pc.x_offset >> 2u;
+    for (uint i = ix; i < pc.blocks_per_row; i += 2u) {
+        uint y1 = i * 256u + y_offset; /* element index */
+        uint y2 = y1 + 128u;
+        vec4 by10 = x4[xbase + (y1 >> 2u)];
+        vec4 by132 = x4[xbase + (y1 >> 2u) + 8u];
+        vec4 by20 = x4[xbase + (y2 >> 2u)];
+        vec4 by232 = x4[xbase + (y2 >> 2u) + 8u];
 
-            vec2 dd = unpackHalf2x16(h0); /* d, dmin */
-            uint sc_u, mn_u;
-            if (sub < 4u) {
-                uint qs_b = (h1 >> (8u * sub)) & 0xffu;
-                uint qm_b = (h2 >> (8u * sub)) & 0xffu;
-                sc_u = qs_b & 63u;
-                mn_u = qm_b & 63u;
-            } else {
-                uint j = sub - 4u;
-                uint q_j4 = (h3 >> (8u * j)) & 0xffu;
-                uint q_jm4 = (h1 >> (8u * j)) & 0xffu;
-                uint q_j = (h2 >> (8u * j)) & 0xffu;
-                sc_u = (q_j4 & 15u) | ((q_jm4 >> 6u) << 4u);
-                mn_u = (q_j4 >> 4u) | ((q_j >> 6u) << 4u);
-            }
+        [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+            uint blk = ((first_row + n) * pc.blocks_per_row + i) * 36u; /* w_offset==0 */
+            vec2 dm = unpackHalf2x16(w[blk]);
 
-            uint qs = blk + 4u + (sub >> 1u) * 8u + (idx8 >> 2u);
-            uint q0 = w[qs];
-            uint q1 = w[qs + 1u];
+            uint s01 = w[blk + 1u]; /* scale u16s 0,1 */
+            uint s23 = w[blk + 2u];
+            uint s45 = w[blk + 3u];
+            uint scale0_u32 = v_im == 0u ? (s01 & 0xffffu) : (s01 >> 16u);
+            uint scale4_u32 = v_im == 0u ? (s23 & 0xffffu) : (s23 >> 16u);
+            uint scale8_u32 = v_im == 0u ? (s45 & 0xffffu) : (s45 >> 16u);
+            uint scale_0_4_l = (scale4_u32 << 16) | scale0_u32;
+            uint scale_0_4_h = (scale_0_4_l & 0xC0C0C0C0u) >> 2u;
+            vec4 scl = vec4(unpack8(scale_0_4_l & 0x3F3F3F3Fu));
+            vec4 sch = vec4(unpack8((((scale8_u32 << 12) | scale8_u32) & 0x0F0F0F0Fu) |
+                                    scale_0_4_h));
 
-            vec4 qv0 = vec4(float((q0 >> shift) & 15u), float((q0 >> (8u + shift)) & 15u),
-                            float((q0 >> (16u + shift)) & 15u),
-                            float((q0 >> (24u + shift)) & 15u));
-            vec4 qv1 = vec4(float((q1 >> shift) & 15u), float((q1 >> (8u + shift)) & 15u),
-                            float((q1 >> (16u + shift)) & 15u),
-                            float((q1 >> (24u + shift)) & 15u));
-            uint xv = (pc.x_offset + b * 256u + sub * 32u + idx8) >> 2u;
-            vec4 xa = x4[xv];
-            vec4 xb = x4[xv + 1u];
-            float xq = dot(qv0, xa) + dot(qv1, xb);
-            float xs = dot(xa + xb, vec4(1.0));
-            sum += dd.x * float(sc_u) * xq - dd.y * float(mn_u) * xs;
+            uint qsw = blk + 4u + (q_offset >> 2u);
+            uint qs0 = w[qsw];
+            uint qs64 = w[qsw + 16u];
+            vec4 q0l = vec4(unpack8(qs0 & 0x0F0F0F0Fu));
+            vec4 q0h = vec4(unpack8((qs0 >> 4u) & 0x0F0F0F0Fu));
+            vec4 q6l = vec4(unpack8(qs64 & 0x0F0F0F0Fu));
+            vec4 q6h = vec4(unpack8((qs64 >> 4u) & 0x0F0F0F0Fu));
+
+            float sx = dot(by10, q0l);
+            float sy = dot(by132, q0h);
+            float sz = dot(by20, q6l);
+            float sw = dot(by232, q6h);
+            float smin = (by10.x + by10.y + by10.z + by10.w) * scl.z +
+                         (by132.x + by132.y + by132.z + by132.w) * scl.w +
+                         (by20.x + by20.y + by20.z + by20.w) * sch.z +
+                         (by232.x + by232.y + by232.z + by232.w) * sch.w;
+            temp[n] = fma(dm.x, fma(sx, scl.x, fma(sy, scl.y, fma(sz, sch.x, sw * sch.y))),
+                          fma(-dm.y, smin, temp[n]));
         }
     }
 
-    sum = subgroupAdd(sum);
-    if (subgroupElect() && row < pc.n_out) {
-        y[pc.y_offset + row] = sum;
+    [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+        tmpsh[n][tid] = temp[n];
+    }
+    barrier();
+    [[unroll]] for (uint s = 16u; s > 0u; s >>= 1u) {
+        if (tid < s) {
+            [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+                tmpsh[n][tid] += tmpsh[n][tid + s];
+            }
+        }
+        barrier();
+    }
+    if (tid < num_rows) {
+        y[pc.y_offset + first_row + tid] = tmpsh[tid][0];
     }
 }

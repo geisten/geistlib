@@ -1392,6 +1392,13 @@ static void vk_prof_stamp(struct vk_state *st, uint32_t slot) {
  * global memory barrier — coarse but correct on a single compute queue.
  * ponytail: per-buffer barriers if the profiler ever blames this. */
 static void vk_seq_barrier(struct vk_state *st) {
+    static int no_bar = -1;
+    if (no_bar < 0) {
+        no_bar = getenv("GEIST_VK_NO_BARRIER") != nullptr; /* perf probe: WRONG results */
+    }
+    if (no_bar > 0) {
+        return;
+    }
     const VkMemoryBarrier mb = {
             .sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1799,7 +1806,10 @@ static uint32_t vk_groups(size_t n) {
 /* Dispatch geometry of the linear pipes. matvec q4k/q6k: 8 rows per
  * workgroup. matmul_q4k: 4 output rows x 16 batch rows per workgroup. */
 static uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
-    if (pipe == VK_PIPE_MATVEC_Q4K || pipe == VK_PIPE_MATVEC_Q6K) {
+    if (pipe == VK_PIPE_MATVEC_Q4K) {
+        return (n_out + 3u) / 4u;
+    }
+    if (pipe == VK_PIPE_MATVEC_Q6K) {
         return (n_out + 7u) / 8u;
     }
     if (pipe == VK_PIPE_MATMUL_Q4K) {
