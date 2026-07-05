@@ -1098,8 +1098,7 @@ install_tq2_0_tl1_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
     /* Ternary prefill (m>1) stays on the mature SDOT q8a_mN path. The TL1
      * LUT-GEMM mN kernel loses end-to-end on A76 (Pi 5 4t BitNet 2B-4T seq128
      * prefill 21.0 TL1 vs 33.6 q8a) and paid ~383 MB extra RSS, so its opt-in
-     * flag (GEIST_TL1_PREFILL) was removed. cpu_neon_w_tl1_mN remains for a
-     * future i8mm-free host if one ever needs it. */
+     * flag (GEIST_TL1_PREFILL) was removed. */
     return GEIST_OK;
 }
 
