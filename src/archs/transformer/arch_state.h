@@ -184,8 +184,14 @@ struct transformer_arch_session {
      * low-bit cache that reuses the INT8 storage + kernel (no packing, no
      * memory win yet). Measures whether rotation rescues low-bit quality.
      * 0 = native 8-bit; 2..7 forces the INT8 storage path on. Env:
-     * GEIST_KV_INT4=1 (→4) or GEIST_KV_QBITS=N. */
+     * GEIST_KV_QBITS=N. */
     int kv_sim_qbits;
+    /* Packed symmetric 4-bit KV cache (issue #61). Rides the INT8 storage
+     * path (kv_int8_enabled is also set for buffer alloc + ctx wiring) but
+     * the k/v data buffers are allocated half-size and hold two 4-bit values
+     * per byte; append packs, attention unpacks. Half the INT8 KV footprint.
+     * Env: GEIST_KV_INT4=1. */
+    bool kv_int4_packed_enabled;
     /* F16 KV cache: k_cache[]/v_cache[] hold half floats (2 bytes/elem);
      * appends convert through the backend's kv_append_f16 slot and
      * attention reads F16 views. Only set when that slot is non-null. */

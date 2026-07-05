@@ -47,19 +47,19 @@ enum geist_status {
     GEIST_OK = 0,
 
     /* Generic */
-    GEIST_E_OOM,             /* allocation failed */
-    GEIST_E_INVALID_ARG,     /* nullptr where not allowed, bad enum, etc. */
-    GEIST_E_INTERNAL,        /* programmer error, shouldn't happen */
+    GEIST_E_OOM,         /* allocation failed */
+    GEIST_E_INVALID_ARG, /* nullptr where not allowed, bad enum, etc. */
+    GEIST_E_INTERNAL,    /* programmer error, shouldn't happen */
 
     /* I/O */
     GEIST_E_FILE_NOT_FOUND,
-    GEIST_E_IO,              /* read/write failed */
-    GEIST_E_FORMAT,          /* corrupt file, wrong magic, etc. */
+    GEIST_E_IO,     /* read/write failed */
+    GEIST_E_FORMAT, /* corrupt file, wrong magic, etc. */
 
     /* Capability */
-    GEIST_E_UNSUPPORTED,     /* backend cannot run this op/dtype/layout */
-    GEIST_E_NOT_FOUND,       /* tensor name not in model, etc. */
-    GEIST_E_BACKEND,         /* backend-specific failure */
+    GEIST_E_UNSUPPORTED, /* backend cannot run this op/dtype/layout */
+    GEIST_E_NOT_FOUND,   /* tensor name not in model, etc. */
+    GEIST_E_BACKEND,     /* backend-specific failure */
 
     /* Lifecycle */
     GEIST_E_INVALID_STATE,   /* op called in wrong order */
@@ -91,9 +91,9 @@ enum geist_log_level {
 
 /* @stability EXPERIMENTAL — categories and call frequency may evolve. */
 typedef void (*geist_log_callback_t)(enum geist_log_level level,
-                                     const char           *category,
-                                     const char           *message,
-                                     void                 *user_data);
+                                     const char          *category,
+                                     const char          *message,
+                                     void                *user_data);
 
 /* ====================================================================== */
 /* Memory / Allocator                                                      */
@@ -102,8 +102,8 @@ typedef void (*geist_log_callback_t)(enum geist_log_level level,
 /* @stability STABLE since 0.1.0 */
 struct geist_allocator {
     void *(*alloc)(void *ctx, size_t bytes, size_t alignment);
-    void  (*free)(void *ctx, void *ptr);
-    void  (*free_all)(void *ctx); /* optional, arena-style; nullptr for malloc-based */
+    void (*free)(void *ctx, void *ptr);
+    void (*free_all)(void *ctx); /* optional, arena-style; nullptr for malloc-based */
     void *ctx;
 };
 
@@ -132,10 +132,10 @@ struct geist_backend_opts {
  * Create a backend by name (e.g. "cpu_neon", "cpu_scalar", "auto"). The
  * special name "auto" picks the best linked backend for the host. Pass
  * nullptr opts/alloc for defaults. */
-enum geist_status geist_backend_create(const char                    *name,
+enum geist_status geist_backend_create(const char                      *name,
                                        const struct geist_backend_opts *opts,
-                                       const struct geist_allocator   *alloc,
-                                       struct geist_backend          **out);
+                                       const struct geist_allocator    *alloc,
+                                       struct geist_backend           **out);
 
 void              geist_backend_destroy(struct geist_backend *be);
 const char       *geist_backend_name(const struct geist_backend *be);
@@ -152,9 +152,8 @@ struct geist_model;
  * Loads a GGUF model file. Architecture is detected from the GGUF
  * `general.architecture` metadata key; returns GEIST_E_UNSUPPORTED if
  * no architecture matching this build's compiled set is registered. */
-enum geist_status geist_model_load(const char            *path,
-                                   struct geist_backend  *be,
-                                   struct geist_model   **out);
+enum geist_status
+geist_model_load(const char *path, struct geist_backend *be, struct geist_model **out);
 
 /* @stability STABLE since 0.2.1
  * Load a GGUF that is already in memory — e.g. embedded in the executable, so
@@ -196,6 +195,11 @@ enum geist_kv_mode {
     GEIST_KV_INT8 = 2,
     GEIST_KV_KIVI = 3,
     GEIST_KV_F16  = 4,
+    /* Packed symmetric 4-bit KV cache (2 values/byte, per-token per-head
+     * scale). Half the INT8 footprint, near-lossless — especially with the
+     * Hadamard rotation (GEIST_KV_ROT=1, issue #61). No per-channel/group
+     * bookkeeping (unlike KIVI). Env: GEIST_KV_INT4=1. */
+    GEIST_KV_INT4 = 5,
 };
 
 struct geist_session_opts {

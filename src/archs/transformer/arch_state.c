@@ -306,11 +306,15 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
                 return s;
             }
         } else if (st->sess->kv_int8_enabled) {
-            s = alloc_scratch(be, n_elems * sizeof(int8_t), &st->sess->k_cache_q8[li]);
+            /* Packed INT4 halves the data buffers (2 values/byte); scales are
+             * unchanged. hd is a power of two (128/256/512) so n_elems is even. */
+            const size_t data_bytes =
+                    st->sess->kv_int4_packed_enabled ? n_elems / 2 : n_elems * sizeof(int8_t);
+            s = alloc_scratch(be, data_bytes, &st->sess->k_cache_q8[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, n_elems * sizeof(int8_t), &st->sess->v_cache_q8[li]);
+            s = alloc_scratch(be, data_bytes, &st->sess->v_cache_q8[li]);
             if (s != GEIST_OK) {
                 return s;
             }
@@ -892,6 +896,10 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     }
     const char *env_kivi = getenv("GEIST_KV_KIVI");
     const char *env_int8 = getenv("GEIST_KV_INT8");
+    const char *env_int4 = getenv("GEIST_KV_INT4");
+    if (env_int4 != nullptr && env_int4[0] == '1') {
+        return GEIST_KV_INT4;
+    }
     if (env_kivi != nullptr && env_kivi[0] == '1') {
         return GEIST_KV_KIVI;
     }
@@ -998,18 +1006,20 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     const enum geist_kv_mode mode = resolve_kv_mode(opts);
     sess->kv_kivi_enabled         = (mode == GEIST_KV_KIVI);
     sess->kv_int8_enabled         = (mode == GEIST_KV_INT8);
+    /* Issue #61: packed 4-bit KV rides the INT8 storage path (buffer alloc +
+     * ctx wiring), with half-size data buffers holding 2 values/byte. */
+    sess->kv_int4_packed_enabled = (mode == GEIST_KV_INT4);
+    if (sess->kv_int4_packed_enabled) {
+        sess->kv_int8_enabled = true;
+    }
     /* Issue #61: low-bit quality-sim reuses the INT8 storage path with an
-     * N-bit quant grid. GEIST_KV_INT4=1 → 4 bits; GEIST_KV_QBITS=N (2..8)
-     * overrides. Any sim (2..7) forces INT8 storage on regardless of the
-     * resolved mode. Resolve before the rot flag so rotation sees it. */
+     * N-bit quant grid (no packing, no memory win). GEIST_KV_QBITS=N (2..8)
+     * forces INT8 storage on. Resolve before the rot flag so rotation sees
+     * it. Ignored under the real packed-INT4 mode. */
     {
         int         qbits     = 0;
-        const char *env_int4  = getenv("GEIST_KV_INT4");
         const char *env_qbits = getenv("GEIST_KV_QBITS");
-        if (env_int4 != nullptr && env_int4[0] == '1') {
-            qbits = 4;
-        }
-        if (env_qbits != nullptr) {
+        if (!sess->kv_int4_packed_enabled && env_qbits != nullptr) {
             const int q = atoi(env_qbits);
             if (q >= 2 && q <= 8) {
                 qbits = (q == 8) ? 0 : q; /* 8-bit is the native path */
