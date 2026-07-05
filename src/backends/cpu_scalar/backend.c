@@ -46,39 +46,21 @@ static void cpu_scalar_destroy(struct geist_backend *be) {
 
 /* ---------- Capability ---------- */
 
+/* Answer from cpu_scalar_weight_support so this never diverges from what
+ * resolve_weight installs (F32 = NATIVE, the quant dtypes = EMULATED via the
+ * generic dequant+dot kernel, everything else = NONE). */
 static enum geist_support cpu_scalar_supports_op(struct geist_backend                *be,
                                                  const struct geist_op_support_query *query) {
     (void) be;
-    if (query == nullptr || query->input_count < 2) {
+    if (query == nullptr || query->input_count < 2 || query->op != GEIST_OP_LINEAR) {
         return GEIST_SUPPORT_NONE;
     }
-
-    if (query->op == GEIST_OP_LINEAR) {
-        const struct geist_tensor_format *x_fmt = &query->inputs[0];
-        const struct geist_tensor_format *w_fmt = &query->inputs[1];
-        if (x_fmt->dtype != GEIST_DTYPE_F32 || x_fmt->layout != GEIST_LAYOUT_DENSE) {
-            return GEIST_SUPPORT_NONE;
-        }
-        if (w_fmt->dtype == GEIST_DTYPE_F32 && w_fmt->layout == GEIST_LAYOUT_DENSE) {
-            return GEIST_SUPPORT_NATIVE;
-        }
-        if (w_fmt->layout == GEIST_LAYOUT_BLOCK_QUANTIZED) {
-            switch (w_fmt->dtype) {
-            case GEIST_DTYPE_Q4_K:
-            case GEIST_DTYPE_Q6_K:
-                return GEIST_SUPPORT_NATIVE; /* fused decode kernel exists */
-            case GEIST_DTYPE_Q3_K:
-            case GEIST_DTYPE_Q5_K:
-            case GEIST_DTYPE_Q8_0:
-            case GEIST_DTYPE_IQ2_S:
-            case GEIST_DTYPE_IQ3_S:
-                return GEIST_SUPPORT_EMULATED; /* dequant + naive matmul */
-            default:
-                return GEIST_SUPPORT_NONE;
-            }
-        }
+    const struct geist_tensor_format *x_fmt = &query->inputs[0];
+    const struct geist_tensor_format *w_fmt = &query->inputs[1];
+    if (x_fmt->dtype != GEIST_DTYPE_F32 || x_fmt->layout != GEIST_LAYOUT_DENSE) {
+        return GEIST_SUPPORT_NONE;
     }
-    return GEIST_SUPPORT_NONE;
+    return cpu_scalar_weight_support(w_fmt->dtype);
 }
 
 /* ---------- Buffer ops ---------- */

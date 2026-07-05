@@ -210,17 +210,10 @@ static void cpu_scalar_w_quant_mN(const float               *x,
     safe_free((void **) &row);
 }
 
-[[nodiscard]] enum geist_status cpu_scalar_resolve_weight(struct geist_backend *be,
-                                                          struct geist_weight  *w) {
-    (void) be;
-    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
-        return GEIST_E_INVALID_ARG;
-    }
-    switch ((enum geist_dtype) w->dtype) {
+enum geist_support cpu_scalar_weight_support(enum geist_dtype dtype) {
+    switch (dtype) {
     case GEIST_DTYPE_F32:
-        w->linear_m1 = cpu_scalar_w_f32_m1;
-        w->linear_mN = cpu_scalar_w_f32_mN;
-        return GEIST_OK;
+        return GEIST_SUPPORT_NATIVE; /* dedicated F32 kernel */
     case GEIST_DTYPE_Q4_0:
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_Q4_K:
@@ -233,6 +226,24 @@ static void cpu_scalar_w_quant_mN(const float               *x,
     case GEIST_DTYPE_I2_S:
     case GEIST_DTYPE_F16:
     case GEIST_DTYPE_BF16:
+        return GEIST_SUPPORT_EMULATED; /* generic dequant-row + scalar dot */
+    default:
+        return GEIST_SUPPORT_NONE;
+    }
+}
+
+[[nodiscard]] enum geist_status cpu_scalar_resolve_weight(struct geist_backend *be,
+                                                          struct geist_weight  *w) {
+    (void) be;
+    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    switch (cpu_scalar_weight_support((enum geist_dtype) w->dtype)) {
+    case GEIST_SUPPORT_NATIVE:
+        w->linear_m1 = cpu_scalar_w_f32_m1;
+        w->linear_mN = cpu_scalar_w_f32_mN;
+        return GEIST_OK;
+    case GEIST_SUPPORT_EMULATED:
         w->linear_m1 = cpu_scalar_w_quant_m1;
         w->linear_mN = cpu_scalar_w_quant_mN;
         return GEIST_OK;

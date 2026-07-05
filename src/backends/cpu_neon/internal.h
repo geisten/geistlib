@@ -140,6 +140,12 @@ struct geist_weight;
 [[nodiscard]] enum geist_status cpu_neon_resolve_weight(struct geist_backend *be,
                                                         struct geist_weight  *w);
 
+/* Capability query, derived from the SAME kernel table + host-ISA mask the
+ * resolver uses — so it can never drift from what resolve_weight installs.
+ * Returns true iff a LINEAR weight of `dtype` would resolve to a native
+ * kernel on this host. `be->state` must be valid (see resolve_weight). */
+bool cpu_neon_weight_dtype_supported(const struct geist_backend *be, enum geist_dtype dtype);
+
 /* Element-wise + rmsnorm — wraps gemma4_kernels.c FP32 ops. */
 [[nodiscard]] enum geist_status cpu_neon_add(struct geist_backend      *be,
                                              const struct geist_tensor *a,

@@ -85,7 +85,8 @@ int main(void) {
         be->desc->vtbl->buffer_destroy(be, buf);
     }
 
-    /* Capability query: F32 DENSE LINEAR is NATIVE; Q4_K is NONE. */
+    /* Capability query: F32 DENSE LINEAR is NATIVE; an unknown (CUSTOM)
+     * block-quantized dtype the resolver has no kernel for is NONE. */
     struct geist_op_support_query q_f32 = {
             .op          = GEIST_OP_LINEAR,
             .input_count = 2,
@@ -110,7 +111,7 @@ int main(void) {
                     },
     };
     fails += check(geist_backend_supports_op(be, &q_q4k) == GEIST_SUPPORT_NONE,
-                   "supports_op(LINEAR, Q4_K) is NONE in B-2b");
+                   "supports_op(LINEAR, unknown CUSTOM dtype) is NONE");
 
     /* Real F32 DENSE matmul: y = x @ W^T
      *   x: (2, 3) =  [[1, 2, 3], [4, 5, 6]]

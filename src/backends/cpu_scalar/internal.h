@@ -31,6 +31,12 @@ struct geist_weight;
 [[nodiscard]] enum geist_status cpu_scalar_resolve_weight(struct geist_backend *be,
                                                           struct geist_weight  *w);
 
+/* Single source of truth for which LINEAR weight dtypes cpu_scalar handles,
+ * and at what level: NATIVE for the dedicated F32 kernel, EMULATED for the
+ * generic dequant-then-scalar-dot path, NONE otherwise. Both resolve_weight
+ * and supports_op consult this so the two can't drift apart. */
+enum geist_support cpu_scalar_weight_support(enum geist_dtype dtype);
+
 /* Element-wise + rmsnorm ops — F32 DENSE on all inputs/outputs. */
 [[nodiscard]] enum geist_status cpu_scalar_add(struct geist_backend      *be,
                                                const struct geist_tensor *a,
