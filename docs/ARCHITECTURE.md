@@ -163,7 +163,9 @@ keep the score matrix in registers/L1.
 A `geist_model` is immutable, shared, read-only weights. A `geist_session` owns
 the mutable per-conversation state: KV cache, pending logits, sampler config,
 stats. Multiple sessions can share one model. The KV cache supports quantized
-modes (`INT8`, `KIVI`) and prefix pinning (`geist_session_pin_prefix`) to
+modes (`INT8`, packed `INT4` — half the INT8 footprint, near-lossless with the
+optional Hadamard rotation `GEIST_KV_ROT`; and `KIVI` 2-bit) and prefix pinning
+(`geist_session_pin_prefix`) to
 amortize a constant system prompt across chat turns. Speculative decode drafts
 via an n-gram lookup over history and verifies in one batched forward.
 
