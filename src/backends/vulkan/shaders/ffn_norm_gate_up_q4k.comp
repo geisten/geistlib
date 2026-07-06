@@ -15,7 +15,9 @@ layout(local_size_x = 32) in;
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer WG { uint wg[]; };
+layout(set = 0, binding = 1) readonly buffer WG4 { uvec4 wg4[]; };
 layout(set = 0, binding = 2) readonly buffer WU { uint wu[]; };
+layout(set = 0, binding = 2) readonly buffer WU4 { uvec4 wu4[]; };
 layout(set = 0, binding = 3) readonly buffer NW { vec4 nw4[]; };
 layout(set = 0, binding = 4) writeonly buffer Y { float y[]; };
 
@@ -83,10 +85,11 @@ void main() {
         [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
             uint blk = ((first_row + n) * pc.blocks_per_row + i) * 36u;
             [[unroll]] for (uint which = 0; which < 2u; ++which) {
-                vec2 dm = which == 0u ? unpackHalf2x16(wg[blk]) : unpackHalf2x16(wu[blk]);
-                uint s01 = which == 0u ? wg[blk + 1u] : wu[blk + 1u];
-                uint s23 = which == 0u ? wg[blk + 2u] : wu[blk + 2u];
-                uint s45 = which == 0u ? wg[blk + 3u] : wu[blk + 3u];
+                uvec4 hdr = which == 0u ? wg4[blk >> 2u] : wu4[blk >> 2u];
+                vec2 dm = unpackHalf2x16(hdr.x);
+                uint s01 = hdr.y;
+                uint s23 = hdr.z;
+                uint s45 = hdr.w;
                 uint scale0_u32 = v_im == 0u ? (s01 & 0xffffu) : (s01 >> 16u);
                 uint scale4_u32 = v_im == 0u ? (s23 & 0xffffu) : (s23 >> 16u);
                 uint scale8_u32 = v_im == 0u ? (s45 & 0xffffu) : (s45 >> 16u);

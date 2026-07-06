@@ -1,4 +1,6 @@
 #version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_basic : enable
 
 layout(local_size_x = 256) in;
 
@@ -23,7 +25,9 @@ layout(push_constant) uniform Push {
     float eps;
 } pc;
 
-shared float partial[256];
+/* two-level reduce: subgroupAdd per warp + one tiny shared pass — the
+ * 14-barrier tree was most of this kernel's ~9 us on the decode chain */
+shared float partial[8];
 
 void main() {
     uint row = gl_WorkGroupID.x;
@@ -33,17 +37,17 @@ void main() {
         float v = x[pc.x_offset + row * pc.feat + j];
         sum += v * v;
     }
-    partial[lid] = sum;
+    sum = subgroupAdd(sum);
+    if (subgroupElect()) {
+        partial[gl_SubgroupID] = sum;
+    }
     barrier();
-
-    for (uint stride = 128; stride > 0; stride >>= 1) {
-        if (lid < stride) {
-            partial[lid] += partial[lid + stride];
-        }
-        barrier();
+    float total = 0.0;
+    for (uint i = 0; i < 256u / gl_SubgroupSize; i++) {
+        total += partial[i];
     }
 
-    float inv = inversesqrt(partial[0] / float(pc.feat) + pc.eps);
+    float inv = inversesqrt(total / float(pc.feat) + pc.eps);
     for (uint j = lid; j < pc.feat; j += 256) {
         uint idx = row * pc.feat + j;
         y[pc.y_offset + idx] = x[pc.x_offset + idx] * inv * w[pc.w_offset + j];

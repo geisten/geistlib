@@ -13,6 +13,7 @@ layout(local_size_x = 32) in;
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 1) readonly buffer W4 { uvec4 wv4[]; };
 layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
 
 layout(push_constant) uniform Push {
@@ -61,11 +62,12 @@ void main() {
 
         [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
             uint blk = ((first_row + n) * pc.blocks_per_row + i) * 36u; /* w_offset==0 */
-            vec2 dm = unpackHalf2x16(w[blk]);
+            uvec4 hdr = wv4[blk >> 2u]; /* d/dmin + 3 scale words, one load */
+            vec2 dm = unpackHalf2x16(hdr.x);
 
-            uint s01 = w[blk + 1u]; /* scale u16s 0,1 */
-            uint s23 = w[blk + 2u];
-            uint s45 = w[blk + 3u];
+            uint s01 = hdr.y; /* scale u16s 0,1 */
+            uint s23 = hdr.z;
+            uint s45 = hdr.w;
             uint scale0_u32 = v_im == 0u ? (s01 & 0xffffu) : (s01 >> 16u);
             uint scale4_u32 = v_im == 0u ? (s23 & 0xffffu) : (s23 >> 16u);
             uint scale8_u32 = v_im == 0u ? (s45 & 0xffffu) : (s45 >> 16u);

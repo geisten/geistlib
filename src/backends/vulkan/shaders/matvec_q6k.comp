@@ -9,6 +9,7 @@ layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 1) readonly buffer W2 { uvec2 w2[]; };
 layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
 
 layout(push_constant) uniform Push {
@@ -70,15 +71,20 @@ void main() {
 
         for (uint b = 0; b < pc.blocks_per_row; b++) {
             uint block_byte = row_byte + b * 216u; /* GPU copy: 216-B aligned blocks */
-            uint qlw = (block_byte + half_idx * 64u + (stream & 1u) * 32u + l0) >> 2u;
-            uint qhw = (block_byte + 128u + half_idx * 32u + l0) >> 2u;
-            uint ql0 = w[qlw];
-            uint ql1 = w[qlw + 1u];
-            uint qh0 = w[qhw];
-            uint qh1 = w[qhw + 1u];
+            /* all four offsets are % 8 (l0 in {0,8,16,24}, 216-B blocks
+             * are 8-aligned) — pair loads halve the transactions */
+            uvec2 qlp = w2[(block_byte + half_idx * 64u + (stream & 1u) * 32u + l0) >> 3u];
+            uvec2 qhp = w2[(block_byte + 128u + half_idx * 32u + l0) >> 3u];
+            uint ql0 = qlp.x;
+            uint ql1 = qlp.y;
+            uint qh0 = qhp.x;
+            uint qh1 = qhp.y;
 
-            float d = load_f16(block_byte + 208u);
-            int sc = load_i8(block_byte + 192u + half_idx * 8u + sc_idx);
+            float d = unpackHalf2x16(w2[(block_byte + 208u) >> 3u].x).x;
+            uvec2 scp = w2[(block_byte + 192u + half_idx * 8u) >> 3u];
+            uint sc_b = (sc_idx < 4u ? scp.x >> (8u * sc_idx)
+                                     : scp.y >> (8u * (sc_idx - 4u))) & 0xffu;
+            int sc = int(sc_b ^ 0x80u) - 0x80;
 
             vec4 q_lo, q_hi;
             for (uint j = 0; j < 4u; j++) {
