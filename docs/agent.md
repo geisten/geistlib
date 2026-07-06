@@ -186,6 +186,9 @@ in-engine sampler change:
   is scored by its first-token log-prob (an MMLU-style cloze). The score is
   **PMI-calibrated** — the model's prior for each name (given the menu but a
   content-free request) is subtracted, removing token-frequency bias. A
+  The menu also carries a **`reply` pseudo-entry** — when it wins, no tool is
+  forced and the model answers directly ("What is 2 plus 2?", "Delete
+  report.md" → a refusal instead of a forced-but-wrong call).
   Deterministic tie-breakers settle close races: a request naming a file
   (`note.txt`) prefers a file tool, a literal `http(s)://` URL prefers the
   `url`-arg tool (first-token scoring cannot tell `web_search` from `web_fetch`

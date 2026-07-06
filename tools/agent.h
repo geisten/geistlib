@@ -657,28 +657,50 @@ static inline float agent_first_token_logit(struct geist_agent *a, const char *t
     return logits[ids[0]];
 }
 
+/* The router's pseudo-entry for "no tool": scored like a tool name, so a
+ * request no tool handles ("What is 2 plus 2?", "Delete report.md") routes to a
+ * direct answer instead of a forced-but-wrong call. Named "reply", not
+ * "answer" — the menu instruction itself ends in "Answer with the tool name.",
+ * and a name colliding with instruction vocabulary muddies the cloze signal. */
+#define AGENT_ANSWER_NAME "reply"
+#define AGENT_ANSWER_DESC "die Anfrage direkt beantworten, ohne Werkzeug"
+
 /* Build the selection prompt for `req` into sel; returns its length. The menu is
- * fixed (name: description); only the Request line varies, so the same builder
- * serves the real request and the content-free baseline used for calibration. */
-static inline size_t agent_select_prompt(struct geist_agent *a, size_t n, size_t req_len,
-                                         const char *req, size_t cap, char sel[static cap]) {
-    size_t w = (size_t) snprintf(
-            sel, cap, "%sWhich tool best handles this request?\nRequest: %.*s\nTools:\n",
-            a->tmpl.user_open, (int) req_len, req);
+ * fixed (name: description, plus the answer pseudo-entry); only the Request line
+ * varies, so the same builder serves the real request and the content-free
+ * baseline used for calibration. */
+static inline size_t agent_select_prompt(struct geist_agent *a,
+                                         size_t              n,
+                                         size_t              req_len,
+                                         const char         *req,
+                                         size_t              cap,
+                                         char                sel[static cap]) {
+    size_t w = (size_t) snprintf(sel,
+                                 cap,
+                                 "%sWhich tool best handles this request?\nRequest: %.*s\nTools:\n",
+                                 a->tmpl.user_open,
+                                 (int) req_len,
+                                 req);
     for (size_t i = 0; i < n && w < cap; i++) {
         const char *d = a->tools[i].description ? a->tools[i].description : "";
         w += (size_t) snprintf(sel + w, cap - w, "- %s: %s\n", a->tools[i].name, d);
     }
-    w += (size_t) snprintf(sel + w, cap - w, "Answer with the tool name.%s%s", a->tmpl.turn_close,
+    w += (size_t) snprintf(sel + w, cap - w, "- %s: %s\n", AGENT_ANSWER_NAME, AGENT_ANSWER_DESC);
+    w += (size_t) snprintf(sel + w,
+                           cap - w,
+                           "Answer with the tool name.%s%s",
+                           a->tmpl.turn_close,
                            a->tmpl.model_open);
     return w;
 }
 
-/* Score each tool name's first token at the current decode position into out[n].
- * The first token may be bare ("list_dir") or space-prefixed (" list_dir") per
- * the template — take the max of both. Returns 0 on a peek failure. */
-static inline int agent_score_names(struct geist_agent *a, size_t n, const char *prompt,
-                                    float out[static n]) {
+/* Score the first token of n names at the current decode position into out[n]:
+ * the tool names, then (as entry a->n_tools, when n covers it) the answer
+ * pseudo-entry. The first token may be bare ("list_dir") or space-prefixed
+ * (" list_dir") per the template — take the max of both. Returns 0 on a peek
+ * failure. */
+static inline int
+agent_score_names(struct geist_agent *a, size_t n, const char *prompt, float out[static n]) {
     if (geist_session_reset(a->session) != GEIST_OK ||
         geist_session_set_prompt(a->session, prompt) != GEIST_OK) {
         return 0;
@@ -689,9 +711,10 @@ static inline int agent_score_names(struct geist_agent *a, size_t n, const char 
         return 0;
     }
     for (size_t i = 0; i < n; i++) {
-        char spaced[GEIST_AGENT_NAME_CAP + 1];
-        snprintf(spaced, sizeof spaced, " %s", a->tools[i].name);
-        float v0 = agent_first_token_logit(a, a->tools[i].name, logits, n_logits);
+        const char *nm = i < a->n_tools ? a->tools[i].name : AGENT_ANSWER_NAME;
+        char        spaced[GEIST_AGENT_NAME_CAP + 1];
+        snprintf(spaced, sizeof spaced, " %s", nm);
+        float v0 = agent_first_token_logit(a, nm, logits, n_logits);
         float v1 = agent_first_token_logit(a, spaced, logits, n_logits);
         out[i]   = v0 > v1 ? v0 : v1;
     }
@@ -787,11 +810,14 @@ static inline int agent_tool_is_docs(const struct geist_tool *t) {
             (strstr(t->description, "okument") || strstr(t->description, "ocument")));
 }
 
+/* Returns the routed tool's index, or -1 when the answer pseudo-entry wins —
+ * the request is best served by replying directly, with no tool call at all. */
 static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
     if (a->n_tools <= 1) {
-        return 0;
+        return 0; /* no menu to rank; a single-tool agent always forces its tool */
     }
-    const size_t n = a->n_tools < AGENT_MAX_ROUTED ? a->n_tools : AGENT_MAX_ROUTED;
+    const size_t n  = a->n_tools < AGENT_MAX_ROUTED - 1 ? a->n_tools : AGENT_MAX_ROUTED - 1;
+    const size_t nn = n + 1; /* + the answer pseudo-entry, scored like a name */
     static char  sel[GEIST_AGENT_TRANSCRIPT_CAP];
     float        score[AGENT_MAX_ROUTED] = {0};
 
@@ -802,21 +828,21 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
      * the tool menu, not the request, so it is computed ONCE and cached on the
      * agent — every later route then does a single prefill (the request) instead
      * of two, halving routing latency (the Pi's light-task floor). */
-    if (a->route_base_n != n) {
+    if (a->route_base_n != nn) {
         agent_select_prompt(a, n, strlen("(unspecified)"), "(unspecified)", sizeof sel, sel);
-        a->route_base_n = agent_score_names(a, n, sel, a->route_base) ? n : 0;
+        a->route_base_n = agent_score_names(a, nn, sel, a->route_base) ? nn : 0;
     }
-    int have_base = a->route_base_n == n;
+    int have_base = a->route_base_n == nn;
 
     agent_select_prompt(a, n, req_len, req, sizeof sel, sel);
-    if (!agent_score_names(a, n, sel, score)) {
+    if (!agent_score_names(a, nn, sel, score)) {
         return 0;
     }
 
     float cal[AGENT_MAX_ROUTED] = {0};
     int   best                  = 0;
     float best_v                = -1e30f;
-    for (size_t i = 0; i < n; i++) {
+    for (size_t i = 0; i < nn; i++) { /* nn: the answer pseudo-entry competes too */
         cal[i] = have_base ? score[i] - a->route_base[i] : score[i];
         if (cal[i] > best_v) {
             best_v = cal[i], best = (int) i;
@@ -829,7 +855,7 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
      * below. Runs first: a URL also ends in a file-ish extension, so without
      * this the file rule would see ".html" and reason about the wrong axis. */
     if (agent_request_has_url(req_len, req) &&
-        !agent_schema_wants_url(a->tools[best].args_schema)) {
+        (best == (int) n || !agent_schema_wants_url(a->tools[best].args_schema))) {
         int   alt   = -1;
         float alt_v = -1e30f;
         for (size_t i = 0; i < n; i++) {
@@ -849,7 +875,7 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
      * specific file: a named file is more specific evidence than the corpus
      * noun, and the file rule below owns that case. */
     if (!agent_request_names_file(req_len, req) && agent_request_mentions_docs(req_len, req) &&
-        !agent_tool_is_docs(&a->tools[best])) {
+        (best == (int) n || !agent_tool_is_docs(&a->tools[best]))) {
         int   alt   = -1;
         float alt_v = -1e30f;
         for (size_t i = 0; i < n; i++) {
@@ -868,7 +894,8 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
      * scored first token is "Fasse" and the name score barely favours list_dir; a
      * named file is strong evidence for a file tool. Bounded — only on a real
      * file extension (a bare directory path never fires) and only a close race. */
-    if (agent_desc_is_dir(a->tools[best].description) && agent_request_names_file(req_len, req)) {
+    if (best < (int) n && agent_desc_is_dir(a->tools[best].description) &&
+        agent_request_names_file(req_len, req)) {
         int   alt   = -1;
         float alt_v = -1e30f;
         for (size_t i = 0; i < n; i++) {
@@ -880,7 +907,10 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
             best = alt;
         }
     }
-    return best;
+    /* An answer win deliberately survives the FILE rule (a named file in
+     * "Delete report.md" is not a reason to force a tool), but not the URL/docs
+     * rules above — those carry action evidence, not just an object. */
+    return best == (int) n ? -1 : best;
 }
 
 /* A locator arg (a path/file/url) is something the user almost always wrote out
@@ -1384,12 +1414,19 @@ static inline int agent_answer_degenerate(const char *s) {
         if (a->force_call && step == 0) {
             agent_emit(a, GEIST_AGENT_ROUTING, step, nullptr, nullptr);
             int idx = agent_select_tool(a, req_len, req);
-            agent_emit(a, GEIST_AGENT_ROUTING, step, a->tools[idx].name, "selected");
+            agent_emit(a,
+                       GEIST_AGENT_ROUTING,
+                       step,
+                       idx >= 0 ? a->tools[idx].name : AGENT_ANSWER_NAME,
+                       "selected");
             if (geist_session_reset(a->session) != GEIST_OK ||
                 geist_session_set_prompt(a->session, a->transcript) != GEIST_OK) {
                 return GEIST_E_INVALID_STATE;
             }
-            tn = agent_force_call(a, idx, req_len, req, sizeof turn, turn);
+            /* idx < 0: the answer pseudo-entry won the routing — no tool fits, so
+             * decode a free turn; a plain-text reply exits below as the answer. */
+            tn = idx >= 0 ? agent_force_call(a, idx, req_len, req, sizeof turn, turn)
+                          : agent_generate_turn(a, sizeof turn, turn);
         } else {
             tn = agent_generate_turn(a, sizeof turn, turn);
         }
