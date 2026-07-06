@@ -2198,12 +2198,13 @@ static void vk_linear_cm_route(struct vk_state *st, enum vk_pipe *pipe, uint32_t
     if ((m & 15u) != 0 || n_out % 64u != 0 || st->pipes[cm] == VK_NULL_HANDLE) {
         return;
     }
-    /* small n_out starves the SMs on the 64-row tile — use the 32-row one */
+    /* small n_out starves the SMs on the 64-row tile — use the 32x32 one
+     * (workgroup count is the wall clock at ~1 workgroup/SM) */
     if (cm == VK_PIPE_MM_Q4K_CM && n_out < 4096u &&
         st->pipes[VK_PIPE_MM_Q4K_CM32] != VK_NULL_HANDLE) {
         *pipe = VK_PIPE_MM_Q4K_CM32;
         *gx   = n_out / 32u;
-        *gy   = (m + 63u) / 64u;
+        *gy   = (m + 31u) / 32u;
         return;
     }
     *pipe = cm;

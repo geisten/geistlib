@@ -5,14 +5,14 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
 /* Q4_K GEMM on tensor cores (VK_KHR_cooperative_matrix).
- * Small-N variant: 32 output rows x 64 batch per 64-thread workgroup —
- * twice the workgroups of the 64-row tile, for shapes where n_out/64
- * starves the 68 SMs (q/o/down projections at 2048). BK = 32 aligns with the Q4_K 32-element
- * sub-block, so scale/min resolve once per (row, k-step). Weights are
- * dequantized to f16 in shared; x transposes into shared as f16; MMAs
- * accumulate in f32. Column-major stores write y[t][row] directly.
- * Requires: n_out % 64 == 0, rows % 16 == 0, n_in % 256 == 0, subgroup 32.
- * Dispatch: gx = n_out/32, gy = ceil(rows/64). */
+ * Small-N variant: 32 output rows x 32 batch per 64-thread workgroup —
+ * 4x the workgroups of the 64x64 tile, for shapes where n_out/64
+ * starves the 68 SMs (q/o/down projections at 1536-2048; these run ~1
+ * workgroup per SM, so the workgroup count IS the wall clock). BK = 64.
+ * Weights are dequantized to f16 in shared; x transposes into shared as
+ * f16; MMAs accumulate in f32. Column-major stores write y[t][row]
+ * directly. Requires: n_out % 64 == 0, rows % 16 == 0, n_in % 256 == 0,
+ * subgroup 32. Dispatch: gx = n_out/32, gy = ceil(rows/32). */
 
 layout(local_size_x = 64) in;
 
@@ -33,30 +33,18 @@ layout(push_constant) uniform Push {
 } pc;
 
 const uint BM = 32;
-const uint BN = 64;
+const uint BN = 32;
 const uint BK = 64;
 const uint ASTRIDE = BK + 8u;  /* f16 elems, pad against bank conflicts */
 const uint BSTRIDE = BN + 8u;
 
-shared float16_t Ash[BM * ASTRIDE];
-shared float16_t Bsh[BK * BSTRIDE];
+shared float16_t Ash[2][BM * ASTRIDE];
+shared float16_t Bsh[2][BK * BSTRIDE];
 
-void main() {
-    uint lid = gl_LocalInvocationID.x;
-    uint row0 = gl_WorkGroupID.x * BM;
-    uint tb0 = gl_WorkGroupID.y * BN;
-    uint sg = gl_SubgroupID;
+void stage(uint buf, uint ks, uint lid, uint row0, uint tb0) {
+    uint k0 = ks * BK;
 
-    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc[4];
-    for (uint j = 0; j < 4u; j++) {
-        acc[j] = coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
-    }
-
-    uint ksteps = pc.n_in / BK;
-    for (uint ks = 0; ks < ksteps; ks++) {
-        uint k0 = ks * BK;
-
-        /* ---- A tile: dequant 64 rows x 64 k of Q4_K into shared f16.
+    /* ---- A tile: dequant 64 rows x 64 k of Q4_K into shared f16.
          * thread -> (row = lid/2, half-k = lid&1): 32 elements spanning
          * two consecutive 32-element sub-blocks. */
         for (uint half32 = 0; half32 < 2u; half32++) {
@@ -92,41 +80,65 @@ void main() {
                 uint qw = w[qsw + u];
                 for (uint j = 0; j < 4u; j++) {
                     float q = float((qw >> (8u * j + shift)) & 15u);
-                    Ash[abase + u * 4u + j] = float16_t(dsc * q - dmn);
+                    Ash[buf][abase + u * 4u + j] = float16_t(dsc * q - dmn);
                 }
             }
         }
 
         /* ---- B tile: x[t][k0..k0+64] -> Bsh[k][t] (f16, transposed).
-         * 64 threads: each column loads all 64 k-elements. */
+         * thread -> (col = lid&31, k-half = lid>>5): 32 k-elements each. */
         {
-            uint col = lid;
+            uint col = lid & 31u;
+            uint kh = lid >> 5u;
             uint t = tb0 + col;
             if (t < pc.rows) {
-                uint xv = (pc.x_offset + t * pc.x_stride + k0) >> 2u;
-                for (uint u = 0; u < 16u; u++) {
+                uint xv = (pc.x_offset + t * pc.x_stride + k0 + kh * 32u) >> 2u;
+                for (uint u = 0; u < 8u; u++) {
                     vec4 xw = x4[xv + u];
-                    uint kb = u * 4u;
-                    Bsh[(kb + 0u) * BSTRIDE + col] = float16_t(xw.x);
-                    Bsh[(kb + 1u) * BSTRIDE + col] = float16_t(xw.y);
-                    Bsh[(kb + 2u) * BSTRIDE + col] = float16_t(xw.z);
-                    Bsh[(kb + 3u) * BSTRIDE + col] = float16_t(xw.w);
+                    uint kb = kh * 32u + u * 4u;
+                    Bsh[buf][(kb + 0u) * BSTRIDE + col] = float16_t(xw.x);
+                    Bsh[buf][(kb + 1u) * BSTRIDE + col] = float16_t(xw.y);
+                    Bsh[buf][(kb + 2u) * BSTRIDE + col] = float16_t(xw.z);
+                    Bsh[buf][(kb + 3u) * BSTRIDE + col] = float16_t(xw.w);
                 }
             } else {
-                for (uint u = 0; u < 64u; u++) {
-                    Bsh[u * BSTRIDE + col] = float16_t(0.0);
+                for (uint u = 0; u < 32u; u++) {
+                    Bsh[buf][(kh * 32u + u) * BSTRIDE + col] = float16_t(0.0);
                 }
             }
         }
-        barrier();
+}
 
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint row0 = gl_WorkGroupID.x * BM;
+    uint tb0 = gl_WorkGroupID.y * BN;
+    uint sg = gl_SubgroupID;
+
+    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc[2];
+    for (uint j = 0; j < 2u; j++) {
+        acc[j] = coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+    }
+
+    /* ping-pong: while the MMAs consume k-step ks, all threads stage
+     * ks+1 into the other buffer — one barrier per step, the staging
+     * latency hides behind tensor work (matters most here: these narrow
+     * shapes run ~1-3 workgroups per SM, nothing else hides it) */
+    uint ksteps = pc.n_in / BK;
+    stage(0u, 0u, lid, row0, tb0);
+    barrier();
+    for (uint ks = 0; ks < ksteps; ks++) {
+        uint cur = ks & 1u;
+        if (ks + 1u < ksteps) {
+            stage(cur ^ 1u, ks + 1u, lid, row0, tb0);
+        }
         for (uint kk = 0; kk < BK; kk += 16u) {
             coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
-            coopMatLoad(matA, Ash, sg * 16u * ASTRIDE + kk, ASTRIDE,
+            coopMatLoad(matA, Ash[cur], sg * 16u * ASTRIDE + kk, ASTRIDE,
                         gl_CooperativeMatrixLayoutRowMajor);
-            for (uint j = 0; j < 4u; j++) {
+            for (uint j = 0; j < 2u; j++) {
                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matB;
-                coopMatLoad(matB, Bsh, kk * BSTRIDE + j * 16u, BSTRIDE,
+                coopMatLoad(matB, Bsh[cur], kk * BSTRIDE + j * 16u, BSTRIDE,
                             gl_CooperativeMatrixLayoutRowMajor);
                 acc[j] = coopMatMulAdd(matA, matB, acc[j]);
             }
@@ -138,7 +150,7 @@ void main() {
      * y[t][row] with stride y_stride. Guard whole 16-col blocks (rows%16==0
      * is a C-side precondition). */
     uint out_row = row0 + sg * 16u;
-    for (uint j = 0; j < 4u; j++) {
+    for (uint j = 0; j < 2u; j++) {
         uint t = tb0 + j * 16u;
         if (t < pc.rows) {
             coopMatStore(acc[j], y, pc.y_offset + t * pc.y_stride + out_row, pc.y_stride,
