@@ -17,6 +17,7 @@
 #include "error.h"
 
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -27,7 +28,15 @@ extern const struct geist_backend_descriptor *const geist_backend_registry[];
  * registry in preference order (cpu_neon before cpu_scalar etc.). */
 static const struct geist_backend_descriptor *resolve_descriptor(const char *name) {
     if (name == nullptr || name[0] == '\0' || strcmp(name, "auto") == 0) {
-        return geist_backend_registry[0]; /* may be nullptr if no backends linked */
+        /* GEIST_BACKEND overrides auto (same convention as the bench
+         * harness's GEIST_BENCH_BACKEND) — without it every "auto"
+         * caller silently gets registry[0] and GPU builds cannot be
+         * exercised end-to-end from the CLI or eval tools. */
+        const char *env = getenv("GEIST_BACKEND");
+        if (env == nullptr || env[0] == '\0') {
+            return geist_backend_registry[0]; /* may be nullptr if no backends linked */
+        }
+        name = env;
     }
     for (size_t i = 0; geist_backend_registry[i] != nullptr; i++) {
         if (strcmp(geist_backend_registry[i]->name, name) == 0) {
