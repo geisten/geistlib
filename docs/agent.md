@@ -187,8 +187,10 @@ in-engine sampler change:
   **PMI-calibrated** — the model's prior for each name (given the menu but a
   content-free request) is subtracted, removing token-frequency bias. A
   The menu also carries a **`reply` pseudo-entry** — when it wins, no tool is
-  forced and the model answers directly ("What is 2 plus 2?", "Delete
-  report.md" → a refusal instead of a forced-but-wrong call).
+  forced and the model answers directly ("What is 2 plus 2?"). A request opening
+  with a destructive verb no whitelisted tool covers ("Delete report.md",
+  "Lösche …") routes to `reply` before any scoring — a refusal instead of a
+  forced-but-wrong call, at zero model cost.
   Deterministic tie-breakers settle close races: a request naming a file
   (`note.txt`) prefers a file tool, a literal `http(s)://` URL prefers the
   `url`-arg tool (first-token scoring cannot tell `web_search` from `web_fetch`

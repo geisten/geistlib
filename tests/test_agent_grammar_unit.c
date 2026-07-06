@@ -229,6 +229,27 @@ static void test_route_tiebreak(void) {
                             .description = "die Dateien in einem Verzeichnis auflisten"};
     fails += geist_expect(agent_tool_is_docs(&dt), "tool_is_docs: doc_search");
     fails += geist_expect(!agent_tool_is_docs(&lt), "tool_is_docs: list_dir -> no");
+
+    /* destructive-verb guard: an opening imperative (optionally after one
+     * politeness word) is detected; mid-request destructive words are not. */
+    const char *x1 = "Delete report.md";
+    const char *x2 = "Bitte lösche notes.txt";
+    const char *x3 = "rm -rf everything";
+    const char *x4 = "Search the docs for how to remove noise";
+    const char *x5 = "List the files in the current directory";
+    fails += geist_expect(agent_request_is_destructive(strlen(x1), x1), "destructive: Delete");
+    fails +=
+            geist_expect(agent_request_is_destructive(strlen(x2), x2), "destructive: Bitte lösche");
+    fails += geist_expect(agent_request_is_destructive(strlen(x3), x3), "destructive: rm");
+    fails += geist_expect(!agent_request_is_destructive(strlen(x4), x4),
+                          "destructive: mid-request remove -> no");
+    fails += geist_expect(!agent_request_is_destructive(strlen(x5), x5), "destructive: List -> no");
+
+    struct geist_tool  del = {.name = "delete_file", .description = "eine Datei löschen"};
+    struct geist_agent ad  = {.tools = &del, .n_tools = 1};
+    struct geist_agent al  = {.tools = &lt, .n_tools = 1};
+    fails += geist_expect(agent_tools_cover_destruction(&ad), "cover_destruction: delete_file");
+    fails += geist_expect(!agent_tools_cover_destruction(&al), "cover_destruction: list_dir -> no");
 }
 
 static void test_recipes(void) {

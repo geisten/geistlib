@@ -810,9 +810,77 @@ static inline int agent_tool_is_docs(const struct geist_tool *t) {
             (strstr(t->description, "okument") || strstr(t->description, "ocument")));
 }
 
+/* True if the request opens with a destructive verb (delete / remove / lösche /
+ * rm …), optionally after one politeness word (please / bitte). First-word only:
+ * an imperative names the action, while a destructive word later in the request
+ * is usually content ("search for how to remove noise"). ponytail: "Please
+ * could you delete …" slips past the two-word scan — falls back to PMI. */
+static inline int agent_request_is_destructive(size_t req_len, const char *req) {
+    static const char *const verbs[] = {"delet",
+                                        "remov",
+                                        "eras",
+                                        "wipe",
+                                        "destroy",
+                                        "kill",
+                                        "drop",
+                                        "rm",
+                                        "lösch",
+                                        "entfern",
+                                        "zerstör",
+                                        "vernicht"};
+    size_t                   i       = 0;
+    for (int word = 0; word < 2; word++) {
+        while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
+            i++;
+        }
+        size_t s = i;
+        while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
+            i++;
+        }
+        size_t wl = i - s;
+        if (wl == 0) {
+            return 0;
+        }
+        if ((wl == 6 && strncasecmp(req + s, "please", 6) == 0) ||
+            (wl == 5 && strncasecmp(req + s, "bitte", 5) == 0)) {
+            continue; /* politeness prefix — the verb is the next word */
+        }
+        for (size_t v = 0; v < sizeof verbs / sizeof *verbs; v++) {
+            size_t vl = strlen(verbs[v]);
+            if (wl >= vl && strncasecmp(req + s, verbs[v], vl) == 0) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    return 0;
+}
+
+/* True if some whitelisted tool actually covers destruction (its name or
+ * description names such an action) — then a destructive request is a normal
+ * routing case, not a refusal. */
+static inline int agent_tools_cover_destruction(const struct geist_agent *a) {
+    for (size_t i = 0; i < a->n_tools; i++) {
+        const char *n = a->tools[i].name, *d = a->tools[i].description;
+        if ((n && (strstr(n, "delet") || strstr(n, "remov") || strstr(n, "lösch"))) ||
+            (d && (strstr(d, "delet") || strstr(d, "remov") || strstr(d, "lösch") ||
+                   strstr(d, "entfern")))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Returns the routed tool's index, or -1 when the answer pseudo-entry wins —
  * the request is best served by replying directly, with no tool call at all. */
 static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
+    /* Destructive-verb guard: an imperative the toolset cannot do routes
+     * straight to the reply pseudo-entry — a refusal beats a forced-but-wrong
+     * call ("Delete report.md" pulled doc_search up via the named file). Runs
+     * before scoring: no model pass at all. */
+    if (agent_request_is_destructive(req_len, req) && !agent_tools_cover_destruction(a)) {
+        return -1;
+    }
     if (a->n_tools <= 1) {
         return 0; /* no menu to rank; a single-tool agent always forces its tool */
     }
