@@ -2611,7 +2611,8 @@ static constexpr float VK_GELU_K1 = 0.044715f;
         }
         if (part_bytes > stt->xring->bytes || !vk_tensor_gpu(q, &bq, &qo) ||
             !vk_tensor_gpu_f16(k, &bk, &ko) || !vk_tensor_gpu_f16(v, &bv, &vo) ||
-            !vk_tensor_gpu(out, &bo, &oo)) {
+            !vk_tensor_gpu(out, &bo, &oo) ||
+            ((qo | ko | vo) & 3u) != 0u /* 4-wide K/V/Q streams */) {
             goto attn_generic;
         }
         const uint32_t po = (uint32_t) (stt->xring_used / 4u);
@@ -2649,7 +2650,9 @@ attn_generic:;
                   : (vk_t_n(k) != 0 && vk_t_n(v) != 0 && vk_tensor_gpu(k, &bi[1], &off[1]) &&
                      vk_tensor_gpu(v, &bi[2], &off[2]))) &&
             vk_t_n(out) != 0 &&
-            vk_tensor_gpu(q, &bi[0], &off[0]) && vk_tensor_gpu(out, &bi[3], &off[3])) {
+            vk_tensor_gpu(q, &bi[0], &off[0]) && vk_tensor_gpu(out, &bi[3], &off[3]) &&
+            /* f16 kernel streams q/k/v as 4-wide vectors */
+            (!kv16 || ((off[0] | off[1] | off[2]) & 3u) == 0u)) {
             const uint32_t n_q  = (uint32_t) q->shape[0];
             const uint32_t qh   = (uint32_t) q->shape[1];
             const uint32_t hd   = (uint32_t) q->shape[2];

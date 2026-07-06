@@ -5,13 +5,15 @@
  * (kv-chunk, q-head) computes the online-softmax partial (m, l, acc[hd])
  * over its 128-position chunk. Fills the GPU with chunks*heads workgroups
  * where plain decode attention has only n_q_heads. Partials land in a
- * scratch buffer as [head][chunk][hd + 2]. */
+ * scratch buffer as [head][chunk][hd + 2]. K/V/Q stream as 4-wide vectors
+ * (scalar f16 loads were the kernel's whole cost); requires q/k/v element
+ * offsets % 4 == 0 — the host falls back to the direct kernel otherwise. */
 
 layout(local_size_x = 128) in;
 
-layout(set = 0, binding = 0) readonly buffer Q { float q[]; };
-layout(set = 0, binding = 1) readonly buffer K { float16_t k[]; };
-layout(set = 0, binding = 2) readonly buffer V { float16_t v[]; };
+layout(set = 0, binding = 0) readonly buffer Q { vec4 q4[]; };
+layout(set = 0, binding = 1) readonly buffer K { f16vec4 k4[]; };
+layout(set = 0, binding = 2) readonly buffer V { f16vec4 v4[]; };
 layout(set = 0, binding = 3) writeonly buffer P { float part[]; };
 
 layout(push_constant) uniform Push {
@@ -29,7 +31,7 @@ layout(push_constant) uniform Push {
 } pc;
 
 const uint CHUNK = 128;
-shared float q_sh[512];
+shared vec4 q_sh4[128];
 shared float red[128];
 shared float w_sh[128];
 
@@ -41,8 +43,9 @@ void main() {
         return;
     }
     uint hd = pc.hd;
+    uint hd4 = hd >> 2u;
     uint kv_head = head / (pc.n_q_heads / pc.n_kv_heads);
-    uint kv_row = pc.n_kv_heads * hd;
+    uint kv_row4 = (pc.n_kv_heads * hd) >> 2u;
 
     uint s_lo = 0;
     if (pc.sliding_window > 0 && pc.q_abs + 1 > pc.sliding_window) {
@@ -64,9 +67,9 @@ void main() {
         return;
     }
 
-    uint q_base = pc.q_offset + head * hd;
-    for (uint d = lid; d < hd; d += 128u) {
-        q_sh[d] = q[q_base + d];
+    uint q_base4 = (pc.q_offset >> 2u) + head * hd4;
+    for (uint d = lid; d < hd4; d += 128u) {
+        q_sh4[d] = q4[q_base4 + d];
     }
     barrier();
 
@@ -74,10 +77,10 @@ void main() {
     uint s = c_lo + lid;
     float score = (-1.0 / 0.0);
     if (s < c_hi_excl) {
-        uint k_base = pc.k_offset + s * kv_row + kv_head * hd;
+        uint k_base4 = (pc.k_offset >> 2u) + s * kv_row4 + kv_head * hd4;
         float sum = 0.0;
-        for (uint i = 0; i < hd; i++) {
-            sum += q_sh[i] * float(k[k_base + i]);
+        for (uint i = 0; i < hd4; i++) {
+            sum += dot(vec4(k4[k_base4 + i]), q_sh4[i]);
         }
         score = sum;
     }
@@ -104,14 +107,18 @@ void main() {
     }
     float l = red[0];
 
-    /* weighted V: thread owns dims lid, lid+128, lid+256, lid+384 */
+    /* weighted V: thread owns one 4-wide dim slice */
     uint nn = c_hi_excl - c_lo;
-    for (uint d0 = lid; d0 < hd; d0 += 128u) {
-        float a = 0.0;
+    uint v_base4 = (pc.v_offset >> 2u) + c_lo * kv_row4 + kv_head * hd4;
+    for (uint t = lid; t < hd4; t += 128u) {
+        vec4 a = vec4(0.0);
         for (uint j = 0; j < nn; j++) {
-            a += w_sh[j] * float(v[pc.v_offset + (c_lo + j) * kv_row + kv_head * hd + d0]);
+            a += w_sh[j] * vec4(v4[v_base4 + j * kv_row4 + t]);
         }
-        part[pbase + d0] = a;
+        part[pbase + 4u * t + 0u] = a.x;
+        part[pbase + 4u * t + 1u] = a.y;
+        part[pbase + 4u * t + 2u] = a.z;
+        part[pbase + 4u * t + 3u] = a.w;
     }
     if (lid == 0u) {
         part[pbase + hd] = m;
