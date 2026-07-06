@@ -186,16 +186,28 @@ in-engine sampler change:
   is scored by its first-token log-prob (an MMLU-style cloze). The score is
   **PMI-calibrated** — the model's prior for each name (given the menu but a
   content-free request) is subtracted, removing token-frequency bias. A
-  deterministic tie-breaker prefers a file tool when the request names a file
-  (`note.txt`) and the race is close.
+  Deterministic tie-breakers settle close races: a request naming a file
+  (`note.txt`) prefers a file tool, a literal `http(s)://` URL prefers the
+  `url`-arg tool (first-token scoring cannot tell `web_search` from `web_fetch`
+  — same first token), and a docs word (`docs`, `Dokumente`) prefers the doc
+  tool.
 - **Forcing** (`agent.force_call = true`) — grammar-*forces* turn 0 to be a valid
   call to the routed tool: the JSON scaffold + the chosen tool name are prefilled
   token-by-token, and a single-key arg's value is **lifted from the request** (the
   path word for a locator arg, else the request itself as the query) rather than
   free-decoded, which a weak model mangles. The forced call is single-shot — the
-  tool's observation is returned as the answer. This is why an *untrained* model
+  tool's observation is returned as the answer — unless a **recipe** continues
+  it: a known 2-step chain (`web_search→web_fetch`, `doc_search→summarize_file`,
+  `list_dir→summarize_file`) fires when the request carries a cue word for the
+  second step ("… and *read* it", "… *fasse* es zusammen"). Step 1's locator is
+  lifted from step 0's observation (the top URL / the request-matching file) and
+  invoked directly — zero extra model time. This is why an *untrained* model
   can still drive tools reliably: structure and value are forced, only the routing
   decision is the model's.
+
+Reliability is measured, not felt: `make bench-agent` scores routing / args /
+chains per stage over a fixed 30-case corpus (`tests/bench_agent_eval`) and
+gates CI at the fixed threshold (`AGENT_EVAL_MIN`, calibrated per model).
 
 ### Progress events
 
