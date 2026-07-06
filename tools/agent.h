@@ -13,13 +13,15 @@
  *   - max_steps bounds how many tool calls one request can trigger (runaway +
  *     cost guard on constrained hardware).
  * A small model jailbreaks easily as free chat; here it can only DO what the
- * tool table allows. Grammar-constraint, two slices: (1) an off-whitelist tool
- * NAME is re-picked by agent_decode_name_constrained, which decodes the name
- * constrained to the whitelist (a near-miss recovers to the model's intended
- * tool, not an error step); (2) the args object is re-keyed to the tool's
- * args_schema by agent_args_normalize (small models mis-key flat string args).
- * Full upgrade: per-token logit masking in the sampler so the model cannot even
- * emit an off-grammar token, plus a constrained key-decode for multi-key args.
+ * tool table allows. Grammar-constraint, three slices: (1) an off-whitelist
+ * tool NAME is re-picked by agent_decode_name_constrained, which decodes the
+ * name constrained to the whitelist (a near-miss recovers to the model's
+ * intended tool, not an error step); (2) the args object is re-keyed to the
+ * tool's args_schema by agent_args_normalize (small models mis-key flat string
+ * args); (3) a free turn that opens a call is decoded ALONG the call grammar
+ * (agent_generate_call_masked): name and key constrained per-token over the
+ * public peek/prefill API, only the value free — an off-grammar call cannot be
+ * emitted. Remaining upgrade: full multi-key argument grammars.
  *
  * No assert(): all checks are explicit and return enum geist_status. Buffers
  * are caller-provided or fixed in the struct (no hidden heap).
@@ -582,15 +584,14 @@ static inline int agent_name_complete(const struct geist_agent *a, const char *p
     return -1;
 }
 
-/* Greedily decode the tool name constrained to the whitelist. Precondition:
- * logits are pending at the name's first position (caller has prefilled the
- * transcript + the opening `{"tool":"`). At each step, among the whitelist names
- * that still match the chars emitted so far, force the next token of whichever
- * has the highest logit, so the model picks the tool but can only ever spell a
- * real one. Returns the chosen tool index, or -1 if the whitelist is empty.
- * ponytail: assumes no whitelist name is a strict prefix of another (true for
- * distinct tool names) — else greedy never stops at the shorter one. */
-static inline int agent_decode_name_constrained(struct geist_agent *a) {
+/* Greedily decode ONE string out of opts[] constrained to that set.
+ * Precondition: logits are pending at the string's first position. At each
+ * step, among the options that still match the chars emitted so far, force the
+ * next token of whichever has the highest logit — the model picks the option
+ * but can only ever spell a real one. Returns the chosen index, or -1 if
+ * nothing completed. ponytail: assumes no option is a strict prefix of another
+ * (true for tool names and schema keys) — else greedy never stops early. */
+static inline int agent_decode_pick(struct geist_agent *a, size_t n_opts, const char *const *opts) {
     char   partial[GEIST_AGENT_NAME_CAP];
     size_t pl  = 0;
     partial[0] = '\0';
@@ -600,19 +601,19 @@ static inline int agent_decode_name_constrained(struct geist_agent *a) {
         if (!logits || n_logits == 0) {
             break;
         }
-        /* pick the next token of the highest-logit still-matching name */
-        int           have = 0;
+        /* pick the next token of the highest-logit still-matching option */
+        int           have       = 0;
         float         best_logit = 0;
         geist_token_t best_tok   = 0;
-        for (size_t i = 0; i < a->n_tools; i++) {
-            const char *name = a->tools[i].name;
+        for (size_t i = 0; i < n_opts; i++) {
+            const char *name = opts[i];
             if (strlen(name) <= pl || strncmp(name, partial, pl) != 0) {
-                continue; /* not a still-matching name with a remaining suffix */
+                continue; /* not a still-matching option with a remaining suffix */
             }
             geist_token_t ids[8];
             size_t        nid = 0;
-            if (geist_session_tokenize(a->session, name + pl, 8, ids, &nid) != GEIST_OK || nid == 0 ||
-                ids[0] >= (geist_token_t) n_logits) {
+            if (geist_session_tokenize(a->session, name + pl, 8, ids, &nid) != GEIST_OK ||
+                nid == 0 || ids[0] >= (geist_token_t) n_logits) {
                 continue;
             }
             if (!have || logits[ids[0]] > best_logit) {
@@ -632,7 +633,24 @@ static inline int agent_decode_name_constrained(struct geist_agent *a) {
         pl += plen;
         partial[pl] = '\0';
     }
-    return agent_name_complete(a, partial);
+    for (size_t i = 0; i < n_opts; i++) {
+        if (strcmp(opts[i], partial) == 0) {
+            return (int) i;
+        }
+    }
+    return -1;
+}
+
+/* Greedily decode the tool name constrained to the whitelist (see
+ * agent_decode_pick). Precondition: caller has prefilled the transcript + the
+ * opening `{"tool":"`. Returns the chosen tool index, or -1. */
+static inline int agent_decode_name_constrained(struct geist_agent *a) {
+    const char *names[AGENT_MAX_ROUTED];
+    size_t      n = a->n_tools < AGENT_MAX_ROUTED ? a->n_tools : AGENT_MAX_ROUTED;
+    for (size_t i = 0; i < n; i++) {
+        names[i] = a->tools[i].name;
+    }
+    return agent_decode_pick(a, n, names);
 }
 
 /* Route a request to the best tool by scoring, instead of trusting the raw
@@ -1211,6 +1229,124 @@ static inline size_t agent_obs_locator(int         wants_url,
     return pick_n;
 }
 
+/* ---- in-sampler grammar masking (free mode) --------------------------------
+ * The free loop used to hand the open turn to plain greedy decoding, and a
+ * small model reliably mangles the call syntax — hallucinated tool names,
+ * broken JSON, wrong keys (eval: free-mode routing 4/30). When greedy WANTS to
+ * open a call (its next token starts '{', or a ```-fence, which in this
+ * context is a wrapped call attempt), the turn is instead decoded along the
+ * call grammar over the public peek/prefill API:
+ *     {"tool":"<name in whitelist>","args":{"<key in schema>":"<value>"}}
+ * The name decodes constrained to the whitelist, the key to the tool's schema
+ * (single-key: prefilled outright, no decode), only the VALUE is free — and it
+ * stops at the closing quote. The model cannot emit an off-grammar call.
+ * ponytail: one arg pair — a multi-key schema decodes its single best key;
+ * full multi-key argument grammars are the remaining upgrade. */
+
+/* Prefill `lit` into the session AND append it to out at w; returns the new w.
+ * Keeps the model conditioned on the scaffold it is "inside". */
+static inline size_t agent_prefill_lit(
+        struct geist_agent *a, const char *lit, size_t cap, char out[static cap], size_t w) {
+    geist_token_t ids[64];
+    size_t        nid = 0;
+    if (geist_session_tokenize(a->session, lit, 64, ids, &nid) == GEIST_OK && nid > 0) {
+        (void) geist_session_prefill_tokens(a->session, nid, ids);
+    }
+    w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%s", lit);
+    return w;
+}
+
+/* True if greedy's next token would open a tool call: '{', or a code fence
+ * (models wrap calls in ```json). Peek only — nothing is consumed. */
+static inline int agent_next_opens_call(struct geist_agent *a) {
+    size_t       n_logits = 0;
+    const float *logits   = geist_session_peek_logits(a->session, &n_logits);
+    if (!logits || n_logits == 0) {
+        return 0;
+    }
+    size_t best = 0;
+    for (size_t i = 1; i < n_logits; i++) {
+        if (logits[i] > logits[best]) {
+            best = i;
+        }
+    }
+    const char *piece = geist_session_token_to_str(a->session, (geist_token_t) best);
+    while (piece && *piece == ' ') {
+        piece++;
+    }
+    return piece && (*piece == '{' || *piece == '`');
+}
+
+/* Decode one guaranteed-valid tool call along the grammar into out. The
+ * session must be at the open model turn. Returns the call's length, or 0 if
+ * the constrained decode fell apart (caller resets and free-decodes). */
+static inline size_t
+agent_generate_call_masked(struct geist_agent *a, size_t cap, char out[static cap]) {
+    size_t w   = agent_prefill_lit(a, "{\"tool\":\"", cap, out, 0);
+    int    idx = agent_decode_name_constrained(a);
+    if (idx < 0) {
+        return 0;
+    }
+    w = (size_t) snprintf(out + w, cap - w, "%s", a->tools[idx].name) + w;
+    w = agent_prefill_lit(a, "\",\"args\":", cap, out, w);
+
+    char   keys[4][GEIST_AGENT_NAME_CAP];
+    size_t nk = agent_schema_keys(a->tools[idx].args_schema, 4, keys);
+    if (nk == 0) {
+        w += (size_t) snprintf(out + w, cap - w, "{}}");
+        return w;
+    }
+    if (nk == 1) {
+        char open[GEIST_AGENT_NAME_CAP + 8];
+        snprintf(open, sizeof open, "{\"%s\":\"", keys[0]);
+        w = agent_prefill_lit(a, open, cap, out, w);
+    } else {
+        w                   = agent_prefill_lit(a, "{\"", cap, out, w);
+        const char *opts[4] = {keys[0], keys[1], keys[2], keys[3]};
+        int         k       = agent_decode_pick(a, nk, opts);
+        if (k < 0) {
+            return 0; /* partial key in the session — caller must reset */
+        }
+        w = (size_t) snprintf(out + w, cap - w, "%s", keys[k]) + w;
+        w = agent_prefill_lit(a, "\":\"", cap, out, w);
+    }
+
+    /* the VALUE is the model's — free greedy, stopped at the closing quote */
+    size_t vstart = w;
+    for (int t = 0; t < 64 && w + 8 < cap; t++) {
+        geist_token_t tok = 0;
+        if (geist_session_decode_step(a->session, &tok) != GEIST_OK || tok == a->eos ||
+            (a->eot != GEIST_TOKEN_NONE && tok == a->eot)) {
+            break;
+        }
+        const char *piece = geist_session_token_to_str(a->session, tok);
+        size_t      plen  = piece ? strlen(piece) : 0;
+        if (plen == 0 || (piece[0] == '<' && piece[plen - 1] == '>') || piece[0] == '}') {
+            break; /* control marker / the model closing the object itself */
+        }
+        int closed = 0;
+        for (const char *p = piece; *p && w + 2 < cap; p++) {
+            if (*p == '"') {
+                closed = 1;
+                break;
+            }
+            char ch = (*p == '\n' || *p == '\t' || *p == '\r') ? ' ' : *p;
+            if (ch == '\\') {
+                out[w++] = '\\'; /* keep the rebuilt JSON parseable */
+            }
+            out[w++] = ch;
+        }
+        if (closed || agent_tail_loop(out + vstart, w - vstart) > 0) {
+            break;
+        }
+    }
+    while (w > vstart && out[w - 1] == ' ') {
+        w--;
+    }
+    w += (size_t) snprintf(out + w, cap - w, "\"}}");
+    return w;
+}
+
 /* Force the next turn to be a valid call to tool `idx` (chosen by
  * agent_select_tool), whether or not the model would have emitted one — the
  * proof that prompted tool use does NOT require a tool-trained model. The JSON
@@ -1465,6 +1601,10 @@ static inline int agent_answer_degenerate(const char *s) {
     char name[GEIST_AGENT_NAME_CAP];
     char args[GEIST_AGENT_ARGS_CAP];
     char obs[GEIST_AGENT_OBS_CAP];
+    /* (name,args) hashes of the calls already executed this run — a repeated
+     * call cannot progress, its observation is already in the transcript. */
+    unsigned seen[16];
+    size_t   n_seen = 0;
 
     for (size_t step = 0; step < a->max_steps; step++) {
         if (geist_session_reset(a->session) != GEIST_OK ||
@@ -1496,7 +1636,21 @@ static inline int agent_answer_degenerate(const char *s) {
             tn = idx >= 0 ? agent_force_call(a, idx, req_len, req, sizeof turn, turn)
                           : agent_generate_turn(a, sizeof turn, turn);
         } else {
-            tn = agent_generate_turn(a, sizeof turn, turn);
+            /* free turn under the grammar mask: if greedy would open a call,
+             * decode it along the call grammar (guaranteed valid, on-whitelist);
+             * plain text stays plain. A fallen-apart constrained decode left
+             * scaffold tokens in the session — reset before free-decoding. */
+            tn = 0;
+            if (a->n_tools > 0 && agent_next_opens_call(a)) {
+                tn = agent_generate_call_masked(a, sizeof turn, turn);
+                if (tn == 0 && (geist_session_reset(a->session) != GEIST_OK ||
+                                geist_session_set_prompt(a->session, a->transcript) != GEIST_OK)) {
+                    return GEIST_E_INVALID_STATE;
+                }
+            }
+            if (tn == 0) {
+                tn = agent_generate_turn(a, sizeof turn, turn);
+            }
         }
 
         if (!agent_parse_call(tn, turn, sizeof name, name, sizeof args, args)) {
@@ -1524,6 +1678,34 @@ static inline int agent_answer_degenerate(const char *s) {
                 *resp_len = n;
             }
             return GEIST_OK;
+        }
+
+        /* A call we already EXECUTED this run cannot progress — it reproduces
+         * an observation the transcript already holds, and a grammar-masked
+         * free turn otherwise wanders call -> obs -> call until max_steps
+         * (including A-B-A alternation). The last observation IS the answer.
+         * ponytail: djb2 over name+args; a collision merely answers early. */
+        unsigned h = 5381;
+        for (const char *p = name; *p; p++) {
+            h = h * 33u + (unsigned char) *p;
+        }
+        for (const char *p = args; *p; p++) {
+            h = h * 33u + (unsigned char) *p;
+        }
+        int repeat = 0;
+        for (size_t i = 0; i < n_seen; i++) {
+            repeat |= seen[i] == h;
+        }
+        if (repeat && step > 0) {
+            agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, obs);
+            size_t n = agent_copy(resp_cap, resp, obs);
+            if (resp_len) {
+                *resp_len = n;
+            }
+            return GEIST_OK;
+        }
+        if (n_seen < sizeof seen / sizeof *seen) {
+            seen[n_seen++] = h;
         }
 
         agent_emit(a, GEIST_AGENT_CALLING, step, name, args);

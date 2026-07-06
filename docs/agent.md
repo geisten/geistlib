@@ -267,11 +267,14 @@ jailbreak resistance — that lives in steps 1–4. It only affects attack surfa
 prefer a Unix-domain socket (filesystem-permission gated) or in-process over an
 HTTP listener for a same-host agent.
 
-Hardest guarantee (`ponytail:` upgrade): **in-sampler grammar masking** — mask the
-sampler's logits to grammar-valid tokens so the model *cannot* emit anything but a
-valid, on-whitelist call. geist already **forces** a valid tool name and re-keys
-arguments from outside the sampler (see *Tool selection & forced calls* above);
-full in-sampler masking of arbitrary argument grammars is the remaining step.
+Hardest guarantee — **grammar masking** (shipped): a free turn that opens a
+call (`{` or a ```-fence) is decoded *along the call grammar* over the public
+peek/prefill API — the tool name per-token constrained to the whitelist, the
+arg key to the tool's schema, only the value free (stopped at its closing
+quote). The model *cannot* emit an off-grammar or off-whitelist call; a call
+already executed in the same run ends the loop (the observation is the
+answer). Remaining (`ponytail:` upgrade): full multi-key argument grammars —
+today a multi-key schema decodes its single best key.
 
 `web_search` is the lower-risk half of web access — it only talks to a **fixed**
 search endpoint (the host is not model-chosen), so the model influences the
