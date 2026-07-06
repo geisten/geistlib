@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling format format-check
+.PHONY: all lib bin run clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -260,6 +260,19 @@ bench-tooling: bin $(MODEL_PREREQ)
 	  --gguf "$${GEIST_GGUF_PATH:-$(abspath $(MODEL_PATH))}" \
 	  --suite $(TOOLING_SUITE) --min-correct $(TOOLING_MIN)
 
+# Quality: agent-LAYER reliability (routing / arg lifting / chains) via the
+# self-contained tests/bench_agent_eval binary — mechanical per-stage scoring
+# over tests/data/agent_eval/cases.jsonl, greedy decode, web tools stubbed
+# in-process (no network). AGENT_EVAL_MODE = forced | free | both.
+# AGENT_EVAL_MIN gates the forced-mode pass count (exit 1 below it). The fixed
+# threshold 23/30 is the level achieved on bitnet-2b4t-i2_s (2026-07): single
+# 15/15, chains 6/8, ambig 2/4, neg 0/3. Recalibrate (or pass AGENT_EVAL_MIN=0)
+# when evaluating a different model.
+AGENT_EVAL_MODE ?= both
+AGENT_EVAL_MIN ?= 23
+bench-agent: bin $(MODEL_PREREQ)
+	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode $(AGENT_EVAL_MODE) --min-pass $(AGENT_EVAL_MIN)
+
 # Cleanup.
 clean:
 	@rm -rf build/$(TARGET)/$(MODE) lib/$(TARGET)/$(MODE) bin/$(TARGET)/$(MODE)
@@ -309,6 +322,7 @@ help:
 	"  make bench-quality-small|-detailed          MMLU acc -> benchmark/BENCHMARK.md" \
 	"  make bench-compare-ref BENCH_REF_URL=...    MMLU vs a running llama-server" \
 	"  make bench-mmlu [MMLU_LIMIT=0] | bench-tooling         accuracy (pip install datasets)" \
+	"  make bench-agent [AGENT_EVAL_MODE=both]     agent-layer routing/args/chains eval" \
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
 	"" \

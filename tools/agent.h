@@ -33,6 +33,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h> /* strncasecmp (POSIX; present on all geist hosts) */
 
 enum {
     GEIST_AGENT_TRANSCRIPT_CAP = 1 << 15,
@@ -738,6 +739,54 @@ static inline int agent_desc_is_dir(const char *d) {
                  strstr(d, "folder"));
 }
 
+/* True if the request contains a literal http(s):// URL (bounded scan — req is
+ * not NUL-terminated here). */
+static inline int agent_request_has_url(size_t req_len, const char *req) {
+    for (size_t i = 0; i + 7 <= req_len; i++) {
+        if (memcmp(req + i, "http", 4) != 0) {
+            continue;
+        }
+        size_t j = i + 4;
+        if (j < req_len && req[j] == 's') {
+            j++;
+        }
+        if (j + 3 <= req_len && memcmp(req + j, "://", 3) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* True if a tool takes a URL argument — its args schema names a "url" key. */
+static inline int agent_schema_wants_url(const char *s) {
+    return s && strstr(s, "\"url\"");
+}
+
+/* True if the request talks about the documentation corpus: a word starting
+ * doc/Dok (docs, documentation, den Dokumenten). Bilingual and prefix-based
+ * like agent_desc_is_dir; "docker"/"doctor" also match — harmless, only
+ * consulted as a close-race tie-breaker. Bounded scan (req not NUL-terminated). */
+static inline int agent_request_mentions_docs(size_t req_len, const char *req) {
+    for (size_t i = 0; i + 3 <= req_len; i++) {
+        if (i > 0 && req[i - 1] != ' ' && req[i - 1] != '\t' && req[i - 1] != '\n') {
+            continue; /* word starts only */
+        }
+        if ((req[i] == 'd' || req[i] == 'D') && req[i + 1] == 'o' &&
+            (req[i + 2] == 'c' || req[i + 2] == 'k')) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* True if a tool is the documentation tool — its name or description names
+ * documents (doc_search, "die lokalen Dokumente", "the documents"). */
+static inline int agent_tool_is_docs(const struct geist_tool *t) {
+    return (t->name && strstr(t->name, "doc")) ||
+           (t->description &&
+            (strstr(t->description, "okument") || strstr(t->description, "ocument")));
+}
+
 static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
     if (a->n_tools <= 1) {
         return 0;
@@ -771,6 +820,45 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
         cal[i] = have_base ? score[i] - a->route_base[i] : score[i];
         if (cal[i] > best_v) {
             best_v = cal[i], best = (int) i;
+        }
+    }
+
+    /* Tie-breaker: a literal http(s):// URL in the request is strong evidence
+     * for the tool that takes a "url" arg (fetch), yet the name score often
+     * favours the search tool. Same bounded close-race window as the file rule
+     * below. Runs first: a URL also ends in a file-ish extension, so without
+     * this the file rule would see ".html" and reason about the wrong axis. */
+    if (agent_request_has_url(req_len, req) &&
+        !agent_schema_wants_url(a->tools[best].args_schema)) {
+        int   alt   = -1;
+        float alt_v = -1e30f;
+        for (size_t i = 0; i < n; i++) {
+            if (agent_schema_wants_url(a->tools[i].args_schema) && cal[i] > alt_v) {
+                alt = (int) i, alt_v = cal[i];
+            }
+        }
+        if (alt >= 0 && alt_v > best_v - 1.5f) {
+            best = alt, best_v = alt_v;
+        }
+    }
+
+    /* Tie-breaker: the request mentions the documentation corpus (docs/Dokumente)
+     * but the winner is not the doc tool — first-token name scoring gives
+     * doc_search only a weak margin over list_dir ("doc" vs the answer-ish
+     * "list"), observed ~0.3-0.9 short. Skipped when the request names a
+     * specific file: a named file is more specific evidence than the corpus
+     * noun, and the file rule below owns that case. */
+    if (!agent_request_names_file(req_len, req) && agent_request_mentions_docs(req_len, req) &&
+        !agent_tool_is_docs(&a->tools[best])) {
+        int   alt   = -1;
+        float alt_v = -1e30f;
+        for (size_t i = 0; i < n; i++) {
+            if (agent_tool_is_docs(&a->tools[i]) && cal[i] > alt_v) {
+                alt = (int) i, alt_v = cal[i];
+            }
+        }
+        if (alt >= 0 && alt_v > best_v - 1.5f) {
+            best = alt, best_v = alt_v;
         }
     }
 
@@ -853,6 +941,176 @@ agent_extract_locator(size_t req_len, const char *req, size_t cap, char out[stat
         }
     }
     return 0;
+}
+
+/* ---- recipe chains ----------------------------------------------------------
+ * force_call is a single-shot tool-runner, so a two-step request ("search the
+ * web AND READ the top result") used to die after step 0. A recipe extends
+ * forcing to a known 2-step chain with the same philosophy as the routing
+ * tie-breakers: deterministic, bounded, lexical. The router picks step 0 as
+ * usual; the recipe fires only when (a) the routed tool is the recipe's first
+ * step, (b) its second tool is on the whitelist, and (c) the request carries a
+ * cue word asking for the second step ("… and read it" / "… fasse es
+ * zusammen"). Step 1's locator arg is lifted from step 0's OBSERVATION — the
+ * model decides nothing, and step 1 costs zero model time (a direct invoke).
+ * ponytail: two fixed steps over the shipped tool names, top-hit extraction; the
+ * upgrade is host-registered recipes + a cloze pick over the candidate lines. */
+struct agent_recipe {
+    const char *step0, *step1;
+    const char *cues; /* space-separated word-start prefixes, lowercase */
+};
+
+static const struct agent_recipe AGENT_RECIPES[] = {
+        {"web_search", "web_fetch", "read lies lese fetch hole open visit besuch page seite say"},
+        {"doc_search", "summarize_file", "summar fasse zusammen gist"},
+        {"list_dir", "summarize_file", "summar fasse zusammen gist"},
+};
+
+/* Case-insensitive bounded needle search (req/obs are not NUL-terminated). */
+static inline int agent_ci_find(size_t hlen, const char *hay, size_t nlen, const char *needle) {
+    if (nlen == 0 || nlen > hlen) {
+        return 0;
+    }
+    for (size_t i = 0; i + nlen <= hlen; i++) {
+        if (strncasecmp(hay + i, needle, nlen) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* If a recipe continues routed tool `idx` — second tool whitelisted and a cue
+ * word (word-start, case-insensitive prefix) present in the request — return
+ * the second tool's index, else -1. */
+static inline int
+agent_recipe_next(struct geist_agent *a, int idx, size_t req_len, const char *req) {
+    if (idx < 0 || (size_t) idx >= a->n_tools) {
+        return -1;
+    }
+    for (size_t r = 0; r < sizeof AGENT_RECIPES / sizeof *AGENT_RECIPES; r++) {
+        const struct agent_recipe *rc = &AGENT_RECIPES[r];
+        if (strcmp(a->tools[idx].name, rc->step0) != 0) {
+            continue;
+        }
+        int nxt = -1;
+        for (size_t i = 0; i < a->n_tools; i++) {
+            if (strcmp(a->tools[i].name, rc->step1) == 0) {
+                nxt = (int) i;
+                break;
+            }
+        }
+        if (nxt < 0) {
+            continue;
+        }
+        for (const char *c = rc->cues; *c != '\0';) {
+            size_t cl = strcspn(c, " ");
+            for (size_t i = 0; i + cl <= req_len; i++) {
+                if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                    strncasecmp(req + i, c, cl) == 0) {
+                    return nxt;
+                }
+            }
+            c += cl;
+            while (*c == ' ') {
+                c++;
+            }
+        }
+    }
+    return -1;
+}
+
+/* Lift the step-1 locator from the step-0 observation. For a url-arg tool: the
+ * first http(s):// URL (search results list the top hit first). Otherwise: the
+ * first word that names a file — brackets/quotes around it are stripped
+ * ("[report.md] …" is doc_search's hit format) — preferring a candidate whose
+ * stem also appears in the request ("… the report" picks report.md over
+ * readdir order). Returns the length, 0 if nothing liftable. */
+static inline size_t agent_obs_locator(int         wants_url,
+                                       size_t      on,
+                                       const char *obs,
+                                       size_t      req_len,
+                                       const char *req,
+                                       size_t      cap,
+                                       char        out[static cap]) {
+    if (wants_url) {
+        for (size_t i = 0; i + 7 <= on; i++) {
+            if (memcmp(obs + i, "http", 4) != 0) {
+                continue;
+            }
+            size_t j = i + 4;
+            if (j < on && obs[j] == 's') {
+                j++;
+            }
+            if (j + 3 > on || memcmp(obs + j, "://", 3) != 0) {
+                continue;
+            }
+            size_t e = i;
+            while (e < on && obs[e] != ' ' && obs[e] != '\t' && obs[e] != '\n' && obs[e] != '"') {
+                e++;
+            }
+            while (e > i && (obs[e - 1] == ')' || obs[e - 1] == ']' || obs[e - 1] == ',' ||
+                             obs[e - 1] == '.' || obs[e - 1] == ';')) {
+                e--; /* trailing prose punctuation is not part of the URL */
+            }
+            size_t n = e - i < cap - 1 ? e - i : cap - 1;
+            memcpy(out, obs + i, n);
+            out[n] = '\0';
+            return n;
+        }
+        return 0;
+    }
+    size_t first_n = 0, pref_n = 0;
+    char   first[256], pref[256];
+    for (size_t i = 0; i < on;) {
+        while (i < on && (obs[i] == ' ' || obs[i] == '\t' || obs[i] == '\n')) {
+            i++;
+        }
+        size_t s = i;
+        while (i < on && obs[i] != ' ' && obs[i] != '\t' && obs[i] != '\n') {
+            i++;
+        }
+        size_t b = s, e = i; /* strip surrounding brackets/quotes */
+        while (b < e && (obs[b] == '[' || obs[b] == '(' || obs[b] == '"' || obs[b] == '\'')) {
+            b++;
+        }
+        while (e > b && (obs[e - 1] == ']' || obs[e - 1] == ')' || obs[e - 1] == '"' ||
+                         obs[e - 1] == '\'' || obs[e - 1] == ',' || obs[e - 1] == ':')) {
+            e--;
+        }
+        size_t dot = (size_t) -1; /* the file-extension shape of agent_extract_locator */
+        for (size_t j = b; j < e; j++) {
+            if (obs[j] == '.') {
+                dot = j;
+            }
+        }
+        int ext = dot != (size_t) -1 && dot > b && e - dot >= 2 && e - dot <= 6;
+        for (size_t j = dot + 1; ext && j < e; j++) {
+            char c = obs[j];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
+                ext = 0;
+            }
+        }
+        if (ext && e - b < sizeof first - 1) {
+            if (first_n == 0) {
+                memcpy(first, obs + b, e - b);
+                first[e - b] = '\0';
+                first_n      = e - b;
+            }
+            if (pref_n == 0 && agent_ci_find(req_len, req, dot - b, obs + b)) {
+                memcpy(pref, obs + b, e - b);
+                pref[e - b] = '\0';
+                pref_n      = e - b;
+                break; /* first request-matching candidate wins */
+            }
+        }
+    }
+    const char *pick   = pref_n ? pref : first;
+    size_t      pick_n = pref_n ? pref_n : first_n;
+    if (pick_n == 0 || pick_n + 1 > cap) {
+        return 0;
+    }
+    memcpy(out, pick, pick_n + 1);
+    return pick_n;
 }
 
 /* Force the next turn to be a valid call to tool `idx` (chosen by
@@ -1199,8 +1457,47 @@ static inline int agent_answer_degenerate(const char *s) {
         /* force_call is a single-task tool-runner: once the routed tool has run,
          * its observation IS the answer (the listing / the summary). Return it
          * directly rather than letting a weak model fumble a free answer turn or
-         * fire more tools. (The normal, un-forced loop keeps composing answers.) */
+         * fire more tools. (The normal, un-forced loop keeps composing answers.)
+         * Exception: a recipe (see agent_recipe_next) continues a known 2-step
+         * chain — the follow-up tool runs directly on a locator lifted from this
+         * observation, and ITS observation is the answer. No model in the loop. */
         if (a->force_call && step == 0) {
+            int nxt = t ? agent_recipe_next(a, (int) (t - a->tools), req_len, req) : -1;
+            if (nxt >= 0) {
+                const struct geist_tool *t1 = &a->tools[nxt];
+                char                     keys[4][GEIST_AGENT_NAME_CAP];
+                char                     loc[512];
+                size_t ln = agent_obs_locator(agent_schema_wants_url(t1->args_schema),
+                                              on,
+                                              obs,
+                                              req_len,
+                                              req,
+                                              sizeof loc,
+                                              loc);
+                if (ln > 0 && agent_schema_keys(t1->args_schema, 4, keys) == 1) {
+                    char   args1[GEIST_AGENT_ARGS_CAP];
+                    size_t aw = (size_t) snprintf(args1, sizeof args1, "{\"%s\":\"", keys[0]);
+                    for (size_t c = 0; c < ln && aw + 4 < sizeof args1; c++) {
+                        if (loc[c] == '"' || loc[c] == '\\') {
+                            args1[aw++] = '\\';
+                        }
+                        args1[aw++] = loc[c];
+                    }
+                    aw += (size_t) snprintf(args1 + aw, sizeof args1 - aw, "\"}");
+                    agent_emit(a, GEIST_AGENT_CALLING, step + 1, t1->name, args1);
+                    agent_emit(a, GEIST_AGENT_RUNNING, step + 1, t1->name, nullptr);
+                    size_t o1 = 0;
+                    if (t1->invoke(t1->ctx, aw, args1, sizeof obs, obs, &o1) == GEIST_OK) {
+                        on = o1;
+                    } else {
+                        on = (size_t) snprintf(
+                                obs, sizeof obs, "error: tool \"%s\" failed", t1->name);
+                    }
+                    agent_emit(a, GEIST_AGENT_OBSERVED, step + 1, t1->name, obs);
+                }
+                /* nothing liftable / multi-key schema -> fall through: step 0's
+                 * observation is still a useful answer (the hit list itself). */
+            }
             agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, obs);
             size_t n = agent_copy(resp_cap, resp, obs);
             if (resp_len) {

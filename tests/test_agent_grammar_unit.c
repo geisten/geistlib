@@ -194,6 +194,102 @@ static void test_route_tiebreak(void) {
                           "desc_is_dir: Verzeichnis tool");
     fails += geist_expect(!agent_desc_is_dir("eine Textdatei lesen und zusammenfassen"),
                           "desc_is_dir: file tool is not a dir tool");
+
+    /* has-url: a literal http(s):// scheme is detected; a bare domain or a
+     * mid-word "http" is not. */
+    const char *u1 = "Fetch https://example.com/bitnet.html and tell me what it says";
+    const char *u2 = "Hole http://example.com/kv.html";
+    const char *u3 = "Search the web for BitNet ternary models";
+    const char *u4 = "is httpd a web server?";
+    fails += geist_expect(agent_request_has_url(strlen(u1), u1), "has_url: https:// detected");
+    fails += geist_expect(agent_request_has_url(strlen(u2), u2), "has_url: http:// detected");
+    fails += geist_expect(!agent_request_has_url(strlen(u3), u3), "has_url: no scheme -> no");
+    fails += geist_expect(!agent_request_has_url(strlen(u4), u4), "has_url: httpd -> no");
+
+    fails += geist_expect(agent_schema_wants_url("{\"url\": string}"), "wants_url: url schema");
+    fails += geist_expect(!agent_schema_wants_url("{\"query\": string}"),
+                          "wants_url: query schema -> no");
+
+    /* mentions-docs: a docs/Dokumente word at a word start is detected; requests
+     * without one (or with doc only mid-word) are not. */
+    const char *d1 = "Search the docs for kv cache quantization";
+    const char *d2 = "Wo steht in den Dokumenten etwas zu NEON Kerneln?";
+    const char *d3 = "Search for kv cache";
+    const char *d4 = "run maxdoc now";
+    fails += geist_expect(agent_request_mentions_docs(strlen(d1), d1), "mentions_docs: docs");
+    fails += geist_expect(agent_request_mentions_docs(strlen(d2), d2), "mentions_docs: Dokumenten");
+    fails += geist_expect(!agent_request_mentions_docs(strlen(d3), d3),
+                          "mentions_docs: no doc word -> no");
+    fails += geist_expect(!agent_request_mentions_docs(strlen(d4), d4),
+                          "mentions_docs: mid-word doc -> no");
+
+    struct geist_tool dt = {.name        = "doc_search",
+                            .description = "die lokalen Dokumente nach einer Anfrage durchsuchen"};
+    struct geist_tool lt = {.name        = "list_dir",
+                            .description = "die Dateien in einem Verzeichnis auflisten"};
+    fails += geist_expect(agent_tool_is_docs(&dt), "tool_is_docs: doc_search");
+    fails += geist_expect(!agent_tool_is_docs(&lt), "tool_is_docs: list_dir -> no");
+}
+
+static void test_recipes(void) {
+    struct geist_tool tools[] = {
+            {.name = "web_search", .args_schema = "{\"query\": string}"},
+            {.name = "web_fetch", .args_schema = "{\"url\": string}"},
+            {.name = "doc_search", .args_schema = "{\"query\": string}"},
+            {.name = "summarize_file", .args_schema = "{\"path\": string}"},
+    };
+    static struct geist_agent a;
+    a.tools   = tools;
+    a.n_tools = sizeof tools / sizeof *tools;
+
+    /* a cue word continues the routed tool into the recipe's second step */
+    const char *r1 = "Find a page about BitNet on the web and read it to me";
+    const char *r2 = "Suche im Web nach BitNet 2B und lies die erste Trefferseite";
+    const char *r3 = "Search the web for BitNet ternary models"; /* no cue */
+    const char *r4 = "Which doc covers kv cache? Find it and summarize that file.";
+    fails += geist_expect(agent_recipe_next(&a, 0, strlen(r1), r1) == 1,
+                          "recipe: search+read -> web_fetch");
+    fails += geist_expect(agent_recipe_next(&a, 0, strlen(r2), r2) == 1,
+                          "recipe: German lies -> web_fetch");
+    fails += geist_expect(agent_recipe_next(&a, 0, strlen(r3), r3) == -1,
+                          "recipe: no cue -> single-shot");
+    fails += geist_expect(agent_recipe_next(&a, 2, strlen(r4), r4) == 3,
+                          "recipe: doc_search+summarize -> summarize_file");
+    fails += geist_expect(agent_recipe_next(&a, 3, strlen(r4), r4) == -1,
+                          "recipe: summarize_file is no recipe start");
+
+    /* step-1 locator lifted from the step-0 observation */
+    char        out[256];
+    const char *hits = "1. BitNet 2B4T — https://example.com/bitnet.html\n"
+                       "2. KV cache — https://example.com/kv.html\n";
+    fails += geist_expect(
+            agent_obs_locator(1, strlen(hits), hits, strlen(r1), r1, sizeof out, out) > 0 &&
+                    strcmp(out, "https://example.com/bitnet.html") == 0,
+            "obs_locator: first URL is the top hit");
+
+    /* doc_search hits are already query-filtered — the FIRST hit is the pick;
+     * the surrounding [brackets] of the hit format are stripped. */
+    const char *para     = "[notes.txt] NEON kernels on the A76\n"
+                           "[kv-cache.md] The KV cache is stored packed 4-bit\n";
+    const char *req_neon = "Finde das Dokument ueber NEON und fasse es zusammen";
+    fails += geist_expect(
+            agent_obs_locator(0, strlen(para), para, strlen(req_neon), req_neon, sizeof out, out) >
+                            0 &&
+                    strcmp(out, "notes.txt") == 0,
+            "obs_locator: first bracketed hit, brackets stripped");
+
+    const char *listing = "report.md\nnotes.txt\ntodo.txt\n";
+    const char *req_rep = "Look at the files in this folder, then summarize the report";
+    fails += geist_expect(
+            agent_obs_locator(
+                    0, strlen(listing), listing, strlen(req_rep), req_rep, sizeof out, out) > 0 &&
+                    strcmp(out, "report.md") == 0,
+            "obs_locator: listing stem match picks report.md");
+
+    const char *nohit = "no matches for \"xyz\"";
+    fails += geist_expect(
+            agent_obs_locator(0, strlen(nohit), nohit, strlen(r4), r4, sizeof out, out) == 0,
+            "obs_locator: nothing liftable -> 0");
 }
 
 int main(void) {
@@ -204,6 +300,7 @@ int main(void) {
     test_degenerate();
     test_locator();
     test_route_tiebreak();
+    test_recipes();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
