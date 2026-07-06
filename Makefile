@@ -263,11 +263,15 @@ bench-tooling: bin $(MODEL_PREREQ)
 # Quality: agent-LAYER reliability (routing / arg lifting / chains) via the
 # self-contained tests/bench_agent_eval binary — mechanical per-stage scoring
 # over tests/data/agent_eval/cases.jsonl, greedy decode, web tools stubbed
-# in-process (no network). Report-only until thresholds are set from the
-# baseline run. AGENT_EVAL_MODE = forced | free | both.
+# in-process (no network). AGENT_EVAL_MODE = forced | free | both.
+# AGENT_EVAL_MIN gates the forced-mode pass count (exit 1 below it). The fixed
+# threshold 23/30 is the level achieved on bitnet-2b4t-i2_s (2026-07): single
+# 15/15, chains 6/8, ambig 2/4, neg 0/3. Recalibrate (or pass AGENT_EVAL_MIN=0)
+# when evaluating a different model.
 AGENT_EVAL_MODE ?= both
+AGENT_EVAL_MIN ?= 23
 bench-agent: bin $(MODEL_PREREQ)
-	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode $(AGENT_EVAL_MODE)
+	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode $(AGENT_EVAL_MODE) --min-pass $(AGENT_EVAL_MIN)
 
 # Cleanup.
 clean:

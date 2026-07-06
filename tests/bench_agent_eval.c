@@ -15,10 +15,12 @@
  * stub texts ever diverge from real curl output in a way that shifts routing.
  *
  * Runs each case in both agent modes (force_call on/off) as separate columns.
- * Exit 0 always — baseline mode; thresholds are fixed AFTER the first
- * baseline run. 77 without a model, 99 if the harness itself is broken.
+ * --min-pass N gates the FORCED-mode pass count (free mode is diagnostic
+ * only): below N exits 1 for CI. 0 = report-only. 77 without a model, 99 if
+ * the harness itself is broken.
  *
- * Usage: bench_agent_eval [--mode forced|free|both] [--verbose] [cases.jsonl]
+ * Usage: bench_agent_eval [--mode forced|free|both] [--min-pass N] [--verbose]
+ *                         [cases.jsonl]
  */
 #define _POSIX_C_SOURCE 200809L
 #include "test_helpers.h"
@@ -141,8 +143,10 @@ static size_t ev_load(const char *path) {
         agent_json_str(line, "tool", sizeof c->tool, c->tool);
         agent_json_str(line, "arg", sizeof c->arg, c->arg);
         agent_json_str(line, "want", sizeof c->want, c->want);
-        /* default chain: the expected tool alone; "none" -> empty chain */
-        if (!agent_json_str(line, "chain", sizeof c->chain, c->chain) &&
+        /* default steps: the expected tool alone; "none" -> empty chain. Key is
+         * "steps", not "chain" — the flat parser would otherwise hit the VALUE
+         * of "cat":"chain" first. */
+        if (!agent_json_str(line, "steps", sizeof c->chain, c->chain) &&
             strcmp(c->tool, "none") != 0)
             snprintf(c->chain, sizeof c->chain, "%s", c->tool);
         n++;
@@ -176,13 +180,14 @@ static int ev_cat_idx(const char *cat) {
     return 0;
 }
 
-static void ev_run_mode(struct geist_model   *model,
-                        struct geist_session *session,
-                        struct geist_tool    *tools,
-                        size_t                n_tools,
-                        size_t                n_cases,
-                        bool                  forced,
-                        bool                  verbose) {
+/* Returns the mode's total pass count (for the --min-pass gate). */
+static int ev_run_mode(struct geist_model   *model,
+                       struct geist_session *session,
+                       struct geist_tool    *tools,
+                       size_t                n_tools,
+                       size_t                n_cases,
+                       bool                  forced,
+                       bool                  verbose) {
     const char *mode = forced ? "forced" : "free";
     geist_agent_init(&ev_agent, model, session, n_tools, tools, EV_MAX_STEPS, nullptr);
     ev_agent.force_call = forced;
@@ -275,11 +280,13 @@ static void ev_run_mode(struct geist_model   *model,
            all.args_app,
            all.chain,
            all.total);
+    return all.pass;
 }
 
 int main(int argc, char **argv) {
     const char *cases_path = EV_CASES;
     bool        verbose = false, run_forced = true, run_free = true;
+    int         min_pass = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--verbose") == 0) {
             verbose = true;
@@ -287,6 +294,8 @@ int main(int argc, char **argv) {
             i++;
             run_forced = strcmp(argv[i], "free") != 0;
             run_free   = strcmp(argv[i], "forced") != 0;
+        } else if (strcmp(argv[i], "--min-pass") == 0 && i + 1 < argc) {
+            min_pass = atoi(argv[++i]);
         } else {
             cases_path = argv[i];
         }
@@ -325,14 +334,22 @@ int main(int argc, char **argv) {
     tools[3].ctx = tools[4].ctx = nullptr;
 
     printf("agent eval: %zu cases, model=%s\n\n", n_cases, model_path);
-    size_t n_tools = sizeof tools / sizeof tools[0];
+    size_t n_tools     = sizeof tools / sizeof tools[0];
+    int    forced_pass = -1;
     if (run_forced)
-        ev_run_mode(model, session, tools, n_tools, n_cases, true, verbose);
+        forced_pass = ev_run_mode(model, session, tools, n_tools, n_cases, true, verbose);
     if (run_free)
         ev_run_mode(model, session, tools, n_tools, n_cases, false, verbose);
 
     geist_session_destroy(session);
     geist_model_destroy(model);
     geist_backend_destroy(be);
-    return GEIST_TEST_PASS; /* report-only: thresholds land after the baseline run */
+    if (min_pass > 0 && forced_pass >= 0 && forced_pass < min_pass) {
+        fprintf(stderr,
+                "FAIL: forced pass %d below the fixed threshold %d\n",
+                forced_pass,
+                min_pass);
+        return GEIST_TEST_FAIL;
+    }
+    return GEIST_TEST_PASS;
 }

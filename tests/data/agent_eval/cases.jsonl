@@ -13,14 +13,14 @@
 {"id":"web-2","cat":"single","req":"Suche im Web nach Raspberry Pi 5 Benchmarks","tool":"web_search","arg":"query","want":"pi"}
 {"id":"fetch-1","cat":"single","req":"Fetch https://example.com/bitnet.html and tell me what it says","tool":"web_fetch","arg":"url","want":"example.com/bitnet.html"}
 {"id":"fetch-2","cat":"single","req":"Hole https://example.com/kv.html und gib mir den Text","tool":"web_fetch","arg":"url","want":"kv.html"}
-{"id":"ch-1","cat":"chain","req":"Find a page about BitNet on the web and read it to me","tool":"web_search","chain":"web_search,web_fetch"}
-{"id":"ch-2","cat":"chain","req":"Search the web for the geist inference engine and fetch the top result","tool":"web_search","chain":"web_search,web_fetch"}
-{"id":"ch-3","cat":"chain","req":"Suche im Web nach BitNet 2B und lies die erste Trefferseite","tool":"web_search","chain":"web_search,web_fetch"}
-{"id":"ch-4","cat":"chain","req":"Which local doc covers kv cache? Find it and summarize that file.","tool":"doc_search","chain":"doc_search,summarize_file"}
-{"id":"ch-5","cat":"chain","req":"Finde das Dokument über NEON und fasse es zusammen","tool":"doc_search","chain":"doc_search,summarize_file"}
-{"id":"ch-6","cat":"chain","req":"Look at the files in this folder, then summarize the report","tool":"list_dir","chain":"list_dir,summarize_file"}
-{"id":"ch-7","cat":"chain","req":"Zeig mir die Dateien hier und fasse dann todo.txt zusammen","tool":"list_dir","chain":"list_dir,summarize_file"}
-{"id":"ch-8","cat":"chain","req":"What does the top web result for ternary LLMs actually say? Search and read it.","tool":"web_search","chain":"web_search,web_fetch"}
+{"id":"ch-1","cat":"chain","req":"Find a page about BitNet on the web and read it to me","tool":"web_search","steps":"web_search,web_fetch"}
+{"id":"ch-2","cat":"chain","req":"Search the web for the geist inference engine and fetch the top result","tool":"web_search","steps":"web_search,web_fetch"}
+{"id":"ch-3","cat":"chain","req":"Suche im Web nach BitNet 2B und lies die erste Trefferseite","tool":"web_search","steps":"web_search,web_fetch"}
+{"id":"ch-4","cat":"chain","req":"Which local doc covers kv cache? Find it and summarize that file.","tool":"doc_search","steps":"doc_search,summarize_file"}
+{"id":"ch-5","cat":"chain","req":"Finde das Dokument über NEON und fasse es zusammen","tool":"doc_search","steps":"doc_search,summarize_file"}
+{"id":"ch-6","cat":"chain","req":"Look at the files in this folder, then summarize the report","tool":"list_dir","steps":"list_dir,summarize_file"}
+{"id":"ch-7","cat":"chain","req":"Zeig mir die Dateien hier und fasse dann todo.txt zusammen","tool":"list_dir","steps":"list_dir,summarize_file"}
+{"id":"ch-8","cat":"chain","req":"What does the top web result for ternary LLMs actually say? Search and read it.","tool":"web_search","steps":"web_search,web_fetch"}
 {"id":"amb-1","cat":"ambig","req":"What is in report.md?","tool":"summarize_file","arg":"path","want":"report.md"}
 {"id":"amb-2","cat":"ambig","req":"Search for kv cache","tool":"doc_search","arg":"query","want":"kv"}
 {"id":"amb-3","cat":"ambig","req":"Look up BitNet online","tool":"web_search","arg":"query","want":"bitnet"}
