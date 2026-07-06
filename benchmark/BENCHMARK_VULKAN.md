@@ -23,9 +23,34 @@ Vulkan code exists. Protocol: pp512 + tg128, E2E total = 640 tok / (t_pp + t_tg)
 | engine | pp512 tok/s | tg128 tok/s | E2E tok/s |
 | :-- | --: | --: | --: |
 | llama.cpp Vulkan (the bar) | 4682.6 ± 39.7 | 152.6 ± 1.2 | 675 |
+| llama.cpp Vulkan (re-run 2026-07-06) | 4639.0 ± 34.5 | 154.0 ± 0.3 | 680 |
 | llama.cpp CUDA (reference) | 6697.3 ± 85.7 | 181.8 ± 1.3 | 820 |
 | geist cpu_x86 (16T) | 484.2 | 42.2 | 156 |
+| geist vulkan @ 3c-14 (2026-07-06, median of 5) | 1150 | 132.3 | 452 |
 | **geist vulkan — target ≥ 1.10×** | | | **≥ 743** |
+
+Status 2026-07-06: tg at 86% of the llama.cpp bar, pp at 25%, E2E at 66%.
+Decode is within striking distance; the remaining E2E gap is mostly the
+prefill GEMMs (mm_q4k_cm/mm_cm32/mm_q6k_cm ~0.9 ms of the ~0.85 s wall) and
+prefill attention. Short-context decode now equals long-context (131.7 at
+pp64) — attention no longer scales the token cost through 640 positions.
+
+## Quality gate (2026-07-06, build @ 3c-14)
+
+Same build, same 200 shuffled MMLU questions (5-shot, seed-fixed), via
+`GEIST_BACKEND=<b> tools/eval_mmlu.py`:
+
+| backend | MMLU-200 | tooling (JSON / func) |
+| :-- | --: | :-- |
+| cpu_x86 | 0.490 (98/200) | — |
+| vulkan | 0.520 (104/200) | 14/14 valid+schema / 14/14 fully correct |
+
+Vulkan ≥ CPU within binomial noise (σ ≈ 7 questions at n=200) — the f16/
+coopmat numeric drift (greedy decode diverges from CPU after ~20 tokens)
+costs no task accuracy. Caveat discovered this round: `"auto"` backend
+resolution ignored the GPU entirely (registry[0] = cpu_x86), so every CLI
+"parity" check before the GEIST_BACKEND env fix compared CPU against CPU —
+end-to-end GPU verification starts at commit 596c5d2.
 
 Decode dominates E2E (~88% of wall time). At pp parity the target needs
 tg ≥ 170 tok/s — i.e. ~85% of the 2080 Ti's 616 GB/s reading a 3.1 GB model
@@ -75,3 +100,4 @@ OMP_NUM_THREADS=16 GEIST_GGUF_PATH=~/models/gemma/gemma-4-E2B-it-Q4_K_M.gguf \
 | Phase 3c-12 — vec4 attention loads | ~1050 | 129.5 | ~432 | attn_part_f16 and attention_f16 streamed K/V/Q as SCALAR f16 loads — the whole kernel cost (attn_part 58.5 us vs a ~2 us bandwidth floor). Rewritten as f16vec4/vec4 streams (host guards offsets % 4): decode 111.4 -> 129.5 (+16%), prefill 860 -> ~1050 (+23%, attention_f16 was ~35% of prefill wall at 720 us/call), E2E 355 -> 432. Largest single win since tensor cores. Lesson: audit every kernel for scalar loads on its hot stream — the 3c-6 flash-decoding redesign fixed parallelism but silently kept the scalar loads |
 | Phase 3c-13 — reduction/load micro-pass | ~1050 | 130.5 | ~438 | rmsnorm/rmsnorm_add: 14-barrier tree -> subgroupAdd two-level (+1 tok/s; the 8 us/call is dispatch-latency floor, not reduction cost). Q4_K header as one uvec4 (was 4 word loads x 16 redundant lanes), Q6_K ql/qh/d/sc as uvec2 pairs (7 -> 4 loads/lane/block): per-op times UNCHANGED — L1 absorbs the header redundancy, the matvecs are not load-issue-bound; kept anyway (fewer instructions, simpler). Remaining decode walls per token: ffn_gate_up 1.8 ms (51 us vs ~27 floor), q4k mv 1.8 ms, norms 1.35 ms (35 x 8 us dispatch floor), attention 0.95, q6k/lm_head 0.83 at ~33% BW. Next levers need occupancy/latency analysis per kernel, not more load tricks |
 | Phase 3c-14 — 64-thread matvec workgroups | ~1050 | 133.2 | ~440 | Turing caps residency at 16 blocks/SM, so the 32-thread matvec workgroups topped out at 16 of 32 warps. matvec_q4k and ffn_norm_gate_up rebuilt as 2 warps x 4 rows (gx = n_out/8): gate_up 51 -> 45.8 us (its 768-1536 workgroups actually hit the block cap), small matvecs unchanged (256-512 workgroups never reach 16/SM — occupancy only binds at scale). Decode 130.5 -> 133.2 |
+| Benchmark round (2026-07-06) | 1150 | 132.3 | 452 | full quality + perf pass, medians of 5 under warm clocks; llama.cpp re-measured same day (pp 4639 / tg 154 / E2E 680 — geist at 25% / 86% / 66% of the bar). MMLU-200 vulkan 0.520 vs cpu_x86 0.490 same build (binomial noise, sigma ~7 questions; gate passed), tooling suite 14/14 JSON + 14/14 function-calling. Also fixed: "auto" backend resolution ignored the GPU — CLI parity checks before 596c5d2 silently compared CPU vs CPU; GEIST_BACKEND env now overrides auto |
