@@ -3,13 +3,15 @@
 #extension GL_EXT_control_flow_attributes : enable
 
 /* Q4_K matvec, structure ported from llama.cpp's mul_mat_vec_q4_k
- * (MIT; see ggml-vulkan) onto geist's push/binding ABI: 32-thread
- * workgroups compute 4 rows together, so every x load is reused 4x;
- * 16 threads cover one 256-element superblock (each owns 4+4 elements
- * in both 128-halves), two block streams in flight.
- * Dispatch: gx = ceil(n_out / 4). */
+ * (MIT; see ggml-vulkan) onto geist's push/binding ABI: each 32-lane
+ * warp computes 4 rows together, so every x load is reused 4x;
+ * 16 lanes cover one 256-element superblock (each owns 4+4 elements
+ * in both 128-halves), two block streams in flight. Workgroup = 2
+ * warps = 8 rows: Turing caps residency at 16 blocks/SM, so 32-thread
+ * workgroups top out at 16 of 32 warps — 64 threads restore full
+ * occupancy. Dispatch: gx = ceil(n_out / 8). */
 
-layout(local_size_x = 32) in;
+layout(local_size_x = 64) in;
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
@@ -28,14 +30,16 @@ layout(push_constant) uniform Push {
     uint y_stride;
 } pc;
 
-const uint NUM_ROWS = 4;
-shared float tmpsh[NUM_ROWS][32];
+const uint NUM_ROWS = 4; /* per warp */
+shared float tmpsh[2][NUM_ROWS][32];
 
 void main() {
-    uint first_row = gl_WorkGroupID.x * NUM_ROWS;
     uint tid = gl_LocalInvocationID.x;
-    uint itid = tid & 15u; /* thread within superblock */
-    uint ix = tid >> 4u;   /* block stream 0/1 */
+    uint wrp = tid >> 5u;  /* warp 0/1 */
+    uint lane = tid & 31u;
+    uint first_row = gl_WorkGroupID.x * 8u + wrp * NUM_ROWS;
+    uint itid = lane & 15u; /* lane within superblock */
+    uint ix = lane >> 4u;   /* block stream 0/1 */
 
     uint il = itid >> 2u;      /* 0..3 */
     uint ir = itid & 3u;       /* 0..3 */
@@ -45,7 +49,7 @@ void main() {
     uint q_offset = 32u * v_im + l0; /* byte into qs */
     uint y_offset = 64u * v_im + l0; /* element into x */
 
-    uint num_rows = min(NUM_ROWS, pc.n_out - first_row);
+    uint num_rows = first_row < pc.n_out ? min(NUM_ROWS, pc.n_out - first_row) : 0u;
     float temp[NUM_ROWS];
     [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
         temp[n] = 0.0;
@@ -61,7 +65,8 @@ void main() {
         vec4 by232 = x4[xbase + (y2 >> 2u) + 8u];
 
         [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
-            uint blk = ((first_row + n) * pc.blocks_per_row + i) * 36u; /* w_offset==0 */
+            /* clamp keeps tail-row weight reads in bounds */
+            uint blk = (min(first_row + n, pc.n_out - 1u) * pc.blocks_per_row + i) * 36u;
             uvec4 hdr = wv4[blk >> 2u]; /* d/dmin + 3 scale words, one load */
             vec2 dm = unpackHalf2x16(hdr.x);
 
@@ -99,18 +104,18 @@ void main() {
     }
 
     [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
-        tmpsh[n][tid] = temp[n];
+        tmpsh[wrp][n][lane] = temp[n];
     }
     barrier();
     [[unroll]] for (uint s = 16u; s > 0u; s >>= 1u) {
-        if (tid < s) {
+        if (lane < s) {
             [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
-                tmpsh[n][tid] += tmpsh[n][tid + s];
+                tmpsh[wrp][n][lane] += tmpsh[wrp][n][lane + s];
             }
         }
         barrier();
     }
-    if (tid < num_rows) {
-        y[pc.y_offset + first_row + tid] = tmpsh[tid][0];
+    if (lane < num_rows) {
+        y[pc.y_offset + first_row + lane] = tmpsh[wrp][lane][0];
     }
 }

@@ -2163,7 +2163,7 @@ static uint32_t vk_groups(size_t n) {
  * workgroup. matmul_q4k: 4 output rows x 16 batch rows per workgroup. */
 static uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
     if (pipe == VK_PIPE_MATVEC_Q4K) {
-        return (n_out + 3u) / 4u;
+        return (n_out + 7u) / 8u; /* 2 warps x 4 rows per workgroup */
     }
     if (pipe == VK_PIPE_MATVEC_Q6K) {
         return (n_out + 7u) / 8u;
@@ -3179,7 +3179,7 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     }
     const uint32_t n_out = (uint32_t) gate_w->shape[0];
     const uint32_t n_in  = (uint32_t) gate_w->shape[1];
-    if (n_in % 256u != 0u || up_w->shape[0] != gate_w->shape[0] ||
+    if (n_in % 256u != 0u || n_out % 8u != 0u || up_w->shape[0] != gate_w->shape[0] ||
         up_w->shape[1] != gate_w->shape[1] || vk_t_n(norm_w) != n_in) {
         return GEIST_E_UNSUPPORTED;
     }
@@ -3209,7 +3209,7 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
                                      vk_acc_all(false), vk_acc_tensor(norm_w, false),
                                      vk_acc_tensor(y, true)};
     return vk_seq_dispatch_acc(be, VK_PIPE_FFN_NORM_GU, bi, acc, &push, sizeof(push),
-                               (n_out + 3u) / 4u, 1, 1);
+                               n_out / 8u, 1, 1);
 }
 
 /* Gemma-3n PLE block in THREE dispatches (replaces gate matvec +
