@@ -761,6 +761,31 @@ static inline int agent_schema_wants_url(const char *s) {
     return s && strstr(s, "\"url\"");
 }
 
+/* True if the request talks about the documentation corpus: a word starting
+ * doc/Dok (docs, documentation, den Dokumenten). Bilingual and prefix-based
+ * like agent_desc_is_dir; "docker"/"doctor" also match — harmless, only
+ * consulted as a close-race tie-breaker. Bounded scan (req not NUL-terminated). */
+static inline int agent_request_mentions_docs(size_t req_len, const char *req) {
+    for (size_t i = 0; i + 3 <= req_len; i++) {
+        if (i > 0 && req[i - 1] != ' ' && req[i - 1] != '\t' && req[i - 1] != '\n') {
+            continue; /* word starts only */
+        }
+        if ((req[i] == 'd' || req[i] == 'D') && req[i + 1] == 'o' &&
+            (req[i + 2] == 'c' || req[i + 2] == 'k')) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* True if a tool is the documentation tool — its name or description names
+ * documents (doc_search, "die lokalen Dokumente", "the documents"). */
+static inline int agent_tool_is_docs(const struct geist_tool *t) {
+    return (t->name && strstr(t->name, "doc")) ||
+           (t->description &&
+            (strstr(t->description, "okument") || strstr(t->description, "ocument")));
+}
+
 static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
     if (a->n_tools <= 1) {
         return 0;
@@ -802,11 +827,32 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
      * favours the search tool. Same bounded close-race window as the file rule
      * below. Runs first: a URL also ends in a file-ish extension, so without
      * this the file rule would see ".html" and reason about the wrong axis. */
-    if (agent_request_has_url(req_len, req) && !agent_schema_wants_url(a->tools[best].args_schema)) {
+    if (agent_request_has_url(req_len, req) &&
+        !agent_schema_wants_url(a->tools[best].args_schema)) {
         int   alt   = -1;
         float alt_v = -1e30f;
         for (size_t i = 0; i < n; i++) {
             if (agent_schema_wants_url(a->tools[i].args_schema) && cal[i] > alt_v) {
+                alt = (int) i, alt_v = cal[i];
+            }
+        }
+        if (alt >= 0 && alt_v > best_v - 1.5f) {
+            best = alt, best_v = alt_v;
+        }
+    }
+
+    /* Tie-breaker: the request mentions the documentation corpus (docs/Dokumente)
+     * but the winner is not the doc tool — first-token name scoring gives
+     * doc_search only a weak margin over list_dir ("doc" vs the answer-ish
+     * "list"), observed ~0.3-0.9 short. Skipped when the request names a
+     * specific file: a named file is more specific evidence than the corpus
+     * noun, and the file rule below owns that case. */
+    if (!agent_request_names_file(req_len, req) && agent_request_mentions_docs(req_len, req) &&
+        !agent_tool_is_docs(&a->tools[best])) {
+        int   alt   = -1;
+        float alt_v = -1e30f;
+        for (size_t i = 0; i < n; i++) {
+            if (agent_tool_is_docs(&a->tools[i]) && cal[i] > alt_v) {
                 alt = (int) i, alt_v = cal[i];
             }
         }

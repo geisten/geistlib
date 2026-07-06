@@ -209,6 +209,26 @@ static void test_route_tiebreak(void) {
     fails += geist_expect(agent_schema_wants_url("{\"url\": string}"), "wants_url: url schema");
     fails += geist_expect(!agent_schema_wants_url("{\"query\": string}"),
                           "wants_url: query schema -> no");
+
+    /* mentions-docs: a docs/Dokumente word at a word start is detected; requests
+     * without one (or with doc only mid-word) are not. */
+    const char *d1 = "Search the docs for kv cache quantization";
+    const char *d2 = "Wo steht in den Dokumenten etwas zu NEON Kerneln?";
+    const char *d3 = "Search for kv cache";
+    const char *d4 = "run maxdoc now";
+    fails += geist_expect(agent_request_mentions_docs(strlen(d1), d1), "mentions_docs: docs");
+    fails += geist_expect(agent_request_mentions_docs(strlen(d2), d2), "mentions_docs: Dokumenten");
+    fails += geist_expect(!agent_request_mentions_docs(strlen(d3), d3),
+                          "mentions_docs: no doc word -> no");
+    fails += geist_expect(!agent_request_mentions_docs(strlen(d4), d4),
+                          "mentions_docs: mid-word doc -> no");
+
+    struct geist_tool dt = {.name        = "doc_search",
+                            .description = "die lokalen Dokumente nach einer Anfrage durchsuchen"};
+    struct geist_tool lt = {.name        = "list_dir",
+                            .description = "die Dateien in einem Verzeichnis auflisten"};
+    fails += geist_expect(agent_tool_is_docs(&dt), "tool_is_docs: doc_search");
+    fails += geist_expect(!agent_tool_is_docs(&lt), "tool_is_docs: list_dir -> no");
 }
 
 int main(void) {
