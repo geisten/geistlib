@@ -194,6 +194,21 @@ static void test_route_tiebreak(void) {
                           "desc_is_dir: Verzeichnis tool");
     fails += geist_expect(!agent_desc_is_dir("eine Textdatei lesen und zusammenfassen"),
                           "desc_is_dir: file tool is not a dir tool");
+
+    /* has-url: a literal http(s):// scheme is detected; a bare domain or a
+     * mid-word "http" is not. */
+    const char *u1 = "Fetch https://example.com/bitnet.html and tell me what it says";
+    const char *u2 = "Hole http://example.com/kv.html";
+    const char *u3 = "Search the web for BitNet ternary models";
+    const char *u4 = "is httpd a web server?";
+    fails += geist_expect(agent_request_has_url(strlen(u1), u1), "has_url: https:// detected");
+    fails += geist_expect(agent_request_has_url(strlen(u2), u2), "has_url: http:// detected");
+    fails += geist_expect(!agent_request_has_url(strlen(u3), u3), "has_url: no scheme -> no");
+    fails += geist_expect(!agent_request_has_url(strlen(u4), u4), "has_url: httpd -> no");
+
+    fails += geist_expect(agent_schema_wants_url("{\"url\": string}"), "wants_url: url schema");
+    fails += geist_expect(!agent_schema_wants_url("{\"query\": string}"),
+                          "wants_url: query schema -> no");
 }
 
 int main(void) {

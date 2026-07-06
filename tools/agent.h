@@ -738,6 +738,29 @@ static inline int agent_desc_is_dir(const char *d) {
                  strstr(d, "folder"));
 }
 
+/* True if the request contains a literal http(s):// URL (bounded scan — req is
+ * not NUL-terminated here). */
+static inline int agent_request_has_url(size_t req_len, const char *req) {
+    for (size_t i = 0; i + 7 <= req_len; i++) {
+        if (memcmp(req + i, "http", 4) != 0) {
+            continue;
+        }
+        size_t j = i + 4;
+        if (j < req_len && req[j] == 's') {
+            j++;
+        }
+        if (j + 3 <= req_len && memcmp(req + j, "://", 3) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* True if a tool takes a URL argument — its args schema names a "url" key. */
+static inline int agent_schema_wants_url(const char *s) {
+    return s && strstr(s, "\"url\"");
+}
+
 static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
     if (a->n_tools <= 1) {
         return 0;
@@ -771,6 +794,24 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
         cal[i] = have_base ? score[i] - a->route_base[i] : score[i];
         if (cal[i] > best_v) {
             best_v = cal[i], best = (int) i;
+        }
+    }
+
+    /* Tie-breaker: a literal http(s):// URL in the request is strong evidence
+     * for the tool that takes a "url" arg (fetch), yet the name score often
+     * favours the search tool. Same bounded close-race window as the file rule
+     * below. Runs first: a URL also ends in a file-ish extension, so without
+     * this the file rule would see ".html" and reason about the wrong axis. */
+    if (agent_request_has_url(req_len, req) && !agent_schema_wants_url(a->tools[best].args_schema)) {
+        int   alt   = -1;
+        float alt_v = -1e30f;
+        for (size_t i = 0; i < n; i++) {
+            if (agent_schema_wants_url(a->tools[i].args_schema) && cal[i] > alt_v) {
+                alt = (int) i, alt_v = cal[i];
+            }
+        }
+        if (alt >= 0 && alt_v > best_v - 1.5f) {
+            best = alt, best_v = alt_v;
         }
     }
 
