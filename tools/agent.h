@@ -1237,11 +1237,13 @@ static inline size_t agent_obs_locator(int         wants_url,
  * context is a wrapped call attempt), the turn is instead decoded along the
  * call grammar over the public peek/prefill API:
  *     {"tool":"<name in whitelist>","args":{"<key in schema>":"<value>"}}
- * The name decodes constrained to the whitelist, the key to the tool's schema
- * (single-key: prefilled outright, no decode), only the VALUE is free — and it
- * stops at the closing quote. The model cannot emit an off-grammar call.
- * ponytail: one arg pair — a multi-key schema decodes its single best key;
- * full multi-key argument grammars are the remaining upgrade. */
+ * The name decodes constrained to the whitelist, each arg KEY to the tool's
+ * still-UNUSED schema keys (one remaining: prefilled outright), only the
+ * VALUEs are free — each stops at its closing quote. At every pair boundary
+ * the model chooses ',' (next key) or '}' (done) by logit, so a multi-key
+ * schema fills as many keys as the model wants, each exactly once. The model
+ * cannot emit an off-grammar call. ponytail: values are flat strings —
+ * typed/nested argument grammars are the remaining upgrade. */
 
 /* Prefill `lit` into the session AND append it to out at w; returns the new w.
  * Keeps the model conditioned on the scaffold it is "inside". */
@@ -1296,54 +1298,98 @@ agent_generate_call_masked(struct geist_agent *a, size_t cap, char out[static ca
         w += (size_t) snprintf(out + w, cap - w, "{}}");
         return w;
     }
-    if (nk == 1) {
-        char open[GEIST_AGENT_NAME_CAP + 8];
-        snprintf(open, sizeof open, "{\"%s\":\"", keys[0]);
-        w = agent_prefill_lit(a, open, cap, out, w);
-    } else {
-        w                   = agent_prefill_lit(a, "{\"", cap, out, w);
-        const char *opts[4] = {keys[0], keys[1], keys[2], keys[3]};
-        int         k       = agent_decode_pick(a, nk, opts);
-        if (k < 0) {
-            return 0; /* partial key in the session — caller must reset */
-        }
-        w = (size_t) snprintf(out + w, cap - w, "%s", keys[k]) + w;
-        w = agent_prefill_lit(a, "\":\"", cap, out, w);
-    }
 
-    /* the VALUE is the model's — free greedy, stopped at the closing quote */
-    size_t vstart = w;
-    for (int t = 0; t < 64 && w + 8 < cap; t++) {
-        geist_token_t tok = 0;
-        if (geist_session_decode_step(a->session, &tok) != GEIST_OK || tok == a->eos ||
-            (a->eot != GEIST_TOKEN_NONE && tok == a->eot)) {
-            break;
+    /* key/value pairs: each key constrained to the still-unused schema keys,
+     * each value free until its closing quote. The value's quote token may
+     * fuse the model's continue/stop choice (`",` / `"}`) — honour it, else
+     * ask the logits at the pair boundary. */
+    int used[4] = {0};
+    w           = agent_prefill_lit(a, "{", cap, out, w);
+    for (size_t pair = 0; pair < nk && w + 8 < cap; pair++) {
+        w = agent_prefill_lit(a, "\"", cap, out, w);
+        const char *opts[4];
+        int         map[4];
+        size_t      rem = 0;
+        for (size_t i = 0; i < nk; i++) {
+            if (!used[i]) {
+                map[rem]    = (int) i;
+                opts[rem++] = keys[i];
+            }
         }
-        const char *piece = geist_session_token_to_str(a->session, tok);
-        size_t      plen  = piece ? strlen(piece) : 0;
-        if (plen == 0 || (piece[0] == '<' && piece[plen - 1] == '>') || piece[0] == '}') {
-            break; /* control marker / the model closing the object itself */
+        int k;
+        if (rem == 1) {
+            k = map[0];
+            w = agent_prefill_lit(a, keys[k], cap, out, w);
+        } else {
+            int pick = agent_decode_pick(a, rem, opts);
+            if (pick < 0) {
+                return 0; /* partial key in the session — caller must reset */
+            }
+            k = map[pick];
+            w = (size_t) snprintf(out + w, cap - w, "%s", keys[k]) + w;
         }
-        int closed = 0;
-        for (const char *p = piece; *p && w + 2 < cap; p++) {
-            if (*p == '"') {
-                closed = 1;
+        used[k] = 1;
+        w       = agent_prefill_lit(a, "\":\"", cap, out, w);
+
+        /* the VALUE is the model's — free greedy, stopped at the closing
+         * quote. end: 0 no quote seen, 1 bare quote, 2 quote+',', 3 quote+'}' */
+        int    end    = 0;
+        size_t vstart = w;
+        for (int t = 0; t < 64 && w + 8 < cap && end == 0; t++) {
+            geist_token_t tok = 0;
+            if (geist_session_decode_step(a->session, &tok) != GEIST_OK || tok == a->eos ||
+                (a->eot != GEIST_TOKEN_NONE && tok == a->eot)) {
                 break;
             }
-            char ch = (*p == '\n' || *p == '\t' || *p == '\r') ? ' ' : *p;
-            if (ch == '\\') {
-                out[w++] = '\\'; /* keep the rebuilt JSON parseable */
+            const char *piece = geist_session_token_to_str(a->session, tok);
+            size_t      plen  = piece ? strlen(piece) : 0;
+            if (plen == 0 || (piece[0] == '<' && piece[plen - 1] == '>') || piece[0] == '}') {
+                break; /* control marker / the model closing the object itself */
             }
-            out[w++] = ch;
+            for (const char *p = piece; *p && w + 2 < cap; p++) {
+                if (*p == '"') {
+                    for (p++; *p == ' '; p++) { /* fused continue/stop choice? */
+                    }
+                    end = *p == ',' ? 2 : *p == '}' ? 3 : 1;
+                    break;
+                }
+                char ch = (*p == '\n' || *p == '\t' || *p == '\r') ? ' ' : *p;
+                if (ch == '\\') {
+                    out[w++] = '\\'; /* keep the rebuilt JSON parseable */
+                }
+                out[w++] = ch;
+            }
+            if (agent_tail_loop(out + vstart, w - vstart) > 0) {
+                break;
+            }
         }
-        if (closed || agent_tail_loop(out + vstart, w - vstart) > 0) {
+        while (w > vstart && out[w - 1] == ' ') {
+            w--;
+        }
+        if (end == 0) {
+            /* no clean quote: close the value ourselves and stop decoding —
+             * the session is no longer aligned with the text past this point. */
+            w += (size_t) snprintf(out + w, cap - w, "\"");
             break;
         }
+        out[w++] = '"'; /* the session already consumed the model's quote */
+        if (end == 3 || pair + 1 >= nk) {
+            break; /* the model closed the object / no keys remain */
+        }
+        if (end == 2) {
+            out[w++] = ','; /* fused: the model already committed to a comma */
+            continue;
+        }
+        /* bare quote: the model chooses ',' (next key) or '}' (done) */
+        size_t       nl = 0;
+        const float *lg = geist_session_peek_logits(a->session, &nl);
+        if (!lg ||
+            agent_first_token_logit(a, "}", lg, nl) >= agent_first_token_logit(a, ",", lg, nl)) {
+            break;
+        }
+        w = agent_prefill_lit(a, ",", cap, out, w);
     }
-    while (w > vstart && out[w - 1] == ' ') {
-        w--;
-    }
-    w += (size_t) snprintf(out + w, cap - w, "\"}}");
+    w += (size_t) snprintf(out + w, cap - w, "}}");
     return w;
 }
 
