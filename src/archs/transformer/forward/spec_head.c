@@ -622,6 +622,12 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
 
     *out_token = geist_sampler_argmax(V, logits);
 
+    /* scratch_logits is now SPARSE (-inf off the candidate set) — right for
+     * the greedy argmax above, wrong for value consumers. peek_logits checks
+     * this flag and lazily recomputes the dense head (scratch_h_a still holds
+     * the normalized hidden this path read). */
+    st->sess->logits_sparse = true;
+
     v->buffer_unmap(st->sess->scratch_logits);
     v->buffer_unmap(st->sess->scratch_h_a);
     return true;

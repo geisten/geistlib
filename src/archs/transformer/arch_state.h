@@ -265,7 +265,13 @@ struct transformer_arch_session {
      * The greedy argmax path skips the softcap (monotonic → argmax
      * invariant), so peek_logits applies it lazily for value consumers
      * (scoring/perplexity). Reset per forward in finalize_logits_one_row. */
-    bool          logits_softcapped;
+    bool logits_softcapped;
+    /* Whether scratch_logits is SPARSE — the spec-head fast path computed
+     * exact logits only for its top-K candidates and set every other entry to
+     * -inf (fine for the greedy argmax it serves). Value consumers must not
+     * see that: peek_logits lazily recomputes the dense head from the still-
+     * valid normalized hidden in scratch_h_a when this is set. */
+    bool          logits_sparse;
     geist_token_t next_token_pending;
 
     /* ---- Sampler state.
