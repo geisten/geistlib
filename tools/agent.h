@@ -803,6 +803,93 @@ static inline int agent_schema_wants_url(const char *s) {
     return s && strstr(s, "\"url\"");
 }
 
+/* True if a tool takes a note-slug argument — its schema names a "slug" key. */
+static inline int agent_schema_wants_slug(const char *s) {
+    return s && strstr(s, "\"slug\"");
+}
+
+/* True if a tool takes a filesystem-path argument — its schema names a
+ * path/dir/file-ish key. */
+static inline int agent_schema_wants_path(const char *s) {
+    return s && (strstr(s, "\"path\"") || strstr(s, "\"dir\"") || strstr(s, "\"directory\"") ||
+                 strstr(s, "\"filepath\"") || strstr(s, "\"file\""));
+}
+
+/* True if the request contains a slash-path word ("tests/data/x") that is not
+ * a URL (the URL rule owns those). Bounded scan. */
+static inline int agent_request_has_pathword(size_t req_len, const char *req) {
+    for (size_t i = 0; i < req_len;) {
+        while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
+            i++;
+        }
+        size_t s     = i;
+        int    slash = 0;
+        while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
+            slash |= req[i] == '/';
+            i++;
+        }
+        if (i > s && slash && !agent_request_has_url(i - s, req + s)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* True if the request talks about notes/memory — the evidence a memory tool
+ * needs (Notiz, note, merke, remember, recall, erinnere, gespeichert). */
+static inline int agent_request_mentions_memory(size_t req_len, const char *req) {
+    static const char *const w[] = {"notiz",
+                                    "note",
+                                    "merk",
+                                    "remember",
+                                    "recall",
+                                    "erinner",
+                                    "gedächt",
+                                    "gespeichert",
+                                    "speicher"};
+    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
+        size_t wl = strlen(w[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, w[v], wl) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* True if a tool is a memory-palace tool (remember/recall). */
+static inline int agent_tool_is_memory(const struct geist_tool *t) {
+    return (t->name && (strstr(t->name, "remember") || strstr(t->name, "recall"))) ||
+           (t->description && (strstr(t->description, "otiz") || strstr(t->description, "edächt")));
+}
+
+/* True if the request contains a slug-shaped word: all lowercase alnum with an
+ * inner dash ("pi-serial" — how mind.h names notes). Bounded scan. */
+static inline int agent_request_has_slug(size_t req_len, const char *req) {
+    for (size_t i = 0; i < req_len;) {
+        while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
+            i++;
+        }
+        size_t s    = i;
+        int    dash = 0, sluggy = 1;
+        while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
+            char c = req[i];
+            if (c == '-') {
+                dash = i > s && i + 1 < req_len && req[i + 1] != ' ';
+            } else if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) {
+                sluggy = 0;
+            }
+            i++;
+        }
+        if (i > s && sluggy && dash) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* True if the request talks about the documentation corpus: a word starting
  * doc/Dok (docs, documentation, den Dokumenten). Bilingual and prefix-based
  * like agent_desc_is_dir; "docker"/"doctor" also match — harmless, only
@@ -935,6 +1022,23 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
         }
     }
 
+    /* Gate: a memory tool needs memory evidence. "recall" winning "What is
+     * 2 plus 2?" is a calibration artifact — a rare name has a low prior, so
+     * any raw bump inflates its PMI. Without a note/memory word the winner
+     * re-routes to the best non-memory candidate (reply competes). Hard, no
+     * window: a note is an explicitly named thing. */
+    if (best < (int) n && agent_tool_is_memory(&a->tools[best]) &&
+        !agent_request_mentions_memory(req_len, req)) {
+        int   alt   = (int) n; /* the reply pseudo-entry */
+        float alt_v = cal[n];
+        for (size_t i = 0; i < n; i++) {
+            if (!agent_tool_is_memory(&a->tools[i]) && cal[i] > alt_v) {
+                alt = (int) i, alt_v = cal[i];
+            }
+        }
+        best = alt, best_v = alt_v;
+    }
+
     /* Tie-breaker: a literal http(s):// URL in the request is strong evidence
      * for the tool that takes a "url" arg (fetch), yet the name score often
      * favours the search tool. Same bounded close-race window as the file rule
@@ -946,6 +1050,41 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
         float alt_v = -1e30f;
         for (size_t i = 0; i < n; i++) {
             if (agent_schema_wants_url(a->tools[i].args_schema) && cal[i] > alt_v) {
+                alt = (int) i, alt_v = cal[i];
+            }
+        }
+        if (alt >= 0 && alt_v > best_v - 1.5f) {
+            best = alt, best_v = alt_v;
+        }
+    }
+
+    /* Tie-breaker: a slash-path word (tests/data/x) is evidence for the tool
+     * that takes a path-like arg — the URL rule's filesystem sibling. Skipped
+     * when the slash word is a URL (the rule above owns that). */
+    if (!agent_request_has_url(req_len, req) && agent_request_has_pathword(req_len, req) &&
+        (best == (int) n || !agent_schema_wants_path(a->tools[best].args_schema))) {
+        int   alt   = -1;
+        float alt_v = -1e30f;
+        for (size_t i = 0; i < n; i++) {
+            if (agent_schema_wants_path(a->tools[i].args_schema) && cal[i] > alt_v) {
+                alt = (int) i, alt_v = cal[i];
+            }
+        }
+        if (alt >= 0 && alt_v > best_v - 1.5f) {
+            best = alt, best_v = alt_v;
+        }
+    }
+
+    /* Tie-breaker: a slug-shaped word (pi-serial — how mind.h names notes) is
+     * strong evidence for the tool that takes a "slug" arg (recall), yet the
+     * name score favours "remember" for either memory verb. Same bounded
+     * close-race window as the URL rule. */
+    if (agent_request_has_slug(req_len, req) &&
+        (best == (int) n || !agent_schema_wants_slug(a->tools[best].args_schema))) {
+        int   alt   = -1;
+        float alt_v = -1e30f;
+        for (size_t i = 0; i < n; i++) {
+            if (agent_schema_wants_slug(a->tools[i].args_schema) && cal[i] > alt_v) {
                 alt = (int) i, alt_v = cal[i];
             }
         }
@@ -1006,7 +1145,7 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
  * names. ponytail: a fixed name list, extend if a tool adds a new locator key. */
 static inline int agent_key_is_locator(const char *key) {
     static const char *const loc[] = {"path", "file",      "filename", "dir",
-                                       "url",  "directory", "filepath"};
+                                       "url",  "directory", "filepath", "slug"};
     for (size_t i = 0; i < sizeof loc / sizeof *loc; i++) {
         if (strcmp(key, loc[i]) == 0) {
             return 1;
@@ -1016,44 +1155,59 @@ static inline int agent_key_is_locator(const char *key) {
 }
 
 /* Find the first whitespace-delimited word in the request that looks like a
- * locator — contains '/' (a path/URL: "/tmp/x", "http://host/p") OR ends in a
- * file extension (".txt"/".md": "note.txt") — and copy it to out. Returns its
- * length, or 0 if the request has no such word. */
+ * locator — contains '/' (a path/URL: "/tmp/x", "http://host/p"), ends in a
+ * file extension (".txt"/".md": "note.txt"), OR is slug-shaped (all lowercase
+ * alnum with an inner dash: "pi-serial" — how mind.h names notes) — and copy
+ * it to out. Returns its length, or 0 if the request has no such word.
+ * ponytail: the slug shape also matches lowercase compounds ("on-device");
+ * harmless — it is only consulted when the arg KEY is a locator (slug/path). */
 static inline size_t
 agent_extract_locator(size_t req_len, const char *req, size_t cap, char out[static cap]) {
-    for (size_t i = 0; i < req_len;) {
-        while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
-            i++;
-        }
-        size_t s = i, dot = (size_t) -1;
-        int    slash = 0;
-        while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
-            if (req[i] == '/') {
-                slash = 1;
-            } else if (req[i] == '.') {
-                dot = i;
+    /* pass 0: slash/extension words (a real path/URL/file always wins);
+     * pass 1: slug-shaped words — so "the on-device report.md" lifts report.md */
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < req_len;) {
+            while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
+                i++;
             }
-            i++;
-        }
-        int ext = 0; /* a dot, not leading, then 1-5 alnum to the word end */
-        if (dot != (size_t) -1 && dot > s && i - dot >= 2 && i - dot <= 6) {
-            ext = 1;
-            for (size_t j = dot + 1; j < i; j++) {
-                char c = req[j];
-                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
-                    ext = 0;
-                    break;
+            size_t s = i, dot = (size_t) -1;
+            int    slash = 0, dash = 0, sluggy = 1;
+            while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
+                char c = req[i];
+                if (c == '/') {
+                    slash = 1;
+                } else if (c == '.') {
+                    dot = i;
+                }
+                if (c == '-') {
+                    dash = i > s && i + 1 < req_len && req[i + 1] != ' '; /* inner dash only */
+                } else if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) {
+                    sluggy = 0;
+                }
+                i++;
+            }
+            int ext = 0; /* a dot, not leading, then 1-5 alnum to the word end */
+            if (dot != (size_t) -1 && dot > s && i - dot >= 2 && i - dot <= 6) {
+                ext = 1;
+                for (size_t j = dot + 1; j < i; j++) {
+                    char c = req[j];
+                    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                          (c >= '0' && c <= '9'))) {
+                        ext = 0;
+                        break;
+                    }
                 }
             }
-        }
-        if ((slash || ext) && i > s) {
-            size_t n = i - s;
-            if (n + 1 > cap) {
-                n = cap - 1;
+            int hit = pass == 0 ? (slash || ext) : (sluggy && dash);
+            if (hit && i > s) {
+                size_t n = i - s;
+                if (n + 1 > cap) {
+                    n = cap - 1;
+                }
+                memcpy(out, req + s, n);
+                out[n] = '\0';
+                return n;
             }
-            memcpy(out, req + s, n);
-            out[n] = '\0';
-            return n;
         }
     }
     return 0;

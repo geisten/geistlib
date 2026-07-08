@@ -52,9 +52,11 @@ tool, including `remember`/`recall`, on its own):
 | `/notes` | print the index (what's stored) |
 | `/help`, `/quit` | help / exit |
 
-The slash commands are the **reliable** manual path (they bypass the model); the
-`remember`/`recall` **tools** let a capable model manage memory itself. On the
-bundled un-tool-trained models, prefer the slash commands.
+The slash commands are the manual path (they bypass the model); the
+`remember`/`recall` **tools** let the model manage memory itself — and since the
+routing gained memory/slug evidence rules, they route reliably on the bundled
+un-tool-trained models too (the `make bench-agent` roundtrip cases gate this:
+remember → recall → the fact comes back).
 
 `geist chat --selftest` runs a palace round-trip with **no model** (CI-friendly).
 

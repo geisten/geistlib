@@ -175,6 +175,19 @@ static void test_locator(void) {
     const char *r5 = "summarize wm2026_de.txt please";
     n              = agent_extract_locator(strlen(r5), r5, sizeof out, out);
     fails += geist_expect(strcmp(out, "wm2026_de.txt") == 0, "locator: lifts filename with digits");
+
+    /* slug-shaped words (mind.h note names) are locators too — but a real
+     * path/extension word always wins over a slug-shaped one */
+    fails += geist_expect(agent_key_is_locator("slug"), "locator: slug is a locator key");
+    const char *r6 = "Rufe die Notiz pi-serial ab";
+    n              = agent_extract_locator(strlen(r6), r6, sizeof out, out);
+    fails += geist_expect(strcmp(out, "pi-serial") == 0, "locator: lifts a slug word");
+    const char *r7 = "summarize the on-device report.md";
+    n              = agent_extract_locator(strlen(r7), r7, sizeof out, out);
+    fails += geist_expect(strcmp(out, "report.md") == 0, "locator: extension beats slug shape");
+    const char *r8 = "Rufe die Notiz ab";
+    n              = agent_extract_locator(strlen(r8), r8, sizeof out, out);
+    fails += geist_expect(n == 0, "locator: no slug word -> nothing lifted");
 }
 
 static void test_route_tiebreak(void) {
@@ -209,6 +222,37 @@ static void test_route_tiebreak(void) {
     fails += geist_expect(agent_schema_wants_url("{\"url\": string}"), "wants_url: url schema");
     fails += geist_expect(!agent_schema_wants_url("{\"query\": string}"),
                           "wants_url: query schema -> no");
+
+    /* has-slug: a slug-shaped word is detected; plain words and file names not */
+    const char *s1 = "Lade die gespeicherte Notiz pi-serial";
+    const char *s2 = "Recall the note";
+    const char *s3 = "Fasse notes.txt zusammen";
+    fails += geist_expect(agent_request_has_slug(strlen(s1), s1), "has_slug: pi-serial");
+    fails += geist_expect(!agent_request_has_slug(strlen(s2), s2), "has_slug: no slug -> no");
+    fails += geist_expect(!agent_request_has_slug(strlen(s3), s3), "has_slug: filename -> no");
+    fails += geist_expect(agent_schema_wants_slug("{\"slug\": string}") &&
+                                  !agent_schema_wants_slug("{\"text\": string}"),
+                          "wants_slug: slug vs text schema");
+
+    /* path-word + memory evidence detectors */
+    const char *p1 = "List the files in the folder tests/data/agent_eval/docs";
+    const char *p2 = "Fetch https://example.com/kv.html please";
+    fails += geist_expect(agent_request_has_pathword(strlen(p1), p1), "pathword: slash path");
+    fails += geist_expect(!agent_request_has_pathword(strlen(p2), p2), "pathword: URL is not one");
+    fails += geist_expect(agent_schema_wants_path("{\"path\": string}") &&
+                                  !agent_schema_wants_path("{\"query\": string}"),
+                          "wants_path: path vs query schema");
+
+    const char *m1 = "Merke dir: die Seriennummer ist 4242";
+    const char *m2 = "Recall the note pi-serial";
+    const char *m3 = "What is 2 plus 2?";
+    fails += geist_expect(agent_request_mentions_memory(strlen(m1), m1), "memory: Merke dir");
+    fails += geist_expect(agent_request_mentions_memory(strlen(m2), m2), "memory: recall note");
+    fails += geist_expect(!agent_request_mentions_memory(strlen(m3), m3), "memory: plain -> no");
+    struct geist_tool mt = {.name = "recall", .description = "eine gespeicherte Notiz laden"};
+    struct geist_tool nt = {.name = "doc_search", .description = "die lokalen Dokumente"};
+    fails += geist_expect(agent_tool_is_memory(&mt) && !agent_tool_is_memory(&nt),
+                          "tool_is_memory: recall vs doc_search");
 
     /* mentions-docs: a docs/Dokumente word at a word start is detected; requests
      * without one (or with doc only mid-word) are not. */

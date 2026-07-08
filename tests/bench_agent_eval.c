@@ -27,19 +27,23 @@
 #include "../tools/agent.h"
 #include "../tools/agent_docsearch.h"
 #include "../tools/agent_listdir.h"
+#include "../tools/agent_memory.h"
 #include "../tools/agent_summarize.h"
 #include "../tools/agent_webfetch.h"
 #include "../tools/agent_websearch.h"
 #include <geist.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include <unistd.h>
 
 enum { EV_MAX_CASES = 64, EV_MAX_STEPS = 4 };
 
 #define EV_DOCS_DIR "tests/data/agent_eval/docs"
 #define EV_CASES "tests/data/agent_eval/cases.jsonl"
+#define EV_MIND_DIR "build/agent-eval-mind"
 
 struct ev_case {
     char id[64];
@@ -405,12 +409,27 @@ int main(int argc, char **argv) {
     static struct summarize_ctx sumctx;
     sumctx = (struct summarize_ctx) {.model = model, .be = be, .root = EV_DOCS_DIR};
 
+    /* memory palace: a scratch mind dir (build/ is gitignored), wiped of the
+     * eval's known notes so every run starts identical, then seeded with one
+     * note the recall cases retrieve. The mem-1 case WRITES
+     * remember-serial-4242.md via the agent; mem-2 recalls it — the roundtrip. */
+    setenv("GEIST_MIND_DIR", EV_MIND_DIR, 1);
+    unlink(EV_MIND_DIR "/INDEX.md");
+    unlink(EV_MIND_DIR "/pi-serial.md");
+    unlink(EV_MIND_DIR "/remember-serial-4242.md");
+    if (mind_remember("pi serial", "Die Seriennummer des Pi ist 4242.") != 0) {
+        fprintf(stderr, "cannot seed %s\n", EV_MIND_DIR);
+        return GEIST_TEST_ERROR;
+    }
+
     struct geist_tool tools[] = {
             listdir_tool(),
             docsearch_tool(EV_DOCS_DIR),
             summarize_file_tool(&sumctx),
             websearch_tool(nullptr),
             webfetch_tool(nullptr),
+            remember_tool(),
+            recall_tool(),
     };
     tools[3].invoke = ev_stub_search; /* keep production name/desc/schema, */
     tools[4].invoke = ev_stub_fetch;  /* stub only the side effect         */

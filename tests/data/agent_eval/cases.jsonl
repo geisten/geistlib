@@ -37,3 +37,6 @@
 {"id":"e2e-7","cat":"e2e","req":"List the files in the folder tests/data/agent_eval/docs","tool":"list_dir","arg":"path","want":"agent_eval/docs","expect":"report.md"}
 {"id":"e2e-8","cat":"e2e","req":"Search the local docs for activation rotation","tool":"doc_search","arg":"query","want":"rotation","expect":"notes.txt|kv-cache.md"}
 {"id":"e2e-9","cat":"e2e","req":"Summarize report.md","tool":"summarize_file","arg":"path","want":"report.md","expect":"BitNet|ternary|Pi"}
+{"id":"mem-1","cat":"e2e","req":"Remember: serial 4242","tool":"remember","arg":"text","want":"serial 4242","expect":"remembered"}
+{"id":"mem-2","cat":"e2e","req":"Recall the note remember-serial-4242","tool":"recall","arg":"slug","want":"remember-serial-4242","expect":"4242"}
+{"id":"mem-3","cat":"e2e","req":"Lade die gespeicherte Notiz pi-serial","tool":"recall","arg":"slug","want":"pi-serial","expect":"4242"}
