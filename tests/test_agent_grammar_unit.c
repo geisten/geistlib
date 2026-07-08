@@ -274,6 +274,9 @@ static void test_recipes(void) {
                           "recipe: German lies -> web_fetch");
     fails += geist_expect(agent_recipe_next(&a, 0, strlen(r3), r3) == -1,
                           "recipe: no cue -> single-shot");
+    const char *r5 = "Suche den Artikel im Web und fasse zusammen was drinsteht";
+    fails += geist_expect(agent_recipe_next(&a, 0, strlen(r5), r5) == 1,
+                          "recipe: web+fasse -> web_fetch");
     fails += geist_expect(agent_recipe_next(&a, 2, strlen(r4), r4) == 3,
                           "recipe: doc_search+summarize -> summarize_file");
     fails += geist_expect(agent_recipe_next(&a, 3, strlen(r4), r4) == -1,

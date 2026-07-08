@@ -1077,7 +1077,9 @@ struct agent_recipe {
 };
 
 static const struct agent_recipe AGENT_RECIPES[] = {
-        {"web_search", "web_fetch", "read lies lese fetch hole open visit besuch page seite say"},
+        {"web_search",
+         "web_fetch",
+         "read lies lese fetch hole open visit besuch page seite say summar fasse zusammen"},
         {"doc_search", "summarize_file", "summar fasse zusammen gist"},
         {"list_dir", "summarize_file", "summar fasse zusammen gist"},
 };
