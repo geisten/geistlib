@@ -1756,6 +1756,25 @@ static inline int agent_answer_degenerate(const char *s) {
     return 1;
 }
 
+/* In conversation mode, fold the final answer into the transcript (closing the
+ * open model turn) so the NEXT geist_agent_run sees it — every return path
+ * must do this, including the forced/recipe and repeat-guard exits, or a
+ * follow-up turn lands on an unclosed model turn. Only advances tlen if the
+ * fold fit (else the turn just goes unrecorded, never corrupted). */
+static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
+    if (!a->conversation) {
+        return;
+    }
+    int fw = snprintf(a->transcript + a->tlen,
+                      sizeof a->transcript - a->tlen,
+                      "%s%s",
+                      answer,
+                      a->tmpl.turn_close);
+    if (fw > 0 && (size_t) fw < sizeof a->transcript - a->tlen) {
+        a->tlen += (size_t) fw;
+    }
+}
+
 /* Run one request to completion: loop generate -> parse -> (whitelist) dispatch
  * -> observe, until the model answers in plain text or max_steps is hit.
  * On any failure resp is left well-defined ("" / *resp_len 0). */
@@ -1862,19 +1881,7 @@ static inline int agent_answer_degenerate(const char *s) {
              * instead — the tool's output is what the user actually asked for. */
             const char *answer = (step > 0 && agent_answer_degenerate(turn)) ? obs : turn;
             agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, answer);
-            if (a->conversation) {
-                /* fold the answer into the transcript so the next turn sees it.
-                 * Only advance tlen if it fit (else leave the transcript as-is —
-                 * the turn is just not recorded, never corrupted). */
-                int fw = snprintf(a->transcript + a->tlen,
-                                  sizeof a->transcript - a->tlen,
-                                  "%s%s",
-                                  answer,
-                                  a->tmpl.turn_close);
-                if (fw > 0 && (size_t) fw < sizeof a->transcript - a->tlen) {
-                    a->tlen += (size_t) fw;
-                }
-            }
+            agent_conv_fold(a, answer);
             size_t n = agent_copy(resp_cap, resp, answer);
             if (resp_len) {
                 *resp_len = n;
@@ -1900,6 +1907,7 @@ static inline int agent_answer_degenerate(const char *s) {
         }
         if (repeat && step > 0) {
             agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, obs);
+            agent_conv_fold(a, obs);
             size_t n = agent_copy(resp_cap, resp, obs);
             if (resp_len) {
                 *resp_len = n;
@@ -1988,6 +1996,7 @@ static inline int agent_answer_degenerate(const char *s) {
                  * observation is still a useful answer (the hit list itself). */
             }
             agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, obs);
+            agent_conv_fold(a, obs);
             size_t n = agent_copy(resp_cap, resp, obs);
             if (resp_len) {
                 *resp_len = n;

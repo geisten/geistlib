@@ -55,6 +55,8 @@ struct ev_case {
     char chain[256];                 /* comma-joined executed tools; "" for none */
     char expect[192];                /* '|'-separated substrings — the final answer
                                       * must contain at least one; "" = don't check */
+    char conv[16];                   /* conversation group: consecutive cases with the
+                                      * same id share one transcript (multi-turn) */
 };
 
 static struct ev_case     ev_cases[EV_MAX_CASES];
@@ -206,6 +208,7 @@ static size_t ev_load(const char *path) {
         agent_json_str(line, "arg", sizeof c->arg, c->arg);
         agent_json_str(line, "want", sizeof c->want, c->want);
         agent_json_str(line, "expect", sizeof c->expect, c->expect);
+        agent_json_str(line, "conv", sizeof c->conv, c->conv);
         /* default steps: the expected tool alone; "none" -> empty chain. Key is
          * "steps", not "chain" — the flat parser would otherwise hit the VALUE
          * of "cat":"chain" first. */
@@ -257,12 +260,21 @@ static int ev_run_mode(struct geist_model   *model,
     ev_agent.force_call = forced;
     ev_agent.on_event   = ev_capture;
 
-    struct ev_tally t[EV_N_CATS] = {0};
-    time_t          t0           = time(nullptr);
+    struct ev_tally t[EV_N_CATS]  = {0};
+    time_t          t0            = time(nullptr);
+    char            prev_conv[16] = "";
 
     for (size_t i = 0; i < n_cases; i++) {
         const struct ev_case *c = &ev_cases[i];
         memset(&cap, 0, sizeof cap);
+
+        /* multi-turn: consecutive cases in the same conv group share one
+         * transcript; a new group (or none) starts fresh. */
+        ev_agent.conversation = c->conv[0] != '\0';
+        if (!c->conv[0] || strcmp(c->conv, prev_conv) != 0) {
+            ev_agent.tlen = 0;
+        }
+        snprintf(prev_conv, sizeof prev_conv, "%s", c->conv);
 
         static char       resp[4096];
         size_t            resp_len = 0;

@@ -40,3 +40,7 @@
 {"id":"mem-1","cat":"e2e","req":"Remember: serial 4242","tool":"remember","arg":"text","want":"serial 4242","expect":"remembered"}
 {"id":"mem-2","cat":"e2e","req":"Recall the note remember-serial-4242","tool":"recall","arg":"slug","want":"remember-serial-4242","expect":"4242"}
 {"id":"mem-3","cat":"e2e","req":"Lade die gespeicherte Notiz pi-serial","tool":"recall","arg":"slug","want":"pi-serial","expect":"4242"}
+{"id":"conv-1","cat":"e2e","conv":"c1","req":"Summarize report.md","tool":"summarize_file","arg":"path","want":"report.md","expect":"BitNet|ternary|Pi"}
+{"id":"conv-2","cat":"e2e","conv":"c1","req":"What did I just ask you about?","tool":"none","expect":"report"}
+{"id":"conv-3","cat":"e2e","conv":"c2","req":"Fetch https://example.com/pi5.html and tell me what it says","tool":"web_fetch","arg":"url","want":"pi5.html","expect":"tokens per second"}
+{"id":"conv-4","cat":"e2e","conv":"c2","req":"Wovon war gerade die Rede?","tool":"none","expect":"Raspberry|Pi 5|pi5|tokens"}
