@@ -110,7 +110,9 @@ static size_t agent_tools(struct geist_model *model, struct geist_backend *be,
     out[0]           = listdir_tool();
     out[1]           = summarize_file_tool(&sctx);
     out[2]           = docsearch_tool(docs && docs[0] ? docs : "./docs");
-    out[3]           = websearch_tool(nullptr);
+    /* DuckDuckGo rate-limits quickly; GEIST_SEARX_ENDPOINT points web_search at
+     * a SearXNG instance instead (same knob as the agent eval / live smoke). */
+    out[3]           = websearch_tool(getenv("GEIST_SEARX_ENDPOINT"));
     out[4]           = webfetch_tool(nullptr);
     size_t n         = 5;
     /* Memory tools are opt-in: include them only when a palace is configured
