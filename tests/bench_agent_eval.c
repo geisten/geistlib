@@ -19,8 +19,13 @@
  * only): below N exits 1 for CI. 0 = report-only. 77 without a model, 99 if
  * the harness itself is broken.
  *
+ * --live-web keeps the REAL web_search/web_fetch (curl + DuckDuckGo) instead
+ * of the stubs — the manual smoke that checks the stub assumptions against
+ * reality (make bench-agent-live). Network-dependent: report-only, never a
+ * CI gate.
+ *
  * Usage: bench_agent_eval [--mode forced|free|both] [--min-pass N] [--verbose]
- *                         [cases.jsonl]
+ *                         [--live-web] [cases.jsonl]
  */
 #define _POSIX_C_SOURCE 200809L
 #include "test_helpers.h"
@@ -384,11 +389,13 @@ static int ev_run_mode(struct geist_model   *model,
 
 int main(int argc, char **argv) {
     const char *cases_path = EV_CASES;
-    bool        verbose = false, run_forced = true, run_free = true;
+    bool        verbose = false, run_forced = true, run_free = true, live_web = false;
     int         min_pass = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--verbose") == 0) {
             verbose = true;
+        } else if (strcmp(argv[i], "--live-web") == 0) {
+            live_web = true;
         } else if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             i++;
             run_forced = strcmp(argv[i], "free") != 0;
@@ -438,14 +445,18 @@ int main(int argc, char **argv) {
             listdir_tool(),
             docsearch_tool(EV_DOCS_DIR),
             summarize_file_tool(&sumctx),
-            websearch_tool(nullptr),
+            /* live mode: DuckDuckGo rate-limits back-to-back requests fast —
+             * point GEIST_SEARX_ENDPOINT at a SearXNG instance for stable runs */
+            websearch_tool(getenv("GEIST_SEARX_ENDPOINT")),
             webfetch_tool(nullptr),
             remember_tool(),
             recall_tool(),
     };
-    tools[3].invoke = ev_stub_search; /* keep production name/desc/schema, */
-    tools[4].invoke = ev_stub_fetch;  /* stub only the side effect         */
-    tools[3].ctx = tools[4].ctx = nullptr;
+    if (!live_web) {
+        tools[3].invoke = ev_stub_search; /* keep production name/desc/schema, */
+        tools[4].invoke = ev_stub_fetch;  /* stub only the side effect         */
+        tools[3].ctx = tools[4].ctx = nullptr;
+    }
 
     printf("agent eval: %zu cases, model=%s\n\n", n_cases, model_path);
     size_t n_tools     = sizeof tools / sizeof tools[0];

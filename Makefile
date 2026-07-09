@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent format format-check
+.PHONY: all lib bin run clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-live format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -274,6 +274,15 @@ AGENT_EVAL_MODE ?= both
 AGENT_EVAL_MIN ?= 41
 bench-agent: bin $(MODEL_PREREQ)
 	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode $(AGENT_EVAL_MODE) --min-pass $(AGENT_EVAL_MIN)
+
+# Manual live-web smoke: the SAME harness with the real web_search/web_fetch
+# (curl + DuckDuckGo) over a tiny stable corpus — checks the stub assumptions
+# against reality. Network-dependent: report-only, never wired into CI.
+# DuckDuckGo rate-limits back-to-back requests quickly; set
+# GEIST_SEARX_ENDPOINT=<searxng-url> for a stable search backend.
+bench-agent-live: bin $(MODEL_PREREQ)
+	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode forced --live-web \
+	  tests/data/agent_eval/cases_live.jsonl
 
 # Cleanup.
 clean:
