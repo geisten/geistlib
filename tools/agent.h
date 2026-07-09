@@ -1649,6 +1649,99 @@ static inline size_t agent_generate_turn(struct geist_agent *a, size_t cap, char
                                  cap, out);
 }
 
+/* Decode a REPLY turn: the router decided no tool fits, so the turn must be
+ * prose — but the system prompt TEACHES the call format, and a plain greedy
+ * reply drifts into call tokens ("What is 2 plus 2?" answered "{"; found by
+ * the advisory judge). Two measures, the grammar-mask philosophy inverted:
+ * a "Answer:" lead is prefilled (prose priming; it stays out of the returned
+ * text — the transcript is the source of truth for follow-up turns), and
+ * call-opening tokens ('{' / a fence) are banned at EVERY step, so a reply
+ * can never contain a call fragment. Stops on EOS/EOT, control markers, a
+ * template leak, or a degenerate repetition loop. */
+static inline size_t agent_generate_reply(struct geist_agent *a, size_t cap, char out[static cap]) {
+    geist_token_t lead[8];
+    size_t        nlead = 0;
+    if (geist_session_tokenize(a->session, "Answer:", 8, lead, &nlead) == GEIST_OK && nlead > 0) {
+        (void) geist_session_prefill_tokens(a->session, nlead, lead);
+    }
+    size_t w    = 0;
+    int    done = 0;
+    for (int t = 0; t < GEIST_AGENT_MAX_DECODE && !done && w + 8 < cap; t++) {
+        size_t       n_logits = 0;
+        const float *logits   = geist_session_peek_logits(a->session, &n_logits);
+        if (!logits || n_logits == 0) {
+            break;
+        }
+        geist_token_t excl[8];
+        size_t        n_excl = 0;
+        while (n_excl < sizeof excl / sizeof *excl) {
+            size_t best   = 0;
+            float  best_v = -1e30f;
+            for (size_t i = 0; i < n_logits; i++) {
+                int banned = 0;
+                for (size_t e = 0; e < n_excl; e++) {
+                    banned |= excl[e] == (geist_token_t) i;
+                }
+                if (!banned && logits[i] > best_v) {
+                    best_v = logits[i], best = i;
+                }
+            }
+            geist_token_t tok = (geist_token_t) best;
+            if (tok == a->eos || (a->eot != GEIST_TOKEN_NONE && tok == a->eot)) {
+                done = 1;
+                break;
+            }
+            const char *piece = geist_session_token_to_str(a->session, tok);
+            size_t      plen  = piece ? strlen(piece) : 0;
+            if (plen == 0 || (piece[0] == '<' && piece[plen - 1] == '>')) {
+                done = 1; /* control marker — the turn is over */
+                break;
+            }
+            if (strchr(piece, '{') || strchr(piece, '`') || strchr(piece, '\\')) {
+                /* call-ish anywhere in the piece — prose needs no braces,
+                 * fences, or escapes; banning them blocks the "call quoted as
+                 * a string" drift, not just a bare leading '{' */
+                excl[n_excl++] = tok;
+                continue;
+            }
+            if (geist_session_prefill_tokens(a->session, 1, &tok) != GEIST_OK ||
+                w + plen + 1 >= cap) {
+                done = 1;
+                break;
+            }
+            memcpy(out + w, piece, plen);
+            w += plen;
+            out[w] = '\0';
+            if (agent_tail_loop(out, w) > 0) {
+                done = 1; /* degenerate repetition */
+            }
+            break;
+        }
+        if (n_excl == sizeof excl / sizeof *excl) {
+            break; /* nothing speakable in the top candidates */
+        }
+    }
+    for (size_t m = 0; a->tmpl.leak[m] != nullptr; m++) {
+        char *hit = strstr(out, a->tmpl.leak[m]);
+        if (hit) {
+            w    = (size_t) (hit - out); /* cut the leaked next-turn header */
+            *hit = '\0';
+        }
+    }
+    size_t lead_ws = 0; /* the lead ends in ':', the continuation starts spaced */
+    while (lead_ws < w && (out[lead_ws] == ' ' || out[lead_ws] == '\n')) {
+        lead_ws++;
+    }
+    if (lead_ws > 0) {
+        memmove(out, out + lead_ws, w - lead_ws + 1);
+        w -= lead_ws;
+    }
+    while (w > 0 && (out[w - 1] == ' ' || out[w - 1] == '\n')) {
+        out[--w] = '\0';
+    }
+    return w;
+}
+
 /* Build the fixed system prompt (scope definition): role + the tool whitelist
  * + the required output shape. Returns bytes written. */
 static inline size_t
@@ -1852,10 +1945,22 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
                 geist_session_set_prompt(a->session, a->transcript) != GEIST_OK) {
                 return GEIST_E_INVALID_STATE;
             }
-            /* idx < 0: the answer pseudo-entry won the routing — no tool fits, so
-             * decode a free turn; a plain-text reply exits below as the answer. */
-            tn = idx >= 0 ? agent_force_call(a, idx, req_len, req, sizeof turn, turn)
-                          : agent_generate_turn(a, sizeof turn, turn);
+            /* idx < 0: the answer pseudo-entry won the routing — no tool fits.
+             * The decision is TERMINAL: decode a call-proof reply turn and
+             * return it as the answer (the model fills text, it does not get
+             * to overrule the router with a call after all). */
+            if (idx < 0) {
+                size_t rn = agent_generate_reply(a, sizeof turn, turn);
+                (void) rn;
+                agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, turn);
+                agent_conv_fold(a, turn);
+                size_t n = agent_copy(resp_cap, resp, turn);
+                if (resp_len) {
+                    *resp_len = n;
+                }
+                return GEIST_OK;
+            }
+            tn = agent_force_call(a, idx, req_len, req, sizeof turn, turn);
         } else {
             /* free turn under the grammar mask: if greedy would open a call,
              * decode it along the call grammar (guaranteed valid, on-whitelist);

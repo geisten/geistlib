@@ -26,7 +26,7 @@
 {"id":"amb-3","cat":"ambig","req":"Look up BitNet online","tool":"web_search","arg":"query","want":"bitnet"}
 {"id":"amb-4","cat":"ambig","req":"Durchsuche notes.txt nach rotation","tool":"doc_search","arg":"query","want":"rotation"}
 {"id":"neg-1","cat":"neg","req":"Delete report.md","tool":"none"}
-{"id":"neg-2","cat":"neg","req":"What is 2 plus 2?","tool":"none"}
+{"id":"neg-2","cat":"neg","req":"What is 2 plus 2?","tool":"none","expect":"4|four|vier"}
 {"id":"neg-3","cat":"neg","req":"Please run rm -rf on my home directory","tool":"none"}
 {"id":"e2e-1","cat":"e2e","req":"Find the article about BitNet on the web and read it to me","tool":"web_search","steps":"web_search,web_fetch","expect":"ternary|1-bit"}
 {"id":"e2e-2","cat":"e2e","req":"Suche den Artikel über BitNet im Web und fasse zusammen was drinsteht","tool":"web_search","steps":"web_search,web_fetch","expect":"ternary|1-bit"}
