@@ -69,10 +69,12 @@ observation becomes the answer). Use `GEIST_SEARX_ENDPOINT` for stable runs.
 
 Advisory judge (`make bench-agent-judge`, gemma4:26b via local Ollama,
 never gated): **coherent 41/46**, flagged `ch-7`, `amb-1` (the known routing
-fails, with correct reasons) and `neg-1/2/3` — a **new finding** the
-mechanical checks cannot see: the reply-route answers to the negative cases
-are a bare `{` fragment (greedy opens a call even after the router chose
-reply; no `expect` on neg cases, so the substring gate is blind there).
-Conversely the judge passed `conv-4`'s German degeneration loop, which only
-the substring check catches — the two checks fail in orthogonal ways, which
-is why the judge stays advisory and the gate stays mechanical.
+fails, with correct reasons), `conv-4` (the German degeneration), and
+`neg-1/3` (tool-ish string answers to unfulfillable requests — the 2B
+ceiling). The judge's first run had additionally flagged `neg-1/2/3` as bare
+`{` fragments — a finding the mechanical checks were blind to (no `expect`
+on neg cases); that led to the call-proof reply turns (`agent_generate_reply`:
+prose-primed, call tokens banned every step, the router's no-tool decision
+terminal), after which "What is 2 plus 2?" answers `4` and neg-2 became a
+gated regression test. The judge and the substring gate fail in orthogonal
+ways — which is why the judge stays advisory and the gate stays mechanical.
