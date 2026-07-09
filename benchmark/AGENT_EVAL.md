@@ -66,3 +66,13 @@ Live-web smoke (`make bench-agent-live`, manual, not gated) on the same
 build/date: `live-1` (example.com fetch, answer-checked) PASS; `live-2/3`
 hit DuckDuckGo rate-limiting — the chain degrades as designed (error
 observation becomes the answer). Use `GEIST_SEARX_ENDPOINT` for stable runs.
+
+Advisory judge (`make bench-agent-judge`, gemma4:26b via local Ollama,
+never gated): **coherent 41/46**, flagged `ch-7`, `amb-1` (the known routing
+fails, with correct reasons) and `neg-1/2/3` — a **new finding** the
+mechanical checks cannot see: the reply-route answers to the negative cases
+are a bare `{` fragment (greedy opens a call even after the router chose
+reply; no `expect` on neg cases, so the substring gate is blind there).
+Conversely the judge passed `conv-4`'s German degeneration loop, which only
+the substring check catches — the two checks fail in orthogonal ways, which
+is why the judge stays advisory and the gate stays mechanical.

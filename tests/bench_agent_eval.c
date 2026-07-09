@@ -24,8 +24,11 @@
  * reality (make bench-agent-live). Network-dependent: report-only, never a
  * CI gate.
  *
+ * --dump FILE appends one JSONL line per case ({mode,id,req,answer}) — the
+ * input for the advisory answer-coherence judge (make bench-agent-judge).
+ *
  * Usage: bench_agent_eval [--mode forced|free|both] [--min-pass N] [--verbose]
- *                         [--live-web] [cases.jsonl]
+ *                         [--live-web] [--dump FILE] [cases.jsonl]
  */
 #define _POSIX_C_SOURCE 200809L
 #include "test_helpers.h"
@@ -66,6 +69,23 @@ struct ev_case {
 
 static struct ev_case     ev_cases[EV_MAX_CASES];
 static struct geist_agent ev_agent; /* large — keep off the stack */
+static FILE              *ev_dump;  /* --dump: JSONL answer dump for the judge */
+
+/* Write s JSON-string-escaped (quotes, backslashes, control chars). */
+static void ev_json_write(FILE *f, const char *s) {
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\') {
+            fputc('\\', f);
+            fputc(*s, f);
+        } else if (*s == '\n') {
+            fputs("\\n", f);
+        } else if (*s == '\t') {
+            fputs("\\t", f);
+        } else if ((unsigned char) *s >= 0x20) {
+            fputc(*s, f);
+        }
+    }
+}
 
 /* ---- per-run capture via the agent's on_event hook ---------------------- */
 
@@ -336,6 +356,14 @@ static int ev_run_mode(struct geist_model   *model,
                    cap.first_tool,
                    cap.first_args[0] ? cap.first_args : "-",
                    cap.answer[0] ? cap.answer : "-");
+        if (ev_dump) {
+            fprintf(ev_dump, "{\"mode\":\"%s\",\"id\":\"%s\",\"req\":\"", mode, c->id);
+            ev_json_write(ev_dump, c->req);
+            fputs("\",\"answer\":\"", ev_dump);
+            ev_json_write(ev_dump, resp);
+            fputs("\"}\n", ev_dump);
+            fflush(ev_dump);
+        }
         fflush(stdout);
     }
 
@@ -396,6 +424,12 @@ int main(int argc, char **argv) {
             verbose = true;
         } else if (strcmp(argv[i], "--live-web") == 0) {
             live_web = true;
+        } else if (strcmp(argv[i], "--dump") == 0 && i + 1 < argc) {
+            ev_dump = fopen(argv[++i], "w");
+            if (!ev_dump) {
+                fprintf(stderr, "cannot open dump file %s\n", argv[i]);
+                return GEIST_TEST_ERROR;
+            }
         } else if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             i++;
             run_forced = strcmp(argv[i], "free") != 0;

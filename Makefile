@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-live format format-check
+.PHONY: all lib bin run clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-live bench-agent-judge format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -283,6 +283,18 @@ bench-agent: bin $(MODEL_PREREQ)
 bench-agent-live: bin $(MODEL_PREREQ)
 	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode forced --live-web \
 	  tests/data/agent_eval/cases_live.jsonl
+
+# Advisory answer-coherence judge: a second AI (local Ollama, JUDGE_MODEL)
+# reads every forced-mode answer and says whether it is a coherent response —
+# the gap the mechanical expect-substring check cannot see. Report-only, exit
+# 0 always: LLM judges drift, the deterministic gate stays authoritative.
+JUDGE_MODEL ?= gemma4:26b
+bench-agent-judge: bin $(MODEL_PREREQ)
+	@mkdir -p bench_runs/agent_eval
+	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode forced \
+	  --dump bench_runs/agent_eval/answers.jsonl
+	@python3 tools/eval_agent_judge.py \
+	  --answers bench_runs/agent_eval/answers.jsonl --model $(JUDGE_MODEL)
 
 # Cleanup.
 clean:

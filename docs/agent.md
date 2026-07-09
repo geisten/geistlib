@@ -303,6 +303,18 @@ rate-limits back-to-back requests within one run (the chain degrades as
 designed: the error observation is the answer); set
 `GEIST_SEARX_ENDPOINT=<searxng-url>` for a stable search backend.
 
+### Advisory judge — `make bench-agent-judge`
+
+A second AI reads the answers. The mechanical `expect` check only proves a
+fact *occurs* — "report report Wohner der Heimat report.md" would pass while
+being no answer at all. `bench_agent_eval --dump` writes every forced-mode
+answer to JSONL and `tools/eval_agent_judge.py` asks a local Ollama model
+(`JUDGE_MODEL`, default `gemma4:26b`) per case whether it is a **coherent,
+plausible response** to the request. Strictly advisory (exit 0 always): LLM
+judges drift with model updates, so the deterministic substring gate stays
+authoritative — the judge tells you which answers to eyeball, replacing the
+manual spot-check.
+
 Results per environment (version, date, wall time) are recorded in
 [benchmark/AGENT_EVAL.md](../benchmark/AGENT_EVAL.md).
 
