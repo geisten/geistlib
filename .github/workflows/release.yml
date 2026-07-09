@@ -257,3 +257,39 @@ jobs:
             || gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
                  --title "geist ${GITHUB_REF_NAME}" --generate-notes --verify-tag
           gh release upload "${GITHUB_REF_NAME}" dist/*/*.tar.gz --repo "${GITHUB_REPOSITORY}" --clobber
+
+  # Keep `brew install geisten/tap/geist` current: render Formula/geist.rb from
+  # the fresh tarball checksums (scripts/make-brew-formula.sh) and push it to
+  # geisten/homebrew-tap. Auth: TAP_DEPLOY_KEY secret = private half of a deploy
+  # key whose public half has write access on the tap repo (nothing else).
+  homebrew:
+    name: update geisten/homebrew-tap
+    needs: release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Render formula and push to the tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          test -n "$TAP_DEPLOY_KEY" || { echo "::error::secret TAP_DEPLOY_KEY missing — deploy key for geisten/homebrew-tap (see scripts/make-brew-formula.sh)"; exit 1; }
+          V="${GITHUB_REF_NAME#v}"
+          sha() { sha256sum "dist/$1/$1.tar.gz" | cut -d' ' -f1; }
+          mkdir -p ~/.ssh
+          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          git clone --depth 1 git@github.com:geisten/homebrew-tap.git tap
+          scripts/make-brew-formula.sh "$V" \
+            "$(sha geist-macos-arm64)" "$(sha geist-linux-arm64)" "$(sha geist-linux-x86_64)" \
+            > tap/Formula/geist.rb
+          cd tap
+          git diff --quiet && { echo "formula already at $V — nothing to push"; exit 0; }
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -am "geist $V"
+          git push
