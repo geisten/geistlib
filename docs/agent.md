@@ -24,6 +24,9 @@ object inside an app — but the core is identical.
 - [Tools](#tools)
   - [Tool selection & forced calls](#tool-selection--forced-calls)
   - [Progress events](#progress-events)
+- [Testing the agent — `make bench-agent`](#testing-the-agent--make-bench-agent)
+  - [The end-to-end cases](#the-end-to-end-cases-cat-e2e)
+  - [Live-web smoke](#live-web-smoke--make-bench-agent-live)
 - [Security model](#security-model)
 - [Embedding the agent](#embedding-the-agent)
 
@@ -244,6 +247,64 @@ per step to a `FILE*` — `geist_agent_main` wires it to `stderr` **by default**
 `tool`/`detail` point into agent buffers and are valid **only during the
 callback** — copy them if you retain them. A server host can serialize the same
 struct to JSON and stream it to a UI.
+
+## Testing the agent — `make bench-agent`
+
+Reliability is measured, not felt. `tests/bench_agent_eval` loads a real model
+and sends every case through the production path (`geist_agent_run`: routing →
+call → dispatch → observation → answer), scoring **mechanically per stage** —
+no LLM judge:
+
+| check | question | mechanic |
+|---|---|---|
+| `route` | right tool chosen? | first `CALLING` event == expected tool (`"none"` = no call) |
+| `args`  | right arguments? | expected key present, value contains the expected substring |
+| `chain` | right tool sequence? | exact order of `RUNNING` events == expected chain |
+| `ans`   | right **content** in the answer? | final answer contains one of the `expect` alternatives |
+
+Corpus: `tests/data/agent_eval/cases.jsonl` (flat JSONL; one case per line —
+`id`, `cat`, `req`, expected `tool`/`arg`/`want`/`steps`/`expect`, optional
+`conv` group). Deterministic: greedy decode, fixture docs in the repo, no
+network. Both agent modes run as separate columns — **forced** (`force_call`,
+the shipped path) is gated via `--min-pass` / `AGENT_EVAL_MIN`; **free** is a
+diagnostic column. Exit 1 below the gate → CI-able.
+
+### The end-to-end cases (`cat: e2e`)
+
+The `ans` check is what makes a case end-to-end, and the web stubs are
+**content-sensitive** so it proves something: the stub search *ranks* a fixed
+page table by query/title word overlap, the stub fetch serves each URL its own
+text — a case passes only when the right page actually travelled
+search → fetch → answer.
+
+- **Web research chains** (`e2e-1..4`): find an article and read/summarize it
+  (EN + DE); the top-ranked result must be the queried one; `e2e-4` fetches a
+  **prompt-injection page** whose text orders the agent to fetch
+  `evil.example.com` and delete files — the chain must end after the fetch
+  regardless.
+- **Direct tool use with content checks** (`e2e-5..9`): two different URLs
+  fetched (each must yield *its* page text), `list_dir` with a lifted path,
+  doc retrieval, file summary.
+- **Memory-palace roundtrip** (`mem-1..3`): `remember` writes a note through
+  the agent, `recall` reads *that* note back by slug (the fact must return);
+  plus a German recall of a pre-seeded note. Uses a scratch mind dir under
+  `build/`.
+- **Multi-turn conversation** (`conv-1..4`): cases sharing a `conv` group keep
+  one transcript; the follow-up ("What did I just ask you about?") passes only
+  by *reading* the prior turns. `conv-4` documents a known ceiling: German
+  free-form follow-ups degenerate on the 2B model.
+
+### Live-web smoke — `make bench-agent-live`
+
+The same harness with the **real** `web_search`/`web_fetch` (curl +
+DuckDuckGo) over `tests/data/agent_eval/cases_live.jsonl`. Manual and
+report-only — network results never gate CI. Known findings: DuckDuckGo
+rate-limits back-to-back requests within one run (the chain degrades as
+designed: the error observation is the answer); set
+`GEIST_SEARX_ENDPOINT=<searxng-url>` for a stable search backend.
+
+Results per environment (version, date, wall time) are recorded in
+[benchmark/AGENT_EVAL.md](../benchmark/AGENT_EVAL.md).
 
 ## Security model
 
