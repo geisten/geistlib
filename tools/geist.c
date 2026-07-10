@@ -40,6 +40,7 @@ enum { geist_embedded = 0 };
 #include "agent_docsearch.h"
 #include "agent_listdir.h"
 #include "agent_main.h"
+#include "agent_home.h"
 #include "agent_memory.h"
 #include "agent_stocks.h"
 #include "agent_summarize.h"
@@ -127,6 +128,96 @@ static size_t agent_tools(struct geist_model *model, struct geist_backend *be,
         out[n++] = recall_tool();
     }
     return n;
+}
+
+/* ---- home appliance profile (make home / TOOLSET=home) ---------------------
+ * A build with -DGEIST_TOOLSET_HOME is the HOME AGENT and nothing else: the
+ * bare prompt argument is an agent request ("./geist-home \"Schalte das Licht
+ * im Flur ein\""), and the web/docs/stocks tools are NOT COMPILED IN — fixed
+ * scope at build time, the artifact itself is the security promise. Runtime
+ * config stays in the environment (a token is never baked into a binary):
+ * GEIST_HA_URL, GEIST_HA_TOKEN, GEIST_HOME_REGISTRY. */
+#if defined(GEIST_TOOLSET_HOME)
+static const char *HOME_SYSTEM =
+        "You are a home control assistant. To switch or set a device reply with "
+        "{\"tool\":\"control_device\",\"args\":{\"request\":\"<user request>\"}}. To read a device "
+        "or sensor reply with {\"tool\":\"home_status\",\"args\":{\"request\":\"<user "
+        "request>\"}}. "
+        "After the tool result, answer the user in one short sentence.";
+
+static size_t home_toolset(struct geist_model   *model,
+                           struct geist_backend *be,
+                           struct geist_tool    *out,
+                           size_t                cap,
+                           void                 *ctx) {
+    (void) model;
+    (void) be;
+    (void) cap;
+    (void) ctx;
+    static struct home_ctx hc;
+    if (hc.n_dev == 0) {
+        memset(&hc, 0, sizeof hc);
+        if (home_registry_load(&hc, nullptr) == 0) {
+            fprintf(stderr,
+                    "home: no devices — set GEIST_HOME_REGISTRY or create "
+                    "./home-registry.txt\n");
+        }
+        hc.set = home_set_ha;
+        hc.get = home_get_ha;
+    }
+    out[0] = home_command_tool(&hc);
+    out[1] = home_status_tool(&hc);
+    return 2;
+}
+#endif
+
+/* `geist ha state|on|off|open|close <entity_id>` — the manual, Unix-style
+ * driver for the HA REST lib (tools/ha_rest.h): verify connectivity, token and
+ * entity ids by hand before pointing the agent at them. All build profiles. */
+static int run_ha_cli(int argc, char **argv) {
+    const char *url = ha_env_url();
+    const char *tok = ha_env_token();
+    if (argc < 3) {
+        fprintf(stderr, "usage: geist ha state|on|off|open|close <entity_id>\n");
+        return 2;
+    }
+    if (tok[0] == '\0') {
+        fprintf(stderr, "ha: set GEIST_HA_TOKEN (and GEIST_HA_URL if not %s)\n", HA_URL_DEFAULT);
+        return 2;
+    }
+    const char *cmd = argv[1];
+    const char *ent = argv[2];
+    char        domain[32];
+    const char *dot = strchr(ent, '.');
+    if (dot == nullptr || (size_t) (dot - ent) >= sizeof domain) {
+        fprintf(stderr, "ha: entity id must look like light.flur\n");
+        return 2;
+    }
+    memcpy(domain, ent, (size_t) (dot - ent));
+    domain[dot - ent] = '\0';
+
+    static char out[1 << 15];
+    long        n;
+    if (strcmp(cmd, "state") == 0) {
+        n = ha_get_state(url, tok, ent, sizeof out, out);
+    } else {
+        const char *svc = strcmp(cmd, "on") == 0      ? "turn_on"
+                          : strcmp(cmd, "off") == 0   ? "turn_off"
+                          : strcmp(cmd, "open") == 0  ? "open_cover"
+                          : strcmp(cmd, "close") == 0 ? "close_cover"
+                                                      : nullptr;
+        if (svc == nullptr) {
+            fprintf(stderr, "usage: geist ha state|on|off|open|close <entity_id>\n");
+            return 2;
+        }
+        n = ha_call_service(url, tok, domain, svc, ent, nullptr, sizeof out, out);
+    }
+    if (n < 0) {
+        fprintf(stderr, "ha: request failed (%s %s)\n", cmd, ent);
+        return 1;
+    }
+    printf("%s\n", out);
+    return 0;
 }
 
 /* Returns a system prompt = base + the notes index (so recall is usable: the
@@ -331,6 +422,29 @@ static int usage(const char *prog, int code) {
 }
 
 int main(int argc, char **argv) {
+    /* `geist ha ...` -> manual HA REST driver (all profiles, no model load). */
+    if (argc > 1 && strcmp(argv[1], "ha") == 0) {
+        return run_ha_cli(argc - 1, argv + 1);
+    }
+#if defined(GEIST_TOOLSET_HOME)
+    /* Home appliance: EVERYTHING else is an agent request — no subcommand, no
+     * raw-completion mode. -h/-v fall through to geist_agent_main's usage. */
+    if (!(argc > 1 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0))) {
+#if defined(GEIST_EMBEDDED_MODEL)
+        return geist_agent_main(argc,
+                                argv,
+                                HOME_SYSTEM,
+                                home_toolset,
+                                nullptr,
+                                geist_embedded_model_start,
+                                geist_embedded_model_end);
+#else
+        return geist_agent_main(argc, argv, HOME_SYSTEM, home_toolset, nullptr, nullptr, nullptr);
+#endif
+    }
+    printf("geist-home %s\n", geist_version_string());
+    return 0;
+#endif
     /* `geist agent ...` -> one-shot tool loop. Drop argv[0]; geist_agent_main
      * parses "agent" as its prog name and the rest after it. In an embedded build
      * the model is baked in (pass its bounds; no model positional). */
