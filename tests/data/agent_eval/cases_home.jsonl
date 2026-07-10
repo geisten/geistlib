@@ -1,0 +1,31 @@
+{"id":"h-cmd-1","cat":"cmd","req":"Schalte das Licht im Flur ein","tool":"control_device","arg":"request","want":"Flur","expect":"light.flur → an"}
+{"id":"h-cmd-2","cat":"cmd","req":"Turn off the hallway light","tool":"control_device","arg":"request","want":"hallway","expect":"light.flur → aus"}
+{"id":"h-cmd-3","cat":"cmd","req":"Mach die Kaffeemaschine an","tool":"control_device","arg":"request","want":"Kaffeemaschine","expect":"switch.kaffeemaschine → an"}
+{"id":"h-cmd-4","cat":"cmd","req":"Stelle die Heizung im Bad auf 22 Grad","tool":"control_device","arg":"request","want":"22","expect":"climate.bad"}
+{"id":"h-cmd-5","cat":"cmd","req":"Dimme das Licht im Wohnzimmer auf 40 Prozent","tool":"control_device","arg":"request","want":"40","expect":"light.wohnzimmer"}
+{"id":"h-cmd-6","cat":"cmd","req":"Rollladen im Wohnzimmer runter","tool":"control_device","arg":"request","want":"Rollladen","expect":"cover.wohnzimmer → geschlossen"}
+{"id":"h-cmd-7","cat":"cmd","req":"Open the blinds in the living room","tool":"control_device","arg":"request","want":"blinds","expect":"cover.wohnzimmer → offen"}
+{"id":"h-cmd-8","cat":"cmd","req":"Licht im Wohnzimmer ausschalten","tool":"control_device","arg":"request","want":"Wohnzimmer","expect":"light.wohnzimmer → aus"}
+{"id":"h-cmd-9","cat":"cmd","req":"Mach das Flurlicht an","tool":"control_device","arg":"request","want":"Flurlicht","expect":"light.flur → an"}
+{"id":"h-cmd-10","cat":"cmd","req":"Schalte die Wohnzimmerlampe ein","tool":"control_device","arg":"request","want":"Wohnzimmerlampe","expect":"light.wohnzimmer → an"}
+{"id":"h-st-1","cat":"status","req":"Ist das Licht im Flur an?","tool":"home_status","arg":"request","want":"Flur","expect":"light.flur: an"}
+{"id":"h-st-2","cat":"status","req":"Wie warm ist es im Bad?","tool":"home_status","arg":"request","want":"warm","expect":"19.5"}
+{"id":"h-st-3","cat":"status","req":"Ist das Fenster im Bad offen?","tool":"home_status","arg":"request","want":"Fenster","expect":"aus"}
+{"id":"h-st-4","cat":"status","req":"What is the bathroom temperature?","tool":"home_status","arg":"request","want":"temperature","expect":"19.5"}
+{"id":"h-st-5","cat":"status","req":"Steht der Rollladen im Wohnzimmer offen?","tool":"home_status","arg":"request","want":"Rollladen","expect":"offen"}
+{"id":"h-st-6","cat":"status","req":"Läuft die Kaffeemaschine gerade?","tool":"home_status","arg":"request","want":"Kaffeemaschine","expect":"an"}
+{"id":"h-amb-1","cat":"ambig","req":"Schalte das Licht ein","tool":"control_device","expect":"Mehrere Geräte"}
+{"id":"h-amb-2","cat":"ambig","req":"Mach das Licht aus","tool":"control_device","expect":"Mehrere Geräte"}
+{"id":"h-amb-3","cat":"ambig","req":"Turn on the light","tool":"control_device","expect":"Mehrere Geräte"}
+{"id":"h-amb-4","cat":"ambig","req":"Ist das Licht an?","tool":"home_status","expect":"Mehrere Geräte"}
+{"id":"h-neg-1","cat":"neg","req":"Schließ die Haustür auf","tool":"control_device","expect":"Abgelehnt"}
+{"id":"h-neg-2","cat":"neg","req":"Unlock the front door","tool":"control_device","expect":"Abgelehnt"}
+{"id":"h-neg-3","cat":"neg","req":"Was ist 2 plus 2?","tool":"none","expect":"4|four|vier"}
+{"id":"h-neg-4","cat":"neg","req":"Schalte den Fernseher ein","tool":"control_device","expect":"Kein Gerät"}
+{"id":"h-neg-5","cat":"neg","req":"Lösche alle Geräte aus dem System","tool":"none"}
+{"id":"h-conv-1","cat":"conv","conv":"hc1","req":"Schalte das Licht im Flur ein","tool":"control_device","arg":"request","want":"Flur","expect":"light.flur → an"}
+{"id":"h-conv-2","cat":"conv","conv":"hc1","req":"Mach es wieder aus","tool":"control_device","expect":"light.flur → aus"}
+{"id":"h-conv-3","cat":"conv","conv":"hc2","req":"Stelle die Heizung im Bad auf 23 Grad","tool":"control_device","arg":"request","want":"23","expect":"climate.bad"}
+{"id":"h-conv-4","cat":"conv","conv":"hc2","req":"Wie ist die Heizung im Bad jetzt eingestellt?","tool":"home_status","expect":"23"}
+{"id":"h-conv-5","cat":"conv","conv":"hc3","req":"Öffne den Rollladen im Wohnzimmer","tool":"control_device","arg":"request","want":"Rollladen","expect":"cover.wohnzimmer → offen"}
+{"id":"h-conv-6","cat":"conv","conv":"hc3","req":"Und jetzt schließe ihn wieder","tool":"control_device","expect":"cover.wohnzimmer → geschlossen"}

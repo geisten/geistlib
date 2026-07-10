@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-live bench-agent-judge format format-check
+.PHONY: all lib bin run home clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-home bench-agent-live bench-agent-judge format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -68,6 +68,13 @@ geist: $(GEIST_BIN)
 run: geist
 	@OMP_WAIT_POLICY=active ./$(EMBED_NAME) $(ARGS)
 
+# The home APPLIANCE build: BitNet baked in, only the home tools compiled in,
+# bare prompt = agent request. One command, one artifact:
+#   make home && GEIST_HA_TOKEN=... ./geist-home "Schalte das Licht im Flur ein"
+home:
+	@$(MAKE) EMBED_MODEL=gguf_artifacts/bitnet-2b4t-i2_s.gguf EMBED_NAME=geist-home \
+	  TOOLSET=home geist
+
 # ---- Optional: embed a model into the geist CLI (single-binary deploy) -----
 # `make EMBED_MODEL=path/to/model.gguf` bakes the GGUF into ./geist via an
 # .incbin stub, so the binary needs no model file — the CLI then takes only a
@@ -82,7 +89,15 @@ run: geist
 # geist.o on it: the stamp is rewritten only when the state changes, so switching
 # between embedded/file mode rebuilds geist.o automatically and nothing churns
 # otherwise. Applies in both branches, so it lives outside the ifneq.
-EMBED_TAG         := $(if $(strip $(EMBED_MODEL)),embedded:$(abspath $(EMBED_MODEL)),none)
+# TOOLSET selects the agent build profile compiled into the CLI: `default`
+# (file/web/memory demo menu) or `home` (the home appliance — ONLY the two
+# home tools are compiled in; the bare prompt is an agent request). The knob
+# joins the embed stamp below so switching profiles rebuilds geist.o.
+TOOLSET ?= default
+ifeq ($(TOOLSET),home)
+  $(BUILD_DIR)/tools/geist.o: CFLAGS += -DGEIST_TOOLSET_HOME
+endif
+EMBED_TAG         := $(if $(strip $(EMBED_MODEL)),embedded:$(abspath $(EMBED_MODEL)),none):$(TOOLSET)
 GEIST_EMBED_STAMP := $(BUILD_DIR)/tools/.geist-embed-state
 # When the embed state changes, DELETE geist.o + this mode's binary so they
 # rebuild with the right -DGEIST_EMBEDDED_MODEL. We can't rely on a stamp
@@ -310,6 +325,15 @@ bench-agent: bin $(MODEL_PREREQ)
 bench-agent-live: bin $(MODEL_PREREQ)
 	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode forced --live-web \
 	  tests/data/agent_eval/cases_live.jsonl
+
+# The HOME appliance eval: the standalone 2-tool home menu over
+# cases_home.jsonl (stubbed mutating state table, fixture registry). The fixed
+# threshold 31/31 is the level achieved on bitnet-2b4t-i2_s (2026-07) — the
+# narrow domain menu routes perfectly; recalibrate for other models.
+AGENT_EVAL_HOME_MIN ?= 31
+bench-agent-home: bin $(MODEL_PREREQ)
+	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --tools home \
+	  --mode $(AGENT_EVAL_MODE) --min-pass $(AGENT_EVAL_HOME_MIN)
 
 # Advisory answer-coherence judge: a second AI (local Ollama, JUDGE_MODEL)
 # reads every forced-mode answer and says whether it is a coherent response —
