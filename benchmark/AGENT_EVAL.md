@@ -10,7 +10,7 @@ so results from different environments never silently overwrite each other.
 ## Methodology
 
 - **Harness:** `tests/bench_agent_eval` over `tests/data/agent_eval/cases.jsonl`
-  (46 cases: 15 single-tool / 8 chains / 4 ambiguous / 3 negative / 16 e2e,
+  (48 cases: 15 single-tool / 8 chains / 4 ambiguous / 3 negative / 18 e2e,
   incl. the memory roundtrip and two multi-turn conversations).
 - **Determinism:** greedy decode, fixture docs, content-sensitive in-process
   web stubs — no network. One process, model loaded once.
@@ -36,8 +36,16 @@ GEIST_GGUF_PATH=gguf_artifacts/bitnet-2b4t-i2_s.gguf make bench-agent
 
 | date | version | host | OS | target/mode | threads | model | gate | forced pass | forced wall | free pass | free wall | total wall |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-07-10 | v0.3.3-31+stocks | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | 43 → **PASS** | 43/48 | 339 s | 4/48 | 472 s | 811 s |
 | 2026-07-09 | v0.3.3-29-gc640d9a | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | 41 → **PASS** | 41/46 | 256 s | 6/46 | 419 s | 675 s (446 % CPU) |
-| — pending — | | Raspberry Pi 5 (4×A76) | | pi5/release | 4 | bitnet-2b4t-i2_s | 41 | | | | | |
+| — pending — | | Raspberry Pi 5 (4×A76) | | pi5/release | 4 | bitnet-2b4t-i2_s | 43 | | | | | |
+
+The 2026-07-10 run adds the `stock_movers` tool (48 cases, 8-tool menu) and
+the routing restructure it forced: evidence BAN mask (rare-name tools do not
+compete without their lexical evidence) plus unwindowed evidence-beats-reply.
+Full-name routing scores were tried and measured worse (36/48) — see the
+`ponytail:` note in `agent_score_names`. Remaining forced fails are the five
+known-honest ones: ch-4, ch-7, amb-1, amb-2, conv-4.
 
 Pi 5 counter-check (once the box is reachable again; quiesce it first — a
 stray process halves 4-thread numbers): same command as above on the Pi.

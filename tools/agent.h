@@ -35,6 +35,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>    /* expf/logf — full-name routing scores (log-softmax) */
 #include <strings.h> /* strncasecmp (POSIX; present on all geist hosts) */
 
 enum {
@@ -716,7 +717,15 @@ static inline size_t agent_select_prompt(struct geist_agent *a,
  * the tool names, then (as entry a->n_tools, when n covers it) the answer
  * pseudo-entry. The first token may be bare ("list_dir") or space-prefixed
  * (" list_dir") per the template — take the max of both. Returns 0 on a peek
- * failure. */
+ * failure.
+ * ponytail: first-token only, deliberately. FULL-name scoring (length-
+ * normalized log-softmax sums with pin_prefix rewind) was built and measured
+ * WORSE on bitnet-2b4t — 36/48 vs 41/46-level with evidence gates, and it
+ * broke the previously stable single-tool routings (the normalization strips
+ * list_dir's frequent-first-token advantage without adding usable signal).
+ * See git history if a stronger model wants it back. Names sharing a first
+ * token stay indistinguishable here; the bounded evidence tie-breakers in
+ * agent_select_tool carry that load. */
 static inline int
 agent_score_names(struct geist_agent *a, size_t n, const char *prompt, float out[static n]) {
     if (geist_session_reset(a->session) != GEIST_OK ||
@@ -852,7 +861,18 @@ static inline int agent_request_mentions_memory(size_t req_len, const char *req)
         for (size_t i = 0; i + wl <= req_len; i++) {
             if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
                 strncasecmp(req + i, w[v], wl) == 0) {
-                return 1;
+                /* a FILENAME is not memory evidence — "notes.txt" armed the
+                 * memory tools and "Fasse notes.txt zusammen" routed remember;
+                 * skip a matched word that continues into a '.' */
+                size_t e      = i;
+                int    dotted = 0;
+                while (e < req_len && req[e] != ' ' && req[e] != '\t' && req[e] != '\n') {
+                    dotted |= req[e] == '.';
+                    e++;
+                }
+                if (!dotted) {
+                    return 1;
+                }
             }
         }
     }
@@ -863,6 +883,101 @@ static inline int agent_request_mentions_memory(size_t req_len, const char *req)
 static inline int agent_tool_is_memory(const struct geist_tool *t) {
     return (t->name && (strstr(t->name, "remember") || strstr(t->name, "recall"))) ||
            (t->description && (strstr(t->description, "otiz") || strstr(t->description, "edächt")));
+}
+
+/* True if the request talks about stocks/markets — the evidence the stocks
+ * tool needs (Aktie, Börse, Kurs, stock, share, market, ticker, DAX). */
+static inline int agent_request_mentions_stocks(size_t req_len, const char *req) {
+    static const char *const w[] = {"akti",   "börse", "boerse", "kurs",   "stock",    "share",
+                                    "market", "markt", "ticker", "nasdaq", "dividend", "dax"};
+    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
+        size_t wl = strlen(w[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, w[v], wl) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* True if a tool is the stock-market tool. */
+static inline int agent_tool_is_stocks(const struct geist_tool *t) {
+    return (t->name && strstr(t->name, "stock")) ||
+           (t->description && (strstr(t->description, "ktie") || strstr(t->description, "örse") ||
+                               strstr(t->description, "tock")));
+}
+
+/* True if the request talks about listing a directory / its files (Ordner,
+ * Verzeichnis, folder, directory, files, Dateien). */
+static inline int agent_request_mentions_dir(size_t req_len, const char *req) {
+    static const char *const w[] = {
+            "ordner", "verzeichnis", "folder", "director", "files", "dateien"};
+    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
+        size_t wl = strlen(w[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, w[v], wl) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* True if the request points at the web (web, online, internet, google). */
+static inline int agent_request_mentions_web(size_t req_len, const char *req) {
+    static const char *const w[] = {"web", "online", "internet", "googl"};
+    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
+        size_t wl = strlen(w[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, w[v], wl) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* ---- routing predicates + best-candidate search --------------------------
+ * The evidence rules all reduce to "the best NON-BANNED candidate whose tool
+ * satisfies a predicate" — one helper instead of eight hand-rolled loops. */
+typedef int (*agent_pred_fn)(const struct geist_tool *);
+
+static inline int agent_pred_url(const struct geist_tool *t) {
+    return agent_schema_wants_url(t->args_schema);
+}
+static inline int agent_pred_slug(const struct geist_tool *t) {
+    return agent_schema_wants_slug(t->args_schema);
+}
+static inline int agent_pred_dir(const struct geist_tool *t) {
+    return agent_desc_is_dir(t->description);
+}
+static inline int agent_pred_nondir(const struct geist_tool *t) {
+    return !agent_desc_is_dir(t->description);
+}
+static inline int agent_pred_filetool(const struct geist_tool *t) {
+    return agent_schema_wants_path(t->args_schema) && !agent_desc_is_dir(t->description);
+}
+static inline int agent_pred_web(const struct geist_tool *t) {
+    return (t->name && strstr(t->name, "web")) || agent_schema_wants_url(t->args_schema);
+}
+
+static inline int agent_best_pred(const struct geist_agent *a,
+                                  size_t                    n,
+                                  const float              *cal,
+                                  const unsigned char      *banned,
+                                  agent_pred_fn             pred) {
+    int   best = -1;
+    float bv   = -1e30f;
+    for (size_t i = 0; i < n; i++) {
+        if (!banned[i] && pred(&a->tools[i]) && cal[i] > bv) {
+            best = (int) i, bv = cal[i];
+        }
+    }
+    return best;
 }
 
 /* True if the request contains a slug-shaped word: all lowercase alnum with an
@@ -921,6 +1036,15 @@ static inline int agent_tool_is_docs(const struct geist_tool *t) {
  * is usually content ("search for how to remove noise"). ponytail: "Please
  * could you delete …" slips past the two-word scan — falls back to PMI. */
 static inline int agent_request_is_destructive(size_t req_len, const char *req) {
+    /* a shell destroyer ANYWHERE is destructive ("Please run rm -rf on my home
+     * directory" hides it at word 3, past the imperative scan below — and its
+     * "directory" would otherwise read as harmless dir evidence) */
+    for (size_t i = 0; i + 2 <= req_len; i++) {
+        if ((i == 0 || req[i - 1] == ' ') && req[i] == 'r' && req[i + 1] == 'm' &&
+            (i + 2 == req_len || req[i + 2] == ' ' || req[i + 2] == 'd')) {
+            return 1; /* "rm" / "rmdir" as its own word */
+        }
+    }
     static const char *const verbs[] = {"delet",
                                         "remov",
                                         "eras",
@@ -1012,129 +1136,153 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
         return 0;
     }
 
+    /* Evidence BAN mask, applied before the argmax and every alternative
+     * search: a rare tool name has a low calibration prior, so any raw bump
+     * inflates its PMI and it magnetizes unrelated requests (recall won "What
+     * is 2 plus 2?", stock_movers won "Fasse notes.txt zusammen"). A tool that
+     * demands lexical evidence simply does not COMPETE without it:
+     *   - memory tools need a note/memory word,
+     *   - the stocks tool needs a stocks/market word,
+     *   - a file-consuming tool (path arg, not a directory tool) needs a named
+     *     file or a path word. */
+    unsigned char banned[AGENT_MAX_ROUTED] = {0};
+    const int     has_file =
+            agent_request_names_file(req_len, req) || agent_request_has_pathword(req_len, req);
+    for (size_t i = 0; i < n; i++) {
+        banned[i] = (unsigned char) ((agent_tool_is_memory(&a->tools[i]) &&
+                                      !agent_request_mentions_memory(req_len, req)) ||
+                                     (agent_tool_is_stocks(&a->tools[i]) &&
+                                      !agent_request_mentions_stocks(req_len, req)) ||
+                                     (agent_pred_filetool(&a->tools[i]) && !has_file));
+    }
+
     float cal[AGENT_MAX_ROUTED] = {0};
-    int   best                  = 0;
-    float best_v                = -1e30f;
-    for (size_t i = 0; i < nn; i++) { /* nn: the answer pseudo-entry competes too */
+    int   best                  = (int) n; /* reply competes and is never banned */
+    float best_v;
+    for (size_t i = 0; i < nn; i++) {
         cal[i] = have_base ? score[i] - a->route_base[i] : score[i];
-        if (cal[i] > best_v) {
+    }
+    best_v = cal[n];
+    for (size_t i = 0; i < n; i++) {
+        if (!banned[i] && cal[i] > best_v) {
             best_v = cal[i], best = (int) i;
         }
     }
 
-    /* Gate: a memory tool needs memory evidence. "recall" winning "What is
-     * 2 plus 2?" is a calibration artifact — a rare name has a low prior, so
-     * any raw bump inflates its PMI. Without a note/memory word the winner
-     * re-routes to the best non-memory candidate (reply competes). Hard, no
-     * window: a note is an explicitly named thing. */
-    if (best < (int) n && agent_tool_is_memory(&a->tools[best]) &&
-        !agent_request_mentions_memory(req_len, req)) {
-        int   alt   = (int) n; /* the reply pseudo-entry */
-        float alt_v = cal[n];
-        for (size_t i = 0; i < n; i++) {
-            if (!agent_tool_is_memory(&a->tools[i]) && cal[i] > alt_v) {
-                alt = (int) i, alt_v = cal[i];
-            }
+    /* Evidence beats the fallback, unwindowed: reply is where requests land
+     * when NO tool fits — but if the request carries tool evidence (a URL, a
+     * slug, a named file, a docs/dir/web/stocks/memory word), the evidenced
+     * tool serves it better than a free-text answer, regardless of margin
+     * (measured: "Wo steht in den Dokumenten …" put reply 2.9 above
+     * doc_search — no fixed window can bridge that without breaking the
+     * legitimate reply wins, whose margins are as small as 0.15). */
+    if (best == (int) n) {
+        int alt = -1;
+        if (agent_request_has_url(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_url);
         }
-        best = alt, best_v = alt_v;
+        if (alt < 0 && agent_request_has_slug(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_slug);
+        }
+        if (alt < 0 && has_file) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_filetool);
+        }
+        if (alt < 0 && agent_request_mentions_docs(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_tool_is_docs);
+        }
+        if (alt < 0 && agent_request_mentions_dir(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_dir);
+        }
+        if (alt < 0 && agent_request_mentions_web(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_web);
+        }
+        if (alt < 0 && agent_request_mentions_stocks(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_tool_is_stocks);
+        }
+        if (alt < 0 && agent_request_mentions_memory(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_tool_is_memory);
+        }
+        if (alt >= 0) {
+            best = alt, best_v = cal[alt];
+        }
     }
 
-    /* Tie-breaker: a literal http(s):// URL in the request is strong evidence
-     * for the tool that takes a "url" arg (fetch), yet the name score often
-     * favours the search tool. Same bounded close-race window as the file rule
-     * below. Runs first: a URL also ends in a file-ish extension, so without
-     * this the file rule would see ".html" and reason about the wrong axis. */
+    /* Windowed tie-breakers for tool-vs-tool races (close-race window 1.5;
+     * the observed residuals are ~0.5). Each steers toward the tool the
+     * request's strongest literal evidence names. */
+
+    /* a literal http(s):// URL -> the "url"-arg tool. Runs first: a URL also
+     * ends in a file-ish extension, so without this the file rule would see
+     * ".html" and reason about the wrong axis. */
     if (agent_request_has_url(req_len, req) &&
         (best == (int) n || !agent_schema_wants_url(a->tools[best].args_schema))) {
-        int   alt   = -1;
-        float alt_v = -1e30f;
-        for (size_t i = 0; i < n; i++) {
-            if (agent_schema_wants_url(a->tools[i].args_schema) && cal[i] > alt_v) {
-                alt = (int) i, alt_v = cal[i];
-            }
-        }
-        if (alt >= 0 && alt_v > best_v - 1.5f) {
-            best = alt, best_v = alt_v;
+        int alt = agent_best_pred(a, n, cal, banned, agent_pred_url);
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
+            best = alt, best_v = cal[alt];
         }
     }
 
-    /* Tie-breaker: a slash-path word (tests/data/x) is evidence for the tool
-     * that takes a path-like arg — the URL rule's filesystem sibling. Skipped
-     * when the slash word is a URL (the rule above owns that). */
+    /* a slash-path word (tests/data/x) -> a path-arg tool (the URL rule's
+     * filesystem sibling; skipped when the slash word is a URL) */
     if (!agent_request_has_url(req_len, req) && agent_request_has_pathword(req_len, req) &&
         (best == (int) n || !agent_schema_wants_path(a->tools[best].args_schema))) {
-        int   alt   = -1;
-        float alt_v = -1e30f;
+        int alt = -1;
         for (size_t i = 0; i < n; i++) {
-            if (agent_schema_wants_path(a->tools[i].args_schema) && cal[i] > alt_v) {
-                alt = (int) i, alt_v = cal[i];
+            if (!banned[i] && agent_schema_wants_path(a->tools[i].args_schema) &&
+                (alt < 0 || cal[i] > cal[alt])) {
+                alt = (int) i;
             }
         }
-        if (alt >= 0 && alt_v > best_v - 1.5f) {
-            best = alt, best_v = alt_v;
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
+            best = alt, best_v = cal[alt];
         }
     }
 
-    /* Tie-breaker: a slug-shaped word (pi-serial — how mind.h names notes) is
-     * strong evidence for the tool that takes a "slug" arg (recall), yet the
-     * name score favours "remember" for either memory verb. Same bounded
-     * close-race window as the URL rule. */
+    /* a slug-shaped word (pi-serial — how mind.h names notes) -> the
+     * "slug"-arg tool (the name score favours "remember" for either memory
+     * verb) */
     if (agent_request_has_slug(req_len, req) &&
         (best == (int) n || !agent_schema_wants_slug(a->tools[best].args_schema))) {
-        int   alt   = -1;
-        float alt_v = -1e30f;
-        for (size_t i = 0; i < n; i++) {
-            if (agent_schema_wants_slug(a->tools[i].args_schema) && cal[i] > alt_v) {
-                alt = (int) i, alt_v = cal[i];
-            }
-        }
-        if (alt >= 0 && alt_v > best_v - 1.5f) {
-            best = alt, best_v = alt_v;
+        int alt = agent_best_pred(a, n, cal, banned, agent_pred_slug);
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
+            best = alt, best_v = cal[alt];
         }
     }
 
-    /* Tie-breaker: the request mentions the documentation corpus (docs/Dokumente)
-     * but the winner is not the doc tool — first-token name scoring gives
-     * doc_search only a weak margin over list_dir ("doc" vs the answer-ish
-     * "list"), observed ~0.3-0.9 short. Skipped when the request names a
-     * specific file: a named file is more specific evidence than the corpus
-     * noun, and the file rule below owns that case. */
+    /* a docs-corpus word (docs/Dokumente) -> the doc tool ("doc" scores only
+     * ~0.3-0.9 short of the answer-ish "list"). Skipped when a file is named:
+     * that is more specific evidence and the file rule owns it. */
     if (!agent_request_names_file(req_len, req) && agent_request_mentions_docs(req_len, req) &&
         (best == (int) n || !agent_tool_is_docs(&a->tools[best]))) {
-        int   alt   = -1;
-        float alt_v = -1e30f;
-        for (size_t i = 0; i < n; i++) {
-            if (agent_tool_is_docs(&a->tools[i]) && cal[i] > alt_v) {
-                alt = (int) i, alt_v = cal[i];
-            }
-        }
-        if (alt >= 0 && alt_v > best_v - 1.5f) {
-            best = alt, best_v = alt_v;
+        int alt = agent_best_pred(a, n, cal, banned, agent_tool_is_docs);
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
+            best = alt, best_v = cal[alt];
         }
     }
 
-    /* Tie-breaker: if the winner is a directory tool but the request names a
-     * specific file (note.txt), prefer the best non-dir tool within a small
-     * window. The German separable verb "Fasse … zusammen" splits the verb so the
-     * scored first token is "Fasse" and the name score barely favours list_dir; a
-     * named file is strong evidence for a file tool. Bounded — only on a real
-     * file extension (a bare directory path never fires) and only a close race. */
+    /* a directory word (Ordner/folder/files) without a named file -> the
+     * directory tool ("look at the files in this folder, then summarize"
+     * routed the summarizer even though the listing must come first) */
+    if (!agent_request_names_file(req_len, req) && agent_request_mentions_dir(req_len, req) &&
+        best < (int) n && !agent_pred_dir(&a->tools[best])) {
+        int alt = agent_best_pred(a, n, cal, banned, agent_pred_dir);
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
+            best = alt, best_v = cal[alt];
+        }
+    }
+
+    /* the winner is a directory tool but a specific file is named -> the best
+     * non-dir tool ("Fasse notes.txt zusammen" splits the German verb, so the
+     * name score barely favours list_dir). A reply win deliberately survives
+     * this rule: a named file in "Delete report.md" is not a reason to force
+     * a tool. */
     if (best < (int) n && agent_desc_is_dir(a->tools[best].description) &&
         agent_request_names_file(req_len, req)) {
-        int   alt   = -1;
-        float alt_v = -1e30f;
-        for (size_t i = 0; i < n; i++) {
-            if (!agent_desc_is_dir(a->tools[i].description) && cal[i] > alt_v) {
-                alt = (int) i, alt_v = cal[i];
-            }
-        }
-        if (alt >= 0 && alt_v > best_v - 1.5f) { /* 1.5: the observed residual is ~0.5 */
+        int alt = agent_best_pred(a, n, cal, banned, agent_pred_nondir);
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
             best = alt;
         }
     }
-    /* An answer win deliberately survives the FILE rule (a named file in
-     * "Delete report.md" is not a reason to force a tool), but not the URL/docs
-     * rules above — those carry action evidence, not just an object. */
     return best == (int) n ? -1 : best;
 }
 

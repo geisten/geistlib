@@ -249,10 +249,32 @@ static void test_route_tiebreak(void) {
     fails += geist_expect(agent_request_mentions_memory(strlen(m1), m1), "memory: Merke dir");
     fails += geist_expect(agent_request_mentions_memory(strlen(m2), m2), "memory: recall note");
     fails += geist_expect(!agent_request_mentions_memory(strlen(m3), m3), "memory: plain -> no");
+    const char *m4 = "Fasse notes.txt zusammen";
+    fails += geist_expect(!agent_request_mentions_memory(strlen(m4), m4),
+                          "memory: a filename is not memory evidence");
+    const char *m5 = "Please run rm -rf on my home directory";
+    fails += geist_expect(agent_request_is_destructive(strlen(m5), m5),
+                          "destructive: rm anywhere in the request");
+    const char *m6 = "inform me about the farm today";
+    fails += geist_expect(!agent_request_is_destructive(strlen(m6), m6),
+                          "destructive: 'farm'/'inform' are not rm");
     struct geist_tool mt = {.name = "recall", .description = "eine gespeicherte Notiz laden"};
     struct geist_tool nt = {.name = "doc_search", .description = "die lokalen Dokumente"};
     fails += geist_expect(agent_tool_is_memory(&mt) && !agent_tool_is_memory(&nt),
                           "tool_is_memory: recall vs doc_search");
+
+    /* stocks evidence + tool detection (the stock_movers gate) */
+    const char *k1 = "Welche Aktie hat heute am besten performt?";
+    const char *k2 = "Which stocks lost the most today?";
+    const char *k3 = "Fasse notes.txt zusammen";
+    fails += geist_expect(agent_request_mentions_stocks(strlen(k1), k1), "stocks: Aktie");
+    fails += geist_expect(agent_request_mentions_stocks(strlen(k2), k2), "stocks: stocks");
+    fails += geist_expect(!agent_request_mentions_stocks(strlen(k3), k3),
+                          "stocks: summarize file -> no");
+    struct geist_tool st = {.name        = "stock_movers",
+                            .description = "die Aktien-Tagesgewinner oder -verlierer abrufen"};
+    fails += geist_expect(agent_tool_is_stocks(&st) && !agent_tool_is_stocks(&nt),
+                          "tool_is_stocks: stock_movers vs doc_search");
 
     /* mentions-docs: a docs/Dokumente word at a word start is detected; requests
      * without one (or with doc only mid-word) are not. */

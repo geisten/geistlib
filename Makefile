@@ -265,13 +265,12 @@ bench-tooling: bin $(MODEL_PREREQ)
 # over tests/data/agent_eval/cases.jsonl, greedy decode, web tools stubbed
 # in-process (no network). AGENT_EVAL_MODE = forced | free | both.
 # AGENT_EVAL_MIN gates the forced-mode pass count (exit 1 below it). The fixed
-# threshold 41/46 is the level achieved on bitnet-2b4t-i2_s (2026-07): single
-# 15/15, chains 6/8, ambig 2/4, neg 3/3, e2e 12/12 (answer-content checks
-# incl. the remember->recall memory roundtrip and multi-turn context carry).
-# Recalibrate (or pass AGENT_EVAL_MIN=0)
-# when evaluating a different model.
+# threshold 43/48 is the level achieved on bitnet-2b4t-i2_s (2026-07): single
+# 15/15, chains 6/8, ambig 2/4, neg 3/3, e2e 17/18 (answer-content checks incl.
+# the memory roundtrip, multi-turn context carry, and the stock_movers cases).
+# Recalibrate (or pass AGENT_EVAL_MIN=0) when evaluating a different model.
 AGENT_EVAL_MODE ?= both
-AGENT_EVAL_MIN ?= 41
+AGENT_EVAL_MIN ?= 43
 bench-agent: bin $(MODEL_PREREQ)
 	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode $(AGENT_EVAL_MODE) --min-pass $(AGENT_EVAL_MIN)
 
