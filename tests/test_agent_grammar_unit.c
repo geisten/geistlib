@@ -382,6 +382,48 @@ static void test_recipes(void) {
             "obs_locator: nothing liftable -> 0");
 }
 
+static void test_home_detectors(void) {
+    /* home evidence: German COMPOUNDS carry the noun mid-word -> substring */
+    const char *c1 = "Mach das Flurlicht an";
+    const char *c2 = "Schalte die Wohnzimmerlampe ein";
+    const char *c3 = "Was ist 2 plus 2?";
+    fails += geist_expect(agent_request_mentions_home(strlen(c1), c1),
+                          "home: compound Flurlicht matches");
+    fails += geist_expect(agent_request_mentions_home(strlen(c2), c2),
+                          "home: compound Wohnzimmerlampe matches");
+    fails += geist_expect(!agent_request_mentions_home(strlen(c3), c3),
+                          "home: plain math -> no evidence");
+
+    /* sentence shape: imperative vs question, filler skipped */
+    const char *i1 = "Dimme das Licht auf 40 Prozent";
+    const char *i2 = "Und jetzt schliesse ihn wieder";
+    const char *i3 = "Unlock the front door";
+    const char *q1 = "Ist das Fenster im Bad offen?";
+    const char *q2 = "Wie warm ist es im Bad?";
+    fails += geist_expect(agent_request_is_imperative(strlen(i1), i1), "shape: Dimme imperative");
+    fails += geist_expect(agent_request_is_imperative(strlen(i2), i2),
+                          "shape: filler skipped, schliesse imperative");
+    fails += geist_expect(agent_request_is_imperative(strlen(i3), i3), "shape: unlock imperative");
+    fails += geist_expect(!agent_request_is_imperative(strlen(q1), q1),
+                          "shape: question is not imperative");
+    fails += geist_expect(agent_request_is_question(strlen(q1), q1), "shape: Ist question");
+    fails += geist_expect(agent_request_is_question(strlen(q2), q2), "shape: Wie question");
+    fails += geist_expect(!agent_request_is_question(strlen(i1), i1),
+                          "shape: imperative is not a question");
+
+    /* home tool predicates split on the name */
+    struct geist_tool cmd = {.name        = "control_device",
+                             .description = "ein Hausger\u00e4t schalten oder stellen"};
+    struct geist_tool st  = {.name        = "home_status",
+                             .description = "den Zustand eines Ger\u00e4ts abfragen"};
+    fails += geist_expect(agent_tool_is_home(&cmd) && agent_tool_is_home(&st),
+                          "home: both tools detected as home");
+    fails += geist_expect(agent_pred_home_command(&cmd) && !agent_pred_home_command(&st),
+                          "home: command predicate");
+    fails += geist_expect(agent_pred_home_status(&st) && !agent_pred_home_status(&cmd),
+                          "home: status predicate");
+}
+
 int main(void) {
     test_matchers();
     test_schema_keys();
@@ -391,6 +433,7 @@ int main(void) {
     test_locator();
     test_route_tiebreak();
     test_recipes();
+    test_home_detectors();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;

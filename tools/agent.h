@@ -885,11 +885,148 @@ static inline int agent_tool_is_memory(const struct geist_tool *t) {
            (t->description && (strstr(t->description, "otiz") || strstr(t->description, "edächt")));
 }
 
+/* Case-insensitive bounded needle search (req/obs are not NUL-terminated). */
+static inline int agent_ci_find(size_t hlen, const char *hay, size_t nlen, const char *needle) {
+    if (nlen == 0 || nlen > hlen) {
+        return 0;
+    }
+    for (size_t i = 0; i + nlen <= hlen; i++) {
+        if (strncasecmp(hay + i, needle, nlen) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* True if the request talks about the home/devices — the evidence the home
+ * tools need. Device NOUNS match as substrings: German compounds (Flurlicht,
+ * Wohnzimmerlampe) bury the noun mid-word, so word-start matching misses the
+ * most natural phrasings. Action VERBS match word-start (both German
+ * spellings where umlauts capitalize). */
+static inline int agent_request_mentions_home(size_t req_len, const char *req) {
+    static const char *const nouns[] = {
+            "licht",    "lampe",    "leucht",  "heizung", "thermostat", "temperat", "rolllad",
+            "jalousie", "steckdos", "fenster", "gerät",   "geraet",     "kaffee",   "tür",
+            "tuer",     "door",     "light",   "lamp",    "blind",      "window",   "heating"};
+    for (size_t v = 0; v < sizeof nouns / sizeof *nouns; v++) {
+        if (agent_ci_find(req_len, req, strlen(nouns[v]), nouns[v])) {
+            return 1;
+        }
+    }
+    static const char *const verbs[] = {"schalte", "schalt", "mach",    "stelle",   "dimme",
+                                        "öffne",   "Öffne",  "schließ", "schliess", "dreh",
+                                        "warm",    "turn",   "switch",  "set",      "dim",
+                                        "open",    "close",  "unlock",  "lock",     "device"};
+    for (size_t v = 0; v < sizeof verbs / sizeof *verbs; v++) {
+        size_t wl = strlen(verbs[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, verbs[v], wl) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* True if a tool is a home-bridge tool (device command / status). */
+static inline int agent_tool_is_home(const struct geist_tool *t) {
+    return (t->name && (strstr(t->name, "device") || strstr(t->name, "home"))) ||
+           (t->description && strstr(t->description, "ausgerät"));
+}
+
+/* The command/status boundary of the home menu: an IMPERATIVE opening asks
+ * for the command tool, a QUESTION opening for the status tool. Leading
+ * filler ("Und jetzt schließe ihn") is skipped word by word. */
+static inline int agent_request_is_imperative(size_t req_len, const char *req) {
+    static const char *const v[] = {"schalte", "schalt",  "mach",     "stelle",   "dimme", "öffne",
+                                    "Öffne",   "schließ", "schliess", "dreh",     "turn",  "switch",
+                                    "set",     "dim",     "open",     "close",    "raise", "lower",
+                                    "unlock",  "lock",    "entriegl", "verriegl", "sperr"};
+    static const char *const skip[] = {"und", "jetzt", "bitte", "dann", "please", "now", "and"};
+    size_t                   i      = 0;
+    for (int word = 0; word < 4 && i < req_len; word++) {
+        while (i < req_len && (req[i] == ' ' || req[i] == '\t')) {
+            i++;
+        }
+        size_t s = i;
+        while (i < req_len && req[i] != ' ' && req[i] != '\t') {
+            i++;
+        }
+        size_t wl      = i - s;
+        int    skipped = 0;
+        for (size_t k = 0; k < sizeof skip / sizeof *skip; k++) {
+            skipped |= wl == strlen(skip[k]) && strncasecmp(req + s, skip[k], wl) == 0;
+        }
+        if (skipped) {
+            continue;
+        }
+        for (size_t k = 0; k < sizeof v / sizeof *v; k++) {
+            size_t vl = strlen(v[k]);
+            if (wl >= vl && strncasecmp(req + s, v[k], vl) == 0) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    return 0;
+}
+
+static inline int agent_request_is_question(size_t req_len, const char *req) {
+    static const char *const v[] = {"ist",
+                                    "sind",
+                                    "wie",
+                                    "was",
+                                    "wann",
+                                    "steht",
+                                    "läuft",
+                                    "Läuft",
+                                    "hat",
+                                    "is",
+                                    "are",
+                                    "what",
+                                    "how",
+                                    "does",
+                                    "when"};
+    size_t                   i   = 0;
+    while (i < req_len && (req[i] == ' ' || req[i] == '\t')) {
+        i++;
+    }
+    size_t s = i;
+    while (i < req_len && req[i] != ' ' && req[i] != '\t') {
+        i++;
+    }
+    for (size_t k = 0; k < sizeof v / sizeof *v; k++) {
+        size_t vl = strlen(v[k]);
+        if (i - s == vl && strncasecmp(req + s, v[k], vl) == 0) {
+            return 1;
+        }
+    }
+    return req_len > 0 && req[req_len - 1] == '?';
+}
+
+static inline int agent_pred_home_command(const struct geist_tool *t) {
+    return agent_tool_is_home(t) && t->name && strstr(t->name, "status") == nullptr;
+}
+static inline int agent_pred_home_status(const struct geist_tool *t) {
+    return agent_tool_is_home(t) && t->name && strstr(t->name, "status") != nullptr;
+}
+
 /* True if the request talks about stocks/markets — the evidence the stocks
  * tool needs (Aktie, Börse, Kurs, stock, share, market, ticker, DAX). */
 static inline int agent_request_mentions_stocks(size_t req_len, const char *req) {
-    static const char *const w[] = {"akti",   "börse", "boerse", "kurs",   "stock",    "share",
-                                    "market", "markt", "ticker", "nasdaq", "dividend", "dax"};
+    static const char *const w[] = {"akti",
+                                    "börse",
+                                    "boerse",
+                                    "kurs",
+                                    "stock",
+                                    "share",
+                                    "market",
+                                    "markt",
+                                    "ticker",
+                                    "nasdaq",
+                                    "dividend",
+                                    "dax"};
     for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
         size_t wl = strlen(w[v]);
         for (size_t i = 0; i + wl <= req_len; i++) {
@@ -1153,6 +1290,8 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
                                       !agent_request_mentions_memory(req_len, req)) ||
                                      (agent_tool_is_stocks(&a->tools[i]) &&
                                       !agent_request_mentions_stocks(req_len, req)) ||
+                                     (agent_tool_is_home(&a->tools[i]) &&
+                                      !agent_request_mentions_home(req_len, req)) ||
                                      (agent_pred_filetool(&a->tools[i]) && !has_file));
     }
 
@@ -1201,6 +1340,28 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
         }
         if (alt < 0 && agent_request_mentions_memory(req_len, req)) {
             alt = agent_best_pred(a, n, cal, banned, agent_tool_is_memory);
+        }
+        if (alt < 0 && agent_request_mentions_home(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_tool_is_home);
+        }
+        if (alt >= 0) {
+            best = alt, best_v = cal[alt];
+        }
+    }
+
+    /* Within the home menu the read/write boundary is decided by the SENTENCE
+     * SHAPE, not the name score: an imperative opening ("Dimme …", "Stelle …")
+     * means the command tool, a question opening ("Ist …", "Wie …") the
+     * status tool — first-token PMI confuses the two (measured: 'Dimme das
+     * Licht' routed home_status). Unwindowed: shape is decisive evidence. */
+    if (best < (int) n && agent_tool_is_home(&a->tools[best])) {
+        int alt = -1;
+        if (agent_request_is_imperative(req_len, req) &&
+            !agent_pred_home_command(&a->tools[best])) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_home_command);
+        } else if (agent_request_is_question(req_len, req) &&
+                   !agent_pred_home_status(&a->tools[best])) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_home_status);
         }
         if (alt >= 0) {
             best = alt, best_v = cal[alt];
@@ -1385,19 +1546,6 @@ static const struct agent_recipe AGENT_RECIPES[] = {
         {"doc_search", "summarize_file", "summar fasse zusammen gist"},
         {"list_dir", "summarize_file", "summar fasse zusammen gist"},
 };
-
-/* Case-insensitive bounded needle search (req/obs are not NUL-terminated). */
-static inline int agent_ci_find(size_t hlen, const char *hay, size_t nlen, const char *needle) {
-    if (nlen == 0 || nlen > hlen) {
-        return 0;
-    }
-    for (size_t i = 0; i + nlen <= hlen; i++) {
-        if (strncasecmp(hay + i, needle, nlen) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
 
 /* If a recipe continues routed tool `idx` — second tool whitelisted and a cue
  * word (word-start, case-insensitive prefix) present in the request — return
