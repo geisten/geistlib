@@ -21,9 +21,12 @@ int main(void) {
     fails += geist_expect(ha_state_url("http://pi:8123", "light.flur", sizeof out, out) > 0 &&
                                   strcmp(out, "http://pi:8123/api/states/light.flur") == 0,
                           "url: state");
-    char tiny[8];
-    fails += geist_expect(ha_service_url("http://pi:8123", "light", "turn_on", sizeof tiny, tiny) ==
-                                  0,
+    /* truncation IS the tested behavior here; the volatile cap keeps GCC's
+     * static format-truncation analysis (an -Werror on the Pi) from proving
+     * the deliberate overflow at compile time. */
+    char            tiny[8];
+    volatile size_t tiny_cap = sizeof tiny;
+    fails += geist_expect(ha_service_url("http://pi:8123", "light", "turn_on", tiny_cap, tiny) == 0,
                           "url: overflow yields 0");
 
     /* body building */
