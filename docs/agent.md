@@ -24,6 +24,7 @@ object inside an app — but the core is identical.
 - [Tools](#tools)
   - [Tool selection & forced calls](#tool-selection--forced-calls)
   - [Progress events](#progress-events)
+- [The home appliance — `make home`](#the-home-appliance--make-home)
 - [Testing the agent — `make bench-agent`](#testing-the-agent--make-bench-agent)
   - [The end-to-end cases](#the-end-to-end-cases-cat-e2e)
   - [Live-web smoke](#live-web-smoke--make-bench-agent-live)
@@ -247,6 +248,42 @@ per step to a `FILE*` — `geist_agent_main` wires it to `stderr` **by default**
 `tool`/`detail` point into agent buffers and are valid **only during the
 callback** — copy them if you retain them. A server host can serialize the same
 struct to JSON and stream it to a UI.
+
+## The home appliance — `make home`
+
+The first DOMAIN BUILD: `make home` produces `./geist-home` — BitNet baked in,
+and **only the home tools compiled in** (no web, no docs, no stocks). Fixed
+scope at build time: the artifact itself is the security promise.
+
+```sh
+make home
+GEIST_HA_URL=http://<ha-host>:8123 GEIST_HA_TOKEN=<long-lived-token> \
+  ./geist-home "Schalte das Licht im Flur ein"    # -> OK: light.flur → an
+```
+
+Three layers:
+
+- **`ha_rest.h`** — standalone, agent-free Home Assistant REST client
+  (call_service / get_state, Bearer auth, no-shell curl). Manual driver:
+  `geist ha state|on|off|open|close <entity_id>` (all build profiles).
+- **`agent_home.h`** — two tools along the read/write boundary:
+  a **command tool** (turn on/off, dim, set temperature, open/close) and a
+  **status tool** (device/sensor reads), both `{"request"}` — the model only
+  routes; device, action and value are parsed deterministically against the
+  **registry file** (`GEIST_HOME_REGISTRY`, default `./home-registry.txt`,
+  one `entity | domain | alias phrases` line per device). Ambiguity ("das
+  Licht" with two lights) yields a deterministic clarifying answer; unknown
+  devices a clear error. A **last-device memory** resolves pronouns ("Mach
+  *es* wieder aus"). v1 writes are whitelisted to light/switch/climate/cover —
+  **locks, garage doors and alarms are refused** even if listed.
+- **routing evidence** — home nouns match as substrings (German compounds:
+  *Flurlicht*), action verbs word-start; the sentence SHAPE decides the
+  read/write boundary (imperative → command, question → status).
+
+Demo backend: the official Home Assistant container with template entities
+matching the starter registry (see `home-registry.txt`); onboarding + a
+long-lived token are API-scriptable. Eval: `make bench-agent-home` — the
+standalone 2-tool menu over `cases_home.jsonl`, gate `AGENT_EVAL_HOME_MIN`.
 
 ## Testing the agent — `make bench-agent`
 
