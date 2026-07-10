@@ -36,7 +36,9 @@ LOG="$OUT/home-gate-$STAMP.log"
 BIN="$REPO/bin/pi5/release/tests/bench_agent_eval"
 [ -x "$BIN" ] || BIN="$(ls "$REPO"/bin/*/release/tests/bench_agent_eval 2>/dev/null | head -1)"
 
-{
+# Subshell, not a brace group: the inner exit must end the MEASURED run only,
+# not the whole script — the summary line and FAILED marker below still run.
+(
     date '+%F %T'
     # Quiesce check, not a hard stop: the HA container idles alongside — note
     # the load so a slow-looking run can be read with its context.
@@ -52,7 +54,7 @@ BIN="$REPO/bin/pi5/release/tests/bench_agent_eval"
     RC=$?
     echo "EVAL_EXIT=$RC WALL_SECONDS=$(( $(date +%s) - T0 ))"
     exit $RC
-} > "$LOG" 2>&1
+) > "$LOG" 2>&1
 RC=$?
 
 SUMMARY=$(grep -m1 '^SUMMARY mode=forced' "$LOG" || echo "SUMMARY missing")

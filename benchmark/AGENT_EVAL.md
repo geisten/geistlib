@@ -37,6 +37,7 @@ GEIST_GGUF_PATH=gguf_artifacts/bitnet-2b4t-i2_s.gguf make bench-agent
 | date | version | host | OS | target/mode | threads | model | gate | forced pass | forced wall | free pass | free wall | total wall |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 2026-07-10 | ecbb8f4 (+realpath fix) | Raspberry Pi 5 (4×A76, 4 GB) | Debian 13.5 (6.18 rpt) | pi5/release (OpenBLAS) | 4 | bitnet-2b4t-i2_s | 43 → **PASS** | **43/48** | 722 s | 4/48 | 1460 s | 2183 s |
+| 2026-07-10 | home nightly (2b4ef81) | Raspberry Pi 5 (4×A76, 4 GB, HA container idling) | Debian 13.5 | pi5/release | 4 | bitnet-2b4t-i2_s | **home** 31 → **PASS** | **31/31** | 252 s | — (nightly runs forced only) | — | 252 s |
 | 2026-07-10 | home appliance (51da99b) | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | **home** 31 → **PASS** | **31/31** | 114 s | 3/31 | 227 s | 341 s |
 | 2026-07-10 | v0.3.3-31+stocks | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | 43 → **PASS** | 43/48 | 339 s | 4/48 | 472 s | 811 s |
 | 2026-07-09 | v0.3.3-29-gc640d9a | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | 41 → **PASS** | 41/46 | 256 s | 6/46 | 419 s | 675 s (446 % CPU) |
@@ -51,6 +52,16 @@ real Home Assistant container on the Pi 5 (template + demo entities; the
 appliance switches a real light, sets the demo thermostat, reads sensors).
 Free mode stays diagnostic. This is the per-domain methodology working as
 designed: narrow menu, own corpus, own gate, better-than-demo reliability.
+
+**Home-gate nightly (Pi 5):** `scripts/nightly-home-gate.sh` runs the DEPLOYED
+tree's forced home gate every night at 03:30 (crontab), one summary line per
+night in `~/geist-nightly/home-gate.log`, full per-date logs kept two weeks,
+and a `~/geist-nightly/FAILED` marker while the latest run is red (the morning
+check — no notification infra by design). Both paths verified live: a red run
+(threshold forced to 32) sets the marker and logs FAIL with the true counts;
+the next green run clears it. Deployment is a deliberate manual rsync+make, so
+a red nightly always means "this deployed state regressed". ~250 s per night
+with the HA container idling alongside (load noted in every log).
 
 The 2026-07-10 runs add the `stock_movers` tool (48 cases, 8-tool menu) and
 the routing restructure it forced: evidence BAN mask (rare-name tools do not
