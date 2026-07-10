@@ -41,6 +41,7 @@ enum { geist_embedded = 0 };
 #include "agent_listdir.h"
 #include "agent_main.h"
 #include "agent_memory.h"
+#include "agent_stocks.h"
 #include "agent_summarize.h"
 #include "agent_webfetch.h"
 #include "agent_websearch.h"
@@ -114,7 +115,8 @@ static size_t agent_tools(struct geist_model *model, struct geist_backend *be,
      * a SearXNG instance instead (same knob as the agent eval / live smoke). */
     out[3]           = websearch_tool(getenv("GEIST_SEARX_ENDPOINT"));
     out[4]           = webfetch_tool(nullptr);
-    size_t n         = 5;
+    out[5]           = stock_movers_tool(nullptr);
+    size_t n         = 6;
     /* Memory tools are opt-in: include them only when a palace is configured
      * (GEIST_MIND_DIR). On weak models the router scores tool NAMES, and adding
      * remember/recall to the default set makes common requests (e.g. "summarize

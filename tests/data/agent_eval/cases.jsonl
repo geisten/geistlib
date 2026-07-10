@@ -44,3 +44,5 @@
 {"id":"conv-2","cat":"e2e","conv":"c1","req":"What did I just ask you about?","tool":"none","expect":"report"}
 {"id":"conv-3","cat":"e2e","conv":"c2","req":"Fetch https://example.com/pi5.html and tell me what it says","tool":"web_fetch","arg":"url","want":"pi5.html","expect":"tokens per second"}
 {"id":"conv-4","cat":"e2e","conv":"c2","req":"Wovon war gerade die Rede?","tool":"none","expect":"Raspberry|Pi 5|pi5|tokens"}
+{"id":"stk-1","cat":"e2e","req":"Welche Aktie hat heute am besten performt?","tool":"stock_movers","arg":"query","want":"performt","expect":"1. LASR"}
+{"id":"stk-2","cat":"e2e","req":"Which stocks lost the most today?","tool":"stock_movers","arg":"query","want":"lost","expect":"1. XYZ"}

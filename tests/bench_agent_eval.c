@@ -36,6 +36,7 @@
 #include "../tools/agent_docsearch.h"
 #include "../tools/agent_listdir.h"
 #include "../tools/agent_memory.h"
+#include "../tools/agent_stocks.h"
 #include "../tools/agent_summarize.h"
 #include "../tools/agent_webfetch.h"
 #include "../tools/agent_websearch.h"
@@ -193,6 +194,31 @@ static enum geist_status ev_stub_search(void      *ctx,
                                EV_PAGES[order[i]].title,
                                EV_PAGES[order[i]].url);
     return agent_ret(out_len, w);
+}
+
+/* stock_movers stub: canned sorted movers, direction from the real detector —
+ * the production fetch is network, the direction/format logic is unit-tested. */
+static enum geist_status ev_stub_stocks(void      *ctx,
+                                        size_t     args_len,
+                                        const char args[static args_len],
+                                        size_t     out_cap,
+                                        char       out[static out_cap],
+                                        size_t    *out_len) {
+    (void) ctx;
+    char query[512];
+    agent_json_str(args, "query", sizeof query, query);
+    if (stocks_wants_losers(query)) {
+        return agent_obs(out_cap,
+                         out,
+                         out_len,
+                         "Today's worst performing stocks (percent change):\n"
+                         "1. XYZ -12.50%%\n2. ABC -3.25%%\n");
+    }
+    return agent_obs(out_cap,
+                     out,
+                     out_len,
+                     "Today's top performing stocks (percent change):\n"
+                     "1. LASR +25.63%%\n2. BBIO +17.07%%\n");
 }
 
 static enum geist_status ev_stub_fetch(void      *ctx,
@@ -485,11 +511,13 @@ int main(int argc, char **argv) {
             webfetch_tool(nullptr),
             remember_tool(),
             recall_tool(),
+            stock_movers_tool(nullptr),
     };
     if (!live_web) {
         tools[3].invoke = ev_stub_search; /* keep production name/desc/schema, */
         tools[4].invoke = ev_stub_fetch;  /* stub only the side effect         */
-        tools[3].ctx = tools[4].ctx = nullptr;
+        tools[7].invoke = ev_stub_stocks;
+        tools[3].ctx = tools[4].ctx = tools[7].ctx = nullptr;
     }
 
     printf("agent eval: %zu cases, model=%s\n\n", n_cases, model_path);
