@@ -34,22 +34,34 @@ include mk/target-$(TARGET).mk
 # Pull in common build rules (LIB_FILE, BIN_TARGETS, object/link rules).
 include mk/common.mk
 
-# Convenience aggregate goals.
+# Convenience aggregate goals. `bin` is declared AFTER the EMBED block below:
+# make expands prerequisite lists immediately at parse time, and the EMBED
+# block swaps the CLI's entry in BIN_TARGETS — declaring `bin` here would
+# capture the pre-swap list and link a broken plain tools/geist from an
+# embedded geist.o.
 lib: $(LIB_FILE)
-bin: $(BIN_TARGETS)
 
 # `./$(EMBED_NAME)` → the built CLI for the current TARGET/MODE, so the demo is
 #   make && OMP_WAIT_POLICY=active ./geist model.gguf "The capital of France is"
 # Re-pointed on every build (cheap); removed by `make distclean`.
 #
-# EMBED_NAME names the symlink. Give an embedded single-file build its OWN name —
-# it has no model-path argument, unlike the plain `geist`, so a distinct name
-# avoids the "which one needs a model?" confusion:
+# EMBED_NAME names the symlink AND the binary under $(BIN_DIR)/tools/. Embedded
+# builds default to "geist-embedded", never "geist": if the embedded binary
+# lived at tools/geist, any later plain `make` would relink that path WITHOUT
+# the model — the ./geist-bitnet symlink would then point at a plain binary
+# that parses the prompt as a model path ("model_load failed"). Distinct paths,
+# no clobber. A distinct name also avoids the "which one needs a model?"
+# confusion — the embedded build takes no model-path argument, unlike `geist`:
 #   make EMBED_MODEL=bitnet-2b4t.i2_s.gguf EMBED_NAME=geist-bitnet
 #   ./geist-bitnet "The capital of France is"      # no model path — it's baked in
-EMBED_NAME ?= geist
-geist: $(BIN_DIR)/tools/geist
-	@ln -sf $(BIN_DIR)/tools/geist $(EMBED_NAME) && echo "./$(EMBED_NAME) -> $(BIN_DIR)/tools/geist"
+ifneq ($(strip $(EMBED_MODEL)),)
+  EMBED_NAME ?= geist-embedded
+else
+  EMBED_NAME ?= geist
+endif
+GEIST_BIN := $(BIN_DIR)/tools/$(EMBED_NAME)
+geist: $(GEIST_BIN)
+	@ln -sf $(GEIST_BIN) $(EMBED_NAME) && echo "./$(EMBED_NAME) -> $(GEIST_BIN)"
 
 # `make run ARGS='model.gguf "your prompt" -n 40'` — build, then run the CLI
 # with OMP_WAIT_POLICY=active (matters for multi-thread perf on mac-omp).
@@ -72,15 +84,18 @@ run: geist
 # otherwise. Applies in both branches, so it lives outside the ifneq.
 EMBED_TAG         := $(if $(strip $(EMBED_MODEL)),embedded:$(abspath $(EMBED_MODEL)),none)
 GEIST_EMBED_STAMP := $(BUILD_DIR)/tools/.geist-embed-state
-# When the embed state changes, DELETE geist.o + the binary so they rebuild with
-# the right -DGEIST_EMBEDDED_MODEL. We can't rely on a stamp prerequisite's mtime:
-# macOS ships GNU make 3.81, whose timestamp comparison is whole-second, so a
-# stamp rewritten in the same second as the prior build looks "not newer" and the
-# rebuild is skipped. Deleting sidesteps mtime entirely. Runs at parse time.
+# When the embed state changes, DELETE geist.o + this mode's binary so they
+# rebuild with the right -DGEIST_EMBEDDED_MODEL. We can't rely on a stamp
+# prerequisite's mtime: macOS ships GNU make 3.81, whose timestamp comparison is
+# whole-second, so a stamp rewritten in the same second as the prior build looks
+# "not newer" and the rebuild is skipped. Deleting sidesteps mtime entirely.
+# Only $(GEIST_BIN) is deleted — the OTHER mode's binary (e.g. tools/geist-bitnet
+# when switching back to plain) stays valid: it was linked from a geist.o that
+# matched its own embed state. Runs at parse time.
 $(shell mkdir -p $(BUILD_DIR)/tools 2>/dev/null; \
         if [ "$$(cat $(GEIST_EMBED_STAMP) 2>/dev/null)" != "$(EMBED_TAG)" ]; then \
             printf '%s' "$(EMBED_TAG)" > $(GEIST_EMBED_STAMP); \
-            rm -f $(BUILD_DIR)/tools/geist.o $(BIN_DIR)/tools/geist; \
+            rm -f $(BUILD_DIR)/tools/geist.o $(GEIST_BIN); \
         fi)
 
 ifneq ($(strip $(EMBED_MODEL)),)
@@ -99,9 +114,22 @@ ifneq ($(strip $(EMBED_MODEL)),)
   $(EMBED_OBJ): $(EMBED_ABS)
   # geist CLI: compile its TU with the embed flag and link the stub object in.
   $(BUILD_DIR)/tools/geist.o: CFLAGS += -DGEIST_EMBEDDED_MODEL
-  $(BIN_DIR)/tools/geist: EXTRA_LINK_OBJS := $(EMBED_OBJ)
-  $(BIN_DIR)/tools/geist: $(EMBED_OBJ)
+  # Link to tools/$(EMBED_NAME), NOT tools/geist: geist.o is shared between the
+  # plain and embedded builds (the stamp above rebuilds it on every mode
+  # switch), but if the BINARIES shared a path too, any later plain `make`
+  # would clobber the embedded binary — leaving the embed symlink pointing at
+  # a model-less CLI. Swap the CLI's entry in BIN_TARGETS so `make bin` builds
+  # the embedded path (and never a broken plain link against an embedded
+  # geist.o). The generic $(BIN_DIR)/% rule in common.mk can't produce this
+  # target (there is no tools/$(EMBED_NAME).o), so link explicitly from geist.o.
+  BIN_TARGETS := $(patsubst $(BIN_DIR)/tools/geist,$(GEIST_BIN),$(BIN_TARGETS))
+  $(GEIST_BIN): $(BUILD_DIR)/tools/geist.o $(EMBED_OBJ) $(LIB_FILE)
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(BUILD_DIR)/tools/geist.o $(EMBED_OBJ) $(LIB_FILE) $(LDLIBS)
 endif
+
+# Declared after the EMBED block on purpose — see the note at `lib:` above.
+bin: $(BIN_TARGETS)
 
 # Test runner — invokes mk/run-tests.sh against the test bin directory.
 # FILTER is an optional substring; e.g. `make test FILTER=q3k` runs only
