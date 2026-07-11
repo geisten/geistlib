@@ -4,6 +4,23 @@
 
 # geist 👻
 
+> **A tiny, local AI runtime for controlled edge agents.** Run useful models on
+> the CPU you already own — especially a Raspberry Pi — and give them a small,
+> explicit set of actions without handing your home or your data to a cloud.
+>
+> **Where this is going:** a private Home Assistant agent that installs on a Pi,
+> keeps its model warm, and can query or control only the entities its owner has
+> exposed. A working preview already runs on a Pi 5: Home Assistant talks to a
+> resident `geist-home` process over a permission-gated Unix socket, with no TCP
+> inference port and no cloud model service.
+
+<p align="center">
+  <strong>local by default</strong> &nbsp;·&nbsp;
+  <strong>CPU-only</strong> &nbsp;·&nbsp;
+  <strong>one small runtime</strong> &nbsp;·&nbsp;
+  <strong>whitelist-gated actions</strong>
+</p>
+
 > **We want AI to belong to everyone.** Not rented from a data center, but running on
 > the hardware you already have — your laptop, a Raspberry Pi, an old CPU with no GPU
 > in sight. geist squeezes the most out of today's models to make that real: capable
@@ -21,6 +38,39 @@
 > same Pi now runs the first **[geist appliance](#from-engine-to-appliance--first-up-your-house-on-voice)**:
 > a voice-controlled smart home — ~2 s per command, no cloud. Need more? The same
 > engine runs **Gemma 4 with vision + audio** from one model file.
+
+## The niche: useful local agents on constrained hardware
+
+geist is not trying to be a universal model catalog or a drop-in replacement for
+every GPU inference server. It is deliberately optimized for a narrower job:
+
+- **Edge appliances:** one auditable C runtime, no Python environment and no
+  container required.
+- **Raspberry Pi and CPU-only hosts:** platform-specific kernels and ternary
+  BitNet support where memory bandwidth matters most.
+- **Controlled agents:** the host supplies a fixed tool whitelist and step
+  budget; the model cannot grant itself new capabilities.
+- **Private smart homes:** the Home Assistant preview keeps inference on the
+  local host; HA supplies the exposed-entity registry and geist limits actions
+  to its explicit home-tool families.
+
+### Home Assistant status
+
+The Home Assistant path is a **working developer preview**, not yet a one-click
+release. Its canonical transport is deliberately small:
+
+1. `geist-home --serve /path/geist.sock` loads the model once and stays warm;
+2. the `geist_conversation` Conversation integration sends one Assist utterance
+   per local Unix-socket connection;
+3. HA pushes its exposed entities, areas and aliases into geist's deterministic
+   registry; unsupported domains are ignored;
+4. geist's bounded home tools call HA locally and keep confirmations for locks
+   inside the appliance agent.
+
+The next milestone is packaging this proven path: reproducible installation,
+health diagnostics, upgrades, soak testing, and published German/English Pi 5
+results. A general TCP/HTTP inference API is not required for this use case. See
+[`ROADMAP.md`](ROADMAP.md).
 
 <p align="center">
   <strong>~2 s</strong> voice command → action <sub>(smart home, Pi 5, offline)</sub> &nbsp;·&nbsp;

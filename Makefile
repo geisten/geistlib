@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run home clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-home bench-agent-live bench-agent-judge format format-check
+.PHONY: all lib bin run home clean distclean help test test-unit test-int test-e2e test-all test-py test-ha fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-home bench-agent-live bench-agent-judge format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -216,6 +216,13 @@ test-py:
 	done; \
 	if [ $$status -ne 0 ]; then echo "test-py: FAIL"; exit $$status; fi; \
 	echo "test-py: PASS"
+
+# Home Assistant packaging/transport contract. Model-free and HA-free: validates
+# the component artifact, exposed-entity registry, Unix-socket framing, staged
+# clean installation, secret permissions, upgrade, and rollback.
+test-ha:
+	@python3 tests/test_ha_integration.py
+	@tests/test_ha_install.sh
 
 # `make test-all` adds e2e but excludes benches. Model first (see `test`).
 test-all: $(MODEL_PREREQ) test-unit test-int test-py test-e2e

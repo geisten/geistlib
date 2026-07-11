@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import socket
 
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
@@ -13,24 +12,9 @@ from homeassistant.helpers import intent
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_SOCKET, DEFAULT_SOCKET, TIMEOUT_S
+from .transport import ask_geist
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _ask_geist(path: str, text: str) -> str:
-    """One utterance, one connection: send the line, half-close, read to EOF."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(TIMEOUT_S)
-        s.connect(path)
-        s.sendall(text.encode("utf-8").replace(b"\n", b" ") + b"\n")
-        s.shutdown(socket.SHUT_WR)
-        chunks = []
-        while True:
-            b = s.recv(4096)
-            if not b:
-                break
-            chunks.append(b)
-    return b"".join(chunks).decode("utf-8", errors="replace").strip()
 
 
 async def async_setup_entry(
@@ -61,7 +45,7 @@ class GeistConversationEntity(conversation.ConversationEntity):
         response = intent.IntentResponse(language=user_input.language)
         try:
             answer = await self.hass.async_add_executor_job(
-                _ask_geist, self._sock_path, user_input.text
+                ask_geist, self._sock_path, user_input.text, TIMEOUT_S
             )
         except OSError as err:
             _LOGGER.error("geist daemon unreachable at %s: %s", self._sock_path, err)

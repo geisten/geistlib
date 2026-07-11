@@ -33,7 +33,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_SOCKET, DEFAULT_SOCKET, DOMAIN
+from .const import CONF_SOCKET, DEFAULT_SOCKET, DOMAIN, TIMEOUT_S
+from .registry import async_setup_registry_sync
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,6 +65,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # Auto-discovery: derive the device registry from HA's exposed entities +
+    # areas + aliases and push it to the daemon (now, on change, periodically).
+    sock = entry.data.get(CONF_SOCKET, DEFAULT_SOCKET)
+    entry.async_on_unload(async_setup_registry_sync(hass, sock, TIMEOUT_S))
     return True
 
 
