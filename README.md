@@ -66,6 +66,7 @@ inside the binary.
 
 ```bash
 ./geist-bitnet "The capital of France is"     # generate — no model argument
+./geist-bitnet -c "How many minutes in a day?" # instruct chat — clean answer, offline
 ./geist-bitnet agent "Summarize report.md"    # one-shot tool-use agent
 ./geist-bitnet chat                           # multi-turn chat + memory
 ```
@@ -164,6 +165,32 @@ parsing wrapped around a small model, a per-domain eval gate — an offline docs
 kiosk, a lab-bench assistant, a control panel that must never phone home. The
 whole home layer is ~1000 lines of header-only C on top of the engine
 ([`tools/agent_home.h`](tools/agent_home.h) + the REST client); start yours there.
+
+---
+
+## …and the other half: the LLM, on the Pi itself
+
+Voice assistants split in two. **Deterministic phrase-matching** handles device
+control — fast, no model, no hallucination. An **LLM handles the rest**: the
+general questions, the light reasoning, "how many minutes are in a day". That
+second half usually gets **offloaded to a bigger box or the cloud**, because a
+capable general model barely fits a 4 GB Pi.
+
+geist runs it **on the Pi itself**. BitNet is ternary, so the whole model is
+**1.2 GB** — about a third the footprint of a typical general model served via
+Ollama (3.4 GB, which strains a 4 GB Pi and, without `use_mmap`, gets OOM-killed
+on load). One binary, no Python, no Docker, no second machine:
+
+```bash
+./geist-bitnet -c "How many minutes are in a day?"   # -> A full day has 1440 minutes.
+```
+
+Warm, that answers in **~2 s on a Raspberry Pi 5** — `-c` wraps your prompt in the
+model's chat template and stops cleanly, no tool loop, nothing leaving the LAN. So
+the whole assistant — control *and* conversation — stays on the box you already own.
+<sub>Measured on a Pi 5 (4 GB) over 10 general questions, warm, 4 threads; the same
+turn on an M1 Max is well under a second. Numbers and method:
+[`benchmark/AGENT_EVAL.md`](benchmark/AGENT_EVAL.md).</sub>
 
 ---
 

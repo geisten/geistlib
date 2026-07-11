@@ -175,3 +175,43 @@ prose-primed, call tokens banned every step, the router's no-tool decision
 terminal), after which "What is 2 plus 2?" answers `4` and neg-2 became a
 gated regression test. The judge and the substring gate fail in orthogonal
 ways — which is why the judge stays advisory and the gate stays mechanical.
+
+## The LLM-half: geist vs Ollama on a Pi 5 (2026-07-11)
+
+The community's voice-assistant split keeps deterministic phrase-matching for
+device control and an **LLM for "the rest"** (general Q&A, light reasoning). This
+measures that second half on the deployment box itself — can a 4 GB Pi 5 run it
+self-contained, and how does geist compare to Ollama there?
+
+**Setup:** 10 general one-shot tasks (facts, unit conversion, one-line reasoning,
+DE+EN), warm, greedy, 4 threads, `geist-home` stopped for a clean box, HA
+container idling. geist via `geist <model> -c` (chat-templated one-shot); Ollama
+via `/api/generate`, `think:false`, `use_mmap:true`, `num_ctx 1024`. Prompts are
+unique (no Ollama prompt cache).
+
+| config | model (footprint) | mean s/task | median | quality |
+|---|---|--:|--:|---|
+| **geist-bitnet** | BitNet 2B-4T i2_s (**1.2 GB**, ternary) | **1.85** | 1.79 | substance correct |
+| ollama-gemma | Gemma 4 E2B Q4 (**3.4 GB**) | 3.90 | 3.73 | cleanest (mature wrapper) |
+| geist-gemma | Gemma 4 E2B Q4 (2.9 GB) | 5.03 | 5.00 | correct |
+
+**Headline — footprint / self-sufficiency:** BitNet's 1.2 GB runs comfortably
+alongside HA; Ollama's 3.4 GB Gemma is **OOM-killed on load without `use_mmap`**
+(`llama-server ... signal: killed` after 2 min) and the box's 2 GB swap sat at
+**100 % used** throughout the Gemma runs. A ternary model is the comfortable fit
+on a 4 GB Pi; a Q4 general model is at the edge.
+
+**geist-BitNet is the fastest (~1.85 s), even handicapped.** geist ran as a *cold
+CLI* (reloads per call) against Ollama's *warm resident server*; BitNet's load is
+cheap (1.2 GB mmap, page-cache hot) so cold≈warm, and it still beat the warm
+Ollama. Same turn on an M1 Max: ~0.8 s.
+
+**Honest caveats.** (1) geist-gemma slower than ollama-gemma (5.03 vs 3.90) is a
+**cold-CLI vs warm-server artifact**, not an engine loss — the same-model warm
+comparison (geist ≥ llama.cpp on Gemma E2B) is in the throughput table above; a
+`geist --serve` daemon (the home appliance does ~2 s warm) would be far lower.
+(2) Ollama's API wall-clock is ~15 % prefill-optimistic. (3) The only model gap
+was **cosmetic**: the bare `geist <model> "prompt"` CLI leaked template tokens
+(`<|im_sep|>`) and stopped poorly — fixed by `geist -c/--chat`, which applies the
+model's chat template (the agent/serve layer already had the wrapper). N=10, easy
+tasks; this sizes the LLM-half, it is not a general capability eval.
