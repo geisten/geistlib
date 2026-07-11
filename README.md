@@ -17,10 +17,13 @@
 > The proof so far is `geist-bitnet`: **one binary with Microsoft's ternary BitNet
 > 2B-4T baked in** — [**download it**](#run-it-now--model-baked-in) and run it right
 > away. Copy it to a Pi and it generates text, **drives tools**, and searches the web
-> — all locally, and it decodes **~2× faster than Microsoft's own bitnet.cpp**. Need
-> more? The same engine runs **Gemma 4 with vision + audio** from one model file.
+> — all locally, and it decodes **~2× faster than Microsoft's own bitnet.cpp**. That
+> same Pi now runs a **[voice-controlled smart home](#your-house-on-voice--no-cloud)**
+> — ~2 s per command, no cloud. Need more? The same engine runs **Gemma 4 with
+> vision + audio** from one model file.
 
 <p align="center">
+  <strong>~2 s</strong> voice command → action <sub>(smart home, Pi 5, offline)</sub> &nbsp;·&nbsp;
   <strong>2.1×</strong> BitNet decode vs bitnet.cpp <sub>(Pi 5)</sub> &nbsp;·&nbsp;
   <strong>1.5×</strong> prefill vs llama.cpp <sub>(M1 Max)</sub> &nbsp;·&nbsp;
   <strong>1.4×</strong> BitNet decode vs bitnet.cpp <sub>(x86)</sub> &nbsp;·&nbsp;
@@ -99,6 +102,46 @@ on every platform). Then point the engine at the model.
 ```
 
 <sub>Prebuilt for macOS · ARM64, Linux · ARM64 and Linux · x86-64 (AVX-512, runs on any x86-64-v3 CPU). Windows is still pending. BitNet is a **base model with no tool training** — geist forces a valid tool call from outside the sampler, so it routes and calls anyway.</sub>
+
+---
+
+## Your house, on voice — no cloud
+
+`make home` builds **geist-home**: a single binary (BitNet baked in, only the
+home tools compiled in) that plugs into
+[Home Assistant](https://www.home-assistant.io/) Assist and turns a
+**4 GB Raspberry Pi 5** into a private voice brain for your smart home.
+
+<!-- TODO promo asset: ~20 s GIF — Assist app: „Schalte das Licht im Flur ein"
+     → light flips in ~2 s, terminal alongside showing nothing leaves the LAN. -->
+
+- **~2 s per command**, warm — measured through the full Home Assistant Assist
+  pipeline on the Pi 5, with the HA container running on the same box.
+  (Speech-to-text, if you add it, is its own step.)
+- **German + English, the way people actually talk**: „Mach alles aus", "dim the
+  light to 40 %", „mach es *etwas wärmer*", "and now close it again" — compound
+  nouns, pronouns, relative setpoints, collectives.
+- **The model never decides a security question.** It only *routes*; device,
+  action and value are parsed deterministically against a plain-text device
+  registry. Unlocking the front door takes a two-turn confirmation (challenge →
+  literal confirm word, one-shot, 120 s TTL). Garage doors and alarm panels are
+  refused **by code, not by prompt**.
+- **Regression-gated, not vibe-checked**: the whole voice→action path passes a
+  56-case eval — commands, statuses, deliberate ambiguity, refusals, multi-turn
+  pronouns, the lock flow, in both languages — **nightly, on the Pi itself**.
+
+```bash
+make home                                        # -> ./geist-home (model baked in)
+GEIST_HA_URL=http://ha.local:8123 GEIST_HA_TOKEN=<token> \
+  ./geist-home "Schalte das Licht im Flur ein"   # -> OK: light.flur → an
+```
+
+Run it as a daemon (`--serve` plus the bundled
+[systemd unit](integrations/systemd/geist-home.service)), add the
+[Home Assistant custom component](integrations/home-assistant/), and Assist —
+typed or spoken — answers from your own hardware. Your devices live in one plain
+text file (`entity | domain | alias phrases`). Full walkthrough:
+[docs/agent.md](docs/agent.md#the-home-appliance--make-home).
 
 ---
 
@@ -299,7 +342,7 @@ exceeds the 2 GB GitHub-release limit. (Runs real-time on a Pi 5 —
 | :-- | :-- |
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Run the CLI and embed the library in two minutes. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, load-time kernel binding, the pipeline. |
-| [`docs/agent.md`](docs/agent.md) | The tool-use agent, bundled tools, routing & forced calls, security model. |
+| [`docs/agent.md`](docs/agent.md) | The tool-use agent, bundled tools, routing & forced calls, security model, the [home appliance](docs/agent.md#the-home-appliance--make-home). |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Single-binary builds, server/embedded deployment. |
 | [`benchmark/`](benchmark/README.md) | Methodology & full results ([Apple/Pi 5](benchmark/BENCHMARK.md), [ternary BitNet](benchmark/TERNARY_BITNET.md)). |
 | [`include/geist.h`](include/geist.h) | The public C API, with `STABLE` / `EXPERIMENTAL` stability tags. |
