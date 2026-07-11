@@ -198,19 +198,19 @@ static struct transformer_forward_profile g_head_profile = {
  * while decode keeps the sketch win. Not softcapped — peek applies that. */
 [[nodiscard]] enum geist_status
 transformer_head_dense_recompute(struct transformer_arch_state *st) {
-    struct geist_backend            *be          = st->backend;
-    const struct geist_backend_vtbl *v           = be->desc->vtbl;
-    struct geist_tensor              t_h_2d      = view_2d(st->sess->scratch_h_a, 1, st->d_model);
-    struct geist_tensor t_logits_2d = view_2d(st->sess->scratch_logits, 1, st->vocab_size);
-    enum geist_status   s           = linear_w_or_legacy(be,
-                                                         v,
-                                                         st->sess->scratch_h_a,
-                                                         st->sess->scratch_logits,
-                                                         &st->embed_table_w,
-                                                         /* seq = */ 1,
-                                                         &t_h_2d,
-                                                         &st->embed_table,
-                                                         &t_logits_2d);
+    struct geist_backend            *be     = st->backend;
+    const struct geist_backend_vtbl *v      = be->desc->vtbl;
+    struct geist_tensor              t_h_2d = view_2d(st->sess->scratch_h_a, 1, st->d_model);
+    struct geist_tensor t_logits_2d         = view_2d(st->sess->scratch_logits, 1, st->vocab_size);
+    enum geist_status   s                   = linear_w_or_legacy(be,
+                                                                 v,
+                                                                 st->sess->scratch_h_a,
+                                                                 st->sess->scratch_logits,
+                                                                 &st->embed_table_w,
+                                                                 /* seq = */ 1,
+                                                                 &t_h_2d,
+                                                                 &st->embed_table,
+                                                                 &t_logits_2d);
     if (s == GEIST_OK) {
         st->sess->logits_sparse = false;
     }
