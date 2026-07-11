@@ -76,6 +76,21 @@ ambiguous or multi-step work.
 A general HTTP inference API is a separate interoperability feature, not a
 dependency of the Home Assistant product track.
 
+### Phase 2: native Home Assistant beta
+
+After the preview exit criteria and first appliance release are complete, Phase
+2 removes the daemon's long-lived HA token, moves final policy enforcement and
+action execution into Home Assistant, adds a versioned typed tool protocol, and
+packages the runtime as a protected Home Assistant app for `aarch64` and
+`amd64`. The Core/Container Unix-socket deployment remains supported.
+
+The architecture, migration gates, security boundaries, distribution strategy,
+and acceptance scorecard are defined in the
+[Phase 2 proposal](docs/proposals/home-assistant-phase-2.md). The first
+implementation slice is deliberately limited to protocol contracts and the
+planner/executor boundary; app packaging follows only after those fail-closed
+contracts are tested.
+
 ## Distribution: one static binary per platform
 
 **Decided (June 2026): ship per-platform static binaries via a CI matrix — not a
