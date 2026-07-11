@@ -11,3 +11,4 @@ climate.heatpump         | climate       | heizung, wärmepumpe, waermepumpe, he
 cover.living_room_window | cover         | rollladen wohnzimmer, rollladen, blinds, living room window
 sensor.temperatur_bad    | sensor        | temperatur bad, warm bad, bathroom temperature
 binary_sensor.fenster_bad| binary_sensor | fenster bad, bathroom window, fenster
+lock.haustuer    | lock    | Haustür, Haustuer, front door, Eingangstür

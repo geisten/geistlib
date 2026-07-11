@@ -37,6 +37,7 @@ GEIST_GGUF_PATH=gguf_artifacts/bitnet-2b4t-i2_s.gguf make bench-agent
 | date | version | host | OS | target/mode | threads | model | gate | forced pass | forced wall | free pass | free wall | total wall |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 2026-07-10 | ecbb8f4 (+realpath fix) | Raspberry Pi 5 (4×A76, 4 GB) | Debian 13.5 (6.18 rpt) | pi5/release (OpenBLAS) | 4 | bitnet-2b4t-i2_s | 43 → **PASS** | **43/48** | 722 s | 4/48 | 1460 s | 2183 s |
+| 2026-07-11 | home + lock flow | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | **home** 41 → **PASS** | **41/41** | 141 s | 3/41 | 330 s | 471 s |
 | 2026-07-10 | home nightly (2b4ef81) | Raspberry Pi 5 (4×A76, 4 GB, HA container idling) | Debian 13.5 | pi5/release | 4 | bitnet-2b4t-i2_s | **home** 31 → **PASS** | **31/31** | 252 s | — (nightly runs forced only) | — | 252 s |
 | 2026-07-10 | home appliance (51da99b) | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | **home** 31 → **PASS** | **31/31** | 114 s | 3/31 | 227 s | 341 s |
 | 2026-07-10 | v0.3.3-31+stocks | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | 43 → **PASS** | 43/48 | 339 s | 4/48 | 472 s | 811 s |
@@ -52,6 +53,19 @@ real Home Assistant container on the Pi 5 (template + demo entities; the
 appliance switches a real light, sets the demo thermostat, reads sensors).
 Free mode stays diagnostic. This is the per-domain methodology working as
 designed: narrow menu, own corpus, own gate, better-than-demo reliability.
+
+**Lock confirmation flow (2026-07-11):** locks moved from hard refusal to a
+deterministic two-turn flow — locking runs directly (the safe direction), an
+unlock request only ARMS a file-based pending slot and answers with a
+challenge; the unlock executes only when the immediately following command
+carries the literal confirm word and resolves to the same entity. One-shot
+(any other command disarms), 120 s TTL, status queries in between are
+allowed. The corpus grew to 41 cases (10 lock cases across three
+conversations incl. the disarm proof) — still **41/41 forced**, gate raised
+to 41. Live-verified against a real HA template lock on the Pi 5: initial
+locked → challenge (state verified UNCHANGED) → confirm → unlocked → cold
+confirm refused → relock → locked. The model never decides the security
+question — it only ferries the user's words.
 
 **Home-gate nightly (Pi 5):** `scripts/nightly-home-gate.sh` runs the DEPLOYED
 tree's forced home gate every night at 03:30 (crontab), one summary line per

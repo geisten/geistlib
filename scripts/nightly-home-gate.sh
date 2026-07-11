@@ -50,7 +50,7 @@ BIN="$REPO/bin/pi5/release/tests/bench_agent_eval"
     cd "$REPO" || exit 99
     T0=$(date +%s)
     GEIST_GGUF_PATH="$GGUF" OMP_NUM_THREADS=4 \
-        "$BIN" --tools home --mode forced --min-pass "${AGENT_EVAL_HOME_MIN:-31}"
+        "$BIN" --tools home --mode forced --min-pass "${AGENT_EVAL_HOME_MIN:-41}"
     RC=$?
     echo "EVAL_EXIT=$RC WALL_SECONDS=$(( $(date +%s) - T0 ))"
     exit $RC

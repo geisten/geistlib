@@ -20,10 +20,13 @@
  * the candidates) instead of a guess. More matched words = more specific =
  * wins outright.
  *
- * v1 write-whitelist: light, switch, climate, cover. Everything else —
- * explicitly locks, garage doors, alarm panels — is REFUSED with a fixed
- * observation even if present in the registry: voice-unlocking a door needs a
- * confirmation flow this version does not have. Sensors are read-only.
+ * Write-whitelist: light, switch, climate, cover. Garage doors and alarm
+ * panels are REFUSED with a fixed observation even if present in the
+ * registry. LOCKS take a dedicated confirmation flow: locking runs directly
+ * (the safe direction), unlocking is two turns — challenge, then a literal
+ * confirm word for the same entity within HOME_CONFIRM_TTL_S; the slot is a
+ * file (one appliance request = one process) and one-shot. The model never
+ * decides the security question. Sensors are read-only.
  *
  * Pronouns ("mach ES wieder aus"): the command tool remembers the last
  * successfully addressed entity in ctx (last_entity) and falls back to it
@@ -42,6 +45,7 @@
 #include "ha_rest.h"
 
 #include <stdio.h>
+#include <time.h> /* time() — the unlock-confirmation TTL */
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -60,6 +64,10 @@ struct home_ctx {
     struct home_device dev[HOME_MAX_DEVICES];
     size_t             n_dev;
     char               last_entity[64]; /* pronoun target ("mach es aus") */
+    /* Unlock confirmation slot: a FILE, not memory — the appliance runs one
+     * process per request, and the confirmation arrives in the next one.
+     * nullptr -> GEIST_HOME_PENDING or ./.geist-home-pending. */
+    const char *pending_path;
     /* transport hooks — the eval stub swaps these for a mutating state table */
     long (*set)(struct home_ctx          *c,
                 const struct home_device *d,
@@ -327,6 +335,12 @@ static inline const char *home_state_word(const char *s) {
     if (strcmp(s, "closed") == 0) {
         return "geschlossen";
     }
+    if (strcmp(s, "locked") == 0) {
+        return "abgeschlossen";
+    }
+    if (strcmp(s, "unlocked") == 0) {
+        return "entriegelt";
+    }
     return s;
 }
 
@@ -376,13 +390,163 @@ static inline long home_resolve(struct home_ctx *c,
     return -1;
 }
 
+/* ---- lock confirmation flow -------------------------------------------------
+ * Locking runs directly (the SAFE direction — like turning a light off), but
+ * UNLOCKING is two turns: the first request arms a pending slot and answers
+ * with a challenge; only a follow-up that carries the confirm word and
+ * resolves to the SAME entity executes. The check is entirely deterministic —
+ * the model never decides a security question, it only ferries the user's
+ * words. The slot is a file (one appliance request = one process), one-shot
+ * (any other command disarms it), and expires after HOME_CONFIRM_TTL_S.
+ * Garage doors and alarm panels stay refused outright — no flow. */
+enum { HOME_CONFIRM_TTL_S = 120 };
+
+/* "lock" (abschließen — direct), "unlock" (entriegeln — needs confirmation),
+ * or nullptr when the request names neither direction. PURE. */
+static inline const char *home_lock_action(const char *req) {
+    /* stems end BEFORE the el/le metathesis: "entrieg" covers entriegeln,
+     * entriegelt AND the imperative "Entriegle" */
+    static const char *const unlock_w[] = {
+            "entrieg", "aufschließ", "aufsperr", "unlock", "aufmach", "öffn", "open"};
+    static const char *const lock_w[] = {
+            "verrieg", "abschließ", "absperr", "zusperr", "zuschließ", "lock", "abmach"};
+    for (size_t i = 0; i < sizeof unlock_w / sizeof *unlock_w; i++) {
+        if (home_word_in(req, unlock_w[i])) {
+            return "unlock";
+        }
+    }
+    /* separable verbs: "schließ … auf" = unlock, "schließ … ab/zu" = lock */
+    if (home_word_in(req, "schließ") || home_word_in(req, "sperr")) {
+        if (home_word_in(req, "auf")) {
+            return "unlock";
+        }
+        return "lock";
+    }
+    for (size_t i = 0; i < sizeof lock_w / sizeof *lock_w; i++) {
+        if (home_word_in(req, lock_w[i])) {
+            return "lock";
+        }
+    }
+    return nullptr;
+}
+
+/* True if the request carries the literal confirm word. PURE. */
+static inline int home_is_confirm(const char *req) {
+    return home_word_in(req, "bestätige") || home_word_in(req, "bestaetige") ||
+           home_word_in(req, "confirm");
+}
+
+static inline const char *home_pending_path(const struct home_ctx *c) {
+    if (c->pending_path != nullptr) {
+        return c->pending_path;
+    }
+    const char *p = getenv("GEIST_HOME_PENDING");
+    return (p && p[0]) ? p : "./.geist-home-pending";
+}
+
+static inline void home_pending_clear(const struct home_ctx *c) {
+    remove(home_pending_path(c));
+}
+
+/* Arm the slot: "<entity>|<service>|<epoch>". */
+static inline int
+home_pending_arm(const struct home_ctx *c, const char *entity, const char *service, long now) {
+    FILE *f = fopen(home_pending_path(c), "w");
+    if (f == nullptr) {
+        return -1;
+    }
+    fprintf(f, "%s|%s|%ld\n", entity, service, now);
+    fclose(f);
+    return 0;
+}
+
+/* Take the slot if it matches entity+service and is fresh at `now` (injected
+ * for testability). The slot is CONSUMED either way once it exists — a stale
+ * or mismatched confirmation must not leave a live slot behind. Returns 1 on
+ * a valid match, 0 otherwise. */
+static inline int
+home_pending_take(const struct home_ctx *c, const char *entity, const char *service, long now) {
+    char  line[256] = "";
+    FILE *f         = fopen(home_pending_path(c), "r");
+    if (f == nullptr) {
+        return 0;
+    }
+    const char *got = fgets(line, sizeof line, f);
+    fclose(f);
+    home_pending_clear(c);
+    if (got == nullptr) {
+        return 0;
+    }
+    char *p1 = strchr(line, '|');
+    char *p2 = p1 ? strchr(p1 + 1, '|') : nullptr;
+    if (p1 == nullptr || p2 == nullptr) {
+        return 0;
+    }
+    *p1      = '\0';
+    *p2      = '\0';
+    long age = now - strtol(p2 + 1, nullptr, 10);
+    return strcmp(line, entity) == 0 && strcmp(p1 + 1, service) == 0 && age >= 0 &&
+           age <= HOME_CONFIRM_TTL_S;
+}
+
 /* ---- the two tools ---------------------------------------------------------- */
 
-/* v1 write-whitelist — locks/garage/alarm are refused BY OMISSION here and by
- * the explicit check below, even when the registry lists them. */
+/* Write-whitelist — garage/alarm are refused BY OMISSION here and by the
+ * explicit check below, even when the registry lists them. Locks are NOT in
+ * this list either: they take the dedicated confirmation flow above. */
 static inline int home_domain_writable(const char *domain) {
     return strcmp(domain, "light") == 0 || strcmp(domain, "switch") == 0 ||
            strcmp(domain, "climate") == 0 || strcmp(domain, "cover") == 0;
+}
+
+/* The lock branch of the command tool: direct lock, challenge/confirm unlock.
+ * Writes the observation; the caller has already resolved the device. */
+static inline enum geist_status home_lock_flow(struct home_ctx          *c,
+                                               const char               *req,
+                                               const struct home_device *d,
+                                               long                      now,
+                                               size_t                    out_cap,
+                                               char                      out[],
+                                               size_t                   *out_len) {
+    const char *action = home_lock_action(req);
+    if (home_is_confirm(req)) {
+        if (action == nullptr || strcmp(action, "unlock") != 0 ||
+            !home_pending_take(c, d->entity, "unlock", now)) {
+            return agent_obs(out_cap, out, out_len,
+                             "Nichts zu bestätigen für %s (Anfrage abgelaufen oder nicht "
+                             "gestellt).",
+                             d->entity);
+        }
+        static char raw[HOME_OBS_CAP];
+        long        rc = c->set(c, d, "unlock", "", sizeof raw, raw);
+        if (rc < 0) {
+            return agent_obs(out_cap, out, out_len,
+                             "error: Home Assistant nicht erreichbar (unlock).");
+        }
+        snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
+        return agent_obs(out_cap, out, out_len, "OK: %s → entriegelt", d->entity);
+    }
+    if (action == nullptr) {
+        return agent_obs(out_cap, out, out_len,
+                         "Unklar, was mit %s geschehen soll (abschließen/aufschließen).",
+                         d->entity);
+    }
+    if (strcmp(action, "lock") == 0) { /* the safe direction runs directly */
+        static char raw[HOME_OBS_CAP];
+        long        rc = c->set(c, d, "lock", "", sizeof raw, raw);
+        if (rc < 0) {
+            return agent_obs(out_cap, out, out_len,
+                             "error: Home Assistant nicht erreichbar (lock).");
+        }
+        snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
+        return agent_obs(out_cap, out, out_len, "OK: %s → abgeschlossen", d->entity);
+    }
+    /* unlock without confirmation: arm the slot, answer with the challenge */
+    home_pending_arm(c, d->entity, "unlock", now);
+    return agent_obs(out_cap, out, out_len,
+                     "Sicherheitsabfrage: %s wirklich entriegeln? Zum Bestätigen sage: "
+                     "\"Bestätige entriegeln\" und das Gerät (gültig %d Sekunden).",
+                     d->entity, (int) HOME_CONFIRM_TTL_S);
 }
 
 static inline enum geist_status home_command_invoke(void      *ctx,
@@ -396,11 +560,19 @@ static inline enum geist_status home_command_invoke(void      *ctx,
     if (!agent_json_str(args, "request", sizeof req, req) || req[0] == '\0') {
         return agent_obs(out_cap, out, out_len, "error: missing \"request\"");
     }
+    /* One-shot slot: any command that is NOT a confirmation disarms a pending
+     * unlock — the confirmation must be the immediately following request. */
+    if (!home_is_confirm(req)) {
+        home_pending_clear(c);
+    }
     size_t di = 0;
     if (home_resolve(c, req, out_cap, out, out_len, &di) != 0) {
         return GEIST_OK; /* clarify/error observation already written */
     }
     const struct home_device *d = &c->dev[di];
+    if (strcmp(d->domain, "lock") == 0) {
+        return home_lock_flow(c, req, d, (long) time(nullptr), out_cap, out, out_len);
+    }
     if (!home_domain_writable(d->domain)) {
         return agent_obs(out_cap,
                          out,

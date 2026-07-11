@@ -274,8 +274,15 @@ Three layers:
   one `entity | domain | alias phrases` line per device). Ambiguity ("das
   Licht" with two lights) yields a deterministic clarifying answer; unknown
   devices a clear error. A **last-device memory** resolves pronouns ("Mach
-  *es* wieder aus"). v1 writes are whitelisted to light/switch/climate/cover —
-  **locks, garage doors and alarms are refused** even if listed.
+  *es* wieder aus"). Writes are whitelisted to light/switch/climate/cover —
+  **garage doors and alarms are refused** even if listed. **Locks take a
+  confirmation flow**: locking runs directly (the safe direction), but an
+  unlock request only *arms* a file-based pending slot and answers with a
+  challenge — the unlock executes only when the immediately following request
+  carries the literal confirm word and resolves to the same entity
+  ("Bestätige entriegeln Haustür"). The slot is one-shot (any other command
+  disarms it) and expires after 120 s; the check is fully deterministic — the
+  model never decides a security question, it only ferries the user's words.
 - **routing evidence** — home nouns match as substrings (German compounds:
   *Flurlicht*), action verbs word-start; the sentence SHAPE decides the
   read/write boundary (imperative → command, question → status).

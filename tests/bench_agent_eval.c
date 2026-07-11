@@ -257,6 +257,10 @@ static long ev_home_set(struct home_ctx          *c,
             char num[16] = "";
             (void) home_parse_number(extra, sizeof num, num);
             snprintf(ev_home[i].state, sizeof ev_home[0].state, "%s", num);
+        } else if (strcmp(service, "lock") == 0) {
+            snprintf(ev_home[i].state, sizeof ev_home[0].state, "locked");
+        } else if (strcmp(service, "unlock") == 0) {
+            snprintf(ev_home[i].state, sizeof ev_home[0].state, "unlocked");
         }
         return (long) (size_t) snprintf(out, cap, "[]");
     }
@@ -596,6 +600,10 @@ int main(int argc, char **argv) {
         }
         homectx.set = ev_home_set;
         homectx.get = ev_home_get;
+        /* deterministic runs: the unlock-confirmation slot lives in build/
+         * scratch and starts absent (a stale slot must not leak between runs) */
+        homectx.pending_path = "build/agent-eval-pending";
+        remove(homectx.pending_path);
         ev_home_seed(&homectx);
         home_tools[0] = home_command_tool(&homectx);
         home_tools[1] = home_status_tool(&homectx);

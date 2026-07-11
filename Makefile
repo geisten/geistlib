@@ -328,9 +328,10 @@ bench-agent-live: bin $(MODEL_PREREQ)
 
 # The HOME appliance eval: the standalone 2-tool home menu over
 # cases_home.jsonl (stubbed mutating state table, fixture registry). The fixed
-# threshold 31/31 is the level achieved on bitnet-2b4t-i2_s (2026-07) — the
+# threshold 41/41 is the level achieved on bitnet-2b4t-i2_s (2026-07, incl.
+# the lock confirmation flow) — the
 # narrow domain menu routes perfectly; recalibrate for other models.
-AGENT_EVAL_HOME_MIN ?= 31
+AGENT_EVAL_HOME_MIN ?= 41
 bench-agent-home: bin $(MODEL_PREREQ)
 	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --tools home \
 	  --mode $(AGENT_EVAL_MODE) --min-pass $(AGENT_EVAL_HOME_MIN)

@@ -1,7 +1,8 @@
 /* test_agent_home_unit — the pure (no-model, no-network) core of the home
  * tool family: registry parsing, alias-phrase matching incl. the deliberate
  * ambiguity answer, action/value mapping, pronoun fallback via last_entity,
- * and the v1 write-whitelist (locks are refused). Transport is stubbed. */
+ * the write-whitelist, and the lock confirmation flow (direct lock, two-turn
+ * unlock with a one-shot, TTL-bounded pending file). Transport is stubbed. */
 #define _POSIX_C_SOURCE 200809L
 #include "test_helpers.h"
 #include "../tools/agent_home.h"
@@ -126,10 +127,68 @@ int main(void) {
                                   strstr(out, "light.bad") != nullptr,
                           "invoke: ambiguity asks back, does not act");
 
-    /* safety: lock in the registry is still refused */
+    /* ---- lock confirmation flow (file-based pending slot in build/) ---- */
+    ctx.pending_path = "build/test-home-pending";
+    remove(ctx.pending_path);
+
+    /* direction parser incl. German separable verbs and imperative metathesis
+     * (Verriegle/Entriegle). Null-safe: compare via helper string. */
+#define LOCKDIR(s) (home_lock_action(s) ? home_lock_action(s) : "(none)")
+    fails += geist_expect(strcmp(LOCKDIR("Schließ die Haustür ab"), "lock") == 0 &&
+                                  strcmp(LOCKDIR("Verriegle die Tür"), "lock") == 0 &&
+                                  strcmp(LOCKDIR("Schließ die Haustür auf"), "unlock") == 0 &&
+                                  strcmp(LOCKDIR("Entriegle die Tür"), "unlock") == 0 &&
+                                  strcmp(LOCKDIR("Wie ist das Wetter"), "(none)") == 0,
+                          "lock: direction parser (separable verbs, metathesis)");
+#undef LOCKDIR
+
+    /* locking is the safe direction: runs directly, no challenge */
+    g_last_service[0] = '\0';
+    invoke_cmd("Schließ die Haustür ab", sizeof out, out);
+    fails += geist_expect(strcmp(g_last_service, "lock") == 0 &&
+                                  strstr(out, "abgeschlossen") != nullptr,
+                          "lock: locking runs directly");
+
+    /* unlocking: first request arms the slot and answers the challenge only */
+    g_last_service[0] = '\0';
     invoke_cmd("Schließ die Haustür auf", sizeof out, out);
-    fails += geist_expect(g_last_service[0] == '\0' && strstr(out, "Abgelehnt") != nullptr,
-                          "invoke: lock refused by the write-whitelist");
+    fails += geist_expect(g_last_service[0] == '\0' && strstr(out, "Sicherheitsabfrage") != nullptr,
+                          "lock: unlock arms + challenges, does not execute");
+
+    /* the matching confirmation executes and consumes the slot */
+    invoke_cmd("Bestätige entriegeln Haustür", sizeof out, out);
+    fails += geist_expect(strcmp(g_last_service, "unlock") == 0 &&
+                                  strstr(out, "entriegelt") != nullptr,
+                          "lock: confirmation executes the pending unlock");
+    g_last_service[0] = '\0';
+    invoke_cmd("Bestätige entriegeln Haustür", sizeof out, out);
+    fails += geist_expect(g_last_service[0] == '\0' &&
+                                  strstr(out, "Nichts zu bestätigen") != nullptr,
+                          "lock: slot is one-shot (second confirm refused)");
+
+    /* any intervening non-confirm command disarms the slot */
+    invoke_cmd("Schließ die Haustür auf", sizeof out, out);
+    invoke_cmd("Schalte das Flurlicht ein", sizeof out, out);
+    g_last_service[0] = '\0';
+    invoke_cmd("Bestätige entriegeln Haustür", sizeof out, out);
+    fails += geist_expect(g_last_service[0] == '\0' &&
+                                  strstr(out, "Nichts zu bestätigen") != nullptr,
+                          "lock: intervening command disarms the slot");
+
+    /* TTL: a stale slot must not fire (now injected via home_pending_take) */
+    fails += geist_expect(
+            home_pending_arm(&ctx, "lock.haustuer", "unlock", 1000) == 0 &&
+                    !home_pending_take(
+                            &ctx, "lock.haustuer", "unlock", 1000 + HOME_CONFIRM_TTL_S + 1),
+            "lock: stale slot expires");
+    fails += geist_expect(home_pending_arm(&ctx, "lock.haustuer", "unlock", 1000) == 0 &&
+                                  home_pending_take(&ctx, "lock.haustuer", "unlock", 1060) &&
+                                  !home_pending_take(&ctx, "lock.haustuer", "unlock", 1060),
+                          "lock: fresh slot fires once, then is consumed");
+    fails += geist_expect(home_pending_arm(&ctx, "lock.haustuer", "unlock", 1000) == 0 &&
+                                  !home_pending_take(&ctx, "lock.keller", "unlock", 1010),
+                          "lock: entity mismatch never fires");
+    remove(ctx.pending_path);
 
     /* status invoke: sensor value with unit */
     {
