@@ -97,6 +97,18 @@ stat -c '%a %U %G %n' /path/to/ha-config/geist.sock
 python3 tests/test_ha_integration.py
 ```
 
+To exercise real authenticated HA service calls without touching an existing
+home, run the opt-in disposable-container test. The HA image must already be
+available locally; the test does not pull it implicitly:
+
+```sh
+GEIST_HOME_BINARY=/path/to/geist-home make test-ha-live
+```
+
+It creates two template lights in a temporary HA instance. Only `light.flur`
+is placed in the geist registry: the test verifies that it turns on and that a
+direct request for the existing but unexposed `light.keller` leaves it off.
+
 In Home Assistant, expose one harmless test light, run a status query and a
 toggle through Assist, then unexpose it and verify the next registry sync makes
 the same request unavailable. Do not begin with locks, covers, or climate
@@ -121,6 +133,6 @@ scripts/check-home-assistant.sh \
 - control frame `\x01REGISTRY\n<body>` replaces the in-memory exposed-device
   registry when the body contains at least one valid entry.
 
-This protocol is intentionally local and small. Versioned framing, diagnostics,
-upgrade/rollback automation, and clean-host timing are the remaining Phase-1
-work before calling the integration generally installable.
+This protocol is intentionally local and small. Versioned framing, latency
+percentiles, soak evidence, and clean-host timing remain before calling the
+integration generally installable.
