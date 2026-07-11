@@ -294,6 +294,12 @@ Three layers:
   adverb in a non-question — "Rollladen *runter*" — counts as imperative,
   the verbless cover command was a score race otherwise).
 
+Input is bilingual (DE + EN). The **answer language** is a deployment setting:
+German by default, `GEIST_HOME_LANG=en` switches the device state words
+(on/off/open/closed/locked/unlocked/unavailable) to English — the pieces every
+command and status answer shows. The rarer clarify/challenge/error sentences
+stay German for now. The eval never sets the env, so the fixed gate is unaffected.
+
 Demo backend: the official Home Assistant container with template entities
 matching the starter registry (see `home-registry.txt`); onboarding + a
 long-lived token are API-scriptable. Eval: `make bench-agent-home` — the

@@ -120,19 +120,23 @@ binary (BitNet baked in, only the home tools compiled in) that plugs into
 **4 GB Raspberry Pi 5** into a private voice brain for your smart home.
 
 <p align="center">
-  <img src="assets/demo-home.gif" alt="Terminal on a Raspberry Pi 5: three German voice-style commands through Home Assistant Assist — 'Schalte das Licht im Flur ein' turns light.flur on in 2.1 s, 'Schalte alle Lichter aus' turns both lights off in 2.0 s, 'Ist das Licht im Flur an?' answers 'aus' in 2.3 s — all executed and verified on the Pi, offline" width="100%">
+  <img src="assets/demo-home.gif" alt="Terminal on a Raspberry Pi 5: three voice-style commands against the local geist-home daemon — 'Turn on the hallway light' turns light.flur on in 2.0 s, 'Turn off all lights' turns both lights off in 1.9 s, 'Is the hallway light on?' answers 'off' in 2.1 s — all executed and verified on the Pi, offline" width="100%">
 </p>
 
-*Three commands, live on a **Raspberry Pi 5** through Home Assistant Assist —
-each parsed, executed and verified on the box in **~2 s**, nothing leaving the
-LAN. (Shown as typed prompts; add speech-to-text for the spoken path.)*
+*Three commands, live on a **Raspberry Pi 5** — each parsed, executed and
+verified on the box in **~2 s**, nothing leaving the LAN. The same turn on an
+**M1 Max is ~0.8 s** (~2.6× faster — the appliance scales with the box).
+German or English (`GEIST_HOME_LANG=en` shown here); typed prompts, add
+speech-to-text for the spoken path.*
 
-- **~2 s per command**, warm — measured through the full Home Assistant Assist
-  pipeline on the Pi 5, with the HA container running on the same box.
-  (Speech-to-text, if you add it, is its own step.)
+- **~2 s per command** on the Pi 5, warm — measured through the full Home
+  Assistant Assist pipeline with the HA container on the same box; **~0.8 s on
+  an M1 Max**. (Speech-to-text, if you add it, is its own step.)
 - **German + English, the way people actually talk**: „Mach alles aus", "dim the
   light to 40 %", „mach es *etwas wärmer*", "and now close it again" — compound
-  nouns, pronouns, relative setpoints, collectives.
+  nouns, pronouns, relative setpoints, collectives. Input is bilingual; the
+  answer language is a deployment setting (German by default,
+  `GEIST_HOME_LANG=en` for English state words).
 - **The model never decides a security question.** It only *routes*; device,
   action and value are parsed deterministically against a plain-text device
   registry. Unlocking the front door takes a two-turn confirmation (challenge →
