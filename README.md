@@ -128,7 +128,13 @@ inside the binary.
 Two downloads: the **engine** (pick your platform) and a **model** (one GGUF runs
 on every platform). Then point the engine at the model.
 
-**Step 1 — the engine** (< 1 MB, model-less):
+**Step 1 — the engine** (< 1 MB, model-less). Homebrew (macOS & Linux):
+
+```bash
+brew install geisten/tap/geist
+```
+
+— or grab the tarball directly:
 
 | Platform | Engine download |
 | :-- | :-- |

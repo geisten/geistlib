@@ -130,359 +130,6 @@ struct metal_profile_stat {
     uint64_t workgroups;
 };
 
-enum {
-    METAL_DECODE_REPLAY_MAX_OPS = 192,
-};
-
-enum metal_decode_replay_op_kind {
-    METAL_DECODE_REPLAY_EMBED_LOOKUP_SCALED,
-    METAL_DECODE_REPLAY_F32_LINEAR,
-    METAL_DECODE_REPLAY_RMSNORM,
-    METAL_DECODE_REPLAY_ADD,
-    METAL_DECODE_REPLAY_SCALE_F32,
-    METAL_DECODE_REPLAY_ATTENTION,
-    METAL_DECODE_REPLAY_ATTENTION_QUERY,
-    METAL_DECODE_REPLAY_FFN_GEGLU,
-    METAL_DECODE_REPLAY_PLE,
-    METAL_DECODE_REPLAY_GREEDY_HEAD,
-};
-
-struct metal_decode_replay_embed_params {
-    uint32_t n;
-    uint32_t dtype;
-    uint32_t blocks_per_row;
-    uint32_t w_byte_offset;
-    uint32_t y_offset;
-    float    scale;
-};
-
-struct metal_decode_replay_f32_params {
-    uint32_t n_in;
-    uint32_t n_out;
-    uint32_t rows;
-    uint32_t x_offset;
-    uint32_t w_offset;
-    uint32_t y_offset;
-    uint32_t x_row_stride;
-    uint32_t y_row_stride;
-};
-
-struct metal_decode_replay_rows_params {
-    uint32_t rows;
-    uint32_t cols;
-    uint32_t x_offset;
-    uint32_t w_offset;
-    uint32_t y_offset;
-    uint32_t x_row_stride;
-    uint32_t y_row_stride;
-    float    eps;
-};
-
-struct metal_decode_replay_binary_rows_params {
-    uint32_t rows;
-    uint32_t cols;
-    uint32_t a_offset;
-    uint32_t b_offset;
-    uint32_t y_offset;
-    uint32_t a_row_stride;
-    uint32_t b_row_stride;
-    uint32_t y_row_stride;
-};
-
-struct metal_decode_replay_scale_rows_params {
-    uint32_t rows;
-    uint32_t cols;
-    uint32_t x_offset;
-    uint32_t y_offset;
-    uint32_t x_row_stride;
-    uint32_t y_row_stride;
-    float    scale;
-};
-
-struct metal_decode_replay_q4k_params {
-    uint32_t n_in;
-    uint32_t n_out;
-    uint32_t rows;
-    uint32_t blocks_per_row;
-    uint32_t x_offset;
-    uint32_t w_byte_offset;
-    uint32_t y_offset;
-    uint32_t x_row_stride;
-    uint32_t y_row_stride;
-};
-
-struct metal_decode_replay_q4k_gate_up_params {
-    uint32_t n_in;
-    uint32_t n_out;
-    uint32_t rows;
-    uint32_t blocks_per_row;
-    uint32_t x_offset;
-    uint32_t gate_w_byte_offset;
-    uint32_t up_w_byte_offset;
-    uint32_t gate_y_offset;
-    uint32_t up_y_offset;
-    uint32_t x_row_stride;
-    uint32_t y_row_stride;
-};
-
-struct metal_decode_replay_q4k_qk_params {
-    uint32_t n_in;
-    uint32_t q_out;
-    uint32_t k_out;
-    uint32_t rows;
-    uint32_t blocks_per_row;
-    uint32_t x_offset;
-    uint32_t q_w_byte_offset;
-    uint32_t k_w_byte_offset;
-    uint32_t q_y_offset;
-    uint32_t k_y_offset;
-    uint32_t x_row_stride;
-    uint32_t q_y_row_stride;
-    uint32_t k_y_row_stride;
-};
-
-struct metal_decode_replay_post_norm_params {
-    uint32_t rows;
-    uint32_t cols;
-    uint32_t residual_offset;
-    uint32_t x_offset;
-    uint32_t w_offset;
-    uint32_t y_offset;
-    uint32_t residual_row_stride;
-    uint32_t x_row_stride;
-    uint32_t y_row_stride;
-    float    eps;
-};
-
-struct metal_decode_replay_norm_rope_params {
-    uint32_t rows;
-    uint32_t heads;
-    uint32_t head_dim;
-    uint32_t x_offset;
-    uint32_t w_offset;
-    uint32_t cos_offset;
-    uint32_t sin_offset;
-    uint32_t x_row_stride;
-    uint32_t rope_row_stride;
-    uint32_t rope_row_offset;
-    float    eps;
-};
-
-struct metal_decode_replay_k_norm_rope_append_params {
-    uint32_t rows;
-    uint32_t heads;
-    uint32_t head_dim;
-    uint32_t x_offset;
-    uint32_t w_offset;
-    uint32_t cos_offset;
-    uint32_t sin_offset;
-    uint32_t cache_offset;
-    uint32_t x_row_stride;
-    uint32_t rope_row_stride;
-    uint32_t rope_row_offset;
-    uint32_t q_position;
-    float    eps;
-};
-
-struct metal_decode_replay_v_norm_append_params {
-    uint32_t rows;
-    uint32_t heads;
-    uint32_t head_dim;
-    uint32_t x_offset;
-    uint32_t w_offset;
-    uint32_t cache_offset;
-    uint32_t x_row_stride;
-    uint32_t q_position;
-    float    eps;
-};
-
-struct metal_decode_replay_attention_params {
-    uint32_t rows;
-    uint32_t kv_len;
-    uint32_t q_heads;
-    uint32_t kv_heads;
-    uint32_t head_dim;
-    uint32_t q_position;
-    uint32_t sliding_window;
-    uint32_t q_offset;
-    uint32_t k_cache_offset;
-    uint32_t v_cache_offset;
-    uint32_t y_offset;
-};
-
-struct metal_decode_replay_argmax_params {
-    uint32_t n;
-    uint32_t x_offset;
-};
-
-struct metal_decode_replay_embed {
-    struct geist_tensor                     table;
-    struct geist_tensor                     out;
-    struct metal_decode_replay_embed_params params;
-};
-
-struct metal_decode_replay_f32_linear {
-    struct geist_tensor                   x;
-    struct geist_tensor                   w;
-    struct geist_tensor                   y;
-    bool                                  matrix;
-    struct metal_decode_replay_f32_params params;
-};
-
-struct metal_decode_replay_rmsnorm {
-    struct geist_tensor                    x;
-    struct geist_tensor                    w;
-    struct geist_tensor                    y;
-    struct metal_decode_replay_rows_params params;
-};
-
-struct metal_decode_replay_binary {
-    struct geist_tensor                           a;
-    struct geist_tensor                           b;
-    struct geist_tensor                           y;
-    struct metal_decode_replay_binary_rows_params params;
-};
-
-struct metal_decode_replay_scale {
-    struct geist_tensor                          x;
-    struct geist_tensor                          y;
-    struct metal_decode_replay_scale_rows_params params;
-};
-
-struct metal_decode_replay_attention {
-    struct geist_backend_attention_block                 block;
-    struct geist_tensor                                  residual;
-    struct geist_tensor                                  attn_norm_weight;
-    struct geist_tensor                                  q_proj_weight;
-    struct geist_tensor                                  k_proj_weight;
-    struct geist_tensor                                  v_proj_weight;
-    struct geist_tensor                                  q_norm_weight;
-    struct geist_tensor                                  k_norm_weight;
-    struct geist_tensor                                  v_norm_weight;
-    struct geist_tensor                                  cos;
-    struct geist_tensor                                  sin;
-    struct geist_tensor                                  k_cache;
-    struct geist_tensor                                  v_cache;
-    struct geist_tensor                                  o_proj_weight;
-    struct geist_tensor                                  post_attn_norm_weight;
-    struct geist_tensor                                  normed_scratch;
-    struct geist_tensor                                  q_scratch;
-    struct geist_tensor                                  k_scratch;
-    struct geist_tensor                                  v_scratch;
-    struct geist_tensor                                  attn_scratch;
-    struct geist_tensor                                  o_scratch;
-    struct geist_tensor                                  post_attn_scratch;
-    struct geist_tensor                                  out;
-    bool                                                 v_w_q6;
-    bool                                                 use_fused_qk;
-    bool                                                 use_fused_qk_nt4;
-    bool                                                 rope_uses_q_position;
-    struct metal_decode_replay_rows_params               norm_params;
-    struct metal_decode_replay_q4k_params                q_params;
-    struct metal_decode_replay_q4k_params                k_params;
-    struct metal_decode_replay_q4k_qk_params             qk_params;
-    struct metal_decode_replay_q4k_params                v_params;
-    struct metal_decode_replay_norm_rope_params          q_norm_rope_params;
-    struct metal_decode_replay_k_norm_rope_append_params k_norm_rope_append_params;
-    struct metal_decode_replay_v_norm_append_params      v_norm_append_params;
-    struct metal_decode_replay_attention_params          attention_params;
-    struct metal_decode_replay_q4k_params                o_params;
-    struct metal_decode_replay_post_norm_params          post_params;
-};
-
-struct metal_decode_replay_attention_query {
-    struct geist_backend_attention_query_block block;
-    struct geist_tensor                        residual;
-    struct geist_tensor                        attn_norm_weight;
-    struct geist_tensor                        q_proj_weight;
-    struct geist_tensor                        q_norm_weight;
-    struct geist_tensor                        cos;
-    struct geist_tensor                        sin;
-    struct geist_tensor                        k_cache;
-    struct geist_tensor                        v_cache;
-    struct geist_tensor                        o_proj_weight;
-    struct geist_tensor                        post_attn_norm_weight;
-    struct geist_tensor                        normed_scratch;
-    struct geist_tensor                        q_scratch;
-    struct geist_tensor                        attn_scratch;
-    struct geist_tensor                        o_scratch;
-    struct geist_tensor                        post_attn_scratch;
-    struct geist_tensor                        out;
-};
-
-struct metal_decode_replay_ffn {
-    struct geist_backend_ffn_geglu_block          block;
-    struct geist_tensor                           residual;
-    struct geist_tensor                           ffn_norm_weight;
-    struct geist_tensor                           gate_weight;
-    struct geist_tensor                           up_weight;
-    struct geist_tensor                           down_weight;
-    struct geist_tensor                           post_ffw_norm_weight;
-    struct geist_tensor                           pre_ff_scratch;
-    struct geist_tensor                           gate_scratch;
-    struct geist_tensor                           up_scratch;
-    struct geist_tensor                           ffn_out_scratch;
-    struct geist_tensor                           post_ff_scratch;
-    struct geist_tensor                           out;
-    bool                                          down_w_q6;
-    struct metal_decode_replay_rows_params        pre_norm_params;
-    struct metal_decode_replay_q4k_gate_up_params gate_up_params;
-    struct metal_decode_replay_q4k_params         down_params;
-    struct metal_decode_replay_post_norm_params   post_params;
-};
-
-struct metal_decode_replay_ple {
-    struct geist_backend_ple_block                block;
-    struct geist_tensor                           hidden;
-    struct geist_tensor                           per_layer_input;
-    struct geist_tensor                           per_layer_gate_weight;
-    struct geist_tensor                           per_layer_proj_weight;
-    struct geist_tensor                           post_per_layer_norm_weight;
-    struct geist_tensor                           gate_scratch;
-    struct geist_tensor                           proj_scratch;
-    struct geist_tensor                           out;
-    bool                                          gate_w_q4;
-    bool                                          proj_w_q4;
-    struct metal_decode_replay_q4k_params         gate_q4_params;
-    struct metal_decode_replay_q4k_params         proj_q4_params;
-    struct metal_decode_replay_f32_params         gate_f32_params;
-    struct metal_decode_replay_f32_params         proj_f32_params;
-    struct metal_decode_replay_binary_rows_params act_params;
-    struct metal_decode_replay_post_norm_params   post_params;
-};
-
-struct metal_decode_replay_greedy_head {
-    struct geist_backend_greedy_head         head;
-    struct geist_tensor                      hidden;
-    struct geist_tensor                      norm_weight;
-    struct geist_tensor                      lm_head_weight;
-    struct geist_tensor                      normed_scratch;
-    struct geist_tensor                      logits;
-    bool                                     lm_head_f32;
-    bool                                     lm_head_q4;
-    bool                                     lm_head_q6;
-    struct metal_decode_replay_rows_params   norm_params;
-    struct metal_decode_replay_f32_params    f32_params;
-    struct metal_decode_replay_q4k_params    q_params;
-    struct metal_decode_replay_argmax_params argmax_params;
-};
-
-struct metal_decode_replay_op {
-    enum metal_decode_replay_op_kind kind;
-    union {
-        struct metal_decode_replay_embed           embed;
-        struct metal_decode_replay_f32_linear      f32_linear;
-        struct metal_decode_replay_rmsnorm         rmsnorm;
-        struct metal_decode_replay_binary          binary;
-        struct metal_decode_replay_scale           scale;
-        struct metal_decode_replay_attention       attention;
-        struct metal_decode_replay_attention_query attention_query;
-        struct metal_decode_replay_ffn             ffn;
-        struct metal_decode_replay_ple             ple;
-        struct metal_decode_replay_greedy_head     greedy_head;
-    } u;
-};
-
 /* Registry entry mapping a live buffer's host contents range back to its
  * geist_buffer, so resolver-installed linear kernels can translate the raw
  * host pointers main's engine passes (buffer_map aliases, w->raw) into
@@ -680,16 +327,6 @@ struct metal_state {
     enum geist_command_sequence_kind sequence_kind;
     bool                             sequence_active;
     bool                             sequence_has_work;
-    bool                             captured_greedy_token_pending;
-    uint32_t                         captured_greedy_vocab_size;
-    uint32_t                         captured_greedy_token_count;
-    bool                             decode_replay_valid;
-    bool                             decode_replay_failed;
-    bool                             decode_replay_replaying;
-    uint32_t                         decode_replay_vocab_size;
-    uint32_t                         decode_replay_token_count;
-    size_t                           decode_replay_op_count;
-    struct metal_decode_replay_op    decode_replay_ops[METAL_DECODE_REPLAY_MAX_OPS];
     bool                             use_ple_block;
     bool                             use_q4k_n4;
     bool                             use_q4k_m16_n2;
@@ -2951,30 +2588,6 @@ static void metal_profile_print_summary(const struct metal_state *st) {
                     (unsigned long long) stat->workgroups);
         }
     }
-}
-
-static bool metal_decode_replay_can_record(const struct metal_state *st) {
-    /* Permanently disabled: the replay execute path was deleted in cccba03 and
-     * the GEIST_METAL_DECODE_REPLAY flag removed. The recording scaffolding
-     * below stays dead until an indirect-command-buffer successor lands. */
-    (void) st;
-    return false;
-}
-
-static struct metal_decode_replay_op *
-metal_decode_replay_append(struct metal_state *st, enum metal_decode_replay_op_kind kind) {
-
-    if (!metal_decode_replay_can_record(st)) {
-        return nullptr;
-    }
-    if (st->decode_replay_op_count >= METAL_DECODE_REPLAY_MAX_OPS) {
-        st->decode_replay_failed = true;
-        st->decode_replay_valid  = false;
-        return nullptr;
-    }
-    struct metal_decode_replay_op *op = &st->decode_replay_ops[st->decode_replay_op_count++];
-    *op                               = (struct metal_decode_replay_op) {.kind = kind};
-    return op;
 }
 
 static bool metal_ranges_overlap(size_t a_offset, size_t b_offset, size_t n_bytes) {
@@ -5610,27 +5223,6 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
                     be, GEIST_E_BACKEND, "metal F32 linear: command sequence has no encoder");
             return GEIST_E_BACKEND;
         }
-        struct metal_decode_replay_op *op =
-                metal_decode_replay_append(st, METAL_DECODE_REPLAY_F32_LINEAR);
-        if (op != nullptr) {
-            op->u.f32_linear = (struct metal_decode_replay_f32_linear) {
-                    .x      = *x,
-                    .w      = *w,
-                    .y      = *y,
-                    .matrix = matrix,
-                    .params =
-                            {
-                                    .n_in         = params.n_in,
-                                    .n_out        = params.n_out,
-                                    .rows         = params.rows,
-                                    .x_offset     = params.x_offset,
-                                    .w_offset     = params.w_offset,
-                                    .y_offset     = params.y_offset,
-                                    .x_row_stride = params.x_row_stride,
-                                    .y_row_stride = params.y_row_stride,
-                            },
-            };
-        }
         metal_encode_f32_matmul(st, metal_sequence_encoder(st), x, w, y, &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5720,26 +5312,6 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
             .eps          = eps,
     };
     if (st->sequence_active) {
-        struct metal_decode_replay_op *op =
-                metal_decode_replay_append(st, METAL_DECODE_REPLAY_RMSNORM);
-        if (op != nullptr) {
-            op->u.rmsnorm = (struct metal_decode_replay_rmsnorm) {
-                    .x = *x,
-                    .w = *w,
-                    .y = *y,
-                    .params =
-                            {
-                                    .rows         = params.rows,
-                                    .cols         = params.cols,
-                                    .x_offset     = params.x_offset,
-                                    .w_offset     = params.w_offset,
-                                    .y_offset     = params.y_offset,
-                                    .x_row_stride = params.x_row_stride,
-                                    .y_row_stride = params.y_row_stride,
-                                    .eps          = params.eps,
-                            },
-            };
-        }
         metal_encode_rmsnorm_rows(st, metal_sequence_encoder(st), x, w, y, &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5802,13 +5374,6 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
             .eps                 = eps,
     };
     if (st->sequence_active) {
-        /* Not represented in the (dormant) replay op stream — invalidate
-         * the recording so a future replay restore can't silently skip
-         * this dispatch. */
-        if (metal_decode_replay_can_record(st)) {
-            st->decode_replay_failed = true;
-            st->decode_replay_valid  = false;
-        }
         metal_encode_rmsnorm_add_rows(st, metal_sequence_encoder(st), res, x, w, y, &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5864,25 +5429,6 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
             .y_row_stride = (uint32_t) y_stride,
     };
     if (st->sequence_active) {
-        struct metal_decode_replay_op *op = metal_decode_replay_append(st, METAL_DECODE_REPLAY_ADD);
-        if (op != nullptr) {
-            op->u.binary = (struct metal_decode_replay_binary) {
-                    .a = *a,
-                    .b = *b,
-                    .y = *y,
-                    .params =
-                            {
-                                    .rows         = params.rows,
-                                    .cols         = params.cols,
-                                    .a_offset     = params.a_offset,
-                                    .b_offset     = params.b_offset,
-                                    .y_offset     = params.y_offset,
-                                    .a_row_stride = params.a_row_stride,
-                                    .b_row_stride = params.b_row_stride,
-                                    .y_row_stride = params.y_row_stride,
-                            },
-            };
-        }
         metal_encode_add_rows(st, metal_sequence_encoder(st), a, b, y, &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -5989,24 +5535,6 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
             .scale        = scale,
     };
     if (st->sequence_active) {
-        struct metal_decode_replay_op *op =
-                metal_decode_replay_append(st, METAL_DECODE_REPLAY_SCALE_F32);
-        if (op != nullptr) {
-            op->u.scale = (struct metal_decode_replay_scale) {
-                    .x = *x,
-                    .y = *y,
-                    .params =
-                            {
-                                    .rows         = params.rows,
-                                    .cols         = params.cols,
-                                    .x_offset     = params.x_offset,
-                                    .y_offset     = params.y_offset,
-                                    .x_row_stride = params.x_row_stride,
-                                    .y_row_stride = params.y_row_stride,
-                                    .scale        = params.scale,
-                            },
-            };
-        }
         metal_encode_scale_rows(st, metal_sequence_encoder(st), x, y, &params);
         st->sequence_has_work = true;
         return GEIST_OK;
@@ -6236,23 +5764,6 @@ metal_embedding_lookup_scaled(struct geist_backend      *be,
                     GEIST_E_BACKEND,
                     "metal embedding_lookup_scaled: command sequence has no encoder");
             return GEIST_E_BACKEND;
-        }
-        struct metal_decode_replay_op *op =
-                metal_decode_replay_append(st, METAL_DECODE_REPLAY_EMBED_LOOKUP_SCALED);
-        if (op != nullptr) {
-            op->u.embed = (struct metal_decode_replay_embed) {
-                    .table = *embed_table,
-                    .out   = *out,
-                    .params =
-                            {
-                                    .n              = params.n,
-                                    .dtype          = params.dtype,
-                                    .blocks_per_row = params.blocks_per_row,
-                                    .w_byte_offset  = params.w_byte_offset,
-                                    .y_offset       = params.y_offset,
-                                    .scale          = params.scale,
-                            },
-            };
         }
         metal_encode_embed_lookup_scaled(st, metal_sequence_encoder(st), embed_table, out, &params);
         st->sequence_has_work = true;
@@ -7126,10 +6637,6 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
             return GEIST_E_BACKEND;
         }
         enc = metal_sequence_encoder(st);
-        if (metal_decode_replay_can_record(st)) {
-            st->decode_replay_failed = true;
-            st->decode_replay_valid  = false;
-        }
     } else {
         cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
         enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
@@ -7219,11 +6726,6 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
             return GEIST_E_BACKEND;
         }
         enc = metal_sequence_encoder(st);
-        /* Not represented in the (dormant) replay op stream. */
-        if (metal_decode_replay_can_record(st)) {
-            st->decode_replay_failed = true;
-            st->decode_replay_valid  = false;
-        }
     } else {
         cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
         enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
@@ -7389,11 +6891,6 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
             return GEIST_E_BACKEND;
         }
         enc = metal_sequence_encoder(st);
-        /* Not represented in the (dormant) replay op stream. */
-        if (metal_decode_replay_can_record(st)) {
-            st->decode_replay_failed = true;
-            st->decode_replay_valid  = false;
-        }
     } else {
         cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
         enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
@@ -7523,11 +7020,6 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
             return GEIST_E_BACKEND;
         }
         enc = metal_sequence_encoder(st);
-        /* Not represented in the (dormant) replay op stream. */
-        if (metal_decode_replay_can_record(st)) {
-            st->decode_replay_failed = true;
-            st->decode_replay_valid  = false;
-        }
     } else {
         cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
         enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
@@ -7693,10 +7185,6 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
             return GEIST_E_BACKEND;
         }
         enc = metal_sequence_encoder(st);
-        if (metal_decode_replay_can_record(st)) {
-            st->decode_replay_failed = true;
-            st->decode_replay_valid  = false;
-        }
     } else {
         cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
         enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
@@ -7788,11 +7276,6 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
             return GEIST_E_BACKEND;
         }
         enc = metal_sequence_encoder(st);
-        /* Not represented in the (dormant) replay op stream. */
-        if (metal_decode_replay_can_record(st)) {
-            st->decode_replay_failed = true;
-            st->decode_replay_valid  = false;
-        }
     } else {
         cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
         enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
@@ -8144,25 +7627,15 @@ static void metal_capture_end(struct metal_state *st) {
         st->sequence_token = 0;
     }
     st->sequence_token++;
-    st->sequence_kind                 = kind;
-    st->sequence_command_buffer       = cmd;
-    st->sequence_compute_encoder      = enc;
-    st->sequence_active               = true;
-    st->sequence_has_work             = false;
-    st->seq_dispatch_count            = 0;
-    st->seq_disp_at_rotate            = 0;
-    st->seq_begin_ns                  = metal_now_ns();
-    st->captured_greedy_token_pending = false;
-    st->captured_greedy_vocab_size    = 0;
-    st->captured_greedy_token_count   = 0;
-    if (kind == GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP && !st->decode_replay_replaying) {
-        st->decode_replay_valid       = false;
-        st->decode_replay_failed      = false;
-        st->decode_replay_vocab_size  = 0;
-        st->decode_replay_token_count = 0;
-        st->decode_replay_op_count    = 0;
-    }
-    *out_token = st->sequence_token;
+    st->sequence_kind            = kind;
+    st->sequence_command_buffer  = cmd;
+    st->sequence_compute_encoder = enc;
+    st->sequence_active          = true;
+    st->sequence_has_work        = false;
+    st->seq_dispatch_count       = 0;
+    st->seq_disp_at_rotate       = 0;
+    st->seq_begin_ns             = metal_now_ns();
+    *out_token                   = st->sequence_token;
     return GEIST_OK;
 }
 
@@ -8185,19 +7658,6 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
     st->sequence_command_buffer  = nullptr;
     st->sequence_active          = false;
     st->sequence_has_work        = false;
-    if (!submit) {
-        st->captured_greedy_token_pending = false;
-        st->captured_greedy_vocab_size    = 0;
-        st->captured_greedy_token_count   = 0;
-        if (st->sequence_kind == GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP &&
-            !st->decode_replay_replaying) {
-            st->decode_replay_valid       = false;
-            st->decode_replay_failed      = false;
-            st->decode_replay_vocab_size  = 0;
-            st->decode_replay_token_count = 0;
-            st->decode_replay_op_count    = 0;
-        }
-    }
 
     metal_msg_send_void0(st, enc, "endEncoding");
     enum geist_status out = GEIST_OK;
@@ -8248,41 +7708,8 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
         void *err = metal_msg_send_id0(st, cmd, "error");
         if (err != nullptr) {
             geist_backend_set_error(be, GEIST_E_BACKEND, "metal command sequence: command failed");
-            out                               = GEIST_E_BACKEND;
-            st->captured_greedy_token_pending = false;
-            st->captured_greedy_vocab_size    = 0;
-            st->captured_greedy_token_count   = 0;
-            if (st->sequence_kind == GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP &&
-                !st->decode_replay_replaying) {
-                st->decode_replay_valid       = false;
-                st->decode_replay_failed      = false;
-                st->decode_replay_vocab_size  = 0;
-                st->decode_replay_token_count = 0;
-                st->decode_replay_op_count    = 0;
-            }
+            out = GEIST_E_BACKEND;
         }
-    } else if (!has_work) {
-        st->captured_greedy_token_pending = false;
-        st->captured_greedy_vocab_size    = 0;
-        st->captured_greedy_token_count   = 0;
-        if (st->sequence_kind == GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP &&
-            !st->decode_replay_replaying) {
-            st->decode_replay_valid       = false;
-            st->decode_replay_failed      = false;
-            st->decode_replay_vocab_size  = 0;
-            st->decode_replay_token_count = 0;
-            st->decode_replay_op_count    = 0;
-        }
-    }
-    if (out == GEIST_OK && submit && has_work &&
-        st->sequence_kind == GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP &&
-        !st->decode_replay_replaying) {
-        st->decode_replay_valid = !st->decode_replay_failed && st->decode_replay_op_count != 0 &&
-                                  st->captured_greedy_token_pending &&
-                                  st->captured_greedy_vocab_size != 0 &&
-                                  st->captured_greedy_token_count != 0;
-        st->decode_replay_vocab_size  = st->captured_greedy_vocab_size;
-        st->decode_replay_token_count = st->captured_greedy_token_count;
     }
 
     /* No-op on the normal submit path (already drained after the wait);
