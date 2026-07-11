@@ -1,0 +1,32 @@
+# geist-home.service — the resident home appliance daemon (see DEPLOY.md).
+#
+# Install (adapt the three /home/germar paths to your box):
+#   sudo cp geist-home.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now geist-home
+#
+# The EnvironmentFile is plain KEY=VALUE (no `export`):
+#   GEIST_HA_URL=http://localhost:8123
+#   GEIST_HA_TOKEN=<long-lived-token>
+#
+# The socket lives in the Home Assistant config volume so the HA container
+# (and its geist_conversation component) reaches it at /config/geist.sock.
+
+[Unit]
+Description=geist home appliance daemon (--serve)
+# The daemon only needs the network for its HA REST calls; it starts fine
+# before Home Assistant and answers "nicht erreichbar" until HA is up.
+After=network.target
+
+[Service]
+User=germar
+WorkingDirectory=/home/germar/geist-public
+EnvironmentFile=/home/germar/geist-public/geist-home.env
+Environment=GEIST_AGENT_TRACE=0
+Environment=GEIST_HOME_REGISTRY=/home/germar/geist-public/home-registry.txt
+ExecStart=/home/germar/geist-public/bin/pi5/release/tools/geist-home --serve /home/germar/ha-config/geist.sock
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -41,6 +41,8 @@
 #include <string.h>
 #include <sys/socket.h> /* --serve: Unix-domain socket daemon   */
 #include <sys/stat.h>   /* --serve: chmod 600 on the socket     */
+#include <sys/time.h>   /* --serve: struct timeval (glibc does not pull it \
+                         * in via sys/socket.h the way macOS does)          */
 #include <sys/un.h>
 #include <unistd.h>
 
