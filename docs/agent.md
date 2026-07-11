@@ -297,8 +297,15 @@ Three layers:
 Input is bilingual (DE + EN). The **answer language** is a deployment setting:
 German by default, `GEIST_HOME_LANG=en` switches the device state words
 (on/off/open/closed/locked/unlocked/unavailable) to English — the pieces every
-command and status answer shows. The rarer clarify/challenge/error sentences
-stay German for now. The eval never sets the env, so the fixed gate is unaffected.
+command and status answer shows. The eval never sets the env, so the fixed gate
+is unaffected.
+
+**Adding a language** is one line, not a code change: the state words live in a
+table (`HOME_LANGS` in `tools/agent_home.h`), one row per language keyed by the
+`GEIST_HOME_LANG` code. Copy a row, translate the eight words, done — the lookup
+is table-driven, so no new branches anywhere. (The rarer clarify/challenge/error
+*sentences* are still German literals; lift them into the same table when an
+English-first deployment ships.)
 
 Demo backend: the official Home Assistant container with template entities
 matching the starter registry (see `home-registry.txt`); onboarding + a

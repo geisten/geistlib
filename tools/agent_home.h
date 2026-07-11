@@ -352,46 +352,77 @@ home_get_ha(struct home_ctx *c, const struct home_device *d, size_t cap, char ou
     return ha_get_state(url, tok, d->entity, cap, out);
 }
 
-/* ---- shared observation helpers ------------------------------------------- */
+/* ---- response language ----------------------------------------------------
+ * The answer's device STATE words are TABLE-driven: one row per language, in a
+ * fixed column order keyed by HA's raw state string. A new language is ONE ROW
+ * here — no new branches anywhere. GEIST_HOME_LANG picks the row by a prefix
+ * match on its code ("en", "en_US" both hit "en"); unset or unknown -> row 0
+ * (German, the default the eval gate runs on).
+ *
+ * Cost: one getenv + a linear scan of a handful of rows/columns per answer —
+ * nanoseconds against the ~2 s model turn, so no measurable hit. (No static
+ * cache on purpose: the unit test flips the env mid-run.)
+ *
+ * Scope: the STATE words only — what every command/status answer shows. The
+ * rarer clarify/challenge/error SENTENCES are still German literals below.
+ * ponytail: table now covers the words a new language needs 90 % of; lift the
+ * sentences into the same struct (a fmt[] column) when an English-FIRST
+ * deployment actually ships, not before. */
+enum {
+    HOME_ST_ON,
+    HOME_ST_OFF,
+    HOME_ST_OPEN,
+    HOME_ST_CLOSED,
+    HOME_ST_LOCKED,
+    HOME_ST_UNLOCKED,
+    HOME_ST_UNAVAIL,
+    HOME_ST_UNKNOWN,
+    HOME_N_STATES
+};
+/* HA's raw state string for each column (the lookup key). */
+static const char *const HOME_STATE_KEYS[HOME_N_STATES] = {
+        "on", "off", "open", "closed", "locked", "unlocked", "unavailable", "unknown"};
 
-/* Response language: German by default, English when GEIST_HOME_LANG=en. Only
- * the device STATE words switch (what every command/status answer shows) — the
- * rarer clarify/challenge/error SENTENCES stay German for now.
- * ponytail: state words only; translate the sentences when an English-first
- * deployment actually needs them, not for the demo. The eval never sets the
- * env, so the German gate is untouched. */
-static inline int home_lang_en(void) {
+struct home_lang {
+    const char *code;
+    const char *word[HOME_N_STATES];
+};
+/* One row per language. To add a language: copy a row, translate the words. */
+static const struct home_lang HOME_LANGS[] = {
+        {"de",
+         {"an",
+          "aus",
+          "offen",
+          "geschlossen",
+          "abgeschlossen",
+          "entriegelt",
+          "nicht erreichbar",
+          "unbekannt"}},
+        {"en", {"on", "off", "open", "closed", "locked", "unlocked", "unavailable", "unknown"}},
+};
+enum { HOME_N_LANGS = sizeof HOME_LANGS / sizeof *HOME_LANGS };
+
+/* Active language row from GEIST_HOME_LANG (prefix match); row 0 = default. */
+static inline const struct home_lang *home_lang(void) {
     const char *l = getenv("GEIST_HOME_LANG");
-    return l && (l[0] == 'e' || l[0] == 'E');
+    if (l && l[0]) {
+        for (size_t i = 0; i < HOME_N_LANGS; i++) {
+            if (strncasecmp(l, HOME_LANGS[i].code, strlen(HOME_LANGS[i].code)) == 0) {
+                return &HOME_LANGS[i];
+            }
+        }
+    }
+    return &HOME_LANGS[0];
 }
 
-/* de-facto state words for answers: on/off -> an/aus (or on/off under
- * GEIST_HOME_LANG=en), else verbatim. */
+/* State word for an answer in the active language; unknown states pass through
+ * verbatim (e.g. a numeric climate setpoint). */
 static inline const char *home_state_word(const char *s) {
-    int en = home_lang_en();
-    if (strcmp(s, "on") == 0) {
-        return en ? "on" : "an";
-    }
-    if (strcmp(s, "off") == 0) {
-        return en ? "off" : "aus";
-    }
-    if (strcmp(s, "open") == 0) {
-        return en ? "open" : "offen";
-    }
-    if (strcmp(s, "closed") == 0) {
-        return en ? "closed" : "geschlossen";
-    }
-    if (strcmp(s, "locked") == 0) {
-        return en ? "locked" : "abgeschlossen";
-    }
-    if (strcmp(s, "unlocked") == 0) {
-        return en ? "unlocked" : "entriegelt";
-    }
-    if (strcmp(s, "unavailable") == 0) {
-        return en ? "unavailable" : "nicht erreichbar"; /* HA's dead/offline state */
-    }
-    if (strcmp(s, "unknown") == 0) {
-        return en ? "unknown" : "unbekannt";
+    const struct home_lang *L = home_lang();
+    for (size_t i = 0; i < HOME_N_STATES; i++) {
+        if (strcmp(s, HOME_STATE_KEYS[i]) == 0) {
+            return L->word[i];
+        }
     }
     return s;
 }
