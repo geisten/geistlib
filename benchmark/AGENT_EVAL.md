@@ -67,6 +67,17 @@ locked → challenge (state verified UNCHANGED) → confirm → unlocked → col
 confirm refused → relock → locked. The model never decides the security
 question — it only ferries the user's words.
 
+**Appliance latency (Pi 5, --serve daemon, measured 2026-07-11):** one
+"Schalte das Licht im Flur ein" turn costs **12–13 s** at the daemon socket;
+the full Assist pipeline (the phone-app path) adds ~1–2 s → **~14 s
+end-to-end**. Stable across turns (not transcript growth at this length):
+the cost is the per-turn prefill work — selection prompt + the FULL
+transcript re-prefill including the constant system prompt (the documented
+O(n²) ceiling). The mac does the same turn in ~3 s. The obvious next perf
+step is `geist_session_pin_prefix` on the constant system prompt — its
+docstring literally names this use case — plus incremental transcript
+prefill; both would cut the dominant share of the 12 s.
+
 **Home-gate nightly (Pi 5):** `scripts/nightly-home-gate.sh` runs the DEPLOYED
 tree's forced home gate every night at 03:30 (crontab), one summary line per
 night in `~/geist-nightly/home-gate.log`, full per-date logs kept two weeks,
