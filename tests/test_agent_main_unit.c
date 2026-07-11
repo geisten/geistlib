@@ -52,6 +52,15 @@ static void test_parse(void) {
                                   strcmp(o.question, "what?") == 0,
                           "parse: model + question");
 
+    char *a_m[] = {"p", "-m", "m.gguf", "what?"};
+    fails += geist_expect(parse(&o, 4, a_m) == AGENT_MAIN_RUN && o.model &&
+                                  strcmp(o.model, "m.gguf") == 0 && o.question &&
+                                  strcmp(o.question, "what?") == 0,
+                          "parse: -m <model> + question");
+    char *a_mnoval[] = {"p", "-m"};
+    fails += geist_expect(parse(&o, 2, a_mnoval) == AGENT_MAIN_BADARGS,
+                          "parse: -m without a value -> BADARGS");
+
     char *a_n[] = {"p", "m.gguf", "-n", "5"};
     fails += geist_expect(parse(&o, 4, a_n) == AGENT_MAIN_RUN && o.max_steps == 5,
                           "parse: -n sets max_steps");

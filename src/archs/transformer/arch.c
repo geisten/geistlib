@@ -15,6 +15,7 @@
 
 #include "arch.h"
 #include "arch_state.h"
+#include "forward.h"
 
 #include "heap.h"
 
@@ -148,6 +149,13 @@ static const float *op_peek_logits(void *arch_state, size_t *n_logits) {
     if (n_logits == nullptr)
         return nullptr;
     if (st == nullptr || !st->sess->logits_valid || st->sess->scratch_logits == nullptr) {
+        *n_logits = 0;
+        return nullptr;
+    }
+    /* The spec-head fast path leaves scratch_logits SPARSE (-inf off its
+     * top-K) — right for greedy, wrong for value consumers. Recompute the
+     * dense head lazily, once, from the hidden still in scratch_h_a. */
+    if (st->sess->logits_sparse && transformer_head_dense_recompute(st) != GEIST_OK) {
         *n_logits = 0;
         return nullptr;
     }

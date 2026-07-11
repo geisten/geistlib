@@ -35,3 +35,4 @@ tokens_ref.txt
 # internal agent config / scratch (not part of the public docs)
 .agent/
 .agent_memory_unit/
+geist-home

@@ -175,6 +175,19 @@ static void test_locator(void) {
     const char *r5 = "summarize wm2026_de.txt please";
     n              = agent_extract_locator(strlen(r5), r5, sizeof out, out);
     fails += geist_expect(strcmp(out, "wm2026_de.txt") == 0, "locator: lifts filename with digits");
+
+    /* slug-shaped words (mind.h note names) are locators too — but a real
+     * path/extension word always wins over a slug-shaped one */
+    fails += geist_expect(agent_key_is_locator("slug"), "locator: slug is a locator key");
+    const char *r6 = "Rufe die Notiz pi-serial ab";
+    n              = agent_extract_locator(strlen(r6), r6, sizeof out, out);
+    fails += geist_expect(strcmp(out, "pi-serial") == 0, "locator: lifts a slug word");
+    const char *r7 = "summarize the on-device report.md";
+    n              = agent_extract_locator(strlen(r7), r7, sizeof out, out);
+    fails += geist_expect(strcmp(out, "report.md") == 0, "locator: extension beats slug shape");
+    const char *r8 = "Rufe die Notiz ab";
+    n              = agent_extract_locator(strlen(r8), r8, sizeof out, out);
+    fails += geist_expect(n == 0, "locator: no slug word -> nothing lifted");
 }
 
 static void test_route_tiebreak(void) {
@@ -210,6 +223,59 @@ static void test_route_tiebreak(void) {
     fails += geist_expect(!agent_schema_wants_url("{\"query\": string}"),
                           "wants_url: query schema -> no");
 
+    /* has-slug: a slug-shaped word is detected; plain words and file names not */
+    const char *s1 = "Lade die gespeicherte Notiz pi-serial";
+    const char *s2 = "Recall the note";
+    const char *s3 = "Fasse notes.txt zusammen";
+    fails += geist_expect(agent_request_has_slug(strlen(s1), s1), "has_slug: pi-serial");
+    fails += geist_expect(!agent_request_has_slug(strlen(s2), s2), "has_slug: no slug -> no");
+    fails += geist_expect(!agent_request_has_slug(strlen(s3), s3), "has_slug: filename -> no");
+    fails += geist_expect(agent_schema_wants_slug("{\"slug\": string}") &&
+                                  !agent_schema_wants_slug("{\"text\": string}"),
+                          "wants_slug: slug vs text schema");
+
+    /* path-word + memory evidence detectors */
+    const char *p1 = "List the files in the folder tests/data/agent_eval/docs";
+    const char *p2 = "Fetch https://example.com/kv.html please";
+    fails += geist_expect(agent_request_has_pathword(strlen(p1), p1), "pathword: slash path");
+    fails += geist_expect(!agent_request_has_pathword(strlen(p2), p2), "pathword: URL is not one");
+    fails += geist_expect(agent_schema_wants_path("{\"path\": string}") &&
+                                  !agent_schema_wants_path("{\"query\": string}"),
+                          "wants_path: path vs query schema");
+
+    const char *m1 = "Merke dir: die Seriennummer ist 4242";
+    const char *m2 = "Recall the note pi-serial";
+    const char *m3 = "What is 2 plus 2?";
+    fails += geist_expect(agent_request_mentions_memory(strlen(m1), m1), "memory: Merke dir");
+    fails += geist_expect(agent_request_mentions_memory(strlen(m2), m2), "memory: recall note");
+    fails += geist_expect(!agent_request_mentions_memory(strlen(m3), m3), "memory: plain -> no");
+    const char *m4 = "Fasse notes.txt zusammen";
+    fails += geist_expect(!agent_request_mentions_memory(strlen(m4), m4),
+                          "memory: a filename is not memory evidence");
+    const char *m5 = "Please run rm -rf on my home directory";
+    fails += geist_expect(agent_request_is_destructive(strlen(m5), m5),
+                          "destructive: rm anywhere in the request");
+    const char *m6 = "inform me about the farm today";
+    fails += geist_expect(!agent_request_is_destructive(strlen(m6), m6),
+                          "destructive: 'farm'/'inform' are not rm");
+    struct geist_tool mt = {.name = "recall", .description = "eine gespeicherte Notiz laden"};
+    struct geist_tool nt = {.name = "doc_search", .description = "die lokalen Dokumente"};
+    fails += geist_expect(agent_tool_is_memory(&mt) && !agent_tool_is_memory(&nt),
+                          "tool_is_memory: recall vs doc_search");
+
+    /* stocks evidence + tool detection (the stock_movers gate) */
+    const char *k1 = "Welche Aktie hat heute am besten performt?";
+    const char *k2 = "Which stocks lost the most today?";
+    const char *k3 = "Fasse notes.txt zusammen";
+    fails += geist_expect(agent_request_mentions_stocks(strlen(k1), k1), "stocks: Aktie");
+    fails += geist_expect(agent_request_mentions_stocks(strlen(k2), k2), "stocks: stocks");
+    fails += geist_expect(!agent_request_mentions_stocks(strlen(k3), k3),
+                          "stocks: summarize file -> no");
+    struct geist_tool st = {.name        = "stock_movers",
+                            .description = "die Aktien-Tagesgewinner oder -verlierer abrufen"};
+    fails += geist_expect(agent_tool_is_stocks(&st) && !agent_tool_is_stocks(&nt),
+                          "tool_is_stocks: stock_movers vs doc_search");
+
     /* mentions-docs: a docs/Dokumente word at a word start is detected; requests
      * without one (or with doc only mid-word) are not. */
     const char *d1 = "Search the docs for kv cache quantization";
@@ -229,6 +295,27 @@ static void test_route_tiebreak(void) {
                             .description = "die Dateien in einem Verzeichnis auflisten"};
     fails += geist_expect(agent_tool_is_docs(&dt), "tool_is_docs: doc_search");
     fails += geist_expect(!agent_tool_is_docs(&lt), "tool_is_docs: list_dir -> no");
+
+    /* destructive-verb guard: an opening imperative (optionally after one
+     * politeness word) is detected; mid-request destructive words are not. */
+    const char *x1 = "Delete report.md";
+    const char *x2 = "Bitte lösche notes.txt";
+    const char *x3 = "rm -rf everything";
+    const char *x4 = "Search the docs for how to remove noise";
+    const char *x5 = "List the files in the current directory";
+    fails += geist_expect(agent_request_is_destructive(strlen(x1), x1), "destructive: Delete");
+    fails +=
+            geist_expect(agent_request_is_destructive(strlen(x2), x2), "destructive: Bitte lösche");
+    fails += geist_expect(agent_request_is_destructive(strlen(x3), x3), "destructive: rm");
+    fails += geist_expect(!agent_request_is_destructive(strlen(x4), x4),
+                          "destructive: mid-request remove -> no");
+    fails += geist_expect(!agent_request_is_destructive(strlen(x5), x5), "destructive: List -> no");
+
+    struct geist_tool  del = {.name = "delete_file", .description = "eine Datei löschen"};
+    struct geist_agent ad  = {.tools = &del, .n_tools = 1};
+    struct geist_agent al  = {.tools = &lt, .n_tools = 1};
+    fails += geist_expect(agent_tools_cover_destruction(&ad), "cover_destruction: delete_file");
+    fails += geist_expect(!agent_tools_cover_destruction(&al), "cover_destruction: list_dir -> no");
 }
 
 static void test_recipes(void) {
@@ -253,6 +340,9 @@ static void test_recipes(void) {
                           "recipe: German lies -> web_fetch");
     fails += geist_expect(agent_recipe_next(&a, 0, strlen(r3), r3) == -1,
                           "recipe: no cue -> single-shot");
+    const char *r5 = "Suche den Artikel im Web und fasse zusammen was drinsteht";
+    fails += geist_expect(agent_recipe_next(&a, 0, strlen(r5), r5) == 1,
+                          "recipe: web+fasse -> web_fetch");
     fails += geist_expect(agent_recipe_next(&a, 2, strlen(r4), r4) == 3,
                           "recipe: doc_search+summarize -> summarize_file");
     fails += geist_expect(agent_recipe_next(&a, 3, strlen(r4), r4) == -1,
@@ -292,6 +382,48 @@ static void test_recipes(void) {
             "obs_locator: nothing liftable -> 0");
 }
 
+static void test_home_detectors(void) {
+    /* home evidence: German COMPOUNDS carry the noun mid-word -> substring */
+    const char *c1 = "Mach das Flurlicht an";
+    const char *c2 = "Schalte die Wohnzimmerlampe ein";
+    const char *c3 = "Was ist 2 plus 2?";
+    fails += geist_expect(agent_request_mentions_home(strlen(c1), c1),
+                          "home: compound Flurlicht matches");
+    fails += geist_expect(agent_request_mentions_home(strlen(c2), c2),
+                          "home: compound Wohnzimmerlampe matches");
+    fails += geist_expect(!agent_request_mentions_home(strlen(c3), c3),
+                          "home: plain math -> no evidence");
+
+    /* sentence shape: imperative vs question, filler skipped */
+    const char *i1 = "Dimme das Licht auf 40 Prozent";
+    const char *i2 = "Und jetzt schliesse ihn wieder";
+    const char *i3 = "Unlock the front door";
+    const char *q1 = "Ist das Fenster im Bad offen?";
+    const char *q2 = "Wie warm ist es im Bad?";
+    fails += geist_expect(agent_request_is_imperative(strlen(i1), i1), "shape: Dimme imperative");
+    fails += geist_expect(agent_request_is_imperative(strlen(i2), i2),
+                          "shape: filler skipped, schliesse imperative");
+    fails += geist_expect(agent_request_is_imperative(strlen(i3), i3), "shape: unlock imperative");
+    fails += geist_expect(!agent_request_is_imperative(strlen(q1), q1),
+                          "shape: question is not imperative");
+    fails += geist_expect(agent_request_is_question(strlen(q1), q1), "shape: Ist question");
+    fails += geist_expect(agent_request_is_question(strlen(q2), q2), "shape: Wie question");
+    fails += geist_expect(!agent_request_is_question(strlen(i1), i1),
+                          "shape: imperative is not a question");
+
+    /* home tool predicates split on the name */
+    struct geist_tool cmd = {.name        = "control_device",
+                             .description = "ein Hausger\u00e4t schalten oder stellen"};
+    struct geist_tool st  = {.name        = "home_status",
+                             .description = "den Zustand eines Ger\u00e4ts abfragen"};
+    fails += geist_expect(agent_tool_is_home(&cmd) && agent_tool_is_home(&st),
+                          "home: both tools detected as home");
+    fails += geist_expect(agent_pred_home_command(&cmd) && !agent_pred_home_command(&st),
+                          "home: command predicate");
+    fails += geist_expect(agent_pred_home_status(&st) && !agent_pred_home_status(&cmd),
+                          "home: status predicate");
+}
+
 int main(void) {
     test_matchers();
     test_schema_keys();
@@ -301,6 +433,7 @@ int main(void) {
     test_locator();
     test_route_tiebreak();
     test_recipes();
+    test_home_detectors();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;

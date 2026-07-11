@@ -9,9 +9,14 @@
  * model can list a directory, summarize a file, search local docs, and search /
  * read the web). It honours GEIST_FORCE_CALL=1 and GEIST_AGENT_TRACE=1.
  *
- *   geist <model.gguf> [prompt] [-n N]          # generate text
- *   geist agent <model.gguf> [request] [-n N]   # tool-use agent (REPL if no request)
+ *   geist [-m <model>] "prompt"                 # ask — instruct chat (DEFAULT): wraps
+ *                                                 the prompt in the model's chat template,
+ *                                                 clean answer, offline, no tools
+ *   geist [-m <model>]                          # no prompt -> interactive agentic chat
+ *   geist [-m <model>] --raw "prompt"           # raw base-model text completion
+ *   geist agent [-m <model>] "request"          # one-shot tool-use agent
  *   geist --version
+ * Model source: -m <path>  >  an embedded model  >  error.
  *
  * For an embeddable text example see examples/simple_generate.c.
  */
@@ -40,7 +45,9 @@ enum { geist_embedded = 0 };
 #include "agent_docsearch.h"
 #include "agent_listdir.h"
 #include "agent_main.h"
+#include "agent_home.h"
 #include "agent_memory.h"
+#include "agent_stocks.h"
 #include "agent_summarize.h"
 #include "agent_webfetch.h"
 #include "agent_websearch.h"
@@ -48,7 +55,9 @@ enum { geist_embedded = 0 };
 
 /* Open backend + model (+ greedy session). path == nullptr -> the embedded model.
  * Returns 0 on success; logs and cleans up on failure. */
-static int cli_open(const char *path, struct geist_backend **be, struct geist_model **model,
+static int cli_open(const char            *path,
+                    struct geist_backend **be,
+                    struct geist_model   **model,
                     struct geist_session **sess) {
     *be    = nullptr;
     *model = nullptr;
@@ -64,7 +73,9 @@ static int cli_open(const char *path, struct geist_backend **be, struct geist_mo
 #if defined(GEIST_EMBEDDED_MODEL)
         ls = geist_model_load_from_memory(
                 geist_embedded_model_start,
-                (size_t) (geist_embedded_model_end - geist_embedded_model_start), *be, model);
+                (size_t) (geist_embedded_model_end - geist_embedded_model_start),
+                *be,
+                model);
 #else
         fprintf(stderr, "no model path given and this build has no embedded model\n");
         geist_backend_destroy(*be);
@@ -89,8 +100,10 @@ static int cli_open(const char *path, struct geist_backend **be, struct geist_mo
 static const char *AGENT_SYSTEM =
         "You are a file, web and memory assistant. To see a directory's contents reply with "
         "{\"tool\":\"list_dir\",\"args\":{\"path\":\".\"}}. To summarize a file reply with "
-        "{\"tool\":\"summarize_file\",\"args\":{\"path\":\"<file>\"}}. To search local documents reply "
-        "with {\"tool\":\"doc_search\",\"args\":{\"query\":\"<query>\"}}. To search the web reply with "
+        "{\"tool\":\"summarize_file\",\"args\":{\"path\":\"<file>\"}}. To search local documents "
+        "reply "
+        "with {\"tool\":\"doc_search\",\"args\":{\"query\":\"<query>\"}}. To search the web reply "
+        "with "
         "{\"tool\":\"web_search\",\"args\":{\"query\":\"<query>\"}}. To read a web page reply with "
         "{\"tool\":\"web_fetch\",\"args\":{\"url\":\"<url>\"}}. To save a note reply with "
         "{\"tool\":\"remember\",\"args\":{\"text\":\"<note>\"}}. To load a saved note reply with "
@@ -100,8 +113,11 @@ static const char *AGENT_SYSTEM =
 /* Built after the model loads (summarize_file's sub-session needs model+backend).
  * doc_search scans GEIST_DOCS (default ./docs); web_fetch's nullptr allowlist =
  * any http/https, fine for a local demo — tighten via webfetch_tool("host,..."). */
-static size_t agent_tools(struct geist_model *model, struct geist_backend *be,
-                          struct geist_tool *out, size_t cap, void *ctx) {
+static size_t agent_tools(struct geist_model   *model,
+                          struct geist_backend *be,
+                          struct geist_tool    *out,
+                          size_t                cap,
+                          void                 *ctx) {
     (void) cap;
     (void) ctx;
     static struct summarize_ctx sctx;
@@ -110,9 +126,12 @@ static size_t agent_tools(struct geist_model *model, struct geist_backend *be,
     out[0]           = listdir_tool();
     out[1]           = summarize_file_tool(&sctx);
     out[2]           = docsearch_tool(docs && docs[0] ? docs : "./docs");
-    out[3]           = websearch_tool(nullptr);
-    out[4]           = webfetch_tool(nullptr);
-    size_t n         = 5;
+    /* DuckDuckGo rate-limits quickly; GEIST_SEARX_ENDPOINT points web_search at
+     * a SearXNG instance instead (same knob as the agent eval / live smoke). */
+    out[3]   = websearch_tool(getenv("GEIST_SEARX_ENDPOINT"));
+    out[4]   = webfetch_tool(nullptr);
+    out[5]   = stock_movers_tool(nullptr);
+    size_t n = 6;
     /* Memory tools are opt-in: include them only when a palace is configured
      * (GEIST_MIND_DIR). On weak models the router scores tool NAMES, and adding
      * remember/recall to the default set makes common requests (e.g. "summarize
@@ -123,6 +142,96 @@ static size_t agent_tools(struct geist_model *model, struct geist_backend *be,
         out[n++] = recall_tool();
     }
     return n;
+}
+
+/* ---- home appliance profile (make home / TOOLSET=home) ---------------------
+ * A build with -DGEIST_TOOLSET_HOME is the HOME AGENT and nothing else: the
+ * bare prompt argument is an agent request ("./geist-home \"Schalte das Licht
+ * im Flur ein\""), and the web/docs/stocks tools are NOT COMPILED IN — fixed
+ * scope at build time, the artifact itself is the security promise. Runtime
+ * config stays in the environment (a token is never baked into a binary):
+ * GEIST_HA_URL, GEIST_HA_TOKEN, GEIST_HOME_REGISTRY. */
+#if defined(GEIST_TOOLSET_HOME)
+static const char *HOME_SYSTEM =
+        "You are a home control assistant. To switch or set a device reply with "
+        "{\"tool\":\"control_device\",\"args\":{\"request\":\"<user request>\"}}. To read a device "
+        "or sensor reply with {\"tool\":\"home_status\",\"args\":{\"request\":\"<user "
+        "request>\"}}. "
+        "After the tool result, answer the user in one short sentence.";
+
+static size_t home_toolset(struct geist_model   *model,
+                           struct geist_backend *be,
+                           struct geist_tool    *out,
+                           size_t                cap,
+                           void                 *ctx) {
+    (void) model;
+    (void) be;
+    (void) cap;
+    (void) ctx;
+    static struct home_ctx hc;
+    if (hc.n_dev == 0) {
+        memset(&hc, 0, sizeof hc);
+        if (home_registry_load(&hc, nullptr) == 0) {
+            fprintf(stderr,
+                    "home: no devices — set GEIST_HOME_REGISTRY or create "
+                    "./home-registry.txt\n");
+        }
+        hc.set = home_set_ha;
+        hc.get = home_get_ha;
+    }
+    out[0] = home_command_tool(&hc);
+    out[1] = home_status_tool(&hc);
+    return 2;
+}
+#endif
+
+/* `geist ha state|on|off|open|close <entity_id>` — the manual, Unix-style
+ * driver for the HA REST lib (tools/ha_rest.h): verify connectivity, token and
+ * entity ids by hand before pointing the agent at them. All build profiles. */
+static int run_ha_cli(int argc, char **argv) {
+    const char *url = ha_env_url();
+    const char *tok = ha_env_token();
+    if (argc < 3) {
+        fprintf(stderr, "usage: geist ha state|on|off|open|close <entity_id>\n");
+        return 2;
+    }
+    if (tok[0] == '\0') {
+        fprintf(stderr, "ha: set GEIST_HA_TOKEN (and GEIST_HA_URL if not %s)\n", HA_URL_DEFAULT);
+        return 2;
+    }
+    const char *cmd = argv[1];
+    const char *ent = argv[2];
+    char        domain[32];
+    const char *dot = strchr(ent, '.');
+    if (dot == nullptr || (size_t) (dot - ent) >= sizeof domain) {
+        fprintf(stderr, "ha: entity id must look like light.flur\n");
+        return 2;
+    }
+    memcpy(domain, ent, (size_t) (dot - ent));
+    domain[dot - ent] = '\0';
+
+    static char out[1 << 15];
+    long        n;
+    if (strcmp(cmd, "state") == 0) {
+        n = ha_get_state(url, tok, ent, sizeof out, out);
+    } else {
+        const char *svc = strcmp(cmd, "on") == 0      ? "turn_on"
+                          : strcmp(cmd, "off") == 0   ? "turn_off"
+                          : strcmp(cmd, "open") == 0  ? "open_cover"
+                          : strcmp(cmd, "close") == 0 ? "close_cover"
+                                                      : nullptr;
+        if (svc == nullptr) {
+            fprintf(stderr, "usage: geist ha state|on|off|open|close <entity_id>\n");
+            return 2;
+        }
+        n = ha_call_service(url, tok, domain, svc, ent, nullptr, sizeof out, out);
+    }
+    if (n < 0) {
+        fprintf(stderr, "ha: request failed (%s %s)\n", cmd, ent);
+        return 1;
+    }
+    printf("%s\n", out);
+    return 0;
 }
 
 /* Returns a system prompt = base + the notes index (so recall is usable: the
@@ -155,10 +264,10 @@ static int chat_selftest(void) {
     setenv("GEIST_MIND_DIR", "./.mind_selftest", 1);
     static char buf[CHAT_NOTE_CAP];
     int         ok = mind_remember("Test Note", "hello world contents") == 0 &&
-             mind_recall("test-note", buf, sizeof buf) > 0 &&
-             strstr(buf, "hello world contents") != nullptr &&
-             mind_slurp("./.mind_selftest/INDEX.md", buf, sizeof buf) > 0 &&
-             strstr(buf, "[Test Note](test-note.md)") != nullptr;
+                     mind_recall("test-note", buf, sizeof buf) > 0 &&
+                     strstr(buf, "hello world contents") != nullptr &&
+                     mind_slurp("./.mind_selftest/INDEX.md", buf, sizeof buf) > 0 &&
+                     strstr(buf, "[Test Note](test-note.md)") != nullptr;
     remove("./.mind_selftest/test-note.md");
     remove("./.mind_selftest/INDEX.md");
     remove("./.mind_selftest");
@@ -166,25 +275,64 @@ static int chat_selftest(void) {
     return ok ? 0 : 1;
 }
 
-static int run_chat(int argc, char **argv) {
-    /* argv here starts at "chat"; the model path is argv[1]. */
-    if (argc == 2 && strcmp(argv[1], "--selftest") == 0) {
-        return chat_selftest();
+/* True if an agent turn's answer is a tool failure — the signal for the offline
+ * fallback. Keyed on our tools' "error:" prefix convention (a failed web fetch
+ * offline surfaces exactly this). Deliberately narrow: matching looser words
+ * ("curl", "unreachable") would false-trigger on a legitimate answer that merely
+ * mentions them. */
+static int chat_tool_failed(const char *resp) {
+    return strncmp(resp, "error:", 6) == 0;
+}
+
+static void chat_prompt_append(char *dst, size_t cap, size_t *len, const char *src) {
+    if (*len >= cap) {
+        return;
     }
-    /* Non-embedded: `geist chat <model>`. Embedded: `geist chat` (baked-in model). */
-    const char *model_path = nullptr;
-    if (geist_embedded) {
-        if (argc != 1) {
-            fprintf(stderr, "usage: geist chat   (or: geist chat --selftest)\n");
-            return 2;
-        }
-    } else {
-        if (argc != 2) {
-            fprintf(stderr, "usage: geist chat <model.gguf>   (or: geist chat --selftest)\n");
-            return 2;
-        }
-        model_path = argv[1];
+    size_t room = cap - *len - 1;
+    size_t n    = strnlen(src, room);
+    memcpy(dst + *len, src, n);
+    *len += n;
+    dst[*len] = '\0';
+}
+
+/* Offline fallback: answer `req` directly (instruct, no tools) on a THROWAWAY
+ * session, leaving the agent's own session/transcript untouched. Used when an
+ * agent tool fails (e.g. the web is unreachable) so the REPL still answers from
+ * the model's own knowledge instead of surfacing "fetch failed". Returns bytes.
+ * ponytail: a fresh session per fallback (rare failure path); the fallback turn
+ * is dropped from the conversation transcript rather than folded back in. */
+static size_t chat_instruct_fallback(struct geist_model   *model,
+                                     struct geist_backend *be,
+                                     const char           *req,
+                                     size_t                cap,
+                                     char                  out[static cap]) {
+    struct geist_session_opts opts = {0};
+    struct geist_session     *s    = nullptr;
+    if (geist_session_create(model, be, &opts, &s) != GEIST_OK) {
+        return 0;
     }
+    struct geist_chat_template tmpl = geist_chat_template_for_model(model);
+    static char                buf[1 << 14];
+    size_t                     len = 0;
+    buf[0]                         = '\0';
+    chat_prompt_append(buf, sizeof buf, &len, tmpl.user_open);
+    chat_prompt_append(buf, sizeof buf, &len, req);
+    chat_prompt_append(buf, sizeof buf, &len, tmpl.turn_close);
+    chat_prompt_append(buf, sizeof buf, &len, tmpl.model_open);
+    size_t w = 0;
+    if (geist_session_set_prompt(s, buf) == GEIST_OK) {
+        geist_token_t eos = geist_model_eos_token(model);
+        geist_token_t eot =
+                tmpl.stop[0] ? geist_model_token_by_text(model, tmpl.stop) : GEIST_TOKEN_NONE;
+        w = geist_generate_greedy(s, eos, eot, tmpl.leak, GEIST_AGENT_MAX_DECODE, cap, out);
+    }
+    geist_session_destroy(s);
+    return w;
+}
+
+/* The interactive agentic REPL on a resolved model (model_path == nullptr ->
+ * embedded). Shared by bare `geist` (no prompt) and the `geist chat` alias. */
+static int run_chat(const char *model_path) {
 
     struct geist_backend *be    = nullptr;
     struct geist_model   *model = nullptr;
@@ -245,14 +393,14 @@ static int run_chat(int argc, char **argv) {
                 puts(mind_remember(title, text) == 0 ? "remembered." : "remember failed.");
             }
         } else if (strncmp(line, "/recall ", 8) == 0) {
-            static char  note[CHAT_NOTE_CAP];
-            static char  entry[CHAT_NOTE_CAP + 256]; /* > note + prefix: format can't truncate */
-            const char  *slug = line + 8;
+            static char note[CHAT_NOTE_CAP];
+            static char entry[CHAT_NOTE_CAP + 256]; /* > note + prefix: format can't truncate */
+            const char *slug = line + 8;
             if (mind_recall(slug, note, sizeof note) > 0) {
                 /* Format the entry into a buffer sized to hold a full note + the
                  * prefix, then append to `pending` only if it fits — so the format
                  * write is bounded and the append is an explicit, guarded copy. */
-                int    el = snprintf(entry, sizeof entry, "Recalled note %.200s:\n%s\n", slug, note);
+                int el = snprintf(entry, sizeof entry, "Recalled note %.200s:\n%s\n", slug, note);
                 size_t pl = strlen(pending);
                 if (el > 0 && pl + (size_t) el + 1 <= sizeof pending) {
                     memcpy(pending + pl, entry, (size_t) el + 1);
@@ -272,10 +420,21 @@ static int run_chat(int argc, char **argv) {
             } else {
                 snprintf(req, sizeof req, "%s", line);
             }
-            size_t rn = 0;
+            size_t rn         = 0;
+            size_t saved_tlen = agent.tlen; /* to drop a failed tool turn cleanly */
             if (geist_agent_run(&agent, strlen(req), req, sizeof resp, resp, &rn) != GEIST_OK) {
                 fprintf(stderr, "chat: turn failed\n");
             } else {
+                if (chat_tool_failed(resp)) {
+                    /* a tool failed (likely offline) — rewind the transcript to
+                     * before this turn and answer directly from the model. */
+                    agent.tlen                   = saved_tlen;
+                    agent.transcript[agent.tlen] = '\0';
+                    size_t fn = chat_instruct_fallback(model, be, req, sizeof resp, resp);
+                    if (fn > 0) {
+                        rn = fn;
+                    }
+                }
                 fwrite(resp, 1, rn, stdout);
                 putchar('\n');
             }
@@ -294,61 +453,135 @@ static int usage(const char *prog, int code) {
     FILE *o = code ? stderr : stdout;
 #if defined(GEIST_EMBEDDED_MODEL)
     fprintf(o,
-        "geist %s — minimal CPU LLM inference (model embedded in this binary)\n\n"
-        "Usage:\n"
-        "  %s [prompt] [-n N]              generate text\n"
-        "  %s agent [request] [-n N]       one-shot tool-use agent\n"
-        "  %s chat                         multi-turn chat + memory palace\n"
-        "  %s --version\n\n"
-        "Options:\n"
-        "  -n, --max-tokens N   max new tokens to generate (default 64)\n"
-        "  -v, --version        print version and exit\n"
-        "  -h, --help           print this help and exit\n\n"
-        "Example:\n"
-        "  OMP_WAIT_POLICY=active %s \"The capital of France is\" -n 40\n",
-        geist_version_string(), prog, prog, prog, prog, prog);
+            "geist %s — minimal CPU LLM inference (model embedded in this binary)\n\n"
+            "Usage:\n"
+            "  %s \"prompt\"                     ask a question (instruct chat)\n"
+            "  %s                              no prompt -> interactive agentic chat\n"
+            "  %s --raw \"prompt\"               raw base-model text completion\n"
+            "  %s agent \"request\"              one-shot tool-use agent\n"
+            "  %s --version\n\n"
+            "Options:\n"
+            "  -m, --model <path>   run a different GGUF instead of the baked-in model\n"
+            "  --raw                raw base-model completion (default is instruct chat:\n"
+            "                       the prompt is wrapped in the model's chat template)\n"
+            "  -n, --max-tokens N   max new tokens to generate (default 64)\n"
+            "  -v, --version        print version and exit\n"
+            "  -h, --help           print this help and exit\n\n"
+            "Example:\n"
+            "  OMP_WAIT_POLICY=active %s \"What is the capital of France?\"\n",
+            geist_version_string(),
+            prog,
+            prog,
+            prog,
+            prog,
+            prog,
+            prog);
 #else
     fprintf(o,
-        "geist %s — minimal CPU LLM inference\n\n"
-        "Usage:\n"
-        "  %s <model.gguf> [prompt] [-n N]        generate text\n"
-        "  %s agent <model.gguf> [request] [-n N] one-shot tool-use agent\n"
-        "  %s chat <model.gguf>                   multi-turn chat + memory palace\n"
-        "  %s --version\n\n"
-        "Options:\n"
-        "  -n, --max-tokens N   max new tokens to generate (default 64)\n"
-        "  -v, --version        print version and exit\n"
-        "  -h, --help           print this help and exit\n\n"
-        "Example:\n"
-        "  OMP_WAIT_POLICY=active %s model.gguf \"The capital of France is\" -n 40\n",
-        geist_version_string(), prog, prog, prog, prog, prog);
+            "geist %s — minimal CPU LLM inference\n\n"
+            "Usage:\n"
+            "  %s -m <model> [prompt]                 ask a question (instruct chat)\n"
+            "  %s -m <model>                          no prompt -> interactive agentic chat\n"
+            "  %s -m <model> --raw [prompt]           raw base-model text completion\n"
+            "  %s agent -m <model> \"request\"          one-shot tool-use agent\n"
+            "  %s --version\n\n"
+            "Options:\n"
+            "  -m, --model <path>   the model GGUF to load (required unless embedded)\n"
+            "  --raw                raw base-model completion (default is instruct chat:\n"
+            "                       the prompt is wrapped in the model's chat template)\n"
+            "  -n, --max-tokens N   max new tokens to generate (default 64)\n"
+            "  -v, --version        print version and exit\n"
+            "  -h, --help           print this help and exit\n\n"
+            "Example:\n"
+            "  OMP_WAIT_POLICY=active %s -m model.gguf \"What is the capital of France?\"\n",
+            geist_version_string(),
+            prog,
+            prog,
+            prog,
+            prog,
+            prog,
+            prog);
 #endif
     return code;
 }
 
 int main(int argc, char **argv) {
+    /* `geist ha ...` -> manual HA REST driver (all profiles, no model load). */
+    if (argc > 1 && strcmp(argv[1], "ha") == 0) {
+        return run_ha_cli(argc - 1, argv + 1);
+    }
+#if defined(GEIST_TOOLSET_HOME)
+    /* Home appliance: EVERYTHING else is an agent request — no subcommand, no
+     * raw-completion mode. -h/-v fall through to geist_agent_main's usage. */
+    if (!(argc > 1 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0))) {
+#if defined(GEIST_EMBEDDED_MODEL)
+        return geist_agent_main(argc,
+                                argv,
+                                HOME_SYSTEM,
+                                home_toolset,
+                                nullptr,
+                                geist_embedded_model_start,
+                                geist_embedded_model_end);
+#else
+        return geist_agent_main(argc, argv, HOME_SYSTEM, home_toolset, nullptr, nullptr, nullptr);
+#endif
+    }
+    printf("geist-home %s\n", geist_version_string());
+    return 0;
+#endif
     /* `geist agent ...` -> one-shot tool loop. Drop argv[0]; geist_agent_main
      * parses "agent" as its prog name and the rest after it. In an embedded build
      * the model is baked in (pass its bounds; no model positional). */
     if (argc > 1 && strcmp(argv[1], "agent") == 0) {
 #if defined(GEIST_EMBEDDED_MODEL)
-        return geist_agent_main(argc - 1, argv + 1, system_with_index(AGENT_SYSTEM), agent_tools,
-                                nullptr, geist_embedded_model_start, geist_embedded_model_end);
+        return geist_agent_main(argc - 1,
+                                argv + 1,
+                                system_with_index(AGENT_SYSTEM),
+                                agent_tools,
+                                nullptr,
+                                geist_embedded_model_start,
+                                geist_embedded_model_end);
 #else
-        return geist_agent_main(argc - 1, argv + 1, system_with_index(AGENT_SYSTEM), agent_tools,
-                                nullptr, nullptr, nullptr);
+        return geist_agent_main(argc - 1,
+                                argv + 1,
+                                system_with_index(AGENT_SYSTEM),
+                                agent_tools,
+                                nullptr,
+                                nullptr,
+                                nullptr);
 #endif
     }
-    /* `geist chat ...` -> multi-turn conversation with the same tools + memory. */
+    /* `geist chat [-m <model>]` -> the agentic REPL; explicit alias for bare
+     * `geist` with no prompt. Carries --selftest and a legacy positional model. */
     if (argc > 1 && strcmp(argv[1], "chat") == 0) {
-        return run_chat(argc - 1, argv + 1);
+        if (argc == 3 && strcmp(argv[2], "--selftest") == 0) {
+            return chat_selftest();
+        }
+        const char *m = nullptr;
+        for (int i = 2; i < argc; i++) {
+            if ((strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--model") == 0) && i + 1 < argc) {
+                m = argv[++i];
+            } else if (argv[i][0] != '-' && m == nullptr) {
+                m = argv[i]; /* legacy positional model */
+            }
+        }
+        if (!geist_embedded && m == nullptr) {
+            fprintf(stderr, "geist chat: no model — pass -m <model.gguf>\n");
+            return 2;
+        }
+        return run_chat(m);
     }
-    const char *prog = "geist";
-    const char *model_path = nullptr;
-    const char *prompt = "Hello, my name is";
-    int  max_new    = 64;
-    bool n_explicit = false; /* explicit -n is a hard cap; the default is a soft target */
-    int  got_prompt = 0;
+
+    /* Default dispatch: `geist [-m <model>] [prompt] [-n N] [--raw]`.
+     *   prompt given -> one-shot instruct answer (--raw = base-model completion);
+     *   no prompt    -> the interactive agentic REPL (run_chat).
+     * Model source: -m <path>  >  embedded  >  error. */
+    const char *prog       = "geist";
+    const char *model_path = nullptr; /* from -m; embedded build ignores it */
+    const char *prompt     = nullptr; /* one positional; nullptr -> REPL */
+    int         max_new    = 64;
+    bool        n_explicit = false; /* explicit -n is a hard cap; the default is a soft target */
+    bool        chat_mode  = true;  /* default: instruct chat (template-wrapped); --raw opts out */
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -357,24 +590,48 @@ int main(int argc, char **argv) {
         } else if (strcmp(a, "-v") == 0 || strcmp(a, "--version") == 0) {
             printf("geist %s\n", geist_version_string());
             return 0;
+        } else if (strcmp(a, "-m") == 0 || strcmp(a, "--model") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "%s: %s needs an argument\n", prog, a);
+                return 2;
+            }
+            model_path = argv[++i];
         } else if (strcmp(a, "-n") == 0 || strcmp(a, "--max-tokens") == 0) {
-            if (i + 1 >= argc) { fprintf(stderr, "%s: %s needs an argument\n", prog, a); return 2; }
+            if (i + 1 >= argc) {
+                fprintf(stderr, "%s: %s needs an argument\n", prog, a);
+                return 2;
+            }
             max_new = atoi(argv[++i]);
-            if (max_new <= 0) { fprintf(stderr, "%s: invalid token count\n", prog); return 2; }
+            if (max_new <= 0) {
+                fprintf(stderr, "%s: invalid token count\n", prog);
+                return 2;
+            }
             n_explicit = true;
+        } else if (strcmp(a, "--raw") == 0) {
+            chat_mode = false;
+        } else if (strcmp(a, "-c") == 0 || strcmp(a, "--chat") == 0) {
+            chat_mode = true; /* explicit; instruct chat is already the default */
         } else if (a[0] == '-' && a[1] != '\0') {
             fprintf(stderr, "%s: unknown option '%s'\n", prog, a);
             return usage(prog, 2);
-        } else if (!geist_embedded && model_path == nullptr) {
-            model_path = a;
-        } else if (!got_prompt) {
-            prompt = a; got_prompt = 1;
+        } else if (prompt == nullptr) {
+            prompt = a; /* the single positional is the PROMPT (model is -m now) */
         } else {
             fprintf(stderr, "%s: unexpected argument '%s'\n", prog, a);
             return usage(prog, 2);
         }
     }
-    if (!geist_embedded && model_path == nullptr) return usage(prog, 2);
+    /* Model: -m, else embedded, else it's an error (there is nothing to run). */
+    if (!geist_embedded && model_path == nullptr) {
+        fprintf(stderr,
+                "%s: no model — pass -m <model.gguf>, or use a build with an embedded model\n",
+                prog);
+        return usage(prog, 2);
+    }
+    /* No prompt -> the interactive agentic REPL. */
+    if (prompt == nullptr) {
+        return run_chat(model_path);
+    }
 
     /* "auto" picks the best backend compiled into this build for the host. */
     struct geist_backend *be = nullptr;
@@ -383,24 +640,53 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Model precedence: an explicit -m path wins even in an embedded build
+     * (-m > embedded > error, matching the arg check above). */
     struct geist_model *model = nullptr;
-    enum geist_status ls;
-    const char *src;
+    enum geist_status   ls;
+    const char         *src;
+    if (model_path != nullptr) {
+        ls  = geist_model_load(model_path, be, &model);
+        src = model_path;
+    } else {
 #if defined(GEIST_EMBEDDED_MODEL)
-    ls  = geist_model_load_from_memory(
-        geist_embedded_model_start,
-        (size_t) (geist_embedded_model_end - geist_embedded_model_start), be, &model);
-    src = "<embedded>";
+        ls = geist_model_load_from_memory(
+                geist_embedded_model_start,
+                (size_t) (geist_embedded_model_end - geist_embedded_model_start),
+                be,
+                &model);
+        src = "<embedded>";
 #else
-    ls  = geist_model_load(model_path, be, &model);
-    src = model_path;
+        ls  = GEIST_E_INVALID_STATE; /* unreachable: guarded above */
+        src = "<none>";
 #endif
+    }
     if (ls != GEIST_OK) {
         fprintf(stderr, "model_load failed: %s\n", geist_last_create_error());
         geist_backend_destroy(be);
         return 1;
     }
     fprintf(stderr, "loaded %s (arch: %s)\n", src, geist_model_arch(model));
+
+    /* Instruct chat is the DEFAULT (most GGUFs people run are instruct-tuned):
+     * wrap the prompt in the model's chat template so the CLI gives a clean
+     * answer that stops at the turn marker — the same wrapper the agent/serve
+     * layer uses, offline and tool-free. --raw opts out to base-model completion
+     * (a bare continuation, for base models or a template geist can't detect). */
+    const char                *gen_prompt = prompt;
+    struct geist_chat_template tmpl       = {0};
+    static char                chat_buf[1 << 14];
+    if (chat_mode) {
+        tmpl = geist_chat_template_for_model(model);
+        snprintf(chat_buf,
+                 sizeof chat_buf,
+                 "%s%s%s%s",
+                 tmpl.user_open,
+                 prompt,
+                 tmpl.turn_close,
+                 tmpl.model_open);
+        gen_prompt = chat_buf;
+    }
 
     /* max_new is a hard cap when the user passed -n; otherwise it's a soft target:
      * keep going past it until a sentence ends (capped at 2x), so a bare completion
@@ -422,11 +708,10 @@ int main(int argc, char **argv) {
         return 1;
     }
     {
-        const size_t   cap  = strlen(prompt) + 8; /* one token/byte upper bound + BOS */
-        size_t         np   = 0;
-        geist_token_t *tmp  = malloc(cap * sizeof(geist_token_t));
-        if (tmp != nullptr &&
-            geist_session_tokenize(sess, prompt, cap, tmp, &np) == GEIST_OK) {
+        const size_t   cap = strlen(gen_prompt) + 8; /* one token/byte upper bound + BOS */
+        size_t         np  = 0;
+        geist_token_t *tmp = malloc(cap * sizeof(geist_token_t));
+        if (tmp != nullptr && geist_session_tokenize(sess, gen_prompt, cap, tmp, &np) == GEIST_OK) {
             const size_t need = np + (size_t) budget + 8;
             /* 4096 = the state-default window (arch_state.c). Only rebuild
              * when the workload exceeds it, so short/medium prompts keep
@@ -436,7 +721,9 @@ int main(int argc, char **argv) {
                 opts.max_seq_len = need;
                 sess             = nullptr;
                 if (geist_session_create(model, be, &opts, &sess) != GEIST_OK) {
-                    fprintf(stderr, "session_create (ctx=%zu) failed: %s\n", need,
+                    fprintf(stderr,
+                            "session_create (ctx=%zu) failed: %s\n",
+                            need,
                             geist_last_create_error());
                     free(tmp);
                     geist_model_destroy(model);
@@ -448,32 +735,50 @@ int main(int argc, char **argv) {
         free(tmp);
     }
 
-    if (geist_session_set_prompt(sess, prompt) != GEIST_OK) {
+    if (geist_session_set_prompt(sess, gen_prompt) != GEIST_OK) {
         fprintf(stderr, "set_prompt failed: %s\n", geist_session_errmsg(sess));
-        geist_session_destroy(sess); geist_model_destroy(model); geist_backend_destroy(be);
+        geist_session_destroy(sess);
+        geist_model_destroy(model);
+        geist_backend_destroy(be);
         return 1;
     }
 
-    printf("%s", prompt);
-    fflush(stdout);
-    for (int i = 0; i < budget; i++) {
-        geist_token_t tok = 0;
-        if (geist_session_decode_step(sess, &tok) != GEIST_OK) {
-            fprintf(stderr, "\ndecode_step failed: %s\n", geist_session_errmsg(sess));
-            break;
-        }
-        const char *piece = geist_session_token_to_str(sess, tok);
-        if (piece == nullptr) break;
-        size_t len = strlen(piece);
-        if (len >= 2 && piece[0] == '<' && piece[len - 1] == '>') break; /* control/special */
-        fputs(piece, stdout);
+    if (chat_mode) {
+        /* Instruct path: generate the assistant turn only, stopping at the model's
+         * EOS or the template's turn terminator; print just the answer (no echo of
+         * the templated prompt). Reuses the agent/summarizer greedy generator. */
+        geist_token_t eos = geist_model_eos_token(model);
+        geist_token_t eot =
+                tmpl.stop[0] ? geist_model_token_by_text(model, tmpl.stop) : GEIST_TOKEN_NONE;
+        static char answer[1 << 14];
+        geist_generate_greedy(sess, eos, eot, tmpl.leak, budget, sizeof answer, answer);
+        puts(answer);
+    } else {
+        printf("%s", prompt);
         fflush(stdout);
-        if (!n_explicit && i + 1 >= max_new && len > 0) { /* past soft target: stop at sentence end */
-            char last = piece[len - 1];
-            if (last == '.' || last == '!' || last == '?' || last == '\n') break;
+        for (int i = 0; i < budget; i++) {
+            geist_token_t tok = 0;
+            if (geist_session_decode_step(sess, &tok) != GEIST_OK) {
+                fprintf(stderr, "\ndecode_step failed: %s\n", geist_session_errmsg(sess));
+                break;
+            }
+            const char *piece = geist_session_token_to_str(sess, tok);
+            if (piece == nullptr)
+                break;
+            size_t len = strlen(piece);
+            if (len >= 2 && piece[0] == '<' && piece[len - 1] == '>')
+                break; /* control/special */
+            fputs(piece, stdout);
+            fflush(stdout);
+            if (!n_explicit && i + 1 >= max_new &&
+                len > 0) { /* soft target: stop at sentence end */
+                char last = piece[len - 1];
+                if (last == '.' || last == '!' || last == '?' || last == '\n')
+                    break;
+            }
         }
+        putchar('\n');
     }
-    putchar('\n');
 
     geist_session_destroy(sess);
     geist_model_destroy(model);

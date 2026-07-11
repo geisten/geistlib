@@ -20,6 +20,53 @@ is open to help. The mission in full is in the
 
 <sub>✅ shipped · 🚧 in progress · 🔬 exploring</sub>
 
+## Product track: private Home Assistant edge agent
+
+The first product-shaped use case for the small-model agent track is a local
+Home Assistant conversation agent on Raspberry Pi 5 and CPU-only Linux hosts.
+Home Assistant remains the authority for entity exposure: the integration
+derives a registry only from Assist-exposed entities and pushes it to the
+resident geist process. Geist resolves targets deterministically, admits only
+its compiled home-tool families, and performs the local HA REST calls.
+
+### Preview exit criteria
+
+The Home Assistant preview is ready to announce when all of these are measured
+on a clean installation rather than inferred from engine-level tests:
+
+| criterion | target |
+| :-- | :-- |
+| Installation | first working request in **10 minutes or less**, without compiling |
+| Clear commands | **≥ 90%** correct end-to-end actions on the published HA evaluation set |
+| Authorization | **0 actions** against entities not exposed by Home Assistant |
+| Simple-command latency | warm p50 **≤ 3 s** on Raspberry Pi 5 |
+| Complex tool latency | warm p50 **≤ 10 s** on Raspberry Pi 5 |
+| Languages | the same published core suite passes in **German and English** |
+| Reliability | **24 h** resident soak without crash, model reload, or unbounded RSS growth |
+
+Latency is a product budget, not an engine benchmark: it includes request
+parsing, model routing/generation, the Home Assistant tool round-trip, and the
+final response. If a small model cannot meet the simple-command budget, those
+commands take a deterministic Assist-intent fast path and the LLM handles only
+ambiguous or multi-step work.
+
+### Delivery stages
+
+1. ✅ Resident Unix-socket daemon: `geist-home --serve /path/geist.sock`; the
+   model stays warm and the socket is created mode `0600`.
+2. ✅ Home Assistant Conversation preview: Assist utterances, exposed-entity
+   registry synchronization, deterministic device resolution, and bounded home
+   actions are running end to end on Raspberry Pi 5.
+3. 🚧 Reproducible installation: versioned component package, service installer,
+   diagnostics, upgrade/rollback instructions, and clean-host acceptance test.
+4. ARM64/x86-64 add-on with model storage, checksums, health checks and updates;
+   keep the Unix socket for same-host deployments.
+5. Published German/English HA evaluation corpus, security cases, 24 h soak,
+   and reproducible Pi 5 latency report.
+
+A general HTTP inference API is a separate interoperability feature, not a
+dependency of the Home Assistant product track.
+
 ## Distribution: one static binary per platform
 
 **Decided (June 2026): ship per-platform static binaries via a CI matrix — not a

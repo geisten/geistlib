@@ -44,7 +44,7 @@ chmod +x "$BINDIR/geist-bitnet"
 echo "Installed: $BINDIR/geist-bitnet"
 case ":$PATH:" in
   *":$BINDIR:"*)
-    echo 'Run:  geist-bitnet "The capital of France is"' ;;
+    echo 'Run:  geist-bitnet "What is the capital of France?"' ;;
   *)
     echo "Add to PATH:  export PATH=\"$BINDIR:\$PATH\""
     echo "Then run:     geist-bitnet \"The capital of France is\"" ;;

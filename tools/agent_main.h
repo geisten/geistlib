@@ -35,9 +35,16 @@
 
 #include "agent.h"
 
+#include <signal.h> /* --serve: SIGPIPE ignore              */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h> /* --serve: Unix-domain socket daemon   */
+#include <sys/stat.h>   /* --serve: chmod 600 on the socket     */
+#include <sys/time.h>   /* --serve: struct timeval (glibc does not pull it \
+                         * in via sys/socket.h the way macOS does)          */
+#include <sys/un.h>
+#include <unistd.h>
 
 enum { AGENT_MAIN_RESP_CAP = 1 << 13, AGENT_MAIN_LINE_CAP = 8192, AGENT_MAIN_TOOLS_CAP = 8 };
 
@@ -51,17 +58,20 @@ typedef size_t (*geist_tools_fn)(struct geist_model   *model,
                                  void                 *ctx);
 
 struct agent_main_opts {
-    const char *model;     /* required (first positional) */
-    const char *question;  /* second positional; nullptr -> interactive REPL */
+    const char *model;     /* -m <path> or a positional; embedded build may omit */
+    const char *question;  /* the positional request; nullptr -> interactive REPL */
     size_t      max_steps; /* -n/--max-steps; 0 -> the agent's default */
+    const char *serve;     /* --serve <unix-socket>: resident daemon mode */
 };
 
 enum agent_main_parse { AGENT_MAIN_RUN = 0, AGENT_MAIN_HELP = 1, AGENT_MAIN_BADARGS = 2 };
 
 static inline void agent_main_usage(FILE *o, const char *prog) {
     fprintf(o,
-            "usage: %s <model.gguf> [\"question\"] [-n max_steps]\n"
-            "  no question -> interactive REPL (one request per line; /quit to exit)\n",
+            "usage: %s [-m <model.gguf>] [\"question\"] [-n max_steps] [--serve <socket>]\n"
+            "  no question -> interactive REPL (one request per line; /quit to exit)\n"
+            "  --serve     -> resident daemon: model stays warm, one request per\n"
+            "                 connection on a chmod-600 Unix socket (see DEPLOY.md)\n",
             prog);
 }
 
@@ -73,6 +83,7 @@ agent_main_parse_args(int argc, char **argv, bool want_model, struct agent_main_
     opts->model     = nullptr;
     opts->question  = nullptr;
     opts->max_steps = 0;
+    opts->serve     = nullptr;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
@@ -87,10 +98,20 @@ agent_main_parse_args(int argc, char **argv, bool want_model, struct agent_main_
                 return AGENT_MAIN_BADARGS;
             }
             opts->max_steps = (size_t) n;
+        } else if (strcmp(a, "--serve") == 0) {
+            if (i + 1 >= argc) {
+                return AGENT_MAIN_BADARGS;
+            }
+            opts->serve = argv[++i];
+        } else if (strcmp(a, "-m") == 0 || strcmp(a, "--model") == 0) {
+            if (i + 1 >= argc) {
+                return AGENT_MAIN_BADARGS;
+            }
+            opts->model = argv[++i]; /* -m wins over embedded (see geist_agent_main) */
         } else if (a[0] == '-' && a[1] != '\0') {
             return AGENT_MAIN_BADARGS; /* unknown flag */
         } else if (want_model && !opts->model) {
-            opts->model = a;
+            opts->model = a; /* legacy positional model */
         } else if (!opts->question) {
             opts->question = a;
         } else {
@@ -120,6 +141,89 @@ static inline bool agent_force_enabled(void) {
 }
 
 /* Run one request and print the answer + newline. Returns 0 on success. */
+/* Resident daemon (--serve): the model stays warm and requests arrive over a
+ * chmod-600 Unix socket — the DEPLOY.md pattern, and the transport behind the
+ * Home Assistant conversation-agent integration (one Assist utterance = one
+ * connection). Protocol: the client sends ONE UTF-8 request line and half-
+ * closes; the daemon writes the full answer (may contain newlines) and closes
+ * — EOF is the frame. One connection at a time, one resident conversation:
+ * the agent keeps its transcript across connections (context carry + pronoun
+ * memory work across Assist turns; agent_compact bounds the growth).
+ * ponytail: sequential accept, no threads — an Assist pipeline sends one
+ * utterance at a time anyway. Unix only, like the rest of this file. */
+static inline int agent_main_serve(struct geist_agent *a, const char *path) {
+    signal(SIGPIPE, SIG_IGN); /* a vanished client must not kill the daemon */
+    unlink(path);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        fprintf(stderr, "serve: socket failed\n");
+        return 1;
+    }
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    if (strlen(path) >= sizeof addr.sun_path) {
+        fprintf(stderr, "serve: socket path too long\n");
+        return 1;
+    }
+    strcpy(addr.sun_path, path);
+    if (bind(fd, (struct sockaddr *) &addr, sizeof addr) != 0 || chmod(path, 0600) != 0 ||
+        listen(fd, 1) != 0) {
+        fprintf(stderr, "serve: cannot bind %s\n", path);
+        close(fd);
+        return 1;
+    }
+    a->conversation = true; /* the daemon IS one long conversation */
+    /* Pre-warm: one throwaway turn so the FIRST real request doesn't pay the
+     * cold-start cost (router baseline + system-prompt pin priming) — measured
+     * ~12 s cold -> ~4 s warm on the Pi. The dummy transcript is dropped so it
+     * never enters the live conversation; the pin and cached route baseline
+     * survive (they live in the session / agent, not the transcript). */
+    {
+        static char warm_resp[AGENT_MAIN_RESP_CAP];
+        size_t      warm_n = 0;
+        (void) geist_agent_run(a, 5, "hallo", sizeof warm_resp, warm_resp, &warm_n);
+        a->tlen = 0; /* discard warm-up; sys_pinned + route_base stay cached */
+    }
+    fprintf(stderr, "serving on %s (one request line per connection)\n", path);
+    for (;;) {
+        int conn = accept(fd, nullptr, nullptr);
+        if (conn < 0) {
+            continue;
+        }
+        /* a silent client must not wedge the (sequential) daemon: bound the
+         * request read — observed live via a dangling HA connection that
+         * blocked every later Assist turn until its 60 s client timeout */
+        struct timeval rto = {.tv_sec = 10};
+        (void) setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &rto, sizeof rto);
+        static char req[AGENT_MAIN_LINE_CAP];
+        size_t      n = 0;
+        ssize_t     r;
+        while (n + 1 < sizeof req && (r = read(conn, req + n, sizeof req - 1 - n)) > 0) {
+            n += (size_t) r;
+            if (memchr(req, '\n', n) != nullptr) {
+                break;
+            }
+        }
+        req[n]                  = '\0';
+        req[strcspn(req, "\n")] = '\0';
+        if (req[0] != '\0') {
+            static char resp[AGENT_MAIN_RESP_CAP];
+            size_t      rn = 0;
+            if (geist_agent_run(a, strlen(req), req, sizeof resp, resp, &rn) != GEIST_OK) {
+                rn = (size_t) snprintf(resp, sizeof resp, "error: agent run failed");
+            }
+            size_t off = 0;
+            while (off < rn) {
+                ssize_t w = write(conn, resp + off, rn - off);
+                if (w <= 0) {
+                    break;
+                }
+                off += (size_t) w;
+            }
+        }
+        close(conn);
+    }
+}
+
 static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
     static char resp[AGENT_MAIN_RESP_CAP];
     size_t      n = 0;
@@ -142,8 +246,8 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
                                                  void                *tools_ctx,
                                                  const unsigned char *emb_start,
                                                  const unsigned char *emb_end) {
-    const char *prog       = argc > 0 ? argv[0] : "geist agent";
-    bool        want_model = emb_start == nullptr; /* false -> a baked-in model */
+    const char            *prog       = argc > 0 ? argv[0] : "geist agent";
+    bool                   want_model = emb_start == nullptr; /* false -> a baked-in model */
     struct agent_main_opts opts;
     switch (agent_main_parse_args(argc, argv, want_model, &opts)) {
     case AGENT_MAIN_HELP:
@@ -161,11 +265,13 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
         fprintf(stderr, "agent: backend_create failed: %s\n", geist_last_create_error());
         return 1;
     }
+    /* -m path wins over an embedded model; else the baked-in bytes. (The parser
+     * guarantees a model exists: non-embedded builds require -m or a positional.) */
     struct geist_model *model = nullptr;
-    enum geist_status   ls =
-            want_model ? geist_model_load(opts.model, be, &model)
-                       : geist_model_load_from_memory(emb_start, (size_t) (emb_end - emb_start), be,
-                                                      &model);
+    enum geist_status ls = opts.model
+                                   ? geist_model_load(opts.model, be, &model)
+                                   : geist_model_load_from_memory(
+                                             emb_start, (size_t) (emb_end - emb_start), be, &model);
     if (ls != GEIST_OK) {
         fprintf(stderr, "agent: model_load failed: %s\n", geist_last_create_error());
         geist_backend_destroy(be);
@@ -188,6 +294,15 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
 
     static struct geist_agent agent; /* large -> static, not a deep stack */
     geist_agent_init(&agent, model, sess, n_tools, tools, opts.max_steps, system_prompt);
+    /* A second session dedicated to routing arms the system-prompt pin (the
+     * per-turn latency fix): generation rewinds to the pinned prompt instead
+     * of re-prefilling it, routing scores stay clean on their own session.
+     * If the extra session fails (memory), the agent just runs the slower
+     * single-session path. */
+    struct geist_session *route_sess = nullptr;
+    if (geist_session_create(model, be, &sopts, &route_sess) == GEIST_OK) {
+        geist_agent_set_route_session(&agent, route_sess);
+    }
     /* Force turn 0 into a valid tool call (default on; GEIST_FORCE_CALL=0 to let
      * the model decide) — the bundled models aren't tool-trained, so without this
      * the agent would never run a tool. See agent_force_enabled. */
@@ -198,7 +313,9 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
     }
 
     int rc = 0;
-    if (opts.question) {
+    if (opts.serve) {
+        rc = agent_main_serve(&agent, opts.serve); /* never returns on success */
+    } else if (opts.question) {
         rc = agent_main_ask(&agent, opts.question);
     } else {
         static char line[AGENT_MAIN_LINE_CAP];
@@ -220,6 +337,9 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
         }
     }
 
+    if (route_sess != nullptr) {
+        geist_session_destroy(route_sess);
+    }
     geist_session_destroy(sess);
     geist_model_destroy(model);
     geist_backend_destroy(be);
