@@ -73,10 +73,20 @@ the full Assist pipeline (the phone-app path) adds ~1–2 s → **~14 s
 end-to-end**. Stable across turns (not transcript growth at this length):
 the cost is the per-turn prefill work — selection prompt + the FULL
 transcript re-prefill including the constant system prompt (the documented
-O(n²) ceiling). The mac does the same turn in ~3 s. The obvious next perf
-step is `geist_session_pin_prefix` on the constant system prompt — its
-docstring literally names this use case — plus incremental transcript
-prefill; both would cut the dominant share of the 12 s.
+O(n²) ceiling). The mac does the same turn in ~3 s.
+
+**Fixed (same day): the system-prompt pin (f87de25).** BOS + system prompt
+are pinned via `geist_session_pin_prefix` on first run; `reset()` rewinds to
+the pinned prefix and only the transcript suffix re-prefills. Routing runs on
+a DEDICATED second session — the first single-session attempt scored the
+selection prompt behind the pinned system prompt and doc_search stole 7
+routings incl. "What is 2 plus 2?" (the tool table in the prompt contaminates
+the cloze; PMI does not cancel it). On its own session, routing is
+bit-identical to the legacy path: main eval restored to exactly 43/48, home
+stays 41/41, both gates green at unchanged thresholds. Measured after the
+fix: **Pi turn 3.6–4.7 s** steady state (turn 1 pays the one-time
+pin+baseline build: 9.3 s), **full Assist pipeline 5.2 s** — ~3× faster.
+Mac eval walls: main forced 339→116 s, home 114→51 s.
 
 **Home-gate nightly (Pi 5):** `scripts/nightly-home-gate.sh` runs the DEPLOYED
 tree's forced home gate every night at 03:30 (crontab), one summary line per
