@@ -167,6 +167,17 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
         return 1;
     }
     a->conversation = true; /* the daemon IS one long conversation */
+    /* Pre-warm: one throwaway turn so the FIRST real request doesn't pay the
+     * cold-start cost (router baseline + system-prompt pin priming) — measured
+     * ~12 s cold -> ~4 s warm on the Pi. The dummy transcript is dropped so it
+     * never enters the live conversation; the pin and cached route baseline
+     * survive (they live in the session / agent, not the transcript). */
+    {
+        static char warm_resp[AGENT_MAIN_RESP_CAP];
+        size_t      warm_n = 0;
+        (void) geist_agent_run(a, 5, "hallo", sizeof warm_resp, warm_resp, &warm_n);
+        a->tlen = 0; /* discard warm-up; sys_pinned + route_base stay cached */
+    }
     fprintf(stderr, "serving on %s (one request line per connection)\n", path);
     for (;;) {
         int conn = accept(fd, nullptr, nullptr);

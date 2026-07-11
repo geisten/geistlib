@@ -37,6 +37,7 @@
 #include <string.h>
 #include <math.h>    /* expf/logf — full-name routing scores (log-softmax) */
 #include <strings.h> /* strncasecmp (POSIX; present on all geist hosts) */
+#include <time.h>    /* clock_gettime — GEIST_AGENT_TIME phase breakdown */
 
 enum {
     GEIST_AGENT_TRANSCRIPT_CAP = 1 << 15,
@@ -46,12 +47,19 @@ enum {
     GEIST_AGENT_OBS_CAP        = 4096,
     GEIST_AGENT_MAX_DECODE     = 512,
     GEIST_AGENT_LOOP_PMAX      = 128, /* longest repeating block the anti-loop cap detects */
-    /* Chat context bound (agent_compact): once the transcript passes BUDGET,
-     * evict the oldest turns down to TARGET. Bounds per-turn prefill (so a long
-     * chat stays O(n), not O(n^2)) and avoids the hard "context full" stop.
-     * ponytail: bytes as a token proxy; lower both for snappier edge chat. */
-    GEIST_AGENT_CTX_BUDGET = (GEIST_AGENT_TRANSCRIPT_CAP * 3) / 4,
-    GEIST_AGENT_CTX_TARGET = GEIST_AGENT_TRANSCRIPT_CAP / 2,
+    /* Chat context bound (agent_compact): keep the protected system-prompt
+     * prefix plus the last CARRY bytes of conversation, evicting older whole
+     * turns. Bounds per-turn prefill (a long chat stays O(n), not O(n^2)) and
+     * avoids a hard "context full" stop. ponytail: bytes as a token proxy.
+     * Per toolset — the home appliance keeps only the last ~2 turns: home
+     * follow-ups ("mach licht an" -> "dimme es herunter") are short-lived, and
+     * unbounded carry climbs per-turn prefill toward minutes over a resident
+     * daemon's life. General chat keeps a long research history. */
+#ifdef GEIST_TOOLSET_HOME
+    GEIST_AGENT_CTX_CARRY = 256, /* ~2 home turns past the system prompt (~100 B/turn measured) */
+#else
+    GEIST_AGENT_CTX_CARRY = GEIST_AGENT_TRANSCRIPT_CAP / 2,
+#endif
 };
 
 /* Generic anti-degeneration: greedy decoding on a chatty model can fall into a
@@ -305,10 +313,19 @@ struct geist_agent {
      * route then does ONE prefill (the request) instead of two. */
     float  route_base[AGENT_MAX_ROUTED];
     size_t route_base_n; /* tools the cached baseline covers; 0 = not computed */
+    /* The constant selection MENU is pinned into the route session's KV once
+     * (agent_pin_route_menu): later routes rewind to it and prefill only the
+     * short request tail instead of the whole menu — the recurring ~2 s route
+     * cost on the Pi. Requires route_session + arch pin support; false = the
+     * legacy full-menu prefill per route. */
+    bool route_menu_pinned;
     /* Optional live-progress hook (nullptr = silent, zero overhead). Set after
      * geist_agent_init. See struct geist_agent_event. */
     void (*on_event)(void *ctx, const struct geist_agent_event *ev);
     void *on_event_ctx;
+    /* GEIST_AGENT_TIME=1: agent_emit prints ms since the previous phase to
+     * stderr, so a turn splits into route/call/tool/answer. Off by default. */
+    struct timespec t_mark;
 };
 
 /* Caller provides storage for *a (it is large — put it in static/heap, not a
@@ -332,21 +349,33 @@ static inline void geist_agent_init(struct geist_agent     *a,
     a->conversation  = false;
     a->eos           = geist_model_eos_token(model);
     a->eot = a->tmpl.stop[0] ? geist_model_token_by_text(model, a->tmpl.stop) : GEIST_TOKEN_NONE;
-    a->tlen          = 0;
-    a->sys_len       = 0;
-    a->sys_pinned    = false;
-    a->route_session = nullptr;
-    a->route_base_n  = 0; /* router baseline computed lazily on the first route */
-    a->on_event     = nullptr;
-    a->on_event_ctx = nullptr;
+    a->tlen              = 0;
+    a->sys_len           = 0;
+    a->sys_pinned        = false;
+    a->route_session     = nullptr;
+    a->route_base_n      = 0; /* router baseline computed lazily on the first route */
+    a->route_menu_pinned = false;
+    a->on_event          = nullptr;
+    a->on_event_ctx      = nullptr;
 }
 
 /* Fire the progress hook if the host set one (one nullptr-check when unset). */
+static inline const char *geist_agent_phase_name(enum geist_agent_phase p); /* fwd: agent_emit time trace */
+
 static inline void agent_emit(struct geist_agent    *a,
                               enum geist_agent_phase phase,
                               size_t                 step,
                               const char            *tool,
                               const char            *detail) {
+    if (getenv("GEIST_AGENT_TIME")) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double ms = (double) (now.tv_sec - a->t_mark.tv_sec) * 1e3 +
+                    (double) (now.tv_nsec - a->t_mark.tv_nsec) / 1e6;
+        fprintf(stderr, "[time] %-9s step=%zu %+8.1f ms%s%s\n", geist_agent_phase_name(phase),
+                step, ms, tool ? " " : "", tool ? tool : "");
+        a->t_mark = now;
+    }
     if (a->on_event) {
         struct geist_agent_event ev = {.phase = phase, .step = step, .tool = tool, .detail = detail};
         a->on_event(a->on_event_ctx, &ev);
@@ -705,28 +734,44 @@ static inline float agent_first_token_logit(struct geist_agent *a, const char *t
  * fixed (name: description, plus the answer pseudo-entry); only the Request line
  * varies, so the same builder serves the real request and the content-free
  * baseline used for calibration. */
+/* The CONSTANT selection MENU (framing + tool list), request-independent — the
+ * part pinned on the route session. The request used to sit at the TOP (before
+ * the tool list); it now moves to the tail below so this whole prefix is fixed
+ * and can be pinned. Ends after the last tool line (a '\n') so the request tail
+ * is a clean suffix. Returns its length. */
+static inline size_t agent_select_menu(struct geist_agent *a, size_t n, size_t cap,
+                                        char out[static cap]) {
+    size_t w = (size_t) snprintf(
+            out, cap, "%sWhich tool best handles this request?\nTools:\n", a->tmpl.user_open);
+    for (size_t i = 0; i < n && w < cap; i++) {
+        const char *d = a->tools[i].description ? a->tools[i].description : "";
+        w += (size_t) snprintf(out + w, cap - w, "- %s: %s\n", a->tools[i].name, d);
+    }
+    w += (size_t) snprintf(out + w, cap - w, "- %s: %s\n", AGENT_ANSWER_NAME, AGENT_ANSWER_DESC);
+    return w;
+}
+
+/* The VARIABLE tail: the request + the fixed answer cue + turn close. Prefilled
+ * per route (short); the menu above it is pinned so only this is re-paid. */
+static inline size_t agent_select_tail(struct geist_agent *a, size_t req_len, const char *req,
+                                       size_t cap, char out[static cap]) {
+    return (size_t) snprintf(out, cap, "Request: %.*s\nAnswer with the tool name.%s%s",
+                             (int) req_len, req, a->tmpl.turn_close, a->tmpl.model_open);
+}
+
+/* Full selection prompt (menu + tail) — the UNPINNED path (single session or an
+ * arch without pin support). Pinned routing splits the two so the menu is paid
+ * once; both share the same reordered text, so scoring is identical. */
 static inline size_t agent_select_prompt(struct geist_agent *a,
                                          size_t              n,
                                          size_t              req_len,
                                          const char         *req,
                                          size_t              cap,
                                          char                sel[static cap]) {
-    size_t w = (size_t) snprintf(sel,
-                                 cap,
-                                 "%sWhich tool best handles this request?\nRequest: %.*s\nTools:\n",
-                                 a->tmpl.user_open,
-                                 (int) req_len,
-                                 req);
-    for (size_t i = 0; i < n && w < cap; i++) {
-        const char *d = a->tools[i].description ? a->tools[i].description : "";
-        w += (size_t) snprintf(sel + w, cap - w, "- %s: %s\n", a->tools[i].name, d);
+    size_t w = agent_select_menu(a, n, cap, sel);
+    if (w < cap) {
+        w += agent_select_tail(a, req_len, req, cap - w, sel + w);
     }
-    w += (size_t) snprintf(sel + w, cap - w, "- %s: %s\n", AGENT_ANSWER_NAME, AGENT_ANSWER_DESC);
-    w += (size_t) snprintf(sel + w,
-                           cap - w,
-                           "Answer with the tool name.%s%s",
-                           a->tmpl.turn_close,
-                           a->tmpl.model_open);
     return w;
 }
 
@@ -744,14 +789,30 @@ static inline size_t agent_select_prompt(struct geist_agent *a,
  * token stay indistinguishable here; the bounded evidence tie-breakers in
  * agent_select_tool carry that load. */
 static inline int
-agent_score_names(struct geist_agent *a, size_t n, const char *prompt, float out[static n]) {
-    /* Route on the dedicated (unpinned) routing session when the host wired
-     * one — the main session's pinned system prompt must not condition the
-     * cloze (scored behind it, doc_search stole 7 routings). With a single
-     * session the pin is never armed, so scoring is identical either way. */
+agent_score_names(struct geist_agent *a, size_t n, size_t req_len, const char *req,
+                  float out[static n]) {
+    /* Route on the dedicated routing session when the host wired one — the main
+     * session's pinned system prompt must not condition the cloze (scored behind
+     * it, doc_search stole 7 routings). With a single session the menu pin is
+     * never armed, so scoring is identical either way. */
     struct geist_session *rs = a->route_session ? a->route_session : a->session;
-    if (geist_session_reset(rs) != GEIST_OK || geist_session_set_prompt(rs, prompt) != GEIST_OK) {
-        return 0;
+    if (a->route_menu_pinned) {
+        /* rewind to the pinned menu; prefill ONLY the short request tail */
+        static char          tail[GEIST_AGENT_TRANSCRIPT_CAP];
+        static geist_token_t ids[1 << 13];
+        size_t               nid = 0;
+        agent_select_tail(a, req_len, req, sizeof tail, tail);
+        if (geist_session_reset(rs) != GEIST_OK ||
+            geist_session_tokenize(rs, tail, sizeof ids / sizeof *ids, ids, &nid) != GEIST_OK ||
+            (nid > 0 && geist_session_prefill_tokens(rs, nid, ids) != GEIST_OK)) {
+            return 0;
+        }
+    } else {
+        static char sel[GEIST_AGENT_TRANSCRIPT_CAP];
+        agent_select_prompt(a, n - 1, req_len, req, sizeof sel, sel);
+        if (geist_session_reset(rs) != GEIST_OK || geist_session_set_prompt(rs, sel) != GEIST_OK) {
+            return 0;
+        }
     }
     size_t       n_logits = 0;
     const float *logits   = geist_session_peek_logits(rs, &n_logits);
@@ -767,6 +828,32 @@ agent_score_names(struct geist_agent *a, size_t n, const char *prompt, float out
         out[i]   = v0 > v1 ? v0 : v1;
     }
     return 1;
+}
+
+/* Pin the constant selection menu into the route session's KV (once): later
+ * routes reset() to rewind here and prefill only the short request tail, not the
+ * whole menu — the recurring ~2 s route cost on the Pi. Mirrors
+ * agent_pin_system_prompt (BOS-prefixed, tokenized as a C string). No-op without
+ * a route session or when the arch lacks pin support (route_menu_pinned stays
+ * false -> agent_score_names takes the full-menu path). */
+static inline void agent_pin_route_menu(struct geist_agent *a, size_t n_menu) {
+    if (a->route_menu_pinned || a->route_session == nullptr) {
+        return;
+    }
+    static char          menu[GEIST_AGENT_TRANSCRIPT_CAP];
+    static geist_token_t ids[1 << 13];
+    size_t               nt  = 0;
+    geist_token_t        bos = geist_model_bos_token(a->model);
+    if (bos >= 0) {
+        ids[nt++] = bos; /* mirror set_prompt, which prepends BOS */
+    }
+    agent_select_menu(a, n_menu, sizeof menu, menu);
+    size_t nid = 0;
+    if (geist_session_tokenize(a->route_session, menu, sizeof ids / sizeof *ids - nt, ids + nt,
+                               &nid) == GEIST_OK &&
+        nid > 0 && geist_session_pin_prefix(a->route_session, nt + nid, ids) == GEIST_OK) {
+        a->route_menu_pinned = true;
+    }
 }
 
 /* True if a request word looks like a named file with an extension (note.txt,
@@ -1273,8 +1360,9 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
     }
     const size_t n  = a->n_tools < AGENT_MAX_ROUTED - 1 ? a->n_tools : AGENT_MAX_ROUTED - 1;
     const size_t nn = n + 1; /* + the answer pseudo-entry, scored like a name */
-    static char  sel[GEIST_AGENT_TRANSCRIPT_CAP];
     float        score[AGENT_MAX_ROUTED] = {0};
+
+    agent_pin_route_menu(a, n); /* once: pin the menu so routes prefill only the tail */
 
     /* Raw name logits have a token-frequency bias (a small model favours
      * "list_dir" regardless of the request). Calibrate: subtract the prior the
@@ -1284,13 +1372,14 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
      * agent — every later route then does a single prefill (the request) instead
      * of two, halving routing latency (the Pi's light-task floor). */
     if (a->route_base_n != nn) {
-        agent_select_prompt(a, n, strlen("(unspecified)"), "(unspecified)", sizeof sel, sel);
-        a->route_base_n = agent_score_names(a, nn, sel, a->route_base) ? nn : 0;
+        a->route_base_n =
+                agent_score_names(a, nn, strlen("(unspecified)"), "(unspecified)", a->route_base)
+                        ? nn
+                        : 0;
     }
     int have_base = a->route_base_n == nn;
 
-    agent_select_prompt(a, n, req_len, req, sizeof sel, sel);
-    if (!agent_score_names(a, nn, sel, score)) {
+    if (!agent_score_names(a, nn, req_len, req, score)) {
         return 0;
     }
 
@@ -2085,10 +2174,10 @@ agent_system_prompt(const struct geist_agent *a, size_t cap, char out[static cap
     return w;
 }
 
-/* Sliding-window context bound for multi-turn chat. When the transcript passes
- * GEIST_AGENT_CTX_BUDGET, evict the OLDEST conversation turns: keep the protected
- * system-prompt prefix [0..sys_len) and the most recent whole turns (snapped to a
- * user_open marker), down to GEIST_AGENT_CTX_TARGET. A turn_close is inserted
+/* Sliding-window context bound for multi-turn chat. When the conversation past
+ * the prefix exceeds GEIST_AGENT_CTX_CARRY, evict the OLDEST conversation turns:
+ * keep the protected system-prompt prefix [0..sys_len) and the most recent whole
+ * turns (snapped to a user_open marker), down to the CARRY tail. A turn_close is inserted
  * after the prefix so the kept history is well-framed (the system instructions
  * become their own user turn). This bounds per-turn re-prefill — a long chat
  * stays O(n), not O(n^2) — and replaces the hard "context full" stop.
@@ -2099,15 +2188,14 @@ agent_system_prompt(const struct geist_agent *a, size_t cap, char out[static cap
  * [sys_len..keep_from) into a running summary via summ_generate and splice it in
  * as "[system][summary][recent]" here — the summarizer already exists. */
 static inline void agent_compact(struct geist_agent *a) {
-    if (!a->conversation || a->sys_len == 0 || a->tlen <= GEIST_AGENT_CTX_BUDGET) {
+    if (!a->conversation || a->sys_len == 0 || a->tlen <= a->sys_len + GEIST_AGENT_CTX_CARRY) {
         return;
     }
     const char *uo  = a->tmpl.user_open;
     size_t      uol = strlen(uo);
     size_t      tcl = strlen(a->tmpl.turn_close);
-    /* tail bytes we may keep after the prefix + the inserted turn_close */
-    size_t budget_tail =
-            (GEIST_AGENT_CTX_TARGET > a->sys_len + tcl) ? GEIST_AGENT_CTX_TARGET - a->sys_len - tcl : 0;
+    /* tail bytes of recent conversation we may keep past the prefix */
+    size_t budget_tail = GEIST_AGENT_CTX_CARRY;
     /* earliest user_open whose tail fits the target (keep the most history);
      * else the latest one (keep only the newest turn — guarantees progress).
      * Scan from sys_len + tcl, not sys_len: a marker within tcl bytes of the
@@ -2263,6 +2351,7 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
     if (resp_len) {
         *resp_len = 0;
     }
+    clock_gettime(CLOCK_MONOTONIC, &a->t_mark); /* GEIST_AGENT_TIME baseline */
 
     if (a->conversation && a->tlen > 0) {
         /* multi-turn chat: the transcript already holds the prior turns (ending
