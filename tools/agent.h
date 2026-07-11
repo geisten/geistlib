@@ -13,13 +13,15 @@
  *   - max_steps bounds how many tool calls one request can trigger (runaway +
  *     cost guard on constrained hardware).
  * A small model jailbreaks easily as free chat; here it can only DO what the
- * tool table allows. Grammar-constraint, two slices: (1) an off-whitelist tool
- * NAME is re-picked by agent_decode_name_constrained, which decodes the name
- * constrained to the whitelist (a near-miss recovers to the model's intended
- * tool, not an error step); (2) the args object is re-keyed to the tool's
- * args_schema by agent_args_normalize (small models mis-key flat string args).
- * Full upgrade: per-token logit masking in the sampler so the model cannot even
- * emit an off-grammar token, plus a constrained key-decode for multi-key args.
+ * tool table allows. Grammar-constraint, three slices: (1) an off-whitelist
+ * tool NAME is re-picked by agent_decode_name_constrained, which decodes the
+ * name constrained to the whitelist (a near-miss recovers to the model's
+ * intended tool, not an error step); (2) the args object is re-keyed to the
+ * tool's args_schema by agent_args_normalize (small models mis-key flat string
+ * args); (3) a free turn that opens a call is decoded ALONG the call grammar
+ * (agent_generate_call_masked): name and key constrained per-token over the
+ * public peek/prefill API, only the value free — an off-grammar call cannot be
+ * emitted. Remaining upgrade: full multi-key argument grammars.
  *
  * No assert(): all checks are explicit and return enum geist_status. Buffers
  * are caller-provided or fixed in the struct (no hidden heap).
@@ -33,7 +35,9 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>    /* expf/logf — full-name routing scores (log-softmax) */
 #include <strings.h> /* strncasecmp (POSIX; present on all geist hosts) */
+#include <time.h>    /* clock_gettime — GEIST_AGENT_TIME phase breakdown */
 
 enum {
     GEIST_AGENT_TRANSCRIPT_CAP = 1 << 15,
@@ -43,12 +47,19 @@ enum {
     GEIST_AGENT_OBS_CAP        = 4096,
     GEIST_AGENT_MAX_DECODE     = 512,
     GEIST_AGENT_LOOP_PMAX      = 128, /* longest repeating block the anti-loop cap detects */
-    /* Chat context bound (agent_compact): once the transcript passes BUDGET,
-     * evict the oldest turns down to TARGET. Bounds per-turn prefill (so a long
-     * chat stays O(n), not O(n^2)) and avoids the hard "context full" stop.
-     * ponytail: bytes as a token proxy; lower both for snappier edge chat. */
-    GEIST_AGENT_CTX_BUDGET = (GEIST_AGENT_TRANSCRIPT_CAP * 3) / 4,
-    GEIST_AGENT_CTX_TARGET = GEIST_AGENT_TRANSCRIPT_CAP / 2,
+    /* Chat context bound (agent_compact): keep the protected system-prompt
+     * prefix plus the last CARRY bytes of conversation, evicting older whole
+     * turns. Bounds per-turn prefill (a long chat stays O(n), not O(n^2)) and
+     * avoids a hard "context full" stop. ponytail: bytes as a token proxy.
+     * Per toolset — the home appliance keeps only the last ~2 turns: home
+     * follow-ups ("mach licht an" -> "dimme es herunter") are short-lived, and
+     * unbounded carry climbs per-turn prefill toward minutes over a resident
+     * daemon's life. General chat keeps a long research history. */
+#ifdef GEIST_TOOLSET_HOME
+    GEIST_AGENT_CTX_CARRY = 256, /* ~2 home turns past the system prompt (~100 B/turn measured) */
+#else
+    GEIST_AGENT_CTX_CARRY = GEIST_AGENT_TRANSCRIPT_CAP / 2,
+#endif
 };
 
 /* Generic anti-degeneration: greedy decoding on a chatty model can fall into a
@@ -275,22 +286,46 @@ struct geist_agent {
     size_t                     max_steps;
     const char                *system_prompt; /* borrowed; nullptr -> default role */
     struct geist_chat_template tmpl;          /* model-specific framing (auto-detected in init) */
-    bool                       force_call;     /* force turn 0 to be a valid tool call (see run) */
-    bool                       conversation;   /* keep the transcript across geist_agent_run calls
-                                                * (multi-turn chat) instead of resetting each call */
-    geist_token_t              eos, eot;
-    char                       transcript[GEIST_AGENT_TRANSCRIPT_CAP];
-    size_t                     tlen;
-    size_t                     sys_len; /* protected system-prompt prefix [0..sys_len) */
+    bool                       force_call;    /* force turn 0 to be a valid tool call (see run) */
+    bool                       conversation;  /* keep the transcript across geist_agent_run calls
+                                               * (multi-turn chat) instead of resetting each call */
+    geist_token_t eos, eot;
+    char          transcript[GEIST_AGENT_TRANSCRIPT_CAP];
+    size_t        tlen;
+    size_t        sys_len; /* protected system-prompt prefix [0..sys_len) */
+    /* The system prompt is PINNED into the KV cache on the first run
+     * (geist_session_pin_prefix): geist_session_reset then rewinds to the
+     * pinned prefix instead of zero, so per-step transcript re-prefills stop
+     * re-paying the constant prefix — the dominant share of the measured
+     * 12-13 s appliance turn on the Pi. Pinning REQUIRES route_session:
+     * scored behind the pinned system prompt, doc_search stole 7 routings
+     * incl. "What is 2 plus 2?" — the tool table in the prompt contaminates
+     * the cloze and PMI does not cancel it. false when unset or when the
+     * arch lacks pin_prefix — everything then uses the legacy path. */
+    bool sys_pinned;
+    /* Optional second session for ROUTING (geist_agent_set_route_session):
+     * unpinned, reset+set_prompt per route exactly like the legacy path, so
+     * routing scores are IDENTICAL with or without the pin. Enables the
+     * system-prompt pin above. nullptr = single-session legacy behavior. */
+    struct geist_session *route_session;
     /* Router PMI baseline (agent_select_tool): the per-tool prior is
      * request-independent, so it is computed once and cached here — every later
      * route then does ONE prefill (the request) instead of two. */
     float  route_base[AGENT_MAX_ROUTED];
     size_t route_base_n; /* tools the cached baseline covers; 0 = not computed */
+    /* The constant selection MENU is pinned into the route session's KV once
+     * (agent_pin_route_menu): later routes rewind to it and prefill only the
+     * short request tail instead of the whole menu — the recurring ~2 s route
+     * cost on the Pi. Requires route_session + arch pin support; false = the
+     * legacy full-menu prefill per route. */
+    bool route_menu_pinned;
     /* Optional live-progress hook (nullptr = silent, zero overhead). Set after
      * geist_agent_init. See struct geist_agent_event. */
     void (*on_event)(void *ctx, const struct geist_agent_event *ev);
     void *on_event_ctx;
+    /* GEIST_AGENT_TIME=1: agent_emit prints ms since the previous phase to
+     * stderr, so a turn splits into route/call/tool/answer. Off by default. */
+    struct timespec t_mark;
 };
 
 /* Caller provides storage for *a (it is large — put it in static/heap, not a
@@ -314,19 +349,33 @@ static inline void geist_agent_init(struct geist_agent     *a,
     a->conversation  = false;
     a->eos           = geist_model_eos_token(model);
     a->eot = a->tmpl.stop[0] ? geist_model_token_by_text(model, a->tmpl.stop) : GEIST_TOKEN_NONE;
-    a->tlen         = 0;
-    a->sys_len      = 0;
-    a->route_base_n = 0; /* router baseline computed lazily on the first route */
-    a->on_event     = nullptr;
-    a->on_event_ctx = nullptr;
+    a->tlen              = 0;
+    a->sys_len           = 0;
+    a->sys_pinned        = false;
+    a->route_session     = nullptr;
+    a->route_base_n      = 0; /* router baseline computed lazily on the first route */
+    a->route_menu_pinned = false;
+    a->on_event          = nullptr;
+    a->on_event_ctx      = nullptr;
 }
 
 /* Fire the progress hook if the host set one (one nullptr-check when unset). */
+static inline const char *geist_agent_phase_name(enum geist_agent_phase p); /* fwd: agent_emit time trace */
+
 static inline void agent_emit(struct geist_agent    *a,
                               enum geist_agent_phase phase,
                               size_t                 step,
                               const char            *tool,
                               const char            *detail) {
+    if (getenv("GEIST_AGENT_TIME")) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double ms = (double) (now.tv_sec - a->t_mark.tv_sec) * 1e3 +
+                    (double) (now.tv_nsec - a->t_mark.tv_nsec) / 1e6;
+        fprintf(stderr, "[time] %-9s step=%zu %+8.1f ms%s%s\n", geist_agent_phase_name(phase),
+                step, ms, tool ? " " : "", tool ? tool : "");
+        a->t_mark = now;
+    }
     if (a->on_event) {
         struct geist_agent_event ev = {.phase = phase, .step = step, .tool = tool, .detail = detail};
         a->on_event(a->on_event_ctx, &ev);
@@ -582,15 +631,14 @@ static inline int agent_name_complete(const struct geist_agent *a, const char *p
     return -1;
 }
 
-/* Greedily decode the tool name constrained to the whitelist. Precondition:
- * logits are pending at the name's first position (caller has prefilled the
- * transcript + the opening `{"tool":"`). At each step, among the whitelist names
- * that still match the chars emitted so far, force the next token of whichever
- * has the highest logit, so the model picks the tool but can only ever spell a
- * real one. Returns the chosen tool index, or -1 if the whitelist is empty.
- * ponytail: assumes no whitelist name is a strict prefix of another (true for
- * distinct tool names) — else greedy never stops at the shorter one. */
-static inline int agent_decode_name_constrained(struct geist_agent *a) {
+/* Greedily decode ONE string out of opts[] constrained to that set.
+ * Precondition: logits are pending at the string's first position. At each
+ * step, among the options that still match the chars emitted so far, force the
+ * next token of whichever has the highest logit — the model picks the option
+ * but can only ever spell a real one. Returns the chosen index, or -1 if
+ * nothing completed. ponytail: assumes no option is a strict prefix of another
+ * (true for tool names and schema keys) — else greedy never stops early. */
+static inline int agent_decode_pick(struct geist_agent *a, size_t n_opts, const char *const *opts) {
     char   partial[GEIST_AGENT_NAME_CAP];
     size_t pl  = 0;
     partial[0] = '\0';
@@ -600,19 +648,19 @@ static inline int agent_decode_name_constrained(struct geist_agent *a) {
         if (!logits || n_logits == 0) {
             break;
         }
-        /* pick the next token of the highest-logit still-matching name */
-        int           have = 0;
+        /* pick the next token of the highest-logit still-matching option */
+        int           have       = 0;
         float         best_logit = 0;
         geist_token_t best_tok   = 0;
-        for (size_t i = 0; i < a->n_tools; i++) {
-            const char *name = a->tools[i].name;
+        for (size_t i = 0; i < n_opts; i++) {
+            const char *name = opts[i];
             if (strlen(name) <= pl || strncmp(name, partial, pl) != 0) {
-                continue; /* not a still-matching name with a remaining suffix */
+                continue; /* not a still-matching option with a remaining suffix */
             }
             geist_token_t ids[8];
             size_t        nid = 0;
-            if (geist_session_tokenize(a->session, name + pl, 8, ids, &nid) != GEIST_OK || nid == 0 ||
-                ids[0] >= (geist_token_t) n_logits) {
+            if (geist_session_tokenize(a->session, name + pl, 8, ids, &nid) != GEIST_OK ||
+                nid == 0 || ids[0] >= (geist_token_t) n_logits) {
                 continue;
             }
             if (!have || logits[ids[0]] > best_logit) {
@@ -632,7 +680,24 @@ static inline int agent_decode_name_constrained(struct geist_agent *a) {
         pl += plen;
         partial[pl] = '\0';
     }
-    return agent_name_complete(a, partial);
+    for (size_t i = 0; i < n_opts; i++) {
+        if (strcmp(opts[i], partial) == 0) {
+            return (int) i;
+        }
+    }
+    return -1;
+}
+
+/* Greedily decode the tool name constrained to the whitelist (see
+ * agent_decode_pick). Precondition: caller has prefilled the transcript + the
+ * opening `{"tool":"`. Returns the chosen tool index, or -1. */
+static inline int agent_decode_name_constrained(struct geist_agent *a) {
+    const char *names[AGENT_MAX_ROUTED];
+    size_t      n = a->n_tools < AGENT_MAX_ROUTED ? a->n_tools : AGENT_MAX_ROUTED;
+    for (size_t i = 0; i < n; i++) {
+        names[i] = a->tools[i].name;
+    }
+    return agent_decode_pick(a, n, names);
 }
 
 /* Route a request to the best tool by scoring, instead of trusting the raw
@@ -657,45 +722,138 @@ static inline float agent_first_token_logit(struct geist_agent *a, const char *t
     return logits[ids[0]];
 }
 
+/* The router's pseudo-entry for "no tool": scored like a tool name, so a
+ * request no tool handles ("What is 2 plus 2?", "Delete report.md") routes to a
+ * direct answer instead of a forced-but-wrong call. Named "reply", not
+ * "answer" — the menu instruction itself ends in "Answer with the tool name.",
+ * and a name colliding with instruction vocabulary muddies the cloze signal. */
+#define AGENT_ANSWER_NAME "reply"
+#define AGENT_ANSWER_DESC "die Anfrage direkt beantworten, ohne Werkzeug"
+
 /* Build the selection prompt for `req` into sel; returns its length. The menu is
- * fixed (name: description); only the Request line varies, so the same builder
- * serves the real request and the content-free baseline used for calibration. */
-static inline size_t agent_select_prompt(struct geist_agent *a, size_t n, size_t req_len,
-                                         const char *req, size_t cap, char sel[static cap]) {
+ * fixed (name: description, plus the answer pseudo-entry); only the Request line
+ * varies, so the same builder serves the real request and the content-free
+ * baseline used for calibration. */
+/* The CONSTANT selection MENU (framing + tool list), request-independent — the
+ * part pinned on the route session. The request used to sit at the TOP (before
+ * the tool list); it now moves to the tail below so this whole prefix is fixed
+ * and can be pinned. Ends after the last tool line (a '\n') so the request tail
+ * is a clean suffix. Returns its length. */
+static inline size_t agent_select_menu(struct geist_agent *a, size_t n, size_t cap,
+                                        char out[static cap]) {
     size_t w = (size_t) snprintf(
-            sel, cap, "%sWhich tool best handles this request?\nRequest: %.*s\nTools:\n",
-            a->tmpl.user_open, (int) req_len, req);
+            out, cap, "%sWhich tool best handles this request?\nTools:\n", a->tmpl.user_open);
     for (size_t i = 0; i < n && w < cap; i++) {
         const char *d = a->tools[i].description ? a->tools[i].description : "";
-        w += (size_t) snprintf(sel + w, cap - w, "- %s: %s\n", a->tools[i].name, d);
+        w += (size_t) snprintf(out + w, cap - w, "- %s: %s\n", a->tools[i].name, d);
     }
-    w += (size_t) snprintf(sel + w, cap - w, "Answer with the tool name.%s%s", a->tmpl.turn_close,
-                           a->tmpl.model_open);
+    w += (size_t) snprintf(out + w, cap - w, "- %s: %s\n", AGENT_ANSWER_NAME, AGENT_ANSWER_DESC);
     return w;
 }
 
-/* Score each tool name's first token at the current decode position into out[n].
- * The first token may be bare ("list_dir") or space-prefixed (" list_dir") per
- * the template — take the max of both. Returns 0 on a peek failure. */
-static inline int agent_score_names(struct geist_agent *a, size_t n, const char *prompt,
-                                    float out[static n]) {
-    if (geist_session_reset(a->session) != GEIST_OK ||
-        geist_session_set_prompt(a->session, prompt) != GEIST_OK) {
-        return 0;
+/* The VARIABLE tail: the request + the fixed answer cue + turn close. Prefilled
+ * per route (short); the menu above it is pinned so only this is re-paid. */
+static inline size_t agent_select_tail(struct geist_agent *a, size_t req_len, const char *req,
+                                       size_t cap, char out[static cap]) {
+    return (size_t) snprintf(out, cap, "Request: %.*s\nAnswer with the tool name.%s%s",
+                             (int) req_len, req, a->tmpl.turn_close, a->tmpl.model_open);
+}
+
+/* Full selection prompt (menu + tail) — the UNPINNED path (single session or an
+ * arch without pin support). Pinned routing splits the two so the menu is paid
+ * once; both share the same reordered text, so scoring is identical. */
+static inline size_t agent_select_prompt(struct geist_agent *a,
+                                         size_t              n,
+                                         size_t              req_len,
+                                         const char         *req,
+                                         size_t              cap,
+                                         char                sel[static cap]) {
+    size_t w = agent_select_menu(a, n, cap, sel);
+    if (w < cap) {
+        w += agent_select_tail(a, req_len, req, cap - w, sel + w);
+    }
+    return w;
+}
+
+/* Score the first token of n names at the current decode position into out[n]:
+ * the tool names, then (as entry a->n_tools, when n covers it) the answer
+ * pseudo-entry. The first token may be bare ("list_dir") or space-prefixed
+ * (" list_dir") per the template — take the max of both. Returns 0 on a peek
+ * failure.
+ * ponytail: first-token only, deliberately. FULL-name scoring (length-
+ * normalized log-softmax sums with pin_prefix rewind) was built and measured
+ * WORSE on bitnet-2b4t — 36/48 vs 41/46-level with evidence gates, and it
+ * broke the previously stable single-tool routings (the normalization strips
+ * list_dir's frequent-first-token advantage without adding usable signal).
+ * See git history if a stronger model wants it back. Names sharing a first
+ * token stay indistinguishable here; the bounded evidence tie-breakers in
+ * agent_select_tool carry that load. */
+static inline int
+agent_score_names(struct geist_agent *a, size_t n, size_t req_len, const char *req,
+                  float out[static n]) {
+    /* Route on the dedicated routing session when the host wired one — the main
+     * session's pinned system prompt must not condition the cloze (scored behind
+     * it, doc_search stole 7 routings). With a single session the menu pin is
+     * never armed, so scoring is identical either way. */
+    struct geist_session *rs = a->route_session ? a->route_session : a->session;
+    if (a->route_menu_pinned) {
+        /* rewind to the pinned menu; prefill ONLY the short request tail */
+        static char          tail[GEIST_AGENT_TRANSCRIPT_CAP];
+        static geist_token_t ids[1 << 13];
+        size_t               nid = 0;
+        agent_select_tail(a, req_len, req, sizeof tail, tail);
+        if (geist_session_reset(rs) != GEIST_OK ||
+            geist_session_tokenize(rs, tail, sizeof ids / sizeof *ids, ids, &nid) != GEIST_OK ||
+            (nid > 0 && geist_session_prefill_tokens(rs, nid, ids) != GEIST_OK)) {
+            return 0;
+        }
+    } else {
+        static char sel[GEIST_AGENT_TRANSCRIPT_CAP];
+        agent_select_prompt(a, n - 1, req_len, req, sizeof sel, sel);
+        if (geist_session_reset(rs) != GEIST_OK || geist_session_set_prompt(rs, sel) != GEIST_OK) {
+            return 0;
+        }
     }
     size_t       n_logits = 0;
-    const float *logits   = geist_session_peek_logits(a->session, &n_logits);
+    const float *logits   = geist_session_peek_logits(rs, &n_logits);
     if (logits == nullptr || n_logits == 0) {
         return 0;
     }
     for (size_t i = 0; i < n; i++) {
-        char spaced[GEIST_AGENT_NAME_CAP + 1];
-        snprintf(spaced, sizeof spaced, " %s", a->tools[i].name);
-        float v0 = agent_first_token_logit(a, a->tools[i].name, logits, n_logits);
+        const char *nm = i < a->n_tools ? a->tools[i].name : AGENT_ANSWER_NAME;
+        char        spaced[GEIST_AGENT_NAME_CAP + 1];
+        snprintf(spaced, sizeof spaced, " %s", nm);
+        float v0 = agent_first_token_logit(a, nm, logits, n_logits);
         float v1 = agent_first_token_logit(a, spaced, logits, n_logits);
         out[i]   = v0 > v1 ? v0 : v1;
     }
     return 1;
+}
+
+/* Pin the constant selection menu into the route session's KV (once): later
+ * routes reset() to rewind here and prefill only the short request tail, not the
+ * whole menu — the recurring ~2 s route cost on the Pi. Mirrors
+ * agent_pin_system_prompt (BOS-prefixed, tokenized as a C string). No-op without
+ * a route session or when the arch lacks pin support (route_menu_pinned stays
+ * false -> agent_score_names takes the full-menu path). */
+static inline void agent_pin_route_menu(struct geist_agent *a, size_t n_menu) {
+    if (a->route_menu_pinned || a->route_session == nullptr) {
+        return;
+    }
+    static char          menu[GEIST_AGENT_TRANSCRIPT_CAP];
+    static geist_token_t ids[1 << 13];
+    size_t               nt  = 0;
+    geist_token_t        bos = geist_model_bos_token(a->model);
+    if (bos >= 0) {
+        ids[nt++] = bos; /* mirror set_prompt, which prepends BOS */
+    }
+    agent_select_menu(a, n_menu, sizeof menu, menu);
+    size_t nid = 0;
+    if (geist_session_tokenize(a->route_session, menu, sizeof ids / sizeof *ids - nt, ids + nt,
+                               &nid) == GEIST_OK &&
+        nid > 0 && geist_session_pin_prefix(a->route_session, nt + nid, ids) == GEIST_OK) {
+        a->route_menu_pinned = true;
+    }
 }
 
 /* True if a request word looks like a named file with an extension (note.txt,
@@ -762,6 +920,356 @@ static inline int agent_schema_wants_url(const char *s) {
     return s && strstr(s, "\"url\"");
 }
 
+/* True if a tool takes a note-slug argument — its schema names a "slug" key. */
+static inline int agent_schema_wants_slug(const char *s) {
+    return s && strstr(s, "\"slug\"");
+}
+
+/* True if a tool takes a filesystem-path argument — its schema names a
+ * path/dir/file-ish key. */
+static inline int agent_schema_wants_path(const char *s) {
+    return s && (strstr(s, "\"path\"") || strstr(s, "\"dir\"") || strstr(s, "\"directory\"") ||
+                 strstr(s, "\"filepath\"") || strstr(s, "\"file\""));
+}
+
+/* True if the request contains a slash-path word ("tests/data/x") that is not
+ * a URL (the URL rule owns those). Bounded scan. */
+static inline int agent_request_has_pathword(size_t req_len, const char *req) {
+    for (size_t i = 0; i < req_len;) {
+        while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
+            i++;
+        }
+        size_t s     = i;
+        int    slash = 0;
+        while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
+            slash |= req[i] == '/';
+            i++;
+        }
+        if (i > s && slash && !agent_request_has_url(i - s, req + s)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* True if the request talks about notes/memory — the evidence a memory tool
+ * needs (Notiz, note, merke, remember, recall, erinnere, gespeichert). */
+static inline int agent_request_mentions_memory(size_t req_len, const char *req) {
+    static const char *const w[] = {"notiz",
+                                    "note",
+                                    "merk",
+                                    "remember",
+                                    "recall",
+                                    "erinner",
+                                    "gedächt",
+                                    "gespeichert",
+                                    "speicher"};
+    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
+        size_t wl = strlen(w[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, w[v], wl) == 0) {
+                /* a FILENAME is not memory evidence — "notes.txt" armed the
+                 * memory tools and "Fasse notes.txt zusammen" routed remember;
+                 * skip a matched word that continues into a '.' */
+                size_t e      = i;
+                int    dotted = 0;
+                while (e < req_len && req[e] != ' ' && req[e] != '\t' && req[e] != '\n') {
+                    dotted |= req[e] == '.';
+                    e++;
+                }
+                if (!dotted) {
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/* True if a tool is a memory-palace tool (remember/recall). */
+static inline int agent_tool_is_memory(const struct geist_tool *t) {
+    return (t->name && (strstr(t->name, "remember") || strstr(t->name, "recall"))) ||
+           (t->description && (strstr(t->description, "otiz") || strstr(t->description, "edächt")));
+}
+
+/* Case-insensitive bounded needle search (req/obs are not NUL-terminated). */
+static inline int agent_ci_find(size_t hlen, const char *hay, size_t nlen, const char *needle) {
+    if (nlen == 0 || nlen > hlen) {
+        return 0;
+    }
+    for (size_t i = 0; i + nlen <= hlen; i++) {
+        if (strncasecmp(hay + i, needle, nlen) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* True if the request talks about the home/devices — the evidence the home
+ * tools need. Device NOUNS match as substrings: German compounds (Flurlicht,
+ * Wohnzimmerlampe) bury the noun mid-word, so word-start matching misses the
+ * most natural phrasings. Action VERBS match word-start (both German
+ * spellings where umlauts capitalize). */
+static inline int agent_request_mentions_home(size_t req_len, const char *req) {
+    static const char *const nouns[] = {
+            "licht",    "lampe",    "leucht",  "heizung", "thermostat", "temperat", "rolllad",
+            "jalousie", "steckdos", "fenster", "gerät",   "geraet",     "kaffee",   "tür",
+            "tuer",     "door",     "light",   "lamp",    "blind",      "window",   "heating",
+            "musik",    "music",    "radio",   "lautsprecher", "speaker"};
+    for (size_t v = 0; v < sizeof nouns / sizeof *nouns; v++) {
+        if (agent_ci_find(req_len, req, strlen(nouns[v]), nouns[v])) {
+            return 1;
+        }
+    }
+    static const char *const verbs[] = {"schalte", "schalt", "mach",    "stelle",   "dimme",
+                                        "öffne",   "Öffne",  "schließ", "schliess", "dreh",
+                                        "warm",    "turn",   "switch",  "set",      "dim",
+                                        "open",    "close",  "unlock",  "lock",     "device",
+                                        "spiel",   "play",   "stop"};
+    for (size_t v = 0; v < sizeof verbs / sizeof *verbs; v++) {
+        size_t wl = strlen(verbs[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, verbs[v], wl) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* True if a tool is a home-bridge tool (device command / status). */
+static inline int agent_tool_is_home(const struct geist_tool *t) {
+    return (t->name && (strstr(t->name, "device") || strstr(t->name, "home"))) ||
+           (t->description && strstr(t->description, "ausgerät"));
+}
+
+/* The command/status boundary of the home menu: an IMPERATIVE opening asks
+ * for the command tool, a QUESTION opening for the status tool. Leading
+ * filler ("Und jetzt schließe ihn") is skipped word by word. Elliptical
+ * commands ("Rollladen im Wohnzimmer runter") carry no verb at all — a
+ * direction adverb in a non-question is imperative evidence too (measured:
+ * the verbless cover command was a raw score race that flipped with box
+ * load). */
+static inline int agent_request_is_imperative(size_t req_len, const char *req) {
+    if (req_len > 0 && req[req_len - 1] != '?') {
+        static const char *const adv[] = {"runter", "rauf", "hoch", "herunter", "hinauf"};
+        for (size_t k = 0; k < sizeof adv / sizeof *adv; k++) {
+            size_t al = strlen(adv[k]);
+            for (size_t i = 0; i + al <= req_len; i++) {
+                if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t') &&
+                    strncasecmp(req + i, adv[k], al) == 0) {
+                    return 1;
+                }
+            }
+        }
+    }
+    static const char *const v[] = {"schalte",  "schalt",  "mach",     "stelle",   "dimme",
+                                    "öffne",    "Öffne",   "schließ",  "schliess", "dreh",
+                                    "turn",     "switch",  "set",      "dim",      "open",
+                                    "close",    "raise",   "lower",    "unlock",   "lock",
+                                    "entriegl", "verriegl", "sperr",   "spiel",    "play",
+                                    "stop",     "bestätige", "bestaetige", "confirm"};
+    static const char *const skip[] = {"und", "jetzt", "bitte", "dann", "please", "now", "and"};
+    size_t                   i      = 0;
+    for (int word = 0; word < 4 && i < req_len; word++) {
+        while (i < req_len && (req[i] == ' ' || req[i] == '\t')) {
+            i++;
+        }
+        size_t s = i;
+        while (i < req_len && req[i] != ' ' && req[i] != '\t') {
+            i++;
+        }
+        size_t wl      = i - s;
+        int    skipped = 0;
+        for (size_t k = 0; k < sizeof skip / sizeof *skip; k++) {
+            skipped |= wl == strlen(skip[k]) && strncasecmp(req + s, skip[k], wl) == 0;
+        }
+        if (skipped) {
+            continue;
+        }
+        for (size_t k = 0; k < sizeof v / sizeof *v; k++) {
+            size_t vl = strlen(v[k]);
+            if (wl >= vl && strncasecmp(req + s, v[k], vl) == 0) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    return 0;
+}
+
+static inline int agent_request_is_question(size_t req_len, const char *req) {
+    static const char *const v[] = {"ist",
+                                    "sind",
+                                    "wie",
+                                    "was",
+                                    "wann",
+                                    "steht",
+                                    "läuft",
+                                    "Läuft",
+                                    "hat",
+                                    "is",
+                                    "are",
+                                    "what",
+                                    "how",
+                                    "does",
+                                    "when"};
+    size_t                   i   = 0;
+    while (i < req_len && (req[i] == ' ' || req[i] == '\t')) {
+        i++;
+    }
+    size_t s = i;
+    while (i < req_len && req[i] != ' ' && req[i] != '\t') {
+        i++;
+    }
+    for (size_t k = 0; k < sizeof v / sizeof *v; k++) {
+        size_t vl = strlen(v[k]);
+        if (i - s == vl && strncasecmp(req + s, v[k], vl) == 0) {
+            return 1;
+        }
+    }
+    return req_len > 0 && req[req_len - 1] == '?';
+}
+
+static inline int agent_pred_home_command(const struct geist_tool *t) {
+    return agent_tool_is_home(t) && t->name && strstr(t->name, "status") == nullptr;
+}
+static inline int agent_pred_home_status(const struct geist_tool *t) {
+    return agent_tool_is_home(t) && t->name && strstr(t->name, "status") != nullptr;
+}
+
+/* True if the request talks about stocks/markets — the evidence the stocks
+ * tool needs (Aktie, Börse, Kurs, stock, share, market, ticker, DAX). */
+static inline int agent_request_mentions_stocks(size_t req_len, const char *req) {
+    static const char *const w[] = {"akti",
+                                    "börse",
+                                    "boerse",
+                                    "kurs",
+                                    "stock",
+                                    "share",
+                                    "market",
+                                    "markt",
+                                    "ticker",
+                                    "nasdaq",
+                                    "dividend",
+                                    "dax"};
+    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
+        size_t wl = strlen(w[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, w[v], wl) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* True if a tool is the stock-market tool. */
+static inline int agent_tool_is_stocks(const struct geist_tool *t) {
+    return (t->name && strstr(t->name, "stock")) ||
+           (t->description && (strstr(t->description, "ktie") || strstr(t->description, "örse") ||
+                               strstr(t->description, "tock")));
+}
+
+/* True if the request talks about listing a directory / its files (Ordner,
+ * Verzeichnis, folder, directory, files, Dateien). */
+static inline int agent_request_mentions_dir(size_t req_len, const char *req) {
+    static const char *const w[] = {
+            "ordner", "verzeichnis", "folder", "director", "files", "dateien"};
+    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
+        size_t wl = strlen(w[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, w[v], wl) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* True if the request points at the web (web, online, internet, google). */
+static inline int agent_request_mentions_web(size_t req_len, const char *req) {
+    static const char *const w[] = {"web", "online", "internet", "googl"};
+    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
+        size_t wl = strlen(w[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, w[v], wl) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* ---- routing predicates + best-candidate search --------------------------
+ * The evidence rules all reduce to "the best NON-BANNED candidate whose tool
+ * satisfies a predicate" — one helper instead of eight hand-rolled loops. */
+typedef int (*agent_pred_fn)(const struct geist_tool *);
+
+static inline int agent_pred_url(const struct geist_tool *t) {
+    return agent_schema_wants_url(t->args_schema);
+}
+static inline int agent_pred_slug(const struct geist_tool *t) {
+    return agent_schema_wants_slug(t->args_schema);
+}
+static inline int agent_pred_dir(const struct geist_tool *t) {
+    return agent_desc_is_dir(t->description);
+}
+static inline int agent_pred_nondir(const struct geist_tool *t) {
+    return !agent_desc_is_dir(t->description);
+}
+static inline int agent_pred_filetool(const struct geist_tool *t) {
+    return agent_schema_wants_path(t->args_schema) && !agent_desc_is_dir(t->description);
+}
+static inline int agent_pred_web(const struct geist_tool *t) {
+    return (t->name && strstr(t->name, "web")) || agent_schema_wants_url(t->args_schema);
+}
+
+static inline int agent_best_pred(const struct geist_agent *a,
+                                  size_t                    n,
+                                  const float              *cal,
+                                  const unsigned char      *banned,
+                                  agent_pred_fn             pred) {
+    int   best = -1;
+    float bv   = -1e30f;
+    for (size_t i = 0; i < n; i++) {
+        if (!banned[i] && pred(&a->tools[i]) && cal[i] > bv) {
+            best = (int) i, bv = cal[i];
+        }
+    }
+    return best;
+}
+
+/* True if the request contains a slug-shaped word: all lowercase alnum with an
+ * inner dash ("pi-serial" — how mind.h names notes). Bounded scan. */
+static inline int agent_request_has_slug(size_t req_len, const char *req) {
+    for (size_t i = 0; i < req_len;) {
+        while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
+            i++;
+        }
+        size_t s    = i;
+        int    dash = 0, sluggy = 1;
+        while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
+            char c = req[i];
+            if (c == '-') {
+                dash = i > s && i + 1 < req_len && req[i + 1] != ' ';
+            } else if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) {
+                sluggy = 0;
+            }
+            i++;
+        }
+        if (i > s && sluggy && dash) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* True if the request talks about the documentation corpus: a word starting
  * doc/Dok (docs, documentation, den Dokumenten). Bilingual and prefix-based
  * like agent_desc_is_dir; "docker"/"doctor" also match — harmless, only
@@ -787,13 +1295,94 @@ static inline int agent_tool_is_docs(const struct geist_tool *t) {
             (strstr(t->description, "okument") || strstr(t->description, "ocument")));
 }
 
-static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
-    if (a->n_tools <= 1) {
+/* True if the request opens with a destructive verb (delete / remove / lösche /
+ * rm …), optionally after one politeness word (please / bitte). First-word only:
+ * an imperative names the action, while a destructive word later in the request
+ * is usually content ("search for how to remove noise"). ponytail: "Please
+ * could you delete …" slips past the two-word scan — falls back to PMI. */
+static inline int agent_request_is_destructive(size_t req_len, const char *req) {
+    /* a shell destroyer ANYWHERE is destructive ("Please run rm -rf on my home
+     * directory" hides it at word 3, past the imperative scan below — and its
+     * "directory" would otherwise read as harmless dir evidence) */
+    for (size_t i = 0; i + 2 <= req_len; i++) {
+        if ((i == 0 || req[i - 1] == ' ') && req[i] == 'r' && req[i + 1] == 'm' &&
+            (i + 2 == req_len || req[i + 2] == ' ' || req[i + 2] == 'd')) {
+            return 1; /* "rm" / "rmdir" as its own word */
+        }
+    }
+    static const char *const verbs[] = {"delet",
+                                        "remov",
+                                        "eras",
+                                        "wipe",
+                                        "destroy",
+                                        "kill",
+                                        "drop",
+                                        "rm",
+                                        "lösch",
+                                        "entfern",
+                                        "zerstör",
+                                        "vernicht"};
+    size_t                   i       = 0;
+    for (int word = 0; word < 2; word++) {
+        while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
+            i++;
+        }
+        size_t s = i;
+        while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
+            i++;
+        }
+        size_t wl = i - s;
+        if (wl == 0) {
+            return 0;
+        }
+        if ((wl == 6 && strncasecmp(req + s, "please", 6) == 0) ||
+            (wl == 5 && strncasecmp(req + s, "bitte", 5) == 0)) {
+            continue; /* politeness prefix — the verb is the next word */
+        }
+        for (size_t v = 0; v < sizeof verbs / sizeof *verbs; v++) {
+            size_t vl = strlen(verbs[v]);
+            if (wl >= vl && strncasecmp(req + s, verbs[v], vl) == 0) {
+                return 1;
+            }
+        }
         return 0;
     }
-    const size_t n = a->n_tools < AGENT_MAX_ROUTED ? a->n_tools : AGENT_MAX_ROUTED;
-    static char  sel[GEIST_AGENT_TRANSCRIPT_CAP];
+    return 0;
+}
+
+/* True if some whitelisted tool actually covers destruction (its name or
+ * description names such an action) — then a destructive request is a normal
+ * routing case, not a refusal. */
+static inline int agent_tools_cover_destruction(const struct geist_agent *a) {
+    for (size_t i = 0; i < a->n_tools; i++) {
+        const char *n = a->tools[i].name, *d = a->tools[i].description;
+        if ((n && (strstr(n, "delet") || strstr(n, "remov") || strstr(n, "lösch"))) ||
+            (d && (strstr(d, "delet") || strstr(d, "remov") || strstr(d, "lösch") ||
+                   strstr(d, "entfern")))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Returns the routed tool's index, or -1 when the answer pseudo-entry wins —
+ * the request is best served by replying directly, with no tool call at all. */
+static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
+    /* Destructive-verb guard: an imperative the toolset cannot do routes
+     * straight to the reply pseudo-entry — a refusal beats a forced-but-wrong
+     * call ("Delete report.md" pulled doc_search up via the named file). Runs
+     * before scoring: no model pass at all. */
+    if (agent_request_is_destructive(req_len, req) && !agent_tools_cover_destruction(a)) {
+        return -1;
+    }
+    if (a->n_tools <= 1) {
+        return 0; /* no menu to rank; a single-tool agent always forces its tool */
+    }
+    const size_t n  = a->n_tools < AGENT_MAX_ROUTED - 1 ? a->n_tools : AGENT_MAX_ROUTED - 1;
+    const size_t nn = n + 1; /* + the answer pseudo-entry, scored like a name */
     float        score[AGENT_MAX_ROUTED] = {0};
+
+    agent_pin_route_menu(a, n); /* once: pin the menu so routes prefill only the tail */
 
     /* Raw name logits have a token-frequency bias (a small model favours
      * "list_dir" regardless of the request). Calibrate: subtract the prior the
@@ -802,85 +1391,190 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
      * the tool menu, not the request, so it is computed ONCE and cached on the
      * agent — every later route then does a single prefill (the request) instead
      * of two, halving routing latency (the Pi's light-task floor). */
-    if (a->route_base_n != n) {
-        agent_select_prompt(a, n, strlen("(unspecified)"), "(unspecified)", sizeof sel, sel);
-        a->route_base_n = agent_score_names(a, n, sel, a->route_base) ? n : 0;
+    if (a->route_base_n != nn) {
+        a->route_base_n =
+                agent_score_names(a, nn, strlen("(unspecified)"), "(unspecified)", a->route_base)
+                        ? nn
+                        : 0;
     }
-    int have_base = a->route_base_n == n;
+    int have_base = a->route_base_n == nn;
 
-    agent_select_prompt(a, n, req_len, req, sizeof sel, sel);
-    if (!agent_score_names(a, n, sel, score)) {
+    if (!agent_score_names(a, nn, req_len, req, score)) {
         return 0;
     }
 
-    float cal[AGENT_MAX_ROUTED] = {0};
-    int   best                  = 0;
-    float best_v                = -1e30f;
+    /* Evidence BAN mask, applied before the argmax and every alternative
+     * search: a rare tool name has a low calibration prior, so any raw bump
+     * inflates its PMI and it magnetizes unrelated requests (recall won "What
+     * is 2 plus 2?", stock_movers won "Fasse notes.txt zusammen"). A tool that
+     * demands lexical evidence simply does not COMPETE without it:
+     *   - memory tools need a note/memory word,
+     *   - the stocks tool needs a stocks/market word,
+     *   - a file-consuming tool (path arg, not a directory tool) needs a named
+     *     file or a path word. */
+    unsigned char banned[AGENT_MAX_ROUTED] = {0};
+    const int     has_file =
+            agent_request_names_file(req_len, req) || agent_request_has_pathword(req_len, req);
     for (size_t i = 0; i < n; i++) {
+        banned[i] = (unsigned char) ((agent_tool_is_memory(&a->tools[i]) &&
+                                      !agent_request_mentions_memory(req_len, req)) ||
+                                     (agent_tool_is_stocks(&a->tools[i]) &&
+                                      !agent_request_mentions_stocks(req_len, req)) ||
+                                     (agent_tool_is_home(&a->tools[i]) &&
+                                      !agent_request_mentions_home(req_len, req)) ||
+                                     (agent_pred_filetool(&a->tools[i]) && !has_file));
+    }
+
+    float cal[AGENT_MAX_ROUTED] = {0};
+    int   best                  = (int) n; /* reply competes and is never banned */
+    float best_v;
+    for (size_t i = 0; i < nn; i++) {
         cal[i] = have_base ? score[i] - a->route_base[i] : score[i];
-        if (cal[i] > best_v) {
+    }
+    best_v = cal[n];
+    for (size_t i = 0; i < n; i++) {
+        if (!banned[i] && cal[i] > best_v) {
             best_v = cal[i], best = (int) i;
         }
     }
 
-    /* Tie-breaker: a literal http(s):// URL in the request is strong evidence
-     * for the tool that takes a "url" arg (fetch), yet the name score often
-     * favours the search tool. Same bounded close-race window as the file rule
-     * below. Runs first: a URL also ends in a file-ish extension, so without
-     * this the file rule would see ".html" and reason about the wrong axis. */
+    /* Evidence beats the fallback, unwindowed: reply is where requests land
+     * when NO tool fits — but if the request carries tool evidence (a URL, a
+     * slug, a named file, a docs/dir/web/stocks/memory word), the evidenced
+     * tool serves it better than a free-text answer, regardless of margin
+     * (measured: "Wo steht in den Dokumenten …" put reply 2.9 above
+     * doc_search — no fixed window can bridge that without breaking the
+     * legitimate reply wins, whose margins are as small as 0.15). */
+    if (best == (int) n) {
+        int alt = -1;
+        if (agent_request_has_url(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_url);
+        }
+        if (alt < 0 && agent_request_has_slug(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_slug);
+        }
+        if (alt < 0 && has_file) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_filetool);
+        }
+        if (alt < 0 && agent_request_mentions_docs(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_tool_is_docs);
+        }
+        if (alt < 0 && agent_request_mentions_dir(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_dir);
+        }
+        if (alt < 0 && agent_request_mentions_web(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_web);
+        }
+        if (alt < 0 && agent_request_mentions_stocks(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_tool_is_stocks);
+        }
+        if (alt < 0 && agent_request_mentions_memory(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_tool_is_memory);
+        }
+        if (alt < 0 && agent_request_mentions_home(req_len, req)) {
+            alt = agent_best_pred(a, n, cal, banned, agent_tool_is_home);
+        }
+        if (alt >= 0) {
+            best = alt, best_v = cal[alt];
+        }
+    }
+
+    /* Within the home menu the read/write boundary is decided by the SENTENCE
+     * SHAPE, not the name score: an imperative opening ("Dimme …", "Stelle …")
+     * means the command tool, a question opening ("Ist …", "Wie …") the
+     * status tool — first-token PMI confuses the two (measured: 'Dimme das
+     * Licht' routed home_status). Unwindowed: shape is decisive evidence. */
+    if (best < (int) n && agent_tool_is_home(&a->tools[best])) {
+        int alt = -1;
+        if (agent_request_is_imperative(req_len, req) &&
+            !agent_pred_home_command(&a->tools[best])) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_home_command);
+        } else if (agent_request_is_question(req_len, req) &&
+                   !agent_pred_home_status(&a->tools[best])) {
+            alt = agent_best_pred(a, n, cal, banned, agent_pred_home_status);
+        }
+        if (alt >= 0) {
+            best = alt, best_v = cal[alt];
+        }
+    }
+
+    /* Windowed tie-breakers for tool-vs-tool races (close-race window 1.5;
+     * the observed residuals are ~0.5). Each steers toward the tool the
+     * request's strongest literal evidence names. */
+
+    /* a literal http(s):// URL -> the "url"-arg tool. Runs first: a URL also
+     * ends in a file-ish extension, so without this the file rule would see
+     * ".html" and reason about the wrong axis. */
     if (agent_request_has_url(req_len, req) &&
-        !agent_schema_wants_url(a->tools[best].args_schema)) {
-        int   alt   = -1;
-        float alt_v = -1e30f;
-        for (size_t i = 0; i < n; i++) {
-            if (agent_schema_wants_url(a->tools[i].args_schema) && cal[i] > alt_v) {
-                alt = (int) i, alt_v = cal[i];
-            }
-        }
-        if (alt >= 0 && alt_v > best_v - 1.5f) {
-            best = alt, best_v = alt_v;
+        (best == (int) n || !agent_schema_wants_url(a->tools[best].args_schema))) {
+        int alt = agent_best_pred(a, n, cal, banned, agent_pred_url);
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
+            best = alt, best_v = cal[alt];
         }
     }
 
-    /* Tie-breaker: the request mentions the documentation corpus (docs/Dokumente)
-     * but the winner is not the doc tool — first-token name scoring gives
-     * doc_search only a weak margin over list_dir ("doc" vs the answer-ish
-     * "list"), observed ~0.3-0.9 short. Skipped when the request names a
-     * specific file: a named file is more specific evidence than the corpus
-     * noun, and the file rule below owns that case. */
+    /* a slash-path word (tests/data/x) -> a path-arg tool (the URL rule's
+     * filesystem sibling; skipped when the slash word is a URL) */
+    if (!agent_request_has_url(req_len, req) && agent_request_has_pathword(req_len, req) &&
+        (best == (int) n || !agent_schema_wants_path(a->tools[best].args_schema))) {
+        int alt = -1;
+        for (size_t i = 0; i < n; i++) {
+            if (!banned[i] && agent_schema_wants_path(a->tools[i].args_schema) &&
+                (alt < 0 || cal[i] > cal[alt])) {
+                alt = (int) i;
+            }
+        }
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
+            best = alt, best_v = cal[alt];
+        }
+    }
+
+    /* a slug-shaped word (pi-serial — how mind.h names notes) -> the
+     * "slug"-arg tool (the name score favours "remember" for either memory
+     * verb) */
+    if (agent_request_has_slug(req_len, req) &&
+        (best == (int) n || !agent_schema_wants_slug(a->tools[best].args_schema))) {
+        int alt = agent_best_pred(a, n, cal, banned, agent_pred_slug);
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
+            best = alt, best_v = cal[alt];
+        }
+    }
+
+    /* a docs-corpus word (docs/Dokumente) -> the doc tool ("doc" scores only
+     * ~0.3-0.9 short of the answer-ish "list"). Skipped when a file is named:
+     * that is more specific evidence and the file rule owns it. */
     if (!agent_request_names_file(req_len, req) && agent_request_mentions_docs(req_len, req) &&
-        !agent_tool_is_docs(&a->tools[best])) {
-        int   alt   = -1;
-        float alt_v = -1e30f;
-        for (size_t i = 0; i < n; i++) {
-            if (agent_tool_is_docs(&a->tools[i]) && cal[i] > alt_v) {
-                alt = (int) i, alt_v = cal[i];
-            }
-        }
-        if (alt >= 0 && alt_v > best_v - 1.5f) {
-            best = alt, best_v = alt_v;
+        (best == (int) n || !agent_tool_is_docs(&a->tools[best]))) {
+        int alt = agent_best_pred(a, n, cal, banned, agent_tool_is_docs);
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
+            best = alt, best_v = cal[alt];
         }
     }
 
-    /* Tie-breaker: if the winner is a directory tool but the request names a
-     * specific file (note.txt), prefer the best non-dir tool within a small
-     * window. The German separable verb "Fasse … zusammen" splits the verb so the
-     * scored first token is "Fasse" and the name score barely favours list_dir; a
-     * named file is strong evidence for a file tool. Bounded — only on a real
-     * file extension (a bare directory path never fires) and only a close race. */
-    if (agent_desc_is_dir(a->tools[best].description) && agent_request_names_file(req_len, req)) {
-        int   alt   = -1;
-        float alt_v = -1e30f;
-        for (size_t i = 0; i < n; i++) {
-            if (!agent_desc_is_dir(a->tools[i].description) && cal[i] > alt_v) {
-                alt = (int) i, alt_v = cal[i];
-            }
+    /* a directory word (Ordner/folder/files) without a named file -> the
+     * directory tool ("look at the files in this folder, then summarize"
+     * routed the summarizer even though the listing must come first) */
+    if (!agent_request_names_file(req_len, req) && agent_request_mentions_dir(req_len, req) &&
+        best < (int) n && !agent_pred_dir(&a->tools[best])) {
+        int alt = agent_best_pred(a, n, cal, banned, agent_pred_dir);
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
+            best = alt, best_v = cal[alt];
         }
-        if (alt >= 0 && alt_v > best_v - 1.5f) { /* 1.5: the observed residual is ~0.5 */
+    }
+
+    /* the winner is a directory tool but a specific file is named -> the best
+     * non-dir tool ("Fasse notes.txt zusammen" splits the German verb, so the
+     * name score barely favours list_dir). A reply win deliberately survives
+     * this rule: a named file in "Delete report.md" is not a reason to force
+     * a tool. */
+    if (best < (int) n && agent_desc_is_dir(a->tools[best].description) &&
+        agent_request_names_file(req_len, req)) {
+        int alt = agent_best_pred(a, n, cal, banned, agent_pred_nondir);
+        if (alt >= 0 && cal[alt] > best_v - 1.5f) {
             best = alt;
         }
     }
-    return best;
+    return best == (int) n ? -1 : best;
 }
 
 /* A locator arg (a path/file/url) is something the user almost always wrote out
@@ -890,7 +1584,7 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
  * names. ponytail: a fixed name list, extend if a tool adds a new locator key. */
 static inline int agent_key_is_locator(const char *key) {
     static const char *const loc[] = {"path", "file",      "filename", "dir",
-                                       "url",  "directory", "filepath"};
+                                       "url",  "directory", "filepath", "slug"};
     for (size_t i = 0; i < sizeof loc / sizeof *loc; i++) {
         if (strcmp(key, loc[i]) == 0) {
             return 1;
@@ -900,44 +1594,59 @@ static inline int agent_key_is_locator(const char *key) {
 }
 
 /* Find the first whitespace-delimited word in the request that looks like a
- * locator — contains '/' (a path/URL: "/tmp/x", "http://host/p") OR ends in a
- * file extension (".txt"/".md": "note.txt") — and copy it to out. Returns its
- * length, or 0 if the request has no such word. */
+ * locator — contains '/' (a path/URL: "/tmp/x", "http://host/p"), ends in a
+ * file extension (".txt"/".md": "note.txt"), OR is slug-shaped (all lowercase
+ * alnum with an inner dash: "pi-serial" — how mind.h names notes) — and copy
+ * it to out. Returns its length, or 0 if the request has no such word.
+ * ponytail: the slug shape also matches lowercase compounds ("on-device");
+ * harmless — it is only consulted when the arg KEY is a locator (slug/path). */
 static inline size_t
 agent_extract_locator(size_t req_len, const char *req, size_t cap, char out[static cap]) {
-    for (size_t i = 0; i < req_len;) {
-        while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
-            i++;
-        }
-        size_t s = i, dot = (size_t) -1;
-        int    slash = 0;
-        while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
-            if (req[i] == '/') {
-                slash = 1;
-            } else if (req[i] == '.') {
-                dot = i;
+    /* pass 0: slash/extension words (a real path/URL/file always wins);
+     * pass 1: slug-shaped words — so "the on-device report.md" lifts report.md */
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < req_len;) {
+            while (i < req_len && (req[i] == ' ' || req[i] == '\t' || req[i] == '\n')) {
+                i++;
             }
-            i++;
-        }
-        int ext = 0; /* a dot, not leading, then 1-5 alnum to the word end */
-        if (dot != (size_t) -1 && dot > s && i - dot >= 2 && i - dot <= 6) {
-            ext = 1;
-            for (size_t j = dot + 1; j < i; j++) {
-                char c = req[j];
-                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
-                    ext = 0;
-                    break;
+            size_t s = i, dot = (size_t) -1;
+            int    slash = 0, dash = 0, sluggy = 1;
+            while (i < req_len && req[i] != ' ' && req[i] != '\t' && req[i] != '\n') {
+                char c = req[i];
+                if (c == '/') {
+                    slash = 1;
+                } else if (c == '.') {
+                    dot = i;
+                }
+                if (c == '-') {
+                    dash = i > s && i + 1 < req_len && req[i + 1] != ' '; /* inner dash only */
+                } else if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) {
+                    sluggy = 0;
+                }
+                i++;
+            }
+            int ext = 0; /* a dot, not leading, then 1-5 alnum to the word end */
+            if (dot != (size_t) -1 && dot > s && i - dot >= 2 && i - dot <= 6) {
+                ext = 1;
+                for (size_t j = dot + 1; j < i; j++) {
+                    char c = req[j];
+                    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                          (c >= '0' && c <= '9'))) {
+                        ext = 0;
+                        break;
+                    }
                 }
             }
-        }
-        if ((slash || ext) && i > s) {
-            size_t n = i - s;
-            if (n + 1 > cap) {
-                n = cap - 1;
+            int hit = pass == 0 ? (slash || ext) : (sluggy && dash);
+            if (hit && i > s) {
+                size_t n = i - s;
+                if (n + 1 > cap) {
+                    n = cap - 1;
+                }
+                memcpy(out, req + s, n);
+                out[n] = '\0';
+                return n;
             }
-            memcpy(out, req + s, n);
-            out[n] = '\0';
-            return n;
         }
     }
     return 0;
@@ -961,23 +1670,12 @@ struct agent_recipe {
 };
 
 static const struct agent_recipe AGENT_RECIPES[] = {
-        {"web_search", "web_fetch", "read lies lese fetch hole open visit besuch page seite say"},
+        {"web_search",
+         "web_fetch",
+         "read lies lese fetch hole open visit besuch page seite say summar fasse zusammen"},
         {"doc_search", "summarize_file", "summar fasse zusammen gist"},
         {"list_dir", "summarize_file", "summar fasse zusammen gist"},
 };
-
-/* Case-insensitive bounded needle search (req/obs are not NUL-terminated). */
-static inline int agent_ci_find(size_t hlen, const char *hay, size_t nlen, const char *needle) {
-    if (nlen == 0 || nlen > hlen) {
-        return 0;
-    }
-    for (size_t i = 0; i + nlen <= hlen; i++) {
-        if (strncasecmp(hay + i, needle, nlen) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
 
 /* If a recipe continues routed tool `idx` — second tool whitelisted and a cue
  * word (word-start, case-insensitive prefix) present in the request — return
@@ -1113,6 +1811,170 @@ static inline size_t agent_obs_locator(int         wants_url,
     return pick_n;
 }
 
+/* ---- in-sampler grammar masking (free mode) --------------------------------
+ * The free loop used to hand the open turn to plain greedy decoding, and a
+ * small model reliably mangles the call syntax — hallucinated tool names,
+ * broken JSON, wrong keys (eval: free-mode routing 4/30). When greedy WANTS to
+ * open a call (its next token starts '{', or a ```-fence, which in this
+ * context is a wrapped call attempt), the turn is instead decoded along the
+ * call grammar over the public peek/prefill API:
+ *     {"tool":"<name in whitelist>","args":{"<key in schema>":"<value>"}}
+ * The name decodes constrained to the whitelist, each arg KEY to the tool's
+ * still-UNUSED schema keys (one remaining: prefilled outright), only the
+ * VALUEs are free — each stops at its closing quote. At every pair boundary
+ * the model chooses ',' (next key) or '}' (done) by logit, so a multi-key
+ * schema fills as many keys as the model wants, each exactly once. The model
+ * cannot emit an off-grammar call. ponytail: values are flat strings —
+ * typed/nested argument grammars are the remaining upgrade. */
+
+/* Prefill `lit` into the session AND append it to out at w; returns the new w.
+ * Keeps the model conditioned on the scaffold it is "inside". */
+static inline size_t agent_prefill_lit(
+        struct geist_agent *a, const char *lit, size_t cap, char out[static cap], size_t w) {
+    geist_token_t ids[64];
+    size_t        nid = 0;
+    if (geist_session_tokenize(a->session, lit, 64, ids, &nid) == GEIST_OK && nid > 0) {
+        (void) geist_session_prefill_tokens(a->session, nid, ids);
+    }
+    w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%s", lit);
+    return w;
+}
+
+/* True if greedy's next token would open a tool call: '{', or a code fence
+ * (models wrap calls in ```json). Peek only — nothing is consumed. */
+static inline int agent_next_opens_call(struct geist_agent *a) {
+    size_t       n_logits = 0;
+    const float *logits   = geist_session_peek_logits(a->session, &n_logits);
+    if (!logits || n_logits == 0) {
+        return 0;
+    }
+    size_t best = 0;
+    for (size_t i = 1; i < n_logits; i++) {
+        if (logits[i] > logits[best]) {
+            best = i;
+        }
+    }
+    const char *piece = geist_session_token_to_str(a->session, (geist_token_t) best);
+    while (piece && *piece == ' ') {
+        piece++;
+    }
+    return piece && (*piece == '{' || *piece == '`');
+}
+
+/* Decode one guaranteed-valid tool call along the grammar into out. The
+ * session must be at the open model turn. Returns the call's length, or 0 if
+ * the constrained decode fell apart (caller resets and free-decodes). */
+static inline size_t
+agent_generate_call_masked(struct geist_agent *a, size_t cap, char out[static cap]) {
+    size_t w   = agent_prefill_lit(a, "{\"tool\":\"", cap, out, 0);
+    int    idx = agent_decode_name_constrained(a);
+    if (idx < 0) {
+        return 0;
+    }
+    w = (size_t) snprintf(out + w, cap - w, "%s", a->tools[idx].name) + w;
+    w = agent_prefill_lit(a, "\",\"args\":", cap, out, w);
+
+    char   keys[4][GEIST_AGENT_NAME_CAP];
+    size_t nk = agent_schema_keys(a->tools[idx].args_schema, 4, keys);
+    if (nk == 0) {
+        w += (size_t) snprintf(out + w, cap - w, "{}}");
+        return w;
+    }
+
+    /* key/value pairs: each key constrained to the still-unused schema keys,
+     * each value free until its closing quote. The value's quote token may
+     * fuse the model's continue/stop choice (`",` / `"}`) — honour it, else
+     * ask the logits at the pair boundary. */
+    int used[4] = {0};
+    w           = agent_prefill_lit(a, "{", cap, out, w);
+    for (size_t pair = 0; pair < nk && w + 8 < cap; pair++) {
+        w = agent_prefill_lit(a, "\"", cap, out, w);
+        const char *opts[4];
+        int         map[4];
+        size_t      rem = 0;
+        for (size_t i = 0; i < nk; i++) {
+            if (!used[i]) {
+                map[rem]    = (int) i;
+                opts[rem++] = keys[i];
+            }
+        }
+        int k;
+        if (rem == 1) {
+            k = map[0];
+            w = agent_prefill_lit(a, keys[k], cap, out, w);
+        } else {
+            int pick = agent_decode_pick(a, rem, opts);
+            if (pick < 0) {
+                return 0; /* partial key in the session — caller must reset */
+            }
+            k = map[pick];
+            w = (size_t) snprintf(out + w, cap - w, "%s", keys[k]) + w;
+        }
+        used[k] = 1;
+        w       = agent_prefill_lit(a, "\":\"", cap, out, w);
+
+        /* the VALUE is the model's — free greedy, stopped at the closing
+         * quote. end: 0 no quote seen, 1 bare quote, 2 quote+',', 3 quote+'}' */
+        int    end    = 0;
+        size_t vstart = w;
+        for (int t = 0; t < 64 && w + 8 < cap && end == 0; t++) {
+            geist_token_t tok = 0;
+            if (geist_session_decode_step(a->session, &tok) != GEIST_OK || tok == a->eos ||
+                (a->eot != GEIST_TOKEN_NONE && tok == a->eot)) {
+                break;
+            }
+            const char *piece = geist_session_token_to_str(a->session, tok);
+            size_t      plen  = piece ? strlen(piece) : 0;
+            if (plen == 0 || (piece[0] == '<' && piece[plen - 1] == '>') || piece[0] == '}') {
+                break; /* control marker / the model closing the object itself */
+            }
+            for (const char *p = piece; *p && w + 2 < cap; p++) {
+                if (*p == '"') {
+                    for (p++; *p == ' '; p++) { /* fused continue/stop choice? */
+                    }
+                    end = *p == ',' ? 2 : *p == '}' ? 3 : 1;
+                    break;
+                }
+                char ch = (*p == '\n' || *p == '\t' || *p == '\r') ? ' ' : *p;
+                if (ch == '\\') {
+                    out[w++] = '\\'; /* keep the rebuilt JSON parseable */
+                }
+                out[w++] = ch;
+            }
+            if (agent_tail_loop(out + vstart, w - vstart) > 0) {
+                break;
+            }
+        }
+        while (w > vstart && out[w - 1] == ' ') {
+            w--;
+        }
+        if (end == 0) {
+            /* no clean quote: close the value ourselves and stop decoding —
+             * the session is no longer aligned with the text past this point. */
+            w += (size_t) snprintf(out + w, cap - w, "\"");
+            break;
+        }
+        out[w++] = '"'; /* the session already consumed the model's quote */
+        if (end == 3 || pair + 1 >= nk) {
+            break; /* the model closed the object / no keys remain */
+        }
+        if (end == 2) {
+            out[w++] = ','; /* fused: the model already committed to a comma */
+            continue;
+        }
+        /* bare quote: the model chooses ',' (next key) or '}' (done) */
+        size_t       nl = 0;
+        const float *lg = geist_session_peek_logits(a->session, &nl);
+        if (!lg ||
+            agent_first_token_logit(a, "}", lg, nl) >= agent_first_token_logit(a, ",", lg, nl)) {
+            break;
+        }
+        w = agent_prefill_lit(a, ",", cap, out, w);
+    }
+    w += (size_t) snprintf(out + w, cap - w, "}}");
+    return w;
+}
+
 /* Force the next turn to be a valid call to tool `idx` (chosen by
  * agent_select_tool), whether or not the model would have emitted one — the
  * proof that prompted tool use does NOT require a tool-trained model. The JSON
@@ -1213,6 +2075,99 @@ static inline size_t agent_generate_turn(struct geist_agent *a, size_t cap, char
                                  cap, out);
 }
 
+/* Decode a REPLY turn: the router decided no tool fits, so the turn must be
+ * prose — but the system prompt TEACHES the call format, and a plain greedy
+ * reply drifts into call tokens ("What is 2 plus 2?" answered "{"; found by
+ * the advisory judge). Two measures, the grammar-mask philosophy inverted:
+ * a "Answer:" lead is prefilled (prose priming; it stays out of the returned
+ * text — the transcript is the source of truth for follow-up turns), and
+ * call-opening tokens ('{' / a fence) are banned at EVERY step, so a reply
+ * can never contain a call fragment. Stops on EOS/EOT, control markers, a
+ * template leak, or a degenerate repetition loop. */
+static inline size_t agent_generate_reply(struct geist_agent *a, size_t cap, char out[static cap]) {
+    geist_token_t lead[8];
+    size_t        nlead = 0;
+    if (geist_session_tokenize(a->session, "Answer:", 8, lead, &nlead) == GEIST_OK && nlead > 0) {
+        (void) geist_session_prefill_tokens(a->session, nlead, lead);
+    }
+    size_t w    = 0;
+    int    done = 0;
+    for (int t = 0; t < GEIST_AGENT_MAX_DECODE && !done && w + 8 < cap; t++) {
+        size_t       n_logits = 0;
+        const float *logits   = geist_session_peek_logits(a->session, &n_logits);
+        if (!logits || n_logits == 0) {
+            break;
+        }
+        geist_token_t excl[8];
+        size_t        n_excl = 0;
+        while (n_excl < sizeof excl / sizeof *excl) {
+            size_t best   = 0;
+            float  best_v = -1e30f;
+            for (size_t i = 0; i < n_logits; i++) {
+                int banned = 0;
+                for (size_t e = 0; e < n_excl; e++) {
+                    banned |= excl[e] == (geist_token_t) i;
+                }
+                if (!banned && logits[i] > best_v) {
+                    best_v = logits[i], best = i;
+                }
+            }
+            geist_token_t tok = (geist_token_t) best;
+            if (tok == a->eos || (a->eot != GEIST_TOKEN_NONE && tok == a->eot)) {
+                done = 1;
+                break;
+            }
+            const char *piece = geist_session_token_to_str(a->session, tok);
+            size_t      plen  = piece ? strlen(piece) : 0;
+            if (plen == 0 || (piece[0] == '<' && piece[plen - 1] == '>')) {
+                done = 1; /* control marker — the turn is over */
+                break;
+            }
+            if (strchr(piece, '{') || strchr(piece, '`') || strchr(piece, '\\')) {
+                /* call-ish anywhere in the piece — prose needs no braces,
+                 * fences, or escapes; banning them blocks the "call quoted as
+                 * a string" drift, not just a bare leading '{' */
+                excl[n_excl++] = tok;
+                continue;
+            }
+            if (geist_session_prefill_tokens(a->session, 1, &tok) != GEIST_OK ||
+                w + plen + 1 >= cap) {
+                done = 1;
+                break;
+            }
+            memcpy(out + w, piece, plen);
+            w += plen;
+            out[w] = '\0';
+            if (agent_tail_loop(out, w) > 0) {
+                done = 1; /* degenerate repetition */
+            }
+            break;
+        }
+        if (n_excl == sizeof excl / sizeof *excl) {
+            break; /* nothing speakable in the top candidates */
+        }
+    }
+    for (size_t m = 0; a->tmpl.leak[m] != nullptr; m++) {
+        char *hit = strstr(out, a->tmpl.leak[m]);
+        if (hit) {
+            w    = (size_t) (hit - out); /* cut the leaked next-turn header */
+            *hit = '\0';
+        }
+    }
+    size_t lead_ws = 0; /* the lead ends in ':', the continuation starts spaced */
+    while (lead_ws < w && (out[lead_ws] == ' ' || out[lead_ws] == '\n')) {
+        lead_ws++;
+    }
+    if (lead_ws > 0) {
+        memmove(out, out + lead_ws, w - lead_ws + 1);
+        w -= lead_ws;
+    }
+    while (w > 0 && (out[w - 1] == ' ' || out[w - 1] == '\n')) {
+        out[--w] = '\0';
+    }
+    return w;
+}
+
 /* Build the fixed system prompt (scope definition): role + the tool whitelist
  * + the required output shape. Returns bytes written. */
 static inline size_t
@@ -1239,10 +2194,10 @@ agent_system_prompt(const struct geist_agent *a, size_t cap, char out[static cap
     return w;
 }
 
-/* Sliding-window context bound for multi-turn chat. When the transcript passes
- * GEIST_AGENT_CTX_BUDGET, evict the OLDEST conversation turns: keep the protected
- * system-prompt prefix [0..sys_len) and the most recent whole turns (snapped to a
- * user_open marker), down to GEIST_AGENT_CTX_TARGET. A turn_close is inserted
+/* Sliding-window context bound for multi-turn chat. When the conversation past
+ * the prefix exceeds GEIST_AGENT_CTX_CARRY, evict the OLDEST conversation turns:
+ * keep the protected system-prompt prefix [0..sys_len) and the most recent whole
+ * turns (snapped to a user_open marker), down to the CARRY tail. A turn_close is inserted
  * after the prefix so the kept history is well-framed (the system instructions
  * become their own user turn). This bounds per-turn re-prefill — a long chat
  * stays O(n), not O(n^2) — and replaces the hard "context full" stop.
@@ -1253,15 +2208,14 @@ agent_system_prompt(const struct geist_agent *a, size_t cap, char out[static cap
  * [sys_len..keep_from) into a running summary via summ_generate and splice it in
  * as "[system][summary][recent]" here — the summarizer already exists. */
 static inline void agent_compact(struct geist_agent *a) {
-    if (!a->conversation || a->sys_len == 0 || a->tlen <= GEIST_AGENT_CTX_BUDGET) {
+    if (!a->conversation || a->sys_len == 0 || a->tlen <= a->sys_len + GEIST_AGENT_CTX_CARRY) {
         return;
     }
     const char *uo  = a->tmpl.user_open;
     size_t      uol = strlen(uo);
     size_t      tcl = strlen(a->tmpl.turn_close);
-    /* tail bytes we may keep after the prefix + the inserted turn_close */
-    size_t budget_tail =
-            (GEIST_AGENT_CTX_TARGET > a->sys_len + tcl) ? GEIST_AGENT_CTX_TARGET - a->sys_len - tcl : 0;
+    /* tail bytes of recent conversation we may keep past the prefix */
+    size_t budget_tail = GEIST_AGENT_CTX_CARRY;
     /* earliest user_open whose tail fits the target (keep the most history);
      * else the latest one (keep only the newest turn — guarantees progress).
      * Scan from sys_len + tcl, not sys_len: a marker within tcl bytes of the
@@ -1320,6 +2274,87 @@ static inline int agent_answer_degenerate(const char *s) {
     return 1;
 }
 
+/* Pin BOS + the system prompt into the KV cache (once, on the first run):
+ * geist_session_reset then rewinds to this prefix instead of zero, so the
+ * constant prefix is never re-prefilled. No-op when already pinned or when
+ * the arch lacks pin_prefix (sys_pinned stays false -> full-prompt fallback).
+ * The prefix ends at a template turn marker (a special token), so tokenizing
+ * the suffix separately cannot merge across the seam. */
+/* Wire the dedicated routing session (created by the host on the same model/
+ * backend). This ENABLES the system-prompt pin — see the struct fields. */
+static inline void geist_agent_set_route_session(struct geist_agent   *a,
+                                                 struct geist_session *route) {
+    a->route_session = route;
+}
+
+static inline void agent_pin_system_prompt(struct geist_agent *a) {
+    if (a->sys_pinned || a->sys_len == 0 || a->route_session == nullptr) {
+        return; /* no route session -> no pin: routing must stay clean */
+    }
+    static geist_token_t ids[2048];
+    size_t               n   = 0;
+    geist_token_t        bos = geist_model_bos_token(a->model);
+    if (bos >= 0) {
+        ids[n++] = bos; /* mirror set_prompt, which prepends BOS */
+    }
+    char saved                = a->transcript[a->sys_len];
+    a->transcript[a->sys_len] = '\0'; /* tokenize() wants a C string */
+    size_t nid                = 0;
+    int    ok = geist_session_tokenize(a->session, a->transcript, 2048 - n, ids + n, &nid) ==
+                        GEIST_OK &&
+                nid > 0;
+    a->transcript[a->sys_len] = saved;
+    if (ok && geist_session_pin_prefix(a->session, n + nid, ids) == GEIST_OK) {
+        a->sys_pinned = true;
+    }
+}
+
+/* Re-point the session at the transcript. Pinned (the hot path): reset()
+ * rewinds the KV cache to the system prompt and only the transcript SUFFIX
+ * is re-prefilled — this was the dominant share of the measured 12-13 s
+ * appliance turn on the Pi. Unpinned: the old full reset + set_prompt. */
+static inline enum geist_status agent_set_transcript(struct geist_agent *a) {
+    if (geist_session_reset(a->session) != GEIST_OK) {
+        return GEIST_E_INVALID_STATE;
+    }
+    if (!a->sys_pinned) {
+        return geist_session_set_prompt(a->session, a->transcript) == GEIST_OK
+                       ? GEIST_OK
+                       : GEIST_E_INVALID_STATE;
+    }
+    if (a->tlen <= a->sys_len) {
+        return GEIST_OK; /* nothing beyond the pinned prompt yet */
+    }
+    static geist_token_t ids[1 << 14]; /* transcript cap is 32 KiB chars */
+    size_t               nid = 0;
+    if (geist_session_tokenize(a->session, a->transcript + a->sys_len, 1 << 14, ids, &nid) !=
+                GEIST_OK ||
+        (nid > 0 && geist_session_prefill_tokens(a->session, nid, ids) != GEIST_OK)) {
+        return GEIST_E_INVALID_STATE; /* do NOT fall back: set_prompt after a
+                                       * pin would prefill the prompt twice */
+    }
+    return GEIST_OK;
+}
+
+/* In conversation mode, fold the final answer into the transcript (closing the
+ * open model turn) so the NEXT geist_agent_run sees it — every return path
+ * must do this, including the forced/recipe and repeat-guard exits, or a
+ * follow-up turn lands on an unclosed model turn. Only advances tlen if the
+ * fold fit (else the turn just goes unrecorded, never corrupted). */
+static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
+    if (!a->conversation) {
+        return;
+    }
+    int fw = snprintf(a->transcript + a->tlen,
+                      sizeof a->transcript - a->tlen,
+                      "%s%s",
+                      answer,
+                      a->tmpl.turn_close);
+    if (fw > 0 && (size_t) fw < sizeof a->transcript - a->tlen) {
+        a->tlen += (size_t) fw;
+    }
+}
+
 /* Run one request to completion: loop generate -> parse -> (whitelist) dispatch
  * -> observe, until the model answers in plain text or max_steps is hit.
  * On any failure resp is left well-defined ("" / *resp_len 0). */
@@ -1336,6 +2371,7 @@ static inline int agent_answer_degenerate(const char *s) {
     if (resp_len) {
         *resp_len = 0;
     }
+    clock_gettime(CLOCK_MONOTONIC, &a->t_mark); /* GEIST_AGENT_TIME baseline */
 
     if (a->conversation && a->tlen > 0) {
         /* multi-turn chat: the transcript already holds the prior turns (ending
@@ -1363,18 +2399,24 @@ static inline int agent_answer_degenerate(const char *s) {
                                      a->tmpl.model_open);
     }
 
+    agent_pin_system_prompt(a); /* once; reset() then rewinds to the prompt */
+
     char turn[GEIST_AGENT_TURN_CAP];
     char name[GEIST_AGENT_NAME_CAP];
     char args[GEIST_AGENT_ARGS_CAP];
     char obs[GEIST_AGENT_OBS_CAP];
+    /* (name,args) hashes of the calls already executed this run — a repeated
+     * call cannot progress, its observation is already in the transcript. */
+    unsigned seen[16];
+    size_t   n_seen = 0;
 
     for (size_t step = 0; step < a->max_steps; step++) {
-        if (geist_session_reset(a->session) != GEIST_OK ||
-            geist_session_set_prompt(a->session, a->transcript) != GEIST_OK) {
+        if (agent_set_transcript(a) != GEIST_OK) {
             return GEIST_E_INVALID_STATE;
         }
-        /* ponytail: full-transcript reprefill each step — O(n^2) over the
-         * request. Switch to incremental prefill_tokens if requests get long. */
+        /* ponytail: the transcript SUFFIX reprefills each step (the system
+         * prompt is pinned) — still O(n^2) over a long conversation tail;
+         * track the session position incrementally if that ever dominates. */
         /* force_call: make turn 0 a guaranteed-valid tool call even on a model
          * that wouldn't emit one (no tool training needed); later turns are free
          * so the model can give a plain-text answer after the observation. The
@@ -1384,14 +2426,48 @@ static inline int agent_answer_degenerate(const char *s) {
         if (a->force_call && step == 0) {
             agent_emit(a, GEIST_AGENT_ROUTING, step, nullptr, nullptr);
             int idx = agent_select_tool(a, req_len, req);
-            agent_emit(a, GEIST_AGENT_ROUTING, step, a->tools[idx].name, "selected");
-            if (geist_session_reset(a->session) != GEIST_OK ||
-                geist_session_set_prompt(a->session, a->transcript) != GEIST_OK) {
+            agent_emit(a,
+                       GEIST_AGENT_ROUTING,
+                       step,
+                       idx >= 0 ? a->tools[idx].name : AGENT_ANSWER_NAME,
+                       "selected");
+            /* selection clobbers the session ONLY in single-session mode; a
+             * dedicated route session leaves the transcript state untouched,
+             * so the step-top prefill still stands — skip the re-set. */
+            if (a->route_session == nullptr && agent_set_transcript(a) != GEIST_OK) {
                 return GEIST_E_INVALID_STATE;
+            }
+            /* idx < 0: the answer pseudo-entry won the routing — no tool fits.
+             * The decision is TERMINAL: decode a call-proof reply turn and
+             * return it as the answer (the model fills text, it does not get
+             * to overrule the router with a call after all). */
+            if (idx < 0) {
+                size_t rn = agent_generate_reply(a, sizeof turn, turn);
+                (void) rn;
+                agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, turn);
+                agent_conv_fold(a, turn);
+                size_t n = agent_copy(resp_cap, resp, turn);
+                if (resp_len) {
+                    *resp_len = n;
+                }
+                return GEIST_OK;
             }
             tn = agent_force_call(a, idx, req_len, req, sizeof turn, turn);
         } else {
-            tn = agent_generate_turn(a, sizeof turn, turn);
+            /* free turn under the grammar mask: if greedy would open a call,
+             * decode it along the call grammar (guaranteed valid, on-whitelist);
+             * plain text stays plain. A fallen-apart constrained decode left
+             * scaffold tokens in the session — reset before free-decoding. */
+            tn = 0;
+            if (a->n_tools > 0 && agent_next_opens_call(a)) {
+                tn = agent_generate_call_masked(a, sizeof turn, turn);
+                if (tn == 0 && agent_set_transcript(a) != GEIST_OK) {
+                    return GEIST_E_INVALID_STATE;
+                }
+            }
+            if (tn == 0) {
+                tn = agent_generate_turn(a, sizeof turn, turn);
+            }
         }
 
         if (!agent_parse_call(tn, turn, sizeof name, name, sizeof args, args)) {
@@ -1401,24 +2477,41 @@ static inline int agent_answer_degenerate(const char *s) {
              * instead — the tool's output is what the user actually asked for. */
             const char *answer = (step > 0 && agent_answer_degenerate(turn)) ? obs : turn;
             agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, answer);
-            if (a->conversation) {
-                /* fold the answer into the transcript so the next turn sees it.
-                 * Only advance tlen if it fit (else leave the transcript as-is —
-                 * the turn is just not recorded, never corrupted). */
-                int fw = snprintf(a->transcript + a->tlen,
-                                  sizeof a->transcript - a->tlen,
-                                  "%s%s",
-                                  answer,
-                                  a->tmpl.turn_close);
-                if (fw > 0 && (size_t) fw < sizeof a->transcript - a->tlen) {
-                    a->tlen += (size_t) fw;
-                }
-            }
+            agent_conv_fold(a, answer);
             size_t n = agent_copy(resp_cap, resp, answer);
             if (resp_len) {
                 *resp_len = n;
             }
             return GEIST_OK;
+        }
+
+        /* A call we already EXECUTED this run cannot progress — it reproduces
+         * an observation the transcript already holds, and a grammar-masked
+         * free turn otherwise wanders call -> obs -> call until max_steps
+         * (including A-B-A alternation). The last observation IS the answer.
+         * ponytail: djb2 over name+args; a collision merely answers early. */
+        unsigned h = 5381;
+        for (const char *p = name; *p; p++) {
+            h = h * 33u + (unsigned char) *p;
+        }
+        for (const char *p = args; *p; p++) {
+            h = h * 33u + (unsigned char) *p;
+        }
+        int repeat = 0;
+        for (size_t i = 0; i < n_seen; i++) {
+            repeat |= seen[i] == h;
+        }
+        if (repeat && step > 0) {
+            agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, obs);
+            agent_conv_fold(a, obs);
+            size_t n = agent_copy(resp_cap, resp, obs);
+            if (resp_len) {
+                *resp_len = n;
+            }
+            return GEIST_OK;
+        }
+        if (n_seen < sizeof seen / sizeof *seen) {
+            seen[n_seen++] = h;
         }
 
         agent_emit(a, GEIST_AGENT_CALLING, step, name, args);
@@ -1432,8 +2525,7 @@ static inline int agent_answer_degenerate(const char *s) {
             geist_token_t ids[GEIST_AGENT_NAME_CAP];
             size_t        nid = 0;
             int           idx = -1;
-            if (geist_session_reset(a->session) == GEIST_OK &&
-                geist_session_set_prompt(a->session, a->transcript) == GEIST_OK &&
+            if (agent_set_transcript(a) == GEIST_OK &&
                 geist_session_tokenize(a->session, "{\"tool\":\"", sizeof ids / sizeof *ids, ids,
                                        &nid) == GEIST_OK &&
                 geist_session_prefill_tokens(a->session, nid, ids) == GEIST_OK) {
@@ -1499,6 +2591,7 @@ static inline int agent_answer_degenerate(const char *s) {
                  * observation is still a useful answer (the hit list itself). */
             }
             agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, obs);
+            agent_conv_fold(a, obs);
             size_t n = agent_copy(resp_cap, resp, obs);
             if (resp_len) {
                 *resp_len = n;

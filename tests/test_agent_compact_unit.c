@@ -56,7 +56,7 @@ int main(void) {
                                 A.tmpl.turn_close);
 
     /* fill with whole turns (each opens with user_open) until well over budget */
-    for (int i = 0; A.tlen < GEIST_AGENT_CTX_BUDGET + 6000; i++) {
+    for (int i = 0; A.tlen < A.sys_len + GEIST_AGENT_CTX_CARRY + 6000; i++) {
         char u[128], m[128];
         snprintf(u, sizeof u, "filler question number %d with some padding text here", i);
         snprintf(m, sizeof m, "filler reply number %d with padding", i);
@@ -66,12 +66,15 @@ int main(void) {
     add_turn("NEWEST_MARKER last question", "last reply");
 
     size_t before = A.tlen;
-    fails += geist_expect(before > GEIST_AGENT_CTX_BUDGET, "setup: transcript exceeds budget");
+    fails += geist_expect(before > A.sys_len + GEIST_AGENT_CTX_CARRY,
+                          "setup: transcript exceeds budget");
 
     agent_compact(&A);
 
+    size_t tcl_budget = strlen(A.tmpl.turn_close);
     fails += geist_expect(A.tlen < before, "compact: transcript shrank");
-    fails += geist_expect(A.tlen <= GEIST_AGENT_CTX_TARGET, "compact: down to target");
+    fails += geist_expect(A.tlen <= A.sys_len + tcl_budget + GEIST_AGENT_CTX_CARRY,
+                          "compact: down to target");
     fails += geist_expect(strlen(A.transcript) == A.tlen, "compact: NUL-terminated at tlen");
     fails += geist_expect(memcmp(A.transcript, sys_copy, A.sys_len) == 0,
                           "compact: system prefix kept verbatim");

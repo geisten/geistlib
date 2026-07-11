@@ -73,6 +73,9 @@ jobs:
       - name: Unit tests
         run: make test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" AUTO_FETCH_MODEL=0
 
+      - name: Home Assistant artifact + clean install
+        run: make test-ha
+
       # The integration + e2e suites load the real GGUF, so they actually exercise
       # the product path (forward pass, tokenizer, KV, the agent/chat loops) — the
       # unit suite cannot. Run them on Linux only and cache the ~3 GB model so it

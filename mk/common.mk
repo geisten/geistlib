@@ -298,13 +298,13 @@ $(BUILD_DIR)/%.o: %.S
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(EMBED_CFLAGS) -c $< -o $@
 
-# Binary linking — each binary links against libgeist.a. EXTRA_LINK_OBJS is
-# empty except for targets that opt in (e.g. the embedded-model object on the
-# geist CLI) via a target-specific assignment.
-EXTRA_LINK_OBJS ?=
+# Binary linking — each binary links against libgeist.a. The embedded-model
+# CLI ($(GEIST_BIN) with EMBED_MODEL set) is NOT built by this rule — its
+# binary name doesn't match its .o name, so the top Makefile links it with an
+# explicit rule.
 $(BIN_DIR)/%: $(BUILD_DIR)/%.o $(LIB_FILE)
 	@mkdir -p $(@D)
-	$(CC) $(LDFLAGS) -o $@ $< $(EXTRA_LINK_OBJS) $(LIB_FILE) $(LDLIBS)
+	$(CC) $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)
 
 # Include generated dependency files (silent if missing).
 -include $(DEPS)

@@ -20,7 +20,11 @@
  *
  * SKIPs cleanly without a GGUF or if the geist binary can't be located.
  */
-#define _POSIX_C_SOURCE 200809L
+/* _XOPEN_SOURCE, not _POSIX_C_SOURCE: glibc guards realpath() behind the
+ * X/Open extensions, so plain POSIX 2008 leaves it undeclared on Linux
+ * (macOS declares it unconditionally — which is why this only breaks on the
+ * Pi). XOPEN 700 is a superset of POSIX.1-2008. */
+#define _XOPEN_SOURCE 700
 
 #include "test_helpers.h"
 

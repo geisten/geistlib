@@ -1,0 +1,14 @@
+# geist home registry — one device per line: entity_id | domain | alias phrases.
+# This starter file matches the demo Home Assistant container from
+# docs/agent.md (make home; template lights + the HA demo integration).
+# An alias PHRASE matches when ALL its words occur in the request; give every
+# light a generic 'licht'/'light' phrase so a bare "das Licht" asks back
+# instead of guessing. Edit for your own home.
+light.flur               | light         | flurlicht, licht flur, hallway light, licht, light
+light.wohnzimmer         | light         | wohnzimmerlampe, licht wohnzimmer, living room light, licht, light, lampe
+switch.kaffeemaschine    | switch        | kaffeemaschine, coffee machine
+climate.heatpump         | climate       | heizung, wärmepumpe, waermepumpe, heating, heat pump
+cover.living_room_window | cover         | rollladen wohnzimmer, rollladen, blinds, living room window
+sensor.temperatur_bad    | sensor        | temperatur bad, warm bad, bathroom temperature
+binary_sensor.fenster_bad| binary_sensor | fenster bad, bathroom window, fenster
+lock.haustuer    | lock    | Haustür, Haustuer, front door, Eingangstür

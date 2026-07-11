@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent format format-check
+.PHONY: all lib bin run home clean distclean help test test-unit test-int test-e2e test-all test-py test-ha fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-home bench-agent-live bench-agent-judge format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -34,27 +34,46 @@ include mk/target-$(TARGET).mk
 # Pull in common build rules (LIB_FILE, BIN_TARGETS, object/link rules).
 include mk/common.mk
 
-# Convenience aggregate goals.
+# Convenience aggregate goals. `bin` is declared AFTER the EMBED block below:
+# make expands prerequisite lists immediately at parse time, and the EMBED
+# block swaps the CLI's entry in BIN_TARGETS — declaring `bin` here would
+# capture the pre-swap list and link a broken plain tools/geist from an
+# embedded geist.o.
 lib: $(LIB_FILE)
-bin: $(BIN_TARGETS)
 
 # `./$(EMBED_NAME)` → the built CLI for the current TARGET/MODE, so the demo is
-#   make && OMP_WAIT_POLICY=active ./geist model.gguf "The capital of France is"
+#   make && OMP_WAIT_POLICY=active ./geist -m model.gguf "What is the capital of France?"
 # Re-pointed on every build (cheap); removed by `make distclean`.
 #
-# EMBED_NAME names the symlink. Give an embedded single-file build its OWN name —
-# it has no model-path argument, unlike the plain `geist`, so a distinct name
-# avoids the "which one needs a model?" confusion:
+# EMBED_NAME names the symlink AND the binary under $(BIN_DIR)/tools/. Embedded
+# builds default to "geist-embedded", never "geist": if the embedded binary
+# lived at tools/geist, any later plain `make` would relink that path WITHOUT
+# the model — the ./geist-bitnet symlink would then point at a plain binary
+# that parses the prompt as a model path ("model_load failed"). Distinct paths,
+# no clobber. A distinct name also avoids the "which one needs a model?"
+# confusion — the embedded build takes no model-path argument, unlike `geist`:
 #   make EMBED_MODEL=bitnet-2b4t.i2_s.gguf EMBED_NAME=geist-bitnet
 #   ./geist-bitnet "The capital of France is"      # no model path — it's baked in
-EMBED_NAME ?= geist
-geist: $(BIN_DIR)/tools/geist
-	@ln -sf $(BIN_DIR)/tools/geist $(EMBED_NAME) && echo "./$(EMBED_NAME) -> $(BIN_DIR)/tools/geist"
+ifneq ($(strip $(EMBED_MODEL)),)
+  EMBED_NAME ?= geist-embedded
+else
+  EMBED_NAME ?= geist
+endif
+GEIST_BIN := $(BIN_DIR)/tools/$(EMBED_NAME)
+geist: $(GEIST_BIN)
+	@ln -sf $(GEIST_BIN) $(EMBED_NAME) && echo "./$(EMBED_NAME) -> $(GEIST_BIN)"
 
-# `make run ARGS='model.gguf "your prompt" -n 40'` — build, then run the CLI
+# `make run ARGS='-m model.gguf "your prompt" -n 40'` — build, then run the CLI
 # with OMP_WAIT_POLICY=active (matters for multi-thread perf on mac-omp).
 run: geist
 	@OMP_WAIT_POLICY=active ./$(EMBED_NAME) $(ARGS)
+
+# The home APPLIANCE build: BitNet baked in, only the home tools compiled in,
+# bare prompt = agent request. One command, one artifact:
+#   make home && GEIST_HA_TOKEN=... ./geist-home "Schalte das Licht im Flur ein"
+home:
+	@$(MAKE) EMBED_MODEL=gguf_artifacts/bitnet-2b4t-i2_s.gguf EMBED_NAME=geist-home \
+	  TOOLSET=home geist
 
 # ---- Optional: embed a model into the geist CLI (single-binary deploy) -----
 # `make EMBED_MODEL=path/to/model.gguf` bakes the GGUF into ./geist via an
@@ -70,17 +89,28 @@ run: geist
 # geist.o on it: the stamp is rewritten only when the state changes, so switching
 # between embedded/file mode rebuilds geist.o automatically and nothing churns
 # otherwise. Applies in both branches, so it lives outside the ifneq.
-EMBED_TAG         := $(if $(strip $(EMBED_MODEL)),embedded:$(abspath $(EMBED_MODEL)),none)
+# TOOLSET selects the agent build profile compiled into the CLI: `default`
+# (file/web/memory demo menu) or `home` (the home appliance — ONLY the two
+# home tools are compiled in; the bare prompt is an agent request). The knob
+# joins the embed stamp below so switching profiles rebuilds geist.o.
+TOOLSET ?= default
+ifeq ($(TOOLSET),home)
+  $(BUILD_DIR)/tools/geist.o: CFLAGS += -DGEIST_TOOLSET_HOME
+endif
+EMBED_TAG         := $(if $(strip $(EMBED_MODEL)),embedded:$(abspath $(EMBED_MODEL)),none):$(TOOLSET)
 GEIST_EMBED_STAMP := $(BUILD_DIR)/tools/.geist-embed-state
-# When the embed state changes, DELETE geist.o + the binary so they rebuild with
-# the right -DGEIST_EMBEDDED_MODEL. We can't rely on a stamp prerequisite's mtime:
-# macOS ships GNU make 3.81, whose timestamp comparison is whole-second, so a
-# stamp rewritten in the same second as the prior build looks "not newer" and the
-# rebuild is skipped. Deleting sidesteps mtime entirely. Runs at parse time.
+# When the embed state changes, DELETE geist.o + this mode's binary so they
+# rebuild with the right -DGEIST_EMBEDDED_MODEL. We can't rely on a stamp
+# prerequisite's mtime: macOS ships GNU make 3.81, whose timestamp comparison is
+# whole-second, so a stamp rewritten in the same second as the prior build looks
+# "not newer" and the rebuild is skipped. Deleting sidesteps mtime entirely.
+# Only $(GEIST_BIN) is deleted — the OTHER mode's binary (e.g. tools/geist-bitnet
+# when switching back to plain) stays valid: it was linked from a geist.o that
+# matched its own embed state. Runs at parse time.
 $(shell mkdir -p $(BUILD_DIR)/tools 2>/dev/null; \
         if [ "$$(cat $(GEIST_EMBED_STAMP) 2>/dev/null)" != "$(EMBED_TAG)" ]; then \
             printf '%s' "$(EMBED_TAG)" > $(GEIST_EMBED_STAMP); \
-            rm -f $(BUILD_DIR)/tools/geist.o $(BIN_DIR)/tools/geist; \
+            rm -f $(BUILD_DIR)/tools/geist.o $(GEIST_BIN); \
         fi)
 
 ifneq ($(strip $(EMBED_MODEL)),)
@@ -99,9 +129,22 @@ ifneq ($(strip $(EMBED_MODEL)),)
   $(EMBED_OBJ): $(EMBED_ABS)
   # geist CLI: compile its TU with the embed flag and link the stub object in.
   $(BUILD_DIR)/tools/geist.o: CFLAGS += -DGEIST_EMBEDDED_MODEL
-  $(BIN_DIR)/tools/geist: EXTRA_LINK_OBJS := $(EMBED_OBJ)
-  $(BIN_DIR)/tools/geist: $(EMBED_OBJ)
+  # Link to tools/$(EMBED_NAME), NOT tools/geist: geist.o is shared between the
+  # plain and embedded builds (the stamp above rebuilds it on every mode
+  # switch), but if the BINARIES shared a path too, any later plain `make`
+  # would clobber the embedded binary — leaving the embed symlink pointing at
+  # a model-less CLI. Swap the CLI's entry in BIN_TARGETS so `make bin` builds
+  # the embedded path (and never a broken plain link against an embedded
+  # geist.o). The generic $(BIN_DIR)/% rule in common.mk can't produce this
+  # target (there is no tools/$(EMBED_NAME).o), so link explicitly from geist.o.
+  BIN_TARGETS := $(patsubst $(BIN_DIR)/tools/geist,$(GEIST_BIN),$(BIN_TARGETS))
+  $(GEIST_BIN): $(BUILD_DIR)/tools/geist.o $(EMBED_OBJ) $(LIB_FILE)
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(BUILD_DIR)/tools/geist.o $(EMBED_OBJ) $(LIB_FILE) $(LDLIBS)
 endif
+
+# Declared after the EMBED block on purpose — see the note at `lib:` above.
+bin: $(BIN_TARGETS)
 
 # Test runner — invokes mk/run-tests.sh against the test bin directory.
 # FILTER is an optional substring; e.g. `make test FILTER=q3k` runs only
@@ -173,6 +216,13 @@ test-py:
 	done; \
 	if [ $$status -ne 0 ]; then echo "test-py: FAIL"; exit $$status; fi; \
 	echo "test-py: PASS"
+
+# Home Assistant packaging/transport contract. Model-free and HA-free: validates
+# the component artifact, exposed-entity registry, Unix-socket framing, staged
+# clean installation, secret permissions, upgrade, and rollback.
+test-ha:
+	@python3 tests/test_ha_integration.py
+	@tests/test_ha_install.sh
 
 # `make test-all` adds e2e but excludes benches. Model first (see `test`).
 test-all: $(MODEL_PREREQ) test-unit test-int test-py test-e2e
@@ -265,13 +315,46 @@ bench-tooling: bin $(MODEL_PREREQ)
 # over tests/data/agent_eval/cases.jsonl, greedy decode, web tools stubbed
 # in-process (no network). AGENT_EVAL_MODE = forced | free | both.
 # AGENT_EVAL_MIN gates the forced-mode pass count (exit 1 below it). The fixed
-# threshold 23/30 is the level achieved on bitnet-2b4t-i2_s (2026-07): single
-# 15/15, chains 6/8, ambig 2/4, neg 0/3. Recalibrate (or pass AGENT_EVAL_MIN=0)
-# when evaluating a different model.
+# threshold 43/48 is the level achieved on bitnet-2b4t-i2_s (2026-07): single
+# 15/15, chains 6/8, ambig 2/4, neg 3/3, e2e 17/18 (answer-content checks incl.
+# the memory roundtrip, multi-turn context carry, and the stock_movers cases).
+# Recalibrate (or pass AGENT_EVAL_MIN=0) when evaluating a different model.
 AGENT_EVAL_MODE ?= both
-AGENT_EVAL_MIN ?= 23
+AGENT_EVAL_MIN ?= 43
 bench-agent: bin $(MODEL_PREREQ)
 	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode $(AGENT_EVAL_MODE) --min-pass $(AGENT_EVAL_MIN)
+
+# Manual live-web smoke: the SAME harness with the real web_search/web_fetch
+# (curl + DuckDuckGo) over a tiny stable corpus — checks the stub assumptions
+# against reality. Network-dependent: report-only, never wired into CI.
+# DuckDuckGo rate-limits back-to-back requests quickly; set
+# GEIST_SEARX_ENDPOINT=<searxng-url> for a stable search backend.
+bench-agent-live: bin $(MODEL_PREREQ)
+	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode forced --live-web \
+	  tests/data/agent_eval/cases_live.jsonl
+
+# The HOME appliance eval: the standalone 2-tool home menu over
+# cases_home.jsonl (stubbed mutating state table, fixture registry). The fixed
+# threshold 56/56 is the level achieved on bitnet-2b4t-i2_s (2026-07, incl.
+# lock confirmation, collectives, relative setpoints, media_player and the
+# dead-device fixture) — the narrow domain menu routes perfectly;
+# recalibrate for other models.
+AGENT_EVAL_HOME_MIN ?= 56
+bench-agent-home: bin $(MODEL_PREREQ)
+	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --tools home \
+	  --mode $(AGENT_EVAL_MODE) --min-pass $(AGENT_EVAL_HOME_MIN)
+
+# Advisory answer-coherence judge: a second AI (local Ollama, JUDGE_MODEL)
+# reads every forced-mode answer and says whether it is a coherent response —
+# the gap the mechanical expect-substring check cannot see. Report-only, exit
+# 0 always: LLM judges drift, the deterministic gate stays authoritative.
+JUDGE_MODEL ?= gemma4:26b
+bench-agent-judge: bin $(MODEL_PREREQ)
+	@mkdir -p bench_runs/agent_eval
+	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode forced \
+	  --dump bench_runs/agent_eval/answers.jsonl
+	@python3 tools/eval_agent_judge.py \
+	  --answers bench_runs/agent_eval/answers.jsonl --model $(JUDGE_MODEL)
 
 # Cleanup.
 clean:
@@ -305,8 +388,8 @@ help:
 	"" \
 	"Build & run:" \
 	"  make                       lib + binaries + ./geist symlink for this TARGET/MODE" \
-	"  OMP_WAIT_POLICY=active ./geist model.gguf \"prompt\" -n 40    run the CLI" \
-	"  make run ARGS='m.gguf \"hi\"'   build, then run ./geist with OMP_WAIT_POLICY=active" \
+	"  OMP_WAIT_POLICY=active ./geist -m model.gguf \"prompt\" -n 40    run the CLI" \
+	"  make run ARGS='-m m.gguf \"hi\"'   build, then run ./geist with OMP_WAIT_POLICY=active" \
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make MODE=debug|asan|perf  -O0+g for gdb | ASan+UBSan | -O3+g for profilers" \
 	"  make clean | distclean     remove current TARGET/MODE | remove everything" \

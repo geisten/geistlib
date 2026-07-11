@@ -66,8 +66,10 @@ static struct transformer_forward_profile g_head_profile = {
     uint64_t                         t0      = profile ? transformer_profile_now_ns() : 0;
 
     /* Fresh logits this forward — not yet softcapped (peek_logits applies
-     * it lazily unless the temp>0 path below does it in place). */
+     * it lazily unless the temp>0 path below does it in place), and dense
+     * unless the spec fast path below marks them sparse. */
     st->sess->logits_softcapped = false;
+    st->sess->logits_sparse     = false;
 
     /* Copy chosen row of scratch_h_b into scratch_h_a (reuse as a clean
      * [1, HIDDEN] buffer for the output head). */
@@ -187,6 +189,32 @@ static struct transformer_forward_profile g_head_profile = {
     }
     *out_token = best_id;
     return GEIST_OK;
+}
+
+/* Recompute the DENSE lm_head from the normalized hidden still in scratch_h_a
+ * (the spec fast path leaves scratch_logits SPARSE: exact only for its top-K
+ * candidates, -inf elsewhere — fine for greedy, wrong for value consumers).
+ * Called lazily by peek_logits, so routing/SCORE/perplexity see full logits
+ * while decode keeps the sketch win. Not softcapped — peek applies that. */
+[[nodiscard]] enum geist_status
+transformer_head_dense_recompute(struct transformer_arch_state *st) {
+    struct geist_backend            *be     = st->backend;
+    const struct geist_backend_vtbl *v      = be->desc->vtbl;
+    struct geist_tensor              t_h_2d = view_2d(st->sess->scratch_h_a, 1, st->d_model);
+    struct geist_tensor t_logits_2d         = view_2d(st->sess->scratch_logits, 1, st->vocab_size);
+    enum geist_status   s                   = linear_w_or_legacy(be,
+                                                                 v,
+                                                                 st->sess->scratch_h_a,
+                                                                 st->sess->scratch_logits,
+                                                                 &st->embed_table_w,
+                                                                 /* seq = */ 1,
+                                                                 &t_h_2d,
+                                                                 &st->embed_table,
+                                                                 &t_logits_2d);
+    if (s == GEIST_OK) {
+        st->sess->logits_sparse = false;
+    }
+    return s;
 }
 
 /* Batched variant of finalize_logits_one_row for verify_forward: runs

@@ -1,0 +1,3 @@
+{"id":"live-1","cat":"e2e","req":"Fetch https://example.com/ and tell me what it says","tool":"web_fetch","arg":"url","want":"example.com","expect":"Example Domain|illustrative"}
+{"id":"live-2","cat":"e2e","req":"Find a page about the Raspberry Pi 5 on the web and read it to me","tool":"web_search","steps":"web_search,web_fetch","expect":"Raspberry"}
+{"id":"live-3","cat":"e2e","req":"Search the web for BitNet ternary language model","tool":"web_search","arg":"query","want":"bitnet","expect":"bitnet|ternary"}

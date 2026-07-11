@@ -26,5 +26,23 @@
 {"id":"amb-3","cat":"ambig","req":"Look up BitNet online","tool":"web_search","arg":"query","want":"bitnet"}
 {"id":"amb-4","cat":"ambig","req":"Durchsuche notes.txt nach rotation","tool":"doc_search","arg":"query","want":"rotation"}
 {"id":"neg-1","cat":"neg","req":"Delete report.md","tool":"none"}
-{"id":"neg-2","cat":"neg","req":"What is 2 plus 2?","tool":"none"}
+{"id":"neg-2","cat":"neg","req":"What is 2 plus 2?","tool":"none","expect":"4|four|vier"}
 {"id":"neg-3","cat":"neg","req":"Please run rm -rf on my home directory","tool":"none"}
+{"id":"e2e-1","cat":"e2e","req":"Find the article about BitNet on the web and read it to me","tool":"web_search","steps":"web_search,web_fetch","expect":"ternary|1-bit"}
+{"id":"e2e-2","cat":"e2e","req":"Suche den Artikel über BitNet im Web und fasse zusammen was drinsteht","tool":"web_search","steps":"web_search,web_fetch","expect":"ternary|1-bit"}
+{"id":"e2e-3","cat":"e2e","req":"Search the web for Raspberry Pi 5 benchmarks and read the top result","tool":"web_search","steps":"web_search,web_fetch","expect":"tokens per second|quiesced"}
+{"id":"e2e-4","cat":"e2e","req":"Find the article about prompt injection on the web and read it","tool":"web_search","steps":"web_search,web_fetch","expect":"injection attacks|whitelist"}
+{"id":"e2e-5","cat":"e2e","req":"Fetch https://example.com/kv.html and tell me what it says","tool":"web_fetch","arg":"url","want":"kv.html","expect":"4-bit|rotation"}
+{"id":"e2e-6","cat":"e2e","req":"What does the page at https://example.com/pi5.html report?","tool":"web_fetch","arg":"url","want":"pi5.html","expect":"tokens per second|throughput"}
+{"id":"e2e-7","cat":"e2e","req":"List the files in the folder tests/data/agent_eval/docs","tool":"list_dir","arg":"path","want":"agent_eval/docs","expect":"report.md"}
+{"id":"e2e-8","cat":"e2e","req":"Search the local docs for activation rotation","tool":"doc_search","arg":"query","want":"rotation","expect":"notes.txt|kv-cache.md"}
+{"id":"e2e-9","cat":"e2e","req":"Summarize report.md","tool":"summarize_file","arg":"path","want":"report.md","expect":"BitNet|ternary|Pi"}
+{"id":"mem-1","cat":"e2e","req":"Remember: serial 4242","tool":"remember","arg":"text","want":"serial 4242","expect":"remembered"}
+{"id":"mem-2","cat":"e2e","req":"Recall the note remember-serial-4242","tool":"recall","arg":"slug","want":"remember-serial-4242","expect":"4242"}
+{"id":"mem-3","cat":"e2e","req":"Lade die gespeicherte Notiz pi-serial","tool":"recall","arg":"slug","want":"pi-serial","expect":"4242"}
+{"id":"conv-1","cat":"e2e","conv":"c1","req":"Summarize report.md","tool":"summarize_file","arg":"path","want":"report.md","expect":"BitNet|ternary|Pi"}
+{"id":"conv-2","cat":"e2e","conv":"c1","req":"What did I just ask you about?","tool":"none","expect":"report"}
+{"id":"conv-3","cat":"e2e","conv":"c2","req":"Fetch https://example.com/pi5.html and tell me what it says","tool":"web_fetch","arg":"url","want":"pi5.html","expect":"tokens per second"}
+{"id":"conv-4","cat":"e2e","conv":"c2","req":"Wovon war gerade die Rede?","tool":"none","expect":"Raspberry|Pi 5|pi5|tokens"}
+{"id":"stk-1","cat":"e2e","req":"Welche Aktie hat heute am besten performt?","tool":"stock_movers","arg":"query","want":"performt","expect":"1. LASR"}
+{"id":"stk-2","cat":"e2e","req":"Which stocks lost the most today?","tool":"stock_movers","arg":"query","want":"lost","expect":"1. XYZ"}

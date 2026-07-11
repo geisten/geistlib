@@ -4,6 +4,23 @@
 
 # geist 👻
 
+> **A tiny, local AI runtime for controlled edge agents.** Run useful models on
+> the CPU you already own — especially a Raspberry Pi — and give them a small,
+> explicit set of actions without handing your home or your data to a cloud.
+>
+> **Where this is going:** a private Home Assistant agent that installs on a Pi,
+> keeps its model warm, and can query or control only the entities its owner has
+> exposed. A working preview already runs on a Pi 5: Home Assistant talks to a
+> resident `geist-home` process over a permission-gated Unix socket, with no TCP
+> inference port and no cloud model service.
+
+<p align="center">
+  <strong>local by default</strong> &nbsp;·&nbsp;
+  <strong>CPU-only</strong> &nbsp;·&nbsp;
+  <strong>one small runtime</strong> &nbsp;·&nbsp;
+  <strong>whitelist-gated actions</strong>
+</p>
+
 > **We want AI to belong to everyone.** Not rented from a data center, but running on
 > the hardware you already have — your laptop, a Raspberry Pi, an old CPU with no GPU
 > in sight. geist squeezes the most out of today's models to make that real: capable
@@ -17,10 +34,46 @@
 > The proof so far is `geist-bitnet`: **one binary with Microsoft's ternary BitNet
 > 2B-4T baked in** — [**download it**](#run-it-now--model-baked-in) and run it right
 > away. Copy it to a Pi and it generates text, **drives tools**, and searches the web
-> — all locally, and it decodes **~2× faster than Microsoft's own bitnet.cpp**. Need
-> more? The same engine runs **Gemma 4 with vision + audio** from one model file.
+> — all locally, and it decodes **~2× faster than Microsoft's own bitnet.cpp**. That
+> same Pi now runs the first **[geist appliance](#from-engine-to-appliance--first-up-your-house-on-voice)**:
+> a voice-controlled smart home — ~2 s per command, no cloud. Need more? The same
+> engine runs **Gemma 4 with vision + audio** from one model file.
+
+## The niche: useful local agents on constrained hardware
+
+geist is not trying to be a universal model catalog or a drop-in replacement for
+every GPU inference server. It is deliberately optimized for a narrower job:
+
+- **Edge appliances:** one auditable C runtime, no Python environment and no
+  container required.
+- **Raspberry Pi and CPU-only hosts:** platform-specific kernels and ternary
+  BitNet support where memory bandwidth matters most.
+- **Controlled agents:** the host supplies a fixed tool whitelist and step
+  budget; the model cannot grant itself new capabilities.
+- **Private smart homes:** the Home Assistant preview keeps inference on the
+  local host; HA supplies the exposed-entity registry and geist limits actions
+  to its explicit home-tool families.
+
+### Home Assistant status
+
+The Home Assistant path is a **working developer preview**, not yet a one-click
+release. Its canonical transport is deliberately small:
+
+1. `geist-home --serve /path/geist.sock` loads the model once and stays warm;
+2. the `geist_conversation` Conversation integration sends one Assist utterance
+   per local Unix-socket connection;
+3. HA pushes its exposed entities, areas and aliases into geist's deterministic
+   registry; unsupported domains are ignored;
+4. geist's bounded home tools call HA locally and keep confirmations for locks
+   inside the appliance agent.
+
+The next milestone is packaging this proven path: reproducible installation,
+health diagnostics, upgrades, soak testing, and published German/English Pi 5
+results. A general TCP/HTTP inference API is not required for this use case. See
+[`ROADMAP.md`](ROADMAP.md).
 
 <p align="center">
+  <strong>~2 s</strong> voice command → action <sub>(smart home, Pi 5, offline)</sub> &nbsp;·&nbsp;
   <strong>2.1×</strong> BitNet decode vs bitnet.cpp <sub>(Pi 5)</sub> &nbsp;·&nbsp;
   <strong>1.5×</strong> prefill vs llama.cpp <sub>(M1 Max)</sub> &nbsp;·&nbsp;
   <strong>1.4×</strong> BitNet decode vs bitnet.cpp <sub>(x86)</sub> &nbsp;·&nbsp;
@@ -62,9 +115,10 @@ inside the binary.
 | **Linux** · x86-64 (AVX-512) | [⬇ geist-bitnet-linux-x86_64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-bitnet-linux-x86_64.tar.gz) |
 
 ```bash
-./geist-bitnet "The capital of France is"     # generate — no model argument
-./geist-bitnet agent "Summarize report.md"    # one-shot tool-use agent
-./geist-bitnet chat                           # multi-turn chat + memory
+./geist-bitnet "What is the capital of France?" # ask — instruct chat, clean answer
+./geist-bitnet --raw "The capital of France is" # raw base-model completion
+./geist-bitnet agent "Summarize report.md"     # one-shot tool-use agent
+./geist-bitnet chat                            # multi-turn chat + memory
 ```
 
 ---
@@ -99,12 +153,100 @@ brew install geisten/tap/geist
 **Step 3 — run** (the model path is the only difference from the baked-in binary):
 
 ```bash
-./geist       model.gguf "The capital of France is"   # generate text
-./geist agent model.gguf "Summarize report.md"        # one-shot tool-use agent
-./geist chat  model.gguf                               # multi-turn chat + memory
+./geist       -m model.gguf "What is the capital of France?" # ask — instruct chat
+./geist agent -m model.gguf "Summarize report.md"            # one-shot tool-use agent
+./geist       -m model.gguf                                  # no prompt → agentic chat
 ```
 
 <sub>Prebuilt for macOS · ARM64, Linux · ARM64 and Linux · x86-64 (AVX-512, runs on any x86-64-v3 CPU). Windows is still pending. BitNet is a **base model with no tool training** — geist forces a valid tool call from outside the sampler, so it routes and calls anyway.</sub>
+
+---
+
+## From engine to appliance — first up: your house, on voice
+
+geist's answer for low-resource boxes is the **appliance**: `make <domain>`
+compiles the engine, the model, and *only the tools that domain needs* into one
+fixed-scope binary — the artifact itself is the security promise, and every
+appliance ships with **its own eval gate**. Smart-home control is the *first*
+domain built this way, not the product: the same recipe fits any narrow job on
+any box with a few GB of RAM.
+
+**The first appliance is `make home`** — it builds **geist-home**: a single
+binary (BitNet baked in, only the home tools compiled in) that plugs into
+[Home Assistant](https://www.home-assistant.io/) Assist and turns a
+**4 GB Raspberry Pi 5** into a private voice brain for your smart home.
+
+<p align="center">
+  <img src="assets/demo-home.gif" alt="Terminal on a Raspberry Pi 5: three voice-style commands against the local geist-home daemon — 'Turn on the hallway light' turns light.flur on in 2.0 s, 'Turn off all lights' turns both lights off in 1.9 s, 'Is the hallway light on?' answers 'off' in 2.1 s — all executed and verified on the Pi, offline" width="100%">
+</p>
+
+*Three commands, live on a **Raspberry Pi 5** — each parsed, executed and
+verified on the box in **~2 s**, nothing leaving the LAN. The same turn on an
+**M1 Max is ~0.8 s** (~2.6× faster — the appliance scales with the box).
+German or English (`GEIST_HOME_LANG=en` shown here); typed prompts, add
+speech-to-text for the spoken path.*
+
+- **~2 s per command** on the Pi 5, warm — measured through the full Home
+  Assistant Assist pipeline with the HA container on the same box; **~0.8 s on
+  an M1 Max**. (Speech-to-text, if you add it, is its own step.)
+- **German + English, the way people actually talk**: „Mach alles aus", "dim the
+  light to 40 %", „mach es *etwas wärmer*", "and now close it again" — compound
+  nouns, pronouns, relative setpoints, collectives. Input is bilingual; the
+  answer language is a deployment setting (German by default,
+  `GEIST_HOME_LANG=en` for English state words).
+- **The model never decides a security question.** It only *routes*; device,
+  action and value are parsed deterministically against a plain-text device
+  registry. Unlocking the front door takes a two-turn confirmation (challenge →
+  literal confirm word, one-shot, 120 s TTL). Garage doors and alarm panels are
+  refused **by code, not by prompt**.
+- **Regression-gated, not vibe-checked**: the whole voice→action path passes a
+  56-case eval — commands, statuses, deliberate ambiguity, refusals, multi-turn
+  pronouns, the lock flow, in both languages — **nightly, on the Pi itself**.
+
+```bash
+make home                                        # -> ./geist-home (model baked in)
+GEIST_HA_URL=http://ha.local:8123 GEIST_HA_TOKEN=<token> \
+  ./geist-home "Schalte das Licht im Flur ein"   # -> OK: light.flur → an
+```
+
+Run it as a daemon (`--serve` plus the bundled
+[systemd unit](integrations/systemd/geist-home.service)), add the
+[Home Assistant custom component](integrations/home-assistant/), and Assist —
+typed or spoken — answers from your own hardware. Your devices live in one plain
+text file (`entity | domain | alias phrases`). Full walkthrough:
+[docs/agent.md](docs/agent.md#the-home-appliance--make-home).
+
+**Your domain next.** The recipe generalizes: a narrow tool menu, deterministic
+parsing wrapped around a small model, a per-domain eval gate — an offline docs
+kiosk, a lab-bench assistant, a control panel that must never phone home. The
+whole home layer is ~1000 lines of header-only C on top of the engine
+([`tools/agent_home.h`](tools/agent_home.h) + the REST client); start yours there.
+
+---
+
+## …and the other half: the LLM, on the Pi itself
+
+Voice assistants split in two. **Deterministic phrase-matching** handles device
+control — fast, no model, no hallucination. An **LLM handles the rest**: the
+general questions, the light reasoning, "how many minutes are in a day". That
+second half usually gets **offloaded to a bigger box or the cloud**, because a
+capable general model barely fits a 4 GB Pi.
+
+geist runs it **on the Pi itself**. BitNet is ternary, so the whole model is
+**1.2 GB** — about a third the footprint of a typical general model served via
+Ollama (3.4 GB, which strains a 4 GB Pi and, without `use_mmap`, gets OOM-killed
+on load). One binary, no Python, no Docker, no second machine:
+
+```bash
+./geist-bitnet "How many minutes are in a day?"   # -> A full day has 1440 minutes.
+```
+
+Warm, that answers in **~2 s on a Raspberry Pi 5** — `-c` wraps your prompt in the
+model's chat template and stops cleanly, no tool loop, nothing leaving the LAN. So
+the whole assistant — control *and* conversation — stays on the box you already own.
+<sub>Measured on a Pi 5 (4 GB) over 10 general questions, warm, 4 threads; the same
+turn on an M1 Max is well under a second. Numbers and method:
+[`benchmark/AGENT_EVAL.md`](benchmark/AGENT_EVAL.md).</sub>
 
 ---
 
@@ -285,7 +427,7 @@ model-needing `geist`:
 
 ```bash
 make EMBED_MODEL=bitnet-2b4t.i2_s.gguf EMBED_NAME=geist-bitnet   # GGUF baked in (zero-copy)
-./geist-bitnet "The capital of France is"            # generate — no model path
+./geist-bitnet "What is the capital of France?"      # ask — no model path
 ./geist-bitnet agent "Summarize the file report.md"  # tools too — no model path
 ```
 
@@ -305,7 +447,7 @@ exceeds the 2 GB GitHub-release limit. (Runs real-time on a Pi 5 —
 | :-- | :-- |
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Run the CLI and embed the library in two minutes. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, load-time kernel binding, the pipeline. |
-| [`docs/agent.md`](docs/agent.md) | The tool-use agent, bundled tools, routing & forced calls, security model. |
+| [`docs/agent.md`](docs/agent.md) | The tool-use agent, bundled tools, routing & forced calls, security model, the [home appliance](docs/agent.md#the-home-appliance--make-home). |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Single-binary builds, server/embedded deployment. |
 | [`benchmark/`](benchmark/README.md) | Methodology & full results ([Apple/Pi 5](benchmark/BENCHMARK.md), [ternary BitNet](benchmark/TERNARY_BITNET.md)). |
 | [`include/geist.h`](include/geist.h) | The public C API, with `STABLE` / `EXPERIMENTAL` stability tags. |

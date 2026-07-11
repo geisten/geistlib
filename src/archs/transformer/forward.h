@@ -80,6 +80,11 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st);
  * Reads the normalized hidden from scratch_h_a. */
 bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t *out_token);
 
+/* Recompute the dense lm_head from the normalized hidden still in scratch_h_a
+ * after the spec fast path left scratch_logits sparse (see logits_sparse).
+ * Called lazily by peek_logits; clears logits_sparse on success. */
+[[nodiscard]] enum geist_status transformer_head_dense_recompute(struct transformer_arch_state *st);
+
 /* Batched variant for verify_forward — runs lm_head on k rows in one
  * batched call, writes k per-position argmaxes into out_tokens. */
 [[nodiscard]] enum geist_status
