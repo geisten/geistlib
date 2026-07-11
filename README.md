@@ -65,10 +65,10 @@ inside the binary.
 | **Linux** · x86-64 (AVX-512) | [⬇ geist-bitnet-linux-x86_64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-bitnet-linux-x86_64.tar.gz) |
 
 ```bash
-./geist-bitnet "The capital of France is"     # generate — no model argument
-./geist-bitnet -c "How many minutes in a day?" # instruct chat — clean answer, offline
-./geist-bitnet agent "Summarize report.md"    # one-shot tool-use agent
-./geist-bitnet chat                           # multi-turn chat + memory
+./geist-bitnet "What is the capital of France?" # ask — instruct chat, clean answer
+./geist-bitnet --raw "The capital of France is" # raw base-model completion
+./geist-bitnet agent "Summarize report.md"     # one-shot tool-use agent
+./geist-bitnet chat                            # multi-turn chat + memory
 ```
 
 ---
@@ -97,9 +97,9 @@ on every platform). Then point the engine at the model.
 **Step 3 — run** (the model path is the only difference from the baked-in binary):
 
 ```bash
-./geist       model.gguf "The capital of France is"   # generate text
-./geist agent model.gguf "Summarize report.md"        # one-shot tool-use agent
-./geist chat  model.gguf                               # multi-turn chat + memory
+./geist       model.gguf "What is the capital of France?" # ask — instruct chat
+./geist agent model.gguf "Summarize report.md"           # one-shot tool-use agent
+./geist chat  model.gguf                                  # multi-turn chat + memory
 ```
 
 <sub>Prebuilt for macOS · ARM64, Linux · ARM64 and Linux · x86-64 (AVX-512, runs on any x86-64-v3 CPU). Windows is still pending. BitNet is a **base model with no tool training** — geist forces a valid tool call from outside the sampler, so it routes and calls anyway.</sub>
@@ -182,7 +182,7 @@ Ollama (3.4 GB, which strains a 4 GB Pi and, without `use_mmap`, gets OOM-killed
 on load). One binary, no Python, no Docker, no second machine:
 
 ```bash
-./geist-bitnet -c "How many minutes are in a day?"   # -> A full day has 1440 minutes.
+./geist-bitnet "How many minutes are in a day?"   # -> A full day has 1440 minutes.
 ```
 
 Warm, that answers in **~2 s on a Raspberry Pi 5** — `-c` wraps your prompt in the
@@ -371,7 +371,7 @@ model-needing `geist`:
 
 ```bash
 make EMBED_MODEL=bitnet-2b4t.i2_s.gguf EMBED_NAME=geist-bitnet   # GGUF baked in (zero-copy)
-./geist-bitnet "The capital of France is"            # generate — no model path
+./geist-bitnet "What is the capital of France?"      # ask — no model path
 ./geist-bitnet agent "Summarize the file report.md"  # tools too — no model path
 ```
 

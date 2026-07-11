@@ -9,10 +9,10 @@
  * model can list a directory, summarize a file, search local docs, and search /
  * read the web). It honours GEIST_FORCE_CALL=1 and GEIST_AGENT_TRACE=1.
  *
- *   geist <model.gguf> [prompt] [-n N]          # generate text (raw completion)
- *   geist <model.gguf> -c [prompt] [-n N]       # instruct chat: wrap the prompt
- *                                                 in the model's chat template
- *                                                 (clean answer, offline, no tools)
+ *   geist <model.gguf> [prompt] [-n N]          # ask — instruct chat (DEFAULT):
+ *                                                 wraps the prompt in the model's chat
+ *                                                 template, clean answer, offline, no tools
+ *   geist <model.gguf> --raw [prompt] [-n N]    # raw base-model text completion
  *   geist agent <model.gguf> [request] [-n N]   # tool-use agent (REPL if no request)
  *   geist --version
  *
@@ -403,19 +403,21 @@ static int usage(const char *prog, int code) {
     fprintf(o,
             "geist %s — minimal CPU LLM inference (model embedded in this binary)\n\n"
             "Usage:\n"
-            "  %s [prompt] [-n N]              generate text\n"
+            "  %s [prompt] [-n N]              ask a question (instruct chat)\n"
+            "  %s --raw [prompt] [-n N]        raw base-model text completion\n"
             "  %s agent [request] [-n N]       one-shot tool-use agent\n"
             "  %s chat                         multi-turn chat + memory palace\n"
             "  %s --version\n\n"
             "Options:\n"
-            "  -c, --chat           instruct chat: wrap the prompt in the model's chat\n"
-            "                       template for a clean answer (default is raw completion)\n"
+            "  --raw                raw base-model completion (default is instruct chat:\n"
+            "                       the prompt is wrapped in the model's chat template)\n"
             "  -n, --max-tokens N   max new tokens to generate (default 64)\n"
             "  -v, --version        print version and exit\n"
             "  -h, --help           print this help and exit\n\n"
             "Example:\n"
-            "  OMP_WAIT_POLICY=active %s -c \"What is the capital of France?\"\n",
+            "  OMP_WAIT_POLICY=active %s \"What is the capital of France?\"\n",
             geist_version_string(),
+            prog,
             prog,
             prog,
             prog,
@@ -425,19 +427,21 @@ static int usage(const char *prog, int code) {
     fprintf(o,
             "geist %s — minimal CPU LLM inference\n\n"
             "Usage:\n"
-            "  %s <model.gguf> [prompt] [-n N]        generate text\n"
+            "  %s <model.gguf> [prompt] [-n N]        ask a question (instruct chat)\n"
+            "  %s <model.gguf> --raw [prompt]         raw base-model text completion\n"
             "  %s agent <model.gguf> [request] [-n N] one-shot tool-use agent\n"
             "  %s chat <model.gguf>                   multi-turn chat + memory palace\n"
             "  %s --version\n\n"
             "Options:\n"
-            "  -c, --chat           instruct chat: wrap the prompt in the model's chat\n"
-            "                       template for a clean answer (default is raw completion)\n"
+            "  --raw                raw base-model completion (default is instruct chat:\n"
+            "                       the prompt is wrapped in the model's chat template)\n"
             "  -n, --max-tokens N   max new tokens to generate (default 64)\n"
             "  -v, --version        print version and exit\n"
             "  -h, --help           print this help and exit\n\n"
             "Example:\n"
-            "  OMP_WAIT_POLICY=active %s model.gguf -c \"What is the capital of France?\"\n",
+            "  OMP_WAIT_POLICY=active %s model.gguf \"What is the capital of France?\"\n",
             geist_version_string(),
+            prog,
             prog,
             prog,
             prog,
@@ -502,7 +506,7 @@ int main(int argc, char **argv) {
     const char *prompt     = "Hello, my name is";
     int         max_new    = 64;
     bool        n_explicit = false; /* explicit -n is a hard cap; the default is a soft target */
-    bool        chat_mode  = false; /* -c: instruct-chat (template-wrapped) vs raw completion */
+    bool        chat_mode  = true;  /* default: instruct chat (template-wrapped); --raw opts out */
     int         got_prompt = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -523,8 +527,10 @@ int main(int argc, char **argv) {
                 return 2;
             }
             n_explicit = true;
+        } else if (strcmp(a, "--raw") == 0) {
+            chat_mode = false;
         } else if (strcmp(a, "-c") == 0 || strcmp(a, "--chat") == 0) {
-            chat_mode = true;
+            chat_mode = true; /* explicit; instruct chat is already the default */
         } else if (a[0] == '-' && a[1] != '\0') {
             fprintf(stderr, "%s: unknown option '%s'\n", prog, a);
             return usage(prog, 2);
@@ -569,10 +575,11 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr, "loaded %s (arch: %s)\n", src, geist_model_arch(model));
 
-    /* -c/--chat: wrap the prompt in the model's chat template so the CLI drives
-     * the instruct path (clean answer, stops at the turn marker) instead of a
-     * raw base-model continuation — the same wrapper the agent/serve layer uses,
-     * offline and tool-free. Default (no -c) stays raw completion. */
+    /* Instruct chat is the DEFAULT (most GGUFs people run are instruct-tuned):
+     * wrap the prompt in the model's chat template so the CLI gives a clean
+     * answer that stops at the turn marker — the same wrapper the agent/serve
+     * layer uses, offline and tool-free. --raw opts out to base-model completion
+     * (a bare continuation, for base models or a template geist can't detect). */
     const char                *gen_prompt = prompt;
     struct geist_chat_template tmpl       = {0};
     static char                chat_buf[1 << 14];

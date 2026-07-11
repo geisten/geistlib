@@ -36,16 +36,18 @@ Any GGUF that carries its own tokenizer works; `fetch-model` is just a helper.
 ```bash
 # The ./geist symlink saves you the bin/<target>/<mode>/ path.
 OMP_WAIT_POLICY=active ./geist gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
-    "The capital of France is"
+    "What is the capital of France?"
 # -> The capital of France is Paris.
 
 # make run sets OMP_WAIT_POLICY for you:
 make run ARGS='gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "Write a haiku" -n 40'
 ```
 
-CLI usage: `geist <model.gguf> [prompt] [-n N]` — `-n` caps new tokens
-(default 64). `OMP_WAIT_POLICY=active` keeps the OpenMP threads spinning between
-tokens and noticeably improves multi-thread throughput; always set it.
+CLI usage: `geist <model.gguf> [prompt] [-n N]` — the prompt is answered as an
+**instruct chat** by default (wrapped in the model's chat template); pass `--raw`
+for a raw base-model text completion. `-n` caps new tokens (default 64).
+`OMP_WAIT_POLICY=active` keeps the OpenMP threads spinning between tokens and
+noticeably improves multi-thread throughput; always set it.
 
 The same binary carries two more subcommands — `geist agent <model> "<request>"`
 (one-shot whitelist-gated tool use) and `geist chat <model>` (multi-turn chat +
@@ -171,7 +173,7 @@ geist already builds as a single dependency-free executable. You can fold the
 ```bash
 make clean                                 # EMBED rebuilds the CLI; start clean
 make EMBED_MODEL=path/to/model.gguf        # bakes the GGUF into ./geist
-./geist "The capital of France is"         # the CLI now takes only a prompt
+./geist "What is the capital of France?"   # the CLI now takes only a prompt
 ```
 
 Weights are aliased **zero-copy** from the binary's read-only data, so this suits
