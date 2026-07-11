@@ -49,6 +49,7 @@ mkdir -p "$tmp/config"
 
 cat >"$tmp/config/configuration.yaml" <<'EOF'
 default_config:
+demo:
 
 homeassistant:
   name: geist disposable acceptance
@@ -92,6 +93,7 @@ EOF
 
 cat >"$tmp/registry.txt" <<'EOF'
 light.flur | light | flurlicht, licht flur, hallway light
+climate.heatpump | climate | heizung, waermepumpe, heat pump
 EOF
 
 docker run -d --name "$container" \
@@ -131,6 +133,11 @@ api_get_state() {
         python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])'
 }
 
+api_get_attr() {
+    curl -fsS "$base/api/states/$1" -H "Authorization: Bearer $token" |
+        python3 -c 'import json,sys; print(json.load(sys.stdin)["attributes"][sys.argv[1]])' "$2"
+}
+
 assert_state() {
     entity=$1
     expected=$2
@@ -145,7 +152,8 @@ assert_state() {
 # startup tasks have settled.
 i=0
 until api_get_state light.flur >/dev/null 2>&1 &&
-    api_get_state light.keller >/dev/null 2>&1; do
+    api_get_state light.keller >/dev/null 2>&1 &&
+    api_get_state climate.heatpump >/dev/null 2>&1; do
     i=$((i + 1))
     if [ "$i" -ge 60 ]; then
         echo "test_home_assistant_live: template lights did not appear" >&2
@@ -231,6 +239,30 @@ latency_summary=$(python3 -c 'import math,statistics,sys
 v=sorted(map(int,open(sys.argv[1]).read().split()))
 print(f"samples={len(v)} p50_ms={round(statistics.median(v))} p95_ms={v[math.ceil(.95*len(v))-1]} min_ms={v[0]} max_ms={v[-1]}")' "$tmp/latency-ms.txt")
 
+# Relative climate is the complex path: read the current HA attribute, derive
+# +/-1, then call climate.set_temperature before returning the final answer.
+: >"$tmp/climate-latency-ms.txt"
+i=1
+while [ "$i" -le 10 ]; do
+    before=$(api_get_attr climate.heatpump temperature)
+    if [ $((i % 2)) -eq 1 ]; then
+        request="Mach die Heizung wärmer"
+        delta=1
+    else
+        request="Mach die Heizung kälter"
+        delta=-1
+    fi
+    expected=$(python3 -c 'import sys; print(float(sys.argv[1])+int(sys.argv[2]))' "$before" "$delta")
+    ask_timed "$request" "$tmp/climate-response-$i.txt" >>"$tmp/climate-latency-ms.txt"
+    actual=$(api_get_attr climate.heatpump temperature)
+    python3 -c 'import sys; assert abs(float(sys.argv[1])-float(sys.argv[2])) < .001' \
+        "$actual" "$expected"
+    i=$((i + 1))
+done
+climate_latency_summary=$(python3 -c 'import math,statistics,sys
+v=sorted(map(int,open(sys.argv[1]).read().split()))
+print(f"samples={len(v)} p50_ms={round(statistics.median(v))} p95_ms={v[math.ceil(.95*len(v))-1]} min_ms={v[0]} max_ms={v[-1]}")' "$tmp/climate-latency-ms.txt")
+
 # The hidden entity is present in HA but absent from the geist registry. The
 # request must not mutate it, irrespective of the model's wording.
 ask_timed "Schalte das Licht im Keller ein" "$tmp/hidden-response.txt" >/dev/null
@@ -240,3 +272,4 @@ printf 'live_ha: PASS exposed=%s hidden=%s\n' \
     "$(api_get_state light.flur)" \
     "$(api_get_state light.keller)"
 printf 'live_ha_latency: %s\n' "$latency_summary"
+printf 'live_ha_climate_latency: %s\n' "$climate_latency_summary"

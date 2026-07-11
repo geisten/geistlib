@@ -35,16 +35,28 @@ Resident-daemon warm simple-command latency:
   warm-up: one status request, excluded
   samples: 10 alternating light.flur on/off actions
 
-  p50     2088 ms
-  p95     2106 ms
-  minimum 1962 ms
-  maximum 2106 ms
+  p50     2095 ms
+  p95     2122 ms
+  minimum 1964 ms
+  maximum 2122 ms
 
   PASS roadmap warm simple-command p50 target <= 3 s
 
+Resident-daemon warm complex climate latency:
+  path: read current climate.temperature from real HA -> derive +/-1 -> call
+        climate.set_temperature -> verify actual HA attribute -> final answer
+  samples: 10 alternating warmer/cooler actions
+
+  p50     2216 ms
+  p95     2256 ms
+  minimum 2162 ms
+  maximum 2256 ms
+
+  PASS roadmap warm complex-tool p50 target <= 10 s
+
 Extended run wall time:
-  51 s, including fresh HA startup, onboarding, initial boundary action,
-  daemon startup, warm-up, ten measured actions and hidden-entity denial
+  76 s, including fresh HA startup, onboarding, initial boundary action,
+  daemon startup, warm-up, 20 measured actions and hidden-entity denial
 
 The test uses the official onboarding and token APIs, authenticates every REST
 request, and invokes HA's real service endpoint. It proves the registry boundary

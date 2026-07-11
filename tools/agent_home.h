@@ -733,7 +733,8 @@ static inline enum geist_status home_command_invoke(void      *ctx,
             static char cur_raw[HOME_OBS_CAP];
             char        cur[32];
             if (c->get(c, d, sizeof cur_raw, cur_raw) >= 0 &&
-                ha_json_str(cur_raw, "state", sizeof cur, cur) > 0) {
+                (ha_json_str(cur_raw, "temperature", sizeof cur, cur) > 0 ||
+                 ha_json_str(cur_raw, "state", sizeof cur, cur) > 0)) {
                 snprintf(extra, sizeof extra, "\"temperature\":%.4g", strtod(cur, nullptr) + dir);
                 service = "set_temperature";
             }

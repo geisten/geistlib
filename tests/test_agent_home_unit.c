@@ -32,7 +32,8 @@ static long stub_get(struct home_ctx *c, const struct home_device *d, size_t cap
                 out, cap, "{\"state\":\"19.5\",\"attributes\":{\"unit_of_measurement\":\"°C\"}}");
     }
     if (strcmp(d->domain, "climate") == 0) { /* the relative-setpoint base */
-        return (long) (size_t) snprintf(out, cap, "{\"state\":\"21\"}");
+        return (long) (size_t) snprintf(
+                out, cap, "{\"state\":\"heat\",\"attributes\":{\"temperature\":21}}");
     }
     return (long) (size_t) snprintf(out, cap, "{\"state\":\"off\"}");
 }
