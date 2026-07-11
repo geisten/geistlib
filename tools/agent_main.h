@@ -58,8 +58,8 @@ typedef size_t (*geist_tools_fn)(struct geist_model   *model,
                                  void                 *ctx);
 
 struct agent_main_opts {
-    const char *model;     /* required (first positional) */
-    const char *question;  /* second positional; nullptr -> interactive REPL */
+    const char *model;     /* -m <path> or a positional; embedded build may omit */
+    const char *question;  /* the positional request; nullptr -> interactive REPL */
     size_t      max_steps; /* -n/--max-steps; 0 -> the agent's default */
     const char *serve;     /* --serve <unix-socket>: resident daemon mode */
 };
@@ -68,7 +68,7 @@ enum agent_main_parse { AGENT_MAIN_RUN = 0, AGENT_MAIN_HELP = 1, AGENT_MAIN_BADA
 
 static inline void agent_main_usage(FILE *o, const char *prog) {
     fprintf(o,
-            "usage: %s <model.gguf> [\"question\"] [-n max_steps] [--serve <socket>]\n"
+            "usage: %s [-m <model.gguf>] [\"question\"] [-n max_steps] [--serve <socket>]\n"
             "  no question -> interactive REPL (one request per line; /quit to exit)\n"
             "  --serve     -> resident daemon: model stays warm, one request per\n"
             "                 connection on a chmod-600 Unix socket (see DEPLOY.md)\n",
@@ -103,10 +103,15 @@ agent_main_parse_args(int argc, char **argv, bool want_model, struct agent_main_
                 return AGENT_MAIN_BADARGS;
             }
             opts->serve = argv[++i];
+        } else if (strcmp(a, "-m") == 0 || strcmp(a, "--model") == 0) {
+            if (i + 1 >= argc) {
+                return AGENT_MAIN_BADARGS;
+            }
+            opts->model = argv[++i]; /* -m wins over embedded (see geist_agent_main) */
         } else if (a[0] == '-' && a[1] != '\0') {
             return AGENT_MAIN_BADARGS; /* unknown flag */
         } else if (want_model && !opts->model) {
-            opts->model = a;
+            opts->model = a; /* legacy positional model */
         } else if (!opts->question) {
             opts->question = a;
         } else {
@@ -241,8 +246,8 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
                                                  void                *tools_ctx,
                                                  const unsigned char *emb_start,
                                                  const unsigned char *emb_end) {
-    const char *prog       = argc > 0 ? argv[0] : "geist agent";
-    bool        want_model = emb_start == nullptr; /* false -> a baked-in model */
+    const char            *prog       = argc > 0 ? argv[0] : "geist agent";
+    bool                   want_model = emb_start == nullptr; /* false -> a baked-in model */
     struct agent_main_opts opts;
     switch (agent_main_parse_args(argc, argv, want_model, &opts)) {
     case AGENT_MAIN_HELP:
@@ -260,11 +265,13 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
         fprintf(stderr, "agent: backend_create failed: %s\n", geist_last_create_error());
         return 1;
     }
+    /* -m path wins over an embedded model; else the baked-in bytes. (The parser
+     * guarantees a model exists: non-embedded builds require -m or a positional.) */
     struct geist_model *model = nullptr;
-    enum geist_status   ls =
-            want_model ? geist_model_load(opts.model, be, &model)
-                       : geist_model_load_from_memory(emb_start, (size_t) (emb_end - emb_start), be,
-                                                      &model);
+    enum geist_status ls = opts.model
+                                   ? geist_model_load(opts.model, be, &model)
+                                   : geist_model_load_from_memory(
+                                             emb_start, (size_t) (emb_end - emb_start), be, &model);
     if (ls != GEIST_OK) {
         fprintf(stderr, "agent: model_load failed: %s\n", geist_last_create_error());
         geist_backend_destroy(be);

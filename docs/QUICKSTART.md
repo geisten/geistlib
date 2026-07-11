@@ -35,17 +35,19 @@ Any GGUF that carries its own tokenizer works; `fetch-model` is just a helper.
 
 ```bash
 # The ./geist symlink saves you the bin/<target>/<mode>/ path.
-OMP_WAIT_POLICY=active ./geist gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
+OMP_WAIT_POLICY=active ./geist -m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
     "What is the capital of France?"
 # -> The capital of France is Paris.
 
 # make run sets OMP_WAIT_POLICY for you:
-make run ARGS='gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "Write a haiku" -n 40'
+make run ARGS='-m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "Write a haiku" -n 40'
 ```
 
-CLI usage: `geist <model.gguf> [prompt] [-n N]` — the prompt is answered as an
-**instruct chat** by default (wrapped in the model's chat template); pass `--raw`
-for a raw base-model text completion. `-n` caps new tokens (default 64).
+CLI usage: `geist -m <model.gguf> [prompt] [-n N]` — the model is given with `-m`
+(or baked in via `make EMBED_MODEL=…`). A prompt is answered as an **instruct
+chat** by default (wrapped in the model's chat template); pass `--raw` for a raw
+base-model text completion, or give **no prompt** to open the interactive agentic
+chat. `-n` caps new tokens (default 64).
 `OMP_WAIT_POLICY=active` keeps the OpenMP threads spinning between tokens and
 noticeably improves multi-thread throughput; always set it.
 

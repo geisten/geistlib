@@ -102,10 +102,10 @@ ship to the server separately.) Recommended shape:
 ```ini
 # /etc/systemd/system/geist.service  (model warm, restart on crash)
 [Service]
-ExecStart=/srv/geist/geist /srv/geist/model.gguf
+# The resident agent daemon: model stays warm, one request per connection on a
+# chmod-600 Unix socket (the daemon chmods it). -m gives the model path.
+ExecStart=/srv/geist/geist agent -m /srv/geist/model.gguf --serve /run/geist/geist.sock
 Restart=always
-# when the socket daemon exists, point ExecStart at it + a Unix socket;
-# chmod 600 the socket so only the service user can talk to it.
 [Install]
 WantedBy=multi-user.target
 ```

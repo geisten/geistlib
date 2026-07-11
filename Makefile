@@ -42,7 +42,7 @@ include mk/common.mk
 lib: $(LIB_FILE)
 
 # `./$(EMBED_NAME)` → the built CLI for the current TARGET/MODE, so the demo is
-#   make && OMP_WAIT_POLICY=active ./geist model.gguf "The capital of France is"
+#   make && OMP_WAIT_POLICY=active ./geist -m model.gguf "What is the capital of France?"
 # Re-pointed on every build (cheap); removed by `make distclean`.
 #
 # EMBED_NAME names the symlink AND the binary under $(BIN_DIR)/tools/. Embedded
@@ -63,7 +63,7 @@ GEIST_BIN := $(BIN_DIR)/tools/$(EMBED_NAME)
 geist: $(GEIST_BIN)
 	@ln -sf $(GEIST_BIN) $(EMBED_NAME) && echo "./$(EMBED_NAME) -> $(GEIST_BIN)"
 
-# `make run ARGS='model.gguf "your prompt" -n 40'` — build, then run the CLI
+# `make run ARGS='-m model.gguf "your prompt" -n 40'` — build, then run the CLI
 # with OMP_WAIT_POLICY=active (matters for multi-thread perf on mac-omp).
 run: geist
 	@OMP_WAIT_POLICY=active ./$(EMBED_NAME) $(ARGS)
@@ -381,8 +381,8 @@ help:
 	"" \
 	"Build & run:" \
 	"  make                       lib + binaries + ./geist symlink for this TARGET/MODE" \
-	"  OMP_WAIT_POLICY=active ./geist model.gguf \"prompt\" -n 40    run the CLI" \
-	"  make run ARGS='m.gguf \"hi\"'   build, then run ./geist with OMP_WAIT_POLICY=active" \
+	"  OMP_WAIT_POLICY=active ./geist -m model.gguf \"prompt\" -n 40    run the CLI" \
+	"  make run ARGS='-m m.gguf \"hi\"'   build, then run ./geist with OMP_WAIT_POLICY=active" \
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make MODE=debug|asan|perf  -O0+g for gdb | ASan+UBSan | -O3+g for profilers" \
 	"  make clean | distclean     remove current TARGET/MODE | remove everything" \

@@ -97,9 +97,9 @@ on every platform). Then point the engine at the model.
 **Step 3 — run** (the model path is the only difference from the baked-in binary):
 
 ```bash
-./geist       model.gguf "What is the capital of France?" # ask — instruct chat
-./geist agent model.gguf "Summarize report.md"           # one-shot tool-use agent
-./geist chat  model.gguf                                  # multi-turn chat + memory
+./geist       -m model.gguf "What is the capital of France?" # ask — instruct chat
+./geist agent -m model.gguf "Summarize report.md"            # one-shot tool-use agent
+./geist       -m model.gguf                                  # no prompt → agentic chat
 ```
 
 <sub>Prebuilt for macOS · ARM64, Linux · ARM64 and Linux · x86-64 (AVX-512, runs on any x86-64-v3 CPU). Windows is still pending. BitNet is a **base model with no tool training** — geist forces a valid tool call from outside the sampler, so it routes and calls anyway.</sub>

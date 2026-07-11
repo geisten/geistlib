@@ -43,7 +43,7 @@ and reliable `/slash` control over notes.
 ```sh
 make                                       # builds ./geist
 GEIST_MIND_DIR=./mind \
-  ./geist chat gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+  ./geist chat -m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
 ```
 
 REPL commands (anything else is a chat turn the model answers — and may call a
