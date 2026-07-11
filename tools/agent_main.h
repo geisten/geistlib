@@ -35,9 +35,14 @@
 
 #include "agent.h"
 
+#include <signal.h> /* --serve: SIGPIPE ignore              */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h> /* --serve: Unix-domain socket daemon   */
+#include <sys/stat.h>   /* --serve: chmod 600 on the socket     */
+#include <sys/un.h>
+#include <unistd.h>
 
 enum { AGENT_MAIN_RESP_CAP = 1 << 13, AGENT_MAIN_LINE_CAP = 8192, AGENT_MAIN_TOOLS_CAP = 8 };
 
@@ -54,14 +59,17 @@ struct agent_main_opts {
     const char *model;     /* required (first positional) */
     const char *question;  /* second positional; nullptr -> interactive REPL */
     size_t      max_steps; /* -n/--max-steps; 0 -> the agent's default */
+    const char *serve;     /* --serve <unix-socket>: resident daemon mode */
 };
 
 enum agent_main_parse { AGENT_MAIN_RUN = 0, AGENT_MAIN_HELP = 1, AGENT_MAIN_BADARGS = 2 };
 
 static inline void agent_main_usage(FILE *o, const char *prog) {
     fprintf(o,
-            "usage: %s <model.gguf> [\"question\"] [-n max_steps]\n"
-            "  no question -> interactive REPL (one request per line; /quit to exit)\n",
+            "usage: %s <model.gguf> [\"question\"] [-n max_steps] [--serve <socket>]\n"
+            "  no question -> interactive REPL (one request per line; /quit to exit)\n"
+            "  --serve     -> resident daemon: model stays warm, one request per\n"
+            "                 connection on a chmod-600 Unix socket (see DEPLOY.md)\n",
             prog);
 }
 
@@ -73,6 +81,7 @@ agent_main_parse_args(int argc, char **argv, bool want_model, struct agent_main_
     opts->model     = nullptr;
     opts->question  = nullptr;
     opts->max_steps = 0;
+    opts->serve     = nullptr;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
@@ -87,6 +96,11 @@ agent_main_parse_args(int argc, char **argv, bool want_model, struct agent_main_
                 return AGENT_MAIN_BADARGS;
             }
             opts->max_steps = (size_t) n;
+        } else if (strcmp(a, "--serve") == 0) {
+            if (i + 1 >= argc) {
+                return AGENT_MAIN_BADARGS;
+            }
+            opts->serve = argv[++i];
         } else if (a[0] == '-' && a[1] != '\0') {
             return AGENT_MAIN_BADARGS; /* unknown flag */
         } else if (want_model && !opts->model) {
@@ -120,6 +134,78 @@ static inline bool agent_force_enabled(void) {
 }
 
 /* Run one request and print the answer + newline. Returns 0 on success. */
+/* Resident daemon (--serve): the model stays warm and requests arrive over a
+ * chmod-600 Unix socket — the DEPLOY.md pattern, and the transport behind the
+ * Home Assistant conversation-agent integration (one Assist utterance = one
+ * connection). Protocol: the client sends ONE UTF-8 request line and half-
+ * closes; the daemon writes the full answer (may contain newlines) and closes
+ * — EOF is the frame. One connection at a time, one resident conversation:
+ * the agent keeps its transcript across connections (context carry + pronoun
+ * memory work across Assist turns; agent_compact bounds the growth).
+ * ponytail: sequential accept, no threads — an Assist pipeline sends one
+ * utterance at a time anyway. Unix only, like the rest of this file. */
+static inline int agent_main_serve(struct geist_agent *a, const char *path) {
+    signal(SIGPIPE, SIG_IGN); /* a vanished client must not kill the daemon */
+    unlink(path);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        fprintf(stderr, "serve: socket failed\n");
+        return 1;
+    }
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    if (strlen(path) >= sizeof addr.sun_path) {
+        fprintf(stderr, "serve: socket path too long\n");
+        return 1;
+    }
+    strcpy(addr.sun_path, path);
+    if (bind(fd, (struct sockaddr *) &addr, sizeof addr) != 0 || chmod(path, 0600) != 0 ||
+        listen(fd, 1) != 0) {
+        fprintf(stderr, "serve: cannot bind %s\n", path);
+        close(fd);
+        return 1;
+    }
+    a->conversation = true; /* the daemon IS one long conversation */
+    fprintf(stderr, "serving on %s (one request line per connection)\n", path);
+    for (;;) {
+        int conn = accept(fd, nullptr, nullptr);
+        if (conn < 0) {
+            continue;
+        }
+        /* a silent client must not wedge the (sequential) daemon: bound the
+         * request read — observed live via a dangling HA connection that
+         * blocked every later Assist turn until its 60 s client timeout */
+        struct timeval rto = {.tv_sec = 10};
+        (void) setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &rto, sizeof rto);
+        static char req[AGENT_MAIN_LINE_CAP];
+        size_t      n = 0;
+        ssize_t     r;
+        while (n + 1 < sizeof req && (r = read(conn, req + n, sizeof req - 1 - n)) > 0) {
+            n += (size_t) r;
+            if (memchr(req, '\n', n) != nullptr) {
+                break;
+            }
+        }
+        req[n]                  = '\0';
+        req[strcspn(req, "\n")] = '\0';
+        if (req[0] != '\0') {
+            static char resp[AGENT_MAIN_RESP_CAP];
+            size_t      rn = 0;
+            if (geist_agent_run(a, strlen(req), req, sizeof resp, resp, &rn) != GEIST_OK) {
+                rn = (size_t) snprintf(resp, sizeof resp, "error: agent run failed");
+            }
+            size_t off = 0;
+            while (off < rn) {
+                ssize_t w = write(conn, resp + off, rn - off);
+                if (w <= 0) {
+                    break;
+                }
+                off += (size_t) w;
+            }
+        }
+        close(conn);
+    }
+}
+
 static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
     static char resp[AGENT_MAIN_RESP_CAP];
     size_t      n = 0;
@@ -198,7 +284,9 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
     }
 
     int rc = 0;
-    if (opts.question) {
+    if (opts.serve) {
+        rc = agent_main_serve(&agent, opts.serve); /* never returns on success */
+    } else if (opts.question) {
         rc = agent_main_ask(&agent, opts.question);
     } else {
         static char line[AGENT_MAIN_LINE_CAP];

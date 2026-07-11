@@ -19,8 +19,19 @@ binary with subcommands:
 | `geist chat <model>` | interactive chat + tools + memory palace (see [agent.md](agent.md)) |
 
 The tool-use **agent** (`agent.h`) is a header-only library; the `agent` and
-`chat` subcommands drive it in-process. A resident socket daemon is a planned
-follow-up (see [the daemon](#the-resident-daemon-follow-up)).
+`chat` subcommands drive it in-process. The resident daemon is `--serve`:
+
+```sh
+geist agent model.gguf --serve /run/geist.sock     # or ./geist-home --serve …
+```
+
+The model stays warm; one request line per connection on a **chmod-600 Unix
+socket**, the answer EOF-framed; the daemon keeps ONE conversation across
+connections (context carry + pronoun memory span turns). This is the
+transport behind the Home Assistant Assist integration
+(`integrations/home-assistant/`): the HA component sends each utterance to
+the socket and speaks the answer — HA is only transport and UI, routing and
+the action whitelist stay in the daemon.
 
 ### Self-contained / dependency-free build
 
