@@ -276,6 +276,15 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
 
     static struct geist_agent agent; /* large -> static, not a deep stack */
     geist_agent_init(&agent, model, sess, n_tools, tools, opts.max_steps, system_prompt);
+    /* A second session dedicated to routing arms the system-prompt pin (the
+     * per-turn latency fix): generation rewinds to the pinned prompt instead
+     * of re-prefilling it, routing scores stay clean on their own session.
+     * If the extra session fails (memory), the agent just runs the slower
+     * single-session path. */
+    struct geist_session *route_sess = nullptr;
+    if (geist_session_create(model, be, &sopts, &route_sess) == GEIST_OK) {
+        geist_agent_set_route_session(&agent, route_sess);
+    }
     /* Force turn 0 into a valid tool call (default on; GEIST_FORCE_CALL=0 to let
      * the model decide) — the bundled models aren't tool-trained, so without this
      * the agent would never run a tool. See agent_force_enabled. */
@@ -310,6 +319,9 @@ static inline int agent_main_ask(struct geist_agent *agent, const char *req) {
         }
     }
 
+    if (route_sess != nullptr) {
+        geist_session_destroy(route_sess);
+    }
     geist_session_destroy(sess);
     geist_model_destroy(model);
     geist_backend_destroy(be);

@@ -278,13 +278,28 @@ struct geist_agent {
     size_t                     max_steps;
     const char                *system_prompt; /* borrowed; nullptr -> default role */
     struct geist_chat_template tmpl;          /* model-specific framing (auto-detected in init) */
-    bool                       force_call;     /* force turn 0 to be a valid tool call (see run) */
-    bool                       conversation;   /* keep the transcript across geist_agent_run calls
-                                                * (multi-turn chat) instead of resetting each call */
-    geist_token_t              eos, eot;
-    char                       transcript[GEIST_AGENT_TRANSCRIPT_CAP];
-    size_t                     tlen;
-    size_t                     sys_len; /* protected system-prompt prefix [0..sys_len) */
+    bool                       force_call;    /* force turn 0 to be a valid tool call (see run) */
+    bool                       conversation;  /* keep the transcript across geist_agent_run calls
+                                               * (multi-turn chat) instead of resetting each call */
+    geist_token_t eos, eot;
+    char          transcript[GEIST_AGENT_TRANSCRIPT_CAP];
+    size_t        tlen;
+    size_t        sys_len; /* protected system-prompt prefix [0..sys_len) */
+    /* The system prompt is PINNED into the KV cache on the first run
+     * (geist_session_pin_prefix): geist_session_reset then rewinds to the
+     * pinned prefix instead of zero, so per-step transcript re-prefills stop
+     * re-paying the constant prefix — the dominant share of the measured
+     * 12-13 s appliance turn on the Pi. Pinning REQUIRES route_session:
+     * scored behind the pinned system prompt, doc_search stole 7 routings
+     * incl. "What is 2 plus 2?" — the tool table in the prompt contaminates
+     * the cloze and PMI does not cancel it. false when unset or when the
+     * arch lacks pin_prefix — everything then uses the legacy path. */
+    bool sys_pinned;
+    /* Optional second session for ROUTING (geist_agent_set_route_session):
+     * unpinned, reset+set_prompt per route exactly like the legacy path, so
+     * routing scores are IDENTICAL with or without the pin. Enables the
+     * system-prompt pin above. nullptr = single-session legacy behavior. */
+    struct geist_session *route_session;
     /* Router PMI baseline (agent_select_tool): the per-tool prior is
      * request-independent, so it is computed once and cached here — every later
      * route then does ONE prefill (the request) instead of two. */
@@ -317,9 +332,11 @@ static inline void geist_agent_init(struct geist_agent     *a,
     a->conversation  = false;
     a->eos           = geist_model_eos_token(model);
     a->eot = a->tmpl.stop[0] ? geist_model_token_by_text(model, a->tmpl.stop) : GEIST_TOKEN_NONE;
-    a->tlen         = 0;
-    a->sys_len      = 0;
-    a->route_base_n = 0; /* router baseline computed lazily on the first route */
+    a->tlen          = 0;
+    a->sys_len       = 0;
+    a->sys_pinned    = false;
+    a->route_session = nullptr;
+    a->route_base_n  = 0; /* router baseline computed lazily on the first route */
     a->on_event     = nullptr;
     a->on_event_ctx = nullptr;
 }
@@ -728,12 +745,16 @@ static inline size_t agent_select_prompt(struct geist_agent *a,
  * agent_select_tool carry that load. */
 static inline int
 agent_score_names(struct geist_agent *a, size_t n, const char *prompt, float out[static n]) {
-    if (geist_session_reset(a->session) != GEIST_OK ||
-        geist_session_set_prompt(a->session, prompt) != GEIST_OK) {
+    /* Route on the dedicated (unpinned) routing session when the host wired
+     * one — the main session's pinned system prompt must not condition the
+     * cloze (scored behind it, doc_search stole 7 routings). With a single
+     * session the pin is never armed, so scoring is identical either way. */
+    struct geist_session *rs = a->route_session ? a->route_session : a->session;
+    if (geist_session_reset(rs) != GEIST_OK || geist_session_set_prompt(rs, prompt) != GEIST_OK) {
         return 0;
     }
     size_t       n_logits = 0;
-    const float *logits   = geist_session_peek_logits(a->session, &n_logits);
+    const float *logits   = geist_session_peek_logits(rs, &n_logits);
     if (logits == nullptr || n_logits == 0) {
         return 0;
     }
@@ -2145,6 +2166,68 @@ static inline int agent_answer_degenerate(const char *s) {
     return 1;
 }
 
+/* Pin BOS + the system prompt into the KV cache (once, on the first run):
+ * geist_session_reset then rewinds to this prefix instead of zero, so the
+ * constant prefix is never re-prefilled. No-op when already pinned or when
+ * the arch lacks pin_prefix (sys_pinned stays false -> full-prompt fallback).
+ * The prefix ends at a template turn marker (a special token), so tokenizing
+ * the suffix separately cannot merge across the seam. */
+/* Wire the dedicated routing session (created by the host on the same model/
+ * backend). This ENABLES the system-prompt pin — see the struct fields. */
+static inline void geist_agent_set_route_session(struct geist_agent   *a,
+                                                 struct geist_session *route) {
+    a->route_session = route;
+}
+
+static inline void agent_pin_system_prompt(struct geist_agent *a) {
+    if (a->sys_pinned || a->sys_len == 0 || a->route_session == nullptr) {
+        return; /* no route session -> no pin: routing must stay clean */
+    }
+    static geist_token_t ids[2048];
+    size_t               n   = 0;
+    geist_token_t        bos = geist_model_bos_token(a->model);
+    if (bos >= 0) {
+        ids[n++] = bos; /* mirror set_prompt, which prepends BOS */
+    }
+    char saved                = a->transcript[a->sys_len];
+    a->transcript[a->sys_len] = '\0'; /* tokenize() wants a C string */
+    size_t nid                = 0;
+    int    ok = geist_session_tokenize(a->session, a->transcript, 2048 - n, ids + n, &nid) ==
+                        GEIST_OK &&
+                nid > 0;
+    a->transcript[a->sys_len] = saved;
+    if (ok && geist_session_pin_prefix(a->session, n + nid, ids) == GEIST_OK) {
+        a->sys_pinned = true;
+    }
+}
+
+/* Re-point the session at the transcript. Pinned (the hot path): reset()
+ * rewinds the KV cache to the system prompt and only the transcript SUFFIX
+ * is re-prefilled — this was the dominant share of the measured 12-13 s
+ * appliance turn on the Pi. Unpinned: the old full reset + set_prompt. */
+static inline enum geist_status agent_set_transcript(struct geist_agent *a) {
+    if (geist_session_reset(a->session) != GEIST_OK) {
+        return GEIST_E_INVALID_STATE;
+    }
+    if (!a->sys_pinned) {
+        return geist_session_set_prompt(a->session, a->transcript) == GEIST_OK
+                       ? GEIST_OK
+                       : GEIST_E_INVALID_STATE;
+    }
+    if (a->tlen <= a->sys_len) {
+        return GEIST_OK; /* nothing beyond the pinned prompt yet */
+    }
+    static geist_token_t ids[1 << 14]; /* transcript cap is 32 KiB chars */
+    size_t               nid = 0;
+    if (geist_session_tokenize(a->session, a->transcript + a->sys_len, 1 << 14, ids, &nid) !=
+                GEIST_OK ||
+        (nid > 0 && geist_session_prefill_tokens(a->session, nid, ids) != GEIST_OK)) {
+        return GEIST_E_INVALID_STATE; /* do NOT fall back: set_prompt after a
+                                       * pin would prefill the prompt twice */
+    }
+    return GEIST_OK;
+}
+
 /* In conversation mode, fold the final answer into the transcript (closing the
  * open model turn) so the NEXT geist_agent_run sees it — every return path
  * must do this, including the forced/recipe and repeat-guard exits, or a
@@ -2207,6 +2290,8 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
                                      a->tmpl.model_open);
     }
 
+    agent_pin_system_prompt(a); /* once; reset() then rewinds to the prompt */
+
     char turn[GEIST_AGENT_TURN_CAP];
     char name[GEIST_AGENT_NAME_CAP];
     char args[GEIST_AGENT_ARGS_CAP];
@@ -2217,12 +2302,12 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
     size_t   n_seen = 0;
 
     for (size_t step = 0; step < a->max_steps; step++) {
-        if (geist_session_reset(a->session) != GEIST_OK ||
-            geist_session_set_prompt(a->session, a->transcript) != GEIST_OK) {
+        if (agent_set_transcript(a) != GEIST_OK) {
             return GEIST_E_INVALID_STATE;
         }
-        /* ponytail: full-transcript reprefill each step — O(n^2) over the
-         * request. Switch to incremental prefill_tokens if requests get long. */
+        /* ponytail: the transcript SUFFIX reprefills each step (the system
+         * prompt is pinned) — still O(n^2) over a long conversation tail;
+         * track the session position incrementally if that ever dominates. */
         /* force_call: make turn 0 a guaranteed-valid tool call even on a model
          * that wouldn't emit one (no tool training needed); later turns are free
          * so the model can give a plain-text answer after the observation. The
@@ -2237,8 +2322,10 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
                        step,
                        idx >= 0 ? a->tools[idx].name : AGENT_ANSWER_NAME,
                        "selected");
-            if (geist_session_reset(a->session) != GEIST_OK ||
-                geist_session_set_prompt(a->session, a->transcript) != GEIST_OK) {
+            /* selection clobbers the session ONLY in single-session mode; a
+             * dedicated route session leaves the transcript state untouched,
+             * so the step-top prefill still stands — skip the re-set. */
+            if (a->route_session == nullptr && agent_set_transcript(a) != GEIST_OK) {
                 return GEIST_E_INVALID_STATE;
             }
             /* idx < 0: the answer pseudo-entry won the routing — no tool fits.
@@ -2265,8 +2352,7 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
             tn = 0;
             if (a->n_tools > 0 && agent_next_opens_call(a)) {
                 tn = agent_generate_call_masked(a, sizeof turn, turn);
-                if (tn == 0 && (geist_session_reset(a->session) != GEIST_OK ||
-                                geist_session_set_prompt(a->session, a->transcript) != GEIST_OK)) {
+                if (tn == 0 && agent_set_transcript(a) != GEIST_OK) {
                     return GEIST_E_INVALID_STATE;
                 }
             }
@@ -2330,8 +2416,7 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
             geist_token_t ids[GEIST_AGENT_NAME_CAP];
             size_t        nid = 0;
             int           idx = -1;
-            if (geist_session_reset(a->session) == GEIST_OK &&
-                geist_session_set_prompt(a->session, a->transcript) == GEIST_OK &&
+            if (agent_set_transcript(a) == GEIST_OK &&
                 geist_session_tokenize(a->session, "{\"tool\":\"", sizeof ids / sizeof *ids, ids,
                                        &nid) == GEIST_OK &&
                 geist_session_prefill_tokens(a->session, nid, ids) == GEIST_OK) {

@@ -391,6 +391,7 @@ static int ev_cat_idx(const char *cat) {
 /* Returns the mode's total pass count (for the --min-pass gate). */
 static int ev_run_mode(struct geist_model   *model,
                        struct geist_session *session,
+                       struct geist_session *route_session,
                        struct geist_tool    *tools,
                        size_t                n_tools,
                        size_t                n_cases,
@@ -398,6 +399,7 @@ static int ev_run_mode(struct geist_model   *model,
                        bool                  verbose) {
     const char *mode = forced ? "forced" : "free";
     geist_agent_init(&ev_agent, model, session, n_tools, tools, EV_MAX_STEPS, nullptr);
+    geist_agent_set_route_session(&ev_agent, route_session); /* arms the pin */
     ev_agent.force_call = forced;
     ev_agent.on_event   = ev_capture;
 
@@ -580,6 +582,11 @@ int main(int argc, char **argv) {
     struct geist_session     *session = nullptr;
     if (geist_session_create(model, be, &o, &session) != GEIST_OK)
         GEIST_SKIP("session");
+    /* the dedicated routing session arms the system-prompt pin — the gates
+     * must test the same two-session path the daemon/CLI ship with */
+    struct geist_session *route_session = nullptr;
+    if (geist_session_create(model, be, &o, &route_session) != GEIST_OK)
+        GEIST_SKIP("route session");
 
     static struct summarize_ctx sumctx;
     sumctx = (struct summarize_ctx) {.model = model, .be = be, .root = EV_DOCS_DIR};
@@ -651,10 +658,12 @@ int main(int argc, char **argv) {
            model_path);
     int forced_pass = -1;
     if (run_forced)
-        forced_pass = ev_run_mode(model, session, ts, n_tools, n_cases, true, verbose);
+        forced_pass =
+                ev_run_mode(model, session, route_session, ts, n_tools, n_cases, true, verbose);
     if (run_free)
-        ev_run_mode(model, session, ts, n_tools, n_cases, false, verbose);
+        ev_run_mode(model, session, route_session, ts, n_tools, n_cases, false, verbose);
 
+    geist_session_destroy(route_session);
     geist_session_destroy(session);
     geist_model_destroy(model);
     geist_backend_destroy(be);
