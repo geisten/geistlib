@@ -18,9 +18,9 @@
 > 2B-4T baked in** — [**download it**](#run-it-now--model-baked-in) and run it right
 > away. Copy it to a Pi and it generates text, **drives tools**, and searches the web
 > — all locally, and it decodes **~2× faster than Microsoft's own bitnet.cpp**. That
-> same Pi now runs a **[voice-controlled smart home](#your-house-on-voice--no-cloud)**
-> — ~2 s per command, no cloud. Need more? The same engine runs **Gemma 4 with
-> vision + audio** from one model file.
+> same Pi now runs the first **[geist appliance](#from-engine-to-appliance--first-up-your-house-on-voice)**:
+> a voice-controlled smart home — ~2 s per command, no cloud. Need more? The same
+> engine runs **Gemma 4 with vision + audio** from one model file.
 
 <p align="center">
   <strong>~2 s</strong> voice command → action <sub>(smart home, Pi 5, offline)</sub> &nbsp;·&nbsp;
@@ -105,10 +105,17 @@ on every platform). Then point the engine at the model.
 
 ---
 
-## Your house, on voice — no cloud
+## From engine to appliance — first up: your house, on voice
 
-`make home` builds **geist-home**: a single binary (BitNet baked in, only the
-home tools compiled in) that plugs into
+geist's answer for low-resource boxes is the **appliance**: `make <domain>`
+compiles the engine, the model, and *only the tools that domain needs* into one
+fixed-scope binary — the artifact itself is the security promise, and every
+appliance ships with **its own eval gate**. Smart-home control is the *first*
+domain built this way, not the product: the same recipe fits any narrow job on
+any box with a few GB of RAM.
+
+**The first appliance is `make home`** — it builds **geist-home**: a single
+binary (BitNet baked in, only the home tools compiled in) that plugs into
 [Home Assistant](https://www.home-assistant.io/) Assist and turns a
 **4 GB Raspberry Pi 5** into a private voice brain for your smart home.
 
@@ -142,6 +149,12 @@ Run it as a daemon (`--serve` plus the bundled
 typed or spoken — answers from your own hardware. Your devices live in one plain
 text file (`entity | domain | alias phrases`). Full walkthrough:
 [docs/agent.md](docs/agent.md#the-home-appliance--make-home).
+
+**Your domain next.** The recipe generalizes: a narrow tool menu, deterministic
+parsing wrapped around a small model, a per-domain eval gate — an offline docs
+kiosk, a lab-bench assistant, a control panel that must never phone home. The
+whole home layer is ~1000 lines of header-only C on top of the engine
+([`tools/agent_home.h`](tools/agent_home.h) + the REST client); start yours there.
 
 ---
 
