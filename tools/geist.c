@@ -284,6 +284,17 @@ static int chat_tool_failed(const char *resp) {
     return strncmp(resp, "error:", 6) == 0;
 }
 
+static void chat_prompt_append(char *dst, size_t cap, size_t *len, const char *src) {
+    if (*len >= cap) {
+        return;
+    }
+    size_t room = cap - *len - 1;
+    size_t n    = strnlen(src, room);
+    memcpy(dst + *len, src, n);
+    *len += n;
+    dst[*len] = '\0';
+}
+
 /* Offline fallback: answer `req` directly (instruct, no tools) on a THROWAWAY
  * session, leaving the agent's own session/transcript untouched. Used when an
  * agent tool fails (e.g. the web is unreachable) so the REPL still answers from
@@ -302,7 +313,12 @@ static size_t chat_instruct_fallback(struct geist_model   *model,
     }
     struct geist_chat_template tmpl = geist_chat_template_for_model(model);
     static char                buf[1 << 14];
-    snprintf(buf, sizeof buf, "%s%s%s%s", tmpl.user_open, req, tmpl.turn_close, tmpl.model_open);
+    size_t                     len = 0;
+    buf[0]                         = '\0';
+    chat_prompt_append(buf, sizeof buf, &len, tmpl.user_open);
+    chat_prompt_append(buf, sizeof buf, &len, req);
+    chat_prompt_append(buf, sizeof buf, &len, tmpl.turn_close);
+    chat_prompt_append(buf, sizeof buf, &len, tmpl.model_open);
     size_t w = 0;
     if (geist_session_set_prompt(s, buf) == GEIST_OK) {
         geist_token_t eos = geist_model_eos_token(model);

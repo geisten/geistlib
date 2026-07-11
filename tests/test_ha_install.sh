@@ -27,7 +27,11 @@ test -f "$component/manifest.json"
 test -f "$component/registry.py"
 test -f "$component/transport.py"
 test ! -e "$component/__pycache__"
-test "$(stat -f '%Lp' "$env" 2>/dev/null || stat -c '%a' "$env")" = 600
+case "$(uname -s)" in
+    Darwin | *BSD) env_mode=$(stat -f '%Lp' "$env") ;;
+    *) env_mode=$(stat -c '%a' "$env") ;;
+esac
+test "$env_mode" = 600
 grep -q '^ExecStart=.*/geist-home --serve /srv/ha-config/geist.sock$' "$unit"
 grep -q '^EnvironmentFile=/var/lib/geist-home/geist-home.env$' "$unit"
 
