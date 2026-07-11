@@ -128,6 +128,16 @@ int main(void) {
     fails += geist_expect(strcmp(home_state_word("unavailable"), "nicht erreichbar") == 0 &&
                                   strcmp(home_state_word("unknown"), "unbekannt") == 0,
                           "state words: unavailable/unknown mapped");
+    /* opt-in English state words (GEIST_HOME_LANG=en); default stays German */
+    setenv("GEIST_HOME_LANG", "en", 1);
+    fails += geist_expect(strcmp(home_state_word("on"), "on") == 0 &&
+                                  strcmp(home_state_word("off"), "off") == 0 &&
+                                  strcmp(home_state_word("locked"), "locked") == 0 &&
+                                  strcmp(home_state_word("unavailable"), "unavailable") == 0,
+                          "state words: English under GEIST_HOME_LANG=en");
+    unsetenv("GEIST_HOME_LANG");
+    fails += geist_expect(strcmp(home_state_word("on"), "an") == 0,
+                          "state words: German again once env cleared");
 
     /* command invoke end-to-end against the stub */
     char out[HOME_OBS_CAP];
@@ -167,6 +177,15 @@ int main(void) {
     invoke_cmd("Mach die Heizung kälter", sizeof out, out);
     fails += geist_expect(strcmp(g_last_extra, "\"temperature\":20") == 0,
                           "invoke: relative 'kälter' sets current-1");
+
+    /* English command end-to-end: EN input + EN result word under the env */
+    setenv("GEIST_HOME_LANG", "en", 1);
+    invoke_cmd("Turn on the hallway light", sizeof out, out);
+    fails += geist_expect(strcmp(g_last_service, "turn_on") == 0 &&
+                                  strcmp(g_last_entity, "light.flur") == 0 &&
+                                  strstr(out, "light.flur → on") != nullptr,
+                          "invoke: English command + English result word");
+    unsetenv("GEIST_HOME_LANG");
 
     /* ---- lock confirmation flow (file-based pending slot in build/) ---- */
     ctx.pending_path = "build/test-home-pending";

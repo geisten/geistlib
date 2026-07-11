@@ -271,8 +271,8 @@ static inline int home_wants_close(const char *req) {
  * umlauts don't occur here, so one spelling per word plus the ae/ue forms. */
 static inline int home_relative_dir(const char *req) {
     static const char *const warm[] = {"wärmer", "waermer", "warmer"};
-    static const char *const cool[] = {"kälter", "kaelter", "kühler",
-                                       "kuehler", "cooler", "colder"};
+    static const char *const cool[] = {
+            "kälter", "kaelter", "kühler", "kuehler", "cooler", "colder"};
     for (size_t i = 0; i < sizeof warm / sizeof *warm; i++) {
         if (home_word_in(req, warm[i])) {
             return 1;
@@ -354,31 +354,44 @@ home_get_ha(struct home_ctx *c, const struct home_device *d, size_t cap, char ou
 
 /* ---- shared observation helpers ------------------------------------------- */
 
-/* de-facto state words for answers: on/off -> an/aus, else verbatim. */
+/* Response language: German by default, English when GEIST_HOME_LANG=en. Only
+ * the device STATE words switch (what every command/status answer shows) — the
+ * rarer clarify/challenge/error SENTENCES stay German for now.
+ * ponytail: state words only; translate the sentences when an English-first
+ * deployment actually needs them, not for the demo. The eval never sets the
+ * env, so the German gate is untouched. */
+static inline int home_lang_en(void) {
+    const char *l = getenv("GEIST_HOME_LANG");
+    return l && (l[0] == 'e' || l[0] == 'E');
+}
+
+/* de-facto state words for answers: on/off -> an/aus (or on/off under
+ * GEIST_HOME_LANG=en), else verbatim. */
 static inline const char *home_state_word(const char *s) {
+    int en = home_lang_en();
     if (strcmp(s, "on") == 0) {
-        return "an";
+        return en ? "on" : "an";
     }
     if (strcmp(s, "off") == 0) {
-        return "aus";
+        return en ? "off" : "aus";
     }
     if (strcmp(s, "open") == 0) {
-        return "offen";
+        return en ? "open" : "offen";
     }
     if (strcmp(s, "closed") == 0) {
-        return "geschlossen";
+        return en ? "closed" : "geschlossen";
     }
     if (strcmp(s, "locked") == 0) {
-        return "abgeschlossen";
+        return en ? "locked" : "abgeschlossen";
     }
     if (strcmp(s, "unlocked") == 0) {
-        return "entriegelt";
+        return en ? "unlocked" : "entriegelt";
     }
     if (strcmp(s, "unavailable") == 0) {
-        return "nicht erreichbar"; /* HA's state for a dead/offline device */
+        return en ? "unavailable" : "nicht erreichbar"; /* HA's dead/offline state */
     }
     if (strcmp(s, "unknown") == 0) {
-        return "unbekannt";
+        return en ? "unknown" : "unbekannt";
     }
     return s;
 }
@@ -552,7 +565,9 @@ static inline enum geist_status home_lock_flow(struct home_ctx          *c,
     if (home_is_confirm(req)) {
         if (action == nullptr || strcmp(action, "unlock") != 0 ||
             !home_pending_take(c, d->entity, "unlock", now)) {
-            return agent_obs(out_cap, out, out_len,
+            return agent_obs(out_cap,
+                             out,
+                             out_len,
                              "Nichts zu bestätigen für %s (Anfrage abgelaufen oder nicht "
                              "gestellt).",
                              d->entity);
@@ -560,14 +575,17 @@ static inline enum geist_status home_lock_flow(struct home_ctx          *c,
         static char raw[HOME_OBS_CAP];
         long        rc = c->set(c, d, "unlock", "", sizeof raw, raw);
         if (rc < 0) {
-            return agent_obs(out_cap, out, out_len,
-                             "error: Home Assistant nicht erreichbar (unlock).");
+            return agent_obs(
+                    out_cap, out, out_len, "error: Home Assistant nicht erreichbar (unlock).");
         }
         snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
-        return agent_obs(out_cap, out, out_len, "OK: %s → entriegelt", d->entity);
+        return agent_obs(
+                out_cap, out, out_len, "OK: %s → %s", d->entity, home_state_word("unlocked"));
     }
     if (action == nullptr) {
-        return agent_obs(out_cap, out, out_len,
+        return agent_obs(out_cap,
+                         out,
+                         out_len,
                          "Unklar, was mit %s geschehen soll (abschließen/aufschließen).",
                          d->entity);
     }
@@ -575,18 +593,22 @@ static inline enum geist_status home_lock_flow(struct home_ctx          *c,
         static char raw[HOME_OBS_CAP];
         long        rc = c->set(c, d, "lock", "", sizeof raw, raw);
         if (rc < 0) {
-            return agent_obs(out_cap, out, out_len,
-                             "error: Home Assistant nicht erreichbar (lock).");
+            return agent_obs(
+                    out_cap, out, out_len, "error: Home Assistant nicht erreichbar (lock).");
         }
         snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
-        return agent_obs(out_cap, out, out_len, "OK: %s → abgeschlossen", d->entity);
+        return agent_obs(
+                out_cap, out, out_len, "OK: %s → %s", d->entity, home_state_word("locked"));
     }
     /* unlock without confirmation: arm the slot, answer with the challenge */
     home_pending_arm(c, d->entity, "unlock", now);
-    return agent_obs(out_cap, out, out_len,
+    return agent_obs(out_cap,
+                     out,
+                     out_len,
                      "Sicherheitsabfrage: %s wirklich entriegeln? Zum Bestätigen sage: "
                      "\"Bestätige entriegeln\" und das Gerät (gültig %d Sekunden).",
-                     d->entity, (int) HOME_CONFIRM_TTL_S);
+                     d->entity,
+                     (int) HOME_CONFIRM_TTL_S);
 }
 
 static inline enum geist_status home_command_invoke(void      *ctx,
@@ -627,18 +649,19 @@ static inline enum geist_status home_command_invoke(void      *ctx,
                     w = (size_t) snprintf(out, out_cap, "OK:");
                 }
                 if (c->set(c, d, service, extra, sizeof raw, raw) < 0) {
-                    w += (size_t) snprintf(out + w, out_cap - w, "%s %s: Fehler",
-                                           done ? "," : "", d->entity);
+                    w += (size_t) snprintf(
+                            out + w, out_cap - w, "%s %s: Fehler", done ? "," : "", d->entity);
                 } else {
                     char        num[16];
-                    const char *nice = strcmp(service, "turn_on") == 0       ? "an"
-                                       : strcmp(service, "turn_off") == 0    ? "aus"
-                                       : strcmp(service, "open_cover") == 0  ? "offen"
-                                       : strcmp(service, "close_cover") == 0 ? "geschlossen"
-                                       : home_parse_number(extra, sizeof num, num) ? num
-                                                                                   : extra;
-                    w += (size_t) snprintf(out + w, out_cap - w, "%s %s → %s",
-                                           done ? "," : "", d->entity, nice);
+                    const char *nice =
+                            strcmp(service, "turn_on") == 0             ? home_state_word("on")
+                            : strcmp(service, "turn_off") == 0          ? home_state_word("off")
+                            : strcmp(service, "open_cover") == 0        ? home_state_word("open")
+                            : strcmp(service, "close_cover") == 0       ? home_state_word("closed")
+                            : home_parse_number(extra, sizeof num, num) ? num
+                                                                        : extra;
+                    w += (size_t) snprintf(
+                            out + w, out_cap - w, "%s %s → %s", done ? "," : "", d->entity, nice);
                     snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
                 }
                 done++;
@@ -680,8 +703,7 @@ static inline enum geist_status home_command_invoke(void      *ctx,
             char        cur[32];
             if (c->get(c, d, sizeof cur_raw, cur_raw) >= 0 &&
                 ha_json_str(cur_raw, "state", sizeof cur, cur) > 0) {
-                snprintf(extra, sizeof extra, "\"temperature\":%.4g",
-                         strtod(cur, nullptr) + dir);
+                snprintf(extra, sizeof extra, "\"temperature\":%.4g", strtod(cur, nullptr) + dir);
                 service = "set_temperature";
             }
         }
@@ -707,10 +729,10 @@ static inline enum geist_status home_command_invoke(void      *ctx,
     }
     snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity); /* pronoun memory */
     char        num[16];
-    const char *nice = strcmp(service, "turn_on") == 0             ? "an"
-                       : strcmp(service, "turn_off") == 0          ? "aus"
-                       : strcmp(service, "open_cover") == 0        ? "offen"
-                       : strcmp(service, "close_cover") == 0       ? "geschlossen"
+    const char *nice = strcmp(service, "turn_on") == 0             ? home_state_word("on")
+                       : strcmp(service, "turn_off") == 0          ? home_state_word("off")
+                       : strcmp(service, "open_cover") == 0        ? home_state_word("open")
+                       : strcmp(service, "close_cover") == 0       ? home_state_word("closed")
                        : home_parse_number(extra, sizeof num, num) ? num
                                                                    : extra;
     return agent_obs(out_cap, out, out_len, "OK: %s → %s", d->entity, nice);
@@ -742,8 +764,8 @@ static inline enum geist_status home_status_invoke(void      *ctx,
                     ha_json_str(agg, "state", sizeof state, state) > 0) {
                     word = home_state_word(state);
                 }
-                w += (size_t) snprintf(out + w, out_cap - w, "%s%s: %s",
-                                       i ? ", " : "", d->entity, word);
+                w += (size_t) snprintf(
+                        out + w, out_cap - w, "%s%s: %s", i ? ", " : "", d->entity, word);
             }
             if (out_len) {
                 *out_len = w;
