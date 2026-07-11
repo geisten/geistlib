@@ -1,0 +1,52 @@
+# geist Home Assistant evaluation — Raspberry Pi 5
+# Date: 2026-07-11 Europe/Berlin
+# Branch: feat/home-eval-extend
+# Commit under test: 89d1343
+# Host: rspdevelop, aarch64, Raspberry Pi 5
+# Safety: isolated source/build under /tmp; mutating HA operations use the
+# evaluator's stateful stub and do not call the productive Home Assistant.
+
+Model:
+  Gemma 4 E2B Q4_K_M
+  /home/germar/geist-public/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+
+Command:
+  GEIST_GGUF_PATH=/home/germar/geist-public/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
+    bin/pi5/release/tests/bench_agent_eval \
+    --tools home --mode forced --min-pass 56
+
+Result:
+  PASS exit status 0
+  elapsed 203 s (evaluator reported 202 s)
+
+  category  pass   route  args   chain  answer
+  ambig      4/4    4/4    -      4/4    4/4
+  neg        7/7    7/7    1/1    7/7    6/6
+  e2e       14/14  14/14  14/14  14/14  14/14
+  cmd       13/13  13/13  13/13  13/13  13/13
+  status     9/9    9/9    9/9    9/9    9/9
+  conv       9/9    9/9    4/4    9/9    9/9
+
+Machine-readable summary:
+  SUMMARY mode=forced pass=56/56 route=56/56 args=41/41 \
+    chain=56/56 answer=55/55
+
+Scope and interpretation:
+  This is the shipped deterministic/forced home-agent path over the published
+  German/English fixture corpus. It covers commands, status, ambiguity,
+  conversation state, collectives, locks, media devices, unavailable devices,
+  and negative/security cases. Device state is a deterministic in-process stub,
+  so this proves routing and policy behavior but is not a live-HA action result.
+
+Diagnostic free-mode observation:
+  A non-gating free-mode run was stopped after a stable failure pattern emerged.
+  Initial device resolution was often correct, but the model frequently emitted
+  an incorrect final answer or continued with redundant status/tool calls. The
+  preview must keep the deterministic path; free agent mode needs a stricter
+  stop policy before it can be considered for home control.
+
+Remaining preview evidence:
+  - run the corpus against a disposable real Home Assistant instance
+  - demonstrate zero actions against non-exposed entities in that instance
+  - record warm p50/p95 end-to-end action latency
+  - complete the 24-hour resident soak

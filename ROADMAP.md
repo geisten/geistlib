@@ -65,7 +65,9 @@ ambiguous or multi-step work.
 4. ARM64/x86-64 add-on with model storage, checksums, health checks and updates;
    keep the Unix socket for same-host deployments.
 5. Published German/English HA evaluation corpus, security cases, 24 h soak,
-   and reproducible Pi 5 latency report.
+   and reproducible Pi 5 latency report. The deterministic stub-backed corpus
+   passes 56/56 on Pi 5 with Gemma 4 E2B Q4_K_M; disposable live-HA validation,
+   latency percentiles, authorization proof, and soak remain open.
 
 A general HTTP inference API is a separate interoperability feature, not a
 dependency of the Home Assistant product track.
