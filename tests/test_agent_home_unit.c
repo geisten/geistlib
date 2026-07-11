@@ -186,6 +186,12 @@ int main(void) {
                                   strcmp(g_last_entity, "light.flur") == 0 &&
                                   strstr(out, "light.flur → on") != nullptr,
                           "invoke: English command + English result word");
+    invoke_cmd("Schalte das Licht ein", sizeof out, out);
+    fails += geist_expect(strstr(out, "Multiple devices match") != nullptr,
+                          "invoke: English ambiguity text");
+    invoke_cmd("Turn on the coffee machine", sizeof out, out);
+    fails += geist_expect(strstr(out, "No device matches this request") != nullptr,
+                          "invoke: English unknown-device text");
     unsetenv("GEIST_HOME_LANG");
 
     /* ---- lock confirmation flow (file-based pending slot in build/) ---- */

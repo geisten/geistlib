@@ -223,6 +223,7 @@ test-py:
 test-ha:
 	@python3 tests/test_ha_integration.py
 	@tests/test_ha_install.sh
+	@tests/test_ha_setup.sh
 
 # Opt-in acceptance test against a disposable official HA container. Requires
 # Docker, an existing HA_IMAGE, and GEIST_HOME_BINARY pointing at geist-home.

@@ -114,6 +114,15 @@ inside the binary.
 | **macOS** · Apple Silicon | [⬇ geist-bitnet-macos-arm64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-bitnet-macos-arm64.tar.gz) |
 | **Linux** · x86-64 (AVX-512) | [⬇ geist-bitnet-linux-x86_64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-bitnet-linux-x86_64.tar.gz) |
 
+Home Assistant uses the narrower appliance build, with only bounded home tools:
+
+| Platform | Home appliance (model included) |
+| :-- | :-- |
+| **Raspberry Pi / Linux** · ARM64 | [⬇ geist-home-linux-arm64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-home-linux-arm64.tar.gz) |
+| **Linux** · x86-64 | [⬇ geist-home-linux-x86_64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-home-linux-x86_64.tar.gz) |
+
+Verify the download against [`SHA256SUMS`](https://github.com/geisten/geisten/releases/latest/download/SHA256SUMS), then follow the [guided HA setup](integrations/home-assistant/README.md#guided-setup).
+
 ```bash
 ./geist-bitnet "What is the capital of France?" # ask — instruct chat, clean answer
 ./geist-bitnet --raw "The capital of France is" # raw base-model completion

@@ -415,6 +415,10 @@ static inline const struct home_lang *home_lang(void) {
     return &HOME_LANGS[0];
 }
 
+static inline int home_lang_is_en(void) {
+    return strcmp(home_lang()->code, "en") == 0;
+}
+
 /* State word for an answer in the active language; unknown states pass through
  * verbatim (e.g. a numeric climate setpoint). */
 static inline const char *home_state_word(const char *s) {
@@ -450,15 +454,24 @@ static inline long home_resolve(struct home_ctx *c,
         }
     }
     if (n == 0) {
-        (void) agent_obs(out_cap,
-                         out,
-                         out_len,
-                         "Kein Gerät passt zu dieser Anfrage. Bekannte Geräte stehen im "
-                         "Registry (%zu Einträge).",
-                         c->n_dev);
+        (void) agent_obs(
+                out_cap,
+                out,
+                out_len,
+                home_lang_is_en()
+                        ? "No device matches this request. Known devices are in the registry "
+                          "(%zu entries)."
+                        : "Kein Gerät passt zu dieser Anfrage. Bekannte Geräte stehen im "
+                          "Registry (%zu Einträge).",
+                c->n_dev);
         return -1;
     }
-    size_t w = (size_t) snprintf(out, out_cap, "Mehrere Geräte passen — welches ist gemeint?");
+    size_t w =
+            (size_t) snprintf(out,
+                              out_cap,
+                              "%s",
+                              home_lang_is_en() ? "Multiple devices match — which one do you mean?"
+                                                : "Mehrere Geräte passen — welches ist gemeint?");
     for (size_t i = 0; i < n && w + 4 < out_cap; i++) {
         w += (size_t) snprintf(out + w,
                                out_cap - w,
@@ -596,18 +609,25 @@ static inline enum geist_status home_lock_flow(struct home_ctx          *c,
     if (home_is_confirm(req)) {
         if (action == nullptr || strcmp(action, "unlock") != 0 ||
             !home_pending_take(c, d->entity, "unlock", now)) {
-            return agent_obs(out_cap,
-                             out,
-                             out_len,
-                             "Nichts zu bestätigen für %s (Anfrage abgelaufen oder nicht "
-                             "gestellt).",
-                             d->entity);
+            return agent_obs(
+                    out_cap,
+                    out,
+                    out_len,
+                    home_lang_is_en()
+                            ? "Nothing to confirm for %s (request expired or was not made)."
+                            : "Nichts zu bestätigen für %s (Anfrage abgelaufen oder nicht "
+                              "gestellt).",
+                    d->entity);
         }
         static char raw[HOME_OBS_CAP];
         long        rc = c->set(c, d, "unlock", "", sizeof raw, raw);
         if (rc < 0) {
-            return agent_obs(
-                    out_cap, out, out_len, "error: Home Assistant nicht erreichbar (unlock).");
+            return agent_obs(out_cap,
+                             out,
+                             out_len,
+                             home_lang_is_en()
+                                     ? "error: Home Assistant unreachable (unlock)."
+                                     : "error: Home Assistant nicht erreichbar (unlock).");
         }
         snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
         return agent_obs(
@@ -617,15 +637,20 @@ static inline enum geist_status home_lock_flow(struct home_ctx          *c,
         return agent_obs(out_cap,
                          out,
                          out_len,
-                         "Unklar, was mit %s geschehen soll (abschließen/aufschließen).",
+                         home_lang_is_en()
+                                 ? "Unclear what to do with %s (lock/unlock)."
+                                 : "Unklar, was mit %s geschehen soll (abschließen/aufschließen).",
                          d->entity);
     }
     if (strcmp(action, "lock") == 0) { /* the safe direction runs directly */
         static char raw[HOME_OBS_CAP];
         long        rc = c->set(c, d, "lock", "", sizeof raw, raw);
         if (rc < 0) {
-            return agent_obs(
-                    out_cap, out, out_len, "error: Home Assistant nicht erreichbar (lock).");
+            return agent_obs(out_cap,
+                             out,
+                             out_len,
+                             home_lang_is_en() ? "error: Home Assistant unreachable (lock)."
+                                               : "error: Home Assistant nicht erreichbar (lock).");
         }
         snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
         return agent_obs(
@@ -633,13 +658,17 @@ static inline enum geist_status home_lock_flow(struct home_ctx          *c,
     }
     /* unlock without confirmation: arm the slot, answer with the challenge */
     home_pending_arm(c, d->entity, "unlock", now);
-    return agent_obs(out_cap,
-                     out,
-                     out_len,
-                     "Sicherheitsabfrage: %s wirklich entriegeln? Zum Bestätigen sage: "
-                     "\"Bestätige entriegeln\" und das Gerät (gültig %d Sekunden).",
-                     d->entity,
-                     (int) HOME_CONFIRM_TTL_S);
+    return agent_obs(
+            out_cap,
+            out,
+            out_len,
+            home_lang_is_en()
+                    ? "Security check: really unlock %s? To confirm, say \"Confirm unlock\" "
+                      "and the device (valid for %d seconds)."
+                    : "Sicherheitsabfrage: %s wirklich entriegeln? Zum Bestätigen sage: "
+                      "\"Bestätige entriegeln\" und das Gerät (gültig %d Sekunden).",
+            d->entity,
+            (int) HOME_CONFIRM_TTL_S);
 }
 
 static inline enum geist_status home_command_invoke(void      *ctx,
@@ -714,13 +743,16 @@ static inline enum geist_status home_command_invoke(void      *ctx,
         return home_lock_flow(c, req, d, (long) time(nullptr), out_cap, out, out_len);
     }
     if (!home_domain_writable(d->domain)) {
-        return agent_obs(out_cap,
-                         out,
-                         out_len,
-                         "Abgelehnt: '%s' (%s) wird aus Sicherheitsgründen nicht per "
-                         "Sprachbefehl gesteuert.",
-                         d->entity,
-                         d->domain);
+        return agent_obs(
+                out_cap,
+                out,
+                out_len,
+                home_lang_is_en()
+                        ? "Denied: '%s' (%s) cannot be controlled by voice for safety reasons."
+                        : "Abgelehnt: '%s' (%s) wird aus Sicherheitsgründen nicht per "
+                          "Sprachbefehl gesteuert.",
+                d->entity,
+                d->domain);
     }
     char        extra[64];
     const char *service = home_action(req, d->domain, sizeof extra, extra);
@@ -741,23 +773,33 @@ static inline enum geist_status home_command_invoke(void      *ctx,
         }
     }
     if (service == nullptr) {
-        return agent_obs(out_cap,
-                         out,
-                         out_len,
-                         "Unklar, was mit %s geschehen soll (z.B. ein/aus, Wert angeben).",
-                         d->entity);
+        return agent_obs(
+                out_cap,
+                out,
+                out_len,
+                home_lang_is_en()
+                        ? "Unclear what to do with %s (for example on/off or provide a value)."
+                        : "Unklar, was mit %s geschehen soll (z.B. ein/aus, Wert angeben).",
+                d->entity);
     }
     static char raw[HOME_OBS_CAP];
     long        rc = c->set(c, d, service, extra, sizeof raw, raw);
     if (rc == -2) {
+        return agent_obs(
+                out_cap,
+                out,
+                out_len,
+                home_lang_is_en()
+                        ? "Home Assistant is not configured (GEIST_HA_URL / GEIST_HA_TOKEN)."
+                        : "Home Assistant ist nicht konfiguriert (GEIST_HA_URL / GEIST_HA_TOKEN).");
+    }
+    if (rc < 0) {
         return agent_obs(out_cap,
                          out,
                          out_len,
-                         "Home Assistant ist nicht konfiguriert (GEIST_HA_URL / GEIST_HA_TOKEN).");
-    }
-    if (rc < 0) {
-        return agent_obs(
-                out_cap, out, out_len, "error: Home Assistant nicht erreichbar (%s).", service);
+                         home_lang_is_en() ? "error: Home Assistant unreachable (%s)."
+                                           : "error: Home Assistant nicht erreichbar (%s).",
+                         service);
     }
     snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity); /* pronoun memory */
     char        num[16];
@@ -813,18 +855,30 @@ static inline enum geist_status home_status_invoke(void      *ctx,
     static char               raw[HOME_OBS_CAP];
     long                      rc = c->get(c, d, sizeof raw, raw);
     if (rc == -2) {
+        return agent_obs(
+                out_cap,
+                out,
+                out_len,
+                home_lang_is_en()
+                        ? "Home Assistant is not configured (GEIST_HA_URL / GEIST_HA_TOKEN)."
+                        : "Home Assistant ist nicht konfiguriert (GEIST_HA_URL / GEIST_HA_TOKEN).");
+    }
+    if (rc < 0) {
         return agent_obs(out_cap,
                          out,
                          out_len,
-                         "Home Assistant ist nicht konfiguriert (GEIST_HA_URL / GEIST_HA_TOKEN).");
-    }
-    if (rc < 0) {
-        return agent_obs(out_cap, out, out_len, "error: Home Assistant nicht erreichbar.");
+                         home_lang_is_en() ? "error: Home Assistant unreachable."
+                                           : "error: Home Assistant nicht erreichbar.");
     }
     snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
     char state[64], unit[16];
     if (ha_json_str(raw, "state", sizeof state, state) == 0) {
-        return agent_obs(out_cap, out, out_len, "error: unerwartete Antwort für %s.", d->entity);
+        return agent_obs(out_cap,
+                         out,
+                         out_len,
+                         home_lang_is_en() ? "error: unexpected response for %s."
+                                           : "error: unerwartete Antwort für %s.",
+                         d->entity);
     }
     if (ha_json_str(raw, "unit_of_measurement", sizeof unit, unit) > 0) {
         return agent_obs(out_cap, out, out_len, "%s: %s %s", d->entity, state, unit);

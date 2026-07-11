@@ -21,6 +21,25 @@ execute actions inside HA and remove the daemon's token entirely.
 
 ## Install the custom component
 
+### Guided setup
+
+With a released or locally built `geist-home`, the recommended path is:
+
+```sh
+scripts/setup-home-assistant.sh \
+  --ha-config /path/to/ha-config \
+  --binary /path/to/geist-home \
+  --activate
+```
+
+The command identifies the platform, finds or validates the embedded-model
+appliance binary, prompts for the token without echo, verifies authenticated HA
+access, installs the component/service, and optionally activates systemd. For
+automation, pass a mode-0600 `--token-file`; use `--dry-run` to inspect all
+detected non-secret values without writing.
+
+### Low-level reproducible installer
+
 The reproducible installer stages the component, a mode-0600 environment file,
 and a generated systemd unit. It never accepts the HA token on the command line:
 
@@ -133,6 +152,6 @@ scripts/check-home-assistant.sh \
 - control frame `\x01REGISTRY\n<body>` replaces the in-memory exposed-device
   registry when the body contains at least one valid entry.
 
-This protocol is intentionally local and small. Versioned framing, latency
-percentiles, soak evidence, and clean-host timing remain before calling the
-integration generally installable.
+This protocol is intentionally local and small. Soak evidence, external beta
+feedback, and a full clean-host timing run remain before calling the integration
+generally installable.
