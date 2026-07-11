@@ -36,6 +36,7 @@ GEIST_GGUF_PATH=gguf_artifacts/bitnet-2b4t-i2_s.gguf make bench-agent
 
 | date | version | host | OS | target/mode | threads | model | gate | forced pass | forced wall | free pass | free wall | total wall |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-07-11 | home 56 deployed (570661c, incl. route-menu pin) | Raspberry Pi 5 (4×A76, 4 GB, HA container idling) | Debian 13.5 | pi5/release | 4 | bitnet-2b4t-i2_s | **home** 56 → **PASS** | **56/56** | 108 s | — (forced only) | — | 108 s |
 | 2026-07-11 | home 56 cases (collectives, media, dead device, relative, EN lock) | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | **home** 56 → **PASS** | **56/56** | 40 s | 4/56 | 299 s | 339 s |
 | 2026-07-10 | ecbb8f4 (+realpath fix) | Raspberry Pi 5 (4×A76, 4 GB) | Debian 13.5 (6.18 rpt) | pi5/release (OpenBLAS) | 4 | bitnet-2b4t-i2_s | 43 → **PASS** | **43/48** | 722 s | 4/48 | 1460 s | 2183 s |
 | 2026-07-11 | home + lock flow | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | **home** 41 → **PASS** | **41/41** | 141 s | 3/41 | 330 s | 471 s |
@@ -85,7 +86,12 @@ counts as imperative shape. (2) A pristine-tree control of the MAIN eval
 reproduced today's box state exactly (40/48 with an identical fail set
 before and after the change) — the home additions touch nothing the full
 menu routes on; the recorded 43/48 rows remain the calibrated reference.
-The Pi nightly needs the usual manual deploy before its gate sees 56.
+Deployed to the Pi the same day (rsync + `make bin` + `make home`, daemon
+restarted): **56/56 on the Pi in 108 s** — faster than the old 41-case
+nightly (245–278 s) because the deploy also brought the route-menu pin
+(fa13217) live. Warm Assist turns measured through the real pipeline after
+the restart: 1.4–2.2 s, including a live collective read ("Sind alle
+Lichter aus?") against the running HA container.
 
 **Appliance latency (Pi 5, --serve daemon, measured 2026-07-11):** one
 "Schalte das Licht im Flur ein" turn costs **12–13 s** at the daemon socket;
