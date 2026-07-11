@@ -119,8 +119,13 @@ binary (BitNet baked in, only the home tools compiled in) that plugs into
 [Home Assistant](https://www.home-assistant.io/) Assist and turns a
 **4 GB Raspberry Pi 5** into a private voice brain for your smart home.
 
-<!-- TODO promo asset: ~20 s GIF — Assist app: „Schalte das Licht im Flur ein"
-     → light flips in ~2 s, terminal alongside showing nothing leaves the LAN. -->
+<p align="center">
+  <img src="assets/demo-home.gif" alt="Terminal on a Raspberry Pi 5: three German voice-style commands through Home Assistant Assist — 'Schalte das Licht im Flur ein' turns light.flur on in 2.1 s, 'Schalte alle Lichter aus' turns both lights off in 2.0 s, 'Ist das Licht im Flur an?' answers 'aus' in 2.3 s — all executed and verified on the Pi, offline" width="100%">
+</p>
+
+*Three commands, live on a **Raspberry Pi 5** through Home Assistant Assist —
+each parsed, executed and verified on the box in **~2 s**, nothing leaving the
+LAN. (Shown as typed prompts; add speech-to-text for the spoken path.)*
 
 - **~2 s per command**, warm — measured through the full Home Assistant Assist
   pipeline on the Pi 5, with the HA container running on the same box.
