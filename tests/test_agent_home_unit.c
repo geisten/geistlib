@@ -31,6 +31,9 @@ static long stub_get(struct home_ctx *c, const struct home_device *d, size_t cap
         return (long) (size_t) snprintf(
                 out, cap, "{\"state\":\"19.5\",\"attributes\":{\"unit_of_measurement\":\"°C\"}}");
     }
+    if (strcmp(d->domain, "climate") == 0) { /* the relative-setpoint base */
+        return (long) (size_t) snprintf(out, cap, "{\"state\":\"21\"}");
+    }
     return (long) (size_t) snprintf(out, cap, "{\"state\":\"off\"}");
 }
 
@@ -47,6 +50,7 @@ static void setup(void) {
             "cover.wz     | cover   | rollladen wohnzimmer, rollladen",
             "sensor.bad_t | sensor  | temperatur bad, warm bad", /* cover 'wie warm' asks */
             "lock.haustuer| lock    | haustür, haustuer, front door",
+            "media_player.wz | media_player | musik, radio, music",
     };
     for (size_t i = 0; i < sizeof lines / sizeof *lines; i++) {
         if (home_registry_line(lines[i], &ctx.dev[ctx.n_dev])) {
@@ -64,7 +68,7 @@ static void invoke_cmd(const char *req, size_t cap, char *out) {
 
 int main(void) {
     setup();
-    fails += geist_expect(ctx.n_dev == 6, "registry: six usable lines");
+    fails += geist_expect(ctx.n_dev == 7, "registry: seven usable lines");
     fails += geist_expect(strcmp(ctx.dev[0].entity, "light.flur") == 0 &&
                                   strcmp(ctx.dev[0].domain, "light") == 0,
                           "registry: fields trimmed");
@@ -104,6 +108,26 @@ int main(void) {
     fails += geist_expect(strcmp(home_action("Rollladen runter", "cover", sizeof extra, extra),
                                  "close_cover") == 0,
                           "action: runter -> close_cover");
+    fails += geist_expect(
+            strcmp(home_action("Spiel Musik", "media_player", sizeof extra, extra), "turn_on") ==
+                            0 &&
+                    strcmp(home_action("Stopp die Musik", "media_player", sizeof extra, extra),
+                           "turn_off") == 0 &&
+                    home_domain_writable("media_player"),
+            "action: media_player plays/stops like a switch");
+
+    /* relative climate + collective + unavailable wording (pure helpers) */
+    fails += geist_expect(home_relative_dir("Mach es etwas wärmer") == 1 &&
+                                  home_relative_dir("Jetzt bitte kälter") == -1 &&
+                                  home_relative_dir("Stelle auf 21 Grad") == 0,
+                          "relative: direction words parse");
+    fails += geist_expect(home_is_collective("Schalte alle Lichter aus") &&
+                                  home_is_collective("Turn off all lights") &&
+                                  !home_is_collective("Schalte das Licht aus"),
+                          "collective: group words detected");
+    fails += geist_expect(strcmp(home_state_word("unavailable"), "nicht erreichbar") == 0 &&
+                                  strcmp(home_state_word("unknown"), "unbekannt") == 0,
+                          "state words: unavailable/unknown mapped");
 
     /* command invoke end-to-end against the stub */
     char out[HOME_OBS_CAP];
@@ -126,6 +150,23 @@ int main(void) {
                                   strstr(out, "light.flur") != nullptr &&
                                   strstr(out, "light.bad") != nullptr,
                           "invoke: ambiguity asks back, does not act");
+
+    /* collective: the same multi-match WITH a group word acts on both lights */
+    invoke_cmd("Schalte alle Lichter aus", sizeof out, out);
+    fails += geist_expect(strcmp(g_last_service, "turn_off") == 0 &&
+                                  strcmp(g_last_entity, "light.bad") == 0 &&
+                                  strstr(out, "light.flur → aus") != nullptr &&
+                                  strstr(out, "light.bad → aus") != nullptr,
+                          "invoke: collective acts on every matched light");
+
+    /* relative setpoint: current 21 (stub) moves by one degree */
+    invoke_cmd("Mach die Heizung wärmer", sizeof out, out);
+    fails += geist_expect(strcmp(g_last_service, "set_temperature") == 0 &&
+                                  strcmp(g_last_extra, "\"temperature\":22") == 0,
+                          "invoke: relative 'wärmer' sets current+1");
+    invoke_cmd("Mach die Heizung kälter", sizeof out, out);
+    fails += geist_expect(strcmp(g_last_extra, "\"temperature\":20") == 0,
+                          "invoke: relative 'kälter' sets current-1");
 
     /* ---- lock confirmation flow (file-based pending slot in build/) ---- */
     ctx.pending_path = "build/test-home-pending";

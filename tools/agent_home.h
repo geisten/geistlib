@@ -20,8 +20,8 @@
  * the candidates) instead of a guess. More matched words = more specific =
  * wins outright.
  *
- * Write-whitelist: light, switch, climate, cover. Garage doors and alarm
- * panels are REFUSED with a fixed observation even if present in the
+ * Write-whitelist: light, switch, climate, cover, media_player. Garage doors
+ * and alarm panels are REFUSED with a fixed observation even if present in the
  * registry. LOCKS take a dedicated confirmation flow: locking runs directly
  * (the safe direction), unlocking is two turns — challenge, then a literal
  * confirm word for the same entity within HOME_CONFIRM_TTL_S; the slot is a
@@ -31,6 +31,12 @@
  * Pronouns ("mach ES wieder aus"): the command tool remembers the last
  * successfully addressed entity in ctx (last_entity) and falls back to it
  * when the request carries a pronoun and no device matches.
+ *
+ * Collectives ("alle Lichter aus"): a collective word plus a MULTI-device
+ * alias match executes on every matched writable device — never on locks.
+ * Bare "alles" matches no alias and stays the safe no-device answer.
+ * Relative climate ("mach es wärmer"): no number but a direction word moves
+ * the current setpoint by a fixed step.
  *
  * ponytail: verbs/aliases are ASCII-prefix matched; German umlaut verbs are
  * listed in both spellings (öffne/Öffne) because bytewise ci-compare cannot
@@ -261,12 +267,39 @@ static inline int home_wants_close(const char *req) {
     return 0;
 }
 
+/* Relative climate direction: +1 warmer, -1 cooler, 0 neither. Word-initial
+ * umlauts don't occur here, so one spelling per word plus the ae/ue forms. */
+static inline int home_relative_dir(const char *req) {
+    static const char *const warm[] = {"wärmer", "waermer", "warmer"};
+    static const char *const cool[] = {"kälter", "kaelter", "kühler",
+                                       "kuehler", "cooler", "colder"};
+    for (size_t i = 0; i < sizeof warm / sizeof *warm; i++) {
+        if (home_word_in(req, warm[i])) {
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof cool / sizeof *cool; i++) {
+        if (home_word_in(req, cool[i])) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* True if the request addresses a device GROUP ("alle Lichter", "all
+ * lights"). "all" word-prefix also covers alle/alles. */
+static inline int home_is_collective(const char *req) {
+    return home_word_in(req, "all") || home_word_in(req, "sämtliche") ||
+           home_word_in(req, "saemtliche") || home_word_in(req, "everything");
+}
+
 /* Map request + domain to an HA service + optional extra JSON field. Returns
  * service name or nullptr when the domain has no writable mapping. PURE. */
 static inline const char *
 home_action(const char *req, const char *domain, size_t cap, char extra[static cap]) {
     extra[0] = '\0';
-    if (strcmp(domain, "light") == 0 || strcmp(domain, "switch") == 0) {
+    if (strcmp(domain, "light") == 0 || strcmp(domain, "switch") == 0 ||
+        strcmp(domain, "media_player") == 0) {
         char num[16];
         if (strcmp(domain, "light") == 0 &&
             (home_word_in(req, "dimme") || home_word_in(req, "dim")) &&
@@ -340,6 +373,12 @@ static inline const char *home_state_word(const char *s) {
     }
     if (strcmp(s, "unlocked") == 0) {
         return "entriegelt";
+    }
+    if (strcmp(s, "unavailable") == 0) {
+        return "nicht erreichbar"; /* HA's state for a dead/offline device */
+    }
+    if (strcmp(s, "unknown") == 0) {
+        return "unbekannt";
     }
     return s;
 }
@@ -496,7 +535,8 @@ home_pending_take(const struct home_ctx *c, const char *entity, const char *serv
  * this list either: they take the dedicated confirmation flow above. */
 static inline int home_domain_writable(const char *domain) {
     return strcmp(domain, "light") == 0 || strcmp(domain, "switch") == 0 ||
-           strcmp(domain, "climate") == 0 || strcmp(domain, "cover") == 0;
+           strcmp(domain, "climate") == 0 || strcmp(domain, "cover") == 0 ||
+           strcmp(domain, "media_player") == 0;
 }
 
 /* The lock branch of the command tool: direct lock, challenge/confirm unlock.
@@ -565,6 +605,52 @@ static inline enum geist_status home_command_invoke(void      *ctx,
     if (!home_is_confirm(req)) {
         home_pending_clear(c);
     }
+    /* Collective: "alle Lichter aus" — a group word plus a multi-device match
+     * runs the action on every matched WRITABLE device. Locks and refused
+     * domains are skipped: a group word never bulk-operates the security
+     * boundary. Zero executable devices falls through to the clarify answer. */
+    if (home_is_collective(req)) {
+        size_t idx[8];
+        size_t nm = home_match(c, req, 8, idx);
+        if (nm >= 2) {
+            static char raw[HOME_OBS_CAP];
+            size_t      w = 0, done = 0;
+            for (size_t i = 0; i < nm; i++) {
+                const struct home_device *d = &c->dev[idx[i]];
+                char                      extra[64];
+                const char               *service;
+                if (!home_domain_writable(d->domain) ||
+                    (service = home_action(req, d->domain, sizeof extra, extra)) == nullptr) {
+                    continue;
+                }
+                if (w == 0) {
+                    w = (size_t) snprintf(out, out_cap, "OK:");
+                }
+                if (c->set(c, d, service, extra, sizeof raw, raw) < 0) {
+                    w += (size_t) snprintf(out + w, out_cap - w, "%s %s: Fehler",
+                                           done ? "," : "", d->entity);
+                } else {
+                    char        num[16];
+                    const char *nice = strcmp(service, "turn_on") == 0       ? "an"
+                                       : strcmp(service, "turn_off") == 0    ? "aus"
+                                       : strcmp(service, "open_cover") == 0  ? "offen"
+                                       : strcmp(service, "close_cover") == 0 ? "geschlossen"
+                                       : home_parse_number(extra, sizeof num, num) ? num
+                                                                                   : extra;
+                    w += (size_t) snprintf(out + w, out_cap - w, "%s %s → %s",
+                                           done ? "," : "", d->entity, nice);
+                    snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
+                }
+                done++;
+            }
+            if (done > 0) {
+                if (out_len) {
+                    *out_len = w;
+                }
+                return GEIST_OK;
+            }
+        }
+    }
     size_t di = 0;
     if (home_resolve(c, req, out_cap, out, out_len, &di) != 0) {
         return GEIST_OK; /* clarify/error observation already written */
@@ -584,6 +670,22 @@ static inline enum geist_status home_command_invoke(void      *ctx,
     }
     char        extra[64];
     const char *service = home_action(req, d->domain, sizeof extra, extra);
+    if (service == nullptr && strcmp(d->domain, "climate") == 0) {
+        /* relative setpoint ("mach es wärmer"): read the current value, move
+         * it one degree. ponytail: fixed ±1 °C step; make it configurable
+         * when a real thermostat asks for finer moves. */
+        int dir = home_relative_dir(req);
+        if (dir != 0) {
+            static char cur_raw[HOME_OBS_CAP];
+            char        cur[32];
+            if (c->get(c, d, sizeof cur_raw, cur_raw) >= 0 &&
+                ha_json_str(cur_raw, "state", sizeof cur, cur) > 0) {
+                snprintf(extra, sizeof extra, "\"temperature\":%.4g",
+                         strtod(cur, nullptr) + dir);
+                service = "set_temperature";
+            }
+        }
+    }
     if (service == nullptr) {
         return agent_obs(out_cap,
                          out,
@@ -624,6 +726,30 @@ static inline enum geist_status home_status_invoke(void      *ctx,
     char             req[512];
     if (!agent_json_str(args, "request", sizeof req, req) || req[0] == '\0') {
         return agent_obs(out_cap, out, out_len, "error: missing \"request\"");
+    }
+    /* Collective read ("sind alle Lichter aus?"): list every matched device. */
+    if (home_is_collective(req)) {
+        size_t idx[8];
+        size_t nm = home_match(c, req, 8, idx);
+        if (nm >= 2) {
+            static char agg[HOME_OBS_CAP];
+            size_t      w = 0;
+            for (size_t i = 0; i < nm; i++) {
+                const struct home_device *d = &c->dev[idx[i]];
+                char                      state[64];
+                const char               *word = "Fehler";
+                if (c->get(c, d, sizeof agg, agg) >= 0 &&
+                    ha_json_str(agg, "state", sizeof state, state) > 0) {
+                    word = home_state_word(state);
+                }
+                w += (size_t) snprintf(out + w, out_cap - w, "%s%s: %s",
+                                       i ? ", " : "", d->entity, word);
+            }
+            if (out_len) {
+                *out_len = w;
+            }
+            return GEIST_OK;
+        }
     }
     size_t di = 0;
     if (home_resolve(c, req, out_cap, out, out_len, &di) != 0) {

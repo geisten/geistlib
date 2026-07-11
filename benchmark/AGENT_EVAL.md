@@ -36,6 +36,7 @@ GEIST_GGUF_PATH=gguf_artifacts/bitnet-2b4t-i2_s.gguf make bench-agent
 
 | date | version | host | OS | target/mode | threads | model | gate | forced pass | forced wall | free pass | free wall | total wall |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-07-11 | home 56 cases (collectives, media, dead device, relative, EN lock) | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | **home** 56 → **PASS** | **56/56** | 40 s | 4/56 | 299 s | 339 s |
 | 2026-07-10 | ecbb8f4 (+realpath fix) | Raspberry Pi 5 (4×A76, 4 GB) | Debian 13.5 (6.18 rpt) | pi5/release (OpenBLAS) | 4 | bitnet-2b4t-i2_s | 43 → **PASS** | **43/48** | 722 s | 4/48 | 1460 s | 2183 s |
 | 2026-07-11 | home + lock flow | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | **home** 41 → **PASS** | **41/41** | 141 s | 3/41 | 330 s | 471 s |
 | 2026-07-10 | home nightly (2b4ef81) | Raspberry Pi 5 (4×A76, 4 GB, HA container idling) | Debian 13.5 | pi5/release | 4 | bitnet-2b4t-i2_s | **home** 31 → **PASS** | **31/31** | 252 s | — (nightly runs forced only) | — | 252 s |
@@ -66,6 +67,25 @@ to 41. Live-verified against a real HA template lock on the Pi 5: initial
 locked → challenge (state verified UNCHANGED) → confirm → unlocked → cold
 confirm refused → relock → locked. The model never decides the security
 question — it only ferries the user's words.
+
+**Corpus extension to 56 (2026-07-11):** five new families along the known
+limits — **collectives** ("alle Lichter aus" acts on every matched writable
+device, "sind alle Lichter aus?" reads them all; bare "alles" stays the safe
+no-device answer), a **media_player** third schaltbar domain (musik evidence
+words added to routing), the **dead-device fixture** (`light.keller`: status
+answers "nicht erreichbar", commands surface the error path — first e2e
+coverage of a failing transport), **relative setpoints** ("mach es etwas
+wärmer" = pronoun memory + current-value read ± 1 °C), and the **EN lock
+conversation** (lock → challenge → confirm → status). **56/56 forced**, gate
+raised to 56. Two findings from the run: (1) "Rollladen im Wohnzimmer
+runter" — the only verbless case — was a raw score race that flips with box
+load (it failed on the UNCHANGED tree the same day the 41/41 row was
+recorded); fixed deterministically, a direction adverb in a non-question now
+counts as imperative shape. (2) A pristine-tree control of the MAIN eval
+reproduced today's box state exactly (40/48 with an identical fail set
+before and after the change) — the home additions touch nothing the full
+menu routes on; the recorded 43/48 rows remain the calibrated reference.
+The Pi nightly needs the usual manual deploy before its gate sees 56.
 
 **Appliance latency (Pi 5, --serve daemon, measured 2026-07-11):** one
 "Schalte das Licht im Flur ein" turn costs **12–13 s** at the daemon socket;

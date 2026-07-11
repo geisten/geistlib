@@ -39,3 +39,18 @@
 {"id":"lock-7","cat":"e2e","conv":"L3","req":"Bestätige entriegeln Haustür","tool":"control_device","arg":"request","want":"Bestätige","expect":"Nichts zu bestätigen"}
 {"id":"lock-8","cat":"e2e","conv":"L3","req":"Ist die Haustür abgeschlossen?","tool":"home_status","arg":"request","want":"Haustür","expect":"abgeschlossen"}
 {"id":"lock-9","cat":"e2e","req":"Bestätige entriegeln Haustür","tool":"control_device","arg":"request","want":"Bestätige","expect":"Nichts zu bestätigen"}
+{"id":"h-mul-1","cat":"cmd","req":"Schalte alle Lichter aus","tool":"control_device","arg":"request","want":"alle","expect":"light.wohnzimmer → aus"}
+{"id":"h-mul-2","cat":"status","req":"Sind alle Lichter aus?","tool":"home_status","arg":"request","want":"Lichter","expect":"light.wohnzimmer: aus"}
+{"id":"h-mul-3","cat":"neg","req":"Mach alles aus","tool":"control_device","expect":"Kein Gerät"}
+{"id":"h-med-1","cat":"cmd","req":"Spiel Musik im Wohnzimmer","tool":"control_device","arg":"request","want":"Musik","expect":"media_player.wohnzimmer → an"}
+{"id":"h-med-2","cat":"status","req":"Läuft gerade Musik?","tool":"home_status","arg":"request","want":"Musik","expect":"media_player.wohnzimmer: an"}
+{"id":"h-med-3","cat":"cmd","req":"Stopp die Musik","tool":"control_device","arg":"request","want":"Musik","expect":"media_player.wohnzimmer → aus"}
+{"id":"h-una-1","cat":"status","req":"Ist das Licht im Keller an?","tool":"home_status","arg":"request","want":"Keller","expect":"nicht erreichbar"}
+{"id":"h-una-2","cat":"neg","req":"Schalte das Licht im Keller ein","tool":"control_device","arg":"request","want":"Keller","expect":"error|nicht erreichbar"}
+{"id":"h-rel-1","cat":"conv","conv":"hc4","req":"Stelle die Heizung im Bad auf 21 Grad","tool":"control_device","arg":"request","want":"21","expect":"climate.bad"}
+{"id":"h-rel-2","cat":"conv","conv":"hc4","req":"Mach es etwas wärmer","tool":"control_device","expect":"22"}
+{"id":"h-rel-3","cat":"conv","conv":"hc4","req":"Mach es wieder kälter","tool":"control_device","expect":"21"}
+{"id":"lock-en-1","cat":"e2e","conv":"L4","req":"Lock the front door","tool":"control_device","arg":"request","want":"front door","expect":"abgeschlossen"}
+{"id":"lock-en-2","cat":"e2e","conv":"L4","req":"Unlock the front door","tool":"control_device","arg":"request","want":"front door","expect":"Sicherheitsabfrage|Bestätige"}
+{"id":"lock-en-3","cat":"e2e","conv":"L4","req":"Confirm unlock front door","tool":"control_device","arg":"request","want":"Confirm","expect":"entriegelt"}
+{"id":"lock-en-4","cat":"e2e","conv":"L4","req":"Is the front door locked?","tool":"home_status","arg":"request","want":"front door","expect":"entriegelt"}

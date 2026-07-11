@@ -274,7 +274,12 @@ Three layers:
   one `entity | domain | alias phrases` line per device). Ambiguity ("das
   Licht" with two lights) yields a deterministic clarifying answer; unknown
   devices a clear error. A **last-device memory** resolves pronouns ("Mach
-  *es* wieder aus"). Writes are whitelisted to light/switch/climate/cover —
+  *es* wieder aus"). **Collectives** ("alle Lichter aus") act on every
+  matched writable device — never on locks; bare "alles" stays the safe
+  no-device answer. **Relative setpoints** ("mach es wärmer") move the
+  current climate value by ±1 °C. Devices HA reports `unavailable` answer
+  "nicht erreichbar" instead of a stale state. Writes are whitelisted to
+  light/switch/climate/cover/media_player —
   **garage doors and alarms are refused** even if listed. **Locks take a
   confirmation flow**: locking runs directly (the safe direction), but an
   unlock request only *arms* a file-based pending slot and answers with a
@@ -285,7 +290,9 @@ Three layers:
   model never decides a security question, it only ferries the user's words.
 - **routing evidence** — home nouns match as substrings (German compounds:
   *Flurlicht*), action verbs word-start; the sentence SHAPE decides the
-  read/write boundary (imperative → command, question → status).
+  read/write boundary (imperative → command, question → status; a direction
+  adverb in a non-question — "Rollladen *runter*" — counts as imperative,
+  the verbless cover command was a score race otherwise).
 
 Demo backend: the official Home Assistant container with template entities
 matching the starter registry (see `home-registry.txt`); onboarding + a

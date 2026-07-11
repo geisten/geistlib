@@ -228,6 +228,12 @@ static void ev_home_seed(const struct home_ctx *c) {
         } else if (strcmp(d, "lock") == 0) {
             st = "locked";
         }
+        /* the dead fixture: light.keller is deliberately unavailable — the
+         * status path must SAY so and the command path must surface an error
+         * (ev_home_set fails for it) instead of pretending success. */
+        if (strcmp(c->dev[i].entity, "light.keller") == 0) {
+            st = "unavailable";
+        }
         snprintf(ev_home[ev_home_n].state, sizeof ev_home[0].state, "%s", st);
         snprintf(ev_home[ev_home_n].unit, sizeof ev_home[0].unit, "%s", un);
         ev_home_n++;
@@ -241,6 +247,9 @@ static long ev_home_set(struct home_ctx          *c,
                         size_t                    cap,
                         char                      out[]) {
     (void) c;
+    if (strcmp(d->entity, "light.keller") == 0) {
+        return -1; /* dead fixture: the command error path */
+    }
     for (size_t i = 0; i < ev_home_n; i++) {
         if (strcmp(ev_home[i].entity, d->entity) != 0) {
             continue;

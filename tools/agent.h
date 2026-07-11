@@ -1015,7 +1015,8 @@ static inline int agent_request_mentions_home(size_t req_len, const char *req) {
     static const char *const nouns[] = {
             "licht",    "lampe",    "leucht",  "heizung", "thermostat", "temperat", "rolllad",
             "jalousie", "steckdos", "fenster", "gerät",   "geraet",     "kaffee",   "tür",
-            "tuer",     "door",     "light",   "lamp",    "blind",      "window",   "heating"};
+            "tuer",     "door",     "light",   "lamp",    "blind",      "window",   "heating",
+            "musik",    "music",    "radio",   "lautsprecher", "speaker"};
     for (size_t v = 0; v < sizeof nouns / sizeof *nouns; v++) {
         if (agent_ci_find(req_len, req, strlen(nouns[v]), nouns[v])) {
             return 1;
@@ -1024,7 +1025,8 @@ static inline int agent_request_mentions_home(size_t req_len, const char *req) {
     static const char *const verbs[] = {"schalte", "schalt", "mach",    "stelle",   "dimme",
                                         "öffne",   "Öffne",  "schließ", "schliess", "dreh",
                                         "warm",    "turn",   "switch",  "set",      "dim",
-                                        "open",    "close",  "unlock",  "lock",     "device"};
+                                        "open",    "close",  "unlock",  "lock",     "device",
+                                        "spiel",   "play",   "stop"};
     for (size_t v = 0; v < sizeof verbs / sizeof *verbs; v++) {
         size_t wl = strlen(verbs[v]);
         for (size_t i = 0; i + wl <= req_len; i++) {
@@ -1045,12 +1047,30 @@ static inline int agent_tool_is_home(const struct geist_tool *t) {
 
 /* The command/status boundary of the home menu: an IMPERATIVE opening asks
  * for the command tool, a QUESTION opening for the status tool. Leading
- * filler ("Und jetzt schließe ihn") is skipped word by word. */
+ * filler ("Und jetzt schließe ihn") is skipped word by word. Elliptical
+ * commands ("Rollladen im Wohnzimmer runter") carry no verb at all — a
+ * direction adverb in a non-question is imperative evidence too (measured:
+ * the verbless cover command was a raw score race that flipped with box
+ * load). */
 static inline int agent_request_is_imperative(size_t req_len, const char *req) {
-    static const char *const v[] = {"schalte", "schalt",  "mach",     "stelle",   "dimme", "öffne",
-                                    "Öffne",   "schließ", "schliess", "dreh",     "turn",  "switch",
-                                    "set",     "dim",     "open",     "close",    "raise", "lower",
-                                    "unlock",  "lock",    "entriegl", "verriegl", "sperr"};
+    if (req_len > 0 && req[req_len - 1] != '?') {
+        static const char *const adv[] = {"runter", "rauf", "hoch", "herunter", "hinauf"};
+        for (size_t k = 0; k < sizeof adv / sizeof *adv; k++) {
+            size_t al = strlen(adv[k]);
+            for (size_t i = 0; i + al <= req_len; i++) {
+                if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t') &&
+                    strncasecmp(req + i, adv[k], al) == 0) {
+                    return 1;
+                }
+            }
+        }
+    }
+    static const char *const v[] = {"schalte",  "schalt",  "mach",     "stelle",   "dimme",
+                                    "öffne",    "Öffne",   "schließ",  "schliess", "dreh",
+                                    "turn",     "switch",  "set",      "dim",      "open",
+                                    "close",    "raise",   "lower",    "unlock",   "lock",
+                                    "entriegl", "verriegl", "sperr",   "spiel",    "play",
+                                    "stop",     "bestätige", "bestaetige", "confirm"};
     static const char *const skip[] = {"und", "jetzt", "bitte", "dann", "please", "now", "and"};
     size_t                   i      = 0;
     for (int word = 0; word < 4 && i < req_len; word++) {

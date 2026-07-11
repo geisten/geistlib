@@ -9,3 +9,8 @@ cover.wohnzimmer      | cover         | rollladen wohnzimmer, rollladen, blinds
 sensor.bad_temp       | sensor        | temperatur bad, warm bad, bathroom temperature
 binary_sensor.fenster_bad | binary_sensor | fenster bad, bathroom window, fenster
 lock.haustuer         | lock          | haustür, haustuer, front door
+# light.keller is the DEAD fixture (stub: state unavailable, commands fail).
+# Deliberately NO generic 'licht' phrase: the ambiguity cases stay two-way
+# and 'alle Lichter' never bulk-touches the dead device.
+light.keller          | light         | kellerlicht, licht keller, keller, basement light
+media_player.wohnzimmer | media_player | musik, radio, music, lautsprecher, speaker
