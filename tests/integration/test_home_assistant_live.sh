@@ -10,6 +10,7 @@ binary=${GEIST_HOME_BINARY:-}
 container=geist-ha-live-$$
 tmp=${TMPDIR:-/tmp}/geist-ha-live-$$
 base=http://127.0.0.1:$port
+daemon_pid=
 
 if [ -z "$binary" ] || [ ! -x "$binary" ]; then
     echo "test_home_assistant_live: set GEIST_HOME_BINARY to an executable geist-home" >&2
@@ -29,6 +30,10 @@ command -v python3 >/dev/null 2>&1 || {
 }
 
 cleanup() {
+    if [ -n "$daemon_pid" ]; then
+        kill "$daemon_pid" >/dev/null 2>&1 || true
+        wait "$daemon_pid" 2>/dev/null || true
+    fi
     docker rm -f "$container" >/dev/null 2>&1 || true
     # HA writes some config files as the container's root user. Remove them
     # through the same image so a non-root host runner can clean its temp dir.
@@ -177,13 +182,61 @@ GEIST_HA_URL="$base" GEIST_HA_TOKEN="$token" \
 assert_state light.flur on
 assert_state light.keller off
 
-# The hidden entity is present in HA but absent from the geist registry. The
-# request must not mutate it, irrespective of the model's wording.
+# Measure warm product latency through the resident Unix-socket daemon. Each
+# sample includes model routing, the authenticated HA service call and answer.
+sock=$tmp/geist.sock
 GEIST_HA_URL="$base" GEIST_HA_TOKEN="$token" \
     GEIST_HOME_REGISTRY="$tmp/registry.txt" \
-    "$binary" "Schalte das Licht im Keller ein" >"$tmp/hidden-response.txt"
+    "$binary" --serve "$sock" >"$tmp/daemon.log" 2>&1 &
+daemon_pid=$!
+i=0
+while [ ! -S "$sock" ]; do
+    i=$((i + 1))
+    if [ "$i" -ge 60 ]; then
+        echo "test_home_assistant_live: geist daemon socket did not appear" >&2
+        cat "$tmp/daemon.log" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+ask_timed() {
+    python3 -c 'import socket,sys,time
+s=socket.socket(socket.AF_UNIX); s.settimeout(60); start=time.monotonic(); s.connect(sys.argv[1]); s.sendall(sys.argv[2].encode()+b"\n"); s.shutdown(socket.SHUT_WR); data=b""
+while True:
+    chunk=s.recv(4096)
+    if not chunk: break
+    data+=chunk
+open(sys.argv[3],"wb").write(data)
+print(round((time.monotonic()-start)*1000))' "$sock" "$1" "$2"
+}
+
+# Warm-up is intentionally excluded from the distribution.
+ask_timed "Ist das Licht im Flur an?" "$tmp/warm-response.txt" >/dev/null
+: >"$tmp/latency-ms.txt"
+i=1
+while [ "$i" -le 10 ]; do
+    if [ $((i % 2)) -eq 1 ]; then
+        request="Schalte das Licht im Flur aus"
+        expected=off
+    else
+        request="Schalte das Licht im Flur ein"
+        expected=on
+    fi
+    ask_timed "$request" "$tmp/latency-response-$i.txt" >>"$tmp/latency-ms.txt"
+    assert_state light.flur "$expected"
+    i=$((i + 1))
+done
+latency_summary=$(python3 -c 'import math,statistics,sys
+v=sorted(map(int,open(sys.argv[1]).read().split()))
+print(f"samples={len(v)} p50_ms={round(statistics.median(v))} p95_ms={v[math.ceil(.95*len(v))-1]} min_ms={v[0]} max_ms={v[-1]}")' "$tmp/latency-ms.txt")
+
+# The hidden entity is present in HA but absent from the geist registry. The
+# request must not mutate it, irrespective of the model's wording.
+ask_timed "Schalte das Licht im Keller ein" "$tmp/hidden-response.txt" >/dev/null
 assert_state light.keller off
 
 printf 'live_ha: PASS exposed=%s hidden=%s\n' \
     "$(api_get_state light.flur)" \
     "$(api_get_state light.keller)"
+printf 'live_ha_latency: %s\n' "$latency_summary"

@@ -27,7 +27,24 @@ Requests and verified HA states:
 
 Result:
   PASS exposed=on hidden=off
-  total wall time: 30 s, including fresh HA startup and API onboarding
+  initial acceptance wall time: 30 s, including fresh HA startup and API onboarding
+
+Resident-daemon warm simple-command latency:
+  transport: one Unix-socket request -> model route -> authenticated HA action
+             -> final daemon answer
+  warm-up: one status request, excluded
+  samples: 10 alternating light.flur on/off actions
+
+  p50     2088 ms
+  p95     2106 ms
+  minimum 1962 ms
+  maximum 2106 ms
+
+  PASS roadmap warm simple-command p50 target <= 3 s
+
+Extended run wall time:
+  51 s, including fresh HA startup, onboarding, initial boundary action,
+  daemon startup, warm-up, ten measured actions and hidden-entity denial
 
 The test uses the official onboarding and token APIs, authenticates every REST
 request, and invokes HA's real service endpoint. It proves the registry boundary

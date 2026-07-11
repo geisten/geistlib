@@ -68,7 +68,8 @@ ambiguous or multi-step work.
    and reproducible Pi 5 latency report. The deterministic stub-backed corpus
    passes 56/56 on Pi 5 with Gemma 4 E2B Q4_K_M. A disposable real-HA test
    proves an exposed light can change while an existing unexposed light remains
-   untouched; latency percentiles and soak remain open.
+   untouched. Ten warm real-HA simple actions measure p50 2.088 s and p95
+   2.106 s on Pi 5; complex-tool percentiles and the 24 h soak remain open.
 
 A general HTTP inference API is a separate interoperability feature, not a
 dependency of the Home Assistant product track.
