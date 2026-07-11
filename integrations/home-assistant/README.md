@@ -102,6 +102,17 @@ toggle through Assist, then unexpose it and verify the next registry sync makes
 the same request unavailable. Do not begin with locks, covers, or climate
 setpoints.
 
+For a deployed host, run the read-only health diagnostic. It checks systemd,
+restart count, resident memory, socket mode, recent registry synchronization,
+environment permissions and the authenticated HA API without sending an agent
+request:
+
+```sh
+scripts/check-home-assistant.sh \
+  --socket /path/to/ha-config/geist.sock \
+  --env-file /path/to/geist-home.env
+```
+
 ## Current protocol
 
 - one UTF-8 utterance line per Unix-socket connection;
