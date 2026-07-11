@@ -59,6 +59,9 @@ ambiguous or multi-step work.
    actions are running end to end on Raspberry Pi 5.
 3. 🚧 Reproducible installation: versioned component package, service installer,
    diagnostics, upgrade/rollback instructions, and clean-host acceptance test.
+   Pi 5 staging plus an isolated internal-model round-trip complete in 9 s with
+   a preinstalled binary, but the smoke prompt answered incorrectly; clean-image
+   setup and semantic acceptance therefore remain open.
 4. ARM64/x86-64 add-on with model storage, checksums, health checks and updates;
    keep the Unix socket for same-host deployments.
 5. Published German/English HA evaluation corpus, security cases, 24 h soak,

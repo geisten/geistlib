@@ -38,3 +38,29 @@ This is not the roadmap's <=10-minute clean-host measurement: build/model
 download, initial HA configuration and first Assist action were intentionally
 excluded. It proves the installer is fast and non-invasive on the target
 hardware; a fresh image remains the acceptance environment for that gate.
+
+Isolated internal-model smoke test (same host, later on 2026-07-11):
+  source staged under /tmp/geist-phase1-fresh
+  installation staged under /tmp/geist-phase1-fresh/stage
+  existing release binary started without -m on a separate Unix socket
+  productive systemd service, socket and HA configuration unchanged
+
+Timings:
+  staged installation       0 s (sub-second resolution)
+  internal model ready      1 s after installation
+  first response            8 s after socket readiness
+  total                     9 s
+
+Request and response:
+  request:  Antworte kurz: Was ist zwei plus zwei?
+  response: Drei
+
+Result:
+  PASS staged artifact, secret mode 0600, daemon startup and socket round-trip
+  FAIL semantic correctness, despite the successful transport round-trip
+
+This second check proves that a preinstalled binary can reach a first response
+well inside ten minutes. It does not close the clean-host installation gate:
+the binary and HA credentials already existed. More importantly, it shows why
+first-response timing must not be used as a quality claim. The published HA
+evaluation corpus and its correctness gate remain required before announcement.
