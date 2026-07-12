@@ -120,6 +120,11 @@ struct geist_home_v2_json_string {
     bool           escaped;
 };
 
+struct geist_home_v2_json_span {
+    const uint8_t *p;
+    size_t         len;
+};
+
 static inline bool geist_home_v2_is_space(uint8_t c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
@@ -381,6 +386,71 @@ static inline bool geist_home_v2_request_id_valid(const struct geist_home_v2_jso
         }
     }
     return true;
+}
+
+/* Find one top-level field and return its complete JSON value span. Returns 1
+ * when found, 0 when absent, and -1 for malformed input or a duplicate key.
+ * Callers normally use this after envelope validation. */
+static inline int geist_home_v2_top_field(const uint8_t                  *json,
+                                          size_t                          json_len,
+                                          const char                     *name,
+                                          struct geist_home_v2_json_span *out) {
+    if (json == NULL || name == NULL || out == NULL) {
+        return -1;
+    }
+    *out                                    = (struct geist_home_v2_json_span) {0};
+    struct geist_home_v2_json_cursor cursor = {.p = json, .end = json + json_len};
+    geist_home_v2_skip_space(&cursor);
+    if (cursor.p >= cursor.end || *cursor.p++ != '{') {
+        return -1;
+    }
+    geist_home_v2_skip_space(&cursor);
+    int found = 0;
+    if (cursor.p < cursor.end && *cursor.p == '}') {
+        cursor.p++;
+    } else {
+        for (;;) {
+            struct geist_home_v2_json_string key = {0};
+            if (!geist_home_v2_json_string(&cursor, &key)) {
+                return -1;
+            }
+            geist_home_v2_skip_space(&cursor);
+            if (cursor.p >= cursor.end || *cursor.p++ != ':') {
+                return -1;
+            }
+            geist_home_v2_skip_space(&cursor);
+            const uint8_t *value_start = cursor.p;
+            if (!geist_home_v2_json_value(&cursor, 1u)) {
+                return -1;
+            }
+            if (geist_home_v2_key_is(&key, name)) {
+                if (found) {
+                    return -1;
+                }
+                out->p   = value_start;
+                out->len = (size_t) (cursor.p - value_start);
+                found    = 1;
+            }
+            geist_home_v2_skip_space(&cursor);
+            if (cursor.p < cursor.end && *cursor.p == '}') {
+                cursor.p++;
+                break;
+            }
+            if (cursor.p >= cursor.end || *cursor.p++ != ',') {
+                return -1;
+            }
+            geist_home_v2_skip_space(&cursor);
+        }
+    }
+    geist_home_v2_skip_space(&cursor);
+    return cursor.p == cursor.end ? found : -1;
+}
+
+static inline bool geist_home_v2_span_string_is(const struct geist_home_v2_json_span *span,
+                                                const char                           *text) {
+    const size_t len = text != NULL ? strlen(text) : 0u;
+    return span != NULL && span->len == len + 2u && span->p[0] == '"' &&
+           span->p[span->len - 1u] == '"' && memcmp(span->p + 1u, text, len) == 0;
 }
 
 static inline enum geist_home_v2_status
