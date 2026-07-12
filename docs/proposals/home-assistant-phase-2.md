@@ -127,12 +127,14 @@ not regress.
    the integration.
 4. Keep all HA state access inside the integration.
 
-Exit gate: the disposable real-HA suite passes with no HA credential available
-to the runtime, including unexpose-during-request and malicious-frame cases.
+Exit gate: model-free protocol/policy tests pass with no HA credential available
+to the runtime, including unexpose-during-request and malicious-frame cases;
+real-HA acceptance is recorded separately before the external beta.
 
 ### P2.2 — UI and operability
 
-1. Add discovery, connection-tested config and reconfigure flows.
+1. ✅ Add a model-free health handshake plus connection-tested UI config and
+   reconfigure flows, including DE/EN validation errors.
 2. Add DE/EN translations, HA-language defaulting, diagnostics, health entities,
    and Repairs.
 3. Add reconnect, cancellation, busy handling, bounded queues, and structured
@@ -215,26 +217,22 @@ portfolio overview; `dynamic-tools-v1.md` is the normative wire/schema contract.
 An implementing agent must start with the first unfinished phase, keep each PR
 within one phase, and update the status and evidence here in the same PR.
 
-The next executable slice is **P2.2 item 1: health handshake and validated config
-flow**. First add one control request to dynamic-tools-v1:
-`{"type":"health"}` →
-`{"type":"health.result","protocol":"dynamic-tools-v1","status":"ready"}`.
-The daemon must answer it without invoking the model. Then use that exchange in
-`integrations/home-assistant/custom_components/geist_conversation/config_flow.py`
-before creating or reconfiguring an entry. Runtime scope is limited to
-`tools/agent_main.h`; integration scope is `config_flow.py` plus a small shared
-health client and focused tests. Update `dynamic-tools-v1.md` in the same PR.
-Do not add HTTP, tokens, fallback transports, YAML-only configuration, or app
-packaging.
+P2.2 item 1 is implemented by the model-free dynamic-tools-v1 health control
+frame, validated UI Config Flow, atomic reconfigure and DE/EN validation errors.
+There is no YAML import path.
+
+The next executable slice is **P2.2 item 2: health entity, Repairs and redacted
+diagnostics**. Scope is limited to the HA integration plus additive fields in
+the existing health result if the UI needs them. Do not add HTTP, tokens,
+fallback transports, YAML configuration or app packaging.
 
 Acceptance for that slice:
 
-1. success, missing socket, timeout, malformed response, and protocol-name
-   mismatch are deterministic model-free tests;
-2. failed validation creates no config entry and exposes a translated error key;
-3. reconfigure uses the same validator and reloads a successful entry;
-4. `make test-ha`, `make test-unit`, and `make format-check` pass;
-5. this plan records the commit and moves the next pointer to P2.2 item 2.
+1. a diagnostic entity reports ready/protocol without utterance or entity data;
+2. Repairs covers unreachable, timeout, wrong protocol and not-ready states;
+3. downloadable diagnostics redact paths, addresses, utterances and HA state;
+4. recovery clears the issue without restarting Home Assistant;
+5. `make test-ha`, `make test-unit`, and `make format-check` pass.
 
 ## Design references
 
@@ -242,6 +240,6 @@ Acceptance for that slice:
 - [App configuration and multi-architecture images](https://developers.home-assistant.io/docs/apps/configuration/)
 - [App communication and internal networking](https://developers.home-assistant.io/docs/apps/communication/)
 - [App security and protected mode](https://developers.home-assistant.io/docs/apps/security/)
-- [Config flows, discovery, reconfigure, and migration](https://developers.home-assistant.io/docs/core/integration/config_flow/)
+- [Config flows, discovery, and reconfigure](https://developers.home-assistant.io/docs/core/integration/config_flow/)
 - [Home Assistant Integration Quality Scale](https://developers.home-assistant.io/docs/core/integration-quality-scale/)
 - [HACS publication requirements](https://hacs.xyz/docs/publish/include/)

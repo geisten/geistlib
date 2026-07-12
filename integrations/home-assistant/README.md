@@ -57,15 +57,10 @@ cp integrations/home-assistant/custom_components/geist_conversation/* \
   /path/to/ha-config/custom_components/geist_conversation/
 ```
 
-Add the transport to `configuration.yaml`:
-
-```yaml
-geist_conversation:
-  socket: /config/geist.sock
-```
-
-Restart Home Assistant, add the **geist Conversation** integration, and select
-it as the conversation agent of an Assist pipeline. For every request the
+Restart Home Assistant, add the **geist Conversation** integration in the UI,
+enter `/config/geist.sock`, and select it as the conversation agent of an Assist
+pipeline. The Config Flow verifies the dynamic-tools-v1 health handshake before
+creating the entry. For every request the
 component derives tools only from Assist-exposed entities in supported domains.
 
 ## Run the resident daemon

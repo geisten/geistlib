@@ -157,6 +157,11 @@ repeat the call with a new id and consumes the same global budget. A correlated
 cancel stops later calls. Home Assistant is one adapter;
 `examples/dynamic_tools_host.c` is an independent C adapter and build.
 
+The serving surface also accepts the exact model-free health control frame
+`{"type":"health"}` and returns protocol identity plus readiness. Configuration
+clients use it to reject the wrong socket before saving state. It does not add a
+second transport or invoke the model.
+
 ## Zero-dispatch kernel binding
 
 Generic engines walk a layer-dispatch loop every token, switching on dtype and

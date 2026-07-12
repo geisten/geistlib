@@ -67,15 +67,11 @@ ambiguous or multi-step work.
    health checks and updates; keep the Unix socket for same-host deployments.
 5. Published German/English HA evaluation corpus, security cases, 24 h soak,
    and reproducible Pi 5 latency report. The deterministic stub-backed corpus
-   passes 56/56 on Pi 5 with Gemma 4 E2B Q4_K_M. A disposable real-HA test
-   proves an exposed light can change while an existing unexposed light remains
-   untouched. Ten warm real-HA simple actions measure p50 2.095 s/p95 2.122 s;
+   passes 56/56 on Pi 5 with Gemma 4 E2B Q4_K_M. Ten warm real-HA simple actions
+   measure p50 2.095 s/p95 2.122 s;
    ten relative climate read-modify-write actions measure p50 2.216 s/p95
    2.256 s on Pi 5. Both latency budgets pass; the 24 h soak is running with
    PID/restart/RSS/latency evidence and remains open until its timer completes.
-
-A general HTTP inference API is a separate interoperability feature, not a
-dependency of the Home Assistant product track.
 
 ### Phase 2: native Home Assistant beta
 
@@ -84,10 +80,14 @@ are implemented. Packaging the runtime as a protected Home Assistant app for
 `aarch64` and `amd64` remains the principal Phase-2 distribution task. The
 Core/Container Unix-socket deployment remains supported.
 
-The architecture, migration gates, security boundaries, distribution strategy,
+The architecture, implementation gates, security boundaries, distribution strategy,
 and acceptance scorecard are defined in the
 [Phase 2 proposal](docs/proposals/home-assistant-phase-2.md). Its fail-closed
 contracts are tested; app packaging and distribution remain.
+
+The complete agent-executable sequence from product boundary through public
+preview is maintained in the
+[Home Assistant implementation phases](docs/HOME_ASSISTANT_IMPLEMENTATION_PHASES.md).
 
 ### Phase 3: host-neutral dynamic tools — complete
 

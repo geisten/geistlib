@@ -67,8 +67,9 @@ release. Its canonical transport is deliberately small:
 
 The next milestone is packaging this proven path: reproducible installation,
 health diagnostics, upgrades, soak testing, and published German/English Pi 5
-results. A general TCP/HTTP inference API is not required for this use case. See
-[`ROADMAP.md`](ROADMAP.md).
+results. The complete implementation sequence is in
+[the HA phases](docs/HOME_ASSISTANT_IMPLEMENTATION_PHASES.md); current status is
+in [`ROADMAP.md`](ROADMAP.md).
 
 <p align="center">
   <strong>~2 s</strong> voice command → action <sub>(smart home, Pi 5, offline)</sub> &nbsp;·&nbsp;
@@ -225,8 +226,10 @@ per request. Geist has no HA REST client and receives no HA token. Full walkthro
 **Your domain next.** The recipe generalizes: a narrow tool menu, deterministic
 parsing wrapped around a small model, a per-domain eval gate — an offline docs
 kiosk, a lab-bench assistant, a control panel that must never phone home. The
-whole home layer is ~1000 lines of header-only C on top of the engine
-([`tools/agent_home.h`](tools/agent_home.h) + the REST client); start yours there.
+host-neutral contract is concentrated in
+[`tools/dynamic_tools_v1.h`](tools/dynamic_tools_v1.h),
+[`tools/dynamic_request_v1.h`](tools/dynamic_request_v1.h), and
+[`tools/dynamic_host_v1.h`](tools/dynamic_host_v1.h); start yours there.
 
 ---
 

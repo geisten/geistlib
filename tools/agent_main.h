@@ -224,6 +224,20 @@ static inline size_t agent_main_dynamic_result(size_t     text_len,
     return w + 3u;
 }
 
+static inline bool agent_main_is_health_request(const char *request) {
+    return request != nullptr && strcmp(request, "{\"type\":\"health\"}") == 0;
+}
+
+static inline size_t agent_main_health_result(size_t cap, char out[static cap]) {
+    static const char result[] =
+            "{\"type\":\"health.result\",\"protocol\":\"dynamic-tools-v1\",\"status\":\"ready\"}\n";
+    if (cap < sizeof result) {
+        return 0;
+    }
+    memcpy(out, result, sizeof result);
+    return sizeof result - 1u;
+}
+
 /* Run one request and print the answer + newline. Returns 0 on success. */
 /* Resident daemon (--serve): the model stays warm and requests arrive over a
  * chmod-600 Unix socket — the DEPLOY.md pattern, and the transport behind the
@@ -289,6 +303,15 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
         req[n]                  = '\0';
         req[strcspn(req, "\n")] = '\0';
         if (req[0] != '\0') {
+            if (agent_main_is_health_request(req)) {
+                char   health[128];
+                size_t health_len = agent_main_health_result(sizeof health, health);
+                if (health_len > 0u) {
+                    (void) geist_dynamic_host_write(conn, health, health_len);
+                }
+                close(conn);
+                continue;
+            }
             static char resp[AGENT_MAIN_RESP_CAP];
             size_t      rn = 0;
             {

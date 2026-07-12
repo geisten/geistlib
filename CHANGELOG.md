@@ -25,6 +25,10 @@ minor release.
   execution, and the independent `make dynamic-example-host` reference build.
 - Added deterministic security/HA suites and a real BitNet + Unix-socket + C-host
   end-to-end transcript under `docs/benchmarks/`.
+- Added a model-free dynamic-tools-v1 health handshake and a UI-only Home
+  Assistant Config/Reconfigure Flow with validated socket and DE/EN errors.
+- Added an agent-executable Home Assistant implementation plan for phases 0–8;
+  HTTP/REST server requirements are explicitly out of scope.
 
 ## [0.3.3] — 2026-07-01
 

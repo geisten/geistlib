@@ -27,8 +27,10 @@ def main() -> None:
         "dynamic_session_v1.py",
         "dynamic_tools_v1.py",
         "ha_executor.py",
+        "health.py",
         "manifest.json",
         "policy.py",
+        "strings.json",
         "exposure.py",
     }
     require(expected <= {p.name for p in COMPONENT.iterdir()}, "component is complete")
@@ -41,6 +43,10 @@ def main() -> None:
     setup_source = (COMPONENT / "__init__.py").read_text()
     require("registry" not in setup_source, "component has no registry-sync compatibility path")
     require("GEIST_HA_TOKEN" not in setup_source, "component does not pass HA credentials")
+    config_flow = (COMPONENT / "config_flow.py").read_text()
+    require("async_validate_health" in config_flow, "config flow validates daemon health")
+    require("async_step_reconfigure" in config_flow, "config flow supports reconfigure")
+    require("async_step_import" not in config_flow, "no YAML-import compatibility flow")
 
     print("ha_integration: dynamic-only artifact contract pass")
 

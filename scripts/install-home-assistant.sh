@@ -130,9 +130,10 @@ if [ -f "$unit_dst" ]; then cp "$unit_dst" "$backup/unit"; fi
 rm -rf "$component_dst"
 mkdir -p "$component_dst"
 for file in __init__.py config_flow.py const.py conversation.py dynamic_session_v1.py \
-    dynamic_tools_v1.py exposure.py ha_executor.py manifest.json policy.py; do
+    dynamic_tools_v1.py exposure.py ha_executor.py health.py manifest.json policy.py strings.json; do
     cp "$component_src/$file" "$component_dst/$file"
 done
+cp -R "$component_src/translations" "$component_dst/translations"
 
 socket_path="$ha_config/geist.sock"
 cat >"$unit_dst" <<EOF

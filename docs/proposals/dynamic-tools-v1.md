@@ -5,6 +5,12 @@ Home Assistant is one adapter, not part of the runtime contract.
 
 ## Request and execution model
 
+Before model work, a host may send the exact control frame
+`{"type":"health"}` followed by newline. The server answers
+`{"type":"health.result","protocol":"dynamic-tools-v1","status":"ready"}`.
+This exchange performs no generation and is used by host configuration flows.
+Other control objects are invalid requests.
+
 A host supplies the available tools on every conversation request:
 
 ```json

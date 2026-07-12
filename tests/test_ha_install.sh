@@ -22,6 +22,8 @@ unit="$tmp/root/etc/systemd/system/geist-home.service"
 
 test -f "$component/manifest.json"
 test -f "$component/exposure.py"
+test -f "$component/health.py"
+test -f "$component/translations/de.json"
 test ! -e "$component/__pycache__"
 grep -q '^ExecStart=.*/geist-home --serve /srv/ha-config/geist.sock$' "$unit"
 ! grep -q '^EnvironmentFile=' "$unit"
