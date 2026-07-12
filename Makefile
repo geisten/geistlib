@@ -228,6 +228,7 @@ test-py:
 # the component artifact, exposed-entity registry, Unix-socket framing, staged
 # clean installation, secret permissions, upgrade, and rollback.
 test-ha:
+	@python3 tests/test_ha_app.py
 	@python3 tests/test_ha_integration.py
 	@python3 tests/test_ha_health.py
 	@python3 tests/test_ha_history.py

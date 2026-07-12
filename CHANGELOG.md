@@ -33,6 +33,9 @@ minor release.
   at-most-one correlated cancellation, and content-free lifecycle logging.
 - Added explicit request language and bounded request context plus HA-owned,
   in-memory conversation history with turn/byte/conversation LRU limits.
+- Added the Home Assistant app repository and protected-compatible multi-arch
+  scaffold with AppArmor, `/data`-only persistence, protocol healthcheck and a
+  non-publishing `aarch64`/`amd64` CI build matrix.
 - Added an agent-executable Home Assistant implementation plan for phases 0–8;
   HTTP/REST server requirements are explicitly out of scope.
 

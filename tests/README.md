@@ -23,6 +23,10 @@ make test FILTER=audio     # only audio-related tests
 make MODE=asan test
 ```
 
+`make test-ha` also validates `repository.yaml` and the HA app scaffold:
+architectures, disabled privileges/APIs/ports/mounts, AppArmor boundaries,
+`/data` persistence, healthcheck, and build-only multi-arch workflow.
+
 Dynamic-tools safety is split across `test_json_schema_v1_unit`,
 `test_dynamic_tools_v1_unit`, `test_dynamic_request_v1_unit`,
 `test_dynamic_arguments_v1_unit`, `test_dynamic_host_v1_unit`,

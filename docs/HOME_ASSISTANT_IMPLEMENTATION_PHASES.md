@@ -102,8 +102,10 @@ through HA UI; no YAML or daemon logs required.
 
 Purpose: install and supervise the resident runtime on HA OS.
 
-Slices: protected `aarch64`/`amd64` images; pinned model download with checksum
-and progress; persistent cache; healthcheck/watchdog; RAM/architecture checks;
+Slices: ✅ protected-compatible `aarch64`/`amd64` scaffold, AppArmor, `/data`
+boundary, healthcheck and build-only CI; **NEXT:** pinned model/runtime inputs,
+signed image publishing, checksums, provenance and SBOM; then persistent cache,
+watchdog, RAM/architecture checks;
 AppArmor; no privileged mode, host network, Docker socket, public port or HA
 config mount; signed images, SBOM, backup/restore and rollback tests.
 

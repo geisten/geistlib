@@ -76,8 +76,9 @@ ambiguous or multi-step work.
 ### Phase 2: native Home Assistant beta
 
 The protocol, executor boundary, session loop and credential-free HA execution
-are implemented. Packaging the runtime as a protected Home Assistant app for
-`aarch64` and `amd64` remains the principal Phase-2 distribution task. The
+are implemented. The protected-compatible Home Assistant app scaffold and
+build-only `aarch64`/`amd64` matrix exist; verified runtime/model inputs, signed
+publishing and installable artifacts remain the principal distribution task. The
 Core/Container Unix-socket deployment remains supported.
 
 The architecture, implementation gates, security boundaries, distribution strategy,

@@ -148,8 +148,9 @@ runtime without editing YAML or reading daemon logs.
 
 ### P2.3 — Home Assistant app and distribution
 
-1. Create the app repository metadata, protected runtime image, AppArmor policy,
-   health check, persistent model storage, and multi-architecture build.
+1. ✅ Create app repository metadata, a protected-compatible runtime scaffold,
+   AppArmor policy, dynamic-protocol healthcheck, `/data`-only persistence, and
+   build-only `aarch64`/`amd64` CI matrix.
 2. Publish signed `aarch64` and `amd64` images plus an SBOM and checksums.
 3. Add HACS and Hassfest validation for the integration release artifact.
 4. Test upgrades, downgrade compatibility, backup/restore, and rollback.
@@ -236,19 +237,24 @@ P2.2 item 4 is implemented by optional typed `language`/`context` request
 metadata and an HA-owned in-memory LRU history. Runtime context is request-local
 and does not participate in current tool-argument extraction.
 
-The next executable slice is **P2.3 item 1: protected HA app scaffold**. Create
-only repository metadata, `aarch64`/`amd64` image build, protected configuration,
-AppArmor baseline, private transport declaration, persistent `/data` layout and
-healthcheck. Do not add model catalogs, public ports, host networking,
-privileged mode, Docker socket access, or HA configuration mounts.
+P2.3 item 1 is implemented under `home-assistant-apps/geist`: repository/app
+metadata, explicit pinned base image, build-only two-architecture CI, restrictive
+AppArmor, no ports/APIs/host namespaces/mounts, `/data` runtime layout and the
+existing model-free health contract. The scaffold intentionally fails closed
+until a verified embedded-model runtime exists at `/data/geist-home`.
+
+The next executable slice is **P2.3 item 2: verified images and supply-chain
+artifacts**. Produce version-pinned runtime/model inputs, publish signed generic
+multi-arch and per-architecture images, checksums, provenance and SBOM. Do not
+download an unpinned `latest` model or enable public networking.
 
 Acceptance for that slice:
 
-1. app metadata validates for `aarch64` and `amd64` with protected mode;
-2. image and AppArmor policy expose no public/host port or broad mounts;
-3. `/data` is the only persistent runtime/model location;
-4. healthcheck uses the existing model-free protocol contract;
-5. model-free metadata/security tests plus `make test-ha` and format checks pass.
+1. image inputs are immutable and checksum-verified before assembly;
+2. `aarch64` and `amd64` images plus generic manifest are published by tag;
+3. Cosign signatures/provenance and an SPDX or CycloneDX SBOM are attached;
+4. config version and image tag match, with no mutable production dependency;
+5. pull-and-verify smoke tests run the model-free healthcheck on both arches.
 
 ## Design references
 

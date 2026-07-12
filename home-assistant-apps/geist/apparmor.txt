@@ -1,0 +1,17 @@
+#include <tunables/global>
+
+profile geist flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network unix stream,
+
+  /bin/sh ix,
+  /run.sh rix,
+  /healthcheck.sh rix,
+  /usr/bin/socat rix,
+  /data/ rw,
+  /data/** rwk,
+
+  deny /config/** rwklx,
+  deny /run/docker.sock rwklx,
+}
