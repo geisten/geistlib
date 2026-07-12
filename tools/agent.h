@@ -2529,7 +2529,8 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
     /* (name,args) hashes of the calls already executed this run — a repeated
      * call cannot progress, its observation is already in the transcript. */
     unsigned seen[16];
-    size_t   n_seen = 0;
+    size_t   n_seen           = 0;
+    bool     have_tool_result = false;
 
     for (size_t step = 0; step < a->max_steps; step++) {
         if (agent_set_transcript(a) != GEIST_OK) {
@@ -2634,9 +2635,15 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
             repeat |= seen[i] == h;
         }
         if (repeat && step > 0) {
-            agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, obs);
-            agent_conv_fold(a, obs);
-            size_t n = agent_copy(resp_cap, resp, obs);
+            const char *answer = obs;
+            if (!a->forced_result_is_final && agent_set_transcript(a) == GEIST_OK) {
+                (void) agent_generate_reply(a, sizeof turn, turn);
+                if (!agent_answer_degenerate(turn))
+                    answer = turn;
+            }
+            agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, answer);
+            agent_conv_fold(a, answer);
+            size_t n = agent_copy(resp_cap, resp, answer);
             if (resp_len) {
                 *resp_len = n;
             }
@@ -2653,16 +2660,38 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
         if (!t) {
             on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" is not allowed", name);
         } else {
-            agent_emit(a, GEIST_AGENT_RUNNING, step, t->name, nullptr);
             if (t->parameters_schema == nullptr) {
                 agent_args_normalize(t->args_schema, sizeof args, args); /* legacy migration */
             }
+            enum jsv1_status before_run = t->parameters_schema != nullptr
+                                                  ? jsv1_validate(t->parameters_schema,
+                                                                  strlen(t->parameters_schema),
+                                                                  args,
+                                                                  strlen(args))
+                                                  : JSV1_OK;
+            if (before_run == JSV1_OK)
+                agent_emit(a, GEIST_AGENT_RUNNING, step, t->name, nullptr);
             if (agent_tool_invoke_checked(t, strlen(args), args, sizeof obs, obs, &on) !=
                 GEIST_OK) {
                 on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" failed", name);
             }
         }
         agent_emit(a, GEIST_AGENT_OBSERVED, step, t ? t->name : name, obs);
+
+        if (have_tool_result && !a->forced_result_is_final &&
+            strncmp(obs, "error: invalid arguments", strlen("error: invalid arguments")) == 0 &&
+            agent_set_transcript(a) == GEIST_OK) {
+            (void) agent_generate_reply(a, sizeof turn, turn);
+            const char *answer = agent_answer_degenerate(turn) ? obs : turn;
+            agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, answer);
+            agent_conv_fold(a, answer);
+            size_t n = agent_copy(resp_cap, resp, answer);
+            if (resp_len)
+                *resp_len = n;
+            return GEIST_OK;
+        }
+        if (t != nullptr && strncmp(obs, "error:", 6u) != 0)
+            have_tool_result = true;
 
         /* force_call is a single-task tool-runner: once the routed tool has run,
          * its observation IS the answer (the listing / the summary). Return it
@@ -2695,8 +2724,16 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
                     }
                     aw += (size_t) snprintf(args1 + aw, sizeof args1 - aw, "\"}");
                     agent_emit(a, GEIST_AGENT_CALLING, step + 1, t1->name, args1);
-                    agent_emit(a, GEIST_AGENT_RUNNING, step + 1, t1->name, nullptr);
-                    size_t o1 = 0;
+                    size_t           o1 = 0;
+                    enum jsv1_status before_run =
+                            t1->parameters_schema != nullptr
+                                    ? jsv1_validate(t1->parameters_schema,
+                                                    strlen(t1->parameters_schema),
+                                                    args1,
+                                                    aw)
+                                    : JSV1_OK;
+                    if (before_run == JSV1_OK)
+                        agent_emit(a, GEIST_AGENT_RUNNING, step + 1, t1->name, nullptr);
                     if (agent_tool_invoke_checked(t1, aw, args1, sizeof obs, obs, &o1) ==
                         GEIST_OK) {
                         on = o1;

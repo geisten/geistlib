@@ -1,4 +1,5 @@
 #include "../tools/dynamic_request_v1.h"
+#include "../tools/dynamic_arguments_v1.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -36,6 +37,25 @@ int main(void) {
     failures +=
             geist_dynamic_tool_validate(
                     &request.toolset, "HassTurnOn", "{\"name\":\"light.kitchen\"}", 24u) != JSV1_OK;
+    const char *calculator =
+            "{\"input\":\"Add 5 and 7\",\"tools\":[{\"name\":\"CalculatorAdd\","
+            "\"description\":\"Add two integer values\",\"parameters\":{\"type\":\"object\","
+            "\"properties\":{\"a\":{\"type\":\"integer\"},\"b\":{\"type\":\"integer\"}},"
+            "\"required\":[\"a\",\"b\"]}}]}";
+    failures += geist_dynamic_request_parse(calculator, strlen(calculator), &request, &detail) !=
+                GEIST_DYNAMIC_REQUEST_OK;
+    char   calculator_args[256];
+    size_t calculator_args_len =
+            geist_dynamic_arguments_build(request.toolset.tools[0].parameters,
+                                          strlen(request.toolset.tools[0].parameters),
+                                          strlen(request.input),
+                                          request.input,
+                                          sizeof calculator_args,
+                                          calculator_args);
+    failures += calculator_args_len == 0u || strcmp(calculator_args, "{\"a\":5,\"b\":7}") != 0;
+    failures += geist_dynamic_tool_validate(
+                        &request.toolset, "CalculatorAdd", calculator_args, calculator_args_len) !=
+                JSV1_OK;
     failures += expect("unknown root",
                        "{\"input\":\"x\",\"tools\":[],\"host\":\"ha\"}",
                        GEIST_DYNAMIC_REQUEST_E_INVALID_REQUEST);

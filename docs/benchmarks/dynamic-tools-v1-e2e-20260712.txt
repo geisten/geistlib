@@ -1,0 +1,34 @@
+# Dynamic tools v1 local end-to-end evidence — 2026-07-12
+
+Branch: codex/dynamic-tools-v1
+Host: macOS, mac-omp release build
+Model: local bitnet-2b4t-i2_s.gguf
+Host implementation: examples/dynamic_tools_host.c (no HA dependency)
+
+Commands:
+
+  make dynamic-example-host
+  GEIST_AGENT_TRACE=1 ./geist agent -m <bitnet.gguf> \
+    --serve /private/tmp/geist-dynamic-v1.sock
+  bin/mac-omp/release/examples/dynamic_tools_host \
+    /private/tmp/geist-dynamic-v1.sock "Add 5 and 7"
+
+Host stdout / exit:
+
+  12
+  exit 0
+
+Daemon trace:
+
+  routing CalculatorAdd: selected
+  calling CalculatorAdd: {"a":5,"b":7}
+  running CalculatorAdd
+  observed CalculatorAdd: {"sum":12}
+  calling CalculatorAdd: {"a":"5","b":"7"}
+  observed CalculatorAdd: error: invalid arguments for "CalculatorAdd": type_mismatch
+  answering: 12
+
+The first call crossed the Unix socket and the independent host returned 12.
+The weak model proposed a redundant second call with schema-invalid string
+arguments. It produced no RUNNING event and never crossed the host boundary;
+Geist formulated the final answer from the preceding valid result.
