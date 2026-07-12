@@ -11,40 +11,43 @@
 
 static int fails = 0;
 
-/* transport stub: records the call, answers like HA would */
-static char g_last_service[64], g_last_extra[64], g_last_entity[64];
-static long stub_set(struct home_ctx          *c,
-                     const struct home_device *d,
-                     const char               *service,
-                     const char               *extra,
-                     size_t                    cap,
-                     char                      out[]) {
-    (void) c;
-    snprintf(g_last_service, sizeof g_last_service, "%s", service);
-    snprintf(g_last_extra, sizeof g_last_extra, "%s", extra);
-    snprintf(g_last_entity, sizeof g_last_entity, "%s", d->entity);
-    return (long) (size_t) snprintf(out, cap, "[]");
-}
-static long stub_get(struct home_ctx *c, const struct home_device *d, size_t cap, char out[]) {
-    (void) c;
-    if (strcmp(d->domain, "sensor") == 0) {
-        return (long) (size_t) snprintf(
+/* Fake executor: records typed planner requests and answers like HA would. */
+static char                      g_last_service[64], g_last_extra[64], g_last_entity[64];
+static enum home_executor_status g_next_status = HOME_EXECUTOR_OK;
+static enum home_executor_status fake_execute(void                               *context,
+                                              const struct home_executor_request *request,
+                                              size_t                              cap,
+                                              char                                out[],
+                                              size_t                             *out_len) {
+    (void) context;
+    if (g_next_status != HOME_EXECUTOR_OK) {
+        return g_next_status;
+    }
+    if (request->operation == HOME_EXECUTOR_CALL_SERVICE) {
+        snprintf(g_last_service, sizeof g_last_service, "%s", request->service);
+        snprintf(g_last_extra, sizeof g_last_extra, "%s", request->arguments);
+        snprintf(g_last_entity, sizeof g_last_entity, "%s", request->entity_id);
+        *out_len = (size_t) snprintf(out, cap, "[]");
+        return HOME_EXECUTOR_OK;
+    }
+    if (strcmp(request->domain, "sensor") == 0) {
+        *out_len = (size_t) snprintf(
                 out, cap, "{\"state\":\"19.5\",\"attributes\":{\"unit_of_measurement\":\"°C\"}}");
-    }
-    if (strcmp(d->domain, "climate") == 0) { /* the relative-setpoint base */
-        return (long) (size_t) snprintf(
+    } else if (strcmp(request->domain, "climate") == 0) {
+        *out_len = (size_t) snprintf(
                 out, cap, "{\"state\":\"heat\",\"attributes\":{\"temperature\":21}}");
+    } else {
+        *out_len = (size_t) snprintf(out, cap, "{\"state\":\"off\"}");
     }
-    return (long) (size_t) snprintf(out, cap, "{\"state\":\"off\"}");
+    return HOME_EXECUTOR_OK;
 }
 
 static struct home_ctx ctx;
 
 static void setup(void) {
     memset(&ctx, 0, sizeof ctx);
-    ctx.set             = stub_set;
-    ctx.get             = stub_get;
-    const char *lines[] = {
+    ctx.executor.execute = fake_execute;
+    const char *lines[]  = {
             "light.flur   | light   | flurlicht, licht flur, hallway light, licht",
             "light.bad    | light   | badlicht, licht bad, licht",
             "climate.bad  | climate | heizung bad, thermostat bad, heizung",
@@ -193,6 +196,13 @@ int main(void) {
     fails += geist_expect(strstr(out, "No device matches this request") != nullptr,
                           "invoke: English unknown-device text");
     unsetenv("GEIST_HOME_LANG");
+
+    g_next_status = HOME_EXECUTOR_DENIED;
+    invoke_cmd("Schalte das Licht im Flur ein", sizeof out, out);
+    fails += geist_expect(strstr(out, "Abgelehnt") != nullptr &&
+                                  strstr(out, "light.flur") != nullptr,
+                          "invoke: executor policy denial is explicit");
+    g_next_status = HOME_EXECUTOR_OK;
 
     /* ---- lock confirmation flow (file-based pending slot in build/) ---- */
     ctx.pending_path = "build/test-home-pending";

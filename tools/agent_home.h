@@ -49,6 +49,7 @@
 
 #include "agent.h"
 #include "ha_rest.h"
+#include "home_executor.h"
 
 #include <stdio.h>
 #include <time.h> /* time() — the unlock-confirmation TTL */
@@ -74,14 +75,9 @@ struct home_ctx {
      * process per request, and the confirmation arrives in the next one.
      * nullptr -> GEIST_HOME_PENDING or ./.geist-home-pending. */
     const char *pending_path;
-    /* transport hooks — the eval stub swaps these for a mutating state table */
-    long (*set)(struct home_ctx          *c,
-                const struct home_device *d,
-                const char               *service,
-                const char               *extra,
-                size_t                    cap,
-                char                      out[]);
-    long (*get)(struct home_ctx *c, const struct home_device *d, size_t cap, char out[]);
+    /* Typed execution boundary. Production uses the legacy REST adapter in
+     * this migration release; tests and protocol v2 supply another executor. */
+    struct home_executor executor;
 };
 
 /* ---- registry -------------------------------------------------------------- */
@@ -326,30 +322,86 @@ home_action(const char *req, const char *domain, size_t cap, char extra[static c
     return nullptr; /* sensors etc. are read-only; locks & co. never mapped */
 }
 
-/* ---- real transports (HA REST) -------------------------------------------- */
+/* ---- executor boundary + legacy HA REST adapter --------------------------- */
 
-static inline long home_set_ha(struct home_ctx          *c,
-                               const struct home_device *d,
-                               const char               *service,
-                               const char               *extra,
-                               size_t                    cap,
-                               char                      out[]) {
-    const char *url = c->ha_url ? c->ha_url : ha_env_url();
-    const char *tok = c->ha_token ? c->ha_token : ha_env_token();
+static inline enum home_executor_status
+home_legacy_rest_execute(void                               *context,
+                         const struct home_executor_request *request,
+                         size_t                              out_cap,
+                         char                                out[static out_cap],
+                         size_t                             *out_len) {
+    struct home_ctx *c   = (struct home_ctx *) context;
+    const char      *url = c->ha_url ? c->ha_url : ha_env_url();
+    const char      *tok = c->ha_token ? c->ha_token : ha_env_token();
     if (tok[0] == '\0') {
-        return -2; /* unconfigured */
+        return HOME_EXECUTOR_UNCONFIGURED;
     }
-    return ha_call_service(url, tok, d->domain, service, d->entity, extra, cap, out);
+    long result;
+    if (request->operation == HOME_EXECUTOR_GET_STATE) {
+        result = ha_get_state(url, tok, request->entity_id, out_cap, out);
+    } else {
+        result = ha_call_service(url,
+                                 tok,
+                                 request->domain,
+                                 request->service,
+                                 request->entity_id,
+                                 request->arguments,
+                                 out_cap,
+                                 out);
+    }
+    if (result < 0) {
+        return HOME_EXECUTOR_UNAVAILABLE;
+    }
+    *out_len = (size_t) result;
+    return HOME_EXECUTOR_OK;
 }
 
-static inline long
-home_get_ha(struct home_ctx *c, const struct home_device *d, size_t cap, char out[]) {
-    const char *url = c->ha_url ? c->ha_url : ha_env_url();
-    const char *tok = c->ha_token ? c->ha_token : ha_env_token();
-    if (tok[0] == '\0') {
-        return -2;
-    }
-    return ha_get_state(url, tok, d->entity, cap, out);
+static inline void home_executor_use_legacy_rest(struct home_ctx *c) {
+    c->executor.execute = home_legacy_rest_execute;
+    c->executor.context = c;
+}
+
+static inline enum home_executor_status home_execute(struct home_ctx             *c,
+                                                     enum home_executor_operation operation,
+                                                     const struct home_device    *d,
+                                                     const char                  *service,
+                                                     const char                  *arguments,
+                                                     size_t                       out_cap,
+                                                     char    out[static out_cap],
+                                                     size_t *out_len) {
+    const struct home_executor_request request = {
+            .operation = operation,
+            .entity_id = d->entity,
+            .domain    = d->domain,
+            .service   = service,
+            .arguments = arguments,
+    };
+    return home_executor_run(&c->executor, &request, out_cap, out, out_len);
+}
+
+static inline enum home_executor_status home_execute_get(struct home_ctx          *c,
+                                                         const struct home_device *d,
+                                                         size_t                    out_cap,
+                                                         char    out[static out_cap],
+                                                         size_t *out_len) {
+    return home_execute(c, HOME_EXECUTOR_GET_STATE, d, NULL, NULL, out_cap, out, out_len);
+}
+
+static inline enum home_executor_status home_execute_set(struct home_ctx          *c,
+                                                         const struct home_device *d,
+                                                         const char               *service,
+                                                         const char               *arguments,
+                                                         size_t                    out_cap,
+                                                         char    out[static out_cap],
+                                                         size_t *out_len) {
+    return home_execute(c,
+                        HOME_EXECUTOR_CALL_SERVICE,
+                        d,
+                        service,
+                        arguments != NULL ? arguments : "",
+                        out_cap,
+                        out,
+                        out_len);
 }
 
 /* ---- response language ----------------------------------------------------
@@ -596,6 +648,44 @@ static inline int home_domain_writable(const char *domain) {
            strcmp(domain, "media_player") == 0;
 }
 
+static inline enum geist_status home_executor_observation(enum home_executor_status status,
+                                                          const struct home_device *device,
+                                                          size_t                    out_cap,
+                                                          char    out[static out_cap],
+                                                          size_t *out_len) {
+    if (status == HOME_EXECUTOR_UNCONFIGURED) {
+        return agent_obs(out_cap,
+                         out,
+                         out_len,
+                         home_lang_is_en()
+                                 ? "Home Assistant execution is not configured."
+                                 : "Die Home-Assistant-Ausführung ist nicht konfiguriert.");
+    }
+    if (status == HOME_EXECUTOR_DENIED) {
+        return agent_obs(out_cap,
+                         out,
+                         out_len,
+                         home_lang_is_en() ? "Denied: Home Assistant policy does not allow %s."
+                                           : "Abgelehnt: Die Home-Assistant-Richtlinie erlaubt %s "
+                                             "nicht.",
+                         device->entity);
+    }
+    if (status == HOME_EXECUTOR_INVALID_REQUEST) {
+        return agent_obs(out_cap,
+                         out,
+                         out_len,
+                         home_lang_is_en() ? "error: invalid execution request for %s."
+                                           : "Fehler: ungültige Ausführungsanfrage für %s.",
+                         device->entity);
+    }
+    return agent_obs(out_cap,
+                     out,
+                     out_len,
+                     home_lang_is_en() ? "error: Home Assistant unreachable for %s."
+                                       : "Fehler: Home Assistant ist für %s nicht erreichbar.",
+                     device->entity);
+}
+
 /* The lock branch of the command tool: direct lock, challenge/confirm unlock.
  * Writes the observation; the caller has already resolved the device. */
 static inline enum geist_status home_lock_flow(struct home_ctx          *c,
@@ -619,15 +709,12 @@ static inline enum geist_status home_lock_flow(struct home_ctx          *c,
                               "gestellt).",
                     d->entity);
         }
-        static char raw[HOME_OBS_CAP];
-        long        rc = c->set(c, d, "unlock", "", sizeof raw, raw);
-        if (rc < 0) {
-            return agent_obs(out_cap,
-                             out,
-                             out_len,
-                             home_lang_is_en()
-                                     ? "error: Home Assistant unreachable (unlock)."
-                                     : "error: Home Assistant nicht erreichbar (unlock).");
+        static char               raw[HOME_OBS_CAP];
+        size_t                    raw_len = 0u;
+        enum home_executor_status rc =
+                home_execute_set(c, d, "unlock", "", sizeof raw, raw, &raw_len);
+        if (rc != HOME_EXECUTOR_OK) {
+            return home_executor_observation(rc, d, out_cap, out, out_len);
         }
         snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
         return agent_obs(
@@ -643,14 +730,12 @@ static inline enum geist_status home_lock_flow(struct home_ctx          *c,
                          d->entity);
     }
     if (strcmp(action, "lock") == 0) { /* the safe direction runs directly */
-        static char raw[HOME_OBS_CAP];
-        long        rc = c->set(c, d, "lock", "", sizeof raw, raw);
-        if (rc < 0) {
-            return agent_obs(out_cap,
-                             out,
-                             out_len,
-                             home_lang_is_en() ? "error: Home Assistant unreachable (lock)."
-                                               : "error: Home Assistant nicht erreichbar (lock).");
+        static char               raw[HOME_OBS_CAP];
+        size_t                    raw_len = 0u;
+        enum home_executor_status rc =
+                home_execute_set(c, d, "lock", "", sizeof raw, raw, &raw_len);
+        if (rc != HOME_EXECUTOR_OK) {
+            return home_executor_observation(rc, d, out_cap, out, out_len);
         }
         snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
         return agent_obs(
@@ -708,7 +793,9 @@ static inline enum geist_status home_command_invoke(void      *ctx,
                 if (w == 0) {
                     w = (size_t) snprintf(out, out_cap, "OK:");
                 }
-                if (c->set(c, d, service, extra, sizeof raw, raw) < 0) {
+                size_t raw_len = 0u;
+                if (home_execute_set(c, d, service, extra, sizeof raw, raw, &raw_len) !=
+                    HOME_EXECUTOR_OK) {
                     w += (size_t) snprintf(
                             out + w, out_cap - w, "%s %s: Fehler", done ? "," : "", d->entity);
                 } else {
@@ -764,7 +851,8 @@ static inline enum geist_status home_command_invoke(void      *ctx,
         if (dir != 0) {
             static char cur_raw[HOME_OBS_CAP];
             char        cur[32];
-            if (c->get(c, d, sizeof cur_raw, cur_raw) >= 0 &&
+            size_t      cur_raw_len = 0u;
+            if (home_execute_get(c, d, sizeof cur_raw, cur_raw, &cur_raw_len) == HOME_EXECUTOR_OK &&
                 (ha_json_str(cur_raw, "temperature", sizeof cur, cur) > 0 ||
                  ha_json_str(cur_raw, "state", sizeof cur, cur) > 0)) {
                 snprintf(extra, sizeof extra, "\"temperature\":%.4g", strtod(cur, nullptr) + dir);
@@ -782,24 +870,12 @@ static inline enum geist_status home_command_invoke(void      *ctx,
                         : "Unklar, was mit %s geschehen soll (z.B. ein/aus, Wert angeben).",
                 d->entity);
     }
-    static char raw[HOME_OBS_CAP];
-    long        rc = c->set(c, d, service, extra, sizeof raw, raw);
-    if (rc == -2) {
-        return agent_obs(
-                out_cap,
-                out,
-                out_len,
-                home_lang_is_en()
-                        ? "Home Assistant is not configured (GEIST_HA_URL / GEIST_HA_TOKEN)."
-                        : "Home Assistant ist nicht konfiguriert (GEIST_HA_URL / GEIST_HA_TOKEN).");
-    }
-    if (rc < 0) {
-        return agent_obs(out_cap,
-                         out,
-                         out_len,
-                         home_lang_is_en() ? "error: Home Assistant unreachable (%s)."
-                                           : "error: Home Assistant nicht erreichbar (%s).",
-                         service);
+    static char               raw[HOME_OBS_CAP];
+    size_t                    raw_len = 0u;
+    enum home_executor_status rc =
+            home_execute_set(c, d, service, extra, sizeof raw, raw, &raw_len);
+    if (rc != HOME_EXECUTOR_OK) {
+        return home_executor_observation(rc, d, out_cap, out, out_len);
     }
     snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity); /* pronoun memory */
     char        num[16];
@@ -833,8 +909,9 @@ static inline enum geist_status home_status_invoke(void      *ctx,
             for (size_t i = 0; i < nm; i++) {
                 const struct home_device *d = &c->dev[idx[i]];
                 char                      state[64];
-                const char               *word = "Fehler";
-                if (c->get(c, d, sizeof agg, agg) >= 0 &&
+                const char               *word    = "Fehler";
+                size_t                    agg_len = 0u;
+                if (home_execute_get(c, d, sizeof agg, agg, &agg_len) == HOME_EXECUTOR_OK &&
                     ha_json_str(agg, "state", sizeof state, state) > 0) {
                     word = home_state_word(state);
                 }
@@ -853,22 +930,10 @@ static inline enum geist_status home_status_invoke(void      *ctx,
     }
     const struct home_device *d = &c->dev[di];
     static char               raw[HOME_OBS_CAP];
-    long                      rc = c->get(c, d, sizeof raw, raw);
-    if (rc == -2) {
-        return agent_obs(
-                out_cap,
-                out,
-                out_len,
-                home_lang_is_en()
-                        ? "Home Assistant is not configured (GEIST_HA_URL / GEIST_HA_TOKEN)."
-                        : "Home Assistant ist nicht konfiguriert (GEIST_HA_URL / GEIST_HA_TOKEN).");
-    }
-    if (rc < 0) {
-        return agent_obs(out_cap,
-                         out,
-                         out_len,
-                         home_lang_is_en() ? "error: Home Assistant unreachable."
-                                           : "error: Home Assistant nicht erreichbar.");
+    size_t                    raw_len = 0u;
+    enum home_executor_status rc      = home_execute_get(c, d, sizeof raw, raw, &raw_len);
+    if (rc != HOME_EXECUTOR_OK) {
+        return home_executor_observation(rc, d, out_cap, out, out_len);
     }
     snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
     char state[64], unit[16];
@@ -886,9 +951,9 @@ static inline enum geist_status home_status_invoke(void      *ctx,
     return agent_obs(out_cap, out, out_len, "%s: %s", d->entity, home_state_word(state));
 }
 
-/* Ready-made whitelist entries. ctx must be initialized (registry loaded,
- * set/get hooks pointing at home_set_ha/home_get_ha or an eval stub) and must
- * outlive the agent. Names chosen by routing score-probe: distinct first
+/* Ready-made whitelist entries. ctx must be initialized with a loaded registry
+ * and an executor (legacy REST, protocol v2, or a fake) and must outlive the
+ * agent. Names chosen by routing score-probe: distinct first
  * tokens, imperative vs question evidence. */
 static inline struct geist_tool home_command_tool(struct home_ctx *c) {
     return (struct geist_tool) {

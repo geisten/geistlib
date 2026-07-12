@@ -240,58 +240,58 @@ static void ev_home_seed(const struct home_ctx *c) {
     }
 }
 
-static long ev_home_set(struct home_ctx          *c,
-                        const struct home_device *d,
-                        const char               *service,
-                        const char               *extra,
-                        size_t                    cap,
-                        char                      out[]) {
-    (void) c;
-    if (strcmp(d->entity, "light.keller") == 0) {
-        return -1; /* dead fixture: the command error path */
+static enum home_executor_status ev_home_execute(void                               *context,
+                                                 const struct home_executor_request *request,
+                                                 size_t                              cap,
+                                                 char                                out[],
+                                                 size_t                             *out_len) {
+    (void) context;
+    if (request->operation == HOME_EXECUTOR_GET_STATE) {
+        for (size_t i = 0; i < ev_home_n; i++) {
+            if (strcmp(ev_home[i].entity, request->entity_id) == 0) {
+                if (ev_home[i].unit[0]) {
+                    *out_len = (size_t) snprintf(
+                            out,
+                            cap,
+                            "{\"state\":\"%s\",\"attributes\":{\"unit_of_measurement\":\"%s\"}}",
+                            ev_home[i].state,
+                            ev_home[i].unit);
+                } else {
+                    *out_len = (size_t) snprintf(out, cap, "{\"state\":\"%s\"}", ev_home[i].state);
+                }
+                return HOME_EXECUTOR_OK;
+            }
+        }
+        return HOME_EXECUTOR_UNAVAILABLE;
+    }
+    if (strcmp(request->entity_id, "light.keller") == 0) {
+        return HOME_EXECUTOR_UNAVAILABLE; /* dead fixture: command error path */
     }
     for (size_t i = 0; i < ev_home_n; i++) {
-        if (strcmp(ev_home[i].entity, d->entity) != 0) {
+        if (strcmp(ev_home[i].entity, request->entity_id) != 0) {
             continue;
         }
-        if (strcmp(service, "turn_on") == 0) {
+        if (strcmp(request->service, "turn_on") == 0) {
             snprintf(ev_home[i].state, sizeof ev_home[0].state, "on");
-        } else if (strcmp(service, "turn_off") == 0) {
+        } else if (strcmp(request->service, "turn_off") == 0) {
             snprintf(ev_home[i].state, sizeof ev_home[0].state, "off");
-        } else if (strcmp(service, "open_cover") == 0) {
+        } else if (strcmp(request->service, "open_cover") == 0) {
             snprintf(ev_home[i].state, sizeof ev_home[0].state, "open");
-        } else if (strcmp(service, "close_cover") == 0) {
+        } else if (strcmp(request->service, "close_cover") == 0) {
             snprintf(ev_home[i].state, sizeof ev_home[0].state, "closed");
-        } else if (strcmp(service, "set_temperature") == 0) {
+        } else if (strcmp(request->service, "set_temperature") == 0) {
             char num[16] = "";
-            (void) home_parse_number(extra, sizeof num, num);
+            (void) home_parse_number(request->arguments, sizeof num, num);
             snprintf(ev_home[i].state, sizeof ev_home[0].state, "%s", num);
-        } else if (strcmp(service, "lock") == 0) {
+        } else if (strcmp(request->service, "lock") == 0) {
             snprintf(ev_home[i].state, sizeof ev_home[0].state, "locked");
-        } else if (strcmp(service, "unlock") == 0) {
+        } else if (strcmp(request->service, "unlock") == 0) {
             snprintf(ev_home[i].state, sizeof ev_home[0].state, "unlocked");
         }
-        return (long) (size_t) snprintf(out, cap, "[]");
+        *out_len = (size_t) snprintf(out, cap, "[]");
+        return HOME_EXECUTOR_OK;
     }
-    return -1;
-}
-
-static long ev_home_get(struct home_ctx *c, const struct home_device *d, size_t cap, char out[]) {
-    (void) c;
-    for (size_t i = 0; i < ev_home_n; i++) {
-        if (strcmp(ev_home[i].entity, d->entity) == 0) {
-            if (ev_home[i].unit[0]) {
-                return (long) (size_t) snprintf(
-                        out,
-                        cap,
-                        "{\"state\":\"%s\",\"attributes\":{\"unit_of_measurement\":\"%s\"}}",
-                        ev_home[i].state,
-                        ev_home[i].unit);
-            }
-            return (long) (size_t) snprintf(out, cap, "{\"state\":\"%s\"}", ev_home[i].state);
-        }
-    }
-    return -1;
+    return HOME_EXECUTOR_UNAVAILABLE;
 }
 
 /* stock_movers stub: canned sorted movers, direction from the real detector —
@@ -614,8 +614,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "cannot load %s (run from the repo root)\n", EV_HOME_REGISTRY);
             return GEIST_TEST_ERROR;
         }
-        homectx.set = ev_home_set;
-        homectx.get = ev_home_get;
+        homectx.executor.execute = ev_home_execute;
         /* deterministic runs: the unlock-confirmation slot lives in build/
          * scratch and starts absent (a stale slot must not leak between runs) */
         homectx.pending_path = "build/agent-eval-pending";

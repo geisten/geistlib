@@ -176,8 +176,7 @@ static size_t home_toolset(struct geist_model   *model,
                     "home: no devices — set GEIST_HOME_REGISTRY or create "
                     "./home-registry.txt\n");
         }
-        hc.set = home_set_ha;
-        hc.get = home_get_ha;
+        home_executor_use_legacy_rest(&hc);
     }
     out[0] = home_command_tool(&hc);
     out[1] = home_status_tool(&hc);
