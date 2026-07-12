@@ -33,6 +33,7 @@
 #include <geist_util.h>
 
 #include "json_schema_v1.h"
+#include "dynamic_arguments_v1.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -2087,6 +2088,31 @@ static inline size_t agent_force_call(struct geist_agent *a,
     AGENT_PREFILL("{\"tool\":\"");
     AGENT_PREFILL(t->name); /* the pre-selected tool (see agent_select_tool) */
     AGENT_PREFILL("\",\"args\":");
+
+    if (t->parameters_schema != nullptr) {
+        char   typed[GEIST_AGENT_ARGS_CAP];
+        size_t typed_len = geist_dynamic_arguments_build(t->parameters_schema,
+                                                         strlen(t->parameters_schema),
+                                                         req_len,
+                                                         req,
+                                                         sizeof typed,
+                                                         typed);
+        if (typed_len == 0u) {
+            return (size_t) snprintf(
+                    out, cap, "Please clarify the required values for the selected action.");
+        }
+        geist_token_t typed_ids[512];
+        size_t        typed_n = 0u;
+        if (geist_session_tokenize(
+                    a->session, typed, sizeof typed_ids / sizeof *typed_ids, typed_ids, &typed_n) ==
+                    GEIST_OK &&
+            typed_n > 0u) {
+            (void) geist_session_prefill_tokens(a->session, typed_n, typed_ids);
+        }
+        w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%s}", typed);
+        out[w < cap ? w : cap - 1u] = '\0';
+        return w < cap ? w : cap - 1u;
+    }
 
     char   keys[4][GEIST_AGENT_NAME_CAP];
     size_t nk = agent_schema_keys(t->args_schema, 4, keys);
