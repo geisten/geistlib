@@ -53,7 +53,7 @@ async def expect(code: str, response: object | None = None, error: Exception | N
     original = health.asyncio.open_unix_connection
     health.asyncio.open_unix_connection = connect
     try:
-        await health.async_validate_health("/config/geist.sock", 0.1)
+        result = await health.async_validate_health("/config/geist.sock", 0.1)
     except health.HealthError as err:
         assert err.code == code, (err.code, code)
     else:
@@ -72,10 +72,11 @@ async def checks() -> None:
     original = health.asyncio.open_unix_connection
     health.asyncio.open_unix_connection = ready
     try:
-        await health.async_validate_health("/config/geist.sock", 0.1)
+        result = await health.async_validate_health("/config/geist.sock", 0.1)
     finally:
         health.asyncio.open_unix_connection = original
     assert writer.payload == health.REQUEST and writer.closed
+    assert result == health.HealthResult(protocol="dynamic-tools-v1", status="ready")
 
     await expect("cannot_connect", error=FileNotFoundError())
     await expect("timeout", error=TimeoutError())

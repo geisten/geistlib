@@ -27,6 +27,8 @@ minor release.
   end-to-end transcript under `docs/benchmarks/`.
 - Added a model-free dynamic-tools-v1 health handshake and a UI-only Home
   Assistant Config/Reconfigure Flow with validated socket and DE/EN errors.
+- Added a polling HA Health entity, automatically recovering Repairs, and
+  config-entry diagnostics that expose no paths, addresses or HA content.
 - Added an agent-executable Home Assistant implementation plan for phases 0–8;
   HTTP/REST server requirements are explicitly out of scope.
 

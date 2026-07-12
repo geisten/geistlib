@@ -26,7 +26,8 @@ make MODE=asan test
 Dynamic-tools safety is split across `test_json_schema_v1_unit`,
 `test_dynamic_tools_v1_unit`, `test_dynamic_request_v1_unit`,
 `test_dynamic_arguments_v1_unit`, `test_dynamic_host_v1_unit`,
-`test_agent_unit`, `test_ha_health.py`, and `test_ha_dynamic_tools_v1.py`. A real model/socket/host
+`test_agent_unit`, `test_ha_health.py`, `test_ha_operability.py`, and
+`test_ha_dynamic_tools_v1.py`. A real model/socket/host
 transcript is recorded in
 `docs/benchmarks/dynamic-tools-v1-e2e-20260712.txt`.
 

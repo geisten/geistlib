@@ -62,6 +62,10 @@ enter `/config/geist.sock`, and select it as the conversation agent of an Assist
 pipeline. The Config Flow verifies the dynamic-tools-v1 health handshake before
 creating the entry. For every request the
 component derives tools only from Assist-exposed entities in supported domains.
+The integration also creates a diagnostic Health sensor. Failed health polls
+raise one Repair issue; a successful later poll clears it automatically.
+Downloadable diagnostics include only readiness, protocol, and stable error
+codes—never the socket path, utterances, entities, arguments, or HA state.
 
 ## Run the resident daemon
 

@@ -1,4 +1,15 @@
 {
+  "issues": {
+    "runtime_health": {
+      "title": "Geist service needs attention",
+      "description": "The local Geist health check failed: {error}. Reconfigure the integration or restart the service."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "health": {"name": "Health"}
+    }
+  },
   "config": {
     "step": {
       "user": {

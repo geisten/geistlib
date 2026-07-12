@@ -1,4 +1,15 @@
 {
+  "issues": {
+    "runtime_health": {
+      "title": "Der Geist-Dienst benötigt Aufmerksamkeit",
+      "description": "Die lokale Geist-Integritätsprüfung ist fehlgeschlagen: {error}. Konfiguriere die Integration neu oder starte den Dienst neu."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "health": {"name": "Zustand"}
+    }
+  },
   "config": {
     "step": {
       "user": {

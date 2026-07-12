@@ -87,11 +87,11 @@ HACS before considering Home Assistant Core.
 Slices:
 
 1. ✅ UI Config Flow, health validation, reconfigure, DE/EN setup strings.
-2. **NEXT:** discovery where supported, health device/entity, Repairs and fully
-   redacted diagnostics.
-3. Pending: conversation-id/history policy, reconnect/cancel/busy handling and
-   bounded queues.
-4. Pending: HACS layout, Hassfest/HACS validation, tagged compatibility table.
+2. ✅ Polling health entity, Repairs with automatic recovery, and fully redacted
+   config-entry diagnostics.
+3. **NEXT:** reconnect/cancel/busy handling, bounded queues and secret-free logs.
+4. Pending: HA-language defaulting and bounded conversation-id/history policy.
+5. Pending: HACS layout, Hassfest/HACS validation, tagged compatibility table.
 
 Exit gate: install, configure, break, diagnose, repair, reconfigure and unload
 through HA UI; no YAML or daemon logs required.

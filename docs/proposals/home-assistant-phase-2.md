@@ -135,10 +135,12 @@ real-HA acceptance is recorded separately before the external beta.
 
 1. ✅ Add a model-free health handshake plus connection-tested UI config and
    reconfigure flows, including DE/EN validation errors.
-2. Add DE/EN translations, HA-language defaulting, diagnostics, health entities,
-   and Repairs.
+2. ✅ Add DE/EN setup/health translations, redacted diagnostics, a polling
+   health entity, and Repairs that clear automatically after recovery.
 3. Add reconnect, cancellation, busy handling, bounded queues, and structured
    secret-free logging.
+4. Add HA-language defaulting plus an explicit bounded conversation-id/history
+   policy, with multilingual and reset tests.
 
 Exit gate: a non-developer can install and diagnose an intentionally broken
 runtime without editing YAML or reading daemon logs.
@@ -221,18 +223,25 @@ P2.2 item 1 is implemented by the model-free dynamic-tools-v1 health control
 frame, validated UI Config Flow, atomic reconfigure and DE/EN validation errors.
 There is no YAML import path.
 
-The next executable slice is **P2.2 item 2: health entity, Repairs and redacted
-diagnostics**. Scope is limited to the HA integration plus additive fields in
-the existing health result if the UI needs them. Do not add HTTP, tokens,
-fallback transports, YAML configuration or app packaging.
+P2.2 item 2 is implemented by the polling diagnostic entity, one Repair issue
+per failed runtime, automatic issue deletion after recovery, and config-entry
+diagnostics containing no paths, addresses, utterances, entities or HA state.
+
+The next executable slice is **P2.2 item 3: reconnect, cancellation, busy
+handling, bounded queues and structured secret-free logging**. Scope is the
+existing dynamic session and HA integration. Do not add a second transport,
+background request replay, tokens, or unbounded conversation history.
 
 Acceptance for that slice:
 
-1. a diagnostic entity reports ready/protocol without utterance or entity data;
-2. Repairs covers unreachable, timeout, wrong protocol and not-ready states;
-3. downloadable diagnostics redact paths, addresses, utterances and HA state;
-4. recovery clears the issue without restarting Home Assistant;
-5. `make test-ha`, `make test-unit`, and `make format-check` pass.
+1. one bounded in-flight request per runtime and an explicit busy result;
+2. client cancellation sends at most one correlated cancel and closes cleanly;
+3. transient disconnects surface a stable HA error and the next request retries
+   by opening a fresh socket—no hidden replay;
+4. logs contain stable codes and timing only, never utterances, arguments,
+   entity ids, paths, addresses or tool results;
+5. deterministic timeout, disconnect, cancellation and concurrency tests plus
+   `make test-ha`, `make test-unit`, and `make format-check` pass.
 
 ## Design references
 
