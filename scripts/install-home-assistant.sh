@@ -1,7 +1,6 @@
 #!/bin/sh
-# Install the geist Home Assistant developer preview without embedding secrets
-# in argv, generated units, or the repository. Supports DESTDIR for hermetic
-# clean-host tests and packaging.
+# Install the geist Home Assistant developer preview. Supports DESTDIR for
+# hermetic clean-host tests and packaging.
 set -eu
 
 usage() {
@@ -11,7 +10,6 @@ usage: scripts/install-home-assistant.sh [options]
 Required:
   --ha-config DIR       host directory mounted as /config in Home Assistant
   --binary PATH         executable geist-home binary
-  --env-file PATH       existing file containing GEIST_HA_URL and GEIST_HA_TOKEN
 
 Options:
   --user USER           systemd service user (default: current user)
@@ -31,7 +29,6 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 component_src="$repo_dir/integrations/home-assistant/custom_components/geist_conversation"
 ha_config=
 binary=
-env_source=
 service_user=$(id -un)
 work_dir=
 state_dir=${HOME:-/tmp}/.local/share/geist-home
@@ -43,7 +40,6 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --ha-config) ha_config=${2-}; shift 2 ;;
         --binary) binary=${2-}; shift 2 ;;
-        --env-file) env_source=${2-}; shift 2 ;;
         --user) service_user=${2-}; shift 2 ;;
         --work-dir) work_dir=${2-}; shift 2 ;;
         --state-dir) state_dir=${2-}; shift 2 ;;
@@ -66,9 +62,8 @@ required() {
 
 required --ha-config "$ha_config"
 required --binary "$binary"
-required --env-file "$env_source"
 
-case "$ha_config$binary$env_source$state_dir$unit_dir$destdir" in
+case "$ha_config$binary$state_dir$unit_dir$destdir" in
     *"\n"*) echo "install-home-assistant: newlines are not allowed in paths" >&2; exit 2 ;;
 esac
 
@@ -84,15 +79,6 @@ if ! "$binary" --help 2>&1 | grep -q -- '--serve'; then
     echo "install-home-assistant: binary does not advertise the required --serve mode" >&2
     exit 1
 fi
-if [ ! -f "$env_source" ]; then
-    echo "install-home-assistant: environment file not found: $env_source" >&2
-    exit 1
-fi
-if ! grep -q '^GEIST_HA_URL=' "$env_source" || ! grep -q '^GEIST_HA_TOKEN=' "$env_source"; then
-    echo "install-home-assistant: env file needs GEIST_HA_URL and GEIST_HA_TOKEN" >&2
-    exit 1
-fi
-
 if [ -z "$work_dir" ]; then
     work_dir=$(CDPATH= cd -- "$(dirname -- "$binary")" && pwd)
 fi
@@ -112,7 +98,6 @@ prefix_path() {
 component_dst=$(prefix_path "$ha_config/custom_components/geist_conversation")
 state_dst=$(prefix_path "$state_dir")
 unit_dst=$(prefix_path "$unit_dir/geist-home.service")
-env_dst="$state_dst/geist-home.env"
 backup_root="$state_dst/backups"
 latest_file="$state_dst/latest-backup"
 
@@ -129,12 +114,6 @@ if [ "$rollback" -eq 1 ]; then
     rm -rf "$component_dst"
     if [ -d "$backup/component" ]; then cp -R "$backup/component" "$component_dst"; fi
     if [ -f "$backup/unit" ]; then cp "$backup/unit" "$unit_dst"; else rm -f "$unit_dst"; fi
-    if [ -f "$backup/env" ]; then
-        cp "$backup/env" "$env_dst"
-        chmod 600 "$env_dst"
-    else
-        rm -f "$env_dst"
-    fi
     echo "Rolled back geist Home Assistant artifacts from $backup"
     exit 0
 fi
@@ -146,16 +125,14 @@ if [ -d "$component_dst" ] && [ "$(find "$component_dst" -mindepth 1 -maxdepth 1
     cp -R "$component_dst" "$backup/component"
 fi
 if [ -f "$unit_dst" ]; then cp "$unit_dst" "$backup/unit"; fi
-if [ -f "$env_dst" ]; then cp "$env_dst" "$backup/env"; fi
 
 # Copy an explicit allowlist: never deploy __pycache__, editor files, or secrets.
 rm -rf "$component_dst"
 mkdir -p "$component_dst"
-for file in __init__.py config_flow.py const.py conversation.py manifest.json registry.py transport.py; do
+for file in __init__.py config_flow.py const.py conversation.py dynamic_session_v1.py \
+    dynamic_tools_v1.py exposure.py ha_executor.py manifest.json policy.py; do
     cp "$component_src/$file" "$component_dst/$file"
 done
-cp "$env_source" "$env_dst"
-chmod 600 "$env_dst"
 
 socket_path="$ha_config/geist.sock"
 cat >"$unit_dst" <<EOF
@@ -166,7 +143,6 @@ After=network.target
 [Service]
 User=$service_user
 WorkingDirectory=$work_dir
-EnvironmentFile=$state_dir/geist-home.env
 Environment=GEIST_AGENT_TRACE=0
 ExecStart=$binary --serve $socket_path
 Restart=on-failure
@@ -181,7 +157,6 @@ printf '%s\n' "$backup" >"$latest_file"
 cat >"$state_dst/install-manifest.txt" <<EOF
 component=$ha_config/custom_components/geist_conversation
 unit=$unit_dir/geist-home.service
-environment=$state_dir/geist-home.env
 socket=$socket_path
 EOF
 

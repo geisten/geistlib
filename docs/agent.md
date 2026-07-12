@@ -228,8 +228,7 @@ observation.
 
 ### Per-request dynamic tools
 
-`geist agent --serve` accepts either the legacy UTF-8 line or a newline-delimited
-JSON request:
+`geist agent --serve` accepts one newline-delimited JSON request:
 
 ```json
 {"input":"Add 5 and 7","max_tool_steps":4,"tools":[{"name":"CalculatorAdd","description":"Add two integers","parameters":{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"]}}]}
@@ -292,17 +291,12 @@ make home
 ```
 
 The current HA integration uses dynamic tools: HA offers exposed capabilities
-per request and executes them itself. This protocol neither requires nor
-consumes an HA token; the installer may still provision an unused compatibility
-variable. The direct one-shot CLI and `ha_rest.h` remain a legacy/developer path
-for deterministic home-agent evaluation.
+per request and executes them itself. Geist contains no HA REST client, receives
+no HA token, and has no compatibility transport.
 
 Three layers:
 
-- **`ha_rest.h`** — standalone, agent-free Home Assistant REST client
-  (call_service / get_state, Bearer auth, no-shell curl). Manual driver:
-  `geist ha state|on|off|open|close <entity_id>` (all build profiles).
-- **`agent_home.h`** — two tools along the read/write boundary:
+- **`agent_home.h`** — an internal deterministic evaluation harness with two tools:
   a **command tool** (turn on/off, dim, set temperature, open/close) and a
   **status tool** (device/sensor reads), both `{"request"}` — the model only
   routes; device, action and value are parsed deterministically against the

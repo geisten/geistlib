@@ -12,11 +12,10 @@ from homeassistant.helpers import intent
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_SOCKET, DEFAULT_SOCKET, TIMEOUT_S
-from .dynamic_session_v1 import async_ask_geist_dynamic
+from .dynamic_session_v1 import ProtocolError, async_ask_geist_dynamic
 from .ha_executor import HomeAssistantExecutor
 from .policy import ExposureStore
-from .protocol_v2 import ProtocolError
-from .registry import exposed_entity_ids
+from .exposure import exposed_entity_ids
 
 _LOGGER = logging.getLogger(__name__)
 

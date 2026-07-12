@@ -26,7 +26,6 @@ def load(name: str):
     return module
 
 
-protocol = load("protocol_v2")
 policy = load("policy")
 dynamic = load("dynamic_tools_v1")
 session = load("dynamic_session_v1")
@@ -127,7 +126,7 @@ async def checks() -> None:
                     {"type": "tool.call", "call_id": "2", "name": "HassTurnOff",
                      "arguments": {"name": "light.kitchen"}}]),
             Writer(), "Do two things", exposure, Executor(), timeout_s=1, max_tool_steps=1)
-    except protocol.ProtocolError as err:
+    except session.ProtocolError as err:
         assert err.code == "tool_budget_exceeded"
     else:
         raise AssertionError("tool budget was not enforced")
@@ -139,7 +138,7 @@ async def checks() -> None:
                      "arguments": {"name": "light.kitchen"}}]),
             timeout_writer, "Turn on kitchen", exposure, SlowExecutor(),
             timeout_s=0.01, max_tool_steps=2)
-    except protocol.ProtocolError as err:
+    except session.ProtocolError as err:
         assert err.code == "timeout"
     else:
         raise AssertionError("timeout did not cancel session")

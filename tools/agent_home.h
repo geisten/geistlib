@@ -48,7 +48,6 @@
 #include <geist.h>
 
 #include "agent.h"
-#include "ha_rest.h"
 #include "home_executor.h"
 
 #include <stdio.h>
@@ -66,8 +65,6 @@ struct home_device {
 };
 
 struct home_ctx {
-    const char        *ha_url;   /* nullptr -> ha_env_url() */
-    const char        *ha_token; /* nullptr -> ha_env_token(); "" = unconfigured */
     struct home_device dev[HOME_MAX_DEVICES];
     size_t             n_dev;
     uint64_t           registry_version; /* protocol-v2 exposure snapshot */
@@ -76,10 +73,41 @@ struct home_ctx {
      * process per request, and the confirmation arrives in the next one.
      * nullptr -> GEIST_HOME_PENDING or ./.geist-home-pending. */
     const char *pending_path;
-    /* Typed execution boundary. Production uses the legacy REST adapter in
-     * this migration release; tests and protocol v2 supply another executor. */
+    /* Typed execution boundary. The host supplies the executor. */
     struct home_executor executor;
 };
+
+/* Extract one scalar field from the small executor result objects used by the
+ * deterministic evaluation harness. This is not a transport or HA client. */
+static inline size_t
+home_json_scalar(const char *json, const char *key, size_t cap, char out[static cap]) {
+    out[0] = '\0';
+    char pat[96];
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (p == nullptr) {
+        return 0;
+    }
+    p += strlen(pat);
+    while (*p == ' ' || *p == ':') {
+        p++;
+    }
+    size_t w = 0;
+    if (*p == '"') {
+        for (p++; *p && *p != '"' && w + 1 < cap; p++) {
+            if (*p == '\\' && p[1]) {
+                p++;
+            }
+            out[w++] = *p;
+        }
+    } else {
+        while (*p && *p != ',' && *p != '}' && *p != ']' && *p != ' ' && w + 1 < cap) {
+            out[w++] = *p++;
+        }
+    }
+    out[w] = '\0';
+    return w;
+}
 
 /* ---- registry -------------------------------------------------------------- */
 
@@ -323,44 +351,7 @@ home_action(const char *req, const char *domain, size_t cap, char extra[static c
     return nullptr; /* sensors etc. are read-only; locks & co. never mapped */
 }
 
-/* ---- executor boundary + legacy HA REST adapter --------------------------- */
-
-static inline enum home_executor_status
-home_legacy_rest_execute(void                               *context,
-                         const struct home_executor_request *request,
-                         size_t                              out_cap,
-                         char                                out[static out_cap],
-                         size_t                             *out_len) {
-    struct home_ctx *c   = (struct home_ctx *) context;
-    const char      *url = c->ha_url ? c->ha_url : ha_env_url();
-    const char      *tok = c->ha_token ? c->ha_token : ha_env_token();
-    if (tok[0] == '\0') {
-        return HOME_EXECUTOR_UNCONFIGURED;
-    }
-    long result;
-    if (request->operation == HOME_EXECUTOR_GET_STATE) {
-        result = ha_get_state(url, tok, request->entity_id, out_cap, out);
-    } else {
-        result = ha_call_service(url,
-                                 tok,
-                                 request->domain,
-                                 request->service,
-                                 request->entity_id,
-                                 request->arguments,
-                                 out_cap,
-                                 out);
-    }
-    if (result < 0) {
-        return HOME_EXECUTOR_UNAVAILABLE;
-    }
-    *out_len = (size_t) result;
-    return HOME_EXECUTOR_OK;
-}
-
-static inline void home_executor_use_legacy_rest(struct home_ctx *c) {
-    c->executor.execute = home_legacy_rest_execute;
-    c->executor.context = c;
-}
+/* ---- executor boundary ---------------------------------------------------- */
 
 static inline enum home_executor_status home_execute(struct home_ctx             *c,
                                                      enum home_executor_operation operation,
@@ -855,8 +846,8 @@ static inline enum geist_status home_command_invoke(void      *ctx,
             char        cur[32];
             size_t      cur_raw_len = 0u;
             if (home_execute_get(c, d, sizeof cur_raw, cur_raw, &cur_raw_len) == HOME_EXECUTOR_OK &&
-                (ha_json_str(cur_raw, "temperature", sizeof cur, cur) > 0 ||
-                 ha_json_str(cur_raw, "state", sizeof cur, cur) > 0)) {
+                (home_json_scalar(cur_raw, "temperature", sizeof cur, cur) > 0 ||
+                 home_json_scalar(cur_raw, "state", sizeof cur, cur) > 0)) {
                 snprintf(extra, sizeof extra, "\"temperature\":%.4g", strtod(cur, nullptr) + dir);
                 service = "set_temperature";
             }
@@ -914,7 +905,7 @@ static inline enum geist_status home_status_invoke(void      *ctx,
                 const char               *word    = "Fehler";
                 size_t                    agg_len = 0u;
                 if (home_execute_get(c, d, sizeof agg, agg, &agg_len) == HOME_EXECUTOR_OK &&
-                    ha_json_str(agg, "state", sizeof state, state) > 0) {
+                    home_json_scalar(agg, "state", sizeof state, state) > 0) {
                     word = home_state_word(state);
                 }
                 w += (size_t) snprintf(
@@ -939,7 +930,7 @@ static inline enum geist_status home_status_invoke(void      *ctx,
     }
     snprintf(c->last_entity, sizeof c->last_entity, "%s", d->entity);
     char state[64], unit[16];
-    if (ha_json_str(raw, "state", sizeof state, state) == 0) {
+    if (home_json_scalar(raw, "state", sizeof state, state) == 0) {
         return agent_obs(out_cap,
                          out,
                          out_len,
@@ -947,7 +938,7 @@ static inline enum geist_status home_status_invoke(void      *ctx,
                                            : "error: unerwartete Antwort für %s.",
                          d->entity);
     }
-    if (ha_json_str(raw, "unit_of_measurement", sizeof unit, unit) > 0) {
+    if (home_json_scalar(raw, "unit_of_measurement", sizeof unit, unit) > 0) {
         return agent_obs(out_cap, out, out_len, "%s: %s %s", d->entity, state, unit);
     }
     return agent_obs(out_cap, out, out_len, "%s: %s", d->entity, home_state_word(state));

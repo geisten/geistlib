@@ -8,7 +8,14 @@ from typing import Any
 
 from .dynamic_tools_v1 import async_handle_dynamic_tool_call, build_dynamic_tools
 from .policy import ExposureStore, PolicyError
-from .protocol_v2 import ProtocolError
+
+
+class ProtocolError(ValueError):
+    """Stable fail-closed error for the dynamic JSON session."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 MAX_LINE_BYTES = 131072
 

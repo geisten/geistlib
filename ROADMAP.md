@@ -27,9 +27,8 @@ Home Assistant conversation agent on Raspberry Pi 5 and CPU-only Linux hosts.
 Home Assistant remains the authority for entity exposure and execution. For
 each Assist request the integration derives a dynamic toolset from the current
 exposure, sends it to the resident Geist process, validates the returned name
-and arguments again, and executes inside HA. The dynamic protocol neither
-requires nor consumes HA credentials; the legacy installer still provisions an
-unused compatibility variable pending cleanup.
+and arguments again, and executes inside HA. Geist has no HA REST client and
+receives no HA credentials.
 
 ### Preview exit criteria
 

@@ -7,22 +7,18 @@ Use a non-critical HA instance or expose only one harmless light at first.
 
 1. Download the `geist-home-<platform>.tar.gz` asset and `SHA256SUMS` from the
    same release. Verify it with `sha256sum -c SHA256SUMS --ignore-missing`.
-2. Until the installer cleanup lands, create a mode-0600 token file for its
-   legacy compatibility check. The Phase-3 conversation path does not use this
-   token for tool execution.
-3. From the source/integration bundle, run:
+2. From the source/integration bundle, run:
 
    ```sh
    scripts/setup-home-assistant.sh \
      --ha-config /path/to/ha-config \
      --binary /path/to/geist-home \
-     --token-file /path/to/token \
      --activate
    ```
 
-4. Restart HA if the script could not identify its container. Add **geist
+3. Restart HA if the script could not identify its container. Add **geist
    Conversation**, select it in an Assist pipeline, and expose one test light.
-5. Try a status question, on, off, an ambiguous name, and a name that is not
+4. Try a status question, on, off, an ambiguous name, and a name that is not
    exposed. The last request must not operate the hidden entity.
 
 ## Report template

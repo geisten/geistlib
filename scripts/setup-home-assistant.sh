@@ -9,23 +9,18 @@ usage: scripts/setup-home-assistant.sh [options]
 Options:
   --ha-config DIR   host path mounted as HA /config (prompted if omitted)
   --binary PATH     geist-home binary (auto-detected if omitted)
-  --ha-url URL      Home Assistant URL (default: http://localhost:8123)
-  --token-file PATH file containing only the HA token
   --user USER       service user (default: current user)
   --activate        run sudo systemctl daemon-reload/enable and restart HA
   --dry-run         detect and validate without writing
   --help
 
-Missing interactive values are prompted. The token is never placed in argv,
-generated units, logs, or the repository.
+Missing interactive values are prompted.
 EOF
 }
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ha_config=
 binary=
-ha_url=http://localhost:8123
-token_file=
 service_user=$(id -un)
 activate=0
 dry_run=0
@@ -34,8 +29,6 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --ha-config) ha_config=${2-}; shift 2 ;;
         --binary) binary=${2-}; shift 2 ;;
-        --ha-url) ha_url=${2-}; shift 2 ;;
-        --token-file) token_file=${2-}; shift 2 ;;
         --user) service_user=${2-}; shift 2 ;;
         --activate) activate=1; shift ;;
         --dry-run) dry_run=1; shift ;;
@@ -87,7 +80,7 @@ fi
 ha_config=$(CDPATH= cd -- "$ha_config" && pwd)
 
 printf 'platform=%s release=%s\n' "$platform" "$release_platform"
-printf 'binary=%s\nha_config=%s\nha_url=%s\n' "$binary" "$ha_config" "$ha_url"
+printf 'binary=%s\nha_config=%s\n' "$binary" "$ha_config"
 if [ "$dry_run" -eq 1 ]; then
     echo "setup-home-assistant: dry-run PASS"
     exit 0
@@ -95,49 +88,13 @@ fi
 
 state_dir=${HOME:-/tmp}/.local/share/geist-home
 mkdir -p "$state_dir"
-env_file=$state_dir/geist-home.setup.env
-umask 077
-if [ -n "$token_file" ]; then
-    if [ ! -f "$token_file" ]; then
-        echo "setup-home-assistant: token file missing: $token_file" >&2
-        exit 1
-    fi
-    token=$(sed -n '1p' "$token_file")
-elif [ -t 0 ]; then
-    printf 'Home Assistant long-lived token: '
-    stty -echo
-    IFS= read -r token
-    stty echo
-    printf '\n'
-else
-    echo "setup-home-assistant: --token-file is required non-interactively" >&2
-    exit 2
-fi
-if [ -z "$token" ]; then
-    echo "setup-home-assistant: token is empty" >&2
-    exit 1
-fi
-printf 'GEIST_HA_URL=%s\nGEIST_HA_TOKEN=%s\n' "$ha_url" "$token" >"$env_file"
-chmod 600 "$env_file"
-
-if command -v curl >/dev/null 2>&1; then
-    if ! printf 'header = "Authorization: Bearer %s"\n' "$token" |
-        curl -fsS --max-time 10 -o /dev/null --config - "$ha_url/api/"; then
-        token=
-        echo "setup-home-assistant: authenticated HA API check failed: $ha_url" >&2
-        exit 1
-    fi
-fi
-token=
 
 "$root/scripts/install-home-assistant.sh" \
     --ha-config "$ha_config" \
     --binary "$binary" \
-    --env-file "$env_file" \
     --user "$service_user" \
     --work-dir "$(dirname -- "$binary")" \
     --state-dir "$state_dir"
-rm -f "$env_file"
 
 if [ "$activate" -eq 1 ]; then
     command -v systemctl >/dev/null 2>&1 || {

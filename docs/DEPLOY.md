@@ -25,13 +25,12 @@ The tool-use **agent** (`agent.h`) is a header-only library; the `agent` and
 geist agent model.gguf --serve /run/geist.sock     # or ./geist-home --serve …
 ```
 
-The model stays warm on a **chmod-600 Unix socket**. Legacy clients may send one
-UTF-8 line. Dynamic hosts send newline-delimited JSON with a per-request toolset,
+The model stays warm on a **chmod-600 Unix socket**. Dynamic hosts send
+newline-delimited JSON with a per-request toolset,
 execute correlated `tool.call` frames themselves, return `tool.result`, and
 receive `conversation.result`. The Home Assistant adapter uses this path, so HA
 owns authorization and execution while the dynamic protocol consumes no HA
-credentials. The legacy installer can still provision an unused compatibility
-variable pending cleanup.
+credentials. There is no REST/token fallback or line-protocol compatibility mode.
 
 ### Self-contained / dependency-free build
 
@@ -112,8 +111,8 @@ WantedBy=multi-user.target
 ### The resident daemon
 
 `geist agent -m model.gguf --serve /path/geist.sock` is implemented. It keeps
-the model warm, preserves legacy line clients, and accepts host-neutral dynamic
-requests with correlated call/result frames. `./geist serve ...` is not a
+the model warm and accepts only host-neutral dynamic requests with correlated
+call/result frames. `./geist serve ...` is not a
 separate required process: the agent daemon is the serving surface.
 
 > Security: prefer a Unix socket (`chmod 600`) or a localhost port behind nginx

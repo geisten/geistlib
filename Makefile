@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run home dynamic-example-host clean distclean help test test-unit test-int test-e2e test-all test-py test-ha test-ha-live fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-home bench-agent-live bench-agent-judge format format-check
+.PHONY: all lib bin run home dynamic-example-host clean distclean help test test-unit test-int test-e2e test-all test-py test-ha fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-home bench-agent-live bench-agent-judge format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -68,9 +68,8 @@ geist: $(GEIST_BIN)
 run: geist
 	@OMP_WAIT_POLICY=active ./$(EMBED_NAME) $(ARGS)
 
-# The home APPLIANCE build: BitNet baked in, only the home tools compiled in,
-# bare prompt = agent request. One command, one artifact:
-#   make home && GEIST_HA_TOKEN=... ./geist-home "Schalte das Licht im Flur ein"
+# The home appliance build: BitNet baked in, dynamic host tools only.
+#   make home && ./geist-home --serve /path/to/ha-config/geist.sock
 home:
 	@$(MAKE) EMBED_MODEL=gguf_artifacts/bitnet-2b4t-i2_s.gguf EMBED_NAME=geist-home \
 	  TOOLSET=home geist
@@ -233,11 +232,6 @@ test-ha:
 	@python3 tests/test_ha_dynamic_tools_v1.py
 	@tests/test_ha_install.sh
 	@tests/test_ha_setup.sh
-
-# Opt-in acceptance test against a disposable official HA container. Requires
-# Docker, an existing HA_IMAGE, and GEIST_HOME_BINARY pointing at geist-home.
-test-ha-live:
-	@tests/integration/test_home_assistant_live.sh
 
 # `make test-all` adds e2e but excludes benches. Model first (see `test`).
 test-all: $(MODEL_PREREQ) test-unit test-int test-py test-e2e

@@ -28,8 +28,8 @@ The following are not Phase 2 goals:
 
 Home Assistant owns authorization and execution. Geist owns local inference and
 planning. The current dynamic-tools path neither requires nor consumes an HA
-credential. The installer may still provision an unused compatibility variable;
-the old REST/token path remains only for legacy direct-CLI evaluation.
+credential. There is no REST client, token configuration, registry-push adapter,
+or compatibility transport in the product.
 
 ```mermaid
 flowchart LR
@@ -55,7 +55,6 @@ schemas. Entity unexposure is rechecked at the HA action boundary.
 | :-- | :-- | :-- | :-- |
 | HA OS / Supervised | Geist Home Assistant app (formerly add-on), model embedded in the image | private internal TCP, no host port | none in the runtime; integration executes actions |
 | Core / Container on Linux | released `geist-home` binary + systemd | Unix socket mode `0600` | none in the runtime; integration executes actions |
-| Existing Phase 1 install | current binary and v1 line protocol | Unix socket | supported for one migration release, with a deprecation warning |
 
 The app runs protected, without host networking, Docker access, privileged
 capabilities, or a mount of Home Assistant's configuration directory. Persistent
@@ -69,41 +68,15 @@ reachable only on Home Assistant's internal app network and uses the same
 versioned protocol as the Unix socket. Core/Container installations do not open
 a TCP listener.
 
-## Protocol v2 and dynamic tools v1
+## Dynamic tools v1
 
-The current Core/Container integration uses the host-neutral newline-framed
+The integration uses the host-neutral newline-framed
 [dynamic-tools-v1 contract](dynamic-tools-v1.md): it sends the complete offered
-toolset per conversation and owns execution. The length-prefixed v2 framing
-below is implemented and contract-tested for the future private app transport;
-it is not required by independent dynamic hosts.
-
-Protocol v2 is a length-prefixed UTF-8 JSON stream over either Unix socket or
-private TCP. Every frame contains `version`, `request_id`, and `type`. Frames
-have an explicit maximum size and requests have deadlines.
-
-Required frame types:
-
-- `hello`: negotiate protocol version and runtime capabilities;
-- `health`: runtime/model version, readiness, model load state, uptime, memory,
-  last request latency, and last error without secrets or utterance text;
-- `registry.replace`: versioned snapshot of Assist-exposed entities, areas,
-  aliases, supported actions, and locale;
-- `conversation.start`: utterance, locale, registry version, and request budget;
-- `tool.call`: one typed state read or bounded action request;
-- `tool.result`: success, typed state, or a stable error code;
-- `conversation.result`: localized speech text and optional non-sensitive trace
-  summary;
-- `cancel`: stop work when Home Assistant abandons or times out a request.
-
-The first implementation supports a single in-flight conversation per model
-instance and returns `busy` for excess work. Unknown versions, frame types,
-oversized frames, stale registry versions, and invalid tool arguments fail
-closed. Raw tokens, access tokens, complete state dumps, and conversation text
-must never appear in diagnostics.
-
-Protocol v1 remains available only on Unix sockets during the migration release.
-The integration tries v2 first and may fall back to v1 only when the user has
-explicitly enabled compatibility mode.
+toolset per conversation and owns execution. This is the only product protocol.
+Frames have explicit size limits and requests have deadlines. Unknown frame
+types, oversized frames, stale exposure versions, and invalid arguments fail
+closed. Raw credentials, complete state dumps, and conversation text must never
+appear in diagnostics.
 
 ## Home Assistant integration
 
@@ -135,12 +108,11 @@ protocol range.
 
 ## Delivery plan
 
-### P2.0 — contracts and migration ✅
+### P2.0 — contracts ✅
 
-1. Freeze the Phase 1 evidence and publish the first `geist-home` release.
-2. Add protocol-v2 schemas, stable error codes, limits, and golden transcripts.
-3. Split planning from HA execution behind an executor interface.
-4. Retain a v1 adapter and document the one-release migration window.
+1. Add dynamic JSON schemas, stable error codes, limits, and golden transcripts.
+2. Split planning from HA execution behind an executor interface.
+3. Remove REST/token and obsolete transport implementations.
 
 Exit gate: model-free contract tests prove malformed, stale, oversized, unknown,
 and unexposed requests fail closed; current German/English evaluation results do
@@ -148,12 +120,12 @@ not regress.
 
 ### P2.1 — HA-owned execution ✅
 
-1. Implement the v2 conversation/tool loop in the integration and daemon.
+1. Implement the dynamic conversation/tool loop in the integration and daemon.
 2. Validate every requested entity, domain, action, and argument immediately
    before calling Home Assistant.
 3. Move state reads, service calls, and relative climate read-modify-write into
    the integration.
-4. Remove the HA URL/token requirement from the normal daemon path.
+4. Keep all HA state access inside the integration.
 
 Exit gate: the disposable real-HA suite passes with no HA credential available
 to the runtime, including unexpose-during-request and malicious-frame cases.
@@ -236,13 +208,33 @@ remain green.
   internal TCP exists solely because HA Core and an app run in separate
   containers on HA OS.
 
-## First implementation slice
+## Agent handoff contract
 
-The first code PR after this document should contain only the v2 frame codec,
-schema validation, golden transcripts, and an executor interface with a fake HA
-backend. It must not yet package an app or change the production transport. This
-keeps the security contract reviewable before process and distribution changes
-depend on it.
+This document is the ordered Phase-2 implementation plan. `ROADMAP.md` is the
+portfolio overview; `dynamic-tools-v1.md` is the normative wire/schema contract.
+An implementing agent must start with the first unfinished phase, keep each PR
+within one phase, and update the status and evidence here in the same PR.
+
+The next executable slice is **P2.2 item 1: health handshake and validated config
+flow**. First add one control request to dynamic-tools-v1:
+`{"type":"health"}` →
+`{"type":"health.result","protocol":"dynamic-tools-v1","status":"ready"}`.
+The daemon must answer it without invoking the model. Then use that exchange in
+`integrations/home-assistant/custom_components/geist_conversation/config_flow.py`
+before creating or reconfiguring an entry. Runtime scope is limited to
+`tools/agent_main.h`; integration scope is `config_flow.py` plus a small shared
+health client and focused tests. Update `dynamic-tools-v1.md` in the same PR.
+Do not add HTTP, tokens, fallback transports, YAML-only configuration, or app
+packaging.
+
+Acceptance for that slice:
+
+1. success, missing socket, timeout, malformed response, and protocol-name
+   mismatch are deterministic model-free tests;
+2. failed validation creates no config entry and exposes a translated error key;
+3. reconfigure uses the same validator and reloads a successful entry;
+4. `make test-ha`, `make test-unit`, and `make format-check` pass;
+5. this plan records the commit and moves the next pointer to P2.2 item 2.
 
 ## Design references
 

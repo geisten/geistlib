@@ -9,10 +9,8 @@ usage: scripts/check-home-assistant.sh [options]
 Options:
   --service NAME          systemd unit (default: geist-home)
   --socket PATH           Unix socket (default: /config/geist.sock)
-  --env-file PATH         GEIST_HA_URL/TOKEN file; enables HA API check
-  --registry-age SEC      require a registry push this recently (default: 600)
   --max-restarts N        allowed systemd restart count (default: 3)
-  --skip-systemd          check only filesystem and optional HA API
+  --skip-systemd          check only the Unix socket
   --help
 
 No state is changed and no agent request is sent through the socket.
@@ -21,8 +19,6 @@ EOF
 
 service=geist-home
 socket_path=/config/geist.sock
-env_file=
-registry_age=600
 max_restarts=3
 skip_systemd=0
 
@@ -30,8 +26,6 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --service) service=${2-}; shift 2 ;;
         --socket) socket_path=${2-}; shift 2 ;;
-        --env-file) env_file=${2-}; shift 2 ;;
-        --registry-age) registry_age=${2-}; shift 2 ;;
         --max-restarts) max_restarts=${2-}; shift 2 ;;
         --skip-systemd) skip_systemd=1; shift ;;
         --help|-h) usage; exit 0 ;;
@@ -39,8 +33,8 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-case "$registry_age:$max_restarts" in
-    *[!0-9:]*|:*|*:) echo "check-home-assistant: ages/counts must be non-negative integers" >&2; exit 2 ;;
+case "$max_restarts" in
+    *[!0-9]*|'') echo "check-home-assistant: restart count must be a non-negative integer" >&2; exit 2 ;;
 esac
 
 failures=0
@@ -89,39 +83,6 @@ if [ "$skip_systemd" -eq 0 ]; then
             fi
             ;;
     esac
-
-    if journalctl -u "$service" --since "$registry_age seconds ago" --no-pager 2>/dev/null |
-        grep -q 'registry push ->'; then
-        ok "exposed-entity registry synchronized within ${registry_age}s"
-    else
-        fail "no registry synchronization in the last ${registry_age}s"
-    fi
-fi
-
-if [ -n "$env_file" ]; then
-    if [ ! -f "$env_file" ]; then
-        fail "environment file missing: $env_file"
-    else
-        env_mode=$(file_mode "$env_file")
-        if [ "$env_mode" = 600 ]; then ok "environment permissions are 0600"
-        else fail "environment permissions are $env_mode, expected 600"; fi
-
-        ha_url=$(sed -n 's/^GEIST_HA_URL=//p' "$env_file" | tail -n 1)
-        ha_token=$(sed -n 's/^GEIST_HA_TOKEN=//p' "$env_file" | tail -n 1)
-        if [ -z "$ha_url" ] || [ -z "$ha_token" ]; then
-            fail "environment lacks GEIST_HA_URL or GEIST_HA_TOKEN"
-        elif command -v curl >/dev/null 2>&1; then
-            if printf 'header = "Authorization: Bearer %s"\n' "$ha_token" |
-                curl -fsS --max-time 5 -o /dev/null --config - "$ha_url/api/"; then
-                ok "Home Assistant authenticated API is reachable"
-            else
-                fail "Home Assistant authenticated API is unreachable"
-            fi
-        else
-            fail "curl is required for the Home Assistant API check"
-        fi
-        ha_token=
-    fi
 fi
 
 if [ "$failures" -ne 0 ]; then

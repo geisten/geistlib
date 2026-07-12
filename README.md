@@ -219,8 +219,7 @@ Run it as a daemon (`--serve` plus the bundled
 [systemd unit](integrations/systemd/geist-home.service)), add the
 [Home Assistant custom component](integrations/home-assistant/), and Assist —
 typed or spoken — answers from your own hardware. HA supplies the exposed tools
-per request. The dynamic protocol does not consume an HA token; the legacy
-installer may still provision an unused compatibility variable. Full walkthrough:
+per request. Geist has no HA REST client and receives no HA token. Full walkthrough:
 [docs/agent.md](docs/agent.md#the-home-appliance--make-home).
 
 **Your domain next.** The recipe generalizes: a narrow tool menu, deterministic

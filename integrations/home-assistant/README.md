@@ -13,7 +13,7 @@ exposure, executes validated calls inside HA, and returns their results to Geist
   build;
 - a host directory visible as `/config` inside the HA container.
 
-No Home Assistant token is passed to the daemon. Expose only the entities Geist
+Geist contains no Home Assistant REST client and receives no token. Expose only the entities Geist
 may see or control; HA rechecks exposure and user context at execution time.
 
 ## Install the custom component
@@ -29,19 +29,14 @@ scripts/setup-home-assistant.sh \
   --activate
 ```
 
-The Phase-1 installer still accepts a legacy token file for rollback-compatible
-deployments, but the dynamic Phase-3 path does not consume it.
-
 ### Low-level reproducible installer
 
-The reproducible installer stages the component, a mode-0600 environment file,
-and a generated systemd unit. It never accepts the HA token on the command line:
+The reproducible installer stages the component and a generated systemd unit:
 
 ```sh
 scripts/install-home-assistant.sh \
   --ha-config /path/to/ha-config \
   --binary /absolute/path/to/geist-home \
-  --env-file /path/to/geist-home.env \
   --user "$USER" \
   --work-dir /path/to/geist-workdir
 ```
@@ -72,7 +67,6 @@ geist_conversation:
 Restart Home Assistant, add the **geist Conversation** integration, and select
 it as the conversation agent of an Assist pipeline. For every request the
 component derives tools only from Assist-exposed entities in supported domains.
-The legacy registry synchronization remains active for older daemon clients.
 
 ## Run the resident daemon
 
@@ -87,7 +81,7 @@ socket's host path must be inside a mounted volume and its UID/GID permissions
 must permit the container's HA process to connect.
 
 For boot operation, adapt `../systemd/geist-home.service`: binary, working
-directory, environment file, user, and socket path are deliberately explicit.
+directory, user, and socket path are deliberately explicit.
 Then run:
 
 ```sh
@@ -104,21 +98,9 @@ systemctl status geist-home
 systemctl is-active geist-home
 stat -c '%a %U %G %n' /path/to/ha-config/geist.sock
 
-# Component files and pure registry behavior are valid without installing HA.
+# Component files and the dynamic protocol are valid without installing HA.
 python3 tests/test_ha_integration.py
 ```
-
-To exercise real HA service calls without touching an existing
-home, run the opt-in disposable-container test. The HA image must already be
-available locally; the test does not pull it implicitly:
-
-```sh
-GEIST_HOME_BINARY=/path/to/geist-home make test-ha-live
-```
-
-It creates two template lights in a temporary HA instance. Only `light.flur`
-is exposed to Geist: the test verifies that it turns on and that a
-direct request for the existing but unexposed `light.keller` leaves it off.
 
 In Home Assistant, expose one harmless test light, run a status query and a
 toggle through Assist, then unexpose it and verify the next request makes
@@ -126,14 +108,10 @@ the same request unavailable. Do not begin with locks, covers, or climate
 setpoints.
 
 For a deployed host, run the read-only health diagnostic. It checks systemd,
-restart count, resident memory, socket mode, environment permissions and the HA
-API without sending an agent
-request:
+restart count, resident memory, and socket mode without sending an agent request:
 
 ```sh
-scripts/check-home-assistant.sh \
-  --socket /path/to/ha-config/geist.sock \
-  --env-file /path/to/geist-home.env
+scripts/check-home-assistant.sh --socket /path/to/ha-config/geist.sock
 ```
 
 ## Current protocol
@@ -144,7 +122,7 @@ scripts/check-home-assistant.sh \
 - Home Assistant validates name, arguments, exposure and action policy, then
   executes; the dynamic protocol does not consume HA credentials;
 - a final `conversation.result` contains the spoken answer;
-- the old UTF-8 line and registry-control frames remain accepted for migration.
+- non-JSON requests and obsolete control frames are rejected.
 
 This protocol is intentionally local and small. Soak evidence, external beta
 feedback, and a full clean-host timing run remain before calling the integration

@@ -13,7 +13,6 @@ chmod 755 "$tmp/geist-home"
 output=$("$root/scripts/setup-home-assistant.sh" \
     --ha-config "$tmp/ha" \
     --binary "$tmp/geist-home" \
-    --ha-url http://127.0.0.1:18123 \
     --dry-run)
 printf '%s\n' "$output" | grep -q '^platform='
 printf '%s\n' "$output" | grep -q "^binary=$tmp/geist-home$"

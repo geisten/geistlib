@@ -12,7 +12,9 @@ minor release.
 
 - `geist agent --serve` accepts an immutable per-request `tools` array and
   performs correlated `tool.call` / `tool.result` round trips over the local
-  socket. Legacy UTF-8 line clients remain supported.
+  socket. The server accepts only the dynamic JSON protocol.
+- Removed the Home Assistant REST/token client, registry-push and line-protocol
+  adapters, unused protocol-v2 stack, and their migration-only tests/config.
 - Added a fixed-memory JSON parser and documented Schema-v1 subset with strict
   name, type, required/optional field, enum, array, bound and duplicate-key
   validation. Unsupported keywords fail request compilation.
