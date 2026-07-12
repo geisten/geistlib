@@ -80,9 +80,10 @@ int main(void) {
     size_t               out_len = 0u;
 
     const struct home_executor_request get = {
-            .operation = HOME_EXECUTOR_GET_STATE,
-            .entity_id = "light.flur",
-            .domain    = "light",
+            .operation        = HOME_EXECUTOR_GET_STATE,
+            .entity_id        = "light.flur",
+            .domain           = "light",
+            .registry_version = 11u,
     };
     enum home_executor_status status =
             home_executor_run(&executor, &get, sizeof out, out, &out_len);
@@ -92,16 +93,18 @@ int main(void) {
     fails += geist_expect(
             strstr(transport.last_request, "\"request_id\":\"exec-7\"") != NULL &&
                     strstr(transport.last_request, "\"operation\":\"get_state\"") != NULL &&
-                    strstr(transport.last_request, "\"entity_id\":\"light.flur\"") != NULL,
+                    strstr(transport.last_request, "\"entity_id\":\"light.flur\"") != NULL &&
+                    strstr(transport.last_request, "\"registry_version\":11") != NULL,
             "get_state tool.call schema");
 
     transport.result_json                  = "[]";
     const struct home_executor_request set = {
-            .operation = HOME_EXECUTOR_CALL_SERVICE,
-            .entity_id = "climate.bad",
-            .domain    = "climate",
-            .service   = "set_temperature",
-            .arguments = "\"temperature\":22",
+            .operation        = HOME_EXECUTOR_CALL_SERVICE,
+            .entity_id        = "climate.bad",
+            .domain           = "climate",
+            .service          = "set_temperature",
+            .arguments        = "\"temperature\":22",
+            .registry_version = 11u,
     };
     status = home_executor_run(&executor, &set, sizeof out, out, &out_len);
     fails += geist_expect(status == HOME_EXECUTOR_OK && strcmp(out, "[]") == 0,

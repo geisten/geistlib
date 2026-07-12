@@ -92,6 +92,8 @@ def main() -> None:
         "const.py",
         "conversation.py",
         "manifest.json",
+        "policy.py",
+        "protocol_v2.py",
         "registry.py",
         "transport.py",
     }

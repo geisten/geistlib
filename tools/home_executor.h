@@ -7,6 +7,7 @@
 #define GEIST_HOME_EXECUTOR_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 enum home_executor_operation {
     HOME_EXECUTOR_GET_STATE = 0,
@@ -27,6 +28,7 @@ struct home_executor_request {
     const char                  *domain;
     const char                  *service;
     const char                  *arguments;
+    uint64_t                     registry_version;
 };
 
 typedef enum home_executor_status (*home_executor_fn)(void                               *context,

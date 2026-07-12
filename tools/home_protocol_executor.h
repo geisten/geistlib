@@ -147,21 +147,25 @@ home_protocol_execute(void                               *context,
         json_len = snprintf(json,
                             sizeof json,
                             "{\"version\":2,\"request_id\":\"%s\",\"type\":\"tool.call\","
-                            "\"operation\":\"get_state\",\"entity_id\":\"%s\",\"domain\":\"%s\"}",
+                            "\"operation\":\"get_state\",\"entity_id\":\"%s\",\"domain\":\"%s\","
+                            "\"registry_version\":%llu}",
                             request_id,
                             entity,
-                            domain);
+                            domain,
+                            (unsigned long long) request->registry_version);
     } else {
         json_len = snprintf(json,
                             sizeof json,
                             "{\"version\":2,\"request_id\":\"%s\",\"type\":\"tool.call\","
                             "\"operation\":\"call_service\",\"entity_id\":\"%s\","
-                            "\"domain\":\"%s\",\"service\":\"%s\",\"arguments\":{%s}}",
+                            "\"domain\":\"%s\",\"service\":\"%s\",\"arguments\":{%s},"
+                            "\"registry_version\":%llu}",
                             request_id,
                             entity,
                             domain,
                             service,
-                            request->arguments);
+                            request->arguments,
+                            (unsigned long long) request->registry_version);
     }
     if (json_len <= 0 || (size_t) json_len >= sizeof json) {
         return HOME_EXECUTOR_INVALID_REQUEST;

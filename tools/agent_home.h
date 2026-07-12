@@ -70,7 +70,8 @@ struct home_ctx {
     const char        *ha_token; /* nullptr -> ha_env_token(); "" = unconfigured */
     struct home_device dev[HOME_MAX_DEVICES];
     size_t             n_dev;
-    char               last_entity[64]; /* pronoun target ("mach es aus") */
+    uint64_t           registry_version; /* protocol-v2 exposure snapshot */
+    char               last_entity[64];  /* pronoun target ("mach es aus") */
     /* Unlock confirmation slot: a FILE, not memory — the appliance runs one
      * process per request, and the confirmation arrives in the next one.
      * nullptr -> GEIST_HOME_PENDING or ./.geist-home-pending. */
@@ -370,11 +371,12 @@ static inline enum home_executor_status home_execute(struct home_ctx            
                                                      char    out[static out_cap],
                                                      size_t *out_len) {
     const struct home_executor_request request = {
-            .operation = operation,
-            .entity_id = d->entity,
-            .domain    = d->domain,
-            .service   = service,
-            .arguments = arguments,
+            .operation        = operation,
+            .entity_id        = d->entity,
+            .domain           = d->domain,
+            .service          = service,
+            .arguments        = arguments,
+            .registry_version = c->registry_version,
     };
     return home_executor_run(&c->executor, &request, out_cap, out, out_len);
 }
