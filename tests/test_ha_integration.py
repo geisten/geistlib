@@ -29,6 +29,7 @@ def main() -> None:
         "dynamic_tools_v1.py",
         "ha_executor.py",
         "health.py",
+        "history.py",
         "manifest.json",
         "policy.py",
         "sensor.py",
@@ -49,6 +50,9 @@ def main() -> None:
     require("async_validate_health" in config_flow, "config flow validates daemon health")
     require("async_step_reconfigure" in config_flow, "config flow supports reconfigure")
     require("async_step_import" not in config_flow, "no YAML-import compatibility flow")
+    conversation = (COMPONENT / "conversation.py").read_text()
+    require("HistoryStore" in conversation and "normalize_language" in conversation,
+            "conversation uses bounded language/history policy")
     init_source = (COMPONENT / "__init__.py").read_text()
     require("Platform.SENSOR" in init_source, "health sensor platform is loaded")
     diagnostics = (COMPONENT / "diagnostics.py").read_text()

@@ -91,13 +91,14 @@ Slices:
    config-entry diagnostics.
 3. ✅ Fresh-socket reconnect, at-most-one cancel, zero-queue busy handling and
    structured status/duration logs without request content.
-4. **NEXT:** HA-language defaulting and bounded conversation-id/history policy.
+4. ✅ Explicit HA-language metadata and in-memory history bounded by 32
+   conversation ids, four turns and 2048 context bytes with deterministic LRU.
 5. Pending: HACS layout, Hassfest/HACS validation, tagged compatibility table.
 
 Exit gate: install, configure, break, diagnose, repair, reconfigure and unload
 through HA UI; no YAML or daemon logs required.
 
-## Phase 5 — Home Assistant app 🚧 pending
+## Phase 5 — Home Assistant app 🚧 **NEXT**
 
 Purpose: install and supervise the resident runtime on HA OS.
 

@@ -234,6 +234,11 @@ observation.
 {"input":"Add 5 and 7","max_tool_steps":4,"tools":[{"name":"CalculatorAdd","description":"Add two integers","parameters":{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"]}}]}
 ```
 
+Hosts may add bounded `language` and `context` strings. They become
+request-local system context; `input` remains the sole source for current forced
+tool arguments. The HA adapter keeps context in memory only, isolated by
+conversation id and bounded by conversation, turn, and byte limits.
+
 The request compiler copies up to 16 unique tools into immutable storage and
 rejects the entire request if a schema or unsupported keyword is invalid. The
 documented subset supports object/string/number/integer/boolean/array,

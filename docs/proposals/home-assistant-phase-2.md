@@ -139,8 +139,9 @@ real-HA acceptance is recorded separately before the external beta.
    health entity, and Repairs that clear automatically after recovery.
 3. ✅ Add fresh-socket reconnect, correlated cancellation, zero-queue busy
    handling, and structured status/duration logging without request content.
-4. Add HA-language defaulting plus an explicit bounded conversation-id/history
-   policy, with multilingual and reset tests.
+4. ✅ Add HA-language defaulting plus an in-memory history policy bounded to 32
+   conversation ids, four turns and 2048 UTF-8 context bytes, with deterministic
+   LRU eviction and reset tests.
 
 Exit gate: a non-developer can install and diagnose an intentionally broken
 runtime without editing YAML or reading daemon logs.
@@ -231,19 +232,23 @@ P2.2 item 3 is implemented by a zero-queue request gate per Config Entry, one
 fresh socket per admitted request, no hidden replay, at-most-one correlated
 cancel, and logs containing only stable status plus duration.
 
-The next executable slice is **P2.2 item 4: HA-language defaulting and bounded
-conversation-id/history policy**. Scope is request metadata and prompt context;
-it must not persist raw conversations to disk or weaken per-request exposure.
+P2.2 item 4 is implemented by optional typed `language`/`context` request
+metadata and an HA-owned in-memory LRU history. Runtime context is request-local
+and does not participate in current tool-argument extraction.
+
+The next executable slice is **P2.3 item 1: protected HA app scaffold**. Create
+only repository metadata, `aarch64`/`amd64` image build, protected configuration,
+AppArmor baseline, private transport declaration, persistent `/data` layout and
+healthcheck. Do not add model catalogs, public ports, host networking,
+privileged mode, Docker socket access, or HA configuration mounts.
 
 Acceptance for that slice:
 
-1. the HA input language is passed explicitly and selects response language;
-2. history is isolated by conversation id, bounded by turns and bytes, and held
-   in memory only;
-3. missing/new conversation ids start empty and eviction is deterministic;
-4. history text is never logged or included in diagnostics;
-5. multilingual, isolation, eviction and reset tests plus `make test-ha`,
-   `make test-unit`, and `make format-check` pass.
+1. app metadata validates for `aarch64` and `amd64` with protected mode;
+2. image and AppArmor policy expose no public/host port or broad mounts;
+3. `/data` is the only persistent runtime/model location;
+4. healthcheck uses the existing model-free protocol contract;
+5. model-free metadata/security tests plus `make test-ha` and format checks pass.
 
 ## Design references
 

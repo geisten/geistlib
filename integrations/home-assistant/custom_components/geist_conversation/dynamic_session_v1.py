@@ -68,12 +68,18 @@ async def async_dynamic_session(
     timeout_s: float,
     max_tool_steps: int = 4,
     allow_high_impact: bool = False,
+    language: str = "",
+    context: str = "",
 ) -> str:
     if not isinstance(utterance, str) or not utterance.strip() or not 1 <= max_tool_steps <= 16:
         raise ProtocolError("invalid_session")
     version = exposure.version
     request = {"input": utterance.strip(), "max_tool_steps": max_tool_steps,
                "tools": build_dynamic_tools(exposure, allow_high_impact=allow_high_impact)}
+    if language:
+        request["language"] = language
+    if context:
+        request["context"] = context
     calls = 0
     active_call_id: str | None = None
     try:
@@ -127,12 +133,15 @@ async def async_ask_geist_dynamic(
     timeout_s: float,
     max_tool_steps: int = 4,
     allow_high_impact: bool = False,
+    language: str = "",
+    context: str = "",
 ) -> str:
     reader, writer = await asyncio.open_unix_connection(socket_path)
     try:
         return await async_dynamic_session(reader, writer, utterance, exposure, executor,
                                            timeout_s=timeout_s, max_tool_steps=max_tool_steps,
-                                           allow_high_impact=allow_high_impact)
+                                           allow_high_impact=allow_high_impact,
+                                           language=language, context=context)
     finally:
         writer.close()
         try:

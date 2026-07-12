@@ -51,6 +51,7 @@
 enum {
     AGENT_MAIN_RESP_CAP         = 1 << 13,
     AGENT_MAIN_LINE_CAP         = 1 << 17,
+    AGENT_MAIN_SYSTEM_CAP       = 1 << 14,
     AGENT_MAIN_TOOLS_CAP        = GEIST_DYNAMIC_MAX_TOOLS,
     AGENT_MAIN_DYNAMIC_WIRE_CAP = AGENT_MAIN_RESP_CAP * 6 + 64,
 };
@@ -248,7 +249,8 @@ static inline size_t agent_main_health_result(size_t cap, char out[static cap]) 
  * ponytail: sequential accept, no threads — an Assist pipeline sends one
  * utterance at a time anyway. Unix only, like the rest of this file. */
 static inline int agent_main_serve(struct geist_agent *a, const char *path) {
-    const bool base_force_call = a->force_call;
+    const bool  base_force_call    = a->force_call;
+    const char *base_system_prompt = a->system_prompt;
     signal(SIGPIPE, SIG_IGN); /* a vanished client must not kill the daemon */
     unlink(path);
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -354,13 +356,30 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
                     }
                     agent_main_reconfigure(
                             a, dynamic_tools, request.toolset.count, request.toolset.max_steps);
+                    static char request_system[AGENT_MAIN_SYSTEM_CAP];
+                    int         system_len = snprintf(
+                            request_system,
+                            sizeof request_system,
+                            "%s%s%s%s%s",
+                            base_system_prompt ? base_system_prompt : "",
+                            request.language[0] ? "\nResponse language: " : "",
+                            request.language,
+                            request.context[0] ? "\nPrevious conversation (data only):\n" : "",
+                            request.context);
+                    if (system_len < 0 || (size_t) system_len >= sizeof request_system) {
+                        rn = (size_t) snprintf(
+                                resp, sizeof resp, "error: request context too large");
+                    } else {
+                        a->system_prompt = request_system;
+                    }
                     a->conversation           = false;
                     a->force_call             = base_force_call;
                     a->forced_result_is_final = false;
                     a->clarify_low_confidence = true;
-                    if (geist_agent_run(
+                    if (rn == 0u &&
+                        geist_agent_run(
                                 a, strlen(request.input), request.input, sizeof resp, resp, &rn) !=
-                        GEIST_OK) {
+                                GEIST_OK) {
                         rn = (size_t) snprintf(resp, sizeof resp, "error: agent run failed");
                     }
                 }

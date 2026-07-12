@@ -23,7 +23,8 @@ static int expect(const char *label, const char *json, enum geist_dynamic_reques
 int main(void) {
     int         failures = 0;
     const char *valid =
-            "{\"input\":\"Schalte K\\u00fcche an \\ud83d\\udca1\",\"max_tool_steps\":3,"
+            "{\"input\":\"Schalte K\\u00fcche an \\ud83d\\udca1\",\"language\":\"de-DE\","
+            "\"context\":\"User: Ist das Licht an?\\nAssistant: Nein.\",\"max_tool_steps\":3,"
             "\"tools\":[{\"name\":\"HassTurnOn\",\"description\":\"Turn on an exposed entity\","
             "\"parameters\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
             "\"string\"}},\"required\":[\"name\"]}}]}";
@@ -33,12 +34,15 @@ int main(void) {
     failures += geist_dynamic_request_parse(valid, strlen(valid), &request, &detail) !=
                 GEIST_DYNAMIC_REQUEST_OK;
     failures += strcmp(request.input, "Schalte Küche an 💡") != 0;
+    failures += strcmp(request.language, "de-DE") != 0;
+    failures += strcmp(request.context, "User: Ist das Licht an?\nAssistant: Nein.") != 0;
     failures += request.toolset.count != 1u || request.toolset.max_steps != 3u;
     failures +=
             geist_dynamic_tool_validate(
                     &request.toolset, "HassTurnOn", "{\"name\":\"light.kitchen\"}", 24u) != JSV1_OK;
     const char *calculator =
-            "{\"input\":\"Add 5 and 7\",\"tools\":[{\"name\":\"CalculatorAdd\","
+            "{\"input\":\"Add 5 and 7\",\"context\":\"Earlier: add 99 and 100\",\"tools\":[{"
+            "\"name\":\"CalculatorAdd\","
             "\"description\":\"Add two integer values\",\"parameters\":{\"type\":\"object\","
             "\"properties\":{\"a\":{\"type\":\"integer\"},\"b\":{\"type\":\"integer\"}},"
             "\"required\":[\"a\",\"b\"]}}]}";
@@ -58,6 +62,9 @@ int main(void) {
                 JSV1_OK;
     failures += expect("unknown root",
                        "{\"input\":\"x\",\"tools\":[],\"host\":\"ha\"}",
+                       GEIST_DYNAMIC_REQUEST_E_INVALID_REQUEST);
+    failures += expect("bad language",
+                       "{\"input\":\"x\",\"language\":\"de_DE\",\"tools\":[]}",
                        GEIST_DYNAMIC_REQUEST_E_INVALID_REQUEST);
     failures += expect("duplicate",
                        "{\"input\":\"x\",\"input\":\"y\",\"tools\":[]}",

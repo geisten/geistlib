@@ -16,6 +16,8 @@ A host supplies the available tools on every conversation request:
 ```json
 {
   "input": "Turn on the kitchen light",
+  "language": "en-GB",
+  "context": "[{\"role\":\"user\",\"content\":\"Earlier question\"}]",
   "max_tool_steps": 4,
   "tools": [
     {
@@ -33,6 +35,13 @@ A host supplies the available tools on every conversation request:
   ]
 }
 ```
+
+`language` and `context` are optional request metadata. Language is a bounded
+BCP-47-like code. Context is a bounded string interpreted as previous
+conversation data in the request-local system context; it is never used for
+current tool-argument extraction. Hosts own history isolation, retention and
+privacy. The HA adapter keeps at most four turns and 2048 context bytes for at
+most 32 conversation ids, in memory only.
 
 The offered array is the complete capability set for that request. Geist may
 return only a name from that set. Arguments are validated before they cross the

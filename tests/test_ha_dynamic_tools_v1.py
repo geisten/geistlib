@@ -130,9 +130,12 @@ async def checks() -> None:
                  "arguments": {"name": "light.kitchen"}},
                 {"type": "conversation.result", "text": "Kitchen is on."}]),
         writer, "Turn on kitchen and report its state", exposure, session_executor,
-        timeout_s=1, max_tool_steps=3)
+        timeout_s=1, max_tool_steps=3, language="en-GB",
+        context='[{"role":"user","content":"Earlier"}]')
     assert answer == "Kitchen is on."
     assert writer.frames[0]["tools"] and writer.frames[0]["max_tool_steps"] == 3
+    assert writer.frames[0]["language"] == "en-GB"
+    assert writer.frames[0]["context"].endswith('"Earlier"}]')
     assert writer.frames[1] == {"type": "tool.result", "call_id": "a", "status": "ok", "result": []}
     assert writer.frames[2] == {"type": "tool.result", "call_id": "b", "status": "ok",
                                 "result": {"state": "off"}}

@@ -6,7 +6,11 @@
 
 #include <stdint.h>
 
-enum { GEIST_DYNAMIC_INPUT_CAP = 4096 };
+enum {
+    GEIST_DYNAMIC_INPUT_CAP    = 4096,
+    GEIST_DYNAMIC_LANGUAGE_CAP = 16,
+    GEIST_DYNAMIC_CONTEXT_CAP  = 4096
+};
 
 enum geist_dynamic_request_status {
     GEIST_DYNAMIC_REQUEST_OK = 0,
@@ -18,8 +22,22 @@ enum geist_dynamic_request_status {
 
 struct geist_dynamic_request {
     char                         input[GEIST_DYNAMIC_INPUT_CAP];
+    char                         language[GEIST_DYNAMIC_LANGUAGE_CAP];
+    char                         context[GEIST_DYNAMIC_CONTEXT_CAP];
     struct geist_dynamic_toolset toolset;
 };
+
+static inline int geist_dynamic_request_language_valid(const char *language) {
+    if (language == NULL || language[0] == '\0')
+        return 1;
+    for (size_t i = 0u; language[i] != '\0'; i++) {
+        char c = language[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '-'))
+            return 0;
+    }
+    return 1;
+}
 
 static inline int geist_dynamic_request_hex(char c) {
     if (c >= '0' && c <= '9')
@@ -171,16 +189,25 @@ geist_dynamic_request_parse(const char                   *json,
     if (jsv1_parse(json, json_len, JSV1_MAX_TOKENS, tokens, &doc) != JSV1_OK ||
         doc.tokens[0].type != JSV1_OBJECT)
         return GEIST_DYNAMIC_REQUEST_E_INVALID_JSON;
-    const char *const root_keys[] = {"input", "max_tool_steps", "tools"};
-    if (!geist_dynamic_request_keys(&doc, 0, root_keys, 3u))
+    const char *const root_keys[] = {"input", "language", "context", "max_tool_steps", "tools"};
+    if (!geist_dynamic_request_keys(&doc, 0, root_keys, 5u))
         return GEIST_DYNAMIC_REQUEST_E_INVALID_REQUEST;
-    int input  = jsv1_object_get(&doc, 0, "input");
-    int tools  = jsv1_object_get(&doc, 0, "tools");
-    int budget = jsv1_object_get(&doc, 0, "max_tool_steps");
+    int input    = jsv1_object_get(&doc, 0, "input");
+    int tools    = jsv1_object_get(&doc, 0, "tools");
+    int budget   = jsv1_object_get(&doc, 0, "max_tool_steps");
+    int language = jsv1_object_get(&doc, 0, "language");
+    int context  = jsv1_object_get(&doc, 0, "context");
     if (input < 0 || tools < 0 || doc.tokens[input].type != JSV1_STRING ||
         doc.tokens[tools].type != JSV1_ARRAY || doc.tokens[tools].size > GEIST_DYNAMIC_MAX_TOOLS)
         return GEIST_DYNAMIC_REQUEST_E_INVALID_REQUEST;
     if (!geist_dynamic_request_string(&doc, input, sizeof out->input, out->input))
+        return GEIST_DYNAMIC_REQUEST_E_INPUT_LIMIT;
+    if (language >= 0 &&
+        (!geist_dynamic_request_string(&doc, language, sizeof out->language, out->language) ||
+         !geist_dynamic_request_language_valid(out->language)))
+        return GEIST_DYNAMIC_REQUEST_E_INVALID_REQUEST;
+    if (context >= 0 &&
+        !geist_dynamic_request_string(&doc, context, sizeof out->context, out->context))
         return GEIST_DYNAMIC_REQUEST_E_INPUT_LIMIT;
     double steps_number = GEIST_DYNAMIC_DEFAULT_STEPS;
     if (budget >= 0 &&

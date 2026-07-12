@@ -15,6 +15,7 @@ assert "async_create_issue" in sensor and "async_delete_issue" in sensor
 assert "translation_key=\"runtime_health\"" in sensor
 assert "IssueSeverity.ERROR" in sensor
 assert "utterance" not in diagnostics and "entity" not in diagnostics
+assert "history" not in diagnostics and "context" not in diagnostics
 assert '"socket"' not in diagnostics
 assert '"runtime_health"' in strings and "{error}" in strings
 assert "RequestGate" in conversation and "status=busy" in conversation

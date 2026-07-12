@@ -70,6 +70,10 @@ Only one Assist request per Config Entry is admitted at a time; concurrent work
 returns `busy` immediately instead of waiting in a hidden queue. Disconnects are
 not replayed, and each later request opens a fresh socket. Lifecycle logs contain
 only a stable status code and elapsed milliseconds.
+The HA input language is sent explicitly. Successful turns are retained only in
+memory for the returned conversation id: at most 32 conversations, four turns
+and 2048 context bytes, with deterministic LRU eviction. New or missing ids
+start empty; history is absent from logs and diagnostics.
 
 ## Run the resident daemon
 

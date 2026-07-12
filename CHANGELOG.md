@@ -31,6 +31,8 @@ minor release.
   config-entry diagnostics that expose no paths, addresses or HA content.
 - Added zero-queue HA request admission, fresh-socket reconnect semantics,
   at-most-one correlated cancellation, and content-free lifecycle logging.
+- Added explicit request language and bounded request context plus HA-owned,
+  in-memory conversation history with turn/byte/conversation LRU limits.
 - Added an agent-executable Home Assistant implementation plan for phases 0–8;
   HTTP/REST server requirements are explicitly out of scope.
 
