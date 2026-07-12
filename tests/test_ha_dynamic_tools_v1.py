@@ -105,14 +105,32 @@ async def checks() -> None:
 
     exposure = policy.ExposureStore(frozenset({"light.kitchen"}), 3)
     writer = Writer()
+    session_executor = Executor()
     answer = await session.async_dynamic_session(
         Reader([{"type": "tool.call", "call_id": "a", "name": "HassTurnOn",
                  "arguments": {"name": "light.kitchen"}},
+                {"type": "tool.call", "call_id": "b", "name": "HassGetState",
+                 "arguments": {"name": "light.kitchen"}},
                 {"type": "conversation.result", "text": "Kitchen is on."}]),
-        writer, "Turn on kitchen", exposure, Executor(), timeout_s=1, max_tool_steps=2)
+        writer, "Turn on kitchen and report its state", exposure, session_executor,
+        timeout_s=1, max_tool_steps=3)
     assert answer == "Kitchen is on."
-    assert writer.frames[0]["tools"] and writer.frames[0]["max_tool_steps"] == 2
+    assert writer.frames[0]["tools"] and writer.frames[0]["max_tool_steps"] == 3
     assert writer.frames[1] == {"type": "tool.result", "call_id": "a", "status": "ok", "result": []}
+    assert writer.frames[2] == {"type": "tool.result", "call_id": "b", "status": "ok",
+                                "result": {"state": "off"}}
+
+    try:
+        await session.async_dynamic_session(
+            Reader([{"type": "tool.call", "call_id": "1", "name": "HassTurnOn",
+                     "arguments": {"name": "light.kitchen"}},
+                    {"type": "tool.call", "call_id": "2", "name": "HassTurnOff",
+                     "arguments": {"name": "light.kitchen"}}]),
+            Writer(), "Do two things", exposure, Executor(), timeout_s=1, max_tool_steps=1)
+    except protocol.ProtocolError as err:
+        assert err.code == "tool_budget_exceeded"
+    else:
+        raise AssertionError("tool budget was not enforced")
 
     timeout_writer = Writer()
     try:

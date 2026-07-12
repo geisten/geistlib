@@ -184,6 +184,30 @@ struct geist_tool {
     void *ctx;
 };
 
+/* Final callback boundary: dynamic arguments fail as an observation without
+ * calling host code. The host independently revalidates before its action. */
+static inline enum geist_status agent_tool_invoke_checked(const struct geist_tool *tool,
+                                                          size_t                   args_len,
+                                                          const char args[static args_len],
+                                                          size_t     out_cap,
+                                                          char       out[static out_cap],
+                                                          size_t    *out_len) {
+    if (tool == nullptr || tool->invoke == nullptr || args == nullptr || out_cap == 0u)
+        return GEIST_E_INVALID_ARG;
+    if (tool->parameters_schema != nullptr) {
+        enum jsv1_status validation = jsv1_validate(
+                tool->parameters_schema, strlen(tool->parameters_schema), args, args_len);
+        if (validation != JSV1_OK)
+            return agent_obs(out_cap,
+                             out,
+                             out_len,
+                             "error: invalid arguments for \"%s\": %s",
+                             tool->name,
+                             jsv1_status_string(validation));
+    }
+    return tool->invoke(tool->ctx, args_len, args, out_cap, out, out_len);
+}
+
 /* Model-specific chat framing. The agent loop, whitelist gate, and grammar
  * constraint are all model-AGNOSTIC; only the turn markers + the assistant-turn
  * terminator differ per model family. Splitting that out here is what lets the
@@ -2633,19 +2657,8 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
             if (t->parameters_schema == nullptr) {
                 agent_args_normalize(t->args_schema, sizeof args, args); /* legacy migration */
             }
-            enum jsv1_status validation = t->parameters_schema != nullptr
-                                                  ? jsv1_validate(t->parameters_schema,
-                                                                  strlen(t->parameters_schema),
-                                                                  args,
-                                                                  strlen(args))
-                                                  : JSV1_OK;
-            if (validation != JSV1_OK) {
-                on = (size_t) snprintf(obs,
-                                       sizeof obs,
-                                       "error: invalid arguments for \"%s\": %s",
-                                       name,
-                                       jsv1_status_string(validation));
-            } else if (t->invoke(t->ctx, strlen(args), args, sizeof obs, obs, &on) != GEIST_OK) {
+            if (agent_tool_invoke_checked(t, strlen(args), args, sizeof obs, obs, &on) !=
+                GEIST_OK) {
                 on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" failed", name);
             }
         }
@@ -2683,21 +2696,9 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
                     aw += (size_t) snprintf(args1 + aw, sizeof args1 - aw, "\"}");
                     agent_emit(a, GEIST_AGENT_CALLING, step + 1, t1->name, args1);
                     agent_emit(a, GEIST_AGENT_RUNNING, step + 1, t1->name, nullptr);
-                    size_t           o1 = 0;
-                    enum jsv1_status validation =
-                            t1->parameters_schema != nullptr
-                                    ? jsv1_validate(t1->parameters_schema,
-                                                    strlen(t1->parameters_schema),
-                                                    args1,
-                                                    aw)
-                                    : JSV1_OK;
-                    if (validation != JSV1_OK) {
-                        on = (size_t) snprintf(obs,
-                                               sizeof obs,
-                                               "error: invalid arguments for \"%s\": %s",
-                                               t1->name,
-                                               jsv1_status_string(validation));
-                    } else if (t1->invoke(t1->ctx, aw, args1, sizeof obs, obs, &o1) == GEIST_OK) {
+                    size_t o1 = 0;
+                    if (agent_tool_invoke_checked(t1, aw, args1, sizeof obs, obs, &o1) ==
+                        GEIST_OK) {
                         on = o1;
                     } else {
                         on = (size_t) snprintf(

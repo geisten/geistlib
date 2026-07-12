@@ -1,6 +1,6 @@
 # Dynamic tools v1
 
-Status: implementation contract for Phase 3. This interface is host-neutral;
+Status: implemented Phase-3 contract. This interface is host-neutral;
 Home Assistant is one adapter, not part of the runtime contract.
 
 ## Request and execution model
@@ -106,3 +106,20 @@ or coercion. Hosts must send explicit values of the declared type.
 5. Host-driven multi-step session with tool results, cancellation and retry.
 6. Home Assistant adapter plus a standalone example host and separate build
    targets proving that neither depends on the other.
+
+## Verification map
+
+| Requirement | Primary executable evidence |
+|---|---|
+| Request tools, dynamic names, immutability and limits | `test_dynamic_request_v1_unit`, `test_dynamic_tools_v1_unit` |
+| Schema subset, multi-args, optional fields, enums and arrays | `test_json_schema_v1_unit`, `test_dynamic_arguments_v1_unit` |
+| Off-list and invalid arguments fail before execution | `test_agent_unit`, `test_dynamic_tools_v1_unit`, `test_ha_dynamic_tools_v1.py` |
+| Multiple calls/results and final conversation result | `test_dynamic_host_v1_unit`, `test_ha_dynamic_tools_v1.py` |
+| Global step budget, one retry and correlated cancellation | `test_dynamic_host_v1_unit`, `test_ha_dynamic_tools_v1.py` |
+| Low-confidence clarification | routing-margin cases in `test_agent_unit` |
+| HA-owned exposure/policy/execution | `make test-ha` |
+| Host-independent integration and build | `make dynamic-example-host` |
+
+The model-dependent quality of selecting and wording calls is evaluated
+separately from these deterministic safety contracts; no model output can bypass
+the name lookup, schema validator, host policy or global call budget.

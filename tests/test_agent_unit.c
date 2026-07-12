@@ -19,7 +19,19 @@
 
 #define DOC_DIR "./.agent_unit_test"
 
-static int  fails = 0;
+static int               fails = 0;
+static enum geist_status counted_tool(void      *ctx,
+                                      size_t     args_len,
+                                      const char args[static args_len],
+                                      size_t     out_cap,
+                                      char       out[static out_cap],
+                                      size_t    *out_len) {
+    (void) args_len;
+    (void) args;
+    (*(unsigned *) ctx)++;
+    return agent_obs(out_cap, out, out_len, "executed");
+}
+
 static void test_parser(void) {
     char name[GEIST_AGENT_NAME_CAP], args[GEIST_AGENT_ARGS_CAP];
 
@@ -70,6 +82,40 @@ static void test_parser(void) {
             agent_parse_call(strlen(duplicate), duplicate, sizeof name, name, sizeof args, args) ==
                     0,
             "parse: duplicate call keys fail closed");
+}
+
+static void test_dynamic_dispatch_gate(void) {
+    unsigned          calls = 0u;
+    struct geist_tool tool  = {
+            .name        = "SetLevel",
+            .args_schema = "{\"level\":integer}",
+            .description = "Set a level",
+            .parameters_schema =
+                    "{\"type\":\"object\",\"properties\":{\"level\":{\"type\":\"integer\","
+                    "\"minimum\":0,\"maximum\":100}},\"required\":[\"level\"]}",
+            .invoke = counted_tool,
+            .ctx    = &calls,
+    };
+    char        observation[256];
+    size_t      observation_len = 0u;
+    const char *invalid         = "{\"level\":101}";
+    fails += geist_expect(agent_tool_invoke_checked(&tool,
+                                                    strlen(invalid),
+                                                    invalid,
+                                                    sizeof observation,
+                                                    observation,
+                                                    &observation_len) == GEIST_OK &&
+                                  calls == 0u && strstr(observation, "range") != nullptr,
+                          "dynamic dispatch: invalid args never reach host callback");
+    const char *valid = "{\"level\":42}";
+    fails += geist_expect(agent_tool_invoke_checked(&tool,
+                                                    strlen(valid),
+                                                    valid,
+                                                    sizeof observation,
+                                                    observation,
+                                                    &observation_len) == GEIST_OK &&
+                                  calls == 1u && strcmp(observation, "executed") == 0,
+                          "dynamic dispatch: valid args invoke exactly once");
 }
 
 static void test_whitelist(void) {
@@ -147,6 +193,7 @@ static void test_docsearch(void) {
 
 int main(void) {
     test_parser();
+    test_dynamic_dispatch_gate();
     test_whitelist();
     test_docsearch();
     if (fails > 0) {
