@@ -112,6 +112,21 @@ static inline enum geist_status geist_dynamic_host_invoke(void      *context,
             retry < tool->session->max_retries)
             continue;
         size_t result_len = doc.tokens[result].end - doc.tokens[result].start;
+        if (status >= 0 && !jsv1_token_is(&doc, status, "ok")) {
+            size_t status_len = doc.tokens[status].end - doc.tokens[status].start;
+            int    length     = snprintf(out,
+                                         out_cap,
+                                         "{\"status\":\"%.*s\",\"result\":%.*s}",
+                                         (int) status_len,
+                                         doc.json + doc.tokens[status].start,
+                                         (int) result_len,
+                                         doc.json + doc.tokens[result].start);
+            if (length <= 0 || (size_t) length >= out_cap)
+                return GEIST_E_INVALID_ARG;
+            if (out_len != NULL)
+                *out_len = (size_t) length;
+            return GEIST_OK;
+        }
         if (result_len + 1u > out_cap)
             return GEIST_E_INVALID_ARG;
         memcpy(out, doc.json + doc.tokens[result].start, result_len);

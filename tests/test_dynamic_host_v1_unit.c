@@ -41,26 +41,36 @@ int main(void) {
     failures += !geist_dynamic_host_read_line(pair[1], sizeof call, call, &call_len) ||
                 strstr(call, "\"call_id\":\"9\"") == NULL;
 
-    const char *cancel = "{\"type\":\"cancel\",\"call_id\":\"10\"}\n";
+    session.max_retries   = 0u;
+    const char *exhausted = "{\"type\":\"tool.result\",\"call_id\":\"10\","
+                            "\"status\":\"retryable\",\"result\":{\"error\":\"busy\"}}\n";
+    failures += !geist_dynamic_host_write(pair[1], exhausted, strlen(exhausted));
+    failures += geist_dynamic_host_invoke(
+                        &context, strlen(args), args, sizeof out, out, &out_len) != GEIST_OK;
+    failures += strcmp(out, "{\"status\":\"retryable\",\"result\":{\"error\":\"busy\"}}") != 0;
+    failures += !geist_dynamic_host_read_line(pair[1], sizeof call, call, &call_len) ||
+                strstr(call, "\"call_id\":\"10\"") == NULL;
+
+    const char *cancel = "{\"type\":\"cancel\",\"call_id\":\"11\"}\n";
     failures += !geist_dynamic_host_write(pair[1], cancel, strlen(cancel));
     failures +=
             geist_dynamic_host_invoke(&context, strlen(args), args, sizeof out, out, &out_len) !=
             GEIST_E_INVALID_STATE;
-    failures += !session.cancelled || session.next_call_id != 11u;
+    failures += !session.cancelled || session.next_call_id != 12u;
     failures += !geist_dynamic_host_read_line(pair[1], sizeof call, call, &call_len) ||
-                strstr(call, "\"call_id\":\"10\"") == NULL;
+                strstr(call, "\"call_id\":\"11\"") == NULL;
     unsigned before = session.next_call_id;
     failures +=
             geist_dynamic_host_invoke(&context, strlen(args), args, sizeof out, out, &out_len) !=
             GEIST_E_INVALID_STATE;
     failures += session.next_call_id != before;
-    failures += session.emitted_calls != 4u;
+    failures += session.emitted_calls != 5u;
     session.cancelled = false;
     session.max_calls = session.emitted_calls;
     failures +=
             geist_dynamic_host_invoke(&context, strlen(args), args, sizeof out, out, &out_len) !=
             GEIST_E_INVALID_STATE;
-    failures += session.next_call_id != before || session.emitted_calls != 4u;
+    failures += session.next_call_id != before || session.emitted_calls != 5u;
     close(pair[0]);
     close(pair[1]);
     if (failures != 0) {
