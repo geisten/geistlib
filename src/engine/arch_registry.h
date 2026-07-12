@@ -26,10 +26,9 @@ struct geist_arch_descriptor {
 /* NULL-terminated. Defined in arch_registry.c. */
 extern const struct geist_arch_descriptor *const geist_arch_registry[];
 
-/* Find the architecture descriptor matching a GGUF general.architecture
- * value. Returns the first-registered descriptor if no exact/prefix
- * match — that's the engine's "single-arch build" fallback. Returns
- * nullptr only if the registry is empty. */
+/* Return the architecture descriptor for a GGUF general.architecture
+ * value. Single-arch build: always the first-registered descriptor
+ * (transformer). Returns nullptr only if the registry is empty. */
 const struct geist_arch_descriptor *geist_arch_registry_lookup(const char *gguf_arch);
 
 #endif /* GEIST_INTERNAL_ARCH_REGISTRY_H */

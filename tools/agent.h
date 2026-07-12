@@ -1961,13 +1961,13 @@ agent_generate_call_masked(struct geist_agent *a, size_t cap, char out[static ca
     if (idx < 0) {
         return 0;
     }
-    w = (size_t) snprintf(out + w, cap - w, "%s", a->tools[idx].name) + w;
+    w = (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%s", a->tools[idx].name) + w;
     w = agent_prefill_lit(a, "\",\"args\":", cap, out, w);
 
     char   keys[4][GEIST_AGENT_NAME_CAP];
     size_t nk = agent_schema_keys(a->tools[idx].args_schema, 4, keys);
     if (nk == 0) {
-        w += (size_t) snprintf(out + w, cap - w, "{}}");
+        w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "{}}");
         return w;
     }
 
@@ -1998,7 +1998,7 @@ agent_generate_call_masked(struct geist_agent *a, size_t cap, char out[static ca
                 return 0; /* partial key in the session — caller must reset */
             }
             k = map[pick];
-            w = (size_t) snprintf(out + w, cap - w, "%s", keys[k]) + w;
+            w = (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%s", keys[k]) + w;
         }
         used[k] = 1;
         w       = agent_prefill_lit(a, "\":\"", cap, out, w);
@@ -2041,7 +2041,7 @@ agent_generate_call_masked(struct geist_agent *a, size_t cap, char out[static ca
         if (end == 0) {
             /* no clean quote: close the value ourselves and stop decoding —
              * the session is no longer aligned with the text past this point. */
-            w += (size_t) snprintf(out + w, cap - w, "\"");
+            w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "\"");
             break;
         }
         out[w++] = '"'; /* the session already consumed the model's quote */
@@ -2061,7 +2061,7 @@ agent_generate_call_masked(struct geist_agent *a, size_t cap, char out[static ca
         }
         w = agent_prefill_lit(a, ",", cap, out, w);
     }
-    w += (size_t) snprintf(out + w, cap - w, "}}");
+    w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "}}");
     return w;
 }
 
@@ -2206,6 +2206,9 @@ static inline size_t agent_generate_reply(struct geist_agent *a, size_t cap, cha
     }
     size_t w    = 0;
     int    done = 0;
+    out[0]      = '\0'; /* a zero-token reply must still be a valid C string:
+                         * the leak-scan strstr() and the copy-out below read
+                         * out as NUL-terminated even when nothing was decoded */
     for (int t = 0; t < GEIST_AGENT_MAX_DECODE && !done && w + 8 < cap; t++) {
         size_t       n_logits = 0;
         const float *logits   = geist_session_peek_logits(a->session, &n_logits);

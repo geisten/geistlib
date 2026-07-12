@@ -22,31 +22,6 @@
 #include "../archs/vision_siglip/arch.h"
 #undef GEIST_INTERNAL_ARCH_LAYER
 
-#include <string.h>
-
-/* Match a GGUF general.architecture value against arch names. Currently
- * matches by exact string. Gemma 4 uses "gemma3" (a holdover from the
- * v3 codebase — Gemma 4 weights are sometimes labelled gemma3 in the
- * GGUF; both map to the transformer decoder). */
-static bool arch_matches(const char *arch_name, const char *gguf_arch) {
-    if (arch_name == nullptr || gguf_arch == nullptr) {
-        return false;
-    }
-    if (strcmp(arch_name, gguf_arch) == 0) {
-        return true;
-    }
-    /* The transformer descriptor handles a few Gemma generations. */
-    if (strcmp(arch_name, "transformer") == 0) {
-        if (strncmp(gguf_arch, "gemma", 5) == 0)
-            return true;
-        if (strncmp(gguf_arch, "llama", 5) == 0)
-            return true;
-        if (strncmp(gguf_arch, "mistral", 7) == 0)
-            return true;
-    }
-    return false;
-}
-
 /* Compiled-in list. GEIST_ARCH_TRANSFORMER is defined by default since
  * the only model the engine currently supports is Gemma 4. */
 #define GEIST_ARCH_TRANSFORMER 1
@@ -68,11 +43,9 @@ const struct geist_arch_descriptor *const geist_arch_registry[] = {
 };
 
 const struct geist_arch_descriptor *geist_arch_registry_lookup(const char *gguf_arch) {
-    for (size_t i = 0; geist_arch_registry[i] != nullptr; i++) {
-        if (arch_matches(geist_arch_registry[i]->name, gguf_arch)) {
-            return geist_arch_registry[i];
-        }
-    }
-    /* Fallback: first registered arch (transformer for Gemma 4 builds). */
+    /* ponytail: single-arch build — every GGUF maps to the one registered
+     * descriptor (transformer covers gemma/llama/mistral). Restore
+     * gguf_arch name-matching over the registry when a second arch lands. */
+    (void) gguf_arch;
     return geist_arch_registry[0];
 }
