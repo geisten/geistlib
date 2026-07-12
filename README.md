@@ -377,11 +377,14 @@ exceeds the 2 GB GitHub-release limit. (Runs real-time on a Pi 5 —
 
 ## Documentation
 
+Repository ownership and the complete map are in
+[`docs/README.md`](docs/README.md).
+
 | Document | What it covers |
 | :-- | :-- |
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Run the CLI and embed the library in two minutes. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, load-time kernel binding, the pipeline. |
-| [`docs/agent.md`](docs/agent.md) | The tool-use agent, bundled tools, routing & forced calls, security model, the [home appliance](docs/agent.md#the-home-appliance--make-home). |
+| [`docs/agent.md`](docs/agent.md) | Tool-use agents, bundled tools, dynamic adapters, routing, forced calls, and the security model. |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Single-binary builds, server/embedded deployment. |
 | [`benchmark/`](benchmark/README.md) | Methodology & full results ([Apple/Pi 5](benchmark/BENCHMARK.md), [ternary BitNet](benchmark/TERNARY_BITNET.md)). |
 | [`include/geist.h`](include/geist.h) | The public C API, with `STABLE` / `EXPERIMENTAL` stability tags. |

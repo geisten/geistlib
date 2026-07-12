@@ -36,70 +36,11 @@ GEIST_GGUF_PATH=gguf_artifacts/bitnet-2b4t-i2_s.gguf make bench-agent
 
 | date | version | host | OS | target/mode | threads | model | gate | forced pass | forced wall | free pass | free wall | total wall |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 2026-07-11 | home 56 deployed (570661c, incl. route-menu pin) | Raspberry Pi 5 (4×A76, 4 GB, HA container idling) | Debian 13.5 | pi5/release | 4 | bitnet-2b4t-i2_s | **home** 56 → **PASS** | **56/56** | 108 s | — (forced only) | — | 108 s |
-| 2026-07-11 | home 56 cases (collectives, media, dead device, relative, EN lock) | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | **home** 56 → **PASS** | **56/56** | 40 s | 4/56 | 299 s | 339 s |
 | 2026-07-10 | ecbb8f4 (+realpath fix) | Raspberry Pi 5 (4×A76, 4 GB) | Debian 13.5 (6.18 rpt) | pi5/release (OpenBLAS) | 4 | bitnet-2b4t-i2_s | 43 → **PASS** | **43/48** | 722 s | 4/48 | 1460 s | 2183 s |
-| 2026-07-11 | home + lock flow | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | **home** 41 → **PASS** | **41/41** | 141 s | 3/41 | 330 s | 471 s |
-| 2026-07-10 | home nightly (2b4ef81) | Raspberry Pi 5 (4×A76, 4 GB, HA container idling) | Debian 13.5 | pi5/release | 4 | bitnet-2b4t-i2_s | **home** 31 → **PASS** | **31/31** | 252 s | — (nightly runs forced only) | — | 252 s |
-| 2026-07-10 | home appliance (51da99b) | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | **home** 31 → **PASS** | **31/31** | 114 s | 3/31 | 227 s | 341 s |
 | 2026-07-10 | v0.3.3-31+stocks | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | 43 → **PASS** | 43/48 | 339 s | 4/48 | 472 s | 811 s |
 | 2026-07-09 | v0.3.3-29-gc640d9a | Apple M1 Max (10c) | macOS 26.5.1 | mac-omp/release | OMP default | bitnet-2b4t-i2_s | 41 → **PASS** | 41/46 | 256 s | 6/46 | 419 s | 675 s (446 % CPU) |
 
-**The home appliance eval** (`make bench-agent-home`, `cases_home.jsonl`, 31
-cases): the standalone 2-tool domain menu routes **perfectly** — 31/31 forced,
-including all four deliberate-ambiguity answers, the lock refusals, and the
-pronoun conversation turns against the mutating state stub. Baseline was 21/31;
-the fixes were German-compound noun evidence, lock verbs, and the sentence-
-shape (imperative/question) tie-breaker. Live-verified end-to-end against a
-real Home Assistant container on the Pi 5 (template + demo entities; the
-appliance switches a real light, sets the demo thermostat, reads sensors).
-Free mode stays diagnostic. This is the per-domain methodology working as
-designed: narrow menu, own corpus, own gate, better-than-demo reliability.
-
-**Lock confirmation flow (2026-07-11):** locks moved from hard refusal to a
-deterministic two-turn flow — locking runs directly (the safe direction), an
-unlock request only ARMS a file-based pending slot and answers with a
-challenge; the unlock executes only when the immediately following command
-carries the literal confirm word and resolves to the same entity. One-shot
-(any other command disarms), 120 s TTL, status queries in between are
-allowed. The corpus grew to 41 cases (10 lock cases across three
-conversations incl. the disarm proof) — still **41/41 forced**, gate raised
-to 41. Live-verified against a real HA template lock on the Pi 5: initial
-locked → challenge (state verified UNCHANGED) → confirm → unlocked → cold
-confirm refused → relock → locked. The model never decides the security
-question — it only ferries the user's words.
-
-**Corpus extension to 56 (2026-07-11):** five new families along the known
-limits — **collectives** ("alle Lichter aus" acts on every matched writable
-device, "sind alle Lichter aus?" reads them all; bare "alles" stays the safe
-no-device answer), a **media_player** third schaltbar domain (musik evidence
-words added to routing), the **dead-device fixture** (`light.keller`: status
-answers "nicht erreichbar", commands surface the error path — first e2e
-coverage of a failing transport), **relative setpoints** ("mach es etwas
-wärmer" = pronoun memory + current-value read ± 1 °C), and the **EN lock
-conversation** (lock → challenge → confirm → status). **56/56 forced**, gate
-raised to 56. Two findings from the run: (1) "Rollladen im Wohnzimmer
-runter" — the only verbless case — was a raw score race that flips with box
-load (it failed on the UNCHANGED tree the same day the 41/41 row was
-recorded); fixed deterministically, a direction adverb in a non-question now
-counts as imperative shape. (2) A pristine-tree control of the MAIN eval
-reproduced today's box state exactly (40/48 with an identical fail set
-before and after the change) — the home additions touch nothing the full
-menu routes on; the recorded 43/48 rows remain the calibrated reference.
-Deployed to the Pi the same day (rsync + `make bin` + `make home`, daemon
-restarted): **56/56 on the Pi in 108 s** — faster than the old 41-case
-nightly (245–278 s) because the deploy also brought the route-menu pin
-(fa13217) live. Warm Assist turns measured through the real pipeline after
-the restart: 1.4–2.2 s, including a live collective read ("Sind alle
-Lichter aus?") against the running HA container.
-
-**Appliance latency (Pi 5, --serve daemon, measured 2026-07-11):** one
-"Schalte das Licht im Flur ein" turn costs **12–13 s** at the daemon socket;
-the full Assist pipeline (the phone-app path) adds ~1–2 s → **~14 s
-end-to-end**. Stable across turns (not transcript growth at this length):
-the cost is the per-turn prefill work — selection prompt + the FULL
-transcript re-prefill including the constant system prompt (the documented
-O(n²) ceiling). The mac does the same turn in ~3 s.
+Home Assistant product evaluations and live-pipeline measurements moved to the dedicated `geisten/geist-home-assistant` repository. This file retains only engine and general-agent evidence.
 
 **Fixed (same day): the system-prompt pin (f87de25).** BOS + system prompt
 are pinned via `geist_session_pin_prefix` on first run; `reset()` rewinds to
@@ -112,19 +53,9 @@ bit-identical to the legacy path: main eval restored to exactly 43/48, home
 stays 41/41, both gates green at unchanged thresholds. Measured after the
 fix: **Pi turn 3.6–4.7 s** steady state (turn 1 pays the one-time
 pin+baseline build: 9.3 s), **full Assist pipeline 5.2 s** — ~3× faster.
-Mac eval walls: main forced 339→116 s, home 114→51 s.
+Mac eval walls: main forced 339→116 s.
 
-**Home-gate nightly (Pi 5):** `scripts/nightly-home-gate.sh` runs the DEPLOYED
-tree's forced home gate every night at 03:30 (crontab), one summary line per
-night in `~/geist-nightly/home-gate.log`, full per-date logs kept two weeks,
-and a `~/geist-nightly/FAILED` marker while the latest run is red (the morning
-check — no notification infra by design). Both paths verified live: a red run
-(threshold forced to 32) sets the marker and logs FAIL with the true counts;
-the next green run clears it. Deployment is a deliberate manual rsync+make, so
-a red nightly always means "this deployed state regressed". ~250 s per night
-with the HA container idling alongside (load noted in every log).
-
-The 2026-07-10 runs add the `stock_movers` tool (48 cases, 8-tool menu) and
+The 2026-07-10 runsThe 2026-07-10 runs add the `stock_movers` tool (48 cases, 8-tool menu) and
 the routing restructure it forced: evidence BAN mask (rare-name tools do not
 compete without their lexical evidence) plus unwindowed evidence-beats-reply.
 Full-name routing scores were tried and measured worse (36/48) — see the
@@ -184,7 +115,7 @@ measures that second half on the deployment box itself — can a 4 GB Pi 5 run i
 self-contained, and how does geist compare to Ollama there?
 
 **Setup:** 10 general one-shot tasks (facts, unit conversion, one-line reasoning,
-DE+EN), warm, greedy, 4 threads, `geist-home` stopped for a clean box, HA
+DE+EN), warm, greedy, 4 threads, HA
 container idling. geist via `geist <model> -c` (chat-templated one-shot); Ollama
 via `/api/generate`, `think:false`, `use_mmap:true`, `num_ctx 1024`. Prompts are
 unique (no Ollama prompt cache).
@@ -208,8 +139,7 @@ Ollama. Same turn on an M1 Max: ~0.8 s.
 
 **Honest caveats.** (1) geist-gemma slower than ollama-gemma (5.03 vs 3.90) is a
 **cold-CLI vs warm-server artifact**, not an engine loss — the same-model warm
-comparison (geist ≥ llama.cpp on Gemma E2B) is in the throughput table above; a
-`geist --serve` daemon (the home appliance does ~2 s warm) would be far lower.
+comparison (geist ≥ llama.cpp on Gemma E2B) is in the throughput table above; a resident `geist --serve` daemon would avoid repeated model startup.
 (2) Ollama's API wall-clock is ~15 % prefill-optimistic. (3) The only model gap
 was **cosmetic**: the bare `geist <model> "prompt"` CLI leaked template tokens
 (`<|im_sep|>`) and stopped poorly — fixed by `geist -c/--chat`, which applies the
