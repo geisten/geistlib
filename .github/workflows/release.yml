@@ -112,29 +112,6 @@ jobs:
         with:
           name: geist-bitnet-linux-arm64
           path: geist-bitnet-linux-arm64.tar.gz
-      - name: Build + package Home Assistant appliance
-        if: env.EMBED_MODEL_URL != ''
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
-            set -e
-            apk add --no-cache build-base linux-headers
-            rm -f build/linux/release/tools/geist.o
-            make TARGET=linux CC=gcc GEMM_PROVIDER=native \
-                 EXTRA_CFLAGS=-D_GNU_SOURCE EXTRA_LDFLAGS="-static -s" \
-                 EMBED_MODEL=embed-model.gguf EMBED_NAME=geist-home TOOLSET=home \
-                 bin/linux/release/tools/geist-home
-          '
-          mkdir -p dist/geist-home-linux-arm64
-          cp bin/linux/release/tools/geist-home dist/geist-home-linux-arm64/
-          cp README.md LICENSE dist/geist-home-linux-arm64/
-          cp integrations/home-assistant/README.md dist/geist-home-linux-arm64/HOME_ASSISTANT.md
-          tar -C dist -czf geist-home-linux-arm64.tar.gz geist-home-linux-arm64
-      - uses: actions/upload-artifact@v4
-        if: env.EMBED_MODEL_URL != ''
-        with:
-          name: geist-home-linux-arm64
-          path: geist-home-linux-arm64.tar.gz
-
   linux-x86_64:
     name: linux-x86_64 (musl-static, AVX-512, dependency-free)
     runs-on: ubuntu-24.04
@@ -204,29 +181,6 @@ jobs:
         with:
           name: geist-bitnet-linux-x86_64
           path: geist-bitnet-linux-x86_64.tar.gz
-      - name: Build + package Home Assistant appliance
-        if: env.EMBED_MODEL_URL != ''
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
-            set -e
-            apk add --no-cache build-base linux-headers
-            rm -f build/linux/release/tools/geist.o
-            make TARGET=linux CC=gcc BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native \
-                 EXTRA_CFLAGS=-D_GNU_SOURCE EXTRA_LDFLAGS="-static -s" \
-                 EMBED_MODEL=embed-model.gguf EMBED_NAME=geist-home TOOLSET=home \
-                 bin/linux/release/tools/geist-home
-          '
-          mkdir -p dist/geist-home-linux-x86_64
-          cp bin/linux/release/tools/geist-home dist/geist-home-linux-x86_64/
-          cp README.md LICENSE dist/geist-home-linux-x86_64/
-          cp integrations/home-assistant/README.md dist/geist-home-linux-x86_64/HOME_ASSISTANT.md
-          tar -C dist -czf geist-home-linux-x86_64.tar.gz geist-home-linux-x86_64
-      - uses: actions/upload-artifact@v4
-        if: env.EMBED_MODEL_URL != ''
-        with:
-          name: geist-home-linux-x86_64
-          path: geist-home-linux-x86_64.tar.gz
-
   macos-arm64:
     name: macos-arm64 (Accelerate/AMX)
     runs-on: macos-15
@@ -280,25 +234,6 @@ jobs:
         with:
           name: geist-bitnet-macos-arm64
           path: geist-bitnet-macos-arm64.tar.gz
-      - name: Build + package Home Assistant appliance
-        if: env.EMBED_MODEL_URL != ''
-        run: |
-          rm -f build/mac-omp/release/tools/geist.o
-          make TARGET=mac-omp CC=clang GEIST_STATIC_OMP=1 \
-               EMBED_MODEL=embed-model.gguf EMBED_NAME=geist-home TOOLSET=home \
-               bin/mac-omp/release/tools/geist-home
-          strip bin/mac-omp/release/tools/geist-home
-          mkdir -p dist/geist-home-macos-arm64
-          cp bin/mac-omp/release/tools/geist-home dist/geist-home-macos-arm64/
-          cp README.md LICENSE dist/geist-home-macos-arm64/
-          cp integrations/home-assistant/README.md dist/geist-home-macos-arm64/HOME_ASSISTANT.md
-          tar -C dist -czf geist-home-macos-arm64.tar.gz geist-home-macos-arm64
-      - uses: actions/upload-artifact@v4
-        if: env.EMBED_MODEL_URL != ''
-        with:
-          name: geist-home-macos-arm64
-          path: geist-home-macos-arm64.tar.gz
-
   release:
     name: attach artifacts to the Release
     needs: [version-guard, linux-arm64, linux-x86_64, macos-arm64]

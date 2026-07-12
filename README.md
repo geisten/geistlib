@@ -8,11 +8,9 @@
 > the CPU you already own — especially a Raspberry Pi — and give them a small,
 > explicit set of actions without handing your home or your data to a cloud.
 >
-> **Where this is going:** a private Home Assistant agent that installs on a Pi,
-> keeps its model warm, and can query or control only the entities its owner has
-> exposed. A working preview already runs on a Pi 5: Home Assistant talks to a
-> resident `geist-home` process over a permission-gated Unix socket, with no TCP
-> inference port and no cloud model service.
+> **Where this is going:** a small, application-neutral inference engine for
+> controlled local agents. Applications provide request-scoped capabilities;
+> Geist keeps the model warm, validates calls, and never invents permissions.
 
 <p align="center">
   <strong>local by default</strong> &nbsp;·&nbsp;
@@ -50,26 +48,16 @@ every GPU inference server. It is deliberately optimized for a narrower job:
   BitNet support where memory bandwidth matters most.
 - **Controlled agents:** the host supplies a static or per-request immutable
   tool whitelist plus a step budget; the model cannot grant itself capabilities.
-- **Private smart homes:** inference stays local while HA offers only currently
-  exposed capabilities, validates arguments, and executes inside HA.
+- **Adapter-owned policy:** applications retain authorization and execution;
+  Geist receives only the capabilities offered for the current request.
 
-### Home Assistant status
+### Home Assistant adapter
 
-The Home Assistant path is a **working developer preview**, not yet a one-click
-release. Its canonical transport is deliberately small:
-
-1. `geist-home --serve /path/geist.sock` loads the model once and stays warm;
-2. `geist_conversation` sends a newline-delimited JSON request containing the
-   utterance, step budget and tools allowed for that Assist request;
-3. Geist emits only correlated calls to offered names; HA revalidates name,
-   arguments, exposure and high-impact policy, then executes inside HA;
-4. tool results return on the same socket and Geist formulates the response.
-
-The next milestone is packaging this proven path: reproducible installation,
-health diagnostics, upgrades, soak testing, and published German/English Pi 5
-results. The complete implementation sequence is in
-[the HA phases](docs/HOME_ASSISTANT_IMPLEMENTATION_PHASES.md); current status is
-in [`ROADMAP.md`](ROADMAP.md).
+Home Assistant integration, policy, packaging, tests, and its implementation
+roadmap live in the separate
+[`geisten/geist-home-assistant`](https://github.com/geisten/geist-home-assistant)
+repository. It consumes the same public `dynamic-tools-v1` contract as any
+other adapter; Geist contains no Home Assistant credentials or product logic.
 
 <p align="center">
   <strong>~2 s</strong> voice command → action <sub>(smart home, Pi 5, offline)</sub> &nbsp;·&nbsp;
@@ -112,15 +100,6 @@ inside the binary.
 | **Raspberry Pi / Linux** · ARM64 | [⬇ geist-bitnet-linux-arm64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-bitnet-linux-arm64.tar.gz) |
 | **macOS** · Apple Silicon | [⬇ geist-bitnet-macos-arm64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-bitnet-macos-arm64.tar.gz) |
 | **Linux** · x86-64 (AVX-512) | [⬇ geist-bitnet-linux-x86_64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-bitnet-linux-x86_64.tar.gz) |
-
-Home Assistant uses the narrower appliance build, with only bounded home tools:
-
-| Platform | Home appliance (model included) |
-| :-- | :-- |
-| **Raspberry Pi / Linux** · ARM64 | [⬇ geist-home-linux-arm64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-home-linux-arm64.tar.gz) |
-| **Linux** · x86-64 | [⬇ geist-home-linux-x86_64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-home-linux-x86_64.tar.gz) |
-
-Verify the download against [`SHA256SUMS`](https://github.com/geisten/geisten/releases/latest/download/SHA256SUMS), then follow the [guided HA setup](integrations/home-assistant/README.md#guided-setup).
 
 ```bash
 ./geist-bitnet "What is the capital of France?" # ask — instruct chat, clean answer
@@ -170,63 +149,9 @@ brew install geisten/tap/geist
 
 ---
 
-## From engine to appliance — first up: your house, on voice
+## Build your adapter
 
-geist's answer for low-resource boxes is the **appliance**: `make <domain>`
-compiles the engine, the model, and *only the tools that domain needs* into one
-fixed-scope binary — the artifact itself is the security promise, and every
-appliance ships with **its own eval gate**. Smart-home control is the *first*
-domain built this way, not the product: the same recipe fits any narrow job on
-any box with a few GB of RAM.
-
-**The first appliance is `make home`** — it builds **geist-home**: a single
-binary (BitNet baked in, only the home tools compiled in) that plugs into
-[Home Assistant](https://www.home-assistant.io/) Assist and turns a
-**4 GB Raspberry Pi 5** into a private voice brain for your smart home.
-
-<p align="center">
-  <img src="assets/demo-home.gif" alt="Terminal on a Raspberry Pi 5: three voice-style commands against the local geist-home daemon — 'Turn on the hallway light' turns light.flur on in 2.0 s, 'Turn off all lights' turns both lights off in 1.9 s, 'Is the hallway light on?' answers 'off' in 2.1 s — all executed and verified on the Pi, offline" width="100%">
-</p>
-
-*Three commands, live on a **Raspberry Pi 5** — each parsed, executed and
-verified on the box in **~2 s**, nothing leaving the LAN. The same turn on an
-**M1 Max is ~0.8 s** (~2.6× faster — the appliance scales with the box).
-German or English (`GEIST_HOME_LANG=en` shown here); typed prompts, add
-speech-to-text for the spoken path.*
-
-- **~2 s per command** on the Pi 5, warm — measured through the full Home
-  Assistant Assist pipeline with the HA container on the same box; **~0.8 s on
-  an M1 Max**. (Speech-to-text, if you add it, is its own step.)
-- **German + English, the way people actually talk**: „Mach alles aus", "dim the
-  light to 40 %", „mach es *etwas wärmer*", "and now close it again" — compound
-  nouns, pronouns, relative setpoints, collectives. Input is bilingual; the
-  answer language is a deployment setting (German by default,
-  `GEIST_HOME_LANG=en` for English state words).
-- **The model never decides a security question.** It only *routes*; device,
-  action and value are parsed deterministically against a plain-text device
-  registry. Unlocking the front door takes a two-turn confirmation (challenge →
-  literal confirm word, one-shot, 120 s TTL). Garage doors and alarm panels are
-  refused **by code, not by prompt**.
-- **Regression-gated, not vibe-checked**: the whole voice→action path passes a
-  56-case eval — commands, statuses, deliberate ambiguity, refusals, multi-turn
-  pronouns, the lock flow, in both languages — **nightly, on the Pi itself**.
-
-```bash
-make home                                        # -> ./geist-home (model baked in)
-./geist-home --serve /path/to/ha-config/geist.sock
-```
-
-Run it as a daemon (`--serve` plus the bundled
-[systemd unit](integrations/systemd/geist-home.service)), add the
-[Home Assistant custom component](integrations/home-assistant/), and Assist —
-typed or spoken — answers from your own hardware. HA supplies the exposed tools
-per request. Geist has no HA REST client and receives no HA token. Full walkthrough:
-[docs/agent.md](docs/agent.md#the-home-appliance--make-home).
-
-**Your domain next.** The recipe generalizes: a narrow tool menu, deterministic
-parsing wrapped around a small model, a per-domain eval gate — an offline docs
-kiosk, a lab-bench assistant, a control panel that must never phone home. The
-host-neutral contract is concentrated in
+The host-neutral contract is concentrated in
 [`tools/dynamic_tools_v1.h`](tools/dynamic_tools_v1.h),
 [`tools/dynamic_request_v1.h`](tools/dynamic_request_v1.h), and
 [`tools/dynamic_host_v1.h`](tools/dynamic_host_v1.h); start yours there.

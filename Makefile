@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run home dynamic-example-host clean distclean help test test-unit test-int test-e2e test-all test-py test-ha fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-home bench-agent-live bench-agent-judge format format-check
+.PHONY: all lib bin run dynamic-example-host clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-live bench-agent-judge format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -68,13 +68,7 @@ geist: $(GEIST_BIN)
 run: geist
 	@OMP_WAIT_POLICY=active ./$(EMBED_NAME) $(ARGS)
 
-# The home appliance build: BitNet baked in, dynamic host tools only.
-#   make home && ./geist-home --serve /path/to/ha-config/geist.sock
-home:
-	@$(MAKE) EMBED_MODEL=gguf_artifacts/bitnet-2b4t-i2_s.gguf EMBED_NAME=geist-home \
-	  TOOLSET=home geist
-
-# Host-neutral Phase-3 example. It links no model/runtime and no Home Assistant
+# Host-neutral dynamic-tools example. It links no model/runtime and no adapter
 # adapter; any application can build the same request/validation contract.
 DYNAMIC_EXAMPLE_HOST := $(BIN_DIR)/examples/dynamic_tools_host
 dynamic-example-host: $(DYNAMIC_EXAMPLE_HOST)
@@ -96,15 +90,7 @@ $(DYNAMIC_EXAMPLE_HOST): examples/dynamic_tools_host.c tools/dynamic_tools_v1.h 
 # geist.o on it: the stamp is rewritten only when the state changes, so switching
 # between embedded/file mode rebuilds geist.o automatically and nothing churns
 # otherwise. Applies in both branches, so it lives outside the ifneq.
-# TOOLSET selects the agent build profile compiled into the CLI: `default`
-# (file/web/memory demo menu) or `home` (the home appliance — ONLY the two
-# home tools are compiled in; the bare prompt is an agent request). The knob
-# joins the embed stamp below so switching profiles rebuilds geist.o.
-TOOLSET ?= default
-ifeq ($(TOOLSET),home)
-  $(BUILD_DIR)/tools/geist.o: CFLAGS += -DGEIST_TOOLSET_HOME
-endif
-EMBED_TAG         := $(if $(strip $(EMBED_MODEL)),embedded:$(abspath $(EMBED_MODEL)),none):$(TOOLSET)
+EMBED_TAG         := $(if $(strip $(EMBED_MODEL)),embedded:$(abspath $(EMBED_MODEL)),none)
 GEIST_EMBED_STAMP := $(BUILD_DIR)/tools/.geist-embed-state
 # When the embed state changes, DELETE geist.o + this mode's binary so they
 # rebuild with the right -DGEIST_EMBEDDED_MODEL. We can't rely on a stamp
@@ -224,19 +210,6 @@ test-py:
 	if [ $$status -ne 0 ]; then echo "test-py: FAIL"; exit $$status; fi; \
 	echo "test-py: PASS"
 
-# Home Assistant packaging/transport contract. Model-free and HA-free: validates
-# the component artifact, exposed-entity registry, Unix-socket framing, staged
-# clean installation, secret permissions, upgrade, and rollback.
-test-ha:
-	@python3 tests/test_ha_app.py
-	@python3 tests/test_ha_integration.py
-	@python3 tests/test_ha_health.py
-	@python3 tests/test_ha_history.py
-	@python3 tests/test_ha_operability.py
-	@python3 tests/test_ha_dynamic_tools_v1.py
-	@tests/test_ha_install.sh
-	@tests/test_ha_setup.sh
-
 # `make test-all` adds e2e but excludes benches. Model first (see `test`).
 test-all: $(MODEL_PREREQ) test-unit test-int test-py test-e2e
 
@@ -345,17 +318,6 @@ bench-agent: bin $(MODEL_PREREQ)
 bench-agent-live: bin $(MODEL_PREREQ)
 	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode forced --live-web \
 	  tests/data/agent_eval/cases_live.jsonl
-
-# The HOME appliance eval: the standalone 2-tool home menu over
-# cases_home.jsonl (stubbed mutating state table, fixture registry). The fixed
-# threshold 56/56 is the level achieved on bitnet-2b4t-i2_s (2026-07, incl.
-# lock confirmation, collectives, relative setpoints, media_player and the
-# dead-device fixture) — the narrow domain menu routes perfectly;
-# recalibrate for other models.
-AGENT_EVAL_HOME_MIN ?= 56
-bench-agent-home: bin $(MODEL_PREREQ)
-	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --tools home \
-	  --mode $(AGENT_EVAL_MODE) --min-pass $(AGENT_EVAL_HOME_MIN)
 
 # Advisory answer-coherence judge: a second AI (local Ollama, JUDGE_MODEL)
 # reads every forced-mode answer and says whether it is a coherent response —

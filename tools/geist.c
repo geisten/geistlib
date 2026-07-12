@@ -143,28 +143,6 @@ static size_t agent_tools(struct geist_model   *model,
     return n;
 }
 
-/* ---- home appliance profile (make home / TOOLSET=home) ---------------------
- * The Home Assistant host supplies the complete request-scoped toolset over
- * the dynamic Unix-socket protocol and executes every action itself. */
-#if defined(GEIST_TOOLSET_HOME)
-static const char *HOME_SYSTEM =
-        "You are a concise home control assistant. Use only tools offered by "
-        "the current request. After a tool result, answer in one short sentence.";
-
-static size_t home_toolset(struct geist_model   *model,
-                           struct geist_backend *be,
-                           struct geist_tool    *out,
-                           size_t                cap,
-                           void                 *ctx) {
-    (void) model;
-    (void) be;
-    (void) out;
-    (void) cap;
-    (void) ctx;
-    return 0;
-}
-#endif
-
 /* Returns a system prompt = base + the notes index (so recall is usable: the
  * model sees the available slugs). Static buffer — valid for the process. */
 static const char *system_with_index(const char *base) {
@@ -437,26 +415,6 @@ static int usage(const char *prog, int code) {
 }
 
 int main(int argc, char **argv) {
-    /* `geist ha ...` -> manual HA REST driver (all profiles, no model load). */
-#if defined(GEIST_TOOLSET_HOME)
-    /* Home appliance: EVERYTHING else is an agent request — no subcommand, no
-     * raw-completion mode. -h/-v fall through to geist_agent_main's usage. */
-    if (!(argc > 1 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0))) {
-#if defined(GEIST_EMBEDDED_MODEL)
-        return geist_agent_main(argc,
-                                argv,
-                                HOME_SYSTEM,
-                                home_toolset,
-                                nullptr,
-                                geist_embedded_model_start,
-                                geist_embedded_model_end);
-#else
-        return geist_agent_main(argc, argv, HOME_SYSTEM, home_toolset, nullptr, nullptr, nullptr);
-#endif
-    }
-    printf("geist-home %s\n", geist_version_string());
-    return 0;
-#endif
     /* `geist agent ...` -> one-shot tool loop. Drop argv[0]; geist_agent_main
      * parses "agent" as its prog name and the rest after it. In an embedded build
      * the model is baked in (pass its bounds; no model positional). */

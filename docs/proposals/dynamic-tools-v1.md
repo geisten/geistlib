@@ -133,7 +133,7 @@ or coercion. Hosts must send explicit values of the declared type.
 | Multiple calls/results and final conversation result | `test_dynamic_host_v1_unit`, `test_ha_dynamic_tools_v1.py` |
 | Global step budget, one retry and correlated cancellation | `test_dynamic_host_v1_unit`, `test_ha_dynamic_tools_v1.py` |
 | Low-confidence clarification | routing-margin cases in `test_agent_unit` |
-| HA-owned exposure/policy/execution | `make test-ha` |
+| Adapter-owned exposure/policy/execution | adapter repository contract suite |
 | Host-independent integration and build | `make dynamic-example-host` |
 
 The model-dependent quality of selecting and wording calls is evaluated

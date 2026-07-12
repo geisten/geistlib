@@ -22,13 +22,14 @@ The tool-use **agent** (`agent.h`) is a header-only library; the `agent` and
 `chat` subcommands drive it in-process. The resident daemon is `--serve`:
 
 ```sh
-geist agent model.gguf --serve /run/geist.sock     # or ./geist-home --serve …
+geist -m model.gguf --serve /run/geist.sock        # external model
+geist --serve /run/geist.sock                      # embedded model
 ```
 
 The model stays warm on a **chmod-600 Unix socket**. Dynamic hosts send
 newline-delimited JSON with a per-request toolset,
 execute correlated `tool.call` frames themselves, return `tool.result`, and
-receive `conversation.result`. The Home Assistant adapter uses this path, so HA
+receive `conversation.result`. Application adapters use this path, so the host
 owns authorization and execution while the dynamic protocol consumes no HA
 credentials. There is no REST/token fallback or line-protocol compatibility mode.
 

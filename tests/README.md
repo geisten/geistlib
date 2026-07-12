@@ -12,7 +12,6 @@ make test-unit     # only fast kernel-level tests (suffix _unit)
 make test-int      # only multi-module integration tests (suffix _int)
 make test-e2e      # only end-to-end tests (suffix _e2e — slow, may need GGUF)
 make test-all      # unit + int + e2e
-make test-ha       # HA adapter, dynamic tools, install/rollback contracts
 make dynamic-example-host # compile the independent Phase-3 host
 
 # Filtering
@@ -23,16 +22,12 @@ make test FILTER=audio     # only audio-related tests
 make MODE=asan test
 ```
 
-`make test-ha` also validates `repository.yaml` and the HA app scaffold:
-architectures, disabled privileges/APIs/ports/mounts, AppArmor boundaries,
-`/data` persistence, healthcheck, and build-only multi-arch workflow.
+Adapter-specific policy and packaging suites live in their own repositories.
 
 Dynamic-tools safety is split across `test_json_schema_v1_unit`,
 `test_dynamic_tools_v1_unit`, `test_dynamic_request_v1_unit`,
-`test_dynamic_arguments_v1_unit`, `test_dynamic_host_v1_unit`,
-`test_agent_unit`, `test_ha_health.py`, `test_ha_history.py`,
-`test_ha_operability.py`, and
-`test_ha_dynamic_tools_v1.py`. A real model/socket/host
+`test_dynamic_arguments_v1_unit`, `test_dynamic_host_v1_unit`, and
+`test_agent_unit`. A real model/socket/host
 transcript is recorded in
 `docs/benchmarks/dynamic-tools-v1-e2e-20260712.txt`.
 

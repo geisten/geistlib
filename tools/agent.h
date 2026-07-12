@@ -49,18 +49,8 @@ enum {
     GEIST_AGENT_MAX_DECODE     = 512,
     GEIST_AGENT_LOOP_PMAX      = 128, /* longest repeating block the anti-loop cap detects */
 /* Chat context bound (agent_compact): keep the protected system-prompt
- * prefix plus the last CARRY bytes of conversation, evicting older whole
- * turns. Bounds per-turn prefill (a long chat stays O(n), not O(n^2)) and
- * avoids a hard "context full" stop. ponytail: bytes as a token proxy.
- * Per toolset — the home appliance keeps only the last ~2 turns: home
- * follow-ups ("mach licht an" -> "dimme es herunter") are short-lived, and
- * unbounded carry climbs per-turn prefill toward minutes over a resident
- * daemon's life. General chat keeps a long research history. */
-#ifdef GEIST_TOOLSET_HOME
-    GEIST_AGENT_CTX_CARRY = 256, /* ~2 home turns past the system prompt (~100 B/turn measured) */
-#else
+ * prefix plus the last CARRY bytes of conversation, evicting older turns. */
     GEIST_AGENT_CTX_CARRY = GEIST_AGENT_TRANSCRIPT_CAP / 2,
-#endif
 };
 
 /* Generic anti-degeneration: greedy decoding on a chatty model can fall into a

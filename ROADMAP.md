@@ -20,75 +20,14 @@ is open to help. The mission in full is in the
 
 <sub>✅ shipped · 🚧 in progress · 🔬 exploring</sub>
 
-## Product track: private Home Assistant edge agent
+## Adapter ecosystem
 
-The first product-shaped use case for the small-model agent track is a local
-Home Assistant conversation agent on Raspberry Pi 5 and CPU-only Linux hosts.
-Home Assistant remains the authority for entity exposure and execution. For
-each Assist request the integration derives a dynamic toolset from the current
-exposure, sends it to the resident Geist process, validates the returned name
-and arguments again, and executes inside HA. Geist has no HA REST client and
-receives no HA credentials.
-
-### Preview exit criteria
-
-The Home Assistant preview is ready to announce when all of these are measured
-on a clean installation rather than inferred from engine-level tests:
-
-| criterion | target |
-| :-- | :-- |
-| Installation | first working request in **10 minutes or less**, without compiling |
-| Clear commands | **≥ 90%** correct end-to-end actions on the published HA evaluation set |
-| Authorization | **0 actions** against entities not exposed by Home Assistant |
-| Simple-command latency | warm p50 **≤ 3 s** on Raspberry Pi 5 |
-| Complex tool latency | warm p50 **≤ 10 s** on Raspberry Pi 5 |
-| Languages | the same published core suite passes in **German and English** |
-| Reliability | **24 h** resident soak without crash, model reload, or unbounded RSS growth |
-
-Latency is a product budget, not an engine benchmark: it includes request
-parsing, model routing/generation, the Home Assistant tool round-trip, and the
-final response. If a small model cannot meet the simple-command budget, those
-commands take a deterministic Assist-intent fast path and the LLM handles only
-ambiguous or multi-step work.
-
-### Delivery stages
-
-1. ✅ Resident Unix-socket daemon: `geist-home --serve /path/geist.sock`; the
-   model stays warm and the socket is created mode `0600`.
-2. ✅ Home Assistant Conversation preview: Assist utterances, per-request
-   exposed capabilities, HA-owned execution, and bounded home actions run over
-   the local bidirectional Unix-socket protocol.
-3. 🚧 Reproducible installation: versioned component package, guided setup,
-   service installer, diagnostics, upgrade/rollback instructions, and clean-host acceptance test.
-   Pi 5 staging plus an isolated internal-model round-trip complete in 9 s with
-   a preinstalled binary, but the smoke prompt answered incorrectly; clean-image
-   setup and semantic acceptance therefore remain open.
-4. 🚧 ARM64/x86-64 appliance artifacts with embedded model, release checksums,
-   health checks and updates; keep the Unix socket for same-host deployments.
-5. Published German/English HA evaluation corpus, security cases, 24 h soak,
-   and reproducible Pi 5 latency report. The deterministic stub-backed corpus
-   passes 56/56 on Pi 5 with Gemma 4 E2B Q4_K_M. Ten warm real-HA simple actions
-   measure p50 2.095 s/p95 2.122 s;
-   ten relative climate read-modify-write actions measure p50 2.216 s/p95
-   2.256 s on Pi 5. Both latency budgets pass; the 24 h soak is running with
-   PID/restart/RSS/latency evidence and remains open until its timer completes.
-
-### Phase 2: native Home Assistant beta
-
-The protocol, executor boundary, session loop and credential-free HA execution
-are implemented. The protected-compatible Home Assistant app scaffold and
-build-only `aarch64`/`amd64` matrix exist; verified runtime/model inputs, signed
-publishing and installable artifacts remain the principal distribution task. The
-Core/Container Unix-socket deployment remains supported.
-
-The architecture, implementation gates, security boundaries, distribution strategy,
-and acceptance scorecard are defined in the
-[Phase 2 proposal](docs/proposals/home-assistant-phase-2.md). Its fail-closed
-contracts are tested; app packaging and distribution remain.
-
-The complete agent-executable sequence from product boundary through public
-preview is maintained in the
-[Home Assistant implementation phases](docs/HOME_ASSISTANT_IMPLEMENTATION_PHASES.md).
+Geist remains application-neutral. Its resident service and dynamic-tools
+protocol are the stable extension boundary; authorization, execution, product
+UX, distribution, and domain evaluations belong to adapter repositories.
+The first adapter is maintained in
+[`geisten/geist-home-assistant`](https://github.com/geisten/geist-home-assistant),
+including its independent roadmap and release phases.
 
 ### Phase 3: host-neutral dynamic tools — complete
 
@@ -99,7 +38,7 @@ executes, returns correlated results, and Geist continues the conversation.
 Multiple calls, global budgets, one bounded retry, cancellation, typed forced
 arguments and low-confidence clarification are covered by deterministic tests.
 
-Home Assistant is one adapter. `make dynamic-example-host` builds a separate C
+`make dynamic-example-host` builds a separate C
 calculator/profile host with no HA or model-runtime dependency, proving that
 other applications can implement and compile against the same contract. See
 [Dynamic tools v1](docs/proposals/dynamic-tools-v1.md).

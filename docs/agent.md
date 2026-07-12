@@ -24,7 +24,7 @@ object inside an app — but the core is identical.
 - [Tools](#tools)
   - [Tool selection & forced calls](#tool-selection--forced-calls)
   - [Progress events](#progress-events)
-- [The home appliance — `make home`](#the-home-appliance--make-home)
+- [Dynamic application adapters](#dynamic-application-adapters)
 - [Testing the agent — `make bench-agent`](#testing-the-agent--make-bench-agent)
   - [The end-to-end cases](#the-end-to-end-cases-cat-e2e)
   - [Live-web smoke](#live-web-smoke--make-bench-agent-live)
@@ -284,68 +284,14 @@ per step to a `FILE*` — `geist_agent_main` wires it to `stderr` **by default**
 callback** — copy them if you retain them. A server host can serialize the same
 struct to JSON and stream it to a UI.
 
-## The home appliance — `make home`
+## Dynamic application adapters
 
-The first DOMAIN BUILD: `make home` produces `./geist-home` — BitNet baked in,
-and **only the home tools compiled in** (no web, no docs, no stocks). Fixed
-scope at build time: the artifact itself is the security promise.
-
-```sh
-make home
-./geist-home --serve /path/to/ha-config/geist.sock
-```
-
-The current HA integration uses dynamic tools: HA offers exposed capabilities
-per request and executes them itself. Geist contains no HA REST client, receives
-no HA token, and has no compatibility transport.
-
-Three layers:
-
-- **`agent_home.h`** — an internal deterministic evaluation harness with two tools:
-  a **command tool** (turn on/off, dim, set temperature, open/close) and a
-  **status tool** (device/sensor reads), both `{"request"}` — the model only
-  routes; device, action and value are parsed deterministically against the
-  **registry file** (`GEIST_HOME_REGISTRY`, default `./home-registry.txt`,
-  one `entity | domain | alias phrases` line per device). Ambiguity ("das
-  Licht" with two lights) yields a deterministic clarifying answer; unknown
-  devices a clear error. A **last-device memory** resolves pronouns ("Mach
-  *es* wieder aus"). **Collectives** ("alle Lichter aus") act on every
-  matched writable device — never on locks; bare "alles" stays the safe
-  no-device answer. **Relative setpoints** ("mach es wärmer") move the
-  current climate value by ±1 °C. Devices HA reports `unavailable` answer
-  "nicht erreichbar" instead of a stale state. Writes are whitelisted to
-  light/switch/climate/cover/media_player —
-  **garage doors and alarms are refused** even if listed. **Locks take a
-  confirmation flow**: locking runs directly (the safe direction), but an
-  unlock request only *arms* a file-based pending slot and answers with a
-  challenge — the unlock executes only when the immediately following request
-  carries the literal confirm word and resolves to the same entity
-  ("Bestätige entriegeln Haustür"). The slot is one-shot (any other command
-  disarms it) and expires after 120 s; the check is fully deterministic — the
-  model never decides a security question, it only ferries the user's words.
-- **routing evidence** — home nouns match as substrings (German compounds:
-  *Flurlicht*), action verbs word-start; the sentence SHAPE decides the
-  read/write boundary (imperative → command, question → status; a direction
-  adverb in a non-question — "Rollladen *runter*" — counts as imperative,
-  the verbless cover command was a score race otherwise).
-
-Input is bilingual (DE + EN). The **answer language** is a deployment setting:
-German by default, `GEIST_HOME_LANG=en` switches the device state words
-(on/off/open/closed/locked/unlocked/unavailable) to English — the pieces every
-command and status answer shows. The eval never sets the env, so the fixed gate
-is unaffected.
-
-**Adding a language** is one line, not a code change: the state words live in a
-table (`HOME_LANGS` in `tools/agent_home.h`), one row per language keyed by the
-`GEIST_HOME_LANG` code. Copy a row, translate the eight words, done — the lookup
-is table-driven, so no new branches anywhere. (The rarer clarify/challenge/error
-*sentences* are still German literals; lift them into the same table when an
-English-first deployment ships.)
-
-Legacy demo backend: the official Home Assistant container with template
-entities matching the starter registry (see `home-registry.txt`). Eval:
-`make bench-agent-home` — the
-standalone 2-tool menu over `cases_home.jsonl`, gate `AGENT_EVAL_HOME_MIN`.
+Run `geist -m model.gguf --serve /path/geist.sock`, or omit `-m` when the model
+is embedded. Each request supplies its immutable tool set and step budget; the
+host executes validated calls and returns correlated results. Domain policy and
+credentials stay outside Geist. The standalone `dynamic-example-host` is the
+reference implementation. Product adapters, including Home Assistant, live in
+separate repositories and test against the versioned wire contract.
 
 ## Testing the agent — `make bench-agent`
 
