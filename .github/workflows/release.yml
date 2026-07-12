@@ -112,7 +112,6 @@ jobs:
         with:
           name: geist-bitnet-linux-arm64
           path: geist-bitnet-linux-arm64.tar.gz
-
   linux-x86_64:
     name: linux-x86_64 (musl-static, AVX-512, dependency-free)
     runs-on: ubuntu-24.04
@@ -182,7 +181,6 @@ jobs:
         with:
           name: geist-bitnet-linux-x86_64
           path: geist-bitnet-linux-x86_64.tar.gz
-
   macos-arm64:
     name: macos-arm64 (Accelerate/AMX)
     runs-on: macos-15
@@ -236,7 +234,6 @@ jobs:
         with:
           name: geist-bitnet-macos-arm64
           path: geist-bitnet-macos-arm64.tar.gz
-
   release:
     name: attach artifacts to the Release
     needs: [version-guard, linux-arm64, linux-x86_64, macos-arm64]
@@ -253,10 +250,13 @@ jobs:
         # alone is not a Release. Create it from the tag (auto-generated notes)
         # if absent, then attach the per-platform tarballs. Idempotent.
         run: |
+          find dist -name '*.tar.gz' -type f -exec sha256sum {} \; | \
+            sed 's#  dist/[^/]*/#  #' | sort -k2 > SHA256SUMS
           gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
             || gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
                  --title "geist ${GITHUB_REF_NAME}" --generate-notes --verify-tag
-          gh release upload "${GITHUB_REF_NAME}" dist/*/*.tar.gz --repo "${GITHUB_REPOSITORY}" --clobber
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS dist/*/*.tar.gz \
+            --repo "${GITHUB_REPOSITORY}" --clobber
 
   # Keep `brew install geisten/tap/geist` current: render Formula/geist.rb from
   # the fresh tarball checksums (scripts/make-brew-formula.sh) and push it to

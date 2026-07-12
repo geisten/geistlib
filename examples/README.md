@@ -29,3 +29,22 @@ It uses only `geist_backend_create` → `geist_model_load` →
 stable surface needed to run text generation; everything multimodal
 (`attach_audio` / `attach_image` / `attach_video`) and the
 speculative / KV-mode knobs are `EXPERIMENTAL` extensions on top.
+
+## `dynamic_tools_host`
+
+This is a host-neutral Phase-3 example rather than a core-ABI generation sample.
+It offers calculator and profile tools to a running Unix-socket agent, validates
+every returned name and argument object, executes locally, returns correlated
+results, and prints the final conversation result. It imports no Home Assistant
+code and links no Geist model/runtime library.
+
+```sh
+make dynamic-example-host
+./geist agent -m model.gguf --serve /tmp/geist.sock
+bin/$(mk/detect-target.sh)/release/examples/dynamic_tools_host \
+  /tmp/geist.sock "Add 5 and 7"
+```
+
+Use it as the starting point for a database, build-system, device or application
+host. The wire/schema contract is in
+[`docs/proposals/dynamic-tools-v1.md`](../docs/proposals/dynamic-tools-v1.md).

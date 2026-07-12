@@ -22,16 +22,16 @@ The tool-use **agent** (`agent.h`) is a header-only library; the `agent` and
 `chat` subcommands drive it in-process. The resident daemon is `--serve`:
 
 ```sh
-geist agent model.gguf --serve /run/geist.sock     # or ./geist-home --serve …
+geist -m model.gguf --serve /run/geist.sock        # external model
+geist --serve /run/geist.sock                      # embedded model
 ```
 
-The model stays warm; one request line per connection on a **chmod-600 Unix
-socket**, the answer EOF-framed; the daemon keeps ONE conversation across
-connections (context carry + pronoun memory span turns). This is the
-transport behind the Home Assistant Assist integration
-(`integrations/home-assistant/`): the HA component sends each utterance to
-the socket and speaks the answer — HA is only transport and UI, routing and
-the action whitelist stay in the daemon.
+The model stays warm on a **chmod-600 Unix socket**. Dynamic hosts send
+newline-delimited JSON with a per-request toolset,
+execute correlated `tool.call` frames themselves, return `tool.result`, and
+receive `conversation.result`. Application adapters use this path, so the host
+owns authorization and execution while the dynamic protocol consumes no HA
+credentials. There is no REST/token fallback or line-protocol compatibility mode.
 
 ### Self-contained / dependency-free build
 
@@ -86,10 +86,9 @@ ship to the server separately.) Recommended shape:
 1. **Build** a musl-static binary in CI (as `release.yml` does) — no runtime deps.
 2. **Ship the model once** to the server (e.g. `/srv/geist/model.gguf`); it is too
    large to bake in or attach to a release.
-3. **Run as a systemd service** that holds the model warm. Until the socket daemon
-   lands, the simplest service is the chat REPL behind a small front; for a real
-   API, finish the daemon (below) and expose it via a **Unix socket** or a
-   localhost port fronted by nginx + TLS for `geisten.net`.
+3. **Run as a systemd service** that holds the model warm. The shipped
+   `--serve` daemon exposes a permission-gated Unix socket. A public HTTP/TLS
+   front remains a separate interoperability layer.
 4. **Deploy on tag** with an Actions SSH step:
 
 ```yaml
@@ -110,13 +109,14 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-### The resident daemon (follow-up)
+### The resident daemon
 
-A ~30-line `accept()` loop over a Unix-domain socket that calls `geist_agent_run`
-per connection, keeping one `geist_session` warm. This is the missing piece for a
-production geisten.net deployment; the agent core (`agent.h`) is already the
-in-process call it wraps. Ask and it gets built next.
+`geist agent -m model.gguf --serve /path/geist.sock` is implemented. It keeps
+the model warm and accepts only host-neutral dynamic requests with correlated
+call/result frames. `./geist serve ...` is not a
+separate required process: the agent daemon is the serving surface.
 
 > Security: prefer a Unix socket (`chmod 600`) or a localhost port behind nginx
-> over a public listener. The agent's jailbreak resistance is the tool whitelist
-> + step budget ([agent.md](agent.md#security-model)), independent of transport.
+> over a public listener. The agent's jailbreak resistance is the immutable
+> offered set, schema/policy validation and global call budget
+> ([agent.md](agent.md#security-model)), independent of transport.

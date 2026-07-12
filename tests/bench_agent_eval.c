@@ -35,7 +35,6 @@
 #include "../tools/agent.h"
 #include "../tools/agent_docsearch.h"
 #include "../tools/agent_listdir.h"
-#include "../tools/agent_home.h"
 #include "../tools/agent_memory.h"
 #include "../tools/agent_stocks.h"
 #include "../tools/agent_summarize.h"
@@ -53,8 +52,6 @@ enum { EV_MAX_CASES = 64, EV_MAX_STEPS = 4 };
 
 #define EV_DOCS_DIR "tests/data/agent_eval/docs"
 #define EV_CASES "tests/data/agent_eval/cases.jsonl"
-#define EV_CASES_HOME "tests/data/agent_eval/cases_home.jsonl"
-#define EV_HOME_REGISTRY "tests/data/agent_eval/home-registry.txt"
 #define EV_MIND_DIR "build/agent-eval-mind"
 
 struct ev_case {
@@ -197,101 +194,6 @@ static enum geist_status ev_stub_search(void      *ctx,
                                EV_PAGES[order[i]].title,
                                EV_PAGES[order[i]].url);
     return agent_ret(out_len, w);
-}
-
-/* ---- home stub: a MUTATING state table ------------------------------------
- * Commands change the table, status reads it back — so a conversation case
- * ("Schalte das Licht ein" -> "Ist das Licht an?") proves real end-to-end
- * state carry, deterministically and without a Home Assistant. */
-static struct {
-    char entity[64];
-    char state[32];
-    char unit[16];
-} ev_home[HOME_MAX_DEVICES];
-static size_t ev_home_n;
-
-static void ev_home_seed(const struct home_ctx *c) {
-    ev_home_n = 0;
-    for (size_t i = 0; i < c->n_dev && i < HOME_MAX_DEVICES; i++) {
-        snprintf(ev_home[ev_home_n].entity, sizeof ev_home[0].entity, "%s", c->dev[i].entity);
-        const char *d  = c->dev[i].domain;
-        const char *st = "off";
-        const char *un = "";
-        if (strcmp(d, "climate") == 0) {
-            st = "21";
-            un = "°C";
-        } else if (strcmp(d, "cover") == 0) {
-            st = "open";
-        } else if (strcmp(d, "sensor") == 0) {
-            st = "19.5";
-            un = "°C";
-        } else if (strcmp(d, "lock") == 0) {
-            st = "locked";
-        }
-        /* the dead fixture: light.keller is deliberately unavailable — the
-         * status path must SAY so and the command path must surface an error
-         * (ev_home_set fails for it) instead of pretending success. */
-        if (strcmp(c->dev[i].entity, "light.keller") == 0) {
-            st = "unavailable";
-        }
-        snprintf(ev_home[ev_home_n].state, sizeof ev_home[0].state, "%s", st);
-        snprintf(ev_home[ev_home_n].unit, sizeof ev_home[0].unit, "%s", un);
-        ev_home_n++;
-    }
-}
-
-static long ev_home_set(struct home_ctx          *c,
-                        const struct home_device *d,
-                        const char               *service,
-                        const char               *extra,
-                        size_t                    cap,
-                        char                      out[]) {
-    (void) c;
-    if (strcmp(d->entity, "light.keller") == 0) {
-        return -1; /* dead fixture: the command error path */
-    }
-    for (size_t i = 0; i < ev_home_n; i++) {
-        if (strcmp(ev_home[i].entity, d->entity) != 0) {
-            continue;
-        }
-        if (strcmp(service, "turn_on") == 0) {
-            snprintf(ev_home[i].state, sizeof ev_home[0].state, "on");
-        } else if (strcmp(service, "turn_off") == 0) {
-            snprintf(ev_home[i].state, sizeof ev_home[0].state, "off");
-        } else if (strcmp(service, "open_cover") == 0) {
-            snprintf(ev_home[i].state, sizeof ev_home[0].state, "open");
-        } else if (strcmp(service, "close_cover") == 0) {
-            snprintf(ev_home[i].state, sizeof ev_home[0].state, "closed");
-        } else if (strcmp(service, "set_temperature") == 0) {
-            char num[16] = "";
-            (void) home_parse_number(extra, sizeof num, num);
-            snprintf(ev_home[i].state, sizeof ev_home[0].state, "%s", num);
-        } else if (strcmp(service, "lock") == 0) {
-            snprintf(ev_home[i].state, sizeof ev_home[0].state, "locked");
-        } else if (strcmp(service, "unlock") == 0) {
-            snprintf(ev_home[i].state, sizeof ev_home[0].state, "unlocked");
-        }
-        return (long) (size_t) snprintf(out, cap, "[]");
-    }
-    return -1;
-}
-
-static long ev_home_get(struct home_ctx *c, const struct home_device *d, size_t cap, char out[]) {
-    (void) c;
-    for (size_t i = 0; i < ev_home_n; i++) {
-        if (strcmp(ev_home[i].entity, d->entity) == 0) {
-            if (ev_home[i].unit[0]) {
-                return (long) (size_t) snprintf(
-                        out,
-                        cap,
-                        "{\"state\":\"%s\",\"attributes\":{\"unit_of_measurement\":\"%s\"}}",
-                        ev_home[i].state,
-                        ev_home[i].unit);
-            }
-            return (long) (size_t) snprintf(out, cap, "{\"state\":\"%s\"}", ev_home[i].state);
-        }
-    }
-    return -1;
 }
 
 /* stock_movers stub: canned sorted movers, direction from the real detector —
@@ -545,15 +447,13 @@ static int ev_run_mode(struct geist_model   *model,
 int main(int argc, char **argv) {
     const char *cases_path = nullptr;
     bool        verbose = false, run_forced = true, run_free = true, live_web = false;
-    bool        home_mode = false;
-    int         min_pass  = 0;
+    int         min_pass = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--verbose") == 0) {
             verbose = true;
         } else if (strcmp(argv[i], "--live-web") == 0) {
             live_web = true;
-        } else if (strcmp(argv[i], "--tools") == 0 && i + 1 < argc) {
-            home_mode = strcmp(argv[++i], "home") == 0;
+
         } else if (strcmp(argv[i], "--dump") == 0 && i + 1 < argc) {
             ev_dump = fopen(argv[++i], "w");
             if (!ev_dump) {
@@ -572,7 +472,7 @@ int main(int argc, char **argv) {
     }
 
     if (cases_path == nullptr) {
-        cases_path = home_mode ? EV_CASES_HOME : EV_CASES;
+        cases_path = EV_CASES;
     }
     size_t n_cases = ev_load(cases_path);
     if (n_cases == 0) {
@@ -600,71 +500,42 @@ int main(int argc, char **argv) {
     static struct summarize_ctx sumctx;
     sumctx = (struct summarize_ctx) {.model = model, .be = be, .root = EV_DOCS_DIR};
 
-    struct geist_tool       *ts;
-    size_t                   n_tools;
-    static struct home_ctx   homectx;
-    static struct geist_tool home_tools[2];
-    struct geist_tool        tools[8];
-
-    if (home_mode) {
-        /* the HOME appliance menu: two tools + reply, fixture registry, and
-         * the mutating state stub (real HA transport only in a live smoke) */
-        memset(&homectx, 0, sizeof homectx);
-        if (home_registry_load(&homectx, EV_HOME_REGISTRY) == 0) {
-            fprintf(stderr, "cannot load %s (run from the repo root)\n", EV_HOME_REGISTRY);
-            return GEIST_TEST_ERROR;
-        }
-        homectx.set = ev_home_set;
-        homectx.get = ev_home_get;
-        /* deterministic runs: the unlock-confirmation slot lives in build/
-         * scratch and starts absent (a stale slot must not leak between runs) */
-        homectx.pending_path = "build/agent-eval-pending";
-        remove(homectx.pending_path);
-        ev_home_seed(&homectx);
-        home_tools[0] = home_command_tool(&homectx);
-        home_tools[1] = home_status_tool(&homectx);
-        ts            = home_tools;
-        n_tools       = 2;
-    } else {
-        /* memory palace: a scratch mind dir (build/ is gitignored), wiped of
-         * the eval's known notes so every run starts identical, then seeded
-         * with one note the recall cases retrieve. mem-1 WRITES
-         * remember-serial-4242.md via the agent; mem-2 recalls it. */
-        setenv("GEIST_MIND_DIR", EV_MIND_DIR, 1);
-        unlink(EV_MIND_DIR "/INDEX.md");
-        unlink(EV_MIND_DIR "/pi-serial.md");
-        unlink(EV_MIND_DIR "/remember-serial-4242.md");
-        if (mind_remember("pi serial", "Die Seriennummer des Pi ist 4242.") != 0) {
-            fprintf(stderr, "cannot seed %s\n", EV_MIND_DIR);
-            return GEIST_TEST_ERROR;
-        }
-        struct geist_tool base[] = {
-                listdir_tool(),
-                docsearch_tool(EV_DOCS_DIR),
-                summarize_file_tool(&sumctx),
-                /* live mode: DuckDuckGo rate-limits back-to-back requests fast —
-                 * GEIST_SEARX_ENDPOINT points web_search at SearXNG instead */
-                websearch_tool(getenv("GEIST_SEARX_ENDPOINT")),
-                webfetch_tool(nullptr),
-                remember_tool(),
-                recall_tool(),
-                stock_movers_tool(nullptr),
-        };
-        memcpy(tools, base, sizeof base);
-        if (!live_web) {
-            tools[3].invoke = ev_stub_search; /* keep production name/desc/schema, */
-            tools[4].invoke = ev_stub_fetch;  /* stub only the side effect         */
-            tools[7].invoke = ev_stub_stocks;
-            tools[3].ctx = tools[4].ctx = tools[7].ctx = nullptr;
-        }
-        ts      = tools;
-        n_tools = sizeof base / sizeof base[0];
+    struct geist_tool *ts;
+    size_t             n_tools;
+    /* memory palace: a scratch mind dir (build/ is gitignored), wiped of
+     * the eval's known notes so every run starts identical, then seeded
+     * with one note the recall cases retrieve. mem-1 WRITES
+     * remember-serial-4242.md via the agent; mem-2 recalls it. */
+    setenv("GEIST_MIND_DIR", EV_MIND_DIR, 1);
+    unlink(EV_MIND_DIR "/INDEX.md");
+    unlink(EV_MIND_DIR "/pi-serial.md");
+    unlink(EV_MIND_DIR "/remember-serial-4242.md");
+    if (mind_remember("pi serial", "Die Seriennummer des Pi ist 4242.") != 0) {
+        fprintf(stderr, "cannot seed %s\n", EV_MIND_DIR);
+        return GEIST_TEST_ERROR;
     }
+    struct geist_tool base[] = {
+            listdir_tool(),
+            docsearch_tool(EV_DOCS_DIR),
+            summarize_file_tool(&sumctx),
+            /* live mode: DuckDuckGo rate-limits back-to-back requests fast —
+             * GEIST_SEARX_ENDPOINT points web_search at SearXNG instead */
+            websearch_tool(getenv("GEIST_SEARX_ENDPOINT")),
+            webfetch_tool(nullptr),
+            remember_tool(),
+            recall_tool(),
+            stock_movers_tool(nullptr),
+    };
+    if (!live_web) {
+        base[3].invoke = ev_stub_search; /* keep production name/desc/schema, */
+        base[4].invoke = ev_stub_fetch;  /* stub only the side effect         */
+        base[7].invoke = ev_stub_stocks;
+        base[3].ctx = base[4].ctx = base[7].ctx = nullptr;
+    }
+    ts      = base;
+    n_tools = sizeof base / sizeof base[0];
 
-    printf("agent eval: %zu cases, %s toolset, model=%s\n\n",
-           n_cases,
-           home_mode ? "home" : "full",
-           model_path);
+    printf("agent eval: %zu cases, full toolset, model=%s\n\n", n_cases, model_path);
     int forced_pass = -1;
     if (run_forced)
         forced_pass =
