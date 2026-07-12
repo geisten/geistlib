@@ -19,7 +19,19 @@
 
 #define DOC_DIR "./.agent_unit_test"
 
-static int  fails = 0;
+static int               fails = 0;
+static enum geist_status counted_tool(void      *ctx,
+                                      size_t     args_len,
+                                      const char args[static args_len],
+                                      size_t     out_cap,
+                                      char       out[static out_cap],
+                                      size_t    *out_len) {
+    (void) args_len;
+    (void) args;
+    (*(unsigned *) ctx)++;
+    return agent_obs(out_cap, out, out_len, "executed");
+}
+
 static void test_parser(void) {
     char name[GEIST_AGENT_NAME_CAP], args[GEIST_AGENT_ARGS_CAP];
 
@@ -51,6 +63,59 @@ static void test_parser(void) {
             "parse: call without args");
     fails += geist_expect(strcmp(name, "now") == 0 && strcmp(args, "{}") == 0,
                           "parse: args defaults to {}");
+
+    const char *nested = "{\"tool\":\"complex\",\"args\":{\"text\":\"keep } here\","
+                         "\"target\":{\"ids\":[\"a\",\"b\"]}}}";
+    fails += geist_expect(
+            agent_parse_call(strlen(nested), nested, sizeof name, name, sizeof args, args) == 1 &&
+                    strcmp(name, "complex") == 0 && strstr(args, "keep } here") != nullptr &&
+                    strstr(args, "\"ids\"") != nullptr,
+            "parse: nested args and quoted braces remain intact");
+
+    const char *decoy = "{\"wrapper\":{\"tool\":\"rm_rf\",\"args\":{}}}";
+    fails += geist_expect(
+            agent_parse_call(strlen(decoy), decoy, sizeof name, name, sizeof args, args) == 0,
+            "parse: nested tool decoy is not a call");
+
+    const char *duplicate = "{\"tool\":\"safe\",\"tool\":\"unsafe\",\"args\":{}}";
+    fails += geist_expect(
+            agent_parse_call(strlen(duplicate), duplicate, sizeof name, name, sizeof args, args) ==
+                    0,
+            "parse: duplicate call keys fail closed");
+}
+
+static void test_dynamic_dispatch_gate(void) {
+    unsigned          calls = 0u;
+    struct geist_tool tool  = {
+            .name        = "SetLevel",
+            .args_schema = "{\"level\":integer}",
+            .description = "Set a level",
+            .parameters_schema =
+                    "{\"type\":\"object\",\"properties\":{\"level\":{\"type\":\"integer\","
+                    "\"minimum\":0,\"maximum\":100}},\"required\":[\"level\"]}",
+            .invoke = counted_tool,
+            .ctx    = &calls,
+    };
+    char        observation[256];
+    size_t      observation_len = 0u;
+    const char *invalid         = "{\"level\":101}";
+    fails += geist_expect(agent_tool_invoke_checked(&tool,
+                                                    strlen(invalid),
+                                                    invalid,
+                                                    sizeof observation,
+                                                    observation,
+                                                    &observation_len) == GEIST_OK &&
+                                  calls == 0u && strstr(observation, "range") != nullptr,
+                          "dynamic dispatch: invalid args never reach host callback");
+    const char *valid = "{\"level\":42}";
+    fails += geist_expect(agent_tool_invoke_checked(&tool,
+                                                    strlen(valid),
+                                                    valid,
+                                                    sizeof observation,
+                                                    observation,
+                                                    &observation_len) == GEIST_OK &&
+                                  calls == 1u && strcmp(observation, "executed") == 0,
+                          "dynamic dispatch: valid args invoke exactly once");
 }
 
 static void test_whitelist(void) {
@@ -61,6 +126,16 @@ static void test_whitelist(void) {
     fails += geist_expect(agent_find(&ag, "doc_search") != nullptr, "whitelist: known tool found");
     fails += geist_expect(agent_find(&ag, "rm_rf") == nullptr, "whitelist: unknown tool rejected");
     fails += geist_expect(agent_find(&ag, "doc_searc") == nullptr, "whitelist: no prefix match");
+    ag.n_tools = 0u;
+    fails += geist_expect(agent_select_tool(&ag, 1u, "x") == -1,
+                          "routing: empty offered set replies without a call");
+    const float         scores[]  = {1.0f, 0.8f, 0.9f};
+    const unsigned char allowed[] = {0u, 0u};
+    fails += geist_expect(!agent_route_confident(2u, 0, scores, allowed, 0.35f),
+                          "routing: close tool/reply race requests clarification");
+    const float clear_scores[] = {1.5f, 0.8f, 0.9f};
+    fails += geist_expect(agent_route_confident(2u, 0, clear_scores, allowed, 0.35f),
+                          "routing: clear winner may execute");
 }
 
 static void run_search(const char *query, char *out, size_t cap) {
@@ -118,6 +193,7 @@ static void test_docsearch(void) {
 
 int main(void) {
     test_parser();
+    test_dynamic_dispatch_gate();
     test_whitelist();
     test_docsearch();
     if (fails > 0) {

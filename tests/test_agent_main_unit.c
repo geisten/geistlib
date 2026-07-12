@@ -112,9 +112,25 @@ static void test_system_prompt(void) {
                           "system_prompt: nullptr -> default role");
 }
 
+static void test_health(void) {
+    char   result[128];
+    size_t n = agent_main_health_result(sizeof result, result);
+    fails += geist_expect(agent_main_is_health_request("{\"type\":\"health\"}"),
+                          "health: canonical request accepted");
+    fails += geist_expect(!agent_main_is_health_request("health") &&
+                                  !agent_main_is_health_request("{\"type\":\"health\",\"x\":1}"),
+                          "health: non-contract requests rejected");
+    fails += geist_expect(n > 0 && strstr(result, "\"protocol\":\"dynamic-tools-v1\"") &&
+                                  strstr(result, "\"status\":\"ready\"") && result[n - 1] == '\n',
+                          "health: result identifies ready protocol");
+    fails += geist_expect(agent_main_health_result(8, result) == 0,
+                          "health: short output buffer rejected");
+}
+
 int main(void) {
     test_parse();
     test_system_prompt();
+    test_health();
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;

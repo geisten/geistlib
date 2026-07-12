@@ -24,7 +24,7 @@ object inside an app — but the core is identical.
 - [Tools](#tools)
   - [Tool selection & forced calls](#tool-selection--forced-calls)
   - [Progress events](#progress-events)
-- [The home appliance — `make home`](#the-home-appliance--make-home)
+- [Dynamic application adapters](#dynamic-application-adapters)
 - [Testing the agent — `make bench-agent`](#testing-the-agent--make-bench-agent)
   - [The end-to-end cases](#the-end-to-end-cases-cat-e2e)
   - [Live-web smoke](#live-web-smoke--make-bench-agent-live)
@@ -142,8 +142,9 @@ count precedes its buffer, caller-provided buffers, `enum geist_status`, no
 `assert()`, no hidden heap (the transcript is fixed inside the caller-owned
 `struct geist_agent`).
 
-Ceilings (`ponytail:`): O(n²) full-transcript reprefill per step; naive JSON
-brace-balance (→ grammar-constrained sampling for a hard guarantee, below).
+Ceiling (`ponytail:`): the transcript suffix is reprefilled per tool step. The
+system/menu prefixes are pinned where the architecture supports it; a future
+incremental suffix cursor can remove the remaining repeated prefill.
 
 ## Tools
 
@@ -154,6 +155,7 @@ struct geist_tool {
     const char *name;          /* whitelist key; must match the emitted "tool" */
     const char *description;   /* one line, used by the router (see below) */
     const char *args_schema;   /* shown to the model, e.g. {"query": string} */
+    const char *parameters_schema; /* optional dynamic-tools-v1 JSON Schema */
     enum geist_status (*invoke)(void *ctx,
                                 size_t args_len, const char args[static args_len],
                                 size_t out_cap,  char       out[static out_cap],
@@ -191,8 +193,8 @@ in-engine sampler change:
   tool menu (`name: description`) are framed as a question and each tool **name**
   is scored by its first-token log-prob (an MMLU-style cloze). The score is
   **PMI-calibrated** — the model's prior for each name (given the menu but a
-  content-free request) is subtracted, removing token-frequency bias. A
-  The menu also carries a **`reply` pseudo-entry** — when it wins, no tool is
+  content-free request) is subtracted, removing token-frequency bias. The menu
+  also carries a **`reply` pseudo-entry** — when it wins, no tool is
   forced and the model answers directly ("What is 2 plus 2?"). A request opening
   with a destructive verb no whitelisted tool covers ("Delete report.md",
   "Lösche …") routes to `reply` before any scoring — a refusal instead of a
@@ -203,18 +205,51 @@ in-engine sampler change:
   — same first token), and a docs word (`docs`, `Dokumente`) prefers the doc
   tool.
 - **Forcing** (`agent.force_call = true`) — grammar-*forces* turn 0 to be a valid
-  call to the routed tool: the JSON scaffold + the chosen tool name are prefilled
-  token-by-token, and a single-key arg's value is **lifted from the request** (the
-  path word for a locator arg, else the request itself as the query) rather than
-  free-decoded, which a weak model mangles. The forced call is single-shot — the
+  call to the routed tool. Legacy single-key values are lifted from the request.
+  A dynamic tool instead builds a typed object from `parameters_schema`:
+  required and detected optional fields, integer/number, boolean, scalar enum
+  and enum-array values are supported. The complete object is validated before
+  the host callback. An unclear required value produces a clarification. The
+  legacy forced call is single-shot — the
   tool's observation is returned as the answer — unless a **recipe** continues
   it: a known 2-step chain (`web_search→web_fetch`, `doc_search→summarize_file`,
   `list_dir→summarize_file`) fires when the request carries a cue word for the
   second step ("… and *read* it", "… *fasse* es zusammen"). Step 1's locator is
   lifted from step 0's observation (the top URL / the request-matching file) and
   invoked directly — zero extra model time. This is why an *untrained* model
-  can still drive tools reliably: structure and value are forced, only the routing
-  decision is the model's.
+  can still drive tools reliably: structure and value are forced, only the
+  routing decision is the model's.
+
+For dynamic routing, a calibrated winner must also clear the runner-up/direct
+reply by `route_min_margin`; otherwise Geist asks which action the user means.
+An invalid follow-up call after a valid result cannot replace that result or run
+host code: Geist switches to call-free answer generation over the last valid
+observation.
+
+### Per-request dynamic tools
+
+`geist agent --serve` accepts one newline-delimited JSON request:
+
+```json
+{"input":"Add 5 and 7","max_tool_steps":4,"tools":[{"name":"CalculatorAdd","description":"Add two integers","parameters":{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"]}}]}
+```
+
+Hosts may add bounded `language` and `context` strings. They become
+request-local system context; `input` remains the sole source for current forced
+tool arguments. The HA adapter keeps context in memory only, isolated by
+conversation id and bounded by conversation, turn, and byte limits.
+
+The request compiler copies up to 16 unique tools into immutable storage and
+rejects the entire request if a schema or unsupported keyword is invalid. The
+documented subset supports object/string/number/integer/boolean/array,
+`properties`, `required`, `additionalProperties`, scalar `enum`, numeric bounds,
+`items`, `minItems` and `maxItems`, with fixed depth/count limits.
+
+For dynamic tools Geist never owns the action. It emits a correlated
+`tool.call`; the host revalidates and executes, returns `tool.result`, and Geist
+continues. Calls, one retry, cancellation and final results share the same global
+budget. See [dynamic-tools-v1.md](proposals/dynamic-tools-v1.md). Build the
+HA-independent reference host with `make dynamic-example-host`.
 
 Reliability is measured, not felt: `make bench-agent` scores routing / args /
 chains per stage over a fixed 30-case corpus (`tests/bench_agent_eval`) and
@@ -249,68 +284,14 @@ per step to a `FILE*` — `geist_agent_main` wires it to `stderr` **by default**
 callback** — copy them if you retain them. A server host can serialize the same
 struct to JSON and stream it to a UI.
 
-## The home appliance — `make home`
+## Dynamic application adapters
 
-The first DOMAIN BUILD: `make home` produces `./geist-home` — BitNet baked in,
-and **only the home tools compiled in** (no web, no docs, no stocks). Fixed
-scope at build time: the artifact itself is the security promise.
-
-```sh
-make home
-GEIST_HA_URL=http://<ha-host>:8123 GEIST_HA_TOKEN=<long-lived-token> \
-  ./geist-home "Schalte das Licht im Flur ein"    # -> OK: light.flur → an
-```
-
-Three layers:
-
-- **`ha_rest.h`** — standalone, agent-free Home Assistant REST client
-  (call_service / get_state, Bearer auth, no-shell curl). Manual driver:
-  `geist ha state|on|off|open|close <entity_id>` (all build profiles).
-- **`agent_home.h`** — two tools along the read/write boundary:
-  a **command tool** (turn on/off, dim, set temperature, open/close) and a
-  **status tool** (device/sensor reads), both `{"request"}` — the model only
-  routes; device, action and value are parsed deterministically against the
-  **registry file** (`GEIST_HOME_REGISTRY`, default `./home-registry.txt`,
-  one `entity | domain | alias phrases` line per device). Ambiguity ("das
-  Licht" with two lights) yields a deterministic clarifying answer; unknown
-  devices a clear error. A **last-device memory** resolves pronouns ("Mach
-  *es* wieder aus"). **Collectives** ("alle Lichter aus") act on every
-  matched writable device — never on locks; bare "alles" stays the safe
-  no-device answer. **Relative setpoints** ("mach es wärmer") move the
-  current climate value by ±1 °C. Devices HA reports `unavailable` answer
-  "nicht erreichbar" instead of a stale state. Writes are whitelisted to
-  light/switch/climate/cover/media_player —
-  **garage doors and alarms are refused** even if listed. **Locks take a
-  confirmation flow**: locking runs directly (the safe direction), but an
-  unlock request only *arms* a file-based pending slot and answers with a
-  challenge — the unlock executes only when the immediately following request
-  carries the literal confirm word and resolves to the same entity
-  ("Bestätige entriegeln Haustür"). The slot is one-shot (any other command
-  disarms it) and expires after 120 s; the check is fully deterministic — the
-  model never decides a security question, it only ferries the user's words.
-- **routing evidence** — home nouns match as substrings (German compounds:
-  *Flurlicht*), action verbs word-start; the sentence SHAPE decides the
-  read/write boundary (imperative → command, question → status; a direction
-  adverb in a non-question — "Rollladen *runter*" — counts as imperative,
-  the verbless cover command was a score race otherwise).
-
-Input is bilingual (DE + EN). The **answer language** is a deployment setting:
-German by default, `GEIST_HOME_LANG=en` switches the device state words
-(on/off/open/closed/locked/unlocked/unavailable) to English — the pieces every
-command and status answer shows. The eval never sets the env, so the fixed gate
-is unaffected.
-
-**Adding a language** is one line, not a code change: the state words live in a
-table (`HOME_LANGS` in `tools/agent_home.h`), one row per language keyed by the
-`GEIST_HOME_LANG` code. Copy a row, translate the eight words, done — the lookup
-is table-driven, so no new branches anywhere. (The rarer clarify/challenge/error
-*sentences* are still German literals; lift them into the same table when an
-English-first deployment ships.)
-
-Demo backend: the official Home Assistant container with template entities
-matching the starter registry (see `home-registry.txt`); onboarding + a
-long-lived token are API-scriptable. Eval: `make bench-agent-home` — the
-standalone 2-tool menu over `cases_home.jsonl`, gate `AGENT_EVAL_HOME_MIN`.
+Run `geist -m model.gguf --serve /path/geist.sock`, or omit `-m` when the model
+is embedded. Each request supplies its immutable tool set and step budget; the
+host executes validated calls and returns correlated results. Domain policy and
+credentials stay outside Geist. The standalone `dynamic-example-host` is the
+reference implementation. Product adapters, including Home Assistant, live in
+separate repositories and test against the versioned wire contract.
 
 ## Testing the agent — `make bench-agent`
 
@@ -387,11 +368,12 @@ Results per environment (version, date, wall time) are recorded in
 A small model jailbreaks easily as free chat, so **the host — not the model —
 decides what can happen**:
 
-1. **Fixed scope** — a short system prompt + a fixed tool whitelist (no "universal
-   assistant").
+1. **Immutable scope** — a short system prompt plus a compiled static whitelist
+   or a copied per-request toolset (no model-created capabilities).
 2. **Whitelist gate** — the model may emit any text, but only a tool in `tools[]`
    can run; an off-list name is rejected before any side effect.
-3. **Step budget** — `max_steps` caps actions per request.
+3. **Global call budget** — `max_steps` caps calls per request; a retry consumes
+   the same budget.
 4. **Per-tool input validation at the trust boundary** — e.g. `web_fetch`:
    - **no shell**: `curl` runs via `fork`+`execvp` with the URL as a separate
      argv element, so a URL like `http://x;rm -rf ~` cannot inject a command;
@@ -406,14 +388,13 @@ jailbreak resistance — that lives in steps 1–4. It only affects attack surfa
 prefer a Unix-domain socket (filesystem-permission gated) or in-process over an
 HTTP listener for a same-host agent.
 
-Hardest guarantee — **grammar masking** (shipped): a free turn that opens a
-call (`{` or a ```-fence) is decoded *along the call grammar* over the public
+Hardest guarantee — **grammar masking + typed validation** (shipped): a free
+turn that opens a call (`{` or a ```-fence) is decoded *along the call grammar* over the public
 peek/prefill API — the tool name per-token constrained to the whitelist, the
-arg key to the tool's schema, only the value free (stopped at its closing
-quote). The model *cannot* emit an off-grammar or off-whitelist call; a call
-already executed in the same run ends the loop (the observation is the
-answer). Remaining (`ponytail:` upgrade): full multi-key argument grammars —
-today a multi-key schema decodes its single best key.
+arg key to the tool's schema. Dynamic forced calls additionally build typed
+multi-field values and validate the entire object against Schema-v1. The model
+cannot execute an off-whitelist or schema-invalid call. Repeated or invalid
+follow-ups after a valid result switch to call-free answer generation.
 
 `web_search` is the lower-risk half of web access — it only talks to a **fixed**
 search endpoint (the host is not model-chosen), so the model influences the

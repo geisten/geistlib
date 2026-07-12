@@ -14,58 +14,34 @@ is open to help. The mission in full is in the
 | **Max quantization** | Ternary (1.58-bit) & binary as first-class citizens, not a bolt-on | ✅ BitNet `I2_S`/`TQ2_0`, integer-only kernels; beats bitnet.cpp on Pi 5 & x86 |
 | **Fast per platform** | The fastest path on *each* target, not a lowest common denominator | ✅ ARM64 NEON · macOS Accelerate/AMX · x86-64 AVX-512/VNNI |
 | **One-file install** | Engine + model in one dependency-free binary | ✅ prebuilt binaries + `make EMBED_MODEL=…` |
-| **Small-model agents** | A tight harness so a 2 B model rivals a bigger one on a narrow task | 🚧 whitelist tool loop, PMI routing + forced calls ([agent.md](docs/agent.md)) |
+| **Small-model agents** | A tight harness so a 2 B model rivals a bigger one on a narrow task | ✅ bounded static + per-request dynamic tools, typed forced calls, host round-trips ([agent.md](docs/agent.md)) |
 | **Memory for small models** | Recall sized to what these models can hold — no vector store | 🚧 file-based memory palace ([agent.md](docs/agent.md#the-memory-palace--mindh)) |
 | **Models that adapt** | Dynamic specialization, learning, self-organization | 🔬 research |
 
 <sub>✅ shipped · 🚧 in progress · 🔬 exploring</sub>
 
-## Product track: private Home Assistant edge agent
+## Adapter ecosystem
 
-The first product-shaped use case for the small-model agent track is a local
-Home Assistant conversation agent on Raspberry Pi 5 and CPU-only Linux hosts.
-Home Assistant remains the authority for entity exposure: the integration
-derives a registry only from Assist-exposed entities and pushes it to the
-resident geist process. Geist resolves targets deterministically, admits only
-its compiled home-tool families, and performs the local HA REST calls.
+Geist remains application-neutral. Its resident service and dynamic-tools
+protocol are the stable extension boundary; authorization, execution, product
+UX, distribution, and domain evaluations belong to adapter repositories.
+The first adapter is maintained in
+[`geisten/geist-home-assistant`](https://github.com/geisten/geist-home-assistant),
+including its independent roadmap and release phases.
 
-### Preview exit criteria
+### Phase 3: host-neutral dynamic tools — complete
 
-The Home Assistant preview is ready to announce when all of these are measured
-on a clean installation rather than inferred from engine-level tests:
+The server accepts an immutable `tools` array per request. Tool names are
+offered capabilities rather than compiled assumptions; arguments use a bounded,
+documented JSON-Schema subset and are checked before the host boundary. The host
+executes, returns correlated results, and Geist continues the conversation.
+Multiple calls, global budgets, one bounded retry, cancellation, typed forced
+arguments and low-confidence clarification are covered by deterministic tests.
 
-| criterion | target |
-| :-- | :-- |
-| Installation | first working request in **10 minutes or less**, without compiling |
-| Clear commands | **≥ 90%** correct end-to-end actions on the published HA evaluation set |
-| Authorization | **0 actions** against entities not exposed by Home Assistant |
-| Simple-command latency | warm p50 **≤ 3 s** on Raspberry Pi 5 |
-| Complex tool latency | warm p50 **≤ 10 s** on Raspberry Pi 5 |
-| Languages | the same published core suite passes in **German and English** |
-| Reliability | **24 h** resident soak without crash, model reload, or unbounded RSS growth |
-
-Latency is a product budget, not an engine benchmark: it includes request
-parsing, model routing/generation, the Home Assistant tool round-trip, and the
-final response. If a small model cannot meet the simple-command budget, those
-commands take a deterministic Assist-intent fast path and the LLM handles only
-ambiguous or multi-step work.
-
-### Delivery stages
-
-1. ✅ Resident Unix-socket daemon: `geist-home --serve /path/geist.sock`; the
-   model stays warm and the socket is created mode `0600`.
-2. ✅ Home Assistant Conversation preview: Assist utterances, exposed-entity
-   registry synchronization, deterministic device resolution, and bounded home
-   actions are running end to end on Raspberry Pi 5.
-3. 🚧 Reproducible installation: versioned component package, service installer,
-   diagnostics, upgrade/rollback instructions, and clean-host acceptance test.
-4. ARM64/x86-64 add-on with model storage, checksums, health checks and updates;
-   keep the Unix socket for same-host deployments.
-5. Published German/English HA evaluation corpus, security cases, 24 h soak,
-   and reproducible Pi 5 latency report.
-
-A general HTTP inference API is a separate interoperability feature, not a
-dependency of the Home Assistant product track.
+`make dynamic-example-host` builds a separate C
+calculator/profile host with no HA or model-runtime dependency, proving that
+other applications can implement and compile against the same contract. See
+[Dynamic tools v1](docs/proposals/dynamic-tools-v1.md).
 
 ## Distribution: one static binary per platform
 

@@ -8,6 +8,37 @@ minor release.
 
 ## [Unreleased]
 
+### Added — host-neutral dynamic tools v1
+
+- `geist agent --serve` accepts an immutable per-request `tools` array and
+  performs correlated `tool.call` / `tool.result` round trips over the local
+  socket. The server accepts only the dynamic JSON protocol.
+- Removed the Home Assistant REST/token client, registry-push and line-protocol
+  adapters, unused protocol-v2 stack, and their migration-only tests/config.
+- Added a fixed-memory JSON parser and documented Schema-v1 subset with strict
+  name, type, required/optional field, enum, array, bound and duplicate-key
+  validation. Unsupported keywords fail request compilation.
+- Typed forced calls now cover multiple arguments, numbers, booleans, scalar
+  enums and enum arrays. Low-confidence routes clarify; invalid/off-list calls
+  never cross the host boundary.
+- Added global call/retry budgets, correlated cancellation, HA-owned dynamic
+  execution, and the independent `make dynamic-example-host` reference build.
+- Added deterministic security/HA suites and a real BitNet + Unix-socket + C-host
+  end-to-end transcript under `docs/benchmarks/`.
+- Added a model-free dynamic-tools-v1 health handshake and a UI-only Home
+  Assistant Config/Reconfigure Flow with validated socket and DE/EN errors.
+- Added a polling HA Health entity, automatically recovering Repairs, and
+  config-entry diagnostics that expose no paths, addresses or HA content.
+- Added zero-queue HA request admission, fresh-socket reconnect semantics,
+  at-most-one correlated cancellation, and content-free lifecycle logging.
+- Added explicit request language and bounded request context plus HA-owned,
+  in-memory conversation history with turn/byte/conversation LRU limits.
+- Added the Home Assistant app repository and protected-compatible multi-arch
+  scaffold with AppArmor, `/data`-only persistence, protocol healthcheck and a
+  non-publishing `aarch64`/`amd64` CI build matrix.
+- Added an agent-executable Home Assistant implementation plan for phases 0–8;
+  HTTP/REST server requirements are explicitly out of scope.
+
 ## [0.3.3] — 2026-07-01
 
 ### Fixed — release embedded-build download resilience
