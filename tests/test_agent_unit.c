@@ -80,6 +80,16 @@ static void test_whitelist(void) {
     fails += geist_expect(agent_find(&ag, "doc_search") != nullptr, "whitelist: known tool found");
     fails += geist_expect(agent_find(&ag, "rm_rf") == nullptr, "whitelist: unknown tool rejected");
     fails += geist_expect(agent_find(&ag, "doc_searc") == nullptr, "whitelist: no prefix match");
+    ag.n_tools = 0u;
+    fails += geist_expect(agent_select_tool(&ag, 1u, "x") == -1,
+                          "routing: empty offered set replies without a call");
+    const float         scores[]  = {1.0f, 0.8f, 0.9f};
+    const unsigned char allowed[] = {0u, 0u};
+    fails += geist_expect(!agent_route_confident(2u, 0, scores, allowed, 0.35f),
+                          "routing: close tool/reply race requests clarification");
+    const float clear_scores[] = {1.5f, 0.8f, 0.9f};
+    fails += geist_expect(agent_route_confident(2u, 0, clear_scores, allowed, 0.35f),
+                          "routing: clear winner may execute");
 }
 
 static void run_search(const char *query, char *out, size_t cap) {

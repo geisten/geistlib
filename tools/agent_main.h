@@ -337,6 +337,7 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
                     a->conversation           = false;
                     a->force_call             = base_force_call;
                     a->forced_result_is_final = false;
+                    a->clarify_low_confidence = true;
                     if (geist_agent_run(
                                 a, strlen(request.input), request.input, sizeof resp, resp, &rn) !=
                         GEIST_OK) {
@@ -357,6 +358,7 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
                 a->conversation           = true;
                 a->force_call             = base_force_call;
                 a->forced_result_is_final = true;
+                a->clarify_low_confidence = false;
                 if (geist_agent_run(a, strlen(req), req, sizeof resp, resp, &rn) != GEIST_OK) {
                     rn = (size_t) snprintf(resp, sizeof resp, "error: agent run failed");
                 }

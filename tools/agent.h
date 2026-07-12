@@ -295,9 +295,11 @@ struct geist_agent {
     const char                *system_prompt; /* borrowed; nullptr -> default role */
     struct geist_chat_template tmpl;          /* model-specific framing (auto-detected in init) */
     bool                       force_call;    /* force turn 0 to be a valid tool call (see run) */
-    bool forced_result_is_final; /* legacy CLI shortcut; false lets model formulate after result */
-    bool conversation;           /* keep the transcript across geist_agent_run calls
-                                  * (multi-turn chat) instead of resetting each call */
+    bool  forced_result_is_final; /* legacy CLI shortcut; false lets model formulate after result */
+    bool  clarify_low_confidence; /* ambiguous forced routing asks instead of executing */
+    float route_min_margin;       /* calibrated winner-vs-runner-up threshold */
+    bool  conversation;           /* keep the transcript across geist_agent_run calls
+                                   * (multi-turn chat) instead of resetting each call */
     geist_token_t eos, eot;
     char          transcript[GEIST_AGENT_TRANSCRIPT_CAP];
     size_t        tlen;
@@ -356,6 +358,8 @@ static inline void geist_agent_init(struct geist_agent     *a,
     a->tmpl                   = geist_chat_template_for_model(model);
     a->force_call             = false;
     a->forced_result_is_final = true;
+    a->clarify_low_confidence = false;
+    a->route_min_margin       = 0.35f;
     a->conversation           = false;
     a->eos                    = geist_model_eos_token(model);
     a->eot  = a->tmpl.stop[0] ? geist_model_token_by_text(model, a->tmpl.stop) : GEIST_TOKEN_NONE;
@@ -1408,6 +1412,23 @@ static inline int agent_tools_cover_destruction(const struct geist_agent *a) {
     return 0;
 }
 
+static inline int agent_route_confident(size_t              n,
+                                        int                 best,
+                                        const float         cal[static n + 1u],
+                                        const unsigned char banned[static n],
+                                        float               minimum_margin) {
+    if (best < 0 || best >= (int) n) {
+        return 0;
+    }
+    float runner_up = cal[n]; /* direct reply is always a candidate */
+    for (size_t i = 0u; i < n; i++) {
+        if ((int) i != best && !banned[i] && cal[i] > runner_up) {
+            runner_up = cal[i];
+        }
+    }
+    return cal[best] - runner_up >= minimum_margin;
+}
+
 /* Returns the routed tool's index, or -1 when the answer pseudo-entry wins —
  * the request is best served by replying directly, with no tool call at all. */
 static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const char *req) {
@@ -1418,7 +1439,10 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
     if (agent_request_is_destructive(req_len, req) && !agent_tools_cover_destruction(a)) {
         return -1;
     }
-    if (a->n_tools <= 1) {
+    if (a->n_tools == 0) {
+        return -1;
+    }
+    if (a->n_tools == 1 && !a->clarify_low_confidence) {
         return 0; /* no menu to rank; a single-tool agent always forces its tool */
     }
     const size_t n  = a->n_tools < AGENT_MAX_ROUTED - 1 ? a->n_tools : AGENT_MAX_ROUTED - 1;
@@ -1615,6 +1639,11 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
         int alt = agent_best_pred(a, n, cal, banned, agent_pred_nondir);
         if (alt >= 0 && cal[alt] > best_v - 1.5f) {
             best = alt;
+        }
+    }
+    if (best < (int) n && a->clarify_low_confidence) {
+        if (!agent_route_confident(n, best, cal, banned, a->route_min_margin)) {
+            return -2;
         }
     }
     return best == (int) n ? -1 : best;
@@ -2483,6 +2512,17 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
              * The decision is TERMINAL: decode a call-proof reply turn and
              * return it as the answer (the model fills text, it does not get
              * to overrule the router with a call after all). */
+            if (idx == -2) {
+                const char *clarification =
+                        "Please clarify which offered action you want me to perform.";
+                agent_emit(a, GEIST_AGENT_ANSWERING, step, nullptr, clarification);
+                agent_conv_fold(a, clarification);
+                size_t n = agent_copy(resp_cap, resp, clarification);
+                if (resp_len) {
+                    *resp_len = n;
+                }
+                return GEIST_OK;
+            }
             if (idx < 0) {
                 size_t rn = agent_generate_reply(a, sizeof turn, turn);
                 (void) rn;
