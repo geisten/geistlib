@@ -71,8 +71,26 @@ class Writer:
     async def drain(self) -> None:
         pass
 
+    def close(self) -> None:
+        pass
+
+    async def wait_closed(self) -> None:
+        pass
+
 
 async def checks() -> None:
+    gate = session.RequestGate()
+    gate.enter()
+    try:
+        gate.enter()
+    except session.ProtocolError as err:
+        assert err.code == "busy"
+    else:
+        raise AssertionError("concurrent request entered zero-queue gate")
+    gate.leave()
+    gate.enter()
+    gate.leave()
+
     exposure = policy.ExposureStore(frozenset({"light.kitchen", "sensor.outdoor", "lock.front"}), 7)
     names = {tool["name"] for tool in dynamic.build_dynamic_tools(exposure)}
     assert {"HassGetState", "HassTurnOn", "HassTurnOff", "HassSetBrightness"} <= names
@@ -144,6 +162,49 @@ async def checks() -> None:
         raise AssertionError("timeout did not cancel session")
     assert timeout_writer.frames[-1] == {
         "type": "cancel", "call_id": "slow", "reason": "timeout"}
+
+    cancel_writer = Writer()
+    cancelled = asyncio.create_task(session.async_dynamic_session(
+        Reader([{"type": "tool.call", "call_id": "cancel-me", "name": "HassTurnOn",
+                 "arguments": {"name": "light.kitchen"}}]),
+        cancel_writer, "Turn on kitchen", exposure, SlowExecutor(),
+        timeout_s=2, max_tool_steps=2))
+    await asyncio.sleep(0)
+    cancelled.cancel()
+    try:
+        await cancelled
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("client cancellation was swallowed")
+    cancel_frames = [frame for frame in cancel_writer.frames if frame.get("type") == "cancel"]
+    assert cancel_frames == [{"type": "cancel", "call_id": "cancel-me",
+                              "reason": "client_cancelled"}]
+
+    opens = 0
+
+    async def fresh_connection(_path: str):
+        nonlocal opens
+        opens += 1
+        if opens == 1:
+            raise ConnectionRefusedError()
+        return Reader([{"type": "conversation.result", "text": "ready"}]), Writer()
+
+    original_open = session.asyncio.open_unix_connection
+    session.asyncio.open_unix_connection = fresh_connection
+    try:
+        try:
+            await session.async_ask_geist_dynamic(
+                "/config/geist.sock", "first", exposure, Executor(), timeout_s=1)
+        except ConnectionRefusedError:
+            pass
+        else:
+            raise AssertionError("disconnect was hidden or replayed")
+        answer = await session.async_ask_geist_dynamic(
+            "/config/geist.sock", "second", exposure, Executor(), timeout_s=1)
+    finally:
+        session.asyncio.open_unix_connection = original_open
+    assert opens == 2 and answer == "ready"
 
 
 if __name__ == "__main__":

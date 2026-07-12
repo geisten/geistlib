@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from time import monotonic
 
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
@@ -12,7 +14,7 @@ from homeassistant.helpers import intent
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_SOCKET, DEFAULT_SOCKET, TIMEOUT_S
-from .dynamic_session_v1 import ProtocolError, async_ask_geist_dynamic
+from .dynamic_session_v1 import ProtocolError, RequestGate, async_ask_geist_dynamic
 from .ha_executor import HomeAssistantExecutor
 from .policy import ExposureStore
 from .exposure import exposed_entity_ids
@@ -37,6 +39,7 @@ class GeistConversationEntity(conversation.ConversationEntity):
     def __init__(self, entry: ConfigEntry) -> None:
         self._sock_path = entry.data.get(CONF_SOCKET, DEFAULT_SOCKET)
         self._attr_unique_id = entry.entry_id
+        self._gate = RequestGate()
 
     @property
     def supported_languages(self) -> list[str] | str:
@@ -46,6 +49,18 @@ class GeistConversationEntity(conversation.ConversationEntity):
         self, user_input: conversation.ConversationInput
     ) -> conversation.ConversationResult:
         response = intent.IntentResponse(language=user_input.language)
+        started = monotonic()
+        try:
+            self._gate.enter()
+        except ProtocolError:
+            _LOGGER.info("geist_request status=busy duration_ms=0")
+            response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                "Geist is busy. Try again shortly.",
+            )
+            return conversation.ConversationResult(
+                response=response, conversation_id=user_input.conversation_id
+            )
         try:
             exposure = ExposureStore(frozenset(exposed_entity_ids(self.hass)), 1)
             answer = await async_ask_geist_dynamic(
@@ -55,15 +70,45 @@ class GeistConversationEntity(conversation.ConversationEntity):
                 HomeAssistantExecutor(self.hass, getattr(user_input, "context", None)),
                 timeout_s=TIMEOUT_S,
             )
-        except (OSError, ProtocolError) as err:
-            _LOGGER.error("geist daemon unreachable at %s: %s", self._sock_path, err)
+        except asyncio.CancelledError:
+            _LOGGER.info(
+                "geist_request status=client_cancelled duration_ms=%d",
+                int((monotonic() - started) * 1000),
+            )
+            raise
+        except OSError:
+            code = "cannot_connect"
+            _LOGGER.warning(
+                "geist_request status=%s duration_ms=%d",
+                code,
+                int((monotonic() - started) * 1000),
+            )
             response.async_set_error(
                 intent.IntentResponseErrorCode.UNKNOWN,
-                "geist ist nicht erreichbar (läuft der --serve Daemon?)",
+                f"Geist request failed ({code}).",
             )
             return conversation.ConversationResult(
                 response=response, conversation_id=user_input.conversation_id
             )
+        except ProtocolError as err:
+            _LOGGER.warning(
+                "geist_request status=%s duration_ms=%d",
+                err.code,
+                int((monotonic() - started) * 1000),
+            )
+            response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                f"Geist request failed ({err.code}).",
+            )
+            return conversation.ConversationResult(
+                response=response, conversation_id=user_input.conversation_id
+            )
+        finally:
+            self._gate.leave()
+        _LOGGER.info(
+            "geist_request status=ok duration_ms=%d",
+            int((monotonic() - started) * 1000),
+        )
         response.async_set_speech(answer or "(keine Antwort)")
         return conversation.ConversationResult(
             response=response, conversation_id=user_input.conversation_id

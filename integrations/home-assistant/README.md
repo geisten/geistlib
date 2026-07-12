@@ -66,6 +66,10 @@ The integration also creates a diagnostic Health sensor. Failed health polls
 raise one Repair issue; a successful later poll clears it automatically.
 Downloadable diagnostics include only readiness, protocol, and stable error
 codes—never the socket path, utterances, entities, arguments, or HA state.
+Only one Assist request per Config Entry is admitted at a time; concurrent work
+returns `busy` immediately instead of waiting in a hidden queue. Disconnects are
+not replayed, and each later request opens a fresh socket. Lifecycle logs contain
+only a stable status code and elapsed milliseconds.
 
 ## Run the resident daemon
 

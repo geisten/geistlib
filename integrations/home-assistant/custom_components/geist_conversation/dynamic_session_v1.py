@@ -20,6 +20,21 @@ class ProtocolError(ValueError):
 MAX_LINE_BYTES = 131072
 
 
+class RequestGate:
+    """Zero-queue admission gate for one resident model runtime."""
+
+    def __init__(self) -> None:
+        self._active = False
+
+    def enter(self) -> None:
+        if self._active:
+            raise ProtocolError("busy")
+        self._active = True
+
+    def leave(self) -> None:
+        self._active = False
+
+
 async def _write(writer: Any, frame: dict[str, Any]) -> None:
     payload = json.dumps(frame, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
     if len(payload) > MAX_LINE_BYTES:

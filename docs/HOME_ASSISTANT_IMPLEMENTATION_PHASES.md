@@ -89,8 +89,9 @@ Slices:
 1. ✅ UI Config Flow, health validation, reconfigure, DE/EN setup strings.
 2. ✅ Polling health entity, Repairs with automatic recovery, and fully redacted
    config-entry diagnostics.
-3. **NEXT:** reconnect/cancel/busy handling, bounded queues and secret-free logs.
-4. Pending: HA-language defaulting and bounded conversation-id/history policy.
+3. ✅ Fresh-socket reconnect, at-most-one cancel, zero-queue busy handling and
+   structured status/duration logs without request content.
+4. **NEXT:** HA-language defaulting and bounded conversation-id/history policy.
 5. Pending: HACS layout, Hassfest/HACS validation, tagged compatibility table.
 
 Exit gate: install, configure, break, diagnose, repair, reconfigure and unload

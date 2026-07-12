@@ -137,8 +137,8 @@ real-HA acceptance is recorded separately before the external beta.
    reconfigure flows, including DE/EN validation errors.
 2. ✅ Add DE/EN setup/health translations, redacted diagnostics, a polling
    health entity, and Repairs that clear automatically after recovery.
-3. Add reconnect, cancellation, busy handling, bounded queues, and structured
-   secret-free logging.
+3. ✅ Add fresh-socket reconnect, correlated cancellation, zero-queue busy
+   handling, and structured status/duration logging without request content.
 4. Add HA-language defaulting plus an explicit bounded conversation-id/history
    policy, with multilingual and reset tests.
 
@@ -227,21 +227,23 @@ P2.2 item 2 is implemented by the polling diagnostic entity, one Repair issue
 per failed runtime, automatic issue deletion after recovery, and config-entry
 diagnostics containing no paths, addresses, utterances, entities or HA state.
 
-The next executable slice is **P2.2 item 3: reconnect, cancellation, busy
-handling, bounded queues and structured secret-free logging**. Scope is the
-existing dynamic session and HA integration. Do not add a second transport,
-background request replay, tokens, or unbounded conversation history.
+P2.2 item 3 is implemented by a zero-queue request gate per Config Entry, one
+fresh socket per admitted request, no hidden replay, at-most-one correlated
+cancel, and logs containing only stable status plus duration.
+
+The next executable slice is **P2.2 item 4: HA-language defaulting and bounded
+conversation-id/history policy**. Scope is request metadata and prompt context;
+it must not persist raw conversations to disk or weaken per-request exposure.
 
 Acceptance for that slice:
 
-1. one bounded in-flight request per runtime and an explicit busy result;
-2. client cancellation sends at most one correlated cancel and closes cleanly;
-3. transient disconnects surface a stable HA error and the next request retries
-   by opening a fresh socket—no hidden replay;
-4. logs contain stable codes and timing only, never utterances, arguments,
-   entity ids, paths, addresses or tool results;
-5. deterministic timeout, disconnect, cancellation and concurrency tests plus
-   `make test-ha`, `make test-unit`, and `make format-check` pass.
+1. the HA input language is passed explicitly and selects response language;
+2. history is isolated by conversation id, bounded by turns and bytes, and held
+   in memory only;
+3. missing/new conversation ids start empty and eviction is deterministic;
+4. history text is never logged or included in diagnostics;
+5. multilingual, isolation, eviction and reset tests plus `make test-ha`,
+   `make test-unit`, and `make format-check` pass.
 
 ## Design references
 

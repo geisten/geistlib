@@ -29,6 +29,8 @@ minor release.
   Assistant Config/Reconfigure Flow with validated socket and DE/EN errors.
 - Added a polling HA Health entity, automatically recovering Repairs, and
   config-entry diagnostics that expose no paths, addresses or HA content.
+- Added zero-queue HA request admission, fresh-socket reconnect semantics,
+  at-most-one correlated cancellation, and content-free lifecycle logging.
 - Added an agent-executable Home Assistant implementation plan for phases 0–8;
   HTTP/REST server requirements are explicitly out of scope.
 
