@@ -313,7 +313,7 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
                     static struct geist_dynamic_host_tool contexts[GEIST_DYNAMIC_MAX_TOOLS];
                     static char                       prompt_schemas[GEIST_DYNAMIC_MAX_TOOLS][512];
                     struct geist_dynamic_host_session host = {
-                            .fd = conn, .next_call_id = 1u, .cancelled = false};
+                            .fd = conn, .next_call_id = 1u, .max_retries = 1u, .cancelled = false};
                     for (size_t i = 0u; i < request.toolset.count; i++) {
                         const struct geist_dynamic_tool *offered = &request.toolset.tools[i];
                         if (geist_dynamic_tool_prompt_schema(

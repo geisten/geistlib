@@ -39,6 +39,24 @@ Home Assistant derives this array from the current user, Assist pipeline and
 exposed entities. Another application can supply database, build-system or
 device tools and compile without any Home Assistant source or dependency.
 
+The Unix-socket server uses newline-delimited JSON for the host round trip:
+
+```json
+{"type":"tool.call","call_id":"1","name":"HassTurnOn","arguments":{"name":"light.kitchen"}}
+{"type":"tool.result","call_id":"1","status":"ok","result":{"state":"on"}}
+{"type":"conversation.result","text":"The kitchen light is on."}
+```
+
+`call_id` must match exactly. A host may return `status:"retryable"`; Geist
+re-emits the same validated call once with a new id. Further retryable results
+are delivered to the model as data. A correlated `{"type":"cancel",...}` while
+waiting for a tool result cancels the session and prevents later calls.
+
+`make dynamic-example-host` builds `examples/dynamic_tools_host.c`, an
+independent calculator/profile host. It has no Home Assistant or model/runtime
+dependency and revalidates every received name and argument object before its
+local dispatch.
+
 ## JSON Schema subset
 
 Version 1 deliberately supports a bounded subset rather than claiming general

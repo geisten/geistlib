@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run home clean distclean help test test-unit test-int test-e2e test-all test-py test-ha test-ha-live fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-home bench-agent-live bench-agent-judge format format-check
+.PHONY: all lib bin run home dynamic-example-host clean distclean help test test-unit test-int test-e2e test-all test-py test-ha test-ha-live fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-home bench-agent-live bench-agent-judge format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -74,6 +74,14 @@ run: geist
 home:
 	@$(MAKE) EMBED_MODEL=gguf_artifacts/bitnet-2b4t-i2_s.gguf EMBED_NAME=geist-home \
 	  TOOLSET=home geist
+
+# Host-neutral Phase-3 example. It links no model/runtime and no Home Assistant
+# adapter; any application can build the same request/validation contract.
+DYNAMIC_EXAMPLE_HOST := $(BIN_DIR)/examples/dynamic_tools_host
+dynamic-example-host: $(DYNAMIC_EXAMPLE_HOST)
+$(DYNAMIC_EXAMPLE_HOST): examples/dynamic_tools_host.c tools/dynamic_tools_v1.h tools/json_schema_v1.h
+	@mkdir -p $(@D)
+	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -I. $< -o $@
 
 # ---- Optional: embed a model into the geist CLI (single-binary deploy) -----
 # `make EMBED_MODEL=path/to/model.gguf` bakes the GGUF into ./geist via an
