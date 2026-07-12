@@ -51,6 +51,25 @@ static void test_parser(void) {
             "parse: call without args");
     fails += geist_expect(strcmp(name, "now") == 0 && strcmp(args, "{}") == 0,
                           "parse: args defaults to {}");
+
+    const char *nested = "{\"tool\":\"complex\",\"args\":{\"text\":\"keep } here\","
+                         "\"target\":{\"ids\":[\"a\",\"b\"]}}}";
+    fails += geist_expect(
+            agent_parse_call(strlen(nested), nested, sizeof name, name, sizeof args, args) == 1 &&
+                    strcmp(name, "complex") == 0 && strstr(args, "keep } here") != nullptr &&
+                    strstr(args, "\"ids\"") != nullptr,
+            "parse: nested args and quoted braces remain intact");
+
+    const char *decoy = "{\"wrapper\":{\"tool\":\"rm_rf\",\"args\":{}}}";
+    fails += geist_expect(
+            agent_parse_call(strlen(decoy), decoy, sizeof name, name, sizeof args, args) == 0,
+            "parse: nested tool decoy is not a call");
+
+    const char *duplicate = "{\"tool\":\"safe\",\"tool\":\"unsafe\",\"args\":{}}";
+    fails += geist_expect(
+            agent_parse_call(strlen(duplicate), duplicate, sizeof name, name, sizeof args, args) ==
+                    0,
+            "parse: duplicate call keys fail closed");
 }
 
 static void test_whitelist(void) {
