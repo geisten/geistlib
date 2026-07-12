@@ -166,6 +166,50 @@ geist_dynamic_tool_find(const struct geist_dynamic_toolset *set, const char *nam
     return NULL;
 }
 
+/* Temporary prompt/forced-call compatibility projection. Validation always uses
+ * `parameters`; this compact view only teaches the existing decoder key names. */
+static inline size_t geist_dynamic_tool_prompt_schema(const struct geist_dynamic_tool *tool,
+                                                      size_t                           cap,
+                                                      char out[static cap]) {
+    if (tool == NULL || cap < 3u)
+        return 0u;
+    struct jsv1_token tokens[JSV1_MAX_TOKENS];
+    struct jsv1_doc   doc;
+    if (jsv1_parse(tool->parameters, strlen(tool->parameters), JSV1_MAX_TOKENS, tokens, &doc) !=
+        JSV1_OK)
+        return 0u;
+    int    properties = jsv1_object_get(&doc, 0, "properties");
+    size_t written    = 0u;
+    out[written++]    = '{';
+    if (properties >= 0) {
+        int cursor = properties;
+        for (unsigned i = 0u; i < doc.tokens[properties].size; i++) {
+            int    name     = jsv1_child(&doc, properties, cursor);
+            int    schema   = jsv1_child(&doc, properties, name);
+            int    type     = jsv1_object_get(&doc, schema, "type");
+            size_t name_len = doc.tokens[name].end - doc.tokens[name].start;
+            size_t type_len = type >= 0 ? doc.tokens[type].end - doc.tokens[type].start : 0u;
+            size_t need     = name_len + type_len + (i > 0u ? 3u : 2u) + 1u;
+            if (written + need >= cap || doc.tokens[name].escaped ||
+                doc.tokens[type].type != JSV1_STRING || doc.tokens[type].escaped)
+                return 0u;
+            if (i > 0u)
+                out[written++] = ',';
+            out[written++] = '"';
+            memcpy(out + written, doc.json + doc.tokens[name].start, name_len);
+            written += name_len;
+            out[written++] = '"';
+            out[written++] = ':';
+            memcpy(out + written, doc.json + doc.tokens[type].start, type_len);
+            written += type_len;
+            cursor = schema;
+        }
+    }
+    out[written++] = '}';
+    out[written]   = '\0';
+    return written;
+}
+
 static inline enum jsv1_status geist_dynamic_tool_validate(const struct geist_dynamic_toolset *set,
                                                            const char                         *name,
                                                            const char *arguments,

@@ -34,6 +34,8 @@
 #include <geist_util.h>
 
 #include "agent.h"
+#include "dynamic_host_v1.h"
+#include "dynamic_request_v1.h"
 
 #include <signal.h> /* --serve: SIGPIPE ignore              */
 #include <stdio.h>
@@ -46,7 +48,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-enum { AGENT_MAIN_RESP_CAP = 1 << 13, AGENT_MAIN_LINE_CAP = 8192, AGENT_MAIN_TOOLS_CAP = 8 };
+enum {
+    AGENT_MAIN_RESP_CAP         = 1 << 13,
+    AGENT_MAIN_LINE_CAP         = 1 << 17,
+    AGENT_MAIN_TOOLS_CAP        = GEIST_DYNAMIC_MAX_TOOLS,
+    AGENT_MAIN_DYNAMIC_WIRE_CAP = AGENT_MAIN_RESP_CAP * 6 + 64,
+};
 
 /* Fills out[0..cap) with the CLI's tools, returns the count. Called after the
  * model + backend are loaded, so a tool's ctx can reference them. ctx is the
@@ -140,6 +147,82 @@ static inline bool agent_force_enabled(void) {
     return f == nullptr || strcmp(f, "0") != 0;
 }
 
+static inline void agent_main_reconfigure(struct geist_agent      *agent,
+                                          const struct geist_tool *tools,
+                                          size_t                   count,
+                                          size_t                   max_steps) {
+    /* A pinned menu is capability state. Clear it before replacing a request's
+     * immutable offered set; otherwise stale names could influence decoding. */
+    geist_token_t empty_prefix = 0;
+    (void) geist_session_pin_prefix(agent->session, 0u, &empty_prefix);
+    (void) geist_session_reset(agent->session);
+    if (agent->route_session != nullptr) {
+        (void) geist_session_pin_prefix(agent->route_session, 0u, &empty_prefix);
+        (void) geist_session_reset(agent->route_session);
+    }
+    agent->tools             = tools;
+    agent->n_tools           = count;
+    agent->max_steps         = max_steps;
+    agent->tlen              = 0u;
+    agent->sys_len           = 0u;
+    agent->sys_pinned        = false;
+    agent->route_base_n      = 0u;
+    agent->route_menu_pinned = false;
+}
+
+static inline size_t agent_main_dynamic_result(size_t     text_len,
+                                               const char text[static text_len],
+                                               size_t     cap,
+                                               char       out[static cap]) {
+    size_t      w          = 0u;
+    const char *prefix     = "{\"type\":\"conversation.result\",\"text\":\"";
+    size_t      prefix_len = strlen(prefix);
+    if (prefix_len >= cap)
+        return 0u;
+    memcpy(out, prefix, prefix_len);
+    w = prefix_len;
+    for (size_t i = 0u; i < text_len; i++) {
+        unsigned char c      = (unsigned char) text[i];
+        const char   *escape = nullptr;
+        switch (c) {
+        case '"':
+            escape = "\\\"";
+            break;
+        case '\\':
+            escape = "\\\\";
+            break;
+        case '\n':
+            escape = "\\n";
+            break;
+        case '\r':
+            escape = "\\r";
+            break;
+        case '\t':
+            escape = "\\t";
+            break;
+        default:
+            break;
+        }
+        if (escape != nullptr) {
+            size_t n = strlen(escape);
+            if (w + n + 4u >= cap)
+                return 0u;
+            memcpy(out + w, escape, n);
+            w += n;
+        } else if (c < 0x20u) {
+            if (w + 6u + 4u >= cap)
+                return 0u;
+            w += (size_t) snprintf(out + w, cap - w, "\\u%04x", c);
+        } else {
+            if (w + 1u + 4u >= cap)
+                return 0u;
+            out[w++] = (char) c;
+        }
+    }
+    memcpy(out + w, "\"}\n", 4u);
+    return w + 3u;
+}
+
 /* Run one request and print the answer + newline. Returns 0 on success. */
 /* Resident daemon (--serve): the model stays warm and requests arrive over a
  * chmod-600 Unix socket — the DEPLOY.md pattern, and the transport behind the
@@ -152,6 +235,10 @@ static inline bool agent_force_enabled(void) {
  * ponytail: sequential accept, no threads — an Assist pipeline sends one
  * utterance at a time anyway. Unix only, like the rest of this file. */
 static inline int agent_main_serve(struct geist_agent *a, const char *path) {
+    const struct geist_tool *base_tools      = a->tools;
+    const size_t             base_tool_count = a->n_tools;
+    const size_t             base_max_steps  = a->max_steps;
+    const bool               base_force_call = a->force_call;
     signal(SIGPIPE, SIG_IGN); /* a vanished client must not kill the daemon */
     unlink(path);
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -184,6 +271,7 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
         a->tlen = 0; /* discard warm-up; sys_pinned + route_base stay cached */
     }
     fprintf(stderr, "serving on %s (one request line per connection)\n", path);
+    bool configured_dynamic = false;
     for (;;) {
         int conn = accept(fd, nullptr, nullptr);
         if (conn < 0) {
@@ -207,9 +295,71 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
         req[strcspn(req, "\n")] = '\0';
         if (req[0] != '\0') {
             static char resp[AGENT_MAIN_RESP_CAP];
-            size_t      rn = 0;
-            if (geist_agent_run(a, strlen(req), req, sizeof resp, resp, &rn) != GEIST_OK) {
-                rn = (size_t) snprintf(resp, sizeof resp, "error: agent run failed");
+            size_t      rn      = 0;
+            bool        dynamic = req[0] == '{';
+            if (dynamic) {
+                static struct geist_dynamic_request request;
+                enum geist_dynamic_status           toolset_status = GEIST_DYNAMIC_OK;
+                enum geist_dynamic_request_status   request_status =
+                        geist_dynamic_request_parse(req, strlen(req), &request, &toolset_status);
+                if (request_status != GEIST_DYNAMIC_REQUEST_OK) {
+                    rn = (size_t) snprintf(resp,
+                                           sizeof resp,
+                                           "error: invalid dynamic request (%d/%s)",
+                                           request_status,
+                                           geist_dynamic_status_string(toolset_status));
+                } else {
+                    static struct geist_tool              dynamic_tools[GEIST_DYNAMIC_MAX_TOOLS];
+                    static struct geist_dynamic_host_tool contexts[GEIST_DYNAMIC_MAX_TOOLS];
+                    static char                       prompt_schemas[GEIST_DYNAMIC_MAX_TOOLS][512];
+                    struct geist_dynamic_host_session host = {
+                            .fd = conn, .next_call_id = 1u, .cancelled = false};
+                    for (size_t i = 0u; i < request.toolset.count; i++) {
+                        const struct geist_dynamic_tool *offered = &request.toolset.tools[i];
+                        if (geist_dynamic_tool_prompt_schema(
+                                    offered, sizeof prompt_schemas[i], prompt_schemas[i]) == 0u) {
+                            snprintf(prompt_schemas[i], sizeof prompt_schemas[i], "{}");
+                        }
+                        contexts[i]      = (struct geist_dynamic_host_tool) {.session = &host,
+                                                                             .name    = offered->name};
+                        dynamic_tools[i] = (struct geist_tool) {
+                                .name              = offered->name,
+                                .args_schema       = prompt_schemas[i],
+                                .description       = offered->description,
+                                .parameters_schema = offered->parameters,
+                                .invoke            = geist_dynamic_host_invoke,
+                                .ctx               = &contexts[i],
+                        };
+                    }
+                    agent_main_reconfigure(
+                            a, dynamic_tools, request.toolset.count, request.toolset.max_steps);
+                    configured_dynamic        = true;
+                    a->conversation           = false;
+                    a->force_call             = base_force_call;
+                    a->forced_result_is_final = false;
+                    if (geist_agent_run(
+                                a, strlen(request.input), request.input, sizeof resp, resp, &rn) !=
+                        GEIST_OK) {
+                        rn = (size_t) snprintf(resp, sizeof resp, "error: agent run failed");
+                    }
+                }
+                static char wire[AGENT_MAIN_DYNAMIC_WIRE_CAP];
+                size_t      wire_len = agent_main_dynamic_result(rn, resp, sizeof wire, wire);
+                if (wire_len > 0u)
+                    (void) geist_dynamic_host_write(conn, wire, wire_len);
+                close(conn);
+                continue;
+            } else {
+                if (configured_dynamic) {
+                    agent_main_reconfigure(a, base_tools, base_tool_count, base_max_steps);
+                    configured_dynamic = false;
+                }
+                a->conversation           = true;
+                a->force_call             = base_force_call;
+                a->forced_result_is_final = true;
+                if (geist_agent_run(a, strlen(req), req, sizeof resp, resp, &rn) != GEIST_OK) {
+                    rn = (size_t) snprintf(resp, sizeof resp, "error: agent run failed");
+                }
             }
             size_t off = 0;
             while (off < rn) {

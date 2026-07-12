@@ -34,6 +34,11 @@ int main(void) {
     mutable_schema[0] = '[';
     failures += check(geist_dynamic_tool_find(&set, "SetLevel") != NULL,
                       "toolset borrowed mutable name");
+    char prompt_schema[128];
+    failures += check(geist_dynamic_tool_prompt_schema(
+                              &set.tools[0], sizeof prompt_schema, prompt_schema) > 0u &&
+                              strcmp(prompt_schema, "{\"level\":integer}") == 0,
+                      "typed schema was not projected into the decoder prompt");
     failures +=
             check(geist_dynamic_tool_validate(&set, "SetLevel", "{\"level\":42}", 12u) == JSV1_OK,
                   "valid arguments rejected");

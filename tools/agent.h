@@ -295,8 +295,9 @@ struct geist_agent {
     const char                *system_prompt; /* borrowed; nullptr -> default role */
     struct geist_chat_template tmpl;          /* model-specific framing (auto-detected in init) */
     bool                       force_call;    /* force turn 0 to be a valid tool call (see run) */
-    bool                       conversation;  /* keep the transcript across geist_agent_run calls
-                                               * (multi-turn chat) instead of resetting each call */
+    bool forced_result_is_final; /* legacy CLI shortcut; false lets model formulate after result */
+    bool conversation;           /* keep the transcript across geist_agent_run calls
+                                  * (multi-turn chat) instead of resetting each call */
     geist_token_t eos, eot;
     char          transcript[GEIST_AGENT_TRANSCRIPT_CAP];
     size_t        tlen;
@@ -346,16 +347,17 @@ static inline void geist_agent_init(struct geist_agent     *a,
                                     const struct geist_tool tools[static n_tools],
                                     size_t                  max_steps,
                                     const char             *system_prompt) {
-    a->model         = model;
-    a->session       = session;
-    a->tools         = tools;
-    a->n_tools       = n_tools;
-    a->max_steps     = max_steps ? max_steps : 8;
-    a->system_prompt = system_prompt;
-    a->tmpl          = geist_chat_template_for_model(model);
-    a->force_call    = false;
-    a->conversation  = false;
-    a->eos           = geist_model_eos_token(model);
+    a->model                  = model;
+    a->session                = session;
+    a->tools                  = tools;
+    a->n_tools                = n_tools;
+    a->max_steps              = max_steps ? max_steps : 8;
+    a->system_prompt          = system_prompt;
+    a->tmpl                   = geist_chat_template_for_model(model);
+    a->force_call             = false;
+    a->forced_result_is_final = true;
+    a->conversation           = false;
+    a->eos                    = geist_model_eos_token(model);
     a->eot  = a->tmpl.stop[0] ? geist_model_token_by_text(model, a->tmpl.stop) : GEIST_TOKEN_NONE;
     a->tlen = 0;
     a->sys_len           = 0;
@@ -2590,7 +2592,7 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
          * Exception: a recipe (see agent_recipe_next) continues a known 2-step
          * chain — the follow-up tool runs directly on a locator lifted from this
          * observation, and ITS observation is the answer. No model in the loop. */
-        if (a->force_call && step == 0) {
+        if (a->force_call && step == 0 && a->forced_result_is_final) {
             int nxt = t ? agent_recipe_next(a, (int) (t - a->tools), req_len, req) : -1;
             if (nxt >= 0) {
                 const struct geist_tool *t1 = &a->tools[nxt];
