@@ -40,13 +40,21 @@ static inline int webfetch_scheme_ok(const char *url) {
     return strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0;
 }
 
-/* Host between "://" and the next '/'|':'|'?'|'#'. Returns 1 on success. */
+/* Host between "://" and the next '/'|':'|'?'|'#'. Returns 1 on success.
+ * Any "userinfo@" prefix is skipped so the allowlist validates the host curl
+ * actually connects to — else "http://allowed.com:@evil/" would pass the gate
+ * (host read as "allowed.com") while curl connects to "evil". */
 static inline int webfetch_host(const char *url, size_t cap, char host[static cap]) {
     const char *s = strstr(url, "://");
     if (!s) {
         return 0;
     }
     s += 3;
+    for (const char *at = s; *at && *at != '/' && *at != '?' && *at != '#'; at++) {
+        if (*at == '@') {
+            s = at + 1; /* last '@' in the authority wins, as curl parses it */
+        }
+    }
     size_t w = 0;
     while (*s && *s != '/' && *s != ':' && *s != '?' && *s != '#' && w + 1 < cap) {
         host[w++] = *s++;
@@ -112,9 +120,9 @@ static inline size_t webfetch_decode_entity(const char *s, size_t max, char *ch)
         return 0;
     }
     if (s[1] == '#') { /* numeric: &#39; (decimal) or &#x27; (hex) */
-        char      *end = nullptr;
-        int        hex = (s[2] == 'x' || s[2] == 'X');
-        long       v   = strtol(s + (hex ? 3 : 2), &end, hex ? 16 : 10);
+        char *end = nullptr;
+        int   hex = (s[2] == 'x' || s[2] == 'X');
+        long  v   = strtol(s + (hex ? 3 : 2), &end, hex ? 16 : 10);
         if (end != s + semi) {
             return 0;
         }
@@ -124,7 +132,8 @@ static inline size_t webfetch_decode_entity(const char *s, size_t max, char *ch)
     static const struct {
         const char *name;
         char        ch;
-    } ents[] = {{"amp", '&'}, {"lt", '<'}, {"gt", '>'}, {"quot", '"'}, {"apos", '\''}, {"nbsp", ' '}};
+    } ents[] = {
+            {"amp", '&'}, {"lt", '<'}, {"gt", '>'}, {"quot", '"'}, {"apos", '\''}, {"nbsp", ' '}};
     size_t nlen = semi - 1;
     for (size_t e = 0; e < sizeof ents / sizeof ents[0]; e++) {
         if (strlen(ents[e].name) == nlen && strncmp(s + 1, ents[e].name, nlen) == 0) {

@@ -327,3 +327,69 @@ can be re-ranked: BitNet F16 (~50 % of decode, 656 MB) → **+77 %**; Gemma Q6_K
 (~32 %, already 2-bit-ish and dequant-bound, 256 K vocab needing a bigger TOP_K)
 → **+5 % exact** (+14 % if approximate). The kernel-blocking ideas do not transfer
 to the A76.
+
+---
+
+## vs. the 2026 ternary-kernel literature (T-SAR, FairyFuse)
+
+Two recent papers push CPU ternary inference further than geist's kernels. Read
+honestly, they are **a different *kind* of contribution on a different target** —
+neither contests geist's headline numbers, but both are more advanced *as
+kernels*.
+
+### The measured picture
+
+| | **geist** | **T-SAR** (arXiv 2511.13676) | **FairyFuse** (arXiv 2604.20913) |
+| :-- | :-- | :-- | :-- |
+| Kind | integration engine, stock kernels | **full-stack co-design (HW component)** | pure-software kernel |
+| Target | **A76/Pi5** (primary), x86, Metal | Ryzen 9950X/7840U, Intel N250 | **x86 AVX-512 only** (Xeon 8558P, 48c) |
+| ARM? | **yes** | no | no |
+| BitNet tested? | yes (2B-4T) | yes (family) | **no** (own Fairy2i 2-bit, Llama-2-7B) |
+| Core idea | `vdotq_s32` SDOT, "unbiased" −1 defer, mt4 tile reuse | in-register LUT (no DRAM TL fetch) → memory→compute-bound | mult-free masked AVX-512 add/sub |
+| Headline | **2.1×** decode vs bitnet.cpp (A76); 1.3–1.4× vs bitnet.cpp (9950X) | prefill 8.4–12.4×, decode 4.1–6.4× vs CPU baseline | 1.24× vs Q4_K_M decode |
+| HW overhead | 0 | **1.4 % area, 3.2 % power** (synthesized SIMD-ALU mod) | 0 |
+
+geist's own measured ternary numbers, for the ratios above: BitNet 2B-4T `i2_s`
+decode **17.4 t/s** vs bitnet.cpp 8.2 on the Pi5; on a 9950X, prefill pp128
+**884** vs 679 and decode tg128 **77.9** vs 56.5.
+
+### Honest reading
+
+- **T-SAR is not a fair "runs today on a Pi" comparison.** It is a *co-design*:
+  the 8–12× assume a modified SIMD ALU (hence the area/power overhead from
+  synthesis). You do **not** get those numbers on stock A76 silicon. Its
+  cross-platform decode figure (Llama-1.58-**8B** at 128.96 t/s on a 9950X)
+  exceeds what a stock DDR5 box can stream for a >1 GB model, which is consistent
+  with its converting decode from memory- to compute-bound *on co-designed
+  hardware*. Not portable software.
+- **But T-SAR names geist's exact wall.** geist's decode is memory-bound on the
+  A76 (`~9 of ~13 GB/s`; "micro-opts don't pan out", above). T-SAR's insight —
+  keep the ternary LUT in the SIMD register file instead of DRAM — is the
+  research answer to that bottleneck. A *software* approximation (in-register
+  shuffle-LUT rather than DRAM TL tables) is the only non-structural A76 decode
+  lever left. Low priority: geist decode is already at parity with llama.cpp and
+  ~2× ahead of bitnet.cpp, so this is a "if a real gap appears" item.
+- **FairyFuse is irrelevant to the Pi moat.** AVX-512 only (no ARM), does not
+  test BitNet at all (its own Fairy2i 2-bit on Llama-2-7B), and 1.24× vs 4-bit on
+  a 48-core server. It touches at most geist's x86 path, and even there with a
+  different model/quant. Its mult-free idea geist already approximates (the
+  `unbiased` SDOT trick defers the −1 rather than multiplying).
+
+### Where geist stands
+
+- **Weaker on kernel novelty.** As this doc already records, geist's decode inner
+  loop is *the same algorithm* as llama.cpp's `ggml_vec_dot_tq2_0_q8_K`; the 2×
+  over bitnet.cpp is largely bitnet.cpp's TL1 being slow on the A76, not a better
+  geist kernel. T-SAR (register-LUT) and FairyFuse (mult-free) are genuinely more
+  advanced *as kernels*.
+- **Stronger as a system, on the axis that matters.** For the moat metric —
+  **stock ARM, real BitNet 2B-4T, runs today, in a <1 MB embeddable single-codebase
+  lib** — neither paper fields a competing number: T-SAR needs new silicon,
+  FairyFuse needs AVX-512 and doesn't do ARM or BitNet. geist's claim is
+  *portable, embeddable, self-contained*, not *fastest kernel*. Positioning
+  should say exactly that (see [../docs/POSITIONING.md](../docs/POSITIONING.md)).
+
+Sources: [T-SAR](https://arxiv.org/abs/2511.13676),
+[FairyFuse](https://arxiv.org/pdf/2604.20913),
+[bitnet.cpp](https://arxiv.org/html/2502.11880v1),
+[BitNet b1.58 2B4T](https://arxiv.org/pdf/2504.12285).
