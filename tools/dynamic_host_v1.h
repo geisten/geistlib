@@ -13,6 +13,8 @@ struct geist_dynamic_host_session {
     int      fd;
     unsigned next_call_id;
     unsigned max_retries;
+    unsigned max_calls;
+    unsigned emitted_calls;
     bool     cancelled;
 };
 
@@ -66,6 +68,9 @@ static inline enum geist_status geist_dynamic_host_invoke(void      *context,
         tool->session->cancelled)
         return GEIST_E_INVALID_STATE;
     for (unsigned retry = 0u;; retry++) {
+        if (tool->session->emitted_calls >= tool->session->max_calls)
+            return GEIST_E_INVALID_STATE;
+        tool->session->emitted_calls++;
         unsigned call_id = tool->session->next_call_id++;
         char     wire[GEIST_DYNAMIC_CALL_WIRE_CAP];
         int      length = snprintf(wire,

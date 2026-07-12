@@ -49,8 +49,9 @@ The Unix-socket server uses newline-delimited JSON for the host round trip:
 
 `call_id` must match exactly. A host may return `status:"retryable"`; Geist
 re-emits the same validated call once with a new id. Further retryable results
-are delivered to the model as data. A correlated `{"type":"cancel",...}` while
-waiting for a tool result cancels the session and prevents later calls.
+are delivered to the model as data. Retries consume the request's global call
+budget. A correlated `{"type":"cancel",...}` while waiting for a tool result
+cancels the session and prevents later calls.
 
 `make dynamic-example-host` builds `examples/dynamic_tools_host.c`, an
 independent calculator/profile host. It has no Home Assistant or model/runtime

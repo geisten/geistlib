@@ -9,7 +9,7 @@ int main(void) {
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0)
         return 2;
     struct geist_dynamic_host_session session = {
-            .fd = pair[0], .next_call_id = 7u, .max_retries = 1u};
+            .fd = pair[0], .next_call_id = 7u, .max_retries = 1u, .max_calls = 10u};
     struct geist_dynamic_host_tool context = {.session = &session, .name = "SetLevel"};
     const char                    *result  = "{\"type\":\"tool.result\",\"call_id\":\"7\","
                                              "\"result\":{\"ok\":true,\"level\":42}}\n";
@@ -54,6 +54,13 @@ int main(void) {
             geist_dynamic_host_invoke(&context, strlen(args), args, sizeof out, out, &out_len) !=
             GEIST_E_INVALID_STATE;
     failures += session.next_call_id != before;
+    failures += session.emitted_calls != 4u;
+    session.cancelled = false;
+    session.max_calls = session.emitted_calls;
+    failures +=
+            geist_dynamic_host_invoke(&context, strlen(args), args, sizeof out, out, &out_len) !=
+            GEIST_E_INVALID_STATE;
+    failures += session.next_call_id != before || session.emitted_calls != 4u;
     close(pair[0]);
     close(pair[1]);
     if (failures != 0) {
