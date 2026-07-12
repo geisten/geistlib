@@ -53,6 +53,7 @@ async def async_dynamic_session(
     request = {"input": utterance.strip(), "max_tool_steps": max_tool_steps,
                "tools": build_dynamic_tools(exposure, allow_high_impact=allow_high_impact)}
     calls = 0
+    active_call_id: str | None = None
     try:
         async with asyncio.timeout(timeout_s):
             await _write(writer, request)
@@ -65,6 +66,7 @@ async def async_dynamic_session(
                 calls += 1
                 if calls > max_tool_steps:
                     raise ProtocolError("tool_budget_exceeded")
+                active_call_id = frame.get("call_id") if isinstance(frame.get("call_id"), str) else None
                 try:
                     result = await async_handle_dynamic_tool_call(
                         frame, exposure, executor, registry_version=version,
@@ -74,8 +76,24 @@ async def async_dynamic_session(
                     result = {"type": "tool.result", "call_id": call_id,
                               "status": err.status, "result": {}}
                 await _write(writer, result)
+                active_call_id = None
     except TimeoutError as err:
+        if active_call_id is not None:
+            try:
+                await _write(writer, {"type": "cancel", "call_id": active_call_id,
+                                      "reason": "timeout"})
+            except (OSError, ProtocolError):
+                pass
         raise ProtocolError("timeout") from err
+    except asyncio.CancelledError:
+        if active_call_id is not None:
+            try:
+                await asyncio.shield(_write(
+                    writer, {"type": "cancel", "call_id": active_call_id,
+                             "reason": "client_cancelled"}))
+            except (OSError, ProtocolError):
+                pass
+        raise
 
 
 async def async_ask_geist_dynamic(

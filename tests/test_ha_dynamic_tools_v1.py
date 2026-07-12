@@ -45,6 +45,12 @@ class Executor:
         return []
 
 
+class SlowExecutor(Executor):
+    async def async_call_service(self, domain: str, service: str, entity_id: str, arguments: dict):
+        await asyncio.sleep(1)
+        return []
+
+
 class Reader:
     def __init__(self, frames: list[dict]) -> None:
         self.frames = iter(frames)
@@ -107,6 +113,20 @@ async def checks() -> None:
     assert answer == "Kitchen is on."
     assert writer.frames[0]["tools"] and writer.frames[0]["max_tool_steps"] == 2
     assert writer.frames[1] == {"type": "tool.result", "call_id": "a", "status": "ok", "result": []}
+
+    timeout_writer = Writer()
+    try:
+        await session.async_dynamic_session(
+            Reader([{"type": "tool.call", "call_id": "slow", "name": "HassTurnOn",
+                     "arguments": {"name": "light.kitchen"}}]),
+            timeout_writer, "Turn on kitchen", exposure, SlowExecutor(),
+            timeout_s=0.01, max_tool_steps=2)
+    except protocol.ProtocolError as err:
+        assert err.code == "timeout"
+    else:
+        raise AssertionError("timeout did not cancel session")
+    assert timeout_writer.frames[-1] == {
+        "type": "cancel", "call_id": "slow", "reason": "timeout"}
 
 
 if __name__ == "__main__":
