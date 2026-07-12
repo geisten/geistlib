@@ -96,6 +96,7 @@ def main() -> None:
         "policy.py",
         "protocol_v2.py",
         "registry.py",
+        "session_v2.py",
         "transport.py",
     }
     require(expected <= {p.name for p in COMPONENT.iterdir()}, "component is complete")

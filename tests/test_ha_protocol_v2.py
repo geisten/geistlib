@@ -33,6 +33,7 @@ def load(name: str):
 protocol = load("protocol_v2")
 policy = load("policy")
 ha_executor = load("ha_executor")
+session_v2 = load("session_v2")
 
 
 def expect_error(code: str, function, *args) -> None:
@@ -102,6 +103,35 @@ class FakeHass:
 
 class Unauthorized(Exception):
     pass
+
+
+class FakeWriter:
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.drains = 0
+
+    def write(self, data: bytes) -> None:
+        self.data.extend(data)
+
+    async def drain(self) -> None:
+        self.drains += 1
+
+
+def reader_with(*frames: dict):
+    reader = asyncio.StreamReader()
+    for frame in frames:
+        reader.feed_data(protocol.encode_frame(frame))
+    return reader
+
+
+def written_frames(writer: FakeWriter) -> list[dict]:
+    data = bytes(writer.data)
+    frames = []
+    while data:
+        frame, consumed = protocol.decode_frame(data)
+        frames.append(frame)
+        data = data[consumed:]
+    return frames
 
 
 def base_call(store, **changes):
@@ -326,11 +356,176 @@ async def check_ha_executor() -> None:
     assert result["status"] == "unavailable"
 
 
+async def check_session_loop() -> None:
+    store = policy.ExposureStore()
+    store.replace({"light.flur", "climate.bad"})
+    hass = FakeHass()
+    executor = ha_executor.HomeAssistantExecutor(hass, object())
+    tool_get = base_call(store, request_id="tool-1")
+    tool_set = base_call(
+        store,
+        request_id="tool-2",
+        operation="call_service",
+        entity_id="climate.bad",
+        domain="climate",
+        service="set_temperature",
+        arguments={"temperature": 22},
+    )
+    final = {
+        "version": 2,
+        "request_id": "conv-test",
+        "type": "conversation.result",
+        "text": "  Erledigt.  ",
+    }
+    writer = FakeWriter()
+    answer = await session_v2.async_conversation_session(
+        reader_with(tool_get, tool_set, final),
+        writer,
+        "Mach es wärmer",
+        "de-DE",
+        store,
+        executor,
+        timeout_s=1,
+        max_tool_calls=2,
+        request_id="conv-test",
+    )
+    assert answer == "Erledigt."
+    sent = written_frames(writer)
+    assert [frame["type"] for frame in sent] == [
+        "conversation.start",
+        "tool.result",
+        "tool.result",
+    ]
+    assert sent[0]["registry_version"] == store.version
+    assert sent[0]["locale"] == "de-DE" and sent[0]["max_tool_calls"] == 2
+    assert sent[1]["request_id"] == "tool-1" and sent[1]["status"] == "ok"
+    assert sent[2]["request_id"] == "tool-2" and sent[2]["status"] == "ok"
+    assert hass.services.calls[-1][2] == {
+        "entity_id": "climate.bad",
+        "temperature": 22,
+    }
+
+    stale = dict(tool_get, request_id="tool-stale", registry_version=0)
+    writer = FakeWriter()
+    answer = await session_v2.async_conversation_session(
+        reader_with(stale, final),
+        writer,
+        "Status",
+        "de",
+        store,
+        executor,
+        timeout_s=1,
+        request_id="conv-test",
+    )
+    assert answer == "Erledigt."
+    assert written_frames(writer)[1]["status"] == "denied"
+
+    writer = FakeWriter()
+    try:
+        await session_v2.async_conversation_session(
+            reader_with(tool_get, tool_set),
+            writer,
+            "Zwei Aktionen",
+            "de",
+            store,
+            executor,
+            timeout_s=1,
+            max_tool_calls=1,
+            request_id="conv-budget",
+        )
+    except protocol.ProtocolError as err:
+        assert err.code == "tool_budget_exceeded"
+    else:
+        raise AssertionError("tool budget must terminate the session")
+    sent = written_frames(writer)
+    assert sent[-2]["status"] == "denied" and sent[-1]["type"] == "cancel"
+
+    duplicate = dict(tool_get)
+    writer = FakeWriter()
+    try:
+        await session_v2.async_conversation_session(
+            reader_with(tool_get, duplicate),
+            writer,
+            "Doppelt",
+            "de",
+            store,
+            executor,
+            timeout_s=1,
+            request_id="conv-duplicate",
+        )
+    except protocol.ProtocolError as err:
+        assert err.code == "duplicate_request_id"
+    else:
+        raise AssertionError("duplicate tool request id must fail")
+    assert written_frames(writer)[-1]["type"] == "cancel"
+
+    writer = FakeWriter()
+    try:
+        await session_v2.async_conversation_session(
+            asyncio.StreamReader(),
+            writer,
+            "Timeout",
+            "de",
+            store,
+            executor,
+            timeout_s=0.01,
+            request_id="conv-timeout",
+        )
+    except protocol.ProtocolError as err:
+        assert err.code == "timeout"
+    else:
+        raise AssertionError("session timeout must fail")
+    assert written_frames(writer)[-1]["type"] == "cancel"
+
+    writer = FakeWriter()
+    task = asyncio.create_task(
+        session_v2.async_conversation_session(
+            asyncio.StreamReader(),
+            writer,
+            "Abbruch",
+            "de",
+            store,
+            executor,
+            timeout_s=10,
+            request_id="conv-cancelled",
+        )
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("caller cancellation must propagate")
+    assert written_frames(writer)[-1]["type"] == "cancel"
+    assert written_frames(writer)[-1]["reason"] == "client_cancelled"
+
+    wrong_final = dict(final, request_id="other")
+    writer = FakeWriter()
+    try:
+        await session_v2.async_conversation_session(
+            reader_with(wrong_final),
+            writer,
+            "Falsche Korrelation",
+            "de",
+            store,
+            executor,
+            timeout_s=1,
+            request_id="conv-test",
+        )
+    except protocol.ProtocolError as err:
+        assert err.code == "invalid_conversation_result"
+    else:
+        raise AssertionError("mismatched conversation result must fail")
+
+
 def main() -> None:
     check_codec()
     check_policy()
     asyncio.run(check_ha_executor())
-    print("ha_protocol_v2: framing + exposure/action policy + HA executor pass")
+    asyncio.run(check_session_loop())
+    print("ha_protocol_v2: framing + policy + HA executor + session loop pass")
 
 
 if __name__ == "__main__":
