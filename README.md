@@ -48,11 +48,10 @@ every GPU inference server. It is deliberately optimized for a narrower job:
   container required.
 - **Raspberry Pi and CPU-only hosts:** platform-specific kernels and ternary
   BitNet support where memory bandwidth matters most.
-- **Controlled agents:** the host supplies a fixed tool whitelist and step
-  budget; the model cannot grant itself new capabilities.
-- **Private smart homes:** the Home Assistant preview keeps inference on the
-  local host; HA supplies the exposed-entity registry and geist limits actions
-  to its explicit home-tool families.
+- **Controlled agents:** the host supplies a static or per-request immutable
+  tool whitelist plus a step budget; the model cannot grant itself capabilities.
+- **Private smart homes:** inference stays local while HA offers only currently
+  exposed capabilities, validates arguments, and executes inside HA.
 
 ### Home Assistant status
 
@@ -60,12 +59,11 @@ The Home Assistant path is a **working developer preview**, not yet a one-click
 release. Its canonical transport is deliberately small:
 
 1. `geist-home --serve /path/geist.sock` loads the model once and stays warm;
-2. the `geist_conversation` Conversation integration sends one Assist utterance
-   per local Unix-socket connection;
-3. HA pushes its exposed entities, areas and aliases into geist's deterministic
-   registry; unsupported domains are ignored;
-4. geist's bounded home tools call HA locally and keep confirmations for locks
-   inside the appliance agent.
+2. `geist_conversation` sends a newline-delimited JSON request containing the
+   utterance, step budget and tools allowed for that Assist request;
+3. Geist emits only correlated calls to offered names; HA revalidates name,
+   arguments, exposure and high-impact policy, then executes inside HA;
+4. tool results return on the same socket and Geist formulates the response.
 
 The next milestone is packaging this proven path: reproducible installation,
 health diagnostics, upgrades, soak testing, and published German/English Pi 5
@@ -214,15 +212,15 @@ speech-to-text for the spoken path.*
 
 ```bash
 make home                                        # -> ./geist-home (model baked in)
-GEIST_HA_URL=http://ha.local:8123 GEIST_HA_TOKEN=<token> \
-  ./geist-home "Schalte das Licht im Flur ein"   # -> OK: light.flur → an
+./geist-home --serve /path/to/ha-config/geist.sock
 ```
 
 Run it as a daemon (`--serve` plus the bundled
 [systemd unit](integrations/systemd/geist-home.service)), add the
 [Home Assistant custom component](integrations/home-assistant/), and Assist —
-typed or spoken — answers from your own hardware. Your devices live in one plain
-text file (`entity | domain | alias phrases`). Full walkthrough:
+typed or spoken — answers from your own hardware. HA supplies the exposed tools
+per request. The dynamic protocol does not consume an HA token; the legacy
+installer may still provision an unused compatibility variable. Full walkthrough:
 [docs/agent.md](docs/agent.md#the-home-appliance--make-home).
 
 **Your domain next.** The recipe generalizes: a narrow tool menu, deterministic

@@ -13,15 +13,13 @@
  *   - max_steps bounds how many tool calls one request can trigger (runaway +
  *     cost guard on constrained hardware).
  * A small model jailbreaks easily as free chat; here it can only DO what the
- * tool table allows. Grammar-constraint, three slices: (1) an off-whitelist
- * tool NAME is re-picked by agent_decode_name_constrained, which decodes the
- * name constrained to the whitelist (a near-miss recovers to the model's
- * intended tool, not an error step); (2) the args object is re-keyed to the
- * tool's args_schema by agent_args_normalize (small models mis-key flat string
- * args); (3) a free turn that opens a call is decoded ALONG the call grammar
+ * offered toolset allows. An off-list name fails closed and is never remapped.
+ * Legacy flat-string args may be normalized to args_schema; dynamic args are
+ * validated against parameters_schema. A free turn that opens a call is decoded
+ * ALONG the call grammar
  * (agent_generate_call_masked): name and key constrained per-token over the
- * public peek/prefill API, only the value free — an off-grammar call cannot be
- * emitted. Remaining upgrade: full multi-key argument grammars.
+ * public peek/prefill API. Forced dynamic calls build typed multi-field objects
+ * and validate them before the host boundary.
  *
  * No assert(): all checks are explicit and return enum geist_status. Buffers
  * are caller-provided or fixed in the struct (no hidden heap).
@@ -1921,8 +1919,8 @@ static inline size_t agent_obs_locator(int         wants_url,
  * VALUEs are free — each stops at its closing quote. At every pair boundary
  * the model chooses ',' (next key) or '}' (done) by logit, so a multi-key
  * schema fills as many keys as the model wants, each exactly once. The model
- * cannot emit an off-grammar call. ponytail: values are flat strings —
- * typed/nested argument grammars are the remaining upgrade. */
+ * cannot emit an off-grammar call. Free-mode values remain flat strings;
+ * dynamic forced calls use the typed Schema-v1 builder below. */
 
 /* Prefill `lit` into the session AND append it to out at w; returns the new w.
  * Keeps the model conditioned on the scaffold it is "inside". */

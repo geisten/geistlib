@@ -8,6 +8,22 @@ minor release.
 
 ## [Unreleased]
 
+### Added — host-neutral dynamic tools v1
+
+- `geist agent --serve` accepts an immutable per-request `tools` array and
+  performs correlated `tool.call` / `tool.result` round trips over the local
+  socket. Legacy UTF-8 line clients remain supported.
+- Added a fixed-memory JSON parser and documented Schema-v1 subset with strict
+  name, type, required/optional field, enum, array, bound and duplicate-key
+  validation. Unsupported keywords fail request compilation.
+- Typed forced calls now cover multiple arguments, numbers, booleans, scalar
+  enums and enum arrays. Low-confidence routes clarify; invalid/off-list calls
+  never cross the host boundary.
+- Added global call/retry budgets, correlated cancellation, HA-owned dynamic
+  execution, and the independent `make dynamic-example-host` reference build.
+- Added deterministic security/HA suites and a real BitNet + Unix-socket + C-host
+  end-to-end transcript under `docs/benchmarks/`.
+
 ## [0.3.3] — 2026-07-01
 
 ### Fixed — release embedded-build download resilience

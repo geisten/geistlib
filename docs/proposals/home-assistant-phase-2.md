@@ -1,6 +1,7 @@
 # Home Assistant Phase 2: native local appliance
 
-Status: proposed for implementation after the Phase 1 soak and release gate.
+Status: in progress. P2.0 contracts and P2.1 HA-owned execution are implemented;
+UI/operability and protected-app distribution remain.
 
 Phase 2 turns the developer preview into an installable Home Assistant beta.
 The product remains deliberately narrow: a private, CPU-only conversation agent
@@ -25,10 +26,10 @@ The following are not Phase 2 goals:
 
 ## Architecture decision
 
-Home Assistant owns authorization and execution. Geist owns local inference,
-deterministic target resolution, and planning. The current preview gives the
-daemon a long-lived Home Assistant token and lets its tools call the HA REST API.
-Phase 2 removes that token.
+Home Assistant owns authorization and execution. Geist owns local inference and
+planning. The current dynamic-tools path neither requires nor consumes an HA
+credential. The installer may still provision an unused compatibility variable;
+the old REST/token path remains only for legacy direct-CLI evaluation.
 
 ```mermaid
 flowchart LR
@@ -43,11 +44,10 @@ flowchart LR
     I --> U
 ```
 
-The integration rejects a tool request unless its entity is still exposed, its
-domain and action are in the compiled policy, and its arguments satisfy the
-schema. The runtime keeps the same checks as defense in depth. A registry update
-or entity unexposure takes effect before the next tool execution, not merely
-after the next model request.
+The integration rejects a tool request unless its name was offered for the
+request, its entity is still exposed, its domain/action are allowed, and its
+arguments satisfy the schema. Geist independently checks offered names and
+schemas. Entity unexposure is rechecked at the HA action boundary.
 
 ### Deployment profiles
 
@@ -69,7 +69,13 @@ reachable only on Home Assistant's internal app network and uses the same
 versioned protocol as the Unix socket. Core/Container installations do not open
 a TCP listener.
 
-## Protocol v2
+## Protocol v2 and dynamic tools v1
+
+The current Core/Container integration uses the host-neutral newline-framed
+[dynamic-tools-v1 contract](dynamic-tools-v1.md): it sends the complete offered
+toolset per conversation and owns execution. The length-prefixed v2 framing
+below is implemented and contract-tested for the future private app transport;
+it is not required by independent dynamic hosts.
 
 Protocol v2 is a length-prefixed UTF-8 JSON stream over either Unix socket or
 private TCP. Every frame contains `version`, `request_id`, and `type`. Frames
@@ -129,7 +135,7 @@ protocol range.
 
 ## Delivery plan
 
-### P2.0 — contracts and migration
+### P2.0 — contracts and migration ✅
 
 1. Freeze the Phase 1 evidence and publish the first `geist-home` release.
 2. Add protocol-v2 schemas, stable error codes, limits, and golden transcripts.
@@ -140,7 +146,7 @@ Exit gate: model-free contract tests prove malformed, stale, oversized, unknown,
 and unexposed requests fail closed; current German/English evaluation results do
 not regress.
 
-### P2.1 — HA-owned execution
+### P2.1 — HA-owned execution ✅
 
 1. Implement the v2 conversation/tool loop in the integration and daemon.
 2. Validate every requested entity, domain, action, and argument immediately

@@ -14,7 +14,7 @@ is open to help. The mission in full is in the
 | **Max quantization** | Ternary (1.58-bit) & binary as first-class citizens, not a bolt-on | ✅ BitNet `I2_S`/`TQ2_0`, integer-only kernels; beats bitnet.cpp on Pi 5 & x86 |
 | **Fast per platform** | The fastest path on *each* target, not a lowest common denominator | ✅ ARM64 NEON · macOS Accelerate/AMX · x86-64 AVX-512/VNNI |
 | **One-file install** | Engine + model in one dependency-free binary | ✅ prebuilt binaries + `make EMBED_MODEL=…` |
-| **Small-model agents** | A tight harness so a 2 B model rivals a bigger one on a narrow task | 🚧 whitelist tool loop, PMI routing + forced calls ([agent.md](docs/agent.md)) |
+| **Small-model agents** | A tight harness so a 2 B model rivals a bigger one on a narrow task | ✅ bounded static + per-request dynamic tools, typed forced calls, host round-trips ([agent.md](docs/agent.md)) |
 | **Memory for small models** | Recall sized to what these models can hold — no vector store | 🚧 file-based memory palace ([agent.md](docs/agent.md#the-memory-palace--mindh)) |
 | **Models that adapt** | Dynamic specialization, learning, self-organization | 🔬 research |
 
@@ -24,10 +24,12 @@ is open to help. The mission in full is in the
 
 The first product-shaped use case for the small-model agent track is a local
 Home Assistant conversation agent on Raspberry Pi 5 and CPU-only Linux hosts.
-Home Assistant remains the authority for entity exposure: the integration
-derives a registry only from Assist-exposed entities and pushes it to the
-resident geist process. Geist resolves targets deterministically, admits only
-its compiled home-tool families, and performs the local HA REST calls.
+Home Assistant remains the authority for entity exposure and execution. For
+each Assist request the integration derives a dynamic toolset from the current
+exposure, sends it to the resident Geist process, validates the returned name
+and arguments again, and executes inside HA. The dynamic protocol neither
+requires nor consumes HA credentials; the legacy installer still provisions an
+unused compatibility variable pending cleanup.
 
 ### Preview exit criteria
 
@@ -54,9 +56,9 @@ ambiguous or multi-step work.
 
 1. ✅ Resident Unix-socket daemon: `geist-home --serve /path/geist.sock`; the
    model stays warm and the socket is created mode `0600`.
-2. ✅ Home Assistant Conversation preview: Assist utterances, exposed-entity
-   registry synchronization, deterministic device resolution, and bounded home
-   actions are running end to end on Raspberry Pi 5.
+2. ✅ Home Assistant Conversation preview: Assist utterances, per-request
+   exposed capabilities, HA-owned execution, and bounded home actions run over
+   the local bidirectional Unix-socket protocol.
 3. 🚧 Reproducible installation: versioned component package, guided setup,
    service installer, diagnostics, upgrade/rollback instructions, and clean-host acceptance test.
    Pi 5 staging plus an isolated internal-model round-trip complete in 9 s with
@@ -78,18 +80,29 @@ dependency of the Home Assistant product track.
 
 ### Phase 2: native Home Assistant beta
 
-After the preview exit criteria and first appliance release are complete, Phase
-2 removes the daemon's long-lived HA token, moves final policy enforcement and
-action execution into Home Assistant, adds a versioned typed tool protocol, and
-packages the runtime as a protected Home Assistant app for `aarch64` and
-`amd64`. The Core/Container Unix-socket deployment remains supported.
+The protocol, executor boundary, session loop and credential-free HA execution
+are implemented. Packaging the runtime as a protected Home Assistant app for
+`aarch64` and `amd64` remains the principal Phase-2 distribution task. The
+Core/Container Unix-socket deployment remains supported.
 
 The architecture, migration gates, security boundaries, distribution strategy,
 and acceptance scorecard are defined in the
-[Phase 2 proposal](docs/proposals/home-assistant-phase-2.md). The first
-implementation slice is deliberately limited to protocol contracts and the
-planner/executor boundary; app packaging follows only after those fail-closed
-contracts are tested.
+[Phase 2 proposal](docs/proposals/home-assistant-phase-2.md). Its fail-closed
+contracts are tested; app packaging and distribution remain.
+
+### Phase 3: host-neutral dynamic tools — complete
+
+The server accepts an immutable `tools` array per request. Tool names are
+offered capabilities rather than compiled assumptions; arguments use a bounded,
+documented JSON-Schema subset and are checked before the host boundary. The host
+executes, returns correlated results, and Geist continues the conversation.
+Multiple calls, global budgets, one bounded retry, cancellation, typed forced
+arguments and low-confidence clarification are covered by deterministic tests.
+
+Home Assistant is one adapter. `make dynamic-example-host` builds a separate C
+calculator/profile host with no HA or model-runtime dependency, proving that
+other applications can implement and compile against the same contract. See
+[Dynamic tools v1](docs/proposals/dynamic-tools-v1.md).
 
 ## Distribution: one static binary per platform
 

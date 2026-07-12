@@ -29,7 +29,9 @@ The model stays warm on a **chmod-600 Unix socket**. Legacy clients may send one
 UTF-8 line. Dynamic hosts send newline-delimited JSON with a per-request toolset,
 execute correlated `tool.call` frames themselves, return `tool.result`, and
 receive `conversation.result`. The Home Assistant adapter uses this path, so HA
-owns authorization and execution while the daemon receives no HA credentials.
+owns authorization and execution while the dynamic protocol consumes no HA
+credentials. The legacy installer can still provision an unused compatibility
+variable pending cleanup.
 
 ### Self-contained / dependency-free build
 
@@ -84,10 +86,9 @@ ship to the server separately.) Recommended shape:
 1. **Build** a musl-static binary in CI (as `release.yml` does) — no runtime deps.
 2. **Ship the model once** to the server (e.g. `/srv/geist/model.gguf`); it is too
    large to bake in or attach to a release.
-3. **Run as a systemd service** that holds the model warm. Until the socket daemon
-   lands, the simplest service is the chat REPL behind a small front; for a real
-   API, finish the daemon (below) and expose it via a **Unix socket** or a
-   localhost port fronted by nginx + TLS for `geisten.net`.
+3. **Run as a systemd service** that holds the model warm. The shipped
+   `--serve` daemon exposes a permission-gated Unix socket. A public HTTP/TLS
+   front remains a separate interoperability layer.
 4. **Deploy on tag** with an Actions SSH step:
 
 ```yaml
@@ -108,13 +109,14 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-### The resident daemon (follow-up)
+### The resident daemon
 
-A ~30-line `accept()` loop over a Unix-domain socket that calls `geist_agent_run`
-per connection, keeping one `geist_session` warm. This is the missing piece for a
-production geisten.net deployment; the agent core (`agent.h`) is already the
-in-process call it wraps. Ask and it gets built next.
+`geist agent -m model.gguf --serve /path/geist.sock` is implemented. It keeps
+the model warm, preserves legacy line clients, and accepts host-neutral dynamic
+requests with correlated call/result frames. `./geist serve ...` is not a
+separate required process: the agent daemon is the serving surface.
 
 > Security: prefer a Unix socket (`chmod 600`) or a localhost port behind nginx
-> over a public listener. The agent's jailbreak resistance is the tool whitelist
-> + step budget ([agent.md](agent.md#security-model)), independent of transport.
+> over a public listener. The agent's jailbreak resistance is the immutable
+> offered set, schema/policy validation and global call budget
+> ([agent.md](agent.md#security-model)), independent of transport.

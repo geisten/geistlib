@@ -55,6 +55,18 @@ The same binary carries two more subcommands — `geist agent <model> "<request>
 (one-shot whitelist-gated tool use) and `geist chat <model>` (multi-turn chat +
 file-based memory palace). See [agent.md](agent.md).
 
+For a warm local agent server and a host-neutral dynamic-tools example:
+
+```bash
+./geist agent -m model.gguf --serve /tmp/geist.sock
+make dynamic-example-host
+bin/$(mk/detect-target.sh)/release/examples/dynamic_tools_host \
+  /tmp/geist.sock "Add 5 and 7"
+```
+
+The host supplies the complete allowed toolset per request, executes calls, and
+returns results; Geist never executes a dynamic action itself.
+
 For an interactive prompt loop, use the evaluation REPL (no symlink — full path):
 
 ```bash

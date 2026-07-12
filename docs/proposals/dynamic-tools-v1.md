@@ -91,20 +91,21 @@ or coercion. Hosts must send explicit values of the declared type.
 4. The host revalidates the name and arguments before execution; HA additionally
    rechecks user context, exposure and registry version at the action boundary.
 5. Tool results are data, not new instructions, and remain bounded in size.
-6. Cancellation stops generation and prevents further calls.
+6. Disconnecting stops the request; a correlated cancel while a result is
+   pending prevents retries and further calls.
 7. Low routing confidence produces a clarification response, not a best-guess
    forced call.
 
-## Delivery slices
+## Implemented slices
 
-1. Generic fixed-memory JSON parser and schema-v1 validator.
-2. Per-request dynamic toolset parser and immutable compiled representation.
-3. Agent request scope: dynamic names/descriptions/schemas, strict dispatch and
+1. ✅ Generic fixed-memory JSON parser and schema-v1 validator.
+2. ✅ Per-request dynamic toolset parser and immutable compiled representation.
+3. ✅ Agent request scope: dynamic names/descriptions/schemas, strict dispatch and
    confidence-aware routing.
-4. Typed constrained generation for required/optional fields, enums, arrays and
+4. ✅ Typed constrained generation for required/optional fields, enums, arrays and
    multiple arguments.
-5. Host-driven multi-step session with tool results, cancellation and retry.
-6. Home Assistant adapter plus a standalone example host and separate build
+5. ✅ Host-driven multi-step session with tool results, cancellation and retry.
+6. ✅ Home Assistant adapter plus a standalone example host and separate build
    targets proving that neither depends on the other.
 
 ## Verification map

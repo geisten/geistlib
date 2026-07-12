@@ -7,8 +7,9 @@ Use a non-critical HA instance or expose only one harmless light at first.
 
 1. Download the `geist-home-<platform>.tar.gz` asset and `SHA256SUMS` from the
    same release. Verify it with `sha256sum -c SHA256SUMS --ignore-missing`.
-2. Create a Home Assistant long-lived access token and save only the token in a
-   mode-0600 file.
+2. Until the installer cleanup lands, create a mode-0600 token file for its
+   legacy compatibility check. The Phase-3 conversation path does not use this
+   token for tool execution.
 3. From the source/integration bundle, run:
 
    ```sh
@@ -48,7 +49,7 @@ Redacted error/output:
 This shot list doubles as the acceptance flow and avoids editing tricks:
 
 - 0:00 show release asset and successful checksum verification;
-- 0:20 run guided setup with the token entry hidden;
+- 0:20 run guided setup and explain that Phase-3 actions execute inside HA;
 - 0:50 show active `geist-home` and private Unix socket permissions;
 - 1:10 expose `light.flur` in HA and add the conversation integration;
 - 1:35 ask status, turn it on, then turn it off;

@@ -12,6 +12,8 @@ make test-unit     # only fast kernel-level tests (suffix _unit)
 make test-int      # only multi-module integration tests (suffix _int)
 make test-e2e      # only end-to-end tests (suffix _e2e — slow, may need GGUF)
 make test-all      # unit + int + e2e
+make test-ha       # HA adapter, dynamic tools, install/rollback contracts
+make dynamic-example-host # compile the independent Phase-3 host
 
 # Filtering
 make test FILTER=q3k       # only tests whose name contains "q3k"
@@ -20,6 +22,13 @@ make test FILTER=audio     # only audio-related tests
 # With sanitizers
 make MODE=asan test
 ```
+
+Dynamic-tools safety is split across `test_json_schema_v1_unit`,
+`test_dynamic_tools_v1_unit`, `test_dynamic_request_v1_unit`,
+`test_dynamic_arguments_v1_unit`, `test_dynamic_host_v1_unit`,
+`test_agent_unit`, and `test_ha_dynamic_tools_v1.py`. A real model/socket/host
+transcript is recorded in
+`docs/benchmarks/dynamic-tools-v1-e2e-20260712.txt`.
 
 ## Exit-Code Convention (automake-compatible)
 
@@ -90,4 +99,3 @@ int main(int argc, char** argv) {
     return GEIST_TEST_PASS;
 }
 ```
-

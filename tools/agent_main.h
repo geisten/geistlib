@@ -78,7 +78,8 @@ static inline void agent_main_usage(FILE *o, const char *prog) {
             "usage: %s [-m <model.gguf>] [\"question\"] [-n max_steps] [--serve <socket>]\n"
             "  no question -> interactive REPL (one request per line; /quit to exit)\n"
             "  --serve     -> resident daemon: model stays warm, one request per\n"
-            "                 connection on a chmod-600 Unix socket (see DEPLOY.md)\n",
+            "                 connection; legacy line or dynamic JSON on a chmod-600\n"
+            "                 Unix socket (see DEPLOY.md)\n",
             prog);
 }
 
@@ -226,12 +227,11 @@ static inline size_t agent_main_dynamic_result(size_t     text_len,
 /* Run one request and print the answer + newline. Returns 0 on success. */
 /* Resident daemon (--serve): the model stays warm and requests arrive over a
  * chmod-600 Unix socket — the DEPLOY.md pattern, and the transport behind the
- * Home Assistant conversation-agent integration (one Assist utterance = one
- * connection). Protocol: the client sends ONE UTF-8 request line and half-
- * closes; the daemon writes the full answer (may contain newlines) and closes
- * — EOF is the frame. One connection at a time, one resident conversation:
- * the agent keeps its transcript across connections (context carry + pronoun
- * memory work across Assist turns; agent_compact bounds the growth).
+ * Home Assistant conversation-agent integration. Legacy clients send one UTF-8
+ * line and receive an EOF-framed answer. Dynamic hosts send one JSON request,
+ * exchange newline-framed tool.call/tool.result messages, then receive a
+ * conversation.result. One connection is processed at a time. Legacy lines
+ * keep a resident conversation; dynamic requests own an isolated tool scope.
  * ponytail: sequential accept, no threads — an Assist pipeline sends one
  * utterance at a time anyway. Unix only, like the rest of this file. */
 static inline int agent_main_serve(struct geist_agent *a, const char *path) {
@@ -270,7 +270,7 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
         (void) geist_agent_run(a, 5, "hallo", sizeof warm_resp, warm_resp, &warm_n);
         a->tlen = 0; /* discard warm-up; sys_pinned + route_base stay cached */
     }
-    fprintf(stderr, "serving on %s (one request line per connection)\n", path);
+    fprintf(stderr, "serving on %s (legacy line or dynamic JSON per connection)\n", path);
     bool configured_dynamic = false;
     for (;;) {
         int conn = accept(fd, nullptr, nullptr);

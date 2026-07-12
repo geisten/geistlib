@@ -70,9 +70,9 @@ geist_conversation:
 ```
 
 Restart Home Assistant, add the **geist Conversation** integration, and select
-it as the conversation agent of an Assist pipeline. The component pushes only
-Assist-exposed entities in its supported domains; changes are debounced and the
-full registry is re-pushed every five minutes after daemon restarts.
+it as the conversation agent of an Assist pipeline. For every request the
+component derives tools only from Assist-exposed entities in supported domains.
+The legacy registry synchronization remains active for older daemon clients.
 
 ## Run the resident daemon
 
@@ -108,7 +108,7 @@ stat -c '%a %U %G %n' /path/to/ha-config/geist.sock
 python3 tests/test_ha_integration.py
 ```
 
-To exercise real authenticated HA service calls without touching an existing
+To exercise real HA service calls without touching an existing
 home, run the opt-in disposable-container test. The HA image must already be
 available locally; the test does not pull it implicitly:
 
@@ -117,17 +117,17 @@ GEIST_HOME_BINARY=/path/to/geist-home make test-ha-live
 ```
 
 It creates two template lights in a temporary HA instance. Only `light.flur`
-is placed in the geist registry: the test verifies that it turns on and that a
+is exposed to Geist: the test verifies that it turns on and that a
 direct request for the existing but unexposed `light.keller` leaves it off.
 
 In Home Assistant, expose one harmless test light, run a status query and a
-toggle through Assist, then unexpose it and verify the next registry sync makes
+toggle through Assist, then unexpose it and verify the next request makes
 the same request unavailable. Do not begin with locks, covers, or climate
 setpoints.
 
 For a deployed host, run the read-only health diagnostic. It checks systemd,
-restart count, resident memory, socket mode, recent registry synchronization,
-environment permissions and the authenticated HA API without sending an agent
+restart count, resident memory, socket mode, environment permissions and the HA
+API without sending an agent
 request:
 
 ```sh
@@ -142,7 +142,7 @@ scripts/check-home-assistant.sh \
   the tools currently permitted for this Assist request;
 - correlated `tool.call` / `tool.result` round trips on the same socket;
 - Home Assistant validates name, arguments, exposure and action policy, then
-  executes; the daemon never receives HA credentials;
+  executes; the dynamic protocol does not consume HA credentials;
 - a final `conversation.result` contains the spoken answer;
 - the old UTF-8 line and registry-control frames remain accepted for migration.
 
