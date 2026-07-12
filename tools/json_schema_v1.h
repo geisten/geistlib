@@ -676,7 +676,7 @@ jsv1_schema_check(const struct jsv1_doc *schema, int schema_index, unsigned dept
             return JSV1_E_INVALID_SCHEMA;
         }
     } else if (strcmp(type, "number") == 0 || strcmp(type, "integer") == 0) {
-        double minimum, maximum;
+        double minimum = 0.0, maximum = 0.0;
         int    min_token = jsv1_object_get(schema, schema_index, "minimum");
         int    max_token = jsv1_object_get(schema, schema_index, "maximum");
         if ((min_token >= 0 && !jsv1_number(schema, min_token, &minimum)) ||

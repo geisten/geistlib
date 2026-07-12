@@ -48,8 +48,8 @@ enum {
     GEIST_AGENT_OBS_CAP        = 4096,
     GEIST_AGENT_MAX_DECODE     = 512,
     GEIST_AGENT_LOOP_PMAX      = 128, /* longest repeating block the anti-loop cap detects */
-/* Chat context bound (agent_compact): keep the protected system-prompt
- * prefix plus the last CARRY bytes of conversation, evicting older turns. */
+    /* Chat context bound (agent_compact): keep the protected system-prompt
+     * prefix plus the last CARRY bytes of conversation, evicting older turns. */
     GEIST_AGENT_CTX_CARRY = GEIST_AGENT_TRANSCRIPT_CAP / 2,
 };
 
@@ -961,15 +961,20 @@ static inline int agent_desc_is_dir(const char *d) {
 /* True if the request contains a literal http(s):// URL (bounded scan — req is
  * not NUL-terminated here). */
 static inline int agent_request_has_url(size_t req_len, const char *req) {
-    for (size_t i = 0; i + 7 <= req_len; i++) {
-        if (memcmp(req + i, "http", 4) != 0) {
+    if (req == nullptr || req_len < 7u) {
+        return 0;
+    }
+    for (size_t i = 0; i <= req_len - 7u; i++) {
+        size_t remaining = req_len - i;
+        if (req[i] != 'h' || req[i + 1u] != 't' || req[i + 2u] != 't' || req[i + 3u] != 'p') {
             continue;
         }
-        size_t j = i + 4;
-        if (j < req_len && req[j] == 's') {
-            j++;
+        size_t scheme_len = 4u;
+        if (remaining >= 8u && req[i + scheme_len] == 's') {
+            scheme_len = 5u;
         }
-        if (j + 3 <= req_len && memcmp(req + j, "://", 3) == 0) {
+        if (remaining >= scheme_len + 3u && req[i + scheme_len] == ':' &&
+            req[i + scheme_len + 1u] == '/' && req[i + scheme_len + 2u] == '/') {
             return 1;
         }
     }
