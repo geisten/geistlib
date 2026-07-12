@@ -119,6 +119,15 @@ def _exposed_entity_ids(hass) -> list[str]:
     ]
 
 
+def exposed_entity_ids(hass) -> set[str]:
+    """Current Assist exposure filtered to domains supported by the adapter."""
+    return {
+        entity_id
+        for entity_id in _exposed_entity_ids(hass)
+        if entity_id.split(".", 1)[0] in SUPPORTED_DOMAINS
+    }
+
+
 def _area_name(hass, ent_reg, area_reg, dev_reg, entity_id: str) -> str | None:
     """The entity's area name: its own area, else its device's area, else None."""
     entry = ent_reg.async_get(entity_id)

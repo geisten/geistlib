@@ -91,6 +91,8 @@ def main() -> None:
         "config_flow.py",
         "const.py",
         "conversation.py",
+        "dynamic_session_v1.py",
+        "dynamic_tools_v1.py",
         "ha_executor.py",
         "manifest.json",
         "policy.py",

@@ -230,6 +230,7 @@ test-py:
 # clean installation, secret permissions, upgrade, and rollback.
 test-ha:
 	@python3 tests/test_ha_integration.py
+	@python3 tests/test_ha_dynamic_tools_v1.py
 	@tests/test_ha_install.sh
 	@tests/test_ha_setup.sh
 

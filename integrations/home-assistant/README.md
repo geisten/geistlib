@@ -1,9 +1,9 @@
 # Home Assistant developer preview
 
 The preview uses a local Unix socket, not an HTTP inference server. A resident
-`geist-home` process owns the model and bounded home-agent loop; the Home
-Assistant custom component supplies the Assist UI/voice boundary and keeps
-geist's deterministic device registry synchronized with HA's exposed entities.
+`geist-home` process owns the model and bounded agent loop. The Home Assistant
+component supplies a per-request dynamic toolset from the current Assist
+exposure, executes validated calls inside HA, and returns their results to Geist.
 
 ## Prerequisites
 
@@ -11,13 +11,10 @@ geist's deterministic device registry synchronized with HA's exposed entities.
 - a built `geist-home` binary from the home-agent branch;
 - a model embedded in that binary, or the model configuration expected by the
   build;
-- a Home Assistant long-lived access token for the preview's bounded REST
-  tools;
 - a host directory visible as `/config` inside the HA container.
 
-The token is a preview limitation. Store it in a mode-0600 environment file and
-expose only the entities Geist is allowed to resolve. A future integration may
-execute actions inside HA and remove the daemon's token entirely.
+No Home Assistant token is passed to the daemon. Expose only the entities Geist
+may see or control; HA rechecks exposure and user context at execution time.
 
 ## Install the custom component
 
@@ -32,11 +29,8 @@ scripts/setup-home-assistant.sh \
   --activate
 ```
 
-The command identifies the platform, finds or validates the embedded-model
-appliance binary, prompts for the token without echo, verifies authenticated HA
-access, installs the component/service, and optionally activates systemd. For
-automation, pass a mode-0600 `--token-file`; use `--dry-run` to inspect all
-detected non-secret values without writing.
+The Phase-1 installer still accepts a legacy token file for rollback-compatible
+deployments, but the dynamic Phase-3 path does not consume it.
 
 ### Low-level reproducible installer
 
@@ -82,11 +76,9 @@ full registry is re-pushed every five minutes after daemon restarts.
 
 ## Run the resident daemon
 
-The deployed Pi preview uses:
+The dynamic-tools path uses:
 
 ```sh
-GEIST_HA_URL=http://localhost:8123 \
-GEIST_HA_TOKEN='<long-lived-token>' \
 ./geist-home --serve /path/to/ha-config/geist.sock
 ```
 
@@ -146,11 +138,13 @@ scripts/check-home-assistant.sh \
 
 ## Current protocol
 
-- one UTF-8 utterance line per Unix-socket connection;
-- client half-closes its write side;
-- daemon returns an EOF-framed UTF-8 answer;
-- control frame `\x01REGISTRY\n<body>` replaces the in-memory exposed-device
-  registry when the body contains at least one valid entry.
+- one newline-delimited JSON request containing `input`, `max_tool_steps`, and
+  the tools currently permitted for this Assist request;
+- correlated `tool.call` / `tool.result` round trips on the same socket;
+- Home Assistant validates name, arguments, exposure and action policy, then
+  executes; the daemon never receives HA credentials;
+- a final `conversation.result` contains the spoken answer;
+- the old UTF-8 line and registry-control frames remain accepted for migration.
 
 This protocol is intentionally local and small. Soak evidence, external beta
 feedback, and a full clean-host timing run remain before calling the integration

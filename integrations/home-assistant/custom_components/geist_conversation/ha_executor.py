@@ -36,6 +36,16 @@ class HomeAssistantExecutor:
         }
         return {"state": str(state.state), "attributes": attributes}
 
+    def is_exposed(self, entity_id: str) -> bool:
+        """Recheck Assist exposure at the final action boundary."""
+        try:
+            from homeassistant.components.homeassistant.exposed_entities import (
+                async_should_expose,
+            )
+        except ImportError:
+            return self._hass.states.get(entity_id) is not None
+        return bool(async_should_expose(self._hass, "conversation", entity_id))
+
     async def async_call_service(
         self,
         domain: str,

@@ -25,13 +25,11 @@ The tool-use **agent** (`agent.h`) is a header-only library; the `agent` and
 geist agent model.gguf --serve /run/geist.sock     # or ./geist-home --serve …
 ```
 
-The model stays warm; one request line per connection on a **chmod-600 Unix
-socket**, the answer EOF-framed; the daemon keeps ONE conversation across
-connections (context carry + pronoun memory span turns). This is the
-transport behind the Home Assistant Assist integration
-(`integrations/home-assistant/`): the HA component sends each utterance to
-the socket and speaks the answer — HA is only transport and UI, routing and
-the action whitelist stay in the daemon.
+The model stays warm on a **chmod-600 Unix socket**. Legacy clients may send one
+UTF-8 line. Dynamic hosts send newline-delimited JSON with a per-request toolset,
+execute correlated `tool.call` frames themselves, return `tool.result`, and
+receive `conversation.result`. The Home Assistant adapter uses this path, so HA
+owns authorization and execution while the daemon receives no HA credentials.
 
 ### Self-contained / dependency-free build
 

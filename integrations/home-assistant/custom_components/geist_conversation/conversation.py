@@ -12,7 +12,11 @@ from homeassistant.helpers import intent
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_SOCKET, DEFAULT_SOCKET, TIMEOUT_S
-from .transport import ask_geist
+from .dynamic_session_v1 import async_ask_geist_dynamic
+from .ha_executor import HomeAssistantExecutor
+from .policy import ExposureStore
+from .protocol_v2 import ProtocolError
+from .registry import exposed_entity_ids
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,10 +48,15 @@ class GeistConversationEntity(conversation.ConversationEntity):
     ) -> conversation.ConversationResult:
         response = intent.IntentResponse(language=user_input.language)
         try:
-            answer = await self.hass.async_add_executor_job(
-                ask_geist, self._sock_path, user_input.text, TIMEOUT_S
+            exposure = ExposureStore(frozenset(exposed_entity_ids(self.hass)), 1)
+            answer = await async_ask_geist_dynamic(
+                self._sock_path,
+                user_input.text,
+                exposure,
+                HomeAssistantExecutor(self.hass, getattr(user_input, "context", None)),
+                timeout_s=TIMEOUT_S,
             )
-        except OSError as err:
+        except (OSError, ProtocolError) as err:
             _LOGGER.error("geist daemon unreachable at %s: %s", self._sock_path, err)
             response.async_set_error(
                 intent.IntentResponseErrorCode.UNKNOWN,
