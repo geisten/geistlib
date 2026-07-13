@@ -83,7 +83,12 @@
 #endif
 
 #define SPEC_STRIDE_DEFAULT 4
-#define SPEC_TOPK_DEFAULT 512
+/* 512 was verified byte-identical on the original trajectories, but the
+ * margin is thin: a near-tie whose loser the sketch ranks past the cutoff
+ * flips greedy (seen live when an unrelated ULP-level kernel change shifted
+ * the trajectory, #102 Phase 2). 1024 doubles the recall margin for ~3 % of
+ * the head read (phase 3 is 2.6 → 5.2 MB next to the 82 MB sketch). */
+#define SPEC_TOPK_DEFAULT 1024
 
 /* (rough score, vocab index) entry of the top-K min-heap. */
 struct spec_cand {
@@ -602,15 +607,37 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
      *     path. (No OMP fork: that kernel runs serially for n_out=1.)
      *   - otherwise (repacked layouts): dequantize the row to f32 and dot in
      *     f32 — high precision but not bit-identical to the dense kernel. */
-    const bool exact_kernel = dt != GEIST_DTYPE_F16 && st->embed_table_w.linear_m1 != nullptr &&
-                              st->embed_table_w.backend_layout == GEIST_W_LAYOUT_SOURCE;
+    /* One-row-view + linear_m1 requires a kernel that reads w->raw in source
+     * layout. An aux repack (e.g. the x86 Q8 lm_head blob) indexes its aux
+     * data by n_out, which a 1-row view breaks — those fall to the local
+     * dots below. */
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+    /* NEON: keep the local F16 dot (mirrors cpu_neon_w_f16_m1's loop, Pi-
+     * validated); its kernels run n_out=1 inside an OMP region, which would
+     * cost a fork per finalist. Quantized heads keep the one-row-view path. */
+    const bool f16_via_kernel = false;
+#else
+    /* x86: route F16 finalists through the SAME compiled f16_gemv_m1 row
+     * loop the dense head uses (it skips the OMP fork for n_out == 1) —
+     * greedy byte-identity holds by construction instead of by luck. The
+     * previous local spec_f16dot was a second -ffast-math compilation of
+     * the same math and drifted a ULP on near-ties (#102 Phase 2). */
+    const bool f16_via_kernel = true;
+#endif
+    const bool exact_kernel = st->embed_table_w.linear_m1 != nullptr &&
+                              st->embed_table_w.backend_layout == GEIST_W_LAYOUT_SOURCE &&
+                              (st->embed_table_w.flags & GEIST_W_AUX_BACKEND_REPACK) == 0 &&
+                              (dt != GEIST_DTYPE_F16 || f16_via_kernel);
     for (size_t i = 0; i < V; i++) {
         logits[i] = -INFINITY;
     }
     for (size_t c = 0; c < hn; c++) {
         const size_t   row = heap[c].idx;
         const uint8_t *rb  = Wbase + row * stride;
-        if (dt == GEIST_DTYPE_F16) {
+        if (dt == GEIST_DTYPE_F16 && !exact_kernel) {
+            /* NEON, or an aux-repacked F16 head (x86 Q8 blob): exact f16
+             * dot. For the Q8 case the dense head is int8-approximate, so
+             * bit-identity to it is neither achievable nor desirable. */
             logits[row] = spec_f16dot((const uint16_t *) rb, h, H);
         } else if (exact_kernel) {
             struct geist_weight rw = st->embed_table_w;

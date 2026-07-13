@@ -33,8 +33,12 @@ static inline float hsum256(__m256 v) {
 
 void f16_gemv_m1(
         size_t n_out, size_t n_in, const float *x, const uint16_t w_f16[], float y[static n_out]) {
+    /* if(n_out > 1): the spec head calls this via a one-row weight view, once
+     * per finalist — skip the OMP fork there so the SAME compiled row loop
+     * serves both the dense head and the spec phase-3 without region cost
+     * (bit-identical logits by construction, #102 Phase 2). */
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (n_out > 1)
 #endif
     for (size_t r = 0; r < n_out; r++) {
         const uint16_t *wr   = w_f16 + r * n_in;

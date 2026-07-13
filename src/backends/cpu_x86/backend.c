@@ -209,16 +209,15 @@ static void cpu_x86_linear_i2s_x4_pair_m1(const float               *x,
 }
 
 /* Fuse gate+up / q+k decode (shared quant + one OMP region, 5 regions/layer →
- * 3). Measured neutral on the 9950X (DDR5-6400) under both active and passive
- * OMP wait — the ternary GEMVs are already BW-bound and the saving is lost in
- * run-to-run noise. Kept as an explicit opt-in (GEIST_I2S_PAIR=1) for hosts
- * where the caller measures a benefit (low memory bandwidth, high core count,
- * costly thread wakeups). Default off; host-constant after first read. */
+ * 3). Re-measured for #102 (Phase 2, 9950X DDR5-6400, THP on, 16T active
+ * wait): decode 93.4 → 94.6 t/s (+1.2 %, mean-of-5, best-case too) — earlier
+ * "neutral" reading no longer holds. Default ON; GEIST_I2S_PAIR=0 disables.
+ * Host-constant after first read. */
 static int cpu_x86_i2s_pair_enabled(void) {
     static int e = -1;
     if (e < 0) {
         const char *v = getenv("GEIST_I2S_PAIR");
-        e             = (v != nullptr && v[0] == '1') ? 1 : 0;
+        e             = (v != nullptr && v[0] == '0') ? 0 : 1;
     }
     return e;
 }

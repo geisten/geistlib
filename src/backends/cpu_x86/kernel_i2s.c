@@ -72,8 +72,17 @@ void i2s_x4_gemv_pair_m1_avx512_vnni(size_t        n_in,
                                      size_t        n_out1,
                                      float        *y1);
 
-/* --- Activation quant: per-row symmetric int8, scale = 127/max|x|. ------- */
-static float quantize_act_row(size_t n_in, const float *x, int8_t *xq, int32_t *sum_a_out) {
+/* --- Activation quant: per-row symmetric int8, scale = 127/max|x|. -------
+ *
+ * noinline: under -ffast-math (-freciprocal-math) gcc compiles the
+ * `max_abs / 127.0f` differently per inline site (divide vs reciprocal
+ * multiply), so the fused-pair path and the single-GEMV path returned
+ * inv values 1 ULP apart — enough to break the pair==m1 byte-identity
+ * contract (caught by test_i2s_gemv_unit case 5, #102 Phase 2). One
+ * compiled instance = one rounding, for every caller. Called once per
+ * GEMV; the call overhead is noise. */
+__attribute__((noinline)) static float
+quantize_act_row(size_t n_in, const float *x, int8_t *xq, int32_t *sum_a_out) {
     float max_abs = 1e-5f;
     for (size_t i = 0; i < n_in; i++) {
         const float a = fabsf(x[i]);
