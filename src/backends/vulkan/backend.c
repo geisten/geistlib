@@ -64,6 +64,7 @@
 #include "shaders/matvec_f32_spv.h"
 #include "shaders/ffn_norm_gate_up_q4k_spv.h"
 #include "shaders/ple_gate_f32_spv.h"
+#include "shaders/matvec_q4k_dp4a_spv.h"
 #include "shaders/matvec_q4k_spv.h"
 #include "shaders/matvec_q6k_spv.h"
 #include "shaders/mul_f32_spv.h"
@@ -172,6 +173,7 @@ enum vk_pipe {
     VK_PIPE_MM_Q4K_CM32, /* small-n_out tensor-core tile */
     VK_PIPE_PLE_GATE,    /* fused PLE gate: gelu(x.gate_w) * ple_in */
     VK_PIPE_FFN_NORM_GU, /* ffn_gate_up with the pre-FFN rmsnorm folded in */
+    VK_PIPE_MATVEC_Q4K_DP4A, /* int8-dot decode matvec; created only with int8_dot */
     VK_PIPE_COUNT,
 };
 
@@ -248,6 +250,7 @@ struct vk_state {
     bool has_fp16;        /* shaderFloat16 + 16-bit storage */
     bool has_int8_dot;    /* shaderIntegerDotProduct + 8-bit storage */
     bool has_coopmat;     /* VK_KHR_cooperative_matrix */
+    bool use_dp4a;        /* int8-dot matvec pipe created; GEIST_VK_DP4A=0 disables */
 
     /* GEIST_VK_GPU_OPS bitmask (debug bisect): 1=linear_t 2=elementwise
      * 4=rmsnorm 8=rope 16=attention 32=copy 64=embed 128=argmax.
@@ -352,6 +355,7 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_KV_APPEND_F16] = 4, [VK_PIPE_ATTN_PART_F16] = 4,
         [VK_PIPE_ATTN_COMB] = 2,     [VK_PIPE_MM_Q4K_CM32] = 3,
         [VK_PIPE_PLE_GATE] = 4,      [VK_PIPE_FFN_NORM_GU] = 5,
+        [VK_PIPE_MATVEC_Q4K_DP4A] = 3,
 };
 
 struct geist_buffer {
@@ -899,11 +903,16 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             [VK_PIPE_PLE_GATE]      = {ple_gate_f32_spv, sizeof(ple_gate_f32_spv)},
             [VK_PIPE_FFN_NORM_GU]   = {ffn_norm_gate_up_q4k_spv,
                                        sizeof(ffn_norm_gate_up_q4k_spv)},
+            [VK_PIPE_MATVEC_Q4K_DP4A] = {matvec_q4k_dp4a_spv,
+                                         sizeof(matvec_q4k_dp4a_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
         if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM ||
              i == VK_PIPE_MM_Q4K_CM32) && !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */
+        }
+        if (i == VK_PIPE_MATVEC_Q4K_DP4A && !st->has_int8_dot) {
+            continue; /* stays VK_NULL_HANDLE; matvec_q4k is the fallback */
         }
         enum geist_status s = vk_make_pipeline(be, st, blobs[i].code, blobs[i].bytes,
                                                st->seq_playouts[vk_pipe_nbind[i] - 2],
@@ -968,9 +977,14 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         return s;
     }
 
+    const char *dp4a_env = getenv("GEIST_VK_DP4A");
+    st->use_dp4a = st->pipes[VK_PIPE_MATVEC_Q4K_DP4A] != VK_NULL_HANDLE &&
+                   (dp4a_env == nullptr || atoi(dp4a_env) != 0);
+
     if (getenv("GEIST_VK_VERBOSE") != nullptr) {
-        fprintf(stderr, "geist vulkan: %s (fp16 %d, int8-dot %d, coopmat %d)\n",
-                st->device_name, st->has_fp16, st->has_int8_dot, st->has_coopmat);
+        fprintf(stderr, "geist vulkan: %s (fp16 %d, int8-dot %d, coopmat %d, dp4a %d)\n",
+                st->device_name, st->has_fp16, st->has_int8_dot, st->has_coopmat,
+                st->use_dp4a);
     }
     be->state = st;
     return GEIST_OK;
@@ -1001,7 +1015,7 @@ static void vk_destroy(struct geist_backend *be) {
                     "scale",      "rmsnorm",    "rmsnorm_add", "rope",      "attention",
                     "argmax",     "embed",      "ffn_gate_up", "qkv_prep", "mm_q4k_cm", "mm_q6k_cm",
                     "attn_f16",   "qkv_f16",    "kv_app_f16", "attn_part", "attn_comb", "mm_cm32",
-                    "ple_gate",   "ffn_norm_gu", "copy"};
+                    "ple_gate",   "ffn_norm_gu", "mv_q4k_dp4a", "copy"};
             fprintf(stderr, "geist vulkan gpu profile:\n");
             for (int i = 0; i <= VK_PIPE_COUNT; ++i) {
                 if (st->prof_calls[i] > 0) {
@@ -1856,6 +1870,9 @@ static struct vk_access vk_acc_tensor16(const struct geist_tensor *t, bool write
                                  .x_stride       = (uint32_t) n_in,
                                  .y_stride       = (uint32_t) n_out};
     enum vk_pipe eff = pipe;
+    if (pipe == VK_PIPE_MATVEC_Q4K && st->use_dp4a) {
+        eff = VK_PIPE_MATVEC_Q4K_DP4A;
+    }
     uint32_t     gx  = vk_linear_gx(pipe, (uint32_t) n_out);
     uint32_t     gy  = vk_linear_gy(pipe, (uint32_t) m);
     vk_linear_cm_route(st, &eff, (uint32_t) m, (uint32_t) n_out, &gx, &gy);
@@ -2162,7 +2179,7 @@ static uint32_t vk_groups(size_t n) {
 /* Dispatch geometry of the linear pipes. matvec q4k/q6k: 8 rows per
  * workgroup. matmul_q4k: 4 output rows x 16 batch rows per workgroup. */
 static uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
-    if (pipe == VK_PIPE_MATVEC_Q4K) {
+    if (pipe == VK_PIPE_MATVEC_Q4K || pipe == VK_PIPE_MATVEC_Q4K_DP4A) {
         return (n_out + 7u) / 8u; /* 2 warps x 4 rows per workgroup */
     }
     if (pipe == VK_PIPE_MATVEC_Q6K) {
@@ -2943,7 +2960,10 @@ attn_generic:;
     }
     enum vk_pipe     mv, mm;
     switch ((enum geist_dtype) w->dtype) {
-    case GEIST_DTYPE_Q4_K: mv = VK_PIPE_MATVEC_Q4K; mm = VK_PIPE_MATMUL_Q4K; break;
+    case GEIST_DTYPE_Q4_K:
+        mv = st->use_dp4a ? VK_PIPE_MATVEC_Q4K_DP4A : VK_PIPE_MATVEC_Q4K;
+        mm = VK_PIPE_MATMUL_Q4K;
+        break;
     case GEIST_DTYPE_Q6_K: mv = VK_PIPE_MATVEC_Q6K; mm = VK_PIPE_MATMUL_Q6K; break;
     case GEIST_DTYPE_F32: mv = VK_PIPE_MATVEC_F32; mm = VK_PIPE_MATMUL_F32; break;
     default: return GEIST_E_UNSUPPORTED;
