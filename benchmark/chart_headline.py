@@ -51,9 +51,13 @@ def xr(r):
 
 def main():
     data = json.load(open(DATA))
-    # group rows by OS, sort rows within a group + groups by their best ratio
+    # Scoreboard shows ONE metric — decode t/s, the number you feel in chat — so
+    # every bar is directly comparable. prefill/total live in the README's full
+    # table. ponytail: one axis, not decode/prefill/total soup.
+    rows = [r for r in data["rows"] if "decode" in r["metric"]]
+    # group rows by system, sort rows within a group + groups by their best ratio
     groups = {}
-    for r in data["rows"]:
+    for r in rows:
         groups.setdefault(r["os"], []).append(r)
     for rows in groups.values():
         rows.sort(key=lambda r: r["geist"] / r["baseline"], reverse=True)
@@ -75,10 +79,10 @@ def main():
              f'font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">')
     s.append(f'<rect x="0" y="0" width="{W}" height="{H}" rx="14" fill="#ffffff" stroke="#e5e7eb"/>')
     s.append('<text x="40" y="46" font-size="23" font-weight="700" fill="#0f172a">'
-             'Headline benchmarks — geist vs the baseline</text>')
+             'Decode throughput — geist vs the baseline</text>')
     s.append('<text x="40" y="72" font-size="13.5" fill="#475569">'
-             'grouped by system · each bar = geist throughput &#247; the baseline engine, on its own '
-             'metric · 1.0&#215; = parity</text>')
+             'decode throughput · each bar = geist &#247; the baseline engine, same metric · '
+             '1.0&#215; = parity</text>')
 
     # system group blocks (tint + accent rail + header)
     for o, rows, top, gh in blocks:
@@ -142,8 +146,8 @@ def main():
                      f'fill="{badge}">{disp:.1f}&#215;</text>')
 
     s.append(f'<text x="40" y="{H - 31}" font-size="11" fill="#94a3b8">'
-             'Each row is that system&#8217;s headline metric (decode / prefill / total) vs its own '
-             'baseline engine — comparable only as a ratio. Full sweep: benchmark/.</text>')
+             'Every bar is decode t/s (tokens/s while generating) vs that system&#8217;s own baseline '
+             'engine. prefill &amp; total are in the README&#8217;s full table. Full sweep: benchmark/.</text>')
     s.append(f'<text x="40" y="{H - 15}" font-size="11" fill="#94a3b8">'
              'Baselines: llama.cpp commits d05fe1d (Pi 5, M1 Max) / b9827 (x86); bitnet.cpp = '
              'microsoft/BitNet master (its bundled llama.cpp fork, unpinned).</text>')

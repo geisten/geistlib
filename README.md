@@ -66,7 +66,7 @@ other adapter; Geist contains no Home Assistant credentials or product logic.
   <strong>1.4×</strong> BitNet decode vs bitnet.cpp <sub>(x86)</sub> &nbsp;·&nbsp;
   <strong>&lt; 1 MB</strong> binary, zero deps
   <br>
-  <sub><a href="#faster-where-it-counts">↓ full scoreboard — 12 measurements across Linux &amp; macOS</a></sub>
+  <sub><a href="#faster-where-it-counts">↓ full scoreboard — decode t/s on every system, one metric</a></sub>
 </p>
 
 [![CI](https://github.com/geisten/geisten/actions/workflows/ci.yml/badge.svg)](https://github.com/geisten/geisten/actions/workflows/ci.yml)
@@ -199,15 +199,24 @@ Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5,
 x86** (9950X: prefill +30 %, decode +38 %) — across edge and desktop:
 
 <p align="center">
-  <img src="assets/headline_benchmarks.svg" alt="Horizontal scoreboard of geist's throughput as a ratio of the baseline engine, grouped by system and tagged with its OS. Raspberry Pi 5 (Linux): BitNet decode 2.1x bitnet.cpp; Gemma decode 1.1x and total 1.1x (short prompt) llama.cpp, dropping to ~1.0x total at a longer prompt and 0.9x on prefill. Apple M1 Max (macOS): Gemma prefill 1.5x llama.cpp. AMD Ryzen 9 9950X (Linux): BitNet decode 1.4x and prefill 1.3x bitnet.cpp; Gemma decode 1.1x and prefill 1.0x, Llama 3.2 prefill 1.0x and decode 1.0x llama.cpp. Each row is a different metric and baseline; sub-parity rows are shown too." width="100%">
+  <img src="assets/headline_benchmarks.svg" alt="Decode-throughput scoreboard: geist divided by its baseline engine, decode tokens/s, grouped by system. Every bar is the same metric so they are directly comparable. Raspberry Pi 5 (Linux): BitNet decode 2.1x bitnet.cpp, Gemma decode 1.1x llama.cpp. AMD Ryzen 9 9950X (Linux): BitNet decode 1.4x bitnet.cpp, Gemma decode 1.1x llama.cpp, Llama 3.2 decode 1.0x llama.cpp. Sub-parity rows are shown too." width="100%">
 </p>
 
-*All 12 measurements, grouped by system and tagged with its **OS** (🐧 Linux / 🍎
-macOS) — each bar is geist ÷ its own baseline engine, on its own metric. geist
-**leads on the metric that defines each platform** (Pi decode & total, M1 prefill,
-x86 BitNet), and we show the near-parity and sub-parity rows too (Pi prefill, the
-long-prompt total). Below, the one that matters most for chat: **end-to-end
-total** throughput.*
+*One metric on every bar: **decode t/s** (tokens/s while generating) — geist ÷ its
+own baseline engine, so the bars are directly comparable. Decode is the number you
+feel in a chat. **prefill and total** for every system (incl. the M1 Max prefill
+win and the Pi long-prompt total) are in the [full numbers table](#documentation)
+below; sub-parity rows (Llama 3.2 on x86) are shown here too — nothing cherry-picked.*
+
+**Run it on your own hardware** — same measurement, your machine:
+
+```bash
+make && make fetch-model                    # build ./geist + pull the Gemma GGUF
+OMP_WAIT_POLICY=active make bench-small      # records decode t/s to benchmark/BENCHMARK.md
+```
+
+<sub>Cross-engine comparison vs a pinned llama.cpp, quality (MMLU) and full
+methodology: [`benchmark/BENCHMARKING.md`](benchmark/BENCHMARKING.md).</sub>
 
 <p align="center">
   <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: real-time BitNet b1.58 2B-4T text generation from a single dependency-free binary" width="100%">
