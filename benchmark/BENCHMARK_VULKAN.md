@@ -27,13 +27,28 @@ Vulkan code exists. Protocol: pp512 + tg128, E2E total = 640 tok / (t_pp + t_tg)
 | llama.cpp CUDA (reference) | 6697.3 ± 85.7 | 181.8 ± 1.3 | 820 |
 | geist cpu_x86 (16T) | 484.2 | 42.2 | 156 |
 | geist vulkan @ 3c-14 (2026-07-06, median of 5) | 1150 | 132.3 | 452 |
+| geist vulkan @ 3c-16 (2026-07-13, colder clocks) | ~1140 | 129.1 | ~445 |
 | **geist vulkan — target ≥ 1.10×** | | | **≥ 743** |
 
-Status 2026-07-06: tg at 86% of the llama.cpp bar, pp at 25%, E2E at 66%.
-Decode is within striking distance; the remaining E2E gap is mostly the
-prefill GEMMs (mm_q4k_cm/mm_cm32/mm_q6k_cm ~0.9 ms of the ~0.85 s wall) and
-prefill attention. Short-context decode now equals long-context (131.7 at
-pp64) — attention no longer scales the token cost through 640 positions.
+Status 2026-07-13: tg at ~86% of the llama.cpp bar, pp at 25%, E2E at 66%.
+Both fronts now carry a measured diagnosis:
+
+- **Prefill** is bound by the coopmat GEMMs, and the tile is at its local
+  optimum on Turing: the instruction-mix redesign was falsified (3c-9 —
+  occupancy/latency-hiding binds, not MMA:load), the narrow-shape tiles got
+  their -30% (3c-15), and larger M chunks die on the 246 MB BAR window
+  (3c-8). Closing the remaining ~4x needs a structurally different kernel
+  or different hardware, not more tile tuning.
+- **Decode** matvecs are memory-latency-bound at their occupancy, not
+  instruction-bound — proven by the DP4A round (3c-16: ~2x less inner-loop
+  ALU, exactly neutral). Remaining decode levers are latency/occupancy-
+  class: the 8 us norm dispatch floor (~1.35 ms/tok across ~35 dispatches),
+  lm_head/q6k at ~33% BW, and KV quantization for attention. Short-context
+  decode equals long-context (131.7 at pp64) since 3c-6 flash-decoding.
+
+Realistic framing: decode can still pass llama.cpp's 154 (need +16%, the
+levers above are unspent); E2E >= 743 is out of reach through decode alone
+while pp sits at 25% of the bar.
 
 ## Quality gate (2026-07-06, build @ 3c-14)
 
