@@ -12,7 +12,7 @@ the test suite**, not just built.
 | :-- | :--: | :--: | :--: | :--: | :--: | :-- |
 | **macOS arm64** (Accelerate/AMX) | ✅ | ✅ | ⚪ skip¹ | — | — | `build-test` |
 | **Linux arm64** (cpu_neon, glibc) | ✅ | ✅ | ✅ | ✅ | ✅ | `build-test`, `build-test-musl`, `asan` |
-| **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅ | ✅ | ⚪² | `build-test-x86_64`, `build-test-musl-x86_64` |
+| **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ⚠️³ non-blocking | ✅ | ⚪² | `build-test-x86_64`, `build-test-musl-x86_64` |
 | **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar` |
 
 Every environment in [`release.yml`](../.github/workflows/release.yml)
@@ -29,6 +29,13 @@ here — previously x86_64 was built + smoke-run only, never tested.
 2. **x86_64 ASan/UBSan — not yet.** The sanitizer job runs on arm64; it catches
    memory/UB bugs in the shared C engine + kernels regardless of SIMD path. An
    x86-specific ASan leg is a reasonable follow-up if an x86-only UB is suspected.
+3. **x86_64 int/e2e — non-blocking, tracked in #96.** This leg immediately did
+   its job: it caught a real shipping bug — the `cpu_x86` backend has AVX-512
+   kernels in the forward path that lack a runtime CPU guard, so the real-model
+   prefill SIGILLs on an AVX-512-less x86-64-v3 runner. `build-test-x86_64`'s
+   **build + unit stay REQUIRED**; the int/e2e **step** is `continue-on-error`
+   (still runs and logs the failures, but doesn't gate) until #96 guards those
+   kernels. Flip it back to required when #96 lands. See #96 for the audit scope.
 
 ### AVX-512 is exercised *opportunistically*, not guaranteed
 
