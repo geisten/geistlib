@@ -178,15 +178,15 @@ jobs:
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
-      # NON-BLOCKING until #96. The cpu_x86 backend has AVX-512 kernels in the
-      # forward path that lack a runtime CPU guard, so the real-model prefill
-      # SIGILLs on this AVX-512-less runner (surfaced here — the whole point of
-      # this leg). Build + unit above stay REQUIRED; this step still RUNS and
-      # LOGS the failures but does not gate the PR. Remove continue-on-error and
-      # re-require once #96 lands.
-      - name: Integration + e2e tests (real model) — non-blocking, tracked #96
-        continue-on-error: true
+      - name: Integration + e2e tests (real model)
         run: make test-int test-e2e TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
+      # Portability gate (#96): GEIST_FORCE_ISA=avx2 clamps the kernel
+      # dispatcher to the x86-64-v3 baseline, so the non-AVX512 code paths
+      # (AVX2 Q4_Kx8 GEMV, scalar W8A8) run a real Q4_K prefill+decode even
+      # when the runner CPU has AVX-512. Guards regressions where an AVX-512
+      # kernel gets installed without a runtime CPU check (SIGILL on v3 CPUs).
+      - name: Integration tests, non-AVX512 dispatch (GEIST_FORCE_ISA=avx2)
+        run: GEIST_FORCE_ISA=avx2 make test-int TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
 
   # Guarantee the SIMD-free portable reference builds + passes on x86_64,
   # independent of whatever SIMD the runner CPU happens to have. This is the

@@ -24,6 +24,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_q4kx8_gemm.h"
+#include "kernel_w4a8.h" /* w4a8_dispatcher_tier — GEIST_FORCE_ISA clamp */
 
 #include <immintrin.h>
 #include <stddef.h>
@@ -808,9 +809,12 @@ void q4kx8_gemm_avx512(size_t                     M,
      * by the CPU probe, but the prefill path (M>=16) reaches here directly — so
      * guard here too: on an x86-64-v3 CPU without AVX-512 (a supported release
      * target) run the AVX2 GEMV for the whole GEMM instead of a SIGILL.
-     * __builtin_cpu_supports reads a once-initialised global — negligible cost. */
-    if (!__builtin_cpu_supports("avx512f") || !__builtin_cpu_supports("avx512bw") ||
-        !__builtin_cpu_supports("avx512dq") || !__builtin_cpu_supports("avx512vl")) {
+     * The dispatcher-tier check additionally honors GEIST_FORCE_ISA=avx2/scalar,
+     * so the non-AVX512 path is exercisable on AVX-512 hosts (CI portability
+     * gate). Both reads are once-initialised globals — negligible cost. */
+    if (w4a8_dispatcher_tier() < W4A8_ISA_AVX512 || !__builtin_cpu_supports("avx512f") ||
+        !__builtin_cpu_supports("avx512bw") || !__builtin_cpu_supports("avx512dq") ||
+        !__builtin_cpu_supports("avx512vl")) {
         q4kx8_gemv_avx2_fallback(M, N, K, X, W, Y);
         return;
     }

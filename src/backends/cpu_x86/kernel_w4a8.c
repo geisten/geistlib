@@ -54,6 +54,7 @@ w4a8_dot_avx512_vnni(size_t        n_blocks,
  * backend create, reads from the inference hot path). */
 static w4a8_dot_fn   g_dot     = nullptr;
 static enum w4a8_isa g_current = W4A8_ISA_SCALAR;
+static enum w4a8_isa g_tier    = W4A8_ISA_SCALAR; /* probe+clamp result, pre-collapse */
 static int           g_inited  = 0;
 
 static enum w4a8_isa probe_best_isa(void) {
@@ -104,6 +105,7 @@ enum w4a8_isa w4a8_dispatcher_init(void) {
     enum w4a8_isa forced = parse_force_env();
     /* Clamp the override down — never lift above what the host supports. */
     enum w4a8_isa chosen = (forced < best) ? forced : best;
+    g_tier               = chosen;
 
     /* Wire the function-pointer slot. AVX-512 (no VNNI) and AVX2 variants
      * arrive in Phase 1a Step 3/4; until then they fall back to scalar. */
@@ -128,6 +130,13 @@ enum w4a8_isa w4a8_dispatcher_init(void) {
 
 enum w4a8_isa w4a8_dispatcher_current(void) {
     return g_current;
+}
+
+enum w4a8_isa w4a8_dispatcher_tier(void) {
+    if (g_inited == 0) {
+        (void) w4a8_dispatcher_init();
+    }
+    return g_tier;
 }
 
 [[nodiscard]] float w4a8_dot(size_t        n_blocks,
