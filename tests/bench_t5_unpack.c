@@ -42,11 +42,11 @@
 #include <omp.h>
 #endif
 
-#define K_COLS 2560                    /* BitNet 2B-4T hidden dim */
-#define GROUP_T5 320                   /* columns per 64-byte T5 group */
-#define N_ROWS (4 * 96 * 1024)         /* 393216 rows -> x4: 629 MB, t5: 503 MB */
-#define ROW_BYTES_X4 (K_COLS / 4)      /* 640: packed 2-bit, row-major view */
-#define ROW_BYTES_T5 (K_COLS / 5)      /* 512: base-3, 8 groups of 64 B */
+#define K_COLS 2560               /* BitNet 2B-4T hidden dim */
+#define GROUP_T5 320              /* columns per 64-byte T5 group */
+#define N_ROWS (4 * 96 * 1024)    /* 393216 rows -> x4: 629 MB, t5: 503 MB */
+#define ROW_BYTES_X4 (K_COLS / 4) /* 640: packed 2-bit, row-major view */
+#define ROW_BYTES_T5 (K_COLS / 5) /* 512: base-3, 8 groups of 64 B */
 #define SWEEPS 6
 
 static double now_s(void) {
@@ -68,9 +68,10 @@ static uint32_t prng(uint32_t *s) {
 
 /* ---- (a) shipping x4 layout: byte = 4 rows x 1 col, 2 bit each ---------- */
 
-__attribute__((target(T5_TARGET))) static void x4_rowgroup_dot(const uint8_t *Wg, /* K/4*4 = K bytes */
-                                                               const int8_t  *xq,
-                                                               int32_t        out[4]) {
+__attribute__((target(T5_TARGET))) static void
+x4_rowgroup_dot(const uint8_t *Wg, /* K/4*4 = K bytes */
+                const int8_t  *xq,
+                int32_t        out[4]) {
     const __m512i m3 = _mm512_set1_epi8(3);
     __m512i       a0 = _mm512_setzero_si512();
     __m512i       a1 = _mm512_setzero_si512();
@@ -102,9 +103,8 @@ __attribute__((target(T5_TARGET))) static inline __m512i t5_trits(__m512i m) {
     return _mm512_mask_add_epi8(t, g170, t, one);
 }
 
-__attribute__((target(T5_TARGET))) static void t5_rowgroup_dot(const uint8_t *w_rows[4],
-                                                               const int8_t  *xq,
-                                                               int32_t        out[4]) {
+__attribute__((target(T5_TARGET))) static void
+t5_rowgroup_dot(const uint8_t *w_rows[4], const int8_t *xq, int32_t out[4]) {
     __m512i acc[4];
     for (int r = 0; r < 4; r++) {
         acc[r] = _mm512_setzero_si512();
@@ -218,8 +218,8 @@ int main(void) {
     }
     printf("correctness: x4 + t5 both exact on %zu rows\n", CHECK_ROWS);
 
-    const double weights = (double) N_ROWS * K_COLS;
-    volatile int32_t sink = 0;
+    const double     weights = (double) N_ROWS * K_COLS;
+    volatile int32_t sink    = 0;
 
     for (int pass = 0; pass < 2; pass++) { /* pass 0 = warmup, 1 = timed */
         double t_x4 = 0.0, t_t5 = 0.0;

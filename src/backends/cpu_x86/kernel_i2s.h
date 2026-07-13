@@ -128,4 +128,54 @@ void i2s_x4_gemv_pair_m1(size_t        n_in,
                          size_t        n_out1,
                          float        *y1);
 
+/* --- t5 base-3 layout (1.6 bpw decode path, #104) --------------------------
+ *
+ * Pack 5 trits per byte via compilade's pow3 scheme (ggml PR #8151):
+ *   n = t0*81 + t1*27 + t2*9 + t3*3 + t4  (n < 243)
+ *   byte = ceil(n * 256 / 243)
+ * Unpack plane k: m_k = byte * 3^k (mod 256, wrapping adds),
+ *   t_k = (m_k > 85) + (m_k > 170).
+ *
+ * Row-major rows of I2S_T5_ROW_BYTES(n_in); each 64-byte group covers 320
+ * columns in 5 stride-64 planes: byte c of group g holds the trits of
+ * columns g*320 + plane*64 + c. n_in is zero-padded up to a multiple of
+ * 320 at pack time (padded trits 0) and the activation scratch is padded
+ * with zeros, so padded columns contribute exactly nothing to the biased
+ * dot. −18.75 % weight bytes vs the 2-bit x4 layout; the Phase-A spike
+ * (bench_t5_unpack) measured the unpack ALU fits in the 9950X's VNNI
+ * slack: 362 vs 298 Gwt/s (ratio 1.21) on a DRAM-resident stream. */
+
+/* Padded column count / bytes per packed row. */
+static inline size_t i2s_t5_cols_pad(size_t n_in) {
+    return (n_in + 319) / 320 * 320;
+}
+static inline size_t i2s_t5_row_bytes(size_t n_in) {
+    return i2s_t5_cols_pad(n_in) / 5;
+}
+
+/* Repack native I2_S -> t5. `t5` is n_out * i2s_t5_row_bytes(n_in) bytes,
+ * caller-owned. n_out % 4 == 0 (the GEMV works in 4-row groups). */
+void i2s_to_t5(size_t n_out, size_t n_in, const uint8_t w_raw[], uint8_t t5[]);
+
+/* t5 decode GEMV (M=1) and the fused two-weight variant, mirroring the x4
+ * entries. AVX-512+VNNI only (caller gates on i2s_isa_is_vnni() +
+ * n_out % 4 == 0). */
+void i2s_t5_gemv_m1(size_t        n_out,
+                    size_t        n_in,
+                    const float  *x,
+                    const uint8_t t5[],
+                    float         tensor_scale,
+                    float         y[static n_out]);
+
+void i2s_t5_gemv_pair_m1(size_t        n_in,
+                         const float  *x,
+                         const uint8_t t5_0[],
+                         float         tensor_scale0,
+                         size_t        n_out0,
+                         float        *y0,
+                         const uint8_t t5_1[],
+                         float         tensor_scale1,
+                         size_t        n_out1,
+                         float        *y1);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_I2S_H */
