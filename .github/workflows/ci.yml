@@ -133,6 +133,91 @@ jobs:
             make test-unit $FLAGS AUTO_FETCH_MODEL=0    # run the model-free unit suite
           '
 
+  # Cover the SHIPPED x86_64 path. release.yml builds linux-x86_64 (AVX-512/VNNI
+  # cpu_x86 backend, runtime-dispatched via hw_probe over an x86-64-v3 baseline),
+  # but the matrix above never tests x86_64 at all — an AVX-512 kernel bug would
+  # ship unseen. This job builds + unit + int + e2e with the release backends on
+  # a glibc x86_64 runner. GitHub runners don't guarantee AVX-512, so the CPU
+  # feature check reports whether the AVX-512 kernels were actually exercised;
+  # the runtime dispatch makes the run safe (AVX2/scalar fallback, no SIGILL)
+  # either way, and build-test-x86_64-scalar below guarantees the SIMD-free path.
+  build-test-x86_64:
+    name: build + tests (Linux x86_64, cpu_x86 AVX-512 + scalar)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report CPU features (was AVX-512 exercised on this runner?)
+        run: |
+          sed -n 's/^model name.*: //p' /proc/cpuinfo | head -1
+          if grep -q avx512 /proc/cpuinfo; then
+            echo "AVX-512: PRESENT -> the cpu_x86 AVX-512 kernels are exercised."
+          else
+            echo "AVX-512: ABSENT -> runtime dispatch falls back to AVX2/scalar (no SIGILL); AVX-512 kernels built but not run here."
+          fi
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-x86_64-${{ github.run_id }}
+          restore-keys: ccache-x86_64-
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 ccache
+      # Same backends/GEMM as the shipped release binary (release.yml linux-x86_64).
+      - name: Build
+        run: make TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
+      - name: Unit tests
+        run: make test-unit TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
+      - name: Cache reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts
+          key: geist-model-gemma4-e2b-q4km-v1
+      - name: Integration + e2e tests (real model)
+        run: make test-int test-e2e TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
+
+  # Guarantee the SIMD-free portable reference builds + passes on x86_64,
+  # independent of whatever SIMD the runner CPU happens to have. This is the
+  # baseline every other x86 kernel is checked against; if it drifts, quantized
+  # correctness is unmoored.
+  build-test-x86_64-scalar:
+    name: build + unit tests (Linux x86_64, cpu_scalar portable reference)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14
+      - name: Build + unit tests (scalar only, no SIMD)
+        run: |
+          make TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native
+          make test-unit TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
+
+  # musl on x86_64: build-test-musl above only covers arm64, but the SHIPPED
+  # x86_64 release artifact is also musl-static. Build + unit-test the exact
+  # release recipe so a musl-specific x86 issue can't reach a release.
+  build-test-musl-x86_64:
+    name: build + unit tests (Linux x86_64, musl)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build + unit tests (musl in Alpine, cpu_x86 + scalar)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+            set -e
+            apk add --no-cache build-base linux-headers bash
+            make TARGET=linux CC=gcc BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE
+            make test-unit TARGET=linux CC=gcc BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE AUTO_FETCH_MODEL=0
+          '
+
   # AGENT.md requires the code to be ASan/UBSan-friendly; nothing enforced it.
   # Build MODE=asan (-fsanitize=address,undefined) and run the model-free unit
   # suite — catches use-after-free / overflow / UB in the kernels + engine the
