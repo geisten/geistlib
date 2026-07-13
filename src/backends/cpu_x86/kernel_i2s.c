@@ -331,3 +331,97 @@ void i2s_x4_gemv_pair_m1(size_t        n_in,
                                     n_out1,
                                     y1);
 }
+
+/* --- t5 base-3 layout (1.6 bpw decode, #104) ------------------------------ */
+
+/* VNNI kernels (kernel_i2s_avx512_vnni.c). n_in_pad is the 320-padded
+ * column count; xq must be zero-padded to it. */
+void i2s_t5_gemv_m1_avx512_vnni(size_t        n_out,
+                                size_t        n_in_pad,
+                                const int8_t *xq,
+                                int32_t       sum_a,
+                                const uint8_t t5[],
+                                float         scale,
+                                float         y[static n_out]);
+
+void i2s_t5_gemv_pair_m1_avx512_vnni(size_t        n_in_pad,
+                                     const int8_t *xq,
+                                     int32_t       sum_a,
+                                     const uint8_t t5_0[],
+                                     float         scale0,
+                                     size_t        n_out0,
+                                     float        *y0,
+                                     const uint8_t t5_1[],
+                                     float         scale1,
+                                     size_t        n_out1,
+                                     float        *y1);
+
+void i2s_to_t5(size_t n_out, size_t n_in, const uint8_t w_raw[], uint8_t t5[]) {
+    const size_t row_bytes_src = n_in / 4;
+    const size_t cols_pad      = i2s_t5_cols_pad(n_in);
+    const size_t row_bytes     = i2s_t5_row_bytes(n_in);
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t r = 0; r < n_out; r++) {
+        uint8_t *row = t5 + r * row_bytes;
+        for (size_t g = 0; g < cols_pad / 320; g++) {
+            for (size_t c = 0; c < 64; c++) {
+                uint32_t n = 0;
+                for (size_t plane = 0; plane < 5; plane++) {
+                    const size_t  col = g * 320 + plane * 64 + c;
+                    const uint8_t code =
+                            (col < n_in) ? i2s_native_code(w_raw, row_bytes_src, r, col) : 0;
+                    n = n * 3 + code;
+                }
+                row[g * 64 + c] = (uint8_t) ((n * 256 + 242) / 243);
+            }
+        }
+    }
+}
+
+void i2s_t5_gemv_m1(size_t        n_out,
+                    size_t        n_in,
+                    const float  *x,
+                    const uint8_t t5[],
+                    float         tensor_scale,
+                    float         y[static n_out]) {
+    const size_t cols_pad = i2s_t5_cols_pad(n_in);
+    int8_t      *xq       = (int8_t *) __builtin_alloca(cols_pad);
+    int32_t      sum_a;
+    const float  scale = tensor_scale * quantize_act_row(n_in, x, xq, &sum_a);
+    if (cols_pad > n_in) {
+        __builtin_memset(xq + n_in, 0, cols_pad - n_in); /* pads contribute 0 */
+    }
+    i2s_t5_gemv_m1_avx512_vnni(n_out, cols_pad, xq, sum_a, t5, scale, y);
+}
+
+void i2s_t5_gemv_pair_m1(size_t        n_in,
+                         const float  *x,
+                         const uint8_t t5_0[],
+                         float         tensor_scale0,
+                         size_t        n_out0,
+                         float        *y0,
+                         const uint8_t t5_1[],
+                         float         tensor_scale1,
+                         size_t        n_out1,
+                         float        *y1) {
+    const size_t cols_pad = i2s_t5_cols_pad(n_in);
+    int8_t      *xq       = (int8_t *) __builtin_alloca(cols_pad);
+    int32_t      sum_a;
+    const float  inv = quantize_act_row(n_in, x, xq, &sum_a); /* shared activation quant */
+    if (cols_pad > n_in) {
+        __builtin_memset(xq + n_in, 0, cols_pad - n_in);
+    }
+    i2s_t5_gemv_pair_m1_avx512_vnni(cols_pad,
+                                    xq,
+                                    sum_a,
+                                    t5_0,
+                                    tensor_scale0 * inv,
+                                    n_out0,
+                                    y0,
+                                    t5_1,
+                                    tensor_scale1 * inv,
+                                    n_out1,
+                                    y1);
+}

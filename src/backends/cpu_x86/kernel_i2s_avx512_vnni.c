@@ -241,6 +241,111 @@ void i2s_x4_gemv_pair_m1_avx512_vnni(size_t        n_in,
     }
 }
 
+/* ===================== t5 base-3 kernels (#104) =========================== */
+/* 1.6 bpw: byte = 5 trits of ONE row (pow3 pack, see kernel_i2s.h). One
+ * 64-byte group covers 320 columns in 5 stride-64 planes. 4 rows share the
+ * 5 activation slices from registers; unpack per plane is 2 wrapping byte
+ * adds (m *= 3) + 2 epu8 compares. Phase-A spike: the extra ALU fits in
+ * Zen 5's VNNI slack (362 vs 298 Gwt/s vs the 2-bit x4 stream). */
+
+/* Trit plane from m = byte * 3^k (mod 256): (m > 85) + (m > 170). */
+static inline __m512i i2s_t5_plane(__m512i m) {
+    const __m512i   one  = _mm512_set1_epi8(1);
+    const __mmask64 g85  = _mm512_cmpgt_epu8_mask(m, _mm512_set1_epi8(85));
+    const __mmask64 g170 = _mm512_cmpgt_epu8_mask(m, _mm512_set1_epi8((char) 170));
+    __m512i         t    = _mm512_maskz_mov_epi8(g85, one);
+    return _mm512_mask_add_epi8(t, g170, t, one);
+}
+
+/* One 4-row group: rows are consecutive in the row-major t5 blob. */
+static inline void i2s_t5_group_m1(const uint8_t *Wg, /* 4 rows x row_bytes, row-major */
+                                   size_t         row_bytes,
+                                   const int8_t  *xq,
+                                   size_t         n_g320,
+                                   int32_t        sum_a,
+                                   float          scale,
+                                   float         *yo) {
+    __m512i acc0 = _mm512_setzero_si512();
+    __m512i acc1 = _mm512_setzero_si512();
+    __m512i acc2 = _mm512_setzero_si512();
+    __m512i acc3 = _mm512_setzero_si512();
+    for (size_t g = 0; g < n_g320; g++) {
+        _mm_prefetch((const char *) (Wg + 0 * row_bytes + g * 64 + 512), _MM_HINT_NTA);
+        _mm_prefetch((const char *) (Wg + 1 * row_bytes + g * 64 + 512), _MM_HINT_NTA);
+        _mm_prefetch((const char *) (Wg + 2 * row_bytes + g * 64 + 512), _MM_HINT_NTA);
+        _mm_prefetch((const char *) (Wg + 3 * row_bytes + g * 64 + 512), _MM_HINT_NTA);
+        __m512i m0 = _mm512_loadu_si512((const void *) (Wg + 0 * row_bytes + g * 64));
+        __m512i m1 = _mm512_loadu_si512((const void *) (Wg + 1 * row_bytes + g * 64));
+        __m512i m2 = _mm512_loadu_si512((const void *) (Wg + 2 * row_bytes + g * 64));
+        __m512i m3 = _mm512_loadu_si512((const void *) (Wg + 3 * row_bytes + g * 64));
+        for (int plane = 0; plane < 5; plane++) {
+            const __m512i a =
+                    _mm512_loadu_si512((const void *) (xq + g * 320 + (size_t) plane * 64));
+            acc0 = _mm512_dpbusd_epi32(acc0, i2s_t5_plane(m0), a);
+            acc1 = _mm512_dpbusd_epi32(acc1, i2s_t5_plane(m1), a);
+            acc2 = _mm512_dpbusd_epi32(acc2, i2s_t5_plane(m2), a);
+            acc3 = _mm512_dpbusd_epi32(acc3, i2s_t5_plane(m3), a);
+            if (plane < 4) { /* m *= 3 (mod 256) exposes the next plane */
+                m0 = _mm512_add_epi8(_mm512_add_epi8(m0, m0), m0);
+                m1 = _mm512_add_epi8(_mm512_add_epi8(m1, m1), m1);
+                m2 = _mm512_add_epi8(_mm512_add_epi8(m2, m2), m2);
+                m3 = _mm512_add_epi8(_mm512_add_epi8(m3, m3), m3);
+            }
+        }
+    }
+    yo[0] = (float) (_mm512_reduce_add_epi32(acc0) - sum_a) * scale;
+    yo[1] = (float) (_mm512_reduce_add_epi32(acc1) - sum_a) * scale;
+    yo[2] = (float) (_mm512_reduce_add_epi32(acc2) - sum_a) * scale;
+    yo[3] = (float) (_mm512_reduce_add_epi32(acc3) - sum_a) * scale;
+}
+
+void i2s_t5_gemv_m1_avx512_vnni(size_t        n_out,
+                                size_t        n_in_pad,
+                                const int8_t *xq,
+                                int32_t       sum_a,
+                                const uint8_t t5[],
+                                float         scale,
+                                float         y[static n_out]) {
+    const size_t row_bytes = n_in_pad / 5;
+    const size_t n_g320    = n_in_pad / 320;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t grp = 0; grp < n_out / 4; grp++) {
+        i2s_t5_group_m1(t5 + grp * 4 * row_bytes, row_bytes, xq, n_g320, sum_a, scale, y + grp * 4);
+    }
+}
+
+void i2s_t5_gemv_pair_m1_avx512_vnni(size_t        n_in_pad,
+                                     const int8_t *xq,
+                                     int32_t       sum_a,
+                                     const uint8_t t5_0[],
+                                     float         scale0,
+                                     size_t        n_out0,
+                                     float        *y0,
+                                     const uint8_t t5_1[],
+                                     float         scale1,
+                                     size_t        n_out1,
+                                     float        *y1) {
+    const size_t row_bytes = n_in_pad / 5;
+    const size_t n_g320    = n_in_pad / 320;
+    const size_t g0        = n_out0 / 4;
+    const size_t gt        = g0 + n_out1 / 4;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t g = 0; g < gt; g++) {
+        if (g < g0) {
+            i2s_t5_group_m1(
+                    t5_0 + g * 4 * row_bytes, row_bytes, xq, n_g320, sum_a, scale0, y0 + g * 4);
+        } else {
+            const size_t grp = g - g0;
+            i2s_t5_group_m1(
+                    t5_1 + grp * 4 * row_bytes, row_bytes, xq, n_g320, sum_a, scale1, y1 + grp * 4);
+        }
+    }
+}
+
 #define I2S_X4_TT 4 /* 16 live accumulators; swept 2/4/8 on the 9950X — 4 wins (#102 Ph. 4) */
 
 void i2s_x4_gemm_avx512_vnni(size_t         m,

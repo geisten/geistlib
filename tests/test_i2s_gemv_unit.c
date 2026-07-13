@@ -214,6 +214,51 @@ static int scenario(size_t N, size_t K) {
             }
             fail = 1;
         }
+        /* (6) t5 base-3 decode (1.6 bpw, #104): byte-exact vs the x4 GEMV —
+         * identical int math, one quantize_act_row instance, same final
+         * scale multiply. Covers the zero-padding path whenever K is not a
+         * multiple of 320 (512, 6912). */
+        uint8_t *t5b = malloc(N * i2s_t5_row_bytes(K));
+        i2s_to_t5(N, K, W, t5b);
+        float *y_t5 = malloc(N * sizeof(float));
+        i2s_t5_gemv_m1(N, K, x, t5b, scale, y_t5);
+        if (memcmp(y_t5, y_x4, N * sizeof(float)) != 0) {
+            for (size_t r = 0; r < N; r++) {
+                if (y_t5[r] != y_x4[r]) {
+                    fprintf(stderr,
+                            "  [N=%zu K=%zu] t5 vs x4 first diff @%zu: t5=%.9g x4=%.9g\n",
+                            N,
+                            K,
+                            r,
+                            (double) y_t5[r],
+                            (double) y_x4[r]);
+                    break;
+                }
+            }
+            fail = 1;
+        }
+
+        /* (7) t5 fused pair == two separate t5 m1, byte-exact, distinct
+         * weights with different n_out (the #102 pair-test hardening). */
+        uint8_t *t5_2 = malloc(N2 * i2s_t5_row_bytes(K));
+        i2s_to_t5(N2, K, W2, t5_2);
+        float *tp0   = malloc(N * sizeof(float));
+        float *tp1   = malloc(N2 * sizeof(float));
+        float *tref1 = malloc(N2 * sizeof(float));
+        i2s_t5_gemv_pair_m1(K, x, t5b, scale, N, tp0, t5_2, scale * 0.5f, N2, tp1);
+        i2s_t5_gemv_m1(N2, K, x, t5_2, scale * 0.5f, tref1);
+        if (memcmp(tp0, y_t5, N * sizeof(float)) != 0 ||
+            memcmp(tp1, tref1, N2 * sizeof(float)) != 0) {
+            fprintf(stderr, "  [N=%zu/%zu K=%zu] t5 pair vs m1 NOT byte-identical\n", N, N2, K);
+            fail = 1;
+        }
+        free(t5b);
+        free(y_t5);
+        free(t5_2);
+        free(tp0);
+        free(tp1);
+        free(tref1);
+
         free(W2);
         free(x4_2);
         free(yp0);
