@@ -31,38 +31,47 @@ static pthread_mutex_t g_act_sparsity_mutex           = PTHREAD_MUTEX_INITIALIZE
 static bool            g_act_sparsity_overflow_warned = false;
 static uint64_t        g_act_sparsity_zeros[ACT_SPARSITY_MAX_LAYERS];
 static uint64_t        g_act_sparsity_total[ACT_SPARSITY_MAX_LAYERS];
-static size_t          g_act_sparsity_n_layers;
+/* All-zero 64-element blocks — the unit a block-skipping ternary GEMV
+ * could drop (one x4 weight cache line per block; #102 Phase 3 gate). */
+static uint64_t g_act_sparsity_zblk[ACT_SPARSITY_MAX_LAYERS];
+static uint64_t g_act_sparsity_tblk[ACT_SPARSITY_MAX_LAYERS];
+static size_t   g_act_sparsity_n_layers;
 
 static void act_sparsity_flush(void) {
     if (g_act_sparsity_n_layers == 0) {
         return;
     }
-    uint64_t z_sum = 0;
-    uint64_t t_sum = 0;
+    uint64_t z_sum = 0, t_sum = 0, zb_sum = 0, tb_sum = 0;
     fprintf(stderr, "\n=== FFN down_proj input sparsity (GEIST_DUMP_ACT_SPARSITY) ===\n");
-    fprintf(stderr, "  layer  zeros            total           sparsity\n");
+    fprintf(stderr, "  layer  zeros            total           sparsity  zero-64blk\n");
     for (size_t i = 0; i < g_act_sparsity_n_layers; i++) {
-        uint64_t z = g_act_sparsity_zeros[i];
-        uint64_t t = g_act_sparsity_total[i];
+        uint64_t z  = g_act_sparsity_zeros[i];
+        uint64_t t  = g_act_sparsity_total[i];
+        uint64_t zb = g_act_sparsity_zblk[i];
+        uint64_t tb = g_act_sparsity_tblk[i];
         if (t == 0) {
             continue;
         }
         z_sum += z;
         t_sum += t;
+        zb_sum += zb;
+        tb_sum += tb;
         fprintf(stderr,
-                "  %5zu  %15llu  %15llu  %7.2f%%\n",
+                "  %5zu  %15llu  %15llu  %7.2f%%  %7.2f%%\n",
                 i,
                 (unsigned long long) z,
                 (unsigned long long) t,
-                100.0 * (double) z / (double) t);
+                100.0 * (double) z / (double) t,
+                tb ? 100.0 * (double) zb / (double) tb : 0.0);
     }
     if (t_sum > 0) {
-        fprintf(stderr, "  -----  ---------------  ---------------  -------\n");
+        fprintf(stderr, "  -----  ---------------  ---------------  -------   -------\n");
         fprintf(stderr,
-                "  TOTAL  %15llu  %15llu  %7.2f%%\n",
+                "  TOTAL  %15llu  %15llu  %7.2f%%  %7.2f%%\n",
                 (unsigned long long) z_sum,
                 (unsigned long long) t_sum,
-                100.0 * (double) z_sum / (double) t_sum);
+                100.0 * (double) z_sum / (double) t_sum,
+                tb_sum ? 100.0 * (double) zb_sum / (double) tb_sum : 0.0);
     }
 }
 
@@ -107,12 +116,21 @@ void transformer_probe_ffn_sparsity(const struct geist_backend_vtbl *v,
     /* Count outside the mutex so the per-token cost is just the (cheap)
      * tight loop. The mutex only serializes the global accumulator
      * update. */
-    uint64_t z = 0;
-    for (size_t i = 0; i < n_elems; i++) {
-        if (data[i] == 0.0f) {
-            z++;
+    uint64_t z = 0, zb = 0;
+    for (size_t b0 = 0; b0 < n_elems; b0 += 64) {
+        const size_t end   = (b0 + 64 <= n_elems) ? b0 + 64 : n_elems;
+        uint64_t     zhere = 0;
+        for (size_t i = b0; i < end; i++) {
+            if (data[i] == 0.0f) {
+                zhere++;
+            }
+        }
+        z += zhere;
+        if (zhere == end - b0) {
+            zb++;
         }
     }
+    const uint64_t tb = (n_elems + 63) / 64;
     v->buffer_unmap(buf);
 
     pthread_mutex_lock(&g_act_sparsity_mutex);
@@ -121,5 +139,7 @@ void transformer_probe_ffn_sparsity(const struct geist_backend_vtbl *v,
     }
     g_act_sparsity_zeros[layer_idx] += z;
     g_act_sparsity_total[layer_idx] += (uint64_t) n_elems;
+    g_act_sparsity_zblk[layer_idx] += zb;
+    g_act_sparsity_tblk[layer_idx] += tb;
     pthread_mutex_unlock(&g_act_sparsity_mutex);
 }
