@@ -85,6 +85,28 @@ geist_backend_create → geist_model_load → geist_session_create
   → geist_session_set_prompt → geist_session_decode_step → geist_session_token_to_str
 ```
 
+### Get the SDK — prebuilt or from source
+
+The library is for **embedding into your own app or experiment** — it is never a
+standalone download-and-run binary. Two ways to get `libgeist.a` + the public
+headers:
+
+- **Prebuilt** (per release): download `libgeist-<platform>.tar.gz` from the
+  [latest release](https://github.com/geisten/geisten/releases/latest) — it holds
+  `libgeist.a`, `include/*.h` and `LICENSE`. Verify it against `SHA256SUMS`.
+  Platforms: `macos-arm64`, `linux-arm64`, `linux-x86_64`.
+- **From source:** `make lib` builds `lib/<target>/<mode>/libgeist.a`.
+
+Link against it (`examples/embed_smoke.c` is the smallest model-free link check;
+the release workflow compiles it against each packaged artifact):
+
+```sh
+cc -std=c23 -Iinclude your_app.c libgeist.a -lm   # + your target's link flags
+```
+
+The public surface is versioned: declarations tagged `@stability STABLE` in the
+headers do not break within 0.x. Only the STABLE surface is the SDK contract.
+
 ### Minimal program
 
 ```c
