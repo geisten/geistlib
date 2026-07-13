@@ -15,7 +15,6 @@
  *
  * SKIPs (exit 0) when no Vulkan runtime/device is present.
  */
-#define _POSIX_C_SOURCE 200809L /* setenv */
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -67,28 +66,6 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
     }
 }
 
-/* Mirror of the dp4a shader's x quantization: per-4-chunk int8 with an
- * f32 scale. nearbyintf under the default rounding mode matches GLSL
- * round() (round-to-nearest-even) on NVIDIA. */
-static void quant4_ref(const float *x, float *xq, size_t n) {
-    for (size_t c = 0; c < n; c += 4) {
-        float amax = 0.0f;
-        for (int i = 0; i < 4; i++) {
-            amax = fmaxf(amax, fabsf(x[c + i]));
-        }
-        if (amax == 0.0f) {
-            for (int i = 0; i < 4; i++) {
-                xq[c + i] = 0.0f;
-            }
-            continue;
-        }
-        const float id = 127.0f / amax, d = amax * (1.0f / 127.0f);
-        for (int i = 0; i < 4; i++) {
-            xq[c + i] = nearbyintf(x[c + i] * id) * d;
-        }
-    }
-}
-
 static void run_case_tol(struct geist_backend *vk,
                          struct geist_backend *ref,
                          int                   dtype,
@@ -96,8 +73,7 @@ static void run_case_tol(struct geist_backend *vk,
                          size_t                n_in,
                          size_t                n_out,
                          size_t                m,
-                         double                tol,
-                         bool                  dp4a_x) {
+                         double                tol) {
     size_t w_bytes;
     if (dtype == GEIST_DTYPE_F32) {
         w_bytes = n_in * n_out * sizeof(float);
@@ -135,25 +111,12 @@ static void run_case_tol(struct geist_backend *vk,
         check(false, "resolver installed no kernel");
         return;
     }
-    /* dp4a_x: reference runs on x pre-quantized exactly like the dp4a
-     * shader, so the compare stays tight. A device without int8-dot serves
-     * the classic f32 kernel instead — then the EXACT-x reference is the
-     * matching one, so take the better of the two. */
-    float *xr = x;
-    if (dp4a_x) {
-        xr = malloc(m * n_in * sizeof(float));
-        if (xr == nullptr) {
-            check(false, "alloc");
-            return;
-        }
-        quant4_ref(x, xr, m * n_in);
-    }
     if (m == 1) {
         w_vk.linear_m1(x, &w_vk, vk, y_vk);
-        w_rf.linear_m1(xr, &w_rf, ref, y_rf);
+        w_rf.linear_m1(x, &w_rf, ref, y_rf);
     } else {
         w_vk.linear_mN(x, &w_vk, m, vk, y_vk);
-        w_rf.linear_mN(xr, &w_rf, m, ref, y_rf);
+        w_rf.linear_mN(x, &w_rf, m, ref, y_rf);
     }
 
     double max_rel = 0.0;
@@ -164,23 +127,6 @@ static void run_case_tol(struct geist_backend *vk,
         if (rel > max_rel) {
             max_rel = rel;
         }
-    }
-    if (dp4a_x && max_rel >= tol) {
-        w_rf.linear_m1(x, &w_rf, ref, y_rf); /* exact-x fallback compare */
-        double max_rel2 = 0.0;
-        for (size_t i = 0; i < m * n_out; i++) {
-            const double rel = fabs((double) y_vk[i] - (double) y_rf[i]) /
-                               (fabs((double) y_rf[i]) > 1.0 ? fabs((double) y_rf[i]) : 1.0);
-            if (rel > max_rel2) {
-                max_rel2 = rel;
-            }
-        }
-        if (max_rel2 < max_rel) {
-            max_rel = max_rel2;
-        }
-    }
-    if (dp4a_x) {
-        free(xr);
     }
     char label[128];
     snprintf(label, sizeof label, "%s m=%zu (%zux%zu) parity, max_rel=%.2e", name, m, n_out,
@@ -196,9 +142,6 @@ static void run_case_tol(struct geist_backend *vk,
 }
 
 int main(void) {
-    /* The exact-parity cases pin the classic f32 kernels; the dp4a case
-     * below creates its own backend with the int8-dot matvec enabled. */
-    setenv("GEIST_VK_DP4A", "0", 1);
     struct geist_backend *vk = nullptr;
     if (geist_backend_create("vulkan", nullptr, nullptr, &vk) == GEIST_E_UNSUPPORTED) {
         fprintf(stderr, "SKIP: no Vulkan runtime/device on this machine\n");
@@ -212,8 +155,7 @@ int main(void) {
         return 1;
     }
 
-#define run_case(vk, ref, dt, name, ni, no, m) \
-    run_case_tol(vk, ref, dt, name, ni, no, m, 1e-3, false)
+#define run_case(vk, ref, dt, name, ni, no, m) run_case_tol(vk, ref, dt, name, ni, no, m, 1e-3)
     /* n_in must be a multiple of 256 for k-quants; n_out deliberately not a
      * multiple of the workgroup count to catch tail bugs. */
     run_case(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 1);
@@ -225,23 +167,11 @@ int main(void) {
     /* coopmat tensor-core path (m%16==0, n_out%64==0): f16 inputs, f32
      * accumulate — looser tolerance by design (prefill-only path; the
      * MMLU gate judges end-to-end). */
-    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 16, 2e-2, false);
-    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 768, 128, 64, 2e-2, false);
+    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 16, 2e-2);
+    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 768, 128, 64, 2e-2);
     /* wide n_out routes to the 128-row register-tiled kernel */
-    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 16, 2e-2, false);
-    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 64, 2e-2, false);
-
-    /* dp4a decode matvec: reference on identically pre-quantized x keeps
-     * the compare tight (raw-x parity is ~9e-2 by construction — per-4
-     * int8 noise under random-weight cancellation, not a bug). */
-    setenv("GEIST_VK_DP4A", "1", 1);
-    struct geist_backend *vkd = nullptr;
-    check(geist_backend_create("vulkan", nullptr, nullptr, &vkd) == GEIST_OK,
-          "vulkan backend (dp4a)");
-    if (vkd != nullptr) {
-        run_case_tol(vkd, ref, GEIST_DTYPE_Q4_K, "Q4_K-dp4a", 512, 383, 1, 1e-3, true);
-        geist_backend_destroy(vkd);
-    }
+    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 16, 2e-2);
+    run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 64, 2e-2);
 
     geist_backend_destroy(vk);
     geist_backend_destroy(ref);
