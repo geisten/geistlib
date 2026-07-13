@@ -802,6 +802,19 @@ void q4kx8_gemm_avx512(size_t                     M,
                        const struct block_q8_Kx4 *X,
                        const struct block_q4_Kx8 *W,
                        float                      Y[static M * N]) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    /* The 16x16 tile path below is AVX-512 (target(avx512f,bw,dq,vl)) and has no
+     * runtime guard of its own. The engine's kernel catalog is meant to gate it
+     * by the CPU probe, but the prefill path (M>=16) reaches here directly — so
+     * guard here too: on an x86-64-v3 CPU without AVX-512 (a supported release
+     * target) run the AVX2 GEMV for the whole GEMM instead of a SIGILL.
+     * __builtin_cpu_supports reads a once-initialised global — negligible cost. */
+    if (!__builtin_cpu_supports("avx512f") || !__builtin_cpu_supports("avx512bw") ||
+        !__builtin_cpu_supports("avx512dq") || !__builtin_cpu_supports("avx512vl")) {
+        q4kx8_gemv_avx2_fallback(M, N, K, X, W, Y);
+        return;
+    }
+#endif
     const size_t n_super_k = K / 256;
 
     if (M < 16 || N < 16 || (M % 16) != 0 || (N % 16) != 0) {

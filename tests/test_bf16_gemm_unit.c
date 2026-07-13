@@ -173,6 +173,14 @@ static int scenario_random_cross_isa(void) {
 }
 
 int main(void) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    /* bf16_gemm_avx512_bf16 needs AVX512-BF16 and has no runtime CPU guard — the
+     * engine gates it before calling. This test calls it directly, so skip
+     * cleanly on a CPU without AVX512-BF16 (e.g. a CI runner) instead of SIGILL. */
+    if (!__builtin_cpu_supports("avx512bf16")) {
+        GEIST_SKIP("bf16_gemm_avx512_bf16 requires AVX512-BF16, absent on this CPU");
+    }
+#endif
     int fails = 0;
     if (scenario_pack_roundtrip() != 0) {
         fputs("scenario_pack_roundtrip FAILED\n", stderr);

@@ -307,6 +307,16 @@ static int scenario_endtoend_m16(size_t M, size_t N, size_t K) {
 }
 
 int main(void) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    /* q4kx8_gemm_avx512 is __attribute__((target(avx512f,bw,dq,vl))) with no
+     * runtime CPU guard — the engine's kernel catalog gates it before calling.
+     * This test calls it directly, so skip cleanly on a CPU without those
+     * features (e.g. a CI runner without AVX-512) instead of SIGILL. */
+    if (!__builtin_cpu_supports("avx512f") || !__builtin_cpu_supports("avx512bw") ||
+        !__builtin_cpu_supports("avx512dq") || !__builtin_cpu_supports("avx512vl")) {
+        GEIST_SKIP("q4kx8_gemm_avx512 requires AVX-512F/BW/DQ/VL, absent on this CPU");
+    }
+#endif
     int fails = 0;
     if (scenario_endtoend_m4() != 0) {
         fputs("scenario_endtoend_m4 FAILED\n", stderr);
