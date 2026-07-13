@@ -166,19 +166,20 @@ int main(int argc, char **argv) {
      * without affecting the metric being measured. */
     setenv("GEIST_TEXT_ONLY", "1", 0);
 
+    /* "auto" = registry preference order (cpu_neon/cpu_x86 before cpu_scalar).
+     * The old default of "cpu_neon" + silent cpu_scalar fallback measured the
+     * scalar path on x86 builds unless GEIST_BENCH_BACKEND was set (#102). */
     const char *backend_name = getenv("GEIST_BENCH_BACKEND");
     if (backend_name == nullptr || backend_name[0] == '\0') {
-        backend_name = "cpu_neon";
+        backend_name = "auto";
     }
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create(backend_name, nullptr, nullptr, &be);
     if (s != GEIST_OK) {
-        s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
-    }
-    if (s != GEIST_OK) {
         fprintf(stderr, "backend create failed: %s\n", geist_last_create_error());
         return GEIST_TEST_ERROR;
     }
+    fprintf(stderr, "[bench] backend: %s\n", geist_backend_name(be));
 
     struct geist_model *model = nullptr;
     s                         = geist_model_load(model_path, be, &model);
