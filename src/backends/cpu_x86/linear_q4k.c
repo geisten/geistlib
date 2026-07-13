@@ -22,7 +22,6 @@
 #include "linear_q4k.h"
 
 #include "backend_state.h"
-#include "kernel_bf16_gemm.h"
 #include "kernel_q4kx8_gemm.h" /* Phase 3 lane-parallel Q4_Kx8 GEMV */
 #include "kernel_w4a8.h"
 #include "kernel_w8a8.h" /* sum_a sized for W8A8 to also cover Q6_K */
@@ -35,8 +34,6 @@
 
 #include <geist_backend.h>
 
-#include <immintrin.h>
-#include <stdalign.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -123,7 +120,7 @@ static enum geist_status grow_scratch(struct cpu_x86_state *st, size_t n_in) {
         return GEIST_E_INVALID_ARG;
     }
 
-    /* SoA blob: W4A8 nibbles + scales + offsets + packed bf16 cache. */
+    /* SoA blob: W4A8 nibbles + scales + offsets + Q4_Kx8 prefill copy. */
     const size_t blob_bytes = blob_total_bytes(n_in, n_out);
 
     uint8_t *blob = heap_alloc_aligned(blob_bytes, OPTIMAL_ALIGNMENT);
@@ -217,49 +214,6 @@ void cpu_x86_linear_q4k_m1(const float               *x,
               y);
 }
 
-/* These helpers + the tiled mN below use AVX-512+VNNI intrinsics. The
- * `target` attribute tells gcc to allow them in this TU even though
- * the file is compiled at baseline -march=x86-64-v3; the dispatcher
- * only calls cpu_x86_linear_q4k_mN on hosts whose cpuid confirms VNNI
- * support, so there is no SIGILL risk on AVX2-only CPUs. */
-#define VNNI_TARGET "avx2,avx512f,avx512bw,avx512dq,avx512vl,avx512vnni"
-
-/* Horizontal sum of 8 fp32 lanes → one fp32. */
-__attribute__((target(VNNI_TARGET))) static inline float hsum_f32_avx(__m256 v) {
-    const __m128 lo = _mm256_castps256_ps128(v);
-    const __m128 hi = _mm256_extractf128_ps(v, 1);
-    __m128       s  = _mm_add_ps(lo, hi);
-    s               = _mm_hadd_ps(s, s);
-    s               = _mm_hadd_ps(s, s);
-    return _mm_cvtss_f32(s);
-}
-
-/* Unpack 16 packed Q4_K bytes (= one 32-element block) into 32 unsigned
- * int8 values in element order, returned in a 256-bit register. The
- * caller will feed the result to VPDPBUSD against int8 activations. */
-__attribute__((target(VNNI_TARGET))) static inline __m256i
-unpack_w4a8_block_to_u8(const uint8_t weight_packed[16]) {
-    const __m128i packed_128 = _mm_loadu_si128((const __m128i *) weight_packed);
-    const __m256i packed_256 = _mm256_set_m128i(packed_128, packed_128);
-    const __m256i lo_mask    = _mm256_set1_epi8(0x0F);
-    const __m256i lo_nibs    = _mm256_and_si256(packed_256, lo_mask);
-    const __m256i hi_nibs    = _mm256_and_si256(_mm256_srli_epi16(packed_256, 4), lo_mask);
-    const __m256i nibs_lo    = _mm256_unpacklo_epi8(lo_nibs, hi_nibs);
-    const __m256i nibs_hi    = _mm256_unpackhi_epi8(lo_nibs, hi_nibs);
-    return _mm256_permute2x128_si256(nibs_lo, nibs_hi, 0x20);
-}
-
-/* Phase 1b Step 3 (c): tiled int8 GEMM for Q4_K prefill (M>1).
- *
- * Outer OMP parallelization over row-tiles. Per tile, hold M_TILE=4
- * fp32 accumulators for each of m output cells (in a stack-resident
- * acc[]), then sweep all K-blocks: per block, load 4 unpacked weight
- * blocks + 4 scale/offset pairs, iterate j∈[0,m) loading one activation
- * block + one sum_a value, and do M_TILE VPDPBUSDs + scale/offset
- * applications per j. Each weight block is read once per row-tile (vs
- * once per m tokens in the per-row gemv path), and each activation
- * block is read M_TILE times instead of n_out times — the standard
- * tiled-GEMM amortization. */
 /* Phase 3: Q4_Kx8 lane-parallel GEMM via VPMADDUBSW. 8 cells per inst
  * (vs our previous 1 cell per VPDPBUSD) — the 8× compute-density lift
  * identified empirically in docs/LINUX_X86_PERF_PROFILE.md (IPC 0.47 →
@@ -268,7 +222,8 @@ unpack_w4a8_block_to_u8(const uint8_t weight_packed[16]) {
  * AVX kernel handles the 8-cell tile per (m, n_tile) call.
  *
  * Fallback: if n_out is not divisible by 8 (no Gemma 4 matrix is, this
- * is purely defensive), drop to the bf16 path. */
+ * is purely defensive), drop to the per-row m1 path. q4kx8_gemm_avx512
+ * guards its own ISA at runtime (AVX2 GEMV fallback on non-AVX512 hosts). */
 void cpu_x86_linear_q4k_mN(const float               *x,
                            const struct geist_weight *w,
                            size_t                     m,

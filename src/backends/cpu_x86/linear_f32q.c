@@ -53,11 +53,13 @@ static size_t f32q_rowmajor_bytes(size_t n_in, size_t n_out) {
     return n_out * n_in + 2 * n_out * f32q_blocks_per_row(n_in) * sizeof(float);
 }
 
-/* When n_out % 8 == 0, append a lane-parallel W8x8 copy (same size, a pure
- * permutation) and run w8x8_gemm at prefill — 8 output rows per VPDPBUSD,
- * reduced once per tile, vs w8a8_gemm's per-row hsum. */
+/* When n_out % 8 == 0 AND the host has AVX-512+VNNI, append a lane-parallel
+ * W8x8 copy (same size, a pure permutation) and run w8x8_gemm at prefill —
+ * 8 output rows per VPDPBUSD, reduced once per tile, vs w8a8_gemm's per-row
+ * hsum. w8x8_gemm/w8x16_gemm live in the -mavx512vnni TU, so the VNNI check
+ * is a SIGILL guard, not a tuning choice (same predicate at resolve and mN). */
 static inline bool f32q_use_w8x8(size_t n_out) {
-    return (n_out % W8X8_NROWS) == 0;
+    return (n_out % W8X8_NROWS) == 0 && w8a8_isa_is_vnni();
 }
 
 static size_t f32q_blob_bytes(size_t n_in, size_t n_out) {
