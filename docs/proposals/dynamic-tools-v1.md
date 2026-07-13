@@ -111,6 +111,78 @@ or coercion. Hosts must send explicit values of the declared type.
 7. Low routing confidence produces a clarification response, not a best-guess
    forced call.
 
+## Compatibility contract
+
+This is what a consumer — Home Assistant, a future gateway, any integration —
+pins and how it updates. The runtime is the primary, language-agnostic seam;
+the contract must be explicit so consumers build reliably, versioned and
+update-capable.
+
+A consumer pins a runtime by **two** things and verifies at startup:
+
+1. **Protocol version** — the literal `dynamic-tools-v1`. This is *the* contract:
+   the wire framing, message types, schema subset and safety invariants above are
+   fixed for this identifier.
+2. **Artifact checksum** — the SHA-256 of a specific release binary (published as
+   `SHA256SUMS`). A consumer pins a digest, not a version range.
+
+At startup, before any generation, the consumer sends the health frame and
+requires the documented reply:
+
+```
+-> {"type":"health"}
+<- {"type":"health.result","protocol":"dynamic-tools-v1","status":"ready"}
+```
+
+A reply whose `protocol` differs from the pinned identifier is an
+incompatibility and must fail closed — the consumer does not proceed to
+conversation requests.
+
+- **Binary version** (`geist --version`, semver) is **informative**, not the
+  contract: patch/minor releases fix bugs or improve performance behind the
+  *same* protocol. A consumer never gates on the semver.
+- **Update rule:** swap in a newer binary that answers the same protocol id,
+  record its new SHA-256, and re-run the startup health handshake. There is no
+  in-place self-updater; the consumer owns *when* it swaps.
+- **Breaking changes** go **only** through a new protocol identifier
+  (`dynamic-tools-v2`) *or* a strictly **additive** field on `dynamic-tools-v1`
+  (a new optional request field, or a new optional frame type that pre-existing
+  consumers never request and never receive). Any change to an existing frame's
+  shape, the schema subset, or a safety invariant requires `-v2`. A protocol
+  change updates the golden fixtures in both the runtime and the consumer
+  repositories and passes both contract suites before either releases.
+- **Integrity** is SHA-256 only; signed provenance / SBOM is deliberately out of
+  scope for this contract (a consumer needing supply-chain attestation layers it
+  on top).
+
+**In one line:** pin `dynamic-tools-v1` + a binary SHA-256; verify with the
+startup health handshake; update by swapping the binary (same protocol) and
+re-verifying.
+
+Interop surfaces themselves — an OpenAI-compatible HTTP endpoint, MCP — are
+**separate consumer projects** over this protocol, not part of the runtime core,
+which stays socket-only and dependency-free.
+
+## Streaming (reserved, additive)
+
+v1 is **non-streaming**: one `input` produces a bounded `tool.call`/`tool.result`
+exchange and exactly one final `conversation.result` carrying the complete
+`text`. This suffices for command/response consumers (Home Assistant: one
+utterance in, one answer to TTS).
+
+A future interactive consumer (e.g. a chat UI over an OpenAI-compatible gateway)
+may need token streaming. It is reserved as a strictly **additive** extension so
+it needs no `-v2`:
+
+- an opt-in `"stream": true` on the conversation request;
+- zero or more `{"type":"conversation.delta","text":"…"}` frames emitted before
+  the final `conversation.result`;
+- a consumer that does not send `stream:true` never receives a
+  `conversation.delta` and is unaffected.
+
+This is documented now only so a later interactive consumer is buildable without
+a protocol break; it is not implemented in v1.
+
 ## Implemented slices
 
 1. ✅ Generic fixed-memory JSON parser and schema-v1 validator.
