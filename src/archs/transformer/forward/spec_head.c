@@ -41,9 +41,11 @@
  *
  * Default ON for greedy decode on an eligible tied lm_head (GEIST_SPEC_HEAD=0
  * forces the exact dense head). Non-greedy sampling, ineligible dtypes, and
- * non-NEON/dotprod hosts always fall back to the dense head. For source-layout
- * quantized / F16 heads the finalist logits are bit-exact so greedy output is
- * byte-identical; repacked layouts use a high-precision (not bit-exact) phase-3.
+ * non-NEON/dotprod hosts always fall back to the dense head — extending the
+ * sketch to top-k sampling failed its exactness gate (see the measured-out
+ * note at the sampling check below). For source-layout quantized / F16 heads
+ * the finalist logits are bit-exact so greedy output is byte-identical;
+ * repacked layouts use a high-precision (not bit-exact) phase-3.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -109,18 +111,15 @@ static size_t spec_env_sz(const char *name, size_t dflt, size_t lo, size_t hi) {
 }
 
 static int spec_head_env(void) {
-    static int m = -1;
-    if (m < 0) {
-        /* Default ON for greedy decode on an eligible tied lm_head: verified
-         * byte-identical to the dense head on Gemma 4 (Q6_K, 256 K vocab) and
-         * BitNet (F16, 128 K) with the vocab-aware TOP_K, for ~+5 % decode on
-         * the Pi 5 (the tied head is ~30-50 % of the per-token read). Non-greedy
-         * sampling, ineligible dtypes, and non-NEON hosts always fall back to
-         * the exact dense head regardless. GEIST_SPEC_HEAD=0 forces it off. */
-        const char *e = getenv("GEIST_SPEC_HEAD");
-        m             = (e != nullptr && e[0] == '0') ? 0 : 1;
-    }
-    return m;
+    /* Default ON for greedy decode + top-k sampling on an eligible tied
+     * lm_head: verified byte-identical to the dense head on Gemma 4 (Q6_K,
+     * 256 K vocab) and BitNet (F16, 128 K) with the vocab-aware TOP_K.
+     * Ineligible modes/dtypes/hosts always fall back to the exact dense head
+     * regardless. GEIST_SPEC_HEAD=0 forces it off. Read per call (once per
+     * decoded token — noise next to the head itself) so tests can toggle it
+     * within one process. */
+    const char *e = getenv("GEIST_SPEC_HEAD");
+    return (e != nullptr && e[0] == '0') ? 0 : 1;
 }
 
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
@@ -474,8 +473,16 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
     if (st->spec_state != 1) {
         return false;
     }
-    /* Greedy only — the spec head writes -inf for non-candidates, which is
-     * fine for argmax but not for a full softmax / top-p distribution. */
+    /* Greedy only. Extending this to top-k sampling was tried and MEASURED
+     * OUT (#102 Phase 1): exact sampling needs the true top-k rows inside the
+     * candidate set, and the stride-4 sketch's rank noise beyond rank 1 is
+     * enormous — on BitNet 2B-4T some true top-40 rows rank outside even the
+     * top-8192 rough candidates, so sampled output diverged from the exact
+     * dense head at every tested TOP_K. Perfect rank-40 recall required a
+     * stride-1 (full-width) int8 phase 1 — the same bytes as the Q8 dense
+     * head, i.e. no win. The sketch ranks only the argmax reliably; greedy is
+     * where the recall contract holds (byte-identical, verified in
+     * tests/test_spec_head_sampling_int.c). */
     if (st->sess->temperature != 0.0f) {
         return false;
     }
