@@ -49,6 +49,8 @@
 #define ROW_BYTES_T5 (K_COLS / 5) /* 512: base-3, 8 groups of 64 B */
 #define SWEEPS 6
 
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+
 static double now_s(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -61,8 +63,6 @@ static uint32_t prng(uint32_t *s) {
     z          = (z ^ (z >> 13)) * 0xC2B2AE35u;
     return z ^ (z >> 16);
 }
-
-#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 
 #define T5_TARGET "avx512f,avx512bw,avx512vl,avx512vnni"
 
