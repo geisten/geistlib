@@ -352,9 +352,11 @@ kernels*.
 geist's own measured ternary numbers, for the ratios above: BitNet 2B-4T `i2_s`
 decode **17.4 t/s** vs bitnet.cpp 8.2 on the Pi5; on a 9950X, prefill pp128
 **884** vs 679 and decode tg128 **77.9** vs 56.5. (After the #102 x86 round —
-THP, fused-pair default, NTA weight prefetch, prefill tile 4 — the 9950X
-numbers are **1093 / 94.9**; see `BENCHMARK_X86.md` for the per-change ledger
-and the measured dead ends: top-k-sampling spec head, ReLU² block-skip.)
+THP, fused-pair default, NTA weight prefetch, prefill tile 4 — and the #104
+t5 base-3 decode packing (1.6 bpw, pow3 unpack — the TQ1_0 idea, x86-only),
+the 9950X numbers are **1098 / 103.1**; see `BENCHMARK_X86.md` for the
+per-change ledger and the measured dead ends: top-k-sampling spec head,
+ReLU² block-skip.)
 
 ### Honest reading
 

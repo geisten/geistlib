@@ -169,6 +169,47 @@ static void cpu_x86_linear_i2s_x4_m1(const float               *x,
     i2s_x4_gemv_m1(n_out, n_in, x, (const uint8_t *) w->aux_fp32, scale, y);
 }
 
+/* I2_S t5 decode (1.6 bpw, #104): the base-3 blob sits AFTER the x4 blob in
+ * the same aux allocation (prefill keeps reading the x4 section). */
+static inline const uint8_t *i2s_t5_section(const struct geist_weight *w) {
+    return (const uint8_t *) w->aux_fp32 + (size_t) w->n_out * (size_t) w->n_in / 4;
+}
+
+static void cpu_x86_linear_i2s_t5_m1(const float               *x,
+                                     const struct geist_weight *w,
+                                     struct geist_backend      *be,
+                                     float                     *y) {
+    (void) be;
+    const size_t n_in  = (size_t) w->n_in;
+    const size_t n_out = (size_t) w->n_out;
+    float        scale;
+    memcpy(&scale, (const uint8_t *) w->raw + n_in * n_out / 4, sizeof scale);
+    i2s_t5_gemv_m1(n_out, n_in, x, i2s_t5_section(w), scale, y);
+}
+
+static void cpu_x86_linear_i2s_t5_pair_m1(const float               *x,
+                                          const struct geist_weight *w0,
+                                          const struct geist_weight *w1,
+                                          struct geist_backend      *be,
+                                          float                     *y0,
+                                          float                     *y1) {
+    (void) be;
+    const size_t n_in = (size_t) w0->n_in;
+    float        s0, s1;
+    memcpy(&s0, (const uint8_t *) w0->raw + n_in * (size_t) w0->n_out / 4, sizeof s0);
+    memcpy(&s1, (const uint8_t *) w1->raw + n_in * (size_t) w1->n_out / 4, sizeof s1);
+    i2s_t5_gemv_pair_m1(n_in,
+                        x,
+                        i2s_t5_section(w0),
+                        s0,
+                        (size_t) w0->n_out,
+                        y0,
+                        i2s_t5_section(w1),
+                        s1,
+                        (size_t) w1->n_out,
+                        y1);
+}
+
 static void cpu_x86_linear_i2s_x4_mN(const float               *x,
                                      const struct geist_weight *w,
                                      size_t                     m,
@@ -222,30 +263,49 @@ static int cpu_x86_i2s_pair_enabled(void) {
     return e;
 }
 
+/* t5 decode blob (1.6 bpw, #104): default ON, GEIST_I2S_T5=0 keeps the
+ * 2-bit x4 decode. Host-constant after first read. */
+static int cpu_x86_i2s_t5_enabled(void) {
+    static int e = -1;
+    if (e < 0) {
+        const char *v = getenv("GEIST_I2S_T5");
+        e             = (v != nullptr && v[0] == '0') ? 0 : 1;
+    }
+    return e;
+}
+
 /* Install the x4 fast path: repack into the row-interleaved blob (aux,
- * heap-owned) and route both kernels there. Returns false (keep the packed
- * path) on shape mismatch or OOM. */
+ * heap-owned) and route both kernels there. When t5 is enabled, append the
+ * base-3 decode blob (−18.75 % decode bytes) and route m1/pair through it —
+ * prefill (mN) keeps the x4 GEMM (compute-bound; the pow3 unpack would cost
+ * it). Returns false (keep the packed path) on shape mismatch or OOM. */
 static bool cpu_x86_linear_i2s_x4_resolve(struct geist_weight *w) {
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
     if (n_out % 4 != 0 || n_in % 64 != 0 || !i2s_isa_is_vnni()) {
         return false;
     }
-    const size_t blob_bytes = n_out * n_in / 4;
+    const bool   t5         = cpu_x86_i2s_t5_enabled() != 0;
+    const size_t x4_bytes   = n_out * n_in / 4;
+    const size_t t5_bytes   = t5 ? n_out * i2s_t5_row_bytes(n_in) : 0;
+    const size_t blob_bytes = x4_bytes + t5_bytes;
     uint8_t     *blob       = heap_alloc_aligned(blob_bytes, OPTIMAL_ALIGNMENT);
     if (blob == nullptr) {
         return false;
     }
     i2s_to_x4(n_out, n_in, (const uint8_t *) w->raw, blob);
+    if (t5) {
+        i2s_to_t5(n_out, n_in, (const uint8_t *) w->raw, blob + x4_bytes);
+    }
     w->aux_fp32  = (const float *) blob;
     w->aux_n     = (int32_t) blob_bytes;
     w->flags     = (uint16_t) (w->flags | GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK);
-    w->linear_m1 = cpu_x86_linear_i2s_x4_m1;
+    w->linear_m1 = t5 ? cpu_x86_linear_i2s_t5_m1 : cpu_x86_linear_i2s_x4_m1;
     w->linear_mN = cpu_x86_linear_i2s_x4_mN;
-    /* Opt-in fused gate+up / q+k decode (dispatcher gates on equal
-     * linear_pair_m1 pointers + equal n_in between the two x4 weights). */
+    /* Fused gate+up / q+k decode (dispatcher gates on equal linear_pair_m1
+     * pointers + equal n_in between the two weights). */
     if (cpu_x86_i2s_pair_enabled()) {
-        w->linear_pair_m1 = cpu_x86_linear_i2s_x4_pair_m1;
+        w->linear_pair_m1 = t5 ? cpu_x86_linear_i2s_t5_pair_m1 : cpu_x86_linear_i2s_x4_pair_m1;
     }
     return true;
 }

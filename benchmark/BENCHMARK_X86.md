@@ -28,13 +28,14 @@ for the F16 tied lm_head:
 
 | metric | geist | bitnet.cpp | result |
 | :-- | --: | --: | :-- |
-| prefill pp128 | **1093** | 679 | **+61 %** |
-| decode  tg128 | **94.9** | 56.5 | **+68 %** |
+| prefill pp128 | **1098** | 679.9 | **+61 %** |
+| decode  tg128 | **103.1** | 54.3 | **+90 %** |
 
-(geist re-measured 2026-07-13 after #102; the bitnet.cpp reference numbers are
-the 2026-06 head-to-head runs — re-run `compare_ternary_pi5.sh` for a fresh
-pairing.) The AVX-512 code path is bit-identical to the scalar oracle (Δ=0);
-the spec-head greedy output is byte-identical to the exact F16 dense head.
+(Both engines re-measured 2026-07-13 on the same host/model after #102 +
+#104; bitnet.cpp via its bundled `llama-bench -p 128 -n 128 -t 16`.) The
+AVX-512 code path is bit-identical to the scalar oracle (Δ=0); the spec-head
+greedy output is byte-identical to the exact F16 dense head; the t5 decode
+output is byte-identical to the x4 decode.
 
 ### #102 optimization ledger (9950X, 16T `OMP_WAIT_POLICY=active`, mean-of-5)
 
@@ -44,7 +45,14 @@ the spec-head greedy output is byte-identical to the exact F16 dense head.
 | THP on >2 MB heap blobs (weight repacks, sketch) | 1044.7 | 92.9 |
 | `GEIST_I2S_PAIR` default ON (q+k / gate+up fused decode) | — | 94.6 |
 | `prefetchnta` on the x4 decode weight stream (512 B ahead) | — | +2.7 % (A/B 94.5 vs 92.0) |
-| prefill token tile `I2S_X4_TT` 2 → 4 | **1093** | **94.9** |
+| prefill token tile `I2S_X4_TT` 2 → 4 | 1093 | 94.9 |
+| **#104**: t5 base-3 decode packing, 1.6 bpw (pow3 unpack, 5 trits/byte) | **1098** | **103.1** (+10.5 % A/B vs x4 93.3) |
+
+The t5 blob rides in the same aux allocation after the x4 blob (prefill keeps
+the x4 GEMM — compute-bound, the pow3 unpack would cost it): RSS 2464 →
+2864 MB (+0.2 B/wt). `GEIST_I2S_T5=0` restores the pure 2-bit decode. The
+Phase-A spike (`bench_t5_unpack`) that gated this: 362 vs 298 Gwt/s on a
+DRAM-resident synthetic stream (ratio 1.21, gate ≥ 1.05).
 
 Thread sweep: 16 T (physical cores) optimal for both phases; SMT (32 T) costs
 −24 % decode. Measured **dead ends** (kept out, see #102): spec-head for top-k
