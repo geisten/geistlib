@@ -85,6 +85,29 @@ jobs:
           name: geist-linux-arm64
           path: geist-linux-arm64.tar.gz
 
+      # libgeist SDK artifact (see the x86_64 job for rationale): static lib +
+      # headers, built with the same musl/native recipe, smoke-linked against the
+      # packaged artifact. (geisten#91)
+      - name: Build + smoke + package libgeist SDK
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+            set -e
+            apk add --no-cache build-base linux-headers
+            make TARGET=linux CC=gcc GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE lib
+            mkdir -p dist/libgeist-linux-arm64/include
+            cp lib/linux/release/libgeist.a dist/libgeist-linux-arm64/
+            cp include/*.h dist/libgeist-linux-arm64/include/
+            cp LICENSE dist/libgeist-linux-arm64/
+            d=dist/libgeist-linux-arm64
+            cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" -lm -o /tmp/sdk_smoke
+            /tmp/sdk_smoke
+          '
+          tar -C dist -czf libgeist-linux-arm64.tar.gz libgeist-linux-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libgeist-linux-arm64
+          path: libgeist-linux-arm64.tar.gz
+
       # Optional: a second binary with the model baked in (.incbin, zero-copy).
       # rm geist.o first — the plain build above compiled it without
       # -DGEIST_EMBEDDED_MODEL and make doesn't track that flag flip.
@@ -177,6 +200,31 @@ jobs:
           name: geist-linux-x86_64
           path: geist-linux-x86_64.tar.gz
 
+      # libgeist SDK artifact: the static lib + public headers for in-process
+      # embedders (secondary to the runtime; never a downloadable app). Built with
+      # the same musl/backends recipe as the binary above, then a model-free smoke
+      # (examples/embed_smoke.c) links ONLY against the packaged headers+archive to
+      # prove the artifact is self-consistent. (geisten#91)
+      - name: Build + smoke + package libgeist SDK
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+            set -e
+            apk add --no-cache build-base linux-headers
+            make TARGET=linux CC=gcc BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE lib
+            mkdir -p dist/libgeist-linux-x86_64/include
+            cp lib/linux/release/libgeist.a dist/libgeist-linux-x86_64/
+            cp include/*.h dist/libgeist-linux-x86_64/include/
+            cp LICENSE dist/libgeist-linux-x86_64/
+            d=dist/libgeist-linux-x86_64
+            cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" -lm -o /tmp/sdk_smoke
+            /tmp/sdk_smoke
+          '
+          tar -C dist -czf libgeist-linux-x86_64.tar.gz libgeist-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libgeist-linux-x86_64
+          path: libgeist-linux-x86_64.tar.gz
+
       # Optional: a second binary with BitNet baked in (.incbin, zero-copy) — now
       # that the x86 I2_S kernels make ternary fast on x86. rm geist.o first (the
       # plain build above compiled it without -DGEIST_EMBEDDED_MODEL).
@@ -259,6 +307,25 @@ jobs:
         with:
           name: geist-macos-arm64
           path: geist-macos-arm64.tar.gz
+
+      # libgeist SDK artifact (see the x86_64 job for rationale): static lib +
+      # headers, built with the same mac recipe, smoke-linked against the packaged
+      # artifact. (geisten#91)
+      - name: Build + smoke + package libgeist SDK
+        run: |
+          make TARGET=mac-omp CC=clang GEIST_STATIC_OMP=1 lib
+          mkdir -p dist/libgeist-macos-arm64/include
+          cp lib/mac-omp/release/libgeist.a dist/libgeist-macos-arm64/
+          cp include/*.h dist/libgeist-macos-arm64/include/
+          cp LICENSE dist/libgeist-macos-arm64/
+          d=dist/libgeist-macos-arm64
+          cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" -lm -o /tmp/sdk_smoke
+          /tmp/sdk_smoke
+          tar -C dist -czf libgeist-macos-arm64.tar.gz libgeist-macos-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libgeist-macos-arm64
+          path: libgeist-macos-arm64.tar.gz
 
       # Optional: a second binary with the model baked in. rm geist.o first (the
       # plain build compiled it without -DGEIST_EMBEDDED_MODEL; make won't notice).
