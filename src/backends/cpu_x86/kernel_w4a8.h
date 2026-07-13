@@ -151,6 +151,12 @@ enum w4a8_isa w4a8_dispatcher_init(void);
 /* Inspect the dispatcher choice (post-init). Returns SCALAR if uninitialized. */
 enum w4a8_isa w4a8_dispatcher_current(void);
 
+/* The probed + GEIST_FORCE_ISA-clamped ISA tier of this host (init-on-first-
+ * call). Unlike w4a8_dispatcher_current(), this preserves the AVX2/AVX512
+ * distinction even where the w4a8 dot has no such variant — use it to gate
+ * any AVX-512 kernel so the env clamp is honored everywhere. */
+enum w4a8_isa w4a8_dispatcher_tier(void);
+
 /* Human-readable name for an ISA tier. */
 const char *w4a8_isa_name(enum w4a8_isa isa);
 
