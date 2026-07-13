@@ -1,0 +1,15 @@
+# build artifacts
+geist-fn
+*.o
+*.d
+
+# imported engine (regenerate with `make import`)
+lib/geistenlib.a
+include/geisten/
+
+# standalone-mode engine checkout
+vendor/
+
+# model files
+models/
+*.gguf
