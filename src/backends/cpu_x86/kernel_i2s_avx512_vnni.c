@@ -241,7 +241,7 @@ void i2s_x4_gemv_pair_m1_avx512_vnni(size_t        n_in,
     }
 }
 
-#define I2S_X4_TT 2 /* tokens per tile: 4 rows × TT → 4·TT live accumulators */
+#define I2S_X4_TT 4 /* 16 live accumulators; swept 2/4/8 on the 9950X — 4 wins (#102 Ph. 4) */
 
 void i2s_x4_gemm_avx512_vnni(size_t         m,
                              size_t         n_out,
