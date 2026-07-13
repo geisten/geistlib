@@ -107,6 +107,29 @@ jobs:
           cp bin/linux/release/tools/geist dist/geist-bitnet-linux-arm64/geist-bitnet
           cp README.md LICENSE dist/geist-bitnet-linux-arm64/
           tar -C dist -czf geist-bitnet-linux-arm64.tar.gz geist-bitnet-linux-arm64
+      # dynamic-tools-v1 health handshake against the shipped embedded artifact
+      # (see the x86_64 job for rationale). Proves --serve answers the protocol
+      # with the documented ready frame on aarch64 (geisten#87).
+      - name: Health-handshake smoke (embedded --serve)
+        if: env.EMBED_MODEL_URL != ''
+        run: |
+          sock="$RUNNER_TEMP/geist-health.sock"
+          ./bin/linux/release/tools/geist --serve "$sock" &
+          pid=$!
+          for _ in $(seq 1 120); do [ -S "$sock" ] && break; sleep 1; done
+          [ -S "$sock" ] || { echo "::error::--serve socket never appeared"; kill "$pid" 2>/dev/null || true; exit 1; }
+          python3 -c '
+          import socket, sys
+          s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(sys.argv[1])
+          s.sendall(b"{\"type\":\"health\"}\n")
+          r = s.recv(4096).decode()
+          print("health reply:", r.strip())
+          assert "\"protocol\":\"dynamic-tools-v1\"" in r and "\"status\":\"ready\"" in r, "unexpected health reply: " + r
+          print("health handshake OK")
+          ' "$sock"
+          rc=$?
+          kill "$pid" 2>/dev/null || true
+          exit $rc
       - uses: actions/upload-artifact@v4
         if: env.EMBED_MODEL_URL != ''
         with:
@@ -176,6 +199,31 @@ jobs:
           cp bin/linux/release/tools/geist dist/geist-bitnet-linux-x86_64/geist-bitnet
           cp README.md LICENSE dist/geist-bitnet-linux-x86_64/
           tar -C dist -czf geist-bitnet-linux-x86_64.tar.gz geist-bitnet-linux-x86_64
+      # dynamic-tools-v1 health handshake against the shipped embedded artifact:
+      # start --serve (internal model), send {"type":"health"}, require the
+      # documented ready frame, shut down. Proves the runtime artifact answers the
+      # protocol on this arch (geisten#87). Correctness is also unit-tested
+      # (test_dynamic_host_v1_unit); this exercises the real binary.
+      - name: Health-handshake smoke (embedded --serve)
+        if: env.EMBED_MODEL_URL != ''
+        run: |
+          sock="$RUNNER_TEMP/geist-health.sock"
+          ./bin/linux/release/tools/geist --serve "$sock" &
+          pid=$!
+          for _ in $(seq 1 120); do [ -S "$sock" ] && break; sleep 1; done
+          [ -S "$sock" ] || { echo "::error::--serve socket never appeared"; kill "$pid" 2>/dev/null || true; exit 1; }
+          python3 -c '
+          import socket, sys
+          s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(sys.argv[1])
+          s.sendall(b"{\"type\":\"health\"}\n")
+          r = s.recv(4096).decode()
+          print("health reply:", r.strip())
+          assert "\"protocol\":\"dynamic-tools-v1\"" in r and "\"status\":\"ready\"" in r, "unexpected health reply: " + r
+          print("health handshake OK")
+          ' "$sock"
+          rc=$?
+          kill "$pid" 2>/dev/null || true
+          exit $rc
       - uses: actions/upload-artifact@v4
         if: env.EMBED_MODEL_URL != ''
         with:

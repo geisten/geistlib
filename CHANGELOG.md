@@ -8,6 +8,15 @@ minor release.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-13
+
+First release of the host-neutral `dynamic-tools-v1` runtime artifact. A consumer
+pins the protocol id `dynamic-tools-v1` + a binary SHA-256 (published as
+`SHA256SUMS`) and verifies with the startup health handshake
+(`{"type":"health"}` → `…"status":"ready"`). Start forms: `geist --serve SOCKET`
+runs the internal (baked-in) model; `geist -m MODEL --serve SOCKET` an external
+one. Compatibility contract: `docs/proposals/dynamic-tools-v1.md`.
+
 ### Added — host-neutral dynamic tools v1
 
 - `geist agent --serve` accepts an immutable per-request `tools` array and
