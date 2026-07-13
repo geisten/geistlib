@@ -170,6 +170,10 @@ static inline void i2s_x4_group_m1(const uint8_t *Wg,
     __m512i a2 = _mm512_setzero_si512();
     __m512i a3 = _mm512_setzero_si512();
     for (size_t cb = 0; cb < n_cblocks; cb++) {
+        /* Weights stream once per token — NTA prefetch keeps them from
+         * evicting the resident activations/KV out of L3. Distance 512 B
+         * won the 256/512/1024 sweep; A/B: +2.7 % decode (#102 Phase 2). */
+        _mm_prefetch((const char *) (Wg + cb * 64 + 512), _MM_HINT_NTA);
         const __m512i w = _mm512_loadu_si512((const void *) (Wg + cb * 64));
         const __m512i a = _mm512_loadu_si512((const void *) (xq + cb * 64));
         a0              = _mm512_dpbusd_epi32(a0, _mm512_and_si512(_mm512_srli_epi16(w, 6), m3), a);
@@ -237,7 +241,7 @@ void i2s_x4_gemv_pair_m1_avx512_vnni(size_t        n_in,
     }
 }
 
-#define I2S_X4_TT 2 /* tokens per tile: 4 rows × TT → 4·TT live accumulators */
+#define I2S_X4_TT 4 /* 16 live accumulators; swept 2/4/8 on the 9950X — 4 wins (#102 Ph. 4) */
 
 void i2s_x4_gemm_avx512_vnni(size_t         m,
                              size_t         n_out,

@@ -7,6 +7,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
+
 // Ensure alignment is a power of 2 (e.g., 16, 32, 64)
 uintptr_t aligned_size(const size_t size, const size_t alignment) {
     return (size + alignment - 1) & ~(alignment - 1);
@@ -204,7 +208,25 @@ void *heap_alloc_aligned(const size_t size, size_t alignment) {
     if (!checked_round_up(size, alignment, &aligned)) {
         return nullptr;
     }
-    return portable_aligned_alloc(alignment, aligned);
+    void *p = portable_aligned_alloc(alignment, aligned);
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+    /* Big streaming allocations (backend weight repacks, lm_head sketch/Q8
+     * blobs — hundreds of MB read every token) benefit from THP the same way
+     * the GGUF mmap does (gguf_reader.c apply_mmap_advice): fewer TLB misses
+     * in bandwidth-bound GEMVs. Advisory; same opt-out env. #102 Phase 0. */
+    if (p != nullptr && aligned >= (2u << 20) && getenv("GEIST_NO_HUGEPAGE") == nullptr) {
+        /* madvise needs a page-aligned address; the allocation is only
+         * `alignment`-aligned. Advise the page-aligned sub-range. */
+        const size_t    page  = 4096;
+        const uintptr_t base  = (uintptr_t) p;
+        const uintptr_t first = (base + page - 1) & ~(uintptr_t) (page - 1);
+        const size_t    skip  = (size_t) (first - base);
+        if (aligned > skip + page) {
+            (void) madvise((void *) first, aligned - skip, MADV_HUGEPAGE);
+        }
+    }
+#endif
+    return p;
 }
 
 void *heap_calloc_aligned(const size_t count, const size_t size, const size_t alignment) {

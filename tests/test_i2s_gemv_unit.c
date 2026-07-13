@@ -160,27 +160,62 @@ static int scenario(size_t N, size_t K) {
             fail = 1;
         }
 
-        /* (5) fused pair == two separate m1 (same weight twice, distinct scales). */
-        float *yp0 = malloc(N * sizeof(float));
-        float *yp1 = malloc(N * sizeof(float));
-        i2s_x4_gemv_pair_m1(K, x, x4, scale, N, yp0, x4, scale * 0.5f, N, yp1);
-        float *yref1 = malloc(N * sizeof(float));
-        i2s_x4_gemv_m1(N, K, x, x4, scale * 0.5f, yref1);
-        double max_pair = 0.0;
-        for (size_t r = 0; r < N; r++) {
-            double d0 = fabs((double) yp0[r] - (double) y_x4[r]); /* y_x4 used scale */
-            double d1 = fabs((double) yp1[r] - (double) yref1[r]);
-            if (d0 > max_pair) {
-                max_pair = d0;
-            }
-            if (d1 > max_pair) {
-                max_pair = d1;
-            }
+        /* (5) fused pair == two separate m1, BYTE-exact. Two DISTINCT weights
+         * with different n_out (like q 2560 + k 640, gate/up 6912): a slot or
+         * offset mix-up between the pair's two weights is invisible when both
+         * slots get the same buffer — that hole hid the #102 Phase 2 pair
+         * regression, so this now builds a second weight (different trits,
+         * N2 = N/2 rounded to a multiple of 4) and memcmp's both outputs. */
+        size_t N2 = (N / 2) & ~(size_t) 3;
+        if (N2 == 0) {
+            N2 = N;
         }
-        if (max_pair > 1e-3) {
-            fprintf(stderr, "  [N=%zu K=%zu] pair vs m1 Δ=%.3e\n", N, K, max_pair);
+        uint8_t *W2 = calloc(N2 * row_bytes + sizeof(float), 1);
+        for (size_t i = 0; i < N2 * row_bytes; i++) {
+            W2[i] = (uint8_t) (prng(&s) % 255); /* raw 2-bit fields, values 0..2 per field */
+        }
+        /* Re-encode to valid trit codes (each 2-bit field in {0,1,2}). */
+        for (size_t i = 0; i < N2 * row_bytes; i++) {
+            uint8_t b = 0;
+            for (size_t g = 0; g < 4; g++) {
+                b = (uint8_t) (b | ((prng(&s) % 3) << (6 - 2 * g)));
+            }
+            W2[i] = b;
+        }
+        uint8_t *x4_2 = malloc(N2 * K / 4);
+        i2s_to_x4(N2, K, W2, x4_2);
+        float *yp0   = malloc(N * sizeof(float));
+        float *yp1   = malloc(N2 * sizeof(float));
+        float *yref1 = malloc(N2 * sizeof(float));
+        i2s_x4_gemv_pair_m1(K, x, x4, scale, N, yp0, x4_2, scale * 0.5f, N2, yp1);
+        i2s_x4_gemv_m1(N2, K, x, x4_2, scale * 0.5f, yref1);
+        if (memcmp(yp0, y_x4, N * sizeof(float)) != 0 ||
+            memcmp(yp1, yref1, N2 * sizeof(float)) != 0) {
+            fprintf(stderr, "  [N=%zu/%zu K=%zu] pair vs m1 NOT byte-identical\n", N, N2, K);
+            for (size_t r = 0; r < N; r++) {
+                if (yp0[r] != y_x4[r]) {
+                    fprintf(stderr,
+                            "    slot0 first diff @%zu: pair=%.9g m1=%.9g\n",
+                            r,
+                            (double) yp0[r],
+                            (double) y_x4[r]);
+                    break;
+                }
+            }
+            for (size_t r = 0; r < N2; r++) {
+                if (yp1[r] != yref1[r]) {
+                    fprintf(stderr,
+                            "    slot1 first diff @%zu: pair=%.9g m1=%.9g\n",
+                            r,
+                            (double) yp1[r],
+                            (double) yref1[r]);
+                    break;
+                }
+            }
             fail = 1;
         }
+        free(W2);
+        free(x4_2);
         free(yp0);
         free(yp1);
         free(yref1);
@@ -215,10 +250,11 @@ static int scenario(size_t N, size_t K) {
 
 int main(void) {
     int fail = 0;
-    fail |= scenario(64, 2560);  /* BitNet-2B-4T attn_output / q_proj */
-    fail |= scenario(640, 2560); /* k/v proj n_out */
-    fail |= scenario(32, 6912);  /* ffn_down n_in */
-    fail |= scenario(48, 512);   /* small, non-multiple-of-16 row count */
+    fail |= scenario(64, 2560);   /* BitNet-2B-4T attn_output / q_proj */
+    fail |= scenario(640, 2560);  /* k/v proj n_out */
+    fail |= scenario(32, 6912);   /* ffn_down n_in */
+    fail |= scenario(48, 512);    /* small, non-multiple-of-16 row count */
+    fail |= scenario(6912, 2560); /* full-size ffn gate/up (pair in vivo) */
     if (fail) {
         fprintf(stderr, "test_i2s_gemv_unit: FAIL\n");
         return 1;
