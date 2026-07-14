@@ -36,10 +36,10 @@
 <rect x="582.0" y="215.0" width="17.5" height="23" rx="3" fill="#0ea5a4"/>
 <text x="608.5" y="231.0" font-size="15" font-weight="700" fill="#0e7490">1.1&#215;</text>
 <text x="56" y="349.0" font-size="13.5" font-weight="600" fill="#0f172a">BitNet b1.58 2B-4T <tspan fill="#94a3b8" font-weight="400">· decode (tg128)</tspan></text>
-<text x="56" y="366.0" font-size="11" fill="#64748b">77.9 vs 56.5 t/s · bitnet.cpp <tspan fill="#94a3b8">master</tspan></text>
+<text x="56" y="366.0" font-size="11" fill="#64748b">103.1 vs 54.3 t/s · bitnet.cpp <tspan fill="#94a3b8">master</tspan></text>
 <rect x="412" y="341.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
-<rect x="582.0" y="341.0" width="64.4" height="23" rx="3" fill="#0ea5a4"/>
-<text x="655.4" y="357.0" font-size="15" font-weight="700" fill="#0e7490">1.4&#215;</text>
+<rect x="582.0" y="341.0" width="152.8" height="23" rx="3" fill="#0ea5a4"/>
+<text x="743.8" y="357.0" font-size="15" font-weight="700" fill="#0e7490">1.9&#215;</text>
 <text x="56" y="405.0" font-size="13.5" font-weight="600" fill="#0f172a">Gemma 4 E2B-it <tspan fill="#94a3b8" font-weight="400">· decode</tspan></text>
 <text x="56" y="422.0" font-size="11" fill="#64748b">48.6 vs 44.1 t/s · llama.cpp <tspan fill="#94a3b8">b9827</tspan></text>
 <rect x="412" y="397.0" width="170.0" height="23" rx="3" fill="#c7ede3"/>
