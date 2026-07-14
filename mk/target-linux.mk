@@ -1,15 +1,11 @@
 # mk/target-linux.mk — generic Linux target.
 #
-# geist's compute kernels are currently NEON-only: arm_neon.h is included
-# unconditionally across src/formats/gguf/, src/backends/common/, and
-# src/formats/ptqtp/. The x86 backend (src/backends/cpu_x86/) is a policy
-# skeleton, not a working compute path yet. Therefore:
-#
-#   * aarch64 / arm64  → supported. Generic ARMv8.2 tuning (Graviton, Ampere,
-#                        generic ARM64 servers/SBCs). For a Raspberry Pi 5
-#                        specifically, prefer `make TARGET=pi5` (cortex-a76).
-#   * x86_64           → not supported yet. We fail fast with guidance rather
-#                        than emitting a wall of arm_neon.h compile errors.
+#   * aarch64 / arm64  → cpu_neon + cpu_scalar. Generic ARMv8.2 tuning
+#                        (Graviton, Ampere, generic ARM64 servers/SBCs). For a
+#                        Raspberry Pi 5 specifically, prefer `make TARGET=pi5`
+#                        (cortex-a76).
+#   * x86_64           → cpu_x86 + cpu_scalar (AVX-512/VNNI tiers runtime-
+#                        dispatched over an x86-64-v3 baseline; see #96/#108).
 #
 # Stack mirrors pi5: OpenBLAS (cblas, dense fp32), OpenMP; FFT vendored.
 # Override OpenBLAS location via OPENBLAS_LIBS (see `make help`).
@@ -19,16 +15,21 @@ LINUX_ARCH := $(shell uname -m)
 # Compiler — gcc-13+ or clang-16+ for C23 support.
 CC ?= cc
 
-# ----- x86_64 path (Phase 0 of docs/LINUX_X86_SPEC.md) ---------------------
+# ----- x86_64 path ----------------------------------------------------------
 #
-# Native cpu_x86 backend is under construction on feat/cpu-x86 (gated, opt-in
-# via BACKENDS="cpu_x86 cpu_scalar"). Default x86_64 build today is cpu_scalar
-# only — slow but correct — until the Phase-2 win criteria are measured and
-# this file flips x86_64 default BACKENDS to "cpu_x86 cpu_scalar". See
-# docs/LINUX_X86_SPEC.md §"Build target" and §"Branch and merge strategy".
+# Native cpu_x86 backend is the DEFAULT (#108). The old opt-in gate ("until
+# the Phase-2 win criteria are measured") is long met: matches-to-beats
+# llama.cpp on Gemma/Llama and beats bitnet.cpp by +61 % prefill / +90 %
+# decode on BitNet (benchmark/BENCHMARK_X86.md); every AVX-512 kernel is
+# runtime-gated behind hw_probe/cpuid (#96) so the x86-64-v3 baseline below
+# remains the only hardware floor; the CI x86 int/e2e strand (native +
+# GEIST_FORCE_ISA=avx2) is required. A plain `make` previously shipped the
+# ~200× slower scalar path — the same trap #102 fixed in bench_perf_sweep.
+# BACKENDS="cpu_scalar" still builds the portable reference (dedicated CI
+# job). Remember `make clean` when switching BACKENDS.
 ifeq ($(LINUX_ARCH),x86_64)
 
-BACKENDS ?= cpu_scalar
+BACKENDS ?= cpu_x86 cpu_scalar
 
 # Baseline x86-64-v3 (Haswell+: AVX2, FMA, BMI2). Per-TU -march= flags in
 # mk/backend-cpu_x86.mk override this for the AVX-512 / +VNNI / +BF16 tiers.
