@@ -65,8 +65,8 @@ cluster), `I2S_X4_TT=8` (register spills, 811 t/s).
 ## Reproduce
 
 ```bash
-# geist (native cpu_x86 backend, opt-in on x86):
-make TARGET=linux BACKENDS="cpu_x86 cpu_scalar"
+# geist (native cpu_x86 backend — the x86 default since #108):
+make TARGET=linux
 OMP_NUM_THREADS=16 OMP_WAIT_POLICY=active \
   bin/linux/release/tests/bench_perf_sweep --gguf $M --seq-lens 128 --decode-n 128
 
