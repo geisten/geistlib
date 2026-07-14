@@ -93,7 +93,9 @@ headers:
 
 - **Prebuilt** (per release): download `libgeist-<platform>.tar.gz` from the
   [latest release](https://github.com/geisten/geisten/releases/latest) — it holds
-  `libgeist.a`, `include/*.h` and `LICENSE`. Verify it against `SHA256SUMS`.
+  `libgeist.a`, `include/*.h` (the engine ABI **and** the header-only tool-use
+  interface: `agent.h`, `agent_main.h`, the `dynamic_*_v1.h` / `json_schema_v1.h`
+  set) and `LICENSE`. Verify it against `SHA256SUMS`.
   Platforms: `macos-arm64`, `linux-arm64`, `linux-x86_64`.
 - **From source:** `make lib` builds `lib/<target>/<mode>/libgeist.a`.
 
