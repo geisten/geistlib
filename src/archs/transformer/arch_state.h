@@ -335,7 +335,7 @@ struct transformer_arch_state {
      * scratch_pool_buf) so norm weights / embed tables inside it are
      * GPU-bindable. nullptr in mmap-alias mode or on heap fallback. */
     struct geist_buffer *weight_arena_buf;
-    size_t weight_arena_capacity;
+    size_t               weight_arena_capacity;
 
     /* ---- Per-layer weight blocks. P1.4.c heap-sizes this array to
      * st->n_layers (was GEIST_GEMMA4_NUM_LAYERS-sized in P1.4.b). */

@@ -344,9 +344,11 @@ distclean:
 # Code formatting via clang-format. Reads .clang-format from repo root.
 # `make format` rewrites in place; `make format-check` is dry-run for CI.
 # Covers the whole src/ tree (recursive), tests/, and any root-level *.c/*.h.
-# third_party/ is vendored and intentionally excluded.
+# third_party/ is vendored and intentionally excluded, as are the GENERATED
+# SPIR-V shader headers (*_spv.h, emitted by `make vulkan-shaders`) — machine
+# output is not subject to the style gate and reformatting it would churn.
 FORMAT_FILES := $(wildcard *.c *.h tests/*.c tests/*.h) \
-                $(shell find src -name '*.c' -o -name '*.h')
+                $(shell find src \( -name '*.c' -o -name '*.h' \) ! -name '*_spv.h')
 
 format:
 	@clang-format -i $(FORMAT_FILES)

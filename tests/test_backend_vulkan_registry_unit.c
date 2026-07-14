@@ -32,9 +32,12 @@ int main(void) {
 
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("vulkan", nullptr, nullptr, &be);
-    if (s == GEIST_E_UNSUPPORTED) {
-        fprintf(stderr, "SKIP: no Vulkan runtime/device on this machine\n");
-        return 0;
+    if (s == GEIST_E_UNSUPPORTED || s == GEIST_E_NOT_FOUND) {
+        /* UNSUPPORTED: no Vulkan loader/device at runtime. NOT_FOUND: the
+         * backend is not compiled in (BACKENDS without "vulkan" — every
+         * default CI build). Both are environment facts, not failures. */
+        fprintf(stderr, "SKIP: vulkan backend unavailable (not built or no device)\n");
+        return GEIST_TEST_SKIP;
     }
     fails += check(s == GEIST_OK, "geist_backend_create(\"vulkan\") returns OK");
     fails += check(be != nullptr, "backend handle is non-null");

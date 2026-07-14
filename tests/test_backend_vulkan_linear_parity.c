@@ -100,9 +100,10 @@ static void run_case_tol(struct geist_backend *vk,
         x[i] = ((float) rng_u8() - 127.5f) / 32.0f;
     }
 
-    struct geist_weight w_vk = {
-            .raw = blob, .n_in = (int32_t) n_in, .n_out = (int32_t) n_out,
-            .dtype = (uint16_t) dtype};
+    struct geist_weight w_vk = {.raw   = blob,
+                                .n_in  = (int32_t) n_in,
+                                .n_out = (int32_t) n_out,
+                                .dtype = (uint16_t) dtype};
     struct geist_weight w_rf = w_vk;
 
     check(vk->desc->vtbl->resolve_weight(vk, &w_vk) == GEIST_OK, "vulkan resolve_weight");
@@ -129,11 +130,16 @@ static void run_case_tol(struct geist_backend *vk,
         }
     }
     char label[128];
-    snprintf(label, sizeof label, "%s m=%zu (%zux%zu) parity, max_rel=%.2e", name, m, n_out,
-             n_in, max_rel);
+    snprintf(label,
+             sizeof label,
+             "%s m=%zu (%zux%zu) parity, max_rel=%.2e",
+             name,
+             m,
+             n_out,
+             n_in,
+             max_rel);
     check(max_rel < tol, label);
-    printf("  %-10s m=%-3zu  max_rel %.2e %s\n", name, m, max_rel,
-           max_rel < tol ? "OK" : "FAIL");
+    printf("  %-10s m=%-3zu  max_rel %.2e %s\n", name, m, max_rel, max_rel < tol ? "OK" : "FAIL");
 
     free(blob);
     free(x);
@@ -143,9 +149,11 @@ static void run_case_tol(struct geist_backend *vk,
 
 int main(void) {
     struct geist_backend *vk = nullptr;
-    if (geist_backend_create("vulkan", nullptr, nullptr, &vk) == GEIST_E_UNSUPPORTED) {
-        fprintf(stderr, "SKIP: no Vulkan runtime/device on this machine\n");
-        return 0;
+    enum geist_status     vs = geist_backend_create("vulkan", nullptr, nullptr, &vk);
+    if (vs == GEIST_E_UNSUPPORTED || vs == GEIST_E_NOT_FOUND) {
+        /* Not built in (default CI BACKENDS) or no loader/device — skip. */
+        fprintf(stderr, "SKIP: vulkan backend unavailable (not built or no device)\n");
+        return GEIST_TEST_SKIP;
     }
     struct geist_backend *ref = nullptr;
     check(vk != nullptr, "vulkan backend");

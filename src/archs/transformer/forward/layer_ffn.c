@@ -83,8 +83,12 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         L->down_awq_inv_scale == nullptr) {
         struct geist_tensor t_gate_f_2d =
                 view_2d(st->sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
-        ffn_front_fused = v->ffn_norm_gate_up(be, &t_h_post_attn_2d, &t_w_ffn_norm, ctx->eps,
-                                              &L->gate_proj, &L->up_proj,
+        ffn_front_fused = v->ffn_norm_gate_up(be,
+                                              &t_h_post_attn_2d,
+                                              &t_w_ffn_norm,
+                                              ctx->eps,
+                                              &L->gate_proj,
+                                              &L->up_proj,
                                               &t_gate_f_2d) == GEIST_OK;
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
     }

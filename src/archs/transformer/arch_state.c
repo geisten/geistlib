@@ -335,14 +335,18 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
              * alloc_scratch is safe: causal attention reads only rows that
              * a prior append wrote. */
             const size_t kv_elem_bytes = st->sess->kv_f16_enabled ? 2u : sizeof(float);
-            s = be->desc->vtbl->buffer_create(be, n_elems * kv_elem_bytes,
-                                              GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO,
-                                              &st->sess->k_cache[li]);
+            s                          = be->desc->vtbl->buffer_create(be,
+                                                                       n_elems * kv_elem_bytes,
+                                                                       GEIST_BUFFER_KV_CACHE,
+                                                                       GEIST_MEMORY_AUTO,
+                                                                       &st->sess->k_cache[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = be->desc->vtbl->buffer_create(be, n_elems * kv_elem_bytes,
-                                              GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO,
+            s = be->desc->vtbl->buffer_create(be,
+                                              n_elems * kv_elem_bytes,
+                                              GEIST_BUFFER_KV_CACHE,
+                                              GEIST_MEMORY_AUTO,
                                               &st->sess->v_cache[li]);
             if (s != GEIST_OK) {
                 return s;
@@ -615,11 +619,11 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
        * fit (m×n_in int8 should fit the 64 KB L1: m=32→48 KB, m=64→96 KB).
        * GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; the metal
        * path never runs those in prefill, so the GPU may batch larger. */
-        const bool  is_gpu = be->desc != nullptr && be->desc->name != nullptr &&
-                             (strcmp(be->desc->name, "metal") == 0 ||
-                              strcmp(be->desc->name, "vulkan") == 0);
-        const int   cap    = is_gpu ? 512 : (int) GEIST_QUANT_M_CAP;
-        const char *mm       = getenv("GEIST_M_MAX");
+        const bool is_gpu =
+                be->desc != nullptr && be->desc->name != nullptr &&
+                (strcmp(be->desc->name, "metal") == 0 || strcmp(be->desc->name, "vulkan") == 0);
+        const int   cap = is_gpu ? 512 : (int) GEIST_QUANT_M_CAP;
+        const char *mm  = getenv("GEIST_M_MAX");
         if (mm != nullptr && mm[0] != '\0') {
             const int v = atoi(mm);
             if (v > 0 && v <= cap)

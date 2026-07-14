@@ -33,9 +33,12 @@ int main(void) {
 
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("vulkan", nullptr, nullptr, &be);
-    if (s == GEIST_E_UNSUPPORTED) {
-        fprintf(stderr, "SKIP: no Vulkan runtime/device on this machine\n");
-        return 0;
+    if (s == GEIST_E_UNSUPPORTED || s == GEIST_E_NOT_FOUND) {
+        /* UNSUPPORTED: no Vulkan loader/device at runtime. NOT_FOUND: the
+         * backend is not compiled in (BACKENDS without "vulkan" — every
+         * default CI build). Both are environment facts, not failures. */
+        fprintf(stderr, "SKIP: vulkan backend unavailable (not built or no device)\n");
+        return GEIST_TEST_SKIP;
     }
     if (check(s == GEIST_OK && be != nullptr, "backend create") != 0) {
         return 1;
@@ -57,8 +60,7 @@ int main(void) {
         fails += check(p != nullptr, "scratch buffer_map is non-null");
         fails += check(v->buffer_upload(scratch, N, pattern) == GEIST_OK, "scratch upload");
         memset(readback, 0, N);
-        fails += check(v->buffer_download(N, readback, scratch) == GEIST_OK,
-                       "scratch download");
+        fails += check(v->buffer_download(N, readback, scratch) == GEIST_OK, "scratch download");
         fails += check(memcmp(pattern, readback, N) == 0, "scratch round-trip bit-exact");
         if (p != nullptr) {
             fails += check(memcmp(p, pattern, N) == 0, "scratch map sees uploaded bytes");
@@ -76,8 +78,7 @@ int main(void) {
     if (s == GEIST_OK) {
         fails += check(v->buffer_map(weight) == nullptr,
                        "weight (device-local) buffer_map is nullptr");
-        fails += check(v->buffer_upload(weight, N, pattern) == GEIST_OK,
-                       "weight staged upload");
+        fails += check(v->buffer_upload(weight, N, pattern) == GEIST_OK, "weight staged upload");
         memset(readback, 0, N);
         fails += check(v->buffer_download(N, readback, weight) == GEIST_OK,
                        "weight staged download");
@@ -96,8 +97,7 @@ int main(void) {
         fails += check(v->buffer_upload(aliased, N, pattern) == GEIST_OK, "aliased upload");
         fails += check(memcmp(host, pattern, N) == 0, "aliased upload lands in host region");
         memset(readback, 0, N);
-        fails += check(v->buffer_download(N, readback, aliased) == GEIST_OK,
-                       "aliased download");
+        fails += check(v->buffer_download(N, readback, aliased) == GEIST_OK, "aliased download");
         fails += check(memcmp(pattern, readback, N) == 0, "aliased round-trip bit-exact");
         v->buffer_destroy(be, aliased);
         /* destroy must not free the aliased bytes — touch them afterwards */
