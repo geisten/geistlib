@@ -63,7 +63,7 @@ other adapter; Geist contains no Home Assistant credentials or product logic.
   <strong>~2 s</strong> voice command → action <sub>(smart home, Pi 5, offline)</sub> &nbsp;·&nbsp;
   <strong>2.1×</strong> BitNet decode vs bitnet.cpp <sub>(Pi 5)</sub> &nbsp;·&nbsp;
   <strong>1.5×</strong> prefill vs llama.cpp <sub>(M1 Max)</sub> &nbsp;·&nbsp;
-  <strong>1.4×</strong> BitNet decode vs bitnet.cpp <sub>(x86)</sub> &nbsp;·&nbsp;
+  <strong>1.9×</strong> BitNet decode vs bitnet.cpp <sub>(x86)</sub> &nbsp;·&nbsp;
   <strong>&lt; 1 MB</strong> binary, zero deps
   <br>
   <sub><a href="#faster-where-it-counts">↓ full scoreboard — decode t/s on every system, one metric</a></sub>
@@ -199,7 +199,7 @@ Same GGUF, greedy decode. geist leads **end-to-end throughput** on a Pi 5,
 x86** (9950X: prefill +30 %, decode +38 %) — across edge and desktop:
 
 <p align="center">
-  <img src="assets/headline_benchmarks.svg" alt="Decode-throughput scoreboard: geist divided by its baseline engine, decode tokens/s, grouped by system. Every bar is the same metric so they are directly comparable. Raspberry Pi 5 (Linux): BitNet decode 2.1x bitnet.cpp, Gemma decode 1.1x llama.cpp. AMD Ryzen 9 9950X (Linux): BitNet decode 1.4x bitnet.cpp, Gemma decode 1.1x llama.cpp, Llama 3.2 decode 1.0x llama.cpp. Sub-parity rows are shown too." width="100%">
+  <img src="assets/headline_benchmarks.svg" alt="Decode-throughput scoreboard: geist divided by its baseline engine, decode tokens/s, grouped by system. Every bar is the same metric so they are directly comparable. Raspberry Pi 5 (Linux): BitNet decode 2.1x bitnet.cpp, Gemma decode 1.1x llama.cpp. AMD Ryzen 9 9950X (Linux): BitNet decode 1.9x bitnet.cpp, Gemma decode 1.1x llama.cpp, Llama 3.2 decode 1.0x llama.cpp. Sub-parity rows are shown too." width="100%">
 </p>
 
 *One metric on every bar: **decode t/s** (tokens/s while generating) — geist ÷ its
@@ -229,8 +229,8 @@ no driver stack.*
 geist runs Microsoft's BitNet b1.58 (`TQ2_0` and canonical `I2_S`) with integer-only
 dot products — ARM **SDOT** (add/subtract, no multiplies) and x86 **AVX-512 VNNI**.
 It beats Microsoft's own bitnet.cpp on **both**: a Pi 5 decodes **~2×** (17.4 vs
-8.2 t/s), and an AMD 9950X does prefill **+30 %** (884 vs 679) and decode **+38 %**
-(77.9 vs 56.5 t/s).
+8.2 t/s), and an AMD 9950X does prefill **+61 %** (1098 vs 679.9) and decode
+**+90 %** (103.1 vs 54.3 t/s) — 1.6-bpw base-3 decode packing included (#104).
 
 ### On-device agent for small models
 A bounded, whitelist-gated tool loop lets a 2 B model *do* things — all in the same
@@ -407,8 +407,8 @@ Repository ownership and the complete map are in
 | Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | decode t/s | **7.5** | 6.8 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max** | prefill t/s (pp1024) | **144** | 97 *(llama.cpp)* |
 | BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s | **17.4** | 8.2 *(bitnet.cpp)* |
-| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | prefill t/s (pp128) | **884** | 679 *(bitnet.cpp)* |
-| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | decode t/s (tg128) | **77.9** | 56.5 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | prefill t/s (pp128) | **1098** | 679.9 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | decode t/s (tg128) | **103.1** | 54.3 *(bitnet.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | prefill t/s | **512** | 495 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | decode t/s | **48.6** | 44.1 *(llama.cpp)* |
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | prefill t/s | **351** | 346 *(llama.cpp)* |
