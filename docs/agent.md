@@ -1,5 +1,14 @@
 # Agent, CLI & memory palace
 
+> **Scope note.** This documents the tool-use **interface** geist ships (the
+> loop `agent.h`, routing/forced calls, the `dynamic-tools-v1` protocol) —
+> which is now part of the libgeist SDK. The concrete **knowledge assistant**
+> (its CLI, the memory palace, and the reference tools `doc_search` / `web_*` /
+> `summarize_file` / `list_dir` / `remember`/`recall`) is moving to a separate
+> consumer project, [geisten/geistwissen](https://github.com/geisten/geistwissen),
+> which links libgeist + this interface — see geist#110. Until that migration
+> lands, those tools still ship in the `geist` CLI and are documented below.
+
 **Why this layer exists.** A 2 B model won't reliably drive tools or carry a
 long memory on its own. geist's answer isn't a bigger model — it's a tight
 harness around a small one: a bounded tool loop, routing and forced calls that
