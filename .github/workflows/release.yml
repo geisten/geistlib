@@ -97,10 +97,13 @@ jobs:
             mkdir -p dist/libgeist-linux-arm64/include
             cp lib/linux/release/libgeist.a dist/libgeist-linux-arm64/
             cp include/*.h dist/libgeist-linux-arm64/include/
+            cp tools/agent.h tools/agent_main.h tools/dynamic_request_v1.h tools/dynamic_arguments_v1.h tools/dynamic_tools_v1.h tools/dynamic_host_v1.h tools/json_schema_v1.h dist/libgeist-linux-arm64/include/
             cp LICENSE dist/libgeist-linux-arm64/
             d=dist/libgeist-linux-arm64
             cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" -lm -o /tmp/sdk_smoke
             /tmp/sdk_smoke
+            cc -std=c23 -I "$d/include" examples/embed_agent_smoke.c "$d/libgeist.a" -lm -o /tmp/agent_smoke
+            /tmp/agent_smoke
           '
           tar -C dist -czf libgeist-linux-arm64.tar.gz libgeist-linux-arm64
       - uses: actions/upload-artifact@v4
@@ -214,10 +217,13 @@ jobs:
             mkdir -p dist/libgeist-linux-x86_64/include
             cp lib/linux/release/libgeist.a dist/libgeist-linux-x86_64/
             cp include/*.h dist/libgeist-linux-x86_64/include/
+            cp tools/agent.h tools/agent_main.h tools/dynamic_request_v1.h tools/dynamic_arguments_v1.h tools/dynamic_tools_v1.h tools/dynamic_host_v1.h tools/json_schema_v1.h dist/libgeist-linux-x86_64/include/
             cp LICENSE dist/libgeist-linux-x86_64/
             d=dist/libgeist-linux-x86_64
             cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" -lm -o /tmp/sdk_smoke
             /tmp/sdk_smoke
+            cc -std=c23 -I "$d/include" examples/embed_agent_smoke.c "$d/libgeist.a" -lm -o /tmp/agent_smoke
+            /tmp/agent_smoke
           '
           tar -C dist -czf libgeist-linux-x86_64.tar.gz libgeist-linux-x86_64
       - uses: actions/upload-artifact@v4
@@ -317,10 +323,13 @@ jobs:
           mkdir -p dist/libgeist-macos-arm64/include
           cp lib/mac-omp/release/libgeist.a dist/libgeist-macos-arm64/
           cp include/*.h dist/libgeist-macos-arm64/include/
+          cp tools/agent.h tools/agent_main.h tools/dynamic_request_v1.h tools/dynamic_arguments_v1.h tools/dynamic_tools_v1.h tools/dynamic_host_v1.h tools/json_schema_v1.h dist/libgeist-macos-arm64/include/
           cp LICENSE dist/libgeist-macos-arm64/
           d=dist/libgeist-macos-arm64
           cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" -lm -o /tmp/sdk_smoke
           /tmp/sdk_smoke
+          cc -std=c23 -I "$d/include" examples/embed_agent_smoke.c "$d/libgeist.a" -lm -o /tmp/agent_smoke
+          /tmp/agent_smoke
           tar -C dist -czf libgeist-macos-arm64.tar.gz libgeist-macos-arm64
       - uses: actions/upload-artifact@v4
         with:
