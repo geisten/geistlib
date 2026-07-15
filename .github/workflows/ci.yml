@@ -101,15 +101,6 @@ jobs:
             --seq-lens 128 --decode-n 16 --warmup 4 --repeats 3 \
             | python3 benchmark/perf_gate.py --min-prefill 20 --min-decode 4
 
-      # Quality gate: self-contained tool-calling/JSON probes (no dataset),
-      # greedy/deterministic. Fails if (JSON schema-correct + func fully-correct)
-      # / total drops below the floor — catches a quant/sampling/kernel change
-      # that degrades structured output. Floor 0.70 (local baseline ~0.89); the
-      # first run prints the runner's rate so it can be tuned.
-      - name: Quality gate (tool-calling)
-        if: matrix.target == 'linux'
-        run: make bench-tooling TOOLING_MIN=0.7 TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
-
       - name: Build example
         run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 

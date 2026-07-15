@@ -235,7 +235,7 @@ static void test_route_tiebreak(void) {
                           "wants_slug: slug vs text schema");
 
     /* path-word + memory evidence detectors */
-    const char *p1 = "List the files in the folder tests/data/agent_eval/docs";
+    const char *p1 = "List the files in the folder tests/data/docs";
     const char *p2 = "Fetch https://example.com/kv.html please";
     fails += geist_expect(agent_request_has_pathword(strlen(p1), p1), "pathword: slash path");
     fails += geist_expect(!agent_request_has_pathword(strlen(p2), p2), "pathword: URL is not one");

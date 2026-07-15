@@ -29,9 +29,9 @@
  *   RESET -> "OK"   (clears KV cache)
  *   QUIT  -> exit
  *
- * Tokens are IDs (int32). The MMLU/tooling harnesses (tools/eval_mmlu.py,
- * tools/eval_tooling.py) use TOK/GEN so no external HF tokenizer is needed;
- * tools/eval_runner.py optionally uses an HF tokenizer for reference parity.
+ * Tokens are IDs (int32). The MMLU harness (tools/eval_mmlu.py) uses TOK/GEN so
+ * no external HF tokenizer is needed; tools/eval_runner.py optionally uses an HF
+ * tokenizer for reference parity.
  *
  * Usage:
  *   eval_geist <gguf> [--awq <scales.bin>]

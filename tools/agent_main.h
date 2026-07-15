@@ -130,11 +130,10 @@ agent_main_parse_args(int argc, char **argv, bool want_model, struct agent_main_
     return (!want_model || opts->model) ? AGENT_MAIN_RUN : AGENT_MAIN_BADARGS;
 }
 
-/* The one-shot `geist agent` trace is ON by default — it prints to stderr, so it
- * never mixes into the answer on stdout, and piping/redirects are unaffected.
- * Silence it with GEIST_AGENT_TRACE=0. (`geist chat` is the opposite: trace is
- * opt-in there, so a conversation stays quiet — see run_chat.) Wire it onto an
- * agent: if this returns true, set a->on_event = agent_event_print; ctx = stderr. */
+/* A one-shot agent CLI traces ON by default — it prints to stderr, so it never
+ * mixes into the answer on stdout, and piping/redirects are unaffected. Silence
+ * it with GEIST_AGENT_TRACE=0. Wire it onto an agent: if this returns true, set
+ * a->on_event = agent_event_print; ctx = stderr. */
 static inline bool agent_trace_enabled(void) {
     const char *t = getenv("GEIST_AGENT_TRACE");
     return t == nullptr || strcmp(t, "0") != 0;
