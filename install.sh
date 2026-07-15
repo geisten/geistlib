@@ -3,12 +3,12 @@
 # baked in) for your platform and drops it on your PATH. One file, no model file,
 # no BLAS, no Python, no CUDA.
 #
-#   curl -fsSL https://raw.githubusercontent.com/geisten/geisten/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/geisten/geistlib/main/install.sh | sh
 #
 # Env knobs: GEIST_BINDIR (install dir, default ~/.local/bin).
 set -eu
 
-REPO=geisten/geisten
+REPO=geisten/geistlib
 BINDIR=${GEIST_BINDIR:-$HOME/.local/bin}
 
 # Map uname -> the release artifact. Pi 5 / any ARM64 Linux share one binary;
@@ -40,7 +40,7 @@ curl -fL --progress-bar -o "$tmp/$asset" "$url"
 # Integrity: verify the download against the release SHA256SUMS before extracting.
 # If the release ships SHA256SUMS, a missing entry or a mismatch ABORTS. Releases
 # that predate checksums (SHA256SUMS absent) only warn — the file ships from the
-# next release (geisten#87), after which verification is always enforced here.
+# next release (geistlib#87), after which verification is always enforced here.
 sums_url="https://github.com/$REPO/releases/latest/download/SHA256SUMS"
 if curl -fsSL -o "$tmp/SHA256SUMS" "$sums_url" 2>/dev/null; then
   if command -v sha256sum >/dev/null 2>&1; then sha='sha256sum'
@@ -60,7 +60,7 @@ if curl -fsSL -o "$tmp/SHA256SUMS" "$sums_url" 2>/dev/null; then
   echo "Verified SHA-256."
 else
   echo "geist: WARNING — this release has no SHA256SUMS; integrity NOT verified." >&2
-  echo "       Checksums ship from the next release (geisten#87)." >&2
+  echo "       Checksums ship from the next release (geistlib#87)." >&2
 fi
 
 tar -C "$tmp" -xzf "$tmp/$asset"
