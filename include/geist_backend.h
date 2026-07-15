@@ -358,6 +358,20 @@ struct geist_backend_vtbl {
                                      const struct geist_tensor *up_w,
                                      struct geist_tensor       *y);
 
+    /* Optional ffn_gate_up with the pre-FFN rmsnorm folded in:
+     *   xn = rmsnorm(x) * norm_w;  y = gelu_tanh(xn·gate_w^T) * (xn·up_w^T)
+     * Each workgroup recomputes the row's inverse RMS from x — cheaper
+     * than a separate norm dispatch on the serial decode chain. Same
+     * contract as ffn_gate_up otherwise; GEIST_E_UNSUPPORTED falls back
+     * to the decomposed rmsnorm + FFN front. nullptr = always decomposed. */
+    enum geist_status (*ffn_norm_gate_up)(struct geist_backend      *be,
+                                          const struct geist_tensor *x,
+                                          const struct geist_tensor *norm_w,
+                                          float                      eps,
+                                          const struct geist_tensor *gate_w,
+                                          const struct geist_tensor *up_w,
+                                          struct geist_tensor       *y);
+
     /* Optional fused gemma attention q/k/v prep:
      *   q: per-head rmsnorm(q)*q_norm_w, then RoPE — in place.
      *   k (when non-null): per-head rmsnorm*k_norm_w + RoPE, written back

@@ -33,6 +33,9 @@ extern const struct geist_backend_descriptor geist_backend_cpu_scalar;
 #if defined(GEIST_BACKEND_METAL) && GEIST_BACKEND_METAL
 extern const struct geist_backend_descriptor geist_backend_metal;
 #endif
+#if defined(GEIST_BACKEND_VULKAN) && GEIST_BACKEND_VULKAN
+extern const struct geist_backend_descriptor geist_backend_vulkan;
+#endif
 
 const struct geist_backend_descriptor *const geist_backend_registry[] = {
 #if defined(GEIST_BACKEND_CPU_NEON) && GEIST_BACKEND_CPU_NEON
@@ -46,6 +49,9 @@ const struct geist_backend_descriptor *const geist_backend_registry[] = {
 #endif
 #if defined(GEIST_BACKEND_METAL) && GEIST_BACKEND_METAL
         &geist_backend_metal,
+#endif
+#if defined(GEIST_BACKEND_VULKAN) && GEIST_BACKEND_VULKAN
+        &geist_backend_vulkan,
 #endif
         nullptr,
 };

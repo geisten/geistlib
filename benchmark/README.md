@@ -154,5 +154,10 @@ weights), and the quality/PPL caveats.
   head-to-head and the spec-head lm_head trick.
 - **[BENCHMARK_X86.md](BENCHMARK_X86.md)** — AMD Ryzen 9 9950X (AVX-512): Gemma &
   Llama vs llama.cpp, and BitNet vs bitnet.cpp (prefill +30 %, decode +38 %).
+- **[BENCHMARK_VULKAN.md](BENCHMARK_VULKAN.md)** — NVIDIA RTX 2080 Ti (**GPU**,
+  Vulkan backend, experimental): head-to-head vs llama.cpp Vulkan (decode at
+  ~86 % of the bar, prefill at 25 %, E2E 66 %), the MMLU quality gate, and the
+  phase-by-phase optimization lab log including the measured dead ends
+  (coopmat tile redesign, DP4A matvecs — both falsified with the reasons why).
 - **[BENCHMARKING.md](BENCHMARKING.md)** — how to produce trustworthy numbers
   (reproduce, compare-ref, quality/MMLU procedures).

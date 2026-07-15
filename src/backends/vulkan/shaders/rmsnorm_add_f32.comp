@@ -1,0 +1,61 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X {
+    float x[];
+};
+
+layout(set = 0, binding = 1) readonly buffer W {
+    float w[];
+};
+
+layout(set = 0, binding = 2) readonly buffer R {
+    float r[];
+};
+
+layout(set = 0, binding = 3) writeonly buffer Y {
+    float y[];
+};
+
+layout(push_constant) uniform Push {
+    uint rows;
+    uint feat;
+    uint x_offset;
+    uint w_offset;
+    uint r_offset;
+    uint y_offset;
+    float eps;
+} pc;
+
+/* two-level reduce: subgroupAdd per warp + one tiny shared pass — the
+ * 14-barrier tree was most of this kernel's ~9 us on the decode chain */
+shared float partial[8];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint lid = gl_LocalInvocationID.x;
+    float sum = 0.0;
+    for (uint j = lid; j < pc.feat; j += 256) {
+        float v = x[pc.x_offset + row * pc.feat + j];
+        sum += v * v;
+    }
+    sum = subgroupAdd(sum);
+    if (subgroupElect()) {
+        partial[gl_SubgroupID] = sum;
+    }
+    barrier();
+    float total = 0.0;
+    for (uint i = 0; i < 256u / gl_SubgroupSize; i++) {
+        total += partial[i];
+    }
+
+    float inv = inversesqrt(total / float(pc.feat) + pc.eps);
+    for (uint j = lid; j < pc.feat; j += 256) {
+        uint idx = row * pc.feat + j;
+        float normed = x[pc.x_offset + idx] * inv * w[pc.w_offset + j];
+        y[pc.y_offset + idx] = r[pc.r_offset + idx] + normed;
+    }
+}

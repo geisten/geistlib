@@ -1,0 +1,115 @@
+#version 450
+#extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+/* Q4_K GEMM, register-tiled: 8 output rows (one per subgroup) x 32 batch
+ * rows per 128-thread workgroup. Each lane dequantizes its 8 weights ONCE
+ * per block into registers and reuses them for all 16 batch rows — the
+ * old kernel re-read the whole weight row per batch row (m x traffic).
+ * Dispatch: gx = ceil(n_out / 8), gy = ceil(rows / 32).
+ * Assumes subgroup size 32 (2080-Ti-first). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+void main() {
+    uint row = gl_WorkGroupID.x * gl_NumSubgroups + gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint t0 = gl_WorkGroupID.y * 32u;
+    if (t0 >= pc.rows) {
+        return;
+    }
+    uint tm = min(32u, pc.rows - t0);
+
+    float s[32];
+    for (uint t = 0; t < 32u; t++) {
+        s[t] = 0.0;
+    }
+
+    if (row < pc.n_out) {
+        uint sub = lane >> 2;
+        uint idx8 = (lane & 3u) * 8u;
+        uint shift = (sub & 1u) * 4u;
+        uint row_word = (pc.w_offset + row * pc.blocks_per_row * 144u) >> 2u;
+
+        for (uint b = 0; b < pc.blocks_per_row; b++) {
+            uint blk = row_word + b * 36u;
+
+            uint h0 = 0u, h1 = 0u, h2 = 0u, h3 = 0u;
+            if (lane == 0u) {
+                h0 = w[blk];
+                h1 = w[blk + 1u];
+                h2 = w[blk + 2u];
+                h3 = w[blk + 3u];
+            }
+            h0 = subgroupBroadcast(h0, 0);
+            h1 = subgroupBroadcast(h1, 0);
+            h2 = subgroupBroadcast(h2, 0);
+            h3 = subgroupBroadcast(h3, 0);
+
+            vec2 dd = unpackHalf2x16(h0);
+            uint sc_u, mn_u;
+            if (sub < 4u) {
+                sc_u = (h1 >> (8u * sub)) & 63u;
+                mn_u = (h2 >> (8u * sub)) & 63u;
+            } else {
+                uint j = sub - 4u;
+                uint q_j4 = (h3 >> (8u * j)) & 0xffu;
+                sc_u = (q_j4 & 15u) | ((((h1 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+                mn_u = (q_j4 >> 4u) | ((((h2 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+            }
+
+            uint qs = blk + 4u + (sub >> 1u) * 8u + (idx8 >> 2u);
+            uint q0 = w[qs];
+            uint q1 = w[qs + 1u];
+
+            /* dequantized weights for this lane's 8 elements, in registers.
+             * All x runs are 8-float aligned (pool 64 B, idx8 multiple of
+             * 8), so the inner product is two vec4 dots. */
+            float dsc = dd.x * float(sc_u);
+            float dmn = dd.y * float(mn_u);
+            vec4 wv0 = dsc * vec4(float((q0 >> shift) & 15u),
+                                  float((q0 >> (8u + shift)) & 15u),
+                                  float((q0 >> (16u + shift)) & 15u),
+                                  float((q0 >> (24u + shift)) & 15u)) - vec4(dmn);
+            vec4 wv1 = dsc * vec4(float((q1 >> shift) & 15u),
+                                  float((q1 >> (8u + shift)) & 15u),
+                                  float((q1 >> (16u + shift)) & 15u),
+                                  float((q1 >> (24u + shift)) & 15u)) - vec4(dmn);
+
+            uint e_base = pc.x_offset + b * 256u + sub * 32u + idx8;
+            for (uint t = 0; t < 32u; t++) {
+                if (t >= tm) {
+                    break;
+                }
+                uint xv = (e_base + (t0 + t) * pc.x_stride) >> 2u;
+                s[t] += dot(wv0, x4[xv]) + dot(wv1, x4[xv + 1u]);
+            }
+        }
+    }
+
+    for (uint t = 0; t < 32u; t++) {
+        if (t >= tm) {
+            break;
+        }
+        float r = subgroupAdd(s[t]);
+        if (subgroupElect() && row < pc.n_out) {
+            y[pc.y_offset + (t0 + t) * pc.y_stride + row] = r;
+        }
+    }
+}

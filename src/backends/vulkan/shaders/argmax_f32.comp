@@ -1,0 +1,49 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { float x[]; };
+layout(set = 0, binding = 1) writeonly buffer Out { uint token_id[]; };
+
+layout(push_constant) uniform Push {
+    uint n;
+    uint x_offset;
+    uint out_offset;
+} pc;
+
+shared float best_val[256];
+shared uint best_idx[256];
+
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+
+    float local_val = uintBitsToFloat(0xff800000u);
+    uint local_idx = 0xffffffffu;
+    for (uint i = lid; i < pc.n; i += 256) {
+        float v = x[pc.x_offset + i];
+        if (v > local_val || (v == local_val && i < local_idx)) {
+            local_val = v;
+            local_idx = i;
+        }
+    }
+    best_val[lid] = local_val;
+    best_idx[lid] = local_idx;
+    barrier();
+
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lid < stride) {
+            float rhs_val = best_val[lid + stride];
+            uint rhs_idx = best_idx[lid + stride];
+            if (rhs_val > best_val[lid] ||
+                (rhs_val == best_val[lid] && rhs_idx < best_idx[lid])) {
+                best_val[lid] = rhs_val;
+                best_idx[lid] = rhs_idx;
+            }
+        }
+        barrier();
+    }
+
+    if (lid == 0) {
+        token_id[pc.out_offset] = best_idx[0];
+    }
+}
