@@ -69,15 +69,15 @@ other adapter; Geist contains no Home Assistant credentials or product logic.
   <sub><a href="#faster-where-it-counts">↓ full scoreboard — decode t/s on every system, one metric</a></sub>
 </p>
 
-[![CI](https://github.com/geisten/geisten/actions/workflows/ci.yml/badge.svg)](https://github.com/geisten/geisten/actions/workflows/ci.yml)
+[![CI](https://github.com/geisten/geistlib/actions/workflows/ci.yml/badge.svg)](https://github.com/geisten/geistlib/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-orange.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20(ARM64%20%2B%20x86--64)-lightgrey.svg)](#getting-started)
 [![Status](https://img.shields.io/badge/status-experimental%20(v0.4.0)-yellow.svg)](#status)
-[![Discussions](https://img.shields.io/badge/Discussions-ask%20%26%20share-5865F2.svg)](https://github.com/geisten/geisten/discussions)
-[![Good first issues](https://img.shields.io/github/issues/geisten/geisten/good%20first%20issue?label=good%20first%20issue&color=7057ff)](https://github.com/geisten/geisten/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+[![Discussions](https://img.shields.io/badge/Discussions-ask%20%26%20share-5865F2.svg)](https://github.com/geisten/geistlib/discussions)
+[![Good first issues](https://img.shields.io/github/issues/geisten/geistlib/good%20first%20issue?label=good%20first%20issue&color=7057ff)](https://github.com/geisten/geistlib/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
-**Questions, ideas, or stuck?** → [GitHub Discussions](https://github.com/geisten/geisten/discussions) · **Found a bug?** → [open an issue](https://github.com/geisten/geisten/issues/new) · **Want to build?** → [good first issues](https://github.com/geisten/geisten/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+**Questions, ideas, or stuck?** → [GitHub Discussions](https://github.com/geisten/geistlib/discussions) · **Found a bug?** → [open an issue](https://github.com/geisten/geistlib/issues/new) · **Want to build?** → [good first issues](https://github.com/geisten/geistlib/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
 <p align="center">
   <img src="assets/demo-bitnet-trio.gif" alt="One geist-bitnet binary doing three things in a row on a Mac: generate text, then drive tools to list a folder and search the web — model baked in, no model file" width="100%">
@@ -97,9 +97,9 @@ inside the binary.
 
 | Platform | Single-file download (model included) |
 | :-- | :-- |
-| **Raspberry Pi / Linux** · ARM64 | [⬇ geist-bitnet-linux-arm64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-bitnet-linux-arm64.tar.gz) |
-| **macOS** · Apple Silicon | [⬇ geist-bitnet-macos-arm64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-bitnet-macos-arm64.tar.gz) |
-| **Linux** · x86-64 (AVX-512) | [⬇ geist-bitnet-linux-x86_64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-bitnet-linux-x86_64.tar.gz) |
+| **Raspberry Pi / Linux** · ARM64 | [⬇ geist-bitnet-linux-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-arm64.tar.gz) |
+| **macOS** · Apple Silicon | [⬇ geist-bitnet-macos-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-macos-arm64.tar.gz) |
+| **Linux** · x86-64 (AVX-512) | [⬇ geist-bitnet-linux-x86_64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-x86_64.tar.gz) |
 
 ```bash
 ./geist-bitnet "What is the capital of France?" # ask — instruct chat, clean answer
@@ -125,9 +125,9 @@ brew install geisten/tap/geist
 
 | Platform | Engine download |
 | :-- | :-- |
-| **macOS** · Apple Silicon | [⬇ geist-macos-arm64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-macos-arm64.tar.gz) |
-| **Raspberry Pi / Linux** · ARM64 | [⬇ geist-linux-arm64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-linux-arm64.tar.gz) |
-| **Linux** · x86-64 (AVX-512) | [⬇ geist-linux-x86_64.tar.gz](https://github.com/geisten/geisten/releases/latest/download/geist-linux-x86_64.tar.gz) |
+| **macOS** · Apple Silicon | [⬇ geist-macos-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-macos-arm64.tar.gz) |
+| **Raspberry Pi / Linux** · ARM64 | [⬇ geist-linux-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64.tar.gz) |
+| **Linux** · x86-64 (AVX-512) | [⬇ geist-linux-x86_64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-linux-x86_64.tar.gz) |
 
 **Step 2 — a model** (one file, any platform):
 
@@ -327,7 +327,7 @@ curl -L -o bitnet-2b4t.i2_s.gguf \
 `make` auto-detects your target and drops a `./geist` symlink in the repo root:
 
 ```bash
-git clone https://github.com/geisten/geisten && cd geisten
+git clone https://github.com/geisten/geistlib && cd geistlib
 make                       # or: make TARGET=mac-omp | pi5 | linux
 ```
 
@@ -350,7 +350,7 @@ walkthrough in [`docs/QUICKSTART.md`](docs/QUICKSTART.md) and the API in
 
 ### Ship one file (model baked in)
 
-**Prebuilt:** every [release](https://github.com/geisten/geisten/releases/latest)
+**Prebuilt:** every [release](https://github.com/geisten/geistlib/releases/latest)
 ships a `geist-bitnet-<platform>.tar.gz` — BitNet 2B-4T already baked in, no model
 file, no path argument. Download, extract, `./geist-bitnet "your prompt"` — or just
 `curl … install.sh | sh` ([top](#run-it-now--model-baked-in)). That's the whole app.
@@ -469,7 +469,7 @@ The interesting work is wide open — low-level kernels and quantization researc
 not yet-another-wrapper. **From clone to green tests in 30 seconds:**
 
 ```bash
-git clone https://github.com/geisten/geisten && cd geisten
+git clone https://github.com/geisten/geistlib && cd geistlib
 make && make test          # builds ./geist, runs the full C suite
 ```
 
@@ -486,7 +486,7 @@ Using geist in research? A "Cite this repository" button is on the repo sidebar
   title   = {geist: a dependency-free CPU inference engine and on-device agent for small LLMs},
   year    = {2026},
   version = {0.4.0},
-  url     = {https://github.com/geisten/geisten}
+  url     = {https://github.com/geisten/geistlib}
 }
 ```
 
