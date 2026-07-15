@@ -1,0 +1,60 @@
+#version 450
+
+/* Flash-decoding combine: one workgroup per q-head merges its chunk
+ * partials [head][chunk][hd+2] into out[head][hd]. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer P { float part[]; };
+layout(set = 0, binding = 1) writeonly buffer O { float out_v[]; };
+
+layout(push_constant) uniform Push {
+    uint n_q_heads;
+    uint hd;
+    uint n_chunks;
+    uint p_offset;
+    uint out_offset;
+} pc;
+
+shared float m_sh;
+shared float l_sh;
+
+void main() {
+    uint head = gl_WorkGroupID.x;
+    uint lid = gl_LocalInvocationID.x;
+    if (head >= pc.n_q_heads) {
+        return;
+    }
+    uint hd = pc.hd;
+    uint pb = pc.p_offset + head * pc.n_chunks * (hd + 2u);
+
+    if (lid == 0u) {
+        float m = (-1.0 / 0.0);
+        for (uint c = 0; c < pc.n_chunks; c++) {
+            m = max(m, part[pb + c * (hd + 2u) + hd]);
+        }
+        float l = 0.0;
+        for (uint c = 0; c < pc.n_chunks; c++) {
+            float mc = part[pb + c * (hd + 2u) + hd];
+            if (mc > (-1.0 / 0.0)) {
+                l += part[pb + c * (hd + 2u) + hd + 1u] * exp(mc - m);
+            }
+        }
+        m_sh = m;
+        l_sh = l;
+    }
+    barrier();
+    float m = m_sh;
+    float inv_l = l_sh > 0.0 ? 1.0 / l_sh : 0.0;
+
+    for (uint d = lid; d < hd; d += 256u) {
+        float acc = 0.0;
+        for (uint c = 0; c < pc.n_chunks; c++) {
+            float mc = part[pb + c * (hd + 2u) + hd];
+            if (mc > (-1.0 / 0.0)) {
+                acc += part[pb + c * (hd + 2u) + d] * exp(mc - m);
+            }
+        }
+        out_v[pc.out_offset + head * hd + d] = acc * inv_l;
+    }
+}

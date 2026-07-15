@@ -1,0 +1,110 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+/* f16-cache variant of qkv_prep_f32 (cache offsets in f16 elements).
+ * Fused Gemma attention q/k/v prep: per-head RMSNorm (+weight), half-split
+ * RoPE for q/k, and F32 KV-cache append — one dispatch instead of ~7.
+ * gl_WorkGroupID = (seq_pos, head, which) with which: 0=q, 1=k, 2=v.
+ * q/k/v and the all-ones v-weight live in the scratch pool (binding 0);
+ * q/k norm gammas live in the weight arena (binding 1). Partial rotation
+ * is encoded in the tables (identity tail), so RoPE runs full-width. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer QKV { float qkv[]; };
+layout(set = 0, binding = 1) readonly buffer NW { float nw[]; };
+layout(set = 0, binding = 2) readonly buffer Cos { float cos_v[]; };
+layout(set = 0, binding = 3) readonly buffer Sin { float sin_v[]; };
+layout(set = 0, binding = 4) writeonly buffer KC { float16_t kc[]; };
+layout(set = 0, binding = 5) writeonly buffer VC { float16_t vc[]; };
+
+layout(push_constant) uniform Push {
+    uint seq;
+    uint n_q_heads;
+    uint n_kv_heads;
+    uint hd;
+    uint q_position;
+    uint has_kv;
+    uint q_off;
+    uint k_off;
+    uint v_off;
+    uint qw_off;
+    uint kw_off;
+    uint vw_off;   /* all-ones vector, binding 0 (pool) */
+    uint cos_off;
+    uint sin_off;
+    uint kc_off;
+    uint vc_off;
+    float eps;
+} pc;
+
+shared float red[256];
+shared float sh[512];
+
+void main() {
+    uint pos = gl_WorkGroupID.x;
+    uint head = gl_WorkGroupID.y;
+    uint z = gl_WorkGroupID.z;
+    uint lid = gl_LocalInvocationID.x;
+    uint heads = z == 0u ? pc.n_q_heads : pc.n_kv_heads;
+    if (pos >= pc.seq || head >= heads || (z > 0u && pc.has_kv == 0u) || pc.hd > 512u) {
+        return;
+    }
+    uint hd = pc.hd;
+    uint base = (z == 0u ? pc.q_off : (z == 1u ? pc.k_off : pc.v_off)) +
+                (pos * heads + head) * hd;
+
+    /* per-head sum of squares */
+    float x0 = lid < hd ? qkv[base + lid] : 0.0;
+    float x1 = lid + 256u < hd ? qkv[base + lid + 256u] : 0.0;
+    red[lid] = x0 * x0 + x1 * x1;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (lid < stride) {
+            red[lid] += red[lid + stride];
+        }
+        barrier();
+    }
+    float inv = inversesqrt(red[0] / float(hd) + pc.eps);
+
+    /* normalize * weight into shared */
+    if (lid < hd) {
+        float wt = z == 2u ? qkv[pc.vw_off + lid] : nw[(z == 0u ? pc.qw_off : pc.kw_off) + lid];
+        sh[lid] = x0 * inv * wt;
+    }
+    if (lid + 256u < hd) {
+        uint d = lid + 256u;
+        float wt = z == 2u ? qkv[pc.vw_off + d] : nw[(z == 0u ? pc.qw_off : pc.kw_off) + d];
+        sh[d] = x1 * inv * wt;
+    }
+    barrier();
+
+    uint half_dim = hd >> 1u;
+    uint cache_base = (pc.q_position + pos) * pc.n_kv_heads * hd + head * hd;
+    if (z < 2u) {
+        /* half-split rope on the normalized vector */
+        if (lid < half_dim) {
+            uint cb = pc.cos_off + pos * hd;
+            uint sb = pc.sin_off + pos * hd;
+            float a = sh[lid];
+            float b = sh[lid + half_dim];
+            float o0 = a * cos_v[cb + lid] - b * sin_v[sb + lid];
+            float o1 = b * cos_v[cb + half_dim + lid] + a * sin_v[sb + half_dim + lid];
+            qkv[base + lid] = o0;
+            qkv[base + half_dim + lid] = o1;
+            if (z == 1u) {
+                kc[pc.kc_off + cache_base + lid] = float16_t(o0);
+                kc[pc.kc_off + cache_base + half_dim + lid] = float16_t(o1);
+            }
+        }
+    } else {
+        if (lid < hd) {
+            qkv[base + lid] = sh[lid];
+            vc[pc.vc_off + cache_base + lid] = float16_t(sh[lid]);
+        }
+        if (lid + 256u < hd) {
+            qkv[base + lid + 256u] = sh[lid + 256u];
+            vc[pc.vc_off + cache_base + lid + 256u] = float16_t(sh[lid + 256u]);
+        }
+    }
+}

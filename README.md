@@ -389,7 +389,7 @@ Repository ownership and the complete map are in
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, load-time kernel binding, the pipeline. |
 | [`docs/agent.md`](docs/agent.md) | Tool-use agents, bundled tools, dynamic adapters, routing, forced calls, and the security model. |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Single-binary builds, server/embedded deployment. |
-| [`benchmark/`](benchmark/README.md) | Methodology & full results ([Apple/Pi 5](benchmark/BENCHMARK.md), [ternary BitNet](benchmark/TERNARY_BITNET.md)). |
+| [`benchmark/`](benchmark/README.md) | Methodology & full results ([Apple/Pi 5](benchmark/BENCHMARK.md), [ternary BitNet](benchmark/TERNARY_BITNET.md), [Vulkan GPU](benchmark/BENCHMARK_VULKAN.md)). |
 | [`include/geist.h`](include/geist.h) | The public C API, with `STABLE` / `EXPERIMENTAL` stability tags. |
 
 <details>
@@ -409,10 +409,14 @@ Repository ownership and the complete map are in
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | decode t/s | 34.1 | 34.5 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | prefill t/s (pp512) | 987 | 1542 *(llama.cpp Metal)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | decode t/s (tg64) | 81.2 | 91.3 *(llama.cpp Metal)* |
+| Gemma 4 E2B-it (Q4_K_M) | **RTX 2080 Ti** *(Vulkan, experimental)* | prefill t/s (pp512) | 1150 | 4639 *(llama.cpp Vulkan)* |
+| Gemma 4 E2B-it (Q4_K_M) | **RTX 2080 Ti** *(Vulkan, experimental)* | decode t/s (tg128) | 132.3 | 154 *(llama.cpp Vulkan)* |
 
-<sub>**Baseline versions:** llama.cpp `d05fe1d` (Pi 5, M1 Max) · `b9827` (x86) — bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `master` (its bundled llama.cpp fork, unpinned `--depth 1` clone). Full methodology: [`benchmark/`](benchmark/README.md).</sub>
+<sub>**Baseline versions:** llama.cpp `d05fe1d` (Pi 5, M1 Max) · `b9827` (x86) · `d0f9d2e` (Vulkan) — bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `master` (its bundled llama.cpp fork, unpinned `--depth 1` clone). Full methodology: [`benchmark/`](benchmark/README.md).</sub>
 
 <sub>**Metal backend status** (`BACKENDS="… metal"`): experimental — greedy-decode tokens verified identical to the `cpu_scalar` reference at every optimization step. Decode is within **12 %** of llama.cpp (81.2 vs 91.3 t/s) and holds up at long context (73 t/s at kv≈2100, vs 27 before the head_dim-512 flash kernels). All attention — including the head_dim-512 full-attention layers — runs simdgroup flash (8-simdgroup prefill variant + 16-chunk split-KV decode variant) on a native f16 KV cache (half the KV memory, zero per-call conversion), with fused per-layer blocks (q/k/v norm+RoPE+KV-append, gate+up GeGLU matvec, k/v pair, PLE), llama-style pipelined command buffers, and a device greedy argmax (4-byte token readback). The remaining prefill gap is the shared ~6-TF q4_K GEMM plateau plus flash-kernel efficiency — kernel-level work that needs M3+ profiler counters to attribute; the full measurement ledger lives in `docs/proposals/metal-beat-llamacpp-plan.md`. Long context works past the 4096 default: the session window grows with the workload (the CLI sizes it from prompt + decode budget) and over-capacity prefills are rejected up-front with `GEIST_E_TOO_MANY_TOKENS` instead of the old silent decode no-op — pp5235 greedy on Metal matches the CPU reference across the 4096 boundary. Cool-state protocol (240 s idle), geist and llama.cpp measured back-to-back (Homebrew llama.cpp, `BLAS,MTL`), M1 Max 32-core.</sub>
+
+<sub>**Vulkan backend status** (`BACKENDS="… vulkan"`): experimental — the first non-Apple GPU path (NVIDIA Turing tested; libvulkan is dlopen'd, no link-time dependency). Quality gate passed: MMLU-200 **0.520 vs 0.490** on the CPU path (same build, binomial noise) and 14/14 on the tool-calling suite. Decode is at **~86 %** of llama.cpp Vulkan (132.3 vs 154 t/s tg128) on tensor-core (KHR_coopmat) GEMMs, split-K flash-decoding over a native f16 KV cache, fused per-layer blocks and rolling submits. Prefill is the open front (25 % of the bar): the coopmat GEMM tile is at its measured local optimum on Turing — the instruction-mix redesign and DP4A integer-dot matvecs were both built, measured and falsified (decode matvecs are memory-latency-bound, not instruction-bound). The full phase-by-phase lab log with all dead ends lives in [`benchmark/BENCHMARK_VULKAN.md`](benchmark/BENCHMARK_VULKAN.md). Protocol: pp512+tg128, medians of 5 under warm clocks, llama.cpp re-measured same day, same GGUF, RTX 2080 Ti 11 GB.</sub>
 </details>
 
 ---

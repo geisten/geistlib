@@ -258,6 +258,10 @@ struct transformer_arch_session {
     void              *scratch_pool_base;
     size_t             scratch_pool_bytes;
     size_t             scratch_pool_used;
+    /* P3 (vulkan): pool allocated through the backend so GPU backends can
+     * bind aliased slices directly; scratch_pool_base == buffer_map(buf).
+     * CPU backends malloc under the hood — behavior unchanged. */
+    struct geist_buffer *scratch_pool_buf;
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;
@@ -327,7 +331,11 @@ struct transformer_arch_state {
      * transformer_state_destroy. */
     void  *weight_arena;
     size_t weight_arena_used;
-    size_t weight_arena_capacity;
+    /* P3 (vulkan): arena allocated through the backend (see
+     * scratch_pool_buf) so norm weights / embed tables inside it are
+     * GPU-bindable. nullptr in mmap-alias mode or on heap fallback. */
+    struct geist_buffer *weight_arena_buf;
+    size_t               weight_arena_capacity;
 
     /* ---- Per-layer weight blocks. P1.4.c heap-sizes this array to
      * st->n_layers (was GEIST_GEMMA4_NUM_LAYERS-sized in P1.4.b). */
