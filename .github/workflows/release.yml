@@ -87,7 +87,7 @@ jobs:
 
       # libgeist SDK artifact (see the x86_64 job for rationale): static lib +
       # headers, built with the same musl/native recipe, smoke-linked against the
-      # packaged artifact. (geisten#91)
+      # packaged artifact. (geistlib#91)
       - name: Build + smoke + package libgeist SDK
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
@@ -135,7 +135,7 @@ jobs:
           tar -C dist -czf geist-bitnet-linux-arm64.tar.gz geist-bitnet-linux-arm64
       # dynamic-tools-v1 health handshake against the shipped embedded artifact
       # (see the x86_64 job for rationale). Proves --serve answers the protocol
-      # with the documented ready frame on aarch64 (geisten#87).
+      # with the documented ready frame on aarch64 (geistlib#87).
       - name: Health-handshake smoke (embedded --serve)
         if: env.EMBED_MODEL_URL != ''
         run: |
@@ -207,7 +207,7 @@ jobs:
       # embedders (secondary to the runtime; never a downloadable app). Built with
       # the same musl/backends recipe as the binary above, then a model-free smoke
       # (examples/embed_smoke.c) links ONLY against the packaged headers+archive to
-      # prove the artifact is self-consistent. (geisten#91)
+      # prove the artifact is self-consistent. (geistlib#91)
       - name: Build + smoke + package libgeist SDK
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
@@ -256,7 +256,7 @@ jobs:
       # dynamic-tools-v1 health handshake against the shipped embedded artifact:
       # start --serve (internal model), send {"type":"health"}, require the
       # documented ready frame, shut down. Proves the runtime artifact answers the
-      # protocol on this arch (geisten#87). Correctness is also unit-tested
+      # protocol on this arch (geistlib#87). Correctness is also unit-tested
       # (test_dynamic_host_v1_unit); this exercises the real binary.
       - name: Health-handshake smoke (embedded --serve)
         if: env.EMBED_MODEL_URL != ''
@@ -316,7 +316,7 @@ jobs:
 
       # libgeist SDK artifact (see the x86_64 job for rationale): static lib +
       # headers, built with the same mac recipe, smoke-linked against the packaged
-      # artifact. (geisten#91)
+      # artifact. (geistlib#91)
       - name: Build + smoke + package libgeist SDK
         run: |
           make TARGET=mac-omp CC=clang GEIST_STATIC_OMP=1 lib
