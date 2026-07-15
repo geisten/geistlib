@@ -140,9 +140,8 @@ brew install geisten/tap/geist
 **Step 3 — run** (the model path is the only difference from the baked-in binary):
 
 ```bash
-./geist       -m model.gguf "What is the capital of France?" # ask — instruct chat
-./geist agent -m model.gguf "Summarize report.md"            # one-shot tool-use agent
-./geist       -m model.gguf                                  # no prompt → agentic chat
+./geist -m model.gguf "What is the capital of France?"  # ask — instruct chat
+./geist -m model.gguf --serve /tmp/geist.sock           # resident dynamic-tools daemon
 ```
 
 <sub>Prebuilt for macOS · ARM64, Linux · ARM64 and Linux · x86-64 (AVX-512, runs on any x86-64-v3 CPU). Windows is still pending. BitNet is a **base model with no tool training** — geist forces a valid tool call from outside the sampler, so it routes and calls anyway.</sub>
@@ -179,8 +178,8 @@ Warm, that answers in **~2 s on a Raspberry Pi 5** — `-c` wraps your prompt in
 model's chat template and stops cleanly, no tool loop, nothing leaving the LAN. So
 the whole assistant — control *and* conversation — stays on the box you already own.
 <sub>Measured on a Pi 5 (4 GB) over 10 general questions, warm, 4 threads; the same
-turn on an M1 Max is well under a second. Numbers and method:
-[`benchmark/AGENT_EVAL.md`](benchmark/AGENT_EVAL.md).</sub>
+turn on an M1 Max is well under a second. Method mirrors
+[`benchmark/BENCHMARK_PI5.md`](benchmark/BENCHMARK_PI5.md).</sub>
 
 ---
 
@@ -232,34 +231,29 @@ It beats Microsoft's own bitnet.cpp on **both**: a Pi 5 decodes **~2×** (17.4 v
 8.2 t/s), and an AMD 9950X does prefill **+61 %** (1098 vs 679.9) and decode
 **+90 %** (103.1 vs 54.3 t/s) — 1.6-bpw base-3 decode packing included (#104).
 
-### On-device agent for small models
-A bounded, whitelist-gated tool loop lets a 2 B model *do* things — all in the same
-process, nothing leaving the machine except an explicit web request:
+### On-device tool-use interface for small models
+A bounded, whitelist-gated tool loop plus routing and forced calls let a 2 B
+model reliably *drive tools* — the hard part on an un-tool-trained model
+(structure and value are forced from outside the sampler; only the routing
+decision is the model's). geist ships this as a **header-only interface** in the
+SDK (`agent.h`, `agent_main.h`, the `dynamic-tools-v1` protocol) and a resident
+`--serve` daemon; the **concrete tools live in consumer projects** that link
+libgeist:
 
-| capability | tool | notes |
-| :-- | :-- | :-- |
-| List a directory | `list_dir` | `opendir`, no shell |
-| Read & summarize a file | `summarize_file` | local — **no embeddings, no cloud** |
-| Search local documents | `doc_search` | keyword scan (local RAG) |
-| Search the web | `web_search` | DuckDuckGo or self-hosted **SearXNG** |
-| Fetch & read a web page | `web_fetch` | `curl` → tag-stripped text |
+| project | what it adds |
+| :-- | :-- |
+| [geistwissen](https://github.com/geisten/geistwissen) | knowledge tools — local doc search (RAG, no embeddings), a memory palace, file summarize, opt-in web |
+| [geist-home-assistant](https://github.com/geisten/geist-home-assistant) | Home Assistant device control over `dynamic-tools-v1` |
 
-*This toolset is expanding steadily.*
+Run the daemon and let a host supply the toolset per request over a chmod-600
+Unix socket:
 
-**Response time per task** — warm (model resident), greedy, via `geist agent`. A
-light task's cost is the model **deciding + forming the call** (a few forward
-passes); the tool's own I/O is milliseconds. **Summarize** runs the whole document
-through the model, so it scales with length:
+```bash
+./geist -m model.gguf --serve /tmp/geist.sock
+```
 
-| task | Mac · Gemma 4 E2B | Pi 5 · BitNet 2B-4T |
-| :-- | --: | --: |
-| list a dir · fetch · search¹ | ~4–5 s | ~15–16 s |
-| summarize a short note (~1 ¶) | ~5 s | ~18 s |
-| summarize an 8 KB article (~4 chunks) | ~80 s | ~3.4 min |
-
-<sub>¹ web tasks add the network round-trip. One-time model load is separate (~3 s
-eager on macOS; the Pi `mmap`s). Single-run wall-clock on live machines — ballpark,
-not a gate. The Pi figures include the cached router baseline ([#39](https://github.com/geisten/geisten/pull/39)).</sub>
+Interface, routing, forced calls and the security model:
+[docs/agent.md](docs/agent.md).
 
 <details>
 <summary><strong>Why C?</strong> (the substrate choice, in full)</summary>

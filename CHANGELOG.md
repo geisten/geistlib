@@ -8,6 +8,26 @@ minor release.
 
 ## [Unreleased]
 
+### Changed — engine core slimmed to inference + `--serve`
+
+- The `geist` CLI is now inference-only plus the resident dynamic-tools daemon:
+  `geist -m model "prompt"` (instruct/`--raw` generation) and
+  `geist -m model --serve <socket>`. The `agent` and `chat` subcommands and the
+  interactive REPL are removed — a served request supplies its own toolset over
+  `dynamic-tools-v1`, and one-shot/REPL tool use belongs in a consumer that links
+  libgeist.
+- The concrete reference tools (`doc_search`, `summarize_file`, `list_dir`,
+  `web_search`, `web_fetch`, `remember`/`recall` + the `mind` palace) and the
+  `stock_movers` demo tool moved **out of the engine** into the
+  [geistwissen](https://github.com/geisten/geistwissen) consumer. geist keeps the
+  tool-use **interface** (`agent.h`, `agent_main.h`, the `dynamic_*_v1.h` set),
+  which continues to ship in the libgeist SDK. See geist#110.
+- Removed the `make bench-tooling` / `bench-agent` quality benches and their CI
+  quality gate, the `tests/bench_agent_eval` harness + `tests/data/agent_eval`
+  corpus, the per-tool unit/integration tests, and `benchmark/AGENT_EVAL.md`
+  (agent-layer reliability is now measured in the consumer). `docs/agent.md` is
+  slimmed to the interface.
+
 ## [0.4.0] — 2026-07-13
 
 First release of the host-neutral `dynamic-tools-v1` runtime artifact. A consumer

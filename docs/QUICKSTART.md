@@ -43,29 +43,26 @@ OMP_WAIT_POLICY=active ./geist -m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
 make run ARGS='-m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "Write a haiku" -n 40'
 ```
 
-CLI usage: `geist -m <model.gguf> [prompt] [-n N]` — the model is given with `-m`
+CLI usage: `geist -m <model.gguf> "prompt" [-n N]` — the model is given with `-m`
 (or baked in via `make EMBED_MODEL=…`). A prompt is answered as an **instruct
 chat** by default (wrapped in the model's chat template); pass `--raw` for a raw
-base-model text completion, or give **no prompt** to open the interactive agentic
-chat. `-n` caps new tokens (default 64).
+base-model text completion. `-n` caps new tokens (default 64).
 `OMP_WAIT_POLICY=active` keeps the OpenMP threads spinning between tokens and
 noticeably improves multi-thread throughput; always set it.
 
-The same binary carries two more subcommands — `geist agent <model> "<request>"`
-(one-shot whitelist-gated tool use) and `geist chat <model>` (multi-turn chat +
-file-based memory palace). See [agent.md](agent.md).
-
-For a warm local agent server and a host-neutral dynamic-tools example:
+The same binary also runs a warm **dynamic-tools daemon** with `--serve`. The
+host supplies the complete allowed toolset per request over a chmod-600 Unix
+socket, executes the calls, and returns results — Geist never executes a dynamic
+action itself. Concrete tools live in consumer projects (see
+[agent.md](agent.md); the reference assistant is
+[geistwissen](https://github.com/geisten/geistwissen)).
 
 ```bash
-./geist agent -m model.gguf --serve /tmp/geist.sock
+./geist -m model.gguf --serve /tmp/geist.sock
 make dynamic-example-host
 bin/$(mk/detect-target.sh)/release/examples/dynamic_tools_host \
   /tmp/geist.sock "Add 5 and 7"
 ```
-
-The host supplies the complete allowed toolset per request, executes calls, and
-returns results; Geist never executes a dynamic action itself.
 
 For an interactive prompt loop, use the evaluation REPL (no symlink — full path):
 

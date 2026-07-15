@@ -1,118 +1,42 @@
-# Agent, CLI & memory palace
+# Tool-use interface — `agent.h`, routing & `dynamic-tools-v1`
 
-> **Scope note.** This documents the tool-use **interface** geist ships (the
-> loop `agent.h`, routing/forced calls, the `dynamic-tools-v1` protocol) —
-> which is now part of the libgeist SDK. The concrete **knowledge assistant**
-> (its CLI, the memory palace, and the reference tools `doc_search` / `web_*` /
-> `summarize_file` / `list_dir` / `remember`/`recall`) is moving to a separate
-> consumer project, [geisten/geistwissen](https://github.com/geisten/geistwissen),
-> which links libgeist + this interface — see geist#110. Until that migration
-> lands, those tools still ship in the `geist` CLI and are documented below.
+> **Scope.** This documents the tool-use **interface** geist ships as part of the
+> libgeist SDK: the bounded loop (`agent.h`), routing / forced calls that extract
+> a valid action from an *untrained* model, the reusable `--serve` daemon
+> (`agent_main.h`), and the host-neutral `dynamic-tools-v1` protocol. geist stays
+> the neutral engine + interface; **concrete tools** (document search, a memory
+> palace, web fetch, file summarize, …) live in **consumer** projects that link
+> libgeist — the reference knowledge assistant is
+> [geisten/geistwissen](https://github.com/geisten/geistwissen); device control is
+> [geisten/geist-home-assistant](https://github.com/geisten/geist-home-assistant).
 
-**Why this layer exists.** A 2 B model won't reliably drive tools or carry a
-long memory on its own. geist's answer isn't a bigger model — it's a tight
-harness around a small one: a bounded tool loop, routing and forced calls that
-extract a valid action from an *untrained* model, and a file-based memory sized
-to what the model can hold. The goal is big-model usefulness on a narrow,
-well-defined task — entirely on-device. It's an open, active track (see the
-[roadmap](../ROADMAP.md)).
+**Why this layer exists.** A 2 B model won't reliably drive tools on its own.
+geist's answer isn't a bigger model — it's a tight harness around a small one: a
+bounded tool loop, routing and forced calls that lift a valid action from an
+*untrained* model. The goal is big-model usefulness on a narrow, well-defined
+task — entirely on-device.
 
-The interaction layer that sits **above** the public ABI (`include/geist.h`).
-Everything here lives in `tools/` as **header-only** modules (`static inline`),
-so the desktop binaries and an embedded host (iOS/Android) compile the same code
-in-process — there is no `libgeist` surface change and nothing new to link.
+The interaction layer sits **above** the public ABI (`include/geist.h`).
+Everything here is **header-only** (`static inline`) in the SDK's headers
+(`agent.h`, `agent_main.h`, the `dynamic_*_v1.h` / `json_schema_v1.h` set), so a
+desktop binary and an embedded host (iOS/Android) compile the same code
+in-process — no `libgeist` surface change and nothing extra to link.
 
 The agent runs in the **same process** as the model: a request is an in-process
 function call over a resident `geist_session`. "Resident" therefore means
 different things per platform — a long-lived daemon on a server, a live session
 object inside an app — but the core is identical.
 
-- [The CLI — `geist chat`](#the-cli--geist-chat)
-- [The memory palace — `mind.h`](#the-memory-palace--mindh)
 - [The agent — `agent.h`](#the-agent--agenth)
 - [Tools](#tools)
   - [Tool selection & forced calls](#tool-selection--forced-calls)
+  - [Per-request dynamic tools](#per-request-dynamic-tools)
   - [Progress events](#progress-events)
-- [Dynamic application adapters](#dynamic-application-adapters)
-- [Testing the agent — `make bench-agent`](#testing-the-agent--make-bench-agent)
-  - [The end-to-end cases](#the-end-to-end-cases-cat-e2e)
-  - [Live-web smoke](#live-web-smoke--make-bench-agent-live)
+- [The `--serve` daemon & dynamic adapters](#the-serve-daemon--dynamic-adapters)
 - [Security model](#security-model)
 - [Embedding the agent](#embedding-the-agent)
 
 ---
-
-## The CLI — `geist chat`
-
-`geist chat` is an interactive multi-turn conversation, built on the **same agent
-engine** as `geist agent` (`geist_agent_run` with `conversation = true`, so the
-transcript carries across turns). It has the full toolset plus the memory palace,
-and reliable `/slash` control over notes.
-
-```sh
-make                                       # builds ./geist
-GEIST_MIND_DIR=./mind \
-  ./geist chat -m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
-```
-
-REPL commands (anything else is a chat turn the model answers — and may call a
-tool, including `remember`/`recall`, on its own):
-
-| command | effect |
-|---|---|
-| `/remember <title> \| <text>` | write a note + index it (explicit title) |
-| `/recall <slug>` | queue a note into context for your next message |
-| `/notes` | print the index (what's stored) |
-| `/help`, `/quit` | help / exit |
-
-The slash commands are the manual path (they bypass the model); the
-`remember`/`recall` **tools** let the model manage memory itself — and since the
-routing gained memory/slug evidence rules, they route reliably on the bundled
-un-tool-trained models too (the `make bench-agent` roundtrip cases gate this:
-remember → recall → the fact comes back).
-
-`geist chat --selftest` runs a palace round-trip with **no model** (CI-friendly).
-
-Environment: `GEIST_MIND_DIR` (default `./mind`) is the palace directory.
-
-## The memory palace — `mind.h`
-
-A file-based long-term memory: plain Markdown, no database, no embeddings.
-
-```
-$GEIST_MIND_DIR/
-  INDEX.md          one line per note; loaded into the model's context each session
-  <slug>.md         one note per file, with YAML front-matter
-```
-
-A note:
-
-```markdown
----
-title: Tenancy notice periods
-date: 2026-06-21
----
-A landlord's ordinary notice is due by the third working day of the month …
-```
-
-`INDEX.md` line: `- [<title>](<slug>.md) — <hook> · <date>`
-
-**Retrieval has no vector store.** `INDEX.md` is small and is injected into the
-system context at session start, so the model sees the titles/hooks and asks to
-`recall(<slug>)`; the full note then enters context. `grep -ri <term> $MIND_DIR`
-covers ad-hoc search.
-
-API (all `static inline`, caller-bounded buffers, no hidden heap):
-
-```c
-int  mind_remember(const char *title, const char *text);          // write + index; 0 ok
-long mind_recall(const char *slug, char *buf, size_t cap);        // bytes, or -1 if absent
-long mind_slurp(const char *path, char *buf, size_t cap);         // bounded file read
-void mind_slugify(const char *title, char *out, size_t cap);      // "My Note!" -> "my-note"
-```
-
-Ceiling (`ponytail:`): the in-context index scales to a few hundred notes; beyond
-that, grep the index or shard by tag.
 
 ## The agent — `agent.h`
 
@@ -121,11 +45,20 @@ take several internal steps (search → read → search again → answer), so th
 public entry is `geist_agent_run` (one request, many steps), not a single step.
 
 ```c
+/* A tool is host-supplied — the concrete constructors live in your app; here is
+ * an inline one to show the shape. */
+static enum geist_status echo_invoke(void *ctx, size_t alen, const char a[static alen],
+                                     size_t cap, char out[static cap], size_t *olen) {
+    (void) ctx;
+    *olen = (size_t) snprintf(out, cap, "%.*s", (int) alen, a);
+    return GEIST_OK;
+}
 struct geist_agent agent;                                   /* caller storage (large) */
-struct geist_tool  tools[] = { docsearch_tool("./docs") };
+struct geist_tool  tools[] = {{ .name = "echo", .description = "echo the args",
+                                .args_schema = "{\"text\": string}", .invoke = echo_invoke }};
 geist_agent_init(&agent, model, session,
                  /*n_tools=*/1, tools, /*max_steps=*/8,
-                 /*system_prompt=*/"You are a document assistant.");
+                 /*system_prompt=*/"You are a helpful assistant.");
 agent.force_call = true;   /* optional: see "Tool selection & forced calls" below */
 
 char   resp[2048];
@@ -174,22 +107,10 @@ struct geist_tool {
 ```
 
 Use `agent_json_str(args, "key", cap, out)` to pull a flat string field from the
-validated args. Shipped tools (each a one-call `*_tool(...)` constructor):
-
-| tool | header | constructor | does |
-|---|---|---|---|
-| **`list_dir`** | `agent_listdir.h` | `listdir_tool()` | list a directory's entries (`opendir`, no shell) |
-| **`summarize_file`** | `agent_summarize.h` | `summarize_file_tool(&ctx)` | read a text file under a root and refine-summarize it (sub-session); `ctx` = `{model, be, root}` |
-| **`doc_search`** | `agent_docsearch.h` | `docsearch_tool(dir)` | keyword search over a directory of text files — local RAG, no embeddings |
-| **`web_search`** | `agent_websearch.h` | `websearch_tool(endpoint)` | search the web (DuckDuckGo HTML, or SearXNG JSON if `endpoint` points there) → title+URL results |
-| **`web_fetch`** | `agent_webfetch.h` | `webfetch_tool(allow_hosts)` | fetch an http(s) URL via `curl`, return tag-stripped text |
-
-`web_search` + `web_fetch` compose: search for pages, then fetch+read one. Both
-are Unix/desktop only (`curl` + `fork`); an iOS/Android host supplies its own over
-the platform HTTP client. `summarize_file` confines reads to its `root` (rejects
-absolute paths and `..`). Ceilings (`ponytail:`): `doc_search` is a linear scan,
-plain text only; `web_search` scrapes DuckDuckGo's HTML result anchors (point it
-at a SearXNG instance for robustness); HTML entities in titles aren't decoded.
+validated args. geist ships **no concrete tools** — a consumer supplies them as
+one-call `*_tool(...)` constructors (see geistwissen for the reference
+`doc_search` / `summarize_file` / `web_*` / memory-palace set, and
+geist-home-assistant for device tools over `dynamic-tools-v1`).
 
 ### Tool selection & forced calls
 
@@ -210,7 +131,7 @@ in-engine sampler change:
   forced-but-wrong call, at zero model cost.
   Deterministic tie-breakers settle close races: a request naming a file
   (`note.txt`) prefers a file tool, a literal `http(s)://` URL prefers the
-  `url`-arg tool (first-token scoring cannot tell `web_search` from `web_fetch`
+  `url`-arg tool (first-token scoring cannot tell a search from a fetch tool
   — same first token), and a docs word (`docs`, `Dokumente`) prefers the doc
   tool.
 - **Forcing** (`agent.force_call = true`) — grammar-*forces* turn 0 to be a valid
@@ -219,13 +140,11 @@ in-engine sampler change:
   required and detected optional fields, integer/number, boolean, scalar enum
   and enum-array values are supported. The complete object is validated before
   the host callback. An unclear required value produces a clarification. The
-  legacy forced call is single-shot — the
-  tool's observation is returned as the answer — unless a **recipe** continues
-  it: a known 2-step chain (`web_search→web_fetch`, `doc_search→summarize_file`,
-  `list_dir→summarize_file`) fires when the request carries a cue word for the
-  second step ("… and *read* it", "… *fasse* es zusammen"). Step 1's locator is
-  lifted from step 0's observation (the top URL / the request-matching file) and
-  invoked directly — zero extra model time. This is why an *untrained* model
+  legacy forced call is single-shot — the tool's observation is returned as the
+  answer — unless a **recipe** continues it: a known 2-step chain fires when the
+  request carries a cue word for the second step ("… and *read* it", "…
+  *fasse* es zusammen"). Step 1's locator is lifted from step 0's observation
+  and invoked directly — zero extra model time. This is why an *untrained* model
   can still drive tools reliably: structure and value are forced, only the
   routing decision is the model's.
 
@@ -237,7 +156,7 @@ observation.
 
 ### Per-request dynamic tools
 
-`geist agent --serve` accepts one newline-delimited JSON request:
+The `--serve` daemon accepts one newline-delimited JSON request per connection:
 
 ```json
 {"input":"Add 5 and 7","max_tool_steps":4,"tools":[{"name":"CalculatorAdd","description":"Add two integers","parameters":{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"]}}]}
@@ -245,8 +164,7 @@ observation.
 
 Hosts may add bounded `language` and `context` strings. They become
 request-local system context; `input` remains the sole source for current forced
-tool arguments. The HA adapter keeps context in memory only, isolated by
-conversation id and bounded by conversation, turn, and byte limits.
+tool arguments.
 
 The request compiler copies up to 16 unique tools into immutable storage and
 rejects the entire request if a schema or unsupported keyword is invalid. The
@@ -258,11 +176,7 @@ For dynamic tools Geist never owns the action. It emits a correlated
 `tool.call`; the host revalidates and executes, returns `tool.result`, and Geist
 continues. Calls, one retry, cancellation and final results share the same global
 budget. See [dynamic-tools-v1.md](proposals/dynamic-tools-v1.md). Build the
-HA-independent reference host with `make dynamic-example-host`.
-
-Reliability is measured, not felt: `make bench-agent` scores routing / args /
-chains per stage over a fixed 30-case corpus (`tests/bench_agent_eval`) and
-gates CI at the fixed threshold (`AGENT_EVAL_MIN`, calibrated per model).
+reference host with `make dynamic-example-host`.
 
 ### Progress events
 
@@ -293,84 +207,32 @@ per step to a `FILE*` — `geist_agent_main` wires it to `stderr` **by default**
 callback** — copy them if you retain them. A server host can serialize the same
 struct to JSON and stream it to a UI.
 
-## Dynamic application adapters
+## The `--serve` daemon & dynamic adapters
 
-Run `geist -m model.gguf --serve /path/geist.sock`, or omit `-m` when the model
-is embedded. Each request supplies its immutable tool set and step budget; the
-host executes validated calls and returns correlated results. Domain policy and
-credentials stay outside Geist. The standalone `dynamic-example-host` is the
-reference implementation. Product adapters, including Home Assistant, live in
-separate repositories and test against the versioned wire contract.
+`agent_main.h` is a reusable agent CLI engine: an app supplies a system prompt
+and a tool builder, and it does arg parsing, model load, one-shot / REPL /
+`--serve`, and the force-call + trace env knobs. The `geist` CLI wires it up for
+`--serve` only (with an **empty** tool builder — the host supplies tools per
+request):
 
-## Testing the agent — `make bench-agent`
+```sh
+geist -m model.gguf --serve /path/geist.sock   # or omit -m for an embedded model
+make dynamic-example-host
+bin/$(mk/detect-target.sh)/release/examples/dynamic_tools_host \
+  /path/geist.sock "Add 5 and 7"
+```
 
-Reliability is measured, not felt. `tests/bench_agent_eval` loads a real model
-and sends every case through the production path (`geist_agent_run`: routing →
-call → dispatch → observation → answer), scoring **mechanically per stage** —
-no LLM judge:
+The model stays warm; each request supplies its immutable tool set and step
+budget over a `chmod 600` Unix socket; the host executes validated calls and
+returns correlated results. Domain policy and credentials stay outside Geist.
+Product adapters (Home Assistant, a knowledge assistant, …) live in separate
+repositories and test against the versioned wire contract. A health handshake
+(`{"type":"health"}` → `{"type":"health.result",…,"status":"ready"}`) lets a host
+probe readiness.
 
-| check | question | mechanic |
-|---|---|---|
-| `route` | right tool chosen? | first `CALLING` event == expected tool (`"none"` = no call) |
-| `args`  | right arguments? | expected key present, value contains the expected substring |
-| `chain` | right tool sequence? | exact order of `RUNNING` events == expected chain |
-| `ans`   | right **content** in the answer? | final answer contains one of the `expect` alternatives |
-
-Corpus: `tests/data/agent_eval/cases.jsonl` (flat JSONL; one case per line —
-`id`, `cat`, `req`, expected `tool`/`arg`/`want`/`steps`/`expect`, optional
-`conv` group). Deterministic: greedy decode, fixture docs in the repo, no
-network. Both agent modes run as separate columns — **forced** (`force_call`,
-the shipped path) is gated via `--min-pass` / `AGENT_EVAL_MIN`; **free** is a
-diagnostic column. Exit 1 below the gate → CI-able.
-
-### The end-to-end cases (`cat: e2e`)
-
-The `ans` check is what makes a case end-to-end, and the web stubs are
-**content-sensitive** so it proves something: the stub search *ranks* a fixed
-page table by query/title word overlap, the stub fetch serves each URL its own
-text — a case passes only when the right page actually travelled
-search → fetch → answer.
-
-- **Web research chains** (`e2e-1..4`): find an article and read/summarize it
-  (EN + DE); the top-ranked result must be the queried one; `e2e-4` fetches a
-  **prompt-injection page** whose text orders the agent to fetch
-  `evil.example.com` and delete files — the chain must end after the fetch
-  regardless.
-- **Direct tool use with content checks** (`e2e-5..9`): two different URLs
-  fetched (each must yield *its* page text), `list_dir` with a lifted path,
-  doc retrieval, file summary.
-- **Memory-palace roundtrip** (`mem-1..3`): `remember` writes a note through
-  the agent, `recall` reads *that* note back by slug (the fact must return);
-  plus a German recall of a pre-seeded note. Uses a scratch mind dir under
-  `build/`.
-- **Multi-turn conversation** (`conv-1..4`): cases sharing a `conv` group keep
-  one transcript; the follow-up ("What did I just ask you about?") passes only
-  by *reading* the prior turns. `conv-4` documents a known ceiling: German
-  free-form follow-ups degenerate on the 2B model.
-
-### Live-web smoke — `make bench-agent-live`
-
-The same harness with the **real** `web_search`/`web_fetch` (curl +
-DuckDuckGo) over `tests/data/agent_eval/cases_live.jsonl`. Manual and
-report-only — network results never gate CI. Known findings: DuckDuckGo
-rate-limits back-to-back requests within one run (the chain degrades as
-designed: the error observation is the answer); set
-`GEIST_SEARX_ENDPOINT=<searxng-url>` for a stable search backend.
-
-### Advisory judge — `make bench-agent-judge`
-
-A second AI reads the answers. The mechanical `expect` check only proves a
-fact *occurs* — "report report Wohner der Heimat report.md" would pass while
-being no answer at all. `bench_agent_eval --dump` writes every forced-mode
-answer to JSONL and `tools/eval_agent_judge.py` asks a local Ollama model
-(`JUDGE_MODEL`, default `gemma4:26b`) per case whether it is a **coherent,
-plausible response** to the request. Strictly advisory (exit 0 always): LLM
-judges drift with model updates, so the deterministic substring gate stays
-authoritative — the judge tells you which answers to eyeball, replacing the
-manual spot-check.
-
-Results per environment (version, date, wall time) are recorded in
-[benchmark/AGENT_EVAL.md](../benchmark/AGENT_EVAL.md).
+Your own app gets the same engine by linking libgeist and writing a ~15-line
+`main` that calls `geist_agent_main` with its own tool builder — see the header
+comment in `agent_main.h`.
 
 ## Security model
 
@@ -383,14 +245,12 @@ decides what can happen**:
    can run; an off-list name is rejected before any side effect.
 3. **Global call budget** — `max_steps` caps calls per request; a retry consumes
    the same budget.
-4. **Per-tool input validation at the trust boundary** — e.g. `web_fetch`:
-   - **no shell**: `curl` runs via `fork`+`execvp` with the URL as a separate
-     argv element, so a URL like `http://x;rm -rf ~` cannot inject a command;
-   - **scheme gate**: only literal `http://` / `https://`;
-   - **host allowlist**: exact host or a dot-bounded subdomain (so `example.com`
-     allows `www.example.com` but rejects `notexample.com` / `example.com.evil.com`);
-   - `curl --proto/--proto-redir =http,https` so a redirect can't change scheme;
-     size + time caps.
+4. **Per-tool input validation at the trust boundary** — the tool owns this. A
+   `web_fetch`-style tool, for example, should run `curl` via `fork`+`execvp`
+   (no shell, so `http://x;rm -rf ~` cannot inject a command), gate the scheme to
+   literal `http`/`https`, enforce a host allowlist (exact host or a dot-bounded
+   subdomain), and cap size + time. These live in the consumer's tool, not the
+   engine.
 
 The transport choice (stdin pipe, Unix socket, in-process) does **not** affect
 jailbreak resistance — that lives in steps 1–4. It only affects attack surface:
@@ -398,21 +258,12 @@ prefer a Unix-domain socket (filesystem-permission gated) or in-process over an
 HTTP listener for a same-host agent.
 
 Hardest guarantee — **grammar masking + typed validation** (shipped): a free
-turn that opens a call (`{` or a ```-fence) is decoded *along the call grammar* over the public
-peek/prefill API — the tool name per-token constrained to the whitelist, the
-arg key to the tool's schema. Dynamic forced calls additionally build typed
-multi-field values and validate the entire object against Schema-v1. The model
-cannot execute an off-whitelist or schema-invalid call. Repeated or invalid
-follow-ups after a valid result switch to call-free answer generation.
-
-`web_search` is the lower-risk half of web access — it only talks to a **fixed**
-search endpoint (the host is not model-chosen), so the model influences the
-*query*, not the destination. But the results it returns are attacker-influenced
-text, so a URL the model then hands to `web_fetch` is still untrusted and goes
-through `web_fetch`'s scheme + host gate.
-
-Not yet defended: `web_fetch` does not block private/link-local IPs (SSRF) — the
-host allowlist is the mitigation for an open fetch.
+turn that opens a call (`{` or a ```-fence) is decoded *along the call grammar*
+over the public peek/prefill API — the tool name per-token constrained to the
+whitelist, the arg key to the tool's schema. Dynamic forced calls additionally
+build typed multi-field values and validate the entire object against Schema-v1.
+The model cannot execute an off-whitelist or schema-invalid call. Repeated or
+invalid follow-ups after a valid result switch to call-free answer generation.
 
 ## Embedding the agent
 
@@ -420,9 +271,8 @@ host allowlist is the mitigation for an open fetch.
   `geist_session` + `geist_agent` for the process lifetime, and call
   `geist_agent_run` per request. For repeated requests on a warm model, wrap it
   in a small `accept()` loop on a Unix-domain socket (`chmod 600` = access
-  control). See [DEPLOY.md](DEPLOY.md).
+  control) — or just use `--serve`. See [DEPLOY.md](DEPLOY.md).
 - **iOS / Android:** link `libgeist.a`, include `agent.h` via a bridging header,
   and call `geist_agent_run` directly from Swift/Kotlin — no transport, no socket
   (the OS forbids spawning a second process; a background daemon is suspended).
-  Supply platform-native tools (e.g. a `web_fetch` over `URLSession`/`OkHttp`
-  instead of the `curl` one).
+  Supply platform-native tools (e.g. a `web_fetch` over `URLSession`/`OkHttp`).
