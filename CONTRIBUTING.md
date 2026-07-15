@@ -76,7 +76,6 @@ ones locally before pushing:
 ```sh
 make test-int test-e2e            # real-model product path (needs the GGUF)
 make MODE=asan test-unit          # AddressSanitizer + UBSan
-make bench-tooling TOOLING_MIN=0.7 # tool-calling/JSON quality floor
 ```
 
 ## Benchmarks

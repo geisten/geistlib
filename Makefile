@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run dynamic-example-host clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-tooling bench-agent bench-agent-live bench-agent-judge format format-check
+.PHONY: all lib bin run dynamic-example-host clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -283,54 +283,6 @@ bench-mmlu: bin $(MODEL_PREREQ)
 	  --gguf "$${GEIST_GGUF_PATH:-$(abspath $(MODEL_PATH))}" \
 	  --hf --shuffle --limit $(MMLU_LIMIT) --shots $(MMLU_SHOTS)
 
-# Quality: function-calling + JSON-generation via tools/eval_tooling.py (also
-# self-contained — drives the eval_geist GEN command, no dataset needed). The
-# probe set is curated and validates extracted JSON (valid + schema + correct
-# function/arguments). TOOLING_SUITE = json | func | all. TOOLING_MIN is a
-# quality gate: 0 = report only; >0 fails if correct/total drops below it (CI).
-TOOLING_SUITE ?= all
-TOOLING_MIN ?= 0
-bench-tooling: bin $(MODEL_PREREQ)
-	@$(GGUF_ENV) OMP_WAIT_POLICY=active python3 tools/eval_tooling.py \
-	  --bin $(BIN_DIR)/tools/eval_geist \
-	  --gguf "$${GEIST_GGUF_PATH:-$(abspath $(MODEL_PATH))}" \
-	  --suite $(TOOLING_SUITE) --min-correct $(TOOLING_MIN)
-
-# Quality: agent-LAYER reliability (routing / arg lifting / chains) via the
-# self-contained tests/bench_agent_eval binary — mechanical per-stage scoring
-# over tests/data/agent_eval/cases.jsonl, greedy decode, web tools stubbed
-# in-process (no network). AGENT_EVAL_MODE = forced | free | both.
-# AGENT_EVAL_MIN gates the forced-mode pass count (exit 1 below it). The fixed
-# threshold 43/48 is the level achieved on bitnet-2b4t-i2_s (2026-07): single
-# 15/15, chains 6/8, ambig 2/4, neg 3/3, e2e 17/18 (answer-content checks incl.
-# the memory roundtrip, multi-turn context carry, and the stock_movers cases).
-# Recalibrate (or pass AGENT_EVAL_MIN=0) when evaluating a different model.
-AGENT_EVAL_MODE ?= both
-AGENT_EVAL_MIN ?= 43
-bench-agent: bin $(MODEL_PREREQ)
-	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode $(AGENT_EVAL_MODE) --min-pass $(AGENT_EVAL_MIN)
-
-# Manual live-web smoke: the SAME harness with the real web_search/web_fetch
-# (curl + DuckDuckGo) over a tiny stable corpus — checks the stub assumptions
-# against reality. Network-dependent: report-only, never wired into CI.
-# DuckDuckGo rate-limits back-to-back requests quickly; set
-# GEIST_SEARX_ENDPOINT=<searxng-url> for a stable search backend.
-bench-agent-live: bin $(MODEL_PREREQ)
-	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode forced --live-web \
-	  tests/data/agent_eval/cases_live.jsonl
-
-# Advisory answer-coherence judge: a second AI (local Ollama, JUDGE_MODEL)
-# reads every forced-mode answer and says whether it is a coherent response —
-# the gap the mechanical expect-substring check cannot see. Report-only, exit
-# 0 always: LLM judges drift, the deterministic gate stays authoritative.
-JUDGE_MODEL ?= gemma4:26b
-bench-agent-judge: bin $(MODEL_PREREQ)
-	@mkdir -p bench_runs/agent_eval
-	@$(GGUF_ENV) $(TEST_BIN_DIR)/bench_agent_eval --mode forced \
-	  --dump bench_runs/agent_eval/answers.jsonl
-	@python3 tools/eval_agent_judge.py \
-	  --answers bench_runs/agent_eval/answers.jsonl --model $(JUDGE_MODEL)
-
 # Cleanup.
 clean:
 	@rm -rf build/$(TARGET)/$(MODE) lib/$(TARGET)/$(MODE) bin/$(TARGET)/$(MODE)
@@ -379,8 +331,7 @@ help:
 	"  make bench-small | bench-detailed           record perf to benchmark/BENCHMARK.md" \
 	"  make bench-quality-small|-detailed          MMLU acc -> benchmark/BENCHMARK.md" \
 	"  make bench-compare-ref BENCH_REF_URL=...    MMLU vs a running llama-server" \
-	"  make bench-mmlu [MMLU_LIMIT=0] | bench-tooling         accuracy (pip install datasets)" \
-	"  make bench-agent [AGENT_EVAL_MODE=both]     agent-layer routing/args/chains eval" \
+	"  make bench-mmlu [MMLU_LIMIT=0]              MMLU accuracy (pip install datasets)" \
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
 	"" \

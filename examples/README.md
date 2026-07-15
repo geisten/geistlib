@@ -40,7 +40,7 @@ code and links no Geist model/runtime library.
 
 ```sh
 make dynamic-example-host
-./geist agent -m model.gguf --serve /tmp/geist.sock
+./geist -m model.gguf --serve /tmp/geist.sock
 bin/$(mk/detect-target.sh)/release/examples/dynamic_tools_host \
   /tmp/geist.sock "Add 5 and 7"
 ```

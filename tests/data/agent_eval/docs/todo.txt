@@ -1,5 +1,0 @@
-TODO
-- build the agent eval harness (routing, args, chains)
-- run the baseline on the M1, counter-check once on the Pi 5
-- fix thresholds after the baseline run
-- recipe-table chain forcing once the numbers say where it breaks

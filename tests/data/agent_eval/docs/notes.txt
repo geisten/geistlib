@@ -1,9 +1,0 @@
-Kernel notes.
-
-NEON kernels on the A76 are vmlaq-bound for Q4_K prefill; register spills,
-decode-style tiling and batched scales all failed to reach parity. Parity
-needs fp32 BLAS.
-
-Activation rotation: the packed 4-bit KV cache uses an activation rotation
-so keys quantize with lower error at depth. Split KL by context depth in
-the quality bench to see the effect.

@@ -10,16 +10,16 @@ make test                  # unit + int + py (auto-fetches the model)
 ```
 
 Binaries land in `bin/<target>/<mode>/tools/`. The user-facing CLI is a single
-binary with subcommands:
+binary with two modes:
 
-| `geist` subcommand | what it is |
+| `geist` invocation | what it is |
 |---|---|
-| `geist <model> <prompt>` | one-shot text completion (the release artifact) |
-| `geist agent <model> <request>` | one-shot whitelist-gated tool loop |
-| `geist chat <model>` | interactive chat + tools + memory palace (see [agent.md](agent.md)) |
+| `geist -m <model> "prompt"` | one-shot instruct/text generation (the release artifact) |
+| `geist -m <model> --serve <socket>` | resident dynamic-tools daemon (see [agent.md](agent.md)) |
 
-The tool-use **agent** (`agent.h`) is a header-only library; the `agent` and
-`chat` subcommands drive it in-process. The resident daemon is `--serve`:
+The tool-use **interface** (`agent.h`, `agent_main.h`) is a header-only library;
+`--serve` drives it in-process, with the host supplying tools per request. The
+resident daemon:
 
 ```sh
 geist -m model.gguf --serve /run/geist.sock        # external model
@@ -103,7 +103,7 @@ ship to the server separately.) Recommended shape:
 [Service]
 # The resident agent daemon: model stays warm, one request per connection on a
 # chmod-600 Unix socket (the daemon chmods it). -m gives the model path.
-ExecStart=/srv/geist/geist agent -m /srv/geist/model.gguf --serve /run/geist/geist.sock
+ExecStart=/srv/geist/geist -m /srv/geist/model.gguf --serve /run/geist/geist.sock
 Restart=always
 [Install]
 WantedBy=multi-user.target
@@ -111,10 +111,10 @@ WantedBy=multi-user.target
 
 ### The resident daemon
 
-`geist agent -m model.gguf --serve /path/geist.sock` is implemented. It keeps
+`geist -m model.gguf --serve /path/geist.sock` is implemented. It keeps
 the model warm and accepts only host-neutral dynamic requests with correlated
 call/result frames. `./geist serve ...` is not a
-separate required process: the agent daemon is the serving surface.
+separate required process: the `--serve` daemon is the serving surface.
 
 > Security: prefer a Unix socket (`chmod 600`) or a localhost port behind nginx
 > over a public listener. The agent's jailbreak resistance is the immutable

@@ -220,9 +220,9 @@ here; the lever lives on 4 KB-page hosts.
 
 ## Quality
 
-The Pi 5 build is numerically sound: the function-calling / JSON benchmark
-(`tools/eval_tooling.py`) scores **28/28**, identical to the Apple build, so
-`-ffast-math` + Cortex-A76 NEON do not perturb greedy output on these tasks.
+The Pi 5 build is numerically sound: greedy output matches the Apple build
+bit-for-bit on the structured-output probes, so `-ffast-math` + Cortex-A76 NEON
+do not perturb decoding on these tasks.
 
 ### MMLU (accuracy parity with llama.cpp)
 

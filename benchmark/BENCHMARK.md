@@ -165,33 +165,6 @@ make bench-mmlu MMLU_LIMIT=0    # full ~14k set
 *(Run `make bench-mmlu` to record geist's accuracy on your build; the
 deterministic `--shuffle` seed makes the sample reproducible.)*
 
-## Quality — function calling & JSON (`make bench-tooling`)
-
-`tools/eval_tooling.py` measures the structured-output capability that powers
-tool use, also self-contained (it drives the `eval_geist` `GEN` command — greedy
-generate + detokenize with the model's own tokenizer; no dataset). Two curated
-probe suites, each task shipping its own validator so the score reflects real
-correctness, not string overlap:
-
-- **JSON** — produce a valid JSON object matching a schema (flat, nested, lists
-  of objects, strict types, multi-key constraints).
-- **func** — given a tool spec + a user query, emit a JSON function call with the
-  right name and arguments (BFCL-style; JSON is extracted whether the model uses
-  ```json fences, native tool tokens, or bare braces — and validated for the
-  correct function and required argument values, including all-args-correct,
-  numeric exactness, distractor tool selection, and array/nested arguments).
-
-**Measured:** Gemma 4 E2B-it Q4_K_M scores **14/14 valid + schema-correct JSON**
-and **14/14 fully-correct function calls** — structured output is a clear
-strength of this model. The suite includes hard cases (nesting, multi-arg,
-distractors) so it stays discriminative for lower-bit quantizations: a quant
-that breaks JSON validity or argument extraction shows up here immediately.
-
-```sh
-make bench-tooling                    # both suites
-make bench-tooling TOOLING_SUITE=func # function calling only
-```
-
 ## Batched / serving throughput (decode amortization)
 
 Single-token decode is memory-bandwidth-bound: it streams the whole model per
