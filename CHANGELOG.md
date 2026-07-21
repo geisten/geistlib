@@ -19,7 +19,7 @@ minor release.
 - The concrete reference tools (`doc_search`, `summarize_file`, `list_dir`,
   `web_search`, `web_fetch`, `remember`/`recall` + the `mind` palace) and the
   `stock_movers` demo tool moved **out of the engine** into the
-  [geistwissen](https://github.com/geisten/geistwissen) consumer. geist keeps the
+  [geist-wissen](https://github.com/geisten/geist-wissen) consumer. geist keeps the
   tool-use **interface** (`agent.h`, `agent_main.h`, the `dynamic_*_v1.h` set),
   which continues to ship in the libgeist SDK. See geist#110.
 - Removed the `make bench-tooling` / `bench-agent` quality benches and their CI

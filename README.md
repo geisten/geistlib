@@ -242,7 +242,7 @@ libgeist:
 
 | project | what it adds |
 | :-- | :-- |
-| [geistwissen](https://github.com/geisten/geistwissen) | knowledge tools — local doc search (RAG, no embeddings), a memory palace, file summarize, opt-in web |
+| [geist-wissen](https://github.com/geisten/geist-wissen) | knowledge tools — local doc search (RAG, no embeddings), a memory palace, file summarize, opt-in web |
 | [geist-home-assistant](https://github.com/geisten/geist-home-assistant) | Home Assistant device control over `dynamic-tools-v1` |
 
 Run the daemon and let a host supply the toolset per request over a chmod-600

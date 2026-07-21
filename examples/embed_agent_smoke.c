@@ -5,7 +5,7 @@
  * interface). Constructs a trivial geist_tool and drives its invoke directly —
  * model-free, so it needs no GGUF — exercising agent_json_str + the geist_tool
  * contract from the shipped headers. The release workflow compiles this against
- * the packaged libgeist-<platform>.tar.gz. For a full agent run see geistwissen.
+ * the packaged libgeist-<platform>.tar.gz. For a full agent run see geist-wissen.
  */
 #include <geist.h>
 #include "agent.h" /* tool-use interface: geist_tool, agent_json_str, … */

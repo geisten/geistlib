@@ -55,7 +55,7 @@ host supplies the complete allowed toolset per request over a chmod-600 Unix
 socket, executes the calls, and returns results — Geist never executes a dynamic
 action itself. Concrete tools live in consumer projects (see
 [agent.md](agent.md); the reference assistant is
-[geistwissen](https://github.com/geisten/geistwissen)).
+[geist-wissen](https://github.com/geisten/geist-wissen)).
 
 ```bash
 ./geist -m model.gguf --serve /tmp/geist.sock
