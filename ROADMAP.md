@@ -15,7 +15,7 @@ is open to help. The mission in full is in the
 | **Fast per platform** | The fastest path on *each* target, not a lowest common denominator | ✅ ARM64 NEON · macOS Accelerate/AMX · x86-64 AVX-512/VNNI |
 | **One-file install** | Engine + model in one dependency-free binary | ✅ prebuilt binaries + `make EMBED_MODEL=…` |
 | **Small-model agents** | A tight harness so a 2 B model rivals a bigger one on a narrow task | ✅ bounded static + per-request dynamic tools, typed forced calls, host round-trips ([agent.md](docs/agent.md)) |
-| **Memory for small models** | Recall sized to what these models can hold — no vector store | 🚧 file-based memory palace, in the [geistwissen](https://github.com/geisten/geistwissen) consumer (the engine ships the tool-use interface) |
+| **Memory for small models** | Recall sized to what these models can hold — no vector store | 🚧 file-based memory palace, in the [geist-wissen](https://github.com/geisten/geist-wissen) consumer (the engine ships the tool-use interface) |
 | **Models that adapt** | Dynamic specialization, learning, self-organization | 🔬 research |
 
 <sub>✅ shipped · 🚧 in progress · 🔬 exploring</sub>

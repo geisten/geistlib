@@ -8,7 +8,7 @@
  * The `--serve` flag hands the process to the resident dynamic-tools daemon
  * (agent_main.h): the model stays warm and a host supplies the complete toolset
  * per request over a Unix socket (dynamic-tools-v1). The engine CLI compiles NO
- * tools of its own — concrete tools live in the consumer (e.g. geistwissen, the
+ * tools of its own — concrete tools live in the consumer (e.g. geist-wissen, the
  * Home Assistant integration). See docs/agent.md.
  *
  *   geist [-m <model>] "prompt"        # ask — instruct chat (DEFAULT): wraps the

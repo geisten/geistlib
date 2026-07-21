@@ -7,7 +7,7 @@
 > the neutral engine + interface; **concrete tools** (document search, a memory
 > palace, web fetch, file summarize, …) live in **consumer** projects that link
 > libgeist — the reference knowledge assistant is
-> [geisten/geistwissen](https://github.com/geisten/geistwissen); device control is
+> [geisten/geist-wissen](https://github.com/geisten/geist-wissen); device control is
 > [geisten/geist-home-assistant](https://github.com/geisten/geist-home-assistant).
 
 **Why this layer exists.** A 2 B model won't reliably drive tools on its own.
@@ -108,7 +108,7 @@ struct geist_tool {
 
 Use `agent_json_str(args, "key", cap, out)` to pull a flat string field from the
 validated args. geist ships **no concrete tools** — a consumer supplies them as
-one-call `*_tool(...)` constructors (see geistwissen for the reference
+one-call `*_tool(...)` constructors (see geist-wissen for the reference
 `doc_search` / `summarize_file` / `web_*` / memory-palace set, and
 geist-home-assistant for device tools over `dynamic-tools-v1`).
 
