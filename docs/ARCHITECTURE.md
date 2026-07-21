@@ -20,6 +20,7 @@ src/backends/            compute: the kernels that actually run the ops
       cpu_neon/            Apple Silicon + ARM64, OpenMP-parallel
       cpu_scalar/          portable reference (correctness oracle)
       cpu_x86/             x86-64 AVX-512 / VNNI (opt-in; runtime hw_probe dispatch)
+      metal/               Apple GPU (opt-in: BACKENDS="… metal"; see below)
 src/formats/             GGUF + PTQTP quant (de)quantization
 src/io/                  GGUF reader, safetensors reader
 ```
@@ -176,6 +177,49 @@ Capabilities are queryable up front via `geist_backend_supports_op` returning
 `NONE` / `EMULATED` / `NATIVE`, so an arch can pick the best available path or
 fail cleanly rather than discovering an unsupported combination mid-forward.
 
+## The Metal backend (Apple GPU)
+
+`src/backends/metal/` runs the transformer forward pass on the Apple GPU. It is
+a full backend — registered in `backend_registry.c`, built via
+`mk/backend-metal.mk` — but **opt-in**: no default target compiles it, so a
+`make` build is CPU-only unless you ask for it:
+
+```
+make BACKENDS="cpu_neon cpu_scalar metal"   # then geist_backend_create("metal", …)
+```
+
+It binds the same `(op, dtype, layout)` kernels through the shared vtbl, so an
+arch runs unchanged; the difference is entirely below the ABI. What it
+implements, and why it is fast:
+
+- **Fused per-layer blocks** — q/k/v norm + RoPE + KV-append, the gate+up GeGLU
+  matvec, the k/v pair, and the PLE block each run as one dispatch, cutting
+  command-encoding overhead per token.
+- **simdgroup flash attention** — all attention (including the head_dim-512
+  full-attention layers) uses simdgroup-matrix flash kernels: an 8-simdgroup
+  prefill variant and a 16-chunk split-KV decode variant, over a **native f16
+  KV cache** (half the KV memory, no per-call conversion).
+- **Pipelined command buffers + device argmax** — llama-style command-buffer
+  pipelining keeps the GPU fed, and a device-side greedy argmax returns only the
+  4-byte token, not the logits.
+- **Verified against the oracle** — greedy output is token-identical to the
+  `cpu_scalar` reference at every optimization step, across the 4096-token
+  context boundary (the session window grows with the workload; over-capacity
+  prefills are rejected up-front with `GEIST_E_TOO_MANY_TOKENS`).
+
+Status: experimental but measured — decode within ~12 % of llama.cpp on an M1
+Max, holding at long context. The remaining gap is the shared q4_K GEMM plateau
+plus flash-kernel efficiency; the measurement ledger is in
+[proposals/metal-beat-llamacpp-plan.md](proposals/metal-beat-llamacpp-plan.md).
+
+**Known debt — the Stage-6 op consolidation.** `metal/backend.c` still carries an
+older set of fine-grained GPU ops (behind `metal_legacy_ops.h`) alongside the
+current fused blocks. Some of those types are still load-bearing (the live
+`ple_block` / `matmul_q4k` / command-sequence paths depend on them), so the
+header is **not** dead code that can simply be deleted — collapsing it into the
+current op set is a deliberate refactor tracked for a later pass, not a cleanup
+to do in passing.
+
 ## Tensors: dtype vs layout
 
 A `geist_tensor` separates the **logical** dtype (`F32`, `Q4_K`, `TQ2_0`, …)
@@ -189,9 +233,9 @@ the kernel for a `TERNARY` weight does only adds/subtracts, no multiplies.
 
 The backend op set (`enum geist_op`) is deliberately small: `LINEAR`,
 `RMSNORM`, `RESIDUAL_ADD`, `SILU_GATE`, `EMBEDDING_LOOKUP`, `ATTENTION`,
-`ROPE`, plus reserved SSM ops (`SSM_STEP`/`SSM_SCAN`/`CONV1D`) for a future
-Mamba arch. Fused attention (QKᵀ → softmax → V) is one op so the backend can
-keep the score matrix in registers/L1.
+`ROPE`. Fused attention (QKᵀ → softmax → V) is one op so the backend can keep
+the score matrix in registers/L1. The set grows only when a real arch needs a
+new op — there are no speculative reserved entries.
 
 ## Sessions and the KV cache
 

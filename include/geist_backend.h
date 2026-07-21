@@ -221,7 +221,7 @@ struct geist_backend_vtbl {
                                                  struct geist_tensor       *out);
 
     /* Additional ops added in subsequent commits:
-     *   silu_gate, ssm_step, ssm_scan, conv1d
+     *   silu_gate
      */
 
     /* ---- Optional Level-3 fast paths ---- */
