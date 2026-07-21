@@ -155,11 +155,6 @@ enum geist_op {
     GEIST_OP_ATTENTION,        /* fused QK^T → softmax → V */
     GEIST_OP_ROPE,
 
-    /* Mamba-specific (added when arch lands; reserved here) */
-    GEIST_OP_SSM_STEP,
-    GEIST_OP_SSM_SCAN,
-    GEIST_OP_CONV1D,
-
     GEIST_OP_COUNT,
 };
 
