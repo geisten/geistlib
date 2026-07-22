@@ -5,6 +5,7 @@
 #ifndef GEIST_JSON_SCHEMA_V1_H
 #define GEIST_JSON_SCHEMA_V1_H
 
+#include <ctype.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -123,10 +124,6 @@ jsv1_new(struct jsv1_parser *parser, enum jsv1_type type, size_t start, int pare
     return index;
 }
 
-static inline int jsv1_hex(char c) {
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-}
-
 static inline int jsv1_parse_value(struct jsv1_parser *parser, int parent, unsigned depth);
 
 static inline int jsv1_parse_string(struct jsv1_parser *parser, int parent) {
@@ -164,7 +161,7 @@ static inline int jsv1_parse_string(struct jsv1_parser *parser, int parent) {
                 return -1;
             }
             for (unsigned i = 0u; i < 4u; i++) {
-                if (!jsv1_hex(parser->doc->json[parser->pos++])) {
+                if (!isxdigit((unsigned char) parser->doc->json[parser->pos++])) {
                     parser->status = JSV1_E_INVALID_JSON;
                     return -1;
                 }
@@ -699,49 +696,38 @@ static inline enum jsv1_status jsv1_validate_object(const struct jsv1_doc *schem
     if (value->tokens[value_index].size > JSV1_MAX_PROPERTIES) {
         return JSV1_E_ITEM_LIMIT;
     }
-    int properties = jsv1_object_get(schema, schema_index, "properties");
-    if (properties >= 0 && schema->tokens[properties].type != JSV1_OBJECT) {
-        return JSV1_E_INVALID_SCHEMA;
+    /* value-side: string keys, unescaped, no duplicates (the args are the
+     * untrusted side — this check must stay here). */
+    if (!jsv1_object_unique(value, value_index)) {
+        return JSV1_E_INVALID_JSON;
     }
+    /* schema shape is guaranteed by jsv1_schema_check (run first by
+     * jsv1_validate, the only entry) — only navigation guards remain below. */
+    int properties       = jsv1_object_get(schema, schema_index, "properties");
     int additional       = jsv1_object_get(schema, schema_index, "additionalProperties");
     int allow_additional = additional >= 0 && schema->tokens[additional].type == JSV1_TRUE;
-    if (additional >= 0 && schema->tokens[additional].type != JSV1_TRUE &&
-        schema->tokens[additional].type != JSV1_FALSE) {
-        return JSV1_E_INVALID_SCHEMA;
-    }
 
     int cursor = value_index;
     for (unsigned pair = 0u; pair < value->tokens[value_index].size; pair++) {
         int key   = jsv1_child(value, value_index, cursor);
         int child = jsv1_child(value, value_index, key);
-        if (key < 0 || child < 0 || value->tokens[key].type != JSV1_STRING ||
-            value->tokens[key].escaped) {
+        if (key < 0 || child < 0) {
             return JSV1_E_INVALID_JSON;
-        }
-        for (int prior = value_index, p = 0; p < (int) pair; p++) {
-            prior           = jsv1_child(value, value_index, prior);
-            int prior_value = jsv1_child(value, value_index, prior);
-            if (jsv1_same(value, prior, value, key)) {
-                return JSV1_E_INVALID_JSON;
-            }
-            prior = prior_value;
         }
         int property_schema = -1;
         if (properties >= 0) {
             size_t key_len = value->tokens[key].end - value->tokens[key].start;
             int    pcursor = properties;
             for (unsigned i = 0u; i < schema->tokens[properties].size; i++) {
-                int    pkey   = jsv1_child(schema, properties, pcursor);
-                int    pvalue = jsv1_child(schema, properties, pkey);
-                size_t plen =
-                        pkey >= 0 ? schema->tokens[pkey].end - schema->tokens[pkey].start : 0u;
-                if (pkey < 0 || pvalue < 0 || schema->tokens[pkey].type != JSV1_STRING) {
+                int pkey   = jsv1_child(schema, properties, pcursor);
+                int pvalue = jsv1_child(schema, properties, pkey);
+                if (pkey < 0 || pvalue < 0) {
                     return JSV1_E_INVALID_SCHEMA;
                 }
-                if (!schema->tokens[pkey].escaped && plen == key_len &&
-                    memcmp(schema->json + schema->tokens[pkey].start,
-                           value->json + value->tokens[key].start,
-                           key_len) == 0) {
+                size_t plen = schema->tokens[pkey].end - schema->tokens[pkey].start;
+                if (plen == key_len && memcmp(schema->json + schema->tokens[pkey].start,
+                                              value->json + value->tokens[key].start,
+                                              key_len) == 0) {
                     property_schema = pvalue;
                     break;
                 }
@@ -764,15 +750,10 @@ static inline enum jsv1_status jsv1_validate_object(const struct jsv1_doc *schem
 
     int required = jsv1_object_get(schema, schema_index, "required");
     if (required >= 0) {
-        if (schema->tokens[required].type != JSV1_ARRAY ||
-            schema->tokens[required].size > JSV1_MAX_PROPERTIES) {
-            return JSV1_E_INVALID_SCHEMA;
-        }
         int rcursor = required;
         for (unsigned i = 0u; i < schema->tokens[required].size; i++) {
             int required_key = jsv1_child(schema, required, rcursor);
-            if (required_key < 0 || schema->tokens[required_key].type != JSV1_STRING ||
-                schema->tokens[required_key].escaped) {
+            if (required_key < 0) {
                 return JSV1_E_INVALID_SCHEMA;
             }
             size_t rlen    = schema->tokens[required_key].end - schema->tokens[required_key].start;
@@ -805,9 +786,11 @@ static inline enum jsv1_status jsv1_validate_at(const struct jsv1_doc *schema,
         schema->tokens[schema_index].type != JSV1_OBJECT) {
         return depth > JSV1_MAX_DEPTH ? JSV1_E_DEPTH_LIMIT : JSV1_E_INVALID_SCHEMA;
     }
+    /* type-whitelist + allowed-keyword shape is guaranteed by jsv1_schema_check;
+     * the extraction guards below stay for navigation/memory safety, and the
+     * dispatch falls closed on an (unreachable) unknown type. */
     int type_token = jsv1_object_get(schema, schema_index, "type");
-    if (type_token < 0 || schema->tokens[type_token].type != JSV1_STRING ||
-        schema->tokens[type_token].escaped) {
+    if (type_token < 0 || schema->tokens[type_token].type != JSV1_STRING) {
         return JSV1_E_INVALID_SCHEMA;
     }
     size_t type_len = schema->tokens[type_token].end - schema->tokens[type_token].start;
@@ -817,20 +800,6 @@ static inline enum jsv1_status jsv1_validate_at(const struct jsv1_doc *schema,
     char type[16];
     memcpy(type, schema->json + schema->tokens[type_token].start, type_len);
     type[type_len] = '\0';
-    if (strcmp(type, "object") != 0 && strcmp(type, "array") != 0 && strcmp(type, "string") != 0 &&
-        strcmp(type, "number") != 0 && strcmp(type, "integer") != 0 &&
-        strcmp(type, "boolean") != 0) {
-        return JSV1_E_INVALID_SCHEMA;
-    }
-    int cursor = schema_index;
-    for (unsigned pair = 0u; pair < schema->tokens[schema_index].size; pair++) {
-        int key   = jsv1_child(schema, schema_index, cursor);
-        int child = jsv1_child(schema, schema_index, key);
-        if (key < 0 || child < 0 || !jsv1_allowed_keyword(schema, key, type)) {
-            return JSV1_E_UNSUPPORTED_KEYWORD;
-        }
-        cursor = child;
-    }
     enum jsv1_status status;
     if (strcmp(type, "object") == 0) {
         status = jsv1_validate_object(schema, schema_index, value, value_index, depth);
@@ -846,17 +815,16 @@ static inline enum jsv1_status jsv1_validate_at(const struct jsv1_doc *schema,
         int      min_token = jsv1_object_get(schema, schema_index, "minItems");
         int      max_token = jsv1_object_get(schema, schema_index, "maxItems");
         double   number;
-        if (min_token >= 0 && (!jsv1_integer_token(schema, min_token) ||
-                               !jsv1_number(schema, min_token, &number) || number < 0.0)) {
-            return JSV1_E_INVALID_SCHEMA;
-        } else if (min_token >= 0) {
+        if (min_token >= 0) {
+            if (!jsv1_number(schema, min_token, &number)) {
+                return JSV1_E_INVALID_SCHEMA;
+            }
             minimum = (uint64_t) number;
         }
-        if (max_token >= 0 &&
-            (!jsv1_integer_token(schema, max_token) || !jsv1_number(schema, max_token, &number) ||
-             number < 0.0 || number > JSV1_MAX_ARRAY_ITEMS)) {
-            return JSV1_E_INVALID_SCHEMA;
-        } else if (max_token >= 0) {
+        if (max_token >= 0) {
+            if (!jsv1_number(schema, max_token, &number)) {
+                return JSV1_E_INVALID_SCHEMA;
+            }
             maximum = (uint64_t) number;
         }
         if (minimum > maximum || value->tokens[value_index].size < minimum ||
@@ -879,11 +847,13 @@ static inline enum jsv1_status jsv1_validate_at(const struct jsv1_doc *schema,
         status = value->tokens[value_index].type == JSV1_NUMBER ? JSV1_OK : JSV1_E_TYPE;
     } else if (strcmp(type, "integer") == 0) {
         status = jsv1_integer_token(value, value_index) ? JSV1_OK : JSV1_E_TYPE;
-    } else {
+    } else if (strcmp(type, "boolean") == 0) {
         status = value->tokens[value_index].type == JSV1_TRUE ||
                                  value->tokens[value_index].type == JSV1_FALSE
                          ? JSV1_OK
                          : JSV1_E_TYPE;
+    } else {
+        return JSV1_E_INVALID_SCHEMA; /* unreachable after jsv1_schema_check */
     }
     if (status != JSV1_OK) {
         return status;
