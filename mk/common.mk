@@ -189,9 +189,11 @@ BACKEND_SOURCES :=
 include $(foreach b,$(BACKENDS),mk/backend-$(b).mk)
 LIB_SOURCES += $(BACKEND_SOURCES)
 
-# Vulkan backend lives on the `vulkan-backend` branch and is intentionally
-# omitted from refactor/v2 to keep the CPU-first development trajectory
-# focused. To work on the GPU path, check out that branch directly.
+# GPU backends: `metal` (macOS) and `vulkan` (Linux discrete GPUs) — both
+# load their runtime via dlopen, so enabling them adds no link-time deps.
+# Build with e.g. `make BACKENDS="vulkan cpu_x86 cpu_scalar"` (and remember
+# `make clean` when changing BACKENDS — the registry TU is not re-built
+# automatically on a -D flag change).
 
 # Third-party single-header libraries (stb_image, stb_image_resize2). One
 # implementation TU per project — compiled with -w to silence the dozens of

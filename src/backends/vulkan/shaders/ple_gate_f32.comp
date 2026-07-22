@@ -1,0 +1,48 @@
+#version 450
+
+/* Fused PLE gate (gemma-3n decode): y[row] = gelu_tanh(x . w[row]) * p[row].
+ * matvec_f32 structure — one 256-thread workgroup per output row — with the
+ * gelu*ple epilogue folded in (replaces matvec + gelu_mul dispatches).
+ * Dispatch: gx = n_out (= hidden_per_layer), rows == 1. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { float x[]; };
+layout(set = 0, binding = 1) readonly buffer W { float w[]; };
+layout(set = 0, binding = 2) readonly buffer P { float p[]; };
+layout(set = 0, binding = 3) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint x_offset;
+    uint p_offset;
+    uint y_offset;
+} pc;
+
+shared float partial[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint lid = gl_LocalInvocationID.x;
+
+    float sum = 0.0;
+    uint w_base = row * pc.n_in;
+    for (uint k = lid; k < pc.n_in; k += 256) {
+        sum += x[pc.x_offset + k] * w[w_base + k];
+    }
+    partial[lid] = sum;
+    barrier();
+
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lid < stride) {
+            partial[lid] += partial[lid + stride];
+        }
+        barrier();
+    }
+
+    if (lid == 0) {
+        float g = partial[0];
+        float t = 0.7978845608028654 * (g + 0.044715 * g * g * g);
+        y[pc.y_offset + row] = (0.5 * g * (1.0 + tanh(t))) * p[pc.p_offset + row];
+    }
+}

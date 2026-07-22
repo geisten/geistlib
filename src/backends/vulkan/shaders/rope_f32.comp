@@ -1,0 +1,40 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer X { float x[]; };
+layout(set = 0, binding = 1) readonly buffer Cos { float cos_v[]; };
+layout(set = 0, binding = 2) readonly buffer Sin { float sin_v[]; };
+
+layout(push_constant) uniform Push {
+    uint total_pairs;
+    uint n_heads;
+    uint head_dim;
+    uint x_offset;
+    uint cos_offset;
+    uint sin_offset;
+} pc;
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.total_pairs) {
+        return;
+    }
+
+    uint half_dim = pc.head_dim >> 1;
+    uint pair = gid % half_dim;
+    uint head = (gid / half_dim) % pc.n_heads;
+    uint seq = gid / (half_dim * pc.n_heads);
+
+    uint x_base = pc.x_offset + (seq * pc.n_heads + head) * pc.head_dim;
+    uint rope_base = seq * pc.head_dim;
+    uint cos_base = pc.cos_offset + rope_base;
+    uint sin_base = pc.sin_offset + rope_base;
+
+    float a = x[x_base + pair];
+    float b = x[x_base + half_dim + pair];
+    x[x_base + pair] = a * cos_v[cos_base + pair] -
+                       b * sin_v[sin_base + pair];
+    x[x_base + half_dim + pair] = b * cos_v[cos_base + half_dim + pair] +
+                                  a * sin_v[sin_base + half_dim + pair];
+}

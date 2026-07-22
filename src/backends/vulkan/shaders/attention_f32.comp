@@ -1,0 +1,148 @@
+#version 450
+
+/* Causal (+ sliding-window) MQA/GQA attention, one workgroup per
+ * (q_pos, q_head). Online-softmax over 256-position chunks:
+ *   - 256 threads compute 256 QK dots in parallel (q cached in shared),
+ *   - chunk max/sum via shared tree reduce, running (m, l) rescale,
+ *   - V accumulated per-thread along head_dim (coalesced column reads).
+ * Two passes over K/V total; no serial per-position loop. head_dim <= 512.
+ * No score scale: Gemma encodes 1/sqrt(d) in the Q/K norms. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Q { float q[]; };
+layout(set = 0, binding = 1) readonly buffer K { float k[]; };
+layout(set = 0, binding = 2) readonly buffer V { float v[]; };
+layout(set = 0, binding = 3) writeonly buffer Out { float out_v[]; };
+
+layout(push_constant) uniform Push {
+    uint n_q;
+    uint n_kv;
+    uint n_q_heads;
+    uint n_kv_heads;
+    uint head_dim;
+    uint q_offset_abs;
+    uint sliding_window;
+    uint q_offset;
+    uint k_offset;
+    uint v_offset;
+    uint out_offset;
+} pc;
+
+shared float q_sh[512];
+shared float red[256];
+shared float w_sh[256];
+
+
+void main() {
+    uint q_pos = gl_WorkGroupID.x;
+    uint q_head = gl_WorkGroupID.y;
+    uint lid = gl_LocalInvocationID.x;
+    if (q_pos >= pc.n_q || q_head >= pc.n_q_heads ||
+        pc.n_kv == 0 || pc.head_dim == 0 || pc.head_dim > 512) {
+        return;
+    }
+
+    uint kv_group = pc.n_q_heads / pc.n_kv_heads;
+    uint kv_head = q_head / kv_group;
+    uint q_abs = pc.q_offset_abs + q_pos;
+    uint s_lo = 0;
+    if (pc.sliding_window > 0 && q_abs + 1 > pc.sliding_window) {
+        s_lo = q_abs + 1 - pc.sliding_window;
+    }
+    uint s_hi = q_abs;
+    if (s_hi >= pc.n_kv) {
+        s_hi = pc.n_kv - 1;
+    }
+
+    uint hd = pc.head_dim;
+    uint out_base = pc.out_offset + (q_pos * pc.n_q_heads + q_head) * hd;
+
+    if (s_lo > s_hi) {
+        for (uint d = lid; d < hd; d += 256) {
+            out_v[out_base + d] = 0.0;
+        }
+        return;
+    }
+
+    /* q row into shared */
+    uint q_base = pc.q_offset + (q_pos * pc.n_q_heads + q_head) * hd;
+    for (uint d = lid; d < hd; d += 256) {
+        q_sh[d] = q[q_base + d];
+    }
+    barrier();
+
+    float m_run = (-1.0/0.0);
+    float l_run = 0.0;
+    float acc0 = 0.0; /* dim lid        */
+    float acc1 = 0.0; /* dim lid + 256  */
+    uint kv_row = pc.n_kv_heads * hd;
+
+    for (uint base = s_lo; base <= s_hi; base += 256) {
+        uint s = base + lid;
+
+        /* parallel QK dots for this chunk */
+        float score = (-1.0/0.0);
+        if (s <= s_hi) {
+            uint k_base = pc.k_offset + s * kv_row + kv_head * hd;
+            float sum = 0.0;
+            for (uint i = 0; i < hd; i++) {
+                sum += q_sh[i] * k[k_base + i];
+            }
+            score = sum;
+        }
+
+        /* chunk max */
+        red[lid] = score;
+        barrier();
+        for (uint stride = 128; stride > 0; stride >>= 1) {
+            if (lid < stride && red[lid + stride] > red[lid]) {
+                red[lid] = red[lid + stride];
+            }
+            barrier();
+        }
+        float m_new = max(m_run, red[0]);
+        barrier(); /* red[] reused below */
+
+        float w = s <= s_hi ? exp(score - m_new) : 0.0;
+        w_sh[lid] = w;
+        red[lid] = w;
+        barrier();
+        for (uint stride = 128; stride > 0; stride >>= 1) {
+            if (lid < stride) {
+                red[lid] += red[lid + stride];
+            }
+            barrier();
+        }
+        float r = m_run == (-1.0/0.0) ? 0.0 : exp(m_run - m_new);
+        l_run = l_run * r + red[0];
+        m_run = m_new;
+
+        /* V accumulation: thread owns dims lid / lid+256; consecutive
+         * threads read consecutive addresses per position (coalesced). */
+        uint chunk_n = min(255u, s_hi - base) + 1u;
+        float a0 = 0.0;
+        float a1 = 0.0;
+        for (uint j = 0; j < chunk_n; j++) {
+            uint v_base = pc.v_offset + (base + j) * kv_row + kv_head * hd;
+            float wj = w_sh[j];
+            if (lid < hd) {
+                a0 += wj * v[v_base + lid];
+            }
+            if (lid + 256 < hd) {
+                a1 += wj * v[v_base + lid + 256];
+            }
+        }
+        acc0 = acc0 * r + a0;
+        acc1 = acc1 * r + a1;
+        barrier(); /* w_sh reused next chunk */
+    }
+
+    float inv_l = l_run > 0.0 ? 1.0 / l_run : 0.0;
+    if (lid < hd) {
+        out_v[out_base + lid] = acc0 * inv_l;
+    }
+    if (lid + 256 < hd) {
+        out_v[out_base + lid + 256] = acc1 * inv_l;
+    }
+}

@@ -1,0 +1,30 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+/* F32 -> F16 converting KV append: copies seq*kv_row elements of k/v into
+ * the f16 caches. Destination offsets (already positioned at q_position)
+ * are in f16 elements. Dispatch: ceil(n / 256). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer KS { float ks[]; };
+layout(set = 0, binding = 1) readonly buffer VS { float vs[]; };
+layout(set = 0, binding = 2) writeonly buffer KD { float16_t kd[]; };
+layout(set = 0, binding = 3) writeonly buffer VD { float16_t vd[]; };
+
+layout(push_constant) uniform Push {
+    uint n;
+    uint k_src_off;
+    uint v_src_off;
+    uint k_dst_off;
+    uint v_dst_off;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.n) {
+        return;
+    }
+    kd[pc.k_dst_off + i] = float16_t(ks[pc.k_src_off + i]);
+    vd[pc.v_dst_off + i] = float16_t(vs[pc.v_src_off + i]);
+}
