@@ -36,9 +36,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-#include <math.h>    /* expf/logf — full-name routing scores (log-softmax) */
 #include <strings.h> /* strncasecmp (POSIX; present on all geist hosts) */
-#include <time.h>    /* clock_gettime — GEIST_AGENT_TIME phase breakdown */
 
 enum {
     GEIST_AGENT_TRANSCRIPT_CAP = 1 << 15,
@@ -132,7 +130,7 @@ static inline size_t geist_generate_greedy(struct geist_session *s,
 }
 
 /* The "write a message, set *out_len, return OK" tail every tool shares, for the
- * error/short-result paths. Tools that fill `out` incrementally use agent_ret. */
+ * error/short-result paths. */
 static inline enum geist_status
 agent_obs(size_t out_cap, char out[static out_cap], size_t *out_len, const char *fmt, ...) {
     va_list ap;
@@ -141,14 +139,6 @@ agent_obs(size_t out_cap, char out[static out_cap], size_t *out_len, const char 
     va_end(ap);
     if (out_len) {
         *out_len = (n < 0) ? 0 : (size_t) n;
-    }
-    return GEIST_OK;
-}
-
-/* Set *out_len (out is already filled) and return OK. */
-static inline enum geist_status agent_ret(size_t *out_len, size_t w) {
-    if (out_len) {
-        *out_len = w;
     }
     return GEIST_OK;
 }
@@ -174,7 +164,11 @@ struct geist_tool {
 
 /* Final callback boundary: dynamic arguments fail as an observation without
  * calling host code. The host independently revalidates before its action. */
+/* `validation` is the caller's jsv1_validate result (JSV1_OK when the tool has
+ * no parameters_schema) — validated once at the call site, which also gates the
+ * RUNNING progress event on it. */
 static inline enum geist_status agent_tool_invoke_checked(const struct geist_tool *tool,
+                                                          enum jsv1_status         validation,
                                                           size_t                   args_len,
                                                           const char args[static args_len],
                                                           size_t     out_cap,
@@ -182,17 +176,13 @@ static inline enum geist_status agent_tool_invoke_checked(const struct geist_too
                                                           size_t    *out_len) {
     if (tool == nullptr || tool->invoke == nullptr || args == nullptr || out_cap == 0u)
         return GEIST_E_INVALID_ARG;
-    if (tool->parameters_schema != nullptr) {
-        enum jsv1_status validation = jsv1_validate(
-                tool->parameters_schema, strlen(tool->parameters_schema), args, args_len);
-        if (validation != JSV1_OK)
-            return agent_obs(out_cap,
-                             out,
-                             out_len,
-                             "error: invalid arguments for \"%s\": %s",
-                             tool->name,
-                             jsv1_status_string(validation));
-    }
+    if (validation != JSV1_OK)
+        return agent_obs(out_cap,
+                         out,
+                         out_len,
+                         "error: invalid arguments for \"%s\": %s",
+                         tool->name,
+                         jsv1_status_string(validation));
     return tool->invoke(tool->ctx, args_len, args, out_cap, out, out_len);
 }
 
@@ -205,7 +195,6 @@ static inline enum geist_status agent_tool_invoke_checked(const struct geist_too
  * a caller may override `a->tmpl` after init (e.g. to match a GGUF's own
  * tokenizer.chat_template). */
 struct geist_chat_template {
-    const char *name;
     const char *user_open;  /* opens a user / observation turn */
     const char *turn_close; /* closes any turn */
     const char *model_open; /* opens the assistant turn (the model generates after this) */
@@ -215,7 +204,6 @@ struct geist_chat_template {
 
 /* Gemma 3/4: <start_of_turn>{role}\n … <end_of_turn>. */
 static const struct geist_chat_template GEIST_CHAT_GEMMA = {
-        .name       = "gemma",
         .user_open  = "<start_of_turn>user\n",
         .turn_close = "<end_of_turn>\n",
         .model_open = "<start_of_turn>model\n",
@@ -229,7 +217,6 @@ static const struct geist_chat_template GEIST_CHAT_GEMMA = {
  * exact template — refine per family (or render the GGUF's tokenizer.chat_template)
  * if a model needs its native framing for good tool-calling. */
 static const struct geist_chat_template GEIST_CHAT_GENERIC = {
-        .name       = "generic",
         .user_open  = "User: ",
         .turn_close = "\n",
         .model_open = "Assistant:",
@@ -246,7 +233,6 @@ static const struct geist_chat_template GEIST_CHAT_GENERIC = {
  * won't emit structured tool calls — it isn't tool-trained; that needs a
  * tool-trained model like Llama-3.1 / Qwen2.5.) */
 static const struct geist_chat_template GEIST_CHAT_LLAMA3 = {
-        .name       = "llama3",
         .user_open  = "<|start_header_id|>user<|end_header_id|>\n\n",
         .turn_close = "<|eot_id|>",
         .model_open = "<|start_header_id|>assistant<|end_header_id|>\n\n",
@@ -347,9 +333,6 @@ struct geist_agent {
      * geist_agent_init. See struct geist_agent_event. */
     void (*on_event)(void *ctx, const struct geist_agent_event *ev);
     void *on_event_ctx;
-    /* GEIST_AGENT_TIME=1: agent_emit prints ms since the previous phase to
-     * stderr, so a turn splits into route/call/tool/answer. Off by default. */
-    struct timespec t_mark;
 };
 
 /* Caller provides storage for *a (it is large — put it in static/heap, not a
@@ -387,28 +370,11 @@ static inline void geist_agent_init(struct geist_agent     *a,
 }
 
 /* Fire the progress hook if the host set one (one nullptr-check when unset). */
-static inline const char *
-geist_agent_phase_name(enum geist_agent_phase p); /* fwd: agent_emit time trace */
-
 static inline void agent_emit(struct geist_agent    *a,
                               enum geist_agent_phase phase,
                               size_t                 step,
                               const char            *tool,
                               const char            *detail) {
-    if (getenv("GEIST_AGENT_TIME")) {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        double ms = (double) (now.tv_sec - a->t_mark.tv_sec) * 1e3 +
-                    (double) (now.tv_nsec - a->t_mark.tv_nsec) / 1e6;
-        fprintf(stderr,
-                "[time] %-9s step=%zu %+8.1f ms%s%s\n",
-                geist_agent_phase_name(phase),
-                step,
-                ms,
-                tool ? " " : "",
-                tool ? tool : "");
-        a->t_mark = now;
-    }
     if (a->on_event) {
         struct geist_agent_event ev = {
                 .phase = phase, .step = step, .tool = tool, .detail = detail};
@@ -1294,6 +1260,9 @@ static inline int agent_pred_filetool(const struct geist_tool *t) {
 static inline int agent_pred_web(const struct geist_tool *t) {
     return (t->name && strstr(t->name, "web")) || agent_schema_wants_url(t->args_schema);
 }
+static inline int agent_pred_path(const struct geist_tool *t) {
+    return agent_schema_wants_path(t->args_schema);
+}
 
 static inline int agent_best_pred(const struct geist_agent *a,
                                   size_t                    n,
@@ -1602,13 +1571,7 @@ static inline int agent_select_tool(struct geist_agent *a, size_t req_len, const
      * filesystem sibling; skipped when the slash word is a URL) */
     if (!agent_request_has_url(req_len, req) && agent_request_has_pathword(req_len, req) &&
         (best == (int) n || !agent_schema_wants_path(a->tools[best].args_schema))) {
-        int alt = -1;
-        for (size_t i = 0; i < n; i++) {
-            if (!banned[i] && agent_schema_wants_path(a->tools[i].args_schema) &&
-                (alt < 0 || cal[i] > cal[alt])) {
-                alt = (int) i;
-            }
-        }
+        int alt = agent_best_pred(a, n, cal, banned, agent_pred_path);
         if (alt >= 0 && cal[alt] > best_v - 1.5f) {
             best = alt, best_v = cal[alt];
         }
@@ -2089,22 +2052,11 @@ static inline size_t agent_force_call(struct geist_agent *a,
         return 0;
     }
     const struct geist_tool *t = &a->tools[idx];
-    size_t                   w = 0;
-    geist_token_t            ids[64];
-    size_t                   nid = 0;
-/* Append `lit` to out AND prefill it so the model's later decode is conditioned
- * on the scaffold it is "inside". */
-#define AGENT_PREFILL(lit)                                                                     \
-    do {                                                                                       \
-        if (geist_session_tokenize(a->session, (lit), 64, ids, &nid) == GEIST_OK && nid > 0) { \
-            (void) geist_session_prefill_tokens(a->session, nid, ids);                         \
-        }                                                                                      \
-        w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%s", (lit));                   \
-    } while (0)
 
-    AGENT_PREFILL("{\"tool\":\"");
-    AGENT_PREFILL(t->name); /* the pre-selected tool (see agent_select_tool) */
-    AGENT_PREFILL("\",\"args\":");
+    size_t w = agent_prefill_lit(a, "{\"tool\":\"", cap, out, 0);
+    w        = agent_prefill_lit(a, t->name, cap, out, w); /* the pre-selected tool
+                                                            * (see agent_select_tool) */
+    w = agent_prefill_lit(a, "\",\"args\":", cap, out, w);
 
     if (t->parameters_schema != nullptr) {
         char   typed[GEIST_AGENT_ARGS_CAP];
@@ -2138,7 +2090,7 @@ static inline size_t agent_force_call(struct geist_agent *a,
     } else {
         char open[GEIST_AGENT_NAME_CAP + 8];
         snprintf(open, sizeof open, "{\"%s\":\"", keys[0]);
-        AGENT_PREFILL(open);
+        w = agent_prefill_lit(a, open, cap, out, w);
         /* The VALUE is lifted from the request, not free-decoded: a weak forced
          * model mangles it (drops words from a query, splits a path). For a
          * locator key use the slash-bearing word; otherwise the request itself IS
@@ -2177,7 +2129,6 @@ static inline size_t agent_force_call(struct geist_agent *a,
         }
         w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "\"}}"); /* close value+args+call */
     }
-#undef AGENT_PREFILL
     out[w < cap ? w : cap - 1] = '\0';
     return w < cap ? w : cap - 1;
 }
@@ -2488,7 +2439,6 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
     if (resp_len) {
         *resp_len = 0;
     }
-    clock_gettime(CLOCK_MONOTONIC, &a->t_mark); /* GEIST_AGENT_TIME baseline */
 
     if (a->conversation && a->tlen > 0) {
         /* multi-turn chat: the transcript already holds the prior turns (ending
@@ -2667,8 +2617,8 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
                                                   : JSV1_OK;
             if (before_run == JSV1_OK)
                 agent_emit(a, GEIST_AGENT_RUNNING, step, t->name, nullptr);
-            if (agent_tool_invoke_checked(t, strlen(args), args, sizeof obs, obs, &on) !=
-                GEIST_OK) {
+            if (agent_tool_invoke_checked(
+                        t, before_run, strlen(args), args, sizeof obs, obs, &on) != GEIST_OK) {
                 on = (size_t) snprintf(obs, sizeof obs, "error: tool \"%s\" failed", name);
             }
         }
@@ -2730,8 +2680,8 @@ static inline void agent_conv_fold(struct geist_agent *a, const char *answer) {
                                     : JSV1_OK;
                     if (before_run == JSV1_OK)
                         agent_emit(a, GEIST_AGENT_RUNNING, step + 1, t1->name, nullptr);
-                    if (agent_tool_invoke_checked(t1, aw, args1, sizeof obs, obs, &o1) ==
-                        GEIST_OK) {
+                    if (agent_tool_invoke_checked(
+                                t1, before_run, aw, args1, sizeof obs, obs, &o1) == GEIST_OK) {
                         on = o1;
                     } else {
                         on = (size_t) snprintf(
