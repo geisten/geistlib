@@ -333,6 +333,17 @@ struct geist_agent {
      * geist_agent_init. See struct geist_agent_event. */
     void (*on_event)(void *ctx, const struct geist_agent_event *ev);
     void *on_event_ctx;
+    /* Optional streaming hook (dynamic-tools-v1 §Streaming): fired once per
+     * decoded piece of the USER-VISIBLE answer — agent_generate_reply only,
+     * never routing/masked-call/internal decodes, so scaffold tokens cannot
+     * leak to a client. The piece is the raw token surface and MAY split a
+     * UTF-8 sequence; the transport owns carry + JSON escaping. Return false
+     * to abort decoding (transport gone — the result would reach nobody).
+     * nullptr (the default) = off, byte-identical non-streaming behavior.
+     * Deliberately separate from on_event: progress telemetry and payload
+     * transport stay different channels. */
+    bool (*on_delta)(void *ctx, size_t len, const char *piece);
+    void *on_delta_ctx;
 };
 
 /* Caller provides storage for *a (it is large — put it in static/heap, not a
@@ -367,6 +378,8 @@ static inline void geist_agent_init(struct geist_agent     *a,
     a->route_menu_pinned = false;
     a->on_event          = nullptr;
     a->on_event_ctx      = nullptr;
+    a->on_delta          = nullptr;
+    a->on_delta_ctx      = nullptr;
 }
 
 /* Fire the progress hook if the host set one (one nullptr-check when unset). */
@@ -2206,6 +2219,10 @@ static inline size_t agent_generate_reply(struct geist_agent *a, size_t cap, cha
             memcpy(out + w, piece, plen);
             w += plen;
             out[w] = '\0';
+            if (a->on_delta != nullptr && !a->on_delta(a->on_delta_ctx, plen, piece)) {
+                done = 1; /* transport gone — decoding for nobody */
+                break;
+            }
             if (agent_tail_loop(out, w) > 0) {
                 done = 1; /* degenerate repetition */
             }

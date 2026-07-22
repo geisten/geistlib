@@ -7,9 +7,20 @@ Home Assistant is one adapter, not part of the runtime contract.
 
 Before model work, a host may send the exact control frame
 `{"type":"health"}` followed by newline. The server answers
-`{"type":"health.result","protocol":"dynamic-tools-v1","status":"ready"}`.
+`{"type":"health.result","protocol":"dynamic-tools-v1","status":"ready","features":["streaming"]}`.
 This exchange performs no generation and is used by host configuration flows.
 Other control objects are invalid requests.
+
+`features` is the generic capability mechanism (additive):
+
+1. It is an array of capability strings; the first defined entry is
+   `"streaming"` (see [Streaming](#streaming-additive)).
+2. A client MUST ignore unknown entries.
+3. An absent `features` field means no capabilities (pre-v0.5 engines). The
+   health **request** `{"type":"health"}` never changes.
+4. A capability never changes engine behavior by itself — activation happens
+   exclusively through the matching request field (e.g. `stream:true`). A
+   client that has not seen a capability does not send its request field.
 
 A host supplies the available tools on every conversation request:
 
@@ -131,7 +142,7 @@ requires the documented reply:
 
 ```
 -> {"type":"health"}
-<- {"type":"health.result","protocol":"dynamic-tools-v1","status":"ready"}
+<- {"type":"health.result","protocol":"dynamic-tools-v1","status":"ready","features":["streaming"]}
 ```
 
 A reply whose `protocol` differs from the pinned identifier is an
@@ -163,25 +174,46 @@ Interop surfaces themselves — an OpenAI-compatible HTTP endpoint, MCP — are
 **separate consumer projects** over this protocol, not part of the runtime core,
 which stays socket-only and dependency-free.
 
-## Streaming (reserved, additive)
+## Streaming (additive)
 
-v1 is **non-streaming**: one `input` produces a bounded `tool.call`/`tool.result`
-exchange and exactly one final `conversation.result` carrying the complete
-`text`. This suffices for command/response consumers (Home Assistant: one
-utterance in, one answer to TTS).
+The default remains **non-streaming**: one `input` produces a bounded
+`tool.call`/`tool.result` exchange and exactly one final `conversation.result`
+carrying the complete `text`. A client that does not opt in gets byte-identical
+behavior to pre-streaming engines.
 
-A future interactive consumer (e.g. a chat UI over an OpenAI-compatible gateway)
-may need token streaming. It is reserved as a strictly **additive** extension so
-it needs no `-v2`:
+Opt-in (strictly additive, no `-v2`):
 
-- an opt-in `"stream": true` on the conversation request;
-- zero or more `{"type":"conversation.delta","text":"…"}` frames emitted before
-  the final `conversation.result`;
-- a consumer that does not send `stream:true` never receives a
-  `conversation.delta` and is unaffected.
+- A client that has seen `"streaming"` in `health.result.features` MAY set
+  `"stream": true` on the conversation request. If present, the field MUST be a
+  JSON boolean; anything else is an invalid request.
+- With `stream:true` the engine emits **zero or more**
+  `{"type":"conversation.delta","text":"…"}` frames, then the unchanged final
+  `conversation.result`. Tool-call frames and their ordering are untouched;
+  deltas appear only after the last `tool.result`.
 
-This is documented now only so a later interactive consumer is buildable without
-a protocol break; it is not implemented in v1.
+Delta semantics:
+
+1. **UTF-8 guarantee.** Every `conversation.delta.text` is valid UTF-8. Token
+   pieces that split a multibyte sequence are carried by the engine until the
+   code point completes; incomplete bytes never leave a frame. A trailing
+   incomplete carry at end of turn is dropped.
+2. **No prefix guarantee.** The concatenation of deltas MAY differ from the
+   final `conversation.result.text` (trailing cleanup happens after decode).
+   The final text alone is normative — a client MUST replace its displayed
+   text with the final text when the result arrives. Deltas are display-only
+   (time-to-first-token).
+3. **Scope.** Deltas come only from decoding the user-visible answer. Internal
+   decodes (routing, constrained call generation, tool turns) never emit
+   deltas. Answers that involve no decode (e.g. a forced call whose
+   observation is returned directly) emit zero deltas.
+
+Error behavior:
+
+- **Client gone.** If writing a delta frame fails, the engine aborts the
+  in-flight generation, closes the connection and returns to accepting — no
+  `conversation.result` follows. The daemon itself is unaffected.
+- **Cancellation.** A cancel is handled exactly as without streaming; after it
+  is honored, no further `conversation.delta` frames are sent.
 
 ## Implemented slices
 
@@ -194,6 +226,8 @@ a protocol break; it is not implemented in v1.
 5. ✅ Host-driven multi-step session with tool results, cancellation and retry.
 6. ✅ Home Assistant adapter plus a standalone example host and separate build
    targets proving that neither depends on the other.
+7. ✅ Additive streaming: `features` capability discovery, strict `stream`
+   opt-in, UTF-8-safe `conversation.delta` frames, abort-on-disconnect.
 
 ## Verification map
 
@@ -203,6 +237,7 @@ a protocol break; it is not implemented in v1.
 | Schema subset, multi-args, optional fields, enums and arrays | `test_json_schema_v1_unit`, `test_dynamic_arguments_v1_unit` |
 | Off-list and invalid arguments fail before execution | `test_agent_unit`, `test_dynamic_tools_v1_unit`, `test_ha_dynamic_tools_v1.py` |
 | Multiple calls/results and final conversation result | `test_dynamic_host_v1_unit`, `test_ha_dynamic_tools_v1.py` |
+| Strict `stream` field, UTF-8/escape-safe deltas, write-failure latch | `test_dynamic_stream_unit` |
 | Global step budget, one retry and correlated cancellation | `test_dynamic_host_v1_unit`, `test_ha_dynamic_tools_v1.py` |
 | Low-confidence clarification | routing-margin cases in `test_agent_unit` |
 | Adapter-owned exposure/policy/execution | adapter repository contract suite |
