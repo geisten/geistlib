@@ -22,7 +22,7 @@ check() {  # $1=label  $2=found
 }
 
 badge=$(sed -n 's/.*status-experimental%20(v\([0-9][0-9.]*\)).*/\1/p' README.md | head -1)
-body=$(sed -n 's/.*`geist` is \*\*v\([0-9][0-9.]*\).*/\1/p' README.md | head -1)
+body=$(sed -n 's/.*`geistlib` is \*\*v\([0-9][0-9.]*\).*/\1/p' README.md | head -1)
 cite=$(sed -n 's/.*version = {\([0-9][0-9.]*\)}.*/\1/p' README.md | head -1)
 
 check "README status badge" "$badge"

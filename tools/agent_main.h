@@ -269,7 +269,6 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
         close(fd);
         return 1;
     }
-    a->conversation = true; /* the daemon IS one long conversation */
     /* Pre-warm: one throwaway turn so the FIRST real request doesn't pay the
      * cold-start cost (router baseline + system-prompt pin priming) — measured
      * ~12 s cold -> ~4 s warm on the Pi. The dummy transcript is dropped so it
@@ -371,7 +370,6 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
                     } else {
                         a->system_prompt = request_system;
                     }
-                    a->conversation           = false;
                     a->force_call             = base_force_call;
                     a->forced_result_is_final = false;
                     a->clarify_low_confidence = true;

@@ -48,20 +48,20 @@
 #include <string.h>
 
 /* Read whitespace-separated int32 list of length n into out. */
-static int read_ids(int n, geist_token_t* out, char** cursor) {
+static int read_ids(int n, geist_token_t *out, char **cursor) {
     for (int i = 0; i < n; i++) {
-        char* end;
-        long v = strtol(*cursor, &end, 10);
+        char *end;
+        long  v = strtol(*cursor, &end, 10);
         if (end == *cursor)
             return -1;
-        out[i] = (geist_token_t) v;
+        out[i]  = (geist_token_t) v;
         *cursor = end;
     }
     return 0;
 }
 
 /* log_softmax then return log_p[token]. */
-static double logprob_at(const float* logits, size_t n_logits, geist_token_t token) {
+static double logprob_at(const float *logits, size_t n_logits, geist_token_t token) {
     float maxv = logits[0];
     for (size_t i = 1; i < n_logits; i++)
         if (logits[i] > maxv)
@@ -72,17 +72,17 @@ static double logprob_at(const float* logits, size_t n_logits, geist_token_t tok
     return (double) (logits[token] - maxv) - log(sum);
 }
 
-static int cmd_decode(struct geist_session* s, char* args) {
-    char* p = args;
-    char* end;
-    long n_prompt = strtol(p, &end, 10);
+static int cmd_decode(struct geist_session *s, char *args) {
+    char *p = args;
+    char *end;
+    long  n_prompt = strtol(p, &end, 10);
     if (end == p || n_prompt <= 0) {
         puts("ERR bad n_prompt");
         return -1;
     }
     p = end;
 
-    geist_token_t* ids = (geist_token_t*) malloc((size_t) n_prompt * sizeof(*ids));
+    geist_token_t *ids = (geist_token_t *) malloc((size_t) n_prompt * sizeof(*ids));
     if (read_ids((int) n_prompt, ids, &p) < 0) {
         free(ids);
         puts("ERR bad ids");
@@ -104,7 +104,7 @@ static int cmd_decode(struct geist_session* s, char* args) {
     }
     free(ids);
 
-    geist_token_t* out = (geist_token_t*) malloc((size_t) n_decode * sizeof(*out));
+    geist_token_t *out = (geist_token_t *) malloc((size_t) n_decode * sizeof(*out));
     for (long i = 0; i < n_decode; i++) {
         if (geist_session_decode_step(s, &out[i]) != GEIST_OK)
             out[i] = -1;
@@ -123,17 +123,17 @@ static int cmd_decode(struct geist_session* s, char* args) {
 /* SCOREALT — prefill prompt once, return log_p for each of K candidate
  * single-token alternatives. Avoids re-prefilling the prompt N times for
  * multi-choice scoring (MMLU). */
-static int cmd_scorealt(struct geist_session* s, char* args) {
-    char* p = args;
-    char* end;
-    long n_prompt = strtol(p, &end, 10);
+static int cmd_scorealt(struct geist_session *s, char *args) {
+    char *p = args;
+    char *end;
+    long  n_prompt = strtol(p, &end, 10);
     if (end == p || n_prompt <= 0) {
         puts("ERR bad n_prompt");
         return -1;
     }
     p = end;
 
-    geist_token_t* ids = (geist_token_t*) malloc((size_t) n_prompt * sizeof(*ids));
+    geist_token_t *ids = (geist_token_t *) malloc((size_t) n_prompt * sizeof(*ids));
     if (read_ids((int) n_prompt, ids, &p) < 0) {
         free(ids);
         puts("ERR bad ids");
@@ -146,8 +146,8 @@ static int cmd_scorealt(struct geist_session* s, char* args) {
         puts("ERR bad n_alt");
         return -1;
     }
-    p = end;
-    geist_token_t* alts = (geist_token_t*) malloc((size_t) n_alt * sizeof(*alts));
+    p                   = end;
+    geist_token_t *alts = (geist_token_t *) malloc((size_t) n_alt * sizeof(*alts));
     if (read_ids((int) n_alt, alts, &p) < 0) {
         free(ids);
         free(alts);
@@ -164,46 +164,34 @@ static int cmd_scorealt(struct geist_session* s, char* args) {
     }
     free(ids);
 
-    size_t n_logits = 0;
-    const float* logits = geist_session_peek_logits(s, &n_logits);
+    size_t       n_logits = 0;
+    const float *logits   = geist_session_peek_logits(s, &n_logits);
     if (logits == nullptr || n_logits == 0) {
         free(alts);
         puts("ERR no logits");
         return -1;
     }
 
-    /* Pre-compute log-sum-exp once. */
-    float maxv = logits[0];
-    for (size_t i = 1; i < n_logits; i++)
-        if (logits[i] > maxv)
-            maxv = logits[i];
-    double sum = 0.0;
-    for (size_t i = 0; i < n_logits; i++)
-        sum += exp((double) (logits[i] - maxv));
-    const double log_sum = log(sum);
-
     fputs("OK", stdout);
-    for (long i = 0; i < n_alt; i++) {
-        const double lp = (double) (logits[alts[i]] - maxv) - log_sum;
-        printf(" %.6f", lp);
-    }
+    for (long i = 0; i < n_alt; i++)
+        printf(" %.6f", logprob_at(logits, n_logits, alts[i]));
     putchar('\n');
     fflush(stdout);
     free(alts);
     return 0;
 }
 
-static int cmd_score(struct geist_session* s, char* args) {
-    char* p = args;
-    char* end;
-    long n_prompt = strtol(p, &end, 10);
+static int cmd_score(struct geist_session *s, char *args) {
+    char *p = args;
+    char *end;
+    long  n_prompt = strtol(p, &end, 10);
     if (end == p || n_prompt <= 0) {
         puts("ERR bad n_prompt");
         return -1;
     }
     p = end;
 
-    geist_token_t* ids = (geist_token_t*) malloc((size_t) n_prompt * sizeof(*ids));
+    geist_token_t *ids = (geist_token_t *) malloc((size_t) n_prompt * sizeof(*ids));
     if (read_ids((int) n_prompt, ids, &p) < 0) {
         free(ids);
         puts("ERR bad ids");
@@ -216,8 +204,8 @@ static int cmd_score(struct geist_session* s, char* args) {
         puts("ERR bad n_cont");
         return -1;
     }
-    p = end;
-    geist_token_t* cont = (geist_token_t*) malloc((size_t) n_cont * sizeof(*cont));
+    p                   = end;
+    geist_token_t *cont = (geist_token_t *) malloc((size_t) n_cont * sizeof(*cont));
     if (read_ids((int) n_cont, cont, &p) < 0) {
         free(ids);
         free(cont);
@@ -234,11 +222,11 @@ static int cmd_score(struct geist_session* s, char* args) {
     }
     free(ids);
 
-    double total_lp = 0.0;
-    double* per_tok = (double*) malloc((size_t) n_cont * sizeof(*per_tok));
+    double  total_lp = 0.0;
+    double *per_tok  = (double *) malloc((size_t) n_cont * sizeof(*per_tok));
     for (long i = 0; i < n_cont; i++) {
-        size_t n_logits = 0;
-        const float* logits = geist_session_peek_logits(s, &n_logits);
+        size_t       n_logits = 0;
+        const float *logits   = geist_session_peek_logits(s, &n_logits);
         if (logits == nullptr) {
             free(cont);
             free(per_tok);
@@ -270,9 +258,9 @@ static int cmd_score(struct geist_session* s, char* args) {
 /* The REPL is line-oriented, but prompts are multi-line; decode \n / \t / \\
  * escapes so a whole prompt fits on one line. Returns the NUL-terminated
  * result length (clamped to cap-1). */
-static size_t unescape(const char* src, char* dst, size_t cap) {
+static size_t unescape(const char *src, char *dst, size_t cap) {
     size_t w = 0;
-    for (const char* p = src; *p && w + 1 < cap; p++) {
+    for (const char *p = src; *p && w + 1 < cap; p++) {
         if (*p == '\\' && p[1]) {
             p++;
             dst[w++] = (*p == 'n') ? '\n' : (*p == 't') ? '\t' : *p;
@@ -286,8 +274,8 @@ static size_t unescape(const char* src, char* dst, size_t cap) {
 
 /* Append `piece` to dst (size cap, *w the cursor), escaping \n and \\ so the
  * generated text rides back on one REPL line. */
-static void append_escaped(const char* piece, char* dst, size_t* w, size_t cap) {
-    for (const char* c = piece; *c && *w + 2 < cap; c++) {
+static void append_escaped(const char *piece, char *dst, size_t *w, size_t cap) {
+    for (const char *c = piece; *c && *w + 2 < cap; c++) {
         if (*c == '\n') {
             dst[(*w)++] = '\\';
             dst[(*w)++] = 'n';
@@ -304,12 +292,12 @@ static void append_escaped(const char* piece, char* dst, size_t* w, size_t cap) 
  * Tokenize text with the model's own GGUF tokenizer. Lets evaluation
  * harnesses (e.g. MMLU) stay self-contained — no external HF tokenizer, and no
  * tokenizer-mismatch risk between scoring and the model's vocabulary. */
-static int cmd_tok(struct geist_session* s, const char* text) {
+static int cmd_tok(struct geist_session *s, const char *text) {
     enum { TOK_CAP = 8192 };
     static geist_token_t out[TOK_CAP];
-    static char unesc[1 << 16];
+    static char          unesc[1 << 16];
     unescape(text, unesc, sizeof unesc);
-    size_t n = 0;
+    size_t            n  = 0;
     enum geist_status st = geist_session_tokenize(s, unesc, TOK_CAP, out, &n);
     if (st != GEIST_OK) {
         printf("ERR tokenize %s\n", geist_status_to_string(st));
@@ -330,9 +318,9 @@ static int cmd_tok(struct geist_session* s, const char* text) {
  * generation benchmark; unlike the simple_generate demo it does NOT stop at
  * arbitrary bracketed tokens, since tool calls legitimately contain specials
  * such as <|tool_call>. */
-static int cmd_gen(struct geist_session* s, char* args) {
-    char* p = args;
-    long max_new = strtol(p, &p, 10);
+static int cmd_gen(struct geist_session *s, char *args) {
+    char *p       = args;
+    long  max_new = strtol(p, &p, 10);
     if (p == args || max_new <= 0 || max_new > 8192) {
         puts("ERR bad max_new");
         fflush(stdout);
@@ -346,7 +334,7 @@ static int cmd_gen(struct geist_session* s, char* args) {
     unescape(p, prompt, sizeof prompt);
 
     static geist_token_t ids[TOK_CAP];
-    size_t n = 0;
+    size_t               n = 0;
     if (geist_session_tokenize(s, prompt, TOK_CAP, ids, &n) != GEIST_OK ||
         geist_session_reset(s) != GEIST_OK || geist_session_prefill_tokens(s, n, ids) != GEIST_OK) {
         puts("ERR gen prefill");
@@ -355,12 +343,12 @@ static int cmd_gen(struct geist_session* s, char* args) {
     }
 
     static char out[1 << 16];
-    size_t w = 0;
+    size_t      w = 0;
     for (long i = 0; i < max_new; i++) {
         geist_token_t tok = 0;
         if (geist_session_decode_step(s, &tok) != GEIST_OK)
             break;
-        const char* piece = geist_session_token_to_str(s, tok);
+        const char *piece = geist_session_token_to_str(s, tok);
         if (piece == nullptr)
             break; /* control token with no surface form */
         if (strcmp(piece, "<eos>") == 0 || strcmp(piece, "<turn|>") == 0 ||
@@ -374,9 +362,9 @@ static int cmd_gen(struct geist_session* s, char* args) {
     return 0;
 }
 
-int main(int argc, char** argv) {
-    const char* gguf_path = nullptr;
-    const char* awq_path = nullptr;
+int main(int argc, char **argv) {
+    const char *gguf_path = nullptr;
+    const char *awq_path  = nullptr;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--awq") == 0 && i + 1 < argc) {
             awq_path = argv[++i];
@@ -389,15 +377,15 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    struct geist_backend* be = nullptr;
-    enum geist_status s = geist_backend_create("auto", nullptr, nullptr, &be);
+    struct geist_backend *be = nullptr;
+    enum geist_status     s  = geist_backend_create("auto", nullptr, nullptr, &be);
     if (s != GEIST_OK) {
         fprintf(stderr, "backend create failed: %s\n", geist_last_create_error());
         return 1;
     }
 
-    struct geist_model* model = nullptr;
-    s = geist_model_load(gguf_path, be, &model);
+    struct geist_model *model = nullptr;
+    s                         = geist_model_load(gguf_path, be, &model);
     if (s != GEIST_OK) {
         fprintf(stderr, "geist_model_load failed: %s\n", geist_last_create_error());
         geist_backend_destroy(be);
@@ -405,11 +393,11 @@ int main(int argc, char** argv) {
     }
 
     struct geist_session_opts opts = {
-            .temperature = 0.0f, /* greedy */
+            .temperature     = 0.0f, /* greedy */
             .awq_scales_path = awq_path,
     };
-    struct geist_session* sess = nullptr;
-    s = geist_session_create(model, be, &opts, &sess);
+    struct geist_session *sess = nullptr;
+    s                          = geist_session_create(model, be, &opts, &sess);
     if (s != GEIST_OK) {
         fprintf(stderr, "geist_session_create failed\n");
         geist_model_destroy(model);
@@ -431,10 +419,10 @@ int main(int argc, char** argv) {
         if (n == 0)
             continue;
 
-        char* cmd = line;
+        char *cmd = line;
         while (*cmd && isspace((unsigned char) *cmd))
             cmd++;
-        char* args = cmd;
+        char *args = cmd;
         while (*args && !isspace((unsigned char) *args))
             args++;
         if (*args) {
