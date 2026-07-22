@@ -112,8 +112,10 @@ jobs:
           path: libgeist-linux-arm64.tar.gz
 
       # Optional: a second binary with the model baked in (.incbin, zero-copy).
-      # rm geist.o first — the plain build above compiled it without
-      # -DGEIST_EMBEDDED_MODEL and make doesn't track that flag flip.
+      # EMBED_NAME=geist-bitnet: with EMBED_MODEL set the Makefile deliberately
+      # never links tools/geist (anti-clobber) — the embedded CLI lives at
+      # tools/$(EMBED_NAME). The embed-state stamp rebuilds geist.o on the
+      # flag flip automatically.
       - name: Build + package embedded (if EMBED_MODEL_URL set)
         if: env.EMBED_MODEL_URL != ''
         run: |
@@ -121,16 +123,16 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
             set -e
             apk add --no-cache build-base linux-headers
-            rm -f build/linux/release/tools/geist.o
             make TARGET=linux CC=gcc GEMM_PROVIDER=native \
                  EXTRA_CFLAGS=-D_GNU_SOURCE EXTRA_LDFLAGS="-static -s" \
-                 EMBED_MODEL=embed-model.gguf bin/linux/release/tools/geist
+                 EMBED_MODEL=embed-model.gguf EMBED_NAME=geist-bitnet \
+                 bin/linux/release/tools/geist-bitnet
           '
-          file bin/linux/release/tools/geist
-          bin/linux/release/tools/geist --version
-          ls -l bin/linux/release/tools/geist
+          file bin/linux/release/tools/geist-bitnet
+          bin/linux/release/tools/geist-bitnet --version
+          ls -l bin/linux/release/tools/geist-bitnet
           mkdir -p dist/geist-bitnet-linux-arm64
-          cp bin/linux/release/tools/geist dist/geist-bitnet-linux-arm64/geist-bitnet
+          cp bin/linux/release/tools/geist-bitnet dist/geist-bitnet-linux-arm64/geist-bitnet
           cp README.md LICENSE dist/geist-bitnet-linux-arm64/
           tar -C dist -czf geist-bitnet-linux-arm64.tar.gz geist-bitnet-linux-arm64
       # dynamic-tools-v1 health handshake against the shipped embedded artifact
@@ -140,7 +142,7 @@ jobs:
         if: env.EMBED_MODEL_URL != ''
         run: |
           sock="$RUNNER_TEMP/geist-health.sock"
-          ./bin/linux/release/tools/geist --serve "$sock" &
+          ./bin/linux/release/tools/geist-bitnet --serve "$sock" &
           pid=$!
           for _ in $(seq 1 120); do [ -S "$sock" ] && break; sleep 1; done
           [ -S "$sock" ] || { echo "::error::--serve socket never appeared"; kill "$pid" 2>/dev/null || true; exit 1; }
@@ -232,8 +234,10 @@ jobs:
           path: libgeist-linux-x86_64.tar.gz
 
       # Optional: a second binary with BitNet baked in (.incbin, zero-copy) — now
-      # that the x86 I2_S kernels make ternary fast on x86. rm geist.o first (the
-      # plain build above compiled it without -DGEIST_EMBEDDED_MODEL).
+      # that the x86 I2_S kernels make ternary fast on x86. EMBED_NAME=geist-bitnet:
+      # with EMBED_MODEL set the Makefile deliberately never links tools/geist
+      # (anti-clobber) — the embedded CLI lives at tools/$(EMBED_NAME); the
+      # embed-state stamp rebuilds geist.o on the flag flip automatically.
       - name: Build + package embedded (if EMBED_MODEL_URL set)
         if: env.EMBED_MODEL_URL != ''
         run: |
@@ -241,16 +245,16 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
             set -e
             apk add --no-cache build-base linux-headers
-            rm -f build/linux/release/tools/geist.o
             make TARGET=linux CC=gcc BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native \
                  EXTRA_CFLAGS=-D_GNU_SOURCE EXTRA_LDFLAGS="-static -s" \
-                 EMBED_MODEL=embed-model.gguf bin/linux/release/tools/geist
+                 EMBED_MODEL=embed-model.gguf EMBED_NAME=geist-bitnet \
+                 bin/linux/release/tools/geist-bitnet
           '
-          file bin/linux/release/tools/geist
-          bin/linux/release/tools/geist --version
-          ls -l bin/linux/release/tools/geist
+          file bin/linux/release/tools/geist-bitnet
+          bin/linux/release/tools/geist-bitnet --version
+          ls -l bin/linux/release/tools/geist-bitnet
           mkdir -p dist/geist-bitnet-linux-x86_64
-          cp bin/linux/release/tools/geist dist/geist-bitnet-linux-x86_64/geist-bitnet
+          cp bin/linux/release/tools/geist-bitnet dist/geist-bitnet-linux-x86_64/geist-bitnet
           cp README.md LICENSE dist/geist-bitnet-linux-x86_64/
           tar -C dist -czf geist-bitnet-linux-x86_64.tar.gz geist-bitnet-linux-x86_64
       # dynamic-tools-v1 health handshake against the shipped embedded artifact:
@@ -262,7 +266,7 @@ jobs:
         if: env.EMBED_MODEL_URL != ''
         run: |
           sock="$RUNNER_TEMP/geist-health.sock"
-          ./bin/linux/release/tools/geist --serve "$sock" &
+          ./bin/linux/release/tools/geist-bitnet --serve "$sock" &
           pid=$!
           for _ in $(seq 1 120); do [ -S "$sock" ] && break; sleep 1; done
           [ -S "$sock" ] || { echo "::error::--serve socket never appeared"; kill "$pid" 2>/dev/null || true; exit 1; }
@@ -336,21 +340,23 @@ jobs:
           name: libgeist-macos-arm64
           path: libgeist-macos-arm64.tar.gz
 
-      # Optional: a second binary with the model baked in. rm geist.o first (the
-      # plain build compiled it without -DGEIST_EMBEDDED_MODEL; make won't notice).
+      # Optional: a second binary with the model baked in. EMBED_NAME=geist-bitnet:
+      # with EMBED_MODEL set the Makefile deliberately never links tools/geist
+      # (anti-clobber) — the embedded CLI lives at tools/$(EMBED_NAME); the
+      # embed-state stamp rebuilds geist.o on the flag flip automatically.
       - name: Build + package embedded (if EMBED_MODEL_URL set)
         if: env.EMBED_MODEL_URL != ''
         run: |
           curl -fL --retry 5 --retry-delay 15 --retry-all-errors -o embed-model.gguf "$EMBED_MODEL_URL"
-          rm -f build/mac-omp/release/tools/geist.o
           make TARGET=mac-omp CC=clang GEIST_STATIC_OMP=1 \
-               EMBED_MODEL=embed-model.gguf bin/mac-omp/release/tools/geist
-          strip bin/mac-omp/release/tools/geist
-          otool -L bin/mac-omp/release/tools/geist
-          bin/mac-omp/release/tools/geist --version
-          ls -l bin/mac-omp/release/tools/geist
+               EMBED_MODEL=embed-model.gguf EMBED_NAME=geist-bitnet \
+               bin/mac-omp/release/tools/geist-bitnet
+          strip bin/mac-omp/release/tools/geist-bitnet
+          otool -L bin/mac-omp/release/tools/geist-bitnet
+          bin/mac-omp/release/tools/geist-bitnet --version
+          ls -l bin/mac-omp/release/tools/geist-bitnet
           mkdir -p dist/geist-bitnet-macos-arm64
-          cp bin/mac-omp/release/tools/geist dist/geist-bitnet-macos-arm64/geist-bitnet
+          cp bin/mac-omp/release/tools/geist-bitnet dist/geist-bitnet-macos-arm64/geist-bitnet
           cp README.md LICENSE dist/geist-bitnet-macos-arm64/
           tar -C dist -czf geist-bitnet-macos-arm64.tar.gz geist-bitnet-macos-arm64
       - uses: actions/upload-artifact@v4
