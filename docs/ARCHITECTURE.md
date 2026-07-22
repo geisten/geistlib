@@ -17,11 +17,14 @@ src/archs/               architectures: how a model's forward pass is wired
   │   audio_conformer/     Conformer audio tower (mel → encoder → soft tokens)
   │   vision_siglip/       SigLIP vision tower (image/video → soft tokens)
 src/backends/            compute: the kernels that actually run the ops
+      common/              shared compute library (GEMM facade, gemma4 kernels, KIVI)
       cpu_neon/            Apple Silicon + ARM64, OpenMP-parallel
       cpu_scalar/          portable reference (correctness oracle)
       cpu_x86/             x86-64 AVX-512 / VNNI (opt-in; runtime hw_probe dispatch)
+      metal/               Apple GPU (opt-in, experimental; dlopen'd Metal.framework)
 src/formats/             GGUF + PTQTP quant (de)quantization
 src/io/                  GGUF reader, safetensors reader
+src/base/                freestanding utilities: heap, error, hw_probe
 ```
 
 An **architecture** knows the shape of the computation (which ops, in which
@@ -31,6 +34,27 @@ are listed in compile-gated registries (`src/engine/*_registry.c`, each entry
 behind a `GEIST_BACKEND_*` / `GEIST_ARCH_*` guard), so the set compiled in is a
 build-time choice (`make BACKENDS="..."`) and the one used is a runtime choice
 (`geist_backend_create("auto" | "cpu_neon" | ...)`).
+
+### Dependency rules
+
+The include graph follows the layers strictly — these rules are load-bearing,
+not aspirational (the tree conforms today):
+
+- `src/base/` includes nothing above it; everyone may include `src/base/`.
+- `src/engine/` includes `base` and the public headers. It never reaches into
+  an arch or backend implementation — with exactly **two composition points**:
+  `arch_registry.c` and `backend_registry.c`, the only files that name concrete
+  archs/backends (each entry compile-gated).
+- `src/archs/` never includes a concrete backend (`cpu_*`, `metal`). Ops reach
+  compute through the backend vtbl. The one sanctioned shortcut is
+  `src/backends/common/` — the shared compute library (GEMM facade, gemma4
+  kernels, KIVI) that is always compiled and may be called directly from archs.
+- `src/backends/<name>/` includes `base` and `backends/common` only; a backend
+  never includes another backend or an arch.
+- `src/formats/` and `src/io/` sit beside the backends: `base` only.
+
+A new backend or arch therefore touches its own directory, one `mk/backend-*.mk`
+fragment, and one registry entry — nothing else.
 
 ## Processing pipeline
 
@@ -224,5 +248,24 @@ text bottleneck would discard.
 - Kernel binding: `src/backends/cpu_neon/weight_resolve.c`.
 - A representative low-bit kernel: `src/backends/cpu_neon/kernels/q4_K.c`.
 - The public contract: `include/geist.h` (stability tags per symbol).
-- The interaction layer (CLI, memory palace, tool-use agent): [agent.md](agent.md).
+- The tool-use SDK interface (`agent.h`, `--serve`, dynamic-tools-v1; concrete
+  tools live in consumer repos): [agent.md](agent.md).
 - Building self-contained binaries and deploying: [DEPLOY.md](DEPLOY.md).
+
+Per directory, the file to open first:
+
+| Directory | Start here | It owns |
+| :-- | :-- | :-- |
+| `src/base/` | `heap.h` | arenas/allocators, error codes, hw probe |
+| `src/engine/` | `session.c` | load → session → decode loop, tokenizers, registries |
+| `src/archs/transformer/` | `forward/step.c` | the per-token forward pass |
+| `src/archs/audio_conformer/` | `audio_encoder.c` | mel → Conformer → soft tokens |
+| `src/archs/vision_siglip/` | `vision_encoder.c` | image/video → SigLIP → soft tokens |
+| `src/backends/common/` | `geist_gemm.c` | shared GEMM facade + gemma4 kernels |
+| `src/backends/cpu_neon/` | `weight_resolve.c` | load-time kernel binding, NEON kernels |
+| `src/backends/cpu_x86/` | `backend.c` | AVX-512/VNNI kernels, runtime dispatch |
+| `src/backends/cpu_scalar/` | `backend.c` | the portable correctness oracle |
+| `src/backends/metal/` | `backend.c` | Apple-GPU path (shaders in `metal_shaders.h`) |
+| `src/formats/gguf/` | `common.c` | per-quant decode (one file per format) |
+| `src/io/` | `gguf_reader.c` | GGUF/safetensors file parsing |
+| `tools/` | `geist.c` | the demo CLI and the header-only SDK |
