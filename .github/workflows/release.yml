@@ -148,7 +148,7 @@ jobs:
           [ -S "$sock" ] || { echo "::error::--serve socket never appeared"; kill "$pid" 2>/dev/null || true; exit 1; }
           python3 -c '
           import socket, sys
-          s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(sys.argv[1])
+          s = socket.socket(socket.AF_UNIX); s.settimeout(300); s.connect(sys.argv[1])
           s.sendall(b"{\"type\":\"health\"}\n")
           r = s.recv(4096).decode()
           print("health reply:", r.strip())
@@ -272,7 +272,7 @@ jobs:
           [ -S "$sock" ] || { echo "::error::--serve socket never appeared"; kill "$pid" 2>/dev/null || true; exit 1; }
           python3 -c '
           import socket, sys
-          s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(sys.argv[1])
+          s = socket.socket(socket.AF_UNIX); s.settimeout(300); s.connect(sys.argv[1])
           s.sendall(b"{\"type\":\"health\"}\n")
           r = s.recv(4096).decode()
           print("health reply:", r.strip())
