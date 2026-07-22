@@ -1,0 +1,67 @@
+#version 450
+#extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+/* F32 GEMM, register-tiled: 4 output rows x 16 batch rows per 128-thread
+ * workgroup, vec4 weight/x loads. Requires n_in % 8 == 0 (all PLE shapes).
+ * Dispatch: gx = ceil(n_out/4), gy = ceil(rows/16). */
+
+layout(local_size_x = 128) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer W { vec4 w4[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+void main() {
+    uint row = gl_WorkGroupID.x * gl_NumSubgroups + gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint t0 = gl_WorkGroupID.y * 16u;
+    if (t0 >= pc.rows) {
+        return;
+    }
+    uint tm = min(16u, pc.rows - t0);
+
+    float s[16];
+    for (uint t = 0; t < 16u; t++) {
+        s[t] = 0.0;
+    }
+
+    if (row < pc.n_out) {
+        uint w_row = (pc.w_offset + row * pc.n_in) >> 2u;
+        /* lane covers elements [lane*8, lane*8+8) each 256-element stripe */
+        for (uint e = lane * 8u; e < pc.n_in; e += 256u) {
+            vec4 wv0 = w4[w_row + (e >> 2u)];
+            vec4 wv1 = w4[w_row + (e >> 2u) + 1u];
+            uint e_base = pc.x_offset + e;
+            for (uint t = 0; t < 16u; t++) {
+                if (t >= tm) {
+                    break;
+                }
+                uint xv = (e_base + (t0 + t) * pc.x_stride) >> 2u;
+                s[t] += dot(wv0, x4[xv]) + dot(wv1, x4[xv + 1u]);
+            }
+        }
+    }
+
+    for (uint t = 0; t < 16u; t++) {
+        if (t >= tm) {
+            break;
+        }
+        float r = subgroupAdd(s[t]);
+        if (subgroupElect() && row < pc.n_out) {
+            y[pc.y_offset + (t0 + t) * pc.y_stride + row] = r;
+        }
+    }
+}

@@ -1,0 +1,105 @@
+#version 450
+#extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+/* Q6_K GEMM, register-tiled like matmul_q4k: 4 output rows x 16 batch
+ * rows per 128-thread workgroup; lane dequantizes its 8 elements once per
+ * block, x arrives as vec4 pairs. 210-byte blocks are not 4-aligned, so
+ * ql/qh stay byte-assembled. Dispatch: gx = ceil(n_out/4), gy = ceil(rows/16). */
+
+layout(local_size_x = 128) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+uint load_u8(uint byte_offset) {
+    return (w[byte_offset >> 2] >> ((byte_offset & 3u) * 8u)) & 0xffu;
+}
+
+float load_f16(uint byte_offset) {
+    uint lo = load_u8(byte_offset);
+    uint hi = load_u8(byte_offset + 1u);
+    return unpackHalf2x16(lo | (hi << 8u)).x;
+}
+
+int load_i8(uint byte_offset) {
+    return int(load_u8(byte_offset) ^ 0x80u) - 0x80;
+}
+
+void main() {
+    uint row = gl_WorkGroupID.x * gl_NumSubgroups + gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint t0 = gl_WorkGroupID.y * 16u;
+    if (t0 >= pc.rows) {
+        return;
+    }
+    uint tm = min(16u, pc.rows - t0);
+
+    float s[16];
+    for (uint t = 0; t < 16u; t++) {
+        s[t] = 0.0;
+    }
+
+    if (row < pc.n_out) {
+        uint e0 = lane * 8u;
+        uint half_idx = e0 >> 7;
+        uint in_half = e0 & 127u;
+        uint stream = in_half >> 5;
+        uint l0 = in_half & 31u;
+        uint ql_shift = (stream >= 2u) ? 4u : 0u;
+        uint qh_shift = stream * 2u;
+        uint sc_idx = stream * 2u + (l0 >> 4);
+        uint row_byte = pc.w_offset + row * pc.blocks_per_row * 216u;
+
+        for (uint b = 0; b < pc.blocks_per_row; b++) {
+            uint block_byte = row_byte + b * 216u;
+            uint ql_byte = block_byte + half_idx * 64u + (stream & 1u) * 32u + l0;
+            uint qh_byte = block_byte + 128u + half_idx * 32u + l0;
+            float d = load_f16(block_byte + 208u);
+            int sc = load_i8(block_byte + 192u + half_idx * 8u + sc_idx);
+            float dsc = d * float(sc);
+
+            vec4 q_lo, q_hi;
+            for (uint j = 0; j < 4u; j++) {
+                q_lo[j] = float(((load_u8(ql_byte + j) >> ql_shift) & 15u) |
+                                (((load_u8(qh_byte + j) >> qh_shift) & 3u) << 4u)) - 32.0;
+                q_hi[j] = float(((load_u8(ql_byte + 4u + j) >> ql_shift) & 15u) |
+                                (((load_u8(qh_byte + 4u + j) >> qh_shift) & 3u) << 4u)) - 32.0;
+            }
+            vec4 wv0 = dsc * q_lo;
+            vec4 wv1 = dsc * q_hi;
+
+            uint e_base = pc.x_offset + b * 256u + e0;
+            for (uint t = 0; t < 16u; t++) {
+                if (t >= tm) {
+                    break;
+                }
+                uint xv = (e_base + (t0 + t) * pc.x_stride) >> 2u;
+                s[t] += dot(wv0, x4[xv]) + dot(wv1, x4[xv + 1u]);
+            }
+        }
+    }
+
+    for (uint t = 0; t < 16u; t++) {
+        if (t >= tm) {
+            break;
+        }
+        float r = subgroupAdd(s[t]);
+        if (subgroupElect() && row < pc.n_out) {
+            y[pc.y_offset + (t0 + t) * pc.y_stride + row] = r;
+        }
+    }
+}

@@ -165,7 +165,7 @@ every GPU inference server. It is deliberately optimized for a narrower job:
 - **Small models, done right:** aggressive quantization and ternary BitNet as
   first-class citizens, where memory bandwidth matters most.
 - **Constrained hardware:** platform-specific kernels for Raspberry Pi and
-  CPU-only hosts; a GPU (experimental Metal) is optional, never required.
+  CPU-only hosts; a GPU (experimental Metal/Vulkan) is optional, never required.
 - **One auditable C runtime:** no Python environment, no container — a single
   small binary you can embed anywhere.
 
@@ -277,7 +277,7 @@ Repository ownership and the complete map are in
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Run the CLI and embed the library in two minutes. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, load-time kernel binding, the pipeline. |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Single-binary and embedded deployment. |
-| [`benchmark/`](benchmark/README.md) | Methodology & full results ([Apple/Pi 5](benchmark/BENCHMARK.md), [ternary BitNet](benchmark/TERNARY_BITNET.md)). |
+| [`benchmark/`](benchmark/README.md) | Methodology & full results ([Apple/Pi 5](benchmark/BENCHMARK.md), [ternary BitNet](benchmark/TERNARY_BITNET.md), [Vulkan GPU](benchmark/BENCHMARK_VULKAN.md)). |
 | [`include/geist.h`](include/geist.h) | The public C API, with `STABLE` / `EXPERIMENTAL` stability tags. |
 
 <details>
@@ -297,10 +297,14 @@ Repository ownership and the complete map are in
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | decode t/s | 34.1 | 34.5 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | prefill t/s (pp512) | 987 | 1542 *(llama.cpp Metal)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal, experimental)* | decode t/s (tg64) | 81.2 | 91.3 *(llama.cpp Metal)* |
+| Gemma 4 E2B-it (Q4_K_M) | **RTX 2080 Ti** *(Vulkan, experimental)* | prefill t/s (pp512) | 1150 | 4639 *(llama.cpp Vulkan)* |
+| Gemma 4 E2B-it (Q4_K_M) | **RTX 2080 Ti** *(Vulkan, experimental)* | decode t/s (tg128) | 132.3 | 154 *(llama.cpp Vulkan)* |
 
-<sub>**Baseline versions:** llama.cpp `d05fe1d` (Pi 5, M1 Max) · `b9827` (x86) — bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `master` (its bundled llama.cpp fork, unpinned `--depth 1` clone). Full methodology: [`benchmark/`](benchmark/README.md).</sub>
+<sub>**Baseline versions:** llama.cpp `d05fe1d` (Pi 5, M1 Max) · `b9827` (x86) · `d0f9d2e` (Vulkan) — bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `master` (its bundled llama.cpp fork, unpinned `--depth 1` clone). Full methodology: [`benchmark/`](benchmark/README.md).</sub>
 
 <sub>**Metal (Apple GPU) backend** (`BACKENDS="… metal"`) is experimental: greedy decode is bit-exact vs the `cpu_scalar` reference and within **12 %** of llama.cpp Metal (81.2 vs 91.3 t/s decode), holding up at long context past the 4096 default. Full kernel notes and the measurement ledger: [`docs/proposals/metal-beat-llamacpp-plan.md`](docs/proposals/metal-beat-llamacpp-plan.md).</sub>
+
+<sub>**Vulkan backend** (`BACKENDS="… vulkan"`) is experimental: the first non-Apple GPU path (NVIDIA Turing tested; libvulkan is dlopen'd, no link-time dependency). Quality gate passed (MMLU-200 0.520 vs 0.490 on the CPU path, 14/14 tool-calling) and decode reaches **~86 %** of llama.cpp Vulkan (132.3 vs 154 t/s tg128); prefill is the open front. The phase-by-phase lab log lives in [`benchmark/BENCHMARK_VULKAN.md`](benchmark/BENCHMARK_VULKAN.md).</sub>
 </details>
 
 ---
@@ -308,7 +312,8 @@ Repository ownership and the complete map are in
 ## Status
 
 `geistlib` is **v0.4.0 — experimental**. It runs Gemma 4 (text + vision + audio) end
-to end on the CPU backends — plus an experimental Metal (Apple GPU) backend — and
+to end on the CPU backends — plus experimental GPU backends (Metal on Apple,
+Vulkan on Linux/NVIDIA) — and
 has a broad C test suite (`make test`). The
 `STABLE` core (load → session → decode → tokenize) is the part to build on;
 `EXPERIMENTAL`-tagged surfaces (KV-cache modes, speculative decode, multimodal

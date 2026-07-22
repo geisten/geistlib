@@ -1,0 +1,127 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+/* Flash-decoding partial pass (n_q == 1, f16 KV): one workgroup per
+ * (kv-chunk, q-head) computes the online-softmax partial (m, l, acc[hd])
+ * over its 128-position chunk. Fills the GPU with chunks*heads workgroups
+ * where plain decode attention has only n_q_heads. Partials land in a
+ * scratch buffer as [head][chunk][hd + 2]. K/V/Q stream as 4-wide vectors
+ * (scalar f16 loads were the kernel's whole cost); requires q/k/v element
+ * offsets % 4 == 0 — the host falls back to the direct kernel otherwise. */
+
+layout(local_size_x = 128) in;
+
+layout(set = 0, binding = 0) readonly buffer Q { vec4 q4[]; };
+layout(set = 0, binding = 1) readonly buffer K { f16vec4 k4[]; };
+layout(set = 0, binding = 2) readonly buffer V { f16vec4 v4[]; };
+layout(set = 0, binding = 3) writeonly buffer P { float part[]; };
+
+layout(push_constant) uniform Push {
+    uint n_kv;
+    uint n_q_heads;
+    uint n_kv_heads;
+    uint hd;
+    uint q_abs;          /* absolute position of the single query */
+    uint sliding_window;
+    uint q_offset;
+    uint k_offset;
+    uint v_offset;
+    uint p_offset;
+    uint n_chunks;
+} pc;
+
+const uint CHUNK = 128;
+shared vec4 q_sh4[128];
+shared float red[128];
+shared float w_sh[128];
+
+void main() {
+    uint chunk = gl_WorkGroupID.x;
+    uint head = gl_WorkGroupID.y;
+    uint lid = gl_LocalInvocationID.x;
+    if (chunk >= pc.n_chunks || head >= pc.n_q_heads || pc.hd > 512u) {
+        return;
+    }
+    uint hd = pc.hd;
+    uint hd4 = hd >> 2u;
+    uint kv_head = head / (pc.n_q_heads / pc.n_kv_heads);
+    uint kv_row4 = (pc.n_kv_heads * hd) >> 2u;
+
+    uint s_lo = 0;
+    if (pc.sliding_window > 0 && pc.q_abs + 1 > pc.sliding_window) {
+        s_lo = pc.q_abs + 1 - pc.sliding_window;
+    }
+    uint s_hi = min(pc.q_abs, pc.n_kv - 1);
+    uint c_lo = max(s_lo, chunk * CHUNK);
+    uint c_hi_excl = min(s_hi + 1, (chunk + 1) * CHUNK);
+
+    uint pbase = pc.p_offset + (head * pc.n_chunks + chunk) * (hd + 2u);
+    if (c_lo >= c_hi_excl) {
+        for (uint d = lid; d < hd; d += 128u) {
+            part[pbase + d] = 0.0;
+        }
+        if (lid == 0u) {
+            part[pbase + hd] = (-1.0 / 0.0); /* m */
+            part[pbase + hd + 1u] = 0.0;     /* l */
+        }
+        return;
+    }
+
+    uint q_base4 = (pc.q_offset >> 2u) + head * hd4;
+    for (uint d = lid; d < hd4; d += 128u) {
+        q_sh4[d] = q4[q_base4 + d];
+    }
+    barrier();
+
+    /* scores for up to 128 positions in parallel */
+    uint s = c_lo + lid;
+    float score = (-1.0 / 0.0);
+    if (s < c_hi_excl) {
+        uint k_base4 = (pc.k_offset >> 2u) + s * kv_row4 + kv_head * hd4;
+        float sum = 0.0;
+        for (uint i = 0; i < hd4; i++) {
+            sum += dot(vec4(k4[k_base4 + i]), q_sh4[i]);
+        }
+        score = sum;
+    }
+    red[lid] = score;
+    barrier();
+    for (uint st = 64u; st > 0u; st >>= 1u) {
+        if (lid < st && red[lid + st] > red[lid]) {
+            red[lid] = red[lid + st];
+        }
+        barrier();
+    }
+    float m = red[0];
+    barrier();
+
+    float w = s < c_hi_excl ? exp(score - m) : 0.0;
+    w_sh[lid] = w;
+    red[lid] = w;
+    barrier();
+    for (uint st = 64u; st > 0u; st >>= 1u) {
+        if (lid < st) {
+            red[lid] += red[lid + st];
+        }
+        barrier();
+    }
+    float l = red[0];
+
+    /* weighted V: thread owns one 4-wide dim slice */
+    uint nn = c_hi_excl - c_lo;
+    uint v_base4 = (pc.v_offset >> 2u) + c_lo * kv_row4 + kv_head * hd4;
+    for (uint t = lid; t < hd4; t += 128u) {
+        vec4 a = vec4(0.0);
+        for (uint j = 0; j < nn; j++) {
+            a += w_sh[j] * vec4(v4[v_base4 + j * kv_row4 + t]);
+        }
+        part[pbase + 4u * t + 0u] = a.x;
+        part[pbase + 4u * t + 1u] = a.y;
+        part[pbase + 4u * t + 2u] = a.z;
+        part[pbase + 4u * t + 3u] = a.w;
+    }
+    if (lid == 0u) {
+        part[pbase + hd] = m;
+        part[pbase + hd + 1u] = l;
+    }
+}

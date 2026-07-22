@@ -22,6 +22,7 @@ src/backends/            compute: the kernels that actually run the ops
       cpu_scalar/          portable reference (correctness oracle)
       cpu_x86/             x86-64 AVX-512 / VNNI (opt-in; runtime hw_probe dispatch)
       metal/               Apple GPU (opt-in, experimental; dlopen'd Metal.framework)
+      vulkan/              Linux/NVIDIA GPU (opt-in, experimental; dlopen'd libvulkan)
 src/formats/             GGUF + PTQTP quant (de)quantization
 src/io/                  GGUF reader, safetensors reader
 src/base/                freestanding utilities: heap, error, hw_probe
@@ -45,7 +46,8 @@ not aspirational (the tree conforms today):
   an arch or backend implementation — with exactly **two composition points**:
   `arch_registry.c` and `backend_registry.c`, the only files that name concrete
   archs/backends (each entry compile-gated).
-- `src/archs/` never includes a concrete backend (`cpu_*`, `metal`). Ops reach
+- `src/archs/` never includes a concrete backend (`cpu_*`, `metal`, `vulkan`).
+  Ops reach
   compute through the backend vtbl. The one sanctioned shortcut is
   `src/backends/common/` — the shared compute library (GEMM facade, gemma4
   kernels, KIVI) that is always compiled and may be called directly from archs.
@@ -266,6 +268,7 @@ Per directory, the file to open first:
 | `src/backends/cpu_x86/` | `backend.c` | AVX-512/VNNI kernels, runtime dispatch |
 | `src/backends/cpu_scalar/` | `backend.c` | the portable correctness oracle |
 | `src/backends/metal/` | `backend.c` | Apple-GPU path (shaders in `metal_shaders.h`) |
+| `src/backends/vulkan/` | `backend.c` | Linux/NVIDIA-GPU path (SPIR-V in `shaders/`) |
 | `src/formats/gguf/` | `common.c` | per-quant decode (one file per format) |
 | `src/io/` | `gguf_reader.c` | GGUF/safetensors file parsing |
 | `tools/` | `geist.c` | the demo CLI and the header-only SDK |

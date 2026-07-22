@@ -1,0 +1,173 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 1) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint token_id;
+    uint dtype;
+    uint blocks_per_row;
+    uint w_byte_offset;
+    uint y_offset;
+    float scale;
+} pc;
+
+const uint DTYPE_F32 = 0u;
+const uint DTYPE_F16 = 1u;
+const uint DTYPE_BF16 = 2u;
+const uint DTYPE_Q4_K = 8u;
+const uint DTYPE_Q5_K = 9u;
+const uint DTYPE_Q6_K = 10u;
+
+uint load_u8(uint byte_offset) {
+    uint word = w[byte_offset >> 2];
+    return (word >> ((byte_offset & 3u) * 8u)) & 0xffu;
+}
+
+int load_i8(uint byte_offset) {
+    uint u = load_u8(byte_offset);
+    return u < 128u ? int(u) : int(u) - 256;
+}
+
+float load_f16(uint byte_offset) {
+    uint lo = load_u8(byte_offset);
+    uint hi = load_u8(byte_offset + 1u);
+    return unpackHalf2x16(lo | (hi << 8u)).x;
+}
+
+float load_f32(uint byte_offset) {
+    return uintBitsToFloat(w[byte_offset >> 2]);
+}
+
+float load_bf16(uint byte_offset) {
+    uint lo = load_u8(byte_offset);
+    uint hi = load_u8(byte_offset + 1u);
+    return uintBitsToFloat((lo | (hi << 8u)) << 16u);
+}
+
+void get_q4_scale_min(uint j, uint scales_base, out uint sc, out uint mn) {
+    if (j < 4u) {
+        sc = load_u8(scales_base + j) & 63u;
+        mn = load_u8(scales_base + j + 4u) & 63u;
+    } else {
+        uint q_j4 = load_u8(scales_base + j + 4u);
+        uint q_jm4 = load_u8(scales_base + j - 4u);
+        uint q_j = load_u8(scales_base + j);
+        sc = (q_j4 & 15u) | ((q_jm4 >> 6u) << 4u);
+        mn = (q_j4 >> 4u) | ((q_j >> 6u) << 4u);
+    }
+}
+
+float dequant_q4k(uint row_base, uint k) {
+    uint block_in_row = k / 256u;
+    uint in_block = k - block_in_row * 256u;
+    uint sub = in_block / 32u;
+    uint idx = in_block - sub * 32u;
+    uint block_byte = row_base + block_in_row * 144u;
+
+    float d = load_f16(block_byte);
+    float dmin = load_f16(block_byte + 2u);
+
+    uint sc_u;
+    uint mn_u;
+    get_q4_scale_min(sub, block_byte + 4u, sc_u, mn_u);
+
+    uint q_byte = load_u8(block_byte + 16u + (sub / 2u) * 32u + idx);
+    uint q = (sub & 1u) == 0u ? (q_byte & 15u) : (q_byte >> 4u);
+    return d * float(sc_u) * float(q) - dmin * float(mn_u);
+}
+
+float dequant_q5k(uint row_base, uint k) {
+    uint block_in_row = k / 256u;
+    uint in_block = k - block_in_row * 256u;
+    uint sub = in_block / 32u;
+    uint idx = in_block - sub * 32u;
+    uint block_byte = row_base + block_in_row * 176u;
+
+    float d = load_f16(block_byte);
+    float dmin = load_f16(block_byte + 2u);
+
+    uint sc_u;
+    uint mn_u;
+    get_q4_scale_min(sub, block_byte + 4u, sc_u, mn_u);
+
+    uint qh = load_u8(block_byte + 16u + idx);
+    uint qs = load_u8(block_byte + 48u + (sub / 2u) * 32u + idx);
+    uint q = (sub & 1u) == 0u ? (qs & 15u) : (qs >> 4u);
+    q += ((qh >> sub) & 1u) << 4u;
+    return d * float(sc_u) * float(q) - dmin * float(mn_u);
+}
+
+float dequant_q6k(uint row_base, uint k) {
+    uint block_in_row = k / 256u;
+    uint in_block = k - block_in_row * 256u;
+    uint half_idx = in_block / 128u;
+    uint in_half = in_block - half_idx * 128u;
+    uint stream = in_half / 32u;
+    uint l = in_half - stream * 32u;
+    uint is = l / 16u;
+    uint block_byte = row_base + block_in_row * 216u;
+    uint ql_base = block_byte + half_idx * 64u;
+    uint qh_base = block_byte + 128u + half_idx * 32u;
+    uint sc_base = block_byte + 192u + half_idx * 8u;
+
+    uint ql0 = load_u8(ql_base + l);
+    uint ql1 = load_u8(ql_base + l + 32u);
+    uint qh = load_u8(qh_base + l);
+    uint q_u;
+    uint sc_idx;
+    if (stream == 0u) {
+        q_u = (ql0 & 15u) | (((qh >> 0u) & 3u) << 4u);
+        sc_idx = is + 0u;
+    } else if (stream == 1u) {
+        q_u = (ql1 & 15u) | (((qh >> 2u) & 3u) << 4u);
+        sc_idx = is + 2u;
+    } else if (stream == 2u) {
+        q_u = (ql0 >> 4u) | (((qh >> 4u) & 3u) << 4u);
+        sc_idx = is + 4u;
+    } else {
+        q_u = (ql1 >> 4u) | (((qh >> 6u) & 3u) << 4u);
+        sc_idx = is + 6u;
+    }
+
+    float d = load_f16(block_byte + 208u);
+    int sc = load_i8(sc_base + sc_idx);
+    int q = int(q_u) - 32;
+    return d * float(sc) * float(q);
+}
+
+void main() {
+    uint k = gl_GlobalInvocationID.x;
+    if (k >= pc.n_in) {
+        return;
+    }
+
+    float value = 0.0;
+    if (pc.dtype == DTYPE_F32) {
+        uint row_base = pc.w_byte_offset + pc.token_id * pc.n_in * 4u;
+        value = load_f32(row_base + k * 4u);
+    } else if (pc.dtype == DTYPE_F16) {
+        uint row_base = pc.w_byte_offset + pc.token_id * pc.n_in * 2u;
+        value = load_f16(row_base + k * 2u);
+    } else if (pc.dtype == DTYPE_BF16) {
+        uint row_base = pc.w_byte_offset + pc.token_id * pc.n_in * 2u;
+        value = load_bf16(row_base + k * 2u);
+    } else if (pc.dtype == DTYPE_Q4_K) {
+        uint row_base = pc.w_byte_offset +
+            pc.token_id * pc.blocks_per_row * 144u;
+        value = dequant_q4k(row_base, k);
+    } else if (pc.dtype == DTYPE_Q5_K) {
+        uint row_base = pc.w_byte_offset +
+            pc.token_id * pc.blocks_per_row * 176u;
+        value = dequant_q5k(row_base, k);
+    } else if (pc.dtype == DTYPE_Q6_K) {
+        uint row_base = pc.w_byte_offset +
+            pc.token_id * pc.blocks_per_row * 216u;
+        value = dequant_q6k(row_base, k);
+    }
+
+    y[pc.y_offset + k] = value * pc.scale;
+}

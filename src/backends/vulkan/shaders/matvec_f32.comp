@@ -1,0 +1,49 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { float x[]; };
+layout(set = 0, binding = 1) readonly buffer W { float w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+shared float partial[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint lid = gl_LocalInvocationID.x;
+
+    if (row >= pc.n_out) {
+        return;
+    }
+
+    float sum = 0.0;
+    uint w_base = pc.w_offset + row * pc.n_in;
+    for (uint k = lid; k < pc.n_in; k += 256) {
+        sum += x[pc.x_offset + k] * w[w_base + k];
+    }
+    partial[lid] = sum;
+    barrier();
+
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lid < stride) {
+            partial[lid] += partial[lid + stride];
+        }
+        barrier();
+    }
+
+    if (lid == 0) {
+        y[pc.y_offset + row] = partial[0];
+    }
+}
