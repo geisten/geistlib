@@ -79,13 +79,19 @@ static inline size_t agent_tail_loop(const char *out, size_t w) {
  * and trim trailing whitespace. Returns bytes written. The session must already
  * be prefilled to where the model generates. Shared by the agent loop and the
  * summarizer sub-session (the only two greedy generators). */
+/* on_delta (nullptr = off) streams each decoded piece of a USER-VISIBLE answer
+ * for dynamic-tools-v1 §Streaming; return false from it to abort (transport
+ * gone). Callers that decode INTERNAL turns (routing, masked calls) pass
+ * nullptr so scaffold tokens never leak. */
 static inline size_t geist_generate_greedy(struct geist_session *s,
                                            geist_token_t         eos,
                                            geist_token_t         eot,
                                            const char *const     leak[],
                                            int                   max_tokens,
-                                           size_t                cap,
-                                           char                  out[static cap]) {
+                                           bool (*on_delta)(void *, size_t, const char *),
+                                           void  *on_delta_ctx,
+                                           size_t cap,
+                                           char   out[static cap]) {
     size_t w = 0;
     for (int i = 0; i < max_tokens; i++) {
         geist_token_t tok = 0;
@@ -105,6 +111,9 @@ static inline size_t geist_generate_greedy(struct geist_session *s,
         }
         memcpy(out + w, piece, pl);
         w += pl;
+        if (on_delta != nullptr && !on_delta(on_delta_ctx, pl, piece)) {
+            break; /* transport gone — decoding for nobody */
+        }
         size_t loop_p = agent_tail_loop(out, w);
         if (loop_p > 0) {
             w -= 2 * loop_p; /* drop the repeats, keep one copy */
@@ -2149,8 +2158,18 @@ static inline size_t agent_force_call(struct geist_agent *a,
 /* Decode one assistant turn into out (greedy, stops on EOS / the template stop /
  * a degenerate repetition loop — see agent_tail_loop). Returns bytes written. */
 static inline size_t agent_generate_turn(struct geist_agent *a, size_t cap, char out[static cap]) {
-    return geist_generate_greedy(
-            a->session, a->eos, a->eot, a->tmpl.leak, GEIST_AGENT_MAX_DECODE, cap, out);
+    /* This is the free-answer decode: reached only after agent_next_opens_call
+     * committed the turn to prose (masked calls go elsewhere), so streaming its
+     * pieces is a user-visible answer, never a tool-call scaffold. */
+    return geist_generate_greedy(a->session,
+                                 a->eos,
+                                 a->eot,
+                                 a->tmpl.leak,
+                                 GEIST_AGENT_MAX_DECODE,
+                                 a->on_delta,
+                                 a->on_delta_ctx,
+                                 cap,
+                                 out);
 }
 
 /* Decode a REPLY turn: the router decided no tool fits, so the turn must be

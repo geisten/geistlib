@@ -368,9 +368,16 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
         }
         /* a silent client must not wedge the (sequential) daemon: bound the
          * request read — observed live via a dangling HA connection that
-         * blocked every later Assist turn until its 60 s client timeout */
+         * blocked every later Assist turn until its 60 s client timeout.
+         * SO_SNDTIMEO does the same for the write side: a client that opens a
+         * stream then stops reading fills the send buffer, and each blocking
+         * conversation.delta write() would otherwise hang the daemon forever —
+         * the timeout makes the write fail, latching the delta writer so the
+         * turn aborts and the loop accepts again. */
         struct timeval rto = {.tv_sec = 10};
         (void) setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &rto, sizeof rto);
+        struct timeval sto = {.tv_sec = 30};
+        (void) setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &sto, sizeof sto);
         static char req[AGENT_MAIN_LINE_CAP];
         size_t      n = 0;
         ssize_t     r;
