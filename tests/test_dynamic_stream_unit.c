@@ -1,4 +1,6 @@
-#define _GNU_SOURCE /* recv() MSG_DONTWAIT on the musl CI leg (CONTRIBUTING.md) */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE /* recv() MSG_DONTWAIT; guarded — musl CI also passes -D_GNU_SOURCE */
+#endif
 /* test_dynamic_stream_unit — dynamic-tools-v1 §Streaming: the strict `stream`
  * request field and the conversation.delta writer (UTF-8 carry, JSON escaping,
  * write-failure latch). No model needed. */
