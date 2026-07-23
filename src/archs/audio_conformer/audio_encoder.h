@@ -25,39 +25,6 @@ struct AudioEncoder;
 struct AudioEncoder *audio_encoder_create(const char *safetensors_path);
 void                 audio_encoder_destroy(struct AudioEncoder *);
 
-/* Phase 2 only — direct exposure of subsample stage for validation.
- *   mel_in:  (n_mel_frames, 128)  fp32
- *   mask_in: (n_mel_frames,)      bool — true = valid frame (NULL = all valid).
- *            HF zeros masked time positions before each conv layer.
- *   out:     (n_out, 1024)        fp32, where n_out = ((n_mel_frames+1)/2 + 1) / 2
- * Returns n_out (number of subsampled frames produced). */
-size_t audio_encoder_subsample_run(const struct AudioEncoder *,
-                                   const float *mel_in,
-                                   const bool  *mask_in,
-                                   size_t       n_mel_frames,
-                                   float       *out);
-
-/* Phase 3 — single Conformer layer forward. Operates on (n, 1024) hidden.
- * Caller passes the chunked attention mask (1, num_blocks, chunk_size,
- * context_size) bool, and the precomputed relative position embeddings
- * (P, 1024). Both come from audio_encoder helpers below. */
-void audio_encoder_layer_run(const struct AudioEncoder *,
-                             int          layer_idx,
-                             const float *h_in,
-                             size_t       n,
-                             const float *pos_emb,
-                             const bool  *attn_mask_5d,
-                             float       *h_out);
-
-/* Compute relative position embeddings used by all attention layers.
- * Returns malloc'd (P, 1024) buffer; caller frees. P = context_size / 2 + 1,
- * with context_size = chunk_size + max_past_horizon + max_future_horizon. */
-float *audio_encoder_compute_pos_emb(const struct AudioEncoder *);
-
-/* Build the chunked-attention mask for `n_subsample_frames` valid frames.
- * Returns malloc'd (num_blocks, chunk_size, context_size) bool buffer. */
-bool *audio_encoder_compute_attn_mask(const struct AudioEncoder *, size_t n);
-
 /* Full audio-tower pipeline: mel → subsample → 12× Conformer → output_proj →
  * embed_audio. Output is the (T_sub, 1536) soft-token sequence ready for
  * the LM. Caller provides padded mel buffer + per-frame mask analogous to

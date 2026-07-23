@@ -98,9 +98,6 @@ size_t                      gguf_tensor_count(const struct gguf_ctx *ctx);
 const struct gguf_tensor_t *gguf_tensor_at(const struct gguf_ctx *ctx, size_t idx);
 const struct gguf_tensor_t *gguf_get_tensor(const struct gguf_ctx *ctx, const char *name);
 
-/* Useful for size-on-disk vs element-count math. */
-size_t      gguf_dtype_block_size(gguf_dtype_t dt);  /* bytes per block */
-size_t      gguf_dtype_block_count(gguf_dtype_t dt); /* elements per block */
 const char *gguf_dtype_name(gguf_dtype_t dt);
 
 /* Total element count across all dims of a tensor. */
@@ -118,7 +115,6 @@ size_t gguf_tensor_elem_count(const struct gguf_tensor_t *t);
  * and may be empty). */
 const char *gguf_get_meta_string(const struct gguf_ctx *ctx, const char *key, size_t *out_len);
 bool        gguf_get_meta_u32(const struct gguf_ctx *ctx, const char *key, uint32_t *out);
-bool        gguf_get_meta_u64(const struct gguf_ctx *ctx, const char *key, uint64_t *out);
 bool        gguf_get_meta_f32(const struct gguf_ctx *ctx, const char *key, float *out);
 bool        gguf_get_meta_bool(const struct gguf_ctx *ctx, const char *key, bool *out);
 

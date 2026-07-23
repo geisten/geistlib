@@ -93,13 +93,16 @@ int main(void) {
         struct geist_rng rng;
         geist_rng_seed(&rng, 11);
         /* Top 2 logits are at indices 4 (=5.0) and 2 (=4.0). */
-        float logits[] = {0.0f, 1.0f, 4.0f, 2.0f, 5.0f, 1.5f, 0.0f, 0.5f};
-        bool  seen[8]  = {false};
+        float                          logits[] = {0.0f, 1.0f, 4.0f, 2.0f, 5.0f, 1.5f, 0.0f, 0.5f};
+        bool                           seen[8]  = {false};
+        struct geist_sampler_workspace ws       = {0};
+        fails += check(geist_sampler_workspace_init(&ws, 8) == GEIST_OK, "top-k ws init");
         for (int i = 0; i < 1000; i++) {
-            geist_token_t t = geist_sampler_top_k(8, logits, 2, 1.0f, &rng);
+            geist_token_t t = geist_sampler_top_k_ws(&ws, logits, 2, 1.0f, &rng);
             fails += check(t >= 0 && t < 8, "top-k token in range");
             seen[t] = true;
         }
+        geist_sampler_workspace_destroy(&ws);
         fails += check(seen[2] && seen[4], "top-k=2 samples both top indices (2, 4)");
         int other = 0;
         for (int i = 0; i < 8; i++)
@@ -114,13 +117,16 @@ int main(void) {
         geist_rng_seed(&rng, 13);
         /* Make most mass concentrate at index 0 — top_p=0.5 should pretty
          * much always pick index 0. */
-        float logits[] = {10.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-        int   hits_0   = 0;
+        float                          logits[] = {10.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        int                            hits_0   = 0;
+        struct geist_sampler_workspace ws       = {0};
+        fails += check(geist_sampler_workspace_init(&ws, 5) == GEIST_OK, "top-p ws init");
         for (int i = 0; i < 1000; i++) {
-            if (geist_sampler_top_p(5, logits, 0.5f, 1.0f, &rng) == 0) {
+            if (geist_sampler_top_p_ws(&ws, logits, 0.5f, 1.0f, &rng) == 0) {
                 hits_0++;
             }
         }
+        geist_sampler_workspace_destroy(&ws);
         fails += check(hits_0 > 990, "top-p=0.5 with peaked logits picks index 0 nearly always");
     }
 

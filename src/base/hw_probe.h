@@ -33,7 +33,6 @@ enum geist_hw_os {
 enum geist_hw_cpu {
     GEIST_HW_CPU_UNKNOWN = 0,
     GEIST_HW_CPU_ARM64_GENERIC,
-    GEIST_HW_CPU_ARM64_CORTEX_A76,
     GEIST_HW_CPU_APPLE_SILICON,
     GEIST_HW_CPU_X86_64_GENERIC,
 };
@@ -60,8 +59,6 @@ struct geist_hw_probe {
                             * (see docs/LINUX_X86_SPEC.md). */
 };
 
-void        geist_hw_probe_fill(struct geist_hw_probe *out);
-const char *geist_hw_os_name(enum geist_hw_os os);
-const char *geist_hw_cpu_name(enum geist_hw_cpu cpu);
+void geist_hw_probe_fill(struct geist_hw_probe *out);
 
 #endif /* GEIST_INTERNAL_HW_PROBE_H */
