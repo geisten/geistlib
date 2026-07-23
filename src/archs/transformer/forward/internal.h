@@ -39,12 +39,11 @@
  * read from st->sess until the architecture has a per-session plan.
  */
 struct transformer_layer_forward_ctx {
-    struct transformer_arch_state              *st;
-    struct geist_backend                       *be;
-    const struct geist_backend_vtbl            *v;
-    struct transformer_layer_weights           *L;
-    const struct transformer_layer_exec_plan   *P;
-    const struct transformer_session_exec_plan *SP;
+    struct transformer_arch_state            *st;
+    struct geist_backend                     *be;
+    const struct geist_backend_vtbl          *v;
+    struct transformer_layer_weights         *L;
+    const struct transformer_layer_exec_plan *P;
 
     int                  layer_idx;
     size_t               q_position;

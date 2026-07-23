@@ -1449,13 +1449,13 @@ static void lconv_run(const struct LConv *lc, float *h, size_t n) {
     safe_free((void **) &residual);
 }
 
-void audio_encoder_layer_run(const struct AudioEncoder *a,
-                             int                        layer_idx,
-                             const float               *h_in,
-                             size_t                     n,
-                             const float               *pos_emb,
-                             const bool                *attn_mask_5d,
-                             float                     *h_out) {
+static void audio_encoder_layer_run(const struct AudioEncoder *a,
+                                    int                        layer_idx,
+                                    const float               *h_in,
+                                    size_t                     n,
+                                    const float               *pos_emb,
+                                    const bool                *attn_mask_5d,
+                                    float                     *h_out) {
     const struct ConformerLayer *L     = &a->layers[layer_idx];
     const size_t                 hsize = (size_t) n * AUDIO_HIDDEN;
 
@@ -1520,7 +1520,7 @@ void audio_encoder_layer_run(const struct AudioEncoder *a,
     safe_free((void **) &h);
 }
 
-float *audio_encoder_compute_pos_emb(const struct AudioEncoder *a) {
+static float *audio_encoder_compute_pos_emb(const struct AudioEncoder *a) {
     (void) a;
     /* Sinusoidal relative position embedding: (POS_LEN, 1024) with
      * position_ids = [POS_LEN-1, POS_LEN-2, ..., 0]. */
@@ -1539,7 +1539,7 @@ float *audio_encoder_compute_pos_emb(const struct AudioEncoder *a) {
     return out;
 }
 
-bool *audio_encoder_compute_attn_mask(const struct AudioEncoder *a, size_t n) {
+static bool *audio_encoder_compute_attn_mask(const struct AudioEncoder *a, size_t n) {
     (void) a;
     /* For each query at absolute position q_g = b*CHUNK + i, the visible keys
      * are k_g in [q_g - MAX_PAST_HORIZON, q_g + MAX_FUTURE] ∩ [0, n).
@@ -1673,11 +1673,11 @@ static void apply_time_mask(float *buf, const bool *mask, int c, int t, int w) {
     }
 }
 
-size_t audio_encoder_subsample_run(const struct AudioEncoder *a,
-                                   const float               *mel_in,
-                                   const bool                *mask_in,
-                                   size_t                     n_mel_frames,
-                                   float                     *out) {
+static size_t audio_encoder_subsample_run(const struct AudioEncoder *a,
+                                          const float               *mel_in,
+                                          const bool                *mask_in,
+                                          size_t                     n_mel_frames,
+                                          float                     *out) {
     /* Treat (n_mel_frames, 128) as a (1, T, 128) image. In our (C, H, W)
      * scratch convention: c_in=1, h_in=T, w_in=128. */
     const int T = (int) n_mel_frames;

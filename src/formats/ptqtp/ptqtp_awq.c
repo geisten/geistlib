@@ -177,7 +177,3 @@ const float *ptqtp_awq_get(const struct ptqtp_awq_ctx *ctx, const char *name, si
     }
     return nullptr;
 }
-
-size_t ptqtp_awq_n_norms(const struct ptqtp_awq_ctx *ctx) {
-    return ctx ? ctx->n_entries : 0;
-}

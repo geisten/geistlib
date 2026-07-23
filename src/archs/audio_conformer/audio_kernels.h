@@ -56,17 +56,11 @@ void conv2d_fp32_from(const float *in,
 void layernorm_fp32_ws(
         const float *x, const float *gamma, size_t batch, size_t d, float eps, float *y);
 
-/* In-place ReLU on n elements. */
-void relu_fp32(float *x, size_t n);
-
 /* In-place SiLU (a.k.a. swish): y = x * sigmoid(x). */
 void silu_fp32(float *x, size_t n);
 
 /* In-place clamp: x[i] = clamp(x[i], lo, hi). */
 void clamp_fp32(float *x, size_t n, float lo, float hi);
-
-/* In-place softplus: y = log(1 + exp(x)). */
-void softplus_fp32(float *x, size_t n);
 
 /* In-place GLU on rows: split last axis (length 2*d) in half, output dim d.
  *   y[r, i] = x[r, i] * sigmoid(x[r, d + i])    for i in [0, d)

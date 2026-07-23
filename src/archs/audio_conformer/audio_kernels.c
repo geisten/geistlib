@@ -140,12 +140,6 @@ void layernorm_fp32_ws(
     }
 }
 
-void relu_fp32(float *x, size_t n) {
-    for (size_t i = 0; i < n; i++)
-        if (x[i] < 0.0f)
-            x[i] = 0.0f;
-}
-
 void silu_fp32(float *x, size_t n) {
     for (size_t i = 0; i < n; i++) {
         float v = x[i];
@@ -158,11 +152,6 @@ void clamp_fp32(float *x, size_t n, float lo, float hi) {
         float v = x[i];
         x[i]    = v < lo ? lo : (v > hi ? hi : v);
     }
-}
-
-void softplus_fp32(float *x, size_t n) {
-    for (size_t i = 0; i < n; i++)
-        x[i] = log1pf(expf(x[i]));
 }
 
 void glu_fp32(const float *x, size_t batch, size_t d, float *y) {

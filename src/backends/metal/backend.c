@@ -1415,7 +1415,7 @@ static void metal_flush_if_referenced(struct metal_state *st, const void *mtl_bu
         return GEIST_E_BACKEND;
     }
 
-    void *mapped = host_visible ? metal_msg_send_ptr0(st, mtl_buffer, "contents") : nullptr;
+    void *mapped = host_visible ? metal_msg_send_id0(st, mtl_buffer, "contents") : nullptr;
     if (host_visible && mapped == nullptr) {
         metal_msg_send_void0(st, mtl_buffer, "release");
         geist_backend_free(be, buf);
@@ -1586,7 +1586,7 @@ static void metal_buffer_destroy_internal(struct geist_backend *be, struct geist
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal: failed to alias %zu bytes", n_bytes);
         return GEIST_E_BACKEND;
     }
-    void *mapped = metal_msg_send_ptr0(st, mtl_buffer, "contents");
+    void *mapped = metal_msg_send_id0(st, mtl_buffer, "contents");
     if (mapped == nullptr) {
         metal_msg_send_void0(st, mtl_buffer, "release");
         geist_backend_free(be, buf);
@@ -5381,7 +5381,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
                     be, GEIST_E_BACKEND, "metal argmax: result buffer allocation failed");
             return GEIST_E_BACKEND;
         }
-        st->argmax_result_mapped = metal_msg_send_ptr0(st, st->argmax_result_buffer, "contents");
+        st->argmax_result_mapped = metal_msg_send_id0(st, st->argmax_result_buffer, "contents");
         if (st->argmax_result_mapped == nullptr) {
             geist_backend_set_error(
                     be, GEIST_E_BACKEND, "metal argmax: result buffer is not mappable");

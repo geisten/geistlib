@@ -11,11 +11,6 @@
 #include <sys/mman.h>
 #endif
 
-// Ensure alignment is a power of 2 (e.g., 16, 32, 64)
-uintptr_t aligned_size(const size_t size, const size_t alignment) {
-    return (size + alignment - 1) & ~(alignment - 1);
-}
-
 /* True iff x is a non-zero power of two. Allocation alignments must satisfy
  * this: the rounding mask ~(alignment-1) and aligned_alloc() are both
  * undefined otherwise. */
@@ -64,125 +59,6 @@ static void *portable_aligned_alloc(const size_t alignment, const size_t size) {
 #else
 #error "heap.c: no aligned allocation primitive available on this platform."
 #endif
-}
-
-uintptr_t optimal_aligned_size(const size_t size) {
-    return aligned_size(size, OPTIMAL_ALIGNMENT);
-}
-
-/**
- * Creates a memory arena with the specified size.
- *
- * The arena allocator is a simple and efficient way to manage memory for
- * short-lived allocations. Instead of calling malloc/free for each small
- * allocation, we allocate a large block upfront and distribute small chunks
- * from it.
- *
- * @param size Size of the arena in bytes
- * @return Initialized memory arena structure
- */
-struct memory_arena create_memory_arena(const size_t size) {
-    struct memory_arena arena = {};
-    if (!try_create_memory_arena(&arena, size)) {
-        /* A runtime/inference core must not exit() on a caller's behalf
-         * (AGENT.md: outputs must remain well-defined on failure). Return a
-         * null arena (memory == nullptr); the caller MUST check arena.memory
-         * before use. arena_allocate_aligned() already rejects such arenas.
-         * Use try_create_memory_arena() directly to handle failure inline. */
-        fprintf(stderr, "create_memory_arena: failed to allocate %zu-byte arena\n", size);
-    }
-    return arena;
-}
-
-bool try_create_memory_arena(struct memory_arena *arena, const size_t size) {
-    if (!arena) {
-        return false;
-    }
-    /* Make sure the size is a multiple of the optimal alignment. Reject
-     * sizes that would overflow when rounded up rather than wrapping to a
-     * tiny allocation. */
-    size_t aligned_size = 0u;
-    if (!checked_round_up(size, OPTIMAL_ALIGNMENT, &aligned_size)) {
-        arena->memory = nullptr;
-        arena->size   = 0;
-        arena->used   = 0;
-        return false;
-    }
-
-    /* Allocate memory with optimal alignment for best performance */
-    void *memory = portable_aligned_alloc(OPTIMAL_ALIGNMENT, aligned_size);
-    if (!memory) {
-        arena->memory = nullptr;
-        arena->size   = 0;
-        arena->used   = 0;
-        return false;
-    }
-
-    /* Initialize the arena structure */
-    arena->memory = memory;
-    arena->size   = aligned_size;
-    arena->used   = 0;
-    return true;
-}
-
-/**
- * Allocates aligned memory from the arena.
- *
- * This function returns a pointer to a block of memory with the specified size
- * and alignment. The memory comes from the arena's pre-allocated block. This is
- * much faster than calling malloc for many small allocations.
- *
- * @param arena Pointer to the memory arena
- * @param size Number of bytes to allocate
- * @param alignment Required alignment (must be power of 2)
- * @return Pointer to allocated memory or nullptr if allocation fails
- */
-void *arena_allocate_aligned(struct memory_arena *arena, size_t size, size_t alignment) {
-    if (!arena || !arena->memory) {
-        return nullptr;
-    }
-
-    /* Default to OPTIMAL_ALIGNMENT, then reject invalid alignments instead
-     * of feeding a non-power-of-2 into the rounding mask / aligned_alloc. */
-    if (alignment == 0u) {
-        alignment = OPTIMAL_ALIGNMENT;
-    }
-    if (!size_is_pow2(alignment)) {
-        return nullptr;
-    }
-    /* Verwende mindestens OPTIMAL_ALIGNMENT */
-    if (alignment < OPTIMAL_ALIGNMENT) {
-        alignment = OPTIMAL_ALIGNMENT;
-    }
-
-    /* Calculate aligned address */
-    const uintptr_t current = (uintptr_t) arena->memory + arena->used;
-    const uintptr_t aligned = aligned_size(current, alignment);
-    const size_t    offset  = aligned - (uintptr_t) arena->memory;
-
-    /* Round size up to a multiple of alignment for better data locality;
-     * refuse on overflow rather than wrapping past the bounds check. */
-    size_t aligned_size_value = 0u;
-    if (!checked_round_up(size, alignment, &aligned_size_value)) {
-        return nullptr;
-    }
-
-    /* Check if we have enough space. Compare without computing
-     * offset + aligned_size_value (which could itself overflow size_t). */
-    if (offset > arena->size || aligned_size_value > arena->size - offset) {
-        fprintf(stderr,
-                "Memory out of bounds (old: %zu + object size %zu > total: %zu)\n",
-                offset,
-                aligned_size_value,
-                arena->size);
-        return nullptr;
-    }
-
-    /* Update used space */
-    arena->used = offset + aligned_size_value;
-
-    /* Return aligned pointer */
-    return (void *) aligned;
 }
 
 void *heap_alloc_aligned(const size_t size, size_t alignment) {
@@ -259,23 +135,5 @@ void safe_free(void **ptr) {
     if (ptr != nullptr && *ptr != nullptr) {
         free(*ptr);
         *ptr = nullptr;
-    }
-}
-
-/**
- * Frees the entire memory arena.
- *
- * This function releases all memory allocated for the arena. After calling this
- * function, any pointers obtained from arena_allocate or arena_allocate_aligned
- * are invalid.
- *
- * @param arena Pointer to the memory arena
- */
-void free_memory_arena(struct memory_arena *arena) {
-    if (arena && arena->memory) {
-        safe_free(&arena->memory);
-        arena->memory = nullptr;
-        arena->size   = 0;
-        arena->used   = 0;
     }
 }

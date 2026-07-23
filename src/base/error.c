@@ -47,29 +47,6 @@ const char *geist_status_to_string(enum geist_status s) {
     return "GEIST_E_UNKNOWN";
 }
 
-/* ---------- Per-handle error setter ---------- */
-
-void geist_error_set(struct geist_error_slot *slot,
-                     enum geist_status        code,
-                     const char              *origin_func,
-                     const char              *fmt,
-                     ...) {
-    if (slot == nullptr) {
-        return;
-    }
-    slot->code        = code;
-    slot->origin_func = origin_func;
-
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(slot->message, GEIST_ERR_MSG_LEN, fmt, ap);
-    va_end(ap);
-
-    if (n < 0) {
-        slot->message[0] = '\0';
-    }
-}
-
 /* ---------- Thread-local create-time fallback ---------- */
 
 static _Thread_local struct geist_error_slot t_create_error = {

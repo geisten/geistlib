@@ -1008,6 +1008,36 @@ static inline int agent_request_has_pathword(size_t req_len, const char *req) {
 
 /* True if the request talks about notes/memory — the evidence a memory tool
  * needs (Notiz, note, merke, remember, recall, erinnere, gespeichert). */
+
+/* True if any of w[0..n) occurs at a word start (begin-of-request or after
+ * space/tab/newline), case-insensitive — the shape every evidence scan below
+ * shares. skip_dotted: a match whose token continues into a '.' does not
+ * count (a FILENAME is not evidence — "notes.txt" armed the memory tools). */
+static inline int agent_word_start_any(
+        size_t req_len, const char *req, const char *const w[], size_t n, bool skip_dotted) {
+    for (size_t v = 0; v < n; v++) {
+        size_t wl = strlen(w[v]);
+        for (size_t i = 0; i + wl <= req_len; i++) {
+            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
+                strncasecmp(req + i, w[v], wl) == 0) {
+                if (skip_dotted) {
+                    size_t e      = i;
+                    int    dotted = 0;
+                    while (e < req_len && req[e] != ' ' && req[e] != '\t' && req[e] != '\n') {
+                        dotted |= req[e] == '.';
+                        e++;
+                    }
+                    if (dotted) {
+                        continue;
+                    }
+                }
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static inline int agent_request_mentions_memory(size_t req_len, const char *req) {
     static const char *const w[] = {"notiz",
                                     "note",
@@ -1018,27 +1048,7 @@ static inline int agent_request_mentions_memory(size_t req_len, const char *req)
                                     "gedächt",
                                     "gespeichert",
                                     "speicher"};
-    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
-        size_t wl = strlen(w[v]);
-        for (size_t i = 0; i + wl <= req_len; i++) {
-            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
-                strncasecmp(req + i, w[v], wl) == 0) {
-                /* a FILENAME is not memory evidence — "notes.txt" armed the
-                 * memory tools and "Fasse notes.txt zusammen" routed remember;
-                 * skip a matched word that continues into a '.' */
-                size_t e      = i;
-                int    dotted = 0;
-                while (e < req_len && req[e] != ' ' && req[e] != '\t' && req[e] != '\n') {
-                    dotted |= req[e] == '.';
-                    e++;
-                }
-                if (!dotted) {
-                    return 1;
-                }
-            }
-        }
-    }
-    return 0;
+    return agent_word_start_any(req_len, req, w, sizeof w / sizeof *w, true);
 }
 
 /* True if a tool is a memory-palace tool (remember/recall). */
@@ -1080,16 +1090,7 @@ static inline int agent_request_mentions_home(size_t req_len, const char *req) {
             "schalte",  "schalt", "mach", "stelle", "dimme",  "öffne", "Öffne", "schließ",
             "schliess", "dreh",   "warm", "turn",   "switch", "set",   "dim",   "open",
             "close",    "unlock", "lock", "device", "spiel",  "play",  "stop"};
-    for (size_t v = 0; v < sizeof verbs / sizeof *verbs; v++) {
-        size_t wl = strlen(verbs[v]);
-        for (size_t i = 0; i + wl <= req_len; i++) {
-            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
-                strncasecmp(req + i, verbs[v], wl) == 0) {
-                return 1;
-            }
-        }
-    }
-    return 0;
+    return agent_word_start_any(req_len, req, verbs, sizeof verbs / sizeof *verbs, false);
 }
 
 /* True if a tool is a home-bridge tool (device command / status). */
@@ -1208,16 +1209,7 @@ static inline int agent_request_mentions_stocks(size_t req_len, const char *req)
                                     "nasdaq",
                                     "dividend",
                                     "dax"};
-    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
-        size_t wl = strlen(w[v]);
-        for (size_t i = 0; i + wl <= req_len; i++) {
-            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
-                strncasecmp(req + i, w[v], wl) == 0) {
-                return 1;
-            }
-        }
-    }
-    return 0;
+    return agent_word_start_any(req_len, req, w, sizeof w / sizeof *w, false);
 }
 
 /* True if a tool is the stock-market tool. */
@@ -1232,31 +1224,13 @@ static inline int agent_tool_is_stocks(const struct geist_tool *t) {
 static inline int agent_request_mentions_dir(size_t req_len, const char *req) {
     static const char *const w[] = {
             "ordner", "verzeichnis", "folder", "director", "files", "dateien"};
-    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
-        size_t wl = strlen(w[v]);
-        for (size_t i = 0; i + wl <= req_len; i++) {
-            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
-                strncasecmp(req + i, w[v], wl) == 0) {
-                return 1;
-            }
-        }
-    }
-    return 0;
+    return agent_word_start_any(req_len, req, w, sizeof w / sizeof *w, false);
 }
 
 /* True if the request points at the web (web, online, internet, google). */
 static inline int agent_request_mentions_web(size_t req_len, const char *req) {
     static const char *const w[] = {"web", "online", "internet", "googl"};
-    for (size_t v = 0; v < sizeof w / sizeof *w; v++) {
-        size_t wl = strlen(w[v]);
-        for (size_t i = 0; i + wl <= req_len; i++) {
-            if ((i == 0 || req[i - 1] == ' ' || req[i - 1] == '\t' || req[i - 1] == '\n') &&
-                strncasecmp(req + i, w[v], wl) == 0) {
-                return 1;
-            }
-        }
-    }
-    return 0;
+    return agent_word_start_any(req_len, req, w, sizeof w / sizeof *w, false);
 }
 
 /* ---- routing predicates + best-candidate search --------------------------

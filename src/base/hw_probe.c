@@ -255,31 +255,3 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
     }
 #endif
 }
-
-const char *geist_hw_os_name(enum geist_hw_os os) {
-    switch (os) {
-    case GEIST_HW_OS_MACOS:
-        return "macos";
-    case GEIST_HW_OS_LINUX:
-        return "linux";
-    case GEIST_HW_OS_WINDOWS:
-        return "windows";
-    default:
-        return "unknown";
-    }
-}
-
-const char *geist_hw_cpu_name(enum geist_hw_cpu cpu) {
-    switch (cpu) {
-    case GEIST_HW_CPU_ARM64_GENERIC:
-        return "arm64";
-    case GEIST_HW_CPU_ARM64_CORTEX_A76:
-        return "cortex-a76";
-    case GEIST_HW_CPU_APPLE_SILICON:
-        return "apple-silicon";
-    case GEIST_HW_CPU_X86_64_GENERIC:
-        return "x86_64";
-    default:
-        return "unknown";
-    }
-}
