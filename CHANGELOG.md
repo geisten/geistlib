@@ -8,6 +8,23 @@ minor release.
 
 ## [Unreleased]
 
+### Added — dynamic-tools-v1 additive streaming (#116)
+
+- `health.result` now advertises capabilities: `"features":["streaming"]`
+  (generic mechanism — unknown entries are client-ignored, absence means no
+  capabilities, activation only ever via the matching request field).
+- Opt-in `"stream": true` on the conversation request (strict boolean) makes
+  `--serve` emit `{"type":"conversation.delta","text":"…"}` frames while the
+  user-visible answer decodes, followed by the unchanged, normative
+  `conversation.result`. Deltas are valid UTF-8 per frame (split multibyte
+  token pieces are carried), display-only, and never produced by internal
+  decodes. A client that disconnects mid-stream aborts the generation; the
+  daemon keeps serving. Clients without `stream` get byte-identical behavior.
+- SDK: additive `on_delta`/`on_delta_ctx` hook on `struct geist_agent`
+  (nullptr = off); no `libgeist` ABI change. Spec:
+  `docs/proposals/dynamic-tools-v1.md` §Streaming. Tests:
+  `test_dynamic_stream_unit`.
+
 ### Changed — engine core slimmed to inference + `--serve`
 
 - The `geist` CLI is now inference-only plus the resident dynamic-tools daemon:
