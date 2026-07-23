@@ -8,6 +8,15 @@ minor release.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-23
+
+Streaming release: `dynamic-tools-v1` gains additive delta streaming for
+time-to-first-token on Assist-class consumers, the project identity settles on
+**geistlib** (engine + demo CLI; the binary, C API and brew formula keep the
+`geist` name), and a repo-wide dead-code sweep removes ~1k lines with no
+behavior change. The v0.4.0 compatibility contract is unchanged — clients that
+do not opt into `stream` get byte-identical behavior.
+
 ### Added — dynamic-tools-v1 additive streaming (#116)
 
 - `health.result` now advertises capabilities: `"features":["streaming"]`
@@ -30,6 +39,38 @@ minor release.
   cannot wedge the daemon. Spec: `docs/proposals/dynamic-tools-v1.md`
   §Streaming. Tests: `test_dynamic_stream_unit`.
 
+### Changed — geistlib identity + docs
+
+- Project renamed **geist → geistlib** (repo `geisten/geistlib`); the binary
+  (`./geist`, `geist-bitnet`), the C API (`geist_*`, `include/geist.h`) and
+  `brew install geisten/tap/geist` deliberately keep their names. README
+  reframed to what the project is — an inference engine + a small demo CLI,
+  CPU-first with experimental Metal/Vulkan GPU backends — and the tool-use /
+  smart-home narrative moved to the consumer repos. `docs/ARCHITECTURE.md`
+  gains explicit dependency rules and a per-directory reading map.
+- `src/backends/metal/backend.c` split: MSL shader sources → `metal_shaders.h`,
+  the objc runtime shim → `metal_objc.h` (pure move — the rebuilt object file
+  was byte-identical).
+
+### Removed — repo-wide dead-code sweep (−1051 lines, #124)
+
+- Dead files: `vision_siglip/video_pipeline.{c,h}`, x86 `kernel_catalog.{c,h}`,
+  `engine/session.h`, `engine/allocator.h`. Dead surface: the `memory_arena` /
+  `geist_arena` family, alloc-per-call sampler wrappers, exec_plan's
+  session-level mirror (flags now read directly, stages called directly), and
+  a dozen zero-caller exports across io/formats/backends. Six copy-pasted
+  routing evidence scans collapsed into one helper. No behavior change; all
+  kernels and every backend (NEON, x86, Metal, Vulkan) untouched.
+
+## [0.4.0] — 2026-07-13
+
+First release of the host-neutral `dynamic-tools-v1` runtime artifact. A consumer
+pins the protocol id `dynamic-tools-v1` + a binary SHA-256 (published as
+`SHA256SUMS`) and verifies with the startup health handshake
+(`{"type":"health"}` → `…"status":"ready"`). Start forms: `geist --serve SOCKET`
+runs the internal (baked-in) model; `geist -m MODEL --serve SOCKET` an external
+one. Compatibility contract: `docs/proposals/dynamic-tools-v1.md`.
+
 ### Changed — engine core slimmed to inference + `--serve`
 
 - The `geist` CLI is now inference-only plus the resident dynamic-tools daemon:
@@ -49,15 +90,6 @@ minor release.
   corpus, the per-tool unit/integration tests, and `benchmark/AGENT_EVAL.md`
   (agent-layer reliability is now measured in the consumer). `docs/agent.md` is
   slimmed to the interface.
-
-## [0.4.0] — 2026-07-13
-
-First release of the host-neutral `dynamic-tools-v1` runtime artifact. A consumer
-pins the protocol id `dynamic-tools-v1` + a binary SHA-256 (published as
-`SHA256SUMS`) and verifies with the startup health handshake
-(`{"type":"health"}` → `…"status":"ready"`). Start forms: `geist --serve SOCKET`
-runs the internal (baked-in) model; `geist -m MODEL --serve SOCKET` an external
-one. Compatibility contract: `docs/proposals/dynamic-tools-v1.md`.
 
 ### Added — host-neutral dynamic tools v1
 
