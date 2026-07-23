@@ -21,9 +21,12 @@ enum geist_dynamic_request_status {
 };
 
 struct geist_dynamic_request {
-    char                         input[GEIST_DYNAMIC_INPUT_CAP];
-    char                         language[GEIST_DYNAMIC_LANGUAGE_CAP];
-    char                         context[GEIST_DYNAMIC_CONTEXT_CAP];
+    char input[GEIST_DYNAMIC_INPUT_CAP];
+    char language[GEIST_DYNAMIC_LANGUAGE_CAP];
+    char context[GEIST_DYNAMIC_CONTEXT_CAP];
+    /* dynamic-tools-v1 §Streaming: opt-in conversation.delta frames. A client
+     * sets this only after seeing "streaming" in health.result features. */
+    bool                         stream;
     struct geist_dynamic_toolset toolset;
 };
 
@@ -189,14 +192,22 @@ geist_dynamic_request_parse(const char                   *json,
     if (jsv1_parse(json, json_len, JSV1_MAX_TOKENS, tokens, &doc) != JSV1_OK ||
         doc.tokens[0].type != JSV1_OBJECT)
         return GEIST_DYNAMIC_REQUEST_E_INVALID_JSON;
-    const char *const root_keys[] = {"input", "language", "context", "max_tool_steps", "tools"};
-    if (!geist_dynamic_request_keys(&doc, 0, root_keys, 5u))
+    const char *const root_keys[] = {
+            "input", "language", "context", "max_tool_steps", "tools", "stream"};
+    if (!geist_dynamic_request_keys(&doc, 0, root_keys, 6u))
         return GEIST_DYNAMIC_REQUEST_E_INVALID_REQUEST;
     int input    = jsv1_object_get(&doc, 0, "input");
     int tools    = jsv1_object_get(&doc, 0, "tools");
     int budget   = jsv1_object_get(&doc, 0, "max_tool_steps");
     int language = jsv1_object_get(&doc, 0, "language");
     int context  = jsv1_object_get(&doc, 0, "context");
+    int stream   = jsv1_object_get(&doc, 0, "stream");
+    if (stream >= 0) { /* strict boundary: present -> must be a JSON boolean */
+        if (doc.tokens[stream].type == JSV1_TRUE)
+            out->stream = true;
+        else if (doc.tokens[stream].type != JSV1_FALSE)
+            return GEIST_DYNAMIC_REQUEST_E_INVALID_REQUEST;
+    }
     if (input < 0 || tools < 0 || doc.tokens[input].type != JSV1_STRING ||
         doc.tokens[tools].type != JSV1_ARRAY || doc.tokens[tools].size > GEIST_DYNAMIC_MAX_TOOLS)
         return GEIST_DYNAMIC_REQUEST_E_INVALID_REQUEST;

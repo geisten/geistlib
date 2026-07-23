@@ -123,6 +123,8 @@ static void test_health(void) {
     fails += geist_expect(n > 0 && strstr(result, "\"protocol\":\"dynamic-tools-v1\"") &&
                                   strstr(result, "\"status\":\"ready\"") && result[n - 1] == '\n',
                           "health: result identifies ready protocol");
+    fails += geist_expect(strstr(result, "\"features\":[\"streaming\"]") != nullptr,
+                          "health: streaming capability advertised");
     fails += geist_expect(agent_main_health_result(8, result) == 0,
                           "health: short output buffer rejected");
 }

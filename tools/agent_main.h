@@ -171,17 +171,11 @@ static inline void agent_main_reconfigure(struct geist_agent      *agent,
     agent->route_menu_pinned = false;
 }
 
-static inline size_t agent_main_dynamic_result(size_t     text_len,
-                                               const char text[static text_len],
-                                               size_t     cap,
-                                               char       out[static cap]) {
-    size_t      w          = 0u;
-    const char *prefix     = "{\"type\":\"conversation.result\",\"text\":\"";
-    size_t      prefix_len = strlen(prefix);
-    if (prefix_len >= cap)
-        return 0u;
-    memcpy(out, prefix, prefix_len);
-    w = prefix_len;
+/* JSON-string-escape text into out at *w, keeping 4 bytes of tail room for the
+ * caller's closing "\"}\n" + NUL. Returns false on overflow. Shared by the
+ * conversation.result and conversation.delta writers. */
+static inline bool agent_main_json_escape(
+        size_t text_len, const char text[static text_len], size_t cap, char *out, size_t *w) {
     for (size_t i = 0u; i < text_len; i++) {
         unsigned char c      = (unsigned char) text[i];
         const char   *escape = nullptr;
@@ -206,22 +200,108 @@ static inline size_t agent_main_dynamic_result(size_t     text_len,
         }
         if (escape != nullptr) {
             size_t n = strlen(escape);
-            if (w + n + 4u >= cap)
-                return 0u;
-            memcpy(out + w, escape, n);
-            w += n;
+            if (*w + n + 4u >= cap)
+                return false;
+            memcpy(out + *w, escape, n);
+            *w += n;
         } else if (c < 0x20u) {
-            if (w + 6u + 4u >= cap)
-                return 0u;
-            w += (size_t) snprintf(out + w, cap - w, "\\u%04x", c);
+            if (*w + 6u + 4u >= cap)
+                return false;
+            *w += (size_t) snprintf(out + *w, cap - *w, "\\u%04x", c);
         } else {
-            if (w + 1u + 4u >= cap)
-                return 0u;
-            out[w++] = (char) c;
+            if (*w + 1u + 4u >= cap)
+                return false;
+            out[(*w)++] = (char) c;
         }
     }
+    return true;
+}
+
+static inline size_t agent_main_dynamic_result(size_t     text_len,
+                                               const char text[static text_len],
+                                               size_t     cap,
+                                               char       out[static cap]) {
+    size_t      w          = 0u;
+    const char *prefix     = "{\"type\":\"conversation.result\",\"text\":\"";
+    size_t      prefix_len = strlen(prefix);
+    if (prefix_len >= cap)
+        return 0u;
+    memcpy(out, prefix, prefix_len);
+    w = prefix_len;
+    if (!agent_main_json_escape(text_len, text, cap, out, &w))
+        return 0u;
     memcpy(out + w, "\"}\n", 4u);
     return w + 3u;
+}
+
+/* ---- conversation.delta writer (dynamic-tools-v1 §Streaming) ---------------
+ * Emits one {"type":"conversation.delta","text":"…"} frame per decoded piece.
+ * UTF-8 guarantee: token pieces may split a multibyte sequence, so incomplete
+ * trailing bytes are carried into the next call — every frame is valid UTF-8.
+ * A trailing carry at end of turn is dropped: the final conversation.result
+ * text is normative, deltas are display-only. On a write failure the writer
+ * latches `failed` and returns false, which aborts the decode (agent.on_delta
+ * contract) and suppresses the result frame — the client is gone. */
+struct agent_main_delta_writer {
+    int    fd;
+    bool   failed;
+    size_t carry_len;
+    char   carry[4];
+};
+
+/* Length of the longest prefix of buf[0..n) that ends on a complete UTF-8
+ * sequence (the remainder, at most 3 bytes, is an incomplete trailing char). */
+static inline size_t agent_main_utf8_complete_prefix(size_t n, const unsigned char *buf) {
+    size_t i    = n;
+    size_t back = 0u;
+    while (i > 0u && back < 3u && (buf[i - 1u] & 0xc0u) == 0x80u) {
+        i--;
+        back++;
+    }
+    if (i == 0u)
+        return n; /* only continuation bytes — pass through, nothing to gain */
+    unsigned char lead = buf[i - 1u];
+    size_t        need = lead < 0x80u              ? 1u
+                         : (lead & 0xe0u) == 0xc0u ? 2u
+                         : (lead & 0xf0u) == 0xe0u ? 3u
+                         : (lead & 0xf8u) == 0xf0u ? 4u
+                                                   : 1u; /* invalid lead: pass through */
+    return 1u + back >= need ? n : i - 1u;
+}
+
+static inline bool agent_main_delta_write(void *ctx, size_t len, const char *piece) {
+    struct agent_main_delta_writer *dw = ctx;
+    if (dw->failed)
+        return false;
+    while (len > 0u) {
+        /* chunk through a bounded stack buffer; the carry keeps UTF-8 whole
+         * across chunk AND piece boundaries */
+        char   buf[256];
+        size_t take = len < sizeof buf - dw->carry_len ? len : sizeof buf - dw->carry_len;
+        memcpy(buf, dw->carry, dw->carry_len);
+        memcpy(buf + dw->carry_len, piece, take);
+        size_t have = dw->carry_len + take;
+        piece += take;
+        len -= take;
+        size_t emit   = agent_main_utf8_complete_prefix(have, (const unsigned char *) buf);
+        dw->carry_len = have - emit;
+        memcpy(dw->carry, buf + emit, dw->carry_len);
+        if (emit == 0u)
+            continue;
+        char        wire[2048];
+        const char *prefix     = "{\"type\":\"conversation.delta\",\"text\":\"";
+        size_t      prefix_len = strlen(prefix);
+        memcpy(wire, prefix, prefix_len);
+        size_t w = prefix_len;
+        if (!agent_main_json_escape(emit, buf, sizeof wire, wire, &w))
+            return true; /* cannot overflow with these caps; keep decoding */
+        memcpy(wire + w, "\"}\n", 4u);
+        if (!geist_dynamic_host_write(dw->fd, wire, w + 3u)) {
+            dw->failed = true;
+            return false;
+        }
+    }
+    return true;
 }
 
 static inline bool agent_main_is_health_request(const char *request) {
@@ -229,8 +309,8 @@ static inline bool agent_main_is_health_request(const char *request) {
 }
 
 static inline size_t agent_main_health_result(size_t cap, char out[static cap]) {
-    static const char result[] =
-            "{\"type\":\"health.result\",\"protocol\":\"dynamic-tools-v1\",\"status\":\"ready\"}\n";
+    static const char result[] = "{\"type\":\"health.result\",\"protocol\":\"dynamic-tools-v1\","
+                                 "\"status\":\"ready\",\"features\":[\"streaming\"]}\n";
     if (cap < sizeof result) {
         return 0;
     }
@@ -373,11 +453,26 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
                     a->force_call             = base_force_call;
                     a->forced_result_is_final = false;
                     a->clarify_low_confidence = true;
+                    /* dynamic-tools-v1 §Streaming: only a request that opted in
+                     * gets delta frames; the hook is cleared before the result
+                     * write so no later request can inherit it. A trailing
+                     * UTF-8 carry is dropped — the final text is normative. */
+                    struct agent_main_delta_writer dw = {.fd = conn};
+                    if (request.stream) {
+                        a->on_delta     = agent_main_delta_write;
+                        a->on_delta_ctx = &dw;
+                    }
                     if (rn == 0u &&
                         geist_agent_run(
                                 a, strlen(request.input), request.input, sizeof resp, resp, &rn) !=
                                 GEIST_OK) {
                         rn = (size_t) snprintf(resp, sizeof resp, "error: agent run failed");
+                    }
+                    a->on_delta     = nullptr;
+                    a->on_delta_ctx = nullptr;
+                    if (dw.failed) { /* client vanished mid-stream: no result */
+                        close(conn);
+                        continue;
                     }
                 }
                 static char wire[AGENT_MAIN_DYNAMIC_WIRE_CAP];
