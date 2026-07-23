@@ -58,7 +58,6 @@ struct st_ctx;
 struct st_ctx *st_open(const char *path, const char **errmsg);
 
 size_t                    st_count(const struct st_ctx *ctx);
-const struct st_tensor_t *st_at(const struct st_ctx *ctx, size_t idx);
 const struct st_tensor_t *st_get(const struct st_ctx *ctx, const char *name);
 
 size_t      st_dtype_bytes(st_dtype_t dtype);

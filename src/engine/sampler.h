@@ -44,32 +44,12 @@ void                   geist_rng_seed(struct geist_rng *rng, uint64_t seed);
                                                       float             temperature,
                                                       struct geist_rng *rng);
 
-/* Top-K filtered sample. k=1 → argmax; k>=n_vocab → temperature-only.
- * Sorts the top-k logits in O(n_vocab log k) via partial sort, then
- * softmax-samples among them. */
-[[nodiscard]] geist_token_t geist_sampler_top_k(size_t            n_vocab,
-                                                const float       logits[static n_vocab],
-                                                int               top_k,
-                                                float             temperature,
-                                                struct geist_rng *rng);
-
-/* Top-P (nucleus) sample. top_p in (0, 1]; top_p<=0 falls back to argmax.
- * Allocates a (size_t)n_vocab*(sizeof(float)+sizeof(uint32_t)) scratch
- * buffer via heap.h — caller controls when this allocation happens via
- * the workspace variant below. */
-[[nodiscard]] geist_token_t geist_sampler_top_p(size_t            n_vocab,
-                                                const float       logits[static n_vocab],
-                                                float             top_p,
-                                                float             temperature,
-                                                struct geist_rng *rng);
-
 /* Pre-allocated workspace for the sampler functions that need scratch
  * (top-k, top-p). Caller-owned, reusable across calls — avoids heap churn
  * in the decode hot path. */
 struct geist_sampler_workspace {
-    float    *probs;   /* size n_vocab */
-    uint32_t *indices; /* size n_vocab */
-    size_t    n_vocab;
+    float *probs; /* size n_vocab */
+    size_t n_vocab;
 };
 
 [[nodiscard]] enum geist_status geist_sampler_workspace_init(struct geist_sampler_workspace *ws,

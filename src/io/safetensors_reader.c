@@ -499,12 +499,6 @@ size_t st_count(const struct st_ctx *ctx) {
     return ctx ? ctx->count : 0;
 }
 
-const struct st_tensor_t *st_at(const struct st_ctx *ctx, size_t idx) {
-    if (!ctx || idx >= ctx->count)
-        return nullptr;
-    return &ctx->tensors[idx];
-}
-
 const struct st_tensor_t *st_get(const struct st_ctx *ctx, const char *name) {
     if (!ctx || !name)
         return nullptr;

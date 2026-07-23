@@ -44,8 +44,6 @@ void ptqtp_awq_close(struct ptqtp_awq_ctx *ctx);
 [[nodiscard]] const float *
 ptqtp_awq_get(const struct ptqtp_awq_ctx *ctx, const char *name, size_t *n_out);
 
-size_t ptqtp_awq_n_norms(const struct ptqtp_awq_ctx *ctx);
-
 #ifdef __cplusplus
 }
 #endif

@@ -1,8 +1,7 @@
 # mk/backend-cpu_x86.mk — x86_64 backend sources.
 #
-# Phase 0 (current): backend.c shell + kernel_catalog policy table. The vtbl
-# is cpu_scalar's; per-ISA kernel TUs land in Phase 1a (W4A8 VPDPBUSD), 1b
-# (BF16-SGEMM trampoline), 2 (native VDPBF16PS-SGEMM).
+# backend.c selects kernels directly in its resolver; per-ISA kernel TUs:
+# W4A8 VPDPBUSD, BF16-SGEMM trampoline, native VDPBF16PS-SGEMM, I2_S ternary.
 # See docs/LINUX_X86_SPEC.md.
 #
 # Opt-in via `make BACKENDS="cpu_x86 cpu_scalar"` (default Linux x86_64 build
@@ -12,7 +11,6 @@
 BACKEND_SOURCES += \
     src/backends/cpu_x86/backend.c \
     src/backends/cpu_x86/elementwise.c \
-    src/backends/cpu_x86/kernel_catalog.c \
     src/backends/cpu_x86/kernel_w4a8.c \
     src/backends/cpu_x86/kernel_w4a8_scalar.c \
     src/backends/cpu_x86/kernel_w4a8_avx512_vnni.c \

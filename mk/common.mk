@@ -41,7 +41,6 @@ endif
 # ---- Base CFLAGS ---------------------------------------------------------
 
 WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Werror
-WARNINGS        := $(WARNINGS_BASE)
 WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 
 # Include paths:
@@ -55,7 +54,7 @@ WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 #   -I.         project root — internal tests reaching across the engine/arch
 #               boundary via path-relative includes
 #               (e.g. `#include "src/archs/transformer/arch_state_v2.h"`)
-CFLAGS_BASE := -std=c23 $(WARNINGS) -fno-strict-aliasing \
+CFLAGS_BASE := -std=c23 $(WARNINGS_BASE) -fno-strict-aliasing \
                -Iinclude -I. \
                -Isrc/base \
                -Isrc/quant \
@@ -151,7 +150,6 @@ LIB_SOURCES := \
     src/archs/vision_siglip/vision_encoder.c \
     src/archs/vision_siglip/vision_kernels.c \
     src/archs/vision_siglip/image_pipeline.c \
-    src/archs/vision_siglip/video_pipeline.c \
     src/formats/gguf/common.c \
     src/formats/gguf/q8_0.c \
     src/formats/gguf/q4_0.c \
@@ -204,7 +202,6 @@ STB_OBJ := $(BUILD_DIR)/third_party/stb/stb_impl.o
 # demos in tools/. Each binary links against libgeist.a and mirrors its source
 # path under bin/ (tests/test_foo -> bin/.../tests/test_foo; tools/eval_geist ->
 # bin/.../tools/eval_geist).
-# Excluded: dump_llamacpp_logits.c (requires external llama.h from llama.cpp).
 TEST_SOURCES := $(wildcard tests/test_*.c tests/bench_*.c)
 DEMO_SOURCES := tools/geist.c tools/eval_geist.c
 

@@ -138,13 +138,8 @@ geist_token_t geist_sampler_temperature(size_t            n_vocab,
     if (ws == nullptr || n_vocab == 0) {
         return GEIST_E_INVALID_ARG;
     }
-    ws->probs   = heap_alloc_array_aligned(float, n_vocab);
-    ws->indices = heap_alloc_array_aligned(uint32_t, n_vocab);
-    if (ws->probs == nullptr || ws->indices == nullptr) {
-        if (ws->probs != nullptr)
-            safe_free((void **) &ws->probs);
-        if (ws->indices != nullptr)
-            safe_free((void **) &ws->indices);
+    ws->probs = heap_alloc_array_aligned(float, n_vocab);
+    if (ws->probs == nullptr) {
         ws->n_vocab = 0;
         return GEIST_E_OOM;
     }
@@ -158,8 +153,6 @@ void geist_sampler_workspace_destroy(struct geist_sampler_workspace *ws) {
     }
     if (ws->probs != nullptr)
         safe_free((void **) &ws->probs);
-    if (ws->indices != nullptr)
-        safe_free((void **) &ws->indices);
     ws->n_vocab = 0;
 }
 
@@ -195,9 +188,7 @@ geist_token_t geist_sampler_top_k_ws(struct geist_sampler_workspace *ws,
         return geist_sampler_temperature(n, logits, temperature, rng);
     }
 
-    /* Build (logit, idx) pairs in the workspace. We reuse ws->probs as a
-     * scratch (storage matches: float for logit). For indices we need a
-     * separate pair array — allocate on stack for typical n. */
+    /* Build (logit, idx) pairs — a stack array for typical n, heap beyond. */
     struct kv_pair  pairs_stack[1024];
     struct kv_pair *pairs         = pairs_stack;
     bool            pairs_on_heap = false;
@@ -234,20 +225,6 @@ geist_token_t geist_sampler_top_k_ws(struct geist_sampler_workspace *ws,
         safe_free((void **) &pairs);
     }
     return picked;
-}
-
-geist_token_t geist_sampler_top_k(size_t            n_vocab,
-                                  const float       logits[static n_vocab],
-                                  int               top_k,
-                                  float             temperature,
-                                  struct geist_rng *rng) {
-    struct geist_sampler_workspace ws = {0};
-    if (geist_sampler_workspace_init(&ws, n_vocab) != GEIST_OK) {
-        return geist_sampler_argmax(n_vocab, logits);
-    }
-    geist_token_t tok = geist_sampler_top_k_ws(&ws, logits, top_k, temperature, rng);
-    geist_sampler_workspace_destroy(&ws);
-    return tok;
 }
 
 /* ---- Top-P -------------------------------------------------------------- */
@@ -325,18 +302,4 @@ geist_token_t geist_sampler_top_p_ws(struct geist_sampler_workspace *ws,
         safe_free((void **) &pairs);
     }
     return picked;
-}
-
-geist_token_t geist_sampler_top_p(size_t            n_vocab,
-                                  const float       logits[static n_vocab],
-                                  float             top_p,
-                                  float             temperature,
-                                  struct geist_rng *rng) {
-    struct geist_sampler_workspace ws = {0};
-    if (geist_sampler_workspace_init(&ws, n_vocab) != GEIST_OK) {
-        return geist_sampler_argmax(n_vocab, logits);
-    }
-    geist_token_t tok = geist_sampler_top_p_ws(&ws, logits, top_p, temperature, rng);
-    geist_sampler_workspace_destroy(&ws);
-    return tok;
 }

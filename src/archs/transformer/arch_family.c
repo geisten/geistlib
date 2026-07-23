@@ -4,10 +4,8 @@
  *
  * Layer: ARCHITECTURE.
  *
- * P1.5: only the gemma4 family is wired today; Llama / Mistral
- * populators are placeholders for follow-up phases. The registry is
- * a static array iterated linearly (one entry today, growing to ~5
- * later) — no hash table needed.
+ * Registry: gemma4, llama, bitnet-b1.58, bitnet — a static array iterated
+ * linearly; no hash table needed at this size.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -324,23 +322,6 @@ static const struct transformer_family FAMILY_BITNET = {
         .populate        = populate_bitnet_b158,
         .populate_layers = populate_layers_bitnet_b158,
 };
-
-/* Future: register sibling families here, e.g.
- *
- *   static void populate_llama(struct gguf_ctx *g, struct transformer_arch_state *st) {
- *       st->config.has_ple       = false;
- *       st->config.logit_softcap = 0.0f;
- *       st->config.kv_sliding_src = -1;
- *       st->config.kv_full_src    = -1;
- *       if (gguf_get_meta_u32(g, "llama.block_count", &u)) st->n_layers = u;
- *       ...
- *   }
- *   static const struct transformer_family FAMILY_LLAMA = { "llama", populate_llama };
- *
- * Once Llama lands, also turn on forward.c family-conditional paths
- * (PLE skip when !has_ple, softcap skip when logit_softcap==0; the
- * latter is in place as of P1.5).
- */
 
 static const struct transformer_family *const REGISTRY[] = {
         &FAMILY_GEMMA4,

@@ -15,43 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-cpu_neon_isa_mask cpu_neon_isa_from_probe(const struct geist_hw_probe *hw) {
-    if (hw == nullptr) {
-        return 0;
-    }
-    cpu_neon_isa_mask m = 0;
-    if (hw->has_neon) {
-        m |= CPU_NEON_ISA_NEON;
-    }
-    if (hw->has_dotprod) {
-        m |= CPU_NEON_ISA_DOTPROD;
-    }
-    if (hw->has_fp16) {
-        m |= CPU_NEON_ISA_FP16;
-    }
-    return m;
-}
-
-const char *cpu_neon_isa_mask_name(cpu_neon_isa_mask mask) {
-    /* Small static buffer: only called on the error path, never from
-     * the hot path. Format: "{NEON,DOTPROD,FP16}" or "{}" if empty. */
-    static char buf[48];
-    int n = snprintf(buf,
-                     sizeof(buf),
-                     "{%s%s%s%s}",
-                     (mask & CPU_NEON_ISA_NEON) ? "NEON" : "",
-                     ((mask & CPU_NEON_ISA_NEON) &&
-                      ((mask & CPU_NEON_ISA_DOTPROD) || (mask & CPU_NEON_ISA_FP16)))
-                             ? ","
-                             : "",
-                     (mask & CPU_NEON_ISA_DOTPROD) ? "DOTPROD" : "",
-                     (mask & CPU_NEON_ISA_FP16) ? ((mask & CPU_NEON_ISA_DOTPROD) ? ",FP16" : "FP16")
-                                                : "");
-    (void) n;
-    return buf;
-}
-
-bool cpu_neon_env_bool(const char *name, bool fallback) {
+static bool cpu_neon_env_bool(const char *name, bool fallback) {
     const char *env = getenv(name);
     if (env == nullptr || env[0] == '\0') {
         return fallback;

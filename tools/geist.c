@@ -174,8 +174,6 @@ int main(int argc, char **argv) {
             n_explicit = true;
         } else if (strcmp(a, "--raw") == 0) {
             chat_mode = false;
-        } else if (strcmp(a, "-c") == 0 || strcmp(a, "--chat") == 0) {
-            chat_mode = true; /* explicit; instruct chat is already the default */
         } else if (a[0] == '-' && a[1] != '\0') {
             fprintf(stderr, "%s: unknown option '%s'\n", prog, a);
             return usage(prog, 2);

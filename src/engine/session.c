@@ -11,7 +11,6 @@
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
-#include "session.h"
 #include "model.h"
 #include "error.h"
 

@@ -136,7 +136,6 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     ctx->v                   = st->backend->desc->vtbl;
     ctx->L                   = L;
     ctx->P                   = P;
-    ctx->SP                  = &st->sess->exec_plan;
     ctx->layer_idx           = layer_idx;
     ctx->q_position          = q_position;
     ctx->seq                 = seq;
@@ -155,9 +154,9 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
             P != nullptr ? P->apply_gemma_attn_norms : st->config.has_gemma_attn_norms;
     ctx->rope_interleaved = P != nullptr ? P->rope_interleaved : st->config.rope_interleaved;
     ctx->apply_ple        = P != nullptr ? P->apply_ple : st->config.has_ple;
-    ctx->kv_int8_enabled  = ctx->SP->kv_int8_enabled;
-    ctx->kv_kivi_enabled  = ctx->SP->kv_kivi_enabled;
-    ctx->kv_f16_enabled   = ctx->SP->kv_f16_enabled;
+    ctx->kv_int8_enabled  = st->sess->kv_int8_enabled;
+    ctx->kv_kivi_enabled  = st->sess->kv_kivi_enabled;
+    ctx->kv_f16_enabled   = st->sess->kv_f16_enabled;
     ctx->ffn_activation   = P != nullptr ? P->ffn_activation : st->config.ffn_activation;
     ctx->eps              = st->config.rms_eps;
     ctx->hd               = L->head_dim;
@@ -195,32 +194,21 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_state *s
 
     frame_arena_reset(&st->sess->scratch_arena);
 
-    const transformer_layer_stage_fn run_attention =
-            ctx.P != nullptr && ctx.P->run_attention_block != nullptr
-                    ? ctx.P->run_attention_block
-                    : transformer_layer_run_attention_block;
-    const transformer_layer_stage_fn run_ffn = ctx.P != nullptr && ctx.P->run_ffn_block != nullptr
-                                                       ? ctx.P->run_ffn_block
-                                                       : transformer_layer_run_ffn_block;
-    const transformer_layer_stage_fn run_ple = ctx.P != nullptr && ctx.P->run_ple_or_copy != nullptr
-                                                       ? ctx.P->run_ple_or_copy
-                                                       : transformer_layer_run_ple_or_copy;
-
     const bool        profile = transformer_profile_enabled();
     uint64_t          t0      = profile ? transformer_profile_now_ns() : 0;
-    enum geist_status s       = run_attention(&ctx);
+    enum geist_status s       = transformer_layer_run_attention_block(&ctx);
     transformer_profile_add(TRANSFORMER_PROFILE_ATTENTION, t0);
     if (s != GEIST_OK) {
         return s;
     }
     t0 = profile ? transformer_profile_now_ns() : 0;
-    s  = run_ffn(&ctx);
+    s  = transformer_layer_run_ffn_block(&ctx);
     transformer_profile_add(TRANSFORMER_PROFILE_FFN, t0);
     if (s != GEIST_OK) {
         return s;
     }
     t0 = profile ? transformer_profile_now_ns() : 0;
-    s  = run_ple(&ctx);
+    s  = transformer_layer_run_ple_or_copy(&ctx);
     transformer_profile_add(TRANSFORMER_PROFILE_PLE, t0);
     if (s != GEIST_OK) {
         return s;
