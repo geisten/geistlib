@@ -235,38 +235,127 @@ static inline size_t agent_main_dynamic_result(size_t     text_len,
 }
 
 /* ---- conversation.delta writer (dynamic-tools-v1 §Streaming) ---------------
- * Emits one {"type":"conversation.delta","text":"…"} frame per decoded piece.
- * UTF-8 guarantee: token pieces may split a multibyte sequence, so incomplete
- * trailing bytes are carried into the next call — every frame is valid UTF-8.
- * A trailing carry at end of turn is dropped: the final conversation.result
- * text is normative, deltas are display-only. On a write failure the writer
- * latches `failed` and returns false, which aborts the decode (agent.on_delta
- * contract) and suppresses the result frame — the client is gone. */
+ * Emits {"type":"conversation.delta","text":"…"} frames as the user-visible
+ * answer decodes. Two invariants beyond framing:
+ *
+ * - Valid UTF-8 per frame: a token piece may split a multibyte sequence, so an
+ *   incomplete-but-valid trailing sequence is carried into the next call, and
+ *   any malformed byte (a lone continuation, a bad/truncated lead — possible
+ *   from a byte-fallback tokenizer on degenerate output) is DROPPED, never
+ *   emitted raw. Deltas are display-only, so dropping is safe; the normative
+ *   conversation.result carries the model's exact text.
+ * - No contradiction of the result: the agent discards an answer turn with
+ *   fewer than 2 alphanumeric chars (agent_answer_degenerate) in favor of the
+ *   tool observation. So the writer HOLDS deltas until the answer has produced
+ *   >=2 alnum bytes; only then does it go live and flush. A turn that never
+ *   crosses the threshold streams nothing — the client never sees text that
+ *   the result then overrides.
+ *
+ * On a write failure the writer latches `failed` and returns false, which
+ * aborts the decode (agent.on_delta contract) and suppresses the result frame
+ * — the client is gone. */
 struct agent_main_delta_writer {
-    int    fd;
-    bool   failed;
-    size_t carry_len;
-    char   carry[4];
+    int           fd;
+    bool          failed;
+    bool          live;      /* >=2 alnum seen -> streaming; else buffering into hold */
+    size_t        alnum;     /* cumulative alphanumeric bytes across the answer */
+    size_t        carry_len; /* incomplete-but-valid trailing UTF-8 bytes (0..3) */
+    unsigned char carry[4];
+    size_t        hold_len; /* valid text buffered before the alnum gate opens */
+    unsigned char hold[256];
 };
 
-/* Length of the longest prefix of buf[0..n) that ends on a complete UTF-8
- * sequence (the remainder, at most 3 bytes, is an incomplete trailing char). */
-static inline size_t agent_main_utf8_complete_prefix(size_t n, const unsigned char *buf) {
-    size_t i    = n;
-    size_t back = 0u;
-    while (i > 0u && back < 3u && (buf[i - 1u] & 0xc0u) == 0x80u) {
-        i--;
-        back++;
+/* Copy the WELL-FORMED-STRUCTURE UTF-8 of in[0..in_len) into out (cap >= in_len
+ * suffices — output never grows), dropping malformed bytes. A trailing
+ * incomplete-but-valid sequence is not emitted; its length (0..3) is returned
+ * via *tail so the caller can carry it. Returns bytes written.
+ * ponytail: validates sequence structure (lead + right count of continuations),
+ * not overlong/surrogate ranges — a real tokenizer never emits those, and the
+ * goal is only "no lone/truncated bytes escape into a frame." */
+static inline size_t
+agent_main_utf8_filter(const unsigned char *in, size_t in_len, unsigned char *out, size_t *tail) {
+    size_t o = 0u, i = 0u;
+    *tail = 0u;
+    while (i < in_len) {
+        unsigned char c    = in[i];
+        size_t        need = c < 0x80u              ? 1u
+                             : (c & 0xe0u) == 0xc0u ? 2u
+                             : (c & 0xf0u) == 0xe0u ? 3u
+                             : (c & 0xf8u) == 0xf0u ? 4u
+                                                    : 0u; /* lone continuation / bad lead */
+        if (need == 0u) {
+            i++; /* drop the malformed byte */
+            continue;
+        }
+        size_t avail = in_len - i;
+        size_t k     = 1u;
+        while (k < need && k < avail && (in[i + k] & 0xc0u) == 0x80u) {
+            k++;
+        }
+        if (k < need) {                       /* sequence not (yet) complete */
+            if (k == avail && avail < need) { /* all bytes so far are valid tail */
+                *tail = avail;                /* carry it */
+                break;
+            }
+            i++; /* a continuation was missing -> the lead was bad, drop it */
+            continue;
+        }
+        memcpy(out + o, in + i, need); /* full, structurally valid sequence */
+        o += need;
+        i += need;
     }
-    if (i == 0u)
-        return n; /* only continuation bytes — pass through, nothing to gain */
-    unsigned char lead = buf[i - 1u];
-    size_t        need = lead < 0x80u              ? 1u
-                         : (lead & 0xe0u) == 0xc0u ? 2u
-                         : (lead & 0xf0u) == 0xe0u ? 3u
-                         : (lead & 0xf8u) == 0xf0u ? 4u
-                                                   : 1u; /* invalid lead: pass through */
-    return 1u + back >= need ? n : i - 1u;
+    return o;
+}
+
+/* Frame and write one delta over fd. text is <=256 bytes of valid UTF-8, so the
+ * escaped payload (<=6x) plus prefix/suffix fits wire[2048]. Returns false on a
+ * write failure. Shared shape with agent_main_dynamic_result. */
+static inline bool agent_main_delta_frame(int fd, const unsigned char *text, size_t len) {
+    char        wire[2048];
+    const char *prefix     = "{\"type\":\"conversation.delta\",\"text\":\"";
+    size_t      prefix_len = strlen(prefix);
+    memcpy(wire, prefix, prefix_len);
+    size_t w = prefix_len;
+    if (!agent_main_json_escape(len, (const char *) text, sizeof wire, wire, &w))
+        return true; /* unreachable with len<=256; keep decoding rather than fail */
+    memcpy(wire + w, "\"}\n", 4u);
+    return geist_dynamic_host_write(fd, wire, w + 3u);
+}
+
+/* Send valid[0..len), applying the alnum gate: buffer into hold until the answer
+ * reaches 2 alnum bytes, then flush and go live. Returns false on write failure
+ * (sets failed). */
+static inline bool
+agent_main_delta_gated(struct agent_main_delta_writer *dw, const unsigned char *valid, size_t len) {
+    if (dw->live) {
+        if (len == 0u)
+            return true;
+        if (!agent_main_delta_frame(dw->fd, valid, len)) {
+            dw->failed = true;
+            return false;
+        }
+        return true;
+    }
+    for (size_t i = 0u; i < len; i++) {
+        unsigned char c = valid[i];
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
+            dw->alnum++;
+    }
+    /* append to hold; on overflow, go live early (a >256-byte non-alnum preamble
+     * is pathological — flush rather than lose a legitimate long answer) */
+    size_t room = sizeof dw->hold - dw->hold_len;
+    size_t take = len < room ? len : room;
+    memcpy(dw->hold + dw->hold_len, valid, take);
+    dw->hold_len += take;
+    if (dw->alnum < 2u && take == len)
+        return true; /* still below threshold, still fits — keep buffering */
+    dw->live = true; /* threshold reached or hold full -> flush what we have */
+    if (dw->hold_len > 0u && !agent_main_delta_frame(dw->fd, dw->hold, dw->hold_len)) {
+        dw->failed = true;
+        return false;
+    }
+    dw->hold_len = 0u;
+    return agent_main_delta_gated(dw, valid + take, len - take); /* live tail, if any */
 }
 
 static inline bool agent_main_delta_write(void *ctx, size_t len, const char *piece) {
@@ -276,30 +365,20 @@ static inline bool agent_main_delta_write(void *ctx, size_t len, const char *pie
     while (len > 0u) {
         /* chunk through a bounded stack buffer; the carry keeps UTF-8 whole
          * across chunk AND piece boundaries */
-        char   buf[256];
-        size_t take = len < sizeof buf - dw->carry_len ? len : sizeof buf - dw->carry_len;
+        unsigned char buf[256];
+        size_t        take = len < sizeof buf - dw->carry_len ? len : sizeof buf - dw->carry_len;
         memcpy(buf, dw->carry, dw->carry_len);
         memcpy(buf + dw->carry_len, piece, take);
         size_t have = dw->carry_len + take;
         piece += take;
         len -= take;
-        size_t emit   = agent_main_utf8_complete_prefix(have, (const unsigned char *) buf);
-        dw->carry_len = have - emit;
-        memcpy(dw->carry, buf + emit, dw->carry_len);
-        if (emit == 0u)
-            continue;
-        char        wire[2048];
-        const char *prefix     = "{\"type\":\"conversation.delta\",\"text\":\"";
-        size_t      prefix_len = strlen(prefix);
-        memcpy(wire, prefix, prefix_len);
-        size_t w = prefix_len;
-        if (!agent_main_json_escape(emit, buf, sizeof wire, wire, &w))
-            return true; /* cannot overflow with these caps; keep decoding */
-        memcpy(wire + w, "\"}\n", 4u);
-        if (!geist_dynamic_host_write(dw->fd, wire, w + 3u)) {
-            dw->failed = true;
+        unsigned char valid[256];
+        size_t        tail = 0u;
+        size_t        vlen = agent_main_utf8_filter(buf, have, valid, &tail);
+        dw->carry_len      = tail;
+        memcpy(dw->carry, buf + have - tail, tail);
+        if (!agent_main_delta_gated(dw, valid, vlen))
             return false;
-        }
     }
     return true;
 }

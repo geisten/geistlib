@@ -196,12 +196,18 @@ Delta semantics:
 1. **UTF-8 guarantee.** Every `conversation.delta.text` is valid UTF-8. Token
    pieces that split a multibyte sequence are carried by the engine until the
    code point completes; incomplete bytes never leave a frame. A trailing
-   incomplete carry at end of turn is dropped.
-2. **No prefix guarantee.** The concatenation of deltas MAY differ from the
-   final `conversation.result.text` (trailing cleanup happens after decode).
-   The final text alone is normative — a client MUST replace its displayed
-   text with the final text when the result arrives. Deltas are display-only
-   (time-to-first-token).
+   incomplete carry at end of turn is dropped, and a malformed byte (a lone
+   continuation or a truncated/invalid lead — possible from a byte-fallback
+   tokenizer on degenerate output) is dropped rather than emitted raw.
+2. **No prefix guarantee, but no contradiction of a shown result.** The
+   concatenation of deltas MAY differ from the final `conversation.result.text`
+   (trailing cleanup happens after decode), so the final text alone is
+   normative — a client MUST replace its displayed text with the final text
+   when the result arrives. As a floor, the engine withholds deltas until the
+   answer has produced at least two alphanumeric characters; an answer it then
+   discards as degenerate (returning the tool observation instead) therefore
+   streams nothing, so a client never renders text the result overrides.
+   Deltas are display-only (time-to-first-token).
 3. **Scope.** Deltas come only from decoding the user-visible answer. Internal
    decodes (routing, constrained call generation, tool turns) never emit
    deltas. Answers that involve no decode (e.g. a forced call whose
