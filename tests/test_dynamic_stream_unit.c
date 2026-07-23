@@ -73,20 +73,40 @@ static void test_delta_writer(void) {
     struct agent_main_delta_writer dw = {.fd = sv[0]};
     char                           frames[4096];
 
-    /* UTF-8 carry: "Hé" arrives as [48 C3] + [A9] — the split C3 must be held
-     * back, then complete into one é frame. */
-    fails += geist_expect(agent_main_delta_write(&dw, 2, "H\xc3"), "delta: piece 1 accepted");
+    /* alnum gate: text below 2 alphanumeric chars is held, not sent (a turn the
+     * agent would discard as degenerate never reaches the client). ". " has 0
+     * alnum -> zero frames so far. */
+    fails += geist_expect(agent_main_delta_write(&dw, 2, ". "), "delta: sub-threshold accepted");
+    fails += geist_expect(drain(sv[1], sizeof frames, frames) == 0 && !dw.live,
+                          "delta: <2 alnum held back, nothing streamed yet");
+
+    /* Crossing 2 alnum opens the gate and flushes everything held so far. */
+    fails += geist_expect(agent_main_delta_write(&dw, 2, "Hi"), "delta: threshold piece accepted");
     drain(sv[1], sizeof frames, frames);
-    fails += geist_expect(strstr(frames, "\"text\":\"H\"") != nullptr &&
-                                  strstr(frames, "\xc3") == nullptr,
-                          "delta: complete prefix emitted, split byte carried");
-    fails += geist_expect(agent_main_delta_write(&dw, 1, "\xa9"), "delta: piece 2 accepted");
+    fails += geist_expect(dw.live && strstr(frames, "\"text\":\". Hi\"") != nullptr,
+                          "delta: gate opens, buffered prefix + trigger flushed as one frame");
+
+    /* Now live: UTF-8 carry — "é" arrives as [C3] then [A9]; the split lead is
+     * carried, no frame, then completes into one valid é frame. */
+    fails += geist_expect(agent_main_delta_write(&dw, 1, "\xc3"), "delta: split lead accepted");
+    fails += geist_expect(drain(sv[1], sizeof frames, frames) == 0,
+                          "delta: incomplete UTF-8 lead carried, no frame");
+    fails += geist_expect(agent_main_delta_write(&dw, 1, "\xa9"), "delta: continuation accepted");
     drain(sv[1], sizeof frames, frames);
     fails += geist_expect(strstr(frames, "\"text\":\"\xc3\xa9\"") != nullptr,
                           "delta: carried bytes complete into valid UTF-8");
 
+    /* Malformed bytes are dropped, never emitted raw (valid-UTF-8-per-frame). A
+     * lone continuation 0xA9 before 'X' is dropped; only 'X' is framed. */
+    fails += geist_expect(agent_main_delta_write(&dw, 2, "\xa9X"),
+                          "delta: lone-cont piece accepted");
+    drain(sv[1], sizeof frames, frames);
+    fails += geist_expect(strstr(frames, "\"text\":\"X\"") != nullptr &&
+                                  strstr(frames, "\xa9") == nullptr,
+                          "delta: lone continuation byte dropped, not emitted");
+
     /* JSON escaping inside a delta frame. */
-    fails += geist_expect(agent_main_delta_write(&dw, 4, "a\"b\n"), "delta: piece 3 accepted");
+    fails += geist_expect(agent_main_delta_write(&dw, 4, "a\"b\n"), "delta: escape piece accepted");
     drain(sv[1], sizeof frames, frames);
     fails += geist_expect(strstr(frames, "\"text\":\"a\\\"b\\n\"") != nullptr,
                           "delta: quote and newline escaped");
@@ -101,6 +121,18 @@ static void test_delta_writer(void) {
     fails += geist_expect(!agent_main_delta_write(&dw, 5, "again"),
                           "delta: latched writer keeps refusing");
     close(sv[0]);
+
+    /* A degenerate answer (never 2 alnum) streams nothing at all. */
+    int sv2[2];
+    fails += geist_expect(socketpair(AF_UNIX, SOCK_STREAM, 0, sv2) == 0, "delta: socketpair 2");
+    struct agent_main_delta_writer dg = {.fd = sv2[0]};
+    (void) agent_main_delta_write(&dg, 3, "..!");
+    (void) agent_main_delta_write(&dg, 1, "A"); /* 1 alnum total — still degenerate */
+    char none[256];
+    fails += geist_expect(drain(sv2[1], sizeof none, none) == 0 && !dg.live,
+                          "delta: degenerate answer (<2 alnum) streams zero frames");
+    close(sv2[0]);
+    close(sv2[1]);
 }
 
 int main(void) {

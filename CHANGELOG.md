@@ -21,9 +21,14 @@ minor release.
   decodes. A client that disconnects mid-stream aborts the generation; the
   daemon keeps serving. Clients without `stream` get byte-identical behavior.
 - SDK: additive `on_delta`/`on_delta_ctx` hook on `struct geist_agent`
-  (nullptr = off); no `libgeist` ABI change. Spec:
-  `docs/proposals/dynamic-tools-v1.md` §Streaming. Tests:
-  `test_dynamic_stream_unit`.
+  (nullptr = off); no `libgeist` ABI change. The hook fires from both
+  user-visible answer decoders (`agent_generate_turn` and
+  `agent_generate_reply`), never from internal routing/masked-call decodes.
+  The delta writer drops malformed UTF-8 bytes and withholds deltas until the
+  answer clears the degenerate threshold, so streamed text never contradicts
+  the normative result; `--serve` also sets `SO_SNDTIMEO` so a stalled reader
+  cannot wedge the daemon. Spec: `docs/proposals/dynamic-tools-v1.md`
+  §Streaming. Tests: `test_dynamic_stream_unit`.
 
 ### Changed — engine core slimmed to inference + `--serve`
 
