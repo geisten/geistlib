@@ -1,11 +1,11 @@
 cff-version: 1.2.0
-message: "If you use geist in your research, please cite it as below."
-title: "geist: a dependency-free CPU inference engine and on-device agent for small LLMs"
+message: "If you use geistlib in your research, please cite it as below."
+title: "geistlib: a dependency-free inference engine for small LLMs"
 abstract: >-
-  geist is a high-performance, dependency-free inference engine and on-device
-  tool-use agent that runs small LLMs (Gemma 4, ternary BitNet b1.58) on the CPU
-  as a single static binary — no BLAS, Python, or CUDA — tuned for edge hardware
-  such as the Raspberry Pi 5.
+  geistlib is a high-performance, dependency-free inference engine that runs
+  small LLMs (Gemma 4, ternary BitNet b1.58) as a single static binary — no
+  BLAS, Python, or CUDA — CPU-first with experimental Metal/Vulkan GPU
+  backends, tuned for edge hardware such as the Raspberry Pi 5.
 type: software
 authors:
   - family-names: Schlegel
@@ -13,7 +13,7 @@ authors:
     affiliation: "geisten Holding UG (haftungsbeschränkt)"
 repository-code: "https://github.com/geisten/geistlib"
 url: "https://github.com/geisten/geistlib"
-version: "0.3.0"
+version: "0.5.0"
 license: Apache-2.0
 keywords:
   - llm
