@@ -5,7 +5,6 @@
 
 #include "exec_plan.h"
 #include "arch_state.h"
-#include "forward/internal.h"
 
 #include "heap.h"
 
@@ -37,9 +36,6 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         P->apply_ple              = st->config.has_ple;
         P->rope_interleaved       = st->config.rope_interleaved;
         P->ffn_activation         = st->config.ffn_activation;
-        P->run_attention_block    = transformer_layer_run_attention_block;
-        P->run_ffn_block          = transformer_layer_run_ffn_block;
-        P->run_ple_or_copy        = transformer_layer_run_ple_or_copy;
     }
     return GEIST_OK;
 }
@@ -51,24 +47,4 @@ void transformer_exec_plan_destroy(struct transformer_arch_state *st) {
     void *p = st->layer_plans;
     safe_free(&p);
     st->layer_plans = nullptr;
-}
-
-void transformer_session_exec_plan_build(struct transformer_arch_session *sess) {
-    if (sess == nullptr) {
-        return;
-    }
-    sess->exec_plan = (struct transformer_session_exec_plan) {
-            .kv_int8_enabled = sess->kv_int8_enabled,
-            .kv_kivi_enabled = sess->kv_kivi_enabled,
-            .kv_f16_enabled  = sess->kv_f16_enabled,
-            .kv_append_kind  = TRANSFORMER_KV_APPEND_FP32,
-            .attention_kind  = TRANSFORMER_ATTENTION_FP32,
-    };
-    if (sess->kv_kivi_enabled) {
-        sess->exec_plan.kv_append_kind = TRANSFORMER_KV_APPEND_KIVI;
-        sess->exec_plan.attention_kind = TRANSFORMER_ATTENTION_KIVI;
-    } else if (sess->kv_int8_enabled) {
-        sess->exec_plan.kv_append_kind = TRANSFORMER_KV_APPEND_INT8;
-        sess->exec_plan.attention_kind = TRANSFORMER_ATTENTION_INT8;
-    }
 }

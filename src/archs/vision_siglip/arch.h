@@ -13,7 +13,6 @@
  *   src/archs/vision_siglip/vision_encoder.c  — tower forward + weight load
  *   src/archs/vision_siglip/vision_kernels.c  — patch-embed, pool, 2D RoPE
  *   src/archs/vision_siglip/image_pipeline.c  — bicubic resize, patchify
- *   src/archs/vision_siglip/video_pipeline.c  — frame batching
  */
 #ifndef GEIST_INTERNAL_ARCH_VISION_SIGLIP_H
 #define GEIST_INTERNAL_ARCH_VISION_SIGLIP_H

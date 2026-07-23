@@ -107,14 +107,6 @@ static const struct dtype_row_t *dtype_lookup(gguf_dtype_t dt) {
     return nullptr;
 }
 
-size_t gguf_dtype_block_size(gguf_dtype_t dt) {
-    const struct dtype_row_t *r = dtype_lookup(dt);
-    return r ? r->block_bytes : 0;
-}
-size_t gguf_dtype_block_count(gguf_dtype_t dt) {
-    const struct dtype_row_t *r = dtype_lookup(dt);
-    return r ? r->block_elems : 0;
-}
 const char *gguf_dtype_name(gguf_dtype_t dt) {
     const struct dtype_row_t *r = dtype_lookup(dt);
     return r ? r->name : "?";
@@ -591,23 +583,6 @@ bool gguf_get_meta_u32(const struct gguf_ctx *ctx, const char *key, uint32_t *ou
         if (v > (uint64_t) UINT32_MAX)
             return false;
         *out = (uint32_t) v;
-        return true;
-    }
-    return false;
-}
-
-bool gguf_get_meta_u64(const struct gguf_ctx *ctx, const char *key, uint64_t *out) {
-    const struct gguf_meta_kv_t *kv = meta_find(ctx, key);
-    if (!kv || !out)
-        return false;
-    if (kv->vt == GGUF_VT_U64 && kv->vlen == 8) {
-        memcpy(out, kv->vp, 8);
-        return true;
-    }
-    if (kv->vt == GGUF_VT_U32 && kv->vlen == 4) {
-        uint32_t v;
-        memcpy(&v, kv->vp, 4);
-        *out = (uint64_t) v;
         return true;
     }
     return false;

@@ -157,15 +157,6 @@ static const char *metal_nserror_message(struct metal_state *st, void *err) {
     return metal_msg_send_cstr0(st, desc, "UTF8String");
 }
 
-static void *metal_msg_send_ptr0(struct metal_state *st, void *receiver, const char *selector) {
-    void *sel = metal_sel_register_name(st, selector);
-    union {
-        void *raw;
-        void *(*fn)(void *, void *);
-    } send = {.raw = st->objc_msgSend};
-    return send.fn(receiver, sel);
-}
-
 static void metal_msg_send_void0(struct metal_state *st, void *receiver, const char *selector) {
     if (receiver == nullptr) {
         return;

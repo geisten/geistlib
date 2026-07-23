@@ -1130,7 +1130,6 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         }
         sess->kv_f16_enabled = want && slot_ok && !(env_f16 != nullptr && env_f16[0] == '0');
     }
-    transformer_session_exec_plan_build(sess);
     sess->kivi_residual_count = 0;
     sess->kivi_drained_count  = 0;
 

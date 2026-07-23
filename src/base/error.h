@@ -31,14 +31,6 @@ struct geist_error_slot {
     const char       *origin_func;
 };
 
-/* Set the per-handle error slot. Used by every layer when a fallible op
- * fails. Format-string version uses printf semantics. */
-void geist_error_set(struct geist_error_slot *slot,
-                     enum geist_status        code,
-                     const char              *origin_func,
-                     const char              *fmt,
-                     ...);
-
 /* Set the thread-local create-time error slot. Used when no handle
  * exists to attach the error to. */
 void geist_error_set_create_time(enum geist_status code,
