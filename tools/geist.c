@@ -319,7 +319,8 @@ int main(int argc, char **argv) {
         geist_token_t eot =
                 tmpl.stop[0] ? geist_model_token_by_text(model, tmpl.stop) : GEIST_TOKEN_NONE;
         static char answer[1 << 14];
-        geist_generate_greedy(sess, eos, eot, tmpl.leak, budget, sizeof answer, answer);
+        geist_generate_greedy(
+                sess, eos, eot, tmpl.leak, budget, nullptr, nullptr, sizeof answer, answer);
         puts(answer);
     } else {
         printf("%s", prompt);
