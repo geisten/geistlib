@@ -143,7 +143,9 @@ bin: $(BIN_TARGETS)
 # FILTER is an optional substring; e.g. `make test FILTER=q3k` runs only
 # tests whose binary name contains "q3k".
 TEST_BIN_DIR := $(BIN_DIR)/tests
-BENCH_OUT_DIR ?= bench_runs/quality_perf
+# Run artifacts live OUTSIDE the repo so the working tree stays clean; override
+# with `make bench-small BENCH_OUT_DIR=...` to put them elsewhere.
+BENCH_OUT_DIR ?= $(HOME)/bench-geistlib/quality_perf
 BENCH_GGUF ?=
 BENCH_THREADS ?=
 BENCH_REF_GGUF ?=

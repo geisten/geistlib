@@ -19,7 +19,7 @@ exit cleanly rather than failing the build. See benchmark/BENCHMARKING.md.
 Usage (normally invoked via the Makefile):
     python3 tools/bench_quality_perf.py --suite small \\
         --target mac-omp --mode release \\
-        --bin-dir bin/mac-omp/release/tests --out-dir bench_runs/quality_perf \\
+        --bin-dir bin/mac-omp/release/tests --out-dir ~/bench-geistlib/quality_perf \\
         --benchmark-md benchmark/BENCHMARK.md --record
 
 Environment:
@@ -284,7 +284,10 @@ def main() -> None:
     p.add_argument("--target", default="unknown")
     p.add_argument("--mode", default="release")
     p.add_argument("--bin-dir", default="bin")
-    p.add_argument("--out-dir", default="bench_runs/quality_perf")
+    # Run artifacts default OUTSIDE the repo (the Makefile passes the same path)
+    # so benchmark output never lands in the working tree.
+    p.add_argument("--out-dir",
+                   default=str(Path.home() / "bench-geistlib" / "quality_perf"))
     p.add_argument("--benchmark-md", default="benchmark/BENCHMARK.md")
     p.add_argument("--record", action="store_true")
     args = p.parse_args()
