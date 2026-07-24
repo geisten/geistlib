@@ -22,7 +22,9 @@ examples/simple_generate
 .agent_memory_unit/
 .mind_selftest/
 
-# Benchmark run artifacts and scratch outputs.
+# Benchmark run artifacts and scratch outputs. Runs now default to
+# ~/bench-geistlib (outside the repo); bench_runs/ stays listed so older
+# working copies keep ignoring their leftovers.
 bench_runs/
 *.npy
 summary.json
