@@ -73,15 +73,26 @@ inside the binary; that's the whole app.
 ```
 
 Copy that binary to a Pi and it generates text in real time, all locally,
-decoding **~2× faster than Microsoft's own bitnet.cpp**. (Or install with
-`curl … install.sh | sh`.)
+decoding **~2× faster than Microsoft's own bitnet.cpp**. Or install it in one
+line — every platform (Raspberry Pi included), SHA-256 verified, no sudo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/geisten/geistlib/main/install.sh | sh
+```
 
 ### Bring your own model
 
-Two downloads: the engine (< 1 MB, model-less) and any GGUF (one file runs on
-every platform). Then point the engine at the model.
+The engine (< 1 MB, model-less) plus any GGUF (one file runs on every platform).
+Then point the engine at the model.
 
-Install the engine with Homebrew (macOS & Linux):
+Install the model-less engine in one line — every platform including Raspberry
+Pi / ARM64 Linux, SHA-256 verified, no sudo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/geisten/geistlib/main/install.sh | GEIST_FLAVOR=engine sh
+```
+
+On macOS or x86-64 Linux you can also use Homebrew:
 
 ```bash
 brew install geisten/tap/geist
