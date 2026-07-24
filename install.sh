@@ -1,15 +1,29 @@
 #!/bin/sh
-# geist installer — downloads the single-file `geist-bitnet` (BitNet b1.58 2B-4T
-# baked in) for your platform and drops it on your PATH. One file, no model file,
-# no BLAS, no Python, no CUDA.
+# geistlib installer — downloads a prebuilt single-file binary for your platform,
+# verifies its SHA-256, and drops it on your PATH. No BLAS, Python, or CUDA;
+# Linux builds are musl-static, macOS needs only system frameworks.
 #
 #   curl -fsSL https://raw.githubusercontent.com/geisten/geistlib/main/install.sh | sh
 #
-# Env knobs: GEIST_BINDIR (install dir, default ~/.local/bin).
+# Env knobs:
+#   GEIST_BINDIR  install dir (default ~/.local/bin)
+#   GEIST_FLAVOR  bitnet (default) — geist-bitnet, BitNet b1.58 2B-4T baked in
+#                                    (~1.1 GB); runs with just a prompt.
+#                 engine         — the model-less geist (~0.6 MB); you bring the
+#                                    GGUF:  geist -m model.gguf "prompt".
 set -eu
 
 REPO=geisten/geistlib
 BINDIR=${GEIST_BINDIR:-$HOME/.local/bin}
+
+# Flavor -> the binary name, which is also the release-asset prefix (the embedded
+# build ships as geist-bitnet, the model-less engine as geist).
+FLAVOR=${GEIST_FLAVOR:-bitnet}
+case "$FLAVOR" in
+  bitnet) name=geist-bitnet; size="~1.1 GB — the model is baked in" ;;
+  engine) name=geist;        size="~0.6 MB — model-less; bring your own GGUF" ;;
+  *) echo "geist: unknown GEIST_FLAVOR '$FLAVOR' (use 'bitnet' or 'engine')" >&2; exit 1 ;;
+esac
 
 # Map uname -> the release artifact. Pi 5 / any ARM64 Linux share one binary;
 # x86-64 Linux ships a musl-static AVX-512 build (runtime-dispatched, so it also
@@ -27,14 +41,14 @@ case "$os/$arch" in
     exit 1 ;;
 esac
 
-asset="geist-bitnet-$plat.tar.gz"
+asset="$name-$plat.tar.gz"
 url="https://github.com/$REPO/releases/latest/download/$asset"
 
 command -v curl >/dev/null 2>&1 || { echo "geist: curl is required" >&2; exit 1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "Downloading $asset (~1.1 GB — the model is baked in) …"
+echo "Downloading $asset ($size) …"
 curl -fL --progress-bar -o "$tmp/$asset" "$url"
 
 # Integrity: verify the download against the release SHA256SUMS before extracting.
@@ -65,17 +79,23 @@ fi
 
 tar -C "$tmp" -xzf "$tmp/$asset"
 
-bin=$(find "$tmp" -type f -name geist-bitnet | head -1)
-[ -n "$bin" ] || { echo "geist: geist-bitnet not found in $asset" >&2; exit 1; }
+# -name matches the exact binary ("geist" does not match "geist-bitnet").
+bin=$(find "$tmp" -type f -name "$name" | head -1)
+[ -n "$bin" ] || { echo "geist: $name not found in $asset" >&2; exit 1; }
 mkdir -p "$BINDIR"
-cp "$bin" "$BINDIR/geist-bitnet"
-chmod +x "$BINDIR/geist-bitnet"
+cp "$bin" "$BINDIR/$name"
+chmod +x "$BINDIR/$name"
 
-echo "Installed: $BINDIR/geist-bitnet"
+case "$FLAVOR" in
+  bitnet) runhint="$name \"What is the capital of France?\"" ;;
+  engine) runhint="$name -m model.gguf \"What is the capital of France?\"" ;;
+esac
+
+echo "Installed: $BINDIR/$name"
 case ":$PATH:" in
   *":$BINDIR:"*)
-    echo 'Run:  geist-bitnet "What is the capital of France?"' ;;
+    echo "Run:  $runhint" ;;
   *)
     echo "Add to PATH:  export PATH=\"$BINDIR:\$PATH\""
-    echo "Then run:     geist-bitnet \"The capital of France is\"" ;;
+    echo "Then run:     $runhint" ;;
 esac
