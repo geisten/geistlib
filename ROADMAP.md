@@ -41,7 +41,7 @@ arguments and low-confidence clarification are covered by deterministic tests.
 `make dynamic-example-host` builds a separate C
 calculator/profile host with no HA or model-runtime dependency, proving that
 other applications can implement and compile against the same contract. See
-[Dynamic tools v1](docs/proposals/dynamic-tools-v1.md).
+[Dynamic tools v1](docs/dynamic-tools-v1.md).
 
 ## Distribution: one static binary per platform
 

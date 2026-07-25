@@ -313,7 +313,7 @@ Repository ownership and the complete map are in
 
 <sub>**Baseline versions:** llama.cpp `d05fe1d` (Pi 5, M1 Max) · `b9827` (x86) · `d0f9d2e` (Vulkan) — bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `master` (its bundled llama.cpp fork, unpinned `--depth 1` clone). Full methodology: [`benchmark/`](benchmark/README.md).</sub>
 
-<sub>**Metal (Apple GPU) backend** (`BACKENDS="… metal"`) is experimental: greedy decode is bit-exact vs the `cpu_scalar` reference and within **12 %** of llama.cpp Metal (81.2 vs 91.3 t/s decode), holding up at long context past the 4096 default. Full kernel notes and the measurement ledger: [`docs/proposals/metal-beat-llamacpp-plan.md`](docs/proposals/metal-beat-llamacpp-plan.md).</sub>
+<sub>**Metal (Apple GPU) backend** (`BACKENDS="… metal"`) is experimental: greedy decode is bit-exact vs the `cpu_scalar` reference and within **12 %** of llama.cpp Metal (81.2 vs 91.3 t/s decode), holding up at long context past the 4096 default. Full kernel notes and the measurement ledger: [`benchmark/results/METAL.md`](benchmark/results/METAL.md).</sub>
 
 <sub>**Vulkan backend** (`BACKENDS="… vulkan"`) is experimental: the first non-Apple GPU path (NVIDIA Turing tested; libvulkan is dlopen'd, no link-time dependency). Quality gate passed (MMLU-200 0.520 vs 0.490 on the CPU path, 14/14 tool-calling) and decode reaches **~86 %** of llama.cpp Vulkan (132.3 vs 154 t/s tg128); prefill is the open front. The phase-by-phase lab log lives in [`benchmark/results/VULKAN.md`](benchmark/results/VULKAN.md).</sub>
 </details>

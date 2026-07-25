@@ -36,7 +36,7 @@ do not opt into `stream` get byte-identical behavior.
   The delta writer drops malformed UTF-8 bytes and withholds deltas until the
   answer clears the degenerate threshold, so streamed text never contradicts
   the normative result; `--serve` also sets `SO_SNDTIMEO` so a stalled reader
-  cannot wedge the daemon. Spec: `docs/proposals/dynamic-tools-v1.md`
+  cannot wedge the daemon. Spec: `docs/dynamic-tools-v1.md`
   §Streaming. Tests: `test_dynamic_stream_unit`.
 
 ### Changed — geistlib identity + docs
@@ -69,7 +69,7 @@ pins the protocol id `dynamic-tools-v1` + a binary SHA-256 (published as
 `SHA256SUMS`) and verifies with the startup health handshake
 (`{"type":"health"}` → `…"status":"ready"`). Start forms: `geist --serve SOCKET`
 runs the internal (baked-in) model; `geist -m MODEL --serve SOCKET` an external
-one. Compatibility contract: `docs/proposals/dynamic-tools-v1.md`.
+one. Compatibility contract: `docs/dynamic-tools-v1.md`.
 
 ### Changed — engine core slimmed to inference + `--serve`
 

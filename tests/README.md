@@ -27,9 +27,10 @@ Adapter-specific policy and packaging suites live in their own repositories.
 Dynamic-tools safety is split across `test_json_schema_v1_unit`,
 `test_dynamic_tools_v1_unit`, `test_dynamic_request_v1_unit`,
 `test_dynamic_arguments_v1_unit`, `test_dynamic_host_v1_unit`, and
-`test_agent_unit`. A real model/socket/host
-transcript is recorded in
-`docs/benchmarks/dynamic-tools-v1-e2e-20260712.txt`.
+`test_agent_unit`. Those cover the wire format without a model; for a real
+model/socket/host transcript, run the reference host against a live agent —
+`make dynamic-example-host`, then follow
+[`examples/README.md`](../examples/README.md).
 
 ## Exit-Code Convention (automake-compatible)
 
