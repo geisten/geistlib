@@ -14,8 +14,10 @@ runs.
 
 ## Methodology
 
-Perf is measured by the `bench_session_throughput` binary (built by
-`make bench`), driven through `tools/bench_quality_perf.py`:
+Perf is measured by the `bench_perf_sweep` binary (built by `make bench`),
+driven through `tools/bench_quality_perf.py`. The sweep owns the protocol —
+warm-up, repeats, and the mean/best/worst aggregation — and emits it as JSONL,
+so every recorded row carries its own provenance:
 
 - **Model:** Gemma 4 E2B-it, Q4_K_M (`make fetch-model`).
 - **Warm-up:** 64-token prefill, then reset (excludes cold caches / page-ins).
@@ -120,8 +122,9 @@ Reproduce:
 
 ```sh
 # geist (auto-pins prefill→P-cores, decode→P-cores−1):
-GEIST_BENCH_PP=512 GEIST_BENCH_TG=128 OMP_WAIT_POLICY=active \
-  bin/$(mk/detect-target.sh)/release/tests/bench_session_throughput model.gguf
+OMP_WAIT_POLICY=active \
+  bin/$(mk/detect-target.sh)/release/tests/bench_perf_sweep \
+    --gguf model.gguf --seq-lens 512 --decode-n 128 --warmup 64 --repeats 10 --emit-jsonl
 # llama.cpp (CPU-only, matched workload):
 llama-bench -m model.gguf -ngl 0 -t 8 -p 512 -n 128
 ```
