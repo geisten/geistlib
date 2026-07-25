@@ -6,7 +6,7 @@
 #   P, D, T                                   prompt / decode tokens, threads (128/128/4)
 #   ENGINES=geist,llama-cpu                   subset to run (default: all below)
 #   QUIESCE=0                                 skip the thermal wait (auto-off without vcgencmd)
-#   JSON_OUT=path                             also emit a bench_report.py panel doc
+#   JSON_OUT=path                             also dump the raw series as JSON
 import json, re, subprocess, time, urllib.request, os
 HOME = os.path.expanduser("~")
 M = os.environ.get("MODEL", HOME + "/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf")
@@ -95,7 +95,7 @@ for alias in selected:
     except Exception as e:
         print("%-22s  ERROR: %s" % (name, e), flush=True)
 
-# JSON_OUT=path -> a one-panel doc for tools/bench_report.py (data, not a chart).
+# JSON_OUT=path -> raw series as JSON (data, not a chart).
 if os.environ.get("JSON_OUT") and series:
     doc = {"title": "total tok/s (%s threads, %s)" % (T, os.path.basename(M)),
            "panels": [{"label": "%d-token prompt + %d decode" % (P, D), "series": series}]}

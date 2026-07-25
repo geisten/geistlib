@@ -16,7 +16,7 @@ Vulkan code exists. Protocol: pp512 + tg128, E2E total = 640 tok / (t_pp + t_tg)
 - llama-bench: `-p 512 -n 128 -r 8`, `GGML_VK_VISIBLE_DEVICES=0` (else it also
   enumerates the Raphael iGPU)
 - geist @ main 5ae89d5, `make BACKENDS="cpu_x86 cpu_scalar"`, bench via
-  `tests/bench_session_throughput`
+  `tests/bench_perf_sweep`
 
 ## Gemma 4 E2B-it Q4_K_M (2.88 GiB) — the H2H
 
@@ -86,9 +86,10 @@ so the bar is geist's own CPU path + bitnet.cpp:
 ```sh
 GGML_VK_VISIBLE_DEVICES=0 ~/llama.cpp/build-vulkan/bin/llama-bench \
   -m ~/models/gemma/gemma-4-E2B-it-Q4_K_M.gguf -p 512 -n 128 -r 8
-OMP_NUM_THREADS=16 GEIST_GGUF_PATH=~/models/gemma/gemma-4-E2B-it-Q4_K_M.gguf \
-  GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_PP=512 GEIST_BENCH_TG=128 \
-  bin/linux/release/tests/bench_session_throughput
+OMP_NUM_THREADS=16 GEIST_BENCH_BACKEND=cpu_x86 \
+  bin/linux/release/tests/bench_perf_sweep \
+    --gguf ~/models/gemma/gemma-4-E2B-it-Q4_K_M.gguf \
+    --seq-lens 512 --decode-n 128 --warmup 64 --repeats 10 --emit-jsonl
 ```
 
 ## Progress log
