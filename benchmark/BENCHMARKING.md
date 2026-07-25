@@ -13,9 +13,11 @@ OMP_WAIT_POLICY=active make bench-detailed # best-of-5
 BENCH_THREADS=6 OMP_WAIT_POLICY=active make bench-detailed  # pin thread count
 ```
 
-These run `bench_session_throughput` (warm-up → prefill 200 → decode 50) via
+These run `bench_perf_sweep` (warm-up, then N measured repeats) via
 `tools/bench_quality_perf.py`, which records a tagged row per
-(model, host, os, target/mode, threads), keeping the best decode run.
+(model, host, os, target/mode, threads), keeping the best decode run. The row
+carries mean throughput, the run-to-run spread, and a derived TTFT; the raw
+JSONL record is written next to it.
 
 Raw timing probes for individual subsystems:
 
@@ -136,24 +138,17 @@ cloze MMLU above sidesteps both (base completion, no chat template).
 
 ## Reporting (charts from data, not by hand)
 
-The measuring scripts emit result JSON (stdlib-only — runs on a bare Pi);
-`tools/bench_report.py` renders it to a grouped-bar chart with matplotlib (a
-dev-box dep, kept off the measuring path). This keeps chart bars from drifting
-away from the numbers:
+The measuring scripts emit result JSON (stdlib-only — runs on a bare Pi), and
+the chart is rendered from that JSON. This keeps chart bars from drifting away
+from the numbers:
 
 ```sh
-JSON_OUT=benchmark/pi5_results.json python3 benchmark/total_tps.py   # measure (no deps)
+# cross-engine measurement (no deps, thermal-quiesced on a Pi)
+JSON_OUT=/tmp/total_tps.json python3 benchmark/total_tps.py
 
-# README charts — no deps, pure stdlib, numbers straight from the JSON:
-python3 benchmark/chart_total_tps.py    # total tok/s vs llama.cpp -> assets/pi5_total_tps.svg
-python3 benchmark/chart_headline.py     # headline scoreboard      -> assets/headline_benchmarks.svg
-
-# optional detailed prefill/decode/total breakdown (needs matplotlib):
-pip install matplotlib
-python3 tools/bench_report.py benchmark/pi5_results.json -o assets/pi5_pp_decode_total.svg
+# the README scoreboard — pure stdlib, numbers straight from headline_results.json
+python3 benchmark/chart_headline.py     # -> assets/headline_benchmarks.svg
 ```
 
-`bench_report.py` takes multiple JSON files (each `panels` entry → a panel) and
-`-` for stdin, writes `.svg` or `.png`, and draws error bars when a metric value
-is `{"value": x, "err": e}` (or `{"value": x, "lo": l, "hi": h}`) — e.g. a
-best-of-N spread or the MMLU binomial CI.
+`headline_results.json` is curated input, not raw output: each row names its
+baseline engine and pinned version, and sub-parity rows are kept on purpose.

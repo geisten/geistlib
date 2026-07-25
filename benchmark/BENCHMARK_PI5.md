@@ -121,8 +121,8 @@ llama.cpp is `acd79d6` (2026-06-14) built two ways.
 ### ollama
 
 Added `ollama` 0.30.10 (its bundled llama.cpp, ggml CPU backend) on the same GGUF
-via a `Modelfile` (`FROM …/gemma4-e2b-Q4_K_M.gguf`). Harness:
-[`ollama_bench_pi5.py`](ollama_bench_pi5.py).
+via a `Modelfile` (`FROM …/gemma4-e2b-Q4_K_M.gguf`), driving ollama's HTTP API
+with the same prompt/decode budget.
 
 > **ollama OOM-kills on the 4 GB board by default — `use_mmap` is required.**
 > Stock ollama loads weights resident; gemma4-e2b's **1.93 GB PLE table** then sits
