@@ -6,7 +6,8 @@ This repository documents the application-neutral Geist engine:
 - `ARCHITECTURE.md`: engine layers and runtime architecture
 - `DEPLOY.md`: embedded/external models and resident dynamic-tools service
 - `agent.md`: generic tool-use agent and adapter contract
-- `proposals/dynamic-tools-v1.md`: normative dynamic-tools wire contract
+- `CI_COVERAGE.md`: what each CI job actually verifies
+- `dynamic-tools-v1.md`: normative dynamic-tools wire contract
 - `../benchmark/`: engine and general-agent methodology/results
 
 Home Assistant integration, policy, installation, app packaging, evaluations,

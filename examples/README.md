@@ -65,7 +65,7 @@ bin/$(mk/detect-target.sh)/release/examples/dynamic_tools_host \
   /tmp/geist.sock "Add 5 and 7"
 ```
 
-Wire format and schema: [`docs/proposals/dynamic-tools-v1.md`](../docs/proposals/dynamic-tools-v1.md).
+Wire format and schema: [`docs/dynamic-tools-v1.md`](../docs/dynamic-tools-v1.md).
 
 ## The two release gates
 
