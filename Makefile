@@ -257,14 +257,14 @@ bench-audio: bin
 bench-mm: bench-vision bench-video bench-audio
 
 # Reproducible quality/performance suites — all drive tools/bench_quality_perf.py,
-# which records a row into benchmark/BENCHMARK.md only when the run sets a new best
+# which records a row into benchmark/results/APPLE.md only when the run sets a new best
 # for that (model, host, os, target/mode, threads) key. BENCH_REF_* are read by the
 # quality/compare suites only; harmless (empty) for the plain perf suites.
 BENCH_PY = BENCH_GGUF="$(BENCH_GGUF)" BENCH_THREADS="$(BENCH_THREADS)" \
            BENCH_REF_GGUF="$(BENCH_REF_GGUF)" BENCH_REF_BIN="$(BENCH_REF_BIN)" \
            python3 tools/bench_quality_perf.py --target "$(TARGET)" --mode "$(MODE)" \
              --bin-dir "$(TEST_BIN_DIR)" --out-dir "$(BENCH_OUT_DIR)" \
-             --benchmark-md benchmark/BENCHMARK.md --record --suite
+             --benchmark-md benchmark/results/APPLE.md --record --suite
 
 bench-small:            bin ; @$(BENCH_PY) small
 bench-detailed:         bin ; @$(BENCH_PY) detailed
@@ -332,8 +332,8 @@ help:
 	"" \
 	"Bench (timing/quality tools, not pass/fail):" \
 	"  make bench | bench-mm                       raw probes | multimodal encoders" \
-	"  make bench-small | bench-detailed           record perf to benchmark/BENCHMARK.md" \
-	"  make bench-quality-small|-detailed          MMLU acc -> benchmark/BENCHMARK.md" \
+	"  make bench-small | bench-detailed           record perf to benchmark/results/APPLE.md" \
+	"  make bench-quality-small|-detailed          MMLU acc -> benchmark/results/APPLE.md" \
 	"  make bench-compare-ref BENCH_REF_URL=...    MMLU vs a running llama-server" \
 	"  make bench-mmlu [MMLU_LIMIT=0]              MMLU accuracy (pip install datasets)" \
 	"" \

@@ -5,7 +5,7 @@ Get geist running as a **command-line tool** in two minutes, then embed it as a
 (`include/geist.h` + `include/geist_util.h`) and the real Makefile targets.
 
 - New to the internals? See [ARCHITECTURE.md](ARCHITECTURE.md).
-- Want the numbers? See [../benchmark/BENCHMARK_PI5.md](../benchmark/BENCHMARK_PI5.md).
+- Want the numbers? See [../benchmark/results/PI5.md](../benchmark/results/PI5.md).
 
 ---
 
@@ -238,4 +238,4 @@ not copied).
 | `GEIST_MMAP_PREFETCH=1` | `MADV_WILLNEED` prefault of the weight map — steadier first-token latency on 4 KB-page Linux (no-op on the Pi 5's 16 KB pages) |
 
 Tuning rationale and measured numbers are in
-[../benchmark/BENCHMARK_PI5.md](../benchmark/BENCHMARK_PI5.md).
+[../benchmark/results/PI5.md](../benchmark/results/PI5.md).

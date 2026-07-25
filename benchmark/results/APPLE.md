@@ -14,8 +14,10 @@ runs.
 
 ## Methodology
 
-Perf is measured by the `bench_session_throughput` binary (built by
-`make bench`), driven through `tools/bench_quality_perf.py`:
+Perf is measured by the `bench_perf_sweep` binary (built by `make bench`),
+driven through `tools/bench_quality_perf.py`. The sweep owns the protocol —
+warm-up, repeats, and the mean/best/worst aggregation — and emits it as JSONL,
+so every recorded row carries its own provenance:
 
 - **Model:** Gemma 4 E2B-it, Q4_K_M (`make fetch-model`).
 - **Warm-up:** 64-token prefill, then reset (excludes cold caches / page-ins).
@@ -59,7 +61,7 @@ which holds ~flat from 128 to 1024 tokens (164 → 144), while llama.cpp's CPU-o
 path degrades sharply past 256 (147 → 97). Decode is at parity and memory-
 bandwidth-bound for both; on this live desktop the 16-token decode window is too
 jitter-prone to rank — the **controlled decode comparison is on the quiesced Pi 5**
-([BENCHMARK_PI5.md](BENCHMARK_PI5.md)), where geist edges llama 1.03×.
+([PI5.md](PI5.md)), where geist edges llama 1.03×.
 
 > **Methodology — why best-of here, mean-of-10 on the Pi.** This M1 Max is a
 > *developer workstation* that cannot be quiesced while in use (WindowServer,
@@ -120,8 +122,9 @@ Reproduce:
 
 ```sh
 # geist (auto-pins prefill→P-cores, decode→P-cores−1):
-GEIST_BENCH_PP=512 GEIST_BENCH_TG=128 OMP_WAIT_POLICY=active \
-  bin/$(mk/detect-target.sh)/release/tests/bench_session_throughput model.gguf
+OMP_WAIT_POLICY=active \
+  bin/$(mk/detect-target.sh)/release/tests/bench_perf_sweep \
+    --gguf model.gguf --seq-lens 512 --decode-n 128 --warmup 64 --repeats 10 --emit-jsonl
 # llama.cpp (CPU-only, matched workload):
 llama-bench -m model.gguf -ngl 0 -t 8 -p 512 -n 128
 ```
@@ -135,7 +138,7 @@ matmuls/token and contends when every core is saturated). Override with
 `GEIST_PREFILL_THREADS` / `GEIST_DECODE_THREADS`.
 
 To reproduce a head-to-head on *your* hardware with the llama.cpp commit
-pinned, see [BENCHMARKING.md](BENCHMARKING.md).
+pinned, see [../METHODOLOGY.md](../METHODOLOGY.md).
 
 ## Quality — MMLU (`make bench-mmlu`)
 
@@ -189,7 +192,7 @@ real multi-sequence decode also pays per-sequence attention, which the bench's
 single-sequence prefill does not model.)
 
 Quality (perplexity / KL-divergence vs the reference, sampled MMLU/GSM8K) is
-likewise documented in [BENCHMARKING.md](BENCHMARKING.md); it needs
+likewise documented in [../METHODOLOGY.md](../METHODOLOGY.md); it needs
 the HF tokenizer and datasets and is not part of the hermetic `make` flow.
 
 <!-- BENCH:AUTO -->
@@ -197,3 +200,29 @@ the HF tokenizer and datasets and is not part of the hermetic `make` flow.
 | Date | Model | Host | OS | Target/Mode | Threads | Prefill tok/s | Decode tok/s |
 | :--- | :--- | :--- | :--- | :--- | :---: | :---: | :---: |
 | 2026-06-10 | gemma4-e2b-Q4_K_M.gguf | MBP-Germar.local/arm64 | Darwin 25.5.0 | mac-omp/release | default | 77.2 | 10.2 |
+
+---
+
+## Apple M1 Max (8 P-cores) — prefill (tokens/s, higher is better)
+
+| seq_len | llama.cpp `-ngl 0` | geist | winner |
+| ---: | :---: | :---: | :--- |
+|  128 | 141 | **164** | **geist 1.16×** |
+|  256 | 147 | **161** | **geist 1.10×** |
+|  512 | 128 | **150** | **geist 1.17×** |
+| 1024 |  97 | **144** | **geist 1.48×** |
+
+```
+prefill t/s   (each █ ≈ 10 t/s)            geist stays flat ·· llama drops off
+ geist  128 ████████████████ 164    llama  128 ██████████████ 141
+        256 ████████████████ 161           256 ███████████████ 147
+        512 ███████████████ 150            512 █████████████ 128
+       1024 ██████████████ 144            1024 ██████████ 97
+```
+
+**Decode:** ≈ par (~26 t/s both). On a live desktop the 16-token decode window is
+too jitter-prone to rank — see the Pi for the controlled decode result.
+
+geist's dense-fp32 path here is **Accelerate/AMX** (Apple's matrix coprocessor),
+which holds ~flat from 128 → 1024 tokens (164 → 144), while llama.cpp's CPU-only
+path degrades sharply past 256 (147 → 97).

@@ -5,7 +5,7 @@
 # Goal this serves: establish whether geist's ternary decode/prefill is >=
 # MAX(bitnet.cpp, llama.cpp) on the A76. It measures all three engines on the
 # SAME GGUF, SAME thread count, from a COOL baseline (the Pi 5 is passively
-# cooled and throttles — see benchmark/BENCHMARK_PI5.md), reporting the MEAN of
+# cooled and throttles — see benchmark/results/PI5.md), reporting the MEAN of
 # N repeats after a discarded warm-up. Raw outputs are saved so nothing is lost.
 #
 # Run ON the Pi 5 (not cross-invoked). Reference binaries are optional — the
@@ -169,4 +169,4 @@ echo
 note "Reference tables are raw in $OUT/{llama,bitnet}.txt (llama-bench format:"
 note "t/s columns 'pp<N>' = prefill, 'tg<N>' = decode). Compare against geist above."
 note "Verdict rule for the goal: geist prefill@each seq AND decode must be >="
-note "MAX(llama, bitnet). Record the winning config in BENCHMARK_PI5.md."
+note "MAX(llama, bitnet). Record the winning config in results/PI5.md."

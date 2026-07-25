@@ -7,20 +7,25 @@ number is tagged with the host, OS, target, mode, thread count, and model so
 results from different machines never silently overwrite each other.
 
 Perf suites (`small`, `detailed`) are fully implemented: they run the C
-`bench_session_throughput` binary against a GGUF and record prefill/decode
-tok/s into benchmark/BENCHMARK.md, keeping the best run per (model, host, os, target,
-mode, threads) key.
+`bench_perf_sweep` binary against a GGUF and record prefill/decode tok/s,
+derived TTFT and the run-to-run spread into benchmark/results/APPLE.md, keeping
+the best run per (model, host, os, target, mode, threads) key.
+
+The sweep owns the measurement protocol — warm-up, repeats, and the
+mean/best/worst aggregation — and reports it as JSONL, so this wrapper only
+selects the workload and records the result. It deliberately does not
+re-implement any statistics.
 
 Quality suites (`quality-small`, `quality-detailed`) and `compare-ref` require
 a reference toolchain (HF tokenizer + datasets, and/or a llama.cpp build) that
 is out of scope for a hermetic `make` invocation. They print setup guidance and
-exit cleanly rather than failing the build. See benchmark/BENCHMARKING.md.
+exit cleanly rather than failing the build. See benchmark/METHODOLOGY.md.
 
 Usage (normally invoked via the Makefile):
     python3 tools/bench_quality_perf.py --suite small \\
         --target mac-omp --mode release \\
         --bin-dir bin/mac-omp/release/tests --out-dir ~/bench-geistlib/quality_perf \\
-        --benchmark-md benchmark/BENCHMARK.md --record
+        --benchmark-md benchmark/results/APPLE.md --record
 
 Environment:
     BENCH_GGUF      Path to the model GGUF (falls back to GEIST_GGUF_PATH).
@@ -31,6 +36,7 @@ Environment:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import re
@@ -42,10 +48,14 @@ from pathlib import Path
 PERF_SUITES = {"small", "detailed"}
 QUALITY_SUITES = {"quality-small", "quality-detailed", "compare-ref"}
 
-# tok/s lines from bench_session_throughput, e.g.
-#   prefill (200 tok):    2560.6 ms  =  12.80 ms/tok  =    78.1 tok/s
-TPS_RE = re.compile(r"^\s*(prefill|decode)\b.*?=\s*([\d.]+)\s*tok/s", re.MULTILINE)
-
+# Workload per perf suite: (seq_len, decode_n, warmup, repeats). `small` is a
+# quick check, `detailed` spends more repeats to shrink the spread. The sweep
+# discards the warm-up run, so weights are resident and the OMP pool is up
+# before the first measured repeat.
+SWEEP_WORKLOAD = {
+    "small":    {"seq_len": 128, "decode_n": 32, "warmup": 8,  "repeats": 3},
+    "detailed": {"seq_len": 512, "decode_n": 64, "warmup": 64, "repeats": 10},
+}
 
 def host_id() -> str:
     """Stable-ish host label so different machines don't clobber each other."""
@@ -63,9 +73,14 @@ def resolve_gguf() -> str | None:
     return None
 
 
-def run_throughput(bin_dir: Path, gguf: str, threads: str | None) -> dict[str, float]:
-    """Run bench_session_throughput once; return {'prefill': tps, 'decode': tps}."""
-    exe = bin_dir / "bench_session_throughput"
+def run_sweep(bin_dir: Path, gguf: str, threads: str | None,
+              workload: dict[str, int]) -> dict:
+    """Run bench_perf_sweep once and return its JSONL record.
+
+    The sweep already performs warm-up, repeats and mean/best/worst
+    aggregation, and states them in the record (`agg`, `repeats`, `warmup`).
+    """
+    exe = bin_dir / "bench_perf_sweep"
     if not exe.is_file():
         sys.exit(f"bench: missing {exe} — run `make bench` to build the bench binaries first")
 
@@ -75,17 +90,58 @@ def run_throughput(bin_dir: Path, gguf: str, threads: str | None) -> dict[str, f
     if threads:
         env["OMP_NUM_THREADS"] = threads
 
-    proc = subprocess.run([str(exe), gguf], env=env, capture_output=True, text=True)
+    cmd = [str(exe), "--gguf", gguf,
+           "--seq-lens", str(workload["seq_len"]),
+           "--decode-n", str(workload["decode_n"]),
+           "--warmup", str(workload["warmup"]),
+           "--repeats", str(workload["repeats"]),
+           "--emit-jsonl"]
+    if threads:
+        cmd += ["--threads", threads]
+
+    proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
     out = proc.stdout + proc.stderr
     if proc.returncode not in (0, None):
         sys.stderr.write(out)
-        sys.exit(f"bench: bench_session_throughput exited {proc.returncode}")
+        sys.exit(f"bench: bench_perf_sweep exited {proc.returncode}")
 
-    found = {m.group(1): float(m.group(2)) for m in TPS_RE.finditer(out)}
-    if "prefill" not in found or "decode" not in found:
-        sys.stderr.write(out)
-        sys.exit("bench: could not parse tok/s from bench_session_throughput output")
-    return found
+    # One JSON object per seq_len; a single seq_len is requested, so take the last.
+    for line in reversed(out.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                break
+    sys.stderr.write(out)
+    sys.exit("bench: bench_perf_sweep produced no JSONL record")
+
+
+def spread_pct(rec: dict) -> float:
+    """Run-to-run spread of decode throughput, as ±% around the mean.
+
+    Derived from the best/worst decode times the sweep reports. A wide spread
+    means the box was not quiet — read the row with that in mind.
+    """
+    best_ms, worst_ms = rec.get("decode_ms_best"), rec.get("decode_ms_worst")
+    mean_tps = rec.get("decode_tps") or 0.0
+    if not best_ms or not worst_ms or mean_tps <= 0.0:
+        return 0.0
+    n = rec["decode_n"]
+    tps_best = n * 1000.0 / best_ms      # fastest run -> highest tok/s
+    tps_worst = n * 1000.0 / worst_ms
+    return (tps_best - tps_worst) / mean_tps * 100.0 / 2.0
+
+
+def ttft_ms(rec: dict) -> float:
+    """Time to first token: prefill plus one decode step.
+
+    Derived, not measured directly — the error is well under one token time.
+    This is the ENGINE's TTFT; a request through `--serve` additionally pays
+    tokenization, chat templating and any tool round trip.
+    """
+    decode_n = rec.get("decode_n") or 1
+    return rec["prefill_ms"] + rec["decode_ms"] / decode_n
 
 
 def perf_suite(args: argparse.Namespace) -> None:
@@ -96,18 +152,19 @@ def perf_suite(args: argparse.Namespace) -> None:
         return
 
     threads = os.environ.get("BENCH_THREADS") or None
-    # `detailed` averages more runs to shrink variance; `small` is a quick check.
-    n_runs = 5 if args.suite == "detailed" else 2
-    best = {"prefill": 0.0, "decode": 0.0}
-    for i in range(n_runs):
-        r = run_throughput(Path(args.bin_dir), gguf, threads)
-        print(f"  run {i + 1}/{n_runs}: prefill {r['prefill']:.1f} tok/s, "
-              f"decode {r['decode']:.1f} tok/s")
-        best["prefill"] = max(best["prefill"], r["prefill"])
-        best["decode"] = max(best["decode"], r["decode"])
+    workload = SWEEP_WORKLOAD[args.suite]
+    print(f"  workload: seq_len={workload['seq_len']} decode_n={workload['decode_n']} "
+          f"warmup={workload['warmup']} repeats={workload['repeats']}")
+
+    rec = run_sweep(Path(args.bin_dir), gguf, threads, workload)
+    spread = spread_pct(rec)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Keep the raw record next to the table row — the table is a summary, the
+    # JSONL is the evidence (rss, per-phase best/worst, protocol fields).
+    raw = out_dir / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}_{args.target}_{args.suite}.jsonl"
+    raw.write_text(json.dumps(rec) + "\n")
 
     row = {
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -117,11 +174,16 @@ def perf_suite(args: argparse.Namespace) -> None:
         "target": args.target,
         "mode": args.mode,
         "threads": threads or "default",
-        "prefill": f"{best['prefill']:.1f}",
-        "decode": f"{best['decode']:.1f}",
+        "prefill": f"{rec['prefill_tps']:.1f}",
+        "decode": f"{rec['decode_tps']:.1f}",
+        "ttft": f"{ttft_ms(rec):.0f}",
+        "spread": f"±{spread:.0f}%",
     }
-    print(f"\nbest: prefill {row['prefill']} tok/s | decode {row['decode']} tok/s "
-          f"({row['host']}, {args.target}/{args.mode}, threads={row['threads']})")
+    print(f"\n{rec.get('agg', 'mean')} of {rec.get('repeats', '?')} repeats: "
+          f"prefill {row['prefill']} tok/s | decode {row['decode']} tok/s {row['spread']} | "
+          f"TTFT {row['ttft']} ms | RSS {rec.get('rss_mb', 0):.0f} MB")
+    print(f"  ({row['host']}, {args.target}/{args.mode}, threads={row['threads']})")
+    print(f"  raw record: {raw}")
 
     if args.record and args.benchmark_md:
         update_benchmark_md(Path(args.benchmark_md), row)
@@ -132,12 +194,33 @@ def perf_suite(args: argparse.Namespace) -> None:
 # the marker is preserved; only the auto-recorded table below it is rewritten.
 MARKER = "<!-- BENCH:AUTO -->"
 
+# A recorded row always starts with an ISO date; prose tables in the same file do not.
+DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _split_at_marker(text: str) -> tuple[str, str | None]:
+    """Split into (hand-written prose, auto-table area) at the REAL marker.
+
+    The marker must be alone on its line. The prose above legitimately *mentions*
+    the marker inline (in backticks) to explain the convention; splitting on the
+    first textual occurrence would treat that sentence as the boundary and
+    destroy every line below it on the next --record run.
+    """
+    lines = text.splitlines(keepends=True)
+    idx = None
+    for i, line in enumerate(lines):
+        if line.strip() == MARKER:
+            idx = i
+    if idx is None:
+        return text, None
+    return "".join(lines[:idx]), "".join(lines[idx + 1:])
+
 # Column layout of the auto-recorded table — one source of truth for both the
 # header and every positional access below (no magic indices elsewhere).
 COLUMNS = ["Date", "Model", "Host", "OS", "Target/Mode", "Threads",
-           "Prefill tok/s", "Decode tok/s"]
+           "Prefill tok/s", "Decode tok/s", "Spread", "TTFT ms"]
 (COL_DATE, COL_MODEL, COL_HOST, COL_OS, COL_TARGET_MODE,
- COL_THREADS, COL_PREFILL, COL_DECODE) = range(len(COLUMNS))
+ COL_THREADS, COL_PREFILL, COL_DECODE, COL_SPREAD, COL_TTFT) = range(len(COLUMNS))
 # Columns identifying a unique config (date + tok/s excluded).
 KEY_COLS = (COL_MODEL, COL_HOST, COL_OS, COL_TARGET_MODE, COL_THREADS)
 
@@ -156,17 +239,27 @@ def update_benchmark_md(path: Path, row: dict) -> None:
     """Insert/replace this run's row, keeping the best decode tok/s per key."""
     new_cells = [row["date"], row["model"], row["host"], row["os"],
                  f"{row['target']}/{row['mode']}", row["threads"],
-                 row["prefill"], row["decode"]]
+                 row["prefill"], row["decode"], row["spread"], row["ttft"]]
 
     existing: dict[tuple, list[str]] = {}
     preamble = ""
     if path.is_file():
         text = path.read_text()
-        if MARKER in text:
-            preamble = text.split(MARKER)[0]
-            for line in text.split(MARKER)[1].splitlines():
+        head, tail = _split_at_marker(text)
+        if tail is not None:
+            preamble = head
+            for line in tail.splitlines():
                 if line.strip().startswith("|") and "tok/s" not in line and ":---" not in line:
                     cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                    # Only OUR rows: the first cell is an ISO date. Hand-written
+                    # prose tables may follow the marker and must not be slurped
+                    # into the auto table (the old exact-width check hid this).
+                    if not cells or not DATE_RE.fullmatch(cells[0]):
+                        continue
+                    # Rows recorded before Spread/TTFT existed are padded rather
+                    # than dropped — an old row is history, not garbage.
+                    if len(cells) < len(COLUMNS):
+                        cells += ["—"] * (len(COLUMNS) - len(cells))
                     if len(cells) == len(COLUMNS):
                         existing[_row_key(cells)] = cells
         else:
@@ -182,7 +275,7 @@ def update_benchmark_md(path: Path, row: dict) -> None:
         preamble = ("# geist Benchmarks (auto-recorded)\n\n"
                     "Rows below are appended by `make bench-small` / `bench-detailed`. "
                     "Each (model, host, os, target/mode, threads) key keeps its best "
-                    "decode run. See [BENCHMARKING.md](BENCHMARKING.md) for methodology.\n\n")
+                    "decode run. See [../METHODOLOGY.md](../METHODOLOGY.md) for methodology.\n\n")
 
     rows = sorted(existing.values(),
                   key=lambda c: (c[COL_MODEL], c[COL_HOST], c[COL_TARGET_MODE]))
