@@ -146,7 +146,7 @@ Prefill t/s alone understates geist: a real generation is **decode-dominated**
 (one prefill, many decode steps), so end-to-end throughput is what a user feels.
 Measured with the speculative output head **on** (the default since June 2026),
 each engine cold-started under a tight ≤50 °C gate (no thermal skew), total =
-(P+D)/(t_prefill + t_decode). Harness: [`total_tps.py`](total_tps.py).
+(P+D)/(t_prefill + t_decode). Harness: [`total_tps.py`](../total_tps.py).
 
 **32-token prompt + 128 decode (decode-heavy):**
 

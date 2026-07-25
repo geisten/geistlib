@@ -175,7 +175,7 @@ documented subset supports object/string/number/integer/boolean/array,
 For dynamic tools Geist never owns the action. It emits a correlated
 `tool.call`; the host revalidates and executes, returns `tool.result`, and Geist
 continues. Calls, one retry, cancellation and final results share the same global
-budget. See [dynamic-tools-v1.md](proposals/dynamic-tools-v1.md). Build the
+budget. See [dynamic-tools-v1.md](dynamic-tools-v1.md). Build the
 reference host with `make dynamic-example-host`.
 
 ### Progress events
