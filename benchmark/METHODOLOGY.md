@@ -1,14 +1,14 @@
 # Benchmarking geist
 
-How to produce trustworthy numbers. See [BENCHMARK.md](BENCHMARK.md) for the
+How to produce trustworthy numbers. See [results/APPLE.md](results/APPLE.md) for the
 Apple M1 Max comparison + auto-recorded results and
-[BENCHMARK_PI5.md](BENCHMARK_PI5.md) for the Raspberry Pi 5 target.
+[results/PI5.md](results/PI5.md) for the Raspberry Pi 5 target.
 
 ## Perf (reproducible, in-tree)
 
 ```sh
 make fetch-model                         # Gemma 4 E2B-it Q4_K_M, ~3.1 GB
-OMP_WAIT_POLICY=active make bench-small   # best-of-2, records to benchmark/BENCHMARK.md
+OMP_WAIT_POLICY=active make bench-small   # best-of-2, records to benchmark/results/APPLE.md
 OMP_WAIT_POLICY=active make bench-detailed # best-of-5
 BENCH_THREADS=6 OMP_WAIT_POLICY=active make bench-detailed  # pin thread count
 ```
@@ -121,7 +121,7 @@ python3 tools/eval_mmlu.py --bin .../eval_geist --gguf model.gguf --hf --shuffle
 both engines see the *identical* questions (same `--shuffle` seed), 5-shot
 exemplars and prompt text — only the kernels differ. Result on Gemma 4 E2B
 Q4_K_M (500 q): **geist 52.8% vs llama.cpp 54.0%** — inside the ±4.4% binomial CI
-at n=500, i.e. iso-quality (see [BENCHMARK_PI5.md](BENCHMARK_PI5.md#quality)).
+at n=500, i.e. iso-quality (see [results/PI5.md](results/PI5.md#quality)).
 
 Two gotchas that make or break the comparison:
 - **BOS:** Gemma needs `<bos>` (id 2) prepended. `eval_mmlu.py --bos` defaults to
@@ -152,3 +152,31 @@ python3 benchmark/chart_headline.py     # -> assets/headline_benchmarks.svg
 
 `headline_results.json` is curated input, not raw output: each row names its
 baseline engine and pinned version, and sub-parity rows are kept on purpose.
+
+## Methodology — and why the two machines use different aggregation
+
+Both machines run the **same model and quantization**, both engines CPU-only, each
+at its best thread count, after a **discarded warm-up run** (the runtime pages
+weights resident and spins up the OpenMP pool, so timings reflect steady state, not
+cold-start). llama.cpp build `d05fe1d`.
+
+- **Raspberry Pi 5 — `mean of 10`, cool start.** A dedicated headless box,
+  genuinely quiesced (load 0.0). The mean is meaningful: spread is <2 % run-to-run.
+  Crucially, **both engines are started from a cool baseline (<56 °C)** — a 4.6 B
+  prefill drives this passively-cooled board to ~78 °C and trips the soft temp
+  limit in under a minute, so benchmarking one engine right after the other
+  throttles the second (this is exactly what understated llama's pp128 to 22 t/s
+  in an earlier revision — cool, it is ~37).
+- **Apple M1 Max — `best of 10`.** A developer workstation that *cannot* be
+  quiesced while in use (WindowServer, browser, IDE all contend for the P-cores).
+  On a contended box the **mean** is dominated by interference spikes (±20 %
+  run-to-run), so we report the **best** of 10 repeats — the least-interrupted run,
+  which approximates the uncontended ceiling and is stable across independent
+  campaigns. Both engines use best-of here, so the comparison stays
+  apples-to-apples.
+
+**Always measure on a quiesced box.** On the 4-core Pi a single stray process
+eating one core inverts the 4-thread numbers. Reproduce with `bench_perf_sweep`
+(geist) and `llama-bench` (reference) — see the sections above for
+the exact commands, the correctness gate (bit-identical greedy output on the same
+weights), and the quality/PPL caveats.

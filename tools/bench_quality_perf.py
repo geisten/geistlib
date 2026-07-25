@@ -8,7 +8,7 @@ results from different machines never silently overwrite each other.
 
 Perf suites (`small`, `detailed`) are fully implemented: they run the C
 `bench_perf_sweep` binary against a GGUF and record prefill/decode tok/s,
-derived TTFT and the run-to-run spread into benchmark/BENCHMARK.md, keeping
+derived TTFT and the run-to-run spread into benchmark/results/APPLE.md, keeping
 the best run per (model, host, os, target, mode, threads) key.
 
 The sweep owns the measurement protocol — warm-up, repeats, and the
@@ -19,13 +19,13 @@ re-implement any statistics.
 Quality suites (`quality-small`, `quality-detailed`) and `compare-ref` require
 a reference toolchain (HF tokenizer + datasets, and/or a llama.cpp build) that
 is out of scope for a hermetic `make` invocation. They print setup guidance and
-exit cleanly rather than failing the build. See benchmark/BENCHMARKING.md.
+exit cleanly rather than failing the build. See benchmark/METHODOLOGY.md.
 
 Usage (normally invoked via the Makefile):
     python3 tools/bench_quality_perf.py --suite small \\
         --target mac-omp --mode release \\
         --bin-dir bin/mac-omp/release/tests --out-dir ~/bench-geistlib/quality_perf \\
-        --benchmark-md benchmark/BENCHMARK.md --record
+        --benchmark-md benchmark/results/APPLE.md --record
 
 Environment:
     BENCH_GGUF      Path to the model GGUF (falls back to GEIST_GGUF_PATH).
@@ -275,7 +275,7 @@ def update_benchmark_md(path: Path, row: dict) -> None:
         preamble = ("# geist Benchmarks (auto-recorded)\n\n"
                     "Rows below are appended by `make bench-small` / `bench-detailed`. "
                     "Each (model, host, os, target/mode, threads) key keeps its best "
-                    "decode run. See [BENCHMARKING.md](BENCHMARKING.md) for methodology.\n\n")
+                    "decode run. See [../METHODOLOGY.md](../METHODOLOGY.md) for methodology.\n\n")
 
     rows = sorted(existing.values(),
                   key=lambda c: (c[COL_MODEL], c[COL_HOST], c[COL_TARGET_MODE]))

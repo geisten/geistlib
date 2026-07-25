@@ -82,10 +82,10 @@ make MODE=asan test-unit          # AddressSanitizer + UBSan
 
 ```sh
 make bench           # raw timing probes (bench_* binaries)
-make bench-small     # reproducible perf suite, records to benchmark/BENCHMARK.md
+make bench-small     # reproducible perf suite, records to benchmark/results/APPLE.md
 ```
 
-See [benchmark/BENCHMARKING.md](benchmark/BENCHMARKING.md) for methodology and the
+See [benchmark/METHODOLOGY.md](benchmark/METHODOLOGY.md) for methodology and the
 quality/compare-ref procedures. **Never hand-edit recorded benchmark numbers** —
 regenerate them on the relevant hardware.
 
