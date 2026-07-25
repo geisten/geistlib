@@ -164,7 +164,7 @@ curl -L -o bitnet-2b4t.i2_s.gguf \
 > **Vision & audio** ride on the Gemma 4 model — the engine has SigLIP (vision) and
 > a Conformer (audio) tower built in; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 > for attaching image/audio inputs. TQ2_0 has no canonical GGUF yet — convert
-> the 1bitLLM base (see [`benchmark/TERNARY_BITNET.md`](benchmark/TERNARY_BITNET.md)).
+> the 1bitLLM base (see [`benchmark/results/TERNARY.md`](benchmark/results/TERNARY.md)).
 
 ---
 
@@ -204,11 +204,11 @@ Reproduce it on your own hardware:
 
 ```bash
 make && make fetch-model                    # build ./geist + pull the Gemma GGUF
-OMP_WAIT_POLICY=active make bench-small      # records decode t/s to benchmark/BENCHMARK.md
+OMP_WAIT_POLICY=active make bench-small      # records decode t/s to benchmark/results/APPLE.md
 ```
 
 <sub>Cross-engine comparison vs a pinned llama.cpp, quality (MMLU) and full
-methodology: [`benchmark/BENCHMARKING.md`](benchmark/BENCHMARKING.md).</sub>
+methodology: [`benchmark/METHODOLOGY.md`](benchmark/METHODOLOGY.md).</sub>
 
 ### Ternary (1.58-bit) as a first-class citizen
 geistlib runs Microsoft's BitNet b1.58 (`TQ2_0` and canonical `I2_S`) with integer-only
@@ -288,7 +288,7 @@ Repository ownership and the complete map are in
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Run the CLI and embed the library in two minutes. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, load-time kernel binding, the pipeline. |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Single-binary and embedded deployment. |
-| [`benchmark/`](benchmark/README.md) | Methodology & full results ([Apple/Pi 5](benchmark/BENCHMARK.md), [ternary BitNet](benchmark/TERNARY_BITNET.md), [Vulkan GPU](benchmark/BENCHMARK_VULKAN.md)). |
+| [`benchmark/`](benchmark/README.md) | Methodology & full results ([Apple/Pi 5](benchmark/results/APPLE.md), [ternary BitNet](benchmark/results/TERNARY.md), [Vulkan GPU](benchmark/results/VULKAN.md)). |
 | [`include/geist.h`](include/geist.h) | The public C API, with `STABLE` / `EXPERIMENTAL` stability tags. |
 
 <details>
@@ -315,7 +315,7 @@ Repository ownership and the complete map are in
 
 <sub>**Metal (Apple GPU) backend** (`BACKENDS="… metal"`) is experimental: greedy decode is bit-exact vs the `cpu_scalar` reference and within **12 %** of llama.cpp Metal (81.2 vs 91.3 t/s decode), holding up at long context past the 4096 default. Full kernel notes and the measurement ledger: [`docs/proposals/metal-beat-llamacpp-plan.md`](docs/proposals/metal-beat-llamacpp-plan.md).</sub>
 
-<sub>**Vulkan backend** (`BACKENDS="… vulkan"`) is experimental: the first non-Apple GPU path (NVIDIA Turing tested; libvulkan is dlopen'd, no link-time dependency). Quality gate passed (MMLU-200 0.520 vs 0.490 on the CPU path, 14/14 tool-calling) and decode reaches **~86 %** of llama.cpp Vulkan (132.3 vs 154 t/s tg128); prefill is the open front. The phase-by-phase lab log lives in [`benchmark/BENCHMARK_VULKAN.md`](benchmark/BENCHMARK_VULKAN.md).</sub>
+<sub>**Vulkan backend** (`BACKENDS="… vulkan"`) is experimental: the first non-Apple GPU path (NVIDIA Turing tested; libvulkan is dlopen'd, no link-time dependency). Quality gate passed (MMLU-200 0.520 vs 0.490 on the CPU path, 14/14 tool-calling) and decode reaches **~86 %** of llama.cpp Vulkan (132.3 vs 154 t/s tg128); prefill is the open front. The phase-by-phase lab log lives in [`benchmark/results/VULKAN.md`](benchmark/results/VULKAN.md).</sub>
 </details>
 
 ---
@@ -346,7 +346,7 @@ building:
 - **Squeeze the model, not the user** — quantize aggressively and run the most
   extreme quantizations (ternary and binary) as first-class citizens, not
   afterthoughts.
-- **Research ternary / binary models** — [BitNet](benchmark/TERNARY_BITNET.md) is
+- **Research ternary / binary models** — [BitNet](benchmark/results/TERNARY.md) is
   just the start; 1.58-bit is where the interesting math lives.
 - **Optimized for what people actually own** — CPUs and small GPUs, all the way down
   to a Raspberry Pi 5.

@@ -5,7 +5,7 @@ if prefill/decode tok/s fall below floors.
 A COARSE cliff-detector for CI: shared cloud runners are noisy (±~20%), so the
 floors are set well below the real number — this catches gross regressions
 (scalar fallback, -O0 sneaking in, OpenMP off, a kernel returning early), not
-subtle ones. The Raspberry Pi 5 stays the precise arbiter (benchmark/BENCHMARK_PI5.md).
+subtle ones. The Raspberry Pi 5 stays the precise arbiter (benchmark/results/PI5.md).
 
   bench_perf_sweep --gguf M --seq-lens 128 --decode-n 16 ... | \
     python3 benchmark/perf_gate.py --min-prefill 20 --min-decode 4
