@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run dynamic-example-host clean distclean help test test-unit test-int test-e2e test-all test-py fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu format format-check
+.PHONY: all lib bin run dynamic-example-host clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -211,6 +211,16 @@ test-py:
 	done; \
 	if [ $$status -ne 0 ]; then echo "test-py: FAIL"; exit $$status; fi; \
 	echo "test-py: PASS"
+
+# Dequant parity against gguf-py, the canonical reference implementation.
+# Kept out of test-py, which is hermetic by contract — this one needs a real
+# GGUF. Skips (77) when the model or the `gguf` package is missing, so it is
+# safe to run anywhere; pass GGUF files as arguments to check specific ones.
+test-dequant: bin
+	@python3 tests/scripts/validate_gguf_dequant.py $(DEQUANT_MODELS); \
+	rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "test-dequant: SKIPPED"; exit 0; fi; \
+	exit $$rc
 
 # `make test-all` adds e2e but excludes benches. Model first (see `test`).
 test-all: $(MODEL_PREREQ) test-unit test-int test-py test-e2e

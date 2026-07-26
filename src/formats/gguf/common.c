@@ -75,6 +75,14 @@ bool gguf_dequant_row_to_fp32(const struct gguf_tensor_t *t,
             out[i] = fp16_to_fp32(h[i]);
         return true;
     }
+    case GGUF_TYPE_BF16: {
+        /* BF16 = top 16 bits of FP32; left-shift restores fp32 layout. */
+        const uint16_t *h = (const uint16_t *) t->data + row_idx * row_elems;
+        uint32_t       *o = (uint32_t *) out;
+        for (size_t i = 0; i < row_elems; i++)
+            o[i] = ((uint32_t) h[i]) << 16;
+        return true;
+    }
     case GGUF_TYPE_Q8_0: {
         const size_t   blocks_per_row = row_elems / Q8_0_BLOCK_ELEMS;
         const uint8_t *base =

@@ -1,10 +1,15 @@
 /*
  * test_gguf_dequant — dequantizes a tensor from a GGUF file and writes
  * raw FP32 binary. validate_gguf_dequant.py compares this against gguf-py's
- * dequantization for bit-close parity.
+ * dequantization for bit-exact parity.
+ *
+ * The optional row cap keeps that comparison affordable. Whole-tensor dequant
+ * of a large embedding table is measured in tens of GB of FP32 (gemma-4-E2B's
+ * per_layer_token_embd alone is 2.3e9 elements), which no Pi and no CI runner
+ * can hold. With a cap we walk the same kernels row by row instead.
  */
+#include "gguf_dequant.h"
 #include "gguf_reader.h"
-#include "quant.h"
 #include "test_helpers.h"
 
 #include <stdio.h>
@@ -12,7 +17,8 @@
 #include <string.h>
 
 int main(int argc, char **argv) {
-    GEIST_REQUIRE_ARGS(argc, 4, "<model.gguf> <tensor_name> <out.bin>");
+    GEIST_REQUIRE_ARGS(argc, 4, "<model.gguf> <tensor_name> <out.bin> [max_rows]");
+    const size_t max_rows = argc > 4 ? strtoull(argv[4], nullptr, 10) : 0;
 
     const char      *err = nullptr;
     struct gguf_ctx *ctx = gguf_open(argv[1], &err);
@@ -37,50 +43,62 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr, "], %zu elems, %zu bytes\n", elems, t->nbytes);
 
-    float *out = (float *) malloc(elems * sizeof(float));
-    if (!out) {
-        gguf_close(ctx);
-        return 1;
-    }
-
-    switch (t->dtype) {
-    case GGUF_TYPE_Q8_0:
-        dequant_q8_0_row(t->data, out, elems);
-        break;
-    case GGUF_TYPE_Q4_K:
-        dequant_q4_K_row(t->data, out, elems);
-        break;
-    case GGUF_TYPE_Q6_K:
-        dequant_q6_K_row(t->data, out, elems);
-        break;
-    case GGUF_TYPE_F32:
-        memcpy(out, t->data, elems * sizeof(float));
-        break;
-    case GGUF_TYPE_F16: {
-        const uint16_t *h = (const uint16_t *) t->data;
-        for (size_t i = 0; i < elems; i++)
-            out[i] = fp16_to_fp32(h[i]);
-        break;
-    }
-    default:
-        fprintf(stderr, "unsupported dtype %s for dequant\n", gguf_dtype_name(t->dtype));
-        free(out);
-        gguf_close(ctx);
-        return 1;
-    }
+    /* row_elems is the row length in elements = the fastest-varying dim. */
+    const size_t row_elems = (size_t) t->dims[0];
+    const size_t rows      = row_elems ? elems / row_elems : 0;
+    const size_t want_rows = (max_rows && max_rows < rows) ? max_rows : rows;
 
     FILE *fo = fopen(argv[3], "wb");
     if (!fo) {
         perror("fopen out");
-        free(out);
         gguf_close(ctx);
         return 1;
     }
-    xfwrite(out, sizeof(float), elems, fo);
-    fclose(fo);
-    fprintf(stderr, "wrote %zu floats to %s\n", elems, argv[3]);
 
-    free(out);
+    int rc = 0;
+    if (want_rows == rows) {
+        /* Dispatch through the engine's own tensor-aware dequant rather than a
+         * switch of our own: the check then covers exactly the dtypes the
+         * loader supports, and gains new ones without an edit here. */
+        float *out = gguf_dequant_to_fp32(t);
+        if (!out) {
+            fprintf(stderr, "dequant failed for dtype %s\n", gguf_dtype_name(t->dtype));
+            rc = 1;
+        } else {
+            xfwrite(out, sizeof(float), elems, fo);
+            fprintf(stderr, "wrote %zu floats to %s\n", elems, argv[3]);
+            free(out);
+        }
+    } else {
+        /* Same kernels, one row at a time — this is the path the PLE loader
+         * takes on a memory-constrained board. */
+        float *row = (float *) malloc(row_elems * sizeof(float));
+        if (!row) {
+            rc = 1;
+        }
+        for (size_t r = 0; rc == 0 && r < want_rows; r++) {
+            if (!gguf_dequant_row_to_fp32(t, r, row_elems, row)) {
+                fprintf(stderr,
+                        "row dequant failed at row %zu (%s)\n",
+                        r,
+                        gguf_dtype_name(t->dtype));
+                rc = 1;
+                break;
+            }
+            xfwrite(row, sizeof(float), row_elems, fo);
+        }
+        free(row);
+        if (rc == 0) {
+            fprintf(stderr,
+                    "wrote %zu of %zu rows (%zu floats) to %s\n",
+                    want_rows,
+                    rows,
+                    want_rows * row_elems,
+                    argv[3]);
+        }
+    }
+
+    fclose(fo);
     gguf_close(ctx);
-    return 0;
+    return rc;
 }
