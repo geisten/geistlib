@@ -12,6 +12,8 @@ make test-unit     # only fast kernel-level tests (suffix _unit)
 make test-int      # only multi-module integration tests (suffix _int)
 make test-e2e      # only end-to-end tests (suffix _e2e — slow, may need GGUF)
 make test-all      # unit + int + e2e
+make test-py       # Python-side reference impls (hermetic: no GGUF, no network)
+make test-dequant  # dequant kernels vs gguf-py, bit-exact (needs a GGUF; skips if absent)
 make dynamic-example-host # compile the independent Phase-3 host
 
 # Filtering
