@@ -76,6 +76,17 @@ $(DYNAMIC_EXAMPLE_HOST): examples/dynamic_tools_host.c tools/dynamic_tools_v1.h 
 	@mkdir -p $(@D)
 	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -I. $< -o $@
 
+# Agent-runtime API contract (docs/API_CONTRACT.md). An out-of-tree agent
+# runtime links these symbols across a release boundary, so a signature change
+# must fail HERE — not in the consumer's build. Compiling pins the signatures,
+# linking pins their existence; the binary itself only reports.
+AGENT_CONTRACT_SMOKE := $(BIN_DIR)/examples/agent_contract_smoke
+agent-contract-smoke: $(AGENT_CONTRACT_SMOKE)
+	@$(AGENT_CONTRACT_SMOKE)
+$(AGENT_CONTRACT_SMOKE): examples/agent_contract_smoke.c $(LIB_FILE) include/geist.h include/geist_util.h
+	@mkdir -p $(@D)
+	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -Iinclude $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)
+
 # ---- Optional: embed a model into the geist CLI (single-binary deploy) -----
 # `make EMBED_MODEL=path/to/model.gguf` bakes the GGUF into ./geist via an
 # .incbin stub, so the binary needs no model file — the CLI then takes only a
