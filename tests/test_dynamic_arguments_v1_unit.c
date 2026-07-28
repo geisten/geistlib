@@ -55,15 +55,14 @@ int main(void) {
     const char *ids = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\","
                       "\"enum\":[\"kitchen_light\",\"hallway_light\",\"desk_lamp\"]}},"
                       "\"required\":[\"name\"]}";
-    failures += build("underscore id", ids, "Turn on the kitchen light",
-                      "{\"name\":\"kitchen_light\"}");
-    failures += build("underscore id de", ids, "Schalte desk lamp ein",
-                      "{\"name\":\"desk_lamp\"}");
+    failures += build(
+            "underscore id", ids, "Turn on the kitchen light", "{\"name\":\"kitchen_light\"}");
+    failures += build("underscore id de", ids, "Schalte desk lamp ein", "{\"name\":\"desk_lamp\"}");
     const char *dotted = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\","
                          "\"enum\":[\"light.kitchen\",\"light.hallway\"]}},"
                          "\"required\":[\"name\"]}";
-    failures += build("dotted entity id", dotted, "Is the kitchen light on?",
-                      "{\"name\":\"light.kitchen\"}");
+    failures += build(
+            "dotted entity id", dotted, "Is the kitchen light on?", "{\"name\":\"light.kitchen\"}");
     /* Fail closed rather than pick a device: "the light" fits two permitted
      * values equally well, and acting on a guess is the failure mode the
      * clarification path exists for. */
