@@ -147,6 +147,43 @@ geist_dynamic_boolean(size_t text_len, const char text[static text_len], int *va
     return 0;
 }
 
+/* How well an enum choice matches the request: the count of its alphanumeric
+ * runs that occur in `text`, or 0 if any run of length >= 2 is missing.
+ *
+ * A literal substring test cannot fill an enum-constrained argument, because
+ * identifiers carry separators that speech does not: "kitchen_light" and
+ * "light.kitchen" never appear verbatim in "turn on the kitchen light". Runs
+ * shorter than two characters are ignored rather than required — they are too
+ * weak to be evidence and would match almost anything. */
+static inline unsigned geist_dynamic_enum_score(size_t      text_len,
+                                                const char  text[static text_len],
+                                                const char *choice,
+                                                size_t      choice_len) {
+    unsigned matched = 0u;
+    size_t   i       = 0u;
+    while (i < choice_len) {
+        while (i < choice_len && !isalnum((unsigned char) choice[i])) {
+            i++;
+        }
+        size_t begin = i;
+        while (i < choice_len && isalnum((unsigned char) choice[i])) {
+            i++;
+        }
+        size_t run = i - begin;
+        if (run == 0u) {
+            break;
+        }
+        if (run < 2u) {
+            continue; /* too short to carry evidence either way */
+        }
+        if (!geist_dynamic_text_contains(text_len, text, choice + begin, run)) {
+            return 0u;
+        }
+        matched++;
+    }
+    return matched;
+}
+
 static inline int geist_dynamic_enum_match(const struct jsv1_doc *schema,
                                            int                    value_schema,
                                            size_t                 text_len,
@@ -161,13 +198,52 @@ static inline int geist_dynamic_enum_match(const struct jsv1_doc *schema,
         if (choice > after && schema->tokens[choice].type == JSV1_STRING &&
             !schema->tokens[choice].escaped) {
             size_t length = schema->tokens[choice].end - schema->tokens[choice].start;
-            if (geist_dynamic_text_contains(
-                        text_len, text, schema->json + schema->tokens[choice].start, length))
+            if (geist_dynamic_enum_score(
+                        text_len, text, schema->json + schema->tokens[choice].start, length) > 0u)
                 return choice;
         }
         cursor = choice;
     }
     return -1;
+}
+
+/* The single permitted value a request means, for a scalar enum argument.
+ *
+ * Unlike the array form above — which collects every mentioned value in schema
+ * order — a scalar must resolve to exactly one. The best-scoring choice wins;
+ * a tie fails closed, because two devices fitting the request equally well is
+ * precisely the case where the runtime must ask instead of picking one and
+ * acting on it. */
+static inline int geist_dynamic_enum_match_unique(const struct jsv1_doc *schema,
+                                                  int                    value_schema,
+                                                  size_t                 text_len,
+                                                  const char             text[static text_len]) {
+    int choices = jsv1_object_get(schema, value_schema, "enum");
+    if (choices < 0)
+        return -1;
+    int      cursor     = choices;
+    int      best       = -1;
+    unsigned best_score = 0u;
+    bool     ambiguous  = false;
+    for (unsigned i = 0u; i < schema->tokens[choices].size; i++) {
+        int choice = jsv1_child(schema, choices, cursor);
+        if (schema->tokens[choice].type == JSV1_STRING && !schema->tokens[choice].escaped) {
+            size_t   length = schema->tokens[choice].end - schema->tokens[choice].start;
+            unsigned score  = geist_dynamic_enum_score(
+                    text_len, text, schema->json + schema->tokens[choice].start, length);
+            if (score > best_score) {
+                best       = choice;
+                best_score = score;
+                ambiguous  = false;
+            } else if (score == best_score && score > 0u) {
+                ambiguous = true;
+            }
+        }
+        cursor = choice;
+    }
+    if (best_score == 0u || ambiguous)
+        return -1;
+    return best;
 }
 
 static inline size_t geist_dynamic_append_raw(
@@ -210,7 +286,7 @@ static inline size_t geist_dynamic_arguments_build(const char *schema_json,
         size_t      name_len     = schema.tokens[name].end - schema.tokens[name].start;
         const char *name_text    = schema.json + schema.tokens[name].start;
         int include = required || geist_dynamic_text_contains(text_len, text, name_text, name_len);
-        int enum_choice     = geist_dynamic_enum_match(&schema, value_schema, text_len, text, -1);
+        int enum_choice = geist_dynamic_enum_match_unique(&schema, value_schema, text_len, text);
         size_t number_start = 0u, number_len = 0u;
         int    boolean_value = 0;
         if (enum_choice >= 0)
