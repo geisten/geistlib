@@ -51,12 +51,15 @@ geist_token_t geist_model_token_by_text(const struct geist_model *m, const char 
 /* Tokenization / direct token feeding                                     */
 /* ====================================================================== */
 
-/* @stability EXPERIMENTAL — tokenize without prefilling. Lets the caller
- * inspect the token IDs that would be produced by set_prompt, e.g. to
- * seed a speculative-decode drafter's history buffer with the prompt
- * tokens. Writes up to `out_capacity` IDs to `out_ids` and the actual
- * count to `*n_out`. Returns GEIST_E_NOT_FOUND if no tokenizer is
- * loaded, GEIST_E_INVALID_ARG on overflow. */
+/* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
+ *
+ * Tokenize without prefilling. Lets the caller inspect the token IDs that
+ * would be produced by set_prompt, e.g. to seed a speculative-decode
+ * drafter's history buffer with the prompt tokens, or to measure a
+ * constrained candidate before committing it. Writes up to `out_capacity`
+ * IDs to `out_ids` and the actual count to `*n_out`. Returns
+ * GEIST_E_NOT_FOUND if no tokenizer is loaded, GEIST_E_INVALID_ARG on
+ * overflow. */
 [[nodiscard]] enum geist_status
 geist_session_tokenize(struct geist_session *s,
                        const char           *text,
@@ -127,7 +130,7 @@ enum geist_status geist_session_attach_video(struct geist_session *s,
 /* Advanced decode: KV-prefix pinning, raw logits, speculative             */
 /* ====================================================================== */
 
-/* @stability EXPERIMENTAL — KV-cache layout API.
+/* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *
  * Pin `n` prefix tokens into the KV cache. After pin_prefix returns
  * GEIST_OK, the session's cache holds those tokens' KV state and any
@@ -142,15 +145,22 @@ enum geist_status geist_session_pin_prefix(struct geist_session *s,
                                             size_t                n,
                                             const geist_token_t   ids[static n]);
 
-/* @stability EXPERIMENTAL — raw-logits accessor for evaluation / scoring.
+/* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *
- * Returns a pointer to the cached next-position logits and writes the
- * vocab size to *n_logits. Returns nullptr (and sets *n_logits=0) if no
- * logits are pending — call geist_session_prefill_tokens / set_prompt /
- * decode_step first. Pointer is valid until the next mutating call on
- * the session. Returns nullptr if the active architecture does not
- * implement peek_logits (Mamba2 currently). CPU-backend only — GPU
- * backends will need a copy variant; out of scope for 0.1.0. */
+ * Raw-logits accessor for evaluation, scoring, and constrained decoding.
+ *
+ * Returns a pointer to the next-position logits and writes the vocab size
+ * to *n_logits. Returns nullptr (and sets *n_logits=0) if no logits are
+ * pending — call geist_session_prefill_tokens / set_prompt / decode_step
+ * first — or if the active architecture does not implement peek_logits
+ * (Mamba2 currently), which callers must treat as "constrained decoding
+ * unavailable", not as an error.
+ *
+ * Ownership: the buffer belongs to the SESSION, not the backend, and stays
+ * valid until the next mutating call on that session. It may be a staging
+ * copy — an accelerator backend satisfies this contract by copying device
+ * memory into session storage, so the signature does not change when such a
+ * backend lands. Do not free it and do not hold it across a decode. */
 const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits);
 
 /* @stability EXPERIMENTAL — speculative-decode API.

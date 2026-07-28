@@ -249,7 +249,9 @@ text bottleneck would discard.
 - The forward pass: `src/archs/transformer/forward/step.c`.
 - Kernel binding: `src/backends/cpu_neon/weight_resolve.c`.
 - A representative low-bit kernel: `src/backends/cpu_neon/kernels/q4_K.c`.
-- The public contract: `include/geist.h` (stability tags per symbol).
+- The public contract: `include/geist.h` (stability tags per symbol), and
+  what those tags promise across a release boundary:
+  [API_CONTRACT.md](API_CONTRACT.md).
 - The tool-use SDK interface (`agent.h`, `--serve`, dynamic-tools-v1; concrete
   tools live in consumer repos): [agent.md](agent.md).
 - Building self-contained binaries and deploying: [DEPLOY.md](DEPLOY.md).
