@@ -1910,6 +1910,64 @@ static inline int agent_next_opens_call(struct geist_agent *a) {
     return piece && (*piece == '{' || *piece == '`');
 }
 
+enum {
+    AGENT_ENUM_MAX_CHOICES = 32,   /* permitted values considered per argument */
+    AGENT_ENUM_TEXT_CAP    = 2048, /* their combined length */
+};
+
+/* Collect the permitted values of property `key` from a dynamic-tools-v1
+ * parameters schema into `text`, returning how many were found.
+ *
+ * Returns 0 when the tool has no dynamic schema, the key has no enum, or the
+ * schema does not parse — the caller then decodes the value freely, which is
+ * the behaviour that existed before enum values were constrained. */
+static inline size_t agent_enum_choices(const char *parameters_schema,
+                                        const char *key,
+                                        size_t      text_cap,
+                                        char        text[static text_cap],
+                                        size_t      max_choices,
+                                        const char *out[static max_choices]) {
+    if (parameters_schema == nullptr || key == nullptr || max_choices == 0u) {
+        return 0u;
+    }
+    struct jsv1_token tokens[JSV1_MAX_TOKENS];
+    struct jsv1_doc   doc;
+    if (jsv1_parse(parameters_schema, strlen(parameters_schema), JSV1_MAX_TOKENS, tokens, &doc) !=
+        JSV1_OK) {
+        return 0u;
+    }
+    int properties = jsv1_object_get(&doc, 0, "properties");
+    if (properties < 0) {
+        return 0u;
+    }
+    int value_schema = jsv1_object_get(&doc, properties, key);
+    if (value_schema < 0) {
+        return 0u;
+    }
+    int choices = jsv1_object_get(&doc, value_schema, "enum");
+    if (choices < 0) {
+        return 0u;
+    }
+    size_t n      = 0u;
+    size_t w      = 0u;
+    int    cursor = choices;
+    for (unsigned i = 0u; i < doc.tokens[choices].size && n < max_choices; i++) {
+        int choice = jsv1_child(&doc, choices, cursor);
+        if (doc.tokens[choice].type == JSV1_STRING && !doc.tokens[choice].escaped) {
+            size_t length = (size_t) (doc.tokens[choice].end - doc.tokens[choice].start);
+            if (w + length + 1u > text_cap) {
+                break; /* keep what fits; a truncated set still constrains */
+            }
+            memcpy(text + w, doc.json + doc.tokens[choice].start, length);
+            text[w + length] = '\0';
+            out[n++]         = text + w;
+            w += length + 1u;
+        }
+        cursor = choice;
+    }
+    return n;
+}
+
 /* Decode one guaranteed-valid tool call along the grammar into out. The
  * session must be at the open model turn. Returns the call's length, or 0 if
  * the constrained decode fell apart (caller resets and free-decodes). */
@@ -1962,11 +2020,36 @@ agent_generate_call_masked(struct geist_agent *a, size_t cap, char out[static ca
         used[k] = 1;
         w       = agent_prefill_lit(a, "\":\"", cap, out, w);
 
-        /* the VALUE is the model's — free greedy, stopped at the closing
-         * quote. end: 0 no quote seen, 1 bare quote, 2 quote+',', 3 quote+'}' */
-        int    end    = 0;
-        size_t vstart = w;
-        for (int t = 0; t < 64 && w + 8 < cap && end == 0; t++) {
+        /* An enum-constrained VALUE is decoded along its permitted set, exactly
+         * as the tool name and the key are: the model still chooses, the
+         * grammar still bounds. Left free, the model writes prose ("kitchen
+         * light") where the schema demands an identifier ("kitchen_light"),
+         * the call fails validation, and the action never happens — correctly
+         * fail-closed, but useless (geistlib#135). */
+        int         end        = 0;
+        size_t      vstart     = w;
+        int         value_done = 0;
+        char        enum_text[AGENT_ENUM_TEXT_CAP];
+        const char *enum_opts[AGENT_ENUM_MAX_CHOICES];
+        size_t      n_enum = agent_enum_choices(a->tools[idx].parameters_schema,
+                                                keys[k],
+                                                sizeof enum_text,
+                                                enum_text,
+                                                AGENT_ENUM_MAX_CHOICES,
+                                                enum_opts);
+        if (n_enum > 0u) {
+            int pick = agent_decode_pick(a, n_enum, enum_opts);
+            if (pick < 0) {
+                return 0; /* partial value in the session — caller must reset */
+            }
+            w = (size_t) snprintf(out + w, w < cap ? cap - w : 0, "%s", enum_opts[pick]) + w;
+            /* close the value ourselves: the model never emitted the quote, so
+             * the boundary below must be asked, not read from a fused token. */
+            w          = agent_prefill_lit(a, "\"", cap, out, w);
+            end        = 1;
+            value_done = 1;
+        }
+        for (int t = 0; t < 64 && w + 8 < cap && end == 0 && !value_done; t++) {
             geist_token_t tok = 0;
             if (geist_session_decode_step(a->session, &tok) != GEIST_OK || tok == a->eos ||
                 (a->eot != GEIST_TOKEN_NONE && tok == a->eot)) {
@@ -1994,16 +2077,18 @@ agent_generate_call_masked(struct geist_agent *a, size_t cap, char out[static ca
                 break;
             }
         }
-        while (w > vstart && out[w - 1] == ' ') {
-            w--;
+        if (!value_done) {
+            while (w > vstart && out[w - 1] == ' ') {
+                w--;
+            }
+            if (end == 0) {
+                /* no clean quote: close the value ourselves and stop decoding —
+                 * the session is no longer aligned with the text past this point. */
+                w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "\"");
+                break;
+            }
+            out[w++] = '"'; /* the session already consumed the model's quote */
         }
-        if (end == 0) {
-            /* no clean quote: close the value ourselves and stop decoding —
-             * the session is no longer aligned with the text past this point. */
-            w += (size_t) snprintf(out + w, w < cap ? cap - w : 0, "\"");
-            break;
-        }
-        out[w++] = '"'; /* the session already consumed the model's quote */
         if (end == 3 || pair + 1 >= nk) {
             break; /* the model closed the object / no keys remain */
         }
