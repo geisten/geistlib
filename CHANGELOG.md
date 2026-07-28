@@ -8,6 +8,63 @@ minor release.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-28
+
+Tool-calling release. Every fix here was found by measuring a real toolset
+rather than by reading the code: an enum-constrained home toolset — the shape
+Home Assistant actually offers — could not be driven at all, and three separate
+defects were responsible. Tool accuracy on a 40-case calibration corpus goes
+from **0.000** to **0.967** (Gemma 4 E2B), **0.714** (BitNet b1.58 2B-4T) and
+**0.524** (Llama 3.2 1B), with decline respect at 1.000 and zero off-list calls
+throughout. Harness and raw data live in
+[geisten/geistagent](https://github.com/geisten/geistagent).
+
+### Added — agent-runtime API contract (#134)
+
+`docs/API_CONTRACT.md` states what the stability tags promise across a release
+boundary and pins the symbols an out-of-tree agent runtime links.
+`geist_session_peek_logits`, `geist_session_pin_prefix` and
+`geist_session_tokenize` are promoted from `EXPERIMENTAL` to **STABLE since
+0.6.0** — constrained decoding is impossible without them. `peek_logits` gains
+an explicit ownership clause so an accelerator backend can satisfy it by
+staging device memory, rather than the promotion freezing a CPU-only design.
+Two guards keep the document honest: `scripts/check-api-contract.sh` binds it
+to the headers, `examples/agent_contract_smoke.c` binds it to the built
+library; both run in CI.
+
+### Added — configurable routing confidence (#138)
+
+`GEIST_ROUTE_MIN_MARGIN` sets the router's winner-vs-runner-up margin per
+deployment. The default stays 0.35, which suits a toolset of distinct tools; a
+home toolset of near-synonyms scores too tightly to clear it, and measured at
+0.0 tool accuracy doubled with decline respect and off-list calls unchanged.
+
+### Fixed — enum arguments were validated but never generated (#135)
+
+A literal substring test could not fill an enum-constrained argument, because
+identifiers carry separators speech does not: neither `kitchen_light` nor
+`light.kitchen` appears in "turn on the kitchen light". Enum values now match
+per alphanumeric run. Scalar enums resolve to exactly one value and **fail
+closed on a tie** — two devices fitting equally well is where the runtime must
+ask rather than pick one; array enums still collect every mentioned value.
+
+The masked call grammar constrained the tool name and each argument key but
+left VALUES free, so a model-written call failed schema validation. Such values
+are now decoded along their permitted set with the same primitive that already
+constrained the tool name: the model still chooses, the grammar now bounds.
+
+### Fixed — the router scored only a name's first token (#140)
+
+`agent_score_names` ranked options by the logit of the **first token** of the
+tool name, so names sharing that token scored identically and could not be told
+apart. `TurnOn` and `TurnOff` both begin `"Turn"`; worse, a uniformly prefixed
+toolset collapsed entirely — Home Assistant's `HassTurnOn`, `HassTurnOff`,
+`HassGetState` and `HassSetBrightness` all tokenize to `"H"`, one score for the
+whole menu, so forced routing could not select among any of its tools. Tied
+groups are now separated by walking one token deeper on the route session,
+costing one forward pass per extra token and only when a tie exists.
+
+
 ## [0.5.0] — 2026-07-23
 
 Streaming release: `dynamic-tools-v1` gains additive delta streaming for
