@@ -1094,9 +1094,44 @@ static inline int agent_request_mentions_home(size_t req_len, const char *req) {
 }
 
 /* True if a tool is a home-bridge tool (device command / status). */
+/* Case-insensitive substring over a tool's metadata; nullptr never matches. */
+static inline int agent_tool_text_has(const char *text, const char *needle) {
+    return text != nullptr && agent_ci_find(strlen(text), text, strlen(needle), needle);
+}
+
+/* Does this tool act on the home? Match the toolset's VOCABULARY, not one
+ * spelling. A real home toolset is named TurnOn/GetState/SetBrightness, or
+ * HassTurnOn/HassGetState under Home Assistant — neither contains "device" or
+ * "home", so keying on those two words alone meant the evidence rescue in
+ * agent_select_tool could never fire for the very product this engine ships
+ * for: the request said "turn on the kitchen light", the reply pseudo-entry
+ * won, and no tool was ever called (measured 0/14 forced routes). Such
+ * toolsets do carry the domain word in their DESCRIPTION ("… one device",
+ * "… one currently exposed Home Assistant entity"), so read both. */
 static inline int agent_tool_is_home(const struct geist_tool *t) {
-    return (t->name && (strstr(t->name, "device") || strstr(t->name, "home"))) ||
-           (t->description && strstr(t->description, "ausgerät"));
+    static const char *const vocab[] = {"device", "home", "light",     "lamp",
+                                        "cover",  "blind", "thermostat", "entity",
+                                        "ausgerät"};
+    for (size_t i = 0; i < sizeof vocab / sizeof *vocab; i++) {
+        if (agent_tool_text_has(t->name, vocab[i]) ||
+            agent_tool_text_has(t->description, vocab[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A read-only home tool. "status" alone missed GetState / HassGetState, which
+ * are how a status tool is actually spelled, so the imperative/question shape
+ * rule below could not tell reads from writes. */
+static inline int agent_tool_reads_state(const struct geist_tool *t) {
+    static const char *const reads[] = {"status", "state", "get", "read", "query"};
+    for (size_t i = 0; i < sizeof reads / sizeof *reads; i++) {
+        if (agent_tool_text_has(t->name, reads[i])) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* The command/status boundary of the home menu: an IMPERATIVE opening asks
@@ -1188,10 +1223,10 @@ static inline int agent_request_is_question(size_t req_len, const char *req) {
 }
 
 static inline int agent_pred_home_command(const struct geist_tool *t) {
-    return agent_tool_is_home(t) && t->name && strstr(t->name, "status") == nullptr;
+    return agent_tool_is_home(t) && t->name && !agent_tool_reads_state(t);
 }
 static inline int agent_pred_home_status(const struct geist_tool *t) {
-    return agent_tool_is_home(t) && t->name && strstr(t->name, "status") != nullptr;
+    return agent_tool_is_home(t) && t->name && agent_tool_reads_state(t);
 }
 
 /* True if the request talks about stocks/markets — the evidence the stocks

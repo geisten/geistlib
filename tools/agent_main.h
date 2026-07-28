@@ -139,6 +139,27 @@ static inline bool agent_trace_enabled(void) {
     return t == nullptr || strcmp(t, "0") != 0;
 }
 
+/* The router's winner-vs-runner-up margin. Below it, a forced route asks
+ * instead of acting — the guard against a weak model firing an action it was
+ * only marginally confident about. 0.35 suits a small, distinct toolset; a
+ * home toolset of near-synonyms (TurnOn/TurnOff/GetState/SetBrightness) scores
+ * so tightly that the margin is rarely met and almost nothing is ever called,
+ * so the right value is per model and per toolset — a capability profile
+ * carries it (geisten/geistagent). Out of range or unparseable keeps the
+ * default rather than failing the request. */
+static inline float agent_route_margin(float fallback) {
+    const char *m = getenv("GEIST_ROUTE_MIN_MARGIN");
+    if (m == nullptr || *m == '\0') {
+        return fallback;
+    }
+    char  *end   = nullptr;
+    double value = strtod(m, &end);
+    if (end == m || *end != '\0' || !(value >= 0.0) || value > 100.0) {
+        return fallback;
+    }
+    return (float) value;
+}
+
 /* `geist agent` forces turn 0 into a valid tool call by default — the models geist
  * ships with (BitNet 2B-4T, Gemma 4 E2B) are not tool-trained and rarely emit a
  * clean call on their own, so without this the agent would never run a tool. Turn-
@@ -408,6 +429,7 @@ static inline size_t agent_main_health_result(size_t cap, char out[static cap]) 
  * utterance at a time anyway. Unix only, like the rest of this file. */
 static inline int agent_main_serve(struct geist_agent *a, const char *path) {
     const bool  base_force_call    = a->force_call;
+    const float base_route_margin  = agent_route_margin(a->route_min_margin);
     const char *base_system_prompt = a->system_prompt;
     signal(SIGPIPE, SIG_IGN); /* a vanished client must not kill the daemon */
     unlink(path);
@@ -539,6 +561,7 @@ static inline int agent_main_serve(struct geist_agent *a, const char *path) {
                     a->force_call             = base_force_call;
                     a->forced_result_is_final = false;
                     a->clarify_low_confidence = true;
+                    a->route_min_margin       = base_route_margin;
                     /* dynamic-tools-v1 §Streaming: only a request that opted in
                      * gets delta frames; the hook is cleared before the result
                      * write so no later request can inherit it. A trailing
