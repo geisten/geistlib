@@ -155,8 +155,8 @@ geist_dynamic_boolean(size_t text_len, const char text[static text_len], int *va
  * "light.kitchen" never appear verbatim in "turn on the kitchen light". Runs
  * shorter than two characters are ignored rather than required — they are too
  * weak to be evidence and would match almost anything. */
-static inline unsigned geist_dynamic_enum_score(size_t     text_len,
-                                                const char text[static text_len],
+static inline unsigned geist_dynamic_enum_score(size_t      text_len,
+                                                const char  text[static text_len],
                                                 const char *choice,
                                                 size_t      choice_len) {
     unsigned matched = 0u;
