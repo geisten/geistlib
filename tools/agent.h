@@ -837,6 +837,90 @@ static inline size_t agent_select_prompt(struct geist_agent *a,
  * See git history if a stronger model wants it back. Names sharing a first
  * token stay indistinguishable here; the bounded evidence tie-breakers in
  * agent_select_tool carry that load. */
+/* Break ties between names that share a first token.
+ *
+ * agent_score_names ranks each option by the logit of its FIRST token, so two
+ * names beginning with the same token score identically and the router cannot
+ * choose between them: TurnOn and TurnOff both start "Turn", and a uniformly
+ * prefixed toolset collapses entirely — Home Assistant's HassTurnOn,
+ * HassTurnOff, HassGetState and HassSetBrightness all tokenize to "H", one
+ * score for the whole menu.
+ *
+ * Walk deeper only for the tied group: prefill the shared token onto the ROUTE
+ * session, read the next-position logits, and separate the members by their
+ * next token. Repeat while the leaders stay tied, bounded by DEPTH.
+ *
+ * The group's BEST member keeps its original score and the others are lowered
+ * by their true deficit, so the refinement reorders inside the group without
+ * shifting the group against candidates that were never tied. Costs one
+ * forward pass per extra token, and only when a tie actually exists. Leaving
+ * the route session dirty is safe: every scoring pass resets it first. */
+static inline void agent_refine_name_ties(struct geist_agent   *a,
+                                          struct geist_session *rs,
+                                          size_t                n,
+                                          float                 out[static n]) {
+    enum { DEPTH = 6 };
+    geist_token_t ids[AGENT_MAX_ROUTED][8];
+    size_t        nid[AGENT_MAX_ROUTED] = {0};
+    if (n > AGENT_MAX_ROUTED) {
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        const char *nm = i < a->n_tools ? a->tools[i].name : AGENT_ANSWER_NAME;
+        if (geist_session_tokenize(a->session, nm, 8, ids[i], &nid[i]) != GEIST_OK) {
+            nid[i] = 0;
+        }
+    }
+    for (size_t depth = 0; depth < DEPTH; depth++) {
+        int best = 0;
+        for (size_t i = 1; i < n; i++) {
+            if (out[i] > out[best]) {
+                best = (int) i;
+            }
+        }
+        /* the group sharing the leader's prefix, all of which must have a
+         * further token to compare — a name that ENDS here cannot be
+         * separated this way, so leave such a group alone. */
+        size_t group[AGENT_MAX_ROUTED];
+        size_t members = 0;
+        for (size_t i = 0; i < n; i++) {
+            if (nid[i] <= depth + 1u || out[i] != out[best]) {
+                continue;
+            }
+            int same = 1;
+            for (size_t d = 0; d <= depth && same; d++) {
+                same = ids[i][d] == ids[(size_t) best][d];
+            }
+            if (same) {
+                group[members++] = i;
+            }
+        }
+        if (members < 2u || nid[(size_t) best] <= depth + 1u) {
+            return;
+        }
+        if (geist_session_prefill_tokens(rs, 1u, &ids[(size_t) best][depth]) != GEIST_OK) {
+            return;
+        }
+        size_t       n_logits = 0;
+        const float *logits   = geist_session_peek_logits(rs, &n_logits);
+        if (logits == nullptr || n_logits == 0) {
+            return;
+        }
+        float next[AGENT_MAX_ROUTED];
+        float leader = -1e30f;
+        for (size_t g = 0; g < members; g++) {
+            geist_token_t tok = ids[group[g]][depth + 1u];
+            next[g]           = tok < (geist_token_t) n_logits ? logits[tok] : -1e30f;
+            if (next[g] > leader) {
+                leader = next[g];
+            }
+        }
+        for (size_t g = 0; g < members; g++) {
+            out[group[g]] += next[g] - leader; /* leader unchanged, rest deficit */
+        }
+    }
+}
+
 static inline int agent_score_names(
         struct geist_agent *a, size_t n, size_t req_len, const char *req, float out[static n]) {
     /* Route on the dedicated routing session when the host wired one — the main
@@ -875,6 +959,7 @@ static inline int agent_score_names(
         float v1 = agent_first_token_logit(a, spaced, logits, n_logits);
         out[i]   = v0 > v1 ? v0 : v1;
     }
+    agent_refine_name_ties(a, rs, n, out);
     return 1;
 }
 
@@ -1109,8 +1194,14 @@ static inline int agent_tool_text_has(const char *text, const char *needle) {
  * toolsets do carry the domain word in their DESCRIPTION ("… one device",
  * "… one currently exposed Home Assistant entity"), so read both. */
 static inline int agent_tool_is_home(const struct geist_tool *t) {
-    static const char *const vocab[] = {"device", "home", "light",     "lamp",
-                                        "cover",  "blind", "thermostat", "entity",
+    static const char *const vocab[] = {"device",
+                                        "home",
+                                        "light",
+                                        "lamp",
+                                        "cover",
+                                        "blind",
+                                        "thermostat",
+                                        "entity",
                                         "ausgerät"};
     for (size_t i = 0; i < sizeof vocab / sizeof *vocab; i++) {
         if (agent_tool_text_has(t->name, vocab[i]) ||
