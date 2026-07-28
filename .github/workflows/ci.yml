@@ -19,6 +19,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: sh scripts/check-version.sh
 
+  api-contract:
+    name: API contract documented and STABLE (docs/API_CONTRACT.md)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh scripts/check-api-contract.sh
+
   build-test:
     name: build + unit tests (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
@@ -72,6 +79,12 @@ jobs:
       # AUTO_FETCH_MODEL=0 keeps the ~3 GB reference download out of CI.
       - name: Unit tests
         run: make test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" AUTO_FETCH_MODEL=0
+
+      # Contract enforcement, link half: an out-of-tree agent runtime links
+      # these symbols across a release boundary, so a changed signature or a
+      # removed symbol must fail here rather than in the consumer's build.
+      - name: Agent-runtime contract smoke
+        run: make agent-contract-smoke TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
       # The integration + e2e suites load the real GGUF, so they actually exercise
       # the product path (forward pass, tokenizer, KV, the agent/chat loops) — the
