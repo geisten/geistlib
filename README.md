@@ -53,97 +53,48 @@ experiment, and an open invitation to join in.
 
 ## Quick start
 
-Three ways in, fastest first.
+geistlib is a **library**. It has no CLI of its own: the tool-use runtime, the
+resident daemon and the single-file binary with a model baked in live in
+[geisten/geistagent](https://github.com/geisten/geistagent), which links this
+engine. If you came here to *run* something, that is the repository you want.
 
-### Run it now — model baked in
+### Use the prebuilt SDK
 
-Download one file and run it — no model file, no model argument. The model lives
-inside the binary; that's the whole app.
-
-| Platform | Single-file download (model included) |
-| :-- | :-- |
-| **Raspberry Pi / Linux** · ARM64 | [⬇ geist-bitnet-linux-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-arm64.tar.gz) |
-| **macOS** · Apple Silicon | [⬇ geist-bitnet-macos-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-macos-arm64.tar.gz) |
-| **Linux** · x86-64 (AVX-512) | [⬇ geist-bitnet-linux-x86_64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-x86_64.tar.gz) |
-
-```bash
-./geist-bitnet "What is the capital of France?"       # instruct chat (default)
-./geist-bitnet --raw "The capital of France is"       # raw base-model completion
-./geist-bitnet -n 128 "Write a haiku about winter."   # cap new tokens (default 64)
-```
-
-Copy that binary to a Pi and it generates text in real time, all locally,
-decoding **~2× faster than Microsoft's own bitnet.cpp**. Or install it in one
-line — every platform (Raspberry Pi included), SHA-256 verified, no sudo:
+Every [release](https://github.com/geisten/geistlib/releases/latest) ships
+`libgeist-<platform>.tar.gz` — `libgeist.a`, `include/*.h` and `LICENSE`.
+Platforms: `macos-arm64`, `linux-arm64`, `linux-x86_64`. Verify it against
+`SHA256SUMS`, then link:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/geisten/geistlib/main/install.sh | sh
+cc -std=c23 -I libgeist-linux-arm64/include my_app.c \
+   libgeist-linux-arm64/libgeist.a -fopenmp -lm -o my_app
 ```
 
-### Bring your own model
-
-The engine (< 1 MB, model-less) plus any GGUF (one file runs on every platform).
-Then point the engine at the model.
-
-Install the model-less engine in one line — every platform including Raspberry
-Pi / ARM64 Linux, SHA-256 verified, no sudo:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/geisten/geistlib/main/install.sh | GEIST_FLAVOR=engine sh
-```
-
-On macOS or x86-64 Linux you can also use Homebrew:
-
-```bash
-brew install geisten/tap/geist
-```
-
-— or grab the tarball directly:
-
-| Platform | Engine download |
-| :-- | :-- |
-| **macOS** · Apple Silicon | [⬇ geist-macos-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-macos-arm64.tar.gz) |
-| **Raspberry Pi / Linux** · ARM64 | [⬇ geist-linux-arm64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64.tar.gz) |
-| **Linux** · x86-64 (AVX-512) | [⬇ geist-linux-x86_64.tar.gz](https://github.com/geisten/geistlib/releases/latest/download/geist-linux-x86_64.tar.gz) |
-
-Grab a model — the full list with sizes and RAM is under [Models](#models):
-
-```bash
-# Gemma 4 E2B-it (text + vision + audio, one file)
-curl -L -o gemma-4-E2B-it-Q4_K_M.gguf \
-  https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf
-```
-
-Run — the model path is the only difference from the baked-in binary:
-
-```bash
-./geist -m model.gguf "What is the capital of France?"  # instruct chat (default)
-./geist -m model.gguf --raw "The capital of France is"  # raw completion
-```
-
-<sub>Prebuilt for macOS · ARM64, Linux · ARM64 and Linux · x86-64 (AVX-512, runs on any x86-64-v3 CPU). Windows is still pending.</sub>
+<sub>The static archive is an OpenMP build, so a consumer supplies the OpenMP
+runtime: `-fopenmp` on Linux, `-framework Accelerate <libomp>/lib/libomp.a` on
+macOS.</sub>
 
 ### Build from source
 
-Any platform with a C23 compiler — the path for a custom target or Windows.
-Prerequisites: a C23 compiler (**gcc ≥ 14**, or Apple-clang ≥ 16 / Xcode 16 /
-macOS 15) and `make`; on macOS, Homebrew `libomp` for multi-threading.
+Any platform with a C23 compiler. Prerequisites: **gcc ≥ 14** or Apple-clang
+≥ 16 (Xcode 16 / macOS 15) and `make`; on macOS, Homebrew `libomp`.
 
 ```bash
 git clone https://github.com/geisten/geistlib && cd geistlib
-make                       # auto-detects target; or: make TARGET=mac-omp | pi5 | linux
+make lib                   # auto-detects target; or: make TARGET=mac-omp | pi5 | linux
 make fetch-model           # optional: pull Gemma 4 E2B-it Q4_K_M (~3.1 GB)
+make run ARGS='gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "The capital of France is"'
 ```
 
-`make` drops a `./geist` symlink in the repo root. To bake a model into the binary,
-see [Bake a model in](#bake-a-model-in).
+`make run` builds and runs `examples/simple_generate.c` — the smallest useful
+program against the STABLE core, and the thing to copy when embedding.
 
 ---
 
 ## Models
 
-Everything runs on the same `./geist` binary — pick by your hardware and what you
-need. Two models are first-class and one-download-and-go.
+Any GGUF that carries its own tokenizer works. Two models are first-class and
+one-download-and-go.
 
 | Model | Modality | Quant | ~Size | RAM | Best on | Get it |
 | :-- | :-- | :-- | --: | --: | :-- | :-- |
@@ -182,7 +133,8 @@ every GPU inference server. It is deliberately optimized for a narrower job:
 
 ### One binary, zero dependencies
 Static musl on Linux ARM (< 1 MB), Apple frameworks only on macOS. Fold the model
-in too (`make EMBED_MODEL=…`) and deployment is *literally one file*.
+in too and deployment is *literally one file* — see
+[geistagent](https://github.com/geisten/geistagent).
 
 ### Faster where it counts
 Same GGUF, greedy decode. geistlib leads end-to-end throughput on a Pi 5,
@@ -203,7 +155,7 @@ below; sub-parity rows (Llama 3.2 on x86) are shown here too — nothing cherry-
 Reproduce it on your own hardware:
 
 ```bash
-make && make fetch-model                    # build ./geist + pull the Gemma GGUF
+make lib && make fetch-model                # build libgeist.a + pull the Gemma GGUF
 OMP_WAIT_POLICY=active make bench-small      # records decode t/s to benchmark/results/APPLE.md
 ```
 
@@ -257,24 +209,13 @@ The stable text path is ~15 lines: `geist_backend_create` → `geist_model_load`
 walkthrough in [`docs/QUICKSTART.md`](docs/QUICKSTART.md) and the API in
 [`include/geist.h`](include/geist.h).
 
-### Bake a model in
+### Ship engine and model as one file
 
-Every [release](https://github.com/geisten/geistlib/releases/latest) already ships a
-`geist-bitnet-<platform>.tar.gz` — BitNet 2B-4T baked in, no model argument
-([Quick start](#run-it-now--model-baked-in)). To bake in your own GGUF, the plain
-`make` build gives you a `geist` that takes a model path; `make EMBED_MODEL=…`
-*bakes the model in* so the binary needs none. Name it with `EMBED_NAME` so it's
-never confused with the model-needing `geist`:
-
-```bash
-make EMBED_MODEL=bitnet-2b4t.i2_s.gguf EMBED_NAME=geist-bitnet   # GGUF baked in (zero-copy)
-./geist-bitnet "What is the capital of France?"      # ask — no model path
-```
-
-To ship it, copy the binary (`bin/<target>/release/tools/geist`) under any name.
-The weights are aliased zero-copy from the binary's read-only data (no extra RAM),
-so this suits small models — the binary grows by the model size, and >~1.5 GB
-exceeds the 2 GB GitHub-release limit.
+Baking a GGUF into a binary is a property of an executable, and this repository
+builds none. [geistagent](https://github.com/geisten/geistagent) does it —
+`make bin EMBED_MODEL=model.gguf` there — and publishes signed single-file
+runtimes with BitNet b1.58 2B-4T already inside. The weights alias zero-copy
+from the binary's read-only data, so the cost is disk, not RAM.
 
 ---
 
@@ -285,9 +226,9 @@ Repository ownership and the complete map are in
 
 | Document | What it covers |
 | :-- | :-- |
-| [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Run the CLI and embed the library in two minutes. |
+| [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Embed the library in two minutes. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, load-time kernel binding, the pipeline. |
-| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Single-binary and embedded deployment. |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Building the library and consuming the packaged SDK. |
 | [`benchmark/`](benchmark/README.md) | Methodology & full results ([Apple/Pi 5](benchmark/results/APPLE.md), [ternary BitNet](benchmark/results/TERNARY.md), [Vulkan GPU](benchmark/results/VULKAN.md)). |
 | [`include/geist.h`](include/geist.h) | The public C API, with `STABLE` / `EXPERIMENTAL` stability tags. |
 
@@ -366,7 +307,7 @@ not yet-another-wrapper. **From clone to green tests in 30 seconds:**
 
 ```bash
 git clone https://github.com/geisten/geistlib && cd geistlib
-make && make test          # builds ./geist, runs the full C suite
+make lib && make test      # builds libgeist.a, runs the full C suite
 ```
 
 ---
