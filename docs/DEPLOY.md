@@ -1,122 +1,74 @@
-# Building & deploying
+# Building & consuming the library
+
+geistlib builds one artefact: `libgeist.a` plus the public headers. It has no
+CLI and no daemon — the resident runtime, the `dynamic-tools-v1` service and the
+single-file binary with a model baked in are
+[geisten/geistagent](https://github.com/geisten/geistagent), which links this
+engine. Deploying *that* is documented there; this page is about producing and
+consuming the library.
 
 ## Build locally
 
 ```sh
-make                       # auto-detect target, MODE=release -> ./geist symlink
-make TARGET=pi5 CC=gcc     # cross-target (see mk/target-*.mk)
-make bin                   # all binaries (geist + eval/profile dev tools)
-make test                  # unit + int + py (auto-fetches the model)
+make lib                   # auto-detect target, MODE=release -> lib/<target>/<mode>/libgeist.a
+make TARGET=pi5 CC=gcc lib # cross-target (see mk/target-*.mk)
+make bin                   # dev tools (eval/profile) — not shipped
+make test                  # unit + int suites (auto-fetches the model)
+make run ARGS='model.gguf "The capital of France is"'   # examples/simple_generate
 ```
-
-Binaries land in `bin/<target>/<mode>/tools/`. The user-facing CLI is a single
-binary with two modes:
-
-| `geist` invocation | what it is |
-|---|---|
-| `geist -m <model> "prompt"` | one-shot instruct/text generation (the release artifact) |
-| `geist -m <model> --serve <socket>` | resident dynamic-tools daemon (see [agent.md](agent.md)) |
-
-The tool-use **interface** (`agent.h`, `agent_main.h`) is a header-only library;
-`--serve` drives it in-process, with the host supplying tools per request. The
-resident daemon:
-
-```sh
-geist -m model.gguf --serve /run/geist.sock        # external model
-geist --serve /run/geist.sock                      # embedded model
-```
-
-The model stays warm on a **chmod-600 Unix socket**. Dynamic hosts send
-newline-delimited JSON with a per-request toolset,
-execute correlated `tool.call` frames themselves, return `tool.result`, and
-receive `conversation.result`. Application adapters use this path, so the host
-owns authorization and execution while the dynamic protocol consumes no HA
-credentials. There is no REST/token fallback or line-protocol compatibility mode.
 
 ### Self-contained / dependency-free build
 
 `GEMM_PROVIDER=native` drops the BLAS dependency; static linking drops libc.
-This is exactly what `release.yml` ships:
+This is what `release.yml` ships:
 
 ```sh
-# Linux: fully static against musl (no libc dependency at all)
+# Linux: build against musl, no libc dependency at all
 make TARGET=linux CC=gcc GEMM_PROVIDER=native \
-     EXTRA_CFLAGS=-D_GNU_SOURCE EXTRA_LDFLAGS="-static -s" \
-     bin/linux/release/tools/geist
-ldd bin/linux/release/tools/geist   # -> "not a dynamic executable"
+     EXTRA_CFLAGS=-D_GNU_SOURCE lib
 ```
 
-### Single-binary (model baked in)
+The release builds run inside `alpine:3.21` so the archive is musl-built.
+Linking a glibc consumer against a musl static library is a link-time coin
+flip, so match the libc you built against.
+
+## The packaged SDK
+
+Each release attaches `libgeist-<platform>.tar.gz` for `macos-arm64`,
+`linux-arm64` and `linux-x86_64`, holding `libgeist.a`, `include/*.h` and
+`LICENSE`. Digests are in `SHA256SUMS`.
+
+The archive contains geist's objects, not its dependencies. **An `.a` is not a
+link:** the build is an OpenMP build, so a consumer supplies the OpenMP runtime
+itself.
 
 ```sh
-make EMBED_MODEL=gguf_artifacts/gemma4-e2b-Q4_K_M.gguf   # ./geist needs no model file
+# Linux
+cc -std=c23 -I "$d/include" my_app.c "$d/libgeist.a" -fopenmp -lm -o my_app
+# macOS
+cc -std=c23 -I "$d/include" my_app.c "$d/libgeist.a" \
+   -framework Accelerate "$(brew --prefix libomp)/lib/libomp.a" -lm -o my_app
 ```
-Only for small models — the binary grows by the model size and a >~1.5 GB binary
-exceeds the 2 GB GitHub-release limit. For a 3 GB Gemma GGUF, keep the model **on
-the server** and deploy only the binary (below). The GGUF must carry its own
-tokenizer (gpt2-BPE / SPM / SPM-unigram — e.g. a BitNet TQ2_0 works).
 
-`release.yml` ships an embedded single-file build **by default**: the
-**`EMBED_MODEL_URL`** repo variable defaults to the BitNet 2B-4T GGUF, so every
-release attaches a `geist-bitnet-<platform>` artifact (model baked in, no model
-file) alongside the model-less `geist` CLI. Point it at a different small GGUF, or
-unset it to ship the model-less CLI only.
+The release workflow compiles `examples/embed_smoke.c` and
+`examples/agent_contract_smoke.c` against each packaged artefact with exactly
+these lines, so a packaging break fails before publication rather than in a
+consumer's build.
+
+## Consuming from another repository
+
+A consumer pins a release the way the Home Assistant product pins its runtime:
+exact `vX.Y.Z` tag, immutable asset URL, SHA-256 verified before extraction —
+never `latest`. geistagent's `scripts/fetch-libgeist.sh` is a working
+implementation of that pattern.
+
+What the engine promises across that boundary is in
+[API_CONTRACT.md](API_CONTRACT.md), and `make agent-contract-smoke` fails here
+if a signature moves — in this repository, not in the consumer's build.
 
 ## GitHub options
 
-Only **release artifacts** is a wired-up workflow today; the container and
-SSH-deploy rows are sketches (no such workflow exists yet).
-
 | option | how | best for |
 |---|---|---|
-| **Release artifacts** ✅ `.github/workflows/release.yml` | push a `v*` tag → builds static `geist` + embedded `geist-bitnet` for linux-arm64/x86-64 (musl) + macos-arm64, attaches them to the GitHub Release | distributing the CLI; `curl`/`gh release download` on any box |
-| **GHCR container** *(sketch — not wired up)* | an Actions job could build a Docker image and push to `ghcr.io/geisten/geist` for the server to `docker pull` | bundling binary + runtime; rollback by tag |
-| **Actions → SSH deploy** *(sketch — see below)* | a workflow step `rsync`/`scp`s the binary to your server and `systemctl restart`s the service | deploying straight to your own server |
-
-`release.yml` builds `tools/geist` — the one binary that carries the `agent` and
-`chat` subcommands. Adding the future daemon is a one-line change to its build step.
-
-## Deploying to geisten.net
-
-The agent is **resident** (load the ~3 GB model once, keep it warm), so run it as
-a long-lived service, not per-request. (This is the Gemma multimodal path; for a
-text-only endpoint, `geist-bitnet` bakes the model into the binary — nothing to
-ship to the server separately.) Recommended shape:
-
-1. **Build** a musl-static binary in CI (as `release.yml` does) — no runtime deps.
-2. **Ship the model once** to the server (e.g. `/srv/geist/model.gguf`); it is too
-   large to bake in or attach to a release.
-3. **Run as a systemd service** that holds the model warm. The shipped
-   `--serve` daemon exposes a permission-gated Unix socket. A public HTTP/TLS
-   front remains a separate interoperability layer.
-4. **Deploy on tag** with an Actions SSH step:
-
-```yaml
-# sketch — add to a deploy workflow, needs SSH_KEY / HOST secrets
-- run: |
-    scp -i <key> bin/linux/release/tools/geist deploy@geisten.net:/srv/geist/geist
-    ssh -i <key> deploy@geisten.net 'systemctl --user restart geist'
-```
-
-```ini
-# /etc/systemd/system/geist.service  (model warm, restart on crash)
-[Service]
-# The resident agent daemon: model stays warm, one request per connection on a
-# chmod-600 Unix socket (the daemon chmods it). -m gives the model path.
-ExecStart=/srv/geist/geist -m /srv/geist/model.gguf --serve /run/geist/geist.sock
-Restart=always
-[Install]
-WantedBy=multi-user.target
-```
-
-### The resident daemon
-
-`geist -m model.gguf --serve /path/geist.sock` is implemented. It keeps
-the model warm and accepts only host-neutral dynamic requests with correlated
-call/result frames. `./geist serve ...` is not a
-separate required process: the `--serve` daemon is the serving surface.
-
-> Security: prefer a Unix socket (`chmod 600`) or a localhost port behind nginx
-> over a public listener. The agent's jailbreak resistance is the immutable
-> offered set, schema/policy validation and global call budget
-> ([agent.md](agent.md#security-model)), independent of transport.
+| **Release artifacts** ✅ `.github/workflows/release.yml` | push a `v*` tag → builds `libgeist.a` + headers for linux-arm64/x86-64 (musl) and macos-arm64, attaches them with `SHA256SUMS` | consuming the SDK from another project |
+| **GHCR container** *(not wired up)* | there is no image to publish: a library is not a runnable artefact | — |

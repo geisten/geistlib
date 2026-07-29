@@ -13,8 +13,8 @@ is open to help. The mission in full is in the
 | :-- | :-- | :-- |
 | **Max quantization** | Ternary (1.58-bit) & binary as first-class citizens, not a bolt-on | ✅ BitNet `I2_S`/`TQ2_0`, integer-only kernels; beats bitnet.cpp on Pi 5 & x86 |
 | **Fast per platform** | The fastest path on *each* target, not a lowest common denominator | ✅ ARM64 NEON · macOS Accelerate/AMX · x86-64 AVX-512/VNNI |
-| **One-file install** | Engine + model in one dependency-free binary | ✅ prebuilt binaries + `make EMBED_MODEL=…` |
-| **Small-model agents** | A tight harness so a 2 B model rivals a bigger one on a narrow task | ✅ bounded static + per-request dynamic tools, typed forced calls, host round-trips ([agent.md](docs/agent.md)) |
+| **One-file install** | Engine + model in one dependency-free binary | ✅ in [geistagent](https://github.com/geisten/geistagent), which links this engine |
+| **Small-model agents** | A tight harness so a 2 B model rivals a bigger one on a narrow task | ✅ bounded static + per-request dynamic tools, typed forced calls, host round-trips — in [geistagent](https://github.com/geisten/geistagent) |
 | **Memory for small models** | Recall sized to what these models can hold — no vector store | 🚧 file-based memory palace, in the [geistwissen](https://github.com/geisten/geistwissen) consumer (the engine ships the tool-use interface) |
 | **Models that adapt** | Dynamic specialization, learning, self-organization | 🔬 research |
 
@@ -22,9 +22,12 @@ is open to help. The mission in full is in the
 
 ## Adapter ecosystem
 
-Geist remains application-neutral. Its resident service and dynamic-tools
-protocol are the stable extension boundary; authorization, execution, product
-UX, distribution, and domain evaluations belong to adapter repositories.
+Geist remains application-neutral. Its stable extension boundary is the C API
+in `include/geist.h` ([API_CONTRACT.md](docs/API_CONTRACT.md)); the agent loop,
+the resident service and the `dynamic-tools-v1` protocol are
+[geistagent](https://github.com/geisten/geistagent). Authorization, execution,
+product UX, distribution and domain evaluations belong to adapter
+repositories.
 The first adapter is maintained in
 [`geisten/geist-home-assistant`](https://github.com/geisten/geist-home-assistant),
 including its independent roadmap and release phases.
@@ -38,10 +41,8 @@ executes, returns correlated results, and Geist continues the conversation.
 Multiple calls, global budgets, one bounded retry, cancellation, typed forced
 arguments and low-confidence clarification are covered by deterministic tests.
 
-`make dynamic-example-host` builds a separate C
-calculator/profile host with no HA or model-runtime dependency, proving that
-other applications can implement and compile against the same contract. See
-[Dynamic tools v1](docs/dynamic-tools-v1.md).
+The protocol and its reference host moved with the agent layer; see
+[geistagent](https://github.com/geisten/geistagent).
 
 ## Distribution: one static binary per platform
 
