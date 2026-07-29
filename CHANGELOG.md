@@ -8,6 +8,39 @@ minor release.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-29
+
+### Removed
+
+- **The agent layer, and with it the `geist` CLI.** `agent.h`, `agent_main.h`,
+  the four `dynamic_*_v1.h` headers, `json_schema_v1.h`, `tools/geist.c`, the
+  `.incbin` model-embedding machinery, their 11 tests and both agent examples
+  now live in [geisten/geistagent](https://github.com/geisten/geistagent).
+  geistlib is an inference engine: it loads models and produces tokens, and
+  has no opinion about whether a model may act.
+- **The `geist-*` and `geist-bitnet-*` release assets**, which were built from
+  that CLI, and the Homebrew job that packaged it. geistagent publishes the
+  runtime now — signed, with build provenance. Existing releases are
+  immutable, so anything pinned to `v0.6.0` keeps resolving.
+- **The agent headers from the `libgeist` SDK asset.** Shipping them from both
+  repositories would have put the security boundary on two include paths, an
+  invitation to audit one and compile the other.
+
+### Changed
+
+- `make run` builds and runs `examples/simple_generate` — the smallest useful
+  program against the STABLE core — instead of the removed CLI.
+- The packaged-SDK release gate now compiles `agent_contract_smoke.c`, which
+  links exactly the symbols the out-of-tree runtime links, and both linux SDK
+  smokes pass `-fopenmp`: the shipped `libgeist.a` is an OpenMP build and a
+  real consumer cannot link it without that ([#144](https://github.com/geisten/geistlib/issues/144)).
+
+### Notes
+
+What the engine still owes its consumer is unchanged and enforced:
+[API_CONTRACT.md](docs/API_CONTRACT.md) plus `make agent-contract-smoke`,
+which fails here rather than in the consumer's build if a signature moves.
+
 ## [0.6.0] — 2026-07-28
 
 Tool-calling release. Every fix here was found by measuring a real toolset

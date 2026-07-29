@@ -22,11 +22,11 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run dynamic-example-host clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu format format-check
+.PHONY: all lib bin run agent-contract-smoke clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
-all: lib bin geist
+all: lib bin
 
 # Pull in target settings (CC, CFLAGS_TARGET, LDFLAGS_TARGET, LDLIBS_TARGET).
 include mk/target-$(TARGET).mk
@@ -34,52 +34,16 @@ include mk/target-$(TARGET).mk
 # Pull in common build rules (LIB_FILE, BIN_TARGETS, object/link rules).
 include mk/common.mk
 
-# Convenience aggregate goals. `bin` is declared AFTER the EMBED block below:
-# make expands prerequisite lists immediately at parse time, and the EMBED
-# block swaps the CLI's entry in BIN_TARGETS — declaring `bin` here would
-# capture the pre-swap list and link a broken plain tools/geist from an
-# embedded geist.o.
 lib: $(LIB_FILE)
 
-# `./$(EMBED_NAME)` → the built CLI for the current TARGET/MODE, so the demo is
-#   make && OMP_WAIT_POLICY=active ./geist -m model.gguf "What is the capital of France?"
-# Re-pointed on every build (cheap); removed by `make distclean`.
-#
-# EMBED_NAME names the symlink AND the binary under $(BIN_DIR)/tools/. Embedded
-# builds default to "geist-embedded", never "geist": if the embedded binary
-# lived at tools/geist, any later plain `make` would relink that path WITHOUT
-# the model — the ./geist-bitnet symlink would then point at a plain binary
-# that parses the prompt as a model path ("model_load failed"). Distinct paths,
-# no clobber. A distinct name also avoids the "which one needs a model?"
-# confusion — the embedded build takes no model-path argument, unlike `geist`:
-#   make EMBED_MODEL=bitnet-2b4t.i2_s.gguf EMBED_NAME=geist-bitnet
-#   ./geist-bitnet "The capital of France is"      # no model path — it's baked in
-ifneq ($(strip $(EMBED_MODEL)),)
-  EMBED_NAME ?= geist-embedded
-else
-  EMBED_NAME ?= geist
-endif
-GEIST_BIN := $(BIN_DIR)/tools/$(EMBED_NAME)
-geist: $(GEIST_BIN)
-	@ln -sf $(GEIST_BIN) $(EMBED_NAME) && echo "./$(EMBED_NAME) -> $(GEIST_BIN)"
+bin: $(BIN_TARGETS)
 
-# `make run ARGS='-m model.gguf "your prompt" -n 40'` — build, then run the CLI
-# with OMP_WAIT_POLICY=active (matters for multi-thread perf on mac-omp).
-run: geist
-	@OMP_WAIT_POLICY=active ./$(EMBED_NAME) $(ARGS)
-
-# Host-neutral dynamic-tools example. It links no model/runtime and no adapter
-# adapter; any application can build the same request/validation contract.
-DYNAMIC_EXAMPLE_HOST := $(BIN_DIR)/examples/dynamic_tools_host
-dynamic-example-host: $(DYNAMIC_EXAMPLE_HOST)
-$(DYNAMIC_EXAMPLE_HOST): examples/dynamic_tools_host.c tools/dynamic_tools_v1.h tools/json_schema_v1.h
-	@mkdir -p $(@D)
-	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -I. $< -o $@
-
-# Agent-runtime API contract (docs/API_CONTRACT.md). An out-of-tree agent
-# runtime links these symbols across a release boundary, so a signature change
-# must fail HERE — not in the consumer's build. Compiling pins the signatures,
-# linking pins their existence; the binary itself only reports.
+# Agent-runtime API contract (docs/API_CONTRACT.md). The out-of-tree agent
+# runtime — geisten/geistagent — links these symbols across a release
+# boundary, so a signature change must fail HERE, not in the consumer's
+# build. Compiling pins the signatures, linking pins their existence.
+# This is the last thing in the engine that knows an agent exists, and it is
+# deliberate: it is a promise, not a dependency.
 AGENT_CONTRACT_SMOKE := $(BIN_DIR)/examples/agent_contract_smoke
 agent-contract-smoke: $(AGENT_CONTRACT_SMOKE)
 	@$(AGENT_CONTRACT_SMOKE)
@@ -87,68 +51,12 @@ $(AGENT_CONTRACT_SMOKE): examples/agent_contract_smoke.c $(LIB_FILE) include/gei
 	@mkdir -p $(@D)
 	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -Iinclude $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)
 
-# ---- Optional: embed a model into the geist CLI (single-binary deploy) -----
-# `make EMBED_MODEL=path/to/model.gguf` bakes the GGUF into ./geist via an
-# .incbin stub, so the binary needs no model file — the CLI then takes only a
-# prompt:  ./geist "The capital of France is".  Zero-copy: weights alias the
-# in-binary .rodata blob. Small models only — the binary grows by the model
-# size; >~1.5 GB exceeds the 2 GB release limit. The GGUF must carry its own
-# tokenizer (no sibling file is searched). Text-only (no external vision/audio).
-#
-# Toggling EMBED_MODEL flips -DGEIST_EMBEDDED_MODEL on geist.o, which make can't
-# see from the source mtime alone (stale geist.o -> link error, or a binary that
-# silently ignores the embed). Track the embed state in a stamp file and depend
-# geist.o on it: the stamp is rewritten only when the state changes, so switching
-# between embedded/file mode rebuilds geist.o automatically and nothing churns
-# otherwise. Applies in both branches, so it lives outside the ifneq.
-EMBED_TAG         := $(if $(strip $(EMBED_MODEL)),embedded:$(abspath $(EMBED_MODEL)),none)
-GEIST_EMBED_STAMP := $(BUILD_DIR)/tools/.geist-embed-state
-# When the embed state changes, DELETE geist.o + this mode's binary so they
-# rebuild with the right -DGEIST_EMBEDDED_MODEL. We can't rely on a stamp
-# prerequisite's mtime: macOS ships GNU make 3.81, whose timestamp comparison is
-# whole-second, so a stamp rewritten in the same second as the prior build looks
-# "not newer" and the rebuild is skipped. Deleting sidesteps mtime entirely.
-# Only $(GEIST_BIN) is deleted — the OTHER mode's binary (e.g. tools/geist-bitnet
-# when switching back to plain) stays valid: it was linked from a geist.o that
-# matched its own embed state. Runs at parse time.
-$(shell mkdir -p $(BUILD_DIR)/tools 2>/dev/null; \
-        if [ "$$(cat $(GEIST_EMBED_STAMP) 2>/dev/null)" != "$(EMBED_TAG)" ]; then \
-            printf '%s' "$(EMBED_TAG)" > $(GEIST_EMBED_STAMP); \
-            rm -f $(BUILD_DIR)/tools/geist.o $(GEIST_BIN); \
-        fi)
-
-ifneq ($(strip $(EMBED_MODEL)),)
-  ifeq ($(wildcard $(EMBED_MODEL)),)
-    $(error EMBED_MODEL='$(EMBED_MODEL)' not found)
-  endif
-  EMBED_ABS  := $(abspath $(EMBED_MODEL))
-  EMBED_SIZE := $(shell wc -c < "$(EMBED_ABS)")
-  $(info embedding $(EMBED_MODEL) ($(shell echo $$(($(EMBED_SIZE)/1048576))) MB) into ./$(EMBED_NAME) — runs with no model-path argument)
-  ifeq ($(shell test $(EMBED_SIZE) -gt 1610612736 && echo big),big)
-    $(warning EMBED_MODEL >1.5 GB — the binary will exceed the 2 GB GitHub-release limit and be unwieldy)
-  endif
-  EMBED_OBJ := $(BUILD_DIR)/src/engine/embedded_model.o
-  # Stub TU: -DGEIST_EMBED_MODEL_PATH points .incbin at the model; rebuild if it changes.
-  $(EMBED_OBJ): EMBED_CFLAGS := -DGEIST_EMBED_MODEL_PATH='"$(EMBED_ABS)"'
-  $(EMBED_OBJ): $(EMBED_ABS)
-  # geist CLI: compile its TU with the embed flag and link the stub object in.
-  $(BUILD_DIR)/tools/geist.o: CFLAGS += -DGEIST_EMBEDDED_MODEL
-  # Link to tools/$(EMBED_NAME), NOT tools/geist: geist.o is shared between the
-  # plain and embedded builds (the stamp above rebuilds it on every mode
-  # switch), but if the BINARIES shared a path too, any later plain `make`
-  # would clobber the embedded binary — leaving the embed symlink pointing at
-  # a model-less CLI. Swap the CLI's entry in BIN_TARGETS so `make bin` builds
-  # the embedded path (and never a broken plain link against an embedded
-  # geist.o). The generic $(BIN_DIR)/% rule in common.mk can't produce this
-  # target (there is no tools/$(EMBED_NAME).o), so link explicitly from geist.o.
-  BIN_TARGETS := $(patsubst $(BIN_DIR)/tools/geist,$(GEIST_BIN),$(BIN_TARGETS))
-  $(GEIST_BIN): $(BUILD_DIR)/tools/geist.o $(EMBED_OBJ) $(LIB_FILE)
-	@mkdir -p $(@D)
-	$(CC) $(LDFLAGS) -o $@ $(BUILD_DIR)/tools/geist.o $(EMBED_OBJ) $(LIB_FILE) $(LDLIBS)
-endif
-
-# Declared after the EMBED block on purpose — see the note at `lib:` above.
-bin: $(BIN_TARGETS)
+# `make run ARGS='model.gguf "your prompt"'` — build the smallest useful
+# program against the library and run it. The engine ships no CLI of its own
+# any more; examples/simple_generate.c is the STABLE-core demo.
+run: lib
+	@$(MAKE) -C examples TARGET=$(TARGET) MODE=$(MODE)
+	@OMP_WAIT_POLICY=active examples/simple_generate $(ARGS)
 
 # Test runner — invokes mk/run-tests.sh against the test bin directory.
 # FILTER is an optional substring; e.g. `make test FILTER=q3k` runs only
@@ -313,7 +221,7 @@ clean:
 
 distclean:
 	@rm -rf build lib bin
-	@rm -f geist $(EMBED_NAME) *.npy *.bin test_* eval_geist bench_sgemv summary.json module_tree.txt tokens_ref.txt
+	@rm -f *.npy *.bin test_* eval_geist bench_sgemv summary.json module_tree.txt tokens_ref.txt
 	@echo "Cleaned all targets, modes, and temporary files."
 
 # Code formatting via clang-format. Reads .clang-format from repo root.
