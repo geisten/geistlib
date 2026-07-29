@@ -14,7 +14,6 @@ make test-e2e      # only end-to-end tests (suffix _e2e — slow, may need GGUF)
 make test-all      # unit + int + e2e
 make test-py       # Python-side reference impls (hermetic: no GGUF, no network)
 make test-dequant  # dequant kernels vs gguf-py, bit-exact (needs a GGUF; skips if absent)
-make dynamic-example-host # compile the independent Phase-3 host
 
 # Filtering
 make test FILTER=q3k       # only tests whose name contains "q3k"
@@ -26,13 +25,12 @@ make MODE=asan test
 
 Adapter-specific policy and packaging suites live in their own repositories.
 
-Dynamic-tools safety is split across `test_json_schema_v1_unit`,
-`test_dynamic_tools_v1_unit`, `test_dynamic_request_v1_unit`,
-`test_dynamic_arguments_v1_unit`, `test_dynamic_host_v1_unit`, and
-`test_agent_unit`. Those cover the wire format without a model; for a real
-model/socket/host transcript, run the reference host against a live agent —
-`make dynamic-example-host`, then follow
-[`examples/README.md`](../examples/README.md).
+Tool-use and wire-format safety is not tested here: the agent layer and the
+`dynamic-tools-v1` protocol live in
+[geisten/geistagent](https://github.com/geisten/geistagent), with their suites.
+What this repository still owes that consumer is covered by
+`make agent-contract-smoke` — the symbols it links must exist with unchanged
+signatures.
 
 ## Exit-Code Convention (automake-compatible)
 

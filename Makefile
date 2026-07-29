@@ -247,9 +247,8 @@ help:
 	"geist build system   (detected TARGET=$(TARGET), MODE=$(MODE), CC=$(CC))" \
 	"" \
 	"Build & run:" \
-	"  make                       lib + binaries + ./geist symlink for this TARGET/MODE" \
-	"  OMP_WAIT_POLICY=active ./geist -m model.gguf \"prompt\" -n 40    run the CLI" \
-	"  make run ARGS='-m m.gguf \"hi\"'   build, then run ./geist with OMP_WAIT_POLICY=active" \
+	"  make                       lib + dev binaries for this TARGET/MODE" \
+	"  make run ARGS='m.gguf \"hi\"'      build + run examples/simple_generate" \
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make MODE=debug|asan|perf  -O0+g for gdb | ASan+UBSan | -O3+g for profilers" \
 	"  make clean | distclean     remove current TARGET/MODE | remove everything" \

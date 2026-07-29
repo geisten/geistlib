@@ -163,8 +163,8 @@ enum geist_status geist_model_load(const char            *path,
  * geist_model_destroy: the caller must keep `data` valid for the model's
  * lifetime (for an `.incbin`-embedded blob that is automatic — it lives in
  * .rodata). The GGUF must carry its own tokenizer (no sibling file is searched)
- * and is text-only (no external vision/audio safetensors). See
- * `make EMBED_MODEL=...` for the build-side helper. */
+ * and is text-only (no external vision/audio safetensors). geisten/geistagent
+ * uses this to ship engine and model as one file. */
 enum geist_status geist_model_load_from_memory(const void           *data,
                                                size_t                size,
                                                struct geist_backend *be,

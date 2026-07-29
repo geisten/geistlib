@@ -2,9 +2,9 @@
 
 This repository documents the application-neutral Geist engine:
 
-- `QUICKSTART.md`: CLI and C-library entry points
+- `QUICKSTART.md`: C-library entry points
 - `ARCHITECTURE.md`: engine layers and runtime architecture
-- `DEPLOY.md`: embedded/external models and resident dynamic-tools service
+- `DEPLOY.md`: building the library and consuming the packaged SDK
 - `CI_COVERAGE.md`: what each CI job actually verifies
 - the tool-use agent, the resident daemon and the normative
   `dynamic-tools-v1` contract live in

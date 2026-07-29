@@ -79,9 +79,9 @@ headers:
 
 - **Prebuilt** (per release): download `libgeist-<platform>.tar.gz` from the
   [latest release](https://github.com/geisten/geistlib/releases/latest) — it holds
-  `libgeist.a`, `include/*.h` (the engine ABI **and** the header-only tool-use
-  interface: `agent.h`, `agent_main.h`, the `dynamic_*_v1.h` / `json_schema_v1.h`
-  set) and `LICENSE`. Verify it against `SHA256SUMS`.
+  `libgeist.a`, `include/*.h` (the engine ABI) and `LICENSE`. Verify it
+  against `SHA256SUMS`. The archive is an OpenMP build, so link `-fopenmp`
+  (Linux) or `-framework Accelerate <libomp>/lib/libomp.a` (macOS).
   Platforms: `macos-arm64`, `linux-arm64`, `linux-x86_64`.
 - **From source:** `make lib` builds `lib/<target>/<mode>/libgeist.a`.
 
@@ -191,14 +191,11 @@ stop or anything multimodal/advanced.
 
 ## 3. Ship one file: model embedded in the binary
 
-geist already builds as a single dependency-free executable. You can fold the
-**model** in too, so a deployment is *literally one file* — no GGUF alongside:
-
-```bash
-make clean                                 # EMBED rebuilds the CLI; start clean
-make EMBED_MODEL=path/to/model.gguf        # bakes the GGUF into ./geist
-./geist "What is the capital of France?"   # the CLI now takes only a prompt
-```
+The library links into a single dependency-free executable, and the **model**
+can be folded in too, so a deployment is *literally one file*. That is a
+property of an executable and this repository builds none —
+[geistagent](https://github.com/geisten/geistagent) does it, via
+`geist_model_load_from_memory`, and publishes signed single-file runtimes.
 
 Weights are aliased **zero-copy** from the binary's read-only data, so this suits
 **small** models (the binary grows by the model size). Full single-file &

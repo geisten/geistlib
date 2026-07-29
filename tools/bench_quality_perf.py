@@ -137,7 +137,7 @@ def ttft_ms(rec: dict) -> float:
     """Time to first token: prefill plus one decode step.
 
     Derived, not measured directly — the error is well under one token time.
-    This is the ENGINE's TTFT; a request through `--serve` additionally pays
+    This is the ENGINE's TTFT; a request through an agent runtime additionally pays
     tokenization, chat templating and any tool round trip.
     """
     decode_n = rec.get("decode_n") or 1
