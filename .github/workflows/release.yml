@@ -148,9 +148,17 @@ jobs:
           cp include/*.h dist/libgeist-macos-arm64/include/
           cp LICENSE dist/libgeist-macos-arm64/
           d=dist/libgeist-macos-arm64
-          cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" -lm -o /tmp/sdk_smoke
+          # The archive holds geist's objects, not the OpenMP runtime: an .a is
+          # not a link. GEIST_STATIC_OMP=1 governs how geistlib links its OWN
+          # binaries, so a consumer of the packaged SDK still supplies libomp
+          # and Accelerate itself — the same flags mk/target-mac-omp.mk uses.
+          # Linking the smokes the way a real consumer must is the whole point
+          # of a packaging gate (geistlib#144).
+          omp=$(brew --prefix libomp)
+          link="-framework Accelerate $omp/lib/libomp.a -lm"
+          cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" $link -o /tmp/sdk_smoke
           /tmp/sdk_smoke
-          cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -lm -o /tmp/agent_smoke
+          cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" $link -o /tmp/agent_smoke
           /tmp/agent_smoke
           tar -C dist -czf libgeist-macos-arm64.tar.gz libgeist-macos-arm64
       - uses: actions/upload-artifact@v4
