@@ -289,18 +289,15 @@ $(LIB_FILE): $(LIB_OBJS)
 	@mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
-# Preprocessed-assembly rule (.S). Used by the optional embedded-model stub
-# (src/engine/embedded_model.S); EMBED_CFLAGS carries the per-target -DGEIST_
-# EMBED_MODEL_PATH from the EMBED block in the top Makefile.
-EMBED_CFLAGS ?=
+# Preprocessed-assembly rule (.S). The engine ships no .S source today; the
+# rule stays because a consumer building in-tree may add one, and because
+# EXTRA_ASFLAGS is how a caller passes -D to it.
+EXTRA_ASFLAGS ?=
 $(BUILD_DIR)/%.o: %.S
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(EMBED_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(EXTRA_ASFLAGS) -c $< -o $@
 
-# Binary linking — each binary links against libgeist.a. The embedded-model
-# CLI ($(GEIST_BIN) with EMBED_MODEL set) is NOT built by this rule — its
-# binary name doesn't match its .o name, so the top Makefile links it with an
-# explicit rule.
+# Binary linking — each binary links against libgeist.a.
 $(BIN_DIR)/%: $(BUILD_DIR)/%.o $(LIB_FILE)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)

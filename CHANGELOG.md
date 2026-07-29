@@ -8,6 +8,20 @@ minor release.
 
 ## [Unreleased]
 
+### Removed
+
+- `install.sh`. It downloaded `geist` / `geist-bitnet` from this repository's
+  releases, which 0.7.0 stopped publishing. Installing a runnable artefact is
+  [geistagent](https://github.com/geisten/geistagent)'s business.
+
+### Changed
+
+- Documentation now describes a library. The README quick start, `DEPLOY.md`,
+  `QUICKSTART.md`, `ROADMAP.md`, `tests/README.md` and the release workflow's
+  comments still told readers to download, build and deploy a CLI that 0.7.0
+  removed — including a Homebrew line and asset links that 404. They point at
+  geistagent where a runnable artefact is meant.
+
 ## [0.7.0] — 2026-07-29
 
 ### Removed
