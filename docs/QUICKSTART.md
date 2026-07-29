@@ -34,35 +34,24 @@ Any GGUF that carries its own tokenizer works; `fetch-model` is just a helper.
 ### Generate
 
 ```bash
-# The ./geist symlink saves you the bin/<target>/<mode>/ path.
-OMP_WAIT_POLICY=active ./geist -m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
-    "What is the capital of France?"
+# make run builds examples/simple_generate and sets OMP_WAIT_POLICY for you:
+make run ARGS='gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "The capital of France is"'
 # -> The capital of France is Paris.
-
-# make run sets OMP_WAIT_POLICY for you:
-make run ARGS='-m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "Write a haiku" -n 40'
 ```
 
-CLI usage: `geist -m <model.gguf> "prompt" [-n N]` — the model is given with `-m`
-(or baked in via `make EMBED_MODEL=…`). A prompt is answered as an **instruct
-chat** by default (wrapped in the model's chat template); pass `--raw` for a raw
-base-model text completion. `-n` caps new tokens (default 64).
+`examples/simple_generate.c` is the smallest useful program against the
+library — load a GGUF, prefill, greedy-decode — and uses only the STABLE core
+of `include/geist.h`. The engine ships no CLI of its own; a command-line
+runtime with tool use, chat templating and a resident daemon is
+[geistagent](https://github.com/geisten/geistagent).
 `OMP_WAIT_POLICY=active` keeps the OpenMP threads spinning between tokens and
 noticeably improves multi-thread throughput; always set it.
 
-The same binary also runs a warm **dynamic-tools daemon** with `--serve`. The
-host supplies the complete allowed toolset per request over a chmod-600 Unix
-socket, executes the calls, and returns results — Geist never executes a dynamic
-action itself. Concrete tools live in consumer projects (see
-[agent.md](agent.md); the reference assistant is
-[geistwissen](https://github.com/geisten/geistwissen)).
-
-```bash
-./geist -m model.gguf --serve /tmp/geist.sock
-make dynamic-example-host
-bin/$(mk/detect-target.sh)/release/examples/dynamic_tools_host \
-  /tmp/geist.sock "Add 5 and 7"
-```
+A warm **dynamic-tools daemon** — a host supplying the allowed toolset per
+request over a Unix socket, with the engine never executing an action itself —
+is [geistagent](https://github.com/geisten/geistagent), which links this
+library. The reference assistant is
+[geistwissen](https://github.com/geisten/geistwissen).
 
 For an interactive prompt loop, use the evaluation REPL (no symlink — full path):
 

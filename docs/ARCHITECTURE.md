@@ -102,91 +102,26 @@ Speculative decode (`geist_session_decode_speculative`) replaces the single
 `decode step` with an n-gram draft + one batched `verify_forward`; on a miss it
 falls back to the sequential path shown above.
 
-## Above the ABI: CLI & agent
+## Above the ABI: what the engine deliberately does not do
 
-The CLI (`geist` with its `agent` / `chat` subcommands), the memory palace, and
-the tool-use agent are **consumers** of the public ABI, not part of the runtime.
-They live in `tools/` as header-only modules (`mind.h`, `agent.h`, `agent_*.h`,
-`agent_main.h`) so the same code runs in-process on desktop and inside an embedded
-host (iOS/Android) with no link step. The agent is the **same process** as the model — `geist_agent_run` is an
-in-process call over a resident session. The host, not the model, decides what
-runs: a request can act only through an immutable **tool whitelist** — compiled
-once for legacy tools or supplied dynamically per request — bounded by a global
-call budget. See [agent.md](agent.md).
+The tool-use agent, the resident `dynamic-tools-v1` daemon and the constrained
+decoding that forces a well-formed call out of a model that cannot emit one
+are **not** in this repository. They live in
+[geisten/geistagent](https://github.com/geisten/geistagent), built on top of
+the public API described here.
 
-```mermaid
-flowchart TD
-    REQ["input + optional dynamic tools"] --> COMPILE["strict parse · copy immutable toolset<br/>compile Schema-v1"]
-    COMPILE --> SYS["geist_agent_run<br/>system prompt + offered menu"]
-    SYS --> GEN["generate one turn<br/>(decode loop, above)"]
-    GEN --> PARSE{"emitted a<br/>tool call?"}
-    PARSE -->|no| ANS(["plain text = final answer"])
-    PARSE -->|yes| GATE{"name ∈ whitelist?"}
-    GATE -->|no| REJ["error observation<br/>(tool never runs)"]
-    GATE -->|yes| SCHEMA{"args match selected schema?"}
-    SCHEMA -->|no| REJ
-    SCHEMA -->|yes, static| RUN["in-process tool.invoke<br/>doc_search · web_fetch · …"]
-    SCHEMA -->|yes, dynamic| CALL["emit correlated tool.call"]
-    CALL --> HOST["host revalidates policy<br/>and executes"]
-    HOST --> RESULT["tool.result · cancel · retryable"]
-    RESULT --> OBS
-    REJ --> OBS["append observation"]
-    RUN --> OBS
-    OBS -->|"step < max_steps"| GEN
-    OBS -->|"step = max_steps"| ANS
+That split is the point rather than an accident of history. The agent layer is
+where a whitelist decides whether a model may act; the engine is where tokens
+are produced. Keeping the loop above the ABI means the constrained-decoding
+capability is reconstructed from the public peek/prefill primitives instead of
+buried in the sampler — `libgeist` stays small, and the code that gates actions
+stays auditable in one place, outside the engine that has no opinion about
+them.
 
-    GEN -.->|"geist_session_set_prompt / decode_step"| ABI["public ABI (include/geist.h)"]
-```
-
-The generate node reuses the decode pipeline shown above; only orchestration
-(compile → route → parse → gate → validate → call/result → observe) is in the
-agent/server layer. `json_schema_v1.h`, `dynamic_tools_v1.h` and
-`dynamic_request_v1.h` contain no HA dependency. `dynamic_host_v1.h` adapts the
-same callback boundary to newline-framed host round trips. Tools remain
-platform-specific, which is why none of this expands `libgeist`'s public ABI.
-
-**Driving tools on small, non-tool-trained models — without touching the
-sampler.** A 2 B model rarely emits a clean tool call on its own, and geist's
-ABI deliberately exposes no in-engine grammar mask. The agent gets the same
-guarantee *from outside* the engine, using only `peek_logits` / `prefill_tokens`
-/ `tokenize`:
-
-- **Routing** scores each tool *name* as the answer to a "which tool?" cloze and
-  PMI-calibrates it against a content-free baseline (so a frequent token like
-  `list` doesn't always win) — picking the tool, not trusting a raw logit.
-- **Forcing** prefills the `{"tool":"<name>","args":{…}}` scaffold. Legacy
-  one-string tools lift their value from the request. Dynamic tools build typed
-  objects from the schema: required/optional fields, numbers, booleans, scalar
-  enums and enum arrays. The complete object must validate before RUNNING.
-- **Confidence gating** compares the routed winner with the runner-up and the
-  direct-reply pseudo-entry. A close race returns a clarification, not a guessed
-  action.
-
-This is the architectural reason the agent layer is **above** the ABI, not inside
-it: a constrained-decoding capability that would normally live in the sampler is
-reconstructed from the public peek/prefill primitives, keeping `libgeist` small
-and the grammar logic auditable in `agent.h`. See [agent.md](agent.md#tool-selection--forced-calls).
-
-### Dynamic host boundary
-
-A dynamic request may offer up to 16 tools and 1–16 total calls. The offered
-array is copied into request-owned storage; changing sender buffers cannot widen
-capability after compilation. Names must be unique. The documented v1 schema
-subset supports objects, strings, numbers, integers, booleans, arrays, required
-and optional properties, scalar enums, bounds and nested structures.
-Unsupported keywords fail compilation.
-
-Dynamic actions never execute inside Geist. The server emits a newline-framed
-`tool.call` with a fresh `call_id`; the host rechecks name, schema and application
-policy, executes, and returns `tool.result`. One explicitly retryable result may
-repeat the call with a new id and consumes the same global budget. A correlated
-cancel stops later calls. Home Assistant is one adapter;
-`examples/dynamic_tools_host.c` is an independent C adapter and build.
-
-The serving surface also accepts the exact model-free health control frame
-`{"type":"health"}` and returns protocol identity plus readiness. Configuration
-clients use it to reject the wrong socket before saving state. It does not add a
-second transport or invoke the model.
+What the engine owes that consumer is written down and enforced:
+[API_CONTRACT.md](API_CONTRACT.md) lists the symbols an out-of-tree agent
+runtime links across a release boundary, and `make agent-contract-smoke`
+fails here — not in the consumer's build — if a signature moves.
 
 ## Zero-dispatch kernel binding
 
@@ -252,8 +187,8 @@ text bottleneck would discard.
 - The public contract: `include/geist.h` (stability tags per symbol), and
   what those tags promise across a release boundary:
   [API_CONTRACT.md](API_CONTRACT.md).
-- The tool-use SDK interface (`agent.h`, `--serve`, dynamic-tools-v1; concrete
-  tools live in consumer repos): [agent.md](agent.md).
+- The tool-use runtime (`agent.h`, `--serve`, dynamic-tools-v1):
+  [geisten/geistagent](https://github.com/geisten/geistagent).
 - Building self-contained binaries and deploying: [DEPLOY.md](DEPLOY.md).
 
 Per directory, the file to open first:
