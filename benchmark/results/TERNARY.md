@@ -50,6 +50,54 @@ inverts between Apple and the A76.
 
 ---
 
+## Per-token byte budget (2B-4T `i2_s`)
+
+Decode on this model is memory-bandwidth bound, so the question "where do the
+bytes go?" decides which optimizations can pay at all. Counted **statically from
+the GGUF tensor table** (via geist's own reader — gguf-py cannot parse `i2_s`,
+type 36), assuming each weight is touched once per token at m=1:
+
+| Read per decode token | MB | share |
+| :-- | --: | --: |
+| ternary `blk.*` (I2_S) | 497.0 | **86 %** |
+| speculative sketch table (V × H/4, int8) | 78.3 | 13 % |
+| phase-3 verify, top-1024 rows of the F16 head | 5.0 | 1 % |
+| norms (F32, all layers) | 1.7 | <1 % |
+| **total** | **582.0** | |
+
+For contrast, the model **on disk** is 1124.8 MB, of which `token_embd.weight`
+alone is 626.2 MB (F16, 55.7 %) — it is tied, so a dense head would re-read all
+of it every token.
+
+Three things follow, and they bound what is still worth trying:
+
+1. **The output head is done.** 626.2 → 83.3 MB is a **7.5×** cut, and it ships
+   on by default (`spec_head.c`, `GEIST_SPEC_HEAD=0` disables). It went from the
+   largest single item to a small one. The 78.3 MB sketch table is also 78.3 MB
+   of *resident* RAM — a deliberate trade of footprint for bandwidth, which is
+   affordable on a 4 GB board only because the F16 table itself stays mmap'd.
+
+2. **86 % of the traffic is ternary weights at ~1.6 bpw** — effectively the
+   floor for the format. Going lower means a different format or sparsity, i.e.
+   research, not tuning. Any bandwidth idea should be sized against this number
+   before it is built.
+
+3. **Weight streaming / prefetch cannot pay here.** geist already keeps the
+   tiered residency that disk-streaming engines are built around: mmap-alias is
+   the default and leaves lookup-only tables disk-backed (see the storage-mode
+   note in `arch_state.c`). What remains prefetchable is a few KB of row lookups
+   against ~582 MB of dense per-token traffic. Decode is DRAM-bound, not
+   I/O-bound; the lever is fewer bytes, not earlier reads.
+
+The one untested knob is `GEIST_SPEC_STRIDE` (default 4): raising it to 8 halves
+the sketch table to 39 MB, about −7 % of per-token traffic. **It must be gated on
+token parity, not on t/s.** A coarser sketch loses recall, and a recall miss is
+*silent* — there is no per-token fallback to the dense head, so the true argmax
+simply never gets computed and the trajectory diverges. `SPEC_TOPK` was already
+raised 512 → 1024 for exactly that margin.
+
+---
+
 ## Measurement protocol
 
 Use `benchmark/compare_ternary_pi5.sh` — runs geist (SDOT + TL1), llama.cpp, and
@@ -67,8 +115,6 @@ BITNET_BENCH=~/BitNet/build/bin/llama-bench \
 
 Decode is often fastest at **3 threads** (memory-bandwidth-bound), prefill at 4
 (compute-bound) — geist auto-selects; sweep `THREADS=3` vs `4` for the references.
-
----
 
 ---
 
