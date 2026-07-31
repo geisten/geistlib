@@ -11,16 +11,22 @@ The tool-use programs that used to live here moved with the agent layer to
 | File | Role | Proves | Built by |
 | :-- | :-- | :-- | :-- |
 | `simple_generate.c` | example | the STABLE core generates text | `make -C examples` |
-| `embed_smoke.c` | release gate | the packaged `libgeist.a` links against nothing but `-lm` | `.github/workflows/release.yml` |
-| `agent_contract_smoke.c` | release gate | the symbols the out-of-tree agent runtime links still exist, with the same signatures | `make agent-contract-smoke` |
+| `embed_smoke.c` | release gate | the packaged `libgeist.a` links and runs with no model | `release.yml` |
+| `agent_contract_smoke.c` | release gate | the symbols the out-of-tree agent runtime links still exist, with the same signatures | `release.yml` + `make agent-contract-smoke` |
 
-The `_smoke` suffix is the marker: a `*_smoke.c` here is compiled against a
-*packaged* SDK by the release workflow, never by `make`. They live beside the
-examples because they share the one property that defines this directory —
-everything here is built from **outside** the library, against the artifact
-geistlib publishes. `tests/` is the opposite: `mk/common.mk` globs
-`tests/test_*.c` and builds them against the repo tree, which is precisely the
-check a packaging gate must not do.
+The `_smoke` suffix is the marker: every `*_smoke.c` here is compiled by
+`release.yml` against the *packaged* SDK, with `-I <package>/include` and the
+repo tree off the include path. They live beside the example because they share
+the one property that defines this directory — everything here is built from
+**outside** the library, against the artifact geistlib publishes. `tests/` is
+the opposite: `mk/common.mk` globs `tests/test_*.c` and builds them against the
+repo tree, which is precisely the check a packaging gate must not do.
+
+`agent_contract_smoke.c` is the exception that proves it: it also builds from
+the repo tree on every PR (`make agent-contract-smoke`, wired into `ci.yml`).
+That is deliberate — a broken contract should fail on the PR that breaks it, not
+weeks later at release. The release run is the one that matters, because only it
+proves the *shipped* headers still hold.
 
 ## `simple_generate`
 
@@ -49,18 +55,25 @@ exactly the compiler, flags and libraries the library itself uses — pass
 
 ## The two release gates
 
-Both are compiled by `release.yml` against the *packaged* SDK with
-`-I <package>/include` — the repo tree is not on the include path. That is what
-makes them worth their 74 lines:
+Both run in all three release jobs — `linux-arm64`, `linux-x86_64`,
+`macos-arm64` — against that platform's packaged SDK. Neither is called for its
+output; each is a compile-and-link assertion, which is why 136 lines are worth
+keeping:
 
-- **`embed_smoke.c`** calls only model-free STABLE entry points (version,
-  status), so it needs no backend, no GGUF, no OpenMP and no BLAS. If it fails
-  to link, the shipped `libgeist.a` is broken for every embedder.
-  `geist_tool`. `agent.h` is 2777 lines of header-only code that is *not* in
-  `libgeist.a`; release.yml copies it and six sibling headers into the package
-  by hand. Add an `#include` to one of them without extending that copy list and
-  this smoke is the only thing that notices — on all three platforms, before the
-  tarball ships.
+- **`embed_smoke.c`** (27 lines) calls only model-free STABLE entry points
+  (version, status), so it needs no backend and no GGUF. If it fails, the
+  shipped `libgeist.a` is unusable for every embedder — the broadest possible
+  failure, caught by the smallest possible program.
 
-They run automatically on release. To reproduce one locally, point `-I` at an
-unpacked tarball rather than at `include/`.
+- **`agent_contract_smoke.c`** (109 lines) binds each symbol of
+  [`docs/API_CONTRACT.md`](../docs/API_CONTRACT.md) to an explicitly typed
+  function pointer. A **changed signature fails to compile**, a **removed symbol
+  fails to link**. Nothing is invoked, so no model is needed; taking a
+  function's address is enough to force the linker to resolve it. The
+  out-of-tree agent runtime ([geistagent](https://github.com/geisten/geistagent))
+  links these across a release boundary, so a break must surface here rather
+  than in someone else's build.
+
+To reproduce either locally, point `-I` at an unpacked tarball instead of
+`include/`. For the contract one, `make agent-contract-smoke` is the quicker
+check — it compiles the same assertions against the working tree.
