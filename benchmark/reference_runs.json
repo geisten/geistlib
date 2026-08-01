@@ -16,5 +16,28 @@
   "baseline_decode_tps": "its decode throughput under the same protocol",
   "ratio": "geist / baseline on the same box -- the only figure comparable across machines"
  },
- "runs": []
+ "runs": [
+  {
+   "date": "2026-08-01",
+   "system": "Raspberry Pi 5 Model B Rev 1.1",
+   "cores": 4,
+   "ram_gb": 4.0,
+   "os": "Linux 6.18.33+rpt-rpi-2712",
+   "model": "bitnet-2b4t-i2_s.gguf",
+   "commit": "959487c",
+   "protocol": {
+    "seq_lens": "32,128,512",
+    "decode_n": 64,
+    "warmup": 64,
+    "repeats": 10,
+    "agg": "mean"
+   },
+   "decode_tps_512": 15.126,
+   "prefill_tps_512": 44.013,
+   "spread_pct": 2.9614885757453138,
+   "baseline_engine": "bitnet.cpp",
+   "baseline_decode_tps": 9.04,
+   "ratio": 1.6732300884955753
+  }
+ ]
 }
