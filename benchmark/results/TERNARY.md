@@ -8,9 +8,14 @@ SDOT, **no i8mm**) at or above `MAX(bitnet.cpp, llama.cpp)` on the same model.
 Cougar/bitnet.cpp head-to-heads built and run on the same board (below). The one
 open gap is a canonical 2B-4T **TQ2_0** GGUF (only `i2_s` ships upstream).
 
-Quote that headline with its context length or not at all — decode falls ~29 %
+Quote that headline with its context length or not at all — decode falls ~17 %
 from a 32-token prompt to a 512-token one, so the same build reads anywhere
-between 17.9 and 12.8 t/s depending only on where you measure it.
+between 18.3 and 15.2 t/s depending only on where you measure it.
+
+The 17.4/8.2 pair is left as measured: both halves came from one head-to-head
+run, and geist's half alone must not be refreshed without re-running bitnet.cpp
+beside it. Today geist reads 18.28 t/s at 32 tokens (see the curve below); what
+bitnet.cpp does on the same board today has not been re-measured.
 
 ---
 
@@ -57,26 +62,48 @@ inverts between Apple and the A76.
 ## Decode against context length (2026-08-01)
 
 The headline number above depends entirely on where it is measured, so here is
-the curve. One `bench_perf_sweep` run, `--seq-lens 32,128,512 --decode-n 64
---warmup 64 --repeats 10`, mean-of-10 from a cool start (47.7 °C, load 0.00,
-`geist-home` and `ollama` stopped for the duration):
+the curve. One `bench_perf_sweep` run per column, `--seq-lens 32,128,512
+--decode-n 64 --warmup 64 --repeats 10`, mean-of-10 from a cool start (47 °C,
+load ~0.0, `geist-home` and `ollama` stopped for the duration):
 
 | prompt tokens | decode t/s | spread | prefill t/s | total t/s |
 | --: | --: | --: | --: | --: |
-| 32 | **17.96** | ±0.8 % | 49.58 | 22.81 |
-| 128 | 16.77 | ±0.4 % | 50.18 | 30.16 |
-| 512 | 12.76 | ±1.3 % | 46.26 | 35.82 |
+| 32 | **18.28** | ±0.7 % | 49.77 | 23.17 |
+| 128 | 17.62 | ±1.7 % | 50.51 | 31.14 |
+| 512 | 15.25 | ±0.6 % | 46.45 | 37.85 |
 
-**Decode falls 29 % from a 32-token prompt to a 512-token one; prefill stays
-flat.** That is the KV attention growing with context, not weight bandwidth —
-the weights read per token are the same at every point (see the budget below).
+**Decode falls 17 % from a 32-token prompt to a 512-token one; prefill stays
+flat.** The weights read per token are identical at every point (see the budget
+below), so the difference is attention over the longer KV.
 
-Two consequences. Any decode number from this model must name its context
-length, or it is unfalsifiable: the same binary reads 17.9 or 12.8 t/s. And an
-optimization that shrinks *per-token weight traffic* shows its effect most
-clearly at **short** context, where attention does not dilute it.
+Any decode number from this model must name its context length, or it is
+unfalsifiable — the same binary reads 18.3 or 15.2 t/s.
 
-Raw run: `~/bench-geistlib/stride/2026-08-01_pi5_bitnet-2b4t-i2s_seqlen-sweep.log`.
+### Where the 17 % used to be 29 %
+
+Before the attention core was parallelized over heads as well as query
+positions, the same sweep read:
+
+| prompt tokens | decode t/s (before) | after | Δ |
+| --: | --: | --: | --: |
+| 32 | 17.96 | 18.28 | +1.8 % |
+| 128 | 16.77 | 17.62 | +5.1 % |
+| 512 | 12.76 | 15.25 | **+19.5 %** |
+
+Decode passes `n_q == 1`, so a `parallel for` over query positions ran on one
+thread while the heads went serially. The tell was that the cost of growing
+context did not move with the thread count at all — 22.87 ms/token at 1 thread
+against 22.67 at 3, a factor of 1.01, while everything else in decode scaled
+1.77×. KV bandwidth could not explain it either: 37.5 MiB per step at ~10 GB/s
+is 3.9 ms, not 22.7. `collapse(2)` halved that portion to 10.87 ms/token.
+
+The residual 17 % is what attention still costs after parallelizing. The gain
+grows with context, so this curve is worth re-measuring whenever the attention
+path changes.
+
+Raw runs: `~/bench-geistlib/stride/2026-08-01_pi5_bitnet-2b4t-i2s_seqlen-sweep*.log`
+(`_seqlen-sweep` = before, `_1thread` = the thread-invariance test,
+`_head-parallel` = after).
 
 ## Per-token byte budget (2B-4T `i2_s`)
 
@@ -123,6 +150,10 @@ token parity, not on t/s.** A coarser sketch loses recall, and a recall miss is
 *silent* — there is no per-token fallback to the dense head, so the true argmax
 simply never gets computed and the trajectory diverges. `SPEC_TOPK` was already
 raised 512 → 1024 for exactly that margin.
+
+Measure it at **short** context. Weight traffic is the same per token at every
+context length, so attention dilutes a traffic saving the longer the prompt
+gets — a real −7 % would half-vanish at 512 tokens and read as noise.
 
 ---
 
