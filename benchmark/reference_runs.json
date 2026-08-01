@@ -11,7 +11,7 @@
   "protocol": "frozen sweep parameters -- rows with differing protocols are not comparable",
   "decode_tps_512": "decode throughput at a 512-token prompt, mean of the repeats",
   "prefill_tps_512": "prefill throughput at a 512-token prompt",
-  "spread_pct": "run-to-run spread as +/-% around the mean; above ~2% the machine was busy",
+  "spread_pct": "run-to-run spread as +/-% around the mean. Above ~2% the run varied; read it together with load before blaming contention -- on an idle board it is usually thermal drift over a long sweep",
   "baseline_engine": "competing engine measured in the same run, if its binary was reachable",
   "baseline_decode_tps": "its decode throughput under the same protocol",
   "ratio": "geist / baseline on the same box -- the only figure comparable across machines"
