@@ -12,17 +12,11 @@
   "decode_tps_512": "decode throughput at a 512-token prompt, mean of the repeats",
   "prefill_tps_512": "prefill throughput at a 512-token prompt",
   "spread_pct": "run-to-run spread as +/-% around the mean. Above ~2% the run varied; read it together with load before blaming contention -- on an idle board it is usually thermal drift over a long sweep",
-  "baseline_engine": "competing engine measured in the same run, if its binary was reachable",
-  "baseline_decode_tps": "its decode throughput under the same protocol",
   "decode_tps_short": "decode throughput at the shortest prompt -- the row that matches a baseline's empty-context generation benchmark",
-  "decode_ratio_short_ctx": "geist / baseline decode, both from a near-empty context",
-  "prefill_ratio_512": "geist / baseline prompt processing at 512 tokens",
-  "baseline_prefill_tps": "baseline prompt-processing throughput at 512 tokens",
   "temp_c_geist_start": "board temperature when geist started",
-  "temp_c_baseline_start": "board temperature when the baseline started; -1 means the run predates this field being recorded",
-  "thermal_gate": "cooled = both engines verified at or below the gate; still_hot = the board would not come down in time and the ratios flatter geist; unreadable = no unprivileged thermometer, so the running order cannot be ruled out",
   "j_per_decode_token": "board energy per decoded token, from the phase-separated probes",
-  "j_per_prefill_token": "board energy per prefill token, from the prefill-only probe"
+  "j_per_prefill_token": "board energy per prefill token, from the prefill-only probe",
+  "baselines": "every competing engine measured in the same run, each with its own start temperature and gate status. A list because a box can carry more than one relevant opponent -- bitnet.cpp for ternary, llama.cpp otherwise -- and measuring only the first silently dropped llama.cpp everywhere both existed"
  },
  "runs": [
   {
@@ -43,15 +37,19 @@
    "decode_tps_512": 14.971,
    "prefill_tps_512": 45.462,
    "spread_pct": 1.1384004892622925,
-   "baseline_engine": "bitnet.cpp",
-   "baseline_decode_tps": 9.14,
    "decode_tps_short": 17.881,
-   "decode_ratio_short_ctx": 1.9563457330415754,
-   "prefill_ratio_512": 0.9926200873362446,
-   "baseline_prefill_tps": 45.8,
    "temp_c_geist_start": 53.8,
-   "temp_c_baseline_start": -1.0,
-   "thermal_gate": "cooled"
+   "baselines": [
+    {
+     "engine": "bitnet.cpp",
+     "decode_tps": 9.14,
+     "prefill_tps": 45.8,
+     "decode_ratio_short_ctx": 1.9563457330415754,
+     "prefill_ratio_512": 0.9926200873362446,
+     "temp_c_start": -1.0,
+     "thermal_gate": "cooled"
+    }
+   ]
   },
   {
    "date": "2026-08-01",
@@ -71,16 +69,21 @@
    "decode_tps_512": 15.058,
    "prefill_tps_512": 46.206,
    "spread_pct": 0.3110393234848873,
-   "baseline_engine": "bitnet.cpp",
-   "baseline_decode_tps": 9.1,
    "decode_tps_short": 18.084,
-   "decode_ratio_short_ctx": 1.9872527472527473,
-   "prefill_ratio_512": 0.9923969072164949,
    "temp_c_geist_start": 52.1,
-   "temp_c_baseline_start": 54.9,
-   "thermal_gate": "cooled",
    "j_per_decode_token": 0.3553492784532044,
-   "j_per_prefill_token": 0.17080639220841934
+   "j_per_prefill_token": 0.17080639220841934,
+   "baselines": [
+    {
+     "engine": "bitnet.cpp",
+     "decode_tps": 9.1,
+     "prefill_tps": null,
+     "decode_ratio_short_ctx": 1.9872527472527473,
+     "prefill_ratio_512": 0.9923969072164949,
+     "temp_c_start": 54.9,
+     "thermal_gate": "cooled"
+    }
+   ]
   }
  ]
 }

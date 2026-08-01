@@ -324,22 +324,31 @@ def energy_per_token(binary: Path, gguf: Path) -> dict | None:
             "prompt_share_of_decode_probe": dec_prompt_tokens * j_prefill / dec["joules"]}
 
 
-def find_baseline() -> tuple[str, Path] | None:
-    """A baseline engine's llama-bench, if one is reachable.
+def find_baselines() -> list[tuple[str, Path]]:
+    """Every reachable baseline engine, one per engine.
 
-    Explicit env wins; otherwise the conventional build paths. Absent is the
+    Both are measured when both are present: bitnet.cpp is the relevant
+    opponent for a ternary model, llama.cpp for everything else, and which one
+    matters depends on the GGUF rather than on which path we happened to check
+    first. An earlier version returned at the first hit, so on a box carrying
+    both -- the development Pi carries five llama-bench builds -- llama.cpp was
+    never measured at all.
+
+    Explicit env wins over the conventional build paths. Finding none is the
     normal case for someone who just cloned this, and is not an error.
     """
+    found: dict[str, Path] = {}
     for var, name in (("BITNET_BENCH", "bitnet.cpp"), ("LLAMA_BENCH", "llama.cpp")):
         p = os.environ.get(var)
         if p and Path(p).exists():
-            return name, Path(p)
+            found[name] = Path(p)
     home = Path.home()
     for cand, name in ((home / "BitNet/build/bin/llama-bench", "bitnet.cpp"),
-                       (home / "llama.cpp/build/bin/llama-bench", "llama.cpp")):
-        if cand.exists():
-            return name, cand
-    return None
+                       (home / "llama.cpp/build/bin/llama-bench", "llama.cpp"),
+                       (home / "llama.cpp/build-cpu/bin/llama-bench", "llama.cpp")):
+        if name not in found and cand.exists():
+            found[name] = cand
+    return sorted(found.items())
 
 
 def run_baseline(binary: Path, gguf: Path) -> dict | None:
@@ -464,54 +473,52 @@ def render(run: dict, refs: list[dict]) -> str:
                   "(Raspberry Pi reports it unprivileged; x86 RAPL and macOS "
                   "`powermetrics` need root, and this benchmark does not ask for it)."]
 
-    if run.get("baseline"):
-        b = run["baseline"]
-        # llama-bench runs pp and tg as SEPARATE benchmarks: tg generates from
-        # an empty context, it does not decode after the pp prompt. So its tg
-        # number belongs beside our SHORTEST-context row, not our longest.
-        # Comparing our seq-512 decode (full KV) against its empty-context tg
-        # pits our hardest case against its easiest and understates us by ~20 %
-        # — measured here at 1.67x where the like-for-like figure is 2.00x.
-        # pp512 does line up with our 512-token prefill.
+    if run.get("baselines"):
         short, long_ = rows[0], rows[-1]
-        L += ["", f"### vs {b['engine']}", "",
-              "| | geist | " + b["engine"] + " | ratio |", "| :-- | --: | --: | --: |"]
-        if b.get("decode_tps"):
-            L.append(f"| decode, {short['seq_len']}-token context "
-                     f"| {short['decode_tps']:.2f} | {b['decode_tps']:.2f} "
-                     f"| **{short['decode_tps'] / b['decode_tps']:.2f}×** |")
-        if b.get("prefill_tps"):
-            L.append(f"| prefill, {long_['seq_len']} tokens "
-                     f"| {long_['prefill_tps']:.2f} | {b['prefill_tps']:.2f} "
-                     f"| **{long_['prefill_tps'] / b['prefill_tps']:.2f}×** |")
-        thermal = {
-            "cooled": (f"Both engines started cool: geist at "
-                       f"{run['temp_before']:.1f} °C, {b['engine']} at "
-                       f"{run['temp_at_baseline']:.1f} °C, against a "
-                       f"{COOL_C:.0f} °C gate. The ratio is not an artefact of "
-                       "the running order."),
-            "still_hot": (f"**The comparison is compromised.** {b['engine']} started "
-                          f"at {run['temp_at_baseline']:.1f} °C against geist's "
-                          f"{run['temp_before']:.1f} °C — the board would not come "
-                          f"back under {COOL_C:.0f} °C within "
-                          f"{COOL_TIMEOUT_S // 60} minutes, so it ran throttled and "
-                          "these ratios flatter geist. Measured cost of exactly this: "
-                          "18 % off the second engine's prefill. Re-run with better "
-                          "airflow before quoting them."),
-            "unreadable": ("**Caveat:** no thermometer this tool can read without "
-                           "privileges, so we cannot show that both engines started "
-                           "from the same thermal state. On a passively cooled board "
-                           "that favours whichever ran first — here, geist."),
-        }[run.get("cool_status", "unreadable")]
+        L += ["", "### vs the baselines", "",
+              "| | geist | " + " | ".join(b["engine"] for b in run["baselines"]) + " |",
+              "| :-- | --: |" + " --: |" * len(run["baselines"])]
+
+        def row(label, ours, key):
+            cells = []
+            for b in run["baselines"]:
+                v = b.get(key)
+                cells.append(f"{v:.2f} — **{ours / v:.2f}×**" if v else "—")
+            return f"| {label} | {ours:.2f} | " + " | ".join(cells) + " |"
+
+        L.append(row(f"decode, {short['seq_len']}-token context",
+                     short["decode_tps"], "decode_tps"))
+        L.append(row(f"prefill, {long_['seq_len']} tokens",
+                     long_["prefill_tps"], "prefill_tps"))
+
+        gates = {b["thermal_gate"] for b in run["baselines"]}
+        if gates == {"cooled"}:
+            temps = ", ".join(f"{b['engine']} at {b['temp_c_start']:.1f} °C"
+                              for b in run["baselines"])
+            thermal = (f"Every engine started cool: geist at {run['temp_before']:.1f} °C, "
+                       f"{temps}, against a {COOL_C:.0f} °C gate. The ratios are not an "
+                       "artefact of the running order.")
+        elif "still_hot" in gates:
+            hot = ", ".join(f"{b['engine']} at {b['temp_c_start']:.1f} °C"
+                            for b in run["baselines"] if b["thermal_gate"] == "still_hot")
+            thermal = (f"**The comparison is compromised.** {hot} — the board would not "
+                       f"come back under {COOL_C:.0f} °C within {COOL_TIMEOUT_S // 60} "
+                       "minutes, so it ran throttled and these ratios flatter geist. "
+                       "Measured cost of exactly this: 18 % off the second engine's "
+                       "prefill. Re-run with better airflow before quoting them.")
+        else:
+            thermal = ("**Caveat:** no thermometer this tool can read without privileges, "
+                       "so we cannot show that every engine started from the same thermal "
+                       "state. On a passively cooled board that favours whichever ran "
+                       "first — here, geist.")
         L += ["", thermal,
-              "", "Same box, same GGUF, same run — this is the falsifiable claim. "
-                  "The rows are matched by *what was measured*, not by position: "
-                  f"{b['engine']}'s generation benchmark starts from an empty "
-                  "context, so it belongs against our shortest-context decode, "
-                  "while its prompt benchmark lines up with our longest prefill. "
-                  f"Our decode at {long_['seq_len']} tokens of context "
-                  f"({long_['decode_tps']:.2f} t/s) has no counterpart here — "
-                  "that engine was not measured under load."]
+              "", "Same box, same GGUF, same run — these ratios are the falsifiable "
+                  "claim. Rows are matched by *what was measured*, not by position: a "
+                  "baseline's generation benchmark starts from an empty context, so it "
+                  "belongs against our shortest-context decode, while its prompt "
+                  "benchmark lines up with our longest prefill. Our decode at "
+                  f"{long_['seq_len']} tokens of context ({long_['decode_tps']:.2f} t/s) "
+                  "has no counterpart — those engines were not measured under load."]
     else:
         L += ["", "**No baseline engine found**, so the numbers above stand alone: "
                   "throughput depends on your hardware and cannot be compared "
@@ -590,14 +597,21 @@ def main() -> int:
         print("  measuring energy per token (two short probes)", file=sys.stderr)
         run["per_token_energy"] = energy_per_token(binary, gguf)
 
-    baseline = find_baseline()
-    if baseline:
-        name, path = baseline
+    baselines = []
+    for name, path in find_baselines():
         print(f"  baseline found: {name} ({path})", file=sys.stderr)
-        run["cool_status"], run["temp_at_baseline"] = cool_down()
+        # Cool before EACH one, not once before the first: the second would
+        # otherwise run on hardware the first just heated, which is the same
+        # running-order artefact the gate exists to prevent.
+        status, temp = cool_down()
         res = run_baseline(path, gguf)
         if res:
-            run["baseline"] = {"engine": name, "path": str(path), **res}
+            baselines.append({"engine": name, "path": str(path),
+                              "thermal_gate": status, "temp_c_start": temp, **res})
+    run["baselines"] = baselines
+    if baselines:
+        run["cool_status"] = baselines[0]["thermal_gate"]
+        run["temp_at_baseline"] = baselines[0]["temp_c_start"]
 
     refs = []
     ds = Path(args.dataset)
@@ -627,21 +641,22 @@ def main() -> int:
             "prefill_tps_512": rows[-1]["prefill_tps"],
             "spread_pct": rows[-1]["spread_pct"],
         }
-        if run.get("baseline") and run["baseline"].get("decode_tps"):
-            # Matched against the SHORT-context row: llama-bench's tg starts
-            # from an empty context. See the note in render().
-            entry["baseline_engine"] = run["baseline"]["engine"]
-            entry["baseline_decode_tps"] = run["baseline"]["decode_tps"]
-            entry["decode_tps_short"] = rows[0]["decode_tps"]
-            entry["decode_ratio_short_ctx"] = rows[0]["decode_tps"] / run["baseline"]["decode_tps"]
-        if run.get("baseline") and run["baseline"].get("prefill_tps"):
-            entry["prefill_ratio_512"] = rows[-1]["prefill_tps"] / run["baseline"]["prefill_tps"]
-        if run.get("baseline"):
-            # Stored so a row can be audited for the running-order artefact
-            # later, not just judged at the moment it was printed.
+        if run.get("baselines"):
+            # A list, because a box can carry more than one relevant opponent and
+            # picking just the first silently dropped llama.cpp on every machine
+            # that also had bitnet.cpp.
+            entry["baselines"] = [
+                {"engine": b["engine"],
+                 "decode_tps": b.get("decode_tps"),
+                 "prefill_tps": b.get("prefill_tps"),
+                 "decode_ratio_short_ctx": (rows[0]["decode_tps"] / b["decode_tps"]
+                                            if b.get("decode_tps") else None),
+                 "prefill_ratio_512": (rows[-1]["prefill_tps"] / b["prefill_tps"]
+                                       if b.get("prefill_tps") else None),
+                 "temp_c_start": b["temp_c_start"],
+                 "thermal_gate": b["thermal_gate"]}
+                for b in run["baselines"]]
             entry["temp_c_geist_start"] = run["temp_before"]
-            entry["temp_c_baseline_start"] = run.get("temp_at_baseline", -1.0)
-            entry["thermal_gate"] = run.get("cool_status", "unreadable")
         if run.get("per_token_energy"):
             entry["j_per_decode_token"] = run["per_token_energy"]["j_per_decode_token"]
             entry["j_per_prefill_token"] = run["per_token_energy"]["j_per_prefill_token"]
