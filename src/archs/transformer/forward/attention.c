@@ -234,24 +234,33 @@ void attention_int8_via_buffers(const float  *q,
     const size_t kv_group_size = n_q_heads / n_kv_heads;
     /* The O(n^2) attention core. Every (t,h) is independent: it reads the
      * shared Q/K/V and writes only its own out[(t*n_q_heads+h)*head_dim..]
-     * slice plus a private `scores` scratch, so the outer loop parallelizes
-     * with no change to any per-(t,h) reduction order — bit-exact vs serial.
+     * slice plus a private `scores` scratch, so this parallelizes with no
+     * change to any per-(t,h) reduction order — bit-exact vs serial.
+     *
+     * collapse(2), NOT a plain loop over t: decode passes n_q == 1, and a
+     * parallel loop over one iteration runs on one thread. Measured on a Pi 5
+     * (BitNet 2B-4T i2_s), the cost of growing context was identical at 1 and
+     * at 3 threads — 22.87 vs 22.67 ms/token from a 32- to a 512-token prompt,
+     * a factor of 1.01 — while everything else in decode scaled 1.77x. The
+     * heads are the axis that still has width when t does not.
+     *
      * Causal + sliding-window masking makes per-t work uneven (later positions
-     * attend to more keys), so schedule(dynamic). The FFN/projection matmuls
-     * are already threaded in the backend; this closes the one prefill phase
-     * that was still serial. Guarded so a non-OpenMP build (no -fopenmp) skips
-     * the pragma cleanly under -Wunknown-pragmas -Werror. */
+     * attend to more keys), so schedule(dynamic). Guarded so a non-OpenMP build
+     * (no -fopenmp) skips the pragma cleanly under -Wunknown-pragmas -Werror. */
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for collapse(2) schedule(dynamic)
 #endif
     for (size_t t = 0; t < n_q; t++) {
-        const size_t q_pos = q_offset + t;
-        const size_t s_lo =
-                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
-        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
-        float        scores[n_kv]; /* private per t-iteration (was a shared param) */
-
         for (size_t h = 0; h < n_q_heads; h++) {
+            /* Recomputed per (t,h) rather than hoisted to the t loop: three
+             * scalar ops, and perfect nesting is what collapse(2) requires. */
+            const size_t q_pos = q_offset + t;
+            const size_t s_lo  = (sliding_window > 0 && q_pos + 1 > sliding_window)
+                                         ? q_pos + 1 - sliding_window
+                                         : 0;
+            const size_t s_hi  = q_pos < n_kv ? q_pos : n_kv - 1;
+            float        scores[n_kv]; /* private per (t,h) */
+
             const size_t kv_h = h / kv_group_size;
             const float *qv   = q + (t * n_q_heads + h) * head_dim;
 
@@ -352,17 +361,20 @@ void attention_int4_via_buffers(const float   *q,
 
     const size_t kv_group_size = n_q_heads / n_kv_heads;
     const size_t packed        = head_dim / 2; /* bytes per cache row */
+/* collapse(2) for the same reason as the INT8 core above: decode passes
+ * n_q == 1, so only the head axis has width to parallelize over. */
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for collapse(2) schedule(dynamic)
 #endif
     for (size_t t = 0; t < n_q; t++) {
-        const size_t q_pos = q_offset + t;
-        const size_t s_lo =
-                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
-        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
-        float        scores[n_kv];
-
         for (size_t h = 0; h < n_q_heads; h++) {
+            const size_t q_pos = q_offset + t;
+            const size_t s_lo  = (sliding_window > 0 && q_pos + 1 > sliding_window)
+                                         ? q_pos + 1 - sliding_window
+                                         : 0;
+            const size_t s_hi  = q_pos < n_kv ? q_pos : n_kv - 1;
+            float        scores[n_kv]; /* private per (t,h) */
+
             const size_t kv_h = h / kv_group_size;
             const float *qv   = q + (t * n_q_heads + h) * head_dim;
 
