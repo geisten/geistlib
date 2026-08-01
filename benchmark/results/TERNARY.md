@@ -4,18 +4,19 @@
 SDOT, **no i8mm**) at or above `MAX(bitnet.cpp, llama.cpp)` on the same model.
 
 **Status: measured on the Pi 5.** geist decodes the canonical 2B-4T `i2_s` at
-**17.4 t/s vs bitnet.cpp's 8.2** (~2×) **at short context**, with prefill and
-Cougar/bitnet.cpp head-to-heads built and run on the same board (below). The one
-open gap is a canonical 2B-4T **TQ2_0** GGUF (only `i2_s` ships upstream).
+**18.05 t/s vs bitnet.cpp's 9.04** (**2.0×**) **at a 32-token prompt** and
+**15.13 t/s** (**1.67×**) **at 512 tokens** — both halves from one `make bench`
+run on the same board (2026-08-01, frozen protocol, spread 3 %, recorded in
+`../reference_runs.json`). Prefill at 512 is 44.0 t/s (1.17×). The one open gap
+is a canonical 2B-4T **TQ2_0** GGUF (only `i2_s` ships upstream).
 
-Quote that headline with its context length or not at all — decode falls ~17 %
+Quote that headline with its context length or not at all — decode falls ~16 %
 from a 32-token prompt to a 512-token one, so the same build reads anywhere
-between 18.3 and 15.2 t/s depending only on where you measure it.
+between 18.1 and 15.1 t/s depending only on where you measure it.
 
-The 17.4/8.2 pair is left as measured: both halves came from one head-to-head
-run, and geist's half alone must not be refreshed without re-running bitnet.cpp
-beside it. Today geist reads 18.28 t/s at 32 tokens (see the curve below); what
-bitnet.cpp does on the same board today has not been re-measured.
+The pair must stay a pair: geist's half must not be refreshed without
+re-running bitnet.cpp beside it in the same `make bench` run. (The previous
+headline, 17.4/8.2, suffered exactly that drift and is superseded.)
 
 ---
 
