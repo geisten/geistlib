@@ -17,7 +17,10 @@
   "decode_tps_short": "decode throughput at the shortest prompt -- the row that matches a baseline's empty-context generation benchmark",
   "decode_ratio_short_ctx": "geist / baseline decode, both from a near-empty context",
   "prefill_ratio_512": "geist / baseline prompt processing at 512 tokens",
-  "baseline_prefill_tps": "baseline prompt-processing throughput at 512 tokens"
+  "baseline_prefill_tps": "baseline prompt-processing throughput at 512 tokens",
+  "temp_c_geist_start": "board temperature when geist started",
+  "temp_c_baseline_start": "board temperature when the baseline started; -1 means the run predates this field being recorded",
+  "thermal_gate": "cooled = both engines verified at or below the gate; still_hot = the board would not come down in time and the ratios flatter geist; unreadable = no unprivileged thermometer, so the running order cannot be ruled out"
  },
  "runs": [
   {
@@ -43,7 +46,10 @@
    "decode_tps_short": 17.881,
    "decode_ratio_short_ctx": 1.9563457330415754,
    "prefill_ratio_512": 0.9926200873362446,
-   "baseline_prefill_tps": 45.8
+   "baseline_prefill_tps": 45.8,
+   "temp_c_geist_start": 53.8,
+   "temp_c_baseline_start": -1.0,
+   "thermal_gate": "cooled"
   }
  ]
 }

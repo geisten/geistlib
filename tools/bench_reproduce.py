@@ -244,22 +244,32 @@ def run_geist(binary: Path, gguf: Path) -> list[dict]:
     return rows
 
 
-def cool_down() -> bool:
-    """Wait for the board to return to the temperature geist started from.
+def cool_down() -> tuple[str, float]:
+    """Return the board to the state the first engine started from.
 
-    Without this the baseline runs on hardware the first engine just heated,
-    and the ratio measures the running order as much as the engines. Returns
-    True if we know the board was cool when the baseline started; False when
-    temperature is not readable here, which the report then says out loud.
+    Without this the baseline runs on hardware geist just heated and the ratio
+    measures the running order as much as the engines — measured here at an 18 %
+    handicap to whichever ran second.
+
+    Returns (status, temperature). The three outcomes are deliberately distinct
+    because they mean different things to a reader, and an earlier version of
+    this collapsed them into one boolean and then reported a cooldown timeout as
+    "this platform has no thermometer", which was simply untrue:
+
+      "cooled"     — verified at or below the threshold before the baseline ran
+      "still_hot"  — readable, but it did not come down inside the timeout;
+                     the comparison is compromised and the report must say so
+      "unreadable" — no unprivileged thermometer here, so we cannot know
     """
     if temp_c() < 0:
-        return False
+        return "unreadable", -1.0
     deadline = time.monotonic() + COOL_TIMEOUT_S
-    while temp_c() > COOL_C and time.monotonic() < deadline:
-        print(f"  cooling to {COOL_C:.0f} C before the baseline "
-              f"(now {temp_c():.1f} C)", file=sys.stderr)
+    while (now := temp_c()) > COOL_C and time.monotonic() < deadline:
+        print(f"  cooling to {COOL_C:.0f} C before the baseline (now {now:.1f} C)",
+              file=sys.stderr)
         time.sleep(20)
-    return temp_c() <= COOL_C
+    final = temp_c()
+    return ("cooled" if final <= COOL_C else "still_hot"), final
 
 
 def find_baseline() -> tuple[str, Path] | None:
@@ -408,13 +418,26 @@ def render(run: dict, refs: list[dict]) -> str:
             L.append(f"| prefill, {long_['seq_len']} tokens "
                      f"| {long_['prefill_tps']:.2f} | {b['prefill_tps']:.2f} "
                      f"| **{long_['prefill_tps'] / b['prefill_tps']:.2f}×** |")
-        L += ["", ("Both engines started from the same thermal baseline "
-                   f"(≤{COOL_C:.0f} °C); the board was allowed to cool between them."
-                   if run.get("baseline_cooled") else
-                   "**Caveat:** this platform does not expose a temperature this "
-                   "tool can read, so the baseline may have run on hardware the "
-                   "first engine had already warmed. On a passively cooled board "
-                   "that favours whichever engine ran first — here, geist."),
+        thermal = {
+            "cooled": (f"Both engines started cool: geist at "
+                       f"{run['temp_before']:.1f} °C, {b['engine']} at "
+                       f"{run['temp_at_baseline']:.1f} °C, against a "
+                       f"{COOL_C:.0f} °C gate. The ratio is not an artefact of "
+                       "the running order."),
+            "still_hot": (f"**The comparison is compromised.** {b['engine']} started "
+                          f"at {run['temp_at_baseline']:.1f} °C against geist's "
+                          f"{run['temp_before']:.1f} °C — the board would not come "
+                          f"back under {COOL_C:.0f} °C within "
+                          f"{COOL_TIMEOUT_S // 60} minutes, so it ran throttled and "
+                          "these ratios flatter geist. Measured cost of exactly this: "
+                          "18 % off the second engine's prefill. Re-run with better "
+                          "airflow before quoting them."),
+            "unreadable": ("**Caveat:** no thermometer this tool can read without "
+                           "privileges, so we cannot show that both engines started "
+                           "from the same thermal state. On a passively cooled board "
+                           "that favours whichever ran first — here, geist."),
+        }[run.get("cool_status", "unreadable")]
+        L += ["", thermal,
               "", "Same box, same GGUF, same run — this is the falsifiable claim. "
                   "The rows are matched by *what was measured*, not by position: "
                   f"{b['engine']}'s generation benchmark starts from an empty "
@@ -501,7 +524,7 @@ def main() -> int:
     if baseline:
         name, path = baseline
         print(f"  baseline found: {name} ({path})", file=sys.stderr)
-        run["baseline_cooled"] = cool_down()
+        run["cool_status"], run["temp_at_baseline"] = cool_down()
         res = run_baseline(path, gguf)
         if res:
             run["baseline"] = {"engine": name, "path": str(path), **res}
@@ -543,6 +566,12 @@ def main() -> int:
             entry["decode_ratio_short_ctx"] = rows[0]["decode_tps"] / run["baseline"]["decode_tps"]
         if run.get("baseline") and run["baseline"].get("prefill_tps"):
             entry["prefill_ratio_512"] = rows[-1]["prefill_tps"] / run["baseline"]["prefill_tps"]
+        if run.get("baseline"):
+            # Stored so a row can be audited for the running-order artefact
+            # later, not just judged at the moment it was printed.
+            entry["temp_c_geist_start"] = run["temp_before"]
+            entry["temp_c_baseline_start"] = run.get("temp_at_baseline", -1.0)
+            entry["thermal_gate"] = run.get("cool_status", "unreadable")
         data = json.loads(ds.read_text()) if ds.is_file() else {"runs": []}
         data["runs"].append(entry)
         ds.write_text(json.dumps(data, indent=1) + "\n")
