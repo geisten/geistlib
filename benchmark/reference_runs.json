@@ -84,6 +84,39 @@
      "thermal_gate": "cooled"
     }
    ]
+  },
+  {
+   "date": "2026-08-01",
+   "system": "Raspberry Pi 5 Model B Rev 1.1",
+   "cores": 4,
+   "ram_gb": 4.0,
+   "os": "Linux 6.18.33+rpt-rpi-2712",
+   "model": "bitnet-2b4t-i2_s.gguf",
+   "commit": "368596e",
+   "protocol": {
+    "seq_lens": "32,128,512",
+    "decode_n": 64,
+    "warmup": 64,
+    "repeats": 10,
+    "agg": "mean"
+   },
+   "decode_tps_512": 15.075,
+   "prefill_tps_512": 46.303,
+   "spread_pct": 1.3214540480927166,
+   "baselines": [
+    {
+     "engine": "bitnet.cpp",
+     "decode_tps": 9.21,
+     "prefill_tps": 46.63,
+     "decode_ratio_short_ctx": 1.9542888165038,
+     "prefill_ratio_512": 0.9929873472013724,
+     "temp_c_start": 56.0,
+     "thermal_gate": "cooled"
+    }
+   ],
+   "temp_c_geist_start": 48.8,
+   "j_per_decode_token": 0.3525675920253477,
+   "j_per_prefill_token": 0.17168218310621355
   }
  ]
 }

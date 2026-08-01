@@ -532,9 +532,14 @@ def render(run: dict, refs: list[dict]) -> str:
               "| system | model | decode t/s @512 | vs baseline | date |",
               "| :-- | :-- | --: | :-- | :-- |"]
         for r in refs:
-            ratio = f"{r['ratio']:.2f}× {r['baseline_engine']}" if r.get("ratio") else "—"
+            # Reads the baselines list; an earlier flat "ratio" field was folded
+            # into it and this table kept looking for the old key, quietly
+            # printing a dash for every row that in fact had a ratio.
+            parts = [f"{x['decode_ratio_short_ctx']:.2f}× {x['engine']}"
+                     for x in r.get("baselines", [])
+                     if x.get("decode_ratio_short_ctx")]
             L.append(f"| {r['system']} | {r['model']} | {r['decode_tps_512']:.2f} "
-                     f"| {ratio} | {r['date']} |")
+                     f"| {', '.join(parts) or '—'} | {r['date']} |")
         L += ["", "Different hardware, so the throughput columns are context rather "
                   "than a comparison — the ratio column is the part that carries "
                   "across machines."]
