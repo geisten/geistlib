@@ -77,7 +77,7 @@
     {
      "engine": "bitnet.cpp",
      "decode_tps": 9.1,
-     "prefill_tps": null,
+     "prefill_tps": 46.56,
      "decode_ratio_short_ctx": 1.9872527472527473,
      "prefill_ratio_512": 0.9923969072164949,
      "temp_c_start": 54.9,
