@@ -58,6 +58,11 @@ PROTOCOL = {
 # Pi 5 lands at 0.4-1.3 %, a live desktop at ~20 %.
 CLEAN_SPREAD_PCT = 2.0
 
+# Load per core above this means the machine had other work. 0.7 is the usual
+# rule of thumb; it exists because a starved run can post a *tight* spread while
+# being uniformly slow, which reads as clean and is not.
+BUSY_LOAD_PER_CORE = 0.7
+
 # Weight bytes actually read per decode token for the default model. Derived in
 # benchmark/results/TERNARY.md from the GGUF tensor table, not measured here.
 # ponytail: one model only. Other models report no throughput rather than a
@@ -311,13 +316,25 @@ def render(run: dict, refs: list[dict]) -> str:
               + (f", {run['temp_before']:.1f} → {run['temp_after']:.1f} °C"
                  if run["temp_before"] > 0 else "")]
 
+    # Load is the blunter signal and often the only honest one: a run can post a
+    # tight spread while being uniformly starved, which looks clean and is not.
+    per_core = run["load_before"] / max(sysinfo["cores"], 1)
+    busy_load = per_core > BUSY_LOAD_PER_CORE
+    reasons = []
+    if busy_load:
+        reasons.append(f"load was {run['load_before']:.1f} on {sysinfo['cores']} cores "
+                       f"({per_core:.1f} per core)")
+    if not quiet:
+        reasons.append(f"widest spread is ±{worst_spread:.1f} %, against the "
+                       f"{CLEAN_SPREAD_PCT:.0f} % a quiet box shows")
     L += ["", "**Machine state:** " + (
-        f"spread stays at or under {CLEAN_SPREAD_PCT:.0f} % — the box was quiet, "
-        "treat these as clean numbers."
-        if quiet else
-        f"widest spread is ±{worst_spread:.1f} %, above the {CLEAN_SPREAD_PCT:.0f} % "
-        "a quiet box shows. Something else was running; re-run on an idle machine "
-        "before quoting these.")]
+        f"load {run['load_before']:.2f} on {sysinfo['cores']} cores and spread at or "
+        f"under {CLEAN_SPREAD_PCT:.0f} % — the box was quiet, treat these as clean "
+        "numbers."
+        if not reasons else
+        " and ".join(reasons).capitalize() + ". **These numbers do not mean anything** "
+        "— something else was using the machine. Re-run on an idle box before "
+        "quoting them.")]
 
     if run.get("energy"):
         e = run["energy"]
