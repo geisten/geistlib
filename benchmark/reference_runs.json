@@ -1,0 +1,20 @@
+{
+ "note": "Runs produced by `make bench` and nothing else. Every entry carries the protocol that produced it, because a throughput number without one cannot be compared to anything -- that is what went wrong with headline_results.json, whose rows record no seq_len and whose Pi 'decode 17.4' turned out to be a short-context figure while the same build reads 12.8 at 512 tokens. Rows are appended by `make bench BENCH_ARGS=--record`; a plain `make bench` never writes here, so a stranger reproducing the numbers leaves no diff behind. Throughput is hardware-bound and therefore context, not comparison; the ratio column is the part that carries across machines.",
+ "schema": {
+  "date": "UTC date of the run",
+  "system": "CPU as the machine names itself",
+  "cores": "logical cores visible to the process",
+  "ram_gb": "total RAM",
+  "os": "kernel name and release",
+  "model": "GGUF filename",
+  "commit": "geist commit the binary was built from",
+  "protocol": "frozen sweep parameters -- rows with differing protocols are not comparable",
+  "decode_tps_512": "decode throughput at a 512-token prompt, mean of the repeats",
+  "prefill_tps_512": "prefill throughput at a 512-token prompt",
+  "spread_pct": "run-to-run spread as +/-% around the mean; above ~2% the machine was busy",
+  "baseline_engine": "competing engine measured in the same run, if its binary was reachable",
+  "baseline_decode_tps": "its decode throughput under the same protocol",
+  "ratio": "geist / baseline on the same box -- the only figure comparable across machines"
+ },
+ "runs": []
+}
