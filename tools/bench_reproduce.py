@@ -316,31 +316,46 @@ def render(run: dict, refs: list[dict]) -> str:
               + (f", {run['temp_before']:.1f} → {run['temp_after']:.1f} °C"
                  if run["temp_before"] > 0 else "")]
 
-    # Load is the blunter signal and often the only honest one: a run can post a
-    # tight spread while being uniformly starved, which looks clean and is not.
+    # Two independent signals that must not be conflated. Load says whether
+    # anything else was competing; spread says whether the run varied. Wide
+    # spread on an idle box is usually the board heating up, not contention —
+    # reporting that as "something else was using the machine" is a false alarm
+    # that discredits a perfectly good measurement.
     per_core = run["load_before"] / max(sysinfo["cores"], 1)
-    busy_load = per_core > BUSY_LOAD_PER_CORE
-    reasons = []
-    if busy_load:
-        reasons.append(f"load was {run['load_before']:.1f} on {sysinfo['cores']} cores "
-                       f"({per_core:.1f} per core)")
-    if not quiet:
-        reasons.append(f"widest spread is ±{worst_spread:.1f} %, against the "
-                       f"{CLEAN_SPREAD_PCT:.0f} % a quiet box shows")
-    L += ["", "**Machine state:** " + (
-        f"load {run['load_before']:.2f} on {sysinfo['cores']} cores and spread at or "
-        f"under {CLEAN_SPREAD_PCT:.0f} % — the box was quiet, treat these as clean "
-        "numbers."
-        if not reasons else
-        " and ".join(reasons).capitalize() + ". **These numbers do not mean anything** "
-        "— something else was using the machine. Re-run on an idle box before "
-        "quoting them.")]
+    busy = per_core > BUSY_LOAD_PER_CORE
+    warmed = run["temp_after"] - run["temp_before"] if run["temp_before"] > 0 else 0.0
+    if busy:
+        verdict = (f"**Contended.** Load was {run['load_before']:.1f} across "
+                   f"{sysinfo['cores']} cores ({per_core:.1f} per core) — something "
+                   "else was competing for the machine. Re-run on an idle box; "
+                   "these numbers say more about the other workload than about "
+                   "this engine.")
+    elif quiet:
+        verdict = (f"**Clean.** Load {run['load_before']:.2f} on {sysinfo['cores']} "
+                   f"cores, spread at or under {CLEAN_SPREAD_PCT:.0f} % throughout.")
+    else:
+        cause = (f"the board warmed {warmed:.0f} °C during the run"
+                 if warmed >= 15 else "the cause is not visible from load alone")
+        verdict = (f"**Idle but variable.** Load was only {run['load_before']:.2f} on "
+                   f"{sysinfo['cores']} cores, so nothing was competing, yet the widest "
+                   f"spread reached ±{worst_spread:.1f} % against the "
+                   f"{CLEAN_SPREAD_PCT:.0f} % a settled box holds — {cause}. The "
+                   "shorter-context rows are the more trustworthy ones.")
+    L += ["", "**Machine state:** " + verdict]
 
     if run.get("energy"):
         e = run["energy"]
-        j_per_tok = e["joules"] / max(run["tokens_total"], 1)
-        L += ["", f"**Energy:** {e['mean_w']:.2f} W mean over {e['seconds']:.0f} s "
-                  f"({e['samples']} PMIC samples) — **{j_per_tok:.3f} J/token**."]
+        # Deliberately NOT divided into a per-token figure. The sampling window
+        # covers prefill and decode together, and at a 512-token prompt prefill
+        # dominates it -- dividing by decoded tokens alone charges prefill's
+        # energy to them and inflates the number ~4.5x. A trustworthy J/token
+        # needs the sampler phase-separated against the sweep's own timings,
+        # which this does not do yet.
+        L += ["", f"**Energy:** {e['mean_w']:.2f} W mean board power over "
+                  f"{e['seconds']:.0f} s ({e['samples']} PMIC samples), "
+                  f"{e['joules']:.0f} J for the whole sweep. Not divided per token: "
+                  "the window covers prefill and decode together and they cost "
+                  "very differently, so any single figure would be a fiction."]
     else:
         L += ["", "**Energy:** not readable without privileges on this platform "
                   "(Raspberry Pi reports it unprivileged; x86 RAPL and macOS "
@@ -429,7 +444,6 @@ def main() -> int:
         r["spread_pct"] = spread_pct(r)
         r["weight_gbps"] = weight_gbps(r, run["model"])
     run["rows"] = rows
-    run["tokens_total"] = sum(r["decode_n"] for r in rows) * PROTOCOL["repeats"]
     run["load_after"], run["temp_after"] = load_avg(), temp_c()
 
     baseline = find_baseline()
