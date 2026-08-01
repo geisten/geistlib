@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <strong>2.1×</strong> BitNet decode vs bitnet.cpp <sub>(Pi 5)</sub> &nbsp;·&nbsp;
+  <strong>1.96×</strong> BitNet decode vs bitnet.cpp <sub>(Pi 5, <code>make bench</code>)</sub> &nbsp;·&nbsp;
   <strong>1.5×</strong> prefill vs llama.cpp <sub>(M1 Max)</sub> &nbsp;·&nbsp;
   <strong>1.9×</strong> BitNet decode vs bitnet.cpp <sub>(x86)</sub> &nbsp;·&nbsp;
   <strong>&lt; 1 MB</strong> binary, zero deps
@@ -143,7 +143,7 @@ on AMD x86 (AVX-512), and beats Microsoft's bitnet.cpp on ternary BitNet on both
 Pi 5 and x86 — across edge and desktop:
 
 <p align="center">
-  <img src="assets/headline_benchmarks.svg" alt="Decode-throughput scoreboard: geistlib divided by its baseline engine, decode tokens/s, grouped by system. Every bar is the same metric so they are directly comparable. Raspberry Pi 5 (Linux): BitNet decode 2.1x bitnet.cpp, Gemma decode 1.1x llama.cpp. AMD Ryzen 9 9950X (Linux): BitNet decode 1.9x bitnet.cpp, Gemma decode 1.1x llama.cpp, Llama 3.2 decode 1.0x llama.cpp. Sub-parity rows are shown too." width="100%">
+  <img src="assets/headline_benchmarks.svg" alt="Decode-throughput scoreboard: geistlib divided by its baseline engine, decode tokens/s, grouped by system. Every bar is the same metric so they are directly comparable. Raspberry Pi 5 (Linux): BitNet decode 1.96x bitnet.cpp, BitNet prefill 0.99x bitnet.cpp, Gemma decode 1.1x llama.cpp. AMD Ryzen 9 9950X (Linux): BitNet decode 1.9x bitnet.cpp, Gemma decode 1.1x llama.cpp, Llama 3.2 decode 1.0x llama.cpp. Sub-parity rows are shown too." width="100%">
 </p>
 
 *One metric on every bar: decode t/s (tokens/s while generating) — geistlib ÷ its
