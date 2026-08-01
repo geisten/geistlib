@@ -63,6 +63,15 @@ CLEAN_SPREAD_PCT = 2.0
 # being uniformly slow, which reads as clean and is not.
 BUSY_LOAD_PER_CORE = 0.7
 
+# Both engines must start from the same thermal state. A passively cooled board
+# reaches its soft limit during one sweep -- measured here, 48 -> 74 C -- and
+# whichever engine runs second is throttled. Measured cost of ignoring it:
+# bitnet.cpp's prefill read 37.5 t/s straight after geist against 44.5 on a
+# cool board, a 16 % handicap invented by the running order and pointing the
+# wrong way, in our favour.
+COOL_C = 56.0
+COOL_TIMEOUT_S = 600
+
 # Weight bytes actually read per decode token for the default model. Derived in
 # benchmark/results/TERNARY.md from the GGUF tensor table, not measured here.
 # ponytail: one model only. Other models report no throughput rather than a
@@ -235,6 +244,24 @@ def run_geist(binary: Path, gguf: Path) -> list[dict]:
     return rows
 
 
+def cool_down() -> bool:
+    """Wait for the board to return to the temperature geist started from.
+
+    Without this the baseline runs on hardware the first engine just heated,
+    and the ratio measures the running order as much as the engines. Returns
+    True if we know the board was cool when the baseline started; False when
+    temperature is not readable here, which the report then says out loud.
+    """
+    if temp_c() < 0:
+        return False
+    deadline = time.monotonic() + COOL_TIMEOUT_S
+    while temp_c() > COOL_C and time.monotonic() < deadline:
+        print(f"  cooling to {COOL_C:.0f} C before the baseline "
+              f"(now {temp_c():.1f} C)", file=sys.stderr)
+        time.sleep(20)
+    return temp_c() <= COOL_C
+
+
 def find_baseline() -> tuple[str, Path] | None:
     """A baseline engine's llama-bench, if one is reachable.
 
@@ -363,15 +390,39 @@ def render(run: dict, refs: list[dict]) -> str:
 
     if run.get("baseline"):
         b = run["baseline"]
+        # llama-bench runs pp and tg as SEPARATE benchmarks: tg generates from
+        # an empty context, it does not decode after the pp prompt. So its tg
+        # number belongs beside our SHORTEST-context row, not our longest.
+        # Comparing our seq-512 decode (full KV) against its empty-context tg
+        # pits our hardest case against its easiest and understates us by ~20 %
+        # — measured here at 1.67x where the like-for-like figure is 2.00x.
+        # pp512 does line up with our 512-token prefill.
+        short, long_ = rows[0], rows[-1]
         L += ["", f"### vs {b['engine']}", "",
-              "| engine | decode t/s | prefill t/s |", "| :-- | --: | --: |",
-              f"| geist | {rows[-1]['decode_tps']:.2f} | {rows[-1]['prefill_tps']:.2f} |",
-              f"| {b['engine']} | {b.get('decode_tps', float('nan')):.2f} "
-              f"| {b.get('prefill_tps', float('nan')):.2f} |"]
+              "| | geist | " + b["engine"] + " | ratio |", "| :-- | --: | --: | --: |"]
         if b.get("decode_tps"):
-            L.append(f"| **ratio** | **{rows[-1]['decode_tps'] / b['decode_tps']:.2f}×** | |")
-        L += ["", "Same box, same GGUF, same protocol — this ratio is the "
-                  "falsifiable claim."]
+            L.append(f"| decode, {short['seq_len']}-token context "
+                     f"| {short['decode_tps']:.2f} | {b['decode_tps']:.2f} "
+                     f"| **{short['decode_tps'] / b['decode_tps']:.2f}×** |")
+        if b.get("prefill_tps"):
+            L.append(f"| prefill, {long_['seq_len']} tokens "
+                     f"| {long_['prefill_tps']:.2f} | {b['prefill_tps']:.2f} "
+                     f"| **{long_['prefill_tps'] / b['prefill_tps']:.2f}×** |")
+        L += ["", ("Both engines started from the same thermal baseline "
+                   f"(≤{COOL_C:.0f} °C); the board was allowed to cool between them."
+                   if run.get("baseline_cooled") else
+                   "**Caveat:** this platform does not expose a temperature this "
+                   "tool can read, so the baseline may have run on hardware the "
+                   "first engine had already warmed. On a passively cooled board "
+                   "that favours whichever engine ran first — here, geist."),
+              "", "Same box, same GGUF, same run — this is the falsifiable claim. "
+                  "The rows are matched by *what was measured*, not by position: "
+                  f"{b['engine']}'s generation benchmark starts from an empty "
+                  "context, so it belongs against our shortest-context decode, "
+                  "while its prompt benchmark lines up with our longest prefill. "
+                  f"Our decode at {long_['seq_len']} tokens of context "
+                  f"({long_['decode_tps']:.2f} t/s) has no counterpart here — "
+                  "that engine was not measured under load."]
     else:
         L += ["", "**No baseline engine found**, so the numbers above stand alone: "
                   "throughput depends on your hardware and cannot be compared "
@@ -450,6 +501,7 @@ def main() -> int:
     if baseline:
         name, path = baseline
         print(f"  baseline found: {name} ({path})", file=sys.stderr)
+        run["baseline_cooled"] = cool_down()
         res = run_baseline(path, gguf)
         if res:
             run["baseline"] = {"engine": name, "path": str(path), **res}
@@ -483,9 +535,12 @@ def main() -> int:
             "spread_pct": rows[-1]["spread_pct"],
         }
         if run.get("baseline") and run["baseline"].get("decode_tps"):
+            # Matched against the SHORT-context row: llama-bench's tg starts
+            # from an empty context. See the note in render().
             entry["baseline_engine"] = run["baseline"]["engine"]
             entry["baseline_decode_tps"] = run["baseline"]["decode_tps"]
-            entry["ratio"] = rows[-1]["decode_tps"] / run["baseline"]["decode_tps"]
+            entry["decode_tps_short"] = rows[0]["decode_tps"]
+            entry["decode_ratio_short_ctx"] = rows[0]["decode_tps"] / run["baseline"]["decode_tps"]
         data = json.loads(ds.read_text()) if ds.is_file() else {"runs": []}
         data["runs"].append(entry)
         ds.write_text(json.dumps(data, indent=1) + "\n")
