@@ -16,7 +16,34 @@
   "baseline_decode_tps": "its decode throughput under the same protocol",
   "decode_tps_short": "decode throughput at the shortest prompt -- the row that matches a baseline's empty-context generation benchmark",
   "decode_ratio_short_ctx": "geist / baseline decode, both from a near-empty context",
-  "prefill_ratio_512": "geist / baseline prompt processing at 512 tokens"
+  "prefill_ratio_512": "geist / baseline prompt processing at 512 tokens",
+  "baseline_prefill_tps": "baseline prompt-processing throughput at 512 tokens"
  },
- "runs": []
+ "runs": [
+  {
+   "date": "2026-08-01",
+   "system": "Raspberry Pi 5 Model B Rev 1.1",
+   "cores": 4,
+   "ram_gb": 4.0,
+   "os": "Linux 6.18.33+rpt-rpi-2712",
+   "model": "bitnet-2b4t-i2_s.gguf",
+   "commit": "9b24b1f",
+   "protocol": {
+    "seq_lens": "32,128,512",
+    "decode_n": 64,
+    "warmup": 64,
+    "repeats": 10,
+    "agg": "mean"
+   },
+   "decode_tps_512": 14.971,
+   "prefill_tps_512": 45.462,
+   "spread_pct": 1.1384004892622925,
+   "baseline_engine": "bitnet.cpp",
+   "baseline_decode_tps": 9.14,
+   "decode_tps_short": 17.881,
+   "decode_ratio_short_ctx": 1.9563457330415754,
+   "prefill_ratio_512": 0.9926200873362446,
+   "baseline_prefill_tps": 45.8
+  }
+ ]
 }

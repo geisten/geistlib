@@ -541,6 +541,8 @@ def main() -> int:
             entry["baseline_decode_tps"] = run["baseline"]["decode_tps"]
             entry["decode_tps_short"] = rows[0]["decode_tps"]
             entry["decode_ratio_short_ctx"] = rows[0]["decode_tps"] / run["baseline"]["decode_tps"]
+        if run.get("baseline") and run["baseline"].get("prefill_tps"):
+            entry["prefill_ratio_512"] = rows[-1]["prefill_tps"] / run["baseline"]["prefill_tps"]
         data = json.loads(ds.read_text()) if ds.is_file() else {"runs": []}
         data["runs"].append(entry)
         ds.write_text(json.dumps(data, indent=1) + "\n")
