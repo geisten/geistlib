@@ -1,5 +1,5 @@
 {
- "note": "Runs produced by `make bench` and nothing else. Every entry carries the protocol that produced it, because a throughput number without one cannot be compared to anything -- that is what went wrong with headline_results.json, whose rows record no seq_len and whose Pi 'decode 17.4' turned out to be a short-context figure while the same build reads 12.8 at 512 tokens. Rows are appended by `make bench BENCH_ARGS=--record`; a plain `make bench` never writes here, so a stranger reproducing the numbers leaves no diff behind. Throughput is hardware-bound and therefore context, not comparison; the ratio column is the part that carries across machines.",
+ "note": "Runs produced by `make bench` and nothing else. Every entry carries the protocol that produced it, because a throughput number without one cannot be compared to anything -- that is what went wrong with headline_results.json, whose rows record no seq_len and whose Pi 'decode 17.4' turned out to be a short-context figure while the same build reads 12.8 at 512 tokens. The baseline is measured only after the board has returned to the temperature geist started from; without that the ratio measures the running order as much as the engines. Rows are appended by `make bench BENCH_ARGS=--record`; a plain `make bench` never writes here, so a stranger reproducing the numbers leaves no diff behind. Throughput is hardware-bound and therefore context, not comparison; the ratio column is the part that carries across machines.",
  "schema": {
   "date": "UTC date of the run",
   "system": "CPU as the machine names itself",
@@ -14,30 +14,9 @@
   "spread_pct": "run-to-run spread as +/-% around the mean. Above ~2% the run varied; read it together with load before blaming contention -- on an idle board it is usually thermal drift over a long sweep",
   "baseline_engine": "competing engine measured in the same run, if its binary was reachable",
   "baseline_decode_tps": "its decode throughput under the same protocol",
-  "ratio": "geist / baseline on the same box -- the only figure comparable across machines"
+  "decode_tps_short": "decode throughput at the shortest prompt -- the row that matches a baseline's empty-context generation benchmark",
+  "decode_ratio_short_ctx": "geist / baseline decode, both from a near-empty context",
+  "prefill_ratio_512": "geist / baseline prompt processing at 512 tokens"
  },
- "runs": [
-  {
-   "date": "2026-08-01",
-   "system": "Raspberry Pi 5 Model B Rev 1.1",
-   "cores": 4,
-   "ram_gb": 4.0,
-   "os": "Linux 6.18.33+rpt-rpi-2712",
-   "model": "bitnet-2b4t-i2_s.gguf",
-   "commit": "959487c",
-   "protocol": {
-    "seq_lens": "32,128,512",
-    "decode_n": 64,
-    "warmup": 64,
-    "repeats": 10,
-    "agg": "mean"
-   },
-   "decode_tps_512": 15.126,
-   "prefill_tps_512": 44.013,
-   "spread_pct": 2.9614885757453138,
-   "baseline_engine": "bitnet.cpp",
-   "baseline_decode_tps": 9.04,
-   "ratio": 1.6732300884955753
-  }
- ]
+ "runs": []
 }
