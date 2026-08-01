@@ -157,6 +157,27 @@ gets — a real −7 % would half-vanish at 512 tokens and read as noise.
 
 ---
 
+## The scalar oracle does not apply here
+
+Elsewhere `cpu_scalar` is the correctness oracle: other backends must reproduce
+its greedy output bit for bit. On ternary weights that check does not hold, and
+it is not supposed to — the two paths bind different arithmetic. `cpu_scalar`
+dequantizes each row to fp32 and dots against fp32 activations (W2A32);
+`cpu_neon` binds `cpu_neon_w_i2_s_q8a_*`, int8 activations against native
+ternary weights (**W2A8**).
+
+8-bit activations are part of the BitNet b1.58 definition rather than an
+approximation of it, so the faster path is the one computing the intended
+scheme and the "reference" is the outlier. Measured on 2B-4T `i2_s`: identical
+for 36 tokens, then the 37th lands on a near-tie and they separate. The same
+comparison on Q4_K stays bit-identical at 60 tokens, so a divergence outside
+ternary is a real bug.
+
+Consequence for benchmarking: **do not use `cpu_scalar` to validate a ternary
+kernel change.** Compare against the previous build of the same backend, which
+is what the perf work here does. See
+[`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) for the general rule.
+
 ## Measurement protocol
 
 Use `benchmark/compare_ternary_pi5.sh` — runs geist (SDOT + TL1), llama.cpp, and

@@ -20,6 +20,21 @@
  *     ternary BitLinear weights are I2_S and whose tied lm_head is F16.)
  *
  * No SIMD, no BLAS — that's what cpu_neon is for.
+ *
+ * ORACLE CAVEAT — ternary (I2_S / TQ2_0). Everywhere else this backend is the
+ * correctness oracle other backends are checked against, bit for bit. For
+ * ternary weights it is NOT, and cannot be: the row buffer above dequantizes
+ * to fp32 and the dot then runs in fp32, i.e. W2A32, while cpu_neon binds
+ * `cpu_neon_w_i2_s_q8a_*` — int8 activations, W2A8. Two different arithmetics,
+ * so two different results by construction.
+ *
+ * Which is right depends on what you are asking. Arithmetically this path is
+ * the more precise one. But 8-bit activations are part of the BitNet b1.58
+ * definition, not an approximation of it, so cpu_neon computes the scheme the
+ * model was trained for and this backend computes a different model that
+ * happens to round less. Measured on BitNet 2B-4T i2_s: greedy output agrees
+ * for 36 tokens and then drifts apart at a near-tie on the 37th. Q4_K and the rest stay
+ * bit-identical, so a divergence outside ternary is a real bug, not this.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 

@@ -137,6 +137,30 @@ Capabilities are queryable up front via `geist_backend_supports_op` returning
 `NONE` / `EMULATED` / `NATIVE`, so an arch can pick the best available path or
 fail cleanly rather than discovering an unsupported combination mid-forward.
 
+### Where the oracle stops: ternary
+
+`cpu_scalar` is the correctness oracle — every other backend is expected to
+produce bit-identical greedy output against it, and that is how the Metal
+backend is validated. **For ternary weights (`I2_S`, `TQ2_0`) it is not, and
+cannot be.**
+
+The two paths bind different arithmetic. `cpu_scalar` dequantizes a weight row
+to fp32 and dots it against fp32 activations — W2A32. `cpu_neon` binds
+`cpu_neon_w_i2_s_q8a_*`, int8 activations against native ternary weights —
+W2A8. Two schemes, two results, by construction rather than by defect.
+
+The precise one is not the reference one. `cpu_scalar` rounds less, but 8-bit
+activations are part of the **BitNet b1.58 definition**, not an approximation
+of it: `cpu_neon` computes the scheme the model was trained for, and
+`cpu_scalar` computes a different model that happens to be arithmetically
+tidier. Treat it as a plumbing check on this path — it proves the weights load,
+the shapes line up and the forward pass runs — not as a numerical gold
+standard.
+
+Measured on BitNet 2B-4T `i2_s`: greedy output agrees for 36 tokens, then
+the 37th lands on a near-tie and the trajectories separate. Q4_K and every other quant stay bit-identical, so a
+divergence **outside** ternary is a real bug and should be treated as one.
+
 ## Tensors: dtype vs layout
 
 A `geist_tensor` separates the **logical** dtype (`F32`, `Q4_K`, `TQ2_0`, …)
@@ -203,7 +227,7 @@ Per directory, the file to open first:
 | `src/backends/common/` | `geist_gemm.c` | shared GEMM facade + gemma4 kernels |
 | `src/backends/cpu_neon/` | `weight_resolve.c` | load-time kernel binding, NEON kernels |
 | `src/backends/cpu_x86/` | `backend.c` | AVX-512/VNNI kernels, runtime dispatch |
-| `src/backends/cpu_scalar/` | `backend.c` | the portable correctness oracle |
+| `src/backends/cpu_scalar/` | `backend.c` | the portable correctness oracle (except ternary — see below) |
 | `src/backends/metal/` | `backend.c` | Apple-GPU path (shaders in `metal_shaders.h`) |
 | `src/backends/vulkan/` | `backend.c` | Linux/NVIDIA-GPU path (SPIR-V in `shaders/`) |
 | `src/formats/gguf/` | `common.c` | per-quant decode (one file per format) |
