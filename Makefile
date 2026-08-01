@@ -22,7 +22,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run agent-contract-smoke clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu format format-check
+.PHONY: all lib bin run agent-contract-smoke bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu format format-check
 
 # Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
 # `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
@@ -166,8 +166,37 @@ $(MODEL_PATH):
 
 # Benches are timing tools, not tests — separate target. Each bench prints
 # its own metrics; runner just reports run/skip/fail status.
-bench: bin
+bench-smoke: bin
 	@$(GGUF_ENV) GEIST_INCLUDE_BENCH=1 mk/run-tests.sh $(TEST_BIN_DIR) "bench_"
+
+# ---- make bench: the reproducible benchmark ------------------------------
+# One command, one report, meant to be run by someone who does not trust the
+# numbers yet. Protocol frozen in tools/bench_reproduce.py; every row in
+# benchmark/reference_runs.json came from it.
+#
+# Its own model, deliberately: MODEL_* above is the *test fixture* (Gemma,
+# 3.1 GB, wired into seven test targets). The reproducer takes the smallest
+# model that carries a published claim instead of making a curious visitor
+# wait for three gigabytes.
+BENCH_MODEL_DIR  ?= gguf_artifacts
+BENCH_MODEL_FILE ?= bitnet-2b4t-i2_s.gguf
+BENCH_MODEL_PATH := $(BENCH_MODEL_DIR)/$(BENCH_MODEL_FILE)
+BENCH_MODEL_URL  ?= https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf
+
+$(BENCH_MODEL_PATH):
+	@command -v curl >/dev/null 2>&1 || { echo "fetch-bench-model: curl not found" >&2; exit 1; }
+	@mkdir -p $(BENCH_MODEL_DIR)
+	@echo "Downloading $(BENCH_MODEL_FILE) (~1.1 GB) from:"
+	@echo "  $(BENCH_MODEL_URL)"
+	@curl -fL --retry 3 --retry-delay 2 -C - -o "$@.part" "$(BENCH_MODEL_URL)"
+	@mv "$@.part" "$@"
+
+fetch-bench-model: $(BENCH_MODEL_PATH)
+	@echo "Benchmark model ready: $(BENCH_MODEL_PATH)"
+
+bench: bin $(BENCH_MODEL_PATH)
+	@python3 tools/bench_reproduce.py --gguf "$(BENCH_MODEL_PATH)" \
+	  --target "$(TARGET)" --mode "$(MODE)" $(BENCH_ARGS)
 
 # Modality-specific multimodal benches — runnable separately so a user
 # benching the vision pipeline doesn't pay for audio/quality suites.
