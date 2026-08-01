@@ -1,19 +1,149 @@
 {
-  "title": "Headline benchmarks — geist vs the baseline",
-  "note": "Each row is a measured number for that model/system — a DIFFERENT metric and baseline. Comparable only as a ratio (geist / baseline). Sub-parity rows are kept on purpose (honesty). baseline_version: llama.cpp commit, or 'master' for bitnet.cpp (microsoft/BitNet upstream, --depth 1 clone of its bundled llama.cpp fork — no pinned commit). Sources: README headline table, BENCHMARK.md, BENCHMARK_PI5.md, TERNARY_BITNET.md, BENCHMARK_X86.md. BitNet Pi 5 decode rows: reference_runs.json 2026-08-01 — same-run baseline under the frozen protocol, context length in the metric name.",
-  "rows": [
-    {"model": "Gemma 4 E2B-it", "quant": "Q4_K_M", "os": "Pi 5",  "os_family": "Linux", "metric": "prefill",       "geist": 34.8, "baseline": 37.4, "baseline_engine": "llama.cpp",  "baseline_version": "d05fe1d"},
-    {"model": "Gemma 4 E2B-it", "quant": "Q4_K_M", "os": "Pi 5",  "os_family": "Linux", "metric": "decode",        "geist": 7.5,  "baseline": 6.8,  "baseline_engine": "llama.cpp",  "baseline_version": "d05fe1d"},
-    {"model": "Gemma 4 E2B-it", "quant": "Q4_K_M", "os": "Pi 5",  "os_family": "Linux", "metric": "total · 32p",   "geist": 8.8,  "baseline": 8.2,  "baseline_engine": "llama.cpp",  "baseline_version": "d05fe1d"},
-    {"model": "Gemma 4 E2B-it", "quant": "Q4_K_M", "os": "Pi 5",  "os_family": "Linux", "metric": "total · 128p",  "geist": 11.1, "baseline": 11.35,"baseline_engine": "llama.cpp",  "baseline_version": "d05fe1d"},
-    {"model": "BitNet b1.58 2B-4T", "quant": "i2_s", "os": "Pi 5","os_family": "Linux", "metric": "decode · 32p",  "geist": 18.05, "baseline": 9.04, "baseline_engine": "bitnet.cpp", "baseline_version": "master"},
-    {"model": "BitNet b1.58 2B-4T", "quant": "i2_s", "os": "Pi 5","os_family": "Linux", "metric": "decode · 512p", "geist": 15.13, "baseline": 9.04, "baseline_engine": "bitnet.cpp", "baseline_version": "master"},
-    {"model": "Gemma 4 E2B-it", "quant": "Q4_K_M", "os": "M1 Max","os_family": "macOS", "metric": "prefill (pp1024)","geist": 144, "baseline": 97,  "baseline_engine": "llama.cpp",  "baseline_version": "d05fe1d"},
-    {"model": "BitNet b1.58 2B-4T", "quant": "i2_s", "os": "AMD 9950X", "os_family": "Linux", "metric": "prefill (pp128)", "geist": 1098, "baseline": 679.9,  "baseline_engine": "bitnet.cpp", "baseline_version": "master"},
-    {"model": "BitNet b1.58 2B-4T", "quant": "i2_s", "os": "AMD 9950X", "os_family": "Linux", "metric": "decode (tg128)",  "geist": 103.1, "baseline": 54.3, "baseline_engine": "bitnet.cpp", "baseline_version": "master"},
-    {"model": "Gemma 4 E2B-it", "quant": "Q4_K_M", "os": "AMD 9950X", "os_family": "Linux", "metric": "prefill", "geist": 512,  "baseline": 495,  "baseline_engine": "llama.cpp",  "baseline_version": "b9827"},
-    {"model": "Gemma 4 E2B-it", "quant": "Q4_K_M", "os": "AMD 9950X", "os_family": "Linux", "metric": "decode",  "geist": 48.6, "baseline": 44.1, "baseline_engine": "llama.cpp",  "baseline_version": "b9827"},
-    {"model": "Llama 3.2 3B", "quant": "Q4_K_M", "os": "AMD 9950X", "os_family": "Linux", "metric": "prefill", "geist": 351,  "baseline": 346,  "baseline_engine": "llama.cpp",  "baseline_version": "b9827"},
-    {"model": "Llama 3.2 3B", "quant": "Q4_K_M", "os": "AMD 9950X", "os_family": "Linux", "metric": "decode",  "geist": 34.1, "baseline": 34.5, "baseline_engine": "llama.cpp",  "baseline_version": "b9827"}
-  ]
+ "title": "Headline benchmarks \u2014 geist vs the baseline",
+ "note": "Each row is a measured number for that model/system \u2014 a DIFFERENT metric and baseline. Comparable only as a ratio (geist / baseline). Sub-parity rows are kept on purpose (honesty). baseline_version: llama.cpp commit, or 'master' for bitnet.cpp (microsoft/BitNet upstream, --depth 1 clone of its bundled llama.cpp fork \u2014 no pinned commit). Sources: README headline table, BENCHMARK.md, BENCHMARK_PI5.md, TERNARY_BITNET.md, BENCHMARK_X86.md. BitNet Pi 5 rows come from reference_runs.json 2026-08-01: same run, same GGUF, both engines started under a 56 C thermal gate. Only like-for-like pairs are listed -- bitnet.cpp's generation benchmark runs from an empty context, so geist's long-context decode has no counterpart and is deliberately absent rather than divided by the wrong number.",
+ "rows": [
+  {
+   "model": "Gemma 4 E2B-it",
+   "quant": "Q4_K_M",
+   "os": "Pi 5",
+   "os_family": "Linux",
+   "metric": "prefill",
+   "geist": 34.8,
+   "baseline": 37.4,
+   "baseline_engine": "llama.cpp",
+   "baseline_version": "d05fe1d"
+  },
+  {
+   "model": "Gemma 4 E2B-it",
+   "quant": "Q4_K_M",
+   "os": "Pi 5",
+   "os_family": "Linux",
+   "metric": "decode",
+   "geist": 7.5,
+   "baseline": 6.8,
+   "baseline_engine": "llama.cpp",
+   "baseline_version": "d05fe1d"
+  },
+  {
+   "model": "Gemma 4 E2B-it",
+   "quant": "Q4_K_M",
+   "os": "Pi 5",
+   "os_family": "Linux",
+   "metric": "total \u00b7 32p",
+   "geist": 8.8,
+   "baseline": 8.2,
+   "baseline_engine": "llama.cpp",
+   "baseline_version": "d05fe1d"
+  },
+  {
+   "model": "Gemma 4 E2B-it",
+   "quant": "Q4_K_M",
+   "os": "Pi 5",
+   "os_family": "Linux",
+   "metric": "total \u00b7 128p",
+   "geist": 11.1,
+   "baseline": 11.35,
+   "baseline_engine": "llama.cpp",
+   "baseline_version": "d05fe1d"
+  },
+  {
+   "model": "BitNet b1.58 2B-4T",
+   "quant": "i2_s",
+   "os": "Pi 5",
+   "os_family": "Linux",
+   "metric": "decode \u00b7 32p",
+   "geist": 17.88,
+   "baseline": 9.14,
+   "baseline_engine": "bitnet.cpp",
+   "baseline_version": "master"
+  },
+  {
+   "model": "BitNet b1.58 2B-4T",
+   "quant": "i2_s",
+   "os": "Pi 5",
+   "os_family": "Linux",
+   "metric": "prefill \u00b7 512p",
+   "geist": 45.46,
+   "baseline": 45.8,
+   "baseline_engine": "bitnet.cpp",
+   "baseline_version": "master"
+  },
+  {
+   "model": "Gemma 4 E2B-it",
+   "quant": "Q4_K_M",
+   "os": "M1 Max",
+   "os_family": "macOS",
+   "metric": "prefill (pp1024)",
+   "geist": 144,
+   "baseline": 97,
+   "baseline_engine": "llama.cpp",
+   "baseline_version": "d05fe1d"
+  },
+  {
+   "model": "BitNet b1.58 2B-4T",
+   "quant": "i2_s",
+   "os": "AMD 9950X",
+   "os_family": "Linux",
+   "metric": "prefill (pp128)",
+   "geist": 1098,
+   "baseline": 679.9,
+   "baseline_engine": "bitnet.cpp",
+   "baseline_version": "master"
+  },
+  {
+   "model": "BitNet b1.58 2B-4T",
+   "quant": "i2_s",
+   "os": "AMD 9950X",
+   "os_family": "Linux",
+   "metric": "decode (tg128)",
+   "geist": 103.1,
+   "baseline": 54.3,
+   "baseline_engine": "bitnet.cpp",
+   "baseline_version": "master"
+  },
+  {
+   "model": "Gemma 4 E2B-it",
+   "quant": "Q4_K_M",
+   "os": "AMD 9950X",
+   "os_family": "Linux",
+   "metric": "prefill",
+   "geist": 512,
+   "baseline": 495,
+   "baseline_engine": "llama.cpp",
+   "baseline_version": "b9827"
+  },
+  {
+   "model": "Gemma 4 E2B-it",
+   "quant": "Q4_K_M",
+   "os": "AMD 9950X",
+   "os_family": "Linux",
+   "metric": "decode",
+   "geist": 48.6,
+   "baseline": 44.1,
+   "baseline_engine": "llama.cpp",
+   "baseline_version": "b9827"
+  },
+  {
+   "model": "Llama 3.2 3B",
+   "quant": "Q4_K_M",
+   "os": "AMD 9950X",
+   "os_family": "Linux",
+   "metric": "prefill",
+   "geist": 351,
+   "baseline": 346,
+   "baseline_engine": "llama.cpp",
+   "baseline_version": "b9827"
+  },
+  {
+   "model": "Llama 3.2 3B",
+   "quant": "Q4_K_M",
+   "os": "AMD 9950X",
+   "os_family": "Linux",
+   "metric": "decode",
+   "geist": 34.1,
+   "baseline": 34.5,
+   "baseline_engine": "llama.cpp",
+   "baseline_version": "b9827"
+  }
+ ]
 }
