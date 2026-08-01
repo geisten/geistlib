@@ -20,7 +20,9 @@
   "baseline_prefill_tps": "baseline prompt-processing throughput at 512 tokens",
   "temp_c_geist_start": "board temperature when geist started",
   "temp_c_baseline_start": "board temperature when the baseline started; -1 means the run predates this field being recorded",
-  "thermal_gate": "cooled = both engines verified at or below the gate; still_hot = the board would not come down in time and the ratios flatter geist; unreadable = no unprivileged thermometer, so the running order cannot be ruled out"
+  "thermal_gate": "cooled = both engines verified at or below the gate; still_hot = the board would not come down in time and the ratios flatter geist; unreadable = no unprivileged thermometer, so the running order cannot be ruled out",
+  "j_per_decode_token": "board energy per decoded token, from the phase-separated probes",
+  "j_per_prefill_token": "board energy per prefill token, from the prefill-only probe"
  },
  "runs": [
   {
@@ -50,6 +52,35 @@
    "temp_c_geist_start": 53.8,
    "temp_c_baseline_start": -1.0,
    "thermal_gate": "cooled"
+  },
+  {
+   "date": "2026-08-01",
+   "system": "Raspberry Pi 5 Model B Rev 1.1",
+   "cores": 4,
+   "ram_gb": 4.0,
+   "os": "Linux 6.18.33+rpt-rpi-2712",
+   "model": "bitnet-2b4t-i2_s.gguf",
+   "commit": "47d02e8",
+   "protocol": {
+    "seq_lens": "32,128,512",
+    "decode_n": 64,
+    "warmup": 64,
+    "repeats": 10,
+    "agg": "mean"
+   },
+   "decode_tps_512": 15.058,
+   "prefill_tps_512": 46.206,
+   "spread_pct": 0.3110393234848873,
+   "baseline_engine": "bitnet.cpp",
+   "baseline_decode_tps": 9.1,
+   "decode_tps_short": 18.084,
+   "decode_ratio_short_ctx": 1.9872527472527473,
+   "prefill_ratio_512": 0.9923969072164949,
+   "temp_c_geist_start": 52.1,
+   "temp_c_baseline_start": 54.9,
+   "thermal_gate": "cooled",
+   "j_per_decode_token": 0.3553492784532044,
+   "j_per_prefill_token": 0.17080639220841934
   }
  ]
 }
