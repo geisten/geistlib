@@ -72,6 +72,21 @@ BUSY_LOAD_PER_CORE = 0.7
 COOL_C = 56.0
 COOL_TIMEOUT_S = 600
 
+# Energy per token needs the phases physically separated, because a prefill
+# token and a decode token cost wildly different amounts and one sampling
+# window over both can only ever produce an average of the two weighted by
+# whatever the sweep happened to do. Correlating a power trace against the
+# sweep's internal timings would mean trusting two clocks in two processes to
+# agree; running two short probes instead measures the thing directly.
+#
+#   prefill probe: decode_n 0, so nothing but prefill happens
+#   decode probe:  a 32-token prompt and a long decode, so prefill is a sliver
+#                  whose cost the first probe has already established
+ENERGY_PROBES = {
+    "prefill": {"seq_lens": "512", "decode_n": 0, "repeats": 3},
+    "decode": {"seq_lens": "32", "decode_n": 256, "repeats": 3},
+}
+
 # Weight bytes actually read per decode token for the default model. Derived in
 # benchmark/results/TERNARY.md from the GGUF tensor table, not measured here.
 # ponytail: one model only. Other models report no throughput rather than a
@@ -226,13 +241,14 @@ def find_geist_bench(target: str, mode: str) -> Path | None:
     return found[0] if found else None
 
 
-def run_geist(binary: Path, gguf: Path) -> list[dict]:
+def run_geist(binary: Path, gguf: Path, seq_lens: str | None = None,
+              decode_n: int | None = None, repeats: int | None = None) -> list[dict]:
     env = dict(os.environ, OMP_WAIT_POLICY=os.environ.get("OMP_WAIT_POLICY", "active"))
     cmd = [str(binary), "--gguf", str(gguf),
-           "--seq-lens", PROTOCOL["seq_lens"],
-           "--decode-n", str(PROTOCOL["decode_n"]),
+           "--seq-lens", seq_lens or PROTOCOL["seq_lens"],
+           "--decode-n", str(PROTOCOL["decode_n"] if decode_n is None else decode_n),
            "--warmup", str(PROTOCOL["warmup"]),
-           "--repeats", str(PROTOCOL["repeats"]),
+           "--repeats", str(repeats or PROTOCOL["repeats"]),
            "--emit-jsonl"]
     p = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=ROOT)
     if p.returncode != 0:
@@ -270,6 +286,42 @@ def cool_down() -> tuple[str, float]:
         time.sleep(20)
     final = temp_c()
     return ("cooled" if final <= COOL_C else "still_hot"), final
+
+
+def energy_per_token(binary: Path, gguf: Path) -> dict | None:
+    """Joules per prefill token and per decode token, measured separately.
+
+    Solves the decode probe for the decode cost after charging its short prompt
+    at the rate the prefill probe measured, so the sliver of prefill inside it
+    is subtracted rather than ignored:
+
+        E_decode_probe = prefill_tokens * J_prefill + decode_tokens * J_decode
+    """
+    out = {}
+    for phase, cfg in ENERGY_PROBES.items():
+        cool_down()  # each probe from the same thermal state as the others
+        with EnergySampler() as sampler:
+            try:
+                run_geist(binary, gguf, seq_lens=cfg["seq_lens"],
+                          decode_n=cfg["decode_n"], repeats=cfg["repeats"])
+            except RuntimeError:
+                return None
+        e = sampler.summary()
+        if not e:
+            return None
+        out[phase] = {"joules": e["joules"], "mean_w": e["mean_w"], **cfg}
+
+    pre, dec = out["prefill"], out["decode"]
+    pre_tokens = int(pre["seq_lens"]) * pre["repeats"]
+    j_prefill = pre["joules"] / pre_tokens
+
+    dec_prompt_tokens = int(dec["seq_lens"]) * dec["repeats"]
+    dec_tokens = dec["decode_n"] * dec["repeats"]
+    j_decode = (dec["joules"] - dec_prompt_tokens * j_prefill) / dec_tokens
+    return {"j_per_prefill_token": j_prefill, "j_per_decode_token": j_decode,
+            "prefill_probe_j": pre["joules"], "decode_probe_j": dec["joules"],
+            "prefill_tokens": pre_tokens, "decode_tokens": dec_tokens,
+            "prompt_share_of_decode_probe": dec_prompt_tokens * j_prefill / dec["joules"]}
 
 
 def find_baseline() -> tuple[str, Path] | None:
@@ -390,9 +442,23 @@ def render(run: dict, refs: list[dict]) -> str:
         # which this does not do yet.
         L += ["", f"**Energy:** {e['mean_w']:.2f} W mean board power over "
                   f"{e['seconds']:.0f} s ({e['samples']} PMIC samples), "
-                  f"{e['joules']:.0f} J for the whole sweep. Not divided per token: "
-                  "the window covers prefill and decode together and they cost "
-                  "very differently, so any single figure would be a fiction."]
+                  f"{e['joules']:.0f} J for the sweep."]
+        pt = run.get("per_token_energy")
+        if pt:
+            L += ["",
+                  "| | J per token |", "| :-- | --: |",
+                  f"| prefill | {pt['j_per_prefill_token']:.4f} |",
+                  f"| decode | **{pt['j_per_decode_token']:.3f}** |",
+                  "",
+                  "Measured with the phases separated, not split out of one window: a "
+                  f"prefill-only probe ({pt['prefill_tokens']} tokens, "
+                  f"{pt['prefill_probe_j']:.0f} J) fixes the prefill cost, then a "
+                  f"long-decode probe ({pt['decode_tokens']} tokens, "
+                  f"{pt['decode_probe_j']:.0f} J) is solved for decode after charging "
+                  "its short prompt at that rate — "
+                  f"{pt['prompt_share_of_decode_probe'] * 100:.1f} % of the second "
+                  "probe, subtracted rather than ignored. Both probes ran from the "
+                  "same thermal gate as the sweep."]
     else:
         L += ["", "**Energy:** not readable without privileges on this platform "
                   "(Raspberry Pi reports it unprivileged; x86 RAPL and macOS "
@@ -520,6 +586,10 @@ def main() -> int:
     run["rows"] = rows
     run["load_after"], run["temp_after"] = load_avg(), temp_c()
 
+    if energy.available:
+        print("  measuring energy per token (two short probes)", file=sys.stderr)
+        run["per_token_energy"] = energy_per_token(binary, gguf)
+
     baseline = find_baseline()
     if baseline:
         name, path = baseline
@@ -572,6 +642,9 @@ def main() -> int:
             entry["temp_c_geist_start"] = run["temp_before"]
             entry["temp_c_baseline_start"] = run.get("temp_at_baseline", -1.0)
             entry["thermal_gate"] = run.get("cool_status", "unreadable")
+        if run.get("per_token_energy"):
+            entry["j_per_decode_token"] = run["per_token_energy"]["j_per_decode_token"]
+            entry["j_per_prefill_token"] = run["per_token_energy"]["j_per_prefill_token"]
         data = json.loads(ds.read_text()) if ds.is_file() else {"runs": []}
         data["runs"].append(entry)
         ds.write_text(json.dumps(data, indent=1) + "\n")
