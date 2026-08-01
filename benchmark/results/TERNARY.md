@@ -4,9 +4,13 @@
 SDOT, **no i8mm**) at or above `MAX(bitnet.cpp, llama.cpp)` on the same model.
 
 **Status: measured on the Pi 5.** geist decodes the canonical 2B-4T `i2_s` at
-**17.4 t/s vs bitnet.cpp's 8.2** (~2×), with prefill and Cougar/bitnet.cpp
-head-to-heads built and run on the same board (below). The one open gap is a
-canonical 2B-4T **TQ2_0** GGUF (only `i2_s` ships upstream).
+**17.4 t/s vs bitnet.cpp's 8.2** (~2×) **at short context**, with prefill and
+Cougar/bitnet.cpp head-to-heads built and run on the same board (below). The one
+open gap is a canonical 2B-4T **TQ2_0** GGUF (only `i2_s` ships upstream).
+
+Quote that headline with its context length or not at all — decode falls ~29 %
+from a 32-token prompt to a 512-token one, so the same build reads anywhere
+between 17.9 and 12.8 t/s depending only on where you measure it.
 
 ---
 
@@ -49,6 +53,30 @@ only to flag that the TL1↔SDOT trade-off must be **measured per platform**; it
 inverts between Apple and the A76.
 
 ---
+
+## Decode against context length (2026-08-01)
+
+The headline number above depends entirely on where it is measured, so here is
+the curve. One `bench_perf_sweep` run, `--seq-lens 32,128,512 --decode-n 64
+--warmup 64 --repeats 10`, mean-of-10 from a cool start (47.7 °C, load 0.00,
+`geist-home` and `ollama` stopped for the duration):
+
+| prompt tokens | decode t/s | spread | prefill t/s | total t/s |
+| --: | --: | --: | --: | --: |
+| 32 | **17.96** | ±0.8 % | 49.58 | 22.81 |
+| 128 | 16.77 | ±0.4 % | 50.18 | 30.16 |
+| 512 | 12.76 | ±1.3 % | 46.26 | 35.82 |
+
+**Decode falls 29 % from a 32-token prompt to a 512-token one; prefill stays
+flat.** That is the KV attention growing with context, not weight bandwidth —
+the weights read per token are the same at every point (see the budget below).
+
+Two consequences. Any decode number from this model must name its context
+length, or it is unfalsifiable: the same binary reads 17.9 or 12.8 t/s. And an
+optimization that shrinks *per-token weight traffic* shows its effect most
+clearly at **short** context, where attention does not dilute it.
+
+Raw run: `~/bench-geistlib/stride/2026-08-01_pi5_bitnet-2b4t-i2s_seqlen-sweep.log`.
 
 ## Per-token byte budget (2B-4T `i2_s`)
 
