@@ -53,8 +53,18 @@ guarantee an AVX-512 CPU, so:
   builds and passes — the baseline every SIMD kernel is checked against, runner
   CPU notwithstanding.
 
-To *guarantee* AVX-512 execution, run the suite on an AVX-512-capable
-self-hosted or larger runner; tracked as a possible follow-up under the CI epic.
+Since #184 the `avx512-sde` job **guarantees** AVX-512/VNNI execution on every
+PR: the shipped x86_64 binaries run under Intel SDE's Sapphire Rapids
+emulation, `test_x86_isa_dispatch_unit` hard-fails unless the dispatcher
+actually selects the VNNI tier (a silent downgrade cannot pass), and the
+targeted W4A8/W8A8/Q4Kx8/Q6K/i2s kernel tests execute with their built-in
+scalar-parity checks. Coverage tiers for x86 SIMD are therefore: **built**
+(all legs) → **opportunistically executed** (`build-test-x86_64`, CPU
+permitting, reported per run) → **guaranteed executed under emulation**
+(`avx512-sde`) → **real-hardware perf/e2e** (self-hosted only; runner
+contract: labels `[self-hosted, linux, x64, geist-avx512]`, mandatory
+AVX-512F/BW/DQ/VL+VNNI enforced by the same dispatch test, BF16 reported
+explicitly either way).
 
 ## Non-goals
 
