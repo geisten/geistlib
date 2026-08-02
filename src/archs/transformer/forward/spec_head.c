@@ -94,6 +94,29 @@
  * and stride 2 for the large model, both of which measure exact. */
 #define SPEC_SKETCH_DIMS 640
 
+/* How much smaller a sketch row must be than a dense row before the sketch is
+ * worth building. This is the whole trade in one number: the sketch replaces
+ * reading a dense row per vocabulary entry with reading a sketch row, so if
+ * the sketch row is not much smaller there is nothing to win -- and the
+ * phase-3 verify and a resident V*SD table still get paid for.
+ *
+ * Gating on dtype, as this used to, asks the wrong question. What decides the
+ * trade is not whether the head is F16 or Q6_K but how wide a dense row is
+ * against the sketch replacing it. Measured on a Pi 5, decode against the same
+ * build with GEIST_SPEC_HEAD=0:
+ *
+ *   BitNet 2B-4T        F16  head  5120 B/row  640-dim sketch  8.00x   +82 %
+ *   bitnet_b1_58-large  Q6_K head  1260 B/row  768-dim sketch  1.64x   +0.8 %
+ *   gemma4-e2b          Q6_K head  1260 B/row  768-dim sketch  1.64x   +0.5 %
+ *
+ * A quantized head is already compact, so subsampling it to int8 shrinks
+ * almost nothing. 3.0 sits between the two measured regimes, and the gap they
+ * leave is wide enough that its exact position hardly matters.
+ *
+ * Declining also hands memory back where the sketch bought nothing: on gemma4
+ * its table is 201 MB resident, which is real on a 4 GB board, for +0.5 %. */
+#define SPEC_MIN_ROW_SHRINK 3.0
+
 /* 512 was verified byte-identical on the original trajectories, but the
  * margin is thin: a near-tie whose loser the sketch ranks past the cutoff
  * flips greedy (seen live when an unrelated ULP-level kernel change shifted
@@ -397,6 +420,11 @@ static bool spec_head_build(struct transformer_arch_state *st) {
         return false;
     }
     const size_t SD = H / sub;
+
+    /* Is a sketch row enough smaller than a dense one to pay for itself? */
+    if ((double) row_bytes / (double) SD < SPEC_MIN_ROW_SHRINK) {
+        return false;
+    }
 
     int8_t           *sketch = heap_alloc_array_aligned(int8_t, V *SD);
     float            *rscale = heap_alloc_array_aligned(float, V);
