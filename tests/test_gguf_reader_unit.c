@@ -8,17 +8,17 @@
 #include <string.h>
 
 int main(int argc, char **argv) {
-    GEIST_REQUIRE_ARGS(argc, 2, "<model.gguf> [tensor_name ...]");
+    const char *model = geist_test_gguf_arg(argc, argv, 1);
 
     const char      *err = nullptr;
-    struct gguf_ctx *ctx = gguf_open(argv[1], &err);
+    struct gguf_ctx *ctx = gguf_open(model, &err);
     if (!ctx) {
         fprintf(stderr, "gguf_open: %s\n", err ? err : "?");
         return 1;
     }
 
     size_t n = gguf_tensor_count(ctx);
-    fprintf(stderr, "Loaded %zu tensors from %s\n", n, argv[1]);
+    fprintf(stderr, "Loaded %zu tensors from %s\n", n, model);
 
     /* dtype histogram */
     int    hist[40]    = {0};

@@ -16,17 +16,49 @@ static double now_us(void) {
     return (double) ts.tv_sec * 1e6 + (double) ts.tv_nsec / 1e3;
 }
 
+/* Prefer an ffn_gate: the paired-tensor branch further down derives the
+ * matching ffn_up from the name, so this default exercises the pair path
+ * too. Falls back to any Q4_K tensor. Returns nullptr if the model has
+ * none — a Q8_0 or ternary model, where this test has nothing to say. */
+static const char *find_default_q4k_tensor(const struct gguf_ctx *ctx) {
+    const char  *any = nullptr;
+    const size_t n   = gguf_tensor_count(ctx);
+    for (size_t i = 0; i < n; i++) {
+        const struct gguf_tensor_t *t = gguf_tensor_at(ctx, i);
+        if (t == nullptr || t->dtype != GGUF_TYPE_Q4_K || t->n_dims < 2) {
+            continue;
+        }
+        if (strstr(t->name, "ffn_gate.weight") != nullptr) {
+            return t->name;
+        }
+        if (any == nullptr) {
+            any = t->name;
+        }
+    }
+    return any;
+}
+
 int main(int argc, char **argv) {
-    GEIST_REQUIRE_ARGS(argc, 3, "<model.gguf> <tensor_name>");
-    const char                 *err = nullptr;
-    struct gguf_ctx            *ctx = gguf_open(argv[1], &err);
-    const struct gguf_tensor_t *t   = gguf_get_tensor(ctx, argv[2]);
+    const char      *model = geist_test_gguf_arg(argc, argv, 1);
+    const char      *err   = nullptr;
+    struct gguf_ctx *ctx   = gguf_open(model, &err);
+    if (ctx == nullptr) {
+        fprintf(stderr, "gguf_open: %s\n", err ? err : "?");
+        return GEIST_TEST_FAIL;
+    }
+    /* Without an explicit tensor name, discover one — hard-coding a name
+     * would bind this test to a single model. */
+    const char *tname = (argc > 2) ? argv[2] : find_default_q4k_tensor(ctx);
+    if (tname == nullptr) {
+        GEIST_SKIP("no Q4_K tensor in this model — nothing to check");
+    }
+    const struct gguf_tensor_t *t = gguf_get_tensor(ctx, tname);
     if (!t || t->dtype != GGUF_TYPE_Q4_K) {
-        fprintf(stderr, "tensor not Q4_K\n");
-        return 1;
+        fprintf(stderr, "tensor not Q4_K: %s\n", tname);
+        return GEIST_TEST_FAIL;
     }
     size_t n_in = t->dims[0], n_out = t->dims[1];
-    fprintf(stderr, "Tensor %s: Q4_K (n_in=%zu, n_out=%zu)\n", argv[2], n_in, n_out);
+    fprintf(stderr, "Tensor %s: Q4_K (n_in=%zu, n_out=%zu)\n", tname, n_in, n_out);
 
     /* Random input */
     float *x = (float *) malloc(n_in * sizeof(float));
@@ -191,12 +223,12 @@ int main(int argc, char **argv) {
     }
 
     const char *gate_suffix = "ffn_gate.weight";
-    const char *gate_pos    = strstr(argv[2], gate_suffix);
+    const char *gate_pos    = strstr(tname, gate_suffix);
     if (gate_pos != nullptr) {
         char         up_name[256];
-        const size_t prefix_len = (size_t) (gate_pos - argv[2]);
+        const size_t prefix_len = (size_t) (gate_pos - tname);
         if (prefix_len + strlen("ffn_up.weight") < sizeof(up_name)) {
-            memcpy(up_name, argv[2], prefix_len);
+            memcpy(up_name, tname, prefix_len);
             strcpy(up_name + prefix_len, "ffn_up.weight");
             const struct gguf_tensor_t *t_up = gguf_get_tensor(ctx, up_name);
             if (t_up != nullptr && t_up->dtype == GGUF_TYPE_Q4_K && t_up->dims[0] == n_in &&

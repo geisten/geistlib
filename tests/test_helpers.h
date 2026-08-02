@@ -89,6 +89,35 @@ static inline int geist_expect(int cond, const char *what) {
 #define GEIST_REQUIRE_ARGS(argc, required, usage_msg) \
     GEIST_SKIP_IF((argc) < (required), "Missing test data. Usage: " usage_msg)
 
+/* ---- Fixture strictness ------------------------------------------------- */
+
+/* A missing GGUF fixture is normally a skip: contributors run the suite
+ * without a 3 GB download. In CI, where the model IS fetched and cached, a
+ * skip means coverage silently vanished — a rotated cache key or an HTTP 404
+ * would leave the suite green while testing nothing.
+ *
+ * GEIST_STRICT_FIXTURES=gguf turns exactly that class of skip into a failure.
+ * Deliberately scoped to GGUF: the vision/audio/safetensors suites gate on
+ * assets nobody downloads, and asset-gated skips stay skips. Use
+ * GEIST_SKIP_FIXTURE only where a fixture is expected to be present in CI. */
+static inline bool geist_test_fixtures_strict(void) {
+    const char *v = getenv("GEIST_STRICT_FIXTURES");
+    return v != nullptr && strstr(v, "gguf") != nullptr;
+}
+
+#define GEIST_SKIP_FIXTURE(reason)                                               \
+    do {                                                                         \
+        if (geist_test_fixtures_strict()) {                                      \
+            fprintf(stderr,                                                      \
+                    "FAIL: %s (GEIST_STRICT_FIXTURES=gguf — a fixture expected " \
+                    "in this environment is missing)\n",                         \
+                    (reason));                                                   \
+            exit(GEIST_TEST_FAIL);                                               \
+        }                                                                        \
+        fprintf(stdout, "SKIP: %s\n", (reason));                                 \
+        exit(GEIST_TEST_SKIP);                                                   \
+    } while (0)
+
 /* ---- GGUF model discovery ----------------------------------------------- */
 
 /* Returns a path to the GGUF model file, or nullptr if not found.
@@ -126,10 +155,27 @@ static inline const char *geist_test_find_gguf(void) {
 
 /* clang-tidy: bugprone-macro-parentheses doesn't understand that `varname` here is a
  * declaration identifier — wrapping it in parens would yield invalid C. Suppress. */
-#define GEIST_REQUIRE_GGUF(varname) /* NOLINT(bugprone-macro-parentheses) */ \
-    const char *varname = geist_test_find_gguf();                            \
-    GEIST_SKIP_IF((varname) == nullptr,                                      \
-                  "GGUF model not found. Set GEIST_GGUF_PATH or place model in ./, ../models/")
+#define GEIST_REQUIRE_GGUF(varname) /* NOLINT(bugprone-macro-parentheses) */                   \
+    const char *varname = geist_test_find_gguf();                                              \
+    if ((varname) == nullptr) {                                                                \
+        GEIST_SKIP_FIXTURE(                                                                    \
+                "GGUF model not found. Set GEIST_GGUF_PATH or place model in ./, ../models/"); \
+    }
+
+/* argv[n] if the caller supplied it, else the discovered GGUF. The runner
+ * invokes every binary with no arguments (mk/run-tests.sh), so a test that
+ * only reads argv sits idle even when CI has the model cached. Falls back to
+ * the same discovery GEIST_REQUIRE_GGUF uses, and is strict-aware. */
+static inline const char *geist_test_gguf_arg(int argc, char **argv, int index) {
+    if (argc > index && argv[index] != nullptr && argv[index][0] != '\0') {
+        return argv[index];
+    }
+    const char *found = geist_test_find_gguf();
+    if (found == nullptr) {
+        GEIST_SKIP_FIXTURE("no GGUF: pass one as an argument or set GEIST_GGUF_PATH");
+    }
+    return found;
+}
 
 /* ---- Floating-point comparison ------------------------------------------ */
 
