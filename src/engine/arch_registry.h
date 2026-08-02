@@ -17,7 +17,12 @@
 #include <geist_arch.h> /* geist_arch_ops_{decoder,encoder,vision} vtables */
 
 struct geist_arch_descriptor {
-    const char                          *name;
+    const char *name;
+    /* NULL-terminated list of the exact `general.architecture` values
+     * this arch accepts. Owned by the arch layer (single source of
+     * truth next to its family registry); the lookup below matches
+     * against it fail-closed. */
+    const char *const                   *gguf_names;
     const struct geist_arch_ops_decoder *decoder_ops;
     const struct geist_arch_ops_encoder *audio_encoder_ops;  /* Phase B-5 */
     const struct geist_arch_ops_vision  *vision_encoder_ops; /* Phase P1 */
@@ -26,9 +31,10 @@ struct geist_arch_descriptor {
 /* NULL-terminated. Defined in arch_registry.c. */
 extern const struct geist_arch_descriptor *const geist_arch_registry[];
 
-/* Return the architecture descriptor for a GGUF general.architecture
- * value. Single-arch build: always the first-registered descriptor
- * (transformer). Returns nullptr only if the registry is empty. */
+/* Return the architecture descriptor whose gguf_names list contains
+ * `gguf_arch` (exact match). Fail-closed: nullptr when gguf_arch is
+ * nullptr or no compiled-in descriptor claims it — the caller reports
+ * GEIST_E_UNSUPPORTED and must not fall back. */
 const struct geist_arch_descriptor *geist_arch_registry_lookup(const char *gguf_arch);
 
 #endif /* GEIST_INTERNAL_ARCH_REGISTRY_H */

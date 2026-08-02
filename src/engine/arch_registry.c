@@ -1,20 +1,24 @@
 /*
  * src/engine/arch_registry.c — compiled-in architecture list.
  *
- * Layer: ENGINE. Mirror of backend_registry.c — each architecture is
- * gated by GEIST_ARCH_<NAME> at compile time; the registry is NULL-
- * terminated and ordered by GGUF-name match preference.
+ * Layer: ENGINE. Mirror of backend_registry.c — the registry is NULL-
+ * terminated and ordered by GGUF-name match preference. Lookup matches
+ * a GGUF's `general.architecture` against each descriptor's gguf_names
+ * list and fails closed on no match — no fallback descriptor.
  *
  * Adding a new architecture:
  *   1. Implement src/archs/<name>/arch.c exporting
- *      'extern const struct geist_arch_ops_decoder geist_arch_<name>'.
- *   2. Add mk/arch-<name>.mk setting SRCS_ARCH += src/archs/<name>/...c
- *   3. Add #if GEIST_ARCH_<NAME> block below.
- *   4. Build with `make ARCHS="transformer <name>"`.
+ *      'extern const struct geist_arch_ops_decoder geist_arch_<name>'
+ *      plus a NULL-terminated 'geist_arch_<name>_gguf_names' list of
+ *      the general.architecture values it accepts.
+ *   2. Add its sources to mk/common.mk.
+ *   3. Add a descriptor + registry entry below.
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
 #include "arch_registry.h"
+
+#include <string.h>
 
 #define GEIST_INTERNAL_ARCH_LAYER
 #include "../archs/audio_conformer/arch.h"
@@ -22,30 +26,30 @@
 #include "../archs/vision_siglip/arch.h"
 #undef GEIST_INTERNAL_ARCH_LAYER
 
-/* Compiled-in list. GEIST_ARCH_TRANSFORMER is defined by default since
- * the only model the engine currently supports is Gemma 4. */
-#define GEIST_ARCH_TRANSFORMER 1
-
-#if GEIST_ARCH_TRANSFORMER
 static const struct geist_arch_descriptor desc_transformer = {
         .name               = "transformer",
+        .gguf_names         = geist_arch_transformer_gguf_names,
         .decoder_ops        = &geist_arch_transformer,
         .audio_encoder_ops  = &geist_arch_audio_conformer,
         .vision_encoder_ops = &geist_arch_vision_siglip,
 };
-#endif
 
 const struct geist_arch_descriptor *const geist_arch_registry[] = {
-#if GEIST_ARCH_TRANSFORMER
         &desc_transformer,
-#endif
         nullptr,
 };
 
 const struct geist_arch_descriptor *geist_arch_registry_lookup(const char *gguf_arch) {
-    /* ponytail: single-arch build — every GGUF maps to the one registered
-     * descriptor (transformer covers gemma/llama/mistral). Restore
-     * gguf_arch name-matching over the registry when a second arch lands. */
-    (void) gguf_arch;
-    return geist_arch_registry[0];
+    if (gguf_arch == nullptr) {
+        return nullptr;
+    }
+    for (size_t i = 0; geist_arch_registry[i] != nullptr; i++) {
+        const struct geist_arch_descriptor *d = geist_arch_registry[i];
+        for (const char *const *n = d->gguf_names; n != nullptr && *n != nullptr; n++) {
+            if (strcmp(*n, gguf_arch) == 0) {
+                return d;
+            }
+        }
+    }
+    return nullptr;
 }
