@@ -3576,6 +3576,38 @@ static const struct geist_backend_vtbl vk_vtbl = {
         .resolve_weight = vk_resolve_weight,
 };
 
+/* Probe pairing for the fused table below. Mirrors the entry checks of
+ * vk_ffn_gate_up / vk_ffn_norm_gate_up (decode-only matvec kernels,
+ * Q4_K weights, GPU-resident via vk_weight_lookup). */
+static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
+    if (q == nullptr || be == nullptr || be->state == nullptr) {
+        return false;
+    }
+    struct vk_state *st = be->state;
+    switch (q->op) {
+    case GEIST_FUSED_GELU_TANH_MUL:
+    case GEIST_FUSED_GELU_TANH_MUL_SCALED:
+        return VK_OPS(be, 1u);
+    case GEIST_FUSED_FFN_GATE_UP:
+    case GEIST_FUSED_FFN_NORM_GATE_UP: {
+        if (!VK_OPS(be, 1u) || q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr ||
+            q->gate_w->dtype != GEIST_DTYPE_Q4_K || q->up_w->dtype != GEIST_DTYPE_Q4_K ||
+            q->d_model % 256u != 0u ||
+            (q->op == GEIST_FUSED_FFN_NORM_GATE_UP && q->inter % 8u != 0u) ||
+            (size_t) q->gate_w->n_in != q->d_model || (size_t) q->up_w->n_in != q->d_model ||
+            q->gate_w->n_out != q->up_w->n_out) {
+            return false;
+        }
+        /* Residency: both weights must be registered GPU buffers. */
+        return q->gate_w->raw != nullptr && q->up_w->raw != nullptr &&
+               vk_weight_lookup(st, (const uint8_t *) q->gate_w->raw) != nullptr &&
+               vk_weight_lookup(st, (const uint8_t *) q->up_w->raw) != nullptr;
+    }
+    default:
+        return false;
+    }
+}
+
 static const struct geist_backend_primitives vk_prims = {
         .rmsnorm          = vk_rmsnorm,
         .add              = vk_add,
@@ -3592,6 +3624,7 @@ static const struct geist_backend_primitives vk_prims = {
 };
 
 static const struct geist_backend_fused vk_fused = {
+        .supported            = vk_fused_supported,
         .gelu_tanh_mul        = vk_gelu_tanh_mul,
         .gelu_tanh_mul_scaled = vk_gelu_tanh_mul_scaled,
 /* Phase 3: batched-submit paths — one flush per token (argmax). */

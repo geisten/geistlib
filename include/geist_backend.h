@@ -270,12 +270,51 @@ struct geist_backend_primitives {
 /* Fused fast paths — all optional, all with decomposed twins.             */
 /* ====================================================================== */
 
+/* Fused-op identifiers for load-time probing (see `supported` below).
+ * Only ops whose call sites are plan-bound need an id; the rest join as
+ * their call sites migrate (policy rule 3). */
+enum geist_fused_op {
+    GEIST_FUSED_GELU_TANH_MUL,
+    GEIST_FUSED_GELU_TANH_MUL_SCALED,
+    GEIST_FUSED_FFN_GEGLU_Q4Q6_MN,
+    GEIST_FUSED_FFN_GATE_UP,
+    GEIST_FUSED_FFN_NORM_GATE_UP,
+};
+
+/* Load-time capability probe for one fused op at one layer's geometry.
+ * `m` carries the regime: 1 = decode; >1 = prefill, and a `true` answer
+ * promises the op succeeds for ANY row count in [1, m]. The weight
+ * pointers are the layer's RESOLVED weights (post resolve_weight, post
+ * upload), so backends can check residency and layout, not just dtype;
+ * fields an op doesn't use are nullptr/0. */
+struct geist_fusion_query {
+    enum geist_fused_op        op;
+    size_t                     m;
+    size_t                     d_model;
+    size_t                     inter;
+    const struct geist_weight *gate_w;
+    const struct geist_weight *up_w;
+    const struct geist_weight *down_w;
+};
+
 /* Every slot here is an OPTIMIZATION: the arch must be able to produce the
  * same result from core + primitives. nullptr = always decomposed; a
  * non-null slot may still return GEIST_E_UNSUPPORTED for geometries its
- * kernel doesn't cover, and the caller falls back. (Probe-and-bind will
- * move that negotiation to load time; until then callers null-check.) */
+ * kernel doesn't cover, and the caller falls back.
+ *
+ * Probe-and-bind: call sites migrate from per-call negotiation to
+ * consulting `supported` once at plan-build time (the FFN front is
+ * converted; remaining stages migrate as touched). The contract is
+ * strict: if `supported` returns true for a query, the op MUST return
+ * GEIST_OK (or a real error like OOM — never GEIST_E_UNSUPPORTED) for
+ * every call matching that query. Probe and kernel live side by side in
+ * the backend; test_fused_probe_agreement_unit checks the pairing. */
 struct geist_backend_fused {
+    /* Load-time probe backing the plan-bound call sites. nullptr = the
+     * backend answers no to every probe (its fusions are then only
+     * reachable through the remaining per-call negotiation sites). */
+    bool (*supported)(struct geist_backend *be, const struct geist_fusion_query *q);
+
     /* y = gelu_tanh(x) * z. F32 DENSE. FFN fast path for GEGLU;
      * callers fall back to gelu_tanh + mul when nullptr. */
     enum geist_status (*gelu_tanh_mul)(struct geist_backend      *be,
