@@ -651,12 +651,21 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     };
 
     /* P1.5: dispatch to the per-family populator selected by
-     * `general.architecture`. Unknown / missing arch falls back to
-     * Gemma-4 (see arch_family.c::transformer_family_select). For the
-     * Gemma-4 IQ2_M test file the meta values equal the defaults so
-     * the populator's overrides are a no-op — bit-identical load. */
+     * `general.architecture`. Unknown / missing arch fails closed —
+     * the engine gate (model.c) rejects such GGUFs before we get here,
+     * so this branch only fires for callers bypassing the engine. */
     const struct transformer_family *fam = transformer_family_select(gguf);
-    st->config.family                    = fam->name;
+    if (fam == nullptr) {
+        void *p = st;
+        safe_free(&p);
+        gguf_close(gguf);
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer: unsupported or missing "
+                                "general.architecture in GGUF");
+        return GEIST_E_UNSUPPORTED;
+    }
+    st->config.family = fam->name;
     fam->populate(gguf, st);
 
     /* P1.4.c: heap-allocate the per-layer weight array sized to the

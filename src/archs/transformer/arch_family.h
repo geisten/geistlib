@@ -9,9 +9,10 @@
  * family the engine supports.
  *
  * Selection happens at state_create from the `general.architecture`
- * metadata string. If no family matches, state_create falls back to
- * the gemma4 populator (legacy default) so older GGUFs without the
- * arch key still load on systems that built the engine for Gemma 4.
+ * metadata string. Unknown or missing arch fails closed — no family,
+ * no load. The engine gate (arch_registry lookup in model.c) rejects
+ * such GGUFs before state_create; the nullptr return here is the
+ * belt-and-suspenders for callers that bypass the engine.
  *
  * Families differ in:
  *   - which meta keys carry the geometry (`gemma4.*` vs `llama.*` vs
@@ -62,8 +63,8 @@ struct transformer_family {
 };
 
 /* Select a family by `general.architecture` string. Returns the
- * matching family entry, or the Gemma-4 fallback when no entry
- * matches (the engine's only confirmed-working family today). */
+ * matching family entry, or nullptr when the key is absent or no
+ * entry matches (fail closed — caller aborts the load). */
 const struct transformer_family *transformer_family_select(struct gguf_ctx *gguf);
 
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_FAMILY_H */
