@@ -734,6 +734,9 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
      * That turns the failure this head used to have -- a silently different
      * token, which took a 28-token trajectory on another model to notice --
      * into an occasional slower step. */
+    /* Cutoff from the min-heap: nothing below it made the candidate set. Read
+     * before the scan because phase 3 overwrites logits, never rough. */
+    const float  cutoff     = hn > 0 ? heap[0].s : -3.4e38f;
     const float  best_exact = logits[*out_token];
     const float  inv_xq     = 1.0f / x_q;
     const float *wdrop      = st->spec_w_drop;
@@ -741,7 +744,16 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
     bool         certain    = true;
     if (wdrop != nullptr && wl1 != nullptr) {
         for (size_t r = 0; r < V; r++) {
-            if (logits[r] != -INFINITY) {
+            /* Excluded rows are those phase 2 left below the heap's cutoff.
+             * This asked `logits[r] != -INFINITY` before, which is a correct
+             * question only where infinities survive: the Pi builds with plain
+             * -ffast-math, whose finite-math assumption lets the compiler fold
+             * that test to always-true. Every row then looked like a
+             * candidate, the scan examined nothing, and the bound did nothing
+             * at all on the one platform it was written for -- while passing
+             * on the Mac, which builds -fno-finite-math-only. A cutoff is
+             * finite arithmetic and means the same thing on both. */
+            if (rough[r] > cutoff) {
                 continue; /* a candidate: already scored exactly */
             }
             const float ub = rough[r] * inv_xq + 0.5f * rscale[r] * h_l1_kept +
