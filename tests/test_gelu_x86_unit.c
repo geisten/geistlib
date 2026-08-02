@@ -34,8 +34,10 @@ int main(void) {
         z[i] = 0.5f + (float) (i % 5) * 0.25f;
     }
 
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    struct geist_buffer             *bx = nullptr, *bz = nullptr, *by = nullptr;
+    const struct geist_backend_vtbl       *v     = be->desc->vtbl;
+    const struct geist_backend_primitives *prims = be->desc->prims;
+    const struct geist_backend_fused      *fused = geist_backend_fused_tbl(be);
+    struct geist_buffer                   *bx = nullptr, *bz = nullptr, *by = nullptr;
     v->buffer_create(be, N * sizeof(float), GEIST_BUFFER_ACTIVATION, GEIST_MEMORY_AUTO, &bx);
     v->buffer_create(be, N * sizeof(float), GEIST_BUFFER_ACTIVATION, GEIST_MEMORY_AUTO, &bz);
     v->buffer_create(be, N * sizeof(float), GEIST_BUFFER_ACTIVATION, GEIST_MEMORY_AUTO, &by);
@@ -57,7 +59,7 @@ int main(void) {
     float out[N];
 
     /* gelu_tanh */
-    if (v->gelu_tanh(be, &tx, &ty) != GEIST_OK) {
+    if (prims->gelu_tanh(be, &tx, &ty) != GEIST_OK) {
         printf("FAIL: gelu_tanh ran\n");
         fails++;
     }
@@ -73,7 +75,7 @@ int main(void) {
         fails++;
 
     /* gelu_tanh_mul */
-    if (v->gelu_tanh_mul(be, &tx, &tz, &ty) != GEIST_OK) {
+    if (fused->gelu_tanh_mul(be, &tx, &tz, &ty) != GEIST_OK) {
         printf("FAIL: gelu_tanh_mul ran\n");
         fails++;
     }

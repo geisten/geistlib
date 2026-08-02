@@ -61,12 +61,14 @@ static bool ffn_tile_fusion_enabled(void) {
 
 enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forward_ctx *ctx) {
 
-    struct transformer_arch_state    *st   = ctx->st;
-    struct transformer_arch_session  *sess = ctx->sess;
-    struct transformer_layer_weights *L    = ctx->L;
-    struct geist_backend             *be   = ctx->be;
-    const struct geist_backend_vtbl  *v    = ctx->v;
-    enum geist_status                 s;
+    struct transformer_arch_state         *st    = ctx->st;
+    struct transformer_arch_session       *sess  = ctx->sess;
+    struct transformer_layer_weights      *L     = ctx->L;
+    struct geist_backend                  *be    = ctx->be;
+    const struct geist_backend_vtbl       *v     = ctx->v;
+    const struct geist_backend_primitives *prims = ctx->prims;
+    const struct geist_backend_fused      *fused = ctx->fused;
+    enum geist_status                      s;
 
     struct geist_tensor t_h_post_attn_2d =
             view_2d(sess->scratch_h_post_attn, ctx->SEQ, st->d_model);
@@ -80,22 +82,22 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
      * rmsnorm + ffn_gate_up. Anything unsupported falls through to the
      * decomposed path below. */
     bool ffn_front_fused = false;
-    if (v->ffn_norm_gate_up != nullptr && ctx->ffn_activation == GEIST_FFN_GEGLU &&
+    if (fused->ffn_norm_gate_up != nullptr && ctx->ffn_activation == GEIST_FFN_GEGLU &&
         L->down_awq_inv_scale == nullptr) {
         struct geist_tensor t_gate_f_2d =
                 view_2d(sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
-        ffn_front_fused = v->ffn_norm_gate_up(be,
-                                              &t_h_post_attn_2d,
-                                              &t_w_ffn_norm,
-                                              ctx->eps,
-                                              &L->gate_proj,
-                                              &L->up_proj,
-                                              &t_gate_f_2d) == GEIST_OK;
+        ffn_front_fused = fused->ffn_norm_gate_up(be,
+                                                  &t_h_post_attn_2d,
+                                                  &t_w_ffn_norm,
+                                                  ctx->eps,
+                                                  &L->gate_proj,
+                                                  &L->up_proj,
+                                                  &t_gate_f_2d) == GEIST_OK;
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
     }
     if (!ffn_front_fused) {
         t0 = profile ? transformer_profile_now_ns() : 0;
-        s  = v->rmsnorm(be, &t_h_post_attn_2d, &t_w_ffn_norm, ctx->eps, &t_pre_ff_2d);
+        s  = prims->rmsnorm(be, &t_h_post_attn_2d, &t_w_ffn_norm, ctx->eps, &t_pre_ff_2d);
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_NORM, t0);
         if (s != GEIST_OK) {
             return s;
@@ -105,7 +107,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     const bool          has_ffn_sub_norm = ctx->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr;
     struct geist_tensor t_ffn_out_2d     = view_2d(sess->scratch_ffn_out, ctx->SEQ, st->d_model);
     if (ctx->seq > 1 && ctx->ffn_activation == GEIST_FFN_GEGLU && !has_ffn_sub_norm &&
-        !st->runtime_flags.dump_act_sparsity && v->ffn_geglu_q4q6_mN != nullptr &&
+        !st->runtime_flags.dump_act_sparsity && fused->ffn_geglu_q4q6_mN != nullptr &&
         ffn_tile_fusion_enabled()) {
         const float *xp = (const float *) v->buffer_map(sess->scratch_pre_ff);
         float       *yp = (float *) v->buffer_map(sess->scratch_ffn_out);
@@ -117,16 +119,16 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             return GEIST_E_BACKEND;
         }
         t0 = profile ? transformer_profile_now_ns() : 0;
-        s  = v->ffn_geglu_q4q6_mN(be,
-                                  xp,
-                                  ctx->seq,
-                                  (size_t) st->d_model,
-                                  ctx->inter,
-                                  &L->gate_proj_w,
-                                  &L->up_proj_w,
-                                  &L->down_proj_w,
-                                  L->down_awq_inv_scale,
-                                  yp);
+        s  = fused->ffn_geglu_q4q6_mN(be,
+                                      xp,
+                                      ctx->seq,
+                                      (size_t) st->d_model,
+                                      ctx->inter,
+                                      &L->gate_proj_w,
+                                      &L->up_proj_w,
+                                      &L->down_proj_w,
+                                      L->down_awq_inv_scale,
+                                      yp);
         v->buffer_unmap(sess->scratch_pre_ff);
         v->buffer_unmap(sess->scratch_ffn_out);
         if (s == GEIST_OK) {
@@ -159,7 +161,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             return s;
         }
         t0 = profile ? transformer_profile_now_ns() : 0;
-        s  = v->relu_squared(be, &t_up_2d, &t_up_2d);
+        s  = prims->relu_squared(be, &t_up_2d, &t_up_2d);
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
         if (s != GEIST_OK) {
             return s;
@@ -177,10 +179,10 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
          * one kernel, one activation pass over x, gelu(gate)*up written
          * directly. Only for the plain GeGLU activation without an AWQ
          * down-scale; anything unsupported falls through. */
-        if (v->ffn_gate_up != nullptr && ctx->ffn_activation == GEIST_FFN_GEGLU &&
+        if (fused->ffn_gate_up != nullptr && ctx->ffn_activation == GEIST_FFN_GEGLU &&
             L->down_awq_inv_scale == nullptr) {
             t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = v->ffn_gate_up(be, &t_pre_ff_2d, &L->gate_proj, &L->up_proj, &t_gate_2d);
+            s  = fused->ffn_gate_up(be, &t_pre_ff_2d, &L->gate_proj, &L->up_proj, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
             if (s == GEIST_OK) {
                 mid_buf  = sess->scratch_gate;
@@ -209,48 +211,48 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
 
         if (ctx->ffn_activation == GEIST_FFN_GATED_SQUARED_RELU) {
             t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = v->relu_squared(be, &t_gate_2d, &t_gate_2d);
+            s  = prims->relu_squared(be, &t_gate_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
             if (s != GEIST_OK) {
                 return s;
             }
             t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = v->mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
+            s  = prims->mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_MUL, t0);
         } else if (ctx->ffn_activation == GEIST_FFN_SWIGLU) {
             t0 = profile ? transformer_profile_now_ns() : 0;
-            if (v->silu != nullptr) {
-                s = v->silu(be, &t_gate_2d, &t_gate_2d);
+            if (prims->silu != nullptr) {
+                s = prims->silu(be, &t_gate_2d, &t_gate_2d);
             } else {
-                s = v->gelu_tanh(be, &t_gate_2d, &t_gate_2d);
+                s = prims->gelu_tanh(be, &t_gate_2d, &t_gate_2d);
             }
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
             if (s != GEIST_OK) {
                 return s;
             }
             t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = v->mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
+            s  = prims->mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_MUL, t0);
-        } else if (v->gelu_tanh_mul_scaled != nullptr && L->down_awq_inv_scale != nullptr &&
+        } else if (fused->gelu_tanh_mul_scaled != nullptr && L->down_awq_inv_scale != nullptr &&
                    !has_ffn_sub_norm && ffn_fused_scale_enabled()) {
             t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = v->gelu_tanh_mul_scaled(
+            s  = fused->gelu_tanh_mul_scaled(
                     be, &t_gate_2d, &t_up_2d, L->down_awq_inv_scale, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
             mid_already_down_scaled = true;
-        } else if (v->gelu_tanh_mul != nullptr) {
+        } else if (fused->gelu_tanh_mul != nullptr) {
             t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = v->gelu_tanh_mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
+            s  = fused->gelu_tanh_mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
         } else {
             t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = v->gelu_tanh(be, &t_gate_2d, &t_gate_2d);
+            s  = prims->gelu_tanh(be, &t_gate_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
             if (s != GEIST_OK) {
                 return s;
             }
             t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = v->mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
+            s  = prims->mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_MUL, t0);
         }
         if (s != GEIST_OK) {
@@ -264,7 +266,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     if (has_ffn_sub_norm) {
         struct geist_tensor t_ffn_sub_w = view_1d(L->ffn_sub_norm.buffer, (int64_t) ctx->inter);
         t0                              = profile ? transformer_profile_now_ns() : 0;
-        s = v->rmsnorm(be, &t_mid_2d, &t_ffn_sub_w, ctx->eps, &t_mid_2d);
+        s = prims->rmsnorm(be, &t_mid_2d, &t_ffn_sub_w, ctx->eps, &t_mid_2d);
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_SUB_NORM, t0);
         if (s != GEIST_OK) {
             return s;
@@ -343,23 +345,23 @@ ffn_post:
     if (ctx->apply_gemma_attn_norms) {
         struct geist_tensor t_post_ff_2d = view_2d(sess->scratch_post_ff, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_ffw = view_1d(L->post_ffw_norm.buffer, st->d_model);
-        if (v->rmsnorm_add == nullptr || v->rmsnorm_add(be,
-                                                        &t_h_post_attn_2d,
-                                                        &t_ffn_out_2d,
-                                                        &t_w_post_ffw,
-                                                        ctx->eps,
-                                                        &t_h_post_ff_2d) != GEIST_OK) {
-            s = v->rmsnorm(be, &t_ffn_out_2d, &t_w_post_ffw, ctx->eps, &t_post_ff_2d);
+        if (fused->rmsnorm_add == nullptr || fused->rmsnorm_add(be,
+                                                                &t_h_post_attn_2d,
+                                                                &t_ffn_out_2d,
+                                                                &t_w_post_ffw,
+                                                                ctx->eps,
+                                                                &t_h_post_ff_2d) != GEIST_OK) {
+            s = prims->rmsnorm(be, &t_ffn_out_2d, &t_w_post_ffw, ctx->eps, &t_post_ff_2d);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = v->add(be, &t_h_post_attn_2d, &t_post_ff_2d, &t_h_post_ff_2d);
+            s = prims->add(be, &t_h_post_attn_2d, &t_post_ff_2d, &t_h_post_ff_2d);
             if (s != GEIST_OK) {
                 return s;
             }
         }
     } else {
-        s = v->add(be, &t_h_post_attn_2d, &t_ffn_out_2d, &t_h_post_ff_2d);
+        s = prims->add(be, &t_h_post_attn_2d, &t_ffn_out_2d, &t_h_post_ff_2d);
         if (s != GEIST_OK) {
             return s;
         }

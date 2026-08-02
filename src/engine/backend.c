@@ -140,14 +140,7 @@ enum geist_status geist_backend_errcode(const struct geist_backend *be) {
     return be != nullptr ? be->err_code : GEIST_E_INVALID_ARG;
 }
 
-enum geist_support geist_backend_supports_op(struct geist_backend                *be,
-                                             const struct geist_op_support_query *query) {
-    if (be == nullptr || query == nullptr || be->desc == nullptr || be->desc->vtbl == nullptr ||
-        be->desc->vtbl->supports_op == nullptr) {
-        return GEIST_SUPPORT_NONE;
-    }
-    return be->desc->vtbl->supports_op(be, query);
-}
+const struct geist_backend_fused geist_backend_no_fused = {0};
 
 /* ---------- Backend-side helpers (declared in geist_backend.h) ---------- */
 

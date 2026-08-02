@@ -3557,33 +3557,12 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
 }
 
 /* ====================================================================== */
-/* Capability                                                              */
-/* ====================================================================== */
-
-static enum geist_support vk_supports_op(struct geist_backend                *be,
-                                         const struct geist_op_support_query *query) {
-    (void) be;
-    if (query == nullptr || query->op != GEIST_OP_LINEAR || query->input_count < 2) {
-        return GEIST_SUPPORT_NONE;
-    }
-    const struct geist_tensor_format *x_fmt = &query->inputs[0];
-    const struct geist_tensor_format *w_fmt = &query->inputs[1];
-    if (x_fmt->dtype == GEIST_DTYPE_F32 && x_fmt->layout == GEIST_LAYOUT_DENSE &&
-        (w_fmt->dtype == GEIST_DTYPE_Q4_K || w_fmt->dtype == GEIST_DTYPE_Q6_K) &&
-        w_fmt->layout == GEIST_LAYOUT_BLOCK_QUANTIZED) {
-        return GEIST_SUPPORT_NATIVE;
-    }
-    return GEIST_SUPPORT_NONE;
-}
-
-/* ====================================================================== */
 /* Descriptor                                                              */
 /* ====================================================================== */
 
 static const struct geist_backend_vtbl vk_vtbl = {
         .create                = vk_create,
         .destroy               = vk_destroy,
-        .supports_op           = vk_supports_op,
         .buffer_create         = vk_buffer_create,
         .buffer_destroy        = vk_buffer_destroy,
         .buffer_create_aliased = vk_buffer_create_aliased,
@@ -3591,28 +3570,34 @@ static const struct geist_backend_vtbl vk_vtbl = {
         .buffer_download       = vk_buffer_download,
         .buffer_map            = vk_buffer_map,
         .buffer_unmap          = vk_buffer_unmap,
-        .resolve_weight        = vk_resolve_weight,
-        .rmsnorm               = vk_rmsnorm,
-        .add                   = vk_add,
-        .mul                   = vk_mul,
-        .gelu_tanh             = vk_gelu_tanh,
-        .gelu_tanh_mul         = vk_gelu_tanh_mul,
-        .gelu_tanh_mul_scaled  = vk_gelu_tanh_mul_scaled,
-        .relu_squared          = vk_relu_squared,
-        .silu                  = vk_silu,
-        .rope_apply            = vk_rope_apply,
-        .embedding_lookup      = vk_embedding_lookup,
-        .attention             = vk_attention,
+#ifndef VK_NO_COPY
+        .buffer_copy = vk_buffer_copy,
+#endif
+        .resolve_weight = vk_resolve_weight,
+};
+
+static const struct geist_backend_primitives vk_prims = {
+        .rmsnorm          = vk_rmsnorm,
+        .add              = vk_add,
+        .mul              = vk_mul,
+        .gelu_tanh        = vk_gelu_tanh,
+        .silu             = vk_silu,
+        .relu_squared     = vk_relu_squared,
+        .rope_apply       = vk_rope_apply,
+        .embedding_lookup = vk_embedding_lookup,
+        .attention        = vk_attention,
+#ifndef VK_NO_SCALE
+        .scale_f32 = vk_scale_f32,
+#endif
+};
+
+static const struct geist_backend_fused vk_fused = {
+        .gelu_tanh_mul        = vk_gelu_tanh_mul,
+        .gelu_tanh_mul_scaled = vk_gelu_tanh_mul_scaled,
 /* Phase 3: batched-submit paths — one flush per token (argmax). */
 #ifndef VK_NO_LINEAR_T
         .linear_t      = vk_linear_t,
         .linear_t_pair = vk_linear_t_pair,
-#endif
-#ifndef VK_NO_COPY
-        .buffer_copy = vk_buffer_copy,
-#endif
-#ifndef VK_NO_SCALE
-        .scale_f32 = vk_scale_f32,
 #endif
 #ifndef VK_NO_RMSADD
         .rmsnorm_add = vk_rmsnorm_add,
@@ -3631,6 +3616,11 @@ static const struct geist_backend_vtbl vk_vtbl = {
 };
 
 const struct geist_backend_descriptor geist_backend_vulkan = {
-        .name = "vulkan",
-        .vtbl = &vk_vtbl,
+        .name  = "vulkan",
+        .vtbl  = &vk_vtbl,
+        .prims = &vk_prims,
+        .fused = &vk_fused,
+        .caps  = {.kv_f16_attention           = true,
+                  .batched_submit             = true,
+                  .weights_need_backend_arena = true},
 };

@@ -58,26 +58,6 @@ static void cpu_neon_destroy(struct geist_backend *be) {
     be->state = nullptr;
 }
 
-/* ---------- Capability ---------- */
-
-static enum geist_support cpu_neon_supports_op(struct geist_backend                *be,
-                                               const struct geist_op_support_query *query) {
-    if (query == nullptr || query->input_count < 2) {
-        return GEIST_SUPPORT_NONE;
-    }
-    if (query->op != GEIST_OP_LINEAR) {
-        return GEIST_SUPPORT_NONE;
-    }
-    /* Activations are always F32 DENSE on this backend. */
-    const struct geist_tensor_format *x = &query->inputs[0];
-    if (x->dtype != GEIST_DTYPE_F32 || x->layout != GEIST_LAYOUT_DENSE) {
-        return GEIST_SUPPORT_NONE;
-    }
-    /* The weight's layout is not consulted: cpu_neon_resolve_weight keys
-     * on dtype alone, and each dtype implies its own storage layout. */
-    return cpu_neon_linear_support(be, (enum geist_dtype) query->inputs[1].dtype);
-}
-
 /* ---------- Buffer ops (mirror cpu_scalar) ---------- */
 
 [[nodiscard]] static enum geist_status cpu_neon_buffer_create(struct geist_backend  *be,
@@ -309,35 +289,40 @@ static void cpu_neon_parallel_region_end(struct geist_backend *be, int token) {
 static const struct geist_backend_vtbl cpu_neon_vtbl = {
         .create                = cpu_neon_create,
         .destroy               = cpu_neon_destroy,
-        .supports_op           = cpu_neon_supports_op,
         .buffer_create         = cpu_neon_buffer_create,
         .buffer_destroy        = cpu_neon_buffer_destroy,
         .buffer_create_aliased = cpu_neon_buffer_create_aliased,
-        .resolve_weight        = cpu_neon_resolve_weight,
         .buffer_upload         = cpu_neon_buffer_upload,
         .buffer_download       = cpu_neon_buffer_download,
         .buffer_map            = cpu_neon_buffer_map,
         .buffer_unmap          = cpu_neon_buffer_unmap,
-        .rmsnorm               = cpu_neon_rmsnorm,
-        .add                   = cpu_neon_add,
-        .mul                   = cpu_neon_mul,
-        .gelu_tanh             = cpu_neon_gelu_tanh,
-        .gelu_tanh_mul         = cpu_neon_gelu_tanh_mul,
-        .gelu_tanh_mul_scaled  = cpu_neon_gelu_tanh_mul_scaled,
-        .relu_squared          = cpu_neon_relu_squared,
-        .silu                  = cpu_neon_silu,
-        .rope_apply            = cpu_neon_rope_apply,
-        .embedding_lookup      = cpu_neon_embedding_lookup,
-        .attention             = cpu_neon_attention,
-        .ffn_geglu_q4q6_mN     = cpu_neon_ffn_geglu_q4q6_mN,
-        .transformer_block     = nullptr,
+        .resolve_weight        = cpu_neon_resolve_weight,
         .parallel_region_begin = cpu_neon_parallel_region_begin,
         .parallel_region_end   = cpu_neon_parallel_region_end,
 };
 
+static const struct geist_backend_primitives cpu_neon_prims = {
+        .rmsnorm          = cpu_neon_rmsnorm,
+        .add              = cpu_neon_add,
+        .mul              = cpu_neon_mul,
+        .gelu_tanh        = cpu_neon_gelu_tanh,
+        .silu             = cpu_neon_silu,
+        .relu_squared     = cpu_neon_relu_squared,
+        .rope_apply       = cpu_neon_rope_apply,
+        .embedding_lookup = cpu_neon_embedding_lookup,
+        .attention        = cpu_neon_attention,
+};
+
+static const struct geist_backend_fused cpu_neon_fused = {
+        .gelu_tanh_mul        = cpu_neon_gelu_tanh_mul,
+        .gelu_tanh_mul_scaled = cpu_neon_gelu_tanh_mul_scaled,
+        .ffn_geglu_q4q6_mN    = cpu_neon_ffn_geglu_q4q6_mN,
+};
+
 const struct geist_backend_descriptor geist_backend_cpu_neon = {
-        .name   = "cpu_neon",
-        .vtbl   = &cpu_neon_vtbl,
-        .caps   = nullptr,
-        .n_caps = 0,
+        .name  = "cpu_neon",
+        .vtbl  = &cpu_neon_vtbl,
+        .prims = &cpu_neon_prims,
+        .fused = &cpu_neon_fused,
+        .caps  = {.manages_host_threads = true},
 };

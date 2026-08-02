@@ -1298,16 +1298,16 @@ static const struct cpu_neon_kernel_entry *lookup_kernel_entry(enum geist_dtype 
     return nullptr;
 }
 
-enum geist_support cpu_neon_linear_support(const struct geist_backend *be,
-                                           enum geist_dtype            w_dtype) {
+enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_backend *be,
+                                                          enum geist_dtype            w_dtype) {
     if (be == nullptr || be->state == nullptr) {
-        return GEIST_SUPPORT_NONE;
+        return CPU_NEON_SUPPORT_NONE;
     }
     const struct cpu_neon_state        *bst = (const struct cpu_neon_state *) be->state;
     const struct cpu_neon_kernel_entry *e =
             lookup_kernel_entry(w_dtype, host_isa_mask(&bst->policy));
     if (e == nullptr) {
-        return GEIST_SUPPORT_NONE;
+        return CPU_NEON_SUPPORT_NONE;
     }
     /* EMULATED means "dequant to fp32, then cblas" — i.e. both paths are
      * the generic trampoline. A row with a purpose-built kernel on either
@@ -1316,7 +1316,7 @@ enum geist_support cpu_neon_linear_support(const struct geist_backend *be,
      * for this dtype. */
     const bool m1_generic = e->linear_m1 == cpu_neon_w_dequant_trampoline_m1;
     const bool mN_generic = e->linear_mN == cpu_neon_w_dequant_trampoline_mN;
-    return (m1_generic && mN_generic) ? GEIST_SUPPORT_EMULATED : GEIST_SUPPORT_NATIVE;
+    return (m1_generic && mN_generic) ? CPU_NEON_SUPPORT_EMULATED : CPU_NEON_SUPPORT_NATIVE;
 }
 
 [[nodiscard]] enum geist_status cpu_neon_resolve_weight(struct geist_backend *be,

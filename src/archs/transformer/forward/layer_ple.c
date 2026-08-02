@@ -43,12 +43,14 @@ static struct transformer_forward_profile g_ple_profile = {
 
 enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_forward_ctx *ctx) {
 
-    struct transformer_arch_state    *st   = ctx->st;
-    struct transformer_arch_session  *sess = ctx->sess;
-    struct transformer_layer_weights *L    = ctx->L;
-    struct geist_backend             *be   = ctx->be;
-    const struct geist_backend_vtbl  *v    = ctx->v;
-    enum geist_status                 s;
+    struct transformer_arch_state         *st    = ctx->st;
+    struct transformer_arch_session       *sess  = ctx->sess;
+    struct transformer_layer_weights      *L     = ctx->L;
+    struct geist_backend                  *be    = ctx->be;
+    const struct geist_backend_vtbl       *v     = ctx->v;
+    const struct geist_backend_primitives *prims = ctx->prims;
+    const struct geist_backend_fused      *fused = ctx->fused;
+    enum geist_status                      s;
 
     struct geist_tensor t_h_post_ff_2d = view_2d(sess->scratch_h_post_ff, ctx->SEQ, st->d_model);
     struct geist_tensor t_h_out_2d     = view_2d(ctx->h_out_buf, ctx->SEQ, st->d_model);
@@ -76,23 +78,23 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
          * proj GEMV + rmsnorm + residual add in two dispatches. Anything
          * the backend doesn't support falls through to the decomposed
          * ops below. */
-        if (v->ple_block != nullptr) {
+        if (fused->ple_block != nullptr) {
             struct geist_tensor t_w_post_per_1d =
                     view_1d(L->post_per_layer_norm.buffer, st->d_model);
             struct geist_tensor t_proj_scratch_2d =
                     view_2d(sess->scratch_proj_ple, ctx->SEQ, st->d_model);
             t0 = prof ? transformer_profile_now_ns() : 0;
-            s  = v->ple_block(be,
-                              &t_h_post_ff_2d,
-                              &L->per_layer_gate,
-                              &t_ple_in_2d,
-                              &L->per_layer_proj,
-                              &t_h_post_ff_2d,
-                              &t_w_post_per_1d,
-                              ctx->eps,
-                              &t_gate_ple_2d,
-                              &t_proj_scratch_2d,
-                              &t_h_out_2d);
+            s  = fused->ple_block(be,
+                                  &t_h_post_ff_2d,
+                                  &L->per_layer_gate,
+                                  &t_ple_in_2d,
+                                  &L->per_layer_proj,
+                                  &t_h_post_ff_2d,
+                                  &t_w_post_per_1d,
+                                  ctx->eps,
+                                  &t_gate_ple_2d,
+                                  &t_proj_scratch_2d,
+                                  &t_h_out_2d);
             transformer_profile_add(&g_ple_profile, PLE_GATE, t0);
             if (s == GEIST_OK) {
                 return GEIST_OK;
@@ -114,17 +116,17 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             return s;
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
-        if (v->gelu_tanh_mul != nullptr &&
-            v->gelu_tanh_mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d) == GEIST_OK) {
+        if (fused->gelu_tanh_mul != nullptr &&
+            fused->gelu_tanh_mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d) == GEIST_OK) {
             transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
         } else {
-            s = v->gelu_tanh(be, &t_gate_ple_2d, &t_gate_ple_2d);
+            s = prims->gelu_tanh(be, &t_gate_ple_2d, &t_gate_ple_2d);
             transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
             if (s != GEIST_OK) {
                 return s;
             }
             t0 = prof ? transformer_profile_now_ns() : 0;
-            s  = v->mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d);
+            s  = prims->mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d);
             transformer_profile_add(&g_ple_profile, PLE_MUL, t0);
             if (s != GEIST_OK) {
                 return s;
@@ -148,19 +150,19 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             return s;
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
-        if (v->rmsnorm_add != nullptr &&
-            v->rmsnorm_add(
+        if (fused->rmsnorm_add != nullptr &&
+            fused->rmsnorm_add(
                     be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_h_out_2d) ==
                     GEIST_OK) {
             transformer_profile_add(&g_ple_profile, PLE_RMSNORM, t0);
         } else {
-            s = v->rmsnorm(be, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_proj_ple_2d);
+            s = prims->rmsnorm(be, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_proj_ple_2d);
             transformer_profile_add(&g_ple_profile, PLE_RMSNORM, t0);
             if (s != GEIST_OK) {
                 return s;
             }
             t0 = prof ? transformer_profile_now_ns() : 0;
-            s  = v->add(be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_h_out_2d);
+            s  = prims->add(be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_h_out_2d);
             transformer_profile_add(&g_ple_profile, PLE_ADD, t0);
             if (s != GEIST_OK) {
                 return s;
@@ -178,11 +180,12 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
 }
 
 void transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
+    const struct geist_backend_primitives *prims = ctx->prims;
     /* Device path first: batched GPU backends keep the per-layer scale
      * on-device instead of flushing their pipeline for a host loop. */
-    if (ctx->v->scale_f32 != nullptr) {
+    if (prims->scale_f32 != nullptr) {
         struct geist_tensor t_h = view_2d(ctx->h_out_buf, ctx->SEQ, ctx->st->d_model);
-        if (ctx->v->scale_f32(ctx->be, &t_h, ctx->L->layer_scalar, &t_h) == GEIST_OK) {
+        if (prims->scale_f32(ctx->be, &t_h, ctx->L->layer_scalar, &t_h) == GEIST_OK) {
             return;
         }
     }

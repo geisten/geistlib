@@ -57,6 +57,7 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
 
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* sqrt(d_model) embedding scale is Gemma-3/4-specific; Llama / BitNet
      * don't scale. has_ple gates Gemma family identity. */
     const float embed_scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
@@ -68,7 +69,7 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
          * Device path first: per-row fused lookup+scale dispatches keep
          * batched GPU backends from flushing the pipeline through a
          * mapped host pointer (and skip the host dequant loop). */
-        bool embed_on_device = v->embedding_lookup_scaled != nullptr;
+        bool embed_on_device = fused->embedding_lookup_scaled != nullptr;
         if (embed_on_device) {
             for (size_t t = 0; t < chunk; t++) {
                 struct geist_tensor t_row = {
@@ -80,7 +81,7 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
                         .shape  = {(int64_t) st->d_model, 0, 0, 0, 0, 0, 0, 0},
                         .stride = {1, 0, 0, 0, 0, 0, 0, 0},
                 };
-                if (v->embedding_lookup_scaled(
+                if (fused->embedding_lookup_scaled(
                             be, &st->embed_table, ids[off + t], embed_scale, &t_row) != GEIST_OK) {
                     embed_on_device = false;
                     break;
@@ -466,9 +467,10 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
         return GEIST_E_FILE_NOT_FOUND;
     }
 
-    const struct geist_backend_vtbl *v  = st->backend->desc->vtbl;
-    enum geist_status                rc = GEIST_OK;
-    char                             key[64];
+    const struct geist_backend_vtbl *v = st->backend->desc->vtbl;
+
+    enum geist_status rc = GEIST_OK;
+    char              key[64];
 
     for (int i = 0; (size_t) i < st->n_layers; i++) {
         struct transformer_layer_weights *L = &st->layers[i];
