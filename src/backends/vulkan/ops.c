@@ -66,6 +66,17 @@ static void vk_linear_run(const float               *x,
     struct vk_state     *st   = be->state;
     struct geist_buffer *wbuf = vk_weight_lookup(st, w->raw);
     const size_t         n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    if (m > 1 && st->subgroup_size != 32u) {
+        /* The register-tiled GEMM shaders hard-assume 32-lane subgroups;
+         * on e.g. lavapipe (8 lanes) they compute garbage — the lavapipe
+         * CI leg caught exactly that on its first run. The matvec kernels
+         * are subgroup-size-agnostic, so loop them: correct everywhere,
+         * and the software tier is a correctness gate, not a benchmark. */
+        for (size_t r = 0; r < m; r++) {
+            vk_linear_run(x + r * n_in, w, 1, be, y + r * n_out, matvec_pipe, matmul_pipe);
+        }
+        return;
+    }
     if (wbuf == nullptr ||
         vk_dispatch_linear(be, m == 1 ? matvec_pipe : matmul_pipe, wbuf, x, y, m, n_in, n_out) !=
                 GEIST_OK) {
