@@ -62,59 +62,67 @@ static void op_state_reset(void *session) {
     }
 }
 
-static void op_set_session_opts(void *session, const struct geist_session_opts *opts) {
-    if (session != nullptr) {
-        transformer_session_apply_opts(session, opts);
+static enum geist_status op_set_session_opts(void *session, const struct geist_session_opts *opts) {
+    if (session == nullptr) {
+        return GEIST_E_INVALID_ARG;
     }
+    return transformer_session_apply_opts(session, opts);
 }
 
 /* Append a sequence of tokens to the KV cache via the batched seq>1
  * path. After the call, the session holds logits for the next position;
  * ops->decode_step will return the argmax of those logits on its first
  * invocation. */
-static void op_prefill(void *session, size_t n, const geist_token_t ids[static n]) {
+static enum geist_status op_prefill(void *session, size_t n, const geist_token_t ids[static n]) {
     struct transformer_arch_session *sess = session;
-    if (sess == nullptr || n == 0) {
-        return;
+    if (sess == nullptr) {
+        return GEIST_E_INVALID_ARG;
     }
-    (void) transformer_prefill_text_batch(sess, n, ids);
-    /* On failure kv_len doesn't advance by n; the engine detects the
-     * shortfall and surfaces the backend's recorded error. */
+    if (n == 0) {
+        return GEIST_OK; /* no-op */
+    }
+    return transformer_prefill_text_batch(sess, n, ids);
 }
 
 /* Append `n` audio soft-tokens to the KV cache via the batched seq>1
  * path. Each soft-token is a HIDDEN-dim FP32 vector produced upstream
  * by the audio encoder. */
-static void op_prefill_audio(void *session, size_t n, const float *soft_tokens) {
+static enum geist_status op_prefill_audio(void *session, size_t n, const float *soft_tokens) {
     struct transformer_arch_session *sess = session;
-    if (sess == nullptr || soft_tokens == nullptr || n == 0) {
-        return;
+    if (sess == nullptr || soft_tokens == nullptr) {
+        return GEIST_E_INVALID_ARG;
     }
-    (void) transformer_prefill_audio_batch(sess, n, soft_tokens);
+    if (n == 0) {
+        return GEIST_OK; /* no-op */
+    }
+    return transformer_prefill_audio_batch(sess, n, soft_tokens);
 }
 
 /* Vision soft-tokens follow the same wire format as audio (1536-dim
  * fp32 per token). The transformer side just memcpys them into the
  * residual stream and runs the layer loop — no embedding lookup, no
  * scale. Delegate to the audio prefill batch path. */
-static void op_prefill_image(void *session, size_t n, const float *soft_tokens) {
+static enum geist_status op_prefill_image(void *session, size_t n, const float *soft_tokens) {
     struct transformer_arch_session *sess = session;
-    if (sess == nullptr || soft_tokens == nullptr || n == 0) {
-        return;
+    if (sess == nullptr || soft_tokens == nullptr) {
+        return GEIST_E_INVALID_ARG;
     }
-    (void) transformer_prefill_audio_batch(sess, n, soft_tokens);
+    if (n == 0) {
+        return GEIST_OK; /* no-op */
+    }
+    return transformer_prefill_audio_batch(sess, n, soft_tokens);
 }
 
 /* Pin `n` prefix tokens into the KV cache. Truncates cache, prefills the
  * prefix once, snapshots the resulting kv_len as the reset target.
  * Subsequent state_reset calls truncate kv_len back to the pinned length,
  * keeping the prefix's KV state across conversation turns. */
-static void op_pin_prefix(void *session, size_t n, const geist_token_t ids[static n]) {
+static enum geist_status op_pin_prefix(void *session, size_t n, const geist_token_t ids[static n]) {
     struct transformer_arch_session *sess = session;
     if (sess == nullptr) {
-        return;
+        return GEIST_E_INVALID_ARG;
     }
-    (void) transformer_pin_prefix(sess, n, ids);
+    return transformer_pin_prefix(sess, n, ids);
 }
 
 /* Greedy one-token autoregressive step. Returns the prediction computed
@@ -122,17 +130,22 @@ static void op_pin_prefix(void *session, size_t n, const geist_token_t ids[stati
  * prediction so the next call's pending value is the prediction for the
  * following position. Mirrors lm.c::lm_decode_step's "return-then-advance"
  * cadence. */
-static geist_token_t op_decode_step(void *session) {
+static enum geist_status op_decode_step(void *session, geist_token_t *out) {
     struct transformer_arch_session *sess = session;
-    if (sess == nullptr || !sess->logits_valid) {
-        return -1;
+    if (sess == nullptr || out == nullptr) {
+        return GEIST_E_INVALID_ARG;
     }
-    const geist_token_t prev    = sess->next_token_pending;
-    geist_token_t       scratch = -1;
-    if (transformer_decode_step(sess, prev, &scratch) != GEIST_OK) {
-        return -1;
+    if (!sess->logits_valid) {
+        return GEIST_E_INVALID_STATE; /* nothing pending — prefill first */
     }
-    return prev;
+    const geist_token_t     prev    = sess->next_token_pending;
+    geist_token_t           scratch = -1;
+    const enum geist_status s       = transformer_decode_step(sess, prev, &scratch);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    *out = prev;
+    return GEIST_OK;
 }
 
 static geist_token_t op_peek_next_token(void *session) {

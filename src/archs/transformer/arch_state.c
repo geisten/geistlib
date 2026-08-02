@@ -1160,7 +1160,7 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         s = GEIST_E_OOM;
     }
     if (s == GEIST_OK && opts != nullptr) {
-        transformer_session_apply_opts(sess, opts);
+        s = transformer_session_apply_opts(sess, opts);
     }
     if (s != GEIST_OK) {
         transformer_session_free(state, sess);

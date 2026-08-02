@@ -77,33 +77,37 @@ struct geist_arch_ops_decoder {
     /* Optional: push session opts into the session. Engine calls this
      * from geist_session_create so per-session sampler config (temperature,
      * top_p, top_k, random_seed) reaches the decode hot path. nullptr
-     * means the architecture ignores session opts (greedy-only). */
-    void (*set_session_opts)(void *session, const struct geist_session_opts *opts);
+     * means the architecture ignores session opts (greedy-only). May fail
+     * (sampler workspace allocation) — the caller must propagate. */
+    enum geist_status (*set_session_opts)(void *session, const struct geist_session_opts *opts);
 
     /* state_reset: drop the session's conversational state (KV / SSM
      * hidden), keep weights. Used by geist_session_reset. */
     void (*state_reset)(void *session);
 
-    /* prefill: append `n` tokens to the session's recurrent state. */
-    void (*prefill)(void *session, size_t n, const geist_token_t ids[static n]);
+    /* prefill: append `n` tokens to the session's recurrent state.
+     * Status is the control flow (KV-window overflow, OOM, backend
+     * failure); the backend error slot only carries detail text. */
+    enum geist_status (*prefill)(void *session, size_t n, const geist_token_t ids[static n]);
 
-    /* decode_step: one greedy autoregressive step, returns next token. */
-    geist_token_t (*decode_step)(void *session);
+    /* decode_step: one autoregressive step. Writes the emitted token to
+     * *out on GEIST_OK only — no in-band sentinel values. */
+    enum geist_status (*decode_step)(void *session, geist_token_t *out);
 
     /* Optional: pin prefix into the session's KV cache so reset()
      * restores to it instead of clearing. nullptr if architecture
      * doesn't support it. */
-    void (*pin_prefix)(void *session, size_t n, const geist_token_t ids[static n]);
+    enum geist_status (*pin_prefix)(void *session, size_t n, const geist_token_t ids[static n]);
 
     /* Optional: append audio soft-tokens (1536-dim per token for Gemma 4)
      * to the recurrent state. nullptr if no audio path. */
-    void (*prefill_audio)(void *session, size_t n, const float *soft_tokens);
+    enum geist_status (*prefill_audio)(void *session, size_t n, const float *soft_tokens);
 
     /* Optional: append vision soft-tokens (1536-dim per token for Gemma 4)
      * to the recurrent state. Same wire format as prefill_audio — both
      * modalities feed d_model-dim floats into the residual stream — so
      * the transformer impl is shared. nullptr if no vision path. */
-    void (*prefill_image)(void *session, size_t n, const float *soft_tokens);
+    enum geist_status (*prefill_image)(void *session, size_t n, const float *soft_tokens);
 
     /* Optional: pointer to the session's cached next-token logits. Writes
      * the vocab size to `*n_logits` on success. Returns nullptr (and sets
