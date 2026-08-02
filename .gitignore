@@ -11,7 +11,7 @@ gguf_artifacts/
 *.safetensors
 *.part
 
-# Leftover CLI symlinks from before the engine/agent split (geisten/geistagent
+# Leftover CLI symlinks from before the engine/agent split (the agent layer
 # owns the binary now). This repo no longer produces them, but older working
 # copies still have them lying around -- and one got committed that way.
 /geist

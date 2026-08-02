@@ -20,8 +20,7 @@ permissions:
 
 # A release publishes the SDK and nothing else: libgeist.a plus the public
 # headers, per platform. Runnable artefacts — a CLI, a resident daemon, a
-# binary with a model baked in — are geisten/geistagent, which links this
-# engine and signs its own releases.
+# binary with a model baked in — are built by whoever links this engine.
 
 jobs:
   # Refuse to publish a release whose binary would print a different version than
