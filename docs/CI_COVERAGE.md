@@ -108,6 +108,22 @@ path currently fails at head resolution (`output.weight` on a
 tied-embedding model) — tracked in #181/#186 as backend feature work, not
 CI wiring.
 
+## Vulkan: software tier on every PR, hardware tier self-hosted (#182)
+
+The `vulkan-lavapipe` job builds `BACKENDS="vulkan cpu_x86 cpu_scalar"` and
+executes `test_backend_vulkan_registry_unit`, the buffer round-trip test and
+`test_backend_vulkan_linear_parity` on Mesa's **lavapipe** — a real Vulkan
+implementation (loader → ICD → SPIR-V pipelines), so the full dispatch chain
+runs on a hosted runner. The tests are invoked directly: exit 77 (missing
+loader/device) fails the job. `vulkaninfo --summary` is logged per run.
+Tolerances live in the parity test: 1e-3 relative (f32 paths), 2e-2 for the
+f16 coopmat path where exposed. Minimum Vulkan: 1.2.
+
+Physical-GPU validation (model load, prefill, decode) is self-hosted —
+runner contract: labels `[self-hosted, linux, x64, geist-vulkan]`, working
+loader + ICD for the physical device; there the same three tests plus a
+model e2e run, and a missing device is a failure, not a skip.
+
 ## Non-goals
 
 - **Windows** — geist is POSIX (fork/execvp, Unix-domain sockets, mmap); the
