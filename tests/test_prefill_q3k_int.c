@@ -26,9 +26,9 @@ extern void cblas_sgemm(CBLAS_ORDER,
                         int          ldc);
 
 int main(int argc, char **argv) {
-    GEIST_REQUIRE_ARGS(argc, 2, "<gguf>");
-    const char      *err = nullptr;
-    struct gguf_ctx *ctx = gguf_open(argv[1], &err);
+    const char      *model = geist_test_gguf_arg(argc, argv, 1);
+    const char      *err   = nullptr;
+    struct gguf_ctx *ctx   = gguf_open(model, &err);
     if (!ctx) {
         fprintf(stderr, "%s\n", err);
         return 1;
@@ -97,6 +97,13 @@ int main(int argc, char **argv) {
         free(yfast);
     }
     printf("Tested %d Q3_K tensors, %d bad (cos < 0.9999)\n", n_tested, n_bad);
+    if (n_tested == 0) {
+        /* Not a pass. A model without a single Q3_K tensor (every Q4_K_M
+         * build, including the CI reference) means this gate ran green
+         * while checking nothing — the failure mode a green checkmark is
+         * least likely to reveal. */
+        GEIST_SKIP("no Q3_K tensor in this model — nothing to check");
+    }
     gguf_close(ctx);
     return n_bad == 0 ? 0 : 1;
 }
