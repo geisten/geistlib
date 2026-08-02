@@ -204,6 +204,12 @@ LLAMA_MODEL_DIR  ?= gguf_artifacts
 LLAMA_MODEL_FILE ?= smollm2-360m-instruct-q8_0.gguf
 LLAMA_MODEL_PATH := $(LLAMA_MODEL_DIR)/$(LLAMA_MODEL_FILE)
 LLAMA_MODEL_URL  ?= https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf
+# Pinned content hash (= the upstream LFS oid, Apache-2.0 model). Verified on
+# every fetch-llama-model run, so a truncated download, a corrupted CI cache
+# and a silently changed upstream all fail loudly BEFORE a test runs — and
+# each prints which of the two hashes disagrees. Changing the model means
+# changing this pin, which also rotates the CI cache key derived from it.
+LLAMA_MODEL_SHA256 := 48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201
 
 $(LLAMA_MODEL_PATH):
 	@command -v curl >/dev/null 2>&1 || { echo "fetch-llama-model: curl not found" >&2; exit 1; }
@@ -214,7 +220,16 @@ $(LLAMA_MODEL_PATH):
 	@mv "$@.part" "$@"
 
 fetch-llama-model: $(LLAMA_MODEL_PATH)
-	@echo "Llama reference model ready: $(LLAMA_MODEL_PATH)"
+	@hash=$$( (command -v sha256sum >/dev/null && sha256sum "$(LLAMA_MODEL_PATH)" || shasum -a 256 "$(LLAMA_MODEL_PATH)") | cut -d' ' -f1 ); \
+	if [ "$$hash" != "$(LLAMA_MODEL_SHA256)" ]; then \
+	  echo "fetch-llama-model: SHA-256 mismatch for $(LLAMA_MODEL_PATH)" >&2; \
+	  echo "  expected $(LLAMA_MODEL_SHA256)" >&2; \
+	  echo "  actual   $$hash" >&2; \
+	  echo "  (truncated/corrupt download or cache -> delete the file and re-run;" >&2; \
+	  echo "   persists -> upstream content changed, re-pin deliberately)" >&2; \
+	  exit 1; \
+	fi
+	@echo "Llama reference model ready (SHA-256 verified): $(LLAMA_MODEL_PATH)"
 
 bench: bin $(BENCH_MODEL_PATH)
 	@python3 tools/bench_reproduce.py --gguf "$(BENCH_MODEL_PATH)" \
