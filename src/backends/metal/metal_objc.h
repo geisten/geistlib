@@ -6,11 +6,11 @@
 #ifndef GEIST_METAL_OBJC_H
 #define GEIST_METAL_OBJC_H
 
-static void *metal_dlsym(void *handle, const char *name) {
+static inline void *metal_dlsym(void *handle, const char *name) {
     return handle != nullptr ? dlsym(handle, name) : nullptr;
 }
 
-static void *metal_objc_get_class(struct metal_state *st, const char *name) {
+static inline void *metal_objc_get_class(struct metal_state *st, const char *name) {
     union {
         void *raw;
         void *(*fn)(const char *name);
@@ -18,7 +18,7 @@ static void *metal_objc_get_class(struct metal_state *st, const char *name) {
     return get_class.fn(name);
 }
 
-static void *metal_create_default_device(struct metal_state *st) {
+static inline void *metal_create_default_device(struct metal_state *st) {
     union {
         void *raw;
         void *(*fn)(void);
@@ -26,7 +26,7 @@ static void *metal_create_default_device(struct metal_state *st) {
     return create_device.fn();
 }
 
-static void *metal_sel_register_name(struct metal_state *st, const char *selector) {
+static inline void *metal_sel_register_name(struct metal_state *st, const char *selector) {
     union {
         void *raw;
         void *(*fn)(const char *name);
@@ -34,7 +34,8 @@ static void *metal_sel_register_name(struct metal_state *st, const char *selecto
     return sel_register.fn(selector);
 }
 
-static void *metal_msg_send_id0(struct metal_state *st, void *receiver, const char *selector) {
+static inline void *
+metal_msg_send_id0(struct metal_state *st, void *receiver, const char *selector) {
     void *sel = metal_sel_register_name(st, selector);
     union {
         void *raw;
@@ -43,7 +44,7 @@ static void *metal_msg_send_id0(struct metal_state *st, void *receiver, const ch
     return send.fn(receiver, sel);
 }
 
-static void *metal_msg_send_id_size_uint(
+static inline void *metal_msg_send_id_size_uint(
         struct metal_state *st, void *receiver, const char *selector, size_t a, unsigned long b) {
     void *sel = metal_sel_register_name(st, selector);
     union {
@@ -54,12 +55,12 @@ static void *metal_msg_send_id_size_uint(
 }
 
 /* newBufferWithBytes:length:options: — copies host bytes into a new MTLBuffer. */
-static void *metal_msg_send_id_ptr_size_uint(struct metal_state *st,
-                                             void               *receiver,
-                                             const char         *selector,
-                                             const void         *ptr,
-                                             size_t              len,
-                                             unsigned long       opts) {
+static inline void *metal_msg_send_id_ptr_size_uint(struct metal_state *st,
+                                                    void               *receiver,
+                                                    const char         *selector,
+                                                    const void         *ptr,
+                                                    size_t              len,
+                                                    unsigned long       opts) {
     void *sel = metal_sel_register_name(st, selector);
     union {
         void *raw;
@@ -68,10 +69,10 @@ static void *metal_msg_send_id_ptr_size_uint(struct metal_state *st,
     return send.fn(receiver, sel, ptr, len, opts);
 }
 
-static void *metal_msg_send_id_cstr(struct metal_state *st,
-                                    void               *receiver,
-                                    const char         *selector,
-                                    const char         *arg) {
+static inline void *metal_msg_send_id_cstr(struct metal_state *st,
+                                           void               *receiver,
+                                           const char         *selector,
+                                           const char         *arg) {
     void *sel = metal_sel_register_name(st, selector);
     union {
         void *raw;
@@ -80,7 +81,7 @@ static void *metal_msg_send_id_cstr(struct metal_state *st,
     return send.fn(receiver, sel, arg);
 }
 
-static void *
+static inline void *
 metal_msg_send_id_id(struct metal_state *st, void *receiver, const char *selector, void *arg) {
     void *sel = metal_sel_register_name(st, selector);
     union {
@@ -90,12 +91,12 @@ metal_msg_send_id_id(struct metal_state *st, void *receiver, const char *selecto
     return send.fn(receiver, sel, arg);
 }
 
-static void *metal_msg_send_id_id_id_err(struct metal_state *st,
-                                         void               *receiver,
-                                         const char         *selector,
-                                         void               *a,
-                                         void               *b,
-                                         void              **err) {
+static inline void *metal_msg_send_id_id_id_err(struct metal_state *st,
+                                                void               *receiver,
+                                                const char         *selector,
+                                                void               *a,
+                                                void               *b,
+                                                void              **err) {
     void *sel = metal_sel_register_name(st, selector);
     union {
         void *raw;
@@ -104,7 +105,7 @@ static void *metal_msg_send_id_id_id_err(struct metal_state *st,
     return send.fn(receiver, sel, a, b, err);
 }
 
-static void *metal_msg_send_id_id_err(
+static inline void *metal_msg_send_id_id_err(
         struct metal_state *st, void *receiver, const char *selector, void *a, void **err) {
     void *sel = metal_sel_register_name(st, selector);
     union {
@@ -114,10 +115,10 @@ static void *metal_msg_send_id_id_err(
     return send.fn(receiver, sel, a, err);
 }
 
-static void metal_msg_send_void_ulong(struct metal_state *st,
-                                      void               *receiver,
-                                      const char         *selector,
-                                      unsigned long       a) {
+static inline void metal_msg_send_void_ulong(struct metal_state *st,
+                                             void               *receiver,
+                                             const char         *selector,
+                                             unsigned long       a) {
     void *sel = metal_sel_register_name(st, selector);
     union {
         void *raw;
@@ -126,7 +127,7 @@ static void metal_msg_send_void_ulong(struct metal_state *st,
     send.fn(receiver, sel, a);
 }
 
-static bool metal_msg_send_bool_id_err(
+static inline bool metal_msg_send_bool_id_err(
         struct metal_state *st, void *receiver, const char *selector, void *a, void **err) {
     void *sel = metal_sel_register_name(st, selector);
     union {
@@ -136,7 +137,7 @@ static bool metal_msg_send_bool_id_err(
     return send.fn(receiver, sel, a, err) != 0;
 }
 
-static const char *
+static inline const char *
 metal_msg_send_cstr0(struct metal_state *st, void *receiver, const char *selector) {
     void *sel = metal_sel_register_name(st, selector);
     union {
@@ -146,7 +147,7 @@ metal_msg_send_cstr0(struct metal_state *st, void *receiver, const char *selecto
     return send.fn(receiver, sel);
 }
 
-static const char *metal_nserror_message(struct metal_state *st, void *err) {
+static inline const char *metal_nserror_message(struct metal_state *st, void *err) {
     if (st == nullptr || err == nullptr) {
         return nullptr;
     }
@@ -157,7 +158,8 @@ static const char *metal_nserror_message(struct metal_state *st, void *err) {
     return metal_msg_send_cstr0(st, desc, "UTF8String");
 }
 
-static void metal_msg_send_void0(struct metal_state *st, void *receiver, const char *selector) {
+static inline void
+metal_msg_send_void0(struct metal_state *st, void *receiver, const char *selector) {
     if (receiver == nullptr) {
         return;
     }
@@ -169,14 +171,14 @@ static void metal_msg_send_void0(struct metal_state *st, void *receiver, const c
     send.fn(receiver, sel);
 }
 
-static void metal_msg_send_copy_buffer(struct metal_state *st,
-                                       void               *receiver,
-                                       const char         *selector,
-                                       void               *src,
-                                       size_t              src_offset,
-                                       void               *dst,
-                                       size_t              dst_offset,
-                                       size_t              bytes) {
+static inline void metal_msg_send_copy_buffer(struct metal_state *st,
+                                              void               *receiver,
+                                              const char         *selector,
+                                              void               *src,
+                                              size_t              src_offset,
+                                              void               *dst,
+                                              size_t              dst_offset,
+                                              size_t              bytes) {
     void *sel = metal_sel_register_name(st, selector);
     union {
         void *raw;
@@ -185,9 +187,10 @@ static void metal_msg_send_copy_buffer(struct metal_state *st,
     send.fn(receiver, sel, src, src_offset, dst, dst_offset, bytes);
 }
 
-static void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf);
+/* Defined in sequence.c (non-static since the module split). */
+void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf);
 
-static void metal_msg_send_set_buffer(
+static inline void metal_msg_send_set_buffer(
         struct metal_state *st, void *receiver, void *buffer, size_t offset, size_t index) {
     void *sel = metal_sel_register_name(st, "setBuffer:offset:atIndex:");
     metal_seq_mark_buffer(st, buffer);
@@ -198,7 +201,7 @@ static void metal_msg_send_set_buffer(
     send.fn(receiver, sel, buffer, offset, index);
 }
 
-static void metal_msg_send_set_bytes(
+static inline void metal_msg_send_set_bytes(
         struct metal_state *st, void *receiver, const void *bytes, size_t length, size_t index) {
     void *sel = metal_sel_register_name(st, "setBytes:length:atIndex:");
     union {
@@ -211,14 +214,15 @@ static void metal_msg_send_set_bytes(
 /* Pipeline bind. Dedup of identical re-binds was tried (2026-07-04) and
  * measured a wash — consecutive redundancy is too low; the per-op GPU
  * command-stream cost scales with op COUNT, so fusion is the lever. */
-static void metal_msg_send_set_pipeline(struct metal_state *st, void *receiver, void *pipeline) {
+static inline void
+metal_msg_send_set_pipeline(struct metal_state *st, void *receiver, void *pipeline) {
     (void) metal_msg_send_id_id(st, receiver, "setComputePipelineState:", pipeline);
 }
 
-static void metal_msg_send_set_threadgroup_memory(struct metal_state *st,
-                                                  void               *receiver,
-                                                  size_t              length,
-                                                  size_t              index) {
+static inline void metal_msg_send_set_threadgroup_memory(struct metal_state *st,
+                                                         void               *receiver,
+                                                         size_t              length,
+                                                         size_t              index) {
     void *sel = metal_sel_register_name(st, "setThreadgroupMemoryLength:atIndex:");
     union {
         void *raw;
@@ -227,10 +231,10 @@ static void metal_msg_send_set_threadgroup_memory(struct metal_state *st,
     send.fn(receiver, sel, length, index);
 }
 
-static void metal_msg_send_dispatch(struct metal_state *st,
-                                    void               *receiver,
-                                    struct metal_size   groups,
-                                    struct metal_size   threads) {
+static inline void metal_msg_send_dispatch(struct metal_state *st,
+                                           void               *receiver,
+                                           struct metal_size   groups,
+                                           struct metal_size   threads) {
     void *sel = metal_sel_register_name(st, "dispatchThreadgroups:threadsPerThreadgroup:");
     if (st->skip_next_dispatch) {
         st->skip_next_dispatch = false;
