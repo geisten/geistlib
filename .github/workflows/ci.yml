@@ -271,6 +271,64 @@ jobs:
             make test-unit TARGET=linux CC=gcc BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE AUTO_FETCH_MODEL=0
           '
 
+  # GUARANTEED AVX-512/VNNI execution (#184). Hosted runners promise no
+  # AVX-512 CPU, so build-test-x86_64 exercises those kernels only
+  # opportunistically — a green run proves the AVX2 fallback, not the
+  # shipped fast path. Intel SDE closes the gap deterministically: the
+  # kernel binaries run under an emulated Sapphire Rapids
+  # (AVX-512F/BW/DQ/VL + VNNI + BF16), and the leg cannot go green
+  # without those paths executing:
+  #   1. test_x86_isa_dispatch_unit runs FIRST with
+  #      GEIST_EXPECT_ISA=avx512_vnni — it prints CPUID features + the
+  #      dispatcher tier and HARD-FAILS on any silent downgrade (SDE
+  #      missing, wrong chip model, clamp bug).
+  #   2. The targeted W4A8/W8A8/Q4Kx8/Q6K/i2s kernel unit tests then run
+  #      under the same emulation; each carries its own scalar-reference
+  #      parity checks. Whole-suite-under-SDE is deliberately out: 10-50×
+  #      emulation overhead buys no additional SIMD coverage.
+  # Real-hardware e2e (big model, perf) stays a self-hosted concern —
+  # runner contract: labels [self-hosted, linux, x64, geist-avx512],
+  # AVX-512F/BW/DQ/VL+VNNI mandatory, checked by the same dispatch test.
+  avx512-sde:
+    name: AVX-512/VNNI guaranteed (Linux x86_64, Intel SDE)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v4
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-sde-${{ github.run_id }}
+          restore-keys: ccache-sde-
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 ccache
+      - name: Install Intel SDE
+        uses: petarpetrovt/setup-sde@31aa4a8e85e109bef00f1d838613fcc6ec421271 # v5.0
+        with:
+          environmentVariableName: SDE_PATH
+      - name: Build (shipped x86_64 configuration)
+        run: make TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: Dispatcher proof — VNNI tier must actually be selected
+        env:
+          GEIST_EXPECT_ISA: avx512_vnni
+        run: |
+          "$SDE_PATH/sde64" -spr -- bin/linux/release/tests/test_x86_isa_dispatch_unit
+      - name: AVX-512 kernel tests under SDE (scalar-parity built in)
+        run: |
+          for t in test_x86_isa_dispatch_unit test_q4k_to_w4a8_unit \
+                   test_q4k_to_q4kx8_unit test_q4kx8_gemm_unit \
+                   test_q6k_gemv_unit test_q8w_gemv_unit test_f32q_unit \
+                   test_i2s_gemv_unit test_gelu_x86_unit; do
+            echo "=== $t (sde -spr) ==="
+            "$SDE_PATH/sde64" -spr -- "bin/linux/release/tests/$t"
+          done
+
   # AGENT.md requires the code to be ASan/UBSan-friendly; nothing enforced it.
   # Build MODE=asan (-fsanitize=address,undefined) and run the model-free unit
   # suite — catches use-after-free / overflow / UB in the kernels + engine the
