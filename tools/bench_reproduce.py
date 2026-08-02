@@ -642,6 +642,21 @@ def main() -> int:
     print(f"\nreport: {out_dir / (stem + '_report.md')}", file=sys.stderr)
 
     if args.record:
+        # A row whose own gate says the comparison was compromised does not
+        # belong in a dataset whose only purpose is that someone else can
+        # reproduce it. Recording it anyway leaves a ratio that flatters us
+        # sitting next to ones that do not, distinguishable only by a field
+        # nobody reads twice. Refuse instead, and say what to do about it.
+        hot = [b["engine"] for b in run.get("baselines", [])
+               if b.get("thermal_gate") == "still_hot"]
+        if hot:
+            print(f"NOT recorded: {', '.join(hot)} started above the {COOL_C:.0f} °C "
+                  f"gate, so this run's ratios are not comparable. The report above "
+                  f"stands on its own; the dataset does not take it. Re-run when the "
+                  f"board can reach the gate — a room warm enough that it idles near "
+                  f"{COOL_C:.0f} °C cannot, no matter how long it waits.",
+                  file=sys.stderr)
+            return 0
         entry = {
             "date": run["date"], "system": run["system"]["cpu"],
             "cores": run["system"]["cores"], "ram_gb": run["system"]["ram_gb"],
@@ -650,6 +665,11 @@ def main() -> int:
             "decode_tps_512": rows[-1]["decode_tps"],
             "prefill_tps_512": rows[-1]["prefill_tps"],
             "spread_pct": rows[-1]["spread_pct"],
+            # The row that baseline ratios are computed against. It went missing
+            # when the flat baseline fields became a list, leaving ratios with
+            # no way to check them -- the one thing every row here exists to
+            # avoid, and the second time this file lost that.
+            "decode_tps_short": rows[0]["decode_tps"],
         }
         if run.get("baselines"):
             # A list, because a box can carry more than one relevant opponent and
