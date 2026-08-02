@@ -3,10 +3,9 @@
  *
  * Layer: BACKEND.
  *
- * B-2a (this commit): walking skeleton — descriptor, lifecycle, buffer ops.
- *                     supports_op returns GEIST_SUPPORT_NONE for everything;
- *                     linear() returns GEIST_E_UNSUPPORTED. Real ops land in
- *                     B-2b (linear F32 DENSE) and follow-up sub-commits.
+ * Reference implementation: every dtype the resolver accepts runs
+ * dequant-to-fp32 plus a naive matmul. Correctness oracle for the
+ * optimized backends, not a performance path.
  *
  * The geist_buffer for this backend wraps a host pointer plus its size,
  * role, and memory_flags. Allocation routes through the user-provided
