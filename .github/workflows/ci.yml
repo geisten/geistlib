@@ -70,7 +70,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-14 libopenblas-dev ccache
+            gcc-14 libopenblas-dev ccache python3-numpy
 
       - name: Build
         run: make TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
@@ -79,6 +79,12 @@ jobs:
       # AUTO_FETCH_MODEL=0 keeps the ~3 GB reference download out of CI.
       - name: Unit tests
         run: make test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" AUTO_FETCH_MODEL=0
+
+      # Hermetic Python suite (algorithm reference impls). Part of `make test`,
+      # so it must stay green — a suite nothing runs is a suite that rots (#146).
+      - name: Python tests
+        if: matrix.target == 'linux'
+        run: make test-py
 
       # Contract enforcement, link half: an out-of-tree agent runtime links
       # these symbols across a release boundary, so a changed signature or a
