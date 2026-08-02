@@ -16,6 +16,21 @@
  */
 #include "test_helpers.h"
 
+#include <stdio.h>
+
+/* The whole file gates cpu_neon's resolver against its kernel table —
+ * it references backend-internal symbols (cpu_neon_linear_support) that
+ * only exist when the neon backend is compiled in. Builds without it
+ * (linux x86 / scalar-only CI) compile a SKIP stub instead. */
+#if !defined(GEIST_BACKEND_CPU_NEON)
+
+int main(void) {
+    printf("SKIP: cpu_neon backend not in this build\n");
+    return GEIST_TEST_SKIP;
+}
+
+#else
+
 #include <geist.h>
 #include <geist_backend.h>
 #include <geist_weight.h>
@@ -167,3 +182,5 @@ int main(void) {
            "with the resolver on every dtype.\n");
     return GEIST_TEST_PASS;
 }
+
+#endif /* GEIST_BACKEND_CPU_NEON */
