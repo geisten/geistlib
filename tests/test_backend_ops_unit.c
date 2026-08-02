@@ -77,7 +77,7 @@ run_add(const char *backend_name, const float *a_in, const float *b_in, size_t n
     struct geist_tensor a = make_tensor_1d(ba, n);
     struct geist_tensor b = make_tensor_1d(bb, n);
     struct geist_tensor y = make_tensor_1d(by, n);
-    enum geist_status   s = be->desc->vtbl->add(be, &a, &b, &y);
+    enum geist_status   s = be->desc->prims->add(be, &a, &b, &y);
     if (s != GEIST_OK) {
         geist_backend_destroy(be);
         return -1;
@@ -103,7 +103,7 @@ static int run_gelu(const char *backend_name, const float *x_in, size_t n, float
     (void) be->desc->vtbl->buffer_upload(bx, n * sizeof(float), (const uint8_t *) x_in);
     struct geist_tensor x = make_tensor_1d(bx, n);
     struct geist_tensor y = make_tensor_1d(by, n);
-    enum geist_status   s = be->desc->vtbl->gelu_tanh(be, &x, &y);
+    enum geist_status   s = be->desc->prims->gelu_tanh(be, &x, &y);
     if (s != GEIST_OK) {
         geist_backend_destroy(be);
         return -1;
@@ -147,7 +147,7 @@ static int run_rmsnorm(const char  *backend_name,
     struct geist_tensor w = make_tensor_1d(bw, feat);
     struct geist_tensor y = x;
     y.buffer              = by;
-    enum geist_status s   = be->desc->vtbl->rmsnorm(be, &x, &w, eps, &y);
+    enum geist_status s   = be->desc->prims->rmsnorm(be, &x, &w, eps, &y);
     if (s != GEIST_OK) {
         geist_backend_destroy(be);
         return -1;

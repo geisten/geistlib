@@ -42,12 +42,16 @@
 #include <string.h>
 
 /* Borrowed from cpu_scalar/backend.c (exported there). */
-extern const struct geist_backend_vtbl cpu_scalar_vtbl;
-extern enum geist_status               cpu_scalar_resolve_weight(struct geist_backend *be,
-                                                                 struct geist_weight  *w);
+extern const struct geist_backend_vtbl       cpu_scalar_vtbl;
+extern const struct geist_backend_primitives cpu_scalar_prims;
+extern const struct geist_backend_fused      cpu_scalar_fused;
+extern enum geist_status                     cpu_scalar_resolve_weight(struct geist_backend *be,
+                                                                       struct geist_weight  *w);
 
-/* Mutable vtbl filled in at module-init time. */
-static struct geist_backend_vtbl cpu_x86_vtbl;
+/* Mutable tables filled in at module-init time. */
+static struct geist_backend_vtbl       cpu_x86_vtbl;
+static struct geist_backend_primitives cpu_x86_prims;
+static struct geist_backend_fused      cpu_x86_fused;
 
 /* ---------- Lifecycle ---------- */
 
@@ -425,18 +429,22 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
 /* ---------- Vtbl init ---------- */
 
 __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
-    cpu_x86_vtbl                      = cpu_scalar_vtbl;
-    cpu_x86_vtbl.create               = cpu_x86_create;
-    cpu_x86_vtbl.destroy              = cpu_x86_destroy;
-    cpu_x86_vtbl.resolve_weight       = cpu_x86_resolve_weight;
-    cpu_x86_vtbl.gelu_tanh            = cpu_x86_gelu_tanh;
-    cpu_x86_vtbl.gelu_tanh_mul        = cpu_x86_gelu_tanh_mul;
-    cpu_x86_vtbl.gelu_tanh_mul_scaled = cpu_x86_gelu_tanh_mul_scaled;
+    cpu_x86_vtbl                = cpu_scalar_vtbl;
+    cpu_x86_vtbl.create         = cpu_x86_create;
+    cpu_x86_vtbl.destroy        = cpu_x86_destroy;
+    cpu_x86_vtbl.resolve_weight = cpu_x86_resolve_weight;
+
+    cpu_x86_prims           = cpu_scalar_prims;
+    cpu_x86_prims.gelu_tanh = cpu_x86_gelu_tanh;
+
+    cpu_x86_fused                      = cpu_scalar_fused;
+    cpu_x86_fused.gelu_tanh_mul        = cpu_x86_gelu_tanh_mul;
+    cpu_x86_fused.gelu_tanh_mul_scaled = cpu_x86_gelu_tanh_mul_scaled;
 }
 
 const struct geist_backend_descriptor geist_backend_cpu_x86 = {
-        .name   = "cpu_x86",
-        .vtbl   = &cpu_x86_vtbl,
-        .caps   = nullptr,
-        .n_caps = 0,
+        .name  = "cpu_x86",
+        .vtbl  = &cpu_x86_vtbl,
+        .prims = &cpu_x86_prims,
+        .fused = &cpu_x86_fused,
 };

@@ -107,11 +107,12 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
                                                            struct geist_buffer *out_h_buf) {
     struct transformer_arch_state *st = sess->model;
 
-    struct geist_backend            *be                    = st->backend;
-    const struct geist_backend_vtbl *v                     = be->desc->vtbl;
-    const size_t                     row_bytes_h           = st->d_model * sizeof(float);
-    const size_t                     row_bytes_ple         = st->hidden_per_layer * sizeof(float);
-    const size_t                     row_bytes_per_tok_ple = st->ple_out * sizeof(float);
+    struct geist_backend             *be                    = st->backend;
+    const struct geist_backend_vtbl  *v                     = be->desc->vtbl;
+    const struct geist_backend_fused *fused                 = geist_backend_fused_tbl(be);
+    const size_t                      row_bytes_h           = st->d_model * sizeof(float);
+    const size_t                      row_bytes_ple         = st->hidden_per_layer * sizeof(float);
+    const size_t                      row_bytes_per_tok_ple = st->ple_out * sizeof(float);
 
     /* Seed scratch_h_a with seq rows of HIDDEN. */
     {
@@ -135,7 +136,7 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
          * (Llama / Mistral) pass nullptr through to forward_one_layer
          * which then skips the PLE injection block. */
         struct geist_buffer *layer_ple_buf = nullptr;
-        if (per_layer_input_buf != nullptr && v->linear_t != nullptr &&
+        if (per_layer_input_buf != nullptr && fused->linear_t != nullptr &&
             per_layer_input_buf == sess->scratch_per_layer_input) {
             /* Batched GPU backends read the layer's PLE slice directly from
              * the slab as a strided view (see layer_ple.c) — the per-layer
@@ -219,13 +220,14 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
 
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* Device path: fused lookup+scale keeps batched GPU backends from
      * dequantizing through a mapped host pointer every token. */
-    if (v->embedding_lookup_scaled != nullptr) {
+    if (fused->embedding_lookup_scaled != nullptr) {
         struct geist_tensor t_out = view_1d(out_h_buf, st->d_model);
         const float         scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
         enum geist_status   es =
-                v->embedding_lookup_scaled(be, &st->embed_table, token_id, scale, &t_out);
+                fused->embedding_lookup_scaled(be, &st->embed_table, token_id, scale, &t_out);
         if (es == GEIST_OK) {
             return GEIST_OK;
         }

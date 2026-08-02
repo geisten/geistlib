@@ -6090,23 +6090,6 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
     return GEIST_OK;
 }
 
-static enum geist_support metal_supports_op(struct geist_backend                *be,
-                                            const struct geist_op_support_query *query) {
-
-    (void) be;
-    if (query == nullptr || query->op != GEIST_OP_LINEAR || query->input_count < 2) {
-        return GEIST_SUPPORT_NONE;
-    }
-    const struct geist_tensor_format *x_fmt = &query->inputs[0];
-    const struct geist_tensor_format *w_fmt = &query->inputs[1];
-    if (x_fmt->dtype == GEIST_DTYPE_F32 && x_fmt->layout == GEIST_LAYOUT_DENSE &&
-        (w_fmt->dtype == GEIST_DTYPE_Q4_K || w_fmt->dtype == GEIST_DTYPE_Q6_K) &&
-        w_fmt->layout == GEIST_LAYOUT_BLOCK_QUANTIZED) {
-        return GEIST_SUPPORT_NATIVE;
-    }
-    return GEIST_SUPPORT_NONE;
-}
-
 /* Resolver-installed GPU linear (main contract). main's engine passes raw
  * host pointers (buffer_map aliases; w->raw = buffer_map(weight buf) +
  * view offset). On Apple unified memory every such pointer lives inside a
@@ -6417,48 +6400,51 @@ static void metal_parallel_region_end(struct geist_backend *be, int token) {
  * internal/dead code (behind metal_legacy_ops.h) pending the Stage-6
  * cleanup, but are not exposed here. */
 static const struct geist_backend_vtbl metal_vtbl = {
-        .create                  = metal_create,
-        .destroy                 = metal_destroy,
-        .supports_op             = metal_supports_op,
-        .buffer_create           = metal_buffer_create,
-        .buffer_destroy          = metal_buffer_destroy,
-        .buffer_create_aliased   = metal_buffer_create_aliased,
-        .buffer_upload           = metal_buffer_upload,
-        .buffer_download         = metal_buffer_download,
-        .buffer_map              = metal_buffer_map,
-        .buffer_unmap            = metal_buffer_unmap,
-        .resolve_weight          = metal_resolve_weight,
-        .rmsnorm                 = metal_rmsnorm,
-        .add                     = metal_add,
-        .mul                     = metal_mul,
-        .gelu_tanh               = metal_gelu_tanh,
+        .create                = metal_create,
+        .destroy               = metal_destroy,
+        .buffer_create         = metal_buffer_create,
+        .buffer_destroy        = metal_buffer_destroy,
+        .buffer_create_aliased = metal_buffer_create_aliased,
+        .buffer_upload         = metal_buffer_upload,
+        .buffer_download       = metal_buffer_download,
+        .buffer_map            = metal_buffer_map,
+        .buffer_unmap          = metal_buffer_unmap,
+        .buffer_copy           = metal_buffer_copy,
+        .resolve_weight        = metal_resolve_weight,
+        .parallel_region_begin = metal_parallel_region_begin,
+        .parallel_region_end   = metal_parallel_region_end,
+};
+
+static const struct geist_backend_primitives metal_prims = {
+        .rmsnorm          = metal_rmsnorm,
+        .add              = metal_add,
+        .mul              = metal_mul,
+        .gelu_tanh        = metal_gelu_tanh,
+        .silu             = nullptr,
+        .relu_squared     = nullptr,
+        .rope_apply       = metal_rope_apply,
+        .embedding_lookup = metal_embedding_lookup,
+        .attention        = metal_attention,
+        .scale_f32        = metal_scale_f32,
+};
+
+static const struct geist_backend_fused metal_fused = {
         .gelu_tanh_mul           = metal_gelu_tanh_mul,
-        .gelu_tanh_mul_scaled    = nullptr,
-        .relu_squared            = nullptr,
-        .silu                    = nullptr,
-        .rope_apply              = metal_rope_apply,
-        .embedding_lookup        = metal_embedding_lookup,
-        .attention               = metal_attention,
-        .ffn_geglu_q4q6_mN       = nullptr,
-        .transformer_block       = nullptr,
-        .parallel_region_begin   = metal_parallel_region_begin,
-        .parallel_region_end     = metal_parallel_region_end,
         .linear_t                = metal_linear_t,
-        .buffer_copy             = metal_buffer_copy,
-        .scale_f32               = metal_scale_f32,
-        .embedding_lookup_scaled = metal_embedding_lookup_scaled,
-        .rmsnorm_add             = metal_rmsnorm_add,
-        .kv_append_f16           = metal_kv_append_f16,
-        .ple_block               = metal_ple_block,
-        .attn_qkv_prep           = metal_attn_qkv_prep,
-        .ffn_gate_up             = metal_ffn_gate_up,
         .linear_t_pair           = metal_linear_t_pair,
+        .embedding_lookup_scaled = metal_embedding_lookup_scaled,
+        .kv_append_f16           = metal_kv_append_f16,
         .argmax_f32              = metal_argmax_f32,
+        .ffn_gate_up             = metal_ffn_gate_up,
+        .attn_qkv_prep           = metal_attn_qkv_prep,
+        .ple_block               = metal_ple_block,
+        .rmsnorm_add             = metal_rmsnorm_add,
 };
 
 const struct geist_backend_descriptor geist_backend_metal = {
-        .name   = "metal",
-        .vtbl   = &metal_vtbl,
-        .caps   = nullptr,
-        .n_caps = 0,
+        .name  = "metal",
+        .vtbl  = &metal_vtbl,
+        .prims = &metal_prims,
+        .fused = &metal_fused,
+        .caps  = {.kv_f16_attention = true, .batched_submit = true, .preferred_m_max = 128},
 };

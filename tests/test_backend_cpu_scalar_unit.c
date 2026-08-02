@@ -85,32 +85,11 @@ int main(void) {
         be->desc->vtbl->buffer_destroy(be, buf);
     }
 
-    /* Capability query: F32 DENSE LINEAR is NATIVE; Q4_K is NONE. */
-    struct geist_op_support_query q_f32 = {
-            .op          = GEIST_OP_LINEAR,
-            .input_count = 2,
-            .inputs =
-                    {
-                            {.dtype = GEIST_DTYPE_F32, .layout = GEIST_LAYOUT_DENSE},
-                            {.dtype = GEIST_DTYPE_F32, .layout = GEIST_LAYOUT_DENSE},
-                    },
-            .output_count = 1,
-            .outputs      = {{.dtype = GEIST_DTYPE_F32, .layout = GEIST_LAYOUT_DENSE}},
-    };
-    fails += check(geist_backend_supports_op(be, &q_f32) == GEIST_SUPPORT_NATIVE,
-                   "supports_op(LINEAR, F32 DENSE) is NATIVE");
-
-    struct geist_op_support_query q_q4k = {
-            .op          = GEIST_OP_LINEAR,
-            .input_count = 2,
-            .inputs =
-                    {
-                            {.dtype = GEIST_DTYPE_F32, .layout = GEIST_LAYOUT_DENSE},
-                            {.dtype = GEIST_DTYPE_CUSTOM, .layout = GEIST_LAYOUT_BLOCK_QUANTIZED},
-                    },
-    };
-    fails += check(geist_backend_supports_op(be, &q_q4k) == GEIST_SUPPORT_NONE,
-                   "supports_op(LINEAR, Q4_K) is NONE in B-2b");
+    /* Table split sanity: the descriptor exports all three tables. */
+    fails += check(be->desc->prims != nullptr, "descriptor has a primitives table");
+    fails += check(be->desc->prims->rmsnorm != nullptr, "primitives table has rmsnorm");
+    fails += check(geist_backend_fused_tbl(be) != nullptr,
+                   "fused table (or empty fallback) resolves");
 
     /* Real F32 DENSE matmul: y = x @ W^T
      *   x: (2, 3) =  [[1, 2, 3], [4, 5, 6]]

@@ -145,6 +145,8 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     ctx->sess                = sess;
     ctx->be                  = st->backend;
     ctx->v                   = st->backend->desc->vtbl;
+    ctx->prims               = st->backend->desc->prims;
+    ctx->fused               = geist_backend_fused_tbl(st->backend);
     ctx->L                   = L;
     ctx->P                   = P;
     ctx->layer_idx           = layer_idx;
@@ -339,17 +341,19 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
     if (token_id < 0 || (size_t) token_id >= (size_t) st->vocab_size) {
         return GEIST_E_INVALID_ARG;
     }
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    enum geist_status                s;
+    struct geist_backend                  *be    = st->backend;
+    const struct geist_backend_vtbl       *v     = be->desc->vtbl;
+    const struct geist_backend_primitives *prims = be->desc->prims;
+    const struct geist_backend_fused      *fused = geist_backend_fused_tbl(be);
+    enum geist_status                      s;
 
     /* 1. Dequant one row of the PLE table into scratch_ple_lookup, then
      *    multiply by PLE_TABLE_SCALE (16). */
     {
         bool on_device = false;
-        if (v->embedding_lookup_scaled != nullptr) {
+        if (fused->embedding_lookup_scaled != nullptr) {
             struct geist_tensor t_row = view_1d(sess->scratch_ple_lookup, st->ple_out);
-            on_device                 = v->embedding_lookup_scaled(
+            on_device                 = fused->embedding_lookup_scaled(
                                                 be, &st->ple_table, token_id, st->config.ple_table_scale, &t_row) ==
                                         GEIST_OK;
         }
@@ -390,8 +394,8 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
      *    backends from flushing for a host loop). */
     {
         struct geist_tensor t_all = view_1d(per_layer_input_buf, st->ple_out);
-        if (v->scale_f32 == nullptr ||
-            v->scale_f32(be, &t_all, st->config.ple_model_proj_scale, &t_all) != GEIST_OK) {
+        if (prims->scale_f32 == nullptr ||
+            prims->scale_f32(be, &t_all, st->config.ple_model_proj_scale, &t_all) != GEIST_OK) {
             float *p = (float *) v->buffer_map(per_layer_input_buf);
             for (size_t i = 0; i < (size_t) st->ple_out; i++) {
                 p[i] *= st->config.ple_model_proj_scale;
@@ -404,7 +408,7 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
     struct geist_tensor t_ple_proj_2dN =
             view_2d(per_layer_input_buf, st->n_layers, st->hidden_per_layer);
     struct geist_tensor t_norm_w = view_1d(st->model_proj_norm.buffer, st->hidden_per_layer);
-    s = v->rmsnorm(be, &t_ple_proj_2dN, &t_norm_w, st->config.rms_eps, &t_ple_proj_2dN);
+    s = prims->rmsnorm(be, &t_ple_proj_2dN, &t_norm_w, st->config.rms_eps, &t_ple_proj_2dN);
     if (s != GEIST_OK) {
         return s;
     }
@@ -412,14 +416,14 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
     /* 5. per_layer_input = (ple_proj + ple_lookup) * PLE_INPUT_SCALE. */
     struct geist_tensor t_ple_proj_1d   = view_1d(per_layer_input_buf, st->ple_out);
     struct geist_tensor t_ple_lookup_1d = view_1d(sess->scratch_ple_lookup, st->ple_out);
-    s = v->add(be, &t_ple_proj_1d, &t_ple_lookup_1d, &t_ple_proj_1d);
+    s = prims->add(be, &t_ple_proj_1d, &t_ple_lookup_1d, &t_ple_proj_1d);
     if (s != GEIST_OK) {
         return s;
     }
     {
         struct geist_tensor t_all = view_1d(per_layer_input_buf, st->ple_out);
-        if (v->scale_f32 == nullptr ||
-            v->scale_f32(be, &t_all, st->config.ple_input_scale, &t_all) != GEIST_OK) {
+        if (prims->scale_f32 == nullptr ||
+            prims->scale_f32(be, &t_all, st->config.ple_input_scale, &t_all) != GEIST_OK) {
             float *p = (float *) v->buffer_map(per_layer_input_buf);
             for (size_t i = 0; i < (size_t) st->ple_out; i++) {
                 p[i] *= st->config.ple_input_scale;
@@ -520,17 +524,19 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     if (n == 0 || n > sess->m_max) {
         return GEIST_E_INVALID_ARG;
     }
-    struct geist_backend            *be      = st->backend;
-    const struct geist_backend_vtbl *v       = be->desc->vtbl;
-    const size_t                     PLE_OUT = (size_t) st->ple_out;
-    const bool                       prof    = plepre_enabled();
-    uint64_t                         t0;
+    struct geist_backend                  *be      = st->backend;
+    const struct geist_backend_vtbl       *v       = be->desc->vtbl;
+    const struct geist_backend_primitives *prims   = be->desc->prims;
+    const struct geist_backend_fused      *fused   = geist_backend_fused_tbl(be);
+    const size_t                           PLE_OUT = (size_t) st->ple_out;
+    const bool                             prof    = plepre_enabled();
+    uint64_t                               t0;
 
     /* 1+2. Dequant n PLE rows + scale by 16. Device path: per-row fused
      * lookup+scale dispatches — no host dequant, no pipeline flush from
      * mapping the scratch mid-batch. */
     t0                    = prof ? transformer_profile_now_ns() : 0;
-    bool gather_on_device = v->embedding_lookup_scaled != nullptr;
+    bool gather_on_device = fused->embedding_lookup_scaled != nullptr;
     if (gather_on_device) {
         for (size_t t = 0; t < n; t++) {
             struct geist_tensor t_row = {
@@ -542,7 +548,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
                     .shape  = {(int64_t) PLE_OUT, 0, 0, 0, 0, 0, 0, 0},
                     .stride = {1, 0, 0, 0, 0, 0, 0, 0},
             };
-            if (v->embedding_lookup_scaled(
+            if (fused->embedding_lookup_scaled(
                         be, &st->ple_table, ple_ids[t], st->config.ple_table_scale, &t_row) !=
                 GEIST_OK) {
                 gather_on_device = false;
@@ -581,8 +587,8 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
 
     /* 4. *= PLE_MODEL_PROJ_SCALE. */
     t0 = prof ? transformer_profile_now_ns() : 0;
-    if (v->scale_f32 == nullptr ||
-        v->scale_f32(be, &t_out_2d, st->config.ple_model_proj_scale, &t_out_2d) != GEIST_OK) {
+    if (prims->scale_f32 == nullptr ||
+        prims->scale_f32(be, &t_out_2d, st->config.ple_model_proj_scale, &t_out_2d) != GEIST_OK) {
         float *p = (float *) v->buffer_map(out_buf);
         for (size_t i = 0; i < n * PLE_OUT; i++) {
             p[i] *= st->config.ple_model_proj_scale;
@@ -596,7 +602,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
             view_2d(out_buf, (int64_t) (n * st->n_layers), st->hidden_per_layer);
     struct geist_tensor t_w = view_1d(st->model_proj_norm.buffer, st->hidden_per_layer);
     t0                      = prof ? transformer_profile_now_ns() : 0;
-    s                       = v->rmsnorm(be, &t_out_norm, &t_w, st->config.rms_eps, &t_out_norm);
+    s = prims->rmsnorm(be, &t_out_norm, &t_w, st->config.rms_eps, &t_out_norm);
     plepre_add(PLEPRE_RMSNORM, t0);
     if (s != GEIST_OK) {
         return s;
@@ -606,13 +612,13 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     t0 = prof ? transformer_profile_now_ns() : 0;
     {
         bool combined_on_device = false;
-        if (v->add != nullptr && v->scale_f32 != nullptr) {
+        if (prims->add != nullptr && prims->scale_f32 != nullptr) {
             struct geist_tensor t_plu_2d =
                     view_2d(sess->scratch_ple_lookup, (int64_t) n, (int64_t) PLE_OUT);
             /* add validates before encoding; once it succeeded out_buf is
              * mutated and the host fallback must NOT rerun the combine. */
-            if (v->add(be, &t_out_2d, &t_plu_2d, &t_out_2d) == GEIST_OK) {
-                s = v->scale_f32(be, &t_out_2d, st->config.ple_input_scale, &t_out_2d);
+            if (prims->add(be, &t_out_2d, &t_plu_2d, &t_out_2d) == GEIST_OK) {
+                s = prims->scale_f32(be, &t_out_2d, st->config.ple_input_scale, &t_out_2d);
                 if (s != GEIST_OK) {
                     return s;
                 }

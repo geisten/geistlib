@@ -337,6 +337,7 @@ static int vtable_block_via_backend(const char  *backend_name,
     }
     const struct geist_backend_vtbl *v = be->desc->vtbl;
 
+    const struct geist_backend_primitives *prims = be->desc->prims;
     /* Upload all inputs + weights. */
     struct geist_buffer *bx      = alloc_and_upload(be, x_in, D_MODEL);
     struct geist_buffer *bwq     = alloc_and_upload(be, w_q, N_Q_HEADS * HEAD_DIM * D_MODEL);
@@ -415,7 +416,7 @@ static int vtable_block_via_backend(const char  *backend_name,
     enum geist_status s;
 
     /* Attention block. */
-    s = v->rmsnorm(be, &t_x, &t_w_an, eps, &t_xnorm);
+    s = prims->rmsnorm(be, &t_x, &t_w_an, eps, &t_xnorm);
     if (s != GEIST_OK)
         goto cleanup;
     s = linear1_via_resolver(be, b_xnorm, &wkr_q, b_q);
@@ -427,24 +428,24 @@ static int vtable_block_via_backend(const char  *backend_name,
     s = linear1_via_resolver(be, b_xnorm, &wkr_v, b_v);
     if (s != GEIST_OK)
         goto cleanup;
-    s = v->rope_apply(be, &t_q_rope, &t_cos, &t_sin);
+    s = prims->rope_apply(be, &t_q_rope, &t_cos, &t_sin);
     if (s != GEIST_OK)
         goto cleanup;
-    s = v->rope_apply(be, &t_k_rope, &t_cos, &t_sin);
+    s = prims->rope_apply(be, &t_k_rope, &t_cos, &t_sin);
     if (s != GEIST_OK)
         goto cleanup;
-    s = v->attention(be, &t_q_rope, &t_k_rope, &t_v_3d, 0, 0, &t_attn_3d);
+    s = prims->attention(be, &t_q_rope, &t_k_rope, &t_v_3d, 0, 0, &t_attn_3d);
     if (s != GEIST_OK)
         goto cleanup;
     s = linear1_via_resolver(be, b_attn, &wkr_o, b_o);
     if (s != GEIST_OK)
         goto cleanup;
-    s = v->add(be, &t_x, &t_o_1d, &t_post_attn);
+    s = prims->add(be, &t_x, &t_o_1d, &t_post_attn);
     if (s != GEIST_OK)
         goto cleanup;
 
     /* FFN block. */
-    s = v->rmsnorm(be, &t_post_attn, &t_w_fn, eps, &t_ffn_norm);
+    s = prims->rmsnorm(be, &t_post_attn, &t_w_fn, eps, &t_ffn_norm);
     if (s != GEIST_OK)
         goto cleanup;
     s = linear1_via_resolver(be, b_ffn_norm, &wkr_gate, b_gate);
@@ -453,16 +454,16 @@ static int vtable_block_via_backend(const char  *backend_name,
     s = linear1_via_resolver(be, b_ffn_norm, &wkr_up, b_up);
     if (s != GEIST_OK)
         goto cleanup;
-    s = v->gelu_tanh(be, &t_gate_1d, &t_gate_1d);
+    s = prims->gelu_tanh(be, &t_gate_1d, &t_gate_1d);
     if (s != GEIST_OK)
         goto cleanup;
-    s = v->mul(be, &t_gate_1d, &t_up_1d, &t_gate_1d);
+    s = prims->mul(be, &t_gate_1d, &t_up_1d, &t_gate_1d);
     if (s != GEIST_OK)
         goto cleanup;
     s = linear1_via_resolver(be, b_gate, &wkr_down, b_ffn_out);
     if (s != GEIST_OK)
         goto cleanup;
-    s = v->add(be, &t_post_attn, &t_ffn_out_1d, &t_y_1d);
+    s = prims->add(be, &t_post_attn, &t_ffn_out_1d, &t_y_1d);
     if (s != GEIST_OK)
         goto cleanup;
 
