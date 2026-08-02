@@ -292,7 +292,9 @@ jobs:
   tsan:
     name: TSan multi-session (Linux x86_64, cpu_x86)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # TSan is 5-15x on top of -O1 and serialized OMP: the parallel test's
+    # serial reference prefill dominates. 75 min fits it with headroom.
+    timeout-minutes: 75
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
@@ -320,14 +322,16 @@ jobs:
       - name: Build (TSan) + fetch model
         run: |
           make MODE=tsan TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE \
-            bin/linux/tsan/tests/test_multi_session_int bin/linux/tsan/tests/test_multi_session_parallel_int
+            bin/linux/tsan/tests/test_multi_session_parallel_int
           make fetch-model
       - name: Multi-session tests under TSan
         env:
           TSAN_OPTIONS: halt_on_error=1
+        # Only the PARALLEL test: the serial interleave variant runs in the
+        # regular int suites and exercises no concurrency — under TSan it
+        # just burned 17 of the 30 minutes that then killed this leg.
         run: |
           export GEIST_GGUF_PATH="$PWD/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf"
-          bin/linux/tsan/tests/test_multi_session_int
           bin/linux/tsan/tests/test_multi_session_parallel_int
 
   format:
