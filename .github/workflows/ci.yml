@@ -41,14 +41,21 @@ jobs:
       matrix:
         include:
           # -std=c23 needs gcc >= 14 and Apple-clang >= 16 (Xcode 16 / macOS 15).
+          # macOS builds the metal backend alongside the CPU pair (#181):
+          # the hosted macos-15 runners expose a real Metal device (proved
+          # by the metal-probe spike), so the probe and the linear-parity
+          # gate below actually execute on GPU in every PR.
           - name: macOS arm64
             runner: macos-15
             target: mac-omp
             cc: clang
+            bflags: BACKENDS="metal cpu_neon cpu_scalar"
           - name: Linux arm64
             runner: ubuntu-24.04-arm
             target: linux
             cc: gcc-14
+            bflags: ""
+
     steps:
       - uses: actions/checkout@v4
 
@@ -73,12 +80,23 @@ jobs:
             gcc-14 libopenblas-dev ccache python3-numpy
 
       - name: Build
-        run: make TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
+        run: make TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
       # Unit tests are hardware/kernel-level and do not need a GGUF model;
       # AUTO_FETCH_MODEL=0 keeps the ~3 GB reference download out of CI.
       - name: Unit tests
-        run: make test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" AUTO_FETCH_MODEL=0
+        run: make test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
+
+      # Mandatory GPU gate (#181): on macos-15 a Metal device is expected,
+      # so a SKIP (exit 77) from either binary fails the step — a skipped
+      # gate must not read as a green one. Registration, lifecycle, buffer
+      # round-trip (probe) and Q4_K/Q6_K/F32 linear parity vs cpu_scalar
+      # (m=1 and m=8) all run on the real device.
+      - name: Metal device probe + linear parity (GPU, mandatory)
+        if: runner.os == 'macOS'
+        run: |
+          ./bin/${{ matrix.target }}/release/tests/test_backend_metal_probe
+          ./bin/${{ matrix.target }}/release/tests/test_backend_metal_parity_unit
 
       # Hermetic Python suite (algorithm reference impls). Part of `make test`,
       # so it must stay green — a suite nothing runs is a suite that rots (#146).
@@ -90,7 +108,7 @@ jobs:
       # these symbols across a release boundary, so a changed signature or a
       # removed symbol must fail here rather than in the consumer's build.
       - name: Agent-runtime contract smoke
-        run: make agent-contract-smoke TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
+        run: make agent-contract-smoke TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
       # The integration + e2e suites load the real GGUF, so they actually exercise
       # the product path (forward pass, tokenizer, KV, the agent/chat loops) — the
@@ -146,7 +164,7 @@ jobs:
             | python3 benchmark/perf_gate.py --min-prefill 20 --min-decode 4
 
       - name: Build example
-        run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
+        run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
   # Test what we ship: the release artifact is a musl-static binary (release.yml),
   # but the matrix above only exercises glibc. musl gates POSIX symbols behind the
@@ -379,30 +397,3 @@ jobs:
         run: |
           clang-format --version
           make format-check
-
-  metal-probe:
-    name: metal device probe (spike, manual)
-    # Manual only. This answers one question — does a GitHub macOS runner
-    # expose a usable Metal device? — and nothing depends on it, so it has
-    # no business running on every push.
-    #
-    # Why it matters: src/backends/metal has 52 compute kernels, 8 of them
-    # hand-written simdgroup GEMMs, and no numerical parity gate (vulkan
-    # has three). Before writing that gate, we need to know whether CI can
-    # ever execute it. PASS here => build the gate and wire it into a job.
-    # SKIP here => the gate would only run on a developer's Mac, and that
-    # limitation belongs in writing rather than in a green checkmark that
-    # never actually ran anything.
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-15
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install OpenMP
-        run: brew install libomp
-      - name: Build with the metal backend
-        run: make TARGET=mac-omp BACKENDS="metal cpu_neon cpu_scalar"
-      - name: Probe for a Metal device
-        # Prints SKIP + the reason when no device is present; the step
-        # stays green either way. The transcript is the result.
-        run: ./bin/mac-omp/release/tests/test_backend_metal_probe
