@@ -66,8 +66,9 @@ static struct geist_backend_fused      cpu_x86_fused;
                 be, GEIST_E_OOM, "cpu_x86: failed to allocate %zu-byte state", sizeof(*st));
         return GEIST_E_OOM;
     }
-    *st       = (struct cpu_x86_state) {0};
-    be->state = st;
+    *st               = (struct cpu_x86_state) {0};
+    st->ws_generation = cpu_x86_ws_next_generation();
+    be->state         = st;
     return GEIST_OK;
 }
 
@@ -76,11 +77,7 @@ static void cpu_x86_destroy(struct geist_backend *be) {
         return;
     }
     struct cpu_x86_state *st = (struct cpu_x86_state *) be->state;
-    safe_free((void **) &st->acts_scratch);
-    safe_free((void **) &st->sum_a_scratch);
-    safe_free((void **) &st->acts_mtile);
-    safe_free((void **) &st->sum_a_mtile);
-    safe_free((void **) &st->scale_x_mtile);
+    cpu_x86_ws_destroy_all(st);
     geist_backend_free(be, st);
     be->state = nullptr;
 }
