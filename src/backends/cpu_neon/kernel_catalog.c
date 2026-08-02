@@ -30,7 +30,6 @@ static bool cpu_neon_env_bool(const char *name, bool fallback) {
 struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_hw_probe *hw) {
 
     const bool has_accelerate = hw != nullptr && hw->has_accelerate;
-    const bool non_apple      = !(hw != nullptr && hw->is_apple_silicon);
 #if defined(GEIST_TARGET_PI5)
     /* The Pi5 OpenBLAS SGEMM-prefill path is currently not quality-safe for
      * Gemma Q4_K/Q6_K end-to-end generation. Keep it opt-in via
@@ -63,8 +62,6 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
             .q8_0_native_mn            = !has_accelerate,
             .tq2_0_native_mn           = !has_accelerate,
             .tq2_0_tl1_m1              = false,
-            .iq_flat_cache_allowed     = !non_apple,
-            .iq_flat_cache_force       = false,
     };
 
     p.q5k_native_mn     = cpu_neon_env_bool("GEIST_Q5K_NATIVE_MN", p.q5k_native_mn);
@@ -98,10 +95,6 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
     p.tq2_0_native_mn = cpu_neon_env_bool("GEIST_TQ2_0_NATIVE_MN", p.tq2_0_native_mn);
     p.tq2_0_tl1_m1    = cpu_neon_env_bool("GEIST_TL1", p.tq2_0_tl1_m1);
 
-    if (cpu_neon_env_bool("GEIST_IQ_FLAT_CACHE_FORCE", false)) {
-        p.iq_flat_cache_allowed = true;
-        p.iq_flat_cache_force   = true;
-    }
     return p;
 }
 
