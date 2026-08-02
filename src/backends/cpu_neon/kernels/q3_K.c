@@ -203,6 +203,8 @@ void linear_q3k_w3a8_prefill_pre(const int8_t *x_q8,
                                  size_t        n_out,
                                  float        *y) {
 #if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
     const struct block_q3_K_t *w                = (const struct block_q3_K_t *) w_q3k;
     const size_t               n_blocks_per_row = n_in / Q3_K_BLOCK_ELEMS;
 
@@ -214,9 +216,8 @@ void linear_q3k_w3a8_prefill_pre(const int8_t *x_q8,
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
 
-        /* Per-iteration heap to avoid alloca stack-growth in OMP parallel for. */
-        float   *my_accs        = heap_alloc_array_aligned(float, m);
-        int32_t *block_int_accs = heap_alloc_array_aligned(int32_t, m);
+        float   my_accs[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
+        int32_t block_int_accs[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
         for (size_t i = 0; i < m; i++)
             my_accs[i] = 0.0f;
 
@@ -299,8 +300,6 @@ void linear_q3k_w3a8_prefill_pre(const int8_t *x_q8,
         }
         for (size_t i = 0; i < m; i++)
             y[i * n_out + n] = my_accs[i];
-        safe_free((void **) &my_accs);
-        safe_free((void **) &block_int_accs);
     }
 #else
     (void) x_q8;
