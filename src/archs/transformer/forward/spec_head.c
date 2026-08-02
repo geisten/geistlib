@@ -149,6 +149,28 @@ static size_t spec_env_sz(const char *name, size_t dflt, size_t lo, size_t hi) {
     return (size_t) v;
 }
 
+static int spec_verify_env(void) {
+    /* GEIST_SPEC_VERIFY=1 turns on the certainty bound: every excluded row gets
+     * an upper bound on the exact logit it could have had, and the head
+     * declines whenever one of them could have beaten the winner, which makes
+     * the answer provably the dense head's.
+     *
+     * Off by default, for a measured reason rather than an assumed one. At the
+     * shipped stride the sketch keeps one dimension in four, so the dropped
+     * three quarters carry an uncertainty of the same order as the dot product
+     * itself -- Cauchy-Schwarz must assume they all conspire. The bound is then
+     * almost never satisfiable: on a Pi 5 it fires on nearly every token and
+     * decode falls from 18.3 to 9.4 t/s, which is dense-head speed. Correct,
+     * and worth nothing at that price.
+     *
+     * What it is worth is as an instrument. Run a model under it once and the
+     * output is either identical to the dense head or it is not -- no sampling,
+     * no luck -- which is how the silent divergence on bitnet_b1_58-large would
+     * have been caught the day it appeared instead of months later. */
+    const char *e = getenv("GEIST_SPEC_VERIFY");
+    return (e != nullptr && e[0] == '1') ? 1 : 0;
+}
+
 static int spec_head_env(void) {
     /* Default ON for greedy decode + top-k sampling on an eligible tied
      * lm_head: verified byte-identical to the dense head on Gemma 4 (Q6_K,
@@ -734,14 +756,26 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
      * That turns the failure this head used to have -- a silently different
      * token, which took a 28-token trajectory on another model to notice --
      * into an occasional slower step. */
+    /* Cutoff from the min-heap: nothing below it made the candidate set. Read
+     * before the scan because phase 3 overwrites logits, never rough. */
+    const float  cutoff     = hn > 0 ? heap[0].s : -3.4e38f;
     const float  best_exact = logits[*out_token];
     const float  inv_xq     = 1.0f / x_q;
     const float *wdrop      = st->spec_w_drop;
     const float *wl1        = st->spec_w_l1;
     bool         certain    = true;
-    if (wdrop != nullptr && wl1 != nullptr) {
+    if (spec_verify_env() && wdrop != nullptr && wl1 != nullptr) {
         for (size_t r = 0; r < V; r++) {
-            if (logits[r] != -INFINITY) {
+            /* Excluded rows are those phase 2 left below the heap's cutoff.
+             * This asked `logits[r] != -INFINITY` before, which is a correct
+             * question only where infinities survive: the Pi builds with plain
+             * -ffast-math, whose finite-math assumption lets the compiler fold
+             * that test to always-true. Every row then looked like a
+             * candidate, the scan examined nothing, and the bound did nothing
+             * at all on the one platform it was written for -- while passing
+             * on the Mac, which builds -fno-finite-math-only. A cutoff is
+             * finite arithmetic and means the same thing on both. */
+            if (rough[r] > cutoff) {
                 continue; /* a candidate: already scored exactly */
             }
             const float ub = rough[r] * inv_xq + 0.5f * rscale[r] * h_l1_kept +
