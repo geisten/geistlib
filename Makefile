@@ -5,7 +5,8 @@
 #   make TARGET=pi5            # cross-compile (override CC if needed)
 #   make MODE=asan             # sanitizer build
 #   make MODE=asan TARGET=pi5  # combinations
-#   make test                  # placeholder (Phase E implements)
+#   make test                  # unit + integration + python suites
+#   make bench                 # reproducible benchmark vs llama.cpp / bitnet.cpp
 #   make help                  # show all options
 #
 # Output layout (per-target, per-mode segregated):
@@ -24,8 +25,8 @@ MODE   ?= release
 # Phony targets — do not match files.
 .PHONY: all lib bin run agent-contract-smoke bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu format format-check
 
-# Default goal. The `geist` symlink (built after common.mk pins BIN_DIR) points
-# `./geist` at the freshly built CLI so you never type the bin/<target>/<mode> path.
+# Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
+# evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
 all: lib bin
 
 # Pull in target settings (CC, CFLAGS_TARGET, LDFLAGS_TARGET, LDLIBS_TARGET).
@@ -38,10 +39,10 @@ lib: $(LIB_FILE)
 
 bin: $(BIN_TARGETS)
 
-# Agent-runtime API contract (docs/API_CONTRACT.md). The out-of-tree agent
-# runtime — geisten/geistagent — links these symbols across a release
-# boundary, so a signature change must fail HERE, not in the consumer's
-# build. Compiling pins the signatures, linking pins their existence.
+# Agent-runtime API contract (docs/API_CONTRACT.md). An out-of-tree agent
+# runtime links these symbols across a release boundary, so a signature change
+# must fail HERE, not in the consumer's build. Compiling pins the signatures,
+# linking pins their existence.
 # This is the last thing in the engine that knows an agent exists, and it is
 # deliberate: it is a promise, not a dependency.
 AGENT_CONTRACT_SMOKE := $(BIN_DIR)/examples/agent_contract_smoke

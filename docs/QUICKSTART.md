@@ -1,21 +1,25 @@
 # Quickstart
 
-Get geist running as a **command-line tool** in two minutes, then embed it as a
-**library** in your own C program. Everything here uses the stable, public API
-(`include/geist.h` + `include/geist_util.h`) and the real Makefile targets.
+See geist generate text in two minutes, then embed it as a **library** in your
+own C program. Everything here uses the stable, public API (`include/geist.h` +
+`include/geist_util.h`) and the real Makefile targets.
 
 - New to the internals? See [ARCHITECTURE.md](ARCHITECTURE.md).
 - Want the numbers? See [../benchmark/results/PI5.md](../benchmark/results/PI5.md).
 
+geistlib is an engine, not an application: it loads models and produces tokens.
+It ships no CLI, no chat templating and no tool use — those belong to whatever
+links it. What it does ship is a ~15-line example program, and that is the
+fastest way to see it work.
+
 ---
 
-## 1. Run the application (CLI)
+## 1. Generate text
 
 ### Build
 
 ```bash
-make                       # target auto-detected: mac-omp / mac / pi5 / linux
-                           # → drops a ./geist symlink in the repo root
+make lib                   # target auto-detected: mac-omp / mac / pi5 / linux
 ```
 
 Requirements: a C23 compiler (gcc ≥ 14, or Apple-clang ≥ 16) and `make`. On a
@@ -23,13 +27,12 @@ Mac, `brew install libomp` enables multi-threading (the `mac-omp` target).
 
 ### Get a model
 
-geist targets **Gemma 4 E2B-it, Q4_K_M**. Fetch the reference GGUF (~3.1 GB):
+Any GGUF that carries its own tokenizer works. Two helpers:
 
 ```bash
-make fetch-model           # → gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+make fetch-bench-model     # BitNet b1.58 2B-4T, ternary, ~1.1 GB — the fast one
+make fetch-model           # Gemma 4 E2B-it Q4_K_M, ~3.1 GB — text + vision + audio
 ```
-
-Any GGUF that carries its own tokenizer works; `fetch-model` is just a helper.
 
 ### Generate
 
@@ -41,19 +44,11 @@ make run ARGS='gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "The capital of France is"'
 
 `examples/simple_generate.c` is the smallest useful program against the
 library — load a GGUF, prefill, greedy-decode — and uses only the STABLE core
-of `include/geist.h`. The engine ships no CLI of its own; a command-line
-runtime with tool use, chat templating and a resident daemon is
-[geistagent](https://github.com/geisten/geistagent).
+of `include/geist.h`. It is the thing to copy when you embed.
 `OMP_WAIT_POLICY=active` keeps the OpenMP threads spinning between tokens and
 noticeably improves multi-thread throughput; always set it.
 
-A warm **dynamic-tools daemon** — a host supplying the allowed toolset per
-request over a Unix socket, with the engine never executing an action itself —
-is [geistagent](https://github.com/geisten/geistagent), which links this
-library. The reference assistant is
-[geist-wissen](https://github.com/geisten/geist-wissen).
-
-For an interactive prompt loop, use the evaluation REPL (no symlink — full path):
+For an interactive prompt loop, use the evaluation REPL:
 
 ```bash
 OMP_WAIT_POLICY=active bin/`mk/detect-target.sh`/release/tools/eval_geist \
@@ -193,9 +188,8 @@ stop or anything multimodal/advanced.
 
 The library links into a single dependency-free executable, and the **model**
 can be folded in too, so a deployment is *literally one file*. That is a
-property of an executable and this repository builds none —
-[geistagent](https://github.com/geisten/geistagent) does it, via
-`geist_model_load_from_memory`, and publishes signed single-file runtimes.
+property of an executable and this repository builds none — your app does it,
+via `geist_model_load_from_memory`.
 
 Weights are aliased **zero-copy** from the binary's read-only data, so this suits
 **small** models (the binary grows by the model size). Full single-file &

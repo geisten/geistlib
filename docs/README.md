@@ -6,14 +6,11 @@ This repository documents the application-neutral Geist engine:
 - `ARCHITECTURE.md`: engine layers and runtime architecture
 - `DEPLOY.md`: building the library and consuming the packaged SDK
 - `CI_COVERAGE.md`: what each CI job actually verifies
-- the tool-use agent, the resident daemon and the normative
-  `dynamic-tools-v1` contract live in
-  [geisten/geistagent](https://github.com/geisten/geistagent)
-- `../benchmark/`: engine and general-agent methodology/results
+- `API_CONTRACT.md`: what the stability tags promise across a release boundary
+- `../benchmark/`: methodology and results
 
-Home Assistant integration, policy, installation, app packaging, evaluations,
-and implementation phases belong to
-[`geisten/geist-home-assistant`](https://github.com/geisten/geist-home-assistant).
-Core documentation may use HA as an adapter example but must not contain HA
-setup instructions, product roadmaps, credentials, policy code, or release
-requirements.
+Out of scope, on purpose: tool-use agents, resident daemons, chat templating,
+authorization, product UX, app packaging and domain evaluations. Those belong to
+whatever links this engine. Documentation here may use a downstream consumer as
+an example, but must not carry its setup instructions, product roadmap,
+credentials, policy code or release requirements.

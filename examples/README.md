@@ -5,8 +5,8 @@ and `include/geist_util.h`. One is meant to be read and copied; two are release
 gates that run in CI and are the only check of their kind — don't delete them
 for looking trivial.
 
-The tool-use programs that used to live here moved with the agent layer to
-[geisten/geistagent](https://github.com/geisten/geistagent).
+The tool-use programs that used to live here moved out of tree with the agent
+layer.
 
 | File | Role | Proves | Built by |
 | :-- | :-- | :-- | :-- |
@@ -70,9 +70,8 @@ keeping:
   function pointer. A **changed signature fails to compile**, a **removed symbol
   fails to link**. Nothing is invoked, so no model is needed; taking a
   function's address is enough to force the linker to resolve it. The
-  out-of-tree agent runtime ([geistagent](https://github.com/geisten/geistagent))
-  links these across a release boundary, so a break must surface here rather
-  than in someone else's build.
+  out-of-tree agent runtime links these across a release boundary, so a break
+  must surface here rather than in someone else's build.
 
 To reproduce either locally, point `-I` at an unpacked tarball instead of
 `include/`. For the contract one, `make agent-contract-smoke` is the quicker
