@@ -64,7 +64,14 @@ jobs:
             cp include/*.h dist/libgeist-linux-arm64/include/
             cp LICENSE dist/libgeist-linux-arm64/
             d=dist/libgeist-linux-arm64
-            cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/sdk_smoke
+            # --whole-archive: a static link only pulls referenced objects, so a
+            # plain smoke link can pass while an object the smoke never reaches
+            # still has unresolved deps (geistlib#144). Forcing every object in
+            # makes the link itself assert the full archive resolves with the
+            # documented consumer flags.
+            cc -std=c23 -I "$d/include" examples/embed_smoke.c \
+              -Wl,--whole-archive "$d/libgeist.a" -Wl,--no-whole-archive \
+              -fopenmp -lm -o /tmp/sdk_smoke
             /tmp/sdk_smoke
             cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/agent_smoke
             /tmp/agent_smoke
@@ -98,7 +105,10 @@ jobs:
             cp include/*.h dist/libgeist-linux-x86_64/include/
             cp LICENSE dist/libgeist-linux-x86_64/
             d=dist/libgeist-linux-x86_64
-            cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/sdk_smoke
+            # --whole-archive: see the arm64 job (geistlib#144).
+            cc -std=c23 -I "$d/include" examples/embed_smoke.c \
+              -Wl,--whole-archive "$d/libgeist.a" -Wl,--no-whole-archive \
+              -fopenmp -lm -o /tmp/sdk_smoke
             /tmp/sdk_smoke
             cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/agent_smoke
             /tmp/agent_smoke
@@ -136,7 +146,11 @@ jobs:
           # of a packaging gate (geistlib#144).
           omp=$(brew --prefix libomp)
           link="-framework Accelerate $omp/lib/libomp.a -lm"
-          cc -std=c23 -I "$d/include" examples/embed_smoke.c "$d/libgeist.a" $link -o /tmp/sdk_smoke
+          # -force_load = ld64's --whole-archive: every object must resolve
+          # with the documented consumer flags, not just the ones the smoke
+          # happens to reference (geistlib#144).
+          cc -std=c23 -I "$d/include" examples/embed_smoke.c \
+            -Wl,-force_load,"$d/libgeist.a" $link -o /tmp/sdk_smoke
           /tmp/sdk_smoke
           cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" $link -o /tmp/agent_smoke
           /tmp/agent_smoke
