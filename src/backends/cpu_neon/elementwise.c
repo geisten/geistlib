@@ -104,7 +104,7 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
 #if defined(__APPLE__) && defined(HAVE_ACCELERATE)
     if (be != nullptr && be->state != nullptr && nx <= (size_t) INT32_MAX) {
         struct cpu_neon_state     *st = (struct cpu_neon_state *) be->state;
-        struct cpu_neon_workspace *ws = &st->workspace;
+        struct cpu_neon_workspace *ws = cpu_neon_ws(st);
         if (ws->elt_f32_cap < nx) {
             safe_free((void **) &ws->elt_f32);
             ws->elt_f32 = heap_alloc_array_aligned(float, nx);
@@ -157,7 +157,7 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
 #if defined(__APPLE__) && defined(HAVE_ACCELERATE)
     if (be != nullptr && be->state != nullptr && nx <= (size_t) INT32_MAX) {
         struct cpu_neon_state     *st = (struct cpu_neon_state *) be->state;
-        struct cpu_neon_workspace *ws = &st->workspace;
+        struct cpu_neon_workspace *ws = cpu_neon_ws(st);
         if (ws->elt_f32_cap < nx) {
             safe_free((void **) &ws->elt_f32);
             ws->elt_f32 = heap_alloc_array_aligned(float, nx);
