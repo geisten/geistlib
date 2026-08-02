@@ -51,7 +51,7 @@ A warm **dynamic-tools daemon** — a host supplying the allowed toolset per
 request over a Unix socket, with the engine never executing an action itself —
 is [geistagent](https://github.com/geisten/geistagent), which links this
 library. The reference assistant is
-[geistwissen](https://github.com/geisten/geistwissen).
+[geist-wissen](https://github.com/geisten/geist-wissen).
 
 For an interactive prompt loop, use the evaluation REPL (no symlink — full path):
 
