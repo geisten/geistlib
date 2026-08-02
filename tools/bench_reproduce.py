@@ -70,7 +70,12 @@ BUSY_LOAD_PER_CORE = 0.7
 # cool board, a 16 % handicap invented by the running order and pointing the
 # wrong way, in our favour.
 COOL_C = 56.0
-COOL_TIMEOUT_S = 600
+# 20 minutes, not 10. Measured: a Pi 5 that starts a run at 51.6 C finishes the
+# sweep plus the energy probes around 74 C and does not come back under the gate
+# within ten -- it reached 57.6, the baseline ran warm, and the report correctly
+# declared its own ratios compromised. A gate that routinely cannot be met
+# teaches readers to ignore it. Overridable for boards that cool differently.
+COOL_TIMEOUT_S = int(os.environ.get("GEIST_BENCH_COOL_TIMEOUT", "1200"))
 
 # Energy per token needs the phases physically separated, because a prefill
 # token and a decode token cost wildly different amounts and one sampling
