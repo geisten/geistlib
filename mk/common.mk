@@ -156,6 +156,9 @@ LIB_SOURCES := \
     src/archs/transformer/arch_ops.c \
     src/archs/audio_conformer/arch.c \
     src/archs/audio_conformer/audio_encoder.c \
+    src/archs/audio_conformer/encoder_weights.c \
+    src/archs/audio_conformer/encoder_stream.c \
+    src/archs/audio_conformer/encoder_forward.c \
     src/archs/audio_conformer/audio_kernels.c \
     src/archs/audio_conformer/mel_pipeline.c \
     src/archs/vision_siglip/arch.c \
