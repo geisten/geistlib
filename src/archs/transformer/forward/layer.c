@@ -469,8 +469,8 @@ enum plepre_stage {
     PLEPRE_COMBINE,
     PLEPRE_COUNT,
 };
-static uint64_t          g_plepre_ns[PLEPRE_COUNT];
-static uint64_t          g_plepre_calls[PLEPRE_COUNT];
+static _Atomic uint64_t  g_plepre_ns[PLEPRE_COUNT];
+static _Atomic uint64_t  g_plepre_calls[PLEPRE_COUNT];
 static const char *const g_plepre_names[PLEPRE_COUNT] = {
         "gather_q5k",
         "model_proj",
@@ -497,16 +497,25 @@ static void plepre_print(void) {
 }
 
 static bool plepre_enabled(void) {
-    static int en = -1;
-    if (en < 0) {
+    /* Same idiom as transformer_profile_enabled above: the plain lazy
+     * cache raced across concurrent sessions — caught by the x86 TSan CI
+     * leg the moment it existed. First updater registers the atexit sink;
+     * losers just reload. */
+    static _Atomic int en  = -1;
+    int                cur = atomic_load(&en);
+    if (cur < 0) {
         const char *e = getenv("GEIST_PROFILE_PREFILL");
         if (e == nullptr || e[0] == '\0')
             e = getenv("GEIST_PROFILE_FORWARD");
-        en = (e != nullptr && e[0] == '1') ? 1 : 0;
-        if (en)
-            atexit(plepre_print);
+        const int on  = (e != nullptr && e[0] == '1') ? 1 : 0;
+        int       exp = -1;
+        if (atomic_compare_exchange_strong(&en, &exp, on)) {
+            if (on)
+                atexit(plepre_print);
+        }
+        cur = atomic_load(&en);
     }
-    return en != 0;
+    return cur != 0;
 }
 
 static void plepre_add(enum plepre_stage stage, uint64_t t0) {
