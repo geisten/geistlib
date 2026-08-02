@@ -7,12 +7,12 @@
  * linear_m1 / linear_mN as expected. For unsupported dtypes we expect
  * GEIST_E_UNSUPPORTED.
  *
- * Also gates supports_op against the resolver: for every dtype the two
+ * Also gates cpu_neon_linear_support against the resolver: for every dtype the two
  * must agree on whether the backend can do it at all. They drifted apart
  * once (Q5_K / IQ2_S / IQ3_S advertised EMULATED and TQ2_0 / I2_S
  * advertised NONE while all five had native kernels), which is invisible
  * without a check like this because nothing in the engine consults
- * supports_op — only embedders do.
+ * the capability answer — only the resolver and this gate do.
  */
 #include "test_helpers.h"
 
@@ -22,6 +22,9 @@
 #include <geist_util.h>
 
 #include "quant.h"
+
+#define GEIST_INTERNAL_BACKEND_LAYER /* cpu_neon_linear_support (internal.h) */
+#include "../src/backends/cpu_neon/internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,7 +72,7 @@ static int expect_resolved(struct geist_backend *be,
     return 0;
 }
 
-/* supports_op and resolve_weight must agree on whether this backend can
+/* cpu_neon_linear_support and resolve_weight must agree on whether this backend can
  * handle `dtype`. Asserts the equivalence rather than a fixed answer, so
  * it holds on hosts with and without dotprod (TQ2_0 / I2_S are ISA-gated
  * in the kernel table). */
@@ -93,21 +96,10 @@ expect_support_agrees(struct geist_backend *be, enum geist_dtype dtype, const ch
     }
     free(raw);
 
-    struct geist_op_support_query q = {
-            .op          = GEIST_OP_LINEAR,
-            .input_count = 2,
-            .inputs =
-                    {
-                            {.dtype = GEIST_DTYPE_F32, .layout = GEIST_LAYOUT_DENSE},
-                            {.dtype  = (uint16_t) dtype,
-                             .layout = dtype == GEIST_DTYPE_F32 ? GEIST_LAYOUT_DENSE
-                                                                : GEIST_LAYOUT_BLOCK_QUANTIZED},
-                    },
-    };
-    const bool advertised = geist_backend_supports_op(be, &q) != GEIST_SUPPORT_NONE;
+    const bool advertised = cpu_neon_linear_support(be, dtype) != CPU_NEON_SUPPORT_NONE;
     if (resolves != advertised) {
         fprintf(stderr,
-                "  [%s] supports_op says %s but resolve_weight %s\n",
+                "  [%s] linear_support says %s but resolve_weight %s\n",
                 name,
                 advertised ? "supported" : "NONE",
                 resolves ? "succeeded" : "failed");
@@ -147,7 +139,7 @@ int main(void) {
     fails += expect_resolved(be, GEIST_DTYPE_F16, "F16", true);
     fails += expect_resolved(be, GEIST_DTYPE_BF16, "BF16", true);
 
-    /* supports_op must not carry a dtype list of its own. TQ2_0 and I2_S
+    /* linear_support must not carry a dtype list of its own. TQ2_0 and I2_S
      * are the rows that were silently reported NONE; GEIST_DTYPE_CUSTOM
      * is the negative case that must stay NONE on both sides. */
     fails += expect_support_agrees(be, GEIST_DTYPE_Q3_K, "Q3_K");
@@ -171,7 +163,7 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
     printf("PASS: cpu_neon resolve_weight covers Q3_K/Q4_K/Q5_K/Q6_K/Q8_0/"
-           "IQ2_S/IQ3_S/F32/F16/BF16 (M=1 and M>1); supports_op agrees "
+           "IQ2_S/IQ3_S/F32/F16/BF16 (M=1 and M>1); linear_support agrees "
            "with the resolver on every dtype.\n");
     return GEIST_TEST_PASS;
 }
