@@ -15,6 +15,7 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
 #if defined(_OPENMP)
@@ -150,7 +151,7 @@ void i2s_gemv_m1_scalar(size_t        n_out,
 }
 
 /* --- Dispatch ------------------------------------------------------------ */
-static int g_i2s_vnni = -1;
+static _Atomic int g_i2s_vnni = -1;
 
 [[nodiscard]] int i2s_isa_is_vnni(void) {
     if (g_i2s_vnni < 0) {

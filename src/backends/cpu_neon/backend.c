@@ -20,6 +20,7 @@
 #include "heap.h"
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -210,7 +211,7 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
          * Pi 5 all 4 A76 cores help (clean pp256 4t 30 vs 3t 24); measure on a
          * QUIESCED box — a stray background process eating a core inverts this
          * (4 OMP threads then oversubscribe). */
-        static int n = -1;
+        static _Atomic int n = -1;
         if (n < 0) {
             const char *env = getenv("GEIST_PREFILL_THREADS");
             if (env != nullptr && env[0] != '\0') {
@@ -228,7 +229,7 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
      * E-cores join the static schedule. Pi 5 (shared LPDDR): 3 threads beat 4.
      * Apple: P-core count (M1 Max tg128: ambient/E-core-polluted → ~10 tps,
      * 8 P-cores → ~31 tps). Other targets keep the ambient count. */
-    static int n = -1;
+    static _Atomic int n = -1;
     if (n < 0) {
         const char *env = getenv("GEIST_DECODE_THREADS");
         if (env != nullptr && env[0] != '\0') {

@@ -279,6 +279,11 @@ enum geist_fused_op {
     GEIST_FUSED_FFN_GEGLU_Q4Q6_MN,
     GEIST_FUSED_FFN_GATE_UP,
     GEIST_FUSED_FFN_NORM_GATE_UP,
+    GEIST_FUSED_RMSNORM_ADD,
+    GEIST_FUSED_ATTN_QKV_PREP,
+    GEIST_FUSED_PLE_BLOCK,
+    GEIST_FUSED_EMBEDDING_LOOKUP_SCALED,
+    GEIST_FUSED_ARGMAX_F32,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -288,10 +293,15 @@ enum geist_fused_op {
  * upload), so backends can check residency and layout, not just dtype;
  * fields an op doesn't use are nullptr/0. */
 struct geist_fusion_query {
-    enum geist_fused_op        op;
-    size_t                     m;
-    size_t                     d_model;
-    size_t                     inter;
+    enum geist_fused_op op;
+    size_t              m;
+    size_t              d_model;
+    size_t              inter;
+    size_t              head_dim;    /* attn_qkv_prep */
+    size_t              n_q_heads;   /* attn_qkv_prep */
+    size_t              n_kv_heads;  /* attn_qkv_prep */
+    uint16_t            table_dtype; /* embedding_lookup_scaled: geist_dtype
+                                      * of the (tensor-typed) lookup table */
     const struct geist_weight *gate_w;
     const struct geist_weight *up_w;
     const struct geist_weight *down_w;

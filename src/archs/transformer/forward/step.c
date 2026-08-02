@@ -222,18 +222,17 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
 
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* Device path: fused lookup+scale keeps batched GPU backends from
-     * dequantizing through a mapped host pointer every token. */
-    if (fused->embedding_lookup_scaled != nullptr) {
-        struct geist_tensor t_out = view_1d(out_h_buf, st->d_model);
-        const float         scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
-        enum geist_status   es =
+     * dequantizing through a mapped host pointer every token. Bound at
+     * plan build. */
+    if (st->model_fusions.embed_lookup_scaled) {
+        struct geist_tensor     t_out = view_1d(out_h_buf, st->d_model);
+        const float             scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
+        const enum geist_status es =
                 fused->embedding_lookup_scaled(be, &st->embed_table, token_id, scale, &t_out);
         if (es == GEIST_OK) {
             return GEIST_OK;
         }
-        if (es != GEIST_E_UNSUPPORTED) {
-            return es;
-        }
+        return es;
     }
 
     float            *dst = (float *) v->buffer_map(out_h_buf);
