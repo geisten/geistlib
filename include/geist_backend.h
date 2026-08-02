@@ -596,7 +596,10 @@ struct geist_backend {
     /* Backend-private state, set during create(). */
     void *state;
 
-    /* Error slot — set via geist_backend_set_error. Writes are guarded
+    /* Error slot — DIAGNOSTIC DETAIL ONLY. Control flow runs through
+     * enum geist_status returns; code that reads geist_backend_errcode
+     * to decide WHETHER something failed is a bug. Set via
+     * geist_backend_set_error. Writes are guarded
      * by err_mu so concurrent sessions can't interleave garbage into the
      * message; reads (geist_backend_errmsg) return a pointer into the
      * slot and are last-writer-wins across sessions — read it after a

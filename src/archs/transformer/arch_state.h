@@ -585,9 +585,10 @@ void transformer_session_reset(struct transformer_arch_session *sess);
 
 /* Apply per-session opts. Called by the engine from geist_session_create.
  * Re-seeds the RNG; (re)allocates the sampler workspace if the opts
- * request a non-greedy mode. */
-void transformer_session_apply_opts(struct transformer_arch_session *sess,
-                                    const struct geist_session_opts *opts);
+ * request a non-greedy mode — that allocation can fail (GEIST_E_OOM). */
+[[nodiscard]] enum geist_status
+transformer_session_apply_opts(struct transformer_arch_session *sess,
+                               const struct geist_session_opts *opts);
 
 /* ---- Multi-session API (P1.2.f, made concurrent by the session-
  * threading refactor) ---------------------------------------------------- *

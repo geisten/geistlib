@@ -76,24 +76,18 @@ static inline void *arch_sess(const struct geist_session_full *sf) {
     return sf->arch_session != nullptr ? sf->arch_session : sf->model->text_decoder.arch_meta;
 }
 
-/* The arch prefill hook is void (errors were historically swallowed and
- * left for "the next decode_step" — which also swallowed them). Detect
- * failure deterministically: a successful prefill of n tokens advances
- * kv_len by exactly n. On shortfall, surface the backend's recorded
- * error (e.g. GEIST_E_TOO_MANY_TOKENS past the session window). */
+/* Record a failed per-session dispatch. The op's status return IS the
+ * control flow; the backend error slot only contributes detail text for
+ * the session's error message. */
 static enum geist_status
-check_prefill_advanced(struct geist_session_full *sf, size_t kv_before, size_t n) {
-    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
-    if (ops->kv_len == nullptr || ops->kv_len(arch_sess(sf)) == kv_before + n) {
-        return GEIST_OK;
-    }
-    const enum geist_status ec = geist_backend_errcode(sf->backend);
-    sf->err_code               = (ec != GEIST_OK) ? ec : GEIST_E_INVALID_STATE;
+session_op_failed(struct geist_session_full *sf, enum geist_status s, const char *what) {
+    sf->err_code = s;
     snprintf(sf->err_msg,
              sizeof(sf->err_msg),
-             "prefill failed: %s",
+             "%s failed: %s",
+             what,
              geist_backend_errmsg(sf->backend));
-    return sf->err_code;
+    return s;
 }
 
 [[nodiscard]] enum geist_status geist_session_create(struct geist_model              *m,
@@ -107,6 +101,20 @@ check_prefill_advanced(struct geist_session_full *sf, size_t kv_before, size_t n
     if (m == nullptr || be == nullptr) {
         geist_error_set_create_time(
                 GEIST_E_INVALID_ARG, "geist_session_create", "model or backend is null");
+        return GEIST_E_INVALID_ARG;
+    }
+
+    /* `be` is a STABLE-signature witness: it must be the backend the
+     * model was loaded on. A session on a different backend instance
+     * would mix buffer ownership and per-backend workspaces. */
+    if (be != m->backend) {
+        geist_error_set_create_time(GEIST_E_INVALID_ARG,
+                                    "geist_session_create",
+                                    "backend does not match the one the model was loaded on "
+                                    "(model: %s, given: %s)",
+                                    m->backend != nullptr ? geist_backend_name(m->backend)
+                                                          : "(null)",
+                                    geist_backend_name(be));
         return GEIST_E_INVALID_ARG;
     }
 
@@ -157,7 +165,14 @@ check_prefill_advanced(struct geist_session_full *sf, size_t kv_before, size_t n
         /* Legacy single-session path: push opts onto the arch's one
          * session (= its arch_state). When multiple legacy sessions
          * share one model, the last set_session_opts call wins. */
-        ops->set_session_opts(m->text_decoder.arch_meta, opts);
+        const enum geist_status os = ops->set_session_opts(m->text_decoder.arch_meta, opts);
+        if (os != GEIST_OK) {
+            geist_error_set_create_time(
+                    GEIST_E_OOM, "geist_session_create", "set_session_opts failed");
+            void *tmp = sf;
+            safe_free(&tmp);
+            return os;
+        }
     }
 
     *out = (struct geist_session *) sf;
@@ -255,12 +270,13 @@ const char *geist_session_errmsg(const struct geist_session *s) {
             return GEIST_E_IO;
         }
         n_enc += enc_n;
-        const uint64_t t0 = monotonic_ns();
-        ops->prefill(arch_sess(sf), n_enc, (const geist_token_t *) enc_ids);
+        const uint64_t          t0 = monotonic_ns();
+        const enum geist_status ps =
+                ops->prefill(arch_sess(sf), n_enc, (const geist_token_t *) enc_ids);
         sf->total_prefill_ns += monotonic_ns() - t0;
         void *p = enc_ids;
         safe_free(&p);
-        return GEIST_OK;
+        return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
     }
 
     uint32_t *ids   = nullptr;
@@ -272,13 +288,11 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     }
     /* sp_bpe yields uint32_t; bit-pattern of u32 ≡ i32 for IDs in 21-bit
      * vocab range. arch->prefill takes geist_token_t (int32_t). */
-    const size_t   kv_before = ops->kv_len != nullptr ? ops->kv_len(arch_sess(sf)) : 0;
-    const uint64_t t0        = monotonic_ns();
-    ops->prefill(arch_sess(sf), n_ids, (const geist_token_t *) ids);
+    const uint64_t          t0 = monotonic_ns();
+    const enum geist_status ps = ops->prefill(arch_sess(sf), n_ids, (const geist_token_t *) ids);
     sf->total_prefill_ns += monotonic_ns() - t0;
-    const size_t n_prefilled = n_ids;
     safe_free((void **) &ids);
-    return check_prefill_advanced(sf, kv_before, n_prefilled);
+    return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
 }
 
 [[nodiscard]] enum geist_status geist_session_tokenize(struct geist_session *s,
@@ -363,11 +377,10 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
     if (ops == nullptr || ops->prefill == nullptr) {
         return GEIST_E_INVALID_STATE;
     }
-    const size_t   kv_before = ops->kv_len != nullptr ? ops->kv_len(arch_sess(sf)) : 0;
-    const uint64_t t0        = monotonic_ns();
-    ops->prefill(arch_sess(sf), n, ids);
+    const uint64_t          t0 = monotonic_ns();
+    const enum geist_status ps = ops->prefill(arch_sess(sf), n, ids);
     sf->total_prefill_ns += monotonic_ns() - t0;
-    return check_prefill_advanced(sf, kv_before, n);
+    return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
 }
 
 [[nodiscard]] enum geist_status geist_session_decode_step(struct geist_session *s,
@@ -380,20 +393,11 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
     if (ops == nullptr || ops->decode_step == nullptr) {
         return GEIST_E_INVALID_STATE;
     }
-    const uint64_t t0 = monotonic_ns();
-    *out_token        = ops->decode_step(arch_sess(sf));
+    const uint64_t          t0 = monotonic_ns();
+    const enum geist_status ds = ops->decode_step(arch_sess(sf), out_token);
     sf->total_decode_ns += monotonic_ns() - t0;
-    if (*out_token < 0) {
-        /* -1 is the arch-level failure sentinel (no pending logits, or the
-         * forward itself failed — e.g. GEIST_E_TOO_MANY_TOKENS past the
-         * session window). Do not report GEIST_OK with a garbage token. */
-        const enum geist_status ec = geist_backend_errcode(sf->backend);
-        sf->err_code               = (ec != GEIST_OK) ? ec : GEIST_E_INVALID_STATE;
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "decode_step failed: %s",
-                 geist_backend_errmsg(sf->backend));
-        return sf->err_code;
+    if (ds != GEIST_OK) {
+        return session_op_failed(sf, ds, "decode_step");
     }
     sf->n_tokens_decoded++;
     return GEIST_OK;
@@ -613,7 +617,10 @@ geist_session_decode_speculative(struct geist_session *s,
      * next spec_step / decode_step needs pending logits computed from
      * it, so push it now via a single-token prefill. Numerically the
      * same as ending the previous batched forward one token earlier. */
-    ops->prefill(st, 1, &correction);
+    const enum geist_status cs = ops->prefill(st, 1, &correction);
+    if (cs != GEIST_OK) {
+        return session_op_failed(sf, cs, "speculative correction prefill");
+    }
 
     *n_out = emitted;
     sf->n_tokens_decoded += emitted;
@@ -718,11 +725,11 @@ geist_session_attach_audio(struct geist_session *s,
         return GEIST_E_IO;
     }
 
-    const uint64_t t_pre0 = monotonic_ns();
-    dec_ops->prefill_audio(arch_sess(sf), n_soft, soft);
+    const uint64_t          t_pre0 = monotonic_ns();
+    const enum geist_status as     = dec_ops->prefill_audio(arch_sess(sf), n_soft, soft);
     sf->total_prefill_ns += monotonic_ns() - t_pre0;
     safe_free((void **) &soft);
-    return GEIST_OK;
+    return as == GEIST_OK ? GEIST_OK : session_op_failed(sf, as, "prefill_audio");
 }
 
 /* Vision path: RGB pixels → image_pipeline → vision_siglip tower →
@@ -778,11 +785,11 @@ geist_session_attach_image(struct geist_session *s,
         return GEIST_E_IO;
     }
 
-    const uint64_t t_pre0 = monotonic_ns();
-    dec_ops->prefill_image(arch_sess(sf), n_soft, soft);
+    const uint64_t          t_pre0 = monotonic_ns();
+    const enum geist_status is     = dec_ops->prefill_image(arch_sess(sf), n_soft, soft);
     sf->total_prefill_ns += monotonic_ns() - t_pre0;
     safe_free((void **) &soft);
-    return GEIST_OK;
+    return is == GEIST_OK ? GEIST_OK : session_op_failed(sf, is, "prefill_image");
 }
 
 /* Video path: per-frame run_image → concat soft tokens →
@@ -840,11 +847,11 @@ geist_session_attach_video(struct geist_session *s,
         return GEIST_E_IO;
     }
 
-    const uint64_t t_pre0 = monotonic_ns();
-    dec_ops->prefill_image(arch_sess(sf), n_soft, soft);
+    const uint64_t          t_pre0 = monotonic_ns();
+    const enum geist_status is     = dec_ops->prefill_image(arch_sess(sf), n_soft, soft);
     sf->total_prefill_ns += monotonic_ns() - t_pre0;
     safe_free((void **) &soft);
-    return GEIST_OK;
+    return is == GEIST_OK ? GEIST_OK : session_op_failed(sf, is, "prefill_image");
 }
 
 [[nodiscard]] enum geist_status

@@ -382,10 +382,10 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
     sess->next_token_pending = 0;
 }
 
-void transformer_session_apply_opts(struct transformer_arch_session *sess,
-                                    const struct geist_session_opts *opts) {
+enum geist_status transformer_session_apply_opts(struct transformer_arch_session *sess,
+                                                 const struct geist_session_opts *opts) {
     if (sess == nullptr || opts == nullptr) {
-        return;
+        return GEIST_E_INVALID_ARG;
     }
     sess->temperature = opts->temperature;
     sess->top_p       = opts->top_p > 0.0f ? opts->top_p : 1.0f;
@@ -401,6 +401,11 @@ void transformer_session_apply_opts(struct transformer_arch_session *sess,
                           (sess->top_k > 1 || (sess->top_p > 0.0f && sess->top_p < 1.0f));
     if (needs_ws && sess->sampler_ws.n_vocab != (size_t) sess->model->vocab_size) {
         geist_sampler_workspace_destroy(&sess->sampler_ws);
-        (void) geist_sampler_workspace_init(&sess->sampler_ws, (size_t) sess->model->vocab_size);
+        const enum geist_status ws =
+                geist_sampler_workspace_init(&sess->sampler_ws, (size_t) sess->model->vocab_size);
+        if (ws != GEIST_OK) {
+            return ws; /* previously swallowed */
+        }
     }
+    return GEIST_OK;
 }
