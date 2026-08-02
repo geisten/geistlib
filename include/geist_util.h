@@ -13,7 +13,7 @@
 #pragma once
 
 #include <geist.h>
-#include <geist_types.h>  /* geist_op_support_query, GEIST_OP_COUNT */
+#include <geist_types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,7 +25,7 @@ extern "C" {
 
 /* Sentinel returned by the token-id accessors when the model has no
  * tokenizer, the metadata field is unset, or a lookup misses. */
-#define GEIST_TOKEN_NONE ((geist_token_t) -1)
+#define GEIST_TOKEN_NONE ((geist_token_t) - 1)
 
 /* @stability STABLE since 0.2.0 — special-token ids from the model's
  * tokenizer metadata. Use these for clean stop handling and chat templating
@@ -60,12 +60,11 @@ geist_token_t geist_model_token_by_text(const struct geist_model *m, const char 
  * IDs to `out_ids` and the actual count to `*n_out`. Returns
  * GEIST_E_NOT_FOUND if no tokenizer is loaded, GEIST_E_INVALID_ARG on
  * overflow. */
-[[nodiscard]] enum geist_status
-geist_session_tokenize(struct geist_session *s,
-                       const char           *text,
-                       size_t                out_capacity,
-                       geist_token_t         out_ids[static out_capacity],
-                       size_t               *n_out);
+[[nodiscard]] enum geist_status geist_session_tokenize(struct geist_session *s,
+                                                       const char           *text,
+                                                       size_t                out_capacity,
+                                                       geist_token_t out_ids[static out_capacity],
+                                                       size_t       *n_out);
 
 /* @stability STABLE since 0.1.0 — bypass tokenization: caller supplies
  * token IDs directly. Useful for testing and for integrations that
@@ -76,8 +75,7 @@ geist_session_tokenize(struct geist_session *s,
  * geist_session_decode_step yields the prediction for the position
  * following ids[n-1]. */
 [[nodiscard]] enum geist_status
-geist_session_prefill_tokens(struct geist_session *s, size_t n,
-                             const geist_token_t ids[static n]);
+geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_token_t ids[static n]);
 
 /* ====================================================================== */
 /* Multimodal soft-token attach                                            */
@@ -104,9 +102,9 @@ enum geist_status geist_session_attach_audio(struct geist_session *s,
  * Returns GEIST_E_NOT_FOUND if vision_tower.safetensors was not found
  * at model-load time. */
 enum geist_status geist_session_attach_image(struct geist_session *s,
-                                              size_t                height,
-                                              size_t                width,
-                                              const uint8_t         rgb[static height * width * 3]);
+                                             size_t                height,
+                                             size_t                width,
+                                             const uint8_t         rgb[static height * width * 3]);
 
 /* @stability EXPERIMENTAL — vision-tower soft-token injection for video.
  *
@@ -120,11 +118,12 @@ enum geist_status geist_session_attach_image(struct geist_session *s,
  *
  * Returns GEIST_E_NOT_FOUND if vision_tower.safetensors was not found
  * at model-load time. */
-enum geist_status geist_session_attach_video(struct geist_session *s,
-                                              size_t                n_frames,
-                                              size_t                height,
-                                              size_t                width,
-                                              const uint8_t         frames[static n_frames * height * width * 3]);
+enum geist_status
+geist_session_attach_video(struct geist_session *s,
+                           size_t                n_frames,
+                           size_t                height,
+                           size_t                width,
+                           const uint8_t         frames[static n_frames * height * width * 3]);
 
 /* ====================================================================== */
 /* Advanced decode: KV-prefix pinning, raw logits, speculative             */
@@ -141,9 +140,8 @@ enum geist_status geist_session_attach_video(struct geist_session *s,
  *
  * Returns GEIST_E_UNSUPPORTED if the active architecture does not
  * implement prefix pinning. */
-enum geist_status geist_session_pin_prefix(struct geist_session *s,
-                                            size_t                n,
-                                            const geist_token_t   ids[static n]);
+enum geist_status
+geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t ids[static n]);
 
 /* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *
@@ -196,20 +194,12 @@ const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits
  * the speculative primitives. */
 [[nodiscard]] enum geist_status
 geist_session_decode_speculative(struct geist_session *s,
-                                  size_t                k_max,
-                                  size_t                history_n,
-                                  const geist_token_t   history[static history_n],
-                                  size_t                out_capacity,
-                                  geist_token_t         out_tokens[static out_capacity],
-                                  size_t               *n_out);
-
-/* ====================================================================== */
-/* Backend capability query                                                */
-/* ====================================================================== */
-
-/* @stability EXPERIMENTAL */
-enum geist_support geist_backend_supports_op(struct geist_backend                 *be,
-                                             const struct geist_op_support_query *query);
+                                 size_t                k_max,
+                                 size_t                history_n,
+                                 const geist_token_t   history[static history_n],
+                                 size_t                out_capacity,
+                                 geist_token_t         out_tokens[static out_capacity],
+                                 size_t               *n_out);
 
 /* ====================================================================== */
 /* Stats / Telemetry                                                       */
@@ -230,8 +220,6 @@ struct geist_session_stats {
     uint64_t buffer_alloc_count;
     uint64_t buffer_alloc_bytes_peak;
     uint64_t buffer_alloc_bytes_current;
-    uint64_t per_op_ns[GEIST_OP_COUNT];
-    uint64_t per_op_calls[GEIST_OP_COUNT];
 };
 
 /* @stability EXPERIMENTAL */

@@ -614,7 +614,7 @@ static bool spec_head_build(struct transformer_arch_state *st) {
  * batched-submit GPU backend (the sketch is a HOST optimization), or when
  * the head is ineligible. */
 void transformer_spec_head_init(struct transformer_arch_state *st) {
-    if (spec_head_env() == 0 || st->backend->desc->vtbl->linear_t != nullptr) {
+    if (spec_head_env() == 0 || st->backend->desc->caps.batched_submit) {
         st->spec_state = -1;
         return;
     }

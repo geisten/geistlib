@@ -53,43 +53,6 @@ static void cpu_scalar_destroy(struct geist_backend *be) {
     be->state = nullptr;
 }
 
-/* ---------- Capability ---------- */
-
-static enum geist_support cpu_scalar_supports_op(struct geist_backend                *be,
-                                                 const struct geist_op_support_query *query) {
-    (void) be;
-    if (query == nullptr || query->input_count < 2) {
-        return GEIST_SUPPORT_NONE;
-    }
-
-    if (query->op == GEIST_OP_LINEAR) {
-        const struct geist_tensor_format *x_fmt = &query->inputs[0];
-        const struct geist_tensor_format *w_fmt = &query->inputs[1];
-        if (x_fmt->dtype != GEIST_DTYPE_F32 || x_fmt->layout != GEIST_LAYOUT_DENSE) {
-            return GEIST_SUPPORT_NONE;
-        }
-        if (w_fmt->dtype == GEIST_DTYPE_F32 && w_fmt->layout == GEIST_LAYOUT_DENSE) {
-            return GEIST_SUPPORT_NATIVE;
-        }
-        if (w_fmt->layout == GEIST_LAYOUT_BLOCK_QUANTIZED) {
-            switch (w_fmt->dtype) {
-            case GEIST_DTYPE_Q4_K:
-            case GEIST_DTYPE_Q6_K:
-                return GEIST_SUPPORT_NATIVE; /* fused decode kernel exists */
-            case GEIST_DTYPE_Q3_K:
-            case GEIST_DTYPE_Q5_K:
-            case GEIST_DTYPE_Q8_0:
-            case GEIST_DTYPE_IQ2_S:
-            case GEIST_DTYPE_IQ3_S:
-                return GEIST_SUPPORT_EMULATED; /* dequant + naive matmul */
-            default:
-                return GEIST_SUPPORT_NONE;
-            }
-        }
-    }
-    return GEIST_SUPPORT_NONE;
-}
-
 /* ---------- Buffer ops ---------- */
 
 [[nodiscard]] static enum geist_status cpu_scalar_buffer_create(struct geist_backend  *be,
@@ -220,32 +183,38 @@ static void cpu_scalar_buffer_unmap(struct geist_buffer *buf) {
 const struct geist_backend_vtbl cpu_scalar_vtbl = {
         .create                = cpu_scalar_create,
         .destroy               = cpu_scalar_destroy,
-        .supports_op           = cpu_scalar_supports_op,
         .buffer_create         = cpu_scalar_buffer_create,
         .buffer_destroy        = cpu_scalar_buffer_destroy,
         .buffer_create_aliased = cpu_scalar_buffer_create_aliased,
-        .resolve_weight        = cpu_scalar_resolve_weight,
         .buffer_upload         = cpu_scalar_buffer_upload,
         .buffer_download       = cpu_scalar_buffer_download,
         .buffer_map            = cpu_scalar_buffer_map,
         .buffer_unmap          = cpu_scalar_buffer_unmap,
-        .rmsnorm               = cpu_scalar_rmsnorm,
-        .add                   = cpu_scalar_add,
-        .mul                   = cpu_scalar_mul,
-        .gelu_tanh             = cpu_scalar_gelu_tanh,
-        .gelu_tanh_mul         = cpu_scalar_gelu_tanh_mul,
-        .gelu_tanh_mul_scaled  = cpu_scalar_gelu_tanh_mul_scaled,
-        .relu_squared          = cpu_scalar_relu_squared,
-        .silu                  = cpu_scalar_silu,
-        .rope_apply            = cpu_scalar_rope_apply,
-        .embedding_lookup      = cpu_scalar_embedding_lookup,
-        .attention             = cpu_scalar_attention,
-        .transformer_block     = nullptr, /* level-3 not implemented for CPU */
+        .resolve_weight        = cpu_scalar_resolve_weight,
+};
+
+/* Exported like the vtbl: cpu_x86 struct-copies these as its Phase-0
+ * baseline. */
+const struct geist_backend_primitives cpu_scalar_prims = {
+        .rmsnorm          = cpu_scalar_rmsnorm,
+        .add              = cpu_scalar_add,
+        .mul              = cpu_scalar_mul,
+        .gelu_tanh        = cpu_scalar_gelu_tanh,
+        .silu             = cpu_scalar_silu,
+        .relu_squared     = cpu_scalar_relu_squared,
+        .rope_apply       = cpu_scalar_rope_apply,
+        .embedding_lookup = cpu_scalar_embedding_lookup,
+        .attention        = cpu_scalar_attention,
+};
+
+const struct geist_backend_fused cpu_scalar_fused = {
+        .gelu_tanh_mul        = cpu_scalar_gelu_tanh_mul,
+        .gelu_tanh_mul_scaled = cpu_scalar_gelu_tanh_mul_scaled,
 };
 
 const struct geist_backend_descriptor geist_backend_cpu_scalar = {
-        .name   = "cpu_scalar",
-        .vtbl   = &cpu_scalar_vtbl,
-        .caps   = nullptr, /* dynamic via supports_op */
-        .n_caps = 0,
+        .name  = "cpu_scalar",
+        .vtbl  = &cpu_scalar_vtbl,
+        .prims = &cpu_scalar_prims,
+        .fused = &cpu_scalar_fused,
 };

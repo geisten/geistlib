@@ -335,7 +335,7 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
             /* Dense KV caches carry the KV_CACHE role: after the append/
              * attention ops went on-device (P3), GPU backends keep them in
              * VRAM — the arch only touches them through buffer_copy and
-             * v->attention, never through buffer_map. The memset skip in
+             * prims->attention, never through buffer_map. The memset skip in
              * alloc_scratch is safe: causal attention reads only rows that
              * a prior append wrote. */
             const size_t kv_elem_bytes = sess->kv_f16_enabled ? 2u : sizeof(float);
@@ -611,22 +611,17 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                      * predecoded SGEMM path scales up to m=128 (m=32
                      * regresses Accelerate). 64 keeps scratch under ~30 MB
                      * while feeding Accelerate a decent batch. */
-    if (be->desc != nullptr && be->desc->name != nullptr && strcmp(be->desc->name, "metal") == 0) {
-        st->m_max = 128; /* GPU sweet spot (measured, M1 Max): the mm_sg
-                          * GEMM fast paths want rows%64==0 and fewer,
-                          * larger chunks; 128 was the bench default via
-                          * GEIST_M_MAX all along. */
+    if (be->desc != nullptr && be->desc->caps.preferred_m_max > 0) {
+        st->m_max = be->desc->caps.preferred_m_max; /* backend-measured sweet spot */
     }
 #endif
     { /* GEIST_M_MAX override — for tuning the prefill activation tile vs L1
        * fit (m×n_in int8 should fit the 64 KB L1: m=32→48 KB, m=64→96 KB).
        * GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; the metal
        * path never runs those in prefill, so the GPU may batch larger. */
-        const bool is_gpu =
-                be->desc != nullptr && be->desc->name != nullptr &&
-                (strcmp(be->desc->name, "metal") == 0 || strcmp(be->desc->name, "vulkan") == 0);
-        const int   cap = is_gpu ? 512 : (int) GEIST_QUANT_M_CAP;
-        const char *mm  = getenv("GEIST_M_MAX");
+        const bool  is_gpu = be->desc != nullptr && be->desc->caps.batched_submit;
+        const int   cap    = is_gpu ? 512 : (int) GEIST_QUANT_M_CAP;
+        const char *mm     = getenv("GEIST_M_MAX");
         if (mm != nullptr && mm[0] != '\0') {
             const int v = atoi(mm);
             if (v > 0 && v <= cap)
@@ -713,7 +708,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     /* GPU backends default to the backend-arena mode: norm weights and
      * embed tables must live inside a backend buffer to be GPU-bindable;
      * mmap pages are not (every touching op would flush + run on CPU). */
-    bool mmap_alias_mode = strcmp(be->desc->name, "vulkan") != 0;
+    bool mmap_alias_mode = !be->desc->caps.weights_need_backend_arena;
     {
         const char *env = getenv("GEIST_WEIGHT_MMAP");
         if (env != nullptr && env[0] != '\0') {
@@ -976,9 +971,9 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         return (env_int8[0] == '1') ? GEIST_KV_INT8 : GEIST_KV_FP32;
     }
     /* Batched-submit GPU backends keep dense KV on-device (buffer_copy
-     * append + v->attention); the INT8 cache would force a host round-trip
+     * append + prims->attention); the INT8 cache would force a host round-trip
      * per layer. */
-    if (be != nullptr && strcmp(be->desc->name, "vulkan") == 0) {
+    if (be != nullptr && be->desc->caps.batched_submit) {
         return GEIST_KV_FP32;
     }
 #if defined(__APPLE__)
@@ -1005,10 +1000,10 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     memset(sess, 0, sizeof(*sess));
     sess->model = state;
     sess->m_max = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
-    /* GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; metal's
-     * prefill never runs those, so its sessions may batch up to 512. */
-    const size_t m_cap = (be->desc != nullptr && be->desc->name != nullptr &&
-                          strcmp(be->desc->name, "metal") == 0)
+    /* GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; batched-
+     * submit GPU prefill never runs those, so those sessions may batch
+     * up to 512. */
+    const size_t m_cap = (be->desc != nullptr && be->desc->caps.batched_submit)
                                  ? 512u
                                  : (size_t) GEIST_QUANT_M_CAP;
     if (sess->m_max == 0 || sess->m_max > m_cap) {
@@ -1138,12 +1133,14 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         }
     }
     /* F16 cache: explicit request, or AUTO-resolved FP32 upgraded when the
-     * backend has the fused converting append (env GEIST_KV_F16=0 forces
-     * FP32, =1 requests it under AUTO). Without the slot F16 silently
-     * degrades to FP32 — no host-side half-float path exists. */
+     * backend's attention reads F16 K/V (caps.kv_f16_attention) and the
+     * fused converting append exists (env GEIST_KV_F16=0 forces FP32,
+     * =1 requests it under AUTO). Otherwise F16 silently degrades to
+     * FP32 — no host-side half-float path exists. */
     {
-        const bool slot_ok =
-                state->backend != nullptr && state->backend->desc->vtbl->kv_append_f16 != nullptr;
+        const bool  slot_ok = state->backend != nullptr &&
+                              state->backend->desc->caps.kv_f16_attention &&
+                              geist_backend_fused_tbl(state->backend)->kv_append_f16 != nullptr;
         const char *env_f16 = getenv("GEIST_KV_F16");
         bool        want    = mode == GEIST_KV_F16;
         if (mode == GEIST_KV_FP32 && (opts == nullptr || opts->kv_mode == GEIST_KV_AUTO)) {

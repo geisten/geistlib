@@ -67,7 +67,7 @@ enum geist_dtype {
     GEIST_DTYPE_BINARY,  /* 1-bit values; storage via layout */
     GEIST_DTYPE_TERNARY, /* {-1, 0, +1}; storage via layout */
 
-    GEIST_DTYPE_CUSTOM,  /* user-extended via geist_quant_desc.flags */
+    GEIST_DTYPE_CUSTOM, /* user-extended via geist_quant_desc.flags */
 };
 
 enum geist_layout {
@@ -99,7 +99,7 @@ enum geist_memory_flags {
      * region owned by the GGUF reader). buffer_destroy frees only the
      * buffer-handle metadata; the caller retains ownership of the
      * underlying bytes. Created via buffer_create_aliased. */
-    GEIST_MEMORY_ALIASED      = 1 << 4,
+    GEIST_MEMORY_ALIASED = 1 << 4,
 };
 
 /* Quantization metadata for block-quantized layouts.
@@ -137,59 +137,6 @@ struct geist_tensor {
     int64_t stride[8];
 
     struct geist_quant_desc quant;
-};
-
-/* ====================================================================== */
-/* Backend Op Vocab + Capability                                           */
-/* ====================================================================== */
-
-enum geist_op {
-    /* Shared */
-    GEIST_OP_LINEAR,           /* y = x @ W */
-    GEIST_OP_RMSNORM,
-    GEIST_OP_RESIDUAL_ADD,
-    GEIST_OP_SILU_GATE,
-    GEIST_OP_EMBEDDING_LOOKUP,
-
-    /* Transformer-specific */
-    GEIST_OP_ATTENTION,        /* fused QK^T → softmax → V */
-    GEIST_OP_ROPE,
-
-    /* Mamba-specific (added when arch lands; reserved here) */
-    GEIST_OP_SSM_STEP,
-    GEIST_OP_SSM_SCAN,
-    GEIST_OP_CONV1D,
-
-    GEIST_OP_COUNT,
-};
-
-enum geist_support {
-    GEIST_SUPPORT_NONE,     /* backend cannot do this combination */
-    GEIST_SUPPORT_EMULATED, /* backend can do it, but slow path */
-    GEIST_SUPPORT_NATIVE,   /* backend has native fast implementation */
-};
-
-/* Storage description — what kind of tensor (without the data). */
-struct geist_tensor_format {
-    enum geist_dtype  dtype;
-    enum geist_layout layout;
-
-    int storage_bits_per_value_num;
-    int storage_bits_per_value_den;
-
-    int block_values;
-    int block_bytes;
-};
-
-/* Capability query — describes a complete op signature. */
-struct geist_op_support_query {
-    enum geist_op op;
-
-    int                       input_count;
-    struct geist_tensor_format inputs[8];
-
-    int                       output_count;
-    struct geist_tensor_format outputs[4];
 };
 
 #ifdef __cplusplus
