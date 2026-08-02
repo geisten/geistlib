@@ -242,7 +242,7 @@ NEON_KERNEL_TESTS := \
     tests/test_backend_vs_direct_int.c tests/bench_q4k_kernel.c \
     tests/test_i2_s_parity.c tests/test_tl1_parity.c \
     tests/bench_5trit_probe.c tests/test_state_layer_fwd_int.c \
-    tests/test_multi_session_int.c tests/test_resolve_weight_unit.c
+    tests/test_multi_session_int.c
 ifeq ($(filter cpu_neon,$(BACKENDS)),)
     TEST_SOURCES := $(filter-out $(NEON_KERNEL_TESTS),$(TEST_SOURCES))
 endif
