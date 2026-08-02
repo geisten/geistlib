@@ -104,11 +104,10 @@ falls back to the sequential path shown above.
 
 ## Above the ABI: what the engine deliberately does not do
 
-The tool-use agent, the resident `dynamic-tools-v1` daemon and the constrained
-decoding that forces a well-formed call out of a model that cannot emit one
-are **not** in this repository. They live in
-[geisten/geistagent](https://github.com/geisten/geistagent), built on top of
-the public API described here.
+A tool-use agent, a resident daemon and the constrained decoding that forces a
+well-formed call out of a model that cannot emit one are **not** in this
+repository. They belong above the ABI, built on top of the public API described
+here.
 
 That split is the point rather than an accident of history. The agent layer is
 where a whitelist decides whether a model may act; the engine is where tokens
@@ -213,8 +212,8 @@ text bottleneck would discard.
 - The public contract: `include/geist.h` (stability tags per symbol), and
   what those tags promise across a release boundary:
   [API_CONTRACT.md](API_CONTRACT.md).
-- The tool-use runtime (`agent.h`, `--serve`, dynamic-tools-v1):
-  [geisten/geistagent](https://github.com/geisten/geistagent).
+- What the engine promises an out-of-tree runtime:
+  [API_CONTRACT.md](API_CONTRACT.md).
 - Building self-contained binaries and deploying: [DEPLOY.md](DEPLOY.md).
 
 Per directory, the file to open first:

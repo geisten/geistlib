@@ -1,11 +1,9 @@
 # Building & consuming the library
 
-geistlib builds one artefact: `libgeist.a` plus the public headers. It has no
-CLI and no daemon — the resident runtime, the `dynamic-tools-v1` service and the
-single-file binary with a model baked in are
-[geisten/geistagent](https://github.com/geisten/geistagent), which links this
-engine. Deploying *that* is documented there; this page is about producing and
-consuming the library.
+geistlib builds one artefact: `libgeist.a` plus the public headers. It has no CLI
+and no daemon — a resident runtime, a tool-use service and the single-file binary
+with a model baked in are things a *consumer* builds on top. This page is about
+producing and consuming the library.
 
 ## Build locally
 
@@ -57,10 +55,8 @@ consumer's build.
 
 ## Consuming from another repository
 
-A consumer pins a release the way the Home Assistant product pins its runtime:
-exact `vX.Y.Z` tag, immutable asset URL, SHA-256 verified before extraction —
-never `latest`. geistagent's `scripts/fetch-libgeist.sh` is a working
-implementation of that pattern.
+Pin a release: exact `vX.Y.Z` tag, immutable asset URL, SHA-256 verified before
+extraction — never `latest`.
 
 What the engine promises across that boundary is in
 [API_CONTRACT.md](API_CONTRACT.md), and `make agent-contract-smoke` fails here

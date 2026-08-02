@@ -33,10 +33,10 @@ survives an accelerator/architecture change without a signature break.
 
 ## The agent-runtime contract
 
-[`geisten/geistagent`](https://github.com/geisten/geistagent) implements the
-tool-use loop — constrained ("masked") decoding, KV-prefix pinning, chat
-templating — out of tree, linking libgeist. That loop is the security boundary
-of every product built on it, so the symbols it needs are contractual.
+A tool-use loop — constrained ("masked") decoding, KV-prefix pinning, chat
+templating — is implemented out of tree, linking libgeist. That loop is the
+security boundary of every product built on it, so the symbols it needs are
+contractual.
 
 Constrained decoding is what lets a model that was never trained for tool
 calling still emit a well-formed one: the runtime inspects the next-token

@@ -25,12 +25,10 @@ make MODE=asan test
 
 Adapter-specific policy and packaging suites live in their own repositories.
 
-Tool-use and wire-format safety is not tested here: the agent layer and the
-`dynamic-tools-v1` protocol live in
-[geisten/geistagent](https://github.com/geisten/geistagent), with their suites.
-What this repository still owes that consumer is covered by
-`make agent-contract-smoke` — the symbols it links must exist with unchanged
-signatures.
+Tool-use and wire-format safety is not tested here: the agent layer and its
+protocol live out of tree, with their suites. What this repository still owes an
+out-of-tree consumer is covered by `make agent-contract-smoke` — the symbols such
+a runtime links must exist with unchanged signatures.
 
 ## Exit-Code Convention (automake-compatible)
 

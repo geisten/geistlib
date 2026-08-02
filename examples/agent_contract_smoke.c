@@ -2,7 +2,7 @@
  * agent_contract_smoke.c — the agent-runtime API contract, enforced by the
  * compiler and the linker (docs/API_CONTRACT.md).
  *
- * An out-of-tree agent runtime (geisten/geistagent) implements the tool-use
+ * An out-of-tree agent runtime implements the tool-use
  * loop — constrained decoding, KV-prefix pinning, chat templating — against
  * libgeist. Those symbols are contractual, so a signature change must be a
  * deliberate major bump, never a surprise at the consumer's build.
