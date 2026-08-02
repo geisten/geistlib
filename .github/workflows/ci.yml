@@ -313,9 +313,14 @@ jobs:
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
+      # Build ONLY the two multi-session binaries (file targets), not `bin`:
+      # the cross-session races live in engine/arch/backend code these two
+      # exercise, and building 100+ test TUs under -fsanitize=thread buys
+      # nothing but wall-clock and -O1-only warning noise in unrelated tests.
       - name: Build (TSan) + fetch model
         run: |
-          make MODE=tsan TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE bin
+          make MODE=tsan TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE \
+            bin/linux/tsan/tests/test_multi_session_int bin/linux/tsan/tests/test_multi_session_parallel_int
           make fetch-model
       - name: Multi-session tests under TSan
         env:
