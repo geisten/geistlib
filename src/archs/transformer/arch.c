@@ -3,13 +3,11 @@
  *
  * Layer: ARCHITECTURE.
  *
- * Phase B-4e production swap (this file): the arch_state is the v2 state
- * built in arch_state.{h,c}. Every op routes through backend->vtbl->*
- * via transformer_decode_step. The legacy `LM*` delegation is gone;
- * the lm.c module is now only used by tests in tests/legacy/.
- *
- * Phase B-4f: prefill_audio and pin_prefix wired through v2. peek_logits
- * wired through to scratch_logits for the public session_peek_logits API.
+ * Thin thunks between the engine's geist_arch_ops_decoder vtable and the
+ * internal entry points in arch_ops.c / forward/. Model-level ops take
+ * the opaque arch_state; per-session ops take the opaque session handle
+ * (a struct transformer_arch_session) — the engine always passes a real
+ * session for this arch since it implements session_alloc.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -58,24 +56,28 @@ static void op_state_destroy(void *arch_state) {
     transformer_state_destroy(arch_state);
 }
 
-static void op_state_reset(void *arch_state) {
-    transformer_state_reset(arch_state);
+static void op_state_reset(void *session) {
+    if (session != nullptr) {
+        transformer_session_reset(session);
+    }
 }
 
-static void op_set_session_opts(void *arch_state, const struct geist_session_opts *opts) {
-    transformer_state_apply_opts(arch_state, opts);
+static void op_set_session_opts(void *session, const struct geist_session_opts *opts) {
+    if (session != nullptr) {
+        transformer_session_apply_opts(session, opts);
+    }
 }
 
 /* Append a sequence of tokens to the KV cache via the batched seq>1
- * path. After the call, arch_state holds logits for the next position;
+ * path. After the call, the session holds logits for the next position;
  * ops->decode_step will return the argmax of those logits on its first
  * invocation. */
-static void op_prefill(void *arch_state, size_t n, const geist_token_t ids[static n]) {
-    struct transformer_arch_state *st = arch_state;
-    if (st == nullptr || n == 0) {
+static void op_prefill(void *session, size_t n, const geist_token_t ids[static n]) {
+    struct transformer_arch_session *sess = session;
+    if (sess == nullptr || n == 0) {
         return;
     }
-    (void) transformer_prefill_text_batch(st, n, ids);
+    (void) transformer_prefill_text_batch(sess, n, ids);
     /* On failure kv_len doesn't advance by n; the engine detects the
      * shortfall and surfaces the backend's recorded error. */
 }
@@ -83,36 +85,36 @@ static void op_prefill(void *arch_state, size_t n, const geist_token_t ids[stati
 /* Append `n` audio soft-tokens to the KV cache via the batched seq>1
  * path. Each soft-token is a HIDDEN-dim FP32 vector produced upstream
  * by the audio encoder. */
-static void op_prefill_audio(void *arch_state, size_t n, const float *soft_tokens) {
-    struct transformer_arch_state *st = arch_state;
-    if (st == nullptr || soft_tokens == nullptr || n == 0) {
+static void op_prefill_audio(void *session, size_t n, const float *soft_tokens) {
+    struct transformer_arch_session *sess = session;
+    if (sess == nullptr || soft_tokens == nullptr || n == 0) {
         return;
     }
-    (void) transformer_prefill_audio_batch(st, n, soft_tokens);
+    (void) transformer_prefill_audio_batch(sess, n, soft_tokens);
 }
 
 /* Vision soft-tokens follow the same wire format as audio (1536-dim
  * fp32 per token). The transformer side just memcpys them into the
  * residual stream and runs the layer loop — no embedding lookup, no
  * scale. Delegate to the audio prefill batch path. */
-static void op_prefill_image(void *arch_state, size_t n, const float *soft_tokens) {
-    struct transformer_arch_state *st = arch_state;
-    if (st == nullptr || soft_tokens == nullptr || n == 0) {
+static void op_prefill_image(void *session, size_t n, const float *soft_tokens) {
+    struct transformer_arch_session *sess = session;
+    if (sess == nullptr || soft_tokens == nullptr || n == 0) {
         return;
     }
-    (void) transformer_prefill_audio_batch(st, n, soft_tokens);
+    (void) transformer_prefill_audio_batch(sess, n, soft_tokens);
 }
 
 /* Pin `n` prefix tokens into the KV cache. Truncates cache, prefills the
  * prefix once, snapshots the resulting kv_len as the reset target.
  * Subsequent state_reset calls truncate kv_len back to the pinned length,
  * keeping the prefix's KV state across conversation turns. */
-static void op_pin_prefix(void *arch_state, size_t n, const geist_token_t ids[static n]) {
-    struct transformer_arch_state *st = arch_state;
-    if (st == nullptr) {
+static void op_pin_prefix(void *session, size_t n, const geist_token_t ids[static n]) {
+    struct transformer_arch_session *sess = session;
+    if (sess == nullptr) {
         return;
     }
-    (void) transformer_pin_prefix(st, n, ids);
+    (void) transformer_pin_prefix(sess, n, ids);
 }
 
 /* Greedy one-token autoregressive step. Returns the prediction computed
@@ -120,90 +122,87 @@ static void op_pin_prefix(void *arch_state, size_t n, const geist_token_t ids[st
  * prediction so the next call's pending value is the prediction for the
  * following position. Mirrors lm.c::lm_decode_step's "return-then-advance"
  * cadence. */
-static geist_token_t op_decode_step(void *arch_state) {
-    struct transformer_arch_state *st = arch_state;
-    if (st == nullptr || !st->sess->logits_valid) {
+static geist_token_t op_decode_step(void *session) {
+    struct transformer_arch_session *sess = session;
+    if (sess == nullptr || !sess->logits_valid) {
         return -1;
     }
-    const geist_token_t prev    = st->sess->next_token_pending;
+    const geist_token_t prev    = sess->next_token_pending;
     geist_token_t       scratch = -1;
-    if (transformer_decode_step(st, prev, &scratch) != GEIST_OK) {
+    if (transformer_decode_step(sess, prev, &scratch) != GEIST_OK) {
         return -1;
     }
     return prev;
 }
 
-static geist_token_t op_peek_next_token(void *arch_state) {
-    const struct transformer_arch_state *st = arch_state;
-    if (st == nullptr || !st->sess->logits_valid)
+static geist_token_t op_peek_next_token(void *session) {
+    const struct transformer_arch_session *sess = session;
+    if (sess == nullptr || !sess->logits_valid)
         return -1;
-    return st->sess->next_token_pending;
+    return sess->next_token_pending;
 }
 
 /* Returns a pointer to the pending next-position logits and the vocab
  * size in *n_logits. nullptr (with *n_logits=0) if no logits are pending.
  * CPU-only: pointer aliases the backend buffer and is valid until the
  * next mutating call on the session. */
-static const float *op_peek_logits(void *arch_state, size_t *n_logits) {
-    struct transformer_arch_state *st = arch_state;
+static const float *op_peek_logits(void *session, size_t *n_logits) {
+    struct transformer_arch_session *sess = session;
     if (n_logits == nullptr)
         return nullptr;
-    if (st == nullptr || !st->sess->logits_valid || st->sess->scratch_logits == nullptr) {
+    if (sess == nullptr || !sess->logits_valid || sess->scratch_logits == nullptr) {
         *n_logits = 0;
         return nullptr;
     }
+    struct transformer_arch_state *st = sess->model;
     /* The spec-head fast path leaves scratch_logits SPARSE (-inf off its
      * top-K) — right for greedy, wrong for value consumers. Recompute the
      * dense head lazily, once, from the hidden still in scratch_h_a. */
-    if (st->sess->logits_sparse && transformer_head_dense_recompute(st) != GEIST_OK) {
+    if (sess->logits_sparse && transformer_head_dense_recompute(sess) != GEIST_OK) {
         *n_logits = 0;
         return nullptr;
     }
     *n_logits = (size_t) st->vocab_size;
-    float *p  = (float *) st->backend->desc->vtbl->buffer_map(st->sess->scratch_logits);
+    float *p  = (float *) st->backend->desc->vtbl->buffer_map(sess->scratch_logits);
     /* The greedy argmax path skips the Gemma final-logit softcap (monotonic,
      * so the argmax is invariant and it saves ~262k tanhf/token on decode).
      * peek_logits exposes the VALUES to scoring/perplexity consumers, which
      * need the model-conformant softcapped logits — apply it lazily, once. */
-    if (p != nullptr && st->config.logit_softcap > 0.0f && !st->sess->logits_softcapped) {
+    if (p != nullptr && st->config.logit_softcap > 0.0f && !sess->logits_softcapped) {
         const float c = st->config.logit_softcap;
         for (size_t i = 0; i < (size_t) st->vocab_size; i++) {
             p[i] = tanhf(p[i] / c) * c;
         }
-        st->sess->logits_softcapped = true;
+        sess->logits_softcapped = true;
     }
     return (const float *) p;
 }
 
-static enum geist_status op_verify_forward(void               *arch_state,
+static enum geist_status op_verify_forward(void               *session,
                                            size_t              k,
                                            const geist_token_t ids[static k],
                                            geist_token_t       out_tokens[static k]) {
     return transformer_verify_forward(
-            (struct transformer_arch_state *) arch_state, k, ids, out_tokens);
+            (struct transformer_arch_session *) session, k, ids, out_tokens);
 }
 
-static void op_kv_truncate(void *arch_state, size_t new_len) {
-    transformer_kv_truncate((struct transformer_arch_state *) arch_state, new_len);
+static void op_kv_truncate(void *session, size_t new_len) {
+    transformer_kv_truncate((struct transformer_arch_session *) session, new_len);
 }
 
-static size_t op_kv_len(const void *arch_state) {
-    const struct transformer_arch_state *st = arch_state;
-    return st != nullptr ? st->sess->kv_len : 0;
+static size_t op_kv_len(const void *session) {
+    const struct transformer_arch_session *sess = session;
+    return sess != nullptr ? sess->kv_len : 0;
 }
 
-/* ---- Multi-session vtable hooks (P1.2.f) ------------------------------ */
+/* ---- Session lifecycle vtable hooks (P1.2.f) -------------------------- */
 
 static void *op_session_alloc(void *arch_state, const struct geist_session_opts *opts) {
     return transformer_session_alloc(arch_state, opts);
 }
 
-static void op_session_free(void *arch_state, void *session_meta) {
-    transformer_session_free(arch_state, session_meta);
-}
-
-static void op_session_attach(void *arch_state, void *session_meta) {
-    transformer_session_attach(arch_state, session_meta);
+static void op_session_free(void *arch_state, void *session) {
+    transformer_session_free(arch_state, session);
 }
 
 const struct geist_arch_ops_decoder geist_arch_transformer = {
@@ -225,5 +224,4 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .kv_len                   = op_kv_len,
         .session_alloc            = op_session_alloc,
         .session_free             = op_session_free,
-        .session_attach           = op_session_attach,
 };

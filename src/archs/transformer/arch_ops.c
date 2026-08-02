@@ -40,15 +40,17 @@
 
 /* ---- Batched text prefill -------------------------------------------- */
 
-static enum geist_status
-prefill_text_batch_inner(struct transformer_arch_state *st, size_t n, const geist_token_t *ids) {
+static enum geist_status prefill_text_batch_inner(struct transformer_arch_session *sess,
+                                                  size_t                           n,
+                                                  const geist_token_t             *ids) {
+    struct transformer_arch_state *st = sess->model;
     if (st == nullptr || (n > 0 && ids == nullptr)) {
         return GEIST_E_INVALID_ARG;
     }
     if (n == 0) {
         return GEIST_OK;
     }
-    enum geist_status room = transformer_check_kv_room(st, n);
+    enum geist_status room = transformer_check_kv_room(sess, n);
     if (room != GEIST_OK) {
         return room;
     }
@@ -70,7 +72,7 @@ prefill_text_batch_inner(struct transformer_arch_state *st, size_t n, const geis
         if (embed_on_device) {
             for (size_t t = 0; t < chunk; t++) {
                 struct geist_tensor t_row = {
-                        .buffer = st->sess->scratch_h_a,
+                        .buffer = sess->scratch_h_a,
                         .offset = t * st->d_model * sizeof(float),
                         .dtype  = GEIST_DTYPE_F32,
                         .layout = GEIST_LAYOUT_DENSE,
@@ -86,12 +88,12 @@ prefill_text_batch_inner(struct transformer_arch_state *st, size_t n, const geis
             }
         }
         if (!embed_on_device) {
-            float *h_dst = (float *) v->buffer_map(st->sess->scratch_h_a);
+            float *h_dst = (float *) v->buffer_map(sess->scratch_h_a);
             for (size_t t = 0; t < chunk; t++) {
                 enum geist_status s = dequant_one_row(
                         be, &st->embed_table, (size_t) ids[off + t], h_dst + t * st->d_model);
                 if (s != GEIST_OK) {
-                    v->buffer_unmap(st->sess->scratch_h_a);
+                    v->buffer_unmap(sess->scratch_h_a);
                     return s;
                 }
             }
@@ -101,7 +103,7 @@ prefill_text_batch_inner(struct transformer_arch_state *st, size_t n, const geis
                     h_dst[i] *= embed_scale;
                 }
             }
-            v->buffer_unmap(st->sess->scratch_h_a);
+            v->buffer_unmap(sess->scratch_h_a);
         }
 
         /* 2. Batched PLE precompute. P1.5.b: skipped for non-PLE families. */
@@ -109,32 +111,32 @@ prefill_text_batch_inner(struct transformer_arch_state *st, size_t n, const geis
         struct geist_buffer *ple_buf = nullptr;
         if (st->config.has_ple) {
             s = compute_per_layer_inputs_batch(
-                    st, chunk, ids + off, st->sess->scratch_h_a, st->sess->scratch_per_layer_input);
+                    sess, chunk, ids + off, sess->scratch_h_a, sess->scratch_per_layer_input);
             if (s != GEIST_OK) {
                 return s;
             }
-            ple_buf = st->sess->scratch_per_layer_input;
+            ple_buf = sess->scratch_per_layer_input;
         }
 
         /* 3. Layer loop seq=chunk. */
-        const size_t q_pos = st->sess->kv_len;
+        const size_t q_pos = sess->kv_len;
         s                  = transformer_run_all_layers(
-                st, q_pos, chunk, st->sess->scratch_h_a, ple_buf, st->sess->scratch_h_b);
+                sess, q_pos, chunk, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
         if (s != GEIST_OK) {
             return s;
         }
 
         /* 4. Advance kv_len by chunk. */
-        st->sess->kv_len += chunk;
-        if (st->sess->kv_kivi_enabled) {
-            st->sess->kivi_residual_count += chunk;
-            transformer_kivi_drain_full(st);
+        sess->kv_len += chunk;
+        if (sess->kv_kivi_enabled) {
+            sess->kivi_residual_count += chunk;
+            transformer_kivi_drain_full(sess);
         }
 
         /* 5. On the final chunk, compute logits for the last token so
          *    ops->decode_step has a pending prediction. */
         if (off + chunk == n) {
-            s = finalize_logits_last_row(st, chunk);
+            s = finalize_logits_last_row(sess, chunk);
             if (s != GEIST_OK) {
                 return s;
             }
@@ -143,9 +145,10 @@ prefill_text_batch_inner(struct transformer_arch_state *st, size_t n, const geis
     return GEIST_OK;
 }
 
-enum geist_status transformer_prefill_text_batch(struct transformer_arch_state *st,
-                                                 size_t                         n,
-                                                 const geist_token_t           *ids) {
+enum geist_status transformer_prefill_text_batch(struct transformer_arch_session *sess,
+                                                 size_t                           n,
+                                                 const geist_token_t             *ids) {
+    struct transformer_arch_state *st = sess->model;
     if (st == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -155,7 +158,7 @@ enum geist_status transformer_prefill_text_batch(struct transformer_arch_state *
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
     const int                        region_tok =
             v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
-    const enum geist_status s = prefill_text_batch_inner(st, n, ids);
+    const enum geist_status s = prefill_text_batch_inner(sess, n, ids);
     if (v->parallel_region_end) {
         v->parallel_region_end(be, region_tok);
     }
@@ -169,10 +172,11 @@ enum geist_status transformer_prefill_text_batch(struct transformer_arch_state *
  * accept/reject the draft and then optionally truncates kv_len to
  * undo verify-pass KV writes past the accept point. */
 
-enum geist_status transformer_verify_forward(struct transformer_arch_state *st,
-                                             size_t                         k,
-                                             const geist_token_t           *ids,
-                                             geist_token_t                 *out_tokens) {
+enum geist_status transformer_verify_forward(struct transformer_arch_session *sess,
+                                             size_t                           k,
+                                             const geist_token_t             *ids,
+                                             geist_token_t                   *out_tokens) {
+    struct transformer_arch_state *st = sess->model;
     if (st == nullptr || k == 0 || ids == nullptr || out_tokens == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -180,7 +184,7 @@ enum geist_status transformer_verify_forward(struct transformer_arch_state *st,
         /* Spec K should fit in one prefill chunk. Larger requires chunking. */
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status room = transformer_check_kv_room(st, k);
+    enum geist_status room = transformer_check_kv_room(sess, k);
     if (room != GEIST_OK) {
         return room;
     }
@@ -190,12 +194,12 @@ enum geist_status transformer_verify_forward(struct transformer_arch_state *st,
 
     /* 1. Embed all k tokens into scratch_h_a [k, HIDDEN]. */
     {
-        float *h_dst = (float *) v->buffer_map(st->sess->scratch_h_a);
+        float *h_dst = (float *) v->buffer_map(sess->scratch_h_a);
         for (size_t t = 0; t < k; t++) {
             enum geist_status s =
                     dequant_one_row(be, &st->embed_table, (size_t) ids[t], h_dst + t * st->d_model);
             if (s != GEIST_OK) {
-                v->buffer_unmap(st->sess->scratch_h_a);
+                v->buffer_unmap(sess->scratch_h_a);
                 return s;
             }
         }
@@ -205,7 +209,7 @@ enum geist_status transformer_verify_forward(struct transformer_arch_state *st,
                 h_dst[i] *= embed_scale;
             }
         }
-        v->buffer_unmap(st->sess->scratch_h_a);
+        v->buffer_unmap(sess->scratch_h_a);
     }
 
     /* 2. PLE precompute. P1.5.b: skipped for non-PLE families. */
@@ -213,17 +217,16 @@ enum geist_status transformer_verify_forward(struct transformer_arch_state *st,
     struct geist_buffer *ple_buf = nullptr;
     if (st->config.has_ple) {
         s = compute_per_layer_inputs_batch(
-                st, k, ids, st->sess->scratch_h_a, st->sess->scratch_per_layer_input);
+                sess, k, ids, sess->scratch_h_a, sess->scratch_per_layer_input);
         if (s != GEIST_OK) {
             return s;
         }
-        ple_buf = st->sess->scratch_per_layer_input;
+        ple_buf = sess->scratch_per_layer_input;
     }
 
     /* 3. Layer loop. */
-    const size_t q_pos = st->sess->kv_len;
-    s                  = transformer_run_all_layers(
-            st, q_pos, k, st->sess->scratch_h_a, ple_buf, st->sess->scratch_h_b);
+    const size_t q_pos = sess->kv_len;
+    s = transformer_run_all_layers(sess, q_pos, k, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
     if (s != GEIST_OK) {
         return s;
     }
@@ -234,12 +237,12 @@ enum geist_status transformer_verify_forward(struct transformer_arch_state *st,
      * residual region). The residual buffer is sized R + m_max so up
      * to m_max tokens can sit past the drain threshold safely. Drain
      * happens on subsequent decode_step (accept) or kv_truncate (reject). */
-    st->sess->kv_len += k;
-    if (st->sess->kv_kivi_enabled) {
-        st->sess->kivi_residual_count += k;
+    sess->kv_len += k;
+    if (sess->kv_kivi_enabled) {
+        sess->kivi_residual_count += k;
     }
-    st->sess->logits_valid       = false;
-    st->sess->next_token_pending = 0;
+    sess->logits_valid       = false;
+    sess->next_token_pending = 0;
 
     /* 5. Sample one token per row of scratch_h_b. Two paths:
      *  - k=1: single-row lm_head via finalize_logits_one_row.
@@ -252,12 +255,12 @@ enum geist_status transformer_verify_forward(struct transformer_arch_state *st,
      * kernels and amortizes the weight stream over k columns. Greedy-
      * only softcap skip would be additive but the linear is the bulk. */
     if (k == 1) {
-        s = finalize_logits_one_row(st, 0, &out_tokens[0]);
+        s = finalize_logits_one_row(sess, 0, &out_tokens[0]);
         if (s != GEIST_OK) {
             return s;
         }
     } else {
-        s = finalize_logits_batch(st, k, out_tokens);
+        s = finalize_logits_batch(sess, k, out_tokens);
         if (s != GEIST_OK) {
             return s;
         }
@@ -265,44 +268,45 @@ enum geist_status transformer_verify_forward(struct transformer_arch_state *st,
     return GEIST_OK;
 }
 
-void transformer_kv_truncate(struct transformer_arch_state *st, size_t new_len) {
-    if (st == nullptr)
+void transformer_kv_truncate(struct transformer_arch_session *sess, size_t new_len) {
+    if (sess == nullptr)
         return;
-    if (new_len > st->sess->kv_len)
+    if (new_len > sess->kv_len)
         return; /* monotonic shrink only */
-    st->sess->kv_len = new_len;
-    if (st->sess->kv_kivi_enabled) {
+    sess->kv_len = new_len;
+    if (sess->kv_kivi_enabled) {
         /* Truncate can't cross a drain boundary backwards (drained groups
          * are 2-bit committed and can't be un-quantized). Speculative
          * K ≤ m_max=64 < R=128, so truncates in practice never reach
          * the drained region. If asked anyway, clamp to drain boundary. */
-        const size_t drained = st->sess->kivi_drained_count;
+        const size_t drained = sess->kivi_drained_count;
         if (new_len < drained) {
-            st->sess->kv_len              = drained;
-            st->sess->kivi_residual_count = 0;
+            sess->kv_len              = drained;
+            sess->kivi_residual_count = 0;
         } else {
-            st->sess->kivi_residual_count = new_len - drained;
+            sess->kivi_residual_count = new_len - drained;
         }
         /* Truncate may settle residual into commit-safe territory
          * (verify_forward burst → accept → truncate at kv_len_old + a). */
-        transformer_kivi_drain_full(st);
+        transformer_kivi_drain_full(sess);
     }
-    st->sess->logits_valid       = false;
-    st->sess->next_token_pending = 0;
+    sess->logits_valid       = false;
+    sess->next_token_pending = 0;
 }
 
 /* ---- Batched audio prefill ------------------------------------------- */
 
-enum geist_status transformer_prefill_audio_batch(struct transformer_arch_state *st,
-                                                  size_t                         n,
-                                                  const float                   *soft_tokens) {
+enum geist_status transformer_prefill_audio_batch(struct transformer_arch_session *sess,
+                                                  size_t                           n,
+                                                  const float                     *soft_tokens) {
+    struct transformer_arch_state *st = sess->model;
     if (st == nullptr || (n > 0 && soft_tokens == nullptr)) {
         return GEIST_E_INVALID_ARG;
     }
     if (n == 0) {
         return GEIST_OK;
     }
-    enum geist_status room = transformer_check_kv_room(st, n);
+    enum geist_status room = transformer_check_kv_room(sess, n);
     if (room != GEIST_OK) {
         return room;
     }
@@ -312,16 +316,16 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_state 
     /* Pre-fill a pad-id array for compute_per_layer_inputs_batch.
      * Audio tokens use pad_token_id (0) as PLE row identity. */
     geist_token_t *pad_ids =
-            heap_alloc_aligned(st->sess->m_max * sizeof(geist_token_t), alignof(geist_token_t));
+            heap_alloc_aligned(sess->m_max * sizeof(geist_token_t), alignof(geist_token_t));
     if (pad_ids == nullptr) {
         return GEIST_E_OOM;
     }
-    for (size_t i = 0; i < st->sess->m_max; i++) {
+    for (size_t i = 0; i < sess->m_max; i++) {
         pad_ids[i] = 0;
     }
 
     enum geist_status rc    = GEIST_OK;
-    const size_t      m_max = st->sess->m_max;
+    const size_t      m_max = sess->m_max;
     for (size_t off = 0; off < n; off += m_max) {
         const size_t chunk = (n - off > m_max) ? m_max : (n - off);
 
@@ -348,51 +352,51 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_state 
         /* 1. PLE input = pad_embedding (raw, unscaled). */
         struct geist_buffer *ple_buf = nullptr;
         if (st->config.has_ple) {
-            float *h_dst = (float *) v->buffer_map(st->sess->scratch_h_a);
+            float *h_dst = (float *) v->buffer_map(sess->scratch_h_a);
             for (size_t t = 0; t < chunk; t++) {
                 enum geist_status s = dequant_one_row(
                         be, &st->embed_table, 0 /* pad_token_id */, h_dst + t * st->d_model);
                 if (s != GEIST_OK) {
-                    v->buffer_unmap(st->sess->scratch_h_a);
+                    v->buffer_unmap(sess->scratch_h_a);
                     rc = s;
                     goto cleanup;
                 }
             }
-            v->buffer_unmap(st->sess->scratch_h_a);
+            v->buffer_unmap(sess->scratch_h_a);
 
             rc = compute_per_layer_inputs_batch(
-                    st, chunk, pad_ids, st->sess->scratch_h_a, st->sess->scratch_per_layer_input);
+                    sess, chunk, pad_ids, sess->scratch_h_a, sess->scratch_per_layer_input);
             if (rc != GEIST_OK) {
                 goto cleanup;
             }
-            ple_buf = st->sess->scratch_per_layer_input;
+            ple_buf = sess->scratch_per_layer_input;
         }
 
         /* 2. Overwrite scratch_h_a with the actual soft tokens for the
          * layer loop (these live in the LM residual stream). */
         {
             const size_t bytes = chunk * st->d_model * sizeof(float);
-            uint8_t     *dst   = (uint8_t *) v->buffer_map(st->sess->scratch_h_a);
+            uint8_t     *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
             memcpy(dst, (const uint8_t *) (soft_tokens + off * st->d_model), bytes);
-            v->buffer_unmap(st->sess->scratch_h_a);
+            v->buffer_unmap(sess->scratch_h_a);
         }
 
         /* 3. Layer loop. */
-        const size_t q_pos = st->sess->kv_len;
+        const size_t q_pos = sess->kv_len;
         rc                 = transformer_run_all_layers(
-                st, q_pos, chunk, st->sess->scratch_h_a, ple_buf, st->sess->scratch_h_b);
+                sess, q_pos, chunk, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
         if (rc != GEIST_OK) {
             goto cleanup;
         }
 
-        st->sess->kv_len += chunk;
-        if (st->sess->kv_kivi_enabled) {
-            st->sess->kivi_residual_count += chunk;
-            transformer_kivi_drain_full(st);
+        sess->kv_len += chunk;
+        if (sess->kv_kivi_enabled) {
+            sess->kivi_residual_count += chunk;
+            transformer_kivi_drain_full(sess);
         }
 
         if (off + chunk == n) {
-            rc = finalize_logits_last_row(st, chunk);
+            rc = finalize_logits_last_row(sess, chunk);
             if (rc != GEIST_OK) {
                 goto cleanup;
             }
@@ -409,8 +413,8 @@ cleanup: {
 /* ---- Prefix pinning -------------------------------------------------- */
 
 enum geist_status
-transformer_pin_prefix(struct transformer_arch_state *st, size_t n, const geist_token_t *ids) {
-    if (st == nullptr) {
+transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const geist_token_t *ids) {
+    if (sess == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
     if (n > 0 && ids == nullptr) {
@@ -418,18 +422,18 @@ transformer_pin_prefix(struct transformer_arch_state *st, size_t n, const geist_
     }
     /* Truncate to empty so the prefill that follows starts from kv_len=0;
      * this matches lm.c::lm_pin_prefix and gives a clean snapshot point. */
-    st->sess->kv_len             = 0;
-    st->sess->prefix_length      = 0;
-    st->sess->logits_valid       = false;
-    st->sess->next_token_pending = 0;
+    sess->kv_len             = 0;
+    sess->prefix_length      = 0;
+    sess->logits_valid       = false;
+    sess->next_token_pending = 0;
     if (n == 0) {
         return GEIST_OK;
     }
-    enum geist_status rc = transformer_prefill_text_batch(st, n, ids);
+    enum geist_status rc = transformer_prefill_text_batch(sess, n, ids);
     if (rc != GEIST_OK) {
         return rc;
     }
-    st->sess->prefix_length = st->sess->kv_len;
+    sess->prefix_length = sess->kv_len;
     return GEIST_OK;
 }
 

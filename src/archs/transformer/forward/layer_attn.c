@@ -85,16 +85,17 @@ static enum geist_status permute_interleaved_rope_inplace(const struct geist_bac
 
 enum geist_status transformer_layer_run_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
-    struct transformer_arch_state    *st = ctx->st;
-    struct transformer_layer_weights *L  = ctx->L;
-    struct geist_backend             *be = ctx->be;
-    const struct geist_backend_vtbl  *v  = ctx->v;
+    struct transformer_arch_state    *st   = ctx->st;
+    struct transformer_arch_session  *sess = ctx->sess;
+    struct transformer_layer_weights *L    = ctx->L;
+    struct geist_backend             *be   = ctx->be;
+    const struct geist_backend_vtbl  *v    = ctx->v;
     enum geist_status                 s;
     const bool                        profile = transformer_profile_enabled(&g_attn_profile);
     uint64_t                          t0      = profile ? transformer_profile_now_ns() : 0;
 
     struct geist_tensor t_h_in_2d     = view_2d(ctx->h_in_buf, ctx->SEQ, st->d_model);
-    struct geist_tensor t_normed_2d   = view_2d(st->sess->scratch_normed, ctx->SEQ, st->d_model);
+    struct geist_tensor t_normed_2d   = view_2d(sess->scratch_normed, ctx->SEQ, st->d_model);
     struct geist_tensor t_w_attn_norm = view_1d(L->attn_norm.buffer, st->d_model);
 
     s = v->rmsnorm(be, &t_h_in_2d, &t_w_attn_norm, ctx->eps, &t_normed_2d);
@@ -105,21 +106,21 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
 
     if (ctx->apply_bitnet_input_quant) {
         t0 = profile ? transformer_profile_now_ns() : 0;
-        apply_bitnet_input_quant_inplace(v, st->sess->scratch_normed, ctx->seq, st->d_model);
+        apply_bitnet_input_quant_inplace(v, sess->scratch_normed, ctx->seq, st->d_model);
         transformer_profile_add(&g_attn_profile, ATTN_PROFILE_NORM, t0);
     }
 
-    struct geist_tensor t_q_2d = view_2d(st->sess->scratch_q, ctx->SEQ, (int64_t) ctx->q_out);
+    struct geist_tensor t_q_2d = view_2d(sess->scratch_q, ctx->SEQ, (int64_t) ctx->q_out);
     t0                         = profile ? transformer_profile_now_ns() : 0;
     if (ctx->compute_kv) {
-        struct geist_tensor t_k_2d = view_2d(st->sess->scratch_k, ctx->SEQ, (int64_t) ctx->kv_out);
-        struct geist_tensor t_v_2d = view_2d(st->sess->scratch_v, ctx->SEQ, (int64_t) ctx->kv_out);
+        struct geist_tensor t_k_2d = view_2d(sess->scratch_k, ctx->SEQ, (int64_t) ctx->kv_out);
+        struct geist_tensor t_v_2d = view_2d(sess->scratch_v, ctx->SEQ, (int64_t) ctx->kv_out);
         s                          = linear_w_triple_or_legacy(be,
                                                                v,
-                                                               st->sess->scratch_normed,
-                                                               st->sess->scratch_q,
-                                                               st->sess->scratch_k,
-                                                               st->sess->scratch_v,
+                                                               sess->scratch_normed,
+                                                               sess->scratch_q,
+                                                               sess->scratch_k,
+                                                               sess->scratch_v,
                                                                &L->q_proj_w,
                                                                &L->k_proj_w,
                                                                &L->v_proj_w,
@@ -138,8 +139,8 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     } else {
         s = linear_w_or_legacy(be,
                                v,
-                               st->sess->scratch_normed,
-                               st->sess->scratch_q,
+                               sess->scratch_normed,
+                               sess->scratch_q,
                                &L->q_proj_w,
                                ctx->seq,
                                &t_normed_2d,
@@ -160,7 +161,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     struct geist_tensor t_sin =
             view_2d_at(sin_buf, ctx->q_position * cos_row_bytes, ctx->SEQ, (int64_t) ctx->hd);
     struct geist_tensor t_q_3d =
-            view_3d(st->sess->scratch_q, ctx->SEQ, st->n_q_heads, (int64_t) ctx->hd);
+            view_3d(sess->scratch_q, ctx->SEQ, st->n_q_heads, (int64_t) ctx->hd);
 
     /* Fused q/k/v prep (GPU): per-head norms + RoPE + KV-cache append in
      * two dispatches. Covers the gemma half-split-RoPE path on the plain
@@ -171,12 +172,12 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         struct geist_tensor t_q_norm_w = view_1d(L->q_norm.buffer, (int64_t) ctx->hd);
         if (ctx->compute_kv) {
             struct geist_tensor t_k_3d =
-                    view_3d(st->sess->scratch_k, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
+                    view_3d(sess->scratch_k, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
             struct geist_tensor t_v_3d =
-                    view_3d(st->sess->scratch_v, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
+                    view_3d(sess->scratch_v, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
             struct geist_tensor t_k_norm_w = view_1d(L->k_norm.buffer, (int64_t) ctx->hd);
             struct geist_tensor t_ones_hd =
-                    view_1d(st->sess->scratch_ones_headdim_max, (int64_t) ctx->hd);
+                    view_1d(sess->scratch_ones_headdim_max, (int64_t) ctx->hd);
             const int64_t       cache_rows = (int64_t) (ctx->q_position + ctx->seq);
             struct geist_tensor t_kc       = ctx->kv_f16_enabled ? view_3d_f16(ctx->k_cache_buf,
                                                                                cache_rows,
@@ -228,7 +229,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     if (!fused_qkv_prep) {
         if (ctx->apply_gemma_attn_norms) {
             struct geist_tensor t_q_perhead =
-                    view_2d(st->sess->scratch_q, ctx->SEQ * st->n_q_heads, (int64_t) ctx->hd);
+                    view_2d(sess->scratch_q, ctx->SEQ * st->n_q_heads, (int64_t) ctx->hd);
             struct geist_tensor t_q_norm_w = view_1d(L->q_norm.buffer, (int64_t) ctx->hd);
             s = v->rmsnorm(be, &t_q_perhead, &t_q_norm_w, ctx->eps, &t_q_perhead);
             if (s != GEIST_OK) {
@@ -237,7 +238,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         }
         if (ctx->rope_interleaved) {
             s = permute_interleaved_rope_inplace(
-                    v, st->sess->scratch_q, ctx->seq, st->n_q_heads, ctx->hd);
+                    v, sess->scratch_q, ctx->seq, st->n_q_heads, ctx->hd);
             if (s != GEIST_OK) {
                 return s;
             }
@@ -250,26 +251,26 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
 
     if (!ctx->apply_gemma_attn_norms) {
         const float scale = 1.0f / sqrtf((float) ctx->hd);
-        float      *qp    = (float *) v->buffer_map(st->sess->scratch_q);
+        float      *qp    = (float *) v->buffer_map(sess->scratch_q);
         for (size_t i = 0; i < ctx->seq * ctx->q_out; i++) {
             qp[i] *= scale;
         }
-        v->buffer_unmap(st->sess->scratch_q);
+        v->buffer_unmap(sess->scratch_q);
     }
     transformer_profile_add(&g_attn_profile, ATTN_PROFILE_Q_PREP, t0);
 
     if (ctx->compute_kv && !fused_qkv_prep) {
         t0 = profile ? transformer_profile_now_ns() : 0;
         struct geist_tensor t_k_3d =
-                view_3d(st->sess->scratch_k, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
+                view_3d(sess->scratch_k, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
         if (ctx->apply_gemma_attn_norms) {
             struct geist_tensor t_k_perhead =
-                    view_2d(st->sess->scratch_k, ctx->SEQ * st->n_kv_heads, (int64_t) ctx->hd);
+                    view_2d(sess->scratch_k, ctx->SEQ * st->n_kv_heads, (int64_t) ctx->hd);
             struct geist_tensor t_v_perhead =
-                    view_2d(st->sess->scratch_v, ctx->SEQ * st->n_kv_heads, (int64_t) ctx->hd);
+                    view_2d(sess->scratch_v, ctx->SEQ * st->n_kv_heads, (int64_t) ctx->hd);
             struct geist_tensor t_k_norm_w = view_1d(L->k_norm.buffer, (int64_t) ctx->hd);
             struct geist_tensor t_ones_hd =
-                    view_1d(st->sess->scratch_ones_headdim_max, (int64_t) ctx->hd);
+                    view_1d(sess->scratch_ones_headdim_max, (int64_t) ctx->hd);
             s = v->rmsnorm(be, &t_k_perhead, &t_k_norm_w, ctx->eps, &t_k_perhead);
             if (s != GEIST_OK) {
                 return s;
@@ -281,7 +282,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         }
         if (ctx->rope_interleaved) {
             s = permute_interleaved_rope_inplace(
-                    v, st->sess->scratch_k, ctx->seq, st->n_kv_heads, ctx->hd);
+                    v, sess->scratch_k, ctx->seq, st->n_kv_heads, ctx->hd);
             if (s != GEIST_OK) {
                 return s;
             }
@@ -302,7 +303,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     ctx->kv_len_now = ctx->q_position + ctx->seq;
 
     struct geist_tensor t_attn_3d =
-            view_3d(st->sess->scratch_attn, ctx->SEQ, st->n_q_heads, (int64_t) ctx->hd);
+            view_3d(sess->scratch_attn, ctx->SEQ, st->n_q_heads, (int64_t) ctx->hd);
     t0 = profile ? transformer_profile_now_ns() : 0;
     s  = transformer_kv_store_attention(ctx, &t_q_3d, &t_attn_3d);
     transformer_profile_add(&g_attn_profile, ATTN_PROFILE_CORE, t0);
@@ -312,9 +313,9 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
 
     t0 = profile ? transformer_profile_now_ns() : 0;
     apply_per_channel_inv_scale_inplace(
-            v, st->sess->scratch_attn, ctx->seq, ctx->q_out, L->o_awq_inv_scale);
+            v, sess->scratch_attn, ctx->seq, ctx->q_out, L->o_awq_inv_scale);
 
-    struct geist_tensor t_attn_2d = view_2d(st->sess->scratch_attn, ctx->SEQ, (int64_t) ctx->q_out);
+    struct geist_tensor t_attn_2d = view_2d(sess->scratch_attn, ctx->SEQ, (int64_t) ctx->q_out);
     if (ctx->apply_sub_ln && L->attn_sub_norm.buffer != nullptr) {
         struct geist_tensor t_attn_sub_w = view_1d(L->attn_sub_norm.buffer, (int64_t) ctx->q_out);
         s = v->rmsnorm(be, &t_attn_2d, &t_attn_sub_w, ctx->eps, &t_attn_2d);
@@ -324,12 +325,12 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     }
     transformer_profile_add(&g_attn_profile, ATTN_PROFILE_POST_CORE, t0);
 
-    struct geist_tensor t_o_2d = view_2d(st->sess->scratch_o, ctx->SEQ, st->d_model);
+    struct geist_tensor t_o_2d = view_2d(sess->scratch_o, ctx->SEQ, st->d_model);
     t0                         = profile ? transformer_profile_now_ns() : 0;
     s                          = linear_w_or_legacy(be,
                                                     v,
-                                                    st->sess->scratch_attn,
-                                                    st->sess->scratch_o,
+                                                    sess->scratch_attn,
+                                                    sess->scratch_o,
                                                     &L->o_proj_w,
                                                     ctx->seq,
                                                     &t_attn_2d,
@@ -341,11 +342,11 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     }
 
     struct geist_tensor t_h_post_attn_2d =
-            view_2d(st->sess->scratch_h_post_attn, ctx->SEQ, st->d_model);
+            view_2d(sess->scratch_h_post_attn, ctx->SEQ, st->d_model);
     t0 = profile ? transformer_profile_now_ns() : 0;
     if (ctx->apply_gemma_attn_norms) {
         struct geist_tensor t_post_attn_2d =
-                view_2d(st->sess->scratch_post_attn, ctx->SEQ, st->d_model);
+                view_2d(sess->scratch_post_attn, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_attn = view_1d(L->post_attn_norm.buffer, st->d_model);
         if (v->rmsnorm_add == nullptr ||
             v->rmsnorm_add(be, &t_h_in_2d, &t_o_2d, &t_w_post_attn, ctx->eps, &t_h_post_attn_2d) !=

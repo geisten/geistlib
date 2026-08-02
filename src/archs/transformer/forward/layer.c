@@ -97,7 +97,7 @@ static void transformer_profile_add(enum transformer_profile_stage stage, uint64
 
 static void transformer_layer_bind_kv_buffers(struct transformer_layer_forward_ctx *ctx) {
 
-    struct transformer_arch_session *sess   = ctx->st->sess;
+    struct transformer_arch_session *sess   = ctx->sess;
     const int                        kv_src = ctx->kv_src;
     ctx->k_cache_buf                        = sess->k_cache[kv_src];
     ctx->v_cache_buf                        = sess->v_cache[kv_src];
@@ -116,7 +116,7 @@ static void transformer_layer_bind_kv_buffers(struct transformer_layer_forward_c
 }
 
 static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx,
-                                       struct transformer_arch_state        *st,
+                                       struct transformer_arch_session      *sess,
                                        int                                   layer_idx,
                                        size_t                                q_position,
                                        size_t                                seq,
@@ -126,12 +126,14 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
                                        struct geist_buffer                  *h_out_buf) {
 
     memset(ctx, 0, sizeof(*ctx));
-    struct transformer_layer_weights         *L = &st->layers[layer_idx];
+    struct transformer_arch_state            *st = sess->model;
+    struct transformer_layer_weights         *L  = &st->layers[layer_idx];
     const struct transformer_layer_exec_plan *P =
             st->layer_plans != nullptr ? &st->layer_plans[layer_idx] : nullptr;
     const bool plan_apply_sub_ln = P != nullptr ? P->apply_sub_ln : st->config.has_sub_ln;
 
     ctx->st                  = st;
+    ctx->sess                = sess;
     ctx->be                  = st->backend;
     ctx->v                   = st->backend->desc->vtbl;
     ctx->L                   = L;
@@ -154,9 +156,9 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
             P != nullptr ? P->apply_gemma_attn_norms : st->config.has_gemma_attn_norms;
     ctx->rope_interleaved = P != nullptr ? P->rope_interleaved : st->config.rope_interleaved;
     ctx->apply_ple        = P != nullptr ? P->apply_ple : st->config.has_ple;
-    ctx->kv_int8_enabled  = st->sess->kv_int8_enabled;
-    ctx->kv_kivi_enabled  = st->sess->kv_kivi_enabled;
-    ctx->kv_f16_enabled   = st->sess->kv_f16_enabled;
+    ctx->kv_int8_enabled  = sess->kv_int8_enabled;
+    ctx->kv_kivi_enabled  = sess->kv_kivi_enabled;
+    ctx->kv_f16_enabled   = sess->kv_f16_enabled;
     ctx->ffn_activation   = P != nullptr ? P->ffn_activation : st->config.ffn_activation;
     ctx->eps              = st->config.rms_eps;
     ctx->hd               = L->head_dim;
@@ -168,22 +170,23 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     transformer_layer_bind_kv_buffers(ctx);
 }
 
-enum geist_status transformer_forward_one_layer(struct transformer_arch_state *st,
-                                                int                            layer_idx,
-                                                size_t                         q_position,
-                                                size_t                         seq,
-                                                bool                           advance_kv,
-                                                struct geist_buffer           *h_in_buf,
-                                                struct geist_buffer           *per_layer_input_buf,
-                                                struct geist_buffer           *h_out_buf) {
+enum geist_status transformer_forward_one_layer(struct transformer_arch_session *sess,
+                                                int                              layer_idx,
+                                                size_t                           q_position,
+                                                size_t                           seq,
+                                                bool                             advance_kv,
+                                                struct geist_buffer             *h_in_buf,
+                                                struct geist_buffer *per_layer_input_buf,
+                                                struct geist_buffer *h_out_buf) {
+    struct transformer_arch_state *st = sess->model;
     if (st == nullptr || layer_idx < 0 || (size_t) layer_idx >= st->n_layers ||
-        h_in_buf == nullptr || h_out_buf == nullptr || seq == 0 || seq > st->sess->m_max) {
+        h_in_buf == nullptr || h_out_buf == nullptr || seq == 0 || seq > sess->m_max) {
         return GEIST_E_INVALID_ARG;
     }
 
     struct transformer_layer_forward_ctx ctx;
     transformer_layer_ctx_init(&ctx,
-                               st,
+                               sess,
                                layer_idx,
                                q_position,
                                seq,
@@ -192,7 +195,7 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_state *s
                                per_layer_input_buf,
                                h_out_buf);
 
-    frame_arena_reset(&st->sess->scratch_arena);
+    frame_arena_reset(&sess->scratch_arena);
 
     const bool        profile = transformer_profile_enabled();
     uint64_t          t0      = profile ? transformer_profile_now_ns() : 0;
@@ -218,7 +221,7 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_state *s
     transformer_layer_scale_output(&ctx);
     transformer_profile_add(TRANSFORMER_PROFILE_SCALE, t0);
     if (ctx.advance_kv) {
-        st->sess->kv_len = ctx.kv_len_now;
+        sess->kv_len = ctx.kv_len_now;
     }
     return GEIST_OK;
 }
@@ -316,10 +319,11 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_state *s
     return rc;
 }
 
-enum geist_status transformer_compute_per_layer_input(struct transformer_arch_state *st,
-                                                      geist_token_t                  token_id,
-                                                      struct geist_buffer           *h_buf,
+enum geist_status transformer_compute_per_layer_input(struct transformer_arch_session *sess,
+                                                      geist_token_t                    token_id,
+                                                      struct geist_buffer             *h_buf,
                                                       struct geist_buffer *per_layer_input_buf) {
+    struct transformer_arch_state *st = sess->model;
     if (st == nullptr || h_buf == nullptr || per_layer_input_buf == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -335,22 +339,22 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
     {
         bool on_device = false;
         if (v->embedding_lookup_scaled != nullptr) {
-            struct geist_tensor t_row = view_1d(st->sess->scratch_ple_lookup, st->ple_out);
+            struct geist_tensor t_row = view_1d(sess->scratch_ple_lookup, st->ple_out);
             on_device                 = v->embedding_lookup_scaled(
                                                 be, &st->ple_table, token_id, st->config.ple_table_scale, &t_row) ==
                                         GEIST_OK;
         }
         if (!on_device) {
-            float *dst = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
+            float *dst = (float *) v->buffer_map(sess->scratch_ple_lookup);
             s          = dequant_one_row(be, &st->ple_table, (size_t) token_id, dst);
             if (s != GEIST_OK) {
-                v->buffer_unmap(st->sess->scratch_ple_lookup);
+                v->buffer_unmap(sess->scratch_ple_lookup);
                 return s;
             }
             for (size_t i = 0; i < (size_t) st->ple_out; i++) {
                 dst[i] *= st->config.ple_table_scale;
             }
-            v->buffer_unmap(st->sess->scratch_ple_lookup);
+            v->buffer_unmap(sess->scratch_ple_lookup);
         }
     }
 
@@ -398,7 +402,7 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_st
 
     /* 5. per_layer_input = (ple_proj + ple_lookup) * PLE_INPUT_SCALE. */
     struct geist_tensor t_ple_proj_1d   = view_1d(per_layer_input_buf, st->ple_out);
-    struct geist_tensor t_ple_lookup_1d = view_1d(st->sess->scratch_ple_lookup, st->ple_out);
+    struct geist_tensor t_ple_lookup_1d = view_1d(sess->scratch_ple_lookup, st->ple_out);
     s = v->add(be, &t_ple_proj_1d, &t_ple_lookup_1d, &t_ple_proj_1d);
     if (s != GEIST_OK) {
         return s;
@@ -496,13 +500,15 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
     g_plepre_calls[stage]++;
 }
 
-[[nodiscard]] enum geist_status compute_per_layer_inputs_batch(struct transformer_arch_state *st,
-                                                               size_t                         n,
-                                                               const geist_token_t *ple_ids,
-                                                               struct geist_buffer *h_buf,
-                                                               struct geist_buffer *out_buf) {
+[[nodiscard]] enum geist_status
+compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
+                               size_t                           n,
+                               const geist_token_t             *ple_ids,
+                               struct geist_buffer             *h_buf,
+                               struct geist_buffer             *out_buf) {
+    struct transformer_arch_state *st = sess->model;
 
-    if (n == 0 || n > st->sess->m_max) {
+    if (n == 0 || n > sess->m_max) {
         return GEIST_E_INVALID_ARG;
     }
     struct geist_backend            *be      = st->backend;
@@ -519,7 +525,7 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
     if (gather_on_device) {
         for (size_t t = 0; t < n; t++) {
             struct geist_tensor t_row = {
-                    .buffer = st->sess->scratch_ple_lookup,
+                    .buffer = sess->scratch_ple_lookup,
                     .offset = t * PLE_OUT * sizeof(float),
                     .dtype  = GEIST_DTYPE_F32,
                     .layout = GEIST_LAYOUT_DENSE,
@@ -536,19 +542,19 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
         }
     }
     if (!gather_on_device) {
-        float *dst = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
+        float *dst = (float *) v->buffer_map(sess->scratch_ple_lookup);
         for (size_t t = 0; t < n; t++) {
             enum geist_status s =
                     dequant_one_row(be, &st->ple_table, (size_t) ple_ids[t], dst + t * PLE_OUT);
             if (s != GEIST_OK) {
-                v->buffer_unmap(st->sess->scratch_ple_lookup);
+                v->buffer_unmap(sess->scratch_ple_lookup);
                 return s;
             }
         }
         for (size_t i = 0; i < n * PLE_OUT; i++) {
             dst[i] *= st->config.ple_table_scale;
         }
-        v->buffer_unmap(st->sess->scratch_ple_lookup);
+        v->buffer_unmap(sess->scratch_ple_lookup);
     }
     plepre_add(PLEPRE_GATHER, t0);
 
@@ -593,7 +599,7 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
         bool combined_on_device = false;
         if (v->add != nullptr && v->scale_f32 != nullptr) {
             struct geist_tensor t_plu_2d =
-                    view_2d(st->sess->scratch_ple_lookup, (int64_t) n, (int64_t) PLE_OUT);
+                    view_2d(sess->scratch_ple_lookup, (int64_t) n, (int64_t) PLE_OUT);
             /* add validates before encoding; once it succeeded out_buf is
              * mutated and the host fallback must NOT rerun the combine. */
             if (v->add(be, &t_out_2d, &t_plu_2d, &t_out_2d) == GEIST_OK) {
@@ -606,11 +612,11 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
         }
         if (!combined_on_device) {
             float *p   = (float *) v->buffer_map(out_buf);
-            float *plu = (float *) v->buffer_map(st->sess->scratch_ple_lookup);
+            float *plu = (float *) v->buffer_map(sess->scratch_ple_lookup);
             for (size_t i = 0; i < n * PLE_OUT; i++) {
                 p[i] = (p[i] + plu[i]) * st->config.ple_input_scale;
             }
-            v->buffer_unmap(st->sess->scratch_ple_lookup);
+            v->buffer_unmap(sess->scratch_ple_lookup);
             v->buffer_unmap(out_buf);
         }
     }
@@ -625,5 +631,5 @@ static void plepre_add(enum plepre_stage stage, uint64_t t0) {
  * argmax, and store the prediction in next_token_pending. */
 /* Drive lm_head + softcap + sampler on a single row of scratch_h_b
  * (at index row_idx, 0..seq-1). Returns the sampled token via
- * *out_token. Greedy when state->sess->temperature == 0; otherwise uses the
+ * *out_token. Greedy when sess->temperature == 0; otherwise uses the
  * session's configured top_k/top_p/temperature. */
