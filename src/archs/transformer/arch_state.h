@@ -356,8 +356,15 @@ struct transformer_arch_state {
      * ~82 MB read per token (the decode bottleneck on the BitNet-2B-4T
      * i2_s model). Lazily built on first use; nullptr/0 until then.
      * spec_state: 0 = unbuilt, 1 = built+active, -1 = ineligible/disabled. */
-    int8_t *spec_sketch;     /* [VOCAB * spec_sketch_dim] i8 */
-    float  *spec_row_scale;  /* [VOCAB] sketch dequant scale per row */
+    int8_t *spec_sketch;    /* [VOCAB * spec_sketch_dim] i8 */
+    float  *spec_row_scale; /* [VOCAB] sketch dequant scale per row */
+    /* Safety-bound terms, one pair per row: the L2 norm of the dimensions the
+     * sketch drops and the L1 norm of the ones it keeps. With the activation's
+     * matching norms they bound how far a rough score can sit from the exact
+     * logit, which is what lets a miss be detected rather than merely being
+     * unlikely. */
+    float  *spec_w_drop;
+    float  *spec_w_l1;
     int8_t *spec_x_i8;       /* [HIDDEN] quantized activation scratch */
     int8_t *spec_act_sketch; /* [spec_sketch_dim] subsampled activation */
     float  *spec_rough;      /* [VOCAB] rough scores scratch */
