@@ -386,9 +386,15 @@ struct transformer_arch_state {
     float *spec_w_drop;
     float *spec_w_l1;
     size_t spec_sketch_dim;
-    size_t spec_stride; /* sketch subsample stride (GEIST_SPEC_STRIDE) */
-    size_t spec_topk;   /* exact-finalist count (GEIST_SPEC_TOPK) */
-    int    spec_state;
+    /* Which input dimensions the sketch keeps, chosen at load time by variance
+     * across the vocabulary rather than by a fixed stride. A stride keeps every
+     * n-th coordinate regardless of whether it carries any ranking signal; the
+     * dimensions that actually separate one token from another are not spread
+     * evenly, so picking them deliberately buys recall at the same width. */
+    uint32_t *spec_dims;
+    size_t    spec_stride; /* sketch subsample stride (GEIST_SPEC_STRIDE) */
+    size_t    spec_topk;   /* exact-finalist count (GEIST_SPEC_TOPK) */
+    int       spec_state;
 
     /* Owning buffer handles for the globals (mirrors layer .bufs[] pattern). */
     struct geist_buffer *global_bufs[8];

@@ -472,6 +472,85 @@ static bool spec_head_build(struct transformer_arch_state *st) {
 
     const uint8_t *const Wbase = (const uint8_t *) w->raw;
     const uint16_t       dt    = w->dtype;
+
+    /* Choose which dimensions the sketch keeps, by variance across the
+     * vocabulary instead of by a fixed stride. A stride keeps every n-th
+     * coordinate whether or not it separates one token from another; the
+     * coordinates that do are not spread evenly, so choosing them buys ranking
+     * quality at exactly the same width.
+     *
+     * Variance is estimated from a sample of rows -- a few hundred is plenty
+     * for a per-dimension spread, and a full pass here would double the load
+     * cost of a table this size for no better answer. */
+    uint32_t *dims = heap_alloc_array_aligned(uint32_t, SD);
+    float    *dvar = heap_alloc_array_aligned(float, H);
+    float    *dsum = heap_alloc_array_aligned(float, H);
+    if (dims == nullptr || dvar == nullptr || dsum == nullptr) {
+        safe_free((void **) &dims);
+        safe_free((void **) &dvar);
+        safe_free((void **) &dsum);
+        safe_free((void **) &wdrop);
+        safe_free((void **) &wl1);
+        safe_free((void **) &sketch);
+        safe_free((void **) &rscale);
+        safe_free((void **) &scratch);
+        return false;
+    }
+    for (size_t i = 0; i < H; i++) {
+        dvar[i] = 0.0f;
+        dsum[i] = 0.0f;
+    }
+    const size_t vstep = V > 512 ? V / 512 : 1;
+    size_t       vn    = 0;
+    for (size_t r = 0; r < V; r += vstep, vn++) {
+        /* `scratch` is the per-thread row buffer of the parallel build below;
+         * this pass is serial and runs first, so its first H floats are free. */
+        spec_row_to_f32(dt, Wbase + r * row_bytes, H, scratch);
+        for (size_t i = 0; i < H; i++) {
+            dsum[i] += scratch[i];
+            dvar[i] += scratch[i] * scratch[i];
+        }
+    }
+    for (size_t i = 0; i < H; i++) {
+        const float mean = dsum[i] / (float) vn;
+        dvar[i]          = dvar[i] / (float) vn - mean * mean;
+    }
+    /* Partial selection of the SD highest-variance dimensions: repeatedly take
+     * the current maximum. SD is a few hundred against H a few thousand, so
+     * this is cheap and needs no sort. */
+    for (size_t s = 0; s < SD; s++) {
+        size_t best = 0;
+        for (size_t i = 1; i < H; i++) {
+            if (dvar[i] > dvar[best]) {
+                best = i;
+            }
+        }
+        dims[s]    = (uint32_t) best;
+        dvar[best] = -1.0f; /* consumed */
+    }
+    safe_free((void **) &dvar);
+    safe_free((void **) &dsum);
+    /* Ascending order keeps the gather sequential, which the int8 dot likes. */
+    for (size_t a = 0; a + 1 < SD; a++) {
+        for (size_t b = a + 1; b < SD; b++) {
+            if (dims[b] < dims[a]) {
+                const uint32_t tmpd = dims[a];
+                dims[a]             = dims[b];
+                dims[b]             = tmpd;
+            }
+        }
+    }
+    /* Mark kept dimensions so the bound terms can split on membership rather
+     * than on the arithmetic the stride used to imply. */
+    bool *kept = heap_alloc_array_aligned(bool, H);
+    if (kept != nullptr) {
+        for (size_t i = 0; i < H; i++) {
+            kept[i] = false;
+        }
+        for (size_t s = 0; s < SD; s++) {
+            kept[dims[s]] = true;
+        }
+    }
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -484,7 +563,7 @@ static bool spec_head_build(struct transformer_arch_state *st) {
         spec_row_to_f32(dt, Wbase + r * row_bytes, H, tmp);
         float amax = 1e-8f;
         for (size_t s = 0; s < SD; s++) {
-            const float v = tmp[s * sub];
+            const float v = tmp[dims[s]];
             const float a = v < 0.0f ? -v : v;
             if (a > amax) {
                 amax = a;
@@ -493,7 +572,7 @@ static bool spec_head_build(struct transformer_arch_state *st) {
         const float scale = 127.0f / amax;
         int8_t     *sk    = sketch + r * SD;
         for (size_t s = 0; s < SD; s++) {
-            int32_t q = (int32_t) lrintf(tmp[s * sub] * scale);
+            int32_t q = (int32_t) lrintf(tmp[dims[s]] * scale);
             if (q > 127) {
                 q = 127;
             }
@@ -507,7 +586,7 @@ static bool spec_head_build(struct transformer_arch_state *st) {
          * their combined contribution is what Cauchy-Schwarz has to cover. */
         float sq = 0.0f, l1 = 0.0f;
         for (size_t i = 0; i < H; i++) {
-            if (i % sub == 0) {
+            if (kept != nullptr && kept[i]) {
                 l1 += tmp[i] < 0.0f ? -tmp[i] : tmp[i];
             } else {
                 sq += tmp[i] * tmp[i];
@@ -523,6 +602,7 @@ static bool spec_head_build(struct transformer_arch_state *st) {
     st->spec_w_l1       = wl1;
     st->spec_row_scale  = rscale;
     st->spec_sketch_dim = SD;
+    st->spec_dims       = dims;
     st->spec_stride     = sub;
     st->spec_topk       = topk;
     return true;
@@ -571,7 +651,7 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
     const size_t                     H      = (size_t) st->d_model;
     const size_t                     V      = (size_t) st->vocab_size;
     const size_t                     SD     = st->spec_sketch_dim;
-    const size_t                     sub    = st->spec_stride;
+    const uint32_t *const            dims   = st->spec_dims;
     const size_t                     topk   = st->spec_topk;
     const uint16_t                   dt     = st->embed_table_w.dtype;
     const uint8_t *const             Wbase  = (const uint8_t *) st->embed_table_w.raw;
@@ -611,7 +691,7 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
         x_i8[i] = (int8_t) q;
     }
     for (size_t s = 0; s < SD; s++) {
-        a_sk[s] = x_i8[s * sub];
+        a_sk[s] = x_i8[dims[s]];
     }
 
     /* Phase 1: rough scores over the whole vocab via the i8 sketch. The
@@ -631,11 +711,15 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
      * L2 over those it drops. One O(H) pass. */
     float h_l1_kept = 0.0f, h_sq_drop = 0.0f;
     for (size_t i = 0; i < H; i++) {
-        if (i % sub == 0) {
-            h_l1_kept += h[i] < 0.0f ? -h[i] : h[i];
-        } else {
-            h_sq_drop += h[i] * h[i];
-        }
+        h_sq_drop += h[i] * h[i];
+    }
+    for (size_t s = 0; s < SD; s++) {
+        const float hv = h[dims[s]];
+        h_l1_kept += hv < 0.0f ? -hv : hv;
+        h_sq_drop -= hv * hv; /* kept dimensions are not dropped */
+    }
+    if (h_sq_drop < 0.0f) {
+        h_sq_drop = 0.0f; /* rounding */
     }
     const float h_l2_drop = sqrtf(h_sq_drop);
 
