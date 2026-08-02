@@ -5,15 +5,20 @@
 
 #include "profile.h"
 
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 
 enum { TRANSFORMER_PROFILE_MAX_SINKS = 16 };
 
+/* Diagnostics only (env-gated); still made thread-safe so concurrent
+ * sessions with profiling on don't race the cache/registry (TSan). */
 static struct transformer_forward_profile *g_profiles[TRANSFORMER_PROFILE_MAX_SINKS];
 static size_t                              g_profile_count;
-static int                                 g_profile_enabled = -1;
+static pthread_mutex_t                     g_profile_mu      = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic int                         g_profile_enabled = -1;
 static bool                                g_profile_atexit_registered;
 
 static void transformer_profile_print_all(void) {
@@ -46,28 +51,35 @@ static void transformer_profile_print_all(void) {
 }
 
 static bool transformer_profile_env_enabled(void) {
-    if (g_profile_enabled < 0) {
-        const char *env = getenv("GEIST_PROFILE_PREFILL");
-        if (env == nullptr || env[0] == '\0') {
-            env = getenv("GEIST_PROFILE_FORWARD");
+    if (atomic_load(&g_profile_enabled) < 0) {
+        pthread_mutex_lock(&g_profile_mu);
+        if (atomic_load(&g_profile_enabled) < 0) {
+            const char *env = getenv("GEIST_PROFILE_PREFILL");
+            if (env == nullptr || env[0] == '\0') {
+                env = getenv("GEIST_PROFILE_FORWARD");
+            }
+            const int on = (env != nullptr && env[0] == '1') ? 1 : 0;
+            if (on && !g_profile_atexit_registered) {
+                atexit(transformer_profile_print_all);
+                g_profile_atexit_registered = true;
+            }
+            atomic_store(&g_profile_enabled, on);
         }
-        g_profile_enabled = (env != nullptr && env[0] == '1') ? 1 : 0;
-        if (g_profile_enabled && !g_profile_atexit_registered) {
-            atexit(transformer_profile_print_all);
-            g_profile_atexit_registered = true;
-        }
+        pthread_mutex_unlock(&g_profile_mu);
     }
-    return g_profile_enabled != 0;
+    return atomic_load(&g_profile_enabled) != 0;
 }
 
 static void transformer_profile_register(struct transformer_forward_profile *profile) {
     if (profile == nullptr || profile->registered) {
         return;
     }
-    if (g_profile_count < TRANSFORMER_PROFILE_MAX_SINKS) {
+    pthread_mutex_lock(&g_profile_mu);
+    if (!profile->registered && g_profile_count < TRANSFORMER_PROFILE_MAX_SINKS) {
         g_profiles[g_profile_count++] = profile;
         profile->registered           = true;
     }
+    pthread_mutex_unlock(&g_profile_mu);
 }
 
 bool transformer_profile_enabled(struct transformer_forward_profile *profile) {

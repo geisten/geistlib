@@ -399,7 +399,7 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
                              const struct geist_weight *w,
                              struct geist_backend      *be,
                              float                     *y) {
-    struct cpu_neon_workspace *ws             = &((struct cpu_neon_state *) be->state)->workspace;
+    struct cpu_neon_workspace *ws             = cpu_neon_ws((struct cpu_neon_state *) be->state);
     const size_t               n_in           = (size_t) w->n_in;
     const size_t               n_out          = (size_t) w->n_out;
     const size_t               blocks_per_row = n_in / 256;
@@ -605,7 +605,7 @@ void cpu_neon_w_tq2_0_q8a_mN(const float               *x,
                              size_t                     m,
                              struct geist_backend      *be,
                              float                     *y) {
-    struct cpu_neon_workspace *ws             = &((struct cpu_neon_state *) be->state)->workspace;
+    struct cpu_neon_workspace *ws             = cpu_neon_ws((struct cpu_neon_state *) be->state);
     const size_t               n_in           = (size_t) w->n_in;
     const size_t               n_out          = (size_t) w->n_out;
     const size_t               blocks_per_row = n_in / 256;
@@ -938,7 +938,7 @@ void cpu_neon_w_i2_s_q8a_m1(const float               *x,
                             const struct geist_weight *w,
                             struct geist_backend      *be,
                             float                     *y) {
-    struct cpu_neon_workspace *ws             = &((struct cpu_neon_state *) be->state)->workspace;
+    struct cpu_neon_workspace *ws             = cpu_neon_ws((struct cpu_neon_state *) be->state);
     const size_t               n_in           = (size_t) w->n_in;
     const size_t               n_out          = (size_t) w->n_out;
     const size_t               blocks_per_row = n_in / 256;
@@ -1203,7 +1203,7 @@ void cpu_neon_w_i2_s_q8a_mN(const float               *x,
                             size_t                     m,
                             struct geist_backend      *be,
                             float                     *y) {
-    struct cpu_neon_workspace *ws             = &((struct cpu_neon_state *) be->state)->workspace;
+    struct cpu_neon_workspace *ws             = cpu_neon_ws((struct cpu_neon_state *) be->state);
     const size_t               n_in           = (size_t) w->n_in;
     const size_t               n_out          = (size_t) w->n_out;
     const size_t               blocks_per_row = n_in / 256;

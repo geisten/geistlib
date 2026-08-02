@@ -13,9 +13,14 @@
  *
  * The scratch holds the per-row int8 activation buffer and the per-block
  * sum_a integer buffer. Both are written by w4a8_quantize_acts_row and
- * read by w4a8_gemv inside one linear_m1 invocation; not shared across
- * threads, not racy under multi-session because each backend instance
- * owns its own state.
+ * read by w4a8_gemv inside one linear_m1 invocation.
+ *
+ * ponytail: this single per-backend scratch races when CONCURRENT
+ * sessions share one backend (the geist_arch.h thread contract) — the
+ * same bug test_multi_session_parallel_int caught in cpu_neon, fixed
+ * there with per-thread workspaces (cpu_neon_ws / ws_head list). Apply
+ * the same mechanism here when x86 concurrent-session support is
+ * needed; until then, serialize sessions on cpu_x86.
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_X86_BACKEND_STATE_H
 #define GEIST_INTERNAL_BACKEND_CPU_X86_BACKEND_STATE_H
