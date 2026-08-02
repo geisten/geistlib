@@ -11,8 +11,6 @@
 #include <geist.h>
 #include <geist_backend.h>
 
-#include "quant.h"
-
 #include <stdlib.h>
 #include <string.h>
 
@@ -98,13 +96,15 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         /* ---- FFN-front fusion binding (see exec_plan.h). Prefill is
          * probed at the largest m any session may use, so the answer
          * covers every session on this model. */
-        struct geist_backend *be           = st->backend;
-        const size_t          m_cap        = (be->desc != nullptr && be->desc->caps.batched_submit)
-                                                     ? 512u
-                                                     : (size_t) GEIST_QUANT_M_CAP;
-        const bool            geglu        = st->config.ffn_activation == GEIST_FFN_GEGLU;
-        const bool            has_sub_norm = P->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr &&
-                                             st->runtime_flags.bitnet_sub_ln_enabled;
+        struct geist_backend *be = st->backend;
+        /* Prefill probes answer for any m ≤ the backend's per-call row
+         * limit (caps.max_m; 0 = uncapped — probe at the model m_max). */
+        const size_t m_cap        = (be->desc != nullptr && be->desc->caps.max_m > 0)
+                                            ? be->desc->caps.max_m
+                                            : st->m_max;
+        const bool   geglu        = st->config.ffn_activation == GEIST_FFN_GEGLU;
+        const bool   has_sub_norm = P->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr &&
+                                    st->runtime_flags.bitnet_sub_ln_enabled;
         const struct geist_fusion_query base = {
                 .d_model = st->d_model,
                 .inter   = L->intermediate,
