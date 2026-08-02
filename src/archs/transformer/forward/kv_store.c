@@ -58,13 +58,14 @@ static inline float kv_row_absmax(const float *x, size_t n) {
 
 enum geist_status transformer_kv_store_append(struct transformer_layer_forward_ctx *ctx) {
 
-    struct transformer_arch_state   *st         = ctx->st;
-    struct transformer_arch_session *sess       = ctx->sess;
-    const struct geist_backend_vtbl *v          = ctx->v;
-    const size_t                     seq        = ctx->seq;
-    const size_t                     q_position = ctx->q_position;
-    const size_t                     hd         = ctx->hd;
-    const size_t                     kv_out     = ctx->kv_out;
+    struct transformer_arch_state    *st         = ctx->st;
+    struct transformer_arch_session  *sess       = ctx->sess;
+    const struct geist_backend_vtbl  *v          = ctx->v;
+    const struct geist_backend_fused *fused      = ctx->fused;
+    const size_t                      seq        = ctx->seq;
+    const size_t                      q_position = ctx->q_position;
+    const size_t                      hd         = ctx->hd;
+    const size_t                      kv_out     = ctx->kv_out;
 
     /* F16 cache: fused f32→f16 converting append on-device. The mode is
      * only enabled when the backend provides the slot (arch_state.c). */
@@ -77,7 +78,7 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
                 ctx->k_cache_buf, (int64_t) (q_position + seq), st->n_kv_heads, (int64_t) hd);
         struct geist_tensor t_v_dst = view_3d_f16(
                 ctx->v_cache_buf, (int64_t) (q_position + seq), st->n_kv_heads, (int64_t) hd);
-        return v->kv_append_f16(ctx->be, &t_k_src, &t_v_src, q_position, &t_k_dst, &t_v_dst);
+        return fused->kv_append_f16(ctx->be, &t_k_src, &t_v_src, q_position, &t_k_dst, &t_v_dst);
     }
 
     /* Plain f32 cache + device-copy-capable backend: append on-device so
@@ -230,12 +231,13 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                                  const struct geist_tensor            *t_q_3d,
                                                  struct geist_tensor                  *t_attn_3d) {
 
-    struct transformer_arch_state    *st         = ctx->st;
-    struct transformer_arch_session  *sess       = ctx->sess;
-    struct transformer_layer_weights *L          = ctx->L;
-    struct geist_backend             *be         = ctx->be;
-    const struct geist_backend_vtbl  *v          = ctx->v;
-    const size_t                      kv_len_now = ctx->kv_len_now;
+    struct transformer_arch_state         *st         = ctx->st;
+    struct transformer_arch_session       *sess       = ctx->sess;
+    struct transformer_layer_weights      *L          = ctx->L;
+    struct geist_backend                  *be         = ctx->be;
+    const struct geist_backend_vtbl       *v          = ctx->v;
+    const struct geist_backend_primitives *prims      = ctx->prims;
+    const size_t                           kv_len_now = ctx->kv_len_now;
 
     if (ctx->kv_kivi_enabled) {
         const float   *qp   = (const float *) v->buffer_map(sess->scratch_q);
@@ -386,13 +388,13 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                                                         (int64_t) kv_len_now,
                                                                         st->n_kv_heads,
                                                                         (int64_t) ctx->hd);
-        enum geist_status   s           = v->attention(be,
-                                                       t_q_3d,
-                                                       &t_kcache_3d,
-                                                       &t_vcache_3d,
-                                                       ctx->q_position,
-                                                       L->sliding_window,
-                                                       t_attn_3d);
+        enum geist_status   s           = prims->attention(be,
+                                                           t_q_3d,
+                                                           &t_kcache_3d,
+                                                           &t_vcache_3d,
+                                                           ctx->q_position,
+                                                           L->sliding_window,
+                                                           t_attn_3d);
         if (s != GEIST_OK) {
             return s;
         }

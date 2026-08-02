@@ -60,11 +60,13 @@ static struct transformer_forward_profile g_head_profile = {
                                                         geist_token_t *out_token) {
     struct transformer_arch_state *st = sess->model;
 
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    enum geist_status                s;
-    const bool                       profile = transformer_profile_enabled(&g_head_profile);
-    uint64_t                         t0      = profile ? transformer_profile_now_ns() : 0;
+    struct geist_backend                  *be    = st->backend;
+    const struct geist_backend_vtbl       *v     = be->desc->vtbl;
+    const struct geist_backend_primitives *prims = be->desc->prims;
+    const struct geist_backend_fused      *fused = geist_backend_fused_tbl(be);
+    enum geist_status                      s;
+    const bool                             profile = transformer_profile_enabled(&g_head_profile);
+    uint64_t                               t0      = profile ? transformer_profile_now_ns() : 0;
 
     /* Fresh logits this forward — not yet softcapped (peek_logits applies
      * it lazily unless the temp>0 path below does it in place), and dense
@@ -94,7 +96,7 @@ static struct transformer_forward_profile g_head_profile = {
     struct geist_tensor t_h_1d       = view_1d(sess->scratch_h_a, st->d_model);
     struct geist_tensor t_w_out_norm = view_1d(st->output_norm.buffer, st->d_model);
     t0                               = profile ? transformer_profile_now_ns() : 0;
-    s = v->rmsnorm(be, &t_h_1d, &t_w_out_norm, st->config.rms_eps, &t_h_1d);
+    s = prims->rmsnorm(be, &t_h_1d, &t_w_out_norm, st->config.rms_eps, &t_h_1d);
     transformer_profile_add(&g_head_profile, HEAD_PROFILE_NORM, t0);
     if (s != GEIST_OK) {
         return s;
@@ -128,10 +130,10 @@ static struct transformer_forward_profile g_head_profile = {
 
     /* Greedy fast path: device argmax reads back a 4-byte index instead
      * of mapping the 1 MB logits row (softcap skipped — tanh monotonic). */
-    if (sess->temperature == 0.0f && v->argmax_f32 != nullptr) {
+    if (sess->temperature == 0.0f && fused->argmax_f32 != nullptr) {
         t0          = profile ? transformer_profile_now_ns() : 0;
         int32_t idx = -1;
-        if (v->argmax_f32(be, &t_logits_2d, &idx) == GEIST_OK && idx >= 0 &&
+        if (fused->argmax_f32(be, &t_logits_2d, &idx) == GEIST_OK && idx >= 0 &&
             (size_t) idx < (size_t) st->vocab_size) {
             *out_token = (geist_token_t) idx;
             transformer_profile_add(&g_head_profile, HEAD_PROFILE_SAMPLE, t0);
@@ -222,9 +224,10 @@ transformer_head_dense_recompute(struct transformer_arch_session *sess) {
 finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_token_t *out_tokens) {
     struct transformer_arch_state *st = sess->model;
 
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    enum geist_status                s;
+    struct geist_backend                  *be    = st->backend;
+    const struct geist_backend_vtbl       *v     = be->desc->vtbl;
+    const struct geist_backend_primitives *prims = be->desc->prims;
+    enum geist_status                      s;
 
     /* Source: scratch_h_b [k, HIDDEN]. Apply output_norm row-wise
      * (rmsnorm batches naturally over the leading dim). Reuse
@@ -240,7 +243,7 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
     }
     struct geist_tensor t_h_2d       = view_2d(sess->scratch_h_a, (int64_t) k, st->d_model);
     struct geist_tensor t_w_out_norm = view_1d(st->output_norm.buffer, st->d_model);
-    s = v->rmsnorm(be, &t_h_2d, &t_w_out_norm, st->config.rms_eps, &t_h_2d);
+    s = prims->rmsnorm(be, &t_h_2d, &t_w_out_norm, st->config.rms_eps, &t_h_2d);
     if (s != GEIST_OK) {
         return s;
     }

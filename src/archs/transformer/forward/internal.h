@@ -43,6 +43,8 @@ struct transformer_layer_forward_ctx {
     struct transformer_arch_session          *sess;
     struct geist_backend                     *be;
     const struct geist_backend_vtbl          *v;
+    const struct geist_backend_primitives    *prims;
+    const struct geist_backend_fused         *fused;
     struct transformer_layer_weights         *L;
     const struct transformer_layer_exec_plan *P;
 
