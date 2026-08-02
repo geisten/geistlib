@@ -39,6 +39,20 @@ struct transformer_layer_exec_plan {
     bool                           apply_ple;
     bool                           rope_interleaved;
     enum geist_ffn_activation_kind ffn_activation;
+
+    /* ---- Probe-and-bind: FFN-front fusion decisions, made once here
+     * from the backend's fused->supported probe plus the layer-constant
+     * conditions (activation kind, AWQ scales, SubLN, env gates). The
+     * hot path branches on these bits and calls the fused op
+     * UNCONDITIONALLY — probe true means the kernel must succeed
+     * (geist_backend.h contract), so there is no per-call
+     * GEIST_E_UNSUPPORTED negotiation on bound stages. _m1 = decode
+     * (seq==1); _mN = prefill (any seq ≤ the session m cap). */
+    bool fuse_ffn_norm_gate_up_m1; /* fused rmsnorm + gate/up front */
+    bool fuse_ffn_gate_up_m1;      /* fused gate/up front (norm separate) */
+    bool fuse_ffn_geglu_tile_mN;   /* whole-FFN q4/q6 tile kernel (prefill) */
+    bool fuse_gelu_mul_scaled;     /* GEGLU epilogue with AWQ scale, any m */
+    bool fuse_gelu_mul;            /* GEGLU epilogue, any m */
 };
 
 enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st);

@@ -6415,6 +6415,32 @@ static const struct geist_backend_vtbl metal_vtbl = {
         .parallel_region_end   = metal_parallel_region_end,
 };
 
+/* Probe pairing for the fused table below. gate_up mirrors
+ * metal_ffn_gate_up's entry checks (decode-only matvec kernel); the
+ * elementwise GEGLU epilogue works for any F32 row block. */
+static bool metal_fused_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
+    if (q == nullptr) {
+        return false;
+    }
+    switch (q->op) {
+    case GEIST_FUSED_GELU_TANH_MUL:
+        return true; /* F32 elementwise, any geometry, any m */
+    case GEIST_FUSED_FFN_GATE_UP:
+        if (q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr ||
+            q->gate_w->dtype != GEIST_DTYPE_Q4_K || q->up_w->dtype != GEIST_DTYPE_Q4_K ||
+            q->d_model % 256u != 0u || (size_t) q->gate_w->n_in != q->d_model ||
+            (size_t) q->up_w->n_in != q->d_model || q->gate_w->n_out != q->up_w->n_out) {
+            return false;
+        }
+        if (metal_ensure_q4k_pipeline(be) != GEIST_OK) {
+            return false;
+        }
+        return ((struct metal_state *) be->state)->q4k_gate_up_n4_pipeline != nullptr;
+    default:
+        return false;
+    }
+}
+
 static const struct geist_backend_primitives metal_prims = {
         .rmsnorm          = metal_rmsnorm,
         .add              = metal_add,
@@ -6429,6 +6455,7 @@ static const struct geist_backend_primitives metal_prims = {
 };
 
 static const struct geist_backend_fused metal_fused = {
+        .supported               = metal_fused_supported,
         .gelu_tanh_mul           = metal_gelu_tanh_mul,
         .linear_t                = metal_linear_t,
         .linear_t_pair           = metal_linear_t_pair,
