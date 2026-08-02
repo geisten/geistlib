@@ -23,7 +23,6 @@
 #include "scratch_plan.h"
 #include "weight_load.h"
 
-#include "quant.h"
 #include "gguf_reader.h"
 #include "gemma4_kernels.h"
 #include "heap.h"
@@ -34,6 +33,7 @@
 #include <geist.h>
 #include <geist_backend.h>
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -617,11 +617,12 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
 #endif
     { /* GEIST_M_MAX override — for tuning the prefill activation tile vs L1
        * fit (m×n_in int8 should fit the 64 KB L1: m=32→48 KB, m=64→96 KB).
-       * GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; the metal
-       * path never runs those in prefill, so the GPU may batch larger. */
-        const bool  is_gpu = be->desc != nullptr && be->desc->caps.batched_submit;
-        const int   cap    = is_gpu ? 512 : (int) GEIST_QUANT_M_CAP;
-        const char *mm     = getenv("GEIST_M_MAX");
+       * caps.max_m carries the backend's per-call row limit (CPU quant
+       * kernels size stack arrays from it; batched-submit GPUs allow
+       * larger tiles). 0 = uncapped. */
+        const size_t be_cap = be->desc != nullptr ? be->desc->caps.max_m : 0;
+        const int    cap    = be_cap > 0 ? (int) be_cap : INT_MAX;
+        const char  *mm     = getenv("GEIST_M_MAX");
         if (mm != nullptr && mm[0] != '\0') {
             const int v = atoi(mm);
             if (v > 0 && v <= cap)
@@ -970,17 +971,14 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     if (env_int8 != nullptr) {
         return (env_int8[0] == '1') ? GEIST_KV_INT8 : GEIST_KV_FP32;
     }
-    /* Batched-submit GPU backends keep dense KV on-device (buffer_copy
-     * append + prims->attention); the INT8 cache would force a host round-trip
-     * per layer. */
-    if (be != nullptr && be->desc->caps.batched_submit) {
-        return GEIST_KV_FP32;
+    /* Backend preference (caps.preferred_kv_mode): the backend owns its
+     * platform/pipeline knowledge — GPUs keep dense KV on-device,
+     * Apple-unified-memory CPU builds prefer FP32, Pi-class LPDDR
+     * builds prefer INT8. No preference (= GEIST_KV_AUTO) → FP32. */
+    if (be != nullptr && be->desc->caps.preferred_kv_mode != GEIST_KV_AUTO) {
+        return be->desc->caps.preferred_kv_mode;
     }
-#if defined(__APPLE__)
     return GEIST_KV_FP32;
-#else
-    return GEIST_KV_INT8;
-#endif
 }
 
 struct transformer_arch_session *transformer_session_alloc(struct transformer_arch_state   *state,
@@ -1000,12 +998,11 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     memset(sess, 0, sizeof(*sess));
     sess->model = state;
     sess->m_max = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
-    /* GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; batched-
-     * submit GPU prefill never runs those, so those sessions may batch
-     * up to 512. */
-    const size_t m_cap = (be->desc != nullptr && be->desc->caps.batched_submit)
-                                 ? 512u
-                                 : (size_t) GEIST_QUANT_M_CAP;
+    /* caps.max_m is the backend's per-call row limit (CPU quant kernels
+     * size stack arrays from it; batched-submit GPUs allow larger
+     * batches). 0 = uncapped. */
+    const size_t m_cap =
+            (be->desc != nullptr && be->desc->caps.max_m > 0) ? be->desc->caps.max_m : SIZE_MAX;
     if (sess->m_max == 0 || sess->m_max > m_cap) {
         geist_backend_set_error(
                 be,

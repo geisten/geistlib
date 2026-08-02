@@ -20,6 +20,7 @@
 #include <geist_backend.h>
 
 #include "heap.h"
+#include "quant.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -229,4 +230,13 @@ const struct geist_backend_descriptor geist_backend_cpu_scalar = {
         .vtbl  = &cpu_scalar_vtbl,
         .prims = &cpu_scalar_prims,
         .fused = &cpu_scalar_fused,
+        .caps =
+                {
+                        .max_m = GEIST_QUANT_M_CAP,
+#if defined(__APPLE__)
+                        .preferred_kv_mode = GEIST_KV_FP32,
+#else
+                        .preferred_kv_mode = GEIST_KV_INT8,
+#endif
+                },
 };

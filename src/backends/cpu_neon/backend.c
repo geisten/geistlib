@@ -352,5 +352,16 @@ const struct geist_backend_descriptor geist_backend_cpu_neon = {
         .vtbl  = &cpu_neon_vtbl,
         .prims = &cpu_neon_prims,
         .fused = &cpu_neon_fused,
-        .caps  = {.manages_host_threads = true},
+        .caps =
+                {
+                        .manages_host_threads = true,
+                        .max_m                = GEIST_QUANT_M_CAP,
+#if defined(__APPLE__)
+                        /* Unified memory + Accelerate: FP32 KV wins. */
+                        .preferred_kv_mode = GEIST_KV_FP32,
+#else
+                        /* Pi-class LPDDR: INT8 KV halves the cache traffic. */
+                        .preferred_kv_mode = GEIST_KV_INT8,
+#endif
+                },
 };

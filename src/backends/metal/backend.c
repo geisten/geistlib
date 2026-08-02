@@ -6502,5 +6502,9 @@ const struct geist_backend_descriptor geist_backend_metal = {
         .vtbl  = &metal_vtbl,
         .prims = &metal_prims,
         .fused = &metal_fused,
-        .caps  = {.kv_f16_attention = true, .batched_submit = true, .preferred_m_max = 128},
+        .caps  = {.kv_f16_attention  = true,
+                  .batched_submit    = true,
+                  .preferred_m_max   = 128,
+                  .max_m             = 512, /* batched-submit pipeline bound */
+                  .preferred_kv_mode = GEIST_KV_FP32},
 };

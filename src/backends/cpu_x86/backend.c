@@ -33,6 +33,7 @@
 
 #include "geist_gemm.h"
 #include "heap.h"
+#include "quant.h"
 
 #include <geist_backend.h>
 #include <geist_weight.h>
@@ -448,4 +449,5 @@ const struct geist_backend_descriptor geist_backend_cpu_x86 = {
         .vtbl  = &cpu_x86_vtbl,
         .prims = &cpu_x86_prims,
         .fused = &cpu_x86_fused,
+        .caps  = {.max_m = GEIST_QUANT_M_CAP, .preferred_kv_mode = GEIST_KV_INT8},
 };
