@@ -3,6 +3,56 @@
 **Goal:** geist's ternary decode *and* prefill on a Raspberry Pi 5 (Cortex-A76,
 SDOT, **no i8mm**) at or above `MAX(bitnet.cpp, llama.cpp)` on the same model.
 
+**That goal is met on `i2_s` and missed on `TQ2_0`.** Measured 2026-08-01 with
+all three engines on `bitnet_b1_58-large` TQ2_0, one `make bench` run, each
+engine started under the 56 °C gate:
+
+| | geist | bitnet.cpp | llama.cpp |
+| :-- | --: | --: | --: |
+| decode, 32-token context | 46.31 | 43.62 — 1.06× | 49.09 — **0.94×** |
+| prefill, 512 tokens | 128.08 | 74.81 — 1.71× | 51.59 — 2.48× |
+
+Prefill clears both by a wide margin. Decode appears 6 % behind llama.cpp — but
+that row was measured with a default that is **silently wrong on this model**,
+and the honest figure is parity. See below.
+
+### The decode row is a defect, not a deficit
+
+`make bench` runs the shipped defaults, which here include the speculative
+output head. On this model that head **changes the output**: greedy generation
+matches the dense head for 28 tokens and then diverges. Both paths are
+deterministic (three identical runs each), so this is a recall miss, not noise —
+and the sketch has no fallback, so it never notices.
+
+Measured across configurations, same prompt, 48 tokens:
+
+| configuration | decode t/s | output |
+| :-- | --: | :-- |
+| default (sketch, stride 4, topk 1024) | 47.15 | **diverges** |
+| `GEIST_SPEC_TOPK=4096` | 34.38 | exact |
+| `GEIST_SPEC_STRIDE=2` | 45.04 | exact |
+| `GEIST_SPEC_HEAD=0` | **48.42** | exact by construction |
+| llama.cpp | 49.09 | — |
+
+Among the configurations that produce the right tokens, turning the sketch
+**off** is the fastest — so on this model the speculative head is a loss in
+every correct setting, and the honest ratio against llama.cpp is **0.99×**,
+parity rather than a deficit.
+
+**Root cause: the sketch resolution is `SD = H / stride` with a fixed stride of
+4.** The 2B-4T has `H = 2560`, so `SD = 640` and topk 1024 has margin to spare.
+This model has `H = 1536`, so `SD = 384` — a proportionally coarser sketch, and
+the recall margin verified on the 2B-4T no longer holds. Two independent knobs
+confirm it: raising topk to 4096 *or* halving the stride restores exact parity,
+and both cost throughput.
+
+`spec_dtype_ok()` gates on dtype and vocabulary size. Neither is the variable
+that decides recall.
+
+Recorded in `reference_runs.json`; spread 1.0 %. The row stands as what the
+shipped defaults produce — that is what a reproducer would get — with this
+section as its reading.
+
 **Status: measured on the Pi 5.** geist decodes the canonical 2B-4T `i2_s` at
 **18.05 t/s vs bitnet.cpp's 9.04** (**2.0×**) **at a 32-token prompt** and
 **15.13 t/s** (**1.67×**) **at 512 tokens** — both halves from one `make bench`

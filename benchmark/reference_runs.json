@@ -117,6 +117,48 @@
    "temp_c_geist_start": 48.8,
    "j_per_decode_token": 0.3525675920253477,
    "j_per_prefill_token": 0.17168218310621355
+  },
+  {
+   "date": "2026-08-02",
+   "system": "Raspberry Pi 5 Model B Rev 1.1",
+   "cores": 4,
+   "ram_gb": 4.0,
+   "os": "Linux 6.18.33+rpt-rpi-2712",
+   "model": "bitnet_b1_58-large-TQ2_0.gguf",
+   "commit": "368596e",
+   "protocol": {
+    "seq_lens": "32,128,512",
+    "decode_n": 64,
+    "warmup": 64,
+    "repeats": 10,
+    "agg": "mean"
+   },
+   "decode_tps_512": 32.266,
+   "prefill_tps_512": 128.082,
+   "spread_pct": 1.028424932379877,
+   "baselines": [
+    {
+     "engine": "bitnet.cpp",
+     "decode_tps": 43.62,
+     "prefill_tps": 74.81,
+     "decode_ratio_short_ctx": 1.0617148097203117,
+     "prefill_ratio_512": 1.7120973131934232,
+     "temp_c_start": 53.8,
+     "thermal_gate": "cooled"
+    },
+    {
+     "engine": "llama.cpp",
+     "decode_tps": 49.09,
+     "prefill_tps": 51.59,
+     "decode_ratio_short_ctx": 0.9434100631493174,
+     "prefill_ratio_512": 2.4826904438844735,
+     "temp_c_start": 54.3,
+     "thermal_gate": "cooled"
+    }
+   ],
+   "temp_c_geist_start": 49.4,
+   "j_per_decode_token": 0.12917359691764405,
+   "j_per_prefill_token": 0.051884053132070486
   }
  ]
 }
