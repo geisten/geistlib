@@ -87,12 +87,6 @@ struct cpu_neon_kernel_policy {
     bool   q8_0_native_mn;
     bool   tq2_0_native_mn;
     bool   tq2_0_tl1_m1;
-    bool   iq_flat_cache_allowed;
-    /* True iff iq_flat_cache_allowed was set via GEIST_IQ_FLAT_CACHE_FORCE
-     * (i.e. the user opted into a config the platform default disabled).
-     * Carried separately so backend.c can keep the loud override warning
-     * on the FORCE path even when policy.iq_flat_cache_allowed is true. */
-    bool iq_flat_cache_force;
 };
 
 struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_hw_probe *hw);
