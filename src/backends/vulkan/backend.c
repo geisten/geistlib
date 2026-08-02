@@ -3683,5 +3683,7 @@ const struct geist_backend_descriptor geist_backend_vulkan = {
         .fused = &vk_fused,
         .caps  = {.kv_f16_attention           = true,
                   .batched_submit             = true,
-                  .weights_need_backend_arena = true},
+                  .weights_need_backend_arena = true,
+                  .max_m                      = 512,
+                  .preferred_kv_mode          = GEIST_KV_FP32},
 };
