@@ -396,7 +396,7 @@ static void cpu_neon_w_q4k_mN(const float               *x,
                               struct geist_backend      *be,
                               float                     *y) {
     struct cpu_neon_state     *st   = (struct cpu_neon_state *) be->state;
-    struct cpu_neon_workspace *ws   = &st->workspace;
+    struct cpu_neon_workspace *ws   = cpu_neon_ws(st);
     const size_t               n_in = (size_t) w->n_in;
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
@@ -437,7 +437,7 @@ static void cpu_neon_w_q4k_pair_mN(const float               *x,
                                    float                     *y0,
                                    float                     *y1) {
     struct cpu_neon_state     *st   = (struct cpu_neon_state *) be->state;
-    struct cpu_neon_workspace *ws   = &st->workspace;
+    struct cpu_neon_workspace *ws   = cpu_neon_ws(st);
     const size_t               n_in = (size_t) w0->n_in;
     if (m == 0 || m > GEIST_QUANT_M_CAP || w0->n_in != w1->n_in)
         return;
@@ -489,7 +489,7 @@ static void cpu_neon_w_q6k_mN(const float               *x,
                               struct geist_backend      *be,
                               float                     *y) {
     struct cpu_neon_state     *st   = (struct cpu_neon_state *) be->state;
-    struct cpu_neon_workspace *ws   = &st->workspace;
+    struct cpu_neon_workspace *ws   = cpu_neon_ws(st);
     const size_t               n_in = (size_t) w->n_in;
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;

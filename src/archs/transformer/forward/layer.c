@@ -23,6 +23,7 @@
 #include <geist_backend.h>
 
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -35,8 +36,10 @@ enum transformer_profile_stage {
     TRANSFORMER_PROFILE_COUNT,
 };
 
-static uint64_t g_transformer_profile_ns[TRANSFORMER_PROFILE_COUNT];
-static uint64_t g_transformer_profile_calls[TRANSFORMER_PROFILE_COUNT];
+/* Diagnostics only (env-gated); atomic so concurrent sessions with
+ * profiling on accumulate instead of racing (TSan). */
+static _Atomic uint64_t g_transformer_profile_ns[TRANSFORMER_PROFILE_COUNT];
+static _Atomic uint64_t g_transformer_profile_calls[TRANSFORMER_PROFILE_COUNT];
 
 static uint64_t transformer_profile_now_ns(void) {
     struct timespec ts;
@@ -73,26 +76,32 @@ static void transformer_profile_print(void) {
 }
 
 static bool transformer_profile_enabled(void) {
-    static int enabled = -1;
-    if (enabled < 0) {
+    static _Atomic int enabled = -1;
+    int                cur     = atomic_load(&enabled);
+    if (cur < 0) {
         const char *env = getenv("GEIST_PROFILE_PREFILL");
         if (env == nullptr || env[0] == '\0') {
             env = getenv("GEIST_PROFILE_FORWARD");
         }
-        enabled = (env != nullptr && env[0] == '1') ? 1 : 0;
-        if (enabled) {
-            atexit(transformer_profile_print);
+        const int on  = (env != nullptr && env[0] == '1') ? 1 : 0;
+        int       exp = -1;
+        /* First updater registers the atexit sink; losers just reload. */
+        if (atomic_compare_exchange_strong(&enabled, &exp, on)) {
+            if (on) {
+                atexit(transformer_profile_print);
+            }
         }
+        cur = atomic_load(&enabled);
     }
-    return enabled != 0;
+    return cur != 0;
 }
 
 static void transformer_profile_add(enum transformer_profile_stage stage, uint64_t t0) {
     if (t0 == 0) {
         return;
     }
-    g_transformer_profile_ns[stage] += transformer_profile_now_ns() - t0;
-    g_transformer_profile_calls[stage]++;
+    atomic_fetch_add(&g_transformer_profile_ns[stage], transformer_profile_now_ns() - t0);
+    atomic_fetch_add(&g_transformer_profile_calls[stage], 1);
 }
 
 static void transformer_layer_bind_kv_buffers(struct transformer_layer_forward_ctx *ctx) {

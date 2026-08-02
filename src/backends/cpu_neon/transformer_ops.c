@@ -125,7 +125,7 @@ static size_t ffn_tile_blocks(void) {
     }
 
     struct cpu_neon_state     *st                  = (struct cpu_neon_state *) be->state;
-    struct cpu_neon_workspace *ws                  = &st->workspace;
+    struct cpu_neon_workspace *ws                  = cpu_neon_ws(st);
     const size_t               xq_need             = m * d_model;
     const size_t               sum_need            = m * (d_model / 32);
     const size_t               xsc_need            = m;

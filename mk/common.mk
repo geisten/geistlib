@@ -20,6 +20,11 @@ BIN_DIR   := bin/$(TARGET)/$(MODE)
 # release : production
 # debug   : -O0 -g for gdb stepping
 # asan    : sanitizer build for refactor safety net
+# tsan    : ThreadSanitizer build for the multi-session concurrency tests.
+#           OpenMP is stripped (stock libomp is not TSan-instrumented and
+#           floods the report with false positives at barriers); the omp
+#           pragmas compile to serial loops, which is exactly right — the
+#           races under test are cross-session, not intra-kernel.
 # perf    : -O3 + symbols for perf record / sampling profilers
 
 ifeq      ($(MODE),release)
@@ -31,11 +36,18 @@ else ifeq ($(MODE),debug)
 else ifeq ($(MODE),asan)
     CFLAGS_MODE  := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
     LDFLAGS_MODE := -fsanitize=address,undefined
+else ifeq ($(MODE),tsan)
+    # -Wno-unused-function: OMP-only kernel helpers go unused without -fopenmp.
+    CFLAGS_MODE  := -O1 -g -fsanitize=thread -fno-omit-frame-pointer -Wno-unused-function
+    LDFLAGS_MODE := -fsanitize=thread
+    # Strip OpenMP from the target flags (see mode table above).
+    CFLAGS_TARGET  := $(filter-out -Xpreprocessor -fopenmp,$(CFLAGS_TARGET))
+    LDFLAGS_TARGET := $(filter-out -lomp,$(LDFLAGS_TARGET))
 else ifeq ($(MODE),perf)
     CFLAGS_MODE  := -O3 -g -fno-omit-frame-pointer
     LDFLAGS_MODE :=
 else
-    $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, perf)
+    $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, perf)
 endif
 
 # ---- Base CFLAGS ---------------------------------------------------------

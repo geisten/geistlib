@@ -14,6 +14,8 @@
 #error "cpu_neon/internal.h is internal to the backend layer."
 #endif
 
+#include <pthread.h>
+#include <stdatomic.h>
 #include <geist.h>
 #include <geist_types.h>
 #include "hw_probe.h"
@@ -26,21 +28,24 @@ struct geist_buffer {
     unsigned int           memory_flags;
 };
 
-/* Backend-owned scratch for kernels that need temporary int8 / fp32 /
- * int32 buffers. Replaces the file-scope `_Thread_local` caches that
- * lived through the OMP runtime's lifetime independently of backend
- * destroy (review #4 / V12 — fixed structurally here).
+/* Kernel scratch for temporary int8 / fp32 / int32 buffers. One
+ * workspace PER CALLING THREAD, owned by the backend: concurrent
+ * sessions (one thread each, see geist_arch.h) quantize activations
+ * and stage dequant tiles here, so a single shared instance was a
+ * cross-session data race (caught by test_multi_session_parallel_int).
+ * Per-thread instances hang off cpu_neon_state.ws_head and are all
+ * freed at backend destroy — keeping the lifetime fix of review #4 /
+ * V12 (no scratch surviving the backend) while restoring isolation.
  *
- * One slot per kernel family (m1, mN). All current users follow a
- * master-prepares-then-OMP-fan-out pattern: the main thread fills the
- * scratch, parallel workers read it, no per-worker writes. If a future
- * kernel needs per-worker writable scratch, extend with a slot array
- * indexed by omp_get_thread_num().
+ * Within one workspace the users still follow master-prepares-then-
+ * OMP-fan-out: the owning thread fills the scratch, its OMP workers
+ * read it.
  *
  * Lifetime:
- *   - zero-initialized when `cpu_neon_state` is zero-initialized
+ *   - a thread's first cpu_neon_ws() call on a backend mints its
+ *     workspace (lock-free list push, TLS-cached lookup)
  *   - buffers grow on demand from inside the kernels (heap.h)
- *   - freed in one place: cpu_neon_workspace_destroy() at backend
+ *   - freed in one place: cpu_neon_ws_destroy_all() at backend
  *     destroy. No OMP barrier needed.
  */
 struct cpu_neon_workspace {
@@ -88,11 +93,29 @@ struct cpu_neon_workspace {
 
 void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws);
 
+/* One node per (backend, thread) pair; ws_head is a lock-free push-only
+ * list. Nodes of exited threads stay until backend destroy — bounded by
+ * the number of threads that ever touched the backend. */
+struct cpu_neon_ws_node {
+    pthread_t                 tid;
+    struct cpu_neon_workspace ws;
+    struct cpu_neon_ws_node *_Atomic next;
+};
+
 struct cpu_neon_state {
     struct geist_hw_probe         hw;
     struct cpu_neon_kernel_policy policy;
-    struct cpu_neon_workspace     workspace;
+    uint64_t                      ws_generation; /* unique per state instance;
+                                                  * guards the TLS cache against
+                                                  * a recycled state address */
+    struct cpu_neon_ws_node *_Atomic ws_head;
 };
+
+/* The calling thread's workspace on this backend (minted on first use).
+ * Returns nullptr only on OOM of the ~200-byte node. */
+struct cpu_neon_workspace *cpu_neon_ws(struct cpu_neon_state *st);
+void                       cpu_neon_ws_destroy_all(struct cpu_neon_state *st);
+uint64_t                   cpu_neon_ws_next_generation(void);
 
 /* TQ2_0 (ternary BitNet b1.58) compute kernels — implemented in
  * kernels/tq2_0.c, referenced by the resolver table in weight_resolve.c.
