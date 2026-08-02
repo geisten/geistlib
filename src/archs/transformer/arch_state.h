@@ -164,6 +164,13 @@ struct transformer_layer_weights {
  *                    the next call.
  */
 struct transformer_arch_session {
+    /* Owning model. Set once at session creation, never changed. Internal
+     * forward code takes a session handle and reaches weights/config
+     * through this pointer — there is no ambient "active session" on the
+     * model, so sessions on one model may run concurrently (one thread
+     * per session; see the contract in geist_arch.h). */
+    struct transformer_arch_state *model;
+
     /* ---- KV-cache state. Layers 0..14 own buffers; 15..34 alias them
      * via GEMMA4_KV_*_SRC. One of three representations is active:
      *   FP32 (default on Apple): k_cache[] / v_cache[].
@@ -285,6 +292,17 @@ struct transformer_arch_session {
     int                            top_k;
     struct geist_rng               rng;
     struct geist_sampler_workspace sampler_ws;
+
+    /* ---- Spec-head per-token scratch (written every decode step, so it
+     * lives here, not on the model — the sketch itself and its bound
+     * terms are weight-derived and stay model-level). Allocated at
+     * session creation when the model's spec head is active. */
+    int8_t *spec_x_i8;       /* [HIDDEN] quantized activation scratch */
+    int8_t *spec_act_sketch; /* [spec_sketch_dim] subsampled activation */
+    float  *spec_rough;      /* [VOCAB] rough scores scratch */
+    float  *spec_row_f32;    /* [HIDDEN] dequant scratch for the exact pass
+                              * (quantized embeddings, e.g. Gemma's Q6_K) */
+    void *spec_heap;         /* [spec_topk] (score,idx) top-K min-heap */
 };
 
 struct transformer_runtime_flags {
@@ -354,7 +372,9 @@ struct transformer_arch_state {
      * decode rough-rank the whole vocab cheaply, pick top-K, then compute
      * EXACT f16 logits for only those K. Cuts the lm_head from ~656 MB to
      * ~82 MB read per token (the decode bottleneck on the BitNet-2B-4T
-     * i2_s model). Lazily built on first use; nullptr/0 until then.
+     * i2_s model). Built EAGERLY at state_create when GEIST_SPEC_HEAD is
+     * enabled — immutable afterwards, so concurrent sessions read it
+     * without coordination (per-token scratch lives on the session).
      * spec_state: 0 = unbuilt, 1 = built+active, -1 = ineligible/disabled. */
     int8_t *spec_sketch;    /* [VOCAB * spec_sketch_dim] i8 */
     float  *spec_row_scale; /* [VOCAB] sketch dequant scale per row */
@@ -363,14 +383,8 @@ struct transformer_arch_state {
      * matching norms they bound how far a rough score can sit from the exact
      * logit, which is what lets a miss be detected rather than merely being
      * unlikely. */
-    float  *spec_w_drop;
-    float  *spec_w_l1;
-    int8_t *spec_x_i8;       /* [HIDDEN] quantized activation scratch */
-    int8_t *spec_act_sketch; /* [spec_sketch_dim] subsampled activation */
-    float  *spec_rough;      /* [VOCAB] rough scores scratch */
-    float  *spec_row_f32;    /* [HIDDEN] dequant scratch for the exact pass
-                              * (quantized embeddings, e.g. Gemma's Q6_K) */
-    void  *spec_heap;        /* [spec_topk] (score,idx) top-K min-heap */
+    float *spec_w_drop;
+    float *spec_w_l1;
     size_t spec_sketch_dim;
     size_t spec_stride; /* sketch subsample stride (GEIST_SPEC_STRIDE) */
     size_t spec_topk;   /* exact-finalist count (GEIST_SPEC_TOPK) */
@@ -382,29 +396,28 @@ struct transformer_arch_state {
 
     /* ---- Precomputed RoPE cos/sin tables. Gemma 4 has two layer types
      * with different (rope_theta, n_rotated_dims) → two tables. Shape
-     * each: [max_seq_len, head_dim]. Shared across sessions; rebuilt
-     * (grow-only) when session_alloc sees a larger opts.max_seq_len. */
+     * each: [max_seq_len, head_dim]. Shared across sessions and FROZEN
+     * at state_create — session_alloc rejects opts.max_seq_len larger
+     * than the model's, instead of regrowing tables other sessions may
+     * be reading (load the model with the larger max_seq_len instead). */
     struct geist_buffer *rope_cos_sliding;
     struct geist_buffer *rope_sin_sliding;
     struct geist_buffer *rope_cos_full;
     struct geist_buffer *rope_sin_full;
 
-    /* ---- Per-session mutable state (P1.2.d/e/f).
-     *
-     * `sess` points at the currently-active session. `default_sess` is
-     * the session that state_create allocates so direct-state callers
-     * (no engine session) keep working unchanged.
-     *
-     * Engine-owned sessions allocated via transformer_session_alloc
-     * are heap-separate; transformer_session_attach swaps the active
-     * pointer before each dispatch. Single-active by design — true
-     * concurrent multi-session is future work (would require passing
-     * session_meta through every vtable call). */
-    struct transformer_arch_session *sess;
+    /* The session state_create allocates, for direct-state callers that
+     * never mint their own (tests, single-session tools) — fetch it via
+     * transformer_default_session. A normal session that happens to be
+     * model-owned; there is no "active session" pointer — per-session
+     * ops receive their session explicitly. */
     struct transformer_arch_session *default_sess;
 };
 
 /* ---- Forward-pass helpers (architecture-internal) --------------------- *
+ * Per-session entry points take the session handle; weights and config
+ * are reached through sess->model. Handles must be non-null — the vtable
+ * thunks (arch.c) guard-return on nullptr.
+ *
  * Single-token, single-layer forward. Used by sub-step 2 cross-reference
  * tests; the full prefill/decode wrappers land in sub-steps 2-loop and 3.
  *
@@ -415,19 +428,19 @@ struct transformer_arch_state {
  *   q_position          — absolute position of this token (KV cache index).
  *
  * Side effects: appends one (K, V) pair into the layer's KV cache (or the
- * source layer's cache if kv_shared); advances state->kv_len IFF
+ * source layer's cache if kv_shared); advances sess->kv_len IFF
  * advance_kv == true (caller controls this so per-layer cross-refs can run
  * without polluting state).
  */
 [[nodiscard]] enum geist_status
-transformer_forward_one_layer(struct transformer_arch_state *state,
-                              int                            layer_idx,
-                              size_t                         q_position,
-                              size_t                         seq,
-                              bool                           advance_kv,
-                              struct geist_buffer           *h_in_buf,
-                              struct geist_buffer           *per_layer_input_buf,
-                              struct geist_buffer           *h_out_buf);
+transformer_forward_one_layer(struct transformer_arch_session *sess,
+                              int                              layer_idx,
+                              size_t                           q_position,
+                              size_t                           seq,
+                              bool                             advance_kv,
+                              struct geist_buffer             *h_in_buf,
+                              struct geist_buffer             *per_layer_input_buf,
+                              struct geist_buffer             *h_out_buf);
 
 /* Compute the PLE per-layer-input for ONE token (decode m=1) starting
  * from the residual stream `h` at this point in the pipeline.
@@ -441,22 +454,20 @@ transformer_forward_one_layer(struct transformer_arch_state *state,
  * single needed row on the fly (lm.c's approach to keep the Pi 5 RAM
  * budget — full FP32 expansion of the table would be ~9 GB). */
 [[nodiscard]] enum geist_status
-transformer_compute_per_layer_input(struct transformer_arch_state *state,
-                                    geist_token_t                  token_id,
-                                    struct geist_buffer           *h_buf,
-                                    struct geist_buffer           *per_layer_input_buf);
+transformer_compute_per_layer_input(struct transformer_arch_session *sess,
+                                    geist_token_t                    token_id,
+                                    struct geist_buffer             *h_buf,
+                                    struct geist_buffer             *per_layer_input_buf);
 
 /* End-to-end single-token forward + sample. Consumes the input token at
- * position state->kv_len, advances state->kv_len by 1, and returns the
+ * position sess->kv_len, advances sess->kv_len by 1, and returns the
  * predicted next token via greedy argmax.
  *
  * This is the v2 equivalent of lm.c::lm_decode_step + the embedding scale
- * + the PLE precompute + the softcap'd lm_head all rolled into one call.
- * Used by the prefill+decode loop in the test gate; the full decoder
- * arch_ops wiring lands once this is verified end-to-end. */
-[[nodiscard]] enum geist_status transformer_decode_step(struct transformer_arch_state *state,
-                                                        geist_token_t                  input_token,
-                                                        geist_token_t                 *out_token);
+ * + the PLE precompute + the softcap'd lm_head all rolled into one call. */
+[[nodiscard]] enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
+                                                        geist_token_t  input_token,
+                                                        geist_token_t *out_token);
 
 /* Append one audio soft-token (HIDDEN floats, already produced by the
  * audio encoder) to the KV cache.
@@ -474,25 +485,24 @@ transformer_compute_per_layer_input(struct transformer_arch_state *state,
  * n-soft-token audio clip; the engine's session_attach_audio takes care
  * of the encoder pipeline upstream. */
 [[nodiscard]] enum geist_status
-transformer_advance_audio_token(struct transformer_arch_state *state, const float *h_in_host);
+transformer_advance_audio_token(struct transformer_arch_session *sess, const float *h_in_host);
 
 /* Batched text prefill: append `n` tokens to the KV cache via the
- * seq>1 path. Processes the input in chunks of at most state->m_max
+ * seq>1 path. Processes the input in chunks of at most sess->m_max
  * tokens. After the last chunk, the next-token-pending field holds the
  * greedy prediction for the position after the prefill, ready for
  * ops->decode_step to return.
  *
  * Returns GEIST_OK on success. n==0 is a no-op. */
-[[nodiscard]] enum geist_status transformer_prefill_text_batch(struct transformer_arch_state *state,
-                                                               size_t                         n,
-                                                               const geist_token_t           *ids);
+[[nodiscard]] enum geist_status transformer_prefill_text_batch(
+        struct transformer_arch_session *sess, size_t n, const geist_token_t *ids);
 
 /* Batched audio prefill: append `n` soft-tokens to the KV cache via the
  * seq>1 path. Each soft-token is HIDDEN F32 values (no embed lookup,
  * no sqrt scale); PLE uses pad_token_id (0) for all positions. Same
  * chunking and side-effect semantics as the text batched prefill. */
 [[nodiscard]] enum geist_status transformer_prefill_audio_batch(
-        struct transformer_arch_state *state, size_t n, const float *soft_tokens);
+        struct transformer_arch_session *sess, size_t n, const float *soft_tokens);
 
 /* Pin a prefix into the KV cache. Mirrors lm.c::lm_pin_prefix semantics:
  * truncates the cache to empty, runs a batched prefill of `ids` (no-op if
@@ -503,7 +513,7 @@ transformer_advance_audio_token(struct transformer_arch_state *state, const floa
  *
  * Returns GEIST_OK on success; GEIST_E_INVALID_ARG if state is null. */
 [[nodiscard]] enum geist_status
-transformer_pin_prefix(struct transformer_arch_state *state, size_t n, const geist_token_t *ids);
+transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const geist_token_t *ids);
 
 /* Speculative-decode primitives.
  *
@@ -523,12 +533,12 @@ transformer_pin_prefix(struct transformer_arch_state *state, size_t n, const gei
  * positions ≥ new_len is implicitly invalid (future writes will
  * overwrite). Invalidates logits_valid. Used to undo speculative-pass
  * KV writes after a draft mismatch. */
-[[nodiscard]] enum geist_status transformer_verify_forward(struct transformer_arch_state *state,
-                                                           size_t                         k,
-                                                           const geist_token_t           *ids,
+[[nodiscard]] enum geist_status transformer_verify_forward(struct transformer_arch_session *sess,
+                                                           size_t                           k,
+                                                           const geist_token_t             *ids,
                                                            geist_token_t *out_tokens);
 
-void transformer_kv_truncate(struct transformer_arch_state *state, size_t new_len);
+void transformer_kv_truncate(struct transformer_arch_session *sess, size_t new_len);
 
 /* ---- Public functions (architecture-internal) -------------------------- */
 
@@ -562,31 +572,29 @@ transformer_state_create_from_gguf(struct geist_backend            *be,
 
 void transformer_state_destroy(struct transformer_arch_state *state);
 
-/* Reset conversational state — drops the KV cache and stored logits;
- * keeps the loaded weights. Used by ops->state_reset. */
-void transformer_state_reset(struct transformer_arch_state *state);
+/* Reset conversational state — drops the session's KV cache and stored
+ * logits; the model's weights are untouched. Used by ops->state_reset. */
+void transformer_session_reset(struct transformer_arch_session *sess);
 
-/* Apply per-session opts to the arch state. Called by the engine from
- * geist_session_create. Re-seeds the RNG; (re)allocates the sampler
- * workspace if the opts request a non-greedy mode. */
-void transformer_state_apply_opts(struct transformer_arch_state   *state,
-                                  const struct geist_session_opts *opts);
+/* Apply per-session opts. Called by the engine from geist_session_create.
+ * Re-seeds the RNG; (re)allocates the sampler workspace if the opts
+ * request a non-greedy mode. */
+void transformer_session_apply_opts(struct transformer_arch_session *sess,
+                                    const struct geist_session_opts *opts);
 
-/* ---- Multi-session API (P1.2.f) --------------------------------------- *
+/* ---- Multi-session API (P1.2.f, made concurrent by the session-
+ * threading refactor) ---------------------------------------------------- *
  *
- * Each engine-level geist_session may own its own session (KV cache,
- * scratch pool, sampler RNG, ...). The model state's `sess` slot points
- * at the *active* session — re-bound by transformer_session_attach
- * before each dispatch.
+ * Each engine-level geist_session owns a transformer_arch_session (KV
+ * cache, scratch pool, sampler RNG, spec scratch). Sessions carry their
+ * model back-pointer; per-session ops receive the session explicitly, so
+ * sessions on one model may run concurrently (one thread per session).
+ * Session alloc/free are setup-phase: not thread-safe against each other
+ * or against running sessions — see the contract in geist_arch.h.
  *
- * state_create still installs a default session for backward-compat with
- * direct-state callers (e.g. test_state_decode_int). Engine sessions
- * allocate their own via transformer_session_alloc; on destroy the
- * engine re-binds the model's default session via session_attach(nullptr).
- *
- * Concurrency: single active session at a time. True concurrent multi-
- * session would require passing session_meta through every vtable call;
- * out of scope for P1.2.f. */
+ * session_alloc fails (returns nullptr) if opts request a max_seq_len
+ * larger than the model was created with: RoPE tables and geometry are
+ * frozen at state_create. */
 [[nodiscard]] struct transformer_arch_session *
 transformer_session_alloc(struct transformer_arch_state   *state,
                           const struct geist_session_opts *opts);
@@ -594,12 +602,8 @@ transformer_session_alloc(struct transformer_arch_state   *state,
 void transformer_session_free(struct transformer_arch_state   *state,
                               struct transformer_arch_session *sess);
 
-void transformer_session_attach(struct transformer_arch_state   *state,
-                                struct transformer_arch_session *sess);
-
-/* Internal accessor for the model's default session (the one installed
- * by transformer_state_create). Engine uses this to restore the
- * default after detaching an engine-owned session. */
+/* The model-owned session state_create installs; vtable wrappers resolve
+ * session == nullptr to this. */
 struct transformer_arch_session *transformer_default_session(struct transformer_arch_state *state);
 
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_STATE_V2_H */

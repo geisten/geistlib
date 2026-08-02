@@ -91,6 +91,7 @@ enum geist_status geist_backend_create(const char                      *name,
             .err_code = GEIST_OK,
     };
     be->err_msg[0] = '\0';
+    pthread_mutex_init(&be->err_mu, nullptr);
 
     if (desc->vtbl->create != nullptr) {
         enum geist_status s = desc->vtbl->create(be, opts);
@@ -118,6 +119,7 @@ void geist_backend_destroy(struct geist_backend *be) {
     if (be->desc != nullptr && be->desc->vtbl != nullptr && be->desc->vtbl->destroy != nullptr) {
         be->desc->vtbl->destroy(be);
     }
+    pthread_mutex_destroy(&be->err_mu);
     /* Stash allocator before freeing the handle so the free uses correct ctx. */
     struct geist_allocator a = be->alloc;
     a.free(a.ctx, be);
@@ -156,6 +158,7 @@ void geist_backend_set_error(struct geist_backend *be,
     if (be == nullptr) {
         return;
     }
+    pthread_mutex_lock(&be->err_mu);
     be->err_code = code;
 
     va_list ap;
@@ -166,6 +169,7 @@ void geist_backend_set_error(struct geist_backend *be,
     if (n < 0) {
         be->err_msg[0] = '\0';
     }
+    pthread_mutex_unlock(&be->err_mu);
 }
 
 void *geist_backend_alloc(struct geist_backend *be, size_t bytes, size_t alignment) {

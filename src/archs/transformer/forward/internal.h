@@ -35,11 +35,12 @@
  * Private, per-call bundle used to keep transformer_forward_one_layer()
  * as orchestration while allowing attention/FFN/PLE stages to live in
  * separate translation units. Model-family switches come from the layer
- * exec plan when available; session-dependent KV representation remains
- * read from st->sess until the architecture has a per-session plan.
+ * exec plan when available; the session carries the KV representation
+ * and scratch, threaded in explicitly (no ambient active session).
  */
 struct transformer_layer_forward_ctx {
     struct transformer_arch_state            *st;
+    struct transformer_arch_session          *sess;
     struct geist_backend                     *be;
     const struct geist_backend_vtbl          *v;
     struct transformer_layer_weights         *L;

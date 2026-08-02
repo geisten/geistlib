@@ -12,7 +12,9 @@
 #define GEIST_BACKEND_H
 
 #include <geist.h>
-#include <geist_types.h>  /* tensor / op / dtype types the vtable speaks in */
+
+#include <pthread.h>
+#include <geist_types.h> /* tensor / op / dtype types the vtable speaks in */
 #include <geist_weight.h>
 
 #ifdef __cplusplus
@@ -39,8 +41,7 @@ struct geist_backend_vtbl {
     /* Optional create-time hook. Backend allocates per-instance state and
      * stashes it into geist_backend->state. Returns GEIST_OK on success.
      * If non-OK, engine reclaims geist_backend memory and propagates. */
-    enum geist_status (*create)(struct geist_backend           *be,
-                                              const struct geist_backend_opts *opts);
+    enum geist_status (*create)(struct geist_backend *be, const struct geist_backend_opts *opts);
 
     /* Required. Tear down per-instance state and any held buffers. */
     void (*destroy)(struct geist_backend *be);
@@ -48,18 +49,18 @@ struct geist_backend_vtbl {
     /* ---- Capability ---- */
 
     /* Pre-flight check: can this backend execute this op signature? */
-    enum geist_support (*supports_op)(struct geist_backend                 *be,
+    enum geist_support (*supports_op)(struct geist_backend                *be,
                                       const struct geist_op_support_query *query);
 
     /* ---- Buffer ops ---- */
 
     /* Allocate a buffer of the given size and role. Backend may pick
      * device-local vs host-coherent based on memory_flags. */
-    enum geist_status (*buffer_create)(struct geist_backend      *be,
-                                                     size_t                     bytes,
-                                                     enum geist_buffer_role     role,
-                                                     unsigned int               memory_flags,
-                                                     struct geist_buffer      **out);
+    enum geist_status (*buffer_create)(struct geist_backend  *be,
+                                       size_t                 bytes,
+                                       enum geist_buffer_role role,
+                                       unsigned int           memory_flags,
+                                       struct geist_buffer  **out);
 
     void (*buffer_destroy)(struct geist_backend *be, struct geist_buffer *buf);
 
@@ -79,13 +80,13 @@ struct geist_backend_vtbl {
 
     /* Copy host bytes into the buffer. Caller-provided source array. */
     enum geist_status (*buffer_upload)(struct geist_buffer *buf,
-                                                     size_t               n_bytes,
-                                                     const uint8_t        src[static n_bytes]);
+                                       size_t               n_bytes,
+                                       const uint8_t        src[static n_bytes]);
 
     /* Copy buffer contents back to host. Caller-provided destination. */
     enum geist_status (*buffer_download)(size_t                     n_bytes,
-                                                       uint8_t                    dst[static n_bytes],
-                                                       const struct geist_buffer *buf);
+                                         uint8_t                    dst[static n_bytes],
+                                         const struct geist_buffer *buf);
 
     /* CPU shortcut: returns a host pointer that aliases the buffer.
      * Returns nullptr if the backend cannot produce a host alias for this
@@ -108,8 +109,7 @@ struct geist_backend_vtbl {
      * fundamentally can't pre-resolve, e.g. a future fully-dynamic GPU
      * backend) leave this slot null. Callers fall back to the legacy
      * per-op vtable path. */
-    enum geist_status (*resolve_weight)(struct geist_backend *be,
-                                        struct geist_weight  *w);
+    enum geist_status (*resolve_weight)(struct geist_backend *be, struct geist_weight *w);
 
     /* ---- Primitive Ops (Level 2 per Q17) ---- */
     /* Each op takes geist_tensor inputs/outputs whose .buffer was created
@@ -126,27 +126,27 @@ struct geist_backend_vtbl {
     /* y = x * w * rsqrt(mean(x^2) + eps). w broadcasts across feature dim.
      * All tensors are F32 DENSE. x and y can be the same tensor (in-place). */
     enum geist_status (*rmsnorm)(struct geist_backend      *be,
-                                               const struct geist_tensor *x,
-                                               const struct geist_tensor *w,
-                                               float                      eps,
-                                               struct geist_tensor       *y);
+                                 const struct geist_tensor *x,
+                                 const struct geist_tensor *w,
+                                 float                      eps,
+                                 struct geist_tensor       *y);
 
     /* y = a + b. All F32 DENSE, same shape. y can alias a or b. */
     enum geist_status (*add)(struct geist_backend      *be,
-                                           const struct geist_tensor *a,
-                                           const struct geist_tensor *b,
-                                           struct geist_tensor       *y);
+                             const struct geist_tensor *a,
+                             const struct geist_tensor *b,
+                             struct geist_tensor       *y);
 
     /* y = a * b (element-wise). All F32 DENSE, same shape. */
     enum geist_status (*mul)(struct geist_backend      *be,
-                                           const struct geist_tensor *a,
-                                           const struct geist_tensor *b,
-                                           struct geist_tensor       *y);
+                             const struct geist_tensor *a,
+                             const struct geist_tensor *b,
+                             struct geist_tensor       *y);
 
     /* y = gelu_tanh(x). F32 DENSE, x and y can be the same tensor. */
     enum geist_status (*gelu_tanh)(struct geist_backend      *be,
-                                                 const struct geist_tensor *x,
-                                                 struct geist_tensor       *y);
+                                   const struct geist_tensor *x,
+                                   struct geist_tensor       *y);
 
     /* y = gelu_tanh(x) * z. F32 DENSE. Optional FFN fast path for GEGLU;
      * callers fall back to gelu_tanh + mul when nullptr. */
@@ -171,15 +171,15 @@ struct geist_backend_vtbl {
      * vs. relu(x) followed by mul(y, y). May be nullptr on backends
      * that don't implement it; callers must check. */
     enum geist_status (*relu_squared)(struct geist_backend      *be,
-                                                    const struct geist_tensor *x,
-                                                    struct geist_tensor       *y);
+                                      const struct geist_tensor *x,
+                                      struct geist_tensor       *y);
 
     /* y = silu(x) = x / (1 + exp(-x)). F32 DENSE, x and y can be the
      * same tensor. SiLU is Llama 2/3 + BitNet b1.58 3B's SwiGLU
      * activation. */
     enum geist_status (*silu)(struct geist_backend      *be,
-                                            const struct geist_tensor *x,
-                                            struct geist_tensor       *y);
+                              const struct geist_tensor *x,
+                              struct geist_tensor       *y);
 
     /* Rotary position embeddings, applied in place.
      *   x   shape [seq_len, n_heads, head_dim]   (F32 DENSE)
@@ -189,18 +189,18 @@ struct geist_backend_vtbl {
      * n_rotated_dims columns of each head; n_rotated_dims is encoded as
      * cos->shape[-1] (typically == head_dim for full rotation). */
     enum geist_status (*rope_apply)(struct geist_backend      *be,
-                                                  struct geist_tensor       *x,
-                                                  const struct geist_tensor *cos,
-                                                  const struct geist_tensor *sin);
+                                    struct geist_tensor       *x,
+                                    const struct geist_tensor *cos,
+                                    const struct geist_tensor *sin);
 
     /* Embedding lookup: out = embed_table[token_id, :].
      *   embed_table shape [vocab_size, d_model]
      *   out         shape [d_model] (1D) or [1, d_model] (2D)
      * Returns GEIST_E_INVALID_ARG if token_id is out of range. */
     enum geist_status (*embedding_lookup)(struct geist_backend      *be,
-                                                        const struct geist_tensor *embed_table,
-                                                        geist_token_t              token_id,
-                                                        struct geist_tensor       *out);
+                                          const struct geist_tensor *embed_table,
+                                          geist_token_t              token_id,
+                                          struct geist_tensor       *out);
 
     /* Scaled dot-product attention with MQA broadcast and causal+window mask.
      *   q   shape [n_q,  n_q_heads,  head_dim]   (F32 DENSE)
@@ -213,12 +213,12 @@ struct geist_backend_vtbl {
      *   sliding_window — 0 = unbounded causal; >0 = additionally
      *                    s > q_offset + t - sliding_window. */
     enum geist_status (*attention)(struct geist_backend      *be,
-                                                 const struct geist_tensor *q,
-                                                 const struct geist_tensor *k,
-                                                 const struct geist_tensor *v,
-                                                 size_t                     q_offset,
-                                                 size_t                     sliding_window,
-                                                 struct geist_tensor       *out);
+                                   const struct geist_tensor *q,
+                                   const struct geist_tensor *k,
+                                   const struct geist_tensor *v,
+                                   size_t                     q_offset,
+                                   size_t                     sliding_window,
+                                   struct geist_tensor       *out);
 
     /* Additional ops added in subsequent commits:
      *   silu_gate, ssm_step, ssm_scan, conv1d
@@ -258,8 +258,7 @@ struct geist_backend_vtbl {
      * regime; the token is 0 when nothing was changed. Backends that don't
      * manage host parallelism (e.g. GPU) leave both slots null — the arch
      * layer then runs at the ambient setting. Both null or both set. */
-    int  (*parallel_region_begin)(struct geist_backend       *be,
-                                  enum geist_parallel_region  region);
+    int (*parallel_region_begin)(struct geist_backend *be, enum geist_parallel_region region);
     void (*parallel_region_end)(struct geist_backend *be, int token);
 
     /* Optional tensor-based linear for batched-submit (GPU) backends. The
@@ -300,12 +299,11 @@ struct geist_backend_vtbl {
      * keep the per-token embed/PLE-table lookups (and their scaling)
      * on-device instead of dequantizing through a mapped host pointer.
      * nullptr = arch dequantizes on the host. */
-    enum geist_status (*embedding_lookup_scaled)(
-        struct geist_backend      *be,
-        const struct geist_tensor *embed_table,
-        geist_token_t              token_id,
-        float                      scale,
-        struct geist_tensor       *out);
+    enum geist_status (*embedding_lookup_scaled)(struct geist_backend      *be,
+                                                 const struct geist_tensor *embed_table,
+                                                 geist_token_t              token_id,
+                                                 float                      scale,
+                                                 struct geist_tensor       *out);
 
     /* Optional fused f32→f16 KV-cache append: convert k_src/v_src (F32
      * DENSE [seq, kv_heads, head_dim]) and store them at row q_position
@@ -465,18 +463,26 @@ struct geist_backend {
     /* Backend-private state, set during create(). */
     void *state;
 
-    /* Error slot — set via geist_backend_set_error*. */
+    /* Error slot — set via geist_backend_set_error. Writes are guarded
+     * by err_mu so concurrent sessions can't interleave garbage into the
+     * message; reads (geist_backend_errmsg) return a pointer into the
+     * slot and are last-writer-wins across sessions — read it after a
+     * failing call on your own session.
+     * ponytail: one shared slot; per-session error slots if concurrent
+     * error attribution ever matters. */
     enum geist_status err_code;
     char              err_msg[512];
+    pthread_mutex_t   err_mu;
 };
 
 /* Helpers backends call to record an error. */
-void geist_backend_set_error(struct geist_backend *be, enum geist_status code,
-                             const char *fmt, ...);
+void geist_backend_set_error(struct geist_backend *be,
+                             enum geist_status     code,
+                             const char           *fmt,
+                             ...);
 
 /* Allocator convenience: route a backend allocation through be->alloc. */
-[[nodiscard]] void *geist_backend_alloc(struct geist_backend *be, size_t bytes,
-                                        size_t alignment);
+[[nodiscard]] void *geist_backend_alloc(struct geist_backend *be, size_t bytes, size_t alignment);
 void                geist_backend_free(struct geist_backend *be, void *ptr);
 
 #ifdef __cplusplus
