@@ -3,6 +3,7 @@
 #include "heap.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -217,11 +218,22 @@ void attention_mqa_causal_kv(const float *q,
                              size_t       head_dim,
                              size_t       sliding_window,
                              float       *out) {
-    const float scale = 1.0f; /* Gemma 4: scaling encoded via Q/K-norms. */
-    (void) head_dim;
+    const float  scale         = 1.0f; /* Gemma 4: scaling encoded via Q/K-norms. */
     const size_t kv_group_size = n_q_heads / n_kv_heads;
 
     float *scores = heap_alloc_array_aligned(float, n_kv);
+    if (scores == nullptr) {
+        /* No status channel on this signature. Zero `out` so the caller
+         * reads defined values rather than uninitialized stack/heap, and
+         * make the failure audible — a silent all-zero attention output
+         * is indistinguishable from a legitimate one. */
+        memset(out, 0, n_q * n_q_heads * head_dim * sizeof(float));
+        fprintf(stderr,
+                "geist: attention_mqa_causal_kv: score buffer alloc failed "
+                "(%zu floats) — output zeroed\n",
+                n_kv);
+        return;
+    }
     for (size_t t = 0; t < n_q; t++) {
         size_t q_pos = q_offset + t;
         size_t s_lo  = 0;
@@ -281,12 +293,20 @@ void attention_mqa_causal(const float *q,
     /* Gemma 4 sets self_attn.scaling = 1.0 (not the conventional
      * 1/sqrt(head_dim)). The Q/K RMSNorms normalize magnitudes such
      * that explicit attention scaling becomes redundant. */
-    const float scale = 1.0f;
-    (void) head_dim;
+    const float  scale         = 1.0f;
     const size_t kv_group_size = n_q_heads / n_kv_heads;
 
     /* Working buffer for one row of attention scores (length seq_len). */
     float *scores = heap_alloc_array_aligned(float, seq_len);
+    if (scores == nullptr) {
+        /* See attention_mqa_causal_kv: zero + shout, no status channel. */
+        memset(out, 0, seq_len * n_q_heads * head_dim * sizeof(float));
+        fprintf(stderr,
+                "geist: attention_mqa_causal: score buffer alloc failed "
+                "(%zu floats) — output zeroed\n",
+                seq_len);
+        return;
+    }
 
     for (size_t t = 0; t < seq_len; t++) {
         for (size_t h = 0; h < n_q_heads; h++) {
