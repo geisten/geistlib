@@ -228,9 +228,13 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     }
     st->phys = devs[pick];
     st->fn.GetPhysicalDeviceMemoryProperties(st->phys, &st->mem_props);
-    VkPhysicalDeviceProperties2 pprops = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    VkPhysicalDeviceSubgroupProperties sgp = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+    VkPhysicalDeviceProperties2 pprops = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                          .pNext = &sgp};
     st->fn.GetPhysicalDeviceProperties2(st->phys, &pprops);
-    st->ts_period_ns = pprops.properties.limits.timestampPeriod;
+    st->ts_period_ns  = pprops.properties.limits.timestampPeriod;
+    st->subgroup_size = sgp.subgroupSize;
     return GEIST_OK;
 }
 
