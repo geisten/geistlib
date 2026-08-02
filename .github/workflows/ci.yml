@@ -97,13 +97,28 @@ jobs:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
 
+      # A second architecture family: gemma alone never exercises the llama
+      # populator or its tokenizer mode, so test_llama_{load,e2e}_int skipped
+      # on every run. 369 MB, cached under its own key so a change here does
+      # not invalidate the 2.9 GB download above.
+      - name: Cache Llama reference model
+        if: matrix.target == 'linux'
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/smollm2-360m-instruct-q8_0.gguf
+          key: geist-model-smollm2-360m-q8-v1
+
+      - name: Fetch Llama reference model
+        if: matrix.target == 'linux'
+        run: make fetch-llama-model
+
       # GEIST_STRICT_FIXTURES=gguf turns "GGUF model not found" from a skip
       # into a failure. Scoped to THIS step on purpose: it is the only one
-      # where the model is guaranteed present (cached + fetched above). The
-      # unit step runs AUTO_FETCH_MODEL=0 and must keep skipping cleanly.
+      # where both models are guaranteed present (cached + fetched above).
+      # The unit step runs AUTO_FETCH_MODEL=0 and must keep skipping cleanly.
       # Without this, a rotated cache key or an HTTP 404 would silently drop
       # every model-gated test and leave the suite green.
-      - name: Integration + e2e tests (real model, fixtures mandatory)
+      - name: Integration + e2e tests (real models, fixtures mandatory)
         if: matrix.target == 'linux'
         env:
           GEIST_STRICT_FIXTURES: gguf
