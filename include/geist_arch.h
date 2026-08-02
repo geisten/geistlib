@@ -28,15 +28,27 @@ extern "C" {
 /* Decoder arch_ops vtable — what every decoder-arch must implement.       */
 /* ====================================================================== */
 
-/* The vtable operates on opaque `void *arch_state` rather than a
- * `struct geist_session` to keep arch implementations decoupled from
- * the engine's full session definition. The engine extracts what each
- * call needs (model + backend + opts at create time, tokens at runtime)
- * and passes only those.
+/* The vtable operates on two opaque handles to keep arch implementations
+ * decoupled from the engine's full session definition:
  *
- * arch_state holds the architecture-specific recurrent state — for a
- * transformer this means the LM + KV cache; for Mamba it means the
- * SSM state vector. */
+ *   `void *arch_state` — the MODEL: weights, geometry, precomputed
+ *       tables. Immutable after state_create; shared by all sessions.
+ *   `void *session`    — ONE inference stream's mutable state: for a
+ *       transformer the KV cache, scratch, sampler; for Mamba the SSM
+ *       hidden vector. Minted by session_alloc. For architectures
+ *       WITHOUT session_alloc the engine passes the arch_state itself
+ *       as the session handle — such an arch's model is its one
+ *       session.
+ *
+ * THREAD-SAFETY CONTRACT. Setup and teardown are single-threaded:
+ * state_create/destroy and session_alloc/free must not run concurrently
+ * with anything else on the same model. Steady-state per-session ops
+ * (prefill*, decode_step, peek_*, state_reset, pin_prefix, the
+ * speculative primitives) may run concurrently across DIFFERENT
+ * sessions of one model — one thread per session; a single session is
+ * never called from two threads at once. Encoder ops (audio/vision) and
+ * the engine's tokenizers are NOT covered by this guarantee — serialize
+ * them externally. */
 struct geist_arch_ops_decoder {
     const char *name;
 
@@ -62,42 +74,44 @@ struct geist_arch_ops_decoder {
     /* state_destroy: tear down arch_state. nullptr is a no-op. */
     void (*state_destroy)(void *arch_state);
 
-    /* Optional: push session opts into arch_state. Engine calls this
+    /* Optional: push session opts into the session. Engine calls this
      * from geist_session_create so per-session sampler config (temperature,
      * top_p, top_k, random_seed) reaches the decode hot path. nullptr
      * means the architecture ignores session opts (greedy-only). */
-    void (*set_session_opts)(void *arch_state, const struct geist_session_opts *opts);
+    void (*set_session_opts)(void *session, const struct geist_session_opts *opts);
 
-    /* state_reset: drop conversational state (KV / SSM hidden), keep
-     * weights. Used by geist_session_reset. */
-    void (*state_reset)(void *arch_state);
+    /* state_reset: drop the session's conversational state (KV / SSM
+     * hidden), keep weights. Used by geist_session_reset. */
+    void (*state_reset)(void *session);
 
-    /* prefill: append `n` tokens to the recurrent state. */
-    void (*prefill)(void *arch_state, size_t n, const geist_token_t ids[static n]);
+    /* prefill: append `n` tokens to the session's recurrent state. */
+    void (*prefill)(void *session, size_t n, const geist_token_t ids[static n]);
 
     /* decode_step: one greedy autoregressive step, returns next token. */
-    geist_token_t (*decode_step)(void *arch_state);
+    geist_token_t (*decode_step)(void *session);
 
-    /* Optional: pin prefix into KV cache so reset() restores to it
-     * instead of clearing. nullptr if architecture doesn't support it. */
-    void (*pin_prefix)(void *arch_state, size_t n, const geist_token_t ids[static n]);
+    /* Optional: pin prefix into the session's KV cache so reset()
+     * restores to it instead of clearing. nullptr if architecture
+     * doesn't support it. */
+    void (*pin_prefix)(void *session, size_t n, const geist_token_t ids[static n]);
 
     /* Optional: append audio soft-tokens (1536-dim per token for Gemma 4)
      * to the recurrent state. nullptr if no audio path. */
-    void (*prefill_audio)(void *arch_state, size_t n, const float *soft_tokens);
+    void (*prefill_audio)(void *session, size_t n, const float *soft_tokens);
 
     /* Optional: append vision soft-tokens (1536-dim per token for Gemma 4)
      * to the recurrent state. Same wire format as prefill_audio — both
      * modalities feed d_model-dim floats into the residual stream — so
      * the transformer impl is shared. nullptr if no vision path. */
-    void (*prefill_image)(void *arch_state, size_t n, const float *soft_tokens);
+    void (*prefill_image)(void *session, size_t n, const float *soft_tokens);
 
-    /* Optional: pointer to the cached next-token logits. Writes the vocab
-     * size to `*n_logits` on success. Returns nullptr (and sets *n_logits=0)
-     * if logits aren't materialized yet. Pointer is valid until the next
-     * mutating call. CPU-only contract — GPU backends that need a copy
-     * should populate this via a session-owned scratch buffer. */
-    const float *(*peek_logits)(void *arch_state, size_t *n_logits);
+    /* Optional: pointer to the session's cached next-token logits. Writes
+     * the vocab size to `*n_logits` on success. Returns nullptr (and sets
+     * *n_logits=0) if logits aren't materialized yet. Pointer is valid
+     * until the next mutating call on THIS session. CPU-only contract —
+     * GPU backends that need a copy should populate this via a
+     * session-owned scratch buffer. */
+    const float *(*peek_logits)(void *session, size_t *n_logits);
 
     /* Speculative-decode primitives. Optional — leave nullptr if the
      * architecture has no batched verify path or no truncatable cache.
@@ -112,32 +126,29 @@ struct geist_arch_ops_decoder {
      * kv_truncate: shrink recurrent state to new_len. Subsequent prefill
      *   overwrites from new_len onwards.
      * kv_len: current recurrent-state length (positions filled). */
-    geist_token_t (*peek_next_token)(void *arch_state);
-    enum geist_status (*verify_forward)(void               *arch_state,
+    geist_token_t (*peek_next_token)(void *session);
+    enum geist_status (*verify_forward)(void               *session,
                                         size_t              k,
                                         const geist_token_t ids[static k],
                                         geist_token_t       out_tokens[static k]);
-    void (*kv_truncate)(void *arch_state, size_t new_len);
-    size_t (*kv_len)(const void *arch_state);
+    void (*kv_truncate)(void *session, size_t new_len);
+    size_t (*kv_len)(const void *session);
 
-    /* Multi-session lifecycle (P1.2.f). Each engine-level geist_session
-     * may own its own per-session arch state (KV cache, scratch pool,
-     * sampler RNG, etc.); the model owns the immutable weight set.
+    /* Session lifecycle. Each engine-level geist_session owns one arch
+     * session (KV cache, scratch pool, sampler RNG, ...); the model
+     * (arch_state) owns the immutable weight set and is shared.
      *
-     * session_alloc: allocate a fresh per-session arch state on the
-     *   model. Returns the opaque session_meta or nullptr on OOM.
-     * session_free: tear down a previously-allocated session_meta.
-     * session_attach: install session_meta as the active session on
-     *   the model state. Subsequent vtable calls (prefill, decode_step,
-     *   verify_forward, ...) operate on this session's KV/scratch.
-     *   nullptr re-installs the model's default session. The engine
-     *   re-attaches before each dispatch — single-active by design.
+     * session_alloc: mint a fresh session on the model. Returns the
+     *   opaque session handle, or nullptr on OOM or unsatisfiable opts
+     *   (e.g. a max_seq_len beyond what the model was created with).
+     * session_free: tear down a session handle.
      *
-     * All three nullptr → architecture stays single-session-per-model
-     * (engine falls back to using the model's default session). */
+     * Both nullptr → architecture is single-session-per-model; the
+     * engine passes session == nullptr and the arch uses its default
+     * session. There is no attach: per-session ops receive their
+     * session explicitly on every call. */
     void *(*session_alloc)(void *arch_state, const struct geist_session_opts *opts);
-    void (*session_free)(void *arch_state, void *session_meta);
-    void (*session_attach)(void *arch_state, void *session_meta);
+    void (*session_free)(void *arch_state, void *session);
 };
 
 /* ====================================================================== */
@@ -146,7 +157,9 @@ struct geist_arch_ops_decoder {
 
 /* Encoder runs are session-independent (no recurrent state across calls);
  * the encoder weights live in encoder_state owned by the model and shared
- * across all sessions that consume the model. */
+ * across all sessions that consume the model. Encoder ops are NOT
+ * thread-safe (encoder_state holds shared scratch) — serialize calls
+ * externally. */
 struct geist_arch_ops_encoder {
     const char *name;
 
@@ -179,7 +192,8 @@ struct geist_arch_ops_encoder {
 /* Parallel to geist_arch_ops_encoder but with image/video signatures that
  * don't fit the PCM-shaped surface. Encoder runs are session-independent;
  * weights live in encoder_state owned by the model and shared across all
- * sessions that consume the model. */
+ * sessions that consume the model. Like the audio encoder, NOT
+ * thread-safe — serialize calls externally. */
 struct geist_arch_ops_vision {
     const char *name;
 

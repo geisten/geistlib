@@ -148,14 +148,15 @@ int main(void) {
             teardown();
             return GEIST_TEST_FAIL;
         }
-        const size_t kv_before = st->sess->kv_len;
-        s                      = transformer_verify_forward(st, K, ref_tokens, verify_out);
+        struct transformer_arch_session *asess     = geist_session_internal_arch_session(sess);
+        const size_t                     kv_before = asess->kv_len;
+        s = transformer_verify_forward(asess, K, ref_tokens, verify_out);
         if (s != GEIST_OK) {
             fprintf(stderr, "verify_forward failed: %s\n", geist_status_to_string(s));
             teardown();
             return GEIST_TEST_FAIL;
         }
-        kv_after_verify = st->sess->kv_len;
+        kv_after_verify = asess->kv_len;
         if (kv_after_verify != kv_before + K) {
             fprintf(stderr,
                     "verify_forward kv_len: %zu, expected %zu\n",
@@ -206,31 +207,32 @@ int main(void) {
             teardown();
             return GEIST_TEST_FAIL;
         }
-        const size_t kv_before = st->sess->kv_len;
+        struct transformer_arch_session *asess     = geist_session_internal_arch_session(sess);
+        const size_t                     kv_before = asess->kv_len;
 
         geist_token_t scratch_out[K];
-        s = transformer_verify_forward(st, K, ref_tokens, scratch_out);
+        s = transformer_verify_forward(asess, K, ref_tokens, scratch_out);
         if (s != GEIST_OK) {
             teardown();
             return GEIST_TEST_FAIL;
         }
-        if (st->sess->kv_len != kv_before + K) {
+        if (asess->kv_len != kv_before + K) {
             fprintf(stderr,
                     "FAIL: kv_len after verify=%zu, expected %zu\n",
-                    st->sess->kv_len,
+                    asess->kv_len,
                     kv_before + K);
             fails++;
         }
         /* Truncate back to kv_before. */
-        transformer_kv_truncate(st, kv_before);
-        if (st->sess->kv_len != kv_before) {
+        transformer_kv_truncate(asess, kv_before);
+        if (asess->kv_len != kv_before) {
             fprintf(stderr,
                     "FAIL: kv_len after truncate=%zu, expected %zu\n",
-                    st->sess->kv_len,
+                    asess->kv_len,
                     kv_before);
             fails++;
         }
-        if (st->sess->logits_valid) {
+        if (asess->logits_valid) {
             fprintf(stderr, "FAIL: logits_valid not cleared after truncate\n");
             fails++;
         }

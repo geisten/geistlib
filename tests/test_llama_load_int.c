@@ -78,6 +78,7 @@ int main(void) {
 
     struct transformer_arch_state *st = nullptr;
     s                                 = transformer_state_create(be, path, nullptr, &st);
+    struct transformer_arch_session *sess [[maybe_unused]] = transformer_default_session(st);
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "state_create FAIL: %s — %s\n",
@@ -235,7 +236,7 @@ int main(void) {
             printf("prompt encoded -> %zu tokens -> decoded: %s\n", n_prompt, buf);
         }
 
-        enum geist_status ps = transformer_prefill_text_batch(st, n_prompt, prompt_ids);
+        enum geist_status ps = transformer_prefill_text_batch(sess, n_prompt, prompt_ids);
         if (ps != GEIST_OK) {
             fprintf(stderr,
                     "FAIL: Llama prefill returned %s — %s\n",
@@ -250,7 +251,7 @@ int main(void) {
             int           n_decoded   = 0;
             for (int i = 0; i < N_STEPS; i++) {
                 geist_token_t next = -1;
-                ps                 = transformer_decode_step(st, prev, &next);
+                ps                 = transformer_decode_step(sess, prev, &next);
                 if (ps != GEIST_OK || next < 0 || (size_t) next >= st->vocab_size) {
                     fprintf(stderr,
                             "FAIL: Llama decode_step[%d] status=%s tok=%d\n",

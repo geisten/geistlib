@@ -24,7 +24,10 @@ struct transformer_scratch_plan {
     size_t pool_bytes;
 };
 
+/* Sizes scratch for one session; m_max is the session's prefill chunk
+ * size (0 = use the model default). */
 void transformer_scratch_plan_build(const struct transformer_arch_state *st,
+                                    size_t                               m_max,
                                     struct transformer_scratch_plan     *out);
 
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_SCRATCH_PLAN_H */

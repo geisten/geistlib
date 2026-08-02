@@ -430,31 +430,20 @@ static bool spec_head_build(struct transformer_arch_state *st) {
     float  *rscale = heap_alloc_array_aligned(float, V);
     /* Row halves of the safety bound: two floats a row -- 1 MB against an
      * 82 MB sketch on the 2B-4T. */
-    float            *wdrop = heap_alloc_array_aligned(float, V);
-    float            *wl1   = heap_alloc_array_aligned(float, V);
-    int8_t           *x_i8  = heap_alloc_array_aligned(int8_t, H);
-    int8_t           *a_sk  = heap_alloc_array_aligned(int8_t, SD);
-    float            *rough = heap_alloc_array_aligned(float, V);
-    float            *row32 = heap_alloc_array_aligned(float, H);
-    struct spec_cand *heap  = heap_alloc_array_aligned(struct spec_cand, topk);
+    float *wdrop = heap_alloc_array_aligned(float, V);
+    float *wl1   = heap_alloc_array_aligned(float, V);
 #ifdef _OPENMP
     const size_t nthr = (size_t) omp_get_max_threads();
 #else
     const size_t nthr = 1;
 #endif
     float *scratch = heap_alloc_array_aligned(float, nthr *H); /* per-thread */
-    if (sketch == nullptr || rscale == nullptr || x_i8 == nullptr || a_sk == nullptr ||
-        rough == nullptr || row32 == nullptr || heap == nullptr || scratch == nullptr ||
-        wdrop == nullptr || wl1 == nullptr) {
+    if (sketch == nullptr || rscale == nullptr || scratch == nullptr || wdrop == nullptr ||
+        wl1 == nullptr) {
         safe_free((void **) &wdrop);
         safe_free((void **) &wl1);
         safe_free((void **) &sketch);
         safe_free((void **) &rscale);
-        safe_free((void **) &x_i8);
-        safe_free((void **) &a_sk);
-        safe_free((void **) &rough);
-        safe_free((void **) &row32);
-        safe_free((void **) &heap);
         safe_free((void **) &scratch);
         return false;
     }
@@ -511,32 +500,34 @@ static bool spec_head_build(struct transformer_arch_state *st) {
     st->spec_w_drop     = wdrop;
     st->spec_w_l1       = wl1;
     st->spec_row_scale  = rscale;
-    st->spec_x_i8       = x_i8;
-    st->spec_act_sketch = a_sk;
-    st->spec_rough      = rough;
-    st->spec_row_f32    = row32;
-    st->spec_heap       = heap;
     st->spec_sketch_dim = SD;
     st->spec_stride     = sub;
     st->spec_topk       = topk;
     return true;
 }
 
-bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t *out_token) {
+/* Eager build at state_create (model-level; sessions only carry scratch).
+ * Immutable afterwards, so concurrent sessions read the sketch without
+ * coordination. Skipped — spec_state = -1 — when disabled by env, on a
+ * batched-submit GPU backend (the sketch is a HOST optimization), or when
+ * the head is ineligible. */
+void transformer_spec_head_init(struct transformer_arch_state *st) {
+    if (spec_head_env() == 0 || st->backend->desc->vtbl->linear_t != nullptr) {
+        st->spec_state = -1;
+        return;
+    }
+    st->spec_state = spec_head_build(st) ? 1 : -1;
+}
+
+bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_token_t *out_token) {
+    struct transformer_arch_state *st = sess->model;
     if (spec_head_env() == 0) {
         return false;
     }
-    /* The sketch is a HOST optimization (int8 dots + per-candidate dequant
-     * on the CPU). On a batched-submit GPU backend (linear_t set) it would
-     * stall the pipeline with host work per token — the on-device dense
-     * head is faster there. */
-    if (st->backend->desc->vtbl->linear_t != nullptr) {
-        return false;
-    }
-    if (st->spec_state == 0) {
-        st->spec_state = spec_head_build(st) ? 1 : -1;
-    }
-    if (st->spec_state != 1) {
+    /* Built eagerly at state_create (transformer_spec_head_init); 0 means
+     * init never ran (direct-state caller skipping state_create — treat
+     * as inactive), -1 means ineligible or disabled. */
+    if (st->spec_state != 1 || sess->spec_x_i8 == nullptr) {
         return false;
     }
     /* Greedy only. Extending this to top-k sampling was tried and MEASURED
@@ -549,7 +540,7 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
      * head, i.e. no win. The sketch ranks only the argmax reliably; greedy is
      * where the recall contract holds (byte-identical, verified in
      * tests/test_spec_head_sampling_int.c). */
-    if (st->sess->temperature != 0.0f) {
+    if (sess->temperature != 0.0f) {
         return false;
     }
 
@@ -564,21 +555,21 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
     const uint8_t *const             Wbase  = (const uint8_t *) st->embed_table_w.raw;
     const size_t                     stride = spec_row_stride(dt, H);
 
-    const float *h      = (const float *) v->buffer_map(st->sess->scratch_h_a);
-    float       *logits = (float *) v->buffer_map(st->sess->scratch_logits);
+    const float *h      = (const float *) v->buffer_map(sess->scratch_h_a);
+    float       *logits = (float *) v->buffer_map(sess->scratch_logits);
     if (h == nullptr || logits == nullptr) {
         if (h != nullptr) {
-            v->buffer_unmap(st->sess->scratch_h_a);
+            v->buffer_unmap(sess->scratch_h_a);
         }
         if (logits != nullptr) {
-            v->buffer_unmap(st->sess->scratch_logits);
+            v->buffer_unmap(sess->scratch_logits);
         }
         return false;
     }
 
     /* Quantize the activation, build the subsampled sketch activation. */
-    int8_t *x_i8 = st->spec_x_i8;
-    int8_t *a_sk = st->spec_act_sketch;
+    int8_t *x_i8 = sess->spec_x_i8;
+    int8_t *a_sk = sess->spec_act_sketch;
     float   amax = 1e-8f;
     for (size_t i = 0; i < H; i++) {
         const float a = h[i] < 0.0f ? -h[i] : h[i];
@@ -603,7 +594,7 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
 
     /* Phase 1: rough scores over the whole vocab via the i8 sketch. The
      * common x_scale factor is dropped — it does not affect the ranking. */
-    float        *rough  = st->spec_rough;
+    float        *rough  = sess->spec_rough;
     const int8_t *sketch = st->spec_sketch;
     const float  *rscale = st->spec_row_scale;
 #ifdef _OPENMP
@@ -628,7 +619,7 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
 
     /* Phase 2: top-K by rough score, via a bounded min-heap of (score, idx).
      * heap[0] is the smallest score currently retained. */
-    struct spec_cand *heap = (struct spec_cand *) st->spec_heap;
+    struct spec_cand *heap = (struct spec_cand *) sess->spec_heap;
     size_t            hn   = 0;
     for (size_t r = 0; r < V; r++) {
         const float sc = rough[r];
@@ -722,8 +713,8 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
             rw.linear_m1(h, &rw, be, &out1);
             logits[row] = out1;
         } else {
-            spec_row_to_f32(dt, rb, H, st->spec_row_f32);
-            logits[row] = spec_f32dot(st->spec_row_f32, h, H);
+            spec_row_to_f32(dt, rb, H, sess->spec_row_f32);
+            logits[row] = spec_f32dot(sess->spec_row_f32, h, H);
         }
     }
 
@@ -762,8 +753,8 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
         }
     }
     if (!certain) {
-        v->buffer_unmap(st->sess->scratch_logits);
-        v->buffer_unmap(st->sess->scratch_h_a);
+        v->buffer_unmap(sess->scratch_logits);
+        v->buffer_unmap(sess->scratch_h_a);
         return false; /* head.c recomputes the dense head */
     }
 
@@ -771,19 +762,57 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
      * the greedy argmax above, wrong for value consumers. peek_logits checks
      * this flag and lazily recomputes the dense head (scratch_h_a still holds
      * the normalized hidden this path read). */
-    st->sess->logits_sparse = true;
+    sess->logits_sparse = true;
 
-    v->buffer_unmap(st->sess->scratch_logits);
-    v->buffer_unmap(st->sess->scratch_h_a);
+    v->buffer_unmap(sess->scratch_logits);
+    v->buffer_unmap(sess->scratch_h_a);
     return true;
 }
 
-#else /* no NEON+dotprod: spec head unavailable */
+#else /* no NEON+dotprod / AVX2: spec head unavailable */
 
-bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t *out_token) {
-    (void) st;
+void transformer_spec_head_init(struct transformer_arch_state *st) {
+    st->spec_state = -1;
+}
+
+bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_token_t *out_token) {
+    (void) sess;
     (void) out_token;
     return false;
 }
 
 #endif
+
+/* ---- Per-session spec scratch ----------------------------------------- *
+ * The sketch and its bound terms are model-owned and immutable; everything
+ * written per token lives on the session. Sized from the model's built
+ * sketch geometry — a no-op when the spec head is inactive. */
+
+bool transformer_spec_session_scratch_alloc(struct transformer_arch_session *sess) {
+    struct transformer_arch_state *st = sess->model;
+    if (st->spec_state != 1) {
+        return true; /* nothing to allocate */
+    }
+    const size_t H        = (size_t) st->d_model;
+    const size_t V        = (size_t) st->vocab_size;
+    sess->spec_x_i8       = heap_alloc_array_aligned(int8_t, H);
+    sess->spec_act_sketch = heap_alloc_array_aligned(int8_t, st->spec_sketch_dim);
+    sess->spec_rough      = heap_alloc_array_aligned(float, V);
+    sess->spec_row_f32    = heap_alloc_array_aligned(float, H);
+    sess->spec_heap       = heap_alloc_array_aligned(struct spec_cand, st->spec_topk);
+    if (sess->spec_x_i8 == nullptr || sess->spec_act_sketch == nullptr ||
+        sess->spec_rough == nullptr || sess->spec_row_f32 == nullptr ||
+        sess->spec_heap == nullptr) {
+        transformer_spec_session_scratch_free(sess);
+        return false;
+    }
+    return true;
+}
+
+void transformer_spec_session_scratch_free(struct transformer_arch_session *sess) {
+    safe_free((void **) &sess->spec_x_i8);
+    safe_free((void **) &sess->spec_act_sketch);
+    safe_free((void **) &sess->spec_rough);
+    safe_free((void **) &sess->spec_row_f32);
+    safe_free((void **) &sess->spec_heap);
+}

@@ -35,28 +35,29 @@
 #include <stdlib.h>
 #include <string.h>
 
-void transformer_kivi_drain_full(struct transformer_arch_state *st) {
-    if (!st->sess->kv_kivi_enabled)
+void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
+    struct transformer_arch_state *st = sess->model;
+    if (!sess->kv_kivi_enabled)
         return;
-    if (st->sess->kivi_residual_count < KIVI_K_GROUP_SIZE)
+    if (sess->kivi_residual_count < KIVI_K_GROUP_SIZE)
         return;
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
     const size_t                     R  = KIVI_K_GROUP_SIZE;
 
-    while (st->sess->kivi_residual_count >= R) {
+    while (sess->kivi_residual_count >= R) {
         for (size_t li = 0; li < st->n_layers; li++) {
             if (st->layers[li].is_kv_shared)
                 continue;
             const size_t hd       = st->layers[li].head_dim;
-            float       *k_res    = (float *) v->buffer_map(st->sess->k_residual[li]);
-            float       *v_res    = (float *) v->buffer_map(st->sess->v_residual[li]);
-            uint8_t     *k_q4     = (uint8_t *) v->buffer_map(st->sess->k_kivi_q[li]);
-            uint8_t     *v_q4     = (uint8_t *) v->buffer_map(st->sess->v_kivi_q[li]);
-            float       *k_scales = (float *) v->buffer_map(st->sess->k_kivi_scales[li]);
-            float       *k_zeros  = (float *) v->buffer_map(st->sess->k_kivi_zeros[li]);
-            float       *v_scales = (float *) v->buffer_map(st->sess->v_kivi_scales[li]);
-            float       *v_zeros  = (float *) v->buffer_map(st->sess->v_kivi_zeros[li]);
+            float       *k_res    = (float *) v->buffer_map(sess->k_residual[li]);
+            float       *v_res    = (float *) v->buffer_map(sess->v_residual[li]);
+            uint8_t     *k_q4     = (uint8_t *) v->buffer_map(sess->k_kivi_q[li]);
+            uint8_t     *v_q4     = (uint8_t *) v->buffer_map(sess->v_kivi_q[li]);
+            float       *k_scales = (float *) v->buffer_map(sess->k_kivi_scales[li]);
+            float       *k_zeros  = (float *) v->buffer_map(sess->k_kivi_zeros[li]);
+            float       *v_scales = (float *) v->buffer_map(sess->v_kivi_scales[li]);
+            float       *v_zeros  = (float *) v->buffer_map(sess->v_kivi_zeros[li]);
             kivi_drain_one_layer(k_res,
                                  v_res,
                                  k_q4,
@@ -65,22 +66,22 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
                                  k_zeros,
                                  v_scales,
                                  v_zeros,
-                                 st->sess->kivi_drained_count,
-                                 st->sess->kivi_residual_count,
+                                 sess->kivi_drained_count,
+                                 sess->kivi_residual_count,
                                  R,
                                  hd,
                                  st->n_kv_heads);
-            v->buffer_unmap(st->sess->k_residual[li]);
-            v->buffer_unmap(st->sess->v_residual[li]);
-            v->buffer_unmap(st->sess->k_kivi_q[li]);
-            v->buffer_unmap(st->sess->v_kivi_q[li]);
-            v->buffer_unmap(st->sess->k_kivi_scales[li]);
-            v->buffer_unmap(st->sess->k_kivi_zeros[li]);
-            v->buffer_unmap(st->sess->v_kivi_scales[li]);
-            v->buffer_unmap(st->sess->v_kivi_zeros[li]);
+            v->buffer_unmap(sess->k_residual[li]);
+            v->buffer_unmap(sess->v_residual[li]);
+            v->buffer_unmap(sess->k_kivi_q[li]);
+            v->buffer_unmap(sess->v_kivi_q[li]);
+            v->buffer_unmap(sess->k_kivi_scales[li]);
+            v->buffer_unmap(sess->k_kivi_zeros[li]);
+            v->buffer_unmap(sess->v_kivi_scales[li]);
+            v->buffer_unmap(sess->v_kivi_zeros[li]);
         }
-        st->sess->kivi_drained_count += R;
-        st->sess->kivi_residual_count -= R;
+        sess->kivi_drained_count += R;
+        sess->kivi_residual_count -= R;
     }
 }
 
@@ -98,12 +99,13 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
  * Internally ping-pongs between scratch_h_a and scratch_h_b. Each layer's
  * PLE input is gathered into scratch_ple_lookup as a contiguous
  * [seq, HIDDEN_PER_LAYER] slab before the forward call. */
-[[nodiscard]] enum geist_status transformer_run_all_layers(struct transformer_arch_state *st,
+[[nodiscard]] enum geist_status transformer_run_all_layers(struct transformer_arch_session *sess,
                                                            size_t               q_position,
                                                            size_t               seq,
                                                            struct geist_buffer *initial_h_buf,
                                                            struct geist_buffer *per_layer_input_buf,
                                                            struct geist_buffer *out_h_buf) {
+    struct transformer_arch_state *st = sess->model;
 
     struct geist_backend            *be                    = st->backend;
     const struct geist_backend_vtbl *v                     = be->desc->vtbl;
@@ -114,18 +116,17 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
     /* Seed scratch_h_a with seq rows of HIDDEN. */
     {
         if (v->buffer_copy == nullptr ||
-            v->buffer_copy(st->sess->scratch_h_a, 0, initial_h_buf, 0, seq * row_bytes_h) !=
-                    GEIST_OK) {
+            v->buffer_copy(sess->scratch_h_a, 0, initial_h_buf, 0, seq * row_bytes_h) != GEIST_OK) {
             const uint8_t *src = (const uint8_t *) v->buffer_map(initial_h_buf);
-            uint8_t       *dst = (uint8_t *) v->buffer_map(st->sess->scratch_h_a);
+            uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_h_a);
             memcpy(dst, src, seq * row_bytes_h);
             v->buffer_unmap(initial_h_buf);
-            v->buffer_unmap(st->sess->scratch_h_a);
+            v->buffer_unmap(sess->scratch_h_a);
         }
     }
 
-    struct geist_buffer *h_in  = st->sess->scratch_h_a;
-    struct geist_buffer *h_out = st->sess->scratch_h_b;
+    struct geist_buffer *h_in  = sess->scratch_h_a;
+    struct geist_buffer *h_out = sess->scratch_h_b;
 
     for (size_t li = 0; li < st->n_layers; li++) {
         /* P1.5.b: gather this layer's per_layer_input slices into
@@ -135,7 +136,7 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
          * which then skips the PLE injection block. */
         struct geist_buffer *layer_ple_buf = nullptr;
         if (per_layer_input_buf != nullptr && v->linear_t != nullptr &&
-            per_layer_input_buf == st->sess->scratch_per_layer_input) {
+            per_layer_input_buf == sess->scratch_per_layer_input) {
             /* Batched GPU backends read the layer's PLE slice directly from
              * the slab as a strided view (see layer_ple.c) — the per-layer
              * gather would be seq*n_layers copy dispatches per chunk. */
@@ -146,7 +147,7 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
                  * flushing their pipeline for a host memcpy each layer. */
                 enum geist_status cs = GEIST_OK;
                 for (size_t t = 0; cs == GEIST_OK && t < seq; t++) {
-                    cs = v->buffer_copy(st->sess->scratch_ple_lookup,
+                    cs = v->buffer_copy(sess->scratch_ple_lookup,
                                         t * row_bytes_ple,
                                         per_layer_input_buf,
                                         t * row_bytes_per_tok_ple + li * row_bytes_ple,
@@ -157,19 +158,19 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
                 }
             } else {
                 const uint8_t *src = (const uint8_t *) v->buffer_map(per_layer_input_buf);
-                uint8_t       *dst = (uint8_t *) v->buffer_map(st->sess->scratch_ple_lookup);
+                uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_ple_lookup);
                 for (size_t t = 0; t < seq; t++) {
                     memcpy(dst + t * row_bytes_ple,
                            src + t * row_bytes_per_tok_ple + li * row_bytes_ple,
                            row_bytes_ple);
                 }
                 v->buffer_unmap(per_layer_input_buf);
-                v->buffer_unmap(st->sess->scratch_ple_lookup);
+                v->buffer_unmap(sess->scratch_ple_lookup);
             }
-            layer_ple_buf = st->sess->scratch_ple_lookup;
+            layer_ple_buf = sess->scratch_ple_lookup;
         }
 
-        enum geist_status s = transformer_forward_one_layer(st,
+        enum geist_status s = transformer_forward_one_layer(sess,
                                                             (int) li,
                                                             q_position,
                                                             seq,
@@ -207,9 +208,10 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
  * embedding by sqrt(d_model) (mirrors lm.c's compute_token_inputs);
  * Llama / BitNet do NOT scale the embedding. The scale is gated on
  * has_ple because PLE is Gemma-family-exclusive. */
-[[nodiscard]] static enum geist_status embed_lookup_and_scale(struct transformer_arch_state *st,
+[[nodiscard]] static enum geist_status embed_lookup_and_scale(struct transformer_arch_session *sess,
                                                               geist_token_t        token_id,
                                                               struct geist_buffer *out_h_buf) {
+    struct transformer_arch_state *st = sess->model;
 
     if (token_id < 0 || (size_t) token_id >= (size_t) st->vocab_size) {
         return GEIST_E_INVALID_ARG;
@@ -258,11 +260,13 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
  *   - Audio : 0 (pad_token_id) per HF's masked-scatter semantics
  *
  * out_token receives the greedy argmax. */
-[[nodiscard]] static enum geist_status transformer_run_one_step(struct transformer_arch_state *st,
-                                                                geist_token_t  ple_token_id,
-                                                                geist_token_t *out_token) {
+[[nodiscard]] static enum geist_status
+transformer_run_one_step(struct transformer_arch_session *sess,
+                         geist_token_t                    ple_token_id,
+                         geist_token_t                   *out_token) {
+    struct transformer_arch_state *st = sess->model;
 
-    enum geist_status s = transformer_check_kv_room(st, 1);
+    enum geist_status s = transformer_check_kv_room(sess, 1);
     if (s != GEIST_OK) {
         return s;
     }
@@ -274,45 +278,46 @@ void transformer_kivi_drain_full(struct transformer_arch_state *st) {
     struct geist_buffer *ple_buf = nullptr;
     if (st->config.has_ple) {
         s = transformer_compute_per_layer_input(
-                st, ple_token_id, st->sess->scratch_h_a, st->sess->scratch_per_layer_input);
+                sess, ple_token_id, sess->scratch_h_a, sess->scratch_per_layer_input);
         if (s != GEIST_OK) {
             return s;
         }
-        ple_buf = st->sess->scratch_per_layer_input;
+        ple_buf = sess->scratch_per_layer_input;
     }
     (void) ple_token_id; /* unused when !has_ple */
 
     /* 2. Layer loop (seq=1 for the single-token path). q_position = current
      *    kv_len; advance after. */
-    const size_t q_position = st->sess->kv_len;
+    const size_t q_position = sess->kv_len;
     s                       = transformer_run_all_layers(
-            st, q_position, /* seq = */ 1, st->sess->scratch_h_a, ple_buf, st->sess->scratch_h_b);
+            sess, q_position, /* seq = */ 1, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
     if (s != GEIST_OK) {
         return s;
     }
 
     geist_token_t best_id;
-    s = finalize_logits_one_row(st, 0, &best_id);
+    s = finalize_logits_one_row(sess, 0, &best_id);
     if (s != GEIST_OK) {
         return s;
     }
 
     /* 3. Advance KV, stash prediction. */
-    st->sess->kv_len = q_position + 1;
-    if (st->sess->kv_kivi_enabled) {
-        st->sess->kivi_residual_count += 1;
-        transformer_kivi_drain_full(st);
+    sess->kv_len = q_position + 1;
+    if (sess->kv_kivi_enabled) {
+        sess->kivi_residual_count += 1;
+        transformer_kivi_drain_full(sess);
     }
-    st->sess->next_token_pending = best_id;
-    st->sess->logits_valid       = true;
+    sess->next_token_pending = best_id;
+    sess->logits_valid       = true;
 
     *out_token = best_id;
     return GEIST_OK;
 }
 
-enum geist_status transformer_decode_step(struct transformer_arch_state *st,
-                                          geist_token_t                  input_token,
-                                          geist_token_t                 *out_token) {
+enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
+                                          geist_token_t                    input_token,
+                                          geist_token_t                   *out_token) {
+    struct transformer_arch_state *st = sess->model;
     if (st == nullptr || out_token == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -323,10 +328,10 @@ enum geist_status transformer_decode_step(struct transformer_arch_state *st,
     const int                        region_tok =
             v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_DECODE_STEP) : 0;
     /* Embed the input token into scratch_h_a, scale by sqrt(HIDDEN). */
-    enum geist_status s = embed_lookup_and_scale(st, input_token, st->sess->scratch_h_a);
+    enum geist_status s = embed_lookup_and_scale(sess, input_token, sess->scratch_h_a);
     if (s == GEIST_OK) {
         /* PLE uses the token's actual id (text path). */
-        s = transformer_run_one_step(st, input_token, out_token);
+        s = transformer_run_one_step(sess, input_token, out_token);
     }
     if (v->parallel_region_end) {
         v->parallel_region_end(be, region_tok);
@@ -334,8 +339,9 @@ enum geist_status transformer_decode_step(struct transformer_arch_state *st,
     return s;
 }
 
-enum geist_status transformer_advance_audio_token(struct transformer_arch_state *st,
-                                                  const float                   *h_in_host) {
+enum geist_status transformer_advance_audio_token(struct transformer_arch_session *sess,
+                                                  const float                     *h_in_host) {
+    struct transformer_arch_state *st = sess->model;
     if (st == nullptr || h_in_host == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -346,55 +352,54 @@ enum geist_status transformer_advance_audio_token(struct transformer_arch_state 
      * lookup, no sqrt scale). Copy host bytes into scratch_h_a. */
     {
         const size_t bytes = (size_t) st->d_model * sizeof(float);
-        uint8_t     *dst   = (uint8_t *) v->buffer_map(st->sess->scratch_h_a);
+        uint8_t     *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
         memcpy(dst, h_in_host, bytes);
-        v->buffer_unmap(st->sess->scratch_h_a);
+        v->buffer_unmap(sess->scratch_h_a);
     }
     /* PLE token-identity is the pad token (0) per HF masked-scatter. */
     geist_token_t out_unused;
-    return transformer_run_one_step(st, 0, &out_unused);
+    return transformer_run_one_step(sess, 0, &out_unused);
 }
 
-void transformer_state_reset(struct transformer_arch_state *st) {
-    if (st == nullptr) {
+void transformer_session_reset(struct transformer_arch_session *sess) {
+    if (sess == nullptr) {
         return;
     }
     /* Truncate to pinned prefix length (0 if no prefix has been pinned).
      * The KV state up to prefix_length stays valid in the cache buffers;
      * future prefill/decode appends start at kv_len. */
-    st->sess->kv_len = st->sess->prefix_length;
-    if (st->sess->kv_kivi_enabled) {
+    sess->kv_len = sess->prefix_length;
+    if (sess->kv_kivi_enabled) {
         /* Sync drain + residual counters to the new kv_len. The standard
          * pin_prefix flow pre-prefills with KIVI active, so the counters
          * are already aligned (drained = floor(kv_len/R)*R, residual =
          * remainder). Reset preserves this alignment. */
-        st->sess->kivi_drained_count  = (st->sess->kv_len / KIVI_K_GROUP_SIZE) * KIVI_K_GROUP_SIZE;
-        st->sess->kivi_residual_count = st->sess->kv_len - st->sess->kivi_drained_count;
+        sess->kivi_drained_count  = (sess->kv_len / KIVI_K_GROUP_SIZE) * KIVI_K_GROUP_SIZE;
+        sess->kivi_residual_count = sess->kv_len - sess->kivi_drained_count;
     }
-    st->sess->logits_valid       = false;
-    st->sess->next_token_pending = 0;
+    sess->logits_valid       = false;
+    sess->next_token_pending = 0;
 }
 
-void transformer_state_apply_opts(struct transformer_arch_state   *st,
-                                  const struct geist_session_opts *opts) {
-    if (st == nullptr || opts == nullptr) {
+void transformer_session_apply_opts(struct transformer_arch_session *sess,
+                                    const struct geist_session_opts *opts) {
+    if (sess == nullptr || opts == nullptr) {
         return;
     }
-    st->sess->temperature = opts->temperature;
-    st->sess->top_p       = opts->top_p > 0.0f ? opts->top_p : 1.0f;
-    st->sess->top_k       = opts->top_k;
+    sess->temperature = opts->temperature;
+    sess->top_p       = opts->top_p > 0.0f ? opts->top_p : 1.0f;
+    sess->top_k       = opts->top_k;
     if (opts->random_seed != 0) {
-        geist_rng_seed(&st->sess->rng, opts->random_seed);
+        geist_rng_seed(&sess->rng, opts->random_seed);
     }
 
     /* (Re)allocate the sampler workspace if a non-greedy mode is now in
      * play and the workspace isn't already sized for the vocab. ~3 MB
      * for VOCAB=262144; greedy mode skips this. */
-    const bool needs_ws =
-            st->sess->temperature > 0.0f &&
-            (st->sess->top_k > 1 || (st->sess->top_p > 0.0f && st->sess->top_p < 1.0f));
-    if (needs_ws && st->sess->sampler_ws.n_vocab != (size_t) st->vocab_size) {
-        geist_sampler_workspace_destroy(&st->sess->sampler_ws);
-        (void) geist_sampler_workspace_init(&st->sess->sampler_ws, (size_t) st->vocab_size);
+    const bool needs_ws = sess->temperature > 0.0f &&
+                          (sess->top_k > 1 || (sess->top_p > 0.0f && sess->top_p < 1.0f));
+    if (needs_ws && sess->sampler_ws.n_vocab != (size_t) sess->model->vocab_size) {
+        geist_sampler_workspace_destroy(&sess->sampler_ws);
+        (void) geist_sampler_workspace_init(&sess->sampler_ws, (size_t) sess->model->vocab_size);
     }
 }

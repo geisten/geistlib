@@ -27,7 +27,7 @@ struct transformer_arch_session;
 struct transformer_layer_forward_ctx;
 
 /* No KV-append / attention-kind state here: those are derived from
- * st->sess->kv_{kivi,int8,f16}_enabled at hot-path entry. A cached copy
+ * sess->kv_{kivi,int8,f16}_enabled at hot-path entry. A cached copy
  * would be baked from default_sess at construction time and become stale
  * when transformer_session_attach swaps in a session with a different KV
  * mode (see review #7 / V6). */
