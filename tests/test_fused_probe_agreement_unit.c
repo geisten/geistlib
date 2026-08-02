@@ -35,17 +35,18 @@ static int check_backend(const char *name) {
     }
     int                               fails = 0;
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    const struct geist_backend_vtbl  *vt    = be->desc->vtbl;
+    (void) vt;
 
     /* ---- Elementwise positive agreement. */
     struct geist_fusion_query q = {
             .op = GEIST_FUSED_GELU_TANH_MUL, .m = 4, .d_model = 64, .inter = 64};
     if (fused->supported != nullptr && fused->supported(be, &q)) {
-        const size_t                     n  = 4 * 64;
-        struct geist_buffer             *bx = nullptr, *bz = nullptr, *by = nullptr;
-        const struct geist_backend_vtbl *v = be->desc->vtbl;
-        if (v->buffer_create(be, n * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &bx) == GEIST_OK &&
-            v->buffer_create(be, n * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &bz) == GEIST_OK &&
-            v->buffer_create(be, n * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &by) == GEIST_OK) {
+        const size_t         n  = 4 * 64;
+        struct geist_buffer *bx = nullptr, *bz = nullptr, *by = nullptr;
+        if (vt->buffer_create(be, n * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &bx) == GEIST_OK &&
+            vt->buffer_create(be, n * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &bz) == GEIST_OK &&
+            vt->buffer_create(be, n * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &by) == GEIST_OK) {
             struct geist_tensor tx = {.buffer = bx,
                                       .dtype  = GEIST_DTYPE_F32,
                                       .layout = GEIST_LAYOUT_DENSE,
@@ -60,11 +61,11 @@ static int check_backend(const char *name) {
                                   "probe said yes: gelu_tanh_mul must return GEIST_OK");
         }
         if (bx)
-            v->buffer_destroy(be, bx);
+            vt->buffer_destroy(be, bx);
         if (bz)
-            v->buffer_destroy(be, bz);
+            vt->buffer_destroy(be, bz);
         if (by)
-            v->buffer_destroy(be, by);
+            vt->buffer_destroy(be, by);
     } else {
         fails += geist_expect(fused->gelu_tanh_mul == nullptr || fused->supported == nullptr,
                               "kernel present but probe rejects the plain F32 case");
@@ -89,6 +90,109 @@ static int check_backend(const char *name) {
                 fused->ffn_geglu_q4q6_mN(be, x, 4, 100, 300, &gate, &up, &down, nullptr, y);
         fails += geist_expect(s == GEIST_E_UNSUPPORTED,
                               "kernel entry checks agree: GEIST_E_UNSUPPORTED");
+    }
+
+    /* ---- Newly bound stages: positive agreement on F32 buffers where
+     * the op is expressible without model weights. */
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    if (fused->supported != nullptr) {
+        /* rmsnorm_add: res + rmsnorm(x)*w over a [2, 64] block. */
+        struct geist_fusion_query rq = {
+                .op = GEIST_FUSED_RMSNORM_ADD, .m = 2, .d_model = 64, .inter = 64};
+        if (fused->supported(be, &rq)) {
+            struct geist_buffer *br = nullptr, *bx = nullptr, *bw = nullptr, *by = nullptr;
+            const size_t         n = 2 * 64;
+            if (vt->buffer_create(be, n * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &br) ==
+                        GEIST_OK &&
+                v->buffer_create(be, n * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &bx) == GEIST_OK &&
+                v->buffer_create(be, 64 * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &bw) ==
+                        GEIST_OK &&
+                vt->buffer_create(be, n * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &by) ==
+                        GEIST_OK) {
+                struct geist_tensor tr = {.buffer = br,
+                                          .dtype  = GEIST_DTYPE_F32,
+                                          .layout = GEIST_LAYOUT_DENSE,
+                                          .ndim   = 2,
+                                          .shape  = {2, 64},
+                                          .stride = {64, 1}};
+                struct geist_tensor tx = tr, ty = tr;
+                tx.buffer              = bx;
+                ty.buffer              = by;
+                struct geist_tensor tw = {.buffer = bw,
+                                          .dtype  = GEIST_DTYPE_F32,
+                                          .layout = GEIST_LAYOUT_DENSE,
+                                          .ndim   = 1,
+                                          .shape  = {64},
+                                          .stride = {1}};
+                fails += geist_expect(fused->rmsnorm_add(be, &tr, &tx, &tw, 1e-6f, &ty) == GEIST_OK,
+                                      "probe said yes: rmsnorm_add must return GEIST_OK");
+            }
+            if (br)
+                v->buffer_destroy(be, br);
+            if (bx)
+                v->buffer_destroy(be, bx);
+            if (bw)
+                v->buffer_destroy(be, bw);
+            if (by)
+                v->buffer_destroy(be, by);
+        }
+        /* argmax over a [1, 256] logits row. */
+        struct geist_fusion_query aq = {.op = GEIST_FUSED_ARGMAX_F32, .m = 1, .d_model = 256};
+        if (fused->supported(be, &aq)) {
+            struct geist_buffer *bl = nullptr;
+            if (v->buffer_create(be, 256 * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &bl) ==
+                GEIST_OK) {
+                float *p = (float *) v->buffer_map(bl);
+                for (int i = 0; i < 256; i++)
+                    p[i] = (float) (i == 77 ? 100 : i % 7);
+                v->buffer_unmap(bl);
+                struct geist_tensor tl  = {.buffer = bl,
+                                           .dtype  = GEIST_DTYPE_F32,
+                                           .layout = GEIST_LAYOUT_DENSE,
+                                           .ndim   = 2,
+                                           .shape  = {1, 256},
+                                           .stride = {256, 1}};
+                int32_t             idx = -1;
+                fails += geist_expect(fused->argmax_f32(be, &tl, &idx) == GEIST_OK && idx == 77,
+                                      "probe said yes: argmax_f32 must return OK and index 77");
+                v->buffer_destroy(be, bl);
+            }
+        }
+        /* embedding_lookup_scaled over a tiny F32 [4, 8] table. */
+        struct geist_fusion_query eq = {.op          = GEIST_FUSED_EMBEDDING_LOOKUP_SCALED,
+                                        .m           = 1,
+                                        .d_model     = 8,
+                                        .table_dtype = GEIST_DTYPE_F32};
+        if (fused->supported(be, &eq)) {
+            struct geist_buffer *bt = nullptr, *bo = nullptr;
+            if (v->buffer_create(be, 4 * 8 * sizeof(float), GEIST_BUFFER_WEIGHT, 0, &bt) ==
+                        GEIST_OK &&
+                v->buffer_create(be, 8 * sizeof(float), GEIST_BUFFER_SCRATCH, 0, &bo) == GEIST_OK) {
+                float *p = (float *) v->buffer_map(bt);
+                for (int i = 0; i < 32; i++)
+                    p[i] = (float) i;
+                v->buffer_unmap(bt);
+                struct geist_tensor tt = {.buffer = bt,
+                                          .dtype  = GEIST_DTYPE_F32,
+                                          .layout = GEIST_LAYOUT_DENSE,
+                                          .ndim   = 2,
+                                          .shape  = {4, 8},
+                                          .stride = {8, 1}};
+                struct geist_tensor to = {.buffer = bo,
+                                          .dtype  = GEIST_DTYPE_F32,
+                                          .layout = GEIST_LAYOUT_DENSE,
+                                          .ndim   = 1,
+                                          .shape  = {8},
+                                          .stride = {1}};
+                fails += geist_expect(fused->embedding_lookup_scaled(be, &tt, 2, 2.0f, &to) ==
+                                              GEIST_OK,
+                                      "probe said yes: embedding_lookup_scaled must return OK");
+            }
+            if (bt)
+                v->buffer_destroy(be, bt);
+            if (bo)
+                v->buffer_destroy(be, bo);
+        }
     }
 
     printf("  %s: probe/kernel agreement ok\n", name);

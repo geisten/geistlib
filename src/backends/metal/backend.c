@@ -19,6 +19,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <stdalign.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <limits.h>
 #include <stddef.h>
@@ -1366,7 +1367,7 @@ static void metal_batch_flush(struct metal_state *st) {
 
 static void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf) {
     if (metal_seq_references(st, mtl_buf)) {
-        static int dbg = -1;
+        static _Atomic int dbg = -1;
         if (dbg < 0) {
             const char *e = getenv("GEIST_SEQ_COUNT");
             dbg           = (e && e[0]) ? 1 : 0;
@@ -1718,7 +1719,7 @@ static void *metal_buffer_map(struct geist_buffer *buf) {
     {
         struct metal_state *st = buf->owner;
         if (metal_seq_references(st, buf->buffer)) {
-            static int dbg = -1;
+            static _Atomic int dbg = -1;
             if (dbg < 0) {
                 const char *e = getenv("GEIST_SEQ_COUNT");
                 dbg           = (e && e[0]) ? 1 : 0;
@@ -4419,7 +4420,7 @@ static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
     }
 
     {
-        static int dbg = -1;
+        static _Atomic int dbg = -1;
         if (dbg < 0) {
             const char *e = getenv("GEIST_METAL_DEBUG_LINEAR");
             dbg           = (e != nullptr && e[0] != '\0' && strcmp(e, "0") != 0) ? 1 : 0;
@@ -5555,7 +5556,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     }
 
     {
-        static int dbg = -1;
+        static _Atomic int dbg = -1;
         if (dbg < 0) {
             const char *e = getenv("GEIST_METAL_DEBUG_LINEAR");
             dbg           = (e != nullptr && e[0] != '\0' && strcmp(e, "0") != 0) ? 1 : 0;
@@ -6236,7 +6237,7 @@ static void metal_linear_debug_stats(const float               *x,
                                      size_t                     ny,
                                      const struct geist_weight *w,
                                      size_t                     m) {
-    static int enabled = -1;
+    static _Atomic int enabled = -1;
     if (enabled < 0) {
         const char *e = getenv("GEIST_METAL_DEBUG_LINEAR");
         enabled       = (e != nullptr && e[0] != '\0' && strcmp(e, "0") != 0) ? 1 : 0;
@@ -6436,6 +6437,34 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
             return false;
         }
         return ((struct metal_state *) be->state)->q4k_gate_up_n4_pipeline != nullptr;
+    case GEIST_FUSED_RMSNORM_ADD:
+    case GEIST_FUSED_ARGMAX_F32:
+        /* All-F32 tensor ops; the kernels accept any well-formed row
+         * block the arch passes. Pipeline creation failure at run time
+         * is a real device error, not capability negotiation. */
+        return true;
+    case GEIST_FUSED_ATTN_QKV_PREP:
+        /* Half-split RoPE per-head norm kernel: any row count, head_dim
+         * must be even (mirrors metal_attn_qkv_prep's hd % 2 check). */
+        return q->head_dim > 0 && (q->head_dim % 2u) == 0u;
+    case GEIST_FUSED_PLE_BLOCK:
+        /* F32 gate/proj matrices only (mirrors metal_ple_block's
+         * metal_tensor_is_f32_matrix checks). */
+        return q->gate_w != nullptr && q->up_w != nullptr && q->gate_w->dtype == GEIST_DTYPE_F32 &&
+               q->up_w->dtype == GEIST_DTYPE_F32;
+    case GEIST_FUSED_EMBEDDING_LOOKUP_SCALED:
+        /* Dtype set of metal_embedding_lookup_scaled's row decoders. */
+        switch ((enum geist_dtype) q->table_dtype) {
+        case GEIST_DTYPE_F32:
+        case GEIST_DTYPE_F16:
+        case GEIST_DTYPE_BF16:
+        case GEIST_DTYPE_Q4_K:
+        case GEIST_DTYPE_Q5_K:
+        case GEIST_DTYPE_Q6_K:
+            return true;
+        default:
+            return false;
+        }
     default:
         return false;
     }

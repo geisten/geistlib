@@ -169,8 +169,8 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
      * two dispatches. Covers the gemma half-split-RoPE path on the plain
      * (f32/f16) cache; anything else falls back to the decomposed ops. */
     bool fused_qkv_prep = false;
-    if (ctx->apply_gemma_attn_norms && !ctx->rope_interleaved && fused->attn_qkv_prep != nullptr &&
-        !ctx->kv_kivi_enabled && !ctx->kv_int8_enabled) {
+    if (ctx->P != nullptr && ctx->P->fuse_attn_qkv_prep && !ctx->kv_kivi_enabled &&
+        !ctx->kv_int8_enabled) {
         struct geist_tensor t_q_norm_w = view_1d(L->q_norm.buffer, (int64_t) ctx->hd);
         if (ctx->compute_kv) {
             struct geist_tensor t_k_3d =
@@ -225,7 +225,10 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
                                      nullptr,
                                      nullptr);
         }
-        fused_qkv_prep = (s == GEIST_OK);
+        if (s != GEIST_OK) {
+            return s; /* bound at plan build — failure is a real error */
+        }
+        fused_qkv_prep = true;
     }
 
     if (!fused_qkv_prep) {

@@ -29,6 +29,7 @@
 #include <geist_weight.h>
 
 #include <stddef.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -482,7 +483,7 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
      *   - else, in OMP team     → omp for (work-share, no team spawn)
      *   - else, standalone OMP  → omp parallel for (spawn a team)
      *   - else                  → serial */
-    static int pp_enabled = -1;
+    static _Atomic int pp_enabled = -1;
     if (pp_enabled < 0) {
         const char *e = getenv("GEIST_PP");
         pp_enabled    = (e && e[0] == '1') ? 1 : 0;
@@ -703,7 +704,7 @@ void cpu_neon_w_tq2_0_q8a_mN(const float               *x,
             .row_bytes      = row_bytes,
     };
 
-    static int pp_enabled = -1;
+    static _Atomic int pp_enabled = -1;
     if (pp_enabled < 0) {
         const char *e = getenv("GEIST_PP");
         pp_enabled    = (e && e[0] == '1') ? 1 : 0;
@@ -1004,7 +1005,7 @@ void cpu_neon_w_i2_s_q8a_m1(const float               *x,
             .blocks_per_row = blocks_per_row,
     };
 
-    static int pp_enabled = -1;
+    static _Atomic int pp_enabled = -1;
     if (pp_enabled < 0) {
         const char *e = getenv("GEIST_PP");
         pp_enabled    = (e && e[0] == '1') ? 1 : 0;
@@ -1294,7 +1295,7 @@ void cpu_neon_w_i2_s_q8a_mN(const float               *x,
             .row_bytes      = row_bytes,
     };
 
-    static int pp_enabled = -1;
+    static _Atomic int pp_enabled = -1;
     if (pp_enabled < 0) {
         const char *e = getenv("GEIST_PP");
         pp_enabled    = (e && e[0] == '1') ? 1 : 0;

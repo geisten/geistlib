@@ -53,6 +53,22 @@ struct transformer_layer_exec_plan {
     bool fuse_ffn_geglu_tile_mN;   /* whole-FFN q4/q6 tile kernel (prefill) */
     bool fuse_gelu_mul_scaled;     /* GEGLU epilogue with AWQ scale, any m */
     bool fuse_gelu_mul;            /* GEGLU epilogue, any m */
+    bool fuse_rmsnorm_add;         /* post-norm residual, any m */
+    bool fuse_attn_qkv_prep;       /* per-head norms + RoPE + KV append; the
+                                    * session KV-mode conditions stay inline
+                                    * (sess->kv_*_enabled is the session
+                                    * overlay) */
+    bool fuse_ple_block_m1;        /* fused PLE block, decode */
+    bool fuse_ple_block_mN;        /* fused PLE block, prefill */
+};
+
+/* Model-level fusion decisions (not per-layer): lookup tables and the
+ * greedy head. Filled by transformer_exec_plan_build alongside the
+ * per-layer plans. */
+struct transformer_model_fusion_plan {
+    bool embed_lookup_scaled; /* embed_table on-device lookup+scale */
+    bool ple_lookup_scaled;   /* ple_table on-device lookup+scale */
+    bool argmax;              /* device argmax over [1, vocab] logits */
 };
 
 enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st);
