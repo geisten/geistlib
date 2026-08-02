@@ -31,6 +31,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 static inline size_t f32q_blocks_per_row(size_t n_in) {
     return n_in / W8A8_BLOCK_ELEMS;
@@ -151,10 +152,11 @@ void f32_to_w8a8_row(
     return GEIST_OK;
 }
 
-/* int8-quantize one activation row → st->acts_scratch + 16-block sum_a. */
-static float
-quant_act_row(size_t n_in, struct cpu_x86_state *st, const float *x, int8_t *acts, int32_t *sum_a) {
-    const float  scale_x = w4a8_quantize_acts_row(n_in, x, acts, st->sum_a_scratch);
+/* int8-quantize one activation row → acts + 16-block sum_a. The W4A8
+ * quantizer's 32-elem sums scribble into sum_a first (n_in/16 entries ≥
+ * the n_in/32 it writes), then the re-sum below overwrites them. */
+static float quant_act_row(size_t n_in, const float *x, int8_t *acts, int32_t *sum_a) {
+    const float  scale_x = w4a8_quantize_acts_row(n_in, x, acts, sum_a);
     const size_t nblk    = n_in / W8A8_BLOCK_ELEMS;
     for (size_t b = 0; b < nblk; b++) {
         int32_t s = 0;
@@ -176,14 +178,19 @@ void cpu_x86_linear_f32q_m1(const float               *x,
     const float          *w_scales, *w_offsets;
     f32q_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
 
-    const float scale_x = quant_act_row(n_in, st, x, st->acts_scratch, st->sum_a_scratch);
+    struct cpu_x86_workspace *ws = cpu_x86_ws_acquire(st, n_in);
+    if (ws == nullptr) {
+        memset(y, 0, n_out * sizeof *y);
+        return;
+    }
+    const float scale_x = quant_act_row(n_in, x, ws->acts_scratch, ws->sum_a_scratch);
     w8a8_gemv(n_out,
               n_in / W8A8_BLOCK_ELEMS,
               weights,
               w_scales,
               w_offsets,
-              st->acts_scratch,
-              st->sum_a_scratch,
+              ws->acts_scratch,
+              ws->sum_a_scratch,
               scale_x,
               y);
 }
