@@ -27,4 +27,10 @@
 /* Concrete descriptor for the transformer decoder. */
 extern const struct geist_arch_ops_decoder geist_arch_transformer;
 
+/* NULL-terminated list of the exact `general.architecture` values the
+ * transformer arch accepts ("gemma4", "llama", ...). Single source of
+ * truth in arch_family.c, next to the family registry it mirrors; the
+ * engine's arch_registry gate matches against it fail-closed. */
+extern const char *const geist_arch_transformer_gguf_names[];
+
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_H */
