@@ -37,7 +37,8 @@
         geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: state alloc failed");
         return GEIST_E_OOM;
     }
-    *st = (struct cpu_neon_state) {0};
+    *st               = (struct cpu_neon_state) {0};
+    st->ws_generation = cpu_neon_ws_next_generation();
     geist_hw_probe_fill(&st->hw);
     st->policy = cpu_neon_kernel_policy_default(&st->hw);
 
@@ -52,7 +53,7 @@ static void cpu_neon_destroy(struct geist_backend *be) {
     struct cpu_neon_state *st = (struct cpu_neon_state *) be->state;
     /* Backend-owned scratch: freed directly via the workspace. No OMP
      * barrier needed because the storage lives on `st`, not in TLS. */
-    cpu_neon_workspace_destroy(&st->workspace);
+    cpu_neon_ws_destroy_all(st);
     geist_backend_free(be, be->state);
     be->state = nullptr;
 }
