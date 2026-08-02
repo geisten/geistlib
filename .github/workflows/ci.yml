@@ -279,3 +279,30 @@ jobs:
         run: |
           clang-format --version
           make format-check
+
+  metal-probe:
+    name: metal device probe (spike, manual)
+    # Manual only. This answers one question — does a GitHub macOS runner
+    # expose a usable Metal device? — and nothing depends on it, so it has
+    # no business running on every push.
+    #
+    # Why it matters: src/backends/metal has 52 compute kernels, 8 of them
+    # hand-written simdgroup GEMMs, and no numerical parity gate (vulkan
+    # has three). Before writing that gate, we need to know whether CI can
+    # ever execute it. PASS here => build the gate and wire it into a job.
+    # SKIP here => the gate would only run on a developer's Mac, and that
+    # limitation belongs in writing rather than in a green checkmark that
+    # never actually ran anything.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenMP
+        run: brew install libomp
+      - name: Build with the metal backend
+        run: make TARGET=mac-omp BACKENDS="metal cpu_neon cpu_scalar"
+      - name: Probe for a Metal device
+        # Prints SKIP + the reason when no device is present; the step
+        # stays green either way. The transcript is the result.
+        run: ./bin/mac-omp/release/tests/test_backend_metal_probe
