@@ -149,6 +149,28 @@ static size_t spec_env_sz(const char *name, size_t dflt, size_t lo, size_t hi) {
     return (size_t) v;
 }
 
+static int spec_verify_env(void) {
+    /* GEIST_SPEC_VERIFY=1 turns on the certainty bound: every excluded row gets
+     * an upper bound on the exact logit it could have had, and the head
+     * declines whenever one of them could have beaten the winner, which makes
+     * the answer provably the dense head's.
+     *
+     * Off by default, for a measured reason rather than an assumed one. At the
+     * shipped stride the sketch keeps one dimension in four, so the dropped
+     * three quarters carry an uncertainty of the same order as the dot product
+     * itself -- Cauchy-Schwarz must assume they all conspire. The bound is then
+     * almost never satisfiable: on a Pi 5 it fires on nearly every token and
+     * decode falls from 18.3 to 9.4 t/s, which is dense-head speed. Correct,
+     * and worth nothing at that price.
+     *
+     * What it is worth is as an instrument. Run a model under it once and the
+     * output is either identical to the dense head or it is not -- no sampling,
+     * no luck -- which is how the silent divergence on bitnet_b1_58-large would
+     * have been caught the day it appeared instead of months later. */
+    const char *e = getenv("GEIST_SPEC_VERIFY");
+    return (e != nullptr && e[0] == '1') ? 1 : 0;
+}
+
 static int spec_head_env(void) {
     /* Default ON for greedy decode + top-k sampling on an eligible tied
      * lm_head: verified byte-identical to the dense head on Gemma 4 (Q6_K,
@@ -742,7 +764,7 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
     const float *wdrop      = st->spec_w_drop;
     const float *wl1        = st->spec_w_l1;
     bool         certain    = true;
-    if (wdrop != nullptr && wl1 != nullptr) {
+    if (spec_verify_env() && wdrop != nullptr && wl1 != nullptr) {
         for (size_t r = 0; r < V; r++) {
             /* Excluded rows are those phase 2 left below the heap's cutoff.
              * This asked `logits[r] != -INFINITY` before, which is a correct
