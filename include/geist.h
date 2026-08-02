@@ -162,7 +162,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
  * geist_model_destroy: the caller must keep `data` valid for the model's
  * lifetime (for an `.incbin`-embedded blob that is automatic — it lives in
  * .rodata). The GGUF must carry its own tokenizer (no sibling file is searched)
- * and is text-only (no external vision/audio safetensors). geisten/geistagent
+ * and is text-only (no external vision/audio safetensors). An out-of-tree runtime
  * uses this to ship engine and model as one file. */
 enum geist_status geist_model_load_from_memory(const void           *data,
                                                size_t                size,

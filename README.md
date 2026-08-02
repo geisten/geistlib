@@ -11,17 +11,17 @@
 <p align="center">
   <strong>local by default</strong> &nbsp;·&nbsp;
   <strong>CPU-first, GPU-optional</strong> &nbsp;·&nbsp;
-  <strong>one small runtime</strong> &nbsp;·&nbsp;
+  <strong>ternary BitNet, first-class</strong> &nbsp;·&nbsp;
   <strong>embeddable C library</strong>
 </p>
 
 <p align="center">
-  <strong>1.96×</strong> BitNet decode vs bitnet.cpp <sub>(Pi 5, <code>make bench</code>)</sub> &nbsp;·&nbsp;
+  <strong>1.96×</strong> BitNet decode vs bitnet.cpp <sub>(Pi 5)</sub> &nbsp;·&nbsp;
   <strong>1.5×</strong> prefill vs llama.cpp <sub>(M1 Max)</sub> &nbsp;·&nbsp;
   <strong>1.9×</strong> BitNet decode vs bitnet.cpp <sub>(x86)</sub> &nbsp;·&nbsp;
   <strong>&lt; 1 MB</strong> binary, zero deps
   <br>
-  <sub><a href="#faster-where-it-counts">↓ full scoreboard — decode t/s on every system, one metric</a></sub>
+  <sub><a href="#dont-trust-the-numbers-run-them">↓ don't trust the numbers — <code>make bench</code> measures both engines on your box</a></sub>
 </p>
 
 [![CI](https://github.com/geisten/geistlib/actions/workflows/ci.yml/badge.svg)](https://github.com/geisten/geistlib/actions/workflows/ci.yml)
@@ -41,22 +41,36 @@
 *Real-time on a Raspberry Pi 5 — ternary BitNet b1.58 2B-4T (`i2_s`) generating
 text from a single dependency-free binary, no GPU, no driver stack.*
 
-geistlib is just the engine and a small CLI to run models — build it plain and
-bring your own GGUF, or bake a model in for a single self-contained binary, on
-macOS and Linux (ARM64 + x86-64). It squeezes the most out of small models so
-they run where you are: a laptop, a Raspberry Pi, an old CPU with no GPU in
-sight. It began as one developer's attempt to *understand* how these models work
-by building the engine from scratch, kernel by kernel. It still is: an
-experiment, and an open invitation to join in.
+geistlib is one C23 inference engine — no Python, no runtime, no container. Bring
+any GGUF and it runs on macOS and Linux (ARM64 + x86-64), on whatever CPU you
+already have: a laptop, a Raspberry Pi, an old box with no GPU in sight. It began
+as one developer's attempt to *understand* how these models work by building the
+engine from scratch, kernel by kernel. It still is: an experiment, and an open
+invitation to join in.
 
 ---
 
 ## Quick start
 
-geistlib is a **library**. It has no CLI of its own: the tool-use runtime, the
-resident daemon and the single-file binary with a model baked in live in
-[geisten/geistagent](https://github.com/geisten/geistagent), which links this
-engine. If you came here to *run* something, that is the repository you want.
+Three commands from clone to generated text. Prerequisites: **gcc ≥ 14** or
+Apple-clang ≥ 16 (Xcode 16 / macOS 15) and `make`; on macOS, Homebrew `libomp`.
+
+```bash
+git clone https://github.com/geisten/geistlib && cd geistlib
+make lib                     # auto-detects target; or: make TARGET=mac-omp | pi5 | linux
+make fetch-bench-model       # BitNet b1.58 2B-4T, ternary, 1.1 GB
+make run ARGS='gguf_artifacts/bitnet-2b4t-i2_s.gguf "The capital of France is"'
+```
+
+`make run` builds and runs [`examples/simple_generate.c`](examples/simple_generate.c)
+— load, prefill, greedy-decode in ~15 lines against the STABLE core, and the
+thing to copy when you embed the library. Prefer a bigger, multimodal model?
+`make fetch-model` pulls Gemma 4 E2B-it (~3.1 GB) instead.
+
+geistlib is an **engine, not an application**: it loads models and produces
+tokens, and has no opinion about chat templates, tool use or whether a model may
+act. That is the deal — an engine that stays application-neutral is one anyone
+can embed.
 
 ### Use the prebuilt SDK
 
@@ -74,20 +88,29 @@ cc -std=c23 -I libgeist-linux-arm64/include my_app.c \
 runtime: `-fopenmp` on Linux, `-framework Accelerate <libomp>/lib/libomp.a` on
 macOS.</sub>
 
-### Build from source
+---
 
-Any platform with a C23 compiler. Prerequisites: **gcc ≥ 14** or Apple-clang
-≥ 16 (Xcode 16 / macOS 15) and `make`; on macOS, Homebrew `libomp`.
+## Don't trust the numbers, run them
+
+Every speedup below is one command away from being checked on *your* hardware.
+`make bench` downloads the BitNet GGUF, runs a frozen protocol (warm-up, then 10
+measured repeats at 32/128/512-token prompts), and — if it finds a `llama.cpp` or
+`bitnet.cpp` binary on your machine — measures **that engine in the same run,
+against the byte-identical GGUF, after the board has cooled back to the
+temperature geist started from**:
 
 ```bash
-git clone https://github.com/geisten/geistlib && cd geistlib
-make lib                   # auto-detects target; or: make TARGET=mac-omp | pi5 | linux
-make fetch-model           # optional: pull Gemma 4 E2B-it Q4_K_M (~3.1 GB)
-make run ARGS='gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "The capital of France is"'
+make bench
 ```
 
-`make run` builds and runs `examples/simple_generate.c` — the smallest useful
-program against the STABLE core, and the thing to copy when embedding.
+It prints run-to-run spread alongside every number, and writes nothing to the
+repository, so reproducing the claims leaves no diff behind. Absolute t/s is
+hardware-bound; the **ratio on your own box** is the number that travels.
+
+Greedy output is bit-identical to the `cpu_scalar` reference before any speedup is
+quoted — a faster engine that produces different tokens is not iso-quality. The
+protocol is frozen in [`tools/bench_reproduce.py`](tools/bench_reproduce.py); every
+row in [`benchmark/reference_runs.json`](benchmark/reference_runs.json) came from it.
 
 ---
 
@@ -104,12 +127,8 @@ one-download-and-go.
 | BitNet b1.58-large | text (ternary) | `TQ2_0` | 207 MB | ≥ 1 GB | smallest footprint | convert from [1bitLLM ↗](https://huggingface.co/1bitLLM/bitnet_b1_58-large) |
 
 ```bash
-# Gemma 4 E2B-it (text + vision + audio towers, all on one binary)
-make fetch-model
-
-# BitNet b1.58 2B-4T — the ~2× decode win on a Pi 5
-curl -L -o bitnet-2b4t.i2_s.gguf \
-  https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf
+make fetch-bench-model   # BitNet b1.58 2B-4T — the ~2× decode win on a Pi 5
+make fetch-model         # Gemma 4 E2B-it — text + vision + audio towers
 ```
 
 > **Vision & audio** ride on the Gemma 4 model — the engine has SigLIP (vision) and
@@ -128,13 +147,12 @@ every GPU inference server. It is deliberately optimized for a narrower job:
   first-class citizens, where memory bandwidth matters most.
 - **Constrained hardware:** platform-specific kernels for Raspberry Pi and
   CPU-only hosts; a GPU (experimental Metal/Vulkan) is optional, never required.
-- **One auditable C runtime:** no Python environment, no container — a single
-  small binary you can embed anywhere.
+- **One auditable C library:** no Python environment, no container — a static
+  archive and a header you can embed anywhere, in any language with an FFI.
 
 ### One binary, zero dependencies
-Static musl on Linux ARM (< 1 MB), Apple frameworks only on macOS. Fold the model
-in too and deployment is *literally one file* — see
-[geistagent](https://github.com/geisten/geistagent).
+Static musl on Linux ARM (< 1 MB), Apple frameworks only on macOS. No Python, no
+CUDA, no container, nothing to install on the target — copy the binary and run it.
 
 ### Faster where it counts
 Same GGUF, greedy decode. geistlib leads end-to-end throughput on a Pi 5,
@@ -152,22 +170,16 @@ feel in a chat. Prefill and total for every system (incl. the M1 Max prefill
 win and the Pi long-prompt total) are in the [full numbers table](#documentation)
 below; sub-parity rows (Llama 3.2 on x86) are shown here too — nothing cherry-picked.*
 
-Reproduce it on your own hardware:
-
-```bash
-make lib && make fetch-model                # build libgeist.a + pull the Gemma GGUF
-OMP_WAIT_POLICY=active make bench-small      # records decode t/s to benchmark/results/APPLE.md
-```
-
-<sub>Cross-engine comparison vs a pinned llama.cpp, quality (MMLU) and full
-methodology: [`benchmark/METHODOLOGY.md`](benchmark/METHODOLOGY.md).</sub>
+<sub>Reproduce the ternary rows with [`make bench`](#dont-trust-the-numbers-run-them).
+Cross-engine comparison vs a pinned llama.cpp, quality (MMLU) and full methodology:
+[`benchmark/METHODOLOGY.md`](benchmark/METHODOLOGY.md).</sub>
 
 ### Ternary (1.58-bit) as a first-class citizen
 geistlib runs Microsoft's BitNet b1.58 (`TQ2_0` and canonical `I2_S`) with integer-only
 dot products — ARM SDOT (add/subtract, no multiplies) and x86 AVX-512 VNNI. It beats
 Microsoft's own bitnet.cpp on both a Pi 5 (**~2×** decode) and an AMD 9950X — exact
 t/s in the [full numbers](#documentation) below, 1.6-bpw base-3 decode packing
-included (#104). BitNet is ternary, so the whole 2B-4T model is just 1.2 GB — about
+included (#104). BitNet is ternary, so the whole 2B-4T model is just 1.1 GB — about
 a third the footprint of a comparable general model, small enough to run on a 4 GB Pi.
 
 <details>
@@ -211,11 +223,12 @@ walkthrough in [`docs/QUICKSTART.md`](docs/QUICKSTART.md) and the API in
 
 ### Ship engine and model as one file
 
-Baking a GGUF into a binary is a property of an executable, and this repository
-builds none. [geistagent](https://github.com/geisten/geistagent) does it —
-`make bin EMBED_MODEL=model.gguf` there — and publishes signed single-file
-runtimes with BitNet b1.58 2B-4T already inside. The weights alias zero-copy
-from the binary's read-only data, so the cost is disk, not RAM.
+`geist_model_load_from_memory` loads a GGUF that is already in your address
+space — an `.incbin`-embedded blob, or one you `mmap`ed yourself — so your
+executable *is* the deployment: no model file, no download step, nothing to
+install on the target. The weights alias zero-copy from the binary's read-only
+data, so the cost is disk, not RAM. Recipe in
+[`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ---
 
@@ -240,7 +253,9 @@ Repository ownership and the complete map are in
 | Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | total t/s (32p+128d) | **8.8** | 8.2 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | decode t/s | **7.5** | 6.8 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max** | prefill t/s (pp1024) | **144** | 97 *(llama.cpp)* |
-| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s | **17.4** | 8.2 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s (32p) | **17.9** | 9.1 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s (512p) | **15.0** | — *(no like-for-like)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | prefill t/s (512p) | 45.5 | 45.8 *(bitnet.cpp)* |
 | BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | prefill t/s (pp128) | **1098** | 679.9 *(bitnet.cpp)* |
 | BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | decode t/s (tg128) | **103.1** | 54.3 *(bitnet.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | prefill t/s | **512** | 495 *(llama.cpp)* |
@@ -273,7 +288,7 @@ attach) may still change between minor versions.
 
 ---
 
-## Roadmap
+## Where this is going
 
 geistlib isn't trying to out-benchmark llama.cpp or replace anyone's toolchain. It
 started as one developer's way of understanding how these models actually work — by
@@ -296,19 +311,29 @@ building:
   self-organizing over time.
 
 Most of this is barely started. That's the point — [come build it with
-us](#contributing).
+us](#contributing). Track by track: [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
 ## Contributing
 
 The interesting work is wide open — low-level kernels and quantization research,
-not yet-another-wrapper. **From clone to green tests in 30 seconds:**
+not yet-another-wrapper. **From clone to green tests in one command:**
 
 ```bash
-git clone https://github.com/geisten/geistlib && cd geistlib
 make lib && make test      # builds libgeist.a, runs the full C suite
 ```
+
+Where the leverage is right now:
+
+- **NEON / AVX-512 microkernels** — the ternary and Q4_K paths, measured per cycle.
+- **Low-bit quantization** — TQ2_0, IQ variants, and whatever is smaller than 1.58 bits.
+- **Portability** — Windows, wider x86-64 quant coverage, the open Vulkan prefill front.
+
+Ground rules, build modes and the review bar: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Not sure where to start? Ask in
+[Discussions](https://github.com/geisten/geistlib/discussions) — a half-formed
+idea is a fine opening message.
 
 ---
 

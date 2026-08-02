@@ -13,36 +13,23 @@ is open to help. The mission in full is in the
 | :-- | :-- | :-- |
 | **Max quantization** | Ternary (1.58-bit) & binary as first-class citizens, not a bolt-on | ✅ BitNet `I2_S`/`TQ2_0`, integer-only kernels; beats bitnet.cpp on Pi 5 & x86 |
 | **Fast per platform** | The fastest path on *each* target, not a lowest common denominator | ✅ ARM64 NEON · macOS Accelerate/AMX · x86-64 AVX-512/VNNI |
-| **One-file install** | Engine + model in one dependency-free binary | ✅ in [geistagent](https://github.com/geisten/geistagent), which links this engine |
-| **Small-model agents** | A tight harness so a 2 B model rivals a bigger one on a narrow task | ✅ bounded static + per-request dynamic tools, typed forced calls, host round-trips — in [geistagent](https://github.com/geisten/geistagent) |
-| **Memory for small models** | Recall sized to what these models can hold — no vector store | 🚧 file-based memory palace, in the [geist-wissen](https://github.com/geisten/geist-wissen) consumer (the engine ships the tool-use interface) |
+| **One-file install** | Engine + model in one dependency-free binary | ✅ `geist_model_load_from_memory` aliases weights zero-copy out of a binary's read-only data |
+| **GPU where it helps** | Optional accelerators, never a requirement | 🚧 Metal within 12 % of llama.cpp Metal; Vulkan decode at ~86 %, prefill open |
 | **Models that adapt** | Dynamic specialization, learning, self-organization | 🔬 research |
 
 <sub>✅ shipped · 🚧 in progress · 🔬 exploring</sub>
 
-## Adapter ecosystem
+## Scope
 
-Geist remains application-neutral. Its stable extension boundary is the C API
-in `include/geist.h` ([API_CONTRACT.md](docs/API_CONTRACT.md)); the agent loop,
-the resident service and the `dynamic-tools-v1` protocol are
-[geistagent](https://github.com/geisten/geistagent). Authorization, execution,
-product UX, distribution and domain evaluations belong to adapter
-repositories.
-The first adapter is maintained in
-[`geisten/geist-home-assistant`](https://github.com/geisten/geist-home-assistant),
-including its independent roadmap and release phases.
+geistlib is an inference engine and nothing else: it loads models and produces
+tokens, and has no opinion about chat templates, tool use, authorization or
+whether a model may act. Its extension boundary is the C API in `include/geist.h`
+([API_CONTRACT.md](docs/API_CONTRACT.md)) — agent loops, resident services,
+product UX and domain evaluations belong to whoever links it.
 
-### Phase 3: host-neutral dynamic tools — complete
-
-The server accepts an immutable `tools` array per request. Tool names are
-offered capabilities rather than compiled assumptions; arguments use a bounded,
-documented JSON-Schema subset and are checked before the host boundary. The host
-executes, returns correlated results, and Geist continues the conversation.
-Multiple calls, global budgets, one bounded retry, cancellation, typed forced
-arguments and low-confidence clarification are covered by deterministic tests.
-
-The protocol and its reference host moved with the agent layer; see
-[geistagent](https://github.com/geisten/geistagent).
+That split is deliberate. An engine that stays application-neutral can be
+embedded by anyone; one that grows a product opinion can only be embedded by
+people who share it.
 
 ## Distribution: one static binary per platform
 
