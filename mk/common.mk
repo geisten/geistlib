@@ -48,8 +48,15 @@ else ifeq ($(MODE),tsan)
 else ifeq ($(MODE),perf)
     CFLAGS_MODE  := -O3 -g -fno-omit-frame-pointer
     LDFLAGS_MODE :=
+else ifeq ($(MODE),cov)
+    # Line/branch coverage build for the CI gate (scripts/coverage_gate.py).
+    # -O1, not -O0: the coverage run includes a real-model prefill/decode and
+    # -O0 makes that unaffordable. The baselines were measured at -O1, so the
+    # ratchet comparison stays apples-to-apples.
+    CFLAGS_MODE  := -O1 -g --coverage -fno-omit-frame-pointer
+    LDFLAGS_MODE := --coverage
 else
-    $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, perf)
+    $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, perf, cov)
 endif
 
 # ---- Base CFLAGS ---------------------------------------------------------
