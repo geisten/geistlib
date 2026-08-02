@@ -3,7 +3,11 @@
 # Shaders: src/backends/vulkan/shaders/*.comp are compiled to SPIR-V and
 # committed as *_spv.h headers — `make vulkan-shaders` (needs glslc)
 # regenerates them; end-user builds never invoke glslc.
-BACKEND_SOURCES += src/backends/vulkan/backend.c
+BACKEND_SOURCES += src/backends/vulkan/lifecycle.c \
+    src/backends/vulkan/resources.c \
+    src/backends/vulkan/pipelines.c \
+    src/backends/vulkan/sequence.c \
+    src/backends/vulkan/ops.c
 LDLIBS += -ldl
 
 VULKAN_COMP := $(wildcard src/backends/vulkan/shaders/*.comp)
