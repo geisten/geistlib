@@ -61,6 +61,7 @@
 #include "heap.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,7 +83,40 @@
 #define SPEC_HEAD_AVAILABLE 1
 #endif
 
-#define SPEC_STRIDE_DEFAULT 4
+/* Sketch resolution, not a divisor. The stride used to be fixed at 4, which
+ * ties the sketch's quality to how wide the model happens to be: the same
+ * divisor gave the 2B-4T (H=2560) a 640-dim sketch and bitnet_b1_58-large
+ * (H=1536) a 384-dim one. The coarser sketch loses the true argmax, and since
+ * there is no fallback the loss is silent -- measured 2026-08-01, greedy
+ * output matched the dense head for 28 tokens and then diverged, at the
+ * shipped defaults. Deriving the stride from a target resolution instead makes
+ * the sketch equally good on any width; it reproduces stride 4 for the 2B-4T
+ * and stride 2 for the large model, both of which measure exact. */
+#define SPEC_SKETCH_DIMS 640
+
+/* How much smaller a sketch row must be than a dense row before the sketch is
+ * worth building. This is the whole trade in one number: the sketch replaces
+ * reading a dense row per vocabulary entry with reading a sketch row, so if
+ * the sketch row is not much smaller there is nothing to win -- and the
+ * phase-3 verify and a resident V*SD table still get paid for.
+ *
+ * Gating on dtype, as this used to, asks the wrong question. What decides the
+ * trade is not whether the head is F16 or Q6_K but how wide a dense row is
+ * against the sketch replacing it. Measured on a Pi 5, decode against the same
+ * build with GEIST_SPEC_HEAD=0:
+ *
+ *   BitNet 2B-4T        F16  head  5120 B/row  640-dim sketch  8.00x   +82 %
+ *   bitnet_b1_58-large  Q6_K head  1260 B/row  768-dim sketch  1.64x   +0.8 %
+ *   gemma4-e2b          Q6_K head  1260 B/row  768-dim sketch  1.64x   +0.5 %
+ *
+ * A quantized head is already compact, so subsampling it to int8 shrinks
+ * almost nothing. 3.0 sits between the two measured regimes, and the gap they
+ * leave is wide enough that its exact position hardly matters.
+ *
+ * Declining also hands memory back where the sketch bought nothing: on gemma4
+ * its table is 201 MB resident, which is real on a 4 GB board, for +0.5 %. */
+#define SPEC_MIN_ROW_SHRINK 3.0
+
 /* 512 was verified byte-identical on the original trajectories, but the
  * margin is thin: a near-tie whose loser the sketch ranks past the cutoff
  * flips greedy (seen live when an unrelated ULP-level kernel change shifted
@@ -371,7 +405,8 @@ static bool spec_head_build(struct transformer_arch_state *st) {
      * harder ranking (Gemma's 256 K) needs a finer sketch (smaller stride)
      * and/or more finalists for the true argmax to land in the candidate set.
      * Defaults (4, 512) are exact for BitNet's 128 K F16 head. */
-    size_t sub = spec_env_sz("GEIST_SPEC_STRIDE", SPEC_STRIDE_DEFAULT, 1, H);
+    const size_t stride_dflt = H > SPEC_SKETCH_DIMS ? H / SPEC_SKETCH_DIMS : 1;
+    size_t       sub         = spec_env_sz("GEIST_SPEC_STRIDE", stride_dflt, 1, H);
     while (sub > 1 && H % sub != 0) {
         sub--;
     } /* require H % sub == 0 */
@@ -386,13 +421,22 @@ static bool spec_head_build(struct transformer_arch_state *st) {
     }
     const size_t SD = H / sub;
 
-    int8_t           *sketch = heap_alloc_array_aligned(int8_t, V *SD);
-    float            *rscale = heap_alloc_array_aligned(float, V);
-    int8_t           *x_i8   = heap_alloc_array_aligned(int8_t, H);
-    int8_t           *a_sk   = heap_alloc_array_aligned(int8_t, SD);
-    float            *rough  = heap_alloc_array_aligned(float, V);
-    float            *row32  = heap_alloc_array_aligned(float, H);
-    struct spec_cand *heap   = heap_alloc_array_aligned(struct spec_cand, topk);
+    /* Is a sketch row enough smaller than a dense one to pay for itself? */
+    if ((double) row_bytes / (double) SD < SPEC_MIN_ROW_SHRINK) {
+        return false;
+    }
+
+    int8_t *sketch = heap_alloc_array_aligned(int8_t, V *SD);
+    float  *rscale = heap_alloc_array_aligned(float, V);
+    /* Row halves of the safety bound: two floats a row -- 1 MB against an
+     * 82 MB sketch on the 2B-4T. */
+    float            *wdrop = heap_alloc_array_aligned(float, V);
+    float            *wl1   = heap_alloc_array_aligned(float, V);
+    int8_t           *x_i8  = heap_alloc_array_aligned(int8_t, H);
+    int8_t           *a_sk  = heap_alloc_array_aligned(int8_t, SD);
+    float            *rough = heap_alloc_array_aligned(float, V);
+    float            *row32 = heap_alloc_array_aligned(float, H);
+    struct spec_cand *heap  = heap_alloc_array_aligned(struct spec_cand, topk);
 #ifdef _OPENMP
     const size_t nthr = (size_t) omp_get_max_threads();
 #else
@@ -400,7 +444,10 @@ static bool spec_head_build(struct transformer_arch_state *st) {
 #endif
     float *scratch = heap_alloc_array_aligned(float, nthr *H); /* per-thread */
     if (sketch == nullptr || rscale == nullptr || x_i8 == nullptr || a_sk == nullptr ||
-        rough == nullptr || row32 == nullptr || heap == nullptr || scratch == nullptr) {
+        rough == nullptr || row32 == nullptr || heap == nullptr || scratch == nullptr ||
+        wdrop == nullptr || wl1 == nullptr) {
+        safe_free((void **) &wdrop);
+        safe_free((void **) &wl1);
         safe_free((void **) &sketch);
         safe_free((void **) &rscale);
         safe_free((void **) &x_i8);
@@ -445,10 +492,24 @@ static bool spec_head_build(struct transformer_arch_state *st) {
             sk[s] = (int8_t) q;
         }
         rscale[r] = amax / 127.0f;
+        /* The sketch keeps every sub-th dimension and is blind to the rest, so
+         * their combined contribution is what Cauchy-Schwarz has to cover. */
+        float sq = 0.0f, l1 = 0.0f;
+        for (size_t i = 0; i < H; i++) {
+            if (i % sub == 0) {
+                l1 += tmp[i] < 0.0f ? -tmp[i] : tmp[i];
+            } else {
+                sq += tmp[i] * tmp[i];
+            }
+        }
+        wdrop[r] = sqrtf(sq);
+        wl1[r]   = l1;
     }
     safe_free((void **) &scratch);
 
     st->spec_sketch     = sketch;
+    st->spec_w_drop     = wdrop;
+    st->spec_w_l1       = wl1;
     st->spec_row_scale  = rscale;
     st->spec_x_i8       = x_i8;
     st->spec_act_sketch = a_sk;
@@ -553,6 +614,18 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
         rough[r]        = (float) d * rscale[r];
     }
 
+    /* Activation halves of the bound: L1 over the dimensions the sketch keeps,
+     * L2 over those it drops. One O(H) pass. */
+    float h_l1_kept = 0.0f, h_sq_drop = 0.0f;
+    for (size_t i = 0; i < H; i++) {
+        if (i % sub == 0) {
+            h_l1_kept += h[i] < 0.0f ? -h[i] : h[i];
+        } else {
+            h_sq_drop += h[i] * h[i];
+        }
+    }
+    const float h_l2_drop = sqrtf(h_sq_drop);
+
     /* Phase 2: top-K by rough score, via a bounded min-heap of (score, idx).
      * heap[0] is the smallest score currently retained. */
     struct spec_cand *heap = (struct spec_cand *) st->spec_heap;
@@ -655,6 +728,44 @@ bool transformer_spec_head_try(struct transformer_arch_state *st, geist_token_t 
     }
 
     *out_token = geist_sampler_argmax(V, logits);
+
+    /* Certainty check. Everything above approximates, in order to choose which
+     * rows to score exactly; this decides whether that choice was safe.
+     *
+     * A rough score differs from the exact logit by three bounded amounts --
+     * the dropped dimensions, the weight quantization and the activation
+     * quantization -- so every excluded row has an upper bound on what its
+     * exact logit could have been. If none reaches the winner's exact logit,
+     * no excluded row could have won and the answer is provably the dense
+     * head's. If one does, we do not guess: the head declines and head.c
+     * recomputes densely.
+     *
+     * That turns the failure this head used to have -- a silently different
+     * token, which took a 28-token trajectory on another model to notice --
+     * into an occasional slower step. */
+    const float  best_exact = logits[*out_token];
+    const float  inv_xq     = 1.0f / x_q;
+    const float *wdrop      = st->spec_w_drop;
+    const float *wl1        = st->spec_w_l1;
+    bool         certain    = true;
+    if (wdrop != nullptr && wl1 != nullptr) {
+        for (size_t r = 0; r < V; r++) {
+            if (logits[r] != -INFINITY) {
+                continue; /* a candidate: already scored exactly */
+            }
+            const float ub = rough[r] * inv_xq + 0.5f * rscale[r] * h_l1_kept +
+                             0.5f * wl1[r] * inv_xq + wdrop[r] * h_l2_drop;
+            if (ub > best_exact) {
+                certain = false;
+                break;
+            }
+        }
+    }
+    if (!certain) {
+        v->buffer_unmap(st->sess->scratch_logits);
+        v->buffer_unmap(st->sess->scratch_h_a);
+        return false; /* head.c recomputes the dense head */
+    }
 
     /* scratch_logits is now SPARSE (-inf off the candidate set) — right for
      * the greedy argmax above, wrong for value consumers. peek_logits checks
