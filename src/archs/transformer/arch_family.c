@@ -331,6 +331,25 @@ static const struct transformer_family *const REGISTRY[] = {
 };
 static const size_t REGISTRY_N = sizeof REGISTRY / sizeof REGISTRY[0];
 
+/* Engine-facing match list: the exact `general.architecture` values this
+ * architecture accepts, NULL-terminated. Referenced by desc_transformer in
+ * src/engine/arch_registry.c — the engine gate rejects any GGUF whose arch
+ * string is not listed here, before weights are touched. Must mirror
+ * REGISTRY above (count enforced below; a string mismatch fails closed at
+ * transformer_family_select, never loads the wrong family). */
+const char *const geist_arch_transformer_gguf_names[] = {
+        "gemma4",
+        "llama",
+        "bitnet-b1.58",
+        "bitnet",
+        nullptr,
+};
+static_assert(sizeof geist_arch_transformer_gguf_names /
+                                      sizeof geist_arch_transformer_gguf_names[0] -
+                              1 ==
+                      sizeof REGISTRY / sizeof REGISTRY[0],
+              "gguf name list must mirror REGISTRY");
+
 const struct transformer_family *transformer_family_select(struct gguf_ctx *gguf) {
     size_t      arch_len = 0;
     const char *arch     = gguf_get_meta_string(gguf, "general.architecture", &arch_len);
@@ -343,7 +362,8 @@ const struct transformer_family *transformer_family_select(struct gguf_ctx *gguf
             }
         }
     }
-    /* Fall back to the legacy default. Honest failure later if the
-     * GGUF isn't actually a Gemma-4 (tensor-shape mismatch at load). */
-    return &FAMILY_GEMMA4;
+    /* Fail closed: no silent Gemma-4 fallback. The engine gate should
+     * have rejected the GGUF already; reaching this means a caller
+     * bypassed it or the name lists diverged. */
+    return nullptr;
 }
