@@ -8,8 +8,19 @@ minor release.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-02
+
 ### Fixed
 
+- **`geist_version_components()` reported the wrong version.**
+  `GEIST_VERSION_MINOR` still read `6` while `GEIST_VERSION_STRING` said
+  `"0.7.0"`, so a consumer version-gating on the numeric components saw 0.6.0.
+  `scripts/check-version.sh` compared the string against the README but never
+  against the components, so nothing caught it; it does now, and the check is
+  verified to fail when the two disagree.
+- **`CITATION.cff` was two releases behind** (`0.6.0`), which is what the
+  repository's "Cite this repository" button reads. Also covered by
+  `check-version.sh` now.
 - **`make lib` works on a musl system.** `-std=c23` (not `gnu23`) defines
   `__STRICT_ANSI__`, under which musl hides everything outside ISO C —
   `strdup` included — so a plain `make lib` on Alpine died on an implicit

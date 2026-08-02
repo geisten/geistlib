@@ -28,7 +28,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-orange.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20(ARM64%20%2B%20x86--64)-lightgrey.svg)](#quick-start)
-[![Status](https://img.shields.io/badge/status-experimental%20(v0.7.0)-yellow.svg)](#status)
+[![Status](https://img.shields.io/badge/status-experimental%20(v0.8.0)-yellow.svg)](#status)
 [![Discussions](https://img.shields.io/badge/Discussions-ask%20%26%20share-5865F2.svg)](https://github.com/geisten/geistlib/discussions)
 [![Good first issues](https://img.shields.io/github/issues/geisten/geistlib/good%20first%20issue?label=good%20first%20issue&color=7057ff)](https://github.com/geisten/geistlib/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
@@ -54,6 +54,10 @@ invitation to join in.
 
 Three commands from clone to generated text. Prerequisites: **gcc ≥ 14** or
 Apple-clang ≥ 16 (Xcode 16 / macOS 15) and `make`; on macOS, Homebrew `libomp`.
+
+<sub>Verified from a clean container: **Debian 13** and **Alpine 3.21** build as
+shown. **Ubuntu 24.04** ships gcc 13, which predates `-std=c23` — install
+`gcc-14` and build with `make CC=gcc-14`.</sub>
 
 ```bash
 git clone https://github.com/geisten/geistlib && cd geistlib
@@ -278,7 +282,7 @@ Repository ownership and the complete map are in
 
 ## Status
 
-`geistlib` is **v0.7.0 — experimental**. It runs Gemma 4 (text + vision + audio) end
+`geistlib` is **v0.8.0 — experimental**. It runs Gemma 4 (text + vision + audio) end
 to end on the CPU backends — plus experimental GPU backends (Metal on Apple,
 Vulkan on Linux/NVIDIA) — and
 has a broad C test suite (`make test`). The
@@ -347,7 +351,7 @@ Using geistlib in research? A "Cite this repository" button is on the repo sideb
   author  = {Schlegel, Germar},
   title   = {geistlib: a dependency-free inference engine for small LLMs},
   year    = {2026},
-  version = {0.7.0},
+  version = {0.8.0},
   url     = {https://github.com/geisten/geistlib}
 }
 ```
