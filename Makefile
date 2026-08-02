@@ -194,6 +194,27 @@ $(BENCH_MODEL_PATH):
 fetch-bench-model: $(BENCH_MODEL_PATH)
 	@echo "Benchmark model ready: $(BENCH_MODEL_PATH)"
 
+# Llama-family reference model. Small on purpose (369 MB): it exists to prove
+# the engine reads a SECOND architecture family and tokenizer mode, not to
+# measure anything, so test_llama_{load,e2e}_int stop skipping. Not part of
+# AUTO_FETCH_MODEL -- a local `make test` should not grow by another download
+# on top of the 2.9 GB reference; CI fetches it explicitly.
+LLAMA_MODEL_DIR  ?= gguf_artifacts
+LLAMA_MODEL_FILE ?= smollm2-360m-instruct-q8_0.gguf
+LLAMA_MODEL_PATH := $(LLAMA_MODEL_DIR)/$(LLAMA_MODEL_FILE)
+LLAMA_MODEL_URL  ?= https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf
+
+$(LLAMA_MODEL_PATH):
+	@command -v curl >/dev/null 2>&1 || { echo "fetch-llama-model: curl not found" >&2; exit 1; }
+	@mkdir -p $(LLAMA_MODEL_DIR)
+	@echo "Downloading $(LLAMA_MODEL_FILE) (~369 MB) from:"
+	@echo "  $(LLAMA_MODEL_URL)"
+	@curl -fL --retry 3 --retry-delay 2 -C - -o "$@.part" "$(LLAMA_MODEL_URL)"
+	@mv "$@.part" "$@"
+
+fetch-llama-model: $(LLAMA_MODEL_PATH)
+	@echo "Llama reference model ready: $(LLAMA_MODEL_PATH)"
+
 bench: bin $(BENCH_MODEL_PATH)
 	@python3 tools/bench_reproduce.py --gguf "$(BENCH_MODEL_PATH)" \
 	  --target "$(TARGET)" --mode "$(MODE)" $(BENCH_ARGS)

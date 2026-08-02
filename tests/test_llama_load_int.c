@@ -61,10 +61,8 @@ static const char *resolve_path(void) {
 int main(void) {
     const char *path = resolve_path();
     if (path == nullptr) {
-        printf("SKIP: no Llama GGUF found. Set GEIST_LLAMA_GGUF_PATH "
-               "or place smollm2-360m-instruct-q8_0.gguf in ./ or "
-               "./gguf_artifacts/\n");
-        return GEIST_TEST_SKIP;
+        GEIST_SKIP_FIXTURE("no Llama GGUF. Run `make fetch-llama-model`, or set "
+                           "GEIST_LLAMA_GGUF_PATH");
     }
 
     struct geist_backend *be = nullptr;
