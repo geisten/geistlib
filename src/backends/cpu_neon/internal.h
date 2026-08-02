@@ -158,14 +158,21 @@ struct geist_weight;
 [[nodiscard]] enum geist_status cpu_neon_resolve_weight(struct geist_backend *be,
                                                         struct geist_weight  *w);
 
-/* Capability answer for GEIST_OP_LINEAR with a weight of `w_dtype`,
- * derived from the same kernel table and the same runtime ISA gating
- * cpu_neon_resolve_weight dispatches on. supports_op must not carry its
- * own dtype list — the two drifted apart once already (Q5_K / IQ2_S /
- * IQ3_S reported EMULATED and TQ2_0 / I2_S reported NONE while all five
- * had native kernels). */
-enum geist_support cpu_neon_linear_support(const struct geist_backend *be,
-                                           enum geist_dtype            w_dtype);
+/* Capability answer for a linear with a weight of `w_dtype`, derived
+ * from the same kernel table and the same runtime ISA gating
+ * cpu_neon_resolve_weight dispatches on. A hand-kept dtype list drifted
+ * apart once already (Q5_K / IQ2_S / IQ3_S reported EMULATED and
+ * TQ2_0 / I2_S reported NONE while all five had native kernels) —
+ * test_resolve_weight_unit gates the equivalence. Backend-internal
+ * since the public supports_op query was removed with the vtable
+ * split. */
+enum cpu_neon_linear_support_kind {
+    CPU_NEON_SUPPORT_NONE,     /* no kernel resolves this dtype */
+    CPU_NEON_SUPPORT_EMULATED, /* generic dequant trampolines only */
+    CPU_NEON_SUPPORT_NATIVE,   /* purpose-built kernel on m1 or mN */
+};
+enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_backend *be,
+                                                          enum geist_dtype            w_dtype);
 
 /* Element-wise + rmsnorm — wraps gemma4_kernels.c FP32 ops. */
 [[nodiscard]] enum geist_status cpu_neon_add(struct geist_backend      *be,
