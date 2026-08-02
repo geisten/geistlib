@@ -130,15 +130,16 @@ static struct transformer_forward_profile g_head_profile = {
 
     /* Greedy fast path: device argmax reads back a 4-byte index instead
      * of mapping the 1 MB logits row (softcap skipped — tanh monotonic). */
-    if (sess->temperature == 0.0f && fused->argmax_f32 != nullptr) {
+    if (sess->temperature == 0.0f && st->model_fusions.argmax) {
         t0          = profile ? transformer_profile_now_ns() : 0;
         int32_t idx = -1;
-        if (fused->argmax_f32(be, &t_logits_2d, &idx) == GEIST_OK && idx >= 0 &&
-            (size_t) idx < (size_t) st->vocab_size) {
-            *out_token = (geist_token_t) idx;
-            transformer_profile_add(&g_head_profile, HEAD_PROFILE_SAMPLE, t0);
-            return GEIST_OK;
+        s           = fused->argmax_f32(be, &t_logits_2d, &idx);
+        if (s != GEIST_OK || idx < 0 || (size_t) idx >= (size_t) st->vocab_size) {
+            return s != GEIST_OK ? s : GEIST_E_BACKEND;
         }
+        *out_token = (geist_token_t) idx;
+        transformer_profile_add(&g_head_profile, HEAD_PROFILE_SAMPLE, t0);
+        return GEIST_OK;
     }
 
     /* Softcap. P1.5: family-conditional. H1: skip in greedy mode — tanh is

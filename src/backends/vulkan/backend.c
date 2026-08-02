@@ -38,6 +38,7 @@
 #include <math.h>
 #include <time.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1552,7 +1553,7 @@ static void vk_prof_stamp(struct vk_state *st, uint32_t slot) {
 static void vk_seq_barrier(struct vk_state *st) {
     st->n_dirty = 0;
     st->stat_barriers++;
-    static int no_bar = -1;
+    static _Atomic int no_bar = -1;
     if (no_bar < 0) {
         no_bar = getenv("GEIST_VK_NO_BARRIER") != nullptr; /* perf probe: WRONG results */
     }
@@ -3603,6 +3604,33 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
                vk_weight_lookup(st, (const uint8_t *) q->gate_w->raw) != nullptr &&
                vk_weight_lookup(st, (const uint8_t *) q->up_w->raw) != nullptr;
     }
+    case GEIST_FUSED_RMSNORM_ADD:
+        return VK_OPS(be, 4u);
+    case GEIST_FUSED_ARGMAX_F32:
+        return VK_OPS(be, 128u);
+    case GEIST_FUSED_ATTN_QKV_PREP:
+        return VK_OPS(be, 4u) && q->head_dim > 0 && (q->head_dim % 2u) == 0u;
+    case GEIST_FUSED_PLE_BLOCK:
+        /* vk_ple_block is a decode-only (rows == 1) kernel over F32
+         * gate/proj matrices. */
+        return VK_OPS(be, 1u) && q->m == 1 && q->gate_w != nullptr && q->up_w != nullptr &&
+               q->gate_w->dtype == GEIST_DTYPE_F32 && q->up_w->dtype == GEIST_DTYPE_F32;
+    case GEIST_FUSED_EMBEDDING_LOOKUP_SCALED:
+        /* Dtype set of vk_embedding_lookup_scaled's dtype_code switch. */
+        if (!VK_OPS(be, 64u)) {
+            return false;
+        }
+        switch ((enum geist_dtype) q->table_dtype) {
+        case GEIST_DTYPE_F32:
+        case GEIST_DTYPE_F16:
+        case GEIST_DTYPE_BF16:
+        case GEIST_DTYPE_Q4_K:
+        case GEIST_DTYPE_Q5_K:
+        case GEIST_DTYPE_Q6_K:
+            return true;
+        default:
+            return false;
+        }
     default:
         return false;
     }

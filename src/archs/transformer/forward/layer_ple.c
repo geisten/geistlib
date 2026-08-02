@@ -78,7 +78,8 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
          * proj GEMV + rmsnorm + residual add in two dispatches. Anything
          * the backend doesn't support falls through to the decomposed
          * ops below. */
-        if (fused->ple_block != nullptr) {
+        const struct transformer_layer_exec_plan *P = ctx->P;
+        if (P != nullptr && (ctx->seq == 1 ? P->fuse_ple_block_m1 : P->fuse_ple_block_mN)) {
             struct geist_tensor t_w_post_per_1d =
                     view_1d(L->post_per_layer_norm.buffer, st->d_model);
             struct geist_tensor t_proj_scratch_2d =
@@ -96,9 +97,10 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
                                   &t_proj_scratch_2d,
                                   &t_h_out_2d);
             transformer_profile_add(&g_ple_profile, PLE_GATE, t0);
-            if (s == GEIST_OK) {
-                return GEIST_OK;
+            if (s != GEIST_OK) {
+                return s;
             }
+            return GEIST_OK;
         }
 
         t0 = prof ? transformer_profile_now_ns() : 0;
@@ -150,10 +152,12 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             return s;
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
-        if (fused->rmsnorm_add != nullptr &&
-            fused->rmsnorm_add(
-                    be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_h_out_2d) ==
-                    GEIST_OK) {
+        if (ctx->P != nullptr && ctx->P->fuse_rmsnorm_add) {
+            s = fused->rmsnorm_add(
+                    be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_h_out_2d);
+            if (s != GEIST_OK) {
+                return s;
+            }
             transformer_profile_add(&g_ple_profile, PLE_RMSNORM, t0);
         } else {
             s = prims->rmsnorm(be, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_proj_ple_2d);

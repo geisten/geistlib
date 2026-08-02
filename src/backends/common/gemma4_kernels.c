@@ -4,6 +4,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -50,7 +51,7 @@ void gelu_tanh_fp32(const float *x, size_t n, float *y) {
  * remaining 3.6 s tower, ~13% total tower speedup). */
 #if defined(__APPLE__)
 static int fast_tanh_enabled(void) {
-    static int v = -1;
+    static _Atomic int v = -1;
     if (v < 0) {
         const char *s = getenv("GEIST_FAST_TANH");
         v             = (s != nullptr && s[0] == '1') ? 1 : 0;

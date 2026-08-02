@@ -38,6 +38,7 @@
 #include <geist_weight.h>
 
 #include <stddef.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -259,7 +260,7 @@ static void cpu_x86_linear_i2s_x4_pair_m1(const float               *x,
  * "neutral" reading no longer holds. Default ON; GEIST_I2S_PAIR=0 disables.
  * Host-constant after first read. */
 static int cpu_x86_i2s_pair_enabled(void) {
-    static int e = -1;
+    static _Atomic int e = -1;
     if (e < 0) {
         const char *v = getenv("GEIST_I2S_PAIR");
         e             = (v != nullptr && v[0] == '0') ? 0 : 1;
@@ -270,7 +271,7 @@ static int cpu_x86_i2s_pair_enabled(void) {
 /* t5 decode blob (1.6 bpw, #104): default ON, GEIST_I2S_T5=0 keeps the
  * 2-bit x4 decode. Host-constant after first read. */
 static int cpu_x86_i2s_t5_enabled(void) {
-    static int e = -1;
+    static _Atomic int e = -1;
     if (e < 0) {
         const char *v = getenv("GEIST_I2S_T5");
         e             = (v != nullptr && v[0] == '0') ? 0 : 1;
