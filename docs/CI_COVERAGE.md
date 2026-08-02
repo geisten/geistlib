@@ -127,9 +127,11 @@ model e2e run, and a missing device is a failure, not a skip.
 ## Coverage ratchet (#185)
 
 The `coverage` job builds `MODE=cov` (gcc-14, `-O1 --coverage`, Linux arm64)
-and runs the model-free unit suite plus the real-model int/e2e suites with
+and runs the model-free unit suite plus the real-model int suite with
 `GEIST_STRICT_FIXTURES=gguf` — a fixture skip would hollow out the
-measurement, so it fails instead. `gcovr` produces JSON + Cobertura XML +
+measurement, so it fails instead. (e2e is deliberately not measured: on an
+instrumented -O1 build it re-drives the same engine paths through the CLI
+wrappers for another ~half hour and changes the numbers by noise.) `gcovr` produces JSON + Cobertura XML +
 HTML (uploaded as the `coverage-report` artifact), and
 `scripts/coverage_gate.py` gates per-subsystem **line and branch** coverage
 against the versioned baselines in `benchmark/coverage_baselines.json`, with

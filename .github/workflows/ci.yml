@@ -444,9 +444,13 @@ jobs:
   # this runner), third_party and generated *_spv.h (not ours). The control
   # test tests/test_coverage_gate_py.py proves the gate actually fires.
   coverage:
-    name: coverage ratchet (Linux arm64, unit + int + e2e)
+    name: coverage ratchet (Linux arm64, unit + int)
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    # An instrumented -O1 build prefills the real model many times across
+    # the int suite: 58 minutes measured. e2e re-drives the same engine
+    # paths through the CLI wrappers for another ~half hour and moved the
+    # per-subsystem numbers by noise, so the measurement is unit + int.
+    timeout-minutes: 100
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
@@ -505,7 +509,7 @@ key: ccache-cov-${{ github.run_id }}
           GEIST_STRICT_FIXTURES: gguf
         run: |
           make MODE=cov TARGET=linux CC="ccache gcc-14" test-unit
-          make MODE=cov TARGET=linux CC="ccache gcc-14" test-int test-e2e
+          make MODE=cov TARGET=linux CC="ccache gcc-14" test-int
       - name: Coverage report + gate
         run: |
           mkdir -p coverage/html
