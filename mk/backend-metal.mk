@@ -7,6 +7,11 @@
 # targets (create() fails to find the Metal device and returns an error).
 
 BACKEND_SOURCES += \
-    src/backends/metal/backend.c
+    src/backends/metal/lifecycle.c \
+    src/backends/metal/resources.c \
+    src/backends/metal/pipelines.c \
+    src/backends/metal/sequence.c \
+    src/backends/metal/ops.c \
+    src/backends/metal/profiling.c
 
 LDLIBS += -ldl
