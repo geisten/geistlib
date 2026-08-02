@@ -193,6 +193,17 @@ const struct geist_backend_vtbl cpu_scalar_vtbl = {
         .resolve_weight        = cpu_scalar_resolve_weight,
 };
 
+/* Elementwise F32 fusions hold for any geometry and any m; nothing else
+ * is implemented. */
+static bool cpu_scalar_fused_supported(struct geist_backend            *be,
+                                       const struct geist_fusion_query *q) {
+    (void) be;
+    if (q == nullptr) {
+        return false;
+    }
+    return q->op == GEIST_FUSED_GELU_TANH_MUL || q->op == GEIST_FUSED_GELU_TANH_MUL_SCALED;
+}
+
 /* Exported like the vtbl: cpu_x86 struct-copies these as its Phase-0
  * baseline. */
 const struct geist_backend_primitives cpu_scalar_prims = {
@@ -208,6 +219,7 @@ const struct geist_backend_primitives cpu_scalar_prims = {
 };
 
 const struct geist_backend_fused cpu_scalar_fused = {
+        .supported            = cpu_scalar_fused_supported,
         .gelu_tanh_mul        = cpu_scalar_gelu_tanh_mul,
         .gelu_tanh_mul_scaled = cpu_scalar_gelu_tanh_mul_scaled,
 };

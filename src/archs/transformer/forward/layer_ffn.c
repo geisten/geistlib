@@ -41,24 +41,6 @@ static struct transformer_forward_profile g_ffn_profile = {
         .calls       = g_ffn_profile_calls,
 };
 
-static bool ffn_fused_scale_enabled(void) {
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *env = getenv("GEIST_FFN_FUSED_SCALE");
-        enabled         = (env == nullptr || env[0] != '0') ? 1 : 0;
-    }
-    return enabled != 0;
-}
-
-static bool ffn_tile_fusion_enabled(void) {
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *env = getenv("GEIST_FFN_TILE_FUSION");
-        enabled         = (env != nullptr && env[0] == '1') ? 1 : 0;
-    }
-    return enabled != 0;
-}
-
 enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forward_ctx *ctx) {
 
     struct transformer_arch_state         *st    = ctx->st;
@@ -79,21 +61,25 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
 
     /* Fused norm + gate/up front (GPU decode fast path): the pre-FFN
      * rmsnorm folds into the matvec's x loads — one dispatch replaces
-     * rmsnorm + ffn_gate_up. Anything unsupported falls through to the
-     * decomposed path below. */
-    bool ffn_front_fused = false;
-    if (fused->ffn_norm_gate_up != nullptr && ctx->ffn_activation == GEIST_FFN_GEGLU &&
-        L->down_awq_inv_scale == nullptr) {
+     * rmsnorm + ffn_gate_up. Bound at plan build (probe contract:
+     * bound means it must succeed — no per-call negotiation). */
+    const struct transformer_layer_exec_plan *P               = ctx->P;
+    bool                                      ffn_front_fused = false;
+    if (ctx->seq == 1 && P != nullptr && P->fuse_ffn_norm_gate_up_m1) {
         struct geist_tensor t_gate_f_2d =
                 view_2d(sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
-        ffn_front_fused = fused->ffn_norm_gate_up(be,
-                                                  &t_h_post_attn_2d,
-                                                  &t_w_ffn_norm,
-                                                  ctx->eps,
-                                                  &L->gate_proj,
-                                                  &L->up_proj,
-                                                  &t_gate_f_2d) == GEIST_OK;
+        s = fused->ffn_norm_gate_up(be,
+                                    &t_h_post_attn_2d,
+                                    &t_w_ffn_norm,
+                                    ctx->eps,
+                                    &L->gate_proj,
+                                    &L->up_proj,
+                                    &t_gate_f_2d);
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        ffn_front_fused = true;
     }
     if (!ffn_front_fused) {
         t0 = profile ? transformer_profile_now_ns() : 0;
@@ -106,9 +92,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
 
     const bool          has_ffn_sub_norm = ctx->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr;
     struct geist_tensor t_ffn_out_2d     = view_2d(sess->scratch_ffn_out, ctx->SEQ, st->d_model);
-    if (ctx->seq > 1 && ctx->ffn_activation == GEIST_FFN_GEGLU && !has_ffn_sub_norm &&
-        !st->runtime_flags.dump_act_sparsity && fused->ffn_geglu_q4q6_mN != nullptr &&
-        ffn_tile_fusion_enabled()) {
+    if (ctx->seq > 1 && P != nullptr && P->fuse_ffn_geglu_tile_mN) {
         const float *xp = (const float *) v->buffer_map(sess->scratch_pre_ff);
         float       *yp = (float *) v->buffer_map(sess->scratch_ffn_out);
         if (xp == nullptr || yp == nullptr) {
@@ -131,13 +115,11 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
                                       yp);
         v->buffer_unmap(sess->scratch_pre_ff);
         v->buffer_unmap(sess->scratch_ffn_out);
-        if (s == GEIST_OK) {
-            transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
-            goto ffn_post;
-        }
-        if (s != GEIST_E_UNSUPPORTED) {
+        if (s != GEIST_OK) {
             return s;
         }
+        transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
+        goto ffn_post;
     }
 
     struct geist_tensor  t_up_2d = view_2d(sess->scratch_up, ctx->SEQ, (int64_t) ctx->inter);
@@ -177,18 +159,17 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         }
         /* Fused gate+up matvec with GeGLU epilogue (GPU decode fast path):
          * one kernel, one activation pass over x, gelu(gate)*up written
-         * directly. Only for the plain GeGLU activation without an AWQ
-         * down-scale; anything unsupported falls through. */
-        if (fused->ffn_gate_up != nullptr && ctx->ffn_activation == GEIST_FFN_GEGLU &&
-            L->down_awq_inv_scale == nullptr) {
+         * directly. Bound at plan build. */
+        if (ctx->seq == 1 && P != nullptr && P->fuse_ffn_gate_up_m1) {
             t0 = profile ? transformer_profile_now_ns() : 0;
             s  = fused->ffn_gate_up(be, &t_pre_ff_2d, &L->gate_proj, &L->up_proj, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
-            if (s == GEIST_OK) {
-                mid_buf  = sess->scratch_gate;
-                t_mid_2d = t_gate_2d;
-                goto ffn_mid_done;
+            if (s != GEIST_OK) {
+                return s;
             }
+            mid_buf  = sess->scratch_gate;
+            t_mid_2d = t_gate_2d;
+            goto ffn_mid_done;
         }
         t0 = profile ? transformer_profile_now_ns() : 0;
         s  = linear_w_pair_or_legacy(be,
@@ -233,14 +214,13 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             t0 = profile ? transformer_profile_now_ns() : 0;
             s  = prims->mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_MUL, t0);
-        } else if (fused->gelu_tanh_mul_scaled != nullptr && L->down_awq_inv_scale != nullptr &&
-                   !has_ffn_sub_norm && ffn_fused_scale_enabled()) {
+        } else if (P != nullptr && P->fuse_gelu_mul_scaled) {
             t0 = profile ? transformer_profile_now_ns() : 0;
             s  = fused->gelu_tanh_mul_scaled(
                     be, &t_gate_2d, &t_up_2d, L->down_awq_inv_scale, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
             mid_already_down_scaled = true;
-        } else if (fused->gelu_tanh_mul != nullptr) {
+        } else if (P != nullptr && P->fuse_gelu_mul) {
             t0 = profile ? transformer_profile_now_ns() : 0;
             s  = fused->gelu_tanh_mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
