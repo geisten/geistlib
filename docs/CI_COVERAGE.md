@@ -56,6 +56,22 @@ guarantee an AVX-512 CPU, so:
 To *guarantee* AVX-512 execution, run the suite on an AVX-512-capable
 self-hosted or larger runner; tracked as a possible follow-up under the CI epic.
 
+## Model fixtures — what the int/e2e legs actually load
+
+| Fixture | Family it proves | Source (pinned) | Mandatory where |
+| :-- | :-- | :-- | :-- |
+| `gemma4-e2b-Q4_K_M.gguf` (~2.9 GB) | gemma (primary reference) | `unsloth/gemma-4-E2B-it-GGUF` | Linux arm64 + x86_64 int/e2e |
+| `smollm2-360m-instruct-q8_0.gguf` (~369 MB) | llama populator + GPT-2-BPE tokenizer mode | `HuggingFaceTB/SmolLM2-360M-Instruct-GGUF`, SHA-256-pinned in the Makefile (`LLAMA_MODEL_SHA256`), Apache-2.0 | Linux arm64 + x86_64 int/e2e |
+
+The llama tests (`test_llama_load_int`, `test_llama_e2e_int`) are **executed,
+not merely built**: both Linux int/e2e legs fetch the model
+(`make fetch-llama-model`, which verifies the SHA-256 on every run and fails
+loudly on a truncated download, a corrupted cache, or a changed upstream) and
+run with `GEIST_STRICT_FIXTURES=gguf`, which turns a "model not found" skip
+into a failure. The CI cache key embeds the content-pin prefix, so re-pinning
+the model rotates the cache. Local `make test` without the model keeps
+skipping cleanly (#180).
+
 ## Non-goals
 
 - **Windows** — geist is POSIX (fork/execvp, Unix-domain sockets, mmap); the

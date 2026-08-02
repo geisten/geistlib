@@ -106,13 +106,15 @@ jobs:
       # A second architecture family: gemma alone never exercises the llama
       # populator or its tokenizer mode, so test_llama_{load,e2e}_int skipped
       # on every run. 369 MB, cached under its own key so a change here does
-      # not invalidate the 2.9 GB download above.
+      # not invalidate the 2.9 GB download above. The key embeds the content
+      # pin (LLAMA_MODEL_SHA256 prefix) — re-pinning the model in the
+      # Makefile rotates the cache; fetch-llama-model verifies the full hash.
       - name: Cache Llama reference model
         if: matrix.target == 'linux'
         uses: actions/cache@v4
         with:
           path: gguf_artifacts/smollm2-360m-instruct-q8_0.gguf
-          key: geist-model-smollm2-360m-q8-v1
+          key: geist-model-smollm2-360m-q8-48ab3034d0dd
 
       - name: Fetch Llama reference model
         if: matrix.target == 'linux'
@@ -211,7 +213,18 @@ jobs:
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
-      - name: Integration + e2e tests (real model)
+      # Same llama fixture + strictness as the arm64 leg: #180 requires the
+      # llama tests to PASS on both Linux arches, and a skip must not count.
+      - name: Cache Llama reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/smollm2-360m-instruct-q8_0.gguf
+          key: geist-model-smollm2-360m-q8-48ab3034d0dd
+      - name: Fetch Llama reference model
+        run: make fetch-llama-model
+      - name: Integration + e2e tests (real models, fixtures mandatory)
+        env:
+          GEIST_STRICT_FIXTURES: gguf
         run: make test-int test-e2e TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
       # Portability gate (#96): GEIST_FORCE_ISA=avx2 clamps the kernel
       # dispatcher to the x86-64-v3 baseline, so the non-AVX512 code paths
