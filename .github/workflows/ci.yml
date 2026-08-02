@@ -431,6 +431,22 @@ jobs:
     # TSan is 5-15x on top of -O1 and serialized OMP: the parallel test's
     # serial reference prefill dominates. 75 min fits it with headroom.
     timeout-minutes: 75
+
+# Coverage ratchet (#185): line+branch per subsystem against versioned
+  # baselines (benchmark/coverage_baselines.json), gated by
+  # scripts/coverage_gate.py. One reproducible run: model-free unit suite
+  # plus the real-model int/e2e suites with fixtures mandatory — a fixture
+  # skip would silently hollow out the measurement, so it fails instead.
+  # Scope: the portable engine (src/base, engine, io, formats,
+  # archs/transformer, backends/common, backends/cpu_scalar). Excluded from
+  # the GATE (still visible in the report): cpu_neon (SIMD leg, only this
+  # runner family executes it), cpu_x86/metal/vulkan (cannot execute on
+  # this runner), third_party and generated *_spv.h (not ours). The control
+  # test tests/test_coverage_gate_py.py proves the gate actually fires.
+  coverage:
+    name: coverage ratchet (Linux arm64, unit + int + e2e)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
@@ -446,6 +462,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-14 ccache
+
+key: ccache-cov-${{ github.run_id }}
+          restore-keys: ccache-cov-
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache gcovr
       - name: Cache reference model
         uses: actions/cache@v4
         with:
@@ -469,6 +492,38 @@ jobs:
         run: |
           export GEIST_GGUF_PATH="$PWD/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf"
           bin/linux/tsan/tests/test_multi_session_parallel_int
+
+- name: Cache Llama reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/smollm2-360m-instruct-q8_0.gguf
+          key: geist-model-smollm2-360m-q8-v1
+      - name: Fetch Llama reference model
+        run: make fetch-llama-model
+      - name: Build + run suites (MODE=cov, fixtures mandatory)
+        env:
+          GEIST_STRICT_FIXTURES: gguf
+        run: |
+          make MODE=cov TARGET=linux CC="ccache gcc-14" test-unit
+          make MODE=cov TARGET=linux CC="ccache gcc-14" test-int test-e2e
+      - name: Coverage report + gate
+        run: |
+          mkdir -p coverage/html
+          gcovr --root . --filter 'src/' \
+            --exclude 'src/backends/vulkan/' --exclude 'src/backends/metal/' \
+            --exclude 'src/backends/cpu_x86/' \
+            --gcov-ignore-parse-errors negative_hits.warn \
+            --json coverage/coverage.json --xml coverage/cobertura.xml \
+            --html-details coverage/html/index.html \
+            build/linux/cov
+          python3 scripts/coverage_gate.py coverage/coverage.json \
+            --baselines benchmark/coverage_baselines.json
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
 
   format:
     name: clang-format
