@@ -1,5 +1,9 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Detect the build target based on the host system.
+#
+# POSIX sh on purpose, not bash: this runs before anything else in the build,
+# and minimal containers (Alpine, distroless) ship no bash. With a bash
+# shebang, detection failed silently there and make died on `mk/target-.mk`.
 # Output: mac | mac-omp | pi5 | linux | unknown
 # Override at make-time: make TARGET=mac
 #

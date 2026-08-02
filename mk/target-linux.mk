@@ -12,7 +12,7 @@
 
 LINUX_ARCH := $(shell uname -m)
 
-# Compiler — gcc-13+ or clang-16+ for C23 support.
+# Compiler — gcc-14+ or clang-16+ for C23 support.
 CC ?= cc
 
 # ----- x86_64 path ----------------------------------------------------------
@@ -65,3 +65,12 @@ LDLIBS_TARGET  := -lm
 GEMM_PROVIDER ?= openblas
 
 endif
+
+# Feature-test macro, both architectures, every Linux libc. `-std=c23` (not
+# gnu23) defines __STRICT_ANSI__, and musl then hides everything outside ISO C
+# — `strdup` included — so a plain `make lib` on Alpine died on an implicit
+# declaration. glibc exposes it regardless, which is why this only ever
+# surfaced off the beaten path. It belongs here rather than in each caller:
+# the release workflow passed it by hand, so CI was green while the documented
+# build was not.
+CFLAGS_TARGET += -D_GNU_SOURCE
