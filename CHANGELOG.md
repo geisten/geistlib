@@ -8,6 +8,20 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`make lib` works on a musl system.** `-std=c23` (not `gnu23`) defines
+  `__STRICT_ANSI__`, under which musl hides everything outside ISO C —
+  `strdup` included — so a plain `make lib` on Alpine died on an implicit
+  declaration. `mk/target-linux.mk` now defines `_GNU_SOURCE` itself. The
+  release workflow passed that flag by hand, which is why CI was green while
+  the documented build was not; the workflow no longer needs to.
+- **Target detection works without bash.** `mk/detect-target.sh` carried a
+  `#!/usr/bin/env bash` shebang while using no bash feature at all. On a
+  container without bash it produced an empty `TARGET`, and the build died on
+  `mk/target-.mk: No such file or directory`. It is `#!/bin/sh` now, and an
+  unusable `TARGET` fails with a message that names the available targets.
+
 ### Removed
 
 - `install.sh`. It downloaded `geist` / `geist-bitnet` from this repository's
