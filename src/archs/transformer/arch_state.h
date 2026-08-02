@@ -356,8 +356,9 @@ struct transformer_arch_state {
 
     /* ---- Per-layer weight blocks. P1.4.c heap-sizes this array to
      * st->n_layers (was GEIST_GEMMA4_NUM_LAYERS-sized in P1.4.b). */
-    struct transformer_layer_weights   *layers;
-    struct transformer_layer_exec_plan *layer_plans;
+    struct transformer_layer_weights    *layers;
+    struct transformer_layer_exec_plan  *layer_plans;
+    struct transformer_model_fusion_plan model_fusions; /* exec_plan_build */
 
     struct geist_tensor embed_table;     /* [VOCAB, HIDDEN] — Q-format */
     struct geist_tensor ple_table;       /* [VOCAB, PLE_OUT] — Q-format */

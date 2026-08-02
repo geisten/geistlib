@@ -325,12 +325,15 @@ ffn_post:
     if (ctx->apply_gemma_attn_norms) {
         struct geist_tensor t_post_ff_2d = view_2d(sess->scratch_post_ff, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_ffw = view_1d(L->post_ffw_norm.buffer, st->d_model);
-        if (fused->rmsnorm_add == nullptr || fused->rmsnorm_add(be,
-                                                                &t_h_post_attn_2d,
-                                                                &t_ffn_out_2d,
-                                                                &t_w_post_ffw,
-                                                                ctx->eps,
-                                                                &t_h_post_ff_2d) != GEIST_OK) {
+        bool                bound_rmsnorm_add = P != nullptr && P->fuse_rmsnorm_add;
+        if (bound_rmsnorm_add) {
+            s = fused->rmsnorm_add(
+                    be, &t_h_post_attn_2d, &t_ffn_out_2d, &t_w_post_ffw, ctx->eps, &t_h_post_ff_2d);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        }
+        if (!bound_rmsnorm_add) {
             s = prims->rmsnorm(be, &t_ffn_out_2d, &t_w_post_ffw, ctx->eps, &t_post_ff_2d);
             if (s != GEIST_OK) {
                 return s;

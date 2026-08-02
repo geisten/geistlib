@@ -12,6 +12,7 @@
 #include "quant.h"
 
 #include <stddef.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -30,7 +31,7 @@ extern void geist_pp_parallel_for(size_t n, geist_pp_body_fn body_fn, void *ctx)
         __attribute__((weak));
 
 static int q6k_pp_enabled(void) {
-    static int enabled = -1;
+    static _Atomic int enabled = -1;
     if (enabled >= 0)
         return enabled;
     const char *e = getenv("GEIST_PP");

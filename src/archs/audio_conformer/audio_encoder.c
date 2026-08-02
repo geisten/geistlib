@@ -31,6 +31,7 @@
 #include <errno.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -493,7 +494,7 @@ static bool load_lconv(struct st_ctx *sf, int layer_idx, const char *prefix, str
      * from FP32 to W8A8 (depthwise conv stays FP32 — it's per-channel
      * causal and the kernel doesn't have a quant path). Same rationale
      * as Attn W8A8 (bib.md A6). */
-    static int lconv_w8a8 = -1;
+    static _Atomic int lconv_w8a8 = -1;
     if (lconv_w8a8 < 0) {
         const char *s = getenv("GEIST_AUDIO_LCONV_W8A8");
         lconv_w8a8    = (s != nullptr && s[0] == '1') ? 1 : 0;
@@ -2400,7 +2401,7 @@ size_t audio_encoder_stream_push(const struct AudioEncoder *a,
      *    the Phase-3 cache exceeds the conv2d savings). Opt-in to Phase-3
      *    incremental via GEIST_AUDIO_SUBSAMPLE_INC=1 for long-form audio
      *    where the conv2d savings win. */
-    static int subs_inc = -1;
+    static _Atomic int subs_inc = -1;
     if (subs_inc < 0) {
         const char *s = getenv("GEIST_AUDIO_SUBSAMPLE_INC");
         subs_inc      = (s != nullptr && s[0] == '1') ? 1 : 0;

@@ -351,11 +351,14 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
      *    multiply by PLE_TABLE_SCALE (16). */
     {
         bool on_device = false;
-        if (fused->embedding_lookup_scaled != nullptr) {
+        if (st->model_fusions.ple_lookup_scaled) {
             struct geist_tensor t_row = view_1d(sess->scratch_ple_lookup, st->ple_out);
-            on_device                 = fused->embedding_lookup_scaled(
-                                                be, &st->ple_table, token_id, st->config.ple_table_scale, &t_row) ==
-                                        GEIST_OK;
+            s                         = fused->embedding_lookup_scaled(
+                    be, &st->ple_table, token_id, st->config.ple_table_scale, &t_row);
+            if (s != GEIST_OK) {
+                return s;
+            }
+            on_device = true;
         }
         if (!on_device) {
             float *dst = (float *) v->buffer_map(sess->scratch_ple_lookup);
@@ -536,7 +539,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
      * lookup+scale dispatches — no host dequant, no pipeline flush from
      * mapping the scratch mid-batch. */
     t0                    = prof ? transformer_profile_now_ns() : 0;
-    bool gather_on_device = fused->embedding_lookup_scaled != nullptr;
+    bool gather_on_device = st->model_fusions.ple_lookup_scaled;
     if (gather_on_device) {
         for (size_t t = 0; t < n; t++) {
             struct geist_tensor t_row = {
@@ -548,11 +551,10 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
                     .shape  = {(int64_t) PLE_OUT, 0, 0, 0, 0, 0, 0, 0},
                     .stride = {1, 0, 0, 0, 0, 0, 0, 0},
             };
-            if (fused->embedding_lookup_scaled(
-                        be, &st->ple_table, ple_ids[t], st->config.ple_table_scale, &t_row) !=
-                GEIST_OK) {
-                gather_on_device = false;
-                break;
+            const enum geist_status es = fused->embedding_lookup_scaled(
+                    be, &st->ple_table, ple_ids[t], st->config.ple_table_scale, &t_row);
+            if (es != GEIST_OK) {
+                return es; /* bound at plan build — failure is a real error */
             }
         }
     }

@@ -50,6 +50,21 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_FFN_NORM_GATE_UP:
         have = fused->ffn_norm_gate_up != nullptr;
         break;
+    case GEIST_FUSED_RMSNORM_ADD:
+        have = fused->rmsnorm_add != nullptr;
+        break;
+    case GEIST_FUSED_ATTN_QKV_PREP:
+        have = fused->attn_qkv_prep != nullptr;
+        break;
+    case GEIST_FUSED_PLE_BLOCK:
+        have = fused->ple_block != nullptr;
+        break;
+    case GEIST_FUSED_EMBEDDING_LOOKUP_SCALED:
+        have = fused->embedding_lookup_scaled != nullptr;
+        break;
+    case GEIST_FUSED_ARGMAX_F32:
+        have = fused->argmax_f32 != nullptr;
+        break;
     }
     return have && fused->supported != nullptr && fused->supported(be, &q);
 }
@@ -126,6 +141,49 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         q.op             = GEIST_FUSED_GELU_TANH_MUL;
         q.m              = m_cap;
         P->fuse_gelu_mul = probe(be, q);
+
+        q                   = base;
+        q.op                = GEIST_FUSED_RMSNORM_ADD;
+        q.m                 = m_cap;
+        P->fuse_rmsnorm_add = probe(be, q);
+
+        /* Session KV-mode conditions (kivi/int8 off, f16-vs-f32 cache
+         * views) stay inline at the call site — sess->kv_*_enabled is
+         * the per-session overlay, frozen at session_alloc. */
+        q                     = base;
+        q.op                  = GEIST_FUSED_ATTN_QKV_PREP;
+        q.m                   = m_cap;
+        q.head_dim            = L->head_dim;
+        q.n_q_heads           = st->n_q_heads;
+        q.n_kv_heads          = st->n_kv_heads;
+        P->fuse_attn_qkv_prep = P->apply_gemma_attn_norms && !P->rope_interleaved && probe(be, q);
+
+        struct geist_fusion_query pq = {
+                .op      = GEIST_FUSED_PLE_BLOCK,
+                .d_model = st->d_model,
+                .inter   = st->hidden_per_layer,
+                .gate_w  = &L->per_layer_gate_w,
+                .up_w    = &L->per_layer_proj_w, /* proj rides the up slot */
+        };
+        pq.m                 = 1;
+        P->fuse_ple_block_m1 = P->apply_ple && probe(be, pq);
+        pq.m                 = m_cap;
+        P->fuse_ple_block_mN = P->apply_ple && probe(be, pq);
+    }
+
+    /* ---- Model-level fusion decisions (lookup tables + greedy head). */
+    {
+        struct geist_backend     *be          = st->backend;
+        struct geist_fusion_query q           = {.op = GEIST_FUSED_EMBEDDING_LOOKUP_SCALED, .m = 1};
+        q.d_model                             = st->d_model;
+        q.table_dtype                         = st->embed_table.dtype;
+        st->model_fusions.embed_lookup_scaled = probe(be, q);
+        q.d_model                             = st->ple_out;
+        q.table_dtype                         = st->ple_table.dtype;
+        st->model_fusions.ple_lookup_scaled   = st->config.has_ple && probe(be, q);
+        q                                     = (struct geist_fusion_query) {
+                .op = GEIST_FUSED_ARGMAX_F32, .m = 1, .d_model = st->vocab_size};
+        st->model_fusions.argmax = probe(be, q);
     }
     return GEIST_OK;
 }
