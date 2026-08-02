@@ -543,6 +543,20 @@ struct geist_backend_caps {
      * (metal: 128 — mm_sg GEMM fast paths want rows%64==0 and fewer,
      * larger chunks.) */
     size_t preferred_m_max;
+
+    /* Largest batch (rows) the backend's kernels accept per call;
+     * 0 = uncapped. Every backend with per-call row limits MUST set
+     * this (CPU quant kernels size stack arrays from it). Consumers:
+     * session_alloc's m_max validation, the GEIST_M_MAX env clamp,
+     * exec_plan's prefill-regime probes. */
+    size_t max_m;
+
+    /* KV-cache dtype default under GEIST_KV_AUTO (opts and GEIST_KV_*
+     * env overrides win; see resolve_kv_mode). GEIST_KV_AUTO (= 0 =
+     * zero-init) means no preference — the arch falls back to FP32.
+     * Platform-specific compilands (cpu_neon/cpu_scalar) set this per
+     * their own build target; the arch layer never sniffs platforms. */
+    enum geist_kv_mode preferred_kv_mode;
 };
 
 /* ====================================================================== */
