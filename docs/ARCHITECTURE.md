@@ -133,9 +133,11 @@ calls bound kernels with no vtable walk or format switch. This matters most on
 single-core-heavy edge CPUs where dispatch overhead is a real fraction of the
 per-token budget.
 
-Capabilities are queryable up front via `geist_backend_supports_op` returning
-`NONE` / `EMULATED` / `NATIVE`, so an arch can pick the best available path or
-fail cleanly rather than discovering an unsupported combination mid-forward.
+Capabilities are settled up front rather than discovered mid-forward, but the
+query is no longer a public one: the generic `supports_op` vtable slot was
+removed with the vtable split. Linear support is answered backend-internally
+from the same kernel table the resolver dispatches on, and fused ops are bound
+at plan-build time through `geist_backend_vtbl_fused::supported`.
 
 ### Where the oracle stops: ternary
 
