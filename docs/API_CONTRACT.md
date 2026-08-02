@@ -75,8 +75,8 @@ CPU-only design.
 ### Explicitly NOT in the contract
 
 `geist_session_attach_audio` / `attach_image` / `attach_video`,
-`geist_session_decode_speculative`, `geist_backend_supports_op`, and the
-`geist_session_stats` family remain `EXPERIMENTAL`. They are useful and
+`geist_session_decode_speculative`, and the `geist_session_stats` family
+remain `EXPERIMENTAL`. They are useful and
 supported, but an agent runtime must not build its core loop on them expecting
 release-boundary stability.
 
