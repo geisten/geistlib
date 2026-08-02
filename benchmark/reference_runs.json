@@ -12,7 +12,7 @@
   "decode_tps_512": "decode throughput at a 512-token prompt, mean of the repeats",
   "prefill_tps_512": "prefill throughput at a 512-token prompt",
   "spread_pct": "run-to-run spread as +/-% around the mean. Above ~2% the run varied; read it together with load before blaming contention -- on an idle board it is usually thermal drift over a long sweep",
-  "decode_tps_short": "decode throughput at the shortest prompt -- the row that matches a baseline's empty-context generation benchmark",
+  "decode_tps_short": "decode throughput at the shortest prompt -- the row every baseline ratio is computed against, so a ratio can be checked rather than believed",
   "temp_c_geist_start": "board temperature when geist started",
   "j_per_decode_token": "board energy per decoded token, from the phase-separated probes",
   "j_per_prefill_token": "board energy per prefill token, from the prefill-only probe",
