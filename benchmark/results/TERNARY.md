@@ -3,6 +3,23 @@
 **Goal:** geist's ternary decode *and* prefill on a Raspberry Pi 5 (Cortex-A76,
 SDOT, **no i8mm**) at or above `MAX(bitnet.cpp, llama.cpp)` on the same model.
 
+**That goal is met on `i2_s` and missed on `TQ2_0`.** Measured 2026-08-01 with
+all three engines on `bitnet_b1_58-large` TQ2_0, one `make bench` run, each
+engine started under the 56 °C gate:
+
+| | geist | bitnet.cpp | llama.cpp |
+| :-- | --: | --: | --: |
+| decode, 32-token context | 46.31 | 43.62 — 1.06× | 49.09 — **0.94×** |
+| prefill, 512 tokens | 128.08 | 74.81 — 1.71× | 51.59 — 2.48× |
+
+Prefill clears both by a wide margin. Decode does not: llama.cpp is **6 %
+ahead**, so `MAX(bitnet.cpp, llama.cpp)` is not reached on this model, and the
+margin over bitnet.cpp is 6 % rather than the 2× the `i2_s` path shows. Two
+variables differ at once — 0.7 B against 2 B, and TQ2_0 against i2_s — so this
+does not say which of them costs the decode lead, only that the lead is
+specific to the path it was measured on and does not generalise across ternary
+formats. Recorded in `reference_runs.json`; spread 1.0 %.
+
 **Status: measured on the Pi 5.** geist decodes the canonical 2B-4T `i2_s` at
 **18.05 t/s vs bitnet.cpp's 9.04** (**2.0×**) **at a 32-token prompt** and
 **15.13 t/s** (**1.67×**) **at 512 tokens** — both halves from one `make bench`
