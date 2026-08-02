@@ -61,6 +61,7 @@
 #include "heap.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,7 +83,17 @@
 #define SPEC_HEAD_AVAILABLE 1
 #endif
 
-#define SPEC_STRIDE_DEFAULT 4
+/* Sketch resolution, not a divisor. The stride used to be fixed at 4, which
+ * ties the sketch's quality to how wide the model happens to be: the same
+ * divisor gave the 2B-4T (H=2560) a 640-dim sketch and bitnet_b1_58-large
+ * (H=1536) a 384-dim one. The coarser sketch loses the true argmax, and since
+ * there is no fallback the loss is silent -- measured 2026-08-01, greedy
+ * output matched the dense head for 28 tokens and then diverged, at the
+ * shipped defaults. Deriving the stride from a target resolution instead makes
+ * the sketch equally good on any width; it reproduces stride 4 for the 2B-4T
+ * and stride 2 for the large model, both of which measure exact. */
+#define SPEC_SKETCH_DIMS 640
+
 /* 512 was verified byte-identical on the original trajectories, but the
  * margin is thin: a near-tie whose loser the sketch ranks past the cutoff
  * flips greedy (seen live when an unrelated ULP-level kernel change shifted
@@ -371,7 +382,8 @@ static bool spec_head_build(struct transformer_arch_state *st) {
      * harder ranking (Gemma's 256 K) needs a finer sketch (smaller stride)
      * and/or more finalists for the true argmax to land in the candidate set.
      * Defaults (4, 512) are exact for BitNet's 128 K F16 head. */
-    size_t sub = spec_env_sz("GEIST_SPEC_STRIDE", SPEC_STRIDE_DEFAULT, 1, H);
+    const size_t stride_dflt = H > SPEC_SKETCH_DIMS ? H / SPEC_SKETCH_DIMS : 1;
+    size_t       sub         = spec_env_sz("GEIST_SPEC_STRIDE", stride_dflt, 1, H);
     while (sub > 1 && H % sub != 0) {
         sub--;
     } /* require H % sub == 0 */
