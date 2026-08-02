@@ -6,12 +6,20 @@
  * stubs and the supported dtypes, and verify the backend populates
  * linear_m1 / linear_mN as expected. For unsupported dtypes we expect
  * GEIST_E_UNSUPPORTED.
+ *
+ * Also gates supports_op against the resolver: for every dtype the two
+ * must agree on whether the backend can do it at all. They drifted apart
+ * once (Q5_K / IQ2_S / IQ3_S advertised EMULATED and TQ2_0 / I2_S
+ * advertised NONE while all five had native kernels), which is invisible
+ * without a check like this because nothing in the engine consults
+ * supports_op — only embedders do.
  */
 #include "test_helpers.h"
 
 #include <geist.h>
 #include <geist_backend.h>
 #include <geist_weight.h>
+#include <geist_util.h>
 
 #include "quant.h"
 
@@ -61,6 +69,53 @@ static int expect_resolved(struct geist_backend *be,
     return 0;
 }
 
+/* supports_op and resolve_weight must agree on whether this backend can
+ * handle `dtype`. Asserts the equivalence rather than a fixed answer, so
+ * it holds on hosts with and without dotprod (TQ2_0 / I2_S are ISA-gated
+ * in the kernel table). */
+static int
+expect_support_agrees(struct geist_backend *be, enum geist_dtype dtype, const char *name) {
+    void *raw = calloc(1, 64);
+    if (raw == nullptr) {
+        fprintf(stderr, "  [%s] raw stub allocation failed\n", name);
+        return 1;
+    }
+    struct geist_weight w = {
+            .raw   = raw,
+            .n_in  = 1536,
+            .n_out = 1536,
+            .dtype = (uint16_t) dtype,
+    };
+    const bool resolves = be->desc->vtbl->resolve_weight(be, &w) == GEIST_OK;
+    if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
+        void *aux = (void *) w.aux_fp32;
+        free(aux);
+    }
+    free(raw);
+
+    struct geist_op_support_query q = {
+            .op          = GEIST_OP_LINEAR,
+            .input_count = 2,
+            .inputs =
+                    {
+                            {.dtype = GEIST_DTYPE_F32, .layout = GEIST_LAYOUT_DENSE},
+                            {.dtype  = (uint16_t) dtype,
+                             .layout = dtype == GEIST_DTYPE_F32 ? GEIST_LAYOUT_DENSE
+                                                                : GEIST_LAYOUT_BLOCK_QUANTIZED},
+                    },
+    };
+    const bool advertised = geist_backend_supports_op(be, &q) != GEIST_SUPPORT_NONE;
+    if (resolves != advertised) {
+        fprintf(stderr,
+                "  [%s] supports_op says %s but resolve_weight %s\n",
+                name,
+                advertised ? "supported" : "NONE",
+                resolves ? "succeeded" : "failed");
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
@@ -92,6 +147,23 @@ int main(void) {
     fails += expect_resolved(be, GEIST_DTYPE_F16, "F16", true);
     fails += expect_resolved(be, GEIST_DTYPE_BF16, "BF16", true);
 
+    /* supports_op must not carry a dtype list of its own. TQ2_0 and I2_S
+     * are the rows that were silently reported NONE; GEIST_DTYPE_CUSTOM
+     * is the negative case that must stay NONE on both sides. */
+    fails += expect_support_agrees(be, GEIST_DTYPE_Q3_K, "Q3_K");
+    fails += expect_support_agrees(be, GEIST_DTYPE_Q4_K, "Q4_K");
+    fails += expect_support_agrees(be, GEIST_DTYPE_Q5_K, "Q5_K");
+    fails += expect_support_agrees(be, GEIST_DTYPE_Q6_K, "Q6_K");
+    fails += expect_support_agrees(be, GEIST_DTYPE_Q8_0, "Q8_0");
+    fails += expect_support_agrees(be, GEIST_DTYPE_IQ2_S, "IQ2_S");
+    fails += expect_support_agrees(be, GEIST_DTYPE_IQ3_S, "IQ3_S");
+    fails += expect_support_agrees(be, GEIST_DTYPE_TQ2_0, "TQ2_0");
+    fails += expect_support_agrees(be, GEIST_DTYPE_I2_S, "I2_S");
+    fails += expect_support_agrees(be, GEIST_DTYPE_F16, "F16");
+    fails += expect_support_agrees(be, GEIST_DTYPE_BF16, "BF16");
+    fails += expect_support_agrees(be, GEIST_DTYPE_F32, "F32");
+    fails += expect_support_agrees(be, GEIST_DTYPE_CUSTOM, "CUSTOM (unsupported)");
+
     geist_backend_destroy(be);
 
     if (fails > 0) {
@@ -99,6 +171,7 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
     printf("PASS: cpu_neon resolve_weight covers Q3_K/Q4_K/Q5_K/Q6_K/Q8_0/"
-           "IQ2_S/IQ3_S/F32/F16/BF16 (M=1 and M>1).\n");
+           "IQ2_S/IQ3_S/F32/F16/BF16 (M=1 and M>1); supports_op agrees "
+           "with the resolver on every dtype.\n");
     return GEIST_TEST_PASS;
 }

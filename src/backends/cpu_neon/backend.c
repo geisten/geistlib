@@ -62,36 +62,20 @@ static void cpu_neon_destroy(struct geist_backend *be) {
 
 static enum geist_support cpu_neon_supports_op(struct geist_backend                *be,
                                                const struct geist_op_support_query *query) {
-    (void) be;
     if (query == nullptr || query->input_count < 2) {
         return GEIST_SUPPORT_NONE;
     }
-    if (query->op == GEIST_OP_LINEAR) {
-        const struct geist_tensor_format *x = &query->inputs[0];
-        const struct geist_tensor_format *w = &query->inputs[1];
-        if (x->dtype != GEIST_DTYPE_F32 || x->layout != GEIST_LAYOUT_DENSE) {
-            return GEIST_SUPPORT_NONE;
-        }
-        if (w->dtype == GEIST_DTYPE_F32 && w->layout == GEIST_LAYOUT_DENSE) {
-            return GEIST_SUPPORT_NATIVE; /* cblas_sgemm */
-        }
-        if (w->layout == GEIST_LAYOUT_BLOCK_QUANTIZED) {
-            switch (w->dtype) {
-            case GEIST_DTYPE_Q3_K:
-            case GEIST_DTYPE_Q4_K:
-            case GEIST_DTYPE_Q6_K:
-            case GEIST_DTYPE_Q8_0:
-                return GEIST_SUPPORT_NATIVE; /* W3A8/W4A8/W6A8/W8A8 NEON */
-            case GEIST_DTYPE_Q5_K:
-            case GEIST_DTYPE_IQ2_S:
-            case GEIST_DTYPE_IQ3_S:
-                return GEIST_SUPPORT_EMULATED; /* dequant + cblas_sgemm */
-            default:
-                return GEIST_SUPPORT_NONE;
-            }
-        }
+    if (query->op != GEIST_OP_LINEAR) {
+        return GEIST_SUPPORT_NONE;
     }
-    return GEIST_SUPPORT_NONE;
+    /* Activations are always F32 DENSE on this backend. */
+    const struct geist_tensor_format *x = &query->inputs[0];
+    if (x->dtype != GEIST_DTYPE_F32 || x->layout != GEIST_LAYOUT_DENSE) {
+        return GEIST_SUPPORT_NONE;
+    }
+    /* The weight's layout is not consulted: cpu_neon_resolve_weight keys
+     * on dtype alone, and each dtype implies its own storage layout. */
+    return cpu_neon_linear_support(be, (enum geist_dtype) query->inputs[1].dtype);
 }
 
 /* ---------- Buffer ops (mirror cpu_scalar) ---------- */
