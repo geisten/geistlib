@@ -158,6 +158,15 @@ struct geist_weight;
 [[nodiscard]] enum geist_status cpu_neon_resolve_weight(struct geist_backend *be,
                                                         struct geist_weight  *w);
 
+/* Capability answer for GEIST_OP_LINEAR with a weight of `w_dtype`,
+ * derived from the same kernel table and the same runtime ISA gating
+ * cpu_neon_resolve_weight dispatches on. supports_op must not carry its
+ * own dtype list — the two drifted apart once already (Q5_K / IQ2_S /
+ * IQ3_S reported EMULATED and TQ2_0 / I2_S reported NONE while all five
+ * had native kernels). */
+enum geist_support cpu_neon_linear_support(const struct geist_backend *be,
+                                           enum geist_dtype            w_dtype);
+
 /* Element-wise + rmsnorm — wraps gemma4_kernels.c FP32 ops. */
 [[nodiscard]] enum geist_status cpu_neon_add(struct geist_backend      *be,
                                              const struct geist_tensor *a,

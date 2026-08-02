@@ -1270,6 +1270,55 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
     }
 }
 
+/* Runtime ISA bits this host offers, in the same form the table's
+ * `requires` masks are written in. */
+static cpu_neon_isa_mask host_isa_mask(const struct cpu_neon_kernel_policy *policy) {
+    return (policy->has_dotprod ? CPU_NEON_ISA_DOTPROD : 0u) |
+           (policy->has_fp16 ? CPU_NEON_ISA_FP16 : 0u) |
+           CPU_NEON_ISA_NEON; /* cpu_neon backend only registers on NEON */
+}
+
+/* First table row that matches `dtype` and whose ISA requirements this
+ * host meets — the same "first match wins" scan cpu_neon_resolve_weight
+ * performs, so a capability answer and the kernel actually installed can
+ * never disagree. Returns nullptr when no row applies. */
+static const struct cpu_neon_kernel_entry *lookup_kernel_entry(enum geist_dtype  dtype,
+                                                               cpu_neon_isa_mask host_isa) {
+    const size_t n = sizeof(CPU_NEON_KERNELS) / sizeof(CPU_NEON_KERNELS[0]);
+    for (size_t i = 0; i < n; i++) {
+        const struct cpu_neon_kernel_entry *e = &CPU_NEON_KERNELS[i];
+        if (e->dtype != dtype) {
+            continue;
+        }
+        if ((e->requires & host_isa) != e->requires) {
+            continue;
+        }
+        return e;
+    }
+    return nullptr;
+}
+
+enum geist_support cpu_neon_linear_support(const struct geist_backend *be,
+                                           enum geist_dtype            w_dtype) {
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_SUPPORT_NONE;
+    }
+    const struct cpu_neon_state        *bst = (const struct cpu_neon_state *) be->state;
+    const struct cpu_neon_kernel_entry *e =
+            lookup_kernel_entry(w_dtype, host_isa_mask(&bst->policy));
+    if (e == nullptr) {
+        return GEIST_SUPPORT_NONE;
+    }
+    /* EMULATED means "dequant to fp32, then cblas" — i.e. both paths are
+     * the generic trampoline. A row with a purpose-built kernel on either
+     * path (f16 has a fused m1 GEMV but trampolines m>1; tq2_0/fp32 the
+     * same) counts as NATIVE: the backend does have a hand-written kernel
+     * for this dtype. */
+    const bool m1_generic = e->linear_m1 == cpu_neon_w_dequant_trampoline_m1;
+    const bool mN_generic = e->linear_mN == cpu_neon_w_dequant_trampoline_mN;
+    return (m1_generic && mN_generic) ? GEIST_SUPPORT_EMULATED : GEIST_SUPPORT_NATIVE;
+}
+
 [[nodiscard]] enum geist_status cpu_neon_resolve_weight(struct geist_backend *be,
                                                         struct geist_weight  *w) {
     if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
@@ -1284,12 +1333,9 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    const struct cpu_neon_state        *bst    = (const struct cpu_neon_state *) be->state;
-    const struct cpu_neon_kernel_policy policy = bst->policy;
-    const cpu_neon_isa_mask             host_isa =
-            (policy.has_dotprod ? CPU_NEON_ISA_DOTPROD : 0u) |
-            (policy.has_fp16 ? CPU_NEON_ISA_FP16 : 0u) |
-            CPU_NEON_ISA_NEON; /* cpu_neon backend only registers on NEON */
+    const struct cpu_neon_state        *bst      = (const struct cpu_neon_state *) be->state;
+    const struct cpu_neon_kernel_policy policy   = bst->policy;
+    const cpu_neon_isa_mask             host_isa = host_isa_mask(&policy);
 
     const size_t n = sizeof(CPU_NEON_KERNELS) / sizeof(CPU_NEON_KERNELS[0]);
     for (size_t i = 0; i < n; i++) {
