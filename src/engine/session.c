@@ -68,6 +68,14 @@ static inline struct geist_session_full *as_full(struct geist_session *s) {
     return (struct geist_session_full *) s;
 }
 
+/* The session handle passed to per-session vtable ops. For architectures
+ * with session_alloc this is the arch session this geist_session owns;
+ * for single-session archs (no session_alloc) it is the arch_state
+ * itself — such an arch's model IS its one session. */
+static inline void *arch_sess(const struct geist_session_full *sf) {
+    return sf->arch_session != nullptr ? sf->arch_session : sf->model->text_decoder.arch_meta;
+}
+
 /* The arch prefill hook is void (errors were historically swallowed and
  * left for "the next decode_step" — which also swallowed them). Detect
  * failure deterministically: a successful prefill of n tokens advances
@@ -76,7 +84,7 @@ static inline struct geist_session_full *as_full(struct geist_session *s) {
 static enum geist_status
 check_prefill_advanced(struct geist_session_full *sf, size_t kv_before, size_t n) {
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
-    if (ops->kv_len == nullptr || ops->kv_len(sf->model->text_decoder.arch_meta) == kv_before + n) {
+    if (ops->kv_len == nullptr || ops->kv_len(arch_sess(sf)) == kv_before + n) {
         return GEIST_OK;
     }
     const enum geist_status ec = geist_backend_errcode(sf->backend);
@@ -86,20 +94,6 @@ check_prefill_advanced(struct geist_session_full *sf, size_t kv_before, size_t n
              "prefill failed: %s",
              geist_backend_errmsg(sf->backend));
     return sf->err_code;
-}
-
-/* P1.2.f: bind this session's per-session arch state as the active one
- * on the model before any vtable dispatch. No-op if the architecture
- * doesn't support multi-session (arch_session is then nullptr and the
- * model's default session is what dispatch operates on). */
-static inline void session_attach(const struct geist_session_full *sf) {
-    if (sf == nullptr || sf->arch_session == nullptr) {
-        return;
-    }
-    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
-    if (ops != nullptr && ops->session_attach != nullptr) {
-        ops->session_attach(sf->model->text_decoder.arch_meta, sf->arch_session);
-    }
 }
 
 [[nodiscard]] enum geist_status geist_session_create(struct geist_model              *m,
@@ -145,12 +139,12 @@ static inline void session_attach(const struct geist_session_full *sf) {
      * model. session_alloc already calls apply_opts inside, so the
      * session-level temperature / top_p / top_k / seed are wired up.
      *
-     * Architectures without session_alloc (or without session_attach)
-     * stay single-session-per-model — the engine falls back to using
-     * the model's default session, and set_session_opts is the only
-     * path for sampler config. */
+     * Architectures without session_alloc stay single-session-per-model
+     * — the engine passes the arch_state as the session handle on every
+     * dispatch (such an arch's model IS its one session), and
+     * set_session_opts is the only path for sampler config. */
     const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;
-    if (ops != nullptr && ops->session_alloc != nullptr && ops->session_attach != nullptr) {
+    if (ops != nullptr && ops->session_alloc != nullptr) {
         sf->arch_session = ops->session_alloc(m->text_decoder.arch_meta, opts);
         if (sf->arch_session == nullptr) {
             geist_error_set_create_time(
@@ -160,14 +154,18 @@ static inline void session_attach(const struct geist_session_full *sf) {
             return GEIST_E_OOM;
         }
     } else if (opts != nullptr && ops != nullptr && ops->set_session_opts != nullptr) {
-        /* Legacy single-session path: push opts onto the model's default
-         * session. When multiple legacy sessions share one model, the
-         * last set_session_opts call wins. */
+        /* Legacy single-session path: push opts onto the arch's one
+         * session (= its arch_state). When multiple legacy sessions
+         * share one model, the last set_session_opts call wins. */
         ops->set_session_opts(m->text_decoder.arch_meta, opts);
     }
 
     *out = (struct geist_session *) sf;
     return GEIST_OK;
+}
+
+void *geist_session_internal_arch_session(struct geist_session *s) {
+    return s != nullptr ? arch_sess(as_full(s)) : nullptr;
 }
 
 void geist_session_destroy(struct geist_session *s) {
@@ -177,8 +175,7 @@ void geist_session_destroy(struct geist_session *s) {
     struct geist_session_full           *sf  = as_full(s);
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
     /* P1.2.f: release this session's per-session arch state if it owns
-     * one. session_free detaches itself if it was the active session,
-     * restoring the model's default. */
+     * one. */
     if (sf->arch_session != nullptr && ops != nullptr && ops->session_free != nullptr) {
         ops->session_free(sf->model->text_decoder.arch_meta, sf->arch_session);
         sf->arch_session = nullptr;
@@ -205,8 +202,7 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     if (ops == nullptr || ops->state_reset == nullptr) {
         return GEIST_E_INVALID_STATE;
     }
-    session_attach(sf);
-    ops->state_reset(sf->model->text_decoder.arch_meta);
+    ops->state_reset(arch_sess(sf));
     sf->n_tokens_decoded = 0;
     return GEIST_OK;
 }
@@ -259,9 +255,8 @@ const char *geist_session_errmsg(const struct geist_session *s) {
             return GEIST_E_IO;
         }
         n_enc += enc_n;
-        session_attach(sf);
         const uint64_t t0 = monotonic_ns();
-        ops->prefill(sf->model->text_decoder.arch_meta, n_enc, (const geist_token_t *) enc_ids);
+        ops->prefill(arch_sess(sf), n_enc, (const geist_token_t *) enc_ids);
         sf->total_prefill_ns += monotonic_ns() - t0;
         void *p = enc_ids;
         safe_free(&p);
@@ -277,11 +272,9 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     }
     /* sp_bpe yields uint32_t; bit-pattern of u32 ≡ i32 for IDs in 21-bit
      * vocab range. arch->prefill takes geist_token_t (int32_t). */
-    session_attach(sf);
-    const size_t kv_before =
-            ops->kv_len != nullptr ? ops->kv_len(sf->model->text_decoder.arch_meta) : 0;
-    const uint64_t t0 = monotonic_ns();
-    ops->prefill(sf->model->text_decoder.arch_meta, n_ids, (const geist_token_t *) ids);
+    const size_t   kv_before = ops->kv_len != nullptr ? ops->kv_len(arch_sess(sf)) : 0;
+    const uint64_t t0        = monotonic_ns();
+    ops->prefill(arch_sess(sf), n_ids, (const geist_token_t *) ids);
     sf->total_prefill_ns += monotonic_ns() - t0;
     const size_t n_prefilled = n_ids;
     safe_free((void **) &ids);
@@ -370,11 +363,9 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
     if (ops == nullptr || ops->prefill == nullptr) {
         return GEIST_E_INVALID_STATE;
     }
-    session_attach(sf);
-    const size_t kv_before =
-            ops->kv_len != nullptr ? ops->kv_len(sf->model->text_decoder.arch_meta) : 0;
-    const uint64_t t0 = monotonic_ns();
-    ops->prefill(sf->model->text_decoder.arch_meta, n, ids);
+    const size_t   kv_before = ops->kv_len != nullptr ? ops->kv_len(arch_sess(sf)) : 0;
+    const uint64_t t0        = monotonic_ns();
+    ops->prefill(arch_sess(sf), n, ids);
     sf->total_prefill_ns += monotonic_ns() - t0;
     return check_prefill_advanced(sf, kv_before, n);
 }
@@ -389,9 +380,8 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
     if (ops == nullptr || ops->decode_step == nullptr) {
         return GEIST_E_INVALID_STATE;
     }
-    session_attach(sf);
     const uint64_t t0 = monotonic_ns();
-    *out_token        = ops->decode_step(sf->model->text_decoder.arch_meta);
+    *out_token        = ops->decode_step(arch_sess(sf));
     sf->total_decode_ns += monotonic_ns() - t0;
     if (*out_token < 0) {
         /* -1 is the arch-level failure sentinel (no pending logits, or the
@@ -419,8 +409,7 @@ const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
     if (ops == nullptr || ops->peek_logits == nullptr)
         return nullptr;
-    session_attach(sf);
-    return ops->peek_logits(sf->model->text_decoder.arch_meta, n_logits);
+    return ops->peek_logits(arch_sess(sf), n_logits);
 }
 
 /* N-gram drafter: find the longest suffix of `history + [seed]` (up to
@@ -547,7 +536,7 @@ geist_session_decode_speculative(struct geist_session *s,
 
     struct geist_session_full           *sf  = as_full(s);
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
-    void                                *st  = sf->model->text_decoder.arch_meta;
+    void                                *st  = sf->arch_session;
     if (ops == nullptr)
         return GEIST_E_INVALID_STATE;
 
@@ -556,7 +545,6 @@ geist_session_decode_speculative(struct geist_session *s,
     if (!can_spec)
         return spec_fallback_single(s, out_tokens, n_out);
 
-    session_attach(sf);
     const uint64_t      t_start = monotonic_ns();
     const geist_token_t seed    = ops->peek_next_token(st);
     if (seed < 0)
@@ -730,9 +718,8 @@ geist_session_attach_audio(struct geist_session *s,
         return GEIST_E_IO;
     }
 
-    session_attach(sf);
     const uint64_t t_pre0 = monotonic_ns();
-    dec_ops->prefill_audio(sf->model->text_decoder.arch_meta, n_soft, soft);
+    dec_ops->prefill_audio(arch_sess(sf), n_soft, soft);
     sf->total_prefill_ns += monotonic_ns() - t_pre0;
     safe_free((void **) &soft);
     return GEIST_OK;
@@ -791,9 +778,8 @@ geist_session_attach_image(struct geist_session *s,
         return GEIST_E_IO;
     }
 
-    session_attach(sf);
     const uint64_t t_pre0 = monotonic_ns();
-    dec_ops->prefill_image(sf->model->text_decoder.arch_meta, n_soft, soft);
+    dec_ops->prefill_image(arch_sess(sf), n_soft, soft);
     sf->total_prefill_ns += monotonic_ns() - t_pre0;
     safe_free((void **) &soft);
     return GEIST_OK;
@@ -854,9 +840,8 @@ geist_session_attach_video(struct geist_session *s,
         return GEIST_E_IO;
     }
 
-    session_attach(sf);
     const uint64_t t_pre0 = monotonic_ns();
-    dec_ops->prefill_image(sf->model->text_decoder.arch_meta, n_soft, soft);
+    dec_ops->prefill_image(arch_sess(sf), n_soft, soft);
     sf->total_prefill_ns += monotonic_ns() - t_pre0;
     safe_free((void **) &soft);
     return GEIST_OK;
@@ -876,8 +861,7 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
         sf->err_code = GEIST_E_UNSUPPORTED;
         return GEIST_E_UNSUPPORTED;
     }
-    session_attach(sf);
-    ops->pin_prefix(sf->model->text_decoder.arch_meta, n, ids);
+    ops->pin_prefix(arch_sess(sf), n, ids);
     return GEIST_OK;
 }
 

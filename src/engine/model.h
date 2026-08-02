@@ -75,4 +75,9 @@ struct gguf_tokenizer *geist_model_internal_gguf_tokenizer(struct geist_model *m
  * this — go through arch_ops vtable instead. */
 void *geist_model_internal_arch_meta(struct geist_model *m);
 
+/* Engine-internal: the arch session handle this geist_session dispatches
+ * with (its own arch session, or the arch_state for single-session
+ * archs). For tests that cross from the engine into the arch layer. */
+void *geist_session_internal_arch_session(struct geist_session *s);
+
 #endif /* GEIST_INTERNAL_MODEL_H */

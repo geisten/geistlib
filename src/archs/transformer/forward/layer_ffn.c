@@ -61,15 +61,16 @@ static bool ffn_tile_fusion_enabled(void) {
 
 enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forward_ctx *ctx) {
 
-    struct transformer_arch_state    *st = ctx->st;
-    struct transformer_layer_weights *L  = ctx->L;
-    struct geist_backend             *be = ctx->be;
-    const struct geist_backend_vtbl  *v  = ctx->v;
+    struct transformer_arch_state    *st   = ctx->st;
+    struct transformer_arch_session  *sess = ctx->sess;
+    struct transformer_layer_weights *L    = ctx->L;
+    struct geist_backend             *be   = ctx->be;
+    const struct geist_backend_vtbl  *v    = ctx->v;
     enum geist_status                 s;
 
     struct geist_tensor t_h_post_attn_2d =
-            view_2d(st->sess->scratch_h_post_attn, ctx->SEQ, st->d_model);
-    struct geist_tensor t_pre_ff_2d  = view_2d(st->sess->scratch_pre_ff, ctx->SEQ, st->d_model);
+            view_2d(sess->scratch_h_post_attn, ctx->SEQ, st->d_model);
+    struct geist_tensor t_pre_ff_2d  = view_2d(sess->scratch_pre_ff, ctx->SEQ, st->d_model);
     struct geist_tensor t_w_ffn_norm = view_1d(L->ffn_norm.buffer, st->d_model);
     const bool          profile      = transformer_profile_enabled(&g_ffn_profile);
     uint64_t            t0           = profile ? transformer_profile_now_ns() : 0;
@@ -82,7 +83,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     if (v->ffn_norm_gate_up != nullptr && ctx->ffn_activation == GEIST_FFN_GEGLU &&
         L->down_awq_inv_scale == nullptr) {
         struct geist_tensor t_gate_f_2d =
-                view_2d(st->sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
+                view_2d(sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
         ffn_front_fused = v->ffn_norm_gate_up(be,
                                               &t_h_post_attn_2d,
                                               &t_w_ffn_norm,
@@ -102,17 +103,17 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     }
 
     const bool          has_ffn_sub_norm = ctx->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr;
-    struct geist_tensor t_ffn_out_2d = view_2d(st->sess->scratch_ffn_out, ctx->SEQ, st->d_model);
+    struct geist_tensor t_ffn_out_2d     = view_2d(sess->scratch_ffn_out, ctx->SEQ, st->d_model);
     if (ctx->seq > 1 && ctx->ffn_activation == GEIST_FFN_GEGLU && !has_ffn_sub_norm &&
         !st->runtime_flags.dump_act_sparsity && v->ffn_geglu_q4q6_mN != nullptr &&
         ffn_tile_fusion_enabled()) {
-        const float *xp = (const float *) v->buffer_map(st->sess->scratch_pre_ff);
-        float       *yp = (float *) v->buffer_map(st->sess->scratch_ffn_out);
+        const float *xp = (const float *) v->buffer_map(sess->scratch_pre_ff);
+        float       *yp = (float *) v->buffer_map(sess->scratch_ffn_out);
         if (xp == nullptr || yp == nullptr) {
             if (xp != nullptr)
-                v->buffer_unmap(st->sess->scratch_pre_ff);
+                v->buffer_unmap(sess->scratch_pre_ff);
             if (yp != nullptr)
-                v->buffer_unmap(st->sess->scratch_ffn_out);
+                v->buffer_unmap(sess->scratch_ffn_out);
             return GEIST_E_BACKEND;
         }
         t0 = profile ? transformer_profile_now_ns() : 0;
@@ -126,8 +127,8 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
                                   &L->down_proj_w,
                                   L->down_awq_inv_scale,
                                   yp);
-        v->buffer_unmap(st->sess->scratch_pre_ff);
-        v->buffer_unmap(st->sess->scratch_ffn_out);
+        v->buffer_unmap(sess->scratch_pre_ff);
+        v->buffer_unmap(sess->scratch_ffn_out);
         if (s == GEIST_OK) {
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
             goto ffn_post;
@@ -137,7 +138,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         }
     }
 
-    struct geist_tensor  t_up_2d = view_2d(st->sess->scratch_up, ctx->SEQ, (int64_t) ctx->inter);
+    struct geist_tensor  t_up_2d = view_2d(sess->scratch_up, ctx->SEQ, (int64_t) ctx->inter);
     struct geist_buffer *mid_buf;
     struct geist_tensor  t_mid_2d;
     bool                 mid_already_down_scaled = false;
@@ -146,8 +147,8 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         t0 = profile ? transformer_profile_now_ns() : 0;
         s  = linear_w_or_legacy(be,
                                 v,
-                                st->sess->scratch_pre_ff,
-                                st->sess->scratch_up,
+                                sess->scratch_pre_ff,
+                                sess->scratch_up,
                                 &L->up_proj_w,
                                 ctx->seq,
                                 &t_pre_ff_2d,
@@ -163,13 +164,12 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         if (s != GEIST_OK) {
             return s;
         }
-        mid_buf  = st->sess->scratch_up;
+        mid_buf  = sess->scratch_up;
         t_mid_2d = t_up_2d;
     } else {
-        struct geist_tensor t_gate_2d =
-                view_2d(st->sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
+        struct geist_tensor t_gate_2d = view_2d(sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
         if (ffn_front_fused) {
-            mid_buf  = st->sess->scratch_gate;
+            mid_buf  = sess->scratch_gate;
             t_mid_2d = t_gate_2d;
             goto ffn_mid_done;
         }
@@ -183,7 +183,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             s  = v->ffn_gate_up(be, &t_pre_ff_2d, &L->gate_proj, &L->up_proj, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
             if (s == GEIST_OK) {
-                mid_buf  = st->sess->scratch_gate;
+                mid_buf  = sess->scratch_gate;
                 t_mid_2d = t_gate_2d;
                 goto ffn_mid_done;
             }
@@ -191,9 +191,9 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         t0 = profile ? transformer_profile_now_ns() : 0;
         s  = linear_w_pair_or_legacy(be,
                                      v,
-                                     st->sess->scratch_pre_ff,
-                                     st->sess->scratch_gate,
-                                     st->sess->scratch_up,
+                                     sess->scratch_pre_ff,
+                                     sess->scratch_gate,
+                                     sess->scratch_up,
                                      &L->gate_proj_w,
                                      &L->up_proj_w,
                                      ctx->seq,
@@ -256,7 +256,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         if (s != GEIST_OK) {
             return s;
         }
-        mid_buf  = st->sess->scratch_gate;
+        mid_buf  = sess->scratch_gate;
         t_mid_2d = t_gate_2d;
     ffn_mid_done:;
     }
@@ -283,7 +283,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         s  = linear_w_or_legacy(be,
                                 v,
                                 mid_buf,
-                                st->sess->scratch_ffn_out,
+                                sess->scratch_ffn_out,
                                 &L->down_proj_w,
                                 ctx->seq,
                                 &t_mid_2d,
@@ -302,7 +302,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             s  = linear_w_or_legacy(be,
                                     v,
                                     mid_buf,
-                                    st->sess->scratch_ffn_out,
+                                    sess->scratch_ffn_out,
                                     &L->down_proj_w,
                                     ctx->seq,
                                     &t_mid_2d,
@@ -313,7 +313,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             s = linear_w_or_legacy(be,
                                    v,
                                    mid_buf,
-                                   st->sess->scratch_ffn_out,
+                                   sess->scratch_ffn_out,
                                    &L->down_proj_w,
                                    ctx->seq,
                                    &t_mid_2d,
@@ -323,7 +323,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             s = linear_w_scaled_input_or_legacy(be,
                                                 v,
                                                 mid_buf,
-                                                st->sess->scratch_ffn_out,
+                                                sess->scratch_ffn_out,
                                                 &L->down_proj_w,
                                                 ctx->seq,
                                                 ctx->inter,
@@ -338,12 +338,10 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     }
 
 ffn_post:
-    struct geist_tensor t_h_post_ff_2d =
-            view_2d(st->sess->scratch_h_post_ff, ctx->SEQ, st->d_model);
-    t0 = profile ? transformer_profile_now_ns() : 0;
+    struct geist_tensor t_h_post_ff_2d = view_2d(sess->scratch_h_post_ff, ctx->SEQ, st->d_model);
+    t0                                 = profile ? transformer_profile_now_ns() : 0;
     if (ctx->apply_gemma_attn_norms) {
-        struct geist_tensor t_post_ff_2d =
-                view_2d(st->sess->scratch_post_ff, ctx->SEQ, st->d_model);
+        struct geist_tensor t_post_ff_2d = view_2d(sess->scratch_post_ff, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_ffw = view_1d(L->post_ffw_norm.buffer, st->d_model);
         if (v->rmsnorm_add == nullptr || v->rmsnorm_add(be,
                                                         &t_h_post_attn_2d,

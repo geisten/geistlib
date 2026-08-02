@@ -275,8 +275,9 @@ static int run_layer(struct transformer_arch_state *st,
                      size_t                         q_position,
                      const float                   *h_in_host,
                      float                         *h_out_host) {
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    struct transformer_arch_session *sess = transformer_default_session(st);
+    struct geist_backend            *be   = st->backend;
+    const struct geist_backend_vtbl *v    = be->desc->vtbl;
 
     struct geist_buffer *h_in_buf  = nullptr;
     struct geist_buffer *h_out_buf = nullptr;
@@ -296,7 +297,7 @@ static int run_layer(struct transformer_arch_state *st,
         goto cleanup;
     }
 
-    s = transformer_forward_one_layer(st,
+    s = transformer_forward_one_layer(sess,
                                       layer_idx,
                                       q_position,
                                       /* seq = */ 1,
@@ -470,8 +471,9 @@ static int check_one_layer(struct transformer_arch_state *st, int layer_idx) {
 static int check_kv_shared_layer_smoke(struct transformer_arch_state *st,
                                        int                            src_layer_idx,
                                        int                            shared_layer_idx) {
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    struct transformer_arch_session *sess = transformer_default_session(st);
+    struct geist_backend            *be   = st->backend;
+    const struct geist_backend_vtbl *v    = be->desc->vtbl;
 
     struct geist_buffer *h_src_buf = nullptr, *h_src_out_buf = nullptr;
     struct geist_buffer *h_shared_buf = nullptr, *h_shared_out_buf = nullptr;
@@ -510,7 +512,7 @@ static int check_kv_shared_layer_smoke(struct transformer_arch_state *st,
 
     /* Prime the source layer's KV cache at q_position. */
     s = transformer_forward_one_layer(
-            st, src_layer_idx, q_position, 1, false, h_src_buf, nullptr, h_src_out_buf);
+            sess, src_layer_idx, q_position, 1, false, h_src_buf, nullptr, h_src_out_buf);
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "kv-shared smoke: priming src L%d failed: %s — %s\n",
@@ -522,7 +524,7 @@ static int check_kv_shared_layer_smoke(struct transformer_arch_state *st,
 
     /* Run the shared layer. */
     s = transformer_forward_one_layer(
-            st, shared_layer_idx, q_position, 1, false, h_shared_buf, nullptr, h_shared_out_buf);
+            sess, shared_layer_idx, q_position, 1, false, h_shared_buf, nullptr, h_shared_out_buf);
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "kv-shared smoke: shared L%d failed: %s — %s\n",
@@ -607,8 +609,9 @@ static void reference_ple_precompute(const float               *h,
 }
 
 static int check_ple_precompute(struct transformer_arch_state *st, geist_token_t token_id) {
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    struct transformer_arch_session *sess = transformer_default_session(st);
+    struct geist_backend            *be   = st->backend;
+    const struct geist_backend_vtbl *v    = be->desc->vtbl;
 
     /* Random residual stream. */
     float h_in[HIDDEN];
@@ -634,7 +637,7 @@ static int check_ple_precompute(struct transformer_arch_state *st, geist_token_t
         goto cleanup;
 
     /* Vtable path. */
-    s = transformer_compute_per_layer_input(st, token_id, h_buf, ple_buf);
+    s = transformer_compute_per_layer_input(sess, token_id, h_buf, ple_buf);
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "transformer_compute_per_layer_input failed: %s — %s\n",
@@ -757,6 +760,7 @@ int main(void) {
 
     struct transformer_arch_state *st = nullptr;
     s                                 = transformer_state_create(be, model_path, nullptr, &st);
+    struct transformer_arch_session *sess [[maybe_unused]] = transformer_default_session(st);
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "state_create failed: %s — %s\n",

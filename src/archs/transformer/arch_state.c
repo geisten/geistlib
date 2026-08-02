@@ -122,26 +122,27 @@ alloc_scratch(struct geist_backend *be, size_t bytes, struct geist_buffer **out)
  * buffer_destroy; the underlying bytes belong to the pool and are
  * released exactly once when transformer_state_destroy frees
  * scratch_pool_base. */
-[[nodiscard]] static enum geist_status
-alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_buffer **out_buf) {
+[[nodiscard]] static enum geist_status alloc_pool_buffer(struct transformer_arch_session *sess,
+                                                         size_t                           bytes,
+                                                         struct geist_buffer            **out_buf) {
 
-    struct geist_backend *be      = st->backend;
+    struct geist_backend *be      = sess->model->backend;
     const size_t          align   = 64;
     const size_t          mask    = align - 1;
-    const size_t          aligned = (st->sess->scratch_pool_used + mask) & ~mask;
-    if (aligned + bytes > st->sess->scratch_pool_bytes) {
+    const size_t          aligned = (sess->scratch_pool_used + mask) & ~mask;
+    if (aligned + bytes > sess->scratch_pool_bytes) {
         geist_backend_set_error(be,
                                 GEIST_E_OOM,
                                 "transformer: scratch pool exhausted "
                                 "(used %zu, need %zu, capacity %zu)",
-                                st->sess->scratch_pool_used,
+                                sess->scratch_pool_used,
                                 bytes,
-                                st->sess->scratch_pool_bytes);
+                                sess->scratch_pool_bytes);
         return GEIST_E_OOM;
     }
-    void *p = (uint8_t *) st->sess->scratch_pool_base + aligned;
+    void *p = (uint8_t *) sess->scratch_pool_base + aligned;
     memset(p, 0, bytes);
-    st->sess->scratch_pool_used = aligned + bytes;
+    sess->scratch_pool_used = aligned + bytes;
     return be->desc->vtbl->buffer_create_aliased(be, p, bytes, GEIST_BUFFER_SCRATCH, out_buf);
 }
 
@@ -169,9 +170,10 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
 
     struct geist_backend *be = st->backend;
 
-    /* Re-runnable: session_alloc rebuilds the tables when a session
-     * requests a larger max_seq_len than currently covered. Tables are
-     * shared across sessions; a bigger table serves smaller windows too. */
+    /* Called exactly once, from state_create — the tables are frozen for
+     * the model's lifetime so concurrent sessions can read them without
+     * coordination (session_alloc rejects larger max_seq_len requests).
+     * The destroy loop below is a create-time no-op kept for safety. */
     struct geist_buffer **old[] = {
             &st->rope_cos_sliding,
             &st->rope_sin_sliding,
@@ -247,10 +249,12 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
  * per-forward arena + ones-row scratch. Operates on the session currently
  * installed at st->sess; caller must install the target session before
  * calling and restore the previous one afterwards. */
-[[nodiscard]] static enum geist_status allocate_runtime_session(struct transformer_arch_state *st) {
+[[nodiscard]] static enum geist_status
+allocate_runtime_session(struct transformer_arch_session *sess) {
 
-    struct geist_backend *be = st->backend;
-    enum geist_status     s;
+    struct transformer_arch_state *st = sess->model;
+    struct geist_backend          *be = st->backend;
+    enum geist_status              s;
 
     /* ---- KV caches: per-layer for 0..14, NULL for 15..34 (those alias
      * the source layer's cache at runtime). Three branches, exactly one
@@ -262,7 +266,7 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
         const size_t hd       = st->layers[li].head_dim;
         const size_t n_elems  = st->max_seq_len * st->n_kv_heads * hd;
         const size_t n_scales = st->max_seq_len * st->n_kv_heads;
-        if (st->sess->kv_kivi_enabled) {
+        if (sess->kv_kivi_enabled) {
             /* Drained region packs at 2 bits per element (4 vals/byte).
              * Per-channel K scales/zeros: one fp32 per (group, channel).
              * Per-token V scales/zeros: one fp32 per (token, kv_head).
@@ -272,58 +276,58 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
             const size_t n_drain_groups = (st->max_seq_len + R - 1) / R;
             const size_t k_scales_elems = n_drain_groups * st->n_kv_heads * hd;
             const size_t v_scales_elems = st->max_seq_len * st->n_kv_heads;
-            const size_t residual_slots = R + st->sess->m_max;
+            const size_t residual_slots = R + sess->m_max;
             const size_t residual_elems = residual_slots * st->n_kv_heads * hd;
-            s                           = alloc_scratch(be, n_elems / 4, &st->sess->k_kivi_q[li]);
+            s                           = alloc_scratch(be, n_elems / 4, &sess->k_kivi_q[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, n_elems / 4, &st->sess->v_kivi_q[li]);
+            s = alloc_scratch(be, n_elems / 4, &sess->v_kivi_q[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, k_scales_elems * sizeof(float), &st->sess->k_kivi_scales[li]);
+            s = alloc_scratch(be, k_scales_elems * sizeof(float), &sess->k_kivi_scales[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, k_scales_elems * sizeof(float), &st->sess->k_kivi_zeros[li]);
+            s = alloc_scratch(be, k_scales_elems * sizeof(float), &sess->k_kivi_zeros[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, v_scales_elems * sizeof(float), &st->sess->v_kivi_scales[li]);
+            s = alloc_scratch(be, v_scales_elems * sizeof(float), &sess->v_kivi_scales[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, v_scales_elems * sizeof(float), &st->sess->v_kivi_zeros[li]);
+            s = alloc_scratch(be, v_scales_elems * sizeof(float), &sess->v_kivi_zeros[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, residual_elems * sizeof(float), &st->sess->k_residual[li]);
+            s = alloc_scratch(be, residual_elems * sizeof(float), &sess->k_residual[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, residual_elems * sizeof(float), &st->sess->v_residual[li]);
+            s = alloc_scratch(be, residual_elems * sizeof(float), &sess->v_residual[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-        } else if (st->sess->kv_int8_enabled) {
+        } else if (sess->kv_int8_enabled) {
             /* Packed INT4 halves the data buffers (2 values/byte); scales are
              * unchanged. hd is a power of two (128/256/512) so n_elems is even. */
             const size_t data_bytes =
-                    st->sess->kv_int4_packed_enabled ? n_elems / 2 : n_elems * sizeof(int8_t);
-            s = alloc_scratch(be, data_bytes, &st->sess->k_cache_q8[li]);
+                    sess->kv_int4_packed_enabled ? n_elems / 2 : n_elems * sizeof(int8_t);
+            s = alloc_scratch(be, data_bytes, &sess->k_cache_q8[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, data_bytes, &st->sess->v_cache_q8[li]);
+            s = alloc_scratch(be, data_bytes, &sess->v_cache_q8[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, n_scales * sizeof(float), &st->sess->k_cache_scale[li]);
+            s = alloc_scratch(be, n_scales * sizeof(float), &sess->k_cache_scale[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            s = alloc_scratch(be, n_scales * sizeof(float), &st->sess->v_cache_scale[li]);
+            s = alloc_scratch(be, n_scales * sizeof(float), &sess->v_cache_scale[li]);
             if (s != GEIST_OK) {
                 return s;
             }
@@ -334,12 +338,12 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
              * v->attention, never through buffer_map. The memset skip in
              * alloc_scratch is safe: causal attention reads only rows that
              * a prior append wrote. */
-            const size_t kv_elem_bytes = st->sess->kv_f16_enabled ? 2u : sizeof(float);
+            const size_t kv_elem_bytes = sess->kv_f16_enabled ? 2u : sizeof(float);
             s                          = be->desc->vtbl->buffer_create(be,
                                                                        n_elems * kv_elem_bytes,
                                                                        GEIST_BUFFER_KV_CACHE,
                                                                        GEIST_MEMORY_AUTO,
-                                                                       &st->sess->k_cache[li]);
+                                                                       &sess->k_cache[li]);
             if (s != GEIST_OK) {
                 return s;
             }
@@ -347,23 +351,23 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
                                               n_elems * kv_elem_bytes,
                                               GEIST_BUFFER_KV_CACHE,
                                               GEIST_MEMORY_AUTO,
-                                              &st->sess->v_cache[li]);
+                                              &sess->v_cache[li]);
             if (s != GEIST_OK) {
                 return s;
             }
-            void *pk = be->desc->vtbl->buffer_map(st->sess->k_cache[li]);
+            void *pk = be->desc->vtbl->buffer_map(sess->k_cache[li]);
             if (pk != nullptr) {
                 memset(pk, 0, n_elems * kv_elem_bytes);
             }
-            be->desc->vtbl->buffer_unmap(st->sess->k_cache[li]);
-            void *pv = be->desc->vtbl->buffer_map(st->sess->v_cache[li]);
+            be->desc->vtbl->buffer_unmap(sess->k_cache[li]);
+            void *pv = be->desc->vtbl->buffer_map(sess->v_cache[li]);
             if (pv != nullptr) {
                 memset(pv, 0, n_elems * kv_elem_bytes);
             }
-            be->desc->vtbl->buffer_unmap(st->sess->v_cache[li]);
+            be->desc->vtbl->buffer_unmap(sess->v_cache[li]);
         }
     }
-    st->sess->kv_len = 0;
+    sess->kv_len = 0;
 
     /* ---- Scratch buffers — sized for m_max tokens to support batched
      * prefill. Decode (seq=1) only touches the first row of each buffer,
@@ -374,83 +378,83 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
      * heap_alloc_aligned'd pool. One allocation per state instead of
      * 21 separate ones; each buffer is a GEIST_MEMORY_ALIASED slice. */
     struct transformer_scratch_plan scratch_plan;
-    transformer_scratch_plan_build(st, &scratch_plan);
-    const size_t F               = sizeof(float);
-    const size_t head_dim_max    = 512;
-    st->sess->scratch_pool_bytes = scratch_plan.pool_bytes;
+    transformer_scratch_plan_build(st, sess->m_max, &scratch_plan);
+    const size_t F            = sizeof(float);
+    const size_t head_dim_max = 512;
+    sess->scratch_pool_bytes  = scratch_plan.pool_bytes;
     /* Route the pool through the backend so GPU backends hand out memory
      * they can bind (host-visible VkBuffer / shared MTLBuffer); CPU
      * backends malloc. Slices still wrap via buffer_create_aliased. */
     s = be->desc->vtbl->buffer_create(be,
-                                      st->sess->scratch_pool_bytes,
+                                      sess->scratch_pool_bytes,
                                       GEIST_BUFFER_SCRATCH,
                                       GEIST_MEMORY_MAPPED,
-                                      &st->sess->scratch_pool_buf);
-    st->sess->scratch_pool_base =
-            s == GEIST_OK ? be->desc->vtbl->buffer_map(st->sess->scratch_pool_buf) : nullptr;
-    if (st->sess->scratch_pool_base == nullptr) {
+                                      &sess->scratch_pool_buf);
+    sess->scratch_pool_base =
+            s == GEIST_OK ? be->desc->vtbl->buffer_map(sess->scratch_pool_buf) : nullptr;
+    if (sess->scratch_pool_base == nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_OOM,
                                 "transformer: scratch pool alloc failed (%zu bytes)",
-                                st->sess->scratch_pool_bytes);
+                                sess->scratch_pool_bytes);
         return GEIST_E_OOM;
     }
-    memset(st->sess->scratch_pool_base, 0, st->sess->scratch_pool_bytes);
-    st->sess->scratch_pool_used = 0;
+    memset(sess->scratch_pool_base, 0, sess->scratch_pool_bytes);
+    sess->scratch_pool_used = 0;
 
-    s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_normed);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_normed);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.q_out, &st->sess->scratch_q);
+    s = alloc_pool_buffer(sess, scratch_plan.q_out, &sess->scratch_q);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.kv_out, &st->sess->scratch_k);
+    s = alloc_pool_buffer(sess, scratch_plan.kv_out, &sess->scratch_k);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.kv_out, &st->sess->scratch_v);
+    s = alloc_pool_buffer(sess, scratch_plan.kv_out, &sess->scratch_v);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.q_out, &st->sess->scratch_attn);
+    s = alloc_pool_buffer(sess, scratch_plan.q_out, &sess->scratch_attn);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_o);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_o);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_post_attn);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_post_attn);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_h_post_attn);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_h_post_attn);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_pre_ff);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_pre_ff);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.inter, &st->sess->scratch_gate);
+    s = alloc_pool_buffer(sess, scratch_plan.inter, &sess->scratch_gate);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.inter, &st->sess->scratch_up);
+    s = alloc_pool_buffer(sess, scratch_plan.inter, &sess->scratch_up);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_ffn_out);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_ffn_out);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_post_ff);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_post_ff);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_h_post_ff);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_h_post_ff);
     if (s != GEIST_OK) {
         return s;
     }
@@ -462,11 +466,11 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
      * guards (P1.5.b) leave these pointers null and the PLE block
      * never executes. */
     if (st->config.has_ple) {
-        s = alloc_pool_buffer(st, scratch_plan.hidden_per, &st->sess->scratch_gate_ple);
+        s = alloc_pool_buffer(sess, scratch_plan.hidden_per, &sess->scratch_gate_ple);
         if (s != GEIST_OK) {
             return s;
         }
-        s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_proj_ple);
+        s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_proj_ple);
         if (s != GEIST_OK) {
             return s;
         }
@@ -474,25 +478,25 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
          * batched compute_per_layer_inputs, and (b) the [seq, HIDDEN_PER_LAYER]
          * per-layer-input slice during the layer loop. The larger of the
          * two is (a) at m_max * PLE_OUT. */
-        s = alloc_pool_buffer(st, scratch_plan.ple_out, &st->sess->scratch_ple_lookup);
+        s = alloc_pool_buffer(sess, scratch_plan.ple_out, &sess->scratch_ple_lookup);
         if (s != GEIST_OK) {
             return s;
         }
-        s = alloc_pool_buffer(st, scratch_plan.ple_out, &st->sess->scratch_per_layer_input);
+        s = alloc_pool_buffer(sess, scratch_plan.ple_out, &sess->scratch_per_layer_input);
         if (s != GEIST_OK) {
             return s;
         }
     } else {
-        st->sess->scratch_gate_ple        = nullptr;
-        st->sess->scratch_proj_ple        = nullptr;
-        st->sess->scratch_ple_lookup      = nullptr;
-        st->sess->scratch_per_layer_input = nullptr;
+        sess->scratch_gate_ple        = nullptr;
+        sess->scratch_proj_ple        = nullptr;
+        sess->scratch_ple_lookup      = nullptr;
+        sess->scratch_per_layer_input = nullptr;
     }
-    s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_h_a);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_h_a);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(st, scratch_plan.hidden, &st->sess->scratch_h_b);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_h_b);
     if (s != GEIST_OK) {
         return s;
     }
@@ -501,7 +505,7 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
      * Pi 5; M>1 IQ kernels amortize the 262K-wide weight stream over
      * k columns). At m_max=64 and VOCAB=262144 this is ~64 MB. Lives
      * in the scratch pool. */
-    s = alloc_pool_buffer(st, scratch_plan.vocab, &st->sess->scratch_logits);
+    s = alloc_pool_buffer(sess, scratch_plan.vocab, &sess->scratch_logits);
     if (s != GEIST_OK) {
         return s;
     }
@@ -521,28 +525,27 @@ alloc_pool_buffer(struct transformer_arch_state *st, size_t bytes, struct geist_
      * ponytail: fixed 64 KB caps the KIVI scores path at max_seq_len
      * 16384; frame_arena_alloc fails cleanly past that — size this
      * from max_seq_len if KIVI needs longer windows. */
-    st->sess->scratch_arena_bytes = 64u * 1024u;
-    st->sess->scratch_arena_base  = heap_alloc_aligned(st->sess->scratch_arena_bytes, 64);
-    if (st->sess->scratch_arena_base == nullptr) {
+    sess->scratch_arena_bytes = 64u * 1024u;
+    sess->scratch_arena_base  = heap_alloc_aligned(sess->scratch_arena_bytes, 64);
+    if (sess->scratch_arena_base == nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_OOM,
                                 "transformer: scratch arena alloc failed (%zu bytes)",
-                                st->sess->scratch_arena_bytes);
+                                sess->scratch_arena_bytes);
         return GEIST_E_OOM;
     }
-    frame_arena_init(
-            &st->sess->scratch_arena, st->sess->scratch_arena_base, st->sess->scratch_arena_bytes);
+    frame_arena_init(&sess->scratch_arena, sess->scratch_arena_base, sess->scratch_arena_bytes);
 
-    s = alloc_scratch(be, head_dim_max * F, &st->sess->scratch_ones_headdim_max);
+    s = alloc_scratch(be, head_dim_max * F, &sess->scratch_ones_headdim_max);
     if (s != GEIST_OK) {
         return s;
     }
     {
-        float *p = (float *) be->desc->vtbl->buffer_map(st->sess->scratch_ones_headdim_max);
+        float *p = (float *) be->desc->vtbl->buffer_map(sess->scratch_ones_headdim_max);
         for (size_t i = 0; i < head_dim_max; i++) {
             p[i] = 1.0f;
         }
-        be->desc->vtbl->buffer_unmap(st->sess->scratch_ones_headdim_max);
+        be->desc->vtbl->buffer_unmap(sess->scratch_ones_headdim_max);
     }
 
     return GEIST_OK;
@@ -782,12 +785,21 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         transformer_state_destroy(st);
         return s;
     }
-    st->sess = st->default_sess;
 
     s = transformer_exec_plan_build(st);
     if (s != GEIST_OK) {
         transformer_state_destroy(st);
         return s;
+    }
+
+    /* Eager spec-head build (was lazy at first decode). Doing it here keeps
+     * the model immutable during steady-state, so concurrent sessions never
+     * race a first-use build. The default session's scratch is allocated
+     * below-the-fact since session_alloc ran before the sketch existed. */
+    transformer_spec_head_init(st);
+    if (st->spec_state == 1 && !transformer_spec_session_scratch_alloc(st->default_sess)) {
+        transformer_state_destroy(st);
+        return GEIST_E_OOM;
     }
 
     /* AWQ (optional): fold attn_norm/ffn_norm gammas and stash per-layer
@@ -869,7 +881,6 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     if (st->default_sess != nullptr) {
         transformer_session_free(st, st->default_sess);
         st->default_sess = nullptr;
-        st->sess         = nullptr;
     }
 
     if (be != nullptr) {
@@ -896,11 +907,6 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         safe_free((void **) &st->spec_row_scale);
         safe_free((void **) &st->spec_w_drop);
         safe_free((void **) &st->spec_w_l1);
-        safe_free((void **) &st->spec_x_i8);
-        safe_free((void **) &st->spec_act_sketch);
-        safe_free((void **) &st->spec_rough);
-        safe_free((void **) &st->spec_row_f32);
-        safe_free((void **) &st->spec_heap);
         for (size_t b = 0; b < st->n_global_bufs; b++) {
             if (st->global_bufs[b] != nullptr) {
                 be->desc->vtbl->buffer_destroy(be, st->global_bufs[b]);
@@ -996,6 +1002,7 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         return nullptr;
     }
     memset(sess, 0, sizeof(*sess));
+    sess->model = state;
     sess->m_max = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
     /* GEIST_QUANT_M_CAP guards CPU quant-kernel stack arrays; metal's
      * prefill never runs those, so its sessions may batch up to 512. */
@@ -1015,25 +1022,27 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         return nullptr;
     }
 
-    /* Honor opts->max_seq_len: sessions may request a larger window than
-     * the state's tables currently cover (state default is set at model
-     * load, typically 4096). Grow-only: bump the state max and rebuild
-     * the shared RoPE cos/sin tables BEFORE sizing this session's KV
-     * caches below. Existing sessions keep their smaller KV caches and
-     * their own sess->max_seq_len bound; the bigger shared tables serve
-     * them unchanged. On rebuild failure the state's rope tables are
-     * gone — the model is unusable, matching other fatal-OOM paths. */
+    /* Honor opts->max_seq_len up to the model's frozen bound. Sessions
+     * may run SMALLER windows (their KV caches are sized to req_seq);
+     * larger is rejected — the shared RoPE tables and geometry are
+     * fixed at state_create so concurrent sessions can read them
+     * without coordination. Load the model with the larger
+     * max_seq_len instead. */
     const size_t req_seq =
             (opts != nullptr && opts->max_seq_len > 0) ? opts->max_seq_len : state->max_seq_len;
     if (req_seq > state->max_seq_len) {
-        state->max_seq_len = req_seq;
-        if (allocate_runtime_rope(state) != GEIST_OK) {
-            void *p_sess = sess;
-            safe_free(&p_sess);
-            return nullptr;
-        }
+        geist_backend_set_error(be,
+                                GEIST_E_INVALID_ARG,
+                                "transformer_session_alloc: max_seq_len %zu exceeds the "
+                                "model's %zu (fixed at model load; reload the model with "
+                                "a larger max_seq_len)",
+                                req_seq,
+                                state->max_seq_len);
+        void *p_sess = sess;
+        safe_free(&p_sess);
+        return nullptr;
     }
-    sess->max_seq_len = state->max_seq_len;
+    sess->max_seq_len = req_seq;
 
     /* P1.4.c: heap-allocate the 14 per-layer KV slot arrays. One
      * combined allocation, partitioned across the 14 pointer-array
@@ -1151,20 +1160,13 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     sess->sampler_ws  = (struct geist_sampler_workspace) {0};
     geist_rng_seed(&sess->rng, 0xCAFEBABE1234ULL);
 
-    /* Temporarily install so the alloc helpers (alloc_pool_buffer /
-     * alloc_scratch) mutate this session's scratch_pool_* slots, not
-     * any previously-attached session's. Restore the previous active
-     * session before returning — engine binds the new one explicitly
-     * via session_attach. */
-    struct transformer_arch_session *prev = state->sess;
-    state->sess                           = sess;
-
-    enum geist_status s = allocate_runtime_session(state);
-    if (s == GEIST_OK && opts != nullptr) {
-        transformer_state_apply_opts(state, opts);
+    enum geist_status s = allocate_runtime_session(sess);
+    if (s == GEIST_OK && !transformer_spec_session_scratch_alloc(sess)) {
+        s = GEIST_E_OOM;
     }
-    state->sess = prev;
-
+    if (s == GEIST_OK && opts != nullptr) {
+        transformer_session_apply_opts(sess, opts);
+    }
     if (s != GEIST_OK) {
         transformer_session_free(state, sess);
         return nullptr;
@@ -1259,6 +1261,7 @@ void transformer_session_free(struct transformer_arch_state   *state,
         sess->scratch_pool_used  = 0;
     }
     geist_sampler_workspace_destroy(&sess->sampler_ws);
+    transformer_spec_session_scratch_free(sess);
 
     /* P1.4.c: release the combined 14-slot KV pointer block. The
      * underlying geist_buffer headers were destroyed above; this just
@@ -1284,24 +1287,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
         sess->v_residual    = nullptr;
     }
 
-    /* If this session was the currently-active one, detach. The caller
-     * (typically engine session_destroy) usually re-attaches the model
-     * default first, but defensively clear the slot if we're freeing it
-     * directly. */
-    if (state != nullptr && state->sess == sess) {
-        state->sess = state->default_sess;
-    }
-
     void *sp = sess;
     safe_free(&sp);
-}
-
-void transformer_session_attach(struct transformer_arch_state   *state,
-                                struct transformer_arch_session *sess) {
-    if (state == nullptr) {
-        return;
-    }
-    state->sess = (sess != nullptr) ? sess : state->default_sess;
 }
 
 struct transformer_arch_session *transformer_default_session(struct transformer_arch_state *state) {

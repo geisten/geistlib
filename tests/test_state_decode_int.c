@@ -53,6 +53,7 @@ int main(void) {
     /* ---- v2 path ---- */
     struct transformer_arch_state *st = nullptr;
     s                                 = transformer_state_create(be, model_path, nullptr, &st);
+    struct transformer_arch_session *sess [[maybe_unused]] = transformer_default_session(st);
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "state_create: %s — %s\n",
@@ -71,7 +72,7 @@ int main(void) {
     const geist_token_t prompt[] = {HELLO_TOKEN};
     geist_token_t       next     = -1;
     for (size_t i = 0; i < sizeof prompt / sizeof prompt[0]; i++) {
-        s = transformer_decode_step(st, prompt[i], &next);
+        s = transformer_decode_step(sess, prompt[i], &next);
         if (s != GEIST_OK) {
             fprintf(stderr,
                     "v2 decode_step prefill[%zu] failed: %s — %s\n",
@@ -89,7 +90,7 @@ int main(void) {
     geist_token_t _decoded[N_DECODE_STEPS];
     _decoded[0] = next;
     for (int t = 1; t < N_DECODE_STEPS; t++) {
-        s = transformer_decode_step(st, _decoded[t - 1], &_decoded[t]);
+        s = transformer_decode_step(sess, _decoded[t - 1], &_decoded[t]);
         if (s != GEIST_OK) {
             fprintf(stderr,
                     "v2 decode_step[%d] failed: %s — %s\n",

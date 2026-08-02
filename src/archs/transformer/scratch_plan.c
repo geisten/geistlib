@@ -9,11 +9,12 @@
 #include <string.h>
 
 void transformer_scratch_plan_build(const struct transformer_arch_state *st,
+                                    size_t                               m_max,
                                     struct transformer_scratch_plan     *out) {
 
     memset(out, 0, sizeof(*out));
-    const size_t F = sizeof(float);
-    const size_t M = (st->sess != NULL && st->sess->m_max > 0) ? st->sess->m_max : st->m_max;
+    const size_t F            = sizeof(float);
+    const size_t M            = (m_max > 0) ? m_max : st->m_max;
     const size_t head_dim_max = 512;
     const size_t q_out_max    = st->n_q_heads * head_dim_max;
     const size_t kv_out_max   = st->n_kv_heads * head_dim_max;

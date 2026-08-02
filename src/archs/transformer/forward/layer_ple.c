@@ -43,25 +43,25 @@ static struct transformer_forward_profile g_ple_profile = {
 
 enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_forward_ctx *ctx) {
 
-    struct transformer_arch_state    *st = ctx->st;
-    struct transformer_layer_weights *L  = ctx->L;
-    struct geist_backend             *be = ctx->be;
-    const struct geist_backend_vtbl  *v  = ctx->v;
+    struct transformer_arch_state    *st   = ctx->st;
+    struct transformer_arch_session  *sess = ctx->sess;
+    struct transformer_layer_weights *L    = ctx->L;
+    struct geist_backend             *be   = ctx->be;
+    const struct geist_backend_vtbl  *v    = ctx->v;
     enum geist_status                 s;
 
-    struct geist_tensor t_h_post_ff_2d =
-            view_2d(st->sess->scratch_h_post_ff, ctx->SEQ, st->d_model);
-    struct geist_tensor t_h_out_2d = view_2d(ctx->h_out_buf, ctx->SEQ, st->d_model);
+    struct geist_tensor t_h_post_ff_2d = view_2d(sess->scratch_h_post_ff, ctx->SEQ, st->d_model);
+    struct geist_tensor t_h_out_2d     = view_2d(ctx->h_out_buf, ctx->SEQ, st->d_model);
     if (ctx->apply_ple && ctx->per_layer_input_buf != nullptr) {
         const bool          prof = transformer_profile_enabled(&g_ple_profile);
         uint64_t            t0;
         struct geist_tensor t_gate_ple_2d =
-                view_2d(st->sess->scratch_gate_ple, ctx->SEQ, st->hidden_per_layer);
+                view_2d(sess->scratch_gate_ple, ctx->SEQ, st->hidden_per_layer);
         /* When the full per-token slab [seq, n_layers*hpl] is passed
          * through (batched GPU backends skip the per-layer gather), read
          * this layer's slice as a strided view; a pre-gathered buffer is
          * contiguous. */
-        const bool ple_slab = ctx->per_layer_input_buf == st->sess->scratch_per_layer_input;
+        const bool          ple_slab    = ctx->per_layer_input_buf == sess->scratch_per_layer_input;
         struct geist_tensor t_ple_in_2d = view_2d_at(
                 ctx->per_layer_input_buf,
                 ple_slab ? (size_t) ctx->layer_idx * (size_t) st->hidden_per_layer * sizeof(float)
@@ -80,7 +80,7 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             struct geist_tensor t_w_post_per_1d =
                     view_1d(L->post_per_layer_norm.buffer, st->d_model);
             struct geist_tensor t_proj_scratch_2d =
-                    view_2d(st->sess->scratch_proj_ple, ctx->SEQ, st->d_model);
+                    view_2d(sess->scratch_proj_ple, ctx->SEQ, st->d_model);
             t0 = prof ? transformer_profile_now_ns() : 0;
             s  = v->ple_block(be,
                               &t_h_post_ff_2d,
@@ -102,8 +102,8 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
         t0 = prof ? transformer_profile_now_ns() : 0;
         s  = linear_w_or_legacy(be,
                                 v,
-                                st->sess->scratch_h_post_ff,
-                                st->sess->scratch_gate_ple,
+                                sess->scratch_h_post_ff,
+                                sess->scratch_gate_ple,
                                 &L->per_layer_gate_w,
                                 ctx->seq,
                                 &t_h_post_ff_2d,
@@ -131,19 +131,18 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             }
         }
 
-        struct geist_tensor t_proj_ple_2d =
-                view_2d(st->sess->scratch_proj_ple, ctx->SEQ, st->d_model);
-        struct geist_tensor t_w_post_per = view_1d(L->post_per_layer_norm.buffer, st->d_model);
-        t0                               = prof ? transformer_profile_now_ns() : 0;
-        s                                = linear_w_or_legacy(be,
-                                                              v,
-                                                              st->sess->scratch_gate_ple,
-                                                              st->sess->scratch_proj_ple,
-                                                              &L->per_layer_proj_w,
-                                                              ctx->seq,
-                                                              &t_gate_ple_2d,
-                                                              &L->per_layer_proj,
-                                                              &t_proj_ple_2d);
+        struct geist_tensor t_proj_ple_2d = view_2d(sess->scratch_proj_ple, ctx->SEQ, st->d_model);
+        struct geist_tensor t_w_post_per  = view_1d(L->post_per_layer_norm.buffer, st->d_model);
+        t0                                = prof ? transformer_profile_now_ns() : 0;
+        s                                 = linear_w_or_legacy(be,
+                                                               v,
+                                                               sess->scratch_gate_ple,
+                                                               sess->scratch_proj_ple,
+                                                               &L->per_layer_proj_w,
+                                                               ctx->seq,
+                                                               &t_gate_ple_2d,
+                                                               &L->per_layer_proj,
+                                                               &t_proj_ple_2d);
         transformer_profile_add(&g_ple_profile, PLE_PROJ, t0);
         if (s != GEIST_OK) {
             return s;
@@ -169,10 +168,10 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
         }
     } else {
         const size_t bytes = ctx->seq * st->d_model * sizeof(float);
-        uint8_t     *src   = (uint8_t *) v->buffer_map(st->sess->scratch_h_post_ff);
+        uint8_t     *src   = (uint8_t *) v->buffer_map(sess->scratch_h_post_ff);
         uint8_t     *dst   = (uint8_t *) v->buffer_map(ctx->h_out_buf);
         memcpy(dst, src, bytes);
-        v->buffer_unmap(st->sess->scratch_h_post_ff);
+        v->buffer_unmap(sess->scratch_h_post_ff);
         v->buffer_unmap(ctx->h_out_buf);
     }
     return GEIST_OK;
