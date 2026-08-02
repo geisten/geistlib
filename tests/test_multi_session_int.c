@@ -105,14 +105,18 @@ int main(void) {
     printf("reference A: [%d %d %d]\n", ref_A[0], ref_A[1], ref_A[2]);
     printf("reference B: [%d %d %d]\n", ref_B[0], ref_B[1], ref_B[2]);
 
-    /* First-token-differs check: same model + different prompts must
-     * give different next tokens. Otherwise the prompt isn't getting
-     * through to the session's KV cache. */
-    if (ref_A[0] == ref_B[0]) {
+    /* Streams-differ check: same model + different prompts must give
+     * different continuations SOMEWHERE in the window — otherwise the
+     * prompt isn't reaching the session's KV cache. Compared over the
+     * whole window, not just token 0: a weak model may legitimately
+     * predict the same first token for both prompts (bitnet-large gives
+     * 29892 for both "Hello" and "Goodbye", then diverges). */
+    if (memcmp(ref_A, ref_B, sizeof ref_A) == 0) {
         fprintf(stderr,
-                "FAIL: ref_A[0]==ref_B[0]==%d — different prompts produced "
-                "the same first token (prompt didn't reach session KV)\n",
-                ref_A[0]);
+                "FAIL: ref_A == ref_B over all %d tokens — different prompts "
+                "produced identical continuations (prompt didn't reach "
+                "session KV)\n",
+                N_DECODE);
         goto fail;
     }
 
