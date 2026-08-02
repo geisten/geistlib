@@ -97,8 +97,16 @@ jobs:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
 
-      - name: Integration + e2e tests (real model)
+      # GEIST_STRICT_FIXTURES=gguf turns "GGUF model not found" from a skip
+      # into a failure. Scoped to THIS step on purpose: it is the only one
+      # where the model is guaranteed present (cached + fetched above). The
+      # unit step runs AUTO_FETCH_MODEL=0 and must keep skipping cleanly.
+      # Without this, a rotated cache key or an HTTP 404 would silently drop
+      # every model-gated test and leave the suite green.
+      - name: Integration + e2e tests (real model, fixtures mandatory)
         if: matrix.target == 'linux'
+        env:
+          GEIST_STRICT_FIXTURES: gguf
         run: make test-int test-e2e TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
       # Coarse Q4_K perf-regression gate on the (noisy) shared runner: generous
