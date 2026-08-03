@@ -13,6 +13,10 @@ chmod +x geist-bitnet-linux-arm64
 ./geist-bitnet-linux-arm64 "The capital of France is"
 ```
 
+Run it with no arguments for a minimal REPL (each line completes
+independently; the model stays loaded). Full guide — cooling, cold-start
+times, errors, model limits: [`docs/PI5_BITNET.md`](docs/PI5_BITNET.md).
+
 <p align="center">
   <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: real-time BitNet b1.58 2B-4T text generation from a single dependency-free binary" width="100%">
 </p>
@@ -37,7 +41,7 @@ there, or use the [prebuilt SDK](#embed-the-library).
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-orange.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#build-from-source)
-[![Status](https://img.shields.io/badge/status-experimental%20(v0.8.1)-yellow.svg)](#status)
+[![Status](https://img.shields.io/badge/status-experimental%20(v0.8.2)-yellow.svg)](#status)
 [![Discussions](https://img.shields.io/badge/Discussions-ask%20%26%20share-5865F2.svg)](https://github.com/geisten/geistlib/discussions)
 [![Good first issues](https://img.shields.io/github/issues/geisten/geistlib/good%20first%20issue?label=good%20first%20issue&color=7057ff)](https://github.com/geisten/geistlib/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
@@ -48,7 +52,7 @@ there, or use the [prebuilt SDK](#embed-the-library).
 ## How it works
 
 geistlib is **one C23 inference engine** — no Python, no runtime, no container,
-a `<1 MB` static binary with zero dependencies. Three properties carry the
+a small static binary with zero dependencies (the engine itself is <1 MB; the slim CLI ships at ~2 MB). Three properties carry the
 Pi 5 result:
 
 - **Ternary kernels, first-class.** BitNet b1.58 weighs every parameter as
@@ -68,7 +72,7 @@ is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Bring your own model
 
-The slim CLI (`geist-linux-arm64`, <1 MB, same [release page](https://github.com/geisten/geistlib/releases/latest))
+The slim CLI (`geist-linux-arm64`, ~2 MB, same [release page](https://github.com/geisten/geistlib/releases/latest))
 runs any GGUF that carries its own tokenizer:
 
 ```bash
@@ -140,7 +144,7 @@ backends (Metal, Vulkan): [`docs/BACKENDS.md`](docs/BACKENDS.md).
 
 ## Status
 
-`geistlib` is **v0.8.1 — experimental**. The `STABLE` core (load → session →
+`geistlib` is **v0.8.2 — experimental**. The `STABLE` core (load → session →
 decode → tokenize) is the part to build on; `EXPERIMENTAL`-tagged surfaces
 (KV-cache modes, speculative decode, multimodal attach, GPU backends) may
 change between minor versions. It runs Gemma 4 (text + vision + audio) end to
@@ -192,6 +196,7 @@ The complete map is in [`docs/README.md`](docs/README.md).
 | Document | What it covers |
 | :-- | :-- |
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Embed the library in two minutes. |
+| [`docs/PI5_BITNET.md`](docs/PI5_BITNET.md) | The Pi 5 BitNet binary — install, speed, errors, model limits. |
 | [`docs/MODELS.md`](docs/MODELS.md) | Supported models — Gemma (vision/audio), Llama, ternary BitNet. |
 | [`docs/BACKENDS.md`](docs/BACKENDS.md) | CPU backends and the experimental Metal / Vulkan GPU paths. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, kernel binding, and why C. |
@@ -208,7 +213,7 @@ sidebar (from [`CITATION.cff`](CITATION.cff)), or use:
   author  = {Schlegel, Germar},
   title   = {geistlib: a dependency-free inference engine for small LLMs},
   year    = {2026},
-  version = {0.8.1},
+  version = {0.8.2},
   url     = {https://github.com/geisten/geistlib}
 }
 ```

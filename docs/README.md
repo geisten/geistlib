@@ -3,6 +3,7 @@
 This repository documents the application-neutral Geist engine:
 
 - `QUICKSTART.md`: C-library entry points
+- `PI5_BITNET.md`: user guide for the self-contained Pi 5 BitNet binary
 - `MODELS.md`: supported models — Gemma (vision/audio), Llama, ternary BitNet
 - `BACKENDS.md`: CPU backends and the experimental Metal/Vulkan GPU paths
 - `ARCHITECTURE.md`: engine layers and runtime architecture
