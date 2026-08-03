@@ -387,13 +387,28 @@ jobs:
           "$SDE_PATH/sde64" -spr -- bin/linux/release/tests/test_x86_isa_dispatch_unit
       - name: AVX-512 kernel tests under SDE (scalar-parity built in)
         run: |
+          set -eo pipefail
+          mkdir -p ci-diagnostics
+          { echo "=== CPU (host, not what SDE emulates) ==="; lscpu || true; } \
+            > ci-diagnostics/avx512-env.txt
           for t in test_x86_isa_dispatch_unit test_q4k_to_w4a8_unit \
                    test_q4k_to_q4kx8_unit test_q4kx8_gemm_unit \
                    test_q6k_gemv_unit test_q8w_gemv_unit test_f32q_unit \
                    test_i2s_gemv_unit test_gelu_x86_unit; do
             echo "=== $t (sde -spr) ==="
-            "$SDE_PATH/sde64" -spr -- "bin/linux/release/tests/$t"
+            "$SDE_PATH/sde64" -spr -- "bin/linux/release/tests/$t" 2>&1 \
+              | tee -a ci-diagnostics/avx512-tests.txt
           done
+      # The dispatcher tier this run actually selected is the evidence the
+      # AVX-512 paths ran at all; keep it retrievable rather than buried in a
+      # log that ages out. (#184)
+      - name: Upload AVX-512 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: avx512-sde-diagnostics
+          path: ci-diagnostics/
+          if-no-files-found: warn
 
   # Vulkan on every PR (#182), software tier: Mesa's lavapipe is a real
   # Vulkan implementation (loader -> ICD -> SPIR-V pipeline), so the
@@ -426,15 +441,44 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             gcc-14 ccache libvulkan-dev libvulkan1 mesa-vulkan-drivers vulkan-tools
+      # Kept as an artifact, not just a log line: lavapipe is a moving target
+      # (Mesa updates land under us), so when this job goes red the first
+      # question is what changed in the environment. if: always() so the
+      # diagnostics survive exactly the run that needs them. (#182)
       - name: Report Vulkan environment
-        run: vulkaninfo --summary || true
+        run: |
+          mkdir -p ci-diagnostics
+          {
+            echo "=== vulkaninfo --summary ==="
+            vulkaninfo --summary 2>&1 || echo "vulkaninfo failed"
+            echo
+            echo "=== mesa / loader package versions ==="
+            dpkg-query -W -f '${Package} ${Version}\n' \
+              mesa-vulkan-drivers libvulkan1 libvulkan-dev 2>&1 || true
+          } | tee ci-diagnostics/vulkan-env.txt
       - name: Build (vulkan + shipped x86 CPU backends)
         run: make TARGET=linux CC="ccache gcc-14" BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
       - name: Vulkan tests on lavapipe (SKIP = failure)
+        # pipefail is the load-bearing part: piping through `tee` would
+        # otherwise hand back tee's exit code and every test would look green.
+        # (-e is already GitHub's default for run steps; kept explicit so the
+        # guarantee does not depend on that default.) Exit 77 (SKIP) fails the
+        # job by construction.
         run: |
-          bin/linux/release/tests/test_backend_vulkan_registry_unit
-          bin/linux/release/tests/test_backend_vulkan_buffer_unit
-          bin/linux/release/tests/test_backend_vulkan_linear_parity
+          set -eo pipefail
+          for t in test_backend_vulkan_registry_unit \
+                   test_backend_vulkan_buffer_unit \
+                   test_backend_vulkan_linear_parity; do
+            echo "=== $t ==="
+            bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
+          done
+      - name: Upload Vulkan diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-lavapipe-diagnostics
+          path: ci-diagnostics/
+          if-no-files-found: warn
 
   # AGENT.md requires the code to be ASan/UBSan-friendly; nothing enforced it.
   # Build MODE=asan (-fsanitize=address,undefined) and run the model-free unit
