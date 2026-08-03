@@ -56,10 +56,12 @@ jobs:
       # artifact is libgeist.a plus headers: link flags like -static belong to
       # whoever links it, not to building an archive, so this job passes none.
       - name: Build + smoke + package libgeist SDK
+        env:
+          EMBED_MODEL_URL: ${{ inputs.embed_model_url || 'https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf' }}
         run: |
-          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+          docker run --rm -v "$PWD:/src" -w /src -e EMBED_MODEL_URL alpine:3.21 sh -c '
             set -e
-            apk add --no-cache build-base linux-headers
+            apk add --no-cache build-base linux-headers curl
             make TARGET=linux CC=gcc GEMM_PROVIDER=native lib
             mkdir -p dist/libgeist-linux-arm64/include
             cp lib/linux/release/libgeist.a dist/libgeist-linux-arm64/
@@ -77,12 +79,50 @@ jobs:
             /tmp/sdk_smoke
             cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/agent_smoke
             /tmp/agent_smoke
+
+            # ---- CLI binaries (the README first screen, geistlib#: one binary) --
+            # geist-linux-arm64: the slim bring-your-own-GGUF CLI (<1 MB).
+            # Fully static (musl + libgomp.a): runs on any 64-bit Pi OS with
+            # no toolchain, no Python, no shared libs.
+            cc -std=c23 -static -I "$d/include" examples/simple_generate.c \
+              "$d/libgeist.a" -fopenmp -lm -o dist/geist-linux-arm64
+            # No model in this smoke: exit 2 + usage is the contract.
+            ./dist/geist-linux-arm64 2>/dev/null || [ $? -eq 2 ]
+
+            # geist-bitnet-linux-arm64: same CLI with the MIT-licensed BitNet
+            # b1.58 2B-4T GGUF folded in via .incbin — literally one file,
+            # ~1.2 GB. The weights alias zero-copy from .rodata and are
+            # demand-paged like an mmap, so RAM behavior on a 4 GB Pi equals
+            # the file-based load. GNU ld handles the >1 GB section (ld64
+            # does not, which is why macOS gets no embedded artifact).
+            curl -fLsS --retry 3 -o /tmp/model.gguf "$EMBED_MODEL_URL"
+            {
+              echo "  .section .rodata"
+              echo "  .balign 64"
+              echo "  .globl geist_model_start"
+              echo "geist_model_start:"
+              echo "  .incbin \"/tmp/model.gguf\""
+              echo "  .globl geist_model_end"
+              echo "geist_model_end:"
+            } > /tmp/model_blob.s
+            cc -std=c23 -static -DGEIST_EMBED_MODEL -I "$d/include" \
+              examples/simple_generate.c /tmp/model_blob.s \
+              "$d/libgeist.a" -fopenmp -lm -o dist/geist-bitnet-linux-arm64
+            # Real smoke: load the embedded 2B model and decode a few tokens.
+            OMP_WAIT_POLICY=active ./dist/geist-bitnet-linux-arm64 "The capital of France is" 8
           '
           tar -C dist -czf libgeist-linux-arm64.tar.gz libgeist-linux-arm64
       - uses: actions/upload-artifact@v4
         with:
           name: libgeist-linux-arm64
           path: libgeist-linux-arm64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geist-cli-linux-arm64
+          path: |
+            dist/geist-linux-arm64
+            dist/geist-bitnet-linux-arm64
+          compression-level: 0
 
   linux-x86_64:
     name: linux-x86_64 (musl-static, AVX-512, dependency-free)
@@ -178,10 +218,11 @@ jobs:
         # alone is not a Release. Create it from the tag (auto-generated notes)
         # if absent, then attach the per-platform tarballs. Idempotent.
         run: |
-          find dist -name '*.tar.gz' -type f -exec sha256sum {} \; | \
+          find dist \( -name '*.tar.gz' -o -name 'geist-*' \) -type f -exec sha256sum {} \; | \
             sed 's#  dist/[^/]*/#  #' | sort -k2 > SHA256SUMS
+          chmod +x dist/*/geist-* || true
           gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
             || gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
                  --title "geist ${GITHUB_REF_NAME}" --generate-notes --verify-tag
-          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS dist/*/*.tar.gz \
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS dist/*/*.tar.gz dist/*/geist-* \
             --repo "${GITHUB_REPOSITORY}" --clobber

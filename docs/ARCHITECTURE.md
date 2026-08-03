@@ -234,3 +234,29 @@ Per directory, the file to open first:
 | `src/formats/gguf/` | `common.c` | per-quant decode (one file per format) |
 | `src/io/` | `gguf_reader.c` | GGUF/safetensors file parsing |
 | `tools/` | `geist.c` | the demo CLI and the header-only SDK |
+
+---
+
+## Why C?
+
+Not because it is the fastest (a systems language like Rust ties on raw
+performance) and certainly not because it is the safest (it is the opposite).
+The core reason is **reach, not speed**:
+
+> C is the substrate with maximal reach and minimal assumptions — the universal
+> ABI and the everywhere-available, transparent compiler that every platform and
+> every embedding language already speaks. We knowingly pay for that reach with
+> memory safety.
+
+This maps directly onto the first promise — *one file, runs anywhere, embeds
+anywhere*: the header **is** the ABI (any language FFIs in with no shim), every
+architecture/OS/accelerator toolchain speaks C first, and the source maps almost
+1:1 to the emitted instructions — which matters when you reason about NEON
+kernels by the cycle. Performance is table-stakes here, shared with the
+alternatives; what picks C is ubiquity + zero-ceremony interop + transparency.
+
+The honest counter-position: **if memory safety outweighed ubiquity and
+simplicity for you, Rust would be the better choice.** We deliberately weighed
+it the other way, and offset the safety cost with strict warnings
+(`-Werror -Wshadow -Wundef`), ASan/UBSan/TSan CI (`make MODE=asan`), bit-exact
+golden tests, and a small auditable core (the stable text path is ~70 lines).
