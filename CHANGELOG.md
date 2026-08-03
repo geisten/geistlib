@@ -10,7 +10,29 @@ minor release.
 
 ## [0.8.0] — 2026-08-02
 
+### Added
+
+- **The CI now executes the architecture it advertises**, rather than merely
+  compiling it. Metal builds on every PR and runs a `cpu_scalar` parity test on
+  the hosted runner's real GPU (#202). Vulkan runs the registry, buffer and
+  linear-parity tests on Mesa lavapipe, through the full loader→ICD→SPIR-V
+  chain (#204). AVX-512/VNNI runs the shipped configuration under Intel SDE,
+  with a dispatch-proof test that makes a silent downgrade to a lower tier a
+  hard failure (#203). In each case a skip is a failure, so a missing device or
+  feature can no longer read as a pass.
+- **A pinned Llama fixture.** SmolLM2-360M is content-pinned by SHA-256 and
+  mandatory on both Linux architectures, so the Llama path is executed rather
+  than skipped (#194).
+- **A per-subsystem coverage ratchet** (`MODE=cov`, versioned baselines,
+  0.5 pp tolerance) with a control test that proves the gate fires (#195).
+
 ### Fixed
+
+- **A data race in `cpu_x86` under concurrent sessions.** The shared activation
+  scratch raced exactly like the `cpu_neon` bug `test_multi_session_parallel_int`
+  caught; the cure is ported — per-(backend, thread) workspaces with a
+  generation-checked TLS cache. A `MODE=tsan` CI leg now runs the multi-session
+  tests on x86_64 (#193).
 
 - **`geist_version_components()` reported the wrong version.**
   `GEIST_VERSION_MINOR` still read `6` while `GEIST_VERSION_STRING` said
