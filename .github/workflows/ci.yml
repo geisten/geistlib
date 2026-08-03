@@ -378,6 +378,57 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: make MODE=asan test-unit TARGET=linux CC="ccache gcc-14" AUTO_FETCH_MODEL=0
 
+  # The concurrent-session contract (#183): distinct sessions of one model may
+  # run from different threads. MODE=tsan proved it on cpu_neon (and caught the
+  # shared-workspace race there); this leg proves it on the x86 backend, whose
+  # workspace uses the same per-thread mechanism. Only the two multi-session
+  # tests run — a full suite under TSan would blow the job budget for no extra
+  # coverage of the cross-session races this job exists to catch.
+  tsan:
+    name: TSan multi-session (Linux x86_64, cpu_x86)
+    runs-on: ubuntu-24.04
+    # TSan is 5-15x on top of -O1 and serialized OMP: the parallel test's
+    # serial reference prefill dominates. 75 min fits it with headroom.
+    timeout-minutes: 75
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v4
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-tsan-${{ github.run_id }}
+          restore-keys: ccache-tsan-
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 ccache
+      - name: Cache reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts
+          key: geist-model-gemma4-e2b-q4km-v1
+      # Build ONLY the two multi-session binaries (file targets), not `bin`:
+      # the cross-session races live in engine/arch/backend code these two
+      # exercise, and building 100+ test TUs under -fsanitize=thread buys
+      # nothing but wall-clock and -O1-only warning noise in unrelated tests.
+      - name: Build (TSan) + fetch model
+        run: |
+          make MODE=tsan TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE \
+            bin/linux/tsan/tests/test_multi_session_parallel_int
+          make fetch-model
+      - name: Multi-session tests under TSan
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        # Only the PARALLEL test: the serial interleave variant runs in the
+        # regular int suites and exercises no concurrency — under TSan it
+        # just burned 17 of the 30 minutes that then killed this leg.
+        run: |
+          export GEIST_GGUF_PATH="$PWD/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf"
+          bin/linux/tsan/tests/test_multi_session_parallel_int
+
   format:
     name: clang-format
     # ARM64 runner: `make format-check` auto-detects the target, and the linux

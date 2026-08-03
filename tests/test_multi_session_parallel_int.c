@@ -103,7 +103,13 @@ int main(void) {
     }
 
     struct geist_backend *be = nullptr;
-    enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    /* Best available CPU backend, in kernel-speed order. cpu_x86 matters
+     * twice on the TSan leg: it is the backend whose per-thread workspace
+     * this test gates, and the scalar fallback it silently took before was
+     * both blind to that code and slow enough to blow the job timeout. */
+    enum geist_status s = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    if (s != GEIST_OK)
+        s = geist_backend_create("cpu_x86", nullptr, nullptr, &be);
     if (s != GEIST_OK)
         s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
     if (s != GEIST_OK) {

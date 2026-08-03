@@ -38,7 +38,9 @@ else ifeq ($(MODE),asan)
     LDFLAGS_MODE := -fsanitize=address,undefined
 else ifeq ($(MODE),tsan)
     # -Wno-unused-function: OMP-only kernel helpers go unused without -fopenmp.
-    CFLAGS_MODE  := -O1 -g -fsanitize=thread -fno-omit-frame-pointer -Wno-unused-function
+    # -Wno-unknown-pragmas: gcc (unlike clang) makes the now-unknown `#pragma
+    # omp` an error under -Werror once -fopenmp is stripped.
+    CFLAGS_MODE  := -O1 -g -fsanitize=thread -fno-omit-frame-pointer -Wno-unused-function -Wno-unknown-pragmas
     LDFLAGS_MODE := -fsanitize=thread
     # Strip OpenMP from the target flags (see mode table above).
     CFLAGS_TARGET  := $(filter-out -Xpreprocessor -fopenmp,$(CFLAGS_TARGET))
