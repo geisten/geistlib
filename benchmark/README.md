@@ -19,6 +19,50 @@ both engines, each at its best thread count, after a discarded warm-up.
 > geist is still chasing there. On **ternary BitNet** geist decodes ~2× bitnet.cpp
 > on the Pi 5 and beats it on x86 too.
 
+## Don't trust the numbers — run them
+
+Every published speedup is one command away from being checked on *your*
+hardware:
+
+```sh
+make bench
+```
+
+It downloads the BitNet GGUF, runs a frozen protocol (warm-up, then 10 measured
+repeats at 32/128/512-token prompts), and — if it finds a `llama.cpp` or
+`bitnet.cpp` binary on your machine — measures **that engine in the same run,
+against the byte-identical GGUF, after the board has cooled back to the
+temperature geist started from**. It prints run-to-run spread alongside every
+number and writes nothing to the repository. Absolute t/s is hardware-bound;
+the **ratio on your own box** is the number that travels.
+
+Greedy output is bit-identical to the `cpu_scalar` reference before any speedup
+is quoted — a faster engine that produces different tokens is not iso-quality.
+The protocol is frozen in [`../tools/bench_reproduce.py`](../tools/bench_reproduce.py);
+every row in [`reference_runs.json`](reference_runs.json) came from it.
+
+## Full CPU numbers
+
+| model | platform | metric | **geistlib** | baseline |
+| :-- | :-- | :-- | --: | --: |
+| Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | total t/s (32p+128d) | **8.8** | 8.2 *(llama.cpp)* |
+| Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | decode t/s | **7.5** | 6.8 *(llama.cpp)* |
+| Gemma 4 E2B-it (Q4_K_M) | **M1 Max** | prefill t/s (pp1024) | **144** | 97 *(llama.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s (32p) | **17.9** | 9.1 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s (512p) | **15.0** | — *(no like-for-like)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | prefill t/s (512p) | 45.5 | 45.8 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | prefill t/s (pp128) | **1098** | 679.9 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | decode t/s (tg128) | **103.1** | 54.3 *(bitnet.cpp)* |
+| Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | prefill t/s | **512** | 495 *(llama.cpp)* |
+| Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | decode t/s | **48.6** | 44.1 *(llama.cpp)* |
+| Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | prefill t/s | **351** | 346 *(llama.cpp)* |
+| Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | decode t/s | 34.1 | 34.5 *(llama.cpp)* |
+
+<sub>**Baseline versions:** llama.cpp `d05fe1d` (Pi 5, M1 Max) · `b9827` (x86) ·
+bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `master`.
+GPU (Metal/Vulkan) numbers: [`../docs/BACKENDS.md`](../docs/BACKENDS.md).
+Sub-parity rows are kept on purpose — nothing cherry-picked.</sub>
+
 ## Which file answers which question
 
 | Question | File |

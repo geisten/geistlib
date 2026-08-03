@@ -3,6 +3,8 @@
 This repository documents the application-neutral Geist engine:
 
 - `QUICKSTART.md`: C-library entry points
+- `MODELS.md`: supported models — Gemma (vision/audio), Llama, ternary BitNet
+- `BACKENDS.md`: CPU backends and the experimental Metal/Vulkan GPU paths
 - `ARCHITECTURE.md`: engine layers and runtime architecture
 - `DEPLOY.md`: building the library and consuming the packaged SDK
 - `CI_COVERAGE.md`: what each CI job actually verifies
