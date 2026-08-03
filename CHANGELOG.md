@@ -8,6 +8,28 @@ minor release.
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-08-03
+
+### Added
+- **Prebuilt CLI binaries** on the release page (linux-arm64, fully static
+  musl): `geist-linux-arm64` (<1 MB, runs any GGUF) and
+  `geist-bitnet-linux-arm64` (~1.2 GB, the MIT-licensed BitNet b1.58 2B-4T
+  folded in via `.incbin` — one file, no model setup; weights alias zero-copy
+  from `.rodata` and are demand-paged like an mmap).
+- `docs/MODELS.md` and `docs/BACKENDS.md` — the model table and the
+  experimental GPU backends, moved out of the README.
+
+### Changed
+- **README rebuilt around the Pi 5 promise**: install command, run example and
+  the three measured numbers (4 GB Pi, 15–18 decode t/s, ~1.2 GB download)
+  first; engine internals, SDK and comparisons after. Benchmark methodology
+  and the full CPU table live in `benchmark/README.md`; "Why C?" moved to
+  `docs/ARCHITECTURE.md`.
+- `examples/simple_generate.c` stops at the model's EOS token and defaults to
+  256 new tokens when no count is given (an untemplated completion can run to
+  the end of the context without ever emitting EOS); supports being built with
+  an embedded model (`-DGEIST_EMBED_MODEL`).
+
 ## [0.8.0] — 2026-08-02
 
 ### Added
