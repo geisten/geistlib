@@ -29,9 +29,24 @@ check "README status badge" "$badge"
 check "README Status line"  "$body"
 check "README citation"     "$cite"
 
+# CITATION.cff feeds the repository's "Cite this repository" button. It was not
+# checked here, and drifted two releases behind unnoticed.
+cff=$(sed -n 's/^version: "\([0-9][0-9.]*\)".*/\1/p' CITATION.cff | head -1)
+check "CITATION.cff version" "$cff"
+
+# The numeric components are a second source of the same fact, and
+# geist_version_components() is what a consumer version-gates on. In 0.7.0
+# MINOR still read 6, so the library reported 0.6.0 while the string said
+# 0.7.0. Reassemble and compare rather than trusting them to be edited together.
+maj=$(sed -n 's/.*GEIST_VERSION_MAJOR \([0-9][0-9]*\).*/\1/p' include/geist.h | head -1)
+min=$(sed -n 's/.*GEIST_VERSION_MINOR \([0-9][0-9]*\).*/\1/p' include/geist.h | head -1)
+pat=$(sed -n 's/.*GEIST_VERSION_PATCH \([0-9][0-9]*\).*/\1/p' include/geist.h | head -1)
+check "GEIST_VERSION_MAJOR/MINOR/PATCH" "$maj.$min.$pat"
+
 if [ "$fail" -eq 0 ]; then
-  echo "version OK: $hdr  (include/geist.h == README badge/status/citation)"
+  echo "version OK: $hdr  (geist.h string == components == README == CITATION.cff)"
 else
-  echo "→ source of truth is include/geist.h ($hdr); update the README to match."
+  echo "→ source of truth is include/geist.h GEIST_VERSION_STRING ($hdr);"
+  echo "  update the mismatching spots above to match."
   exit 1
 fi

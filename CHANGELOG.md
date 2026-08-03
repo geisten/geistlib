@@ -8,6 +8,53 @@ minor release.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-02
+
+### Added
+
+- **The CI now executes the architecture it advertises**, rather than merely
+  compiling it. Metal builds on every PR and runs a `cpu_scalar` parity test on
+  the hosted runner's real GPU (#202). Vulkan runs the registry, buffer and
+  linear-parity tests on Mesa lavapipe, through the full loader→ICD→SPIR-V
+  chain (#204). AVX-512/VNNI runs the shipped configuration under Intel SDE,
+  with a dispatch-proof test that makes a silent downgrade to a lower tier a
+  hard failure (#203). In each case a skip is a failure, so a missing device or
+  feature can no longer read as a pass.
+- **A pinned Llama fixture.** SmolLM2-360M is content-pinned by SHA-256 and
+  mandatory on both Linux architectures, so the Llama path is executed rather
+  than skipped (#194).
+- **A per-subsystem coverage ratchet** (`MODE=cov`, versioned baselines,
+  0.5 pp tolerance) with a control test that proves the gate fires (#195).
+
+### Fixed
+
+- **A data race in `cpu_x86` under concurrent sessions.** The shared activation
+  scratch raced exactly like the `cpu_neon` bug `test_multi_session_parallel_int`
+  caught; the cure is ported — per-(backend, thread) workspaces with a
+  generation-checked TLS cache. A `MODE=tsan` CI leg now runs the multi-session
+  tests on x86_64 (#193).
+
+- **`geist_version_components()` reported the wrong version.**
+  `GEIST_VERSION_MINOR` still read `6` while `GEIST_VERSION_STRING` said
+  `"0.7.0"`, so a consumer version-gating on the numeric components saw 0.6.0.
+  `scripts/check-version.sh` compared the string against the README but never
+  against the components, so nothing caught it; it does now, and the check is
+  verified to fail when the two disagree.
+- **`CITATION.cff` was two releases behind** (`0.6.0`), which is what the
+  repository's "Cite this repository" button reads. Also covered by
+  `check-version.sh` now.
+- **`make lib` works on a musl system.** `-std=c23` (not `gnu23`) defines
+  `__STRICT_ANSI__`, under which musl hides everything outside ISO C —
+  `strdup` included — so a plain `make lib` on Alpine died on an implicit
+  declaration. `mk/target-linux.mk` now defines `_GNU_SOURCE` itself. The
+  release workflow passed that flag by hand, which is why CI was green while
+  the documented build was not; the workflow no longer needs to.
+- **Target detection works without bash.** `mk/detect-target.sh` carried a
+  `#!/usr/bin/env bash` shebang while using no bash feature at all. On a
+  container without bash it produced an empty `TARGET`, and the build died on
+  `mk/target-.mk: No such file or directory`. It is `#!/bin/sh` now, and an
+  unusable `TARGET` fails with a message that names the available targets.
+
 ### Removed
 
 - `install.sh`. It downloaded `geist` / `geist-bitnet` from this repository's

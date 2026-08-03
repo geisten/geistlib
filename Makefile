@@ -30,6 +30,13 @@ MODE   ?= release
 all: lib bin
 
 # Pull in target settings (CC, CFLAGS_TARGET, LDFLAGS_TARGET, LDLIBS_TARGET).
+# Guard first: an empty or unknown TARGET otherwise dies on a missing
+# `mk/target-.mk`, which tells the reader nothing about what went wrong.
+ifeq ($(wildcard mk/target-$(TARGET).mk),)
+  $(error unsupported TARGET '$(TARGET)' — no mk/target-$(TARGET).mk. \
+    Available: $(patsubst mk/target-%.mk,%,$(wildcard mk/target-*.mk)). \
+    Pick one with `make TARGET=<name>`)
+endif
 include mk/target-$(TARGET).mk
 
 # Pull in common build rules (LIB_FILE, BIN_TARGETS, object/link rules).
