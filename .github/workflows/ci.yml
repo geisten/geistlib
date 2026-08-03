@@ -171,6 +171,54 @@ jobs:
   # same feature macros and differs in some libc behaviour, so build+run on musl
   # too — catching musl-specific issues before they reach geisten.net. Mirrors the
   # release build flags (GEMM_PROVIDER=native + -D_GNU_SOURCE) and adds the tests.
+  # Build the way the README tells a newcomer to, in images nobody develops on.
+  #
+  # Two bugs shipped because the build only ever ran on maintainer machines and
+  # in CI jobs that pass flags the docs never mention:
+  #   - mk/detect-target.sh had a bash shebang; images without bash produced an
+  #     empty TARGET and the build died pointing at mk/target-.mk
+  #   - -std=c23 defines __STRICT_ANSI__, under which musl hides strdup. CI was
+  #     green only because release.yml passed EXTRA_CFLAGS=-D_GNU_SOURCE
+  #
+  # The point of this job is what it does NOT pass. No EXTRA_CFLAGS, no
+  # GEMM_PROVIDER, no bash in the image: only the prerequisites the README
+  # states (gcc >= 14 and make) and the command it prints. If the documented
+  # build breaks, this is the job that says so.
+  #
+  # `lib` on purpose: that is the README's first command, and it is also the
+  # goal that needs no BLAS -- linking is the consumer's business.
+  readme-build:
+    name: documented build (${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Debian 13 and Alpine 3.21 are the two images the README claims to
+          # have been verified in; they must build with the printed command.
+          - image: debian:13
+            setup: apt-get update -qq && apt-get install -y -qq build-essential
+            build: make lib
+          - image: alpine:3.21
+            setup: apk add --no-cache build-base
+            build: make lib
+          # Ubuntu 24.04 ships gcc 13, which predates -std=c23. The README says
+          # so and prescribes gcc-14 + CC=gcc-14; this asserts that recipe still
+          # works, so the note cannot go stale either.
+          - image: ubuntu:24.04
+            setup: apt-get update -qq && apt-get install -y -qq gcc-14 make
+            build: make CC=gcc-14 lib
+    steps:
+      - uses: actions/checkout@v4
+      - name: ${{ matrix.build }} in a clean ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src ${{ matrix.image }} sh -c '
+            set -e
+            ${{ matrix.setup }} >/dev/null
+            ${{ matrix.build }}
+          '
+
   build-test-musl:
     name: build + unit tests (Linux arm64, musl)
     runs-on: ubuntu-24.04-arm
