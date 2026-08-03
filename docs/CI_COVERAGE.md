@@ -82,6 +82,32 @@ into a failure. The CI cache key embeds the content-pin prefix, so re-pinning
 the model rotates the cache. Local `make test` without the model keeps
 skipping cleanly (#180).
 
+### Metal is built AND executed on a real GPU in every PR (#181)
+
+The manual probe spike answered its question: **hosted `macos-15` runners
+expose a usable Metal device**. The macOS matrix leg therefore builds
+`BACKENDS="metal cpu_neon cpu_scalar"` and runs a mandatory GPU step:
+
+- `test_backend_metal_probe` — registration, backend lifecycle, buffer
+  round-trip (host↔device);
+- `test_backend_metal_parity_unit` — Q4_K/Q6_K/F32 `linear_m1`/`linear_mN`
+  numerical parity against `cpu_scalar` on identical weight bytes, with x/w/y
+  allocated through the backend's buffer API so the GPU path runs by
+  construction (unregistered pointers would take the host fallback and gate
+  the CPU). Tolerance 1e-3 relative; the Q6_K test data pins block scales
+  small because the simdgroup GEMM stages weights in **half**, whose integer
+  lattice ends at 2048 — a documented staging-precision property, not a bug.
+
+In this step a SKIP (exit 77) **fails**: on `macos-15` a device is expected,
+and a skipped gate must not read as a green one. On Linux legs metal is not
+built and both tests skip cleanly in the unit suite.
+
+Not yet covered: a full GGUF e2e **on** metal. The metal resolver covers
+Q4_K/Q6_K/F32 only (the SmolLM2 fixture is Q8_0), and the gemma-on-metal
+path currently fails at head resolution (`output.weight` on a
+tied-embedding model) — tracked in #181/#186 as backend feature work, not
+CI wiring.
+
 ## Non-goals
 
 - **Windows** — geist is POSIX (fork/execvp, Unix-domain sockets, mmap); the
