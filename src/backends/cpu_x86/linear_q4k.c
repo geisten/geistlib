@@ -10,9 +10,9 @@
  *      each. The blob is owned by the weight (GEIST_W_AUX_HEAP_OWNED) so
  *      the engine frees it at model destroy.
  *   2. Predecode via q4k_to_w4a8_row, row-major over n_out rows.
- *   3. Grow the per-backend activation scratch (int8 acts + sum_a) to
- *      cover n_in if needed — at model-load, never in the hot path.
- *   4. Install cpu_x86_linear_q4k_m1 into w->linear_m1.
+ *   3. Install cpu_x86_linear_q4k_m1 into w->linear_m1. The activation
+ *      scratch (int8 acts + sum_a) is per-thread, acquired in the kernel
+ *      via cpu_x86_ws_acquire (grow-on-first-use, then cached).
  *
  * The hot-path kernel reconstructs the SoA pointers from w->aux_fp32 +
  * w->n_in + w->n_out arithmetic; no per-call allocation, no branching.
@@ -82,33 +82,6 @@ static void blob_pointers(const uint8_t              *blob,
     *q4kx8_out   = (const struct block_q4_Kx8 *) (*offsets_out + scales_count);
 }
 
-/* Grow the backend's activation scratch buffers to cover at least n_in
- * elements. Called only at resolve_weight time. Returns OK or E_OOM. */
-static enum geist_status grow_scratch(struct cpu_x86_state *st, size_t n_in) {
-    if (n_in <= st->scratch_cap) {
-        return GEIST_OK;
-    }
-    int8_t *new_acts = heap_alloc_aligned(n_in * sizeof(int8_t), OPTIMAL_ALIGNMENT);
-    if (new_acts == nullptr) {
-        return GEIST_E_OOM;
-    }
-    /* Size sum_a for the SMALLEST block granularity — W8A8 (16) — so the
-     * buffer covers both Q4_K (W4A8, 32-elem blocks) and Q6_K (W8A8) callers
-     * sharing this scratch. */
-    const size_t n_blocks  = n_in / W8A8_BLOCK_ELEMS;
-    int32_t     *new_sum_a = heap_alloc_aligned(n_blocks * sizeof(int32_t), OPTIMAL_ALIGNMENT);
-    if (new_sum_a == nullptr) {
-        safe_free((void **) &new_acts);
-        return GEIST_E_OOM;
-    }
-    safe_free((void **) &st->acts_scratch);
-    safe_free((void **) &st->sum_a_scratch);
-    st->acts_scratch  = new_acts;
-    st->sum_a_scratch = new_sum_a;
-    st->scratch_cap   = n_in;
-    return GEIST_OK;
-}
-
 [[nodiscard]] enum geist_status cpu_x86_linear_q4k_resolve(struct cpu_x86_state *st,
                                                            struct geist_weight  *w) {
     if (st == nullptr || w == nullptr || w->n_in <= 0 || w->n_out <= 0) {
@@ -156,13 +129,6 @@ static enum geist_status grow_scratch(struct cpu_x86_state *st, size_t n_in) {
         q4k_to_q4kx8_matrix(n_in, n_out, q4k_raw, blob_q4kx8);
     }
 
-    /* Grow scratch to cover this n_in. */
-    enum geist_status scratch_st = grow_scratch(st, n_in);
-    if (scratch_st != GEIST_OK) {
-        safe_free((void **) &blob);
-        return scratch_st;
-    }
-
     /* aux_fp32 reinterpreted as the blob pointer; engine frees it on
      * model destroy via heap_free / safe_free (GEIST_W_AUX_HEAP_OWNED). */
     w->aux_fp32 = (const float *) blob;
@@ -200,7 +166,12 @@ void cpu_x86_linear_q4k_m1(const float               *x,
     }
 
     /* Per-row activation quantization → int8 acts + per-block sum_a. */
-    const float scale_x = w4a8_quantize_acts_row(n_in, x, st->acts_scratch, st->sum_a_scratch);
+    struct cpu_x86_workspace *ws = cpu_x86_ws_acquire(st, n_in);
+    if (ws == nullptr) {
+        memset(y, 0, n_out * sizeof *y);
+        return;
+    }
+    const float scale_x = w4a8_quantize_acts_row(n_in, x, ws->acts_scratch, ws->sum_a_scratch);
 
     /* Multi-row GEMV fallback (n_out not a multiple of 8). OMP-parallel. */
     w4a8_gemv(n_out,
@@ -208,8 +179,8 @@ void cpu_x86_linear_q4k_m1(const float               *x,
               weights,
               w_scales,
               w_offsets,
-              st->acts_scratch,
-              st->sum_a_scratch,
+              ws->acts_scratch,
+              ws->sum_a_scratch,
               scale_x,
               y);
 }

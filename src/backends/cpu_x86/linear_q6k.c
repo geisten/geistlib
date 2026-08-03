@@ -26,6 +26,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* SoA layout in the heap blob (allocated once per Q6_K weight at
  * resolve_weight): weights | w_scales | w_offsets. Sizes derive from n_in,
@@ -164,22 +165,22 @@ static void w8x8_pointers(const uint8_t  *blob,
  * sums in W4A8_BLOCK_ELEMS chunks (32), which is wrong for W8A8, so do
  * a small inline sum at W8A8_BLOCK_ELEMS granularity. */
 static void
-quantize_acts_w8a8(size_t n_in, struct cpu_x86_state *st, const float *x, float *scale_x_out) {
+quantize_acts_w8a8(size_t n_in, struct cpu_x86_workspace *ws, const float *x, float *scale_x_out) {
     /* Use quantize_x_int8_sym directly via the W4A8 wrapper, which
-     * stores int8 acts into st->acts_scratch. Discard the W4A8 sum_a
+     * stores int8 acts into ws->acts_scratch. Discard the W4A8 sum_a
      * (block_elems=32) — recompute at W8A8 granularity below. */
-    *scale_x_out = w4a8_quantize_acts_row(n_in, x, st->acts_scratch, st->sum_a_scratch);
+    *scale_x_out = w4a8_quantize_acts_row(n_in, x, ws->acts_scratch, ws->sum_a_scratch);
 
     /* Re-sum acts at 16-element granularity for W8A8. Overwrites the
      * 32-elem sum_a since they're not used by Q6_K decode. */
     const size_t  n_blocks = n_in / W8A8_BLOCK_ELEMS;
-    const int8_t *acts     = st->acts_scratch;
+    const int8_t *acts     = ws->acts_scratch;
     for (size_t b = 0; b < n_blocks; b++) {
         int32_t s = 0;
         for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) {
             s += (int32_t) acts[b * W8A8_BLOCK_ELEMS + i];
         }
-        st->sum_a_scratch[b] = s;
+        ws->sum_a_scratch[b] = s;
     }
 }
 
@@ -206,16 +207,21 @@ void cpu_x86_linear_q6k_m1(const float               *x,
         return;
     }
 
+    struct cpu_x86_workspace *ws = cpu_x86_ws_acquire(st, n_in);
+    if (ws == nullptr) {
+        memset(y, 0, n_out * sizeof *y);
+        return;
+    }
     float scale_x;
-    quantize_acts_w8a8(n_in, st, x, &scale_x);
+    quantize_acts_w8a8(n_in, ws, x, &scale_x);
 
     w8a8_gemv(n_out,
               n_blocks_per_row,
               weights,
               w_scales,
               w_offsets,
-              st->acts_scratch,
-              st->sum_a_scratch,
+              ws->acts_scratch,
+              ws->sum_a_scratch,
               scale_x,
               y);
 }
@@ -230,10 +236,9 @@ void cpu_x86_linear_q6k_mN(const float               *x,
                            size_t                     m,
                            struct geist_backend      *be,
                            float                     *y) {
-    struct cpu_x86_state *st               = (struct cpu_x86_state *) be->state;
-    const size_t          n_in             = (size_t) w->n_in;
-    const size_t          n_out            = (size_t) w->n_out;
-    const size_t          n_blocks_per_row = blocks_per_row(n_in);
+    const size_t n_in             = (size_t) w->n_in;
+    const size_t n_out            = (size_t) w->n_out;
+    const size_t n_blocks_per_row = blocks_per_row(n_in);
 
     const uint8_t *weights;
     const float   *w_scales;
@@ -257,9 +262,11 @@ void cpu_x86_linear_q6k_mN(const float               *x,
 
     for (size_t j = 0; j < m; j++) {
         /* w4a8 quantizer gives int8 acts + per-row scale; its 32-elem sum_a
-         * is the wrong granularity for W8A8 so discard it into scratch and
-         * re-sum at 16. */
-        scale_x[j] = w4a8_quantize_acts_row(n_in, x + j * n_in, acts + j * n_in, st->sum_a_scratch);
+         * is the wrong granularity for W8A8. Let it scribble into this row's
+         * sum_a slot (n_in/16 entries ≥ the n_in/32 it writes), then
+         * overwrite with the 16-elem re-sum — no shared scratch involved. */
+        scale_x[j] = w4a8_quantize_acts_row(
+                n_in, x + j * n_in, acts + j * n_in, sum_a + j * n_blocks_per_row);
         const int8_t *a  = acts + j * n_in;
         int32_t      *sa = sum_a + j * n_blocks_per_row;
         for (size_t b = 0; b < n_blocks_per_row; b++) {
