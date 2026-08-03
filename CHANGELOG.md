@@ -8,6 +8,23 @@ minor release.
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-08-03
+
+### Added
+- **Minimal REPL and batch mode** in the CLI: no prompt argument on a
+  terminal drops into an interactive loop (model stays loaded; every line is
+  an independent, memory-less completion — geist applies no chat template);
+  a `-` prompt reads prompts line-by-line from stdin.
+- `docs/PI5_BITNET.md` — user guide for the self-contained Pi 5 binary:
+  tested configuration, measured cold/warm start (14 s / 0.6 s), RAM
+  (~1.7 GB peak, file-backed), cooling, install/update/uninstall, common
+  errors, model limits and full model/license attribution (BitNet MIT
+  notice now also in NOTICE).
+
+### Fixed
+- README no longer claims `<1 MB` for the slim CLI — the shipped static
+  binary is ~2 MB.
+
 ## [0.8.1] — 2026-08-03
 
 ### Added
