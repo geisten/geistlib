@@ -51,8 +51,10 @@ jobs:
       # (needed for -std=c23) and a musl-built libgomp for OpenMP. The host job
       # stays on ubuntu-arm so checkout / upload-artifact (Node actions) work;
       # only the compile runs in the container, writing into the mounted volume.
-      # GEMM_PROVIDER=native -> native NEON fp32 + vendored FFT (no OpenBLAS/FFTW).
-      # EXTRA_LDFLAGS "-static -s": fully static + strip symbols at link time.
+      # GEMM_PROVIDER=native -> native NEON fp32 + vendored FFT (no OpenBLAS/FFTW),
+      # so the archive carries no BLAS dependency into a consumer's link. The
+      # artifact is libgeist.a plus headers: link flags like -static belong to
+      # whoever links it, not to building an archive, so this job passes none.
       - name: Build + smoke + package libgeist SDK
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
@@ -126,10 +128,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install libomp
         run: brew install libomp
-      # GEIST_STATIC_OMP=1 -> static libomp.a, so the binary depends only on
-      # macOS system frameworks (Accelerate/libSystem, always present). macOS
-      # cannot be fully static (Apple ships no static libSystem), so we strip
-      # symbols post-link instead of -s (which macOS ld no longer supports).
+      # GEIST_STATIC_OMP=1 -> mk/target-mac-omp.mk links the static libomp.a
+      # rather than -lomp, so geistlib's OWN binaries depend only on system
+      # frameworks (Accelerate/libSystem, always present). It does not change
+      # the packaged archive; see the note at the smoke link below.
       - name: Build + smoke + package libgeist SDK
         run: |
           make TARGET=mac-omp CC=clang GEIST_STATIC_OMP=1 lib
