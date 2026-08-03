@@ -332,7 +332,9 @@ help:
 	"  make fetch-model [HF_TOKEN=..]              download reference GGUF (~3.1 GB)" \
 	"" \
 	"Bench (timing/quality tools, not pass/fail):" \
-	"  make bench | bench-mm                       raw probes | multimodal encoders" \
+	"  make bench                                  reproducible cross-engine benchmark" \
+	"  make fetch-bench-model                      download the BitNet GGUF bench needs" \
+	"  make bench-smoke | bench-mm                 raw probes | multimodal encoders" \
 	"  make bench-small | bench-detailed           record perf to benchmark/results/APPLE.md" \
 	"  make bench-quality-small|-detailed          MMLU acc -> benchmark/results/APPLE.md" \
 	"  make bench-compare-ref BENCH_REF_URL=...    MMLU vs a running llama-server" \
