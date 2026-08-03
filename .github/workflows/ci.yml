@@ -513,7 +513,7 @@ key: ccache-cov-${{ github.run_id }}
       - name: Coverage report + gate
         run: |
           mkdir -p coverage/html
-          gcovr --root . --filter 'src/' \
+          gcovr --root . --gcov-executable gcov-14 --filter 'src/' \
             --exclude 'src/backends/vulkan/' --exclude 'src/backends/metal/' \
             --exclude 'src/backends/cpu_x86/' \
             --gcov-ignore-parse-errors negative_hits.warn \
