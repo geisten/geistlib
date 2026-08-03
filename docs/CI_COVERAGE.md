@@ -124,6 +124,21 @@ runner contract: labels `[self-hosted, linux, x64, geist-vulkan]`, working
 loader + ICD for the physical device; there the same three tests plus a
 model e2e run, and a missing device is a failure, not a skip.
 
+### Diagnostics are kept as artifacts
+
+Both software-emulated tiers upload a `ci-diagnostics/` artifact on every run,
+pass or fail:
+
+| job | artifact | holds |
+| :-- | :-- | :-- |
+| `vulkan-lavapipe` | `vulkan-lavapipe-diagnostics` | `vulkaninfo --summary`, mesa/loader package versions, per-test output |
+| `avx512-sde` | `avx512-sde-diagnostics` | host `lscpu`, per-test output under SDE |
+
+The reason is specific to emulated tiers: lavapipe is a moving target — a Mesa
+update lands under the job without anything in this repo changing — so the
+first question after a red run is what the environment was. `if: always()`
+because that is exactly the run whose diagnostics get thrown away otherwise.
+
 ## Coverage ratchet (#185)
 
 The `coverage` job builds `MODE=cov` (gcc-14, `-O1 --coverage`, Linux arm64)
