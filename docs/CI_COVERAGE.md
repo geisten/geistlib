@@ -124,6 +124,40 @@ runner contract: labels `[self-hosted, linux, x64, geist-vulkan]`, working
 loader + ICD for the physical device; there the same three tests plus a
 model e2e run, and a missing device is a failure, not a skip.
 
+## Coverage ratchet (#185)
+
+The `coverage` job builds `MODE=cov` (gcc-14, `-O1 --coverage`, Linux arm64)
+and runs the model-free unit suite plus the real-model int suite with
+`GEIST_STRICT_FIXTURES=gguf` — a fixture skip would hollow out the
+measurement, so it fails instead. (e2e is deliberately not measured: on an
+instrumented -O1 build it re-drives the same engine paths through the CLI
+wrappers for another ~half hour and changes the numbers by noise.) `gcovr` produces JSON + Cobertura XML +
+HTML (uploaded as the `coverage-report` artifact), and
+`scripts/coverage_gate.py` gates per-subsystem **line and branch** coverage
+against the versioned baselines in `benchmark/coverage_baselines.json`, with
+the overall figure and per-subsystem table published to the job summary.
+
+- **Scope**: `src/base`, `src/engine`, `src/io`, `src/formats`,
+  `src/archs/transformer`, `src/backends/common`, `src/backends/cpu_scalar`.
+- **Exclusions, each deliberate**: `src/backends/cpu_x86`, `metal/`,
+  `vulkan/` cannot execute on this runner (their correctness legs live in
+  the x86/metal/vulkan jobs); `cpu_neon` is measured but not gated (SIMD
+  leg, one runner family); `third_party/` and generated `*_spv.h` are not
+  our code; tests and benches are the instruments, not the subject.
+- **Ratchet**: measured on `main`, rounded DOWN to whole percent, tolerance
+  0.5 pp per metric. Raising after an improvement is routine; lowering is a
+  reviewed, justified edit of the baselines file. An unset (`null`) baseline
+  fails the gate and prints the measured value, so new subsystems enter by
+  deliberate commit, not by silent adoption.
+- **Security floor**: `src/io` (the malformed-GGUF parser surface) holds a
+  hard line-coverage floor regardless of the ratchet — pinned at the
+  measured 34 % for now (the safetensors half of `src/io` is fixture-gated
+  and skips on CI, which keeps the intended 35 % just out of reach); raise
+  it with the coverage, never let it drift down.
+- **Self-test**: `tests/test_coverage_gate_py.py` (hermetic, runs in
+  `make test-py`) proves the gate fires on regression, empty scope, unset
+  baseline and floor violation — and passes when on-baseline.
+
 ## Non-goals
 
 - **Windows** — geist is POSIX (fork/execvp, Unix-domain sockets, mmap); the
