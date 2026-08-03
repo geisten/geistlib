@@ -232,6 +232,11 @@ struct vk_state {
 
     char device_name[256];
 
+    /* From VkPhysicalDeviceSubgroupProperties. The register-tiled GEMM
+     * shaders assume 32 lanes (2080-Ti-first); on any other size the mN
+     * dispatch loops the (size-agnostic) matvec kernels instead. */
+    uint32_t subgroup_size;
+
     /* Feature probes for the Phase-2 kernels. */
     bool has_fp16;     /* shaderFloat16 + 16-bit storage */
     bool has_int8_dot; /* shaderIntegerDotProduct + 8-bit storage */

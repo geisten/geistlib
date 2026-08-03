@@ -347,6 +347,47 @@ jobs:
             "$SDE_PATH/sde64" -spr -- "bin/linux/release/tests/$t"
           done
 
+  # Vulkan on every PR (#182), software tier: Mesa's lavapipe is a real
+  # Vulkan implementation (loader -> ICD -> SPIR-V pipeline), so the
+  # registry, buffer and linear-parity tests execute the ACTUAL dispatch
+  # chain on a hosted runner — no physical GPU required. The tests are
+  # invoked directly: a SKIP (exit 77, e.g. loader or device missing)
+  # fails the job instead of counting as green. The parity tolerances are
+  # encoded in the test (1e-3 relative; 2e-2 for the f16 coopmat path,
+  # which lavapipe may not expose). Physical-GPU validation stays a
+  # self-hosted concern — runner contract: labels [self-hosted, linux,
+  # x64, geist-vulkan], working loader + ICD for the physical device,
+  # Vulkan >= 1.2; the same three tests plus a model e2e run there.
+  vulkan-lavapipe:
+    name: Vulkan backend (Linux x86_64, lavapipe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v4
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-vulkan-${{ github.run_id }}
+          restore-keys: ccache-vulkan-
+      - name: Install deps (loader, lavapipe ICD, headers)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-14 ccache libvulkan-dev libvulkan1 mesa-vulkan-drivers vulkan-tools
+      - name: Report Vulkan environment
+        run: vulkaninfo --summary || true
+      - name: Build (vulkan + shipped x86 CPU backends)
+        run: make TARGET=linux CC="ccache gcc-14" BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: Vulkan tests on lavapipe (SKIP = failure)
+        run: |
+          bin/linux/release/tests/test_backend_vulkan_registry_unit
+          bin/linux/release/tests/test_backend_vulkan_buffer_unit
+          bin/linux/release/tests/test_backend_vulkan_linear_parity
+
   # AGENT.md requires the code to be ASan/UBSan-friendly; nothing enforced it.
   # Build MODE=asan (-fsanitize=address,undefined) and run the model-free unit
   # suite — catches use-after-free / overflow / UB in the kernels + engine the
