@@ -61,7 +61,12 @@ int main(void) {
     GEIST_REQUIRE_GGUF(model_path);
 
     struct geist_backend *be = nullptr;
-    enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    /* Best available CPU backend, in kernel-speed order (see the parallel
+     * variant for why cpu_x86 belongs in this chain). */
+    enum geist_status s = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    if (s != GEIST_OK) {
+        s = geist_backend_create("cpu_x86", nullptr, nullptr, &be);
+    }
     if (s != GEIST_OK) {
         s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
     }
