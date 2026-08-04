@@ -80,6 +80,11 @@ jobs:
             cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/agent_smoke
             /tmp/agent_smoke
 
+            # branch-only: static bench binary for reference-board protocol runs
+            make TARGET=linux CC=gcc GEMM_PROVIDER=native EXTRA_CFLAGS=-D_GNU_SOURCE \
+              EXTRA_LDFLAGS=-static bin/linux/release/tests/bench_perf_sweep
+            cp bin/linux/release/tests/bench_perf_sweep dist/bench_perf_sweep-linux-arm64
+
             # ---- CLI binaries (the README first screen, geistlib#: one binary) --
             # geist-linux-arm64: the slim bring-your-own-GGUF CLI (<1 MB).
             # Fully static (musl + libgomp.a): runs on any 64-bit Pi OS with
@@ -122,6 +127,7 @@ jobs:
           path: |
             dist/geist-linux-arm64
             dist/geist-bitnet-linux-arm64
+            dist/bench_perf_sweep-linux-arm64
           compression-level: 0
 
   linux-x86_64:
