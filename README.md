@@ -130,6 +130,13 @@ BitNet on both a Pi 5 (**~2×** decode) and an AMD 9950X, and matches-to-beats
 llama.cpp on the CPU paths:
 
 <p align="center">
+  <img src="assets/versus-bitnetcpp.gif" alt="Side-by-side terminal recording on one Raspberry Pi 5: geistlib finishes 110 tokens in 7.1 s (15.5 tok/s) while bitnet.cpp needs 11.7 s (9.3 tok/s), same GGUF, both greedy, thermally gated" width="100%">
+</p>
+
+*One board, one GGUF, recorded sequentially with a thermal gate and shown side
+by side — [how this was made, and more demos](docs/DEMOS.md).*
+
+<p align="center">
   <img src="assets/headline_benchmarks.svg" alt="Decode-throughput scoreboard: geistlib divided by its baseline engine, decode tokens/s, grouped by system. Raspberry Pi 5 (Linux): BitNet decode 1.96x bitnet.cpp, BitNet prefill 0.99x bitnet.cpp, Gemma decode 1.1x llama.cpp. AMD Ryzen 9 9950X (Linux): BitNet decode 1.9x bitnet.cpp, Gemma decode 1.1x llama.cpp, Llama 3.2 decode 1.0x llama.cpp. Sub-parity rows are shown too." width="100%">
 </p>
 
@@ -197,6 +204,7 @@ The complete map is in [`docs/README.md`](docs/README.md).
 | :-- | :-- |
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Embed the library in two minutes. |
 | [`docs/PI5_BITNET.md`](docs/PI5_BITNET.md) | The Pi 5 BitNet binary — install, speed, errors, model limits. |
+| [`docs/DEMOS.md`](docs/DEMOS.md) | Recorded demos — vs bitnet.cpp, offline box, writing assistant. |
 | [`docs/MODELS.md`](docs/MODELS.md) | Supported models — Gemma (vision/audio), Llama, ternary BitNet. |
 | [`docs/BACKENDS.md`](docs/BACKENDS.md) | CPU backends and the experimental Metal / Vulkan GPU paths. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, kernel binding, and why C. |
