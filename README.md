@@ -52,7 +52,7 @@ there, or use the [prebuilt SDK](#embed-the-library).
 ## How it works
 
 geistlib is **one C23 inference engine** — no Python, no runtime, no container,
-a small static binary with zero dependencies (the engine itself is <1 MB; the slim CLI ships at ~2 MB). Three properties carry the
+a small static binary with zero dependencies (the engine itself is <1 MB; the slim CLI ships at ~2 MB). Two properties carry the
 Pi 5 result:
 
 - **Ternary kernels, first-class.** BitNet b1.58 weighs every parameter as
@@ -63,12 +63,18 @@ Pi 5 result:
 - **Zero-copy weights.** The GGUF is mmapped (or, in `geist-bitnet`, aliased
   straight out of the binary's read-only data) and demand-paged — weights cost
   disk, not RAM, and loading is near-instant.
-- **An engine, not an application.** It loads models and produces tokens, and
-  has no opinion about chat templates, tool use, or whether a model may act.
-  That neutrality is what makes it embeddable anywhere.
 
 The deeper tour — three layers, load-time kernel binding, why C —
 is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## An engine, not an application
+
+geistlib loads models and produces tokens — and has **no opinion** about chat
+templates, tool use, system prompts, or whether a model may act. That is the
+deal: an engine that stays application-neutral is one *anyone* can embed — in
+an agent, an appliance, a game, a pipeline — without inheriting someone else's
+product decisions. Policy belongs to whatever links the engine;
+[`docs/README.md`](docs/README.md) draws that boundary explicitly.
 
 ## Bring your own model
 
@@ -113,7 +119,9 @@ cc -std=c23 -I libgeist-linux-arm64/include my_app.c \
 
 The stable text path is ~15 lines: `geist_backend_create` →
 `geist_model_load` → `geist_session_create` → loop `geist_session_decode_step`.
-The header **is** the ABI — any language FFIs in with no shim. Walkthrough:
+The header **is** the ABI — any language FFIs in with no shim, and the
+[engine-not-application](#an-engine-not-an-application) neutrality means your
+app keeps every product decision. Walkthrough:
 [`docs/QUICKSTART.md`](docs/QUICKSTART.md); API: [`include/geist.h`](include/geist.h)
 (`STABLE`/`EXPERIMENTAL` tags); deployment, incl. folding a model into your own
 binary: [`docs/DEPLOY.md`](docs/DEPLOY.md).
