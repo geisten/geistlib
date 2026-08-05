@@ -8,9 +8,9 @@
 > One binary. No Python, no model setup, no cloud.
 
 ```bash
-curl -LO https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-arm64
-chmod +x geist-bitnet-linux-arm64
-./geist-bitnet-linux-arm64 "The capital of France is"
+curl -L -o geist-bitnet https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-arm64
+chmod +x geist-bitnet
+./geist-bitnet "The capital of France is"
 ```
 
 Run it with no arguments for a minimal REPL (each line completes
@@ -78,11 +78,14 @@ product decisions. Policy belongs to whatever links the engine;
 
 ## Bring your own model
 
-The slim CLI (`geist-linux-arm64`, ~2 MB, same [release page](https://github.com/geisten/geistlib/releases/latest))
-runs any GGUF that carries its own tokenizer:
+The slim CLI (release asset `geist-linux-arm64`, ~2 MB — the platform suffix
+belongs to the download, not to your disk) runs any GGUF that carries its own
+tokenizer:
 
 ```bash
-./geist-linux-arm64 model.gguf "your prompt" [max_new_tokens]
+curl -L -o geist https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64
+chmod +x geist
+./geist model.gguf "your prompt" [max_new_tokens]
 ```
 
 Gemma 4 (text + vision + audio), Llama-family models, and the 207 MB
