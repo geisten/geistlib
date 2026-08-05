@@ -233,7 +233,7 @@ Per directory, the file to open first:
 | `src/backends/vulkan/` | `backend.c` | Linux/NVIDIA-GPU path (SPIR-V in `shaders/`) |
 | `src/formats/gguf/` | `common.c` | per-quant decode (one file per format) |
 | `src/io/` | `gguf_reader.c` | GGUF/safetensors file parsing |
-| `tools/` | `geist.c` | the demo CLI and the header-only SDK |
+| `tools/` | `eval_geist.c` | the eval REPL and the Python bench/eval harnesses |
 
 ---
 
