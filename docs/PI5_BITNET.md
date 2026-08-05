@@ -1,6 +1,7 @@
 # BitNet on a Raspberry Pi 5 — user guide
 
-Everything about running the self-contained `geist-bitnet-linux-arm64` binary
+Everything about running the self-contained BitNet binary (release asset
+`geist-bitnet-linux-arm64` — renamed to plain `geist-bitnet` on download below)
 from the [release page](https://github.com/geisten/geistlib/releases/latest)
 on a Raspberry Pi 5. Every number on this page was measured on the reference
 board described below; nothing is extrapolated.
@@ -43,17 +44,18 @@ vcgencmd measure_temp && vcgencmd get_throttled   # 0x0 = never throttled
 ## Install, update, uninstall
 
 ```bash
-# install
+# install (the asset carries a platform suffix; your copy doesn't have to)
 curl -LO https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-arm64
-chmod +x geist-bitnet-linux-arm64
 
-# verify (optional, recommended)
+# verify (optional, recommended — BEFORE renaming, so the checksum file matches)
 curl -LO https://github.com/geisten/geistlib/releases/latest/download/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
 
+mv geist-bitnet-linux-arm64 geist-bitnet && chmod +x geist-bitnet
+
 # update: download the new release the same way — each release is one file
 # uninstall: it wrote nothing anywhere else — no config, no cache, no state
-rm geist-bitnet-linux-arm64
+rm geist-bitnet
 ```
 
 The download is ~1.2 GB (measured ~46 s on the reference board's connection —
@@ -62,10 +64,10 @@ yours will vary).
 ## Usage
 
 ```bash
-./geist-bitnet-linux-arm64 "The capital of France is"        # one shot
-./geist-bitnet-linux-arm64 "Explain mmap briefly:" 128       # cap new tokens
-./geist-bitnet-linux-arm64                                   # interactive REPL
-printf 'prompt one\nprompt two\n' | ./geist-bitnet-linux-arm64 - 64   # batch
+./geist-bitnet "The capital of France is"        # one shot
+./geist-bitnet "Explain mmap briefly:" 128       # cap new tokens
+./geist-bitnet                                   # interactive REPL
+printf 'prompt one\nprompt two\n' | ./geist-bitnet - 64   # batch
 ```
 
 | Argument | Meaning |
@@ -111,7 +113,7 @@ the device. Verify it yourself: run it with the network cable pulled, or under
 | Symptom | Cause | Fix |
 | :-- | :-- | :-- |
 | `cannot execute binary file: Exec format error` | 32-bit OS or non-arm64 machine | `uname -m` must say `aarch64`. Install the 64-bit Raspberry Pi OS; on x86 boxes build from source instead |
-| `Permission denied` despite `chmod +x` | filesystem mounted `noexec` (some `/tmp` setups, USB sticks, network mounts) | move the binary to your home directory: `mv geist-bitnet-linux-arm64 ~/` |
+| `Permission denied` despite `chmod +x` | filesystem mounted `noexec` (some `/tmp` setups, USB sticks, network mounts) | move the binary to your home directory: `mv geist-bitnet ~/` |
 | Process killed mid-run, `Killed` in dmesg | out of memory (other big processes competing) | close memory-heavy apps; check `free -h`; the binary itself needs no swap on an otherwise idle 4 GB board |
 | `embedded model load failed` at startup | truncated or corrupted download | re-download and verify: `sha256sum -c --ignore-missing SHA256SUMS` |
 | Output stops after very few tokens | the model emitted its EOS token — that is normal | phrase the prompt as text to continue, or raise the token cap |
