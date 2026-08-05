@@ -7,7 +7,7 @@ benchmarks exercise.
 | Model | Modality | Quant | ~Size | RAM | Best on | Get it |
 | :-- | :-- | :-- | --: | --: | :-- | :-- |
 | **BitNet b1.58 2B-4T** | text (ternary) | `i2_s` | 1.1 GiB | ≥ 4 GB | **Pi 5 · x86** | `make fetch-bench-model` · [⬇ gguf](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf) — or the [self-contained `geist-bitnet` binary](https://github.com/geisten/geistlib/releases/latest) |
-| **Gemma 4 E2B-it** | text · vision · audio | `Q4_K_M` | 2.9 GB | ≥ 4 GB | Mac / Pi 5 | `make fetch-model` · [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf) |
+| **Gemma 4 E2B-it** | text · vision · audio | `Q4_K_M` | 3.1 GB | ≥ 4 GB | Mac / Pi 5 | `make fetch-model` · [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf) |
 | Gemma 4 E4B-it | text · vision · audio | `Q4_K_M` | 4.6 GB | ≥ 6 GB | Mac | [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf) |
 | Llama family (e.g. SmolLM2, Llama 3.2) | text | any GGUF quant | varies | varies | everywhere | e.g. [⬇ SmolLM2-360M](https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf) (the CI reference) |
 | BitNet b1.58-large | text (ternary) | `TQ2_0` | 207 MB | ≥ 1 GB | smallest footprint | convert from [1bitLLM ↗](https://huggingface.co/1bitLLM/bitnet_b1_58-large) |

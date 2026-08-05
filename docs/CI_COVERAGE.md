@@ -17,7 +17,10 @@ the test suite**, not just built.
 
 Every environment in [`release.yml`](../.github/workflows/release.yml)
 (macos-arm64, linux-arm64, linux-x86_64) now has build **and** test coverage
-here — previously x86_64 was built + smoke-run only, never tested.
+here. On top of the matrix, dedicated legs gate every PR: TSan multi-session
+(x86_64), the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on
+lavapipe, and the Metal GPU step inside the macOS leg — each described in its
+section below.
 
 ## Caveats and deliberate gaps
 
@@ -29,13 +32,13 @@ here — previously x86_64 was built + smoke-run only, never tested.
 2. **x86_64 ASan/UBSan — not yet.** The sanitizer job runs on arm64; it catches
    memory/UB bugs in the shared C engine + kernels regardless of SIMD path. An
    x86-specific ASan leg is a reasonable follow-up if an x86-only UB is suspected.
-3. **x86_64 int/e2e — non-blocking, tracked in #96.** This leg immediately did
-   its job: it caught a real shipping bug — the `cpu_x86` backend has AVX-512
-   kernels in the forward path that lack a runtime CPU guard, so the real-model
-   prefill SIGILLs on an AVX-512-less x86-64-v3 runner. `build-test-x86_64`'s
-   **build + unit stay REQUIRED**; the int/e2e **step** is `continue-on-error`
-   (still runs and logs the failures, but doesn't gate) until #96 guards those
-   kernels. Flip it back to required when #96 lands. See #96 for the audit scope.
+3. **x86_64 int/e2e — required again (#96 resolved).** This leg once caught a
+   real shipping bug: AVX-512 kernels in the forward path without a runtime CPU
+   guard, SIGILLing on AVX-512-less x86-64-v3 runners. The kernels are guarded
+   now, the step gates every PR, and a dedicated
+   `GEIST_FORCE_ISA=avx2` pass exercises the non-AVX512 dispatch even on
+   runners that do have AVX-512 — so the portability regression class stays
+   caught.
 
 ### AVX-512 is exercised *opportunistically*, not guaranteed
 
@@ -70,7 +73,7 @@ explicitly either way).
 
 | Fixture | Family it proves | Source (pinned) | Mandatory where |
 | :-- | :-- | :-- | :-- |
-| `gemma4-e2b-Q4_K_M.gguf` (~2.9 GB) | gemma (primary reference) | `unsloth/gemma-4-E2B-it-GGUF` | Linux arm64 + x86_64 int/e2e |
+| `gemma4-e2b-Q4_K_M.gguf` (~3.1 GB) | gemma (primary reference) | `unsloth/gemma-4-E2B-it-GGUF` | Linux arm64 + x86_64 int/e2e |
 | `smollm2-360m-instruct-q8_0.gguf` (~369 MB) | llama populator + GPT-2-BPE tokenizer mode | `HuggingFaceTB/SmolLM2-360M-Instruct-GGUF`, SHA-256-pinned in the Makefile (`LLAMA_MODEL_SHA256`), Apache-2.0 | Linux arm64 + x86_64 int/e2e |
 
 The llama tests (`test_llama_load_int`, `test_llama_e2e_int`) are **executed,
