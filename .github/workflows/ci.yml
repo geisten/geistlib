@@ -150,6 +150,20 @@ jobs:
           GEIST_STRICT_FIXTURES: gguf
         run: make test-int test-e2e TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
+      # The README claims "any language FFIs in with no shim" — prove it on
+      # every PR: build the shared object from the freshly built archive and
+      # run the ctypes example (the complete Python integration, ~30 lines)
+      # against the small llama fixture. Python is the one FFI leg CI pays
+      # for; the Rust/Go/JS examples share the same 11 symbols.
+      - name: FFI example (Python ctypes)
+        if: matrix.target == 'linux'
+        run: |
+          cc -shared -o libgeist.so \
+            -Wl,--whole-archive lib/linux/release/libgeist.a -Wl,--no-whole-archive \
+            -fopenmp -lm
+          python3 examples/ffi/generate.py ./libgeist.so \
+            gguf_artifacts/smollm2-360m-instruct-q8_0.gguf "The capital of France is" | head -c 400
+
       # Coarse Q4_K perf-regression gate on the (noisy) shared runner: generous
       # floors catch a cliff — scalar fallback, -O0, OpenMP off, an early-return
       # kernel — not subtle drift. The Pi 5 stays the precise arbiter. Floors are
