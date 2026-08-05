@@ -206,7 +206,7 @@ fetch-bench-model: $(BENCH_MODEL_PATH)
 # the engine reads a SECOND architecture family and tokenizer mode, not to
 # measure anything, so test_llama_{load,e2e}_int stop skipping. Not part of
 # AUTO_FETCH_MODEL -- a local `make test` should not grow by another download
-# on top of the 2.9 GB reference; CI fetches it explicitly.
+# on top of the 3.1 GB reference; CI fetches it explicitly.
 LLAMA_MODEL_DIR  ?= gguf_artifacts
 LLAMA_MODEL_FILE ?= smollm2-360m-instruct-q8_0.gguf
 LLAMA_MODEL_PATH := $(LLAMA_MODEL_DIR)/$(LLAMA_MODEL_FILE)
