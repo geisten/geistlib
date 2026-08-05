@@ -122,9 +122,11 @@ cc -std=c23 -I libgeist-linux-arm64/include my_app.c \
 
 The stable text path is ~15 lines: `geist_backend_create` →
 `geist_model_load` → `geist_session_create` → loop `geist_session_decode_step`.
-The header **is** the ABI — any language FFIs in with no shim, and the
-[engine-not-application](#an-engine-not-an-application) neutrality means your
-app keeps every product decision. Walkthrough:
+The header **is** the ABI — any language FFIs in with no shim
+([`examples/ffi/`](examples/ffi/) proves it: the complete integration in
+Python, Rust, Go and JavaScript, ~30-40 lines each, no bindings package), and
+the [engine-not-application](#an-engine-not-an-application) neutrality means
+your app keeps every product decision. Walkthrough:
 [`docs/QUICKSTART.md`](docs/QUICKSTART.md); API: [`include/geist.h`](include/geist.h)
 (`STABLE`/`EXPERIMENTAL` tags); deployment, incl. folding a model into your own
 binary: [`docs/DEPLOY.md`](docs/DEPLOY.md).
