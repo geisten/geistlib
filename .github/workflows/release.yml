@@ -24,21 +24,27 @@ permissions:
 
 jobs:
   # Refuse to publish a release whose binary would print a different version than
-  # the tag, or that has no CHANGELOG entry. Source of truth: include/geist.h.
+  # the tag, or that is internally inconsistent. Source of truth: include/geist.h.
+  #
+  # Only the tag comparison lives here — it is the one fact a workflow knows and
+  # a script cannot. Everything else is scripts/check-release.sh, so `make
+  # release-check` before tagging and this gate ask the same question. Two
+  # copies of "what a release must satisfy" is where the drift starts.
   version-guard:
-    name: tag == geist.h version, CHANGELOG entry exists
+    name: tag == geist.h version, release is self-consistent
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
-      - name: Assert tag matches GEIST_VERSION_STRING and has a CHANGELOG section
+      - name: Assert the tag matches GEIST_VERSION_STRING
         run: |
           hdr=$(sed -n 's/.*GEIST_VERSION_STRING "\([0-9][0-9.]*\)".*/\1/p' include/geist.h | head -1)
           tag="${GITHUB_REF_NAME#v}"
           echo "geist.h=$hdr  tag=$tag"
           test "$hdr" = "$tag" || { echo "::error::include/geist.h version $hdr != tag $tag — bump include/geist.h"; exit 1; }
-          grep -q "^## \[$tag\]" CHANGELOG.md || { echo "::error::no '## [$tag]' section in CHANGELOG.md"; exit 1; }
-          sh scripts/check-version.sh
+      # No --pre-tag: the tag exists by now, so its absence is not the question.
+      - name: Release self-consistency
+        run: sh scripts/check-release.sh
 
   linux-arm64:
     name: linux-arm64 (musl-static, dependency-free)
