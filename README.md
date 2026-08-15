@@ -33,9 +33,11 @@ a single dependency-free binary. No GPU, no driver stack.*
 - **~1.2 GB download**, model included. **Private and offline after download** —
   nothing ever leaves the device.
 
-**Platform:** tested on Raspberry Pi 5 (4 GB), 64-bit Raspberry Pi OS. Also runs
-on macOS and Linux (arm64 + x86-64) — [build from source](#build-from-source)
-there, or use the [prebuilt SDK](#embed-the-library).
+**Platform:** tested on Raspberry Pi 5 (4 GB), 64-bit Raspberry Pi OS. The
+prebuilt one-file binaries ship for Linux arm64 **and** x86_64 (swap the
+`-linux-arm64` suffix for `-linux-x86_64` above). Also runs on macOS —
+[build from source](#build-from-source) there, or use the
+[prebuilt SDK](#embed-the-library).
 
 [![CI](https://github.com/geisten/geistlib/actions/workflows/ci.yml/badge.svg)](https://github.com/geisten/geistlib/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
