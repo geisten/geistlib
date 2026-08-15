@@ -40,6 +40,8 @@ static void (*const c_backend_destroy)(struct geist_backend *) = geist_backend_d
 static enum geist_status (*const c_model_load)(const char *, struct geist_backend *,
                                                struct geist_model **) = geist_model_load;
 static void (*const c_model_destroy)(struct geist_model *) = geist_model_destroy;
+/* The chat template lives out of tree; the family it is chosen by does not. */
+static const char *(*const c_model_arch)(const struct geist_model *) = geist_model_arch;
 
 static enum geist_status (*const c_session_create)(struct geist_model *,
                                                    struct geist_backend *,
@@ -80,6 +82,7 @@ static const struct {
         {"geist_backend_destroy", (const void *) &c_backend_destroy},
         {"geist_model_load", (const void *) &c_model_load},
         {"geist_model_destroy", (const void *) &c_model_destroy},
+        {"geist_model_arch", (const void *) &c_model_arch},
         {"geist_session_create", (const void *) &c_session_create},
         {"geist_session_destroy", (const void *) &c_session_destroy},
         {"geist_session_set_prompt", (const void *) &c_set_prompt},
