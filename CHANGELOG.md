@@ -17,6 +17,16 @@ minor release.
   the attach calls perform; the invariant is pinned by
   `tests/test_model_modalities_int.c`. (#233)
 
+### Fixed
+- The Gemma 4 audio/vision towers are no longer attached to other model
+  families. Previously the encoder search heuristics (cwd `audio_bench/`,
+  directory next to the GGUF) could pick up the tower for e.g. a BitNet
+  load; `attach_audio` then injected 1536-dim soft tokens into a 2560-dim
+  residual stream — out-of-bounds reads, garbage in the KV cache, returned
+  as `GEIST_OK`. Tower load is now gated on `general.architecture ==
+  "gemma4"`; other families answer `geist_model_modalities() == 0` and
+  refuse `attach_*` with `GEIST_E_NOT_FOUND`. (#240)
+
 ### Changed
 - `geist_model_arch` is **STABLE since 0.9.0** and joins the agent-runtime
   contract (`docs/API_CONTRACT.md`, `examples/agent_contract_smoke.c`). Since
