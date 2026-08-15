@@ -23,7 +23,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run agent-contract-smoke bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
+.PHONY: all lib bin run agent-contract-smoke release-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -52,6 +52,14 @@ bin: $(BIN_TARGETS)
 # linking pins their existence.
 # This is the last thing in the engine that knows an agent exists, and it is
 # deliberate: it is a promise, not a dependency.
+# The gate a release passes before the tag: the four version sites agree, the
+# API contract holds, no `STABLE since` names a version newer than this one,
+# and nothing is stranded under CHANGELOG [Unreleased]. NOT a per-PR check —
+# promoting a symbol to a future version is legitimate in a PR and wrong only
+# at the moment of tagging. See scripts/check-release.sh.
+release-check:
+	@sh scripts/check-release.sh --pre-tag
+
 AGENT_CONTRACT_SMOKE := $(BIN_DIR)/examples/agent_contract_smoke
 agent-contract-smoke: $(AGENT_CONTRACT_SMOKE)
 	@$(AGENT_CONTRACT_SMOKE)
@@ -342,6 +350,8 @@ help:
 	"  make bench-mmlu [MMLU_LIMIT=0]              MMLU accuracy (pip install datasets)" \
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
+	"" \
+	"Release: make release-check                  version sites, API contract, changelog" \
 	"" \
 	"Targets: mac, mac-omp (Accelerate), pi5 (OpenBLAS+OpenMP), linux" \
 	"  cross-compile:   make TARGET=pi5 CC=aarch64-linux-gnu-gcc-14" \
