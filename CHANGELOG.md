@@ -8,6 +8,8 @@ minor release.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-15
+
 ### Changed
 - `geist_model_arch` is **STABLE since 0.9.0** and joins the agent-runtime
   contract (`docs/API_CONTRACT.md`, `examples/agent_contract_smoke.c`). Since
