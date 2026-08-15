@@ -138,6 +138,17 @@ int main(void) {
         fails++;
     }
 
+    /* #240: the only towers that exist are Gemma 4's — another family must
+     * never claim a modality, even with a tower reachable via the encoder
+     * search heuristics (cwd audio_bench/, dir next to the GGUF, …). */
+    if (strcmp(geist_model_arch(model), "gemma4") != 0 && mask != 0) {
+        fprintf(stderr,
+                "FAIL: non-gemma4 arch %s claims modalities 0x%x\n",
+                geist_model_arch(model),
+                mask);
+        fails++;
+    }
+
     fails += check_modality(model, be, mask, GEIST_MOD_AUDIO, "audio", attach_audio_cb);
     fails += check_modality(model, be, mask, GEIST_MOD_VISION, "vision", attach_image_cb);
     fails += check_modality(model, be, mask, GEIST_MOD_VIDEO, "video", attach_video_cb);
