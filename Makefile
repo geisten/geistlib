@@ -23,7 +23,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run agent-contract-smoke bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu format format-check
+.PHONY: all lib bin run agent-contract-smoke bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -323,13 +323,14 @@ help:
 	"  make                       lib + dev binaries for this TARGET/MODE" \
 	"  make run ARGS='m.gguf \"hi\"'      build + run examples/simple_generate" \
 	"  make lib | bin             only the static lib | only the binaries" \
-	"  make MODE=debug|asan|perf  -O0+g for gdb | ASan+UBSan | -O3+g for profilers" \
+	"  make MODE=debug|asan|tsan|cov|perf   gdb | ASan+UBSan | TSan races | coverage | -O3+g profiling" \
 	"  make clean | distclean     remove current TARGET/MODE | remove everything" \
 	"" \
 	"Test:" \
 	"  make test                  unit + int + py  (auto-fetches model; AUTO_FETCH_MODEL=0 to skip)" \
 	"  make test-unit|test-int|test-e2e|test-all   [FILTER=substr]" \
 	"  make fetch-model [HF_TOKEN=..]              download reference GGUF (~3.1 GB)" \
+	"  make fetch-llama-model                      download SmolLM2 fixture (~369 MB, SHA-pinned)" \
 	"" \
 	"Bench (timing/quality tools, not pass/fail):" \
 	"  make bench                                  reproducible cross-engine benchmark" \
