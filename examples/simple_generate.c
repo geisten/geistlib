@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef GEIST_EMBED_MODEL
@@ -75,12 +76,32 @@ generate(struct geist_session *sess, geist_token_t eos, const char *prompt, int 
 }
 
 int main(int argc, char **argv) {
+    /* Strip -t/--temperature from argv before the positional parsing below,
+     * so the flag works in any position for both the file-loading and the
+     * embedded-model builds. As boring as the rest of the file: no getopt. */
+    float temperature = 0.0f;
+    for (int i = 1; i < argc;) {
+        if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--temperature") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "%s expects a value, e.g. --temperature 0.8\n", argv[i]);
+                return 2;
+            }
+            temperature = strtof(argv[i + 1], nullptr);
+            memmove(&argv[i], &argv[i + 2], (size_t) (argc - i - 2) * sizeof *argv);
+            argc -= 2;
+        } else {
+            i++;
+        }
+    }
 #ifdef GEIST_EMBED_MODEL
     const char *prompt  = (argc > 1) ? argv[1] : nullptr;
     int         max_new = (argc > 2) ? atoi(argv[2]) : 256;
 #else
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <model.gguf> [prompt] [max_new_tokens]\n", argv[0]);
+        fprintf(stderr,
+                "usage: %s <model.gguf> [prompt] [max_new_tokens] [-t|--temperature <float>]\n"
+                "  temperature 0 (default) = greedy, deterministic; >0 = sampled\n",
+                argv[0]);
         return 2;
     }
     const char *model_path = argv[1];
@@ -127,9 +148,18 @@ int main(int argc, char **argv) {
     fprintf(stderr, "loaded %s (arch: %s)\n", model_path, geist_model_arch(model));
 #endif
 
-    /* Zero-initialized opts == greedy decode (temperature 0). */
+    /* Zero-initialized opts == greedy decode (temperature 0). With sampling
+     * requested, a varying seed is what makes runs differ — random_seed 0
+     * means "architecture default FIXED seed", which would reproduce the
+     * same sample every run. */
     struct geist_session_opts opts = {0};
-    struct geist_session     *sess = nullptr;
+    opts.temperature               = temperature;
+    if (temperature > 0.0f) {
+        struct timespec ts;
+        timespec_get(&ts, TIME_UTC);
+        opts.random_seed = (uint64_t) ts.tv_sec * 1000000000ull + (uint64_t) ts.tv_nsec;
+    }
+    struct geist_session *sess = nullptr;
     if (geist_session_create(model, be, &opts, &sess) != GEIST_OK) {
         fprintf(stderr, "session_create failed\n");
         geist_model_destroy(model);
