@@ -514,6 +514,29 @@ const char *geist_model_arch(const struct geist_model *m) {
     return (eng != nullptr && eng->arch != nullptr) ? eng->arch : "transformer";
 }
 
+/* Mirrors the capability checks in geist_session_attach_{audio,image,video}
+ * (src/engine/session.c) — keep the two in lock-step; the invariant is
+ * pinned by tests/test_model_modalities_int.c. */
+unsigned geist_model_modalities(const struct geist_model *m) {
+    if (m == nullptr) {
+        return 0;
+    }
+    const struct geist_arch_ops_decoder *dec  = m->text_decoder.arch_ops;
+    unsigned                             mask = 0;
+    if (m->audio_encoder.arch_ops != nullptr && m->audio_encoder.arch_meta != nullptr &&
+        dec != nullptr && dec->prefill_audio != nullptr) {
+        mask |= GEIST_MOD_AUDIO;
+    }
+    if (m->vision_encoder.arch_ops != nullptr && m->vision_encoder.arch_meta != nullptr &&
+        dec != nullptr && dec->prefill_image != nullptr) {
+        /* attach_image and attach_video gate on the same encoder + decoder
+         * hook, so today the two bits travel together; kept separate for
+         * archs where they may not. */
+        mask |= GEIST_MOD_VISION | GEIST_MOD_VIDEO;
+    }
+    return mask;
+}
+
 /* Special-token accessors — read the ids the tokenizer parsed from the GGUF
  * metadata (or tokenizer.bin). Both tokenizer paths default unset ids to -1,
  * which is GEIST_TOKEN_NONE. */
