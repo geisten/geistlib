@@ -43,6 +43,14 @@ calling still emit a well-formed one: the runtime inspects the next-token
 logits, masks everything the grammar forbids, and commits token by token. That
 requires logit-level access — the three promotions in 0.6.0 below.
 
+Chat templating is out of tree for the same reason the tool-use loop is: the
+turn markers a model wants are the runtime's business, and shipping that table
+from here as well would put it on two include paths. But the *key* the template
+is selected by — the model family — can only come from the model file, so
+`geist_model_arch` is contractual as of 0.9.0. Feeding a model another family's
+turn tokens pushes it off-distribution and wrecks instruction-following; a
+consumer that cannot ask which family it loaded cannot avoid that.
+
 ### `include/geist.h`
 
 | Symbol | Used for |
@@ -54,6 +62,7 @@ requires logit-level access — the three promotions in 0.6.0 below.
 | `geist_session_decode_step` | token-by-token generation |
 | `geist_session_token_to_str` | detokenizing the emitted surface |
 | `geist_session_reset` | rewind to the pinned prefix between turns |
+| `geist_model_arch` | selecting the chat template by model family — STABLE since 0.9.0 |
 
 ### `include/geist_util.h`
 

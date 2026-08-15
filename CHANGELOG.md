@@ -8,6 +8,14 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+- `geist_model_arch` is **STABLE since 0.9.0** and joins the agent-runtime
+  contract (`docs/API_CONTRACT.md`, `examples/agent_contract_smoke.c`). Since
+  the agent layer moved out of tree in 0.7.0, chat templating is the consumer's
+  job — but the model *family* it selects on can only come from the model file,
+  so the key is the engine's to promise. Tag and documentation only; no
+  signature, behaviour or ABI change.
+
 ## [0.8.2] — 2026-08-03
 
 ### Added

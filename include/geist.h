@@ -172,9 +172,13 @@ enum geist_status geist_model_load_from_memory(const void           *data,
 void        geist_model_destroy(struct geist_model *m);
 const char *geist_model_errmsg(const struct geist_model *m);
 
-/* @stability EXPERIMENTAL — the GGUF's general.architecture string ("gemma4",
- * "bitnet-b1.58", "llama", …), captured at load; "transformer" if the key is
- * absent. Lets a chat/agent layer pick a model-specific template by family. */
+/* @stability STABLE since 0.9.0 — agent-runtime contract (docs/API_CONTRACT.md).
+ * The GGUF's general.architecture string ("gemma4", "bitnet-b1.58", "llama", …),
+ * captured at load; "transformer" if the key is absent. Lets a chat/agent layer
+ * pick a model-specific template by family — since the agent layer moved out of
+ * tree, this is the key that selection is made on, and the only half of the
+ * mapping the engine can supply. The returned pointer is owned by the model and
+ * stays valid until geist_model_destroy. */
 const char *geist_model_arch(const struct geist_model *m);
 
 /* ====================================================================== */
