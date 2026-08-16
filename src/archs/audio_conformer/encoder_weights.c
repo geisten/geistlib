@@ -117,15 +117,13 @@ static bool load_ffn(struct st_ctx *sf, int layer_idx, const char *prefix, struc
  * resonance across all 12 Conformer layers - if dropping the last few
  * layers from W8A8 weakens or shifts the drift, the hypothesis holds. */
 static int w8a8_layer_limit(void) {
-    static int limit = -1;
-    if (limit < 0) {
-        const char *s = getenv("GEIST_AUDIO_W8A8_LAYER_LIMIT");
-        limit         = (s != nullptr) ? atoi(s) : N_LAYERS;
-        if (limit < 0)
-            limit = 0;
-        if (limit > N_LAYERS)
-            limit = N_LAYERS;
-    }
+    /* Read per call (not latched) — see load_attn. */
+    const char *s     = getenv("GEIST_AUDIO_W8A8_LAYER_LIMIT");
+    int         limit = (s != nullptr) ? atoi(s) : N_LAYERS;
+    if (limit < 0)
+        limit = 0;
+    if (limit > N_LAYERS)
+        limit = N_LAYERS;
     return limit;
 }
 
@@ -135,11 +133,10 @@ static bool load_attn(struct st_ctx *sf, int layer_idx, const char *prefix, stru
      * Per bib.md A6 (4-bit Conformer with Native QAT, Google 2024) INT8-only
      * shows 0.87% WER loss without finetune — acceptable for the streaming
      * path where the next-token LM dominates output quality anyway. */
-    static int attn_w8a8 = -1;
-    if (attn_w8a8 < 0) {
-        const char *s = getenv("GEIST_AUDIO_ATTN_W8A8");
-        attn_w8a8     = (s != nullptr && s[0] == '1') ? 1 : 0;
-    }
+    /* Read per call (not latched): lets one process load A/B encoders for
+     * the quant-parity test; the cost is nothing next to the weight load. */
+    const char                  *attn_env     = getenv("GEIST_AUDIO_ATTN_W8A8");
+    const int                    attn_w8a8    = (attn_env != nullptr && attn_env[0] == '1') ? 1 : 0;
     const bool                   layer_active = (layer_idx < w8a8_layer_limit());
     const enum audio_linear_prec attn_prec =
             (attn_w8a8 && layer_active) ? AUDIO_PREC_W8A8 : AUDIO_PREC_W8A32;
@@ -169,11 +166,9 @@ static bool load_lconv(struct st_ctx *sf, int layer_idx, const char *prefix, str
      * from FP32 to W8A8 (depthwise conv stays FP32 — it's per-channel
      * causal and the kernel doesn't have a quant path). Same rationale
      * as Attn W8A8 (bib.md A6). */
-    static _Atomic int lconv_w8a8 = -1;
-    if (lconv_w8a8 < 0) {
-        const char *s = getenv("GEIST_AUDIO_LCONV_W8A8");
-        lconv_w8a8    = (s != nullptr && s[0] == '1') ? 1 : 0;
-    }
+    /* Read per call (not latched) — see load_attn. */
+    const char                  *lconv_env  = getenv("GEIST_AUDIO_LCONV_W8A8");
+    const int                    lconv_w8a8 = (lconv_env != nullptr && lconv_env[0] == '1') ? 1 : 0;
     const bool                   layer_active = (layer_idx < w8a8_layer_limit());
     const enum audio_linear_prec prec =
             (lconv_w8a8 && layer_active) ? AUDIO_PREC_W8A8 : AUDIO_PREC_FP32;

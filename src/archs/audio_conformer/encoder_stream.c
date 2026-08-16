@@ -743,11 +743,18 @@ static void worker_do_push(struct AudioEncoder *a, size_t mel_snap, bool is_fina
         return;
     /* Local mask — all-true for valid frames is fine since push_pcm has
      * already produced them via the mel pipeline (no silence-skip path
-     * is wired through the streaming API). */
-    bool *mask = heap_calloc_array_aligned(bool, mel_snap);
+     * is wired through the streaming API).
+     *
+     * The FINAL push mirrors the monolithic path's extra padded frame
+     * (n_mel = frames + 1, mask false) — without it the live worker
+     * emitted one soft token fewer than audio_encoder_run for the same
+     * audio (#235). mel_buf capacity covers the extra row: the
+     * monolithic path reads the same +1 from the same buffer. */
+    const size_t n_mel = is_final ? mel_snap + 1 : mel_snap;
+    bool        *mask  = heap_calloc_array_aligned(bool, n_mel);
     for (size_t i = 0; i < mel_snap; i++)
         mask[i] = true;
-    (void) audio_encoder_stream_push(a, a->stream, a->mel_buf, mask, mel_snap, is_final);
+    (void) audio_encoder_stream_push(a, a->stream, a->mel_buf, mask, n_mel, is_final);
     safe_free((void **) &mask);
 }
 
