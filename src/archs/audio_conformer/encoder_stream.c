@@ -79,6 +79,20 @@ void audio_encoder_end_input(struct AudioEncoder *a) {
     pthread_mutex_unlock(&a->mtx);
 }
 
+/* The model expects one extra padded mel frame after the real ones
+ * (n_mel = frames + 1, mask false) — mirroring HF's feature extractor.
+ * Built in ONE place so no caller can forget the convention again
+ * (#235's missing-token bug was exactly a caller forgetting it).
+ * Caller frees the mask. */
+static bool *padded_mel_mask(size_t n_frames, size_t *n_mel_out) {
+    const size_t n_mel = n_frames + 1;
+    bool        *mask  = heap_calloc_array_aligned(bool, n_mel);
+    for (size_t i = 0; i < n_frames; i++)
+        mask[i] = true;
+    *n_mel_out = n_mel;
+    return mask;
+}
+
 /* Run subsample + Conformer + projections on the pre-computed mel buffer
  * (populated incrementally by push_pcm — Phase C). Caller holds a->mtx;
  * we drop it during the heavy work and re-acquire afterwards. */
@@ -86,7 +100,6 @@ static int compute_segment_locked(struct AudioEncoder *a) {
     /* Snapshot mel frame count under the lock. PCM is needed only as a
      * fallback when something went wrong in the streaming path. */
     const size_t n_frames = a->mel_n_computed;
-    const size_t n_mel    = n_frames + 1; /* +1 mirrors HF's padded extra frame */
 
     if (a->mel == nullptr || n_frames == 0) {
         /* No mel computed (e.g. push_pcm never ran the lazy mel init).
@@ -101,9 +114,8 @@ static int compute_segment_locked(struct AudioEncoder *a) {
      * writes to it, and end_input has set end_input_flag which blocks
      * further pushes. */
     float *mel_view = a->mel_buf;
-    bool  *mask     = heap_calloc_array_aligned(bool, n_mel);
-    for (size_t i = 0; i < n_frames; i++)
-        mask[i] = true;
+    size_t n_mel;
+    bool  *mask = padded_mel_mask(n_frames, &n_mel);
     pthread_mutex_unlock(&a->mtx);
 
     const size_t max_soft = (n_mel + 3) / 4 + 4;
@@ -636,16 +648,14 @@ size_t audio_encoder_stream_push(const struct AudioEncoder *a,
     if (state == nullptr || n_mel_total == 0)
         return 0;
 
-    /* 1. Subsample. Default = full-mel re-run (Phase 2 behaviour, fastest
-     *    for short push-to-talk clips where the alloc + memcpy overhead of
-     *    the Phase-3 cache exceeds the conv2d savings). Opt-in to Phase-3
-     *    incremental via GEIST_AUDIO_SUBSAMPLE_INC=1 for long-form audio
-     *    where the conv2d savings win. */
-    static _Atomic int subs_inc = -1;
-    if (subs_inc < 0) {
-        const char *s = getenv("GEIST_AUDIO_SUBSAMPLE_INC");
-        subs_inc      = (s != nullptr && s[0] == '1') ? 1 : 0;
-    }
+    /* 1. Subsample. One-shot segments default to the full-mel re-run (the
+     *    alloc + memcpy overhead of the Phase-3 cache exceeds the conv2d
+     *    savings on a single pass). The live worker calls this per 48-frame
+     *    kick, where re-running from frame 0 is O(T²) over the clip — it
+     *    defaults to the incremental path. GEIST_AUDIO_SUBSAMPLE_INC=0/1
+     *    overrides either way. */
+    const char  *inc_env  = getenv("GEIST_AUDIO_SUBSAMPLE_INC");
+    const bool   subs_inc = inc_env != nullptr ? inc_env[0] == '1' : a->stream_enabled;
     const size_t n_sub_full =
             subs_inc ? audio_encoder_subsample_run_inc(
                                a, &state->subs, mel_full, mel_mask, n_mel_total, state->sub_buf)
@@ -663,8 +673,11 @@ size_t audio_encoder_stream_push(const struct AudioEncoder *a,
     if (block_end_excl <= block_start)
         return 0;
 
-    /* 3. Constant pos_emb across blocks. */
-    float *pos_emb = audio_encoder_compute_pos_emb(a);
+    /* 3. Constant pos_emb across blocks — computed once per encoder,
+     *    cached on the stream state (freed with it). */
+    if (state->pos_emb == nullptr)
+        state->pos_emb = audio_encoder_compute_pos_emb(a);
+    float *pos_emb = state->pos_emb;
 
     /* 4. Per-block × per-layer streaming. */
     float  h_chunk[CHUNK_SIZE * AUDIO_HIDDEN];
@@ -713,7 +726,6 @@ size_t audio_encoder_stream_push(const struct AudioEncoder *a,
         n_new_soft_total += n_chunk;
     }
 
-    safe_free((void **) &pos_emb);
     return n_new_soft_total;
 }
 
@@ -741,13 +753,19 @@ size_t audio_stream_state_n_soft(const struct audio_stream_state *s) {
 static void worker_do_push(struct AudioEncoder *a, size_t mel_snap, bool is_final) {
     if (mel_snap == 0)
         return;
-    /* Local mask — all-true for valid frames is fine since push_pcm has
-     * already produced them via the mel pipeline (no silence-skip path
-     * is wired through the streaming API). */
-    bool *mask = heap_calloc_array_aligned(bool, mel_snap);
-    for (size_t i = 0; i < mel_snap; i++)
-        mask[i] = true;
-    (void) audio_encoder_stream_push(a, a->stream, a->mel_buf, mask, mel_snap, is_final);
+    /* Mid-stream pushes see only real frames (all-true mask — push_pcm
+     * already produced them); the FINAL push closes the segment with the
+     * same padded extra frame the monolithic path uses. */
+    size_t n_mel = mel_snap;
+    bool  *mask;
+    if (is_final) {
+        mask = padded_mel_mask(mel_snap, &n_mel);
+    } else {
+        mask = heap_calloc_array_aligned(bool, n_mel);
+        for (size_t i = 0; i < n_mel; i++)
+            mask[i] = true;
+    }
+    (void) audio_encoder_stream_push(a, a->stream, a->mel_buf, mask, n_mel, is_final);
     safe_free((void **) &mask);
 }
 

@@ -9,6 +9,25 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **W8A8 attention/LConv is now a gated, tested option** (#238): the
+  existing `GEIST_AUDIO_ATTN_W8A8` / `GEIST_AUDIO_LCONV_W8A8` opt-ins are
+  pinned by `tests/test_audio_attn_w8a8_parity_int.c` — soft-token cosine
+  parity vs the shipping precision on a synthetic clip, thresholds
+  calibrated from measured drift (mean 1−cos ≈ 3.4e-3), run mandatorily
+  in the `audio-smoke` CI job. The three env reads in the weight loader
+  are no longer process-latched, so one process can load A/B encoders.
+  Defaults unchanged (opt-in stays opt-in per the #238 rollout plan).
+  Measured on the Pi 5: attn W8A8 −20 % encode, +lconv −38 % (RTF
+  0.33× → 0.21×), chat e2e 6/6 clips green.
+- **Live streaming worker verified and pinned** (#235): with
+  `GEIST_AUDIO_STREAM=1` the Conformer encodes 48-mel-frame batches while
+  PCM still arrives (now with the incremental subsample by default —
+  re-convolving from frame 0 per kick was O(T²)); on the Pi 5 the
+  post-utterance tail on a 10 s clip drops 3 600 → 202 ms
+  (0.36× → 0.02× of audio).
+  `tests/test_audio_stream_live_parity_int.c` pins bit-identical output
+  vs the monolithic path, mandatory in the `audio-smoke` job.
+
 - **AVX-512 VNNI W8A8 kernel for the audio tower** (#237): x86 hosts with
   VNNI no longer run the scalar path for W8A8-tagged layers — the FFN,
   22–35 % of encode time per the Pi 5 baseline. One catalog entry in
@@ -52,6 +71,9 @@ minor release.
   (probed-best vs forced-scalar vs float64 reference).
 
 ### Fixed
+- The live streaming worker emitted one soft token fewer than the
+  monolithic path for the same audio: the final flush did not mirror the
+  monolithic path's extra padded mel frame (n_mel = frames + 1). (#235)
 - The Gemma 4 audio/vision towers are no longer attached to other model
   families. Previously the encoder search heuristics (cwd `audio_bench/`,
   directory next to the GGUF) could pick up the tower for e.g. a BitNet

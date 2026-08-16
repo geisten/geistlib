@@ -78,18 +78,31 @@ struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
     }
 
     {
-        const char *attn_env   = getenv("GEIST_AUDIO_ATTN_W8A8");
-        const char *lconv_env  = getenv("GEIST_AUDIO_LCONV_W8A8");
-        const char *attn_prec  = (attn_env && attn_env[0] == '1') ? "W8A8" : "W8A32";
-        const char *lconv_prec = (lconv_env && lconv_env[0] == '1') ? "W8A8" : "FP32";
-        fprintf(stderr,
-                "audio_encoder: per-tensor precision (FFN=W8A8, Attn=%s, LConv=%s)"
-#if defined(GEIST_AUDIO_KEEP_FP32)
-                ", FP32 kept for A/B"
+        /* Mirror load_clippable's Apple override — otherwise this line
+         * claims W8A8 while the loader silently forced FP32, and the one
+         * diagnostic users have lies about what was loaded. */
+        bool forced_fp32 = false;
+#if defined(__APPLE__) && defined(HAVE_ACCELERATE)
+        forced_fp32 = getenv("GEIST_AUDIO_FORCE_QUANT") == nullptr;
 #endif
-                "\n",
-                attn_prec,
-                lconv_prec);
+        if (forced_fp32) {
+            fprintf(stderr,
+                    "audio_encoder: per-tensor precision: all FP32 (Accelerate "
+                    "default; GEIST_AUDIO_FORCE_QUANT=1 to quantize)\n");
+        } else {
+            const char *attn_env   = getenv("GEIST_AUDIO_ATTN_W8A8");
+            const char *lconv_env  = getenv("GEIST_AUDIO_LCONV_W8A8");
+            const char *attn_prec  = (attn_env && attn_env[0] == '1') ? "W8A8" : "W8A32";
+            const char *lconv_prec = (lconv_env && lconv_env[0] == '1') ? "W8A8" : "FP32";
+            fprintf(stderr,
+                    "audio_encoder: per-tensor precision (FFN=W8A8, Attn=%s, LConv=%s)"
+#if defined(GEIST_AUDIO_KEEP_FP32)
+                    ", FP32 kept for A/B"
+#endif
+                    "\n",
+                    attn_prec,
+                    lconv_prec);
+        }
     }
 
     /* Bind the quantized matmul kernels once, from the runtime probe —
