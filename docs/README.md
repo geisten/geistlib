@@ -4,6 +4,7 @@ This repository documents the application-neutral Geist engine:
 
 - `QUICKSTART.md`: C-library entry points
 - `PI5_BITNET.md`: user guide for the self-contained Pi 5 BitNet binary
+- `VOICE.md`: push-to-talk quickstart — microphone to spoken-to answer on a Pi 5 and macOS
 - `DEMOS.md`: recorded demos — the bitnet.cpp comparison and use cases
 - `MODELS.md`: supported models — Gemma (vision/audio), Llama, ternary BitNet
 - `BACKENDS.md`: CPU backends and the experimental Metal/Vulkan GPU paths
