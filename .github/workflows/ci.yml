@@ -401,6 +401,35 @@ jobs:
       - name: Live streaming worker parity (a skip is a failure)
         run: ./bin/linux/release/tests/test_audio_stream_live_parity_int
 
+  # TARGET=pi5 is the primary deployment target yet no CI leg built it — the
+  # 0.8.0 _GNU_SOURCE fix landed in target-linux.mk only, and TARGET=pi5
+  # broke unseen until a build on the physical board caught it (#244). The
+  # arm64 runner compiles the exact pi5 flag set (-mcpu=cortex-a76 is a
+  # codegen choice, not a run requirement), so target bit-rot fails here
+  # instead of on the board. Build-only: the Pi 5 itself stays the arbiter
+  # for anything measured.
+  pi5-target-build:
+    name: build (TARGET=pi5 flag set, Linux arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v4
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-pi5-${{ github.run_id }}
+          restore-keys: ccache-pi5-
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache
+      - name: Build lib + all test binaries
+        run: make TARGET=pi5 CC="ccache gcc-14" lib bin
+
   # musl on x86_64: build-test-musl above only covers arm64, but the SHIPPED
   # x86_64 release artifact is also musl-static. Build + unit-test the exact
   # release recipe so a musl-specific x86 issue can't reach a release.
