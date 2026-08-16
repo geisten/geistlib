@@ -27,6 +27,20 @@ make bench-vision    # vision encoder only
 make bench-audio     # audio encoder only
 ```
 
+## Audio-tower baseline (Pi 5)
+
+`benchmark/results/PI5-audio.md` records the per-stage audio baseline the
+audio optimizations are judged against. Its protocol is self-contained and
+fixture-reproducible: the tower comes from `make fetch-audio-tower`
+(SHA-pinned Range extraction, see the Makefile), mel constants are checked
+in, and the input clips are **synthesized** by `tools/gen_test_wav.py`
+(deterministic — the doc records their SHA-256; no voice recordings enter
+the repository). Protocol: quiesced board started < 55 °C, 1 warmup +
+10 repeats per clip length (2 s / 10 s / 28 s), medians, spread and
+temperatures recorded; stage shares from a `-DGEIST_AUDIO_PROFILE` build.
+`reference_runs.json` stays owned by `make bench --record` and carries no
+audio rows.
+
 ## Comparison vs llama.cpp
 
 **Speed** — pin the reference: build `llama.cpp` (`llama-bench`) from a known
