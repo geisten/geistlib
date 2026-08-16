@@ -59,6 +59,37 @@ Readings for the open issues:
 - FFN share grows with clip length (22 → 35 %) — it is the first target
   on long clips, and it is exactly the stage #237 accelerates on x86.
 
+## W8A8 attention / LConv (#238) and live streaming (#235) — measured
+
+Same board/protocol, quiesced re-run (2 s clip, 10 repeats, medians):
+
+| config | encode | vs baseline | RTF |
+|---|---:|---:|---:|
+| shipping (attn W8A32, lconv FP32) | 665 ms | — | 0.33× |
+| `GEIST_AUDIO_ATTN_W8A8=1` | 533 ms | **−20 %** | 0.27× |
+| + `GEIST_AUDIO_LCONV_W8A8=1` | 411 ms | **−38 %** | 0.21× |
+
+Quality gates for the quantized configs, all green on this board:
+`test_audio_attn_w8a8_parity_int` (soft-token cosine drift mean
+1−cos ≈ 9e-4, worst token 0.93) and `test_audio_chat_e2e` **6/6 clips**
+with attn+lconv W8A8 — the model still answers the audio correctly.
+Defaults stay opt-in per the #238 rollout plan.
+
+Live streaming worker (`GEIST_AUDIO_STREAM=1`, 10 s clip, tail after
+end-of-speech):
+
+| config | residual tail | tail / audio |
+|---|---:|---:|
+| monolithic (encode after end_input) | 3 600 ms | 0.36× |
+| streaming worker | **1 091 ms** | **0.11×** |
+
+The worker encodes 48-mel-frame batches while PCM still arrives; output
+is bit-identical to the monolithic path
+(`test_audio_stream_live_parity_int`, 251 = 251 tokens, max|Δ| = 0).
+Tail / full-encode = 0.30 — the #235 target of 0.25 is near but not met;
+the remaining tail is the final flush, and the 48-frame kick interval is
+the knob to shrink it further.
+
 ## Push-to-talk stages (`test_audio_latency_e2e`, 2 s synthetic clip, LM loaded)
 
 Three fresh runs (each loads the 3.1 GB Q4_K_M LM; run 1 pays cold page-in):
