@@ -21,6 +21,23 @@ minor release.
   (`tools/gen_test_wav.py`) — no voice recording enters the repository.
   `test_audio_latency_e2e` accepts `GEIST_AUDIO_WAV=<path>` to run a single
   caller-provided clip.
+- `geist_model_modalities()` (**EXPERIMENTAL**): bitmask of modalities a
+  loaded model instance can consume beyond text (`GEIST_MOD_AUDIO`,
+  `GEIST_MOD_VISION`, `GEIST_MOD_VIDEO`). Lets a host decide up front
+  whether to offer e.g. microphone input, instead of learning it from a
+  failing `attach_*` call. The mask mirrors exactly the capability checks
+  the attach calls perform; the invariant is pinned by
+  `tests/test_model_modalities_int.c`. (#233)
+
+### Fixed
+- The Gemma 4 audio/vision towers are no longer attached to other model
+  families. Previously the encoder search heuristics (cwd `audio_bench/`,
+  directory next to the GGUF) could pick up the tower for e.g. a BitNet
+  load; `attach_audio` then injected 1536-dim soft tokens into a 2560-dim
+  residual stream — out-of-bounds reads, garbage in the KV cache, returned
+  as `GEIST_OK`. Tower load is now gated on `general.architecture ==
+  "gemma4"`; other families answer `geist_model_modalities() == 0` and
+  refuse `attach_*` with `GEIST_E_NOT_FOUND`. (#240)
 
 ## [0.9.0] — 2026-08-15
 
