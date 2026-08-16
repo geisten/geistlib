@@ -8,6 +8,15 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+- `geist_model_modalities()` (**EXPERIMENTAL**): bitmask of modalities a
+  loaded model instance can consume beyond text (`GEIST_MOD_AUDIO`,
+  `GEIST_MOD_VISION`, `GEIST_MOD_VIDEO`). Lets a host decide up front
+  whether to offer e.g. microphone input, instead of learning it from a
+  failing `attach_*` call. The mask mirrors exactly the capability checks
+  the attach calls perform; the invariant is pinned by
+  `tests/test_model_modalities_int.c`. (#233)
+
 ## [0.9.0] — 2026-08-15
 
 ### Changed
