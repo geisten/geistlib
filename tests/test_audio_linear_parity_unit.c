@@ -11,8 +11,8 @@
  *   - w8a32: fp32 accumulation order differs between kernels -> relative
  *            tolerance sized for in_dim-term sums.
  *
- * Also checks both against a float64 reference so two identically-broken
- * kernels can't vouch for each other.
+ * The scalar kernel is additionally checked against a float64 reference,
+ * so the pair can't vouch for each other while both being broken.
  */
 #define _POSIX_C_SOURCE 200809L /* setenv */
 

@@ -392,6 +392,14 @@ jobs:
           GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
           GEIST_AUDIO_WAV: audio_test_data/smoke.wav
         run: ./bin/linux/release/tests/test_audio_latency_e2e
+      # #238: W8A8 attention/lconv must stay equivalent to the shipping
+      # precision — the tower is present here, so a skip is a failure.
+      - name: Attn/LConv W8A8 parity vs shipping precision (a skip is a failure)
+        run: ./bin/linux/release/tests/test_audio_attn_w8a8_parity_int
+      # #235: the live streaming worker must stay bit-identical to the
+      # monolithic path.
+      - name: Live streaming worker parity (a skip is a failure)
+        run: ./bin/linux/release/tests/test_audio_stream_live_parity_int
 
   # musl on x86_64: build-test-musl above only covers arm64, but the SHIPPED
   # x86_64 release artifact is also musl-static. Build + unit-test the exact
