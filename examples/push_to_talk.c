@@ -5,7 +5,9 @@
  * mic delivers through arecord), segments utterances with a simple energy
  * VAD, and answers each one through the Gemma 4 audio path:
  *
- *   arecord -f S16_LE -r 16000 -c 1 -t raw | ./push_to_talk model.gguf
+ *   arecord -f S16_LE -r 16000 -c 1 -t raw | ./push_to_talk model.gguf   # Linux/Pi
+ *   ffmpeg -f avfoundation -i ":1" -ar 16000 -ac 1 -f s16le - | \
+ *       ./push_to_talk model.gguf 1200                                   # macOS
  *
  * No mic handy? Any 16 kHz WAV works the same way (skip the 44-byte
  * header, append silence so the VAD closes the utterance):
