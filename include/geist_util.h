@@ -81,6 +81,28 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
 /* Multimodal soft-token attach                                            */
 /* ====================================================================== */
 
+/* Bits returned by geist_model_modalities. */
+enum geist_modality {
+    GEIST_MOD_AUDIO  = 1 << 0,
+    GEIST_MOD_VISION = 1 << 1,
+    GEIST_MOD_VIDEO  = 1 << 2,
+};
+
+/* @stability EXPERIMENTAL — bitmask of modalities this loaded model
+ * instance can consume beyond text, so a host can decide up front whether
+ * to offer e.g. microphone input instead of finding out from a failing
+ * attach call.
+ *
+ * The mask is a property of the *loaded instance*, not the architecture
+ * string: it depends on the encoder weights found next to the GGUF at
+ * load time (audio_tower.safetensors + mel_constants.bin,
+ * vision_tower.safetensors) and on GEIST_TEXT_ONLY. It mirrors exactly
+ * the capability checks the attach calls perform — a set bit means the
+ * corresponding geist_session_attach_* cannot fail with
+ * GEIST_E_NOT_FOUND / GEIST_E_UNSUPPORTED; a clear bit means it will.
+ * Returns 0 for a text-only model or m == nullptr. */
+unsigned geist_model_modalities(const struct geist_model *m);
+
 /* @stability EXPERIMENTAL — soft-token injection semantics may change.
  *
  * PCM is consumed as 16-bit signed mono at the indicated `sample_rate`.
