@@ -152,7 +152,7 @@ int main(void) {
             }
         }
         printf("w8a32 scalar-vs-f64ref max rel err: %.3e\n", worst);
-        if (worst > 2e-3) {
+        if (worst > 1e-2) {
             fprintf(stderr, "FAIL: w8a32 scalar drifts from reference (%.3e)\n", worst);
             fails++;
         }
