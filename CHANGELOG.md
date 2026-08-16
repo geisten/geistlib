@@ -29,6 +29,19 @@ minor release.
   the attach calls perform; the invariant is pinned by
   `tests/test_model_modalities_int.c`. (#233)
 
+### Changed
+- **Audio tower matmul kernels are bound at load time from the hardware
+  probe** (#236), like the LLM kernel catalogs — the compile-time
+  `#if __ARM_NEON` fork is gone from the forward pass (enforced by
+  `scripts/check-audio-dispatch.sh` in CI). Consequences: a binary built
+  with SIMD flags binds the portable kernels on a host whose probe lacks
+  the feature (no SIGILL on lesser ARM cores); `GEIST_AUDIO_KERNEL=scalar`
+  forces the portable kernels; and non-NEON hosts now run true W8A8 for
+  W8A8-tagged layers (scalar int8) instead of silently widening to W8A32 —
+  the x86 VNNI entry (#237) is now one catalog line away. Binding parity
+  is pinned by the hermetic `tests/test_audio_linear_parity_unit.c`
+  (probed-best vs forced-scalar vs float64 reference).
+
 ### Fixed
 - The Gemma 4 audio/vision towers are no longer attached to other model
   families. Previously the encoder search heuristics (cwd `audio_bench/`,
