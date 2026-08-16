@@ -2,7 +2,7 @@
  * src/archs/audio_conformer/encoder_stream.c — the streaming API and its worker thread.
  *
  * Layer: ARCHITECTURE (audio_conformer). Split from the former
- * monolithic audio_encoder.c; pure moves, no behavior change.
+ * monolithic audio_encoder.c.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -79,20 +79,6 @@ void audio_encoder_end_input(struct AudioEncoder *a) {
     pthread_mutex_unlock(&a->mtx);
 }
 
-/* The model expects one extra padded mel frame after the real ones
- * (n_mel = frames + 1, mask false) — mirroring HF's feature extractor.
- * Built in ONE place so no caller can forget the convention again
- * (#235's missing-token bug was exactly a caller forgetting it).
- * Caller frees the mask. */
-static bool *padded_mel_mask(size_t n_frames, size_t *n_mel_out) {
-    const size_t n_mel = n_frames + 1;
-    bool        *mask  = heap_calloc_array_aligned(bool, n_mel);
-    for (size_t i = 0; i < n_frames; i++)
-        mask[i] = true;
-    *n_mel_out = n_mel;
-    return mask;
-}
-
 /* Run subsample + Conformer + projections on the pre-computed mel buffer
  * (populated incrementally by push_pcm — Phase C). Caller holds a->mtx;
  * we drop it during the heavy work and re-acquire afterwards. */
@@ -115,7 +101,7 @@ static int compute_segment_locked(struct AudioEncoder *a) {
      * further pushes. */
     float *mel_view = a->mel_buf;
     size_t n_mel;
-    bool  *mask = padded_mel_mask(n_frames, &n_mel);
+    bool  *mask = audio_mel_mask_alloc(n_frames, true, &n_mel);
     pthread_mutex_unlock(&a->mtx);
 
     const size_t max_soft = audio_soft_bound_from_mel(n_mel);
@@ -286,6 +272,7 @@ void audio_stream_state_destroy(struct audio_stream_state *s) {
     }
     safe_free((void **) &s->sub_buf);
     safe_free((void **) &s->soft);
+    safe_free((void **) &s->pos_emb);
     safe_free((void **) &s->subs.l0);
     safe_free((void **) &s->subs.l1);
     safe_free((void **) &s);
@@ -301,6 +288,7 @@ static void audio_stream_state_reset(struct audio_stream_state *s) {
     }
     s->n_sub_total = 0;
     s->n_soft      = 0;
+    s->n_drained   = 0; /* forgotten before: pull after reset underflowed avail */
     /* Phase-3 cache reset: just clear the counters; the conv2d_fp32_from
      * overwrites the relevant cells before any subsequent reader. */
     s->subs.n_t_out0   = 0;
@@ -639,7 +627,7 @@ static void audio_encoder_layer_run_streaming(const struct AudioEncoder *a,
  * partial block if is_final) through the 12 streaming layers +
  * output_proj + embed_audio. Returns the number of NEW soft tokens
  * appended to state->soft. */
-size_t audio_encoder_stream_push(const struct AudioEncoder *a,
+size_t audio_encoder_stream_push(struct AudioEncoder       *a,
                                  struct audio_stream_state *state,
                                  const float               *mel_full,
                                  const bool                *mel_mask,
@@ -721,7 +709,13 @@ size_t audio_encoder_stream_push(const struct AudioEncoder *a,
                     state->soft + state->n_soft * AUDIO_SOFT_TOKEN_DIM);
         safe_free((void **) &normed);
 
+        /* Publish under the encoder mutex: the pull side reads n_soft and
+         * memcpys the rows below it while the worker is still mid-push —
+         * without this release the counter can become visible before the
+         * soft-token stores on ARM (data race, garbage rows to the LM). */
+        pthread_mutex_lock(&a->mtx);
         state->n_soft += n_chunk;
+        pthread_mutex_unlock(&a->mtx);
         state->n_sub_total = sub_end;
         n_new_soft_total += n_chunk;
     }
@@ -753,18 +747,10 @@ size_t audio_stream_state_n_soft(const struct audio_stream_state *s) {
 static void worker_do_push(struct AudioEncoder *a, size_t mel_snap, bool is_final) {
     if (mel_snap == 0)
         return;
-    /* Mid-stream pushes see only real frames (all-true mask — push_pcm
-     * already produced them); the FINAL push closes the segment with the
-     * same padded extra frame the monolithic path uses. */
-    size_t n_mel = mel_snap;
-    bool  *mask;
-    if (is_final) {
-        mask = padded_mel_mask(mel_snap, &n_mel);
-    } else {
-        mask = heap_calloc_array_aligned(bool, n_mel);
-        for (size_t i = 0; i < n_mel; i++)
-            mask[i] = true;
-    }
+    /* Mid-stream pushes see only real frames; the FINAL push closes the
+     * segment with the same padded extra frame the monolithic path uses. */
+    size_t n_mel;
+    bool  *mask = audio_mel_mask_alloc(mel_snap, is_final, &n_mel);
     (void) audio_encoder_stream_push(a, a->stream, a->mel_buf, mask, n_mel, is_final);
     safe_free((void **) &mask);
 }

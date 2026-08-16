@@ -17,6 +17,7 @@
 #include "arch.h"
 
 #include "audio_encoder.h"
+#include "encoder_internal.h" /* MEL_HOP, AUDIO_MAX_MEL_FRAMES, mel-mask helper */
 #include "heap.h"
 #include "mel_pipeline.h"
 
@@ -135,30 +136,31 @@ static void audio_conformer_state_destroy(void *encoder_state) {
 }
 
 /* Compute mel frames from int16 PCM at 16 kHz. Returns n_frames on success,
- * 0 on bad input. PCM is processed in 320-sample windows (20 ms hop=full
- * frame); the existing mel pipeline matches HF's Gemma4AudioFeatureExtractor. */
+ * 0 on bad input. Framing per HF's Gemma4AudioFeatureExtractor and
+ * identical to the streaming path (encoder_stream.c push_pcm): 10 ms hop
+ * (MEL_HOP), one 160-sample zero left-pad. Frame i reads
+ * padded[i*160 .. i*160+319] = pcm[i*160-160 .. i*160+159].
+ * (This path ran a 20 ms hop with no pad until the framing-parity fix —
+ * half the tokens of the reference for the same audio.) */
 static size_t pcm_to_mel(struct MelState *mel,
                          const int16_t   *pcm,
                          size_t           n_samples,
                          float           *mel_out,
-                         bool            *mask_out,
                          size_t           max_frames) {
     if (mel == nullptr || pcm == nullptr) {
         return 0;
     }
-    size_t n_frames = n_samples / MEL_FRAME_LENGTH;
+    size_t n_frames = n_samples / MEL_HOP;
     if (n_frames > max_frames) {
         n_frames = max_frames;
     }
     float frame_pcm[MEL_FRAME_LENGTH];
     for (size_t i = 0; i < n_frames; i++) {
         for (size_t k = 0; k < MEL_FRAME_LENGTH; k++) {
-            frame_pcm[k] = (float) pcm[i * MEL_FRAME_LENGTH + k] / 32768.0f;
+            const long pi = (long) (i * MEL_HOP + k) - MEL_HOP; /* unshift left-pad */
+            frame_pcm[k]  = pi < 0 ? 0.0f : (float) pcm[pi] / 32768.0f;
         }
         mel_frame_compute(mel, frame_pcm, mel_out + i * MEL_N_MEL);
-        if (mask_out != nullptr) {
-            mask_out[i] = true;
-        }
     }
     return n_frames;
 }
@@ -173,46 +175,44 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
     }
     struct audio_conformer_state *st = encoder_state;
 
-    /* Max mel frames = 1500 (30 seconds at 50 Hz frame rate). */
-    static constexpr size_t MAX_MEL_FRAMES = 1500;
-    if (n_samples > MAX_MEL_FRAMES * MEL_FRAME_LENGTH) {
-        n_samples = MAX_MEL_FRAMES * MEL_FRAME_LENGTH;
-    }
-    size_t n_mel_frames = n_samples / MEL_FRAME_LENGTH;
-    if (n_mel_frames == 0) {
+    /* Refuse (not silently truncate — #247) input beyond the 30 s the
+     * model was built for. The session surfaces this as an error. */
+    const size_t n_frames = n_samples / MEL_HOP;
+    if (n_frames == 0 || n_frames > AUDIO_MAX_MEL_FRAMES) {
         return 0;
     }
-
-    float *mel  = heap_alloc_array_aligned(float, n_mel_frames *MEL_N_MEL);
-    bool  *mask = heap_alloc_array_aligned(bool, n_mel_frames);
+    /* +1 padded (mask=false) frame — same convention as the streaming
+     * path's final push. */
+    size_t n_mel;
+    bool  *mask = audio_mel_mask_alloc(n_frames, true, &n_mel);
+    float *mel  = heap_calloc_array_aligned(float, n_mel *MEL_N_MEL); /* pad row = zeros */
     if (mel == nullptr || mask == nullptr) {
-        if (mel != nullptr)
-            safe_free((void **) &mel);
-        if (mask != nullptr)
-            safe_free((void **) &mask);
-        return 0;
-    }
-
-    size_t got = pcm_to_mel(st->mel, pcm, n_samples, mel, mask, n_mel_frames);
-    if (got != n_mel_frames) {
         safe_free((void **) &mel);
         safe_free((void **) &mask);
         return 0;
     }
 
-    /* struct AudioEncoder downsamples 4× then runs Conformer; for max_soft to be a
-     * useful cap, the caller has to size their out_soft buffer accordingly.
-     * audio_encoder_run produces soft tokens up to its internal limit. */
-    size_t n_soft = audio_encoder_run(st->enc, mel, mask, n_mel_frames, out_soft);
-    safe_free((void **) &mel);
-    safe_free((void **) &mask);
-
-    if (n_soft > max_soft) {
-        /* Caller-supplied buffer too small — bytes beyond max_soft were
-         * not actually written (audio_encoder_run overflowed); treat as
-         * error to avoid misleading the caller. */
+    /* Capacity check BEFORE running: audio_encoder_run has no output cap,
+     * so a too-small caller buffer must be refused up front, not detected
+     * after the overflow. Exact subsample arithmetic: two stride-2 convs. */
+    const size_t t_out0           = (n_mel - 1) / 2 + 1;
+    const size_t n_soft_predicted = (t_out0 - 1) / 2 + 1;
+    if (n_soft_predicted > max_soft) {
+        safe_free((void **) &mel);
+        safe_free((void **) &mask);
         return 0;
     }
+
+    size_t got = pcm_to_mel(st->mel, pcm, n_samples, mel, n_frames);
+    if (got != n_frames) {
+        safe_free((void **) &mel);
+        safe_free((void **) &mask);
+        return 0;
+    }
+
+    size_t n_soft = audio_encoder_run(st->enc, mel, mask, n_mel, out_soft);
+    safe_free((void **) &mel);
+    safe_free((void **) &mask);
     return n_soft;
 }
 

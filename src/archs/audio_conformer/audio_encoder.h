@@ -96,7 +96,7 @@ void audio_encoder_reset(struct AudioEncoder *);
  * are exposed so tests can drive them directly and validate parity
  * against the monolithic audio_encoder_run. */
 struct audio_stream_state;
-size_t                     audio_encoder_stream_push(const struct AudioEncoder *,
+size_t                     audio_encoder_stream_push(struct AudioEncoder *,
                                                      struct audio_stream_state *,
                                                      const float *mel_full,
                                                      const bool  *mel_mask,
