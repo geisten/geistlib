@@ -27,7 +27,7 @@ CFLAGS  := -std=c23 -O2 -Wall -Wextra -I../include $(CFLAGS_TARGET) $(GEMM_CFLAG
 LDFLAGS := $(LDFLAGS_TARGET)
 LDLIBS  := $(LDLIBS_TARGET) $(GEMM_LDLIBS)
 
-EXAMPLES := simple_generate
+EXAMPLES := simple_generate push_to_talk
 
 .PHONY: all clean
 all: $(EXAMPLES)
