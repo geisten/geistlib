@@ -8,6 +8,15 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed
+- `make TARGET=pi5` builds again: the target was missing the
+  `_GNU_SOURCE` feature macro the linux target gained in 0.8.0, so
+  `-std=c23` hid `mkstemp` from `test_io_malformed_unit.c` (#230) and the
+  build died — unseen, because no CI leg built the pi5 flag set. A new
+  build-only `pi5-target-build` job on the arm64 runner now compiles
+  `TARGET=pi5` on every push, so the primary deployment target can no
+  longer bit-rot. (#244)
+
 ### Added
 - **AVX-512 VNNI W8A8 kernel for the audio tower** (#237): x86 hosts with
   VNNI no longer run the scalar path for W8A8-tagged layers — the FFN,
