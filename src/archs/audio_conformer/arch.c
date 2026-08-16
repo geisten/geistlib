@@ -216,15 +216,21 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
     return n_soft;
 }
 
+static size_t audio_conformer_max_soft_tokens(const void *encoder_state, size_t n_samples) {
+    (void) encoder_state;
+    return audio_encoder_max_soft_tokens(n_samples);
+}
+
 static size_t audio_conformer_soft_token_dim(const void *encoder_state) {
     (void) encoder_state;
     return AUDIO_SOFT_TOKEN_DIM; /* 1536 for Gemma 4 */
 }
 
 const struct geist_arch_ops_encoder geist_arch_audio_conformer = {
-        .name           = "audio_conformer",
-        .state_create   = audio_conformer_state_create,
-        .state_destroy  = audio_conformer_state_destroy,
-        .encode_pcm     = audio_conformer_encode_pcm,
-        .soft_token_dim = audio_conformer_soft_token_dim,
+        .name            = "audio_conformer",
+        .state_create    = audio_conformer_state_create,
+        .state_destroy   = audio_conformer_state_destroy,
+        .encode_pcm      = audio_conformer_encode_pcm,
+        .soft_token_dim  = audio_conformer_soft_token_dim,
+        .max_soft_tokens = audio_conformer_max_soft_tokens,
 };

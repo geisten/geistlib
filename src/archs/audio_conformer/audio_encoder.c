@@ -69,6 +69,11 @@ void ae_profile_print_and_reset(void) {
 }
 #endif
 
+size_t audio_encoder_max_soft_tokens(size_t n_samples) {
+    const size_t n_frames = n_samples / 160; /* 10 ms hop @ 16 kHz */
+    return audio_soft_bound_from_mel(n_frames + 1);
+}
+
 struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
     const char    *err = nullptr;
     struct st_ctx *sf  = st_open(safetensors_path, &err);
