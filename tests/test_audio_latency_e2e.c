@@ -277,8 +277,20 @@ int main(void) {
         }
     }
 
-    const size_t n_cases = sizeof(cases) / sizeof(cases[0]);
-    size_t       n_runs  = 0;
+    /* GEIST_AUDIO_WAV=<path> runs a single caller-provided clip instead of
+     * the checked-in voice set — lets the CI smoke drive this harness with a
+     * synthetic WAV (tools/gen_test_wav.py) on machines without the voice
+     * fixtures. */
+    const struct latency_case *list    = cases;
+    size_t                     n_cases = sizeof(cases) / sizeof(cases[0]);
+    struct latency_case        env_case;
+    const char                *env_wav = getenv("GEIST_AUDIO_WAV");
+    if (env_wav != nullptr && env_wav[0] != '\0') {
+        env_case = (struct latency_case) {env_wav, "Describe the sound you heard.", "env clip"};
+        list     = &env_case;
+        n_cases  = 1;
+    }
+    size_t n_runs = 0;
 
     printf("audio_latency_e2e: per-stage push-to-talk timing\n");
     printf("\n%-26s %7s | %7s %7s %7s %7s %7s | %7s | tokens\n",
@@ -301,7 +313,7 @@ int main(void) {
            "-------");
 
     for (size_t i = 0; i < n_cases; i++) {
-        const struct latency_case *tc = &cases[i];
+        const struct latency_case *tc = &list[i];
         struct stage_timings       t;
         if (!run_one_case(model, be, tc, &t)) {
             printf("%-26s %7s   skipped/error\n", tc->label, "?");
