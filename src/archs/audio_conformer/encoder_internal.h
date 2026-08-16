@@ -212,6 +212,10 @@ struct audio_stream_state {
     float *sub_buf;
     size_t n_sub_total; /* # sub-tokens currently in sub_buf */
 
+    /* Constant (POS_LEN, AUDIO_HIDDEN) table, computed on first push and
+     * reused across kicks — it never changes within an encoder. */
+    float *pos_emb;
+
     /* Accumulated soft tokens (output_proj + embed_audio applied). */
     float *soft; /* (MAX_SUB_TOKENS, AUDIO_SOFT_TOKEN_DIM) */
     size_t n_soft;
