@@ -73,6 +73,23 @@ No microphone? Pipe any 16 kHz WAV plus a second of silence:
     examples/push_to_talk model.gguf
 ```
 
+On macOS there is no `arecord`; ffmpeg's avfoundation input is the
+equivalent (verified live — speaker-to-mic loop on a MacBook):
+
+```sh
+ffmpeg -f avfoundation -list_devices true -i ""   # find your mic index
+ffmpeg -hide_banner -loglevel error -f avfoundation -i ":1" \
+       -ar 16000 -ac 1 -f s16le - | \
+    examples/push_to_talk model.gguf 1200
+```
+
+(`:1` = the built-in mic on a typical MacBook; grant the terminal
+microphone permission on first use. `brew install sox` and
+`rec -q -t raw -r 16000 -e signed -b 16 -c 1 -` works too.) Calibrate
+the threshold against your room: ambient frame RMS on a MacBook mic is
+~800, so the default 300 would trigger constantly — measure a few
+seconds of silence and set the knob above its peak.
+
 `GEIST_PTT_PROMPT` sets the per-utterance instruction; the second CLI
 argument tunes the VAD threshold (default 300 RMS — every room, mic and
 gain combination needs the knob). Run from the repo root (or set
