@@ -459,6 +459,14 @@ jobs:
           GEIST_EXPECT_ISA: avx512_vnni
         run: |
           "$SDE_PATH/sde64" -spr -- bin/linux/release/tests/test_x86_isa_dispatch_unit
+      # #237: the audio tower's W8A8 binding must also pick VNNI under SDE
+      # (and agree with the scalar kernel) — a silent fall-through to scalar
+      # must fail here, not rot quietly.
+      - name: Audio W8A8 binding proof — VNNI kernel selected + parity
+        env:
+          GEIST_EXPECT_AUDIO_KERNEL: avx512vnni
+        run: |
+          "$SDE_PATH/sde64" -spr -- bin/linux/release/tests/test_audio_linear_parity_unit
       - name: AVX-512 kernel tests under SDE (scalar-parity built in)
         run: |
           set -eo pipefail

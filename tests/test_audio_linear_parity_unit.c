@@ -76,6 +76,19 @@ int main(void) {
     audio_linear_w8a8_fn  best_w8a8  = best->w8a8;
     audio_linear_w8a32_fn best_w8a32 = best->w8a32;
 
+    /* CI proof (GEIST_EXPECT_ISA pattern): under Intel SDE the probe must
+     * select the VNNI kernel — a silent fall-through to scalar would let
+     * the AVX-512 audio path rot while this test stays green (#237). */
+    const char *expect = getenv("GEIST_EXPECT_AUDIO_KERNEL");
+    if (expect != nullptr && strcmp(expect, best->name) != 0) {
+        fprintf(stderr,
+                "FAIL: expected binding '%s' (GEIST_EXPECT_AUDIO_KERNEL) but "
+                "probe selected '%s'\n",
+                expect,
+                best->name);
+        fails++;
+    }
+
     setenv("GEIST_AUDIO_KERNEL", "scalar", 1);
     const struct audio_linear_ops *scalar = audio_linear_rebind();
     if (strcmp(scalar->name, "scalar") != 0) {

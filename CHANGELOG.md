@@ -9,6 +9,15 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **AVX-512 VNNI W8A8 kernel for the audio tower** (#237): x86 hosts with
+  VNNI no longer run the scalar path for W8A8-tagged layers — the FFN,
+  22–35 % of encode time per the Pi 5 baseline. One catalog entry in
+  `audio_linear.c` (VPDPBUSD with unsigned-activation shift and
+  weight-row-sum correction), function-level `target` attribute over the
+  x86-64-v3 baseline, installed only when the runtime probe confirms
+  VNNI and `GEIST_FORCE_ISA` doesn't clamp it away. The SDE CI job now
+  proves the binding is actually selected (`GEIST_EXPECT_AUDIO_KERNEL`)
+  and that it agrees with the scalar kernel.
 - **Audio harness CI smoke** (#234): a new `audio-smoke` job builds and RUNS
   `bench_audio_encode` + `test_audio_latency_e2e` on every push, so the
   harness that produces the Pi 5 audio baseline can no longer rot behind a
