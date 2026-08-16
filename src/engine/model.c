@@ -304,12 +304,21 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
     const char *text_only_env = getenv("GEIST_TEXT_ONLY");
     const bool  text_only     = text_only_env != nullptr && text_only_env[0] == '1';
 
+    /* The only audio/vision towers that exist are Gemma 4's (1536-dim soft
+     * tokens). Never attach them to another family's residual stream — the
+     * encoder search heuristics would otherwise pick up a tower from the
+     * cwd for e.g. a BitNet load, and prefill would read n × d_model floats
+     * from an n × 1536 buffer (#240).
+     * ponytail: hardcoded family gate; move into the arch descriptor when a
+     * second multimodal family lands. */
+    const bool towers_match = arch_copy != nullptr && strcmp(arch_copy, "gemma4") == 0;
+
     /* Best-effort load of the audio encoder. The Conformer needs a
      * safetensors file (not part of the GGUF) + mel constants. Failure is
      * non-fatal — text-only sessions keep working, attach_audio reports
      * GEIST_E_NOT_FOUND. */
     void *audio_state = nullptr;
-    if (!text_only && desc->audio_encoder_ops != nullptr &&
+    if (!text_only && towers_match && desc->audio_encoder_ops != nullptr &&
         desc->audio_encoder_ops->state_create != nullptr) {
         audio_state = desc->audio_encoder_ops->state_create(be, aux_root);
     }
@@ -319,7 +328,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
      * Failure is non-fatal — vision-less sessions keep working;
      * attach_image / attach_video will report GEIST_E_NOT_FOUND. */
     void *vision_state = nullptr;
-    if (!text_only && desc->vision_encoder_ops != nullptr &&
+    if (!text_only && towers_match && desc->vision_encoder_ops != nullptr &&
         desc->vision_encoder_ops->state_create != nullptr) {
         vision_state = desc->vision_encoder_ops->state_create(be, aux_root);
     }
@@ -512,6 +521,29 @@ const char *geist_model_arch(const struct geist_model *m) {
     /* The GGUF's general.architecture ("gemma4", "bitnet-b1.58", "llama", …),
      * captured at load. Falls back to "transformer" when the key is absent. */
     return (eng != nullptr && eng->arch != nullptr) ? eng->arch : "transformer";
+}
+
+/* Mirrors the capability checks in geist_session_attach_{audio,image,video}
+ * (src/engine/session.c) — keep the two in lock-step; the invariant is
+ * pinned by tests/test_model_modalities_int.c. */
+unsigned geist_model_modalities(const struct geist_model *m) {
+    if (m == nullptr) {
+        return 0;
+    }
+    const struct geist_arch_ops_decoder *dec  = m->text_decoder.arch_ops;
+    unsigned                             mask = 0;
+    if (m->audio_encoder.arch_ops != nullptr && m->audio_encoder.arch_meta != nullptr &&
+        dec != nullptr && dec->prefill_audio != nullptr) {
+        mask |= GEIST_MOD_AUDIO;
+    }
+    if (m->vision_encoder.arch_ops != nullptr && m->vision_encoder.arch_meta != nullptr &&
+        dec != nullptr && dec->prefill_image != nullptr) {
+        /* attach_image and attach_video gate on the same encoder + decoder
+         * hook, so today the two bits travel together; kept separate for
+         * archs where they may not. */
+        mask |= GEIST_MOD_VISION | GEIST_MOD_VIDEO;
+    }
+    return mask;
 }
 
 /* Special-token accessors — read the ids the tokenizer parsed from the GGUF
