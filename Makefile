@@ -23,7 +23,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run agent-contract-smoke release-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
+.PHONY: all lib bin run agent-contract-smoke release-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-audio-tower bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -246,6 +246,21 @@ fetch-llama-model: $(LLAMA_MODEL_PATH)
 	fi
 	@echo "Llama reference model ready (SHA-256 verified): $(LLAMA_MODEL_PATH)"
 
+# Gemma 4 audio tower (~590 MB), extracted from the public checkpoint via
+# HTTP Range requests — tools/fetch_audio_tower.py pulls only the
+# model.audio_tower.* / model.embed_audio.* byte ranges out of the 9.7 GB
+# file. Content-pinned like fetch-llama-model: the script refuses an output
+# whose SHA-256 differs, so a changed upstream fails before a test runs.
+# Not part of AUTO_FETCH_MODEL; CI's audio-smoke job fetches it explicitly.
+AUDIO_TOWER_PATH   ?= audio_bench/audio_tower.safetensors
+AUDIO_TOWER_SHA256 := d6c45a6c276212dc3a793e66dfc588d89c12d1ac92c0e4b85494390ca848cd77
+
+$(AUDIO_TOWER_PATH):
+	@python3 tools/fetch_audio_tower.py -o "$@" --sha256 $(AUDIO_TOWER_SHA256)
+
+fetch-audio-tower: $(AUDIO_TOWER_PATH)
+	@echo "Audio tower ready (SHA-256 verified on fetch): $(AUDIO_TOWER_PATH)"
+
 bench: bin $(BENCH_MODEL_PATH)
 	@python3 tools/bench_reproduce.py --gguf "$(BENCH_MODEL_PATH)" \
 	  --target "$(TARGET)" --mode "$(MODE)" $(BENCH_ARGS)
@@ -339,6 +354,7 @@ help:
 	"  make test-unit|test-int|test-e2e|test-all   [FILTER=substr]" \
 	"  make fetch-model [HF_TOKEN=..]              download reference GGUF (~3.1 GB)" \
 	"  make fetch-llama-model                      download SmolLM2 fixture (~369 MB, SHA-pinned)" \
+	"  make fetch-audio-tower                      extract Gemma 4 audio tower (~590 MB, SHA-pinned)" \
 	"" \
 	"Bench (timing/quality tools, not pass/fail):" \
 	"  make bench                                  reproducible cross-engine benchmark" \
