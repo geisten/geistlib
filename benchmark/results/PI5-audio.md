@@ -81,14 +81,15 @@ end-of-speech):
 | config | residual tail | tail / audio |
 |---|---:|---:|
 | monolithic (encode after end_input) | 3 600 ms | 0.36× |
-| streaming worker | **1 091 ms** | **0.11×** |
+| streaming worker | **202 ms** | **0.02×** |
 
 The worker encodes 48-mel-frame batches while PCM still arrives; output
 is bit-identical to the monolithic path
 (`test_audio_stream_live_parity_int`, 251 = 251 tokens, max|Δ| = 0).
-Tail / full-encode = 0.30 — the #235 target of 0.25 is near but not met;
-the remaining tail is the final flush, and the 48-frame kick interval is
-the knob to shrink it further.
+Tail / full-encode = 0.06 — well under the #235 target of 0.25. The
+final piece was defaulting the worker to the incremental subsample
+(re-convolving from frame 0 on every kick was O(T²) and alone accounted
+for ~900 ms of the tail).
 
 ## Push-to-talk stages (`test_audio_latency_e2e`, 2 s synthetic clip, LM loaded)
 

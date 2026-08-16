@@ -21,8 +21,10 @@ minor release.
   0.33× → 0.21×), chat e2e 6/6 clips green.
 - **Live streaming worker verified and pinned** (#235): with
   `GEIST_AUDIO_STREAM=1` the Conformer encodes 48-mel-frame batches while
-  PCM still arrives; on the Pi 5 the post-utterance tail on a 10 s clip
-  drops 3 600 → 1 091 ms (0.36× → 0.11× of audio).
+  PCM still arrives (now with the incremental subsample by default —
+  re-convolving from frame 0 per kick was O(T²)); on the Pi 5 the
+  post-utterance tail on a 10 s clip drops 3 600 → 202 ms
+  (0.36× → 0.02× of audio).
   `tests/test_audio_stream_live_parity_int.c` pins bit-identical output
   vs the monolithic path, mandatory in the `audio-smoke` job.
 
