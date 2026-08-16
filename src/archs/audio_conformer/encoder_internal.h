@@ -295,15 +295,9 @@ void                       clip_linear_apply(const struct ClippableLinear *cl,
                                              size_t                        out_dim,
                                              float                        *y);
 void                       ffn_run(const struct FFN *ffn, float *h, size_t n);
-#if defined(__ARM_NEON)
-float dot_head_fp32(const float *a, const float *b);
-void  axpy_head_fp32(float *out, float w, const float *v);
-void  zero_head_fp32(float *out);
-#else
-float dot_head_fp32(const float *a, const float *b);
-void  axpy_head_fp32(float *out, float w, const float *v);
-void  zero_head_fp32(float *out);
-#endif
+float                      dot_head_fp32(const float *a, const float *b);
+void                       axpy_head_fp32(float *out, float w, const float *v);
+void                       zero_head_fp32(float *out);
 
 void   attn_run(const struct Attn *attn,
                 const float       *h,
