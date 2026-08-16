@@ -1,6 +1,6 @@
 # geistlib examples
 
-Three small C programs against what geistlib actually ships: `include/geist.h`
+Four small C programs against what geistlib actually ships: `include/geist.h`
 and `include/geist_util.h`. One is meant to be read and copied; two are release
 gates that run in CI and are the only check of their kind — don't delete them
 for looking trivial.
@@ -11,6 +11,7 @@ layer.
 | File | Role | Proves | Built by |
 | :-- | :-- | :-- | :-- |
 | `simple_generate.c` | example | the STABLE core generates text | `make -C examples` |
+| `push_to_talk.c` | example | a real-time voice loop: mic → VAD → audio attach → spoken-to answer | `make -C examples` |
 | `embed_smoke.c` | release gate | the packaged `libgeist.a` links and runs with no model | `release.yml` |
 | `agent_contract_smoke.c` | release gate | the symbols the out-of-tree agent runtime links still exist, with the same signatures | `release.yml` + `make agent-contract-smoke` |
 
@@ -52,6 +53,31 @@ and the speculative / KV-mode knobs are `EXPERIMENTAL` extensions on top.
 `make -C examples` includes `mk/target-$(TARGET).mk`, so the example links with
 exactly the compiler, flags and libraries the library itself uses — pass
 `TARGET=pi5` / `MODE=debug` to override.
+
+## `push_to_talk`
+
+The complete real-time voice pattern in ~200 lines of public API: raw
+16 kHz mono s16le PCM on stdin (exactly what `arecord` emits), a simple
+energy VAD to segment utterances, one Gemma 4 audio turn per utterance.
+
+```sh
+make -C examples
+arecord -f S16_LE -r 16000 -c 1 -t raw | \
+    examples/push_to_talk gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+```
+
+No microphone? Pipe any 16 kHz WAV plus a second of silence:
+
+```sh
+(tail -c +45 clip.wav; dd if=/dev/zero bs=32000 count=1) | \
+    examples/push_to_talk model.gguf
+```
+
+`GEIST_PTT_PROMPT` sets the per-utterance instruction; the second CLI
+argument tunes the VAD threshold (default 300 RMS — every room, mic and
+gain combination needs the knob). Run from the repo root (or set
+`GEIST_AUDIO_MODEL_PATH`) so the audio tower is found; the program uses
+`geist_model_modalities()` to fail fast when the model cannot hear.
 
 ## The two release gates
 
