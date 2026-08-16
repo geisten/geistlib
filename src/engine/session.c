@@ -701,9 +701,6 @@ geist_session_attach_audio(struct geist_session *s,
         return GEIST_E_UNSUPPORTED;
     }
 
-    /* struct AudioEncoder caps soft tokens — 188 is the practical max for the
-     * Gemma 4 tower (30 s of audio at 50 Hz frame rate, downsampled 4×,
-     * then 2× by Conformer). Allocate generously. */
     /* Size the soft-token buffer from the audio length (#247) — the old
      * hardcoded 256 silently dropped everything past ~10 s while still
      * paying the full encode. Fallback stays for encoders without the op. */
@@ -726,7 +723,8 @@ geist_session_attach_audio(struct geist_session *s,
         snprintf(sf->err_msg,
                  sizeof(sf->err_msg),
                  "attach_audio: audio encoder produced 0 soft tokens "
-                 "(too-short input or encoder failure)");
+                 "(too-short input, audio beyond the encoder's 30 s limit, "
+                 "or encoder failure)");
         sf->err_code = GEIST_E_IO;
         return GEIST_E_IO;
     }

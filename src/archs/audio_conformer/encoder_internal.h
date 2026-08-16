@@ -100,10 +100,9 @@ enum audio_linear_prec {
 };
 
 struct ClippableLinear {
-    /* `w` stays FP32 only when GEIST_AUDIO_KEEP_FP32 is defined at build
-     * time (dev/A-B benchmarking). Default release builds drop it after
-     * quant to save ~450 MB on Pi 5. `w_q8` / `w_scales` are populated
-     * iff prec != AUDIO_PREC_FP32. */
+    /* `w` is dropped after quantization (saves ~450 MB on a Pi 5);
+     * it stays populated only for prec == AUDIO_PREC_FP32 layers.
+     * `w_q8` / `w_scales` are populated iff prec != AUDIO_PREC_FP32. */
     float                 *w;
     int8_t                *w_q8;
     float                 *w_scales;
@@ -206,6 +205,36 @@ struct subs_cache {
 static inline size_t audio_soft_bound_from_mel(size_t n_mel) {
     return (n_mel + 3) / 4 + 4;
 }
+
+/* Mel framing constants shared by the one-shot (encode_pcm) and streaming
+ * (push_pcm) paths: 10 ms hop, one 160-sample zero left-pad, and one
+ * padded (mask=false) frame appended after the real ones — HF's
+ * Gemma4AudioFeatureExtractor convention. The one-shot path used a 20 ms
+ * hop with neither pad until the framing-parity fix; keep BOTH paths on
+ * these constants so they can never diverge again. */
+#define MEL_HOP 160
+#define AUDIO_MAX_MEL_FRAMES 3000 /* 30 s at the 10 ms hop */
+
+/* All-true mask for n_frames real frames, optionally with the extra
+ * padded frame (mask=false). Caller frees. The single home of the
+ * padded-frame convention — #235's missing-token bug and the one-shot
+ * path's missing pad were both callers hand-rolling it. */
+static inline bool *audio_mel_mask_alloc(size_t n_frames, bool pad_final, size_t *n_mel_out) {
+    const size_t n_mel = pad_final ? n_frames + 1 : n_frames;
+    bool        *mask  = heap_calloc_array_aligned(bool, n_mel);
+    if (mask != nullptr) {
+        for (size_t i = 0; i < n_frames; i++)
+            mask[i] = true;
+    }
+    if (n_mel_out != nullptr)
+        *n_mel_out = n_mel;
+    return mask;
+}
+
+/* encoder_weights.c: shared "env var == '1'" read and the single
+ * platform-precision decision (banner + loader read the same truth). */
+bool audio_env_flag(const char *name);
+bool audio_prec_forced_fp32(void);
 
 struct audio_stream_state {
     struct attn_kv_cache attn[N_LAYERS];
