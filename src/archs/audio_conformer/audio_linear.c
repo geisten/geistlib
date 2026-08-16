@@ -9,8 +9,9 @@
  * SIGILL on a lesser core. GEIST_AUDIO_KERNEL=scalar forces the portable
  * kernels (parity testing / triage).
  *
- * x86 note: scalar carries the W8A8 semantics until the cpu_x86 VNNI W8A8
- * GEMV is bound here (#237) — one more catalog entry, no new plumbing.
+ * Catalog entries: NEON (dotprod-gated w8a8), AVX-512 VNNI w8a8 (#237,
+ * function-level target attribute over the x86-64-v3 baseline), portable
+ * scalar for everything else.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER /* hw_probe lives in the engine base */
@@ -182,6 +183,87 @@ static void w8a32_neon(const int8_t *w_q8,
 }
 #endif /* __ARM_NEON */
 
+/* ----------------------------- AVX-512 VNNI ----------------------------- */
+
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
+
+/* Function-level target attribute: the arch layer is built at the
+ * x86-64-v3 baseline; only this kernel carries AVX-512, and the binding
+ * only installs it when the runtime probe confirms VNNI — no SIGILL on
+ * lesser hosts. */
+#define AUDIO_VNNI_TARGET __attribute__((target("avx512f,avx512bw,avx512vl,avx512vnni")))
+
+AUDIO_VNNI_TARGET
+static inline int32_t hsum_epi32(__m256i v) {
+    __m128i s = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
+    s         = _mm_hadd_epi32(s, s);
+    s         = _mm_hadd_epi32(s, s);
+    return _mm_cvtsi128_si32(s);
+}
+
+/* VPDPBUSD multiplies u8 × s8. Quantize activations UNSIGNED (q + 128),
+ * dot against the signed weights, and correct with the weight-row sum:
+ *   Σ (q+128)·w = Σ q·w + 128·Σw   ⇒   isum = dot − (Σw << 7).
+ * Σw costs one dpbusd against ones per 32 weights, computed while the row
+ * is hot in cache — no second pass over the weight matrix. */
+AUDIO_VNNI_TARGET
+static void w8a8_avx512vnni(const int8_t *w_q8,
+                            const float  *w_scales,
+                            const float  *x,
+                            float         scale_x_inv,
+                            float         scale_x,
+                            size_t        m,
+                            size_t        in_dim,
+                            size_t        out_dim,
+                            float        *y) {
+    uint8_t *x_u8 = heap_alloc_array_aligned(uint8_t, m *in_dim);
+    for (size_t i = 0; i < m * in_dim; i++) {
+        /* Same rounding as the scalar/NEON kernels (ties away from zero),
+         * then shift into u8 range. */
+        float q = roundf(x[i] * scale_x_inv);
+        q       = q > 127.0f ? 127.0f : (q < -128.0f ? -128.0f : q);
+        x_u8[i] = (uint8_t) ((int32_t) q + 128);
+    }
+
+    const __m256i ones = _mm256_set1_epi8(1);
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t n = 0; n < out_dim; n++) {
+        const int8_t *wrow   = w_q8 + n * in_dim;
+        const float   wscale = w_scales[n];
+
+        __m256i acc_w = _mm256_setzero_si256();
+        size_t  k     = 0;
+        for (; k + 32 <= in_dim; k += 32) {
+            acc_w = _mm256_dpbusd_epi32(
+                    acc_w, ones, _mm256_loadu_si256((const __m256i *) (wrow + k)));
+        }
+        int32_t row_sum = hsum_epi32(acc_w);
+        for (; k < in_dim; k++)
+            row_sum += (int32_t) wrow[k];
+
+        for (size_t i = 0; i < m; i++) {
+            const uint8_t *xrow = x_u8 + i * in_dim;
+            __m256i        acc  = _mm256_setzero_si256();
+            size_t         kk   = 0;
+            for (; kk + 32 <= in_dim; kk += 32) {
+                acc = _mm256_dpbusd_epi32(acc,
+                                          _mm256_loadu_si256((const __m256i *) (xrow + kk)),
+                                          _mm256_loadu_si256((const __m256i *) (wrow + kk)));
+            }
+            int32_t isum = hsum_epi32(acc);
+            for (; kk < in_dim; kk++)
+                isum += ((int32_t) xrow[kk]) * (int32_t) wrow[kk];
+            isum -= row_sum << 7; /* undo the +128 activation shift */
+            y[i * out_dim + n] = wscale * scale_x * (float) isum;
+        }
+    }
+    safe_free((void **) &x_u8);
+}
+#endif /* __x86_64__ */
+
 /* ------------------------------- binding ------------------------------- */
 
 static struct audio_linear_ops g_ops;
@@ -216,6 +298,19 @@ const struct audio_linear_ops *audio_linear_bind(void) {
                 g_ops.w8a8 = w8a8_neon;
             }
 #endif
+        }
+#elif defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+        struct geist_hw_probe hp;
+        geist_hw_probe_fill(&hp);
+        /* Down-only clamp, mirroring the cpu_x86 dispatcher: a
+         * GEIST_FORCE_ISA without "vnni" keeps the audio path off AVX-512
+         * (the CI avx2 leg proves the fallback on AVX-512 runners).
+         * w8a32 stays scalar on x86 — the plain fp32 loop auto-vectorizes
+         * to AVX2 at the x86-64-v3 baseline. */
+        const char *fisa = getenv("GEIST_FORCE_ISA");
+        if (hp.has_avx512_vnni && (fisa == nullptr || strstr(fisa, "vnni") != nullptr)) {
+            g_ops.w8a8 = w8a8_avx512vnni;
+            g_ops.name = "avx512vnni";
         }
 #endif
     }
