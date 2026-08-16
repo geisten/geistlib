@@ -1,4 +1,5 @@
 #include "audio_kernels.h"
+#include "encoder_internal.h" /* HEAD_DIM + head-primitive decls */
 
 #include <math.h>
 #include <stdlib.h>
@@ -275,3 +276,67 @@ void softmax_fp32(float *x, size_t n_rows, size_t d) {
 #endif
     }
 }
+
+/* Per-head attention primitives, moved from encoder_forward.c (#236).
+ * HEAD_DIM=128, so 8 iterations of the 16-wide unroll cover one head. */
+/* NEON 16-wide unroll of the per-head dot product / axpy. HEAD_DIM=128, so
+ * 8 iterations cover one head fully. The three attention triple-loops below
+ * (matrix_ac, matrix_bd, attn@V) all collapse to these two primitives. */
+#if defined(__ARM_NEON)
+float dot_head_fp32(const float *a, const float *b) {
+    float32x4_t acc0 = vdupq_n_f32(0.0f), acc1 = vdupq_n_f32(0.0f);
+    float32x4_t acc2 = vdupq_n_f32(0.0f), acc3 = vdupq_n_f32(0.0f);
+    for (int d = 0; d < HEAD_DIM; d += 16) {
+        acc0 = vfmaq_f32(acc0, vld1q_f32(a + d + 0), vld1q_f32(b + d + 0));
+        acc1 = vfmaq_f32(acc1, vld1q_f32(a + d + 4), vld1q_f32(b + d + 4));
+        acc2 = vfmaq_f32(acc2, vld1q_f32(a + d + 8), vld1q_f32(b + d + 8));
+        acc3 = vfmaq_f32(acc3, vld1q_f32(a + d + 12), vld1q_f32(b + d + 12));
+    }
+    return vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)));
+}
+
+void axpy_head_fp32(float *out, float w, const float *v) {
+    float32x4_t vw = vdupq_n_f32(w);
+    for (int d = 0; d < HEAD_DIM; d += 16) {
+        float32x4_t o0 = vld1q_f32(out + d + 0), o1 = vld1q_f32(out + d + 4);
+        float32x4_t o2 = vld1q_f32(out + d + 8), o3 = vld1q_f32(out + d + 12);
+        o0 = vfmaq_f32(o0, vw, vld1q_f32(v + d + 0));
+        o1 = vfmaq_f32(o1, vw, vld1q_f32(v + d + 4));
+        o2 = vfmaq_f32(o2, vw, vld1q_f32(v + d + 8));
+        o3 = vfmaq_f32(o3, vw, vld1q_f32(v + d + 12));
+        vst1q_f32(out + d + 0, o0);
+        vst1q_f32(out + d + 4, o1);
+        vst1q_f32(out + d + 8, o2);
+        vst1q_f32(out + d + 12, o3);
+    }
+}
+
+void zero_head_fp32(float *out) {
+    const float32x4_t z = vdupq_n_f32(0.0f);
+    for (int d = 0; d < HEAD_DIM; d += 16) {
+        vst1q_f32(out + d + 0, z);
+        vst1q_f32(out + d + 4, z);
+        vst1q_f32(out + d + 8, z);
+        vst1q_f32(out + d + 12, z);
+    }
+}
+
+#else
+float dot_head_fp32(const float *a, const float *b) {
+    float acc = 0.0f;
+    for (int d = 0; d < HEAD_DIM; d++)
+        acc += a[d] * b[d];
+    return acc;
+}
+
+void axpy_head_fp32(float *out, float w, const float *v) {
+    for (int d = 0; d < HEAD_DIM; d++)
+        out[d] += w * v[d];
+}
+
+void zero_head_fp32(float *out) {
+    for (int d = 0; d < HEAD_DIM; d++)
+        out[d] = 0.0f;
+}
+
+#endif /* __ARM_NEON */

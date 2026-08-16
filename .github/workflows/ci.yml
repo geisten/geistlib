@@ -25,6 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sh scripts/check-api-contract.sh
+      # #236: audio matmul kernels are bound at load time from the hw probe;
+      # a compile-time ISA branch returning to the forward pass fails here.
+      - run: sh scripts/check-audio-dispatch.sh
 
   build-test:
     name: build + unit tests (${{ matrix.name }})

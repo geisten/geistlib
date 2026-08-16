@@ -10,6 +10,8 @@
 
 #include "encoder_internal.h"
 
+#include "audio_linear.h"
+
 #ifdef GEIST_AUDIO_PROFILE
 struct ae_stage_timer g_ae_subsample, g_ae_pos_emb, g_ae_layer_total, g_ae_ffn1, g_ae_norm_pre_attn,
         g_ae_attn, g_ae_norm_post_attn, g_ae_lconv, g_ae_ffn2, g_ae_norm_out, g_ae_output_proj,
@@ -89,6 +91,10 @@ struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
                 attn_prec,
                 lconv_prec);
     }
+
+    /* Bind the quantized matmul kernels once, from the runtime probe —
+     * every clip_linear_apply afterwards is a cached pointer read (#236). */
+    fprintf(stderr, "audio_encoder: linear kernels: %s\n", audio_linear_bind()->name);
 
     struct AudioEncoder *a = heap_calloc_array_aligned(struct AudioEncoder, 1);
     a->sf                  = sf;

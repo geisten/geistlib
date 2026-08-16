@@ -8,127 +8,10 @@
 
 #include "encoder_internal.h"
 
-#if defined(__ARM_NEON)
-/* W8A8 matmul: y[m,n] = scale_x * w_scales[n] * sum_k x_q8[m,k] * w_q8[n,k].
- * Activations are quantized once to int8 with a STATIC scale derived from
- * the precomputed clip range (input_min/max), then dotted against int8
- * weights via vdotq_s32. Caller passes scale_x_inv = 1 / scale_x. */
-static void linear_w8a8(const int8_t *w_q8,
-                        const float  *w_scales,
-                        const float  *x,
-                        float         scale_x_inv,
-                        float         scale_x,
-                        size_t        m,
-                        size_t        in_dim,
-                        size_t        out_dim,
-                        float        *y) {
-    int8_t           *x_q8  = heap_alloc_array_aligned(int8_t, m *in_dim);
-    const float32x4_t inv_v = vdupq_n_f32(scale_x_inv);
-    for (size_t i = 0; i < m; i++) {
-        const float *xrow = x + i * in_dim;
-        int8_t      *qrow = x_q8 + i * in_dim;
-        size_t       k    = 0;
-        for (; k + 16 <= in_dim; k += 16) {
-            int32x4_t q0  = vcvtaq_s32_f32(vmulq_f32(vld1q_f32(xrow + k + 0), inv_v));
-            int32x4_t q1  = vcvtaq_s32_f32(vmulq_f32(vld1q_f32(xrow + k + 4), inv_v));
-            int32x4_t q2  = vcvtaq_s32_f32(vmulq_f32(vld1q_f32(xrow + k + 8), inv_v));
-            int32x4_t q3  = vcvtaq_s32_f32(vmulq_f32(vld1q_f32(xrow + k + 12), inv_v));
-            int16x8_t s01 = vcombine_s16(vqmovn_s32(q0), vqmovn_s32(q1));
-            int16x8_t s23 = vcombine_s16(vqmovn_s32(q2), vqmovn_s32(q3));
-            vst1q_s8(qrow + k, vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)));
-        }
-        for (; k < in_dim; k++)
-            qrow[k] = (int8_t) lrintf(xrow[k] * scale_x_inv);
-    }
+#include "audio_linear.h"
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < out_dim; n++) {
-        const int8_t *wrow   = w_q8 + n * in_dim;
-        const float   wscale = w_scales[n];
-        for (size_t i = 0; i < m; i++) {
-            const int8_t *xrow = x_q8 + i * in_dim;
-            int32x4_t     acc  = vdupq_n_s32(0);
-            size_t        k    = 0;
-            for (; k + 16 <= in_dim; k += 16) {
-                acc = vdotq_s32(acc, vld1q_s8(wrow + k), vld1q_s8(xrow + k));
-            }
-            int32_t isum = vaddvq_s32(acc);
-            for (; k < in_dim; k++)
-                isum += (int32_t) wrow[k] * (int32_t) xrow[k];
-            y[i * out_dim + n] = wscale * scale_x * (float) isum;
-        }
-    }
-    safe_free((void **) &x_q8);
-}
-
-/* W8A32 matmul: y[m, n] = sum_k x[m, k] * (w_q8[n, k] * w_scales[n]).
- * w_q8 is row-major (out, in); x is row-major (m, in); y is row-major (m, out).
- * Each output row n reads its weight row once (in_dim int8 bytes) and dots
- * against M activation rows. NEON path converts int8 -> fp32 in-loop. */
-static void linear_w8a32(const int8_t *w_q8,
-                         const float  *w_scales,
-                         const float  *x,
-                         size_t        m,
-                         size_t        in_dim,
-                         size_t        out_dim,
-                         float        *y) {
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < out_dim; n++) {
-        const int8_t *wrow   = w_q8 + n * in_dim;
-        const float   wscale = w_scales[n];
-        for (size_t i = 0; i < m; i++) {
-            const float *xrow = x + i * in_dim;
-            float32x4_t  acc0 = vdupq_n_f32(0.0f);
-            float32x4_t  acc1 = vdupq_n_f32(0.0f);
-            float32x4_t  acc2 = vdupq_n_f32(0.0f);
-            float32x4_t  acc3 = vdupq_n_f32(0.0f);
-            size_t       k    = 0;
-            for (; k + 16 <= in_dim; k += 16) {
-                int8x16_t qv = vld1q_s8(wrow + k);
-                /* int8x16 -> int16x8 x2 -> int32x4 x4 -> float32x4 x4 */
-                int16x8_t   qa = vmovl_s8(vget_low_s8(qv));
-                int16x8_t   qb = vmovl_s8(vget_high_s8(qv));
-                float32x4_t f0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(qa)));
-                float32x4_t f1 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(qa)));
-                float32x4_t f2 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(qb)));
-                float32x4_t f3 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(qb)));
-                acc0           = vfmaq_f32(acc0, f0, vld1q_f32(xrow + k + 0));
-                acc1           = vfmaq_f32(acc1, f1, vld1q_f32(xrow + k + 4));
-                acc2           = vfmaq_f32(acc2, f2, vld1q_f32(xrow + k + 8));
-                acc3           = vfmaq_f32(acc3, f3, vld1q_f32(xrow + k + 12));
-            }
-            float32x4_t sum = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
-            float       dot = vaddvq_f32(sum);
-            for (; k < in_dim; k++)
-                dot += (float) wrow[k] * xrow[k];
-            y[i * out_dim + n] = wscale * dot;
-        }
-    }
-}
-
-#else
-static void linear_w8a32(const int8_t *w_q8,
-                         const float  *w_scales,
-                         const float  *x,
-                         size_t        m,
-                         size_t        in_dim,
-                         size_t        out_dim,
-                         float        *y) {
-    for (size_t n = 0; n < out_dim; n++) {
-        const float wscale = w_scales[n];
-        for (size_t i = 0; i < m; i++) {
-            float dot = 0.0f;
-            for (size_t k = 0; k < in_dim; k++)
-                dot += (float) w_q8[n * in_dim + k] * x[i * in_dim + k];
-            y[i * out_dim + n] = wscale * dot;
-        }
-    }
-}
-#endif /* __ARM_NEON */
+/* Quantized matmuls live in audio_linear.c, bound at load time from the
+ * hardware probe (#236) — no compile-time ISA selection here. */
 
 /* ----------------------- Conformer per-stage helpers ----------------------- */
 
@@ -150,24 +33,19 @@ void clip_linear_apply(const struct ClippableLinear *cl,
     }
 #endif
 
+    const struct audio_linear_ops *ops = audio_linear_bind();
     switch (prec) {
     case AUDIO_PREC_W8A8: {
-#if defined(__ARM_NEON)
         /* Static activation scale derived from clip bounds applied above. */
         float amax    = fmaxf(fabsf(cl->input_min), fabsf(cl->input_max));
         float scale_x = amax / 127.0f;
         if (scale_x == 0.0f)
             scale_x = 1.0f;
-        linear_w8a8(cl->w_q8, cl->w_scales, x, 1.0f / scale_x, scale_x, n, in_dim, out_dim, y);
-#else
-        /* ponytail: non-NEON falls through to W8A32 (correct, slower). x86
-         * gets the int8 fast path once cpu_x86 lands the W8A8 GEMV. */
-        linear_w8a32(cl->w_q8, cl->w_scales, x, n, in_dim, out_dim, y);
-#endif
+        ops->w8a8(cl->w_q8, cl->w_scales, x, 1.0f / scale_x, scale_x, n, in_dim, out_dim, y);
         break;
     }
     case AUDIO_PREC_W8A32:
-        linear_w8a32(cl->w_q8, cl->w_scales, x, n, in_dim, out_dim, y);
+        ops->w8a32(cl->w_q8, cl->w_scales, x, n, in_dim, out_dim, y);
         break;
     default:
         linear_fp32(x, cl->w, nullptr, n, in_dim, out_dim, y);
@@ -196,67 +74,8 @@ void ffn_run(const struct FFN *ffn, float *h, size_t n) {
     safe_free((void **) &residual);
 }
 
-/* NEON 16-wide unroll of the per-head dot product / axpy. HEAD_DIM=128, so
- * 8 iterations cover one head fully. The three attention triple-loops below
- * (matrix_ac, matrix_bd, attn@V) all collapse to these two primitives. */
-#if defined(__ARM_NEON)
-float dot_head_fp32(const float *a, const float *b) {
-    float32x4_t acc0 = vdupq_n_f32(0.0f), acc1 = vdupq_n_f32(0.0f);
-    float32x4_t acc2 = vdupq_n_f32(0.0f), acc3 = vdupq_n_f32(0.0f);
-    for (int d = 0; d < HEAD_DIM; d += 16) {
-        acc0 = vfmaq_f32(acc0, vld1q_f32(a + d + 0), vld1q_f32(b + d + 0));
-        acc1 = vfmaq_f32(acc1, vld1q_f32(a + d + 4), vld1q_f32(b + d + 4));
-        acc2 = vfmaq_f32(acc2, vld1q_f32(a + d + 8), vld1q_f32(b + d + 8));
-        acc3 = vfmaq_f32(acc3, vld1q_f32(a + d + 12), vld1q_f32(b + d + 12));
-    }
-    return vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)));
-}
-
-void axpy_head_fp32(float *out, float w, const float *v) {
-    float32x4_t vw = vdupq_n_f32(w);
-    for (int d = 0; d < HEAD_DIM; d += 16) {
-        float32x4_t o0 = vld1q_f32(out + d + 0), o1 = vld1q_f32(out + d + 4);
-        float32x4_t o2 = vld1q_f32(out + d + 8), o3 = vld1q_f32(out + d + 12);
-        o0 = vfmaq_f32(o0, vw, vld1q_f32(v + d + 0));
-        o1 = vfmaq_f32(o1, vw, vld1q_f32(v + d + 4));
-        o2 = vfmaq_f32(o2, vw, vld1q_f32(v + d + 8));
-        o3 = vfmaq_f32(o3, vw, vld1q_f32(v + d + 12));
-        vst1q_f32(out + d + 0, o0);
-        vst1q_f32(out + d + 4, o1);
-        vst1q_f32(out + d + 8, o2);
-        vst1q_f32(out + d + 12, o3);
-    }
-}
-
-void zero_head_fp32(float *out) {
-    const float32x4_t z = vdupq_n_f32(0.0f);
-    for (int d = 0; d < HEAD_DIM; d += 16) {
-        vst1q_f32(out + d + 0, z);
-        vst1q_f32(out + d + 4, z);
-        vst1q_f32(out + d + 8, z);
-        vst1q_f32(out + d + 12, z);
-    }
-}
-
-#else
-float dot_head_fp32(const float *a, const float *b) {
-    float acc = 0.0f;
-    for (int d = 0; d < HEAD_DIM; d++)
-        acc += a[d] * b[d];
-    return acc;
-}
-
-void axpy_head_fp32(float *out, float w, const float *v) {
-    for (int d = 0; d < HEAD_DIM; d++)
-        out[d] += w * v[d];
-}
-
-void zero_head_fp32(float *out) {
-    for (int d = 0; d < HEAD_DIM; d++)
-        out[d] = 0.0f;
-}
-
-#endif
+/* dot_head_fp32 / axpy_head_fp32 / zero_head_fp32 live in audio_kernels.c
+ * with the other elementwise kernels (#236). */
 
 /* Chunked self-attention with relative position bias. Reads (n, 1024) hidden,
  * pos_emb (13, 1024), attn_mask (num_blocks, 12, 24) bool. Writes (n, 1024).
@@ -299,39 +118,14 @@ void attn_run(const struct Attn *attn,
     for (int t = 0; t < (int) n; t++) {
         for (int head_i = 0; head_i < N_HEADS; head_i++) {
             float *qrow = q + ((size_t) t * N_HEADS + head_i) * HEAD_DIM;
-#if defined(__ARM_NEON)
-            for (int d = 0; d < HEAD_DIM; d += 16) {
-                float32x4_t s0 = vld1q_f32(q_pds + d + 0), s1 = vld1q_f32(q_pds + d + 4);
-                float32x4_t s2 = vld1q_f32(q_pds + d + 8), s3 = vld1q_f32(q_pds + d + 12);
-                vst1q_f32(qrow + d + 0, vmulq_f32(vld1q_f32(qrow + d + 0), s0));
-                vst1q_f32(qrow + d + 4, vmulq_f32(vld1q_f32(qrow + d + 4), s1));
-                vst1q_f32(qrow + d + 8, vmulq_f32(vld1q_f32(qrow + d + 8), s2));
-                vst1q_f32(qrow + d + 12, vmulq_f32(vld1q_f32(qrow + d + 12), s3));
-            }
-#else
+            /* Plain elementwise mul — the compiler vectorizes this at -O3;
+             * the former hand-NEON added nothing (#236). */
             for (int d = 0; d < HEAD_DIM; d++)
                 qrow[d] *= q_pds[d];
-#endif
         }
     }
-#if defined(__ARM_NEON)
-    {
-        const float32x4_t vks   = vdupq_n_f32(k_scale);
-        const size_t      total = n * AUDIO_HIDDEN;
-        size_t            i     = 0;
-        for (; i + 16 <= total; i += 16) {
-            vst1q_f32(k + i + 0, vmulq_f32(vld1q_f32(k + i + 0), vks));
-            vst1q_f32(k + i + 4, vmulq_f32(vld1q_f32(k + i + 4), vks));
-            vst1q_f32(k + i + 8, vmulq_f32(vld1q_f32(k + i + 8), vks));
-            vst1q_f32(k + i + 12, vmulq_f32(vld1q_f32(k + i + 12), vks));
-        }
-        for (; i < total; i++)
-            k[i] *= k_scale;
-    }
-#else
     for (size_t i = 0; i < n * AUDIO_HIDDEN; i++)
         k[i] *= k_scale;
-#endif
 
     /* 3. Build context-windowed K/V: (num_blocks, CONTEXT_SIZE=24, n_heads, head_dim).
      *    HF: F.pad(K, (0,0, 0,0, max_past=12, chunk-1=11)), then unfold(size=24, stride=12).
