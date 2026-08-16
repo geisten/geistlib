@@ -2,8 +2,10 @@
 # check-version.sh — fail if the version drifts across the docs.
 #
 # Single source of truth: include/geist.h GEIST_VERSION_STRING (what
-# `geist --version` prints). The README carries the same version in three
-# spots (badge, Status line, citation); they must all agree. Run in CI on
+# `geist --version` prints). The README carries the same version in three spots
+# (badge, Status line, citation) and CITATION.cff in a fourth; they must all
+# agree. The comment used to say three and the code checked four — which is the
+# harmless version of the drift this script exists to prevent. Run in CI on
 # every PR, and locally before a release.
 #
 # ponytail: a guard, not a generator — it does not edit anything, it just
