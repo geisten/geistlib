@@ -112,6 +112,42 @@ Two observations the encoder-only table cannot show:
   with the text benchmarks in `PI5.md`. For short replies the audio
   pipeline is roughly a third of total user-perceived latency.
 
+## Speech quality — LibriSpeech WER (#238's question on real speech)
+
+Harness: `bench_audio_wer` (one model load, full chat-template audio path,
+greedy) + `tools/eval_audio_wer.py` (stdlib WER). Data: LibriSpeech
+test-clean, 30 clips of 4–10 s, one per speaker (`random.seed(42)`),
+references from the `*.trans.txt` files, decoded with `flac -d`
+(16 kHz mono s16 natively — no resampling).
+
+| config | aggregate WER (30 clips, 576 ref words) |
+|---|---:|
+| shipping (attn W8A32, lconv FP32) | 75.2 % |
+| `GEIST_AUDIO_ATTN_W8A8=1` + `LCONV_W8A8=1` | 76.2 % |
+
+**The #238 answer on real speech: quantization costs ~1 point of WER —
+inside the noise at this sample size — while cutting encode time 38 %.**
+
+Read the absolute numbers correctly: Gemma 4 E2B at Q4_K_M is a chat
+model that can hear, not an ASR system. Transcripts are close but
+paraphrased ("voyaging" → "yodeling", tense/function-word drift), and the
+instruction wording dominates everything else:
+
+| prompt (`GEIST_WER_PROMPT`) | WER (6-clip subset) |
+|---|---:|
+| "Transcribe this audio." | 50 % |
+| "…word for word. Output only the transcription." | 59 % |
+| "…Reply with only the spoken words." | 104 % (refusals) |
+
+Pipeline correctness is pinned elsewhere (soft-token parity suites, chat
+e2e keyword checks) — these WER figures measure the model, on this
+engine, reproducibly.
+
+Push-to-talk timing on real speech (6-clip subset, quiesced board, LM
+resident): attach mean 4.2 s shipping vs 3.8 s W8A8 (−11 % end to end —
+the encoder win partially masked by page-cache pressure), decode
+7.2 tok/s in both.
+
 ## Reproduce
 
 ```sh
