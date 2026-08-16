@@ -118,7 +118,7 @@ static int compute_segment_locked(struct AudioEncoder *a) {
     bool  *mask = padded_mel_mask(n_frames, &n_mel);
     pthread_mutex_unlock(&a->mtx);
 
-    const size_t max_soft = (n_mel + 3) / 4 + 4;
+    const size_t max_soft = audio_soft_bound_from_mel(n_mel);
     float       *soft     = heap_alloc_array_aligned(float, max_soft *AUDIO_SOFT_TOKEN_DIM);
     size_t       n_soft   = audio_encoder_run(a, mel_view, mask, n_mel, soft);
     safe_free((void **) &mask);

@@ -34,9 +34,10 @@ attention quantization) is judged against.
 | 10 s |         251 |        3 596 ms |  1.5 % |             0.36× |
 | 28 s |         256¹ |       12 136 ms |  6.6 % |             0.43× |
 
-¹ `geist_session_attach_audio` (and this bench) cap soft tokens at a
-hardcoded `max_soft = 256` ≈ 10.2 s of audio — a 28 s clip pays the full
-encode cost and silently loses everything past ~10 s. Tracked in #247.
+¹ Measured before #247: `attach_audio` and the bench capped soft tokens
+at a hardcoded 256 ≈ 10.2 s of audio. The bound now derives from the
+audio length — the same 28 s clip yields ~700 tokens at unchanged encode
+cost (`test_audio_long_clip_int` guards the contract).
 
 ## Where the time goes (`-DGEIST_AUDIO_PROFILE`, shares of pipeline total)
 
