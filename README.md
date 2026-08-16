@@ -33,15 +33,17 @@ a single dependency-free binary. No GPU, no driver stack.*
 - **~1.2 GB download**, model included. **Private and offline after download** —
   nothing ever leaves the device.
 
-**Platform:** tested on Raspberry Pi 5 (4 GB), 64-bit Raspberry Pi OS. Also runs
-on macOS and Linux (arm64 + x86-64) — [build from source](#build-from-source)
-there, or use the [prebuilt SDK](#embed-the-library).
+**Platform:** tested on Raspberry Pi 5 (4 GB), 64-bit Raspberry Pi OS. The
+prebuilt one-file binaries ship for Linux arm64 **and** x86_64 (swap the
+`-linux-arm64` suffix for `-linux-x86_64` above). Also runs on macOS —
+[build from source](#build-from-source) there, or use the
+[prebuilt SDK](#embed-the-library).
 
 [![CI](https://github.com/geisten/geistlib/actions/workflows/ci.yml/badge.svg)](https://github.com/geisten/geistlib/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-orange.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#build-from-source)
-[![Status](https://img.shields.io/badge/status-experimental%20(v0.8.2)-yellow.svg)](#status)
+[![Status](https://img.shields.io/badge/status-experimental%20(v0.9.0)-yellow.svg)](#status)
 [![Discussions](https://img.shields.io/badge/Discussions-ask%20%26%20share-5865F2.svg)](https://github.com/geisten/geistlib/discussions)
 [![Good first issues](https://img.shields.io/github/issues/geisten/geistlib/good%20first%20issue?label=good%20first%20issue&color=7057ff)](https://github.com/geisten/geistlib/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
@@ -164,7 +166,7 @@ backends (Metal, Vulkan): [`docs/BACKENDS.md`](docs/BACKENDS.md).
 
 ## Status
 
-`geistlib` is **v0.8.2 — experimental**. The `STABLE` core (load → session →
+`geistlib` is **v0.9.0 — experimental**. The `STABLE` core (load → session →
 decode → tokenize) is the part to build on; `EXPERIMENTAL`-tagged surfaces
 (KV-cache modes, speculative decode, multimodal attach, GPU backends) may
 change between minor versions. It runs Gemma 4 (text + vision + audio) end to
@@ -234,7 +236,7 @@ sidebar (from [`CITATION.cff`](CITATION.cff)), or use:
   author  = {Schlegel, Germar},
   title   = {geistlib: a dependency-free inference engine for small LLMs},
   year    = {2026},
-  version = {0.8.2},
+  version = {0.9.0},
   url     = {https://github.com/geisten/geistlib}
 }
 ```

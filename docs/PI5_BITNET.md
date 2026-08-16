@@ -68,12 +68,14 @@ yours will vary).
 ./geist-bitnet "Explain mmap briefly:" 128       # cap new tokens
 ./geist-bitnet                                   # interactive REPL
 printf 'prompt one\nprompt two\n' | ./geist-bitnet - 64   # batch
+./geist-bitnet "Write a haiku:" -t 0.8           # sampled, varies per run
 ```
 
 | Argument | Meaning |
 | :-- | :-- |
 | 1st | the prompt; `-` reads prompts line-by-line from stdin; absent on a terminal → REPL |
 | 2nd | max new tokens (default 256; `-1` = until the context fills; generation always stops at the model's EOS token) |
+| `-t`/`--temperature <float>` | any position; `0` (default) = greedy, bit-identical runs; `>0` = softmax sampling with a fresh seed per run |
 
 **The REPL is deliberately memory-less.** Each line is an independent
 completion — the model stays loaded (that is the expensive part), but there is

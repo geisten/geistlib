@@ -7,11 +7,11 @@
     "requires a justified, reviewed edit. null = not yet measured, which the",
     "gate treats as a failure that prints the measured value.",
     "floors are hard minimums outside the ratchet. src/io (the malformed-GGUF",
-    "parser surface) measured 34.80% line: the safetensors half of src/io is",
-    "fixture-gated and skips on CI, which is what keeps the target 35% out of",
-    "reach today. Floor pinned at the measured 34 until safetensors fixtures",
-    "or more malformed-input cases lift it \u2014 raise it with the coverage, do",
-    "not let it drift down."
+    "parser surface) is at the intended 35% parser-security floor since #219:",
+    "test_io_malformed_unit exercises both readers hermetically (synthetic",
+    "GGUF buffers + tiny synthetic safetensors files, no fixtures), so the",
+    "previously fixture-gated safetensors half no longer skips on CI \u2014 raise",
+    "the floor with the coverage, do not let it drift down."
   ],
   "tolerance_pp": 0.5,
   "subsystems": {
@@ -24,7 +24,7 @@
       "branch": 42
     },
     "src/io": {
-      "line": 34,
+      "line": 35,
       "branch": 26
     },
     "src/formats": {
@@ -46,7 +46,7 @@
   },
   "floors": {
     "src/io": {
-      "line": 34.0
+      "line": 35.0
     }
   },
   "overall": {
