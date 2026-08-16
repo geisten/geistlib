@@ -117,9 +117,7 @@ static void normalize_sp(const char *in, char *out, size_t out_cap) {
 }
 
 /* Transcribe one clip. Returns false on pipeline error. */
-static bool transcribe(struct geist_model   *model,
-                       struct geist_backend *be,
-                       const char           *wav_path) {
+static bool transcribe(struct geist_model *model, struct geist_backend *be, const char *wav_path) {
     size_t   n_samples;
     int      sample_rate;
     int16_t *pcm = read_wav_pcm(wav_path, &n_samples, &sample_rate);
@@ -139,13 +137,13 @@ static bool transcribe(struct geist_model   *model,
     bool          ok = false;
     geist_token_t toks[PROMPT_CAP];
     size_t        n_toks = 0;
-    if (tokenize_drop_bos(
-                sess, "<bos><|turn>user\n<|audio>", false, toks, PROMPT_CAP, &n_toks) != GEIST_OK ||
+    if (tokenize_drop_bos(sess, "<bos><|turn>user\n<|audio>", false, toks, PROMPT_CAP, &n_toks) !=
+                GEIST_OK ||
         geist_session_prefill_tokens(sess, n_toks, toks) != GEIST_OK)
         goto out;
 
-    double            t0 = now_ms();
-    enum geist_status s  = geist_session_attach_audio(sess, n_samples, pcm, 16000);
+    double            t0       = now_ms();
+    enum geist_status s        = geist_session_attach_audio(sess, n_samples, pcm, 16000);
     double            t_attach = now_ms() - t0;
     free(pcm);
     pcm = nullptr;
