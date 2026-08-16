@@ -76,14 +76,14 @@ static void answer_utterance(struct geist_session *sess,
                              size_t                n,
                              const char           *instr) {
     /* One long-lived session, reset per utterance: O(1) truncation of the
-     * KV cache instead of reallocating the multi-MB runtime every turn. */
+     * KV cache back to the PINNED turn prefix (see main) — neither the
+     * runtime allocation nor the constant prefix is re-paid per turn. */
     geist_session_reset(sess);
 
     double t0 = now_ms();
     char   suffix[PROMPT_CAP];
     snprintf(suffix, sizeof suffix, "<audio|>\n%s<turn|>\n<|turn>model\n", instr);
-    if (!feed_text(sess, "<bos><|turn>user\n<|audio>", false) ||
-        geist_session_attach_audio(sess, n, pcm, SR) != GEIST_OK ||
+    if (geist_session_attach_audio(sess, n, pcm, SR) != GEIST_OK ||
         !feed_text(sess, suffix, true)) {
         fprintf(stderr, "audio turn failed: %s\n", geist_session_errmsg(sess));
         return;
@@ -171,6 +171,23 @@ int main(int argc, char **argv) {
     g_bos                           = geist_model_bos_token(model);
     const geist_token_t eos         = geist_model_eos_token(model);
     const geist_token_t end_of_turn = geist_model_token_by_text(model, "<turn|>");
+
+    /* Pin the constant turn prefix ONCE: geist_session_reset then
+     * restores to it instead of to an empty cache, so every utterance
+     * skips re-prefilling these tokens (STABLE agent-runtime API). */
+    {
+        geist_token_t prefix[PROMPT_CAP];
+        size_t        n_prefix = 0;
+        if (geist_session_tokenize(
+                    sess, "<bos><|turn>user\n<|audio>", PROMPT_CAP, prefix, &n_prefix) != GEIST_OK ||
+            geist_session_pin_prefix(sess, n_prefix, prefix) != GEIST_OK) {
+            fprintf(stderr, "pin_prefix failed\n");
+            geist_session_destroy(sess);
+            geist_model_destroy(model);
+            geist_backend_destroy(be);
+            return 1;
+        }
+    }
 
     fprintf(stderr, "listening (VAD threshold %.0f RMS, Ctrl-C to quit)...\n", rms_thr);
 
