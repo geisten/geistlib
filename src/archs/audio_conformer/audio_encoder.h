@@ -25,6 +25,11 @@ struct AudioEncoder;
 struct AudioEncoder *audio_encoder_create(const char *safetensors_path);
 void                 audio_encoder_destroy(struct AudioEncoder *);
 
+/* Upper bound on soft tokens an encode of n_samples 16 kHz PCM can
+ * produce (mel frames / 4 + margin, incl. the padded final frame). Use
+ * this to size pull buffers instead of guessing a cap (#247). */
+size_t audio_encoder_max_soft_tokens(size_t n_samples);
+
 /* Full audio-tower pipeline: mel → subsample → 12× Conformer → output_proj →
  * embed_audio. Output is the (T_sub, 1536) soft-token sequence ready for
  * the LM. Caller provides padded mel buffer + per-frame mask analogous to

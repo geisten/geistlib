@@ -116,7 +116,7 @@ int main(int argc, char **argv) {
     /* Pull soft-tokens — triggers full mel→subsample→12-layer→proj pipeline
      * on the first call after end_input. */
     const size_t soft_dim = 1536;
-    const size_t max_soft = 256;
+    const size_t max_soft = audio_encoder_max_soft_tokens(n_samples);
     float       *soft     = malloc(max_soft * soft_dim * sizeof(float));
     if (soft == nullptr) {
         audio_encoder_destroy(enc);

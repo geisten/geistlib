@@ -704,7 +704,13 @@ geist_session_attach_audio(struct geist_session *s,
     /* struct AudioEncoder caps soft tokens — 188 is the practical max for the
      * Gemma 4 tower (30 s of audio at 50 Hz frame rate, downsampled 4×,
      * then 2× by Conformer). Allocate generously. */
-    const size_t max_soft = 256;
+    /* Size the soft-token buffer from the audio length (#247) — the old
+     * hardcoded 256 silently dropped everything past ~10 s while still
+     * paying the full encode. Fallback stays for encoders without the op. */
+    size_t max_soft = 256;
+    if (enc_ops->max_soft_tokens != nullptr) {
+        max_soft = enc_ops->max_soft_tokens(enc_st, n_samples);
+    }
     const size_t soft_dim = enc_ops->soft_token_dim(enc_st);
     float       *soft     = heap_alloc_array_aligned(float, max_soft *soft_dim);
     if (soft == nullptr) {
@@ -723,6 +729,20 @@ geist_session_attach_audio(struct geist_session *s,
                  "(too-short input or encoder failure)");
         sf->err_code = GEIST_E_IO;
         return GEIST_E_IO;
+    }
+    if (n_soft >= max_soft) {
+        /* The bound carries headroom, so a full buffer can only mean the
+         * encoder hit the cap — truncated audio must be an error, not a
+         * silent drop (#247). */
+        safe_free((void **) &soft);
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "attach_audio: soft-token bound too small (%zu tokens for %zu samples) — "
+                 "audio would be truncated",
+                 max_soft,
+                 n_samples);
+        sf->err_code = GEIST_E_INTERNAL;
+        return GEIST_E_INTERNAL;
     }
 
     const uint64_t          t_pre0 = monotonic_ns();

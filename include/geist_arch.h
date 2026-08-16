@@ -187,6 +187,14 @@ struct geist_arch_ops_encoder {
     /* soft_token_dim: dimensionality of each soft-token vector (1536 for
      * Gemma 4 audio tower). */
     size_t (*soft_token_dim)(const void *encoder_state);
+
+    /* max_soft_tokens: upper bound on soft tokens encode_pcm can produce
+     * for n_samples of PCM — lets the engine size the output buffer from
+     * the audio length instead of guessing a fixed cap (#247: a hardcoded
+     * 256 silently truncated everything past ~10 s while still paying the
+     * full encode). Optional; nullptr means the engine falls back to a
+     * conservative default. */
+    size_t (*max_soft_tokens)(const void *encoder_state, size_t n_samples);
 };
 
 /* ====================================================================== */

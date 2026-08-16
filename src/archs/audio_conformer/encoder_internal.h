@@ -199,6 +199,14 @@ struct subs_cache {
     size_t n_mel_seen; /* mel frames the cache reflects */
 };
 
+/* Upper bound on soft tokens for n_mel mel frames: the subsample stage
+ * divides by 4, plus margin for partial blocks. THE single home of this
+ * formula — session buffer sizing, the streaming path and the bench all
+ * derive from it (#247). */
+static inline size_t audio_soft_bound_from_mel(size_t n_mel) {
+    return (n_mel + 3) / 4 + 4;
+}
+
 struct audio_stream_state {
     struct attn_kv_cache attn[N_LAYERS];
     struct lconv_state   lconv[N_LAYERS];
