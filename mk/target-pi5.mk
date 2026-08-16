@@ -31,6 +31,13 @@ BACKENDS ?= cpu_neon cpu_scalar
 # out via `#pragma STDC FENV_ACCESS ON` if exact rounding ever matters.
 CFLAGS_TARGET := -DGEIST_TARGET_PI5=1 -mcpu=cortex-a76 -fopenmp -ffast-math -Wno-nonnull-compare -Wno-vla-parameter
 
+# Same rationale as mk/target-linux.mk: -std=c23 defines __STRICT_ANSI__,
+# under which POSIX symbols (mkstemp, strdup, ...) vanish without a feature
+# macro. It belongs here rather than in each caller — the pi5 target missed
+# it when linux gained it in 0.8.0, and TARGET=pi5 broke unseen because no
+# CI leg builds it (#244).
+CFLAGS_TARGET += -D_GNU_SOURCE
+
 LDFLAGS_TARGET := -fopenmp
 LDLIBS_TARGET  := -lm
 
