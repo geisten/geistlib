@@ -7,6 +7,11 @@ BitNet binary (release asset `geist-bitnet-linux-arm64`) from the
 recordings show the un-renamed asset name.
 Nothing is sped up; the recordings play at wall-clock speed.
 
+The take scripts and the full recording pipeline (thermal gate → pre-warm →
+`asciinema` → `agg` → `ffmpeg` hstack) live in
+[`tools/demos/`](../tools/demos/) — everything needed to regenerate these
+GIFs on a Pi 5 is in the repo.
+
 ## geist vs bitnet.cpp — same Pi, same GGUF
 
 <p align="center">
