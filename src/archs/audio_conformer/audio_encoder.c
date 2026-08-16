@@ -95,8 +95,8 @@ struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
     } else {
         fprintf(stderr,
                 "audio_encoder: per-tensor precision (FFN=W8A8, Attn=%s, LConv=%s)\n",
-                audio_env_flag("GEIST_AUDIO_ATTN_W8A8") ? "W8A8" : "W8A32",
-                audio_env_flag("GEIST_AUDIO_LCONV_W8A8") ? "W8A8" : "FP32");
+                audio_env_flag("GEIST_AUDIO_ATTN_W8A8", true) ? "W8A8" : "W8A32",
+                audio_env_flag("GEIST_AUDIO_LCONV_W8A8", true) ? "W8A8" : "FP32");
     }
 
     /* Bind the quantized matmul kernels once, from the runtime probe —

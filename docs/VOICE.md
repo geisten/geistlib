@@ -41,13 +41,11 @@ arecord -D plughw:1,0 -f S16_LE -r 16000 -c 1 -t raw | \
 
 `plughw` lets ALSA resample if the mic doesn't do 16 kHz natively.
 Expectations on a 4 GB Pi 5 (measured, `benchmark/results/PI5-audio.md`):
-~2.8 s attach for a ~3 s utterance, replies at ~7 tok/s. Two opt-ins cut
-the encode share substantially at no measured quality cost (−38 % encode,
-~1 pt WER on LibriSpeech — inside noise):
-
-```sh
-GEIST_AUDIO_ATTN_W8A8=1 GEIST_AUDIO_LCONV_W8A8=1 arecord ... | examples/push_to_talk ...
-```
+~2 s attach for a ~3 s utterance, replies at ~7 tok/s. W8A8
+attention/LConv is the default since its quality gates went green
+(−38 % encode, ~1 pt WER on LibriSpeech — inside noise);
+`GEIST_AUDIO_ATTN_W8A8=0 GEIST_AUDIO_LCONV_W8A8=0` opts back to the
+high-precision path.
 
 Hardware advice: for an assistant that also *speaks*, prefer a USB
 speakerphone (Jabra Speak, Anker PowerConf class) — the built-in hardware

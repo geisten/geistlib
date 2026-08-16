@@ -231,9 +231,10 @@ static inline bool *audio_mel_mask_alloc(size_t n_frames, bool pad_final, size_t
     return mask;
 }
 
-/* encoder_weights.c: shared "env var == '1'" read and the single
- * platform-precision decision (banner + loader read the same truth). */
-bool audio_env_flag(const char *name);
+/* encoder_weights.c: shared env-flag read ('1' → true, '0' → false,
+ * unset → fallback) and the single platform-precision decision (banner +
+ * loader read the same truth). */
+bool audio_env_flag(const char *name, bool fallback);
 bool audio_prec_forced_fp32(void);
 
 struct audio_stream_state {
