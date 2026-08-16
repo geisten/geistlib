@@ -333,6 +333,63 @@ jobs:
           make TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native
           make test-unit TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
 
+  # Audio harness smoke (#234). The Pi 5 audio baseline is produced by
+  # bench_audio_encode and test_audio_latency_e2e; everywhere else in CI those
+  # binaries SKIP for missing fixtures, so the harness could rot unnoticed.
+  # This job RUNS them: the audio tower is Range-extracted from the public
+  # checkpoint and SHA-pinned (tools/fetch_audio_tower.py, ~590 MB instead of
+  # the 9.7 GB file, cached), mel constants are checked in, the clip is
+  # synthesized (tools/gen_test_wav.py — no voice recording in the repo).
+  # arm64 runner on purpose: NEON kernels, the Pi 5 code path. A skip
+  # (exit 77) fails the step — every fixture is guaranteed present. No
+  # timing is asserted; pass condition is "pipeline runs and emits tokens".
+  audio-smoke:
+    name: audio harness smoke (Linux arm64, NEON)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v4
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-audio-smoke-${{ github.run_id }}
+          restore-keys: |
+            ccache-audio-smoke-
+            ccache-Linux arm64-
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache
+      - name: Build
+        run: make TARGET=linux CC="ccache gcc-14" bin
+      - name: Cache reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts
+          key: geist-model-gemma4-e2b-q4km-v1
+      - name: Fetch reference model
+        run: make fetch-model
+      - name: Cache audio tower
+        uses: actions/cache@v4
+        with:
+          path: audio_bench/audio_tower.safetensors
+          key: geist-audio-tower-d6c45a6c2762
+      - name: Fetch audio tower (Range-extracted, SHA-pinned)
+        run: make fetch-audio-tower
+      - name: Synthesize smoke clip
+        run: python3 tools/gen_test_wav.py audio_test_data/smoke.wav 2.0
+      - name: Audio encoder bench (a skip is a failure)
+        run: ./bin/linux/release/tests/bench_audio_encode audio_test_data/smoke.wav
+      - name: Audio latency harness (a skip is a failure)
+        env:
+          GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+          GEIST_AUDIO_WAV: audio_test_data/smoke.wav
+        run: ./bin/linux/release/tests/test_audio_latency_e2e
+
   # musl on x86_64: build-test-musl above only covers arm64, but the SHIPPED
   # x86_64 release artifact is also musl-static. Build + unit-test the exact
   # release recipe so a musl-specific x86 issue can't reach a release.

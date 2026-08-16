@@ -9,6 +9,18 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Audio harness CI smoke** (#234): a new `audio-smoke` job builds and RUNS
+  `bench_audio_encode` + `test_audio_latency_e2e` on every push, so the
+  harness that produces the Pi 5 audio baseline can no longer rot behind a
+  skip. Fixtures are fully reproducible: `make fetch-audio-tower` extracts
+  the Gemma 4 audio tower (~590 MB) from the public checkpoint via HTTP
+  Range requests instead of downloading the 9.7 GB file
+  (`tools/fetch_audio_tower.py`, stdlib-only, output SHA-pinned);
+  `audio_test_data/mel_constants.bin` is checked in with its generator
+  (`tools/gen_mel_constants.py`); the test clip is synthesized
+  (`tools/gen_test_wav.py`) — no voice recording enters the repository.
+  `test_audio_latency_e2e` accepts `GEIST_AUDIO_WAV=<path>` to run a single
+  caller-provided clip.
 - `geist_model_modalities()` (**EXPERIMENTAL**): bitmask of modalities a
   loaded model instance can consume beyond text (`GEIST_MOD_AUDIO`,
   `GEIST_MOD_VISION`, `GEIST_MOD_VIDEO`). Lets a host decide up front
