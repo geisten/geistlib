@@ -80,6 +80,15 @@ minor release.
   (probed-best vs forced-scalar vs float64 reference).
 
 ### Fixed
+- `geist_session_attach_audio` no longer silently truncates audio past
+  ~10 s: the soft-token buffer was capped at a hardcoded 256 (≈ 10.2 s at
+  ~25 tokens/s), so a 28 s clip paid the full 12 s encode and dropped
+  everything past the cap with `GEIST_OK`. The bound now derives from the
+  audio length via the encoder vtable's new optional `max_soft_tokens`
+  op (single formula home: `audio_soft_bound_from_mel`), a full buffer is
+  a loud error instead of a silent drop, and
+  `tests/test_audio_long_clip_int.c` pins a 12 s clip to ~300 tokens in
+  the `audio-smoke` job. (#247)
 - The live streaming worker emitted one soft token fewer than the
   monolithic path for the same audio: the final flush did not mirror the
   monolithic path's extra padded mel frame (n_mel = frames + 1). (#235)

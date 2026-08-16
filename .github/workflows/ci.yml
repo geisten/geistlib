@@ -387,6 +387,9 @@ jobs:
         run: python3 tools/gen_test_wav.py audio_test_data/smoke.wav 2.0
       - name: Audio encoder bench (a skip is a failure)
         run: ./bin/linux/release/tests/bench_audio_encode audio_test_data/smoke.wav
+      # #247: >10 s audio must produce the full soft-token sequence.
+      - name: Long-clip truncation guard (a skip is a failure)
+        run: ./bin/linux/release/tests/test_audio_long_clip_int
       - name: Audio latency harness (a skip is a failure)
         env:
           GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
