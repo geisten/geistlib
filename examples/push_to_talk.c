@@ -69,26 +69,22 @@ static bool feed_text(struct geist_session *s, const char *text, bool drop_bos) 
     return geist_session_prefill_tokens(s, n - start, toks + start) == GEIST_OK;
 }
 
+/* The audio was already streamed into the session (begin/push/end in the
+ * VAD loop below); this finishes the turn: instruction suffix + decode. */
 static void answer_utterance(struct geist_session *sess,
                              const geist_token_t   eos,
                              const geist_token_t   end_of_turn,
-                             const int16_t        *pcm,
-                             size_t                n,
+                             double                t_tail,
+                             double                audio_s,
                              const char           *instr) {
-    /* One long-lived session, reset per utterance: O(1) truncation of the
-     * KV cache back to the PINNED turn prefix (see main) — neither the
-     * runtime allocation nor the constant prefix is re-paid per turn. */
-    geist_session_reset(sess);
-
     double t0 = now_ms();
     char   suffix[PROMPT_CAP];
     snprintf(suffix, sizeof suffix, "<audio|>\n%s<turn|>\n<|turn>model\n", instr);
-    if (geist_session_attach_audio(sess, n, pcm, SR) != GEIST_OK ||
-        !feed_text(sess, suffix, true)) {
+    if (!feed_text(sess, suffix, true)) {
         fprintf(stderr, "audio turn failed: %s\n", geist_session_errmsg(sess));
         return;
     }
-    double t_attach = now_ms() - t0;
+    double t_attach = t_tail + (now_ms() - t0);
 
     printf("assistant> ");
     fflush(stdout);
@@ -118,8 +114,8 @@ static void answer_utterance(struct geist_session *sess,
         n_tok++;
     }
     double t_decode = now_ms() - t0;
-    printf("\n  [%.1f s audio | attach %.0f ms | %zu tokens @ %.1f tok/s]\n\n",
-           (double) n / SR,
+    printf("\n  [%.1f s audio | tail %.0f ms after end-of-speech | %zu tokens @ %.1f tok/s]\n\n",
+           audio_s,
            t_attach,
            n_tok,
            n_tok / (t_decode / 1000.0));
@@ -191,42 +187,64 @@ int main(int argc, char **argv) {
 
     fprintf(stderr, "listening (VAD threshold %.0f RMS, Ctrl-C to quit)...\n", rms_thr);
 
-    static int16_t utt[MAX_UTT];
-    int16_t        frame[FRAME];
-    size_t         utt_len = 0;
-    int            loud = 0, quiet = 0;
-    bool           in_speech = false;
+    /* Streaming turn (#256): PCM is pushed WHILE the user speaks — the
+     * encoder overlaps its work with the capture, and audio_end() after
+     * end-of-speech pays only the tail (~0.2 s on a Pi 5 vs re-encoding
+     * the whole utterance). A tiny ring of pre-open frames is pushed
+     * retroactively so the utterance keeps its first 60 ms. */
+    int16_t frame[FRAME];
+    int16_t pending[OPEN_FRAMES][FRAME];
+    size_t  pushed = 0;
+    int     loud = 0, quiet = 0;
+    bool    in_speech = false;
 
     while (fread(frame, sizeof(int16_t), FRAME, stdin) == FRAME) {
         const bool is_loud = frame_rms(frame) > rms_thr;
         if (!in_speech) {
+            memcpy(pending[loud % OPEN_FRAMES], frame, sizeof frame);
             loud = is_loud ? loud + 1 : 0;
-            if (loud >= OPEN_FRAMES) {
-                in_speech = true;
-                quiet     = 0;
-                utt_len   = 0;
-                fprintf(stderr, "[speech]\n");
-            } else {
+            if (loud < OPEN_FRAMES) {
                 continue;
             }
+            in_speech = true;
+            quiet     = 0;
+            pushed    = 0;
+            fprintf(stderr, "[speech]\n");
+            geist_session_reset(sess); /* back to the pinned prefix */
+            if (geist_session_audio_begin(sess) != GEIST_OK) {
+                fprintf(stderr, "audio_begin failed: %s\n", geist_session_errmsg(sess));
+                break;
+            }
+            for (int i = 0; i < OPEN_FRAMES - 1; i++) {
+                (void) geist_session_audio_push(sess, FRAME, pending[i]);
+                pushed += FRAME;
+            }
         }
-        if (utt_len + FRAME <= MAX_UTT) {
-            memcpy(utt + utt_len, frame, sizeof frame);
-            utt_len += FRAME;
+        if (pushed + FRAME <= MAX_UTT &&
+            geist_session_audio_push(sess, FRAME, frame) == GEIST_OK) {
+            pushed += FRAME;
         }
         quiet = is_loud ? 0 : quiet + 1;
-        if (quiet >= CLOSE_FRAMES || utt_len >= MAX_UTT) {
+        if (quiet >= CLOSE_FRAMES || pushed + FRAME > MAX_UTT) {
             in_speech = false;
             loud      = 0;
-            /* The closing silence is part of utt_len — subtract it, or a
+            /* The closing silence is part of pushed — subtract it, or a
              * 60 ms door slam plus 0.8 s of quiet always beats MIN_UTT. */
-            const size_t speech_len = utt_len - (size_t) quiet * FRAME;
-            if (speech_len >= MIN_UTT) {
-                fprintf(stderr, "[%.1f s — thinking]\n", (double) utt_len / SR);
-                answer_utterance(sess, eos, end_of_turn, utt, utt_len, instr);
-                fprintf(stderr, "listening...\n");
+            const size_t speech_len = pushed - (size_t) quiet * FRAME;
+            double       t0         = now_ms();
+            if (geist_session_audio_end(sess) != GEIST_OK) {
+                fprintf(stderr, "audio_end failed: %s\n", geist_session_errmsg(sess));
+                continue;
             }
-            utt_len = 0;
+            double t_tail = now_ms() - t0;
+            if (speech_len >= MIN_UTT) {
+                fprintf(stderr, "[%.1f s — thinking]\n", (double) pushed / SR);
+                answer_utterance(
+                        sess, eos, end_of_turn, t_tail, (double) pushed / SR, instr);
+                fprintf(stderr, "listening...\n");
+            } else {
+                geist_session_reset(sess); /* discard the blip's audio */
+            }
         }
     }
 

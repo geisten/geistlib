@@ -783,9 +783,12 @@ static void *audio_encoder_stream_worker(void *arg) {
     return nullptr;
 }
 
-/* Enable the streaming worker (called from audio_encoder_create when
- * GEIST_AUDIO_STREAM=1). Spawns the worker thread. */
+/* Enable the streaming worker (at create when GEIST_AUDIO_STREAM=1, or
+ * lazily on the first session-level stream_begin). Spawns the worker
+ * thread; idempotent. */
 bool stream_worker_start(struct AudioEncoder *a) {
+    if (a->worker_active)
+        return true;
     a->stream_enabled  = true;
     a->worker_active   = true;
     a->worker_kick     = false;
