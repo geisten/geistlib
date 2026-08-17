@@ -115,6 +115,27 @@ enum geist_status geist_session_attach_audio(struct geist_session *s,
                                              const int16_t         pcm_samples[static n_samples],
                                              int                   sample_rate);
 
+/* @stability EXPERIMENTAL — streaming audio turn (#256): push PCM while
+ * the user is still speaking; the encoder overlaps its work with the
+ * arriving audio, so end() returns after only the tail (~200 ms on a
+ * Pi 5 for a 10 s utterance vs ~4 s re-encoding it after the fact).
+ *
+ * Contract: begin → push* → end is equivalent to a single
+ * geist_session_attach_audio over the concatenated PCM: same token
+ * count, identical greedy prediction, logits within the small numeric
+ * noise of the incremental encoder (bit-equality is NOT promised — the
+ * overlapped attention reassociates float sums). Same 16 kHz mono s16
+ * input, same 30 s limit, same error codes.
+ *
+ * Threading: push is safe from a capture thread; begin/end belong to
+ * the thread driving the session. One streaming turn at a time per
+ * model (the audio encoder is model-owned); begin returns
+ * GEIST_E_INVALID_STATE if a turn is already open. */
+enum geist_status geist_session_audio_begin(struct geist_session *s);
+enum geist_status
+geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[static n]);
+enum geist_status geist_session_audio_end(struct geist_session *s);
+
 /* @stability EXPERIMENTAL — vision-tower soft-token injection.
  *
  * RGB is consumed as height × width × 3 uint8 row-major (i.e. HWC,
