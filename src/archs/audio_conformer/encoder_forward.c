@@ -25,15 +25,8 @@ void clip_linear_apply(const struct ClippableLinear *cl,
                        float                        *y) {
     clamp_fp32(x, n * in_dim, cl->input_min, cl->input_max);
 
-    enum audio_linear_prec prec = cl->prec;
-#if defined(GEIST_AUDIO_KEEP_FP32)
-    /* A/B-bench escape hatch — only meaningful if cl->w is still around. */
-    if (cl->w != nullptr && getenv("GEIST_AUDIO_FORCE_FP32") != nullptr) {
-        prec = AUDIO_PREC_FP32;
-    }
-#endif
-
-    const struct audio_linear_ops *ops = audio_linear_bind();
+    const enum audio_linear_prec   prec = cl->prec;
+    const struct audio_linear_ops *ops  = audio_linear_bind();
     switch (prec) {
     case AUDIO_PREC_W8A8: {
         /* Static activation scale derived from clip bounds applied above. */

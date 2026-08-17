@@ -56,37 +56,36 @@ static double frame_rms(const int16_t *f) {
     return sqrt(acc / FRAME);
 }
 
-/* Tokenize helper: Gemma's tokenizer prepends <bos>; drop it for the
- * suffix so the turn markers stay well-formed. */
+/* Tokenize helper: the tokenizer prepends the model's BOS; drop it for
+ * the suffix so the turn markers stay well-formed. */
+static geist_token_t g_bos = -1; /* resolved from model metadata in main */
+
 static bool feed_text(struct geist_session *s, const char *text, bool drop_bos) {
     geist_token_t toks[PROMPT_CAP];
     size_t        n = 0;
     if (geist_session_tokenize(s, text, PROMPT_CAP, toks, &n) != GEIST_OK)
         return false;
-    size_t start = (drop_bos && n > 0 && toks[0] == 2) ? 1 : 0;
+    size_t start = (drop_bos && n > 0 && toks[0] == g_bos) ? 1 : 0;
     return geist_session_prefill_tokens(s, n - start, toks + start) == GEIST_OK;
 }
 
-static void answer_utterance(struct geist_model   *model,
-                             struct geist_backend *be,
+static void answer_utterance(struct geist_session *sess,
+                             const geist_token_t   eos,
+                             const geist_token_t   end_of_turn,
                              const int16_t        *pcm,
                              size_t                n,
                              const char           *instr) {
-    struct geist_session_opts opts = {.max_seq_len = 2048};
-    struct geist_session     *sess = nullptr;
-    if (geist_session_create(model, be, &opts, &sess) != GEIST_OK) {
-        fprintf(stderr, "session_create failed\n");
-        return;
-    }
+    /* One long-lived session, reset per utterance: O(1) truncation of the
+     * KV cache back to the PINNED turn prefix (see main) — neither the
+     * runtime allocation nor the constant prefix is re-paid per turn. */
+    geist_session_reset(sess);
 
     double t0 = now_ms();
     char   suffix[PROMPT_CAP];
     snprintf(suffix, sizeof suffix, "<audio|>\n%s<turn|>\n<|turn>model\n", instr);
-    if (!feed_text(sess, "<bos><|turn>user\n<|audio>", false) ||
-        geist_session_attach_audio(sess, n, pcm, SR) != GEIST_OK ||
+    if (geist_session_attach_audio(sess, n, pcm, SR) != GEIST_OK ||
         !feed_text(sess, suffix, true)) {
         fprintf(stderr, "audio turn failed: %s\n", geist_session_errmsg(sess));
-        geist_session_destroy(sess);
         return;
     }
     double t_attach = now_ms() - t0;
@@ -99,7 +98,7 @@ static void answer_utterance(struct geist_model   *model,
         geist_token_t tok;
         if (geist_session_decode_step(sess, &tok) != GEIST_OK)
             break;
-        if (tok == 1 /* <eos> */ || tok == 106 /* <turn|> */)
+        if (tok == eos || tok == end_of_turn)
             break;
         const char *t = geist_session_token_to_str(sess, tok);
         if (t != nullptr) {
@@ -125,7 +124,6 @@ static void answer_utterance(struct geist_model   *model,
            n_tok,
            n_tok / (t_decode / 1000.0));
     fflush(stdout);
-    geist_session_destroy(sess);
 }
 
 int main(int argc, char **argv) {
@@ -161,6 +159,36 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    struct geist_session_opts opts = {.max_seq_len = 2048};
+    struct geist_session     *sess = nullptr;
+    if (geist_session_create(model, be, &opts, &sess) != GEIST_OK) {
+        fprintf(stderr, "session_create failed\n");
+        geist_model_destroy(model);
+        geist_backend_destroy(be);
+        return 1;
+    }
+    /* Stop tokens from the model's own metadata — no hardcoded ids. */
+    g_bos                           = geist_model_bos_token(model);
+    const geist_token_t eos         = geist_model_eos_token(model);
+    const geist_token_t end_of_turn = geist_model_token_by_text(model, "<turn|>");
+
+    /* Pin the constant turn prefix ONCE: geist_session_reset then
+     * restores to it instead of to an empty cache, so every utterance
+     * skips re-prefilling these tokens (STABLE agent-runtime API). */
+    {
+        geist_token_t prefix[PROMPT_CAP];
+        size_t        n_prefix = 0;
+        if (geist_session_tokenize(
+                    sess, "<bos><|turn>user\n<|audio>", PROMPT_CAP, prefix, &n_prefix) != GEIST_OK ||
+            geist_session_pin_prefix(sess, n_prefix, prefix) != GEIST_OK) {
+            fprintf(stderr, "pin_prefix failed\n");
+            geist_session_destroy(sess);
+            geist_model_destroy(model);
+            geist_backend_destroy(be);
+            return 1;
+        }
+    }
+
     fprintf(stderr, "listening (VAD threshold %.0f RMS, Ctrl-C to quit)...\n", rms_thr);
 
     static int16_t utt[MAX_UTT];
@@ -190,15 +218,19 @@ int main(int argc, char **argv) {
         if (quiet >= CLOSE_FRAMES || utt_len >= MAX_UTT) {
             in_speech = false;
             loud      = 0;
-            if (utt_len >= MIN_UTT) {
+            /* The closing silence is part of utt_len — subtract it, or a
+             * 60 ms door slam plus 0.8 s of quiet always beats MIN_UTT. */
+            const size_t speech_len = utt_len - (size_t) quiet * FRAME;
+            if (speech_len >= MIN_UTT) {
                 fprintf(stderr, "[%.1f s — thinking]\n", (double) utt_len / SR);
-                answer_utterance(model, be, utt, utt_len, instr);
+                answer_utterance(sess, eos, end_of_turn, utt, utt_len, instr);
                 fprintf(stderr, "listening...\n");
             }
             utt_len = 0;
         }
     }
 
+    geist_session_destroy(sess);
     geist_model_destroy(model);
     geist_backend_destroy(be);
     return 0;

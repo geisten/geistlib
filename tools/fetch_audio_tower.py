@@ -96,23 +96,60 @@ def main() -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     part = out.with_suffix(out.suffix + ".part")
-    sha = hashlib.sha256()
 
-    def write(buf: bytes):
-        sha.update(buf)
-        f.write(buf)
+    # Fetch in SOURCE-offset order, coalescing near-adjacent tensors into a
+    # handful of large Range requests (one TLS handshake each) instead of
+    # one request per tensor — 752 round-trips used to dominate wall clock.
+    # Each tensor is seek-written to its name-sorted OUTPUT offset.
+    prelude = struct.pack("<Q", len(hdr_bytes)) + hdr_bytes
+    out_off = {}
+    for name in sorted(picked):
+        out_off[name] = len(prelude) + out_hdr[name]["data_offsets"][0]
+
+    by_src = sorted(picked, key=lambda n: picked[n]["data_offsets"][0])
+    runs, gap = [], 4 << 20
+    for name in by_src:
+        b, e = picked[name]["data_offsets"]
+        if runs and b - runs[-1][1] <= gap:
+            runs[-1][1] = max(runs[-1][1], e)
+            runs[-1][2].append(name)
+        else:
+            runs.append([b, e, [name]])
+    print(f"{len(runs)} coalesced range requests")
 
     with open(part, "wb") as f:
-        write(struct.pack("<Q", len(hdr_bytes)))
-        write(hdr_bytes)
+        f.write(prelude)
         done = 0
-        for name in sorted(picked):
-            b, e = picked[name]["data_offsets"]
-            for chunk in fetch_range(args.url, data_base + b, data_base + e):
-                write(chunk)
-            done += e - b
-            print(f"  {done / 1048576:7.0f} / {total_mb:.0f} MB  {name}", flush=True)
+        for rb, re_, names in runs:
+            names_iter = iter(names)
+            cur = next(names_iter)
+            cur_b, cur_e = picked[cur]["data_offsets"]
+            pos = rb
+            for chunk in fetch_range(args.url, data_base + rb, data_base + re_):
+                cstart = pos
+                pos += len(chunk)
+                while cur is not None and cstart < pos:
+                    lo = max(cstart, cur_b)
+                    hi = min(pos, cur_e)
+                    if lo < hi:
+                        f.seek(out_off[cur] + (lo - cur_b))
+                        f.write(chunk[lo - cstart : hi - cstart])
+                    if pos >= cur_e:
+                        done += cur_e - cur_b
+                        cur = next(names_iter, None)
+                        if cur is not None:
+                            cur_b, cur_e = picked[cur]["data_offsets"]
+                    else:
+                        break
+            print(f"  {done / 1048576:7.0f} / {total_mb:.0f} MB", flush=True)
 
+    sha = hashlib.sha256()
+    with open(part, "rb") as f:
+        while True:
+            buf = f.read(CHUNK)
+            if not buf:
+                break
+            sha.update(buf)
     digest = sha.hexdigest()
     print(f"sha256 {digest}")
     if args.sha256 and digest != args.sha256.lower():
