@@ -60,6 +60,30 @@ Readings for the open issues:
 - FFN share grows with clip length (22 → 35 %) — it is the first target
   on long clips, and it is exactly the stage #237 accelerates on x86.
 
+## Re-baseline after the framing fix + W8A8 default (2026-08-17)
+
+The mel-framing fix (code review, #259) doubled the attach path's mel
+frames — correct per the HF reference, but the old attach numbers below
+were measured against half-framed (cheaper, wrong) input. Re-measured on
+the quiesced board (load 0.00, 48 °C), commit `a1dbfdf`:
+
+| measurement (2 s clip) | old baseline | after fixes | delta |
+|---|---:|---:|---|
+| encode, push path, defaults | 665 ms (W8A32) | **404 ms** (W8A8 is default now) | **−39 %** |
+| encode, opt-out `*_W8A8=0` | 665 ms | 649 ms | path unchanged ✓ |
+| attach warm, LM resident | ~1.6 s (half-framed) | **~2.0 s** (full framing, W8A8) | +25 % for 2× audio information |
+| 28 s clip, tokens | 256 (capped) | **701** | #247 fixed |
+| decoded reply tokens (2 s clip) | 15–17 | 25 | richer replies post-framing-fix |
+
+Reading: the W8A8 default flip delivers the full measured −38 % with no
+env vars; the attach path costs more than the old (incorrectly cheap)
+number because it now feeds the model the framing it was trained on —
+and even so lands only +25 % over the old figure thanks to the default
+flip. Attach remains dominated by page-cache pressure, not compute
+(encode is ~400 ms of the ~2 s). `pin_prefix` in the example removes the
+constant-prefix prefill per turn (structural win; below measurement
+noise at this clip length).
+
 ## W8A8 attention / LConv (#238) and live streaming (#235) — measured
 
 Same board/protocol, quiesced re-run (2 s clip, 10 repeats, medians):
