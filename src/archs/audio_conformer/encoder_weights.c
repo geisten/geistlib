@@ -66,23 +66,17 @@ static bool load_clippable(struct st_ctx          *sf,
     if (!load_bf16_scalar(sf, buf, &cl->output_max))
         return false;
 
-#if defined(__APPLE__) && defined(HAVE_ACCELERATE)
-    /* Apple Silicon's cblas_sgemm via Accelerate (AMX) beats hand-rolled
-     * NEON W8 kernels for these matmul sizes — same lesson as the IQ
-     * flat-decode cache. Default to FP32 on Mac; GEIST_AUDIO_FORCE_QUANT=1
-     * opts back in for A/B benchmarks. Non-Apple keeps the per-class
-     * precision (Pi 5 NEON quant beats naive fp32 loop ~3-4×). */
-    if (getenv("GEIST_AUDIO_FORCE_QUANT") == nullptr)
+    if (audio_prec_forced_fp32())
         prec = AUDIO_PREC_FP32;
-#endif
 
     cl->prec = prec;
     if (prec != AUDIO_PREC_FP32) {
         quantize_clippable_w8(cl, out_dim, in_dim);
-#if !defined(GEIST_AUDIO_KEEP_FP32)
+        /* Drop the FP32 copy after quant — ~450 MB on a Pi 5. FP32 A/B
+         * runs use GEIST_AUDIO_FORCE_QUANT / the per-class env knobs at
+         * load time instead of keeping both copies resident. */
         safe_free((void **) &cl->w);
         cl->w = nullptr;
-#endif
     }
     return true;
 }
@@ -119,9 +113,27 @@ static bool load_ffn(struct st_ctx *sf, int layer_idx, const char *prefix, struc
 /* Env reads here are deliberately NOT process-latched: the A/B parity
  * tests load two encoders with different precision in one process, and
  * the cost is nothing next to the weight load itself. */
-static bool env_flag(const char *name) {
+bool audio_env_flag(const char *name, bool fallback) {
     const char *s = getenv(name);
-    return s != nullptr && s[0] == '1';
+    if (s == nullptr || s[0] == '\0')
+        return fallback;
+    return s[0] == '1';
+}
+
+/* THE platform-precision decision, in one place — the startup banner and
+ * the loader both consult it, so the diagnostic cannot drift from what
+ * actually loads (it did once).
+ * Apple Silicon's cblas_sgemm via Accelerate (AMX) beats the hand-rolled
+ * W8 kernels at these matmul sizes, so Apple defaults every
+ * ClippableLinear to FP32; GEIST_AUDIO_FORCE_QUANT=1 opts back in for
+ * A/B runs. Everything else keeps the per-class precision (Pi 5 NEON
+ * quant beats the naive fp32 loop ~3-4x). */
+bool audio_prec_forced_fp32(void) {
+#if defined(__APPLE__) && defined(HAVE_ACCELERATE)
+    return getenv("GEIST_AUDIO_FORCE_QUANT") == nullptr;
+#else
+    return false;
+#endif
 }
 
 static int w8a8_layer_limit(void) {
@@ -140,7 +152,11 @@ static bool load_attn(struct st_ctx *sf, int layer_idx, const char *prefix, stru
      * Per bib.md A6 (4-bit Conformer with Native QAT, Google 2024) INT8-only
      * shows 0.87% WER loss without finetune — acceptable for the streaming
      * path where the next-token LM dominates output quality anyway. */
-    const bool                   attn_w8a8    = env_flag("GEIST_AUDIO_ATTN_W8A8");
+    /* W8A8 is the DEFAULT since the quality gates went green (parity
+     * cosine, chat e2e 6/6, LibriSpeech WER within noise — see
+     * benchmark/results/PI5-audio.md): -38 % encode on the Pi 5.
+     * GEIST_AUDIO_ATTN_W8A8=0 opts back out. */
+    const bool                   attn_w8a8    = audio_env_flag("GEIST_AUDIO_ATTN_W8A8", true);
     const bool                   layer_active = (layer_idx < w8a8_layer_limit());
     const enum audio_linear_prec attn_prec =
             (attn_w8a8 && layer_active) ? AUDIO_PREC_W8A8 : AUDIO_PREC_W8A32;
@@ -170,7 +186,8 @@ static bool load_lconv(struct st_ctx *sf, int layer_idx, const char *prefix, str
      * from FP32 to W8A8 (depthwise conv stays FP32 — it's per-channel
      * causal and the kernel doesn't have a quant path). Same rationale
      * as Attn W8A8 (bib.md A6). */
-    const bool                   lconv_w8a8   = env_flag("GEIST_AUDIO_LCONV_W8A8");
+    /* Default ON — same evidence and opt-out as GEIST_AUDIO_ATTN_W8A8. */
+    const bool                   lconv_w8a8   = audio_env_flag("GEIST_AUDIO_LCONV_W8A8", true);
     const bool                   layer_active = (layer_idx < w8a8_layer_limit());
     const enum audio_linear_prec prec =
             (lconv_w8a8 && layer_active) ? AUDIO_PREC_W8A8 : AUDIO_PREC_FP32;

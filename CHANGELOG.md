@@ -8,6 +8,14 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+- **W8A8 attention/LConv is the default** for the audio tower (#238
+  rollout): every quality gate is green (soft-token parity, chat e2e 6/6
+  voice clips, LibriSpeech WER within noise of the high-precision path)
+  and the win is −38 % encode on the Pi 5. `GEIST_AUDIO_ATTN_W8A8=0` /
+  `GEIST_AUDIO_LCONV_W8A8=0` opt back out; the parity test now pins
+  defaults ≡ fully-quantized explicitly.
+
 ### Fixed
 - `make TARGET=pi5` builds again: the target was missing the
   `_GNU_SOURCE` feature macro the linux target gained in 0.8.0, so

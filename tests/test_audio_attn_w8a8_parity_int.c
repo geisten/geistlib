@@ -108,8 +108,10 @@ int main(void) {
      * beats the quant kernels there) — force the quant paths so this test
      * exercises W8A8 on every platform, not just the Pi. */
     setenv("GEIST_AUDIO_FORCE_QUANT", "1", 1);
-    unsetenv("GEIST_AUDIO_ATTN_W8A8");
-    unsetenv("GEIST_AUDIO_LCONV_W8A8");
+    /* W8A8 is the default since the quality gates went green — the
+     * high-precision reference now has to opt OUT explicitly. */
+    setenv("GEIST_AUDIO_ATTN_W8A8", "0", 1);
+    setenv("GEIST_AUDIO_LCONV_W8A8", "0", 1);
     size_t n_ref = encode_once(tower, pcm, soft_ref);
     GEIST_SKIP_IF(n_ref == 0, "encoder load failed (mel_constants.bin missing?)");
 
@@ -118,6 +120,10 @@ int main(void) {
     fails += check_config("attn-W8A8:", tower, pcm, soft_ref, n_ref, soft_q);
     setenv("GEIST_AUDIO_LCONV_W8A8", "1", 1);
     fails += check_config("attn+lconv:", tower, pcm, soft_ref, n_ref, soft_q);
+    /* The defaults (both unset) must equal the fully quantized config. */
+    unsetenv("GEIST_AUDIO_ATTN_W8A8");
+    unsetenv("GEIST_AUDIO_LCONV_W8A8");
+    fails += check_config("defaults:", tower, pcm, soft_ref, n_ref, soft_q);
 
     if (fails == 0) {
         printf("PASS\n");

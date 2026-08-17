@@ -22,6 +22,8 @@
 #include "hw_probe.h"
 
 #include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -256,7 +258,8 @@ static void w8a8_avx512vnni(const int8_t *w_q8,
             int32_t isum = hsum_epi32(acc);
             for (; kk < in_dim; kk++)
                 isum += ((int32_t) xrow[kk]) * (int32_t) wrow[kk];
-            isum -= row_sum << 7; /* undo the +128 activation shift */
+            isum -= row_sum * 128; /* undo the +128 shift (row_sum may be
+                                    * negative — a shift would be UB) */
             y[i * out_dim + n] = wscale * scale_x * (float) isum;
         }
     }
@@ -267,15 +270,25 @@ static void w8a8_avx512vnni(const int8_t *w_q8,
 /* ------------------------------- binding ------------------------------- */
 
 static struct audio_linear_ops g_ops;
-static bool                    g_bound = false;
+static _Atomic bool            g_bound   = false;
+static pthread_mutex_t         g_bind_mu = PTHREAD_MUTEX_INITIALIZER;
 
 const struct audio_linear_ops *audio_linear_rebind(void) {
-    g_bound = false;
+    atomic_store_explicit(&g_bound, false, memory_order_relaxed);
     return audio_linear_bind();
 }
 
 const struct audio_linear_ops *audio_linear_bind(void) {
-    if (g_bound) {
+    /* Acquire pairs with the release below: a reader that sees the flag
+     * also sees the fully written g_ops. Plain statics raced when two
+     * model loads bound concurrently (first-bind window: the flag could
+     * become visible before the ops on ARM → call through a null w8a8). */
+    if (atomic_load_explicit(&g_bound, memory_order_acquire)) {
+        return &g_ops;
+    }
+    pthread_mutex_lock(&g_bind_mu);
+    if (atomic_load_explicit(&g_bound, memory_order_relaxed)) {
+        pthread_mutex_unlock(&g_bind_mu);
         return &g_ops;
     }
     g_ops = (struct audio_linear_ops) {
@@ -302,18 +315,27 @@ const struct audio_linear_ops *audio_linear_bind(void) {
 #elif defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
         struct geist_hw_probe hp;
         geist_hw_probe_fill(&hp);
-        /* Down-only clamp, mirroring the cpu_x86 dispatcher: a
-         * GEIST_FORCE_ISA without "vnni" keeps the audio path off AVX-512
-         * (the CI avx2 leg proves the fallback on AVX-512 runners).
+        /* Down-only clamp with the SAME semantics as the cpu_x86
+         * dispatcher (kernel_w4a8.c parse_force_env): the tiers below
+         * VNNI clamp it away, avx512_vnni / avx512_bf16 keep it, and an
+         * unknown value means "no override" — previously a plain
+         * strstr("vnni") disabled the audio kernel for avx512_bf16 and
+         * for typos while the backend kept running VNNI.
          * w8a32 stays scalar on x86 — the plain fp32 loop auto-vectorizes
          * to AVX2 at the x86-64-v3 baseline. */
-        const char *fisa = getenv("GEIST_FORCE_ISA");
-        if (hp.has_avx512_vnni && (fisa == nullptr || strstr(fisa, "vnni") != nullptr)) {
+        const char *fisa    = getenv("GEIST_FORCE_ISA");
+        bool        vnni_ok = true;
+        if (fisa != nullptr && (strcmp(fisa, "scalar") == 0 || strcmp(fisa, "avx2") == 0 ||
+                                strcmp(fisa, "avx512") == 0)) {
+            vnni_ok = false;
+        }
+        if (hp.has_avx512_vnni && vnni_ok) {
             g_ops.w8a8 = w8a8_avx512vnni;
             g_ops.name = "avx512vnni";
         }
 #endif
     }
-    g_bound = true;
+    atomic_store_explicit(&g_bound, true, memory_order_release);
+    pthread_mutex_unlock(&g_bind_mu);
     return &g_ops;
 }

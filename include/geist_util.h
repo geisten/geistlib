@@ -97,10 +97,12 @@ enum geist_modality {
  * string: it depends on the encoder weights found next to the GGUF at
  * load time (audio_tower.safetensors + mel_constants.bin,
  * vision_tower.safetensors) and on GEIST_TEXT_ONLY. It mirrors exactly
- * the capability checks the attach calls perform — a set bit means the
- * corresponding geist_session_attach_* cannot fail with
+ * the capability checks the attach calls perform — for WELL-FORMED input
+ * (16 kHz mono PCM within the encoder's 30 s limit, valid RGB), a set
+ * bit means the corresponding geist_session_attach_* cannot fail with
  * GEIST_E_NOT_FOUND / GEIST_E_UNSUPPORTED; a clear bit means it will.
- * Returns 0 for a text-only model or m == nullptr. */
+ * Malformed input (wrong sample rate, oversize clip) still errors with
+ * the bit set. Returns 0 for a text-only model or m == nullptr. */
 unsigned geist_model_modalities(const struct geist_model *m);
 
 /* @stability EXPERIMENTAL — soft-token injection semantics may change.
