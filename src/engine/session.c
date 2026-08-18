@@ -16,6 +16,8 @@
 
 #include <geist_arch.h> /* arch_ops vtables the engine dispatches through */
 
+#include <stdatomic.h>
+
 #include "heap.h"
 #include "sp_bpe_tokenizer.h"
 #include "gguf_tokenizer.h"
@@ -55,6 +57,11 @@ struct geist_session_full {
     uint64_t total_decode_ns;
     uint64_t total_prefill_ns;
     uint64_t total_audio_encode_ns;
+
+    /* Streaming audio turn (#256). samples is _Atomic because push may
+     * run on a capture thread while end reads it on the session thread. */
+    bool           audio_streaming;
+    _Atomic size_t audio_stream_samples;
 };
 
 static inline uint64_t monotonic_ns(void) {
@@ -746,6 +753,121 @@ geist_session_attach_audio(struct geist_session *s,
     const uint64_t          t_pre0 = monotonic_ns();
     const enum geist_status as     = dec_ops->prefill_audio(arch_sess(sf), n_soft, soft);
     sf->total_prefill_ns += monotonic_ns() - t_pre0;
+    safe_free((void **) &soft);
+    return as == GEIST_OK ? GEIST_OK : session_op_failed(sf, as, "prefill_audio");
+}
+
+/* Streaming audio turn (#256): equivalent to attach_audio over the
+ * concatenated PCM, but the encoder overlaps its work with the arriving
+ * audio — end() pays only the tail. */
+[[nodiscard]] enum geist_status geist_session_audio_begin(struct geist_session *s) {
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf      = as_full(s);
+    const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
+    void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+    const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
+    if (enc_ops == nullptr || enc_st == nullptr || dec_ops == nullptr ||
+        dec_ops->prefill_audio == nullptr) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: model cannot hear");
+        sf->err_code = GEIST_E_NOT_FOUND;
+        return GEIST_E_NOT_FOUND;
+    }
+    if (enc_ops->stream_begin == nullptr || enc_ops->stream_push == nullptr ||
+        enc_ops->stream_end == nullptr) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: encoder has no streaming path");
+        sf->err_code = GEIST_E_UNSUPPORTED;
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (sf->audio_streaming) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: streaming turn already open");
+        sf->err_code = GEIST_E_INVALID_STATE;
+        return GEIST_E_INVALID_STATE;
+    }
+    if (!enc_ops->stream_begin(enc_st)) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: encoder stream_begin failed");
+        sf->err_code = GEIST_E_BACKEND;
+        return GEIST_E_BACKEND;
+    }
+    sf->audio_streaming = true;
+    atomic_store_explicit(&sf->audio_stream_samples, 0, memory_order_relaxed);
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status
+geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[static n]) {
+    if (s == nullptr || n == 0 || pcm == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf      = as_full(s);
+    const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
+    void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+    if (!sf->audio_streaming) {
+        return GEIST_E_INVALID_STATE;
+    }
+    if (!enc_ops->stream_push(enc_st, pcm, n)) {
+        /* Buffer overflow (>30 s) or encoder shutdown — surface loudly,
+         * never drop audio silently (#247's rule). */
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "audio_push: encoder refused %zu samples (>30 s buffered?)",
+                 n);
+        sf->err_code = GEIST_E_UNSUPPORTED;
+        return GEIST_E_UNSUPPORTED;
+    }
+    atomic_fetch_add_explicit(&sf->audio_stream_samples, n, memory_order_relaxed);
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status geist_session_audio_end(struct geist_session *s) {
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf      = as_full(s);
+    const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
+    void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+    const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
+    if (!sf->audio_streaming) {
+        return GEIST_E_INVALID_STATE;
+    }
+    sf->audio_streaming = false;
+
+    const size_t n_samples = atomic_load_explicit(&sf->audio_stream_samples, memory_order_relaxed);
+    size_t       max_soft  = 256;
+    if (enc_ops->max_soft_tokens != nullptr) {
+        max_soft = enc_ops->max_soft_tokens(enc_st, n_samples);
+    }
+    const size_t soft_dim = enc_ops->soft_token_dim(enc_st);
+    float       *soft     = heap_alloc_array_aligned(float, max_soft *soft_dim);
+    if (soft == nullptr) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_end: soft-token buffer alloc failed");
+        sf->err_code = GEIST_E_OOM;
+        return GEIST_E_OOM;
+    }
+    const uint64_t t_enc0 = monotonic_ns();
+    size_t         n_soft = enc_ops->stream_end(enc_st, soft, max_soft);
+    sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
+    if (n_soft == 0) {
+        safe_free((void **) &soft);
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "audio_end: encoder produced 0 soft tokens (no audio pushed, "
+                 "or encoder failure)");
+        sf->err_code = GEIST_E_IO;
+        return GEIST_E_IO;
+    }
+    if (n_soft >= max_soft) {
+        safe_free((void **) &soft);
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "audio_end: soft-token bound too small (%zu tokens for %zu samples)",
+                 max_soft,
+                 n_samples);
+        sf->err_code = GEIST_E_INTERNAL;
+        return GEIST_E_INTERNAL;
+    }
+    const enum geist_status as = dec_ops->prefill_audio(arch_sess(sf), n_soft, soft);
     safe_free((void **) &soft);
     return as == GEIST_OK ? GEIST_OK : session_op_failed(sf, as, "prefill_audio");
 }

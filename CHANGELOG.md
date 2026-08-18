@@ -8,6 +8,18 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+- **Public streaming audio turn** (#256, `@stability EXPERIMENTAL`):
+  `geist_session_audio_begin` / `_push` / `_end`. PCM is pushed while the
+  user speaks (push is capture-thread-safe); the encoder overlaps its
+  work with the arriving audio, and `end()` pays only the tail. Contract:
+  greedy-equivalent to `attach_audio` over the concatenated PCM (pinned
+  by `test_audio_stream_session_int` in the audio-smoke job; bit-equality
+  is explicitly not promised — the overlapped attention reassociates
+  float sums). `examples/push_to_talk` streams per VAD frame and prints
+  the measured tail. Known limit, next step in #256: the LM injection of
+  the soft tokens is not yet overlapped and now dominates the tail.
+
 ### Changed
 - **W8A8 attention/LConv is the default** for the audio tower (#238
   rollout): every quality gate is green (soft-token parity, chat e2e 6/6
