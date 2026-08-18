@@ -41,9 +41,11 @@ arecord -D plughw:1,0 -f S16_LE -r 16000 -c 1 -t raw | \
 
 `plughw` lets ALSA resample if the mic doesn't do 16 kHz natively.
 Expectations on a 4 GB Pi 5 (measured, `benchmark/results/PI5-audio.md`):
-~2 s attach for a ~3 s utterance, replies at ~7 tok/s. W8A8
+~2 s attach for a ~3 s utterance, replies at ~7 tok/s. Transcription
+quality is ASR-grade since the #270 injection fix: **4.2 % aggregate WER**
+on the LibriSpeech harness set (median 0 %, 16/30 clips verbatim). W8A8
 attention/LConv is the default since its quality gates went green
-(−38 % encode, ~1 pt WER on LibriSpeech — inside noise);
+(−38 % encode; 4.3 % WER vs 4.2 % FP32 — inside noise);
 `GEIST_AUDIO_ATTN_W8A8=0 GEIST_AUDIO_LCONV_W8A8=0` opts back to the
 high-precision path.
 
@@ -93,7 +95,7 @@ the loop *is*:
 | Goal | Prompt |
 | :-- | :-- |
 | assistant | `Answer the speaker briefly.` (default) |
-| dictation | `Transcribe this audio.` — the best-measured transcription phrasing; instruction-heavy variants degrade sharply, see `PI5-audio.md` |
+| dictation | `Transcribe this audio.` — best measured (4.2 % WER on the LibriSpeech harness set); wording matters mildly since #270 (instruction-heavy default: 6.1 %), see `PI5-audio.md` |
 | command recognition | few-shot anchor: `The user gave a smart home command. Common commands: 'Lampe an', 'Licht aus', 'Musik an'. Which command did you hear?` |
 
 Short commands (< 1 s) need the few-shot vocabulary anchor — without it
