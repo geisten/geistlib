@@ -3,8 +3,9 @@
  * across kernel bindings (#236).
  *
  * Hermetic: synthetic weights/activations at real tower dimensions, no
- * fixtures. Compares the probed-best binding against the forced-scalar one
- * (GEIST_AUDIO_KERNEL=scalar via the audio_linear_rebind test hook):
+ * fixtures. Compares the probed-best binding against the forced-scalar
+ * one (both obtained via the pure audio_linear_resolve — no global
+ * state, no env juggling):
  *
  *   - w8a8:  integer dot -> results must agree to fp32 rounding of the
  *            final two float multiplies (the int sum itself is exact).
@@ -70,11 +71,9 @@ int main(void) {
     int fails = 0;
 
     /* --- bindings: probed-best vs forced-scalar -------------------------- */
-    unsetenv("GEIST_AUDIO_KERNEL");
-    const struct audio_linear_ops *best = audio_linear_rebind();
+    const struct audio_linear_ops *best   = audio_linear_resolve(false);
+    const struct audio_linear_ops *scalar = audio_linear_resolve(true);
     printf("probed binding: %s\n", best->name);
-    audio_linear_w8a8_fn  best_w8a8  = best->w8a8;
-    audio_linear_w8a32_fn best_w8a32 = best->w8a32;
 
     /* CI proof (GEIST_EXPECT_ISA pattern): under Intel SDE the probe must
      * select the VNNI kernel — a silent fall-through to scalar would let
@@ -88,17 +87,14 @@ int main(void) {
                 best->name);
         fails++;
     }
-
-    setenv("GEIST_AUDIO_KERNEL", "scalar", 1);
-    const struct audio_linear_ops *scalar = audio_linear_rebind();
     if (strcmp(scalar->name, "scalar") != 0) {
-        fprintf(stderr, "FAIL: GEIST_AUDIO_KERNEL=scalar bound '%s'\n", scalar->name);
+        fprintf(stderr, "FAIL: resolve(force_scalar) bound '%s'\n", scalar->name);
         fails++;
     }
+    audio_linear_w8a8_fn  best_w8a8    = best->w8a8;
+    audio_linear_w8a32_fn best_w8a32   = best->w8a32;
     audio_linear_w8a8_fn  scalar_w8a8  = scalar->w8a8;
     audio_linear_w8a32_fn scalar_w8a32 = scalar->w8a32;
-    unsetenv("GEIST_AUDIO_KERNEL");
-    audio_linear_rebind(); /* leave the process in the default binding */
 
     /* --- w8a8 parity ------------------------------------------------------ */
     best_w8a8(w_q8, w_scales, x, 1.0f / scale_x, scale_x, M, IN_DIM, OUT_DIM, y_best);

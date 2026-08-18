@@ -45,14 +45,13 @@ struct audio_linear_ops {
     const char           *name; /* "neon" / "scalar" — logged at bind, pinned by tests */
 };
 
-/* Bind from the hw probe, once (cached). GEIST_AUDIO_KERNEL=scalar forces
- * the portable kernels regardless of the probe — the parity test's lever.
- * audio_encoder_create calls this at load; every later call is a pointer
- * read. */
+/* Bind from the hw probe, once (cached; GEIST_AUDIO_KERNEL=scalar forces
+ * the portable kernels). audio_encoder_create calls this at load; every
+ * later call is a relaxed pointer read into an immutable table. */
 const struct audio_linear_ops *audio_linear_bind(void);
 
-/* Test hook: drop the cached binding and re-evaluate probe + env. Lets the
- * parity test compare forced-scalar against probed-best in one process. */
-const struct audio_linear_ops *audio_linear_rebind(void);
+/* Pure resolution (no cache) — returns the probed-best or the forced
+ * scalar table. The kernel parity test A/Bs bindings through this. */
+const struct audio_linear_ops *audio_linear_resolve(bool force_scalar);
 
 #endif /* AUDIO_LINEAR_H */

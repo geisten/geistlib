@@ -8,6 +8,18 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+- **Audio precision policy is resolved once at encoder create** (#251):
+  a single `audio_prec_policy` struct (attn/lconv W8A8, layer limit,
+  the Apple FORCE_QUANT decision) is read from env exactly once in
+  `audio_prec_policy_resolve`, stored on the encoder, and threaded to
+  every layer load — the startup banner prints from the same struct the
+  loader consumes, so the diagnostic cannot drift by construction. The
+  kernel binding became immutable const tables behind a pure
+  `audio_linear_resolve(force_scalar)`; the mutable `g_ops`/`g_bound`
+  pair, its locking, and the `audio_linear_rebind` test hook are gone —
+  the parity test A/Bs bindings through the pure resolver instead.
+
 ### Added
 - **Public streaming audio turn** (#256, `@stability EXPERIMENTAL`):
   `geist_session_audio_begin` / `_push` / `_end`. PCM is pushed while the
