@@ -8,6 +8,7 @@
  *
  * Bench only — not exercised by make test*.
  */
+#include "audio_test_util.h"
 #include "test_helpers.h"
 
 #define GEIST_INTERNAL_ARCH_LAYER
@@ -33,25 +34,10 @@ static const char *CLIPS[] = {
         nullptr,
 };
 
+/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
+ * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
-    FILE *f = fopen(path, "rb");
-    if (f == nullptr)
-        return nullptr;
-    unsigned char hdr[44];
-    if (fread(hdr, 1, 44, f) != 44) {
-        fclose(f);
-        return nullptr;
-    }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 44, SEEK_SET);
-    *sample_rate_out = hdr[24] | (hdr[25] << 8) | (hdr[26] << 16) | (hdr[27] << 24);
-    size_t   n       = (size_t) (sz - 44) / 2;
-    int16_t *pcm     = malloc(n * sizeof(int16_t));
-    xfread(pcm, sizeof(int16_t), n, f);
-    fclose(f);
-    *n_samples_out = n;
-    return pcm;
+    return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }
 
 static const char *find_tower(void) {
