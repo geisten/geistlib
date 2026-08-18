@@ -169,6 +169,13 @@ static bool transcribe(struct geist_model *model, struct geist_backend *be, cons
     reply[0]         = '\0';
     t0               = now_ms();
     size_t n_dec     = 0;
+    /* Anti-loop stop (GEIST_WER_ANTILOOP=0 disables): greedy decode can
+     * fall into short repetition cycles ("big, big, big, ...") that burn
+     * the whole cap as WER insertions. Stop once the last 8 tokens are a
+     * period-1 or period-2 cycle. */
+    const char   *al       = getenv("GEIST_WER_ANTILOOP");
+    const bool    antiloop = al == nullptr || al[0] != '0';
+    geist_token_t hist[8];
     for (size_t i = 0; i < DECODE_CAP; i++) {
         geist_token_t tok;
         if (geist_session_decode_step(sess, &tok) != GEIST_OK)
@@ -176,6 +183,14 @@ static bool transcribe(struct geist_model *model, struct geist_backend *be, cons
         n_dec++;
         if (tok == 1 /* <eos> */ || tok == 106 /* <turn|> */)
             break;
+        hist[i % 8] = tok;
+        if (antiloop && i >= 7) {
+            bool cyc2 = true; /* period-2 covers period-1 too */
+            for (size_t k = i - 5; k <= i; k++)
+                cyc2 = cyc2 && hist[k % 8] == hist[(k - 2) % 8];
+            if (cyc2)
+                break;
+        }
         const char *t = geist_session_token_to_str(sess, tok);
         if (t == nullptr)
             continue;
