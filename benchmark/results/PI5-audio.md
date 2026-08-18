@@ -145,18 +145,33 @@ test-clean, 30 clips of 4–10 s, one per speaker (`random.seed(42)`),
 references from the `*.trans.txt` files, decoded with `flac -d`
 (16 kHz mono s16 natively — no resampling).
 
+**⚠ Everything below the rule was measured with the #270 injection bug
+present** (the PLE projection saw pad rows instead of soft tokens — the
+LM's per-layer signal carried no audio content). Those runs remain valid
+as *relative* A/Bs of encoder precision, but the absolute WER levels are
+artifacts of the bug, not of the model. Post-fix (mac harness, same
+clip set, prompt "Transcribe this audio."):
+
+| config | aggregate WER | median |
+|---|---:|---:|
+| FP32 encoder | **4.2 %** | 0 % (16/30 clips verbatim) |
+| W8A8 attn+lconv (shipping default) | **4.3 %** | — |
+| FP32, instruction-heavy default prompt | 6.1 % | — |
+
+Gemma 4 E2B at Q4_K_M *is* ASR-grade on this engine — external
+reference for the same weight class: 3.7 % (unquantized). Quantization
+still costs ~0.1 pt (encoder) — the #238 conclusion stands. Prompt
+wording matters mildly (the pre-fix refusal cliff is gone). Pi
+re-baseline of these numbers is pending the board's return (#263).
+
+---
+
+Pre-#270 record (bug present; relative comparisons only):
+
 | config | aggregate WER (30 clips, 576 ref words) |
 |---|---:|
 | shipping (attn W8A32, lconv FP32) | 75.2 % |
 | `GEIST_AUDIO_ATTN_W8A8=1` + `LCONV_W8A8=1` | 76.2 % |
-
-**The #238 answer on real speech: quantization costs ~1 point of WER —
-inside the noise at this sample size — while cutting encode time 38 %.**
-
-Read the absolute numbers correctly: Gemma 4 E2B at Q4_K_M is a chat
-model that can hear, not an ASR system. Transcripts are close but
-paraphrased ("voyaging" → "yodeling", tense/function-word drift), and the
-instruction wording dominates everything else:
 
 | prompt (`GEIST_WER_PROMPT`) | WER (6-clip subset) |
 |---|---:|
@@ -165,8 +180,9 @@ instruction wording dominates everything else:
 | "…Reply with only the spoken words." | 104 % (refusals) |
 
 Pipeline correctness is pinned elsewhere (soft-token parity suites, chat
-e2e keyword checks) — these WER figures measure the model, on this
-engine, reproducibly.
+e2e keyword checks) — and since #268/#269/#270, by staged reference
+parity against HF torch (soft-token cosine 1.0000) plus a chunk-walking
+WAV reader in the harness.
 
 Push-to-talk timing on real speech (6-clip subset, quiesced board, LM
 resident): attach mean 4.2 s shipping vs 3.8 s W8A8 (−11 % end to end —
