@@ -15,6 +15,7 @@
  *   uint32 dim                  (=1536)
  *   float32[n_tokens * dim]     row-major soft tokens
  */
+#include "audio_test_util.h"
 #include "test_helpers.h"
 
 #define GEIST_INTERNAL_ARCH_LAYER
@@ -29,27 +30,16 @@
 #define SOFT_DIM 1536
 #define MAX_SOFT 1024
 
+/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
+ * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). Rejects
+ * non-16kHz input like the local reader it replaces. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out) {
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return nullptr;
-    unsigned char hdr[44];
-    if (fread(hdr, 1, 44, f) != 44) {
-        fclose(f);
+    int      sr  = 0;
+    int16_t *pcm = audio_test_read_wav(path, n_samples_out, &sr);
+    if (pcm != nullptr && sr != 16000) {
+        free(pcm);
         return nullptr;
     }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 44, SEEK_SET);
-    size_t   n   = (size_t) (sz - 44) / 2;
-    int16_t *pcm = malloc(n * sizeof(int16_t));
-    if (!pcm) {
-        fclose(f);
-        return nullptr;
-    }
-    xfread(pcm, sizeof(int16_t), n, f);
-    fclose(f);
-    *n_samples_out = n;
     return pcm;
 }
 

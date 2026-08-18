@@ -12,6 +12,7 @@
  * Resolves audio_tower.safetensors + mel_constants.bin via the normal
  * audio_conformer arch lookup (audio_bench/, audio_test_data/, etc.).
  */
+#include "audio_test_util.h"
 #include "test_helpers.h"
 
 #define GEIST_INTERNAL_ARCH_LAYER
@@ -29,46 +30,10 @@ static double now_ms(void) {
     return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
 }
 
-/* Minimal WAV reader: 16-bit mono PCM at 16 kHz only. Same as the one
- * in test_audio_attach_int. */
+/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
+ * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
-    FILE *f = fopen(path, "rb");
-    if (f == nullptr)
-        return nullptr;
-    unsigned char hdr[44];
-    if (fread(hdr, 1, 44, f) != 44) {
-        fclose(f);
-        return nullptr;
-    }
-    if (memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr + 8, "WAVE", 4) != 0) {
-        fclose(f);
-        return nullptr;
-    }
-    const int n_channels      = hdr[22] | (hdr[23] << 8);
-    const int sample_rate     = hdr[24] | (hdr[25] << 8) | (hdr[26] << 16) | (hdr[27] << 24);
-    const int bits_per_sample = hdr[34] | (hdr[35] << 8);
-    if (n_channels != 1 || bits_per_sample != 16) {
-        fclose(f);
-        return nullptr;
-    }
-    fseek(f, 0, SEEK_END);
-    const long   size      = ftell(f);
-    const size_t n_samples = (size - 44) / 2;
-    fseek(f, 44, SEEK_SET);
-    int16_t *pcm = malloc(n_samples * sizeof(int16_t));
-    if (pcm == nullptr) {
-        fclose(f);
-        return nullptr;
-    }
-    if (fread(pcm, sizeof(int16_t), n_samples, f) != n_samples) {
-        free(pcm);
-        fclose(f);
-        return nullptr;
-    }
-    fclose(f);
-    *n_samples_out   = n_samples;
-    *sample_rate_out = sample_rate;
-    return pcm;
+    return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }
 
 int main(int argc, char **argv) {
