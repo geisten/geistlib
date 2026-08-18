@@ -231,11 +231,18 @@ static inline bool *audio_mel_mask_alloc(size_t n_frames, bool pad_final, size_t
     return mask;
 }
 
-/* encoder_weights.c: shared env-flag read ('1' → true, '0' → false,
- * unset → fallback) and the single platform-precision decision (banner +
- * loader read the same truth). */
-bool audio_env_flag(const char *name, bool fallback);
-bool audio_prec_forced_fp32(void);
+/* Precision policy, resolved ONCE in audio_encoder_create from env +
+ * platform and stored on the encoder (#251) — the only place the
+ * GEIST_AUDIO_{ATTN,LCONV}_W8A8 / W8A8_LAYER_LIMIT / FORCE_QUANT vars
+ * are read. The banner prints from the same struct the loader consumes,
+ * so the diagnostic cannot drift from what loads. */
+struct audio_prec_policy {
+    bool attn_w8a8;
+    bool lconv_w8a8;
+    bool force_fp32;  /* Apple/Accelerate default without FORCE_QUANT */
+    int  layer_limit; /* quantization restricted to layers [0, limit) */
+};
+struct audio_prec_policy audio_prec_policy_resolve(void);
 
 struct audio_stream_state {
     struct attn_kv_cache attn[N_LAYERS];
@@ -262,6 +269,9 @@ struct audio_stream_state {
 
 struct AudioEncoder {
     struct st_ctx *sf;
+
+    /* Resolved precision policy (see audio_prec_policy_resolve). */
+    struct audio_prec_policy prec;
 
     /* Subsample stage. */
     float *l0_conv;
@@ -324,7 +334,10 @@ struct AudioEncoder {
 
 /* ---- Cross-module prototypes ------------------------------------------ */
 float                     *load_bf16(struct st_ctx *sf, const char *name, size_t expect_elems);
-bool                       load_layer(struct st_ctx *sf, int layer_idx, struct ConformerLayer *L);
+bool                       load_layer(struct st_ctx                  *sf,
+                                      int                             layer_idx,
+                                      struct ConformerLayer          *L,
+                                      const struct audio_prec_policy *pol);
 void                       free_layer(struct ConformerLayer *L);
 struct audio_stream_state *audio_stream_state_create(void);
 void                       audio_stream_state_destroy(struct audio_stream_state *s);
