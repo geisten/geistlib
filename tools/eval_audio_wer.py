@@ -18,8 +18,12 @@ import sys
 
 
 def norm_words(text: str) -> list[str]:
+    """Lowercase, strip punctuation, split. Keeps Unicode letters (umlauts,
+    accents) — the ASCII-only class silently split German words ("schön" ->
+    "sch n"), wrecking non-English WER."""
     text = text.lower()
-    text = re.sub(r"[^a-z0-9' ]+", " ", text)
+    text = re.sub(r"[^\w' ]+", " ", text, flags=re.UNICODE)
+    text = text.replace("_", " ")
     return text.split()
 
 
