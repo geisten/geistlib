@@ -216,6 +216,45 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
     return n_soft;
 }
 
+static bool audio_conformer_stream_begin(void *encoder_state) {
+    struct audio_conformer_state *st = encoder_state;
+    if (st == nullptr || st->enc == nullptr) {
+        return false;
+    }
+    /* Lazy worker start: session-level streaming always overlaps encode
+     * with the arriving PCM, no env needed. Reset clears any previous
+     * utterance. */
+    if (!stream_worker_start(st->enc)) {
+        return false;
+    }
+    audio_encoder_reset(st->enc);
+    return true;
+}
+
+static bool audio_conformer_stream_push(void *encoder_state, const int16_t *pcm, size_t n) {
+    struct audio_conformer_state *st = encoder_state;
+    if (st == nullptr || st->enc == nullptr || pcm == nullptr) {
+        return false;
+    }
+    return audio_encoder_push_pcm(st->enc, pcm, n) == 0;
+}
+
+static size_t audio_conformer_stream_end(void *encoder_state, float *out_soft, size_t max_soft) {
+    struct audio_conformer_state *st = encoder_state;
+    if (st == nullptr || st->enc == nullptr || out_soft == nullptr || max_soft == 0) {
+        return 0;
+    }
+    audio_encoder_end_input(st->enc);
+    size_t total = 0;
+    size_t got;
+    while (total < max_soft &&
+           (got = audio_encoder_pull_softtokens(
+                    st->enc, out_soft + total * AUDIO_SOFT_TOKEN_DIM, max_soft - total, -1)) > 0) {
+        total += got;
+    }
+    return total;
+}
+
 static size_t audio_conformer_max_soft_tokens(const void *encoder_state, size_t n_samples) {
     (void) encoder_state;
     return audio_encoder_max_soft_tokens(n_samples);
@@ -232,5 +271,8 @@ const struct geist_arch_ops_encoder geist_arch_audio_conformer = {
         .state_destroy   = audio_conformer_state_destroy,
         .encode_pcm      = audio_conformer_encode_pcm,
         .soft_token_dim  = audio_conformer_soft_token_dim,
+        .stream_begin    = audio_conformer_stream_begin,
+        .stream_push     = audio_conformer_stream_push,
+        .stream_end      = audio_conformer_stream_end,
         .max_soft_tokens = audio_conformer_max_soft_tokens,
 };

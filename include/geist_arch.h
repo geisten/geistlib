@@ -188,6 +188,20 @@ struct geist_arch_ops_encoder {
      * Gemma 4 audio tower). */
     size_t (*soft_token_dim)(const void *encoder_state);
 
+    /* Optional streaming encode (#256): begin, push (repeated), end must
+     * be equivalent to one encode_pcm over the concatenated PCM — that
+     * equivalence is the testable contract. The encoder overlaps the
+     * heavy work with the arriving PCM, so end() returns after only the
+     * tail. push is safe to call from a capture thread (the encoder
+     * serializes internally); begin/end from the inference thread.
+     * All three nullptr when the encoder has no streaming path. */
+    bool (*stream_begin)(void *encoder_state);
+    /* Returns false on overflow (>30 s buffered) or before begin. */
+    bool (*stream_push)(void *encoder_state, const int16_t *pcm, size_t n);
+    /* Finish the tail, write up to max_soft soft tokens, return the
+     * count (0 on error). */
+    size_t (*stream_end)(void *encoder_state, float *out_soft, size_t max_soft);
+
     /* max_soft_tokens: upper bound on soft tokens encode_pcm can produce
      * for n_samples of PCM — lets the engine size the output buffer from
      * the audio length instead of guessing a fixed cap (#247: a hardcoded

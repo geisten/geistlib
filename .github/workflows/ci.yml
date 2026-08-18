@@ -403,6 +403,12 @@ jobs:
       # monolithic path.
       - name: Live streaming worker parity (a skip is a failure)
         run: ./bin/linux/release/tests/test_audio_stream_live_parity_int
+      # #256: the public streaming turn must be greedy-equivalent to
+      # attach_audio (capture-thread pattern included).
+      - name: Session streaming turn equivalence (a skip is a failure)
+        env:
+          GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+        run: ./bin/linux/release/tests/test_audio_stream_session_int
 
   # TARGET=pi5 is the primary deployment target yet no CI leg built it — the
   # 0.8.0 _GNU_SOURCE fix landed in target-linux.mk only, and TARGET=pi5
@@ -723,6 +729,17 @@ jobs:
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
+      # The audio engine paths (attach + the #256 streaming turn) only
+      # execute with the tower present — without it their session.c lines
+      # count as uncovered and the src/engine floor fires. Same pinned
+      # cache the audio-smoke job uses.
+      - name: Cache audio tower
+        uses: actions/cache@v4
+        with:
+          path: audio_bench/audio_tower.safetensors
+          key: geist-audio-tower-d6c45a6c2762
+      - name: Fetch audio tower
+        run: make fetch-audio-tower
       - name: Cache Llama reference model
         uses: actions/cache@v4
         with:
