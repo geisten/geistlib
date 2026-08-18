@@ -21,6 +21,18 @@ minor release.
   the parity test A/Bs bindings through the pure resolver instead.
 
 ### Added
+- **Incremental LM injection for the streaming audio turn** (#256 phase
+  2): new optional `geist_session_audio_poll` — called from the session
+  thread between pushes, it injects the soft tokens the encoder has
+  already produced into the LM while the user is still speaking, so
+  `audio_end()`'s tail shrinks to the final chunk. Never required for
+  correctness (end() covers everything un-polled); greedy-equivalence
+  with attach_audio and with the poll-free streaming turn is pinned in
+  the session equivalence test. `examples/push_to_talk` polls per VAD
+  frame; measured on macOS (paced 2.8 s clip): tail 880 → 678 ms — the
+  Pi 5, where injection costs ~1.5 s, is the real beneficiary (#263).
+
+### Added
 - **Public streaming audio turn** (#256, `@stability EXPERIMENTAL`):
   `geist_session_audio_begin` / `_push` / `_end`. PCM is pushed while the
   user speaks (push is capture-thread-safe); the encoder overlaps its

@@ -198,6 +198,11 @@ struct geist_arch_ops_encoder {
     bool (*stream_begin)(void *encoder_state);
     /* Returns false on overflow (>30 s buffered) or before begin. */
     bool (*stream_push)(void *encoder_state, const int16_t *pcm, size_t n);
+    /* Non-blocking: drain whatever soft tokens are ready NOW (0 when
+     * none). Lets the session inject tokens into the LM while the user
+     * is still speaking — phase 2 of #256. */
+    size_t (*stream_poll)(void *encoder_state, float *out_soft, size_t max_soft);
+
     /* Finish the tail, write up to max_soft soft tokens, return the
      * count (0 on error). */
     size_t (*stream_end)(void *encoder_state, float *out_soft, size_t max_soft);
