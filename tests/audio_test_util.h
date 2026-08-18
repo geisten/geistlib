@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define AUDIO_TEST_SR 16000
 #define AUDIO_TEST_SOFT_DIM 1536
@@ -75,6 +76,75 @@ static inline double audio_test_token_cosine(const float *a, const float *b) {
     }
     double denom = sqrt(na) * sqrt(nb);
     return denom > 0.0 ? dot / denom : 0.0;
+}
+
+/* 16-bit mono WAV reader that WALKS THE RIFF CHUNKS to find 'data'.
+ *
+ * The fixed skip-44-bytes shortcut this replaces mis-read every WAV with
+ * a chunk between 'fmt ' and 'data' — ffmpeg writes a LIST/INFO chunk
+ * there, so all ffmpeg-converted eval clips reached the encoder shifted
+ * by ~15 samples with a metadata click at t=0. That alone moved
+ * LibriSpeech WER from single digits to ~77 % median (#268): the audio
+ * pipeline itself is reference-exact.
+ *
+ * Returns malloc'd PCM (caller frees), sample count and rate via out
+ * params; nullptr on malformed/non-mono-16-bit input. */
+static inline int16_t *
+audio_test_read_wav(const char *path, size_t *n_samples_out, int *sample_rate_out) {
+    FILE *f = fopen(path, "rb");
+    if (f == nullptr) {
+        return nullptr;
+    }
+    unsigned char riff[12];
+    if (fread(riff, 1, 12, f) != 12 || memcmp(riff, "RIFF", 4) != 0 ||
+        memcmp(riff + 8, "WAVE", 4) != 0) {
+        fclose(f);
+        return nullptr;
+    }
+    unsigned rate = 0, channels = 0, bps = 0, data_bytes = 0;
+    for (;;) {
+        unsigned char ck[8];
+        if (fread(ck, 1, 8, f) != 8) {
+            break;
+        }
+        const unsigned sz = (unsigned) ck[4] | ((unsigned) ck[5] << 8) | ((unsigned) ck[6] << 16) |
+                            ((unsigned) ck[7] << 24);
+        if (memcmp(ck, "fmt ", 4) == 0) {
+            unsigned char fmt[16];
+            if (sz < 16 || fread(fmt, 1, 16, f) != 16) {
+                break;
+            }
+            channels = (unsigned) fmt[2] | ((unsigned) fmt[3] << 8);
+            rate     = (unsigned) fmt[4] | ((unsigned) fmt[5] << 8) | ((unsigned) fmt[6] << 16) |
+                   ((unsigned) fmt[7] << 24);
+            bps = (unsigned) fmt[14] | ((unsigned) fmt[15] << 8);
+            if (sz > 16 && fseek(f, (long) (sz - 16 + (sz & 1)), SEEK_CUR) != 0) {
+                break;
+            }
+        } else if (memcmp(ck, "data", 4) == 0) {
+            data_bytes = sz;
+            break;
+        } else if (fseek(f, (long) (sz + (sz & 1)), SEEK_CUR) != 0) {
+            break; /* chunks are word-aligned; odd sizes carry a pad byte */
+        }
+    }
+    if (data_bytes == 0 || channels != 1 || bps != 16) {
+        fclose(f);
+        return nullptr;
+    }
+    size_t   n   = data_bytes / 2;
+    int16_t *pcm = malloc(n * sizeof(int16_t));
+    if (pcm == nullptr || fread(pcm, sizeof(int16_t), n, f) != n) {
+        free(pcm);
+        fclose(f);
+        return nullptr;
+    }
+    fclose(f);
+    *n_samples_out = n;
+    if (sample_rate_out != nullptr) {
+        *sample_rate_out = (int) rate;
+    }
+    return pcm;
 }
 
 #endif /* GEIST_AUDIO_TEST_UTIL_H */

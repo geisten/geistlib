@@ -211,6 +211,25 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
     }
 
     size_t n_soft = audio_encoder_run(st->enc, mel, mask, n_mel, out_soft);
+
+    /* GEIST_AUDIO_DEBUG_DUMP=<prefix>: write the mel and soft-token
+     * stages as raw fp32 for reference-parity diagnosis (#268). */
+    const char *dump = getenv("GEIST_AUDIO_DEBUG_DUMP");
+    if (dump != nullptr && n_soft > 0) {
+        char  path[512];
+        FILE *f;
+        snprintf(path, sizeof path, "%s.mel.bin", dump);
+        if ((f = fopen(path, "wb")) != nullptr) {
+            fwrite(mel, sizeof(float), n_mel * MEL_N_MEL, f);
+            fclose(f);
+        }
+        snprintf(path, sizeof path, "%s.soft.bin", dump);
+        if ((f = fopen(path, "wb")) != nullptr) {
+            fwrite(out_soft, sizeof(float), n_soft * AUDIO_SOFT_TOKEN_DIM, f);
+            fclose(f);
+        }
+        fprintf(stderr, "audio dump: %zu mel frames, %zu soft tokens -> %s.*\n", n_mel, n_soft, dump);
+    }
     safe_free((void **) &mel);
     safe_free((void **) &mask);
     return n_soft;
