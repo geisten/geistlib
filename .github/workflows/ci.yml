@@ -729,6 +729,17 @@ jobs:
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
+      # The audio engine paths (attach + the #256 streaming turn) only
+      # execute with the tower present — without it their session.c lines
+      # count as uncovered and the src/engine floor fires. Same pinned
+      # cache the audio-smoke job uses.
+      - name: Cache audio tower
+        uses: actions/cache@v4
+        with:
+          path: audio_bench/audio_tower.safetensors
+          key: geist-audio-tower-d6c45a6c2762
+      - name: Fetch audio tower
+        run: make fetch-audio-tower
       - name: Cache Llama reference model
         uses: actions/cache@v4
         with:
