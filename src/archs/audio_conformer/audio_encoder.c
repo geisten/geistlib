@@ -88,15 +88,18 @@ struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
         return nullptr;
     }
 
-    if (audio_prec_forced_fp32()) {
+    /* Resolve the precision policy ONCE (#251); the banner and every
+     * layer load read this same struct — no re-derivation, no drift. */
+    const struct audio_prec_policy pol = audio_prec_policy_resolve();
+    if (pol.force_fp32) {
         fprintf(stderr,
                 "audio_encoder: per-tensor precision: all FP32 (Accelerate "
                 "default; GEIST_AUDIO_FORCE_QUANT=1 to quantize)\n");
     } else {
         fprintf(stderr,
                 "audio_encoder: per-tensor precision (FFN=W8A8, Attn=%s, LConv=%s)\n",
-                audio_env_flag("GEIST_AUDIO_ATTN_W8A8", true) ? "W8A8" : "W8A32",
-                audio_env_flag("GEIST_AUDIO_LCONV_W8A8", true) ? "W8A8" : "FP32");
+                pol.attn_w8a8 ? "W8A8" : "W8A32",
+                pol.lconv_w8a8 ? "W8A8" : "FP32");
     }
 
     /* Bind the quantized matmul kernels once, from the runtime probe —
@@ -105,6 +108,7 @@ struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
 
     struct AudioEncoder *a = heap_calloc_array_aligned(struct AudioEncoder, 1);
     a->sf                  = sf;
+    a->prec                = pol;
 
     const char *P = "model.audio_tower.subsample_conv_projection.";
     char        buf[384];
@@ -129,7 +133,7 @@ struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
     /* Load all 12 Conformer layers' weights. */
     fprintf(stderr, "audio_encoder: loading %d Conformer layers...\n", N_LAYERS);
     for (int i = 0; i < N_LAYERS; i++) {
-        if (!load_layer(sf, i, &a->layers[i])) {
+        if (!load_layer(sf, i, &a->layers[i], &a->prec)) {
             audio_encoder_destroy(a);
             return nullptr;
         }

@@ -269,73 +269,81 @@ static void w8a8_avx512vnni(const int8_t *w_q8,
 
 /* ------------------------------- binding ------------------------------- */
 
-static struct audio_linear_ops g_ops;
-static _Atomic bool            g_bound   = false;
-static pthread_mutex_t         g_bind_mu = PTHREAD_MUTEX_INITIALIZER;
+/* Immutable kernel tables — resolve() returns a pointer into these, so a
+ * concurrent first-call can never observe a half-written struct (#251
+ * deleted the mutable g_ops/g_bound pair and the rebind test hook; the
+ * parity test calls resolve() directly instead). */
+static const struct audio_linear_ops OPS_SCALAR = {
+        .w8a8  = w8a8_scalar,
+        .w8a32 = w8a32_scalar,
+        .name  = "scalar",
+};
+#if defined(__ARM_NEON)
+static const struct audio_linear_ops OPS_NEON = {
+#if defined(__ARM_FEATURE_DOTPROD)
+        .w8a8 = w8a8_neon,
+#else
+        .w8a8 = w8a8_scalar,
+#endif
+        .w8a32 = w8a32_neon,
+        .name  = "neon",
+};
+#endif
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+static const struct audio_linear_ops OPS_VNNI = {
+        .w8a8  = w8a8_avx512vnni,
+        .w8a32 = w8a32_scalar, /* fp32 loop auto-vectorizes at x86-64-v3 */
+        .name  = "avx512vnni",
+};
+#endif
 
-const struct audio_linear_ops *audio_linear_rebind(void) {
-    atomic_store_explicit(&g_bound, false, memory_order_relaxed);
-    return audio_linear_bind();
+const struct audio_linear_ops *audio_linear_resolve(bool force_scalar) {
+    if (force_scalar) {
+        return &OPS_SCALAR;
+    }
+#if defined(__ARM_NEON)
+    struct geist_hw_probe hp;
+    geist_hw_probe_fill(&hp);
+    if (hp.has_neon) {
+#if defined(__ARM_FEATURE_DOTPROD)
+        if (!hp.has_dotprod) {
+            /* Compiled with dotprod but running on a core without it:
+             * OPS_NEON's w8a8 would SIGILL — scalar keeps it safe. */
+            return &OPS_SCALAR;
+        }
+#endif
+        return &OPS_NEON;
+    }
+#elif defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    struct geist_hw_probe hp;
+    geist_hw_probe_fill(&hp);
+    /* Down-only clamp with the same semantics as the cpu_x86 dispatcher
+     * (kernel_w4a8.c parse_force_env): tiers below VNNI clamp it away,
+     * avx512_vnni / avx512_bf16 keep it, unknown values mean no
+     * override. */
+    const char *fisa    = getenv("GEIST_FORCE_ISA");
+    bool        vnni_ok = true;
+    if (fisa != nullptr &&
+        (strcmp(fisa, "scalar") == 0 || strcmp(fisa, "avx2") == 0 || strcmp(fisa, "avx512") == 0)) {
+        vnni_ok = false;
+    }
+    if (hp.has_avx512_vnni && vnni_ok) {
+        return &OPS_VNNI;
+    }
+#endif
+    return &OPS_SCALAR;
 }
 
 const struct audio_linear_ops *audio_linear_bind(void) {
-    /* Acquire pairs with the release below: a reader that sees the flag
-     * also sees the fully written g_ops. Plain statics raced when two
-     * model loads bound concurrently (first-bind window: the flag could
-     * become visible before the ops on ARM → call through a null w8a8). */
-    if (atomic_load_explicit(&g_bound, memory_order_acquire)) {
-        return &g_ops;
+    /* Cache the probe result; the tables are immutable, so a plain
+     * atomic pointer with relaxed ordering is fully safe — worst case
+     * two first-callers both resolve to the same table. */
+    static _Atomic(const struct audio_linear_ops *) cached = nullptr;
+    const struct audio_linear_ops *p = atomic_load_explicit(&cached, memory_order_relaxed);
+    if (p == nullptr) {
+        const char *force = getenv("GEIST_AUDIO_KERNEL");
+        p                 = audio_linear_resolve(force != nullptr && strcmp(force, "scalar") == 0);
+        atomic_store_explicit(&cached, p, memory_order_relaxed);
     }
-    pthread_mutex_lock(&g_bind_mu);
-    if (atomic_load_explicit(&g_bound, memory_order_relaxed)) {
-        pthread_mutex_unlock(&g_bind_mu);
-        return &g_ops;
-    }
-    g_ops = (struct audio_linear_ops) {
-            .w8a8  = w8a8_scalar,
-            .w8a32 = w8a32_scalar,
-            .name  = "scalar",
-    };
-
-    const char *force       = getenv("GEIST_AUDIO_KERNEL");
-    const bool  want_scalar = force != nullptr && strcmp(force, "scalar") == 0;
-    if (!want_scalar) {
-#if defined(__ARM_NEON)
-        struct geist_hw_probe hp;
-        geist_hw_probe_fill(&hp);
-        if (hp.has_neon) {
-            g_ops.w8a32 = w8a32_neon;
-            g_ops.name  = "neon";
-#if defined(__ARM_FEATURE_DOTPROD)
-            if (hp.has_dotprod) {
-                g_ops.w8a8 = w8a8_neon;
-            }
-#endif
-        }
-#elif defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
-        struct geist_hw_probe hp;
-        geist_hw_probe_fill(&hp);
-        /* Down-only clamp with the SAME semantics as the cpu_x86
-         * dispatcher (kernel_w4a8.c parse_force_env): the tiers below
-         * VNNI clamp it away, avx512_vnni / avx512_bf16 keep it, and an
-         * unknown value means "no override" — previously a plain
-         * strstr("vnni") disabled the audio kernel for avx512_bf16 and
-         * for typos while the backend kept running VNNI.
-         * w8a32 stays scalar on x86 — the plain fp32 loop auto-vectorizes
-         * to AVX2 at the x86-64-v3 baseline. */
-        const char *fisa    = getenv("GEIST_FORCE_ISA");
-        bool        vnni_ok = true;
-        if (fisa != nullptr && (strcmp(fisa, "scalar") == 0 || strcmp(fisa, "avx2") == 0 ||
-                                strcmp(fisa, "avx512") == 0)) {
-            vnni_ok = false;
-        }
-        if (hp.has_avx512_vnni && vnni_ok) {
-            g_ops.w8a8 = w8a8_avx512vnni;
-            g_ops.name = "avx512vnni";
-        }
-#endif
-    }
-    atomic_store_explicit(&g_bound, true, memory_order_release);
-    pthread_mutex_unlock(&g_bind_mu);
-    return &g_ops;
+    return p;
 }
