@@ -59,9 +59,13 @@ struct geist_session_full {
     uint64_t total_audio_encode_ns;
 
     /* Streaming audio turn (#256). samples is _Atomic because push may
-     * run on a capture thread while end reads it on the session thread. */
+     * run on a capture thread while end reads it on the session thread.
+     * buf/injected are session-thread-only (poll/end). */
     bool           audio_streaming;
     _Atomic size_t audio_stream_samples;
+    float         *audio_stream_buf; /* bound-sized scratch, alive begin→end */
+    size_t         audio_stream_cap; /* tokens the scratch can hold */
+    size_t         audio_stream_injected;
 };
 
 static inline uint64_t monotonic_ns(void) {
@@ -790,8 +794,55 @@ geist_session_attach_audio(struct geist_session *s,
         sf->err_code = GEIST_E_BACKEND;
         return GEIST_E_BACKEND;
     }
-    sf->audio_streaming = true;
+    /* Scratch for poll/end, sized for the encoder's 30 s worst case so
+     * incremental injection never reallocates mid-turn. */
+    size_t cap = 256;
+    if (enc_ops->max_soft_tokens != nullptr) {
+        cap = enc_ops->max_soft_tokens(enc_st, (size_t) -1); /* clamped internally */
+    }
+    const size_t soft_dim = enc_ops->soft_token_dim(enc_st);
+    sf->audio_stream_buf  = heap_alloc_array_aligned(float, cap *soft_dim);
+    if (sf->audio_stream_buf == nullptr) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: scratch alloc failed");
+        sf->err_code = GEIST_E_OOM;
+        return GEIST_E_OOM;
+    }
+    sf->audio_stream_cap      = cap;
+    sf->audio_stream_injected = 0;
+    sf->audio_streaming       = true;
     atomic_store_explicit(&sf->audio_stream_samples, 0, memory_order_relaxed);
+    return GEIST_OK;
+}
+
+/* Inject whatever soft tokens the encoder has ready — phase 2 of #256:
+ * called from the session thread between pushes, it overlaps the LM
+ * prefill with the still-running capture, shrinking end()'s tail. */
+[[nodiscard]] enum geist_status geist_session_audio_poll(struct geist_session *s) {
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf      = as_full(s);
+    const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
+    void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+    const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
+    if (!sf->audio_streaming) {
+        return GEIST_E_INVALID_STATE;
+    }
+    if (enc_ops->stream_poll == nullptr || sf->audio_stream_injected >= sf->audio_stream_cap) {
+        return GEIST_OK; /* nothing to do — end() covers it */
+    }
+    const uint64_t t0  = monotonic_ns();
+    const size_t   got = enc_ops->stream_poll(
+            enc_st, sf->audio_stream_buf, sf->audio_stream_cap - sf->audio_stream_injected);
+    sf->total_audio_encode_ns += monotonic_ns() - t0;
+    if (got == 0) {
+        return GEIST_OK;
+    }
+    const enum geist_status as = dec_ops->prefill_audio(arch_sess(sf), got, sf->audio_stream_buf);
+    if (as != GEIST_OK) {
+        return session_op_failed(sf, as, "prefill_audio (poll)");
+    }
+    sf->audio_stream_injected += got;
     return GEIST_OK;
 }
 
@@ -834,21 +885,18 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[st
     sf->audio_streaming = false;
 
     const size_t n_samples = atomic_load_explicit(&sf->audio_stream_samples, memory_order_relaxed);
-    size_t       max_soft  = 256;
-    if (enc_ops->max_soft_tokens != nullptr) {
-        max_soft = enc_ops->max_soft_tokens(enc_st, n_samples);
-    }
-    const size_t soft_dim = enc_ops->soft_token_dim(enc_st);
-    float       *soft     = heap_alloc_array_aligned(float, max_soft *soft_dim);
-    if (soft == nullptr) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_end: soft-token buffer alloc failed");
-        sf->err_code = GEIST_E_OOM;
-        return GEIST_E_OOM;
-    }
+    float       *soft      = sf->audio_stream_buf;
+    sf->audio_stream_buf   = nullptr;
+    const size_t remaining_cap = sf->audio_stream_cap > sf->audio_stream_injected
+                                         ? sf->audio_stream_cap - sf->audio_stream_injected
+                                         : 0;
+
     const uint64_t t_enc0 = monotonic_ns();
-    size_t         n_soft = enc_ops->stream_end(enc_st, soft, max_soft);
+    const size_t n_soft = remaining_cap > 0 ? enc_ops->stream_end(enc_st, soft, remaining_cap) : 0;
     sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
-    if (n_soft == 0) {
+
+    const size_t total = sf->audio_stream_injected + n_soft;
+    if (total == 0) {
         safe_free((void **) &soft);
         snprintf(sf->err_msg,
                  sizeof(sf->err_msg),
@@ -857,17 +905,20 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[st
         sf->err_code = GEIST_E_IO;
         return GEIST_E_IO;
     }
-    if (n_soft >= max_soft) {
+    if (total >= sf->audio_stream_cap) {
         safe_free((void **) &soft);
         snprintf(sf->err_msg,
                  sizeof(sf->err_msg),
                  "audio_end: soft-token bound too small (%zu tokens for %zu samples)",
-                 max_soft,
+                 sf->audio_stream_cap,
                  n_samples);
         sf->err_code = GEIST_E_INTERNAL;
         return GEIST_E_INTERNAL;
     }
-    const enum geist_status as = dec_ops->prefill_audio(arch_sess(sf), n_soft, soft);
+    enum geist_status as = GEIST_OK;
+    if (n_soft > 0) {
+        as = dec_ops->prefill_audio(arch_sess(sf), n_soft, soft);
+    }
     safe_free((void **) &soft);
     return as == GEIST_OK ? GEIST_OK : session_op_failed(sf, as, "prefill_audio");
 }

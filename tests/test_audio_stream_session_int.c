@@ -151,6 +151,54 @@ int main(void) {
         }
     }
 
+    /* C: streaming turn with incremental injection (poll between pushes,
+     * session thread) — phase 2 of #256 must land at the same greedy
+     * prediction. */
+    struct geist_session *sess_c = nullptr;
+    if (geist_session_create(model, be, &opts, &sess_c) != GEIST_OK)
+        return GEIST_TEST_ERROR;
+    if (geist_session_audio_begin(sess_c) != GEIST_OK) {
+        fprintf(stderr, "audio_begin (C) failed: %s\n", geist_session_errmsg(sess_c));
+        return GEIST_TEST_FAIL;
+    }
+    for (size_t off = 0; off < N_PCM; off += PUSH_CHUNK) {
+        size_t take = N_PCM - off < PUSH_CHUNK ? N_PCM - off : PUSH_CHUNK;
+        if (geist_session_audio_push(sess_c, take, g_pcm + off) != GEIST_OK ||
+            geist_session_audio_poll(sess_c) != GEIST_OK) {
+            fprintf(stderr, "push/poll (C) failed: %s\n", geist_session_errmsg(sess_c));
+            return GEIST_TEST_FAIL;
+        }
+    }
+    if (geist_session_audio_end(sess_c) != GEIST_OK) {
+        fprintf(stderr, "audio_end (C) failed: %s\n", geist_session_errmsg(sess_c));
+        return GEIST_TEST_FAIL;
+    }
+    {
+        size_t       nc = 0;
+        const float *lc = geist_session_peek_logits(sess_c, &nc);
+        if (lc == nullptr || nc == 0) {
+            fprintf(stderr, "FAIL: poll-variant logits unavailable\n");
+            fails++;
+        } else {
+            size_t am_c = 0;
+            for (size_t i = 1; i < nc; i++)
+                if (lc[i] > lc[am_c])
+                    am_c = i;
+            printf("poll variant: argmax %zu\n", am_c);
+            if (la != nullptr && na > 0) {
+                size_t am_ref = 0;
+                for (size_t i = 1; i < na; i++)
+                    if (la[i] > la[am_ref])
+                        am_ref = i;
+                if (am_c != am_ref) {
+                    fprintf(stderr, "FAIL: poll variant diverges (%zu vs %zu)\n", am_c, am_ref);
+                    fails++;
+                }
+            }
+        }
+    }
+    geist_session_destroy(sess_c);
+
     /* end without begin must refuse. */
     if (geist_session_audio_end(sess_b) != GEIST_E_INVALID_STATE) {
         fprintf(stderr, "FAIL: audio_end without begin not refused\n");

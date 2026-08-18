@@ -134,6 +134,10 @@ enum geist_status geist_session_attach_audio(struct geist_session *s,
 enum geist_status geist_session_audio_begin(struct geist_session *s);
 enum geist_status
 geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[static n]);
+/* Optional, from the session thread between pushes: inject the soft
+ * tokens that are ready NOW into the LM, so end() has less left to do.
+ * Cheap no-op when nothing is ready. Never required for correctness. */
+enum geist_status geist_session_audio_poll(struct geist_session *s);
 enum geist_status geist_session_audio_end(struct geist_session *s);
 
 /* @stability EXPERIMENTAL — vision-tower soft-token injection.
