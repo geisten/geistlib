@@ -14,6 +14,7 @@
  *
  * Phase B-5 smoke test for the audio_conformer encoder arch.
  */
+#include "audio_test_util.h"
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -24,51 +25,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Minimal 16-bit PCM WAV reader: skip header, return mono int16 samples
- * at native sample rate. Caller frees. */
+/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
+ * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
-    FILE *f = fopen(path, "rb");
-    if (f == nullptr) {
-        return nullptr;
-    }
-    /* Read RIFF header to find data chunk. Validate just enough to be safe. */
-    unsigned char hdr[44];
-    if (fread(hdr, 1, 44, f) != 44 || memcmp(hdr, "RIFF", 4) != 0 ||
-        memcmp(hdr + 8, "WAVE", 4) != 0) {
-        fclose(f);
-        return nullptr;
-    }
-    /* Audio format = PCM (1), channels at offset 22, sample rate at 24,
-     * bits-per-sample at 34. */
-    unsigned short channels = (unsigned short) (hdr[22] | (hdr[23] << 8));
-    unsigned int   rate =
-            (unsigned int) (hdr[24] | (hdr[25] << 8) | (hdr[26] << 16) | (hdr[27] << 24));
-    unsigned short bps = (unsigned short) (hdr[34] | (hdr[35] << 8));
-    if (channels != 1 || bps != 16) {
-        fclose(f);
-        return nullptr;
-    }
-    /* Read remaining samples — assumes "data" chunk starts at offset 36
-     * (typical RIFF layout for canonical WAV). */
-    fseek(f, 0, SEEK_END);
-    long file_bytes = ftell(f);
-    long data_bytes = file_bytes - 44;
-    fseek(f, 44, SEEK_SET);
-    size_t   n   = (size_t) data_bytes / 2;
-    int16_t *pcm = malloc(n * sizeof(int16_t));
-    if (pcm == nullptr) {
-        fclose(f);
-        return nullptr;
-    }
-    size_t got = fread(pcm, sizeof(int16_t), n, f);
-    fclose(f);
-    if (got != n) {
-        free(pcm);
-        return nullptr;
-    }
-    *n_samples_out   = n;
-    *sample_rate_out = (int) rate;
-    return pcm;
+    return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }
 
 int main(int argc, char **argv) {

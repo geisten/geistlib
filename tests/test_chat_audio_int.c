@@ -16,6 +16,7 @@
  *
  * SKIPs if model, tokenizer, or WAV is missing.
  */
+#include "audio_test_util.h"
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -29,41 +30,10 @@
 
 #define PROMPT_CAP 1024
 
+/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
+ * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
-    FILE *f = fopen(path, "rb");
-    if (f == nullptr)
-        return nullptr;
-    unsigned char hdr[44];
-    if (fread(hdr, 1, 44, f) != 44 || memcmp(hdr, "RIFF", 4) != 0 ||
-        memcmp(hdr + 8, "WAVE", 4) != 0) {
-        fclose(f);
-        return nullptr;
-    }
-    unsigned short ch = (unsigned short) (hdr[22] | (hdr[23] << 8));
-    unsigned int sr = (unsigned int) (hdr[24] | (hdr[25] << 8) | (hdr[26] << 16) | (hdr[27] << 24));
-    unsigned short bps = (unsigned short) (hdr[34] | (hdr[35] << 8));
-    if (ch != 1 || bps != 16) {
-        fclose(f);
-        return nullptr;
-    }
-    fseek(f, 0, SEEK_END);
-    long file_bytes = ftell(f);
-    fseek(f, 44, SEEK_SET);
-    size_t   n   = (size_t) (file_bytes - 44) / 2;
-    int16_t *pcm = malloc(n * sizeof(int16_t));
-    if (pcm == nullptr) {
-        fclose(f);
-        return nullptr;
-    }
-    size_t got = fread(pcm, sizeof(int16_t), n, f);
-    fclose(f);
-    if (got != n) {
-        free(pcm);
-        return nullptr;
-    }
-    *n_samples_out   = n;
-    *sample_rate_out = (int) sr;
-    return pcm;
+    return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }
 
 static enum geist_status tokenize_drop_bos(struct geist_session *s,
