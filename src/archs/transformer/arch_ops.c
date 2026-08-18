@@ -330,56 +330,45 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
     for (size_t off = 0; off < n; off += m_max) {
         const size_t chunk = (n - off > m_max) ? m_max : (n - off);
 
-        /* HF reference (modeling_gemma4.py:2280-2282) builds the PLE
-         * input asymmetrically: at multimodal soft-token positions, it
-         * uses the RAW pad_token embedding row (`embed_tokens.weight[pad_id]`),
-         * UNSCALED — unlike text positions which use scaled embeddings.
+        /* HF reference, two PLE components at multimodal positions
+         * (language_model.forward):
          *
-         *   pad_embedding = embed_tokens.weight[pad_id]   ← raw row, no embed_scale
-         *   llm_inputs_embeds[mm_mask] = pad_embedding
-         *   per_layer_inputs = get_per_layer_inputs(pad_ids, llm_inputs_embeds)
+         *   per_layer_inputs = get_per_layer_inputs(llm_input_ids, ...)
+         *       → identity component: PLE-table row of pad_token_id (0)
+         *   per_layer_inputs = project_per_layer_inputs(inputs_embeds, per_layer_inputs)
+         *       → projection component: model_proj of inputs_embeds, which
+         *         at audio positions is the SOFT TOKEN (masked_scatter runs
+         *         before the language model is called)
          *
-         * The LM residual stream at those positions then gets the actual
-         * soft tokens (vision/audio) masked-scattered in AFTER the PLE
-         * precompute. We replicate this two-stream pattern explicitly:
+         * So the PLE projection must see the soft tokens, not a pad row —
+         * feeding it pad rows starves all 30 layers' per-layer signal of
+         * audio content (#268: measured as ~10x WER vs llama.cpp on the
+         * same Q4 weights while soft tokens were reference-exact).
          *
-         *   1. Populate scratch_h_a with pad_embedding rows (UNSCALED),
-         *      run the PLE precompute against it.
-         *   2. Overwrite scratch_h_a with the actual soft tokens.
-         *   3. Run the layer loop with soft tokens in residual + the
-         *      PLE buffer we just precomputed.
+         *   1. Place soft tokens in scratch_h_a (LM residual stream, raw,
+         *      no embed_scale).
+         *   2. PLE precompute: identity from pad_ids, projection from the
+         *      soft tokens in scratch_h_a.
+         *   3. Layer loop over the same scratch_h_a.
          */
 
-        /* 1. PLE input = pad_embedding (raw, unscaled). */
+        /* 1. Soft tokens into the residual-stream scratch. */
+        {
+            const size_t bytes = chunk * st->d_model * sizeof(float);
+            uint8_t     *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
+            memcpy(dst, (const uint8_t *) (soft_tokens + off * st->d_model), bytes);
+            v->buffer_unmap(sess->scratch_h_a);
+        }
+
+        /* 2. PLE precompute against the soft tokens. */
         struct geist_buffer *ple_buf = nullptr;
         if (st->config.has_ple) {
-            float *h_dst = (float *) v->buffer_map(sess->scratch_h_a);
-            for (size_t t = 0; t < chunk; t++) {
-                enum geist_status s = dequant_one_row(
-                        be, &st->embed_table, 0 /* pad_token_id */, h_dst + t * st->d_model);
-                if (s != GEIST_OK) {
-                    v->buffer_unmap(sess->scratch_h_a);
-                    rc = s;
-                    goto cleanup;
-                }
-            }
-            v->buffer_unmap(sess->scratch_h_a);
-
             rc = compute_per_layer_inputs_batch(
                     sess, chunk, pad_ids, sess->scratch_h_a, sess->scratch_per_layer_input);
             if (rc != GEIST_OK) {
                 goto cleanup;
             }
             ple_buf = sess->scratch_per_layer_input;
-        }
-
-        /* 2. Overwrite scratch_h_a with the actual soft tokens for the
-         * layer loop (these live in the LM residual stream). */
-        {
-            const size_t bytes = chunk * st->d_model * sizeof(float);
-            uint8_t     *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
-            memcpy(dst, (const uint8_t *) (soft_tokens + off * st->d_model), bytes);
-            v->buffer_unmap(sess->scratch_h_a);
         }
 
         /* 3. Layer loop. */
