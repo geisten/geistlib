@@ -239,6 +239,15 @@ static bool audio_conformer_stream_push(void *encoder_state, const int16_t *pcm,
     return audio_encoder_push_pcm(st->enc, pcm, n) == 0;
 }
 
+static size_t audio_conformer_stream_poll(void *encoder_state, float *out_soft, size_t max_soft) {
+    struct audio_conformer_state *st = encoder_state;
+    if (st == nullptr || st->enc == nullptr || out_soft == nullptr || max_soft == 0) {
+        return 0;
+    }
+    /* timeout 0 = non-blocking: only tokens the worker already emitted. */
+    return audio_encoder_pull_softtokens(st->enc, out_soft, max_soft, 0);
+}
+
 static size_t audio_conformer_stream_end(void *encoder_state, float *out_soft, size_t max_soft) {
     struct audio_conformer_state *st = encoder_state;
     if (st == nullptr || st->enc == nullptr || out_soft == nullptr || max_soft == 0) {
@@ -273,6 +282,7 @@ const struct geist_arch_ops_encoder geist_arch_audio_conformer = {
         .soft_token_dim  = audio_conformer_soft_token_dim,
         .stream_begin    = audio_conformer_stream_begin,
         .stream_push     = audio_conformer_stream_push,
+        .stream_poll     = audio_conformer_stream_poll,
         .stream_end      = audio_conformer_stream_end,
         .max_soft_tokens = audio_conformer_max_soft_tokens,
 };

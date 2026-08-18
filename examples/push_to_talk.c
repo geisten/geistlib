@@ -223,6 +223,10 @@ int main(int argc, char **argv) {
         if (pushed + FRAME <= MAX_UTT &&
             geist_session_audio_push(sess, FRAME, frame) == GEIST_OK) {
             pushed += FRAME;
+            /* Phase 2 of #256: inject ready soft tokens into the LM while
+             * the user is still speaking — end()'s tail shrinks to the
+             * final chunk. Cheap no-op when nothing is ready. */
+            (void) geist_session_audio_poll(sess);
         }
         quiet = is_loud ? 0 : quiet + 1;
         if (quiet >= CLOSE_FRAMES || pushed + FRAME > MAX_UTT) {
