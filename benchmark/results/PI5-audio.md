@@ -164,6 +164,20 @@ still costs ~0.1 pt (encoder) — the #238 conclusion stands. Prompt
 wording matters mildly (the pre-fix refusal cliff is gone). Pi
 re-baseline of these numbers is pending the board's return (#263).
 
+**German** (#266's first-class requirement): 30 FLEURS de_de test clips,
+4–18 s (mean 10.5 s), seed-42 selection, scored against FLEURS'
+normalized transcriptions with the Unicode-safe normalization (umlauts
+survive):
+
+| prompt | aggregate WER | median | verbatim clips |
+|---|---:|---:|---:|
+| "Transcribe this audio." (default) | **7.1 %** | 5.3 % | 14/30 |
+| "Transkribiere dieses Audio." | 7.9 % | — | — |
+
+German dictation is single-digit out of the box; the English default
+prompt wins, so `examples/dictate` needs no per-language configuration.
+Transcripts carry correct umlauts, casing and punctuation.
+
 ---
 
 Pre-#270 record (bug present; relative comparisons only):
