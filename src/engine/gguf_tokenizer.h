@@ -85,6 +85,11 @@ struct gguf_tokenizer {
     /* Resolved algorithm + SPM-only state (set at load). */
     enum gguf_tokenizer_mode mode;
     bool                     add_space_prefix; /* SPM: prepend ▁ to the input (add_dummy_prefix) */
+    /* GPT-2 mode: tokenizer.ggml.pre == "qwen2" — encode chunks via the
+     * qwen2 pretokenizer scanner instead of the legacy word splitter
+     * (#275: contractions, single digits, punctuation runs, the
+     * one-codepoint prefix rule). Other pre values keep the old path. */
+    bool    pre_qwen2;
     int32_t spm_byte_id[256]; /* SPM byte fallback: byte → "<0xXX>" vocab id, -1 if absent */
 
     /* P1.5.h: open-addressed hash indices over the vocab + merges

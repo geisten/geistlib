@@ -35,6 +35,7 @@ struct transformer_layer_exec_plan {
     int                            kv_src;
     bool                           compute_kv;
     bool                           apply_gemma_attn_norms;
+    bool                           apply_qk_norms;
     bool                           apply_sub_ln;
     bool                           apply_ple;
     bool                           rope_interleaved;

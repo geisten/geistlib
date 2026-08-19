@@ -202,19 +202,22 @@ load_layer_proj(struct transformer_arch_state    *st,
     if (s != GEIST_OK) {
         return s;
     }
-    if (st->config.has_gemma_attn_norms) {
+    if (st->config.has_qk_norms) {
         LP("attn_q_norm.weight");
         s = load_layer_norm(st, gguf, L, path, L->head_dim, &L->q_norm);
         if (s != GEIST_OK) {
             return s;
         }
+    } else {
+        L->q_norm = (struct geist_tensor) {0};
+    }
+    if (st->config.has_gemma_attn_norms) {
         LP("post_attention_norm.weight");
         s = load_layer_norm(st, gguf, L, path, st->d_model, &L->post_attn_norm);
         if (s != GEIST_OK) {
             return s;
         }
     } else {
-        L->q_norm         = (struct geist_tensor) {0};
         L->post_attn_norm = (struct geist_tensor) {0};
     }
     LP("ffn_norm.weight");
@@ -283,7 +286,7 @@ load_layer_proj(struct transformer_arch_state    *st,
         if (s != GEIST_OK) {
             return s;
         }
-        if (st->config.has_gemma_attn_norms) {
+        if (st->config.has_qk_norms) {
             LP("attn_k_norm.weight");
             s = load_layer_norm(st, gguf, L, path, L->head_dim, &L->k_norm);
             if (s != GEIST_OK) {

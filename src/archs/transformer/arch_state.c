@@ -647,6 +647,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
             .kv_sliding_src       = 13,
             .kv_full_src          = 14,
             .has_gemma_attn_norms = true,
+            .has_qk_norms         = true,
             .has_sub_ln           = false,
             .ffn_activation       = GEIST_FFN_GEGLU,
     };
