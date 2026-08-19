@@ -124,8 +124,9 @@ arecord -f S16_LE -r 16000 -c 1 -t raw | \
 - `GEIST_DICTATE_PROMPT` overrides the instruction; the default
   `Transcribe this audio.` measures 4.2 % WER on the English LibriSpeech
   harness set. Punctuation comes out naturally (commas, periods, casing).
-- The model transcribes the language it hears — German works with the
-  same default prompt (measured numbers in `PI5-audio.md`).
+- The model transcribes the language it hears — German measures **7.1 %
+  WER** (FLEURS de_de, 30 clips) with the same default prompt; a German
+  prompt buys nothing (7.9 %). Details in `PI5-audio.md`.
 - Utterances are typed after end-of-speech (0.8 s silence), not
   word-by-word — the streaming session keeps that tail short.
 
