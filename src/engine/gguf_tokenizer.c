@@ -314,7 +314,10 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
      * (pure unigram, or wordpiece) is unsupported here — load_copy then
      * refuses so the engine falls back to an external tokenizer.bin. */
     if (tok->model_len == 4 && memcmp(tok->model, "gpt2", 4) == 0) {
-        tok->mode = GGUF_TOK_MODE_GPT2;
+        tok->mode           = GGUF_TOK_MODE_GPT2;
+        size_t      pre_len = 0;
+        const char *pre     = gguf_get_meta_string(ctx, "tokenizer.ggml.pre", &pre_len);
+        tok->pre_qwen2      = pre != nullptr && pre_len == 5 && memcmp(pre, "qwen2", 5) == 0;
     } else if (tok->n_merges > 0) {
         tok->mode = GGUF_TOK_MODE_SPM;
     } else if (tok->scores != nullptr) {
@@ -840,6 +843,169 @@ static bool is_ascii_space(unsigned char b) {
     return b == ' ' || b == '\t' || b == '\n' || b == '\r';
 }
 
+/* ---- qwen2 pretokenizer scanner (#275) --------------------------------- *
+ *
+ * Reproduces the qwen2 pre-tokenizer regex over UTF-8 codepoints:
+ *
+ *   (?i:'s|'t|'re|'ve|'m|'ll|'d)        contractions
+ *   |[^\r\n\p{L}\p{N}]?\p{L}+           one-cp prefix + letter run
+ *   |\p{N}                              SINGLE digit
+ *   | ?[^\s\p{L}\p{N}]+[\r\n]*          punct run (optional lead space)
+ *   |\s*[\r\n]+                          newline groups
+ *   |\s+(?!\S)                           trailing-ws (run minus last cp)
+ *   |\s+
+ *
+ * \p{L}/\p{N} are approximated: exact for ASCII; non-ASCII codepoints
+ * count as letters unless they fall in the whitespace set or the common
+ * punctuation/symbol blocks below. Wrong only for exotic scripts' digits
+ * and rare symbol blocks — the parity test pins the cases that matter.
+ * ponytail: category-table approximation; swap in a real UCD table if a
+ * parity case ever fails. */
+static uint32_t q2_cp_at(const char *text, size_t tlen, size_t i, size_t *adv) {
+    uint32_t cp = utf8_decode_one(text + i, tlen - i, adv);
+    if (*adv == 0) { /* malformed byte — treat as 1-byte symbol */
+        *adv = 1;
+        cp   = (uint8_t) text[i];
+    }
+    return cp;
+}
+static bool q2_is_ws(uint32_t cp) {
+    return cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == 0x0B || cp == 0x0C ||
+           cp == 0xA0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 ||
+           cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000;
+}
+static bool q2_is_digit(uint32_t cp) {
+    return (cp >= '0' && cp <= '9') || (cp >= 0xFF10 && cp <= 0xFF19);
+}
+static bool q2_is_letter(uint32_t cp) {
+    if (cp < 0x80)
+        return (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z');
+    if (q2_is_ws(cp) || q2_is_digit(cp))
+        return false;
+    /* Common non-letter blocks: Latin-1 punct/symbols, general punct,
+     * currency, arrows/math/box/symbols, CJK punct, fullwidth forms,
+     * emoji planes. Everything else non-ASCII counts as a letter. */
+    if ((cp >= 0xA1 && cp <= 0xBF) || cp == 0xD7 || cp == 0xF7)
+        return false;
+    if ((cp >= 0x2000 && cp <= 0x206F) || (cp >= 0x20A0 && cp <= 0x20CF) ||
+        (cp >= 0x2190 && cp <= 0x2BFF) || (cp >= 0x2E00 && cp <= 0x2E7F) ||
+        (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFE10 && cp <= 0xFE6F) ||
+        (cp >= 0xFF01 && cp <= 0xFF0F) || (cp >= 0xFF1A && cp <= 0xFF20) ||
+        (cp >= 0xFF3B && cp <= 0xFF40) || (cp >= 0xFF5B && cp <= 0xFF65) ||
+        (cp >= 0x1F000 && cp <= 0x1FFFF))
+        return false;
+    return true;
+}
+
+/* Consume `[^\s\p{L}\p{N}]+[\r\n]*` starting at the first punct cp. */
+static size_t q2_punct_run_end(const char *text, size_t tlen, size_t first) {
+    size_t   adv;
+    uint32_t cp = q2_cp_at(text, tlen, first, &adv);
+    (void) cp;
+    size_t j = first + adv;
+    while (j < tlen) {
+        cp = q2_cp_at(text, tlen, j, &adv);
+        if (q2_is_ws(cp) || q2_is_letter(cp) || q2_is_digit(cp))
+            break;
+        j += adv;
+    }
+    while (j < tlen && (text[j] == '\n' || text[j] == '\r'))
+        j++;
+    return j;
+}
+
+/* End (exclusive) of the pretokenizer match starting at i. Follows the
+ * regex alternation order exactly; never returns i. */
+static size_t qwen2_chunk_end(const char *text, size_t tlen, size_t i) {
+    size_t   adv0;
+    uint32_t c0 = q2_cp_at(text, tlen, i, &adv0);
+
+    /* 1. contractions, case-insensitive */
+    if (c0 == '\'' && i + 1 < tlen) {
+        const char n1 = (char) (text[i + 1] | 0x20);
+        if (n1 == 's' || n1 == 't' || n1 == 'm' || n1 == 'd')
+            return i + 2;
+        if (i + 2 < tlen) {
+            const char n2 = (char) (text[i + 2] | 0x20);
+            if ((n1 == 'r' && n2 == 'e') || (n1 == 'v' && n2 == 'e') || (n1 == 'l' && n2 == 'l'))
+                return i + 3;
+        }
+    }
+
+    if (q2_is_ws(c0)) {
+        /* Scan the whitespace run; remember the end of the last \r|\n. */
+        size_t j = i, last_nl_end = 0, n_cps = 0, last_cp_start = i;
+        while (j < tlen) {
+            size_t   adv;
+            uint32_t cp = q2_cp_at(text, tlen, j, &adv);
+            if (!q2_is_ws(cp))
+                break;
+            if (cp == '\n' || cp == '\r')
+                last_nl_end = j + adv;
+            last_cp_start = j;
+            j += adv;
+            n_cps++;
+        }
+        if (last_nl_end > 0)
+            return last_nl_end; /* 5. \s*[\r\n]+ */
+        if (j >= tlen)
+            return j; /* 6./7. trailing run at EOF */
+        if (n_cps >= 2)
+            return last_cp_start; /* 6. \s+(?!\S): run minus last cp */
+        /* Single ws cp: may prefix a letter run (2.) or a punct run (4.);
+         * digits never take a prefix — the ws stands alone (7.). */
+        size_t   adv;
+        uint32_t n = q2_cp_at(text, tlen, j, &adv);
+        if (q2_is_letter(n)) {
+            j += adv;
+            while (j < tlen) {
+                uint32_t cp = q2_cp_at(text, tlen, j, &adv);
+                if (!q2_is_letter(cp))
+                    break;
+                j += adv;
+            }
+            return j;
+        }
+        if (!q2_is_digit(n))
+            return q2_punct_run_end(text, tlen, j); /* 4. with lead space */
+        return j;                                   /* ws cp alone */
+    }
+
+    if (q2_is_digit(c0))
+        return i + adv0; /* 3. single digit */
+
+    if (q2_is_letter(c0)) {
+        size_t j = i + adv0;
+        while (j < tlen) {
+            size_t   adv;
+            uint32_t cp = q2_cp_at(text, tlen, j, &adv);
+            if (!q2_is_letter(cp))
+                break;
+            j += adv;
+        }
+        return j;
+    }
+
+    /* Punct cp. 2. allows ONE non-\r\n non-letter non-digit cp as prefix
+     * of a letter run ("(x" is one chunk). */
+    if (c0 != '\n' && c0 != '\r' && i + adv0 < tlen) {
+        size_t   adv;
+        uint32_t n = q2_cp_at(text, tlen, i + adv0, &adv);
+        if (q2_is_letter(n)) {
+            size_t j = i + adv0 + adv;
+            while (j < tlen) {
+                uint32_t cp = q2_cp_at(text, tlen, j, &adv);
+                if (!q2_is_letter(cp))
+                    break;
+                j += adv;
+            }
+            return j;
+        }
+    }
+
+    return q2_punct_run_end(text, tlen, i); /* 4. no lead space */
+}
+
 /* SentencePiece *unigram* encode of one normalized chunk. Same greedy pairwise
  * merge as SPM-BPE, but with no merges table: a pair may merge iff its
  * concatenation is a vocab token, and the merge PRIORITY is that token's score
@@ -1054,11 +1220,75 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
         if (matched_special)
             continue;
 
+        if (tok->pre_qwen2) {
+            /* qwen2 pretokenizer chunk, clamped at the first embedded
+             * special-token start so "es?<|im_end|>" can't swallow the
+             * marker into a punct run (specials are matched by the outer
+             * loop, mirroring HF's added-token-first split). */
+            size_t end = qwen2_chunk_end(text, tlen, i);
+            for (size_t p = i + 1; p < end; p++) {
+                bool cut = false;
+                for (size_t s = 0; s < tok->n_specials; s++) {
+                    const size_t slen = tok->specials[s].len;
+                    if (slen == 0 || p + slen > tlen)
+                        continue;
+                    if (text[p] == tok->specials[s].text[0] &&
+                        memcmp(text + p, tok->specials[s].text, slen) == 0) {
+                        end = p;
+                        cut = true;
+                        break;
+                    }
+                }
+                if (cut)
+                    break;
+            }
+            size_t cb_used = 0;
+            for (size_t b = i; b < end; b++) {
+                uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
+                cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
+            }
+            *n_out += bpe_chunk_to_ids(
+                    tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
+            i = end;
+            if (*n_out >= cap)
+                break;
+            continue;
+        }
+
         size_t start = i;
 
         /* Detect chunk kind from first non-space byte. */
         while (i < tlen && is_ascii_space((unsigned char) text[i]))
             i++;
+
+        /* A special token directly after the whitespace run: emit the
+         * run as its own chunk and let the outer loop match the special
+         * — otherwise its first byte gets shredded into the next punct
+         * chunk ("\n<|im_start|>" became "\n<" + "|" + ... , #275). */
+        if (i > start && i < tlen) {
+            bool special_follows = false;
+            for (size_t s = 0; s < tok->n_specials; s++) {
+                const size_t slen = tok->specials[s].len;
+                if (slen == 0 || i + slen > tlen)
+                    continue;
+                if (memcmp(text + i, tok->specials[s].text, slen) == 0) {
+                    special_follows = true;
+                    break;
+                }
+            }
+            if (special_follows) {
+                size_t cb_used = 0;
+                for (size_t b = start; b < i; b++) {
+                    uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
+                    cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
+                }
+                *n_out += bpe_chunk_to_ids(
+                        tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
+                if (*n_out >= cap)
+                    break;
+                continue; /* outer loop matches the special at i */
+            }
+        }
         /* Now i is the first non-space (or tlen). The leading-space
          * run (start..i) is appended as Ġ-prefix on the following
          * word, GPT-2 style. */

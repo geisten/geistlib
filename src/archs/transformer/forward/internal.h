@@ -61,6 +61,7 @@ struct transformer_layer_forward_ctx {
     bool                           apply_bitnet_input_quant;
     bool                           apply_sub_ln;
     bool                           apply_gemma_attn_norms;
+    bool                           apply_qk_norms;
     bool                           rope_interleaved;
     bool                           apply_ple;
     bool                           kv_int8_enabled;

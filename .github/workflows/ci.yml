@@ -141,6 +141,20 @@ jobs:
         if: matrix.target == 'linux'
         run: make fetch-llama-model
 
+      # Third architecture family (#275): qwen3 exercises the metadata
+      # head_dim path (128 ≠ d_model/n_heads), per-head QK-norm, and the
+      # qwen2 pretokenizer parity pins. 609 MB, own cache key.
+      - name: Cache Qwen3 reference model
+        if: matrix.target == 'linux'
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/qwen3-0.6b-q8_0.gguf
+          key: geist-model-qwen3-0.6b-q8-9465e63a22ad
+
+      - name: Fetch Qwen3 reference model
+        if: matrix.target == 'linux'
+        run: make fetch-qwen3-model
+
       # GEIST_STRICT_FIXTURES=gguf turns "GGUF model not found" from a skip
       # into a failure. Scoped to THIS step on purpose: it is the only one
       # where both models are guaranteed present (cached + fetched above).
