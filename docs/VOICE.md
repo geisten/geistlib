@@ -102,6 +102,34 @@ Short commands (< 1 s) need the few-shot vocabulary anchor — without it
 Gemma 4 E2B falls back to "I don't know" (analysis in
 `docs/audio-chunk-streaming/short-command-analysis.md`).
 
+## System-wide dictation
+
+`examples/dictate` is the dictation core: same VAD and streaming turn as
+push_to_talk, but each utterance becomes ONE LINE of clean transcript on
+stdout (status stays on stderr), with the anti-loop guard built in. That
+makes it a pipeline stage — the OS typing integration stays out of tree:
+
+```sh
+# Wayland (wtype from your distro's repos)
+arecord -f S16_LE -r 16000 -c 1 -t raw | \
+    examples/dictate gguf_artifacts/gemma4-e2b-Q4_K_M.gguf | wtype -
+
+# Wayland without compositor virtual-keyboard support: ydotool
+... | while IFS= read -r line; do ydotool type -- "$line "; done
+
+# X11
+... | while IFS= read -r line; do xdotool type --clearmodifiers -- "$line "; done
+```
+
+- `GEIST_DICTATE_PROMPT` overrides the instruction; the default
+  `Transcribe this audio.` measures 4.2 % WER on the English LibriSpeech
+  harness set. Punctuation comes out naturally (commas, periods, casing).
+- The model transcribes the language it hears — German measures **7.1 %
+  WER** (FLEURS de_de, 30 clips) with the same default prompt; a German
+  prompt buys nothing (7.9 %). Details in `PI5-audio.md`.
+- Utterances are typed after end-of-speech (0.8 s silence), not
+  word-by-word — the streaming session keeps that tail short.
+
 ## What runs where
 
 Everything here runs on the **CPU backends** (`cpu_neon` on ARM with
