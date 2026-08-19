@@ -228,7 +228,11 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
             fwrite(out_soft, sizeof(float), n_soft * AUDIO_SOFT_TOKEN_DIM, f);
             fclose(f);
         }
-        fprintf(stderr, "audio dump: %zu mel frames, %zu soft tokens -> %s.*\n", n_mel, n_soft, dump);
+        fprintf(stderr,
+                "audio dump: %zu mel frames, %zu soft tokens -> %s.*\n",
+                n_mel,
+                n_soft,
+                dump);
     }
     safe_free((void **) &mel);
     safe_free((void **) &mask);
