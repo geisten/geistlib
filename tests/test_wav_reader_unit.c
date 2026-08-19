@@ -31,14 +31,13 @@ static void put_u32(unsigned char *p, unsigned v) {
 /* Write a 16 kHz mono 16-bit WAV; with_list inserts an ffmpeg-style
  * LIST/INFO chunk between 'fmt ' and 'data'. */
 static bool write_wav(const char *path, const int16_t *pcm, size_t n, bool with_list) {
-    static const unsigned char list_chunk[] = {'L', 'I', 'S', 'T', 14,  0,   0,   0,
-                                               'I', 'N', 'F', 'O', 'I', 'S', 'F', 'T',
-                                               2,   0,   0,   0,   'x', '\0'};
-    const unsigned data_bytes = (unsigned) (n * 2);
-    const unsigned riff_bytes = 4 + 24 + (with_list ? (unsigned) sizeof(list_chunk) : 0) + 8 +
-                                data_bytes;
-    unsigned char hdr[36] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E',
-                             'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 1, 0};
+    static const unsigned char list_chunk[] = {'L', 'I', 'S', 'T', 14,  0, 0, 0, 'I', 'N', 'F',
+                                               'O', 'I', 'S', 'F', 'T', 2, 0, 0, 0,   'x', '\0'};
+    const unsigned             data_bytes   = (unsigned) (n * 2);
+    const unsigned             riff_bytes =
+            4 + 24 + (with_list ? (unsigned) sizeof(list_chunk) : 0) + 8 + data_bytes;
+    unsigned char hdr[36] = {'R', 'I', 'F', 'F', 0,  0, 0, 0, 'W', 'A', 'V', 'E',
+                             'f', 'm', 't', ' ', 16, 0, 0, 0, 1,   0,   1,   0};
     put_u32(hdr + 4, riff_bytes);
     put_u32(hdr + 24, 16000);
     put_u32(hdr + 28, 32000);
