@@ -116,8 +116,8 @@ audio_test_read_wav(const char *path, size_t *n_samples_out, int *sample_rate_ou
             }
             channels = (unsigned) fmt[2] | ((unsigned) fmt[3] << 8);
             rate     = (unsigned) fmt[4] | ((unsigned) fmt[5] << 8) | ((unsigned) fmt[6] << 16) |
-                   ((unsigned) fmt[7] << 24);
-            bps = (unsigned) fmt[14] | ((unsigned) fmt[15] << 8);
+                       ((unsigned) fmt[7] << 24);
+            bps      = (unsigned) fmt[14] | ((unsigned) fmt[15] << 8);
             if (sz > 16 && fseek(f, (long) (sz - 16 + (sz & 1)), SEEK_CUR) != 0) {
                 break;
             }
