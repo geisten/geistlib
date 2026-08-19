@@ -814,7 +814,7 @@ size_t audio_encoder_run(const struct AudioEncoder *a,
     safe_free((void **) &h_a);
 
     /* Step 5: embed_audio.embedding_pre_projection_norm (RMSNorm with_scale=False)
-     *         then embedding_projection (1536 → 1536, no bias). */
+     *         then embedding_projection (1536 → soft_dim, no bias). */
     float *normed = heap_alloc_array_aligned(float, n_sub *OUTPUT_PROJ_DIMS);
     rmsnorm_fp32(op, nullptr, n_sub, OUTPUT_PROJ_DIMS, RMS_EPS, normed);
     safe_free((void **) &op);
@@ -825,7 +825,7 @@ size_t audio_encoder_run(const struct AudioEncoder *a,
                     nullptr,
                     n_sub,
                     OUTPUT_PROJ_DIMS,
-                    TEXT_HIDDEN,
+                    a->soft_dim,
                     softtokens_out);
         AE_TOC(g_ae_embed_proj);
     }

@@ -69,6 +69,12 @@ void ae_profile_print_and_reset(void) {
 }
 #endif
 
+size_t audio_encoder_soft_dim(const struct AudioEncoder *a) {
+    /* Pre-load callers get the E2B default; after create it is the
+     * checkpoint's embedding_projection row count. */
+    return (a != nullptr && a->soft_dim > 0) ? a->soft_dim : AUDIO_SOFT_TOKEN_DIM;
+}
+
 size_t audio_encoder_max_soft_tokens(size_t n_samples) {
     size_t n_frames = n_samples / MEL_HOP; /* 10 ms hop @ 16 kHz */
     if (n_frames > AUDIO_MAX_MEL_FRAMES) {
@@ -143,14 +149,29 @@ struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
     /* Final projections. */
     a->output_proj_w = load_bf16(
             sf, "model.audio_tower.output_proj.weight", (size_t) OUTPUT_PROJ_DIMS * AUDIO_HIDDEN);
-    a->output_proj_b    = load_bf16(sf, "model.audio_tower.output_proj.bias", OUTPUT_PROJ_DIMS);
+    a->output_proj_b = load_bf16(sf, "model.audio_tower.output_proj.bias", OUTPUT_PROJ_DIMS);
+    /* The embedding_projection maps the 1536-wide tower output onto the
+     * TEXT model's residual stream — its row count IS the soft-token
+     * width (1536 E2B, 2560 E4B), so read it from the checkpoint
+     * instead of pinning it (#258). */
+    const struct st_tensor_t *ep = st_get(sf, "model.embed_audio.embedding_projection.weight");
+    if (ep == nullptr || ep->rank != 2 || ep->shape[1] != OUTPUT_PROJ_DIMS) {
+        fprintf(stderr,
+                "audio_encoder: model.embed_audio.embedding_projection.weight missing or "
+                "not (text_hidden, %d)\n",
+                OUTPUT_PROJ_DIMS);
+        audio_encoder_destroy(a);
+        return nullptr;
+    }
+    a->soft_dim         = ep->shape[0];
     a->embed_audio_proj = load_bf16(sf,
                                     "model.embed_audio.embedding_projection.weight",
-                                    (size_t) TEXT_HIDDEN * OUTPUT_PROJ_DIMS);
+                                    a->soft_dim * (size_t) OUTPUT_PROJ_DIMS);
     if (!a->output_proj_w || !a->output_proj_b || !a->embed_audio_proj) {
         audio_encoder_destroy(a);
         return nullptr;
     }
+    fprintf(stderr, "audio_encoder: soft-token dim %zu (from embedding_projection)\n", a->soft_dim);
 
     /* Streaming state: mutex/cv + PCM buffer. mel pipeline is created lazily
      * by the streaming path (audio_encoder_create only needs the safetensors
@@ -164,7 +185,7 @@ struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
     /* Phase 8b chunk-streaming state (per-layer K/V caches + LConv history).
      * Allocated eagerly so push_pcm doesn't pay heap-arena cost on the
      * audio path. Unused until the streaming forward (Phase 1b) lands. */
-    a->stream = audio_stream_state_create();
+    a->stream = audio_stream_state_create(a->soft_dim);
     if (a->stream == nullptr) {
         audio_encoder_destroy(a);
         return nullptr;
