@@ -8,7 +8,7 @@ benchmarks exercise.
 | :-- | :-- | :-- | --: | --: | :-- | :-- |
 | **BitNet b1.58 2B-4T** | text (ternary) | `i2_s` | 1.1 GiB | ≥ 4 GB | **Pi 5 · x86** | `make fetch-bench-model` · [⬇ gguf](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf) — or the [self-contained `geist-bitnet` binary](https://github.com/geisten/geistlib/releases/latest) |
 | **Gemma 4 E2B-it** | text · vision · audio | `Q4_K_M` | 3.1 GB | ≥ 4 GB | Mac / Pi 5 | `make fetch-model` · [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf) |
-| Gemma 4 E4B-it | text · vision · audio | `Q4_K_M` | 4.6 GB | ≥ 6 GB | Mac | [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf) |
+| Gemma 4 E4B-it | text · audio | `Q4_K_M` | 4.6 GB | ≥ 8 GB | Mac | `make fetch-e4b-model` · [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf) |
 | Llama family (e.g. SmolLM2, Llama 3.2) | text | any GGUF quant | varies | varies | everywhere | e.g. [⬇ SmolLM2-360M](https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf) (the CI reference) |
 | BitNet b1.58-large | text (ternary) | `TQ2_0` | 207 MB | ≥ 1 GB | smallest footprint | convert from [1bitLLM ↗](https://huggingface.co/1bitLLM/bitnet_b1_58-large) |
 
@@ -23,6 +23,15 @@ Multimodality rides on the Gemma 4 models — the engine has a SigLIP vision
 tower and a Conformer audio tower built in, both running on the CPU backends.
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for attaching image/audio inputs
 (`EXPERIMENTAL` API surface).
+
+The towers are per-variant: their final projection targets the text model's
+residual stream (1536 on E2B, 2560 on E4B), and the engine refuses a tower
+whose width doesn't match the loaded GGUF. E4B audio is gated weekly in CI
+(`e4b-smoke`); extract its tower with
+`python3 tools/fetch_audio_tower.py --url .../gemma-4-E4B-it/resolve/main/model.safetensors`.
+E4B vision is unlisted until a test executes it — the loader is
+shape-driven, but nobody has run the E4B vision tower yet
+(`tools/dump_vision_tower.py` extracts it if you want to be first).
 
 ## Ternary (1.58-bit) as a first-class citizen
 

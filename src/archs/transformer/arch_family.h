@@ -57,9 +57,14 @@ struct transformer_family {
      *
      * weight_load.c::load_one_layer reads these pre-filled fields
      * instead of deriving them; that way the layer pattern (Gemma's
-     * 4-sliding/1-full × 7 + KV sharing at >=15 vs Llama's uniform
-     * full-attn) becomes a family concern, not the loader's. */
-    void (*populate_layers)(struct transformer_arch_state *st);
+     * sliding/full mix + KV sharing vs Llama's uniform full-attn)
+     * becomes a family concern, not the loader's.
+     *
+     * Returns false when the geometry is NOT derivable (metadata keys
+     * missing for a non-default layer count, inconsistent pattern
+     * length, ...) — state_create then fails with a message naming
+     * the geometry instead of a downstream weight-wiring error (#258). */
+    bool (*populate_layers)(struct transformer_arch_state *st);
 };
 
 /* Select a family by `general.architecture` string. Returns the

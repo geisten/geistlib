@@ -317,10 +317,27 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
      * safetensors file (not part of the GGUF) + mel constants. Failure is
      * non-fatal — text-only sessions keep working, attach_audio reports
      * GEIST_E_NOT_FOUND. */
-    void *audio_state = nullptr;
+    const size_t d_model     = desc->decoder_ops->hidden_dim != nullptr
+                                       ? desc->decoder_ops->hidden_dim(arch_state)
+                                       : 0;
+    void        *audio_state = nullptr;
     if (!text_only && towers_match && desc->audio_encoder_ops != nullptr &&
         desc->audio_encoder_ops->state_create != nullptr) {
         audio_state = desc->audio_encoder_ops->state_create(be, aux_root);
+        /* Same family ≠ same geometry: an E2B tower (1536-dim soft tokens)
+         * next to an E4B GGUF (d_model 2560) would inject garbage into the
+         * residual stream. Drop the tower; the modality mask stays honest
+         * (#258, extends the #240 family gate). */
+        if (audio_state != nullptr && d_model > 0 &&
+            desc->audio_encoder_ops->soft_token_dim(audio_state) != d_model) {
+            fprintf(stderr,
+                    "geist: audio tower soft-token dim %zu != model d_model %zu — "
+                    "wrong tower for this model variant; audio disabled\n",
+                    desc->audio_encoder_ops->soft_token_dim(audio_state),
+                    d_model);
+            desc->audio_encoder_ops->state_destroy(audio_state);
+            audio_state = nullptr;
+        }
     }
 
     /* Best-effort load of the vision encoder (Gemma 4 vision tower).
@@ -331,6 +348,16 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
     if (!text_only && towers_match && desc->vision_encoder_ops != nullptr &&
         desc->vision_encoder_ops->state_create != nullptr) {
         vision_state = desc->vision_encoder_ops->state_create(be, aux_root);
+        if (vision_state != nullptr && d_model > 0 &&
+            desc->vision_encoder_ops->soft_token_dim(vision_state) != d_model) {
+            fprintf(stderr,
+                    "geist: vision tower soft-token dim %zu != model d_model %zu — "
+                    "wrong tower for this model variant; vision disabled\n",
+                    desc->vision_encoder_ops->soft_token_dim(vision_state),
+                    d_model);
+            desc->vision_encoder_ops->state_destroy(vision_state);
+            vision_state = nullptr;
+        }
     }
 
     if (aux_root != nullptr) {

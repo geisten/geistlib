@@ -225,7 +225,7 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
         }
         snprintf(path, sizeof path, "%s.soft.bin", dump);
         if ((f = fopen(path, "wb")) != nullptr) {
-            fwrite(out_soft, sizeof(float), n_soft * AUDIO_SOFT_TOKEN_DIM, f);
+            fwrite(out_soft, sizeof(float), n_soft * audio_encoder_soft_dim(st->enc), f);
             fclose(f);
         }
         fprintf(stderr,
@@ -277,11 +277,12 @@ static size_t audio_conformer_stream_end(void *encoder_state, float *out_soft, s
         return 0;
     }
     audio_encoder_end_input(st->enc);
-    size_t total = 0;
-    size_t got;
+    const size_t dim   = audio_encoder_soft_dim(st->enc);
+    size_t       total = 0;
+    size_t       got;
     while (total < max_soft &&
            (got = audio_encoder_pull_softtokens(
-                    st->enc, out_soft + total * AUDIO_SOFT_TOKEN_DIM, max_soft - total, -1)) > 0) {
+                    st->enc, out_soft + total * dim, max_soft - total, -1)) > 0) {
         total += got;
     }
     return total;
@@ -293,8 +294,10 @@ static size_t audio_conformer_max_soft_tokens(const void *encoder_state, size_t 
 }
 
 static size_t audio_conformer_soft_token_dim(const void *encoder_state) {
-    (void) encoder_state;
-    return AUDIO_SOFT_TOKEN_DIM; /* 1536 for Gemma 4 */
+    const struct audio_conformer_state *st = encoder_state;
+    /* Per-checkpoint: 1536 (E2B) or 2560 (E4B) — the text model's
+     * residual-stream width, read from the tower safetensors (#258). */
+    return audio_encoder_soft_dim(st != nullptr ? st->enc : nullptr);
 }
 
 const struct geist_arch_ops_encoder geist_arch_audio_conformer = {

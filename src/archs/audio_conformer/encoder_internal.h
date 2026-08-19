@@ -140,7 +140,10 @@ struct ConformerLayer {
     float       *norm_out;
 };
 
-#define TEXT_HIDDEN 1536
+/* Tower-internal output_proj width (1024 → 1536). Constant across Gemma 4
+ * variants — the checkpoint's output_proj_dims. The TEXT-side width of the
+ * final embedding_projection (1536 on E2B, 2560 on E4B) is per-instance:
+ * AudioEncoder.soft_dim, read from the safetensors shape (#258). */
 #define OUTPUT_PROJ_DIMS AUDIO_SOFT_TOKEN_DIM /* 1536 */
 
 /* PCM-buffer cap = 30s × 16 kHz = 480 000 samples (matches model's
@@ -262,7 +265,7 @@ struct audio_stream_state {
     float *pos_emb;
 
     /* Accumulated soft tokens (output_proj + embed_audio applied). */
-    float *soft; /* (MAX_SUB_TOKENS, AUDIO_SOFT_TOKEN_DIM) */
+    float *soft; /* (MAX_SUB_TOKENS, AudioEncoder.soft_dim) */
     size_t n_soft;
     size_t n_drained; /* pull drain pointer (Phase 2 worker path) */
 };
@@ -286,7 +289,11 @@ struct AudioEncoder {
     /* Final projections. */
     float *output_proj_w;    /* (1536, 1024) */
     float *output_proj_b;    /* (1536,) */
-    float *embed_audio_proj; /* (1536, 1536) — no bias, no pre-norm scale */
+    float *embed_audio_proj; /* (soft_dim, 1536) — no bias, no pre-norm scale */
+    /* Width of the emitted soft tokens == the TEXT model's residual
+     * stream (embedding_projection rows): 1536 E2B, 2560 E4B. Read from
+     * the safetensors shape at create (#258). */
+    size_t soft_dim;
 
     /* === Phase 8 streaming state === */
     pthread_mutex_t mtx;
@@ -309,7 +316,7 @@ struct AudioEncoder {
     size_t mel_cap;
 
     /* Soft-token output queue (filled on first pull after end_input). */
-    float *soft_tokens; /* (n_soft, AUDIO_SOFT_TOKEN_DIM) */
+    float *soft_tokens; /* (n_soft, soft_dim) */
     size_t n_soft;
     size_t n_emitted; /* drain pointer */
 
@@ -339,7 +346,7 @@ bool                       load_layer(struct st_ctx                  *sf,
                                       struct ConformerLayer          *L,
                                       const struct audio_prec_policy *pol);
 void                       free_layer(struct ConformerLayer *L);
-struct audio_stream_state *audio_stream_state_create(void);
+struct audio_stream_state *audio_stream_state_create(size_t soft_dim);
 void                       audio_stream_state_destroy(struct audio_stream_state *s);
 bool                       stream_worker_start(struct AudioEncoder *a);
 void                       stream_worker_stop(struct AudioEncoder *a);

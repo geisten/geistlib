@@ -148,8 +148,10 @@ static size_t vision_siglip_encode_video(void          *encoder_state,
 }
 
 static size_t vision_siglip_soft_token_dim(const void *encoder_state) {
-    (void) encoder_state;
-    return VISION_SOFT_TOKEN_DIM; /* 2048 for Gemma 4 E2B */
+    const struct vision_siglip_state *st = encoder_state;
+    /* Per-checkpoint: 1536 (E2B) or 2560 (E4B) — the text model's
+     * residual-stream width, read from the tower safetensors (#258). */
+    return vision_encoder_soft_dim(st != nullptr ? st->enc : nullptr);
 }
 
 const struct geist_arch_ops_vision geist_arch_vision_siglip = {

@@ -19,10 +19,11 @@
 
 /* ---- Gemma 4 (current default) ---------------------------------------- */
 
-/* Gemma 4 attention pattern: 4 sliding-window layers + 1 full-attention
- * layer, repeated 7 times = 35 layers. Layers >= 15 share K/V with
- * layer 13 (sliding source) or 14 (full source) — see
- * config.kv_sliding_src / kv_full_src. */
+/* Fallback attention pattern for GGUFs without the
+ * gemma4.attention.sliding_window_pattern key: the E2B layout — 4
+ * sliding-window layers + 1 full-attention layer, repeated 7 times =
+ * 35 layers. E4B (5+1 × 7 = 42 layers) and anything else MUST carry
+ * the metadata key (#258). */
 static const bool GEMMA4_LAYER_IS_FULL[] = {
         false, false, false, false, true,  false, false, false, false, true,  false, false,
         false, false, true,  false, false, false, false, true,  false, false, false, false,
@@ -47,34 +48,110 @@ static void populate_gemma4(struct gguf_ctx *gguf, struct transformer_arch_state
         st->config.rms_eps = f;
     if (gguf_get_meta_f32(gguf, "gemma4.final_logit_softcapping", &f))
         st->config.logit_softcap = f;
-    /* PLE flag + scales + KV-shared layer indices are family-constant,
-     * not metadata-driven. state_create installs them in the default
-     * config block before calling this populator. */
+    /* PLE flag + scales are family-constant, not metadata-driven.
+     * state_create installs them in the default config block before
+     * calling this populator. KV-shared layer indices are derived in
+     * populate_layers_gemma4 from the attention pattern (#258). */
 }
 
-static void populate_layers_gemma4(struct transformer_arch_state *st) {
-    /* Layers 0..14 are "owners" (compute + store K/V); layers 15..34
-     * alias the source layer's cache per kv_*_src config. Loader uses
-     * the is_kv_shared bit to skip K/V projection tensors and the
-     * runtime uses kv_*_src to pick which earlier layer's cache to
-     * read. Hardcoded threshold (15) matches Gemma 4 E2B; future
-     * variants will need a meta key. */
-    const int kv_share_threshold = 15;
+static bool populate_layers_gemma4(struct transformer_arch_state *st) {
+    struct gguf_ctx *g = (struct gguf_ctx *) st->gguf;
+
+    /* Attention pattern: bool array, true = sliding-window layer. E2B
+     * is 4+1 × 7 (35 layers), E4B is 5+1 × 7 (42 layers) — variant
+     * geometry, so it must come from metadata. GGUFs without the key
+     * fall back to the static E2B table; any other layer count without
+     * the key is not derivable → fail (caller names the geometry). */
+    uint32_t       pat_vt = 0;
+    uint64_t       pat_n  = 0;
+    const uint8_t *pat    = nullptr;
+    if (g == nullptr ||
+        !gguf_get_meta_array_info(
+                g, "gemma4.attention.sliding_window_pattern", &pat_vt, &pat_n, &pat) ||
+        pat_vt != GGUF_META_VT_BOOL || pat_n != st->n_layers) {
+        pat = nullptr;
+        if (st->n_layers != sizeof GEMMA4_LAYER_IS_FULL / sizeof GEMMA4_LAYER_IS_FULL[0]) {
+            return false;
+        }
+    }
+
+    /* KV sharing: the LAST shared_kv_layers layers alias earlier
+     * caches. E2B: 35-20 → owners 0..14 (matches the old hardcoded
+     * threshold 15). E4B: 42-18 → owners 0..23. */
+    uint32_t shared_kv = 20;
+    if (g != nullptr)
+        gguf_get_meta_u32(g, "gemma4.attention.shared_kv_layers", &shared_kv);
+    if (shared_kv > st->n_layers) {
+        return false;
+    }
+    const size_t kv_share_threshold = st->n_layers - shared_kv;
+
+    /* Per-type head dims + sliding window + RoPE bases, E2B defaults. */
+    uint32_t full_hd = 512, swa_hd = 256, sliding_window = 512;
+    float    theta_full = 1000000.0f, theta_swa = 10000.0f;
+    /* FFN inner dim: scalar key (uniform, E4B) or per-layer u32/i32
+     * array (E2B: 6144 owners / 12288 shared). */
+    uint32_t       ffn_uniform = 0;
+    const uint8_t *ffn_arr     = nullptr;
+    if (g != nullptr) {
+        gguf_get_meta_u32(g, "gemma4.attention.key_length", &full_hd);
+        gguf_get_meta_u32(g, "gemma4.attention.key_length_swa", &swa_hd);
+        gguf_get_meta_u32(g, "gemma4.attention.sliding_window", &sliding_window);
+        gguf_get_meta_f32(g, "gemma4.rope.freq_base", &theta_full);
+        gguf_get_meta_f32(g, "gemma4.rope.freq_base_swa", &theta_swa);
+        uint32_t ffn_vt = 0;
+        uint64_t ffn_n  = 0;
+        if (!gguf_get_meta_u32(g, "gemma4.feed_forward_length", &ffn_uniform) &&
+            gguf_get_meta_array_info(g, "gemma4.feed_forward_length", &ffn_vt, &ffn_n, &ffn_arr)) {
+            if ((ffn_vt != GGUF_META_VT_U32 && ffn_vt != GGUF_META_VT_I32) ||
+                ffn_n != st->n_layers) {
+                ffn_arr = nullptr;
+            }
+        }
+    }
+
     for (size_t i = 0; i < st->n_layers; i++) {
         struct transformer_layer_weights *L = &st->layers[i];
         L->layer_idx                        = (int) i;
-        L->is_full        = (i < sizeof GEMMA4_LAYER_IS_FULL / sizeof GEMMA4_LAYER_IS_FULL[0])
-                                    ? GEMMA4_LAYER_IS_FULL[i]
-                                    : true;
-        L->is_kv_shared   = (int) i >= kv_share_threshold;
-        L->head_dim       = L->is_full ? 512 : 256;
-        L->q_out          = st->n_q_heads * L->head_dim;
-        L->kv_out         = st->n_kv_heads * L->head_dim;
-        L->intermediate   = L->is_kv_shared ? 12288 : 6144;
-        L->sliding_window = L->is_full ? 0 : 512;
-        L->rope_theta     = L->is_full ? 1000000.0f : 10000.0f;
-        L->n_rotated_dims = L->is_full ? 128 : (int) L->head_dim;
+        L->is_full      = pat != nullptr ? pat[i] == 0 : GEMMA4_LAYER_IS_FULL[i];
+        L->is_kv_shared = i >= kv_share_threshold;
+        L->head_dim     = L->is_full ? full_hd : swa_hd;
+        L->q_out        = st->n_q_heads * L->head_dim;
+        L->kv_out       = st->n_kv_heads * L->head_dim;
+        if (ffn_arr != nullptr) {
+            uint32_t v;
+            memcpy(&v, ffn_arr + i * sizeof v, sizeof v);
+            L->intermediate = v;
+        } else if (ffn_uniform > 0) {
+            L->intermediate = ffn_uniform;
+        } else {
+            L->intermediate = L->is_kv_shared ? 12288 : 6144; /* pre-key E2B GGUFs */
+        }
+        L->sliding_window = L->is_full ? 0 : sliding_window;
+        L->rope_theta     = L->is_full ? theta_full : theta_swa;
+        /* Full-attn layers rotate 25% of head_dim (partial_rotary_factor
+         * 0.25 — family constant; the GGUF's rope.dimension_count key
+         * carries head_dim, not the rotated width, so it can't be used).
+         * Sliding layers rotate the full head_dim. */
+        L->n_rotated_dims = L->is_full ? (int) (full_hd / 4) : (int) L->head_dim;
     }
+
+    /* KV-share sources: each shared layer reads the cache of the LAST
+     * owner layer of its own attention type. E2B: full←14, sliding←13
+     * (the previously hardcoded values). E4B: full←23, sliding←22. */
+    int last_full = -1, last_sliding = -1;
+    for (size_t i = 0; i < kv_share_threshold; i++) {
+        if (st->layers[i].is_full)
+            last_full = (int) i;
+        else
+            last_sliding = (int) i;
+    }
+    if (shared_kv > 0 && (last_full < 0 || last_sliding < 0)) {
+        return false; /* shared layers with no owner of one type */
+    }
+    st->config.kv_full_src    = last_full;
+    st->config.kv_sliding_src = last_sliding;
+    return true;
 }
 
 /* ---- Llama (P1.5.d) --------------------------------------------------- */
@@ -114,7 +191,7 @@ static void populate_llama(struct gguf_ctx *gguf, struct transformer_arch_state 
     st->ple_out          = 0;
 }
 
-static void populate_layers_llama(struct transformer_arch_state *st) {
+static bool populate_layers_llama(struct transformer_arch_state *st) {
     /* Llama is uniform: all layers full-attention, no KV sharing,
      * head_dim derived from d_model / n_q_heads. RoPE rotates the
      * full head_dim (no partial rotation like Gemma's 25% on full
@@ -150,6 +227,7 @@ static void populate_layers_llama(struct transformer_arch_state *st) {
             }
         }
     }
+    return true;
 }
 
 /* ---- BitNet b1.58 (P1.3) --------------------------------------------- */
@@ -251,7 +329,7 @@ static void populate_bitnet_b158(struct gguf_ctx *gguf, struct transformer_arch_
     st->ple_out          = 0;
 }
 
-static void populate_layers_bitnet_b158(struct transformer_arch_state *st) {
+static bool populate_layers_bitnet_b158(struct transformer_arch_state *st) {
     /* BitNet is Llama-uniform: all layers full attention, no KV sharing,
      * head_dim = d_model / n_q_heads, single FFN intermediate from
      * bitnet.feed_forward_length. RoPE rotates the full head_dim. */
@@ -291,6 +369,7 @@ static void populate_layers_bitnet_b158(struct transformer_arch_state *st) {
             }
         }
     }
+    return true;
 }
 
 /* ---- Registry --------------------------------------------------------- */

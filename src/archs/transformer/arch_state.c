@@ -631,9 +631,11 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
 
     /* P1.4.a: populate the arch-family config from Gemma-4 defaults.
-     * PLE scales + KV-shared layer pattern are Gemma-4 architectural
-     * constants (not in GGUF metadata); rms_eps + logit_softcap are
-     * overwritten from gguf meta below when present. */
+     * PLE scales are Gemma-4 architectural constants (not in GGUF
+     * metadata); rms_eps + logit_softcap are overwritten from gguf
+     * meta below when present; kv_sliding_src / kv_full_src are E2B
+     * defaults that populate_layers_gemma4 re-derives from the
+     * attention pattern (#258). */
     st->config = (struct geist_arch_config) {
             .family               = "gemma4",
             .rms_eps              = 1e-6f,
@@ -687,11 +689,25 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     memset(st->layers, 0, st->n_layers * sizeof(*st->layers));
 
     /* P1.5.c: fill per-layer geometry. The family populator decides
-     * the attention pattern (Gemma: 4 sliding + 1 full × 7 with KV
-     * sharing at idx >= 15; Llama: uniform full-attn, no sharing).
+     * the attention pattern (Gemma: sliding/full mix + KV sharing from
+     * GGUF metadata; Llama: uniform full-attn, no sharing).
      * weight_load.c::load_one_layer reads these pre-filled fields
-     * instead of deriving them. */
-    fam->populate_layers(st);
+     * instead of deriving them. Fails when the metadata doesn't pin
+     * the geometry — a named error beats a downstream wiring one
+     * (#258). */
+    if (!fam->populate_layers(st)) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer: %s geometry not derivable from GGUF metadata "
+                                "(n_layers=%zu, d_model=%zu — missing/inconsistent "
+                                "%s.attention.sliding_window_pattern or shared_kv_layers?)",
+                                fam->name,
+                                st->n_layers,
+                                st->d_model,
+                                fam->name);
+        transformer_state_destroy(st);
+        return GEIST_E_UNSUPPORTED;
+    }
 
     /* Storage mode (mmap-alias default vs β-mode override). mmap-alias
      * (the P0.3 behavior) keeps weight bytes aliased to the GGUF mmap and
