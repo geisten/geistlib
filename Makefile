@@ -23,7 +23,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run agent-contract-smoke release-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-audio-tower bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
+.PHONY: all lib bin run agent-contract-smoke release-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-e4b-model fetch-audio-tower bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -210,6 +210,28 @@ $(BENCH_MODEL_PATH):
 fetch-bench-model: $(BENCH_MODEL_PATH)
 	@echo "Benchmark model ready: $(BENCH_MODEL_PATH)"
 
+# Gemma 4 E4B variant (4.6 GB) — the second gemma4 geometry (42 layers,
+# d_model 2560, 5+1 sliding pattern). Exists so the metadata-driven family
+# populator (#258) has an executing check; the weekly e4b-smoke workflow
+# fetches it, not the default test flow.
+E4B_MODEL_DIR  ?= gguf_artifacts
+E4B_MODEL_FILE ?= gemma4-e4b-Q4_K_M.gguf
+E4B_MODEL_PATH := $(E4B_MODEL_DIR)/$(E4B_MODEL_FILE)
+E4B_MODEL_URL  ?= https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf
+
+$(E4B_MODEL_PATH):
+	@command -v curl >/dev/null 2>&1 || { echo "fetch-e4b-model: curl not found" >&2; exit 1; }
+	@mkdir -p $(E4B_MODEL_DIR)
+	@echo "Downloading $(E4B_MODEL_FILE) (~4.6 GB) from:"
+	@echo "  $(E4B_MODEL_URL)"
+	@curl -fL --retry 3 --retry-delay 2 -C - \
+	  $(if $(HF_TOKEN),-H "Authorization: Bearer $(HF_TOKEN)",) \
+	  -o "$@.part" "$(E4B_MODEL_URL)"
+	@mv "$@.part" "$@"
+
+fetch-e4b-model: $(E4B_MODEL_PATH)
+	@echo "E4B model ready: $(E4B_MODEL_PATH)"
+
 # Llama-family reference model. Small on purpose (369 MB): it exists to prove
 # the engine reads a SECOND architecture family and tokenizer mode, not to
 # measure anything, so test_llama_{load,e2e}_int stop skipping. Not part of
@@ -355,6 +377,7 @@ help:
 	"  make fetch-model [HF_TOKEN=..]              download reference GGUF (~3.1 GB)" \
 	"  make fetch-llama-model                      download SmolLM2 fixture (~369 MB, SHA-pinned)" \
 	"  make fetch-audio-tower                      extract Gemma 4 audio tower (~590 MB, SHA-pinned)" \
+	"  make fetch-e4b-model [HF_TOKEN=..]          download Gemma 4 E4B GGUF (~4.6 GB)" \
 	"" \
 	"Bench (timing/quality tools, not pass/fail):" \
 	"  make bench                                  reproducible cross-engine benchmark" \

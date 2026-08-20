@@ -113,9 +113,12 @@ struct VisionEncoder {
     struct vision_layer layers[V_LAYERS];
 
     /* Multimodal projector: pool-output × root_hidden → RMSNorm
-     * (no scale) → Linear (768 → 1536).
+     * (no scale) → Linear (768 → soft_dim).
      * Weight is model.embed_vision.embedding_projection.weight. */
-    float *projector_weight; /* (VISION_SOFT_TOKEN_DIM, VTH) = (1536, 768) */
+    float *projector_weight; /* (soft_dim, VTH) */
+    /* Soft-token width == the TEXT model's residual stream (projector
+     * rows): 1536 E2B, 2560 E4B. Read from the safetensors shape (#258). */
+    size_t soft_dim;
 };
 
 /* Load a 0-d bf16 scalar by name. Returns false if missing or not bf16. */
@@ -335,16 +338,37 @@ struct VisionEncoder *vision_encoder_create(const char *safetensors_path) {
     }
     fprintf(stderr, "vision_encoder: layers loaded.\n");
 
-    v->projector_weight = load_bf16(sf,
-                                    "model.embed_vision.embedding_projection.weight",
-                                    (size_t) VISION_SOFT_TOKEN_DIM * VTH);
+    /* Projector rows ARE the soft-token width (text residual stream:
+     * 1536 E2B, 2560 E4B) — read from the checkpoint, not pinned (#258). */
+    {
+        const struct st_tensor_t *ep = st_get(sf, "model.embed_vision.embedding_projection.weight");
+        if (ep == nullptr || ep->rank != 2 || ep->shape[1] != VTH) {
+            fprintf(stderr,
+                    "vision_encoder: model.embed_vision.embedding_projection.weight missing "
+                    "or not (text_hidden, %d)\n",
+                    VTH);
+            goto fail;
+        }
+        v->soft_dim = ep->shape[0];
+    }
+    v->projector_weight = load_bf16(
+            sf, "model.embed_vision.embedding_projection.weight", v->soft_dim * (size_t) VTH);
     if (v->projector_weight == nullptr)
         goto fail;
+    fprintf(stderr,
+            "vision_encoder: soft-token dim %zu (from embedding_projection)\n",
+            v->soft_dim);
     return v;
 
 fail:
     vision_encoder_destroy(v);
     return nullptr;
+}
+
+size_t vision_encoder_soft_dim(const struct VisionEncoder *v) {
+    /* Pre-load callers get the E2B default; after create it is the
+     * checkpoint's embedding_projection row count. */
+    return (v != nullptr && v->soft_dim > 0) ? v->soft_dim : VISION_SOFT_TOKEN_DIM;
 }
 
 void vision_encoder_destroy(struct VisionEncoder *v) {
@@ -737,8 +761,8 @@ static size_t run_image_internal(const struct VisionEncoder *v,
     }
     dbg_dump("pool_out", pooled, n_soft * VTH);
     rmsnorm_fp32(pooled, nullptr, n_soft, VTH, V_EPS, normed);
-    linear_fp32(normed, v->projector_weight, nullptr, n_soft, VTH, VISION_SOFT_TOKEN_DIM, out);
-    dbg_dump("soft_tokens", out, n_soft * VISION_SOFT_TOKEN_DIM);
+    linear_fp32(normed, v->projector_weight, nullptr, n_soft, VTH, v->soft_dim, out);
+    dbg_dump("soft_tokens", out, n_soft * v->soft_dim);
 
     safe_free((void **) &patches);
     safe_free((void **) &positions);
@@ -796,7 +820,7 @@ size_t vision_encoder_run_video(const struct VisionEncoder *v,
                                         height,
                                         width,
                                         per_frame_soft,
-                                        out + total_soft * VISION_SOFT_TOKEN_DIM);
+                                        out + total_soft * v->soft_dim);
         if (got == 0)
             return 0;
         total_soft += got;

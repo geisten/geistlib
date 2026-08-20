@@ -148,6 +148,11 @@ static enum geist_status op_decode_step(void *session, geist_token_t *out) {
     return GEIST_OK;
 }
 
+static size_t op_hidden_dim(const void *arch_state) {
+    const struct transformer_arch_state *st = arch_state;
+    return st != nullptr ? st->d_model : 0;
+}
+
 static geist_token_t op_peek_next_token(void *session) {
     const struct transformer_arch_session *sess = session;
     if (sess == nullptr || !sess->logits_valid)
@@ -231,6 +236,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .prefill_audio            = op_prefill_audio,
         .prefill_image            = op_prefill_image,
         .peek_logits              = op_peek_logits,
+        .hidden_dim               = op_hidden_dim,
         .peek_next_token          = op_peek_next_token,
         .verify_forward           = op_verify_forward,
         .kv_truncate              = op_kv_truncate,

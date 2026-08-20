@@ -8,6 +8,20 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed
+- **Gemma 4 E4B loads** (#258): the gemma4 family populator now derives the
+  per-layer geometry from GGUF metadata (`attention.sliding_window_pattern`,
+  `shared_kv_layers`, `key_length(_swa)`, scalar-or-array
+  `feed_forward_length`, dual RoPE bases) instead of E2B hardcodes, and the
+  KV-share sources fall out of the pattern. A GGUF whose geometry is not
+  derivable fails with a message naming it instead of a downstream
+  weight-wiring error. The audio and vision towers read their soft-token
+  width from the checkpoint's `embedding_projection` shape (1536 E2B /
+  2560 E4B), and the engine drops a tower whose width doesn't match the
+  loaded model's `d_model` — same-family-wrong-variant towers can no longer
+  inject garbage (extends the #240 family gate). New `make fetch-e4b-model`
+  + a weekly `e4b-smoke` CI gate keep the MODELS.md E4B row executable.
+
 ### Changed
 - **Audio precision policy is resolved once at encoder create** (#251):
   a single `audio_prec_policy` struct (attn/lconv W8A8, layer limit,
