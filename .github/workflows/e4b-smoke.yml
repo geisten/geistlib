@@ -21,7 +21,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14
+          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev
 
       - name: Build
         run: make TARGET=linux CC=gcc-14
