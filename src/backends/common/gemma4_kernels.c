@@ -98,10 +98,14 @@ void relu_squared_fp32(const float *x, size_t n, float *y) {
 
 void silu_fp32_ooo(const float *x, size_t n, float *y) {
     /* SiLU (Swish): y = x * sigmoid(x) = x / (1 + exp(-x)).
-     * Llama 2/3 + BitNet b1.58 3B SwiGLU activation. */
+     * Llama 2/3 + BitNet b1.58 3B + Qwen3 SwiGLU activation.
+     * Overflow-safe form: exp argument always <= 0 — the naive
+     * expf(-xi) NaNs for xi < -88 under a vectorized finite-math expf
+     * (gcc + libmvec), and Qwen3's gate outliers reach that (#275). */
     for (size_t i = 0; i < n; i++) {
         const float xi = x[i];
-        y[i]           = xi / (1.0f + expf(-xi));
+        const float e  = expf(-fabsf(xi));
+        y[i]           = (xi >= 0.0f) ? xi / (1.0f + e) : (xi * e) / (1.0f + e);
     }
 }
 
