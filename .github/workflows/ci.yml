@@ -319,6 +319,13 @@ jobs:
           key: geist-model-smollm2-360m-q8-48ab3034d0dd
       - name: Fetch Llama reference model
         run: make fetch-llama-model
+      - name: Cache Qwen3 reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/qwen3-0.6b-q8_0.gguf
+          key: geist-model-qwen3-0.6b-q8-9465e63a22ad
+      - name: Fetch Qwen3 reference model
+        run: make fetch-qwen3-model
       - name: Integration + e2e tests (real models, fixtures mandatory)
         env:
           GEIST_STRICT_FIXTURES: gguf
@@ -761,6 +768,13 @@ jobs:
           key: geist-model-smollm2-360m-q8-48ab3034d0dd
       - name: Fetch Llama reference model
         run: make fetch-llama-model
+      - name: Cache Qwen3 reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/qwen3-0.6b-q8_0.gguf
+          key: geist-model-qwen3-0.6b-q8-9465e63a22ad
+      - name: Fetch Qwen3 reference model
+        run: make fetch-qwen3-model
       - name: Build + run suites (MODE=cov, fixtures mandatory)
         env:
           GEIST_STRICT_FIXTURES: gguf
