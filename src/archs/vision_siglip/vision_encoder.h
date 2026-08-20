@@ -26,9 +26,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Soft-token dim = Gemma 4 E2B text-LM hidden (projector output).
- * Confirmed from model.embed_vision.embedding_projection.weight shape
- * (1536, 768) — same as the audio tower's output dim. */
+/* E2B soft-token dim (text-LM hidden, the projector's row count). The
+ * per-checkpoint width — 2560 on E4B — comes from
+ * vision_encoder_soft_dim(); size output buffers with that (#258). */
 #define VISION_SOFT_TOKEN_DIM 1536
 #define VISION_TOWER_HIDDEN 768 /* per-block ViT hidden_size */
 
@@ -42,6 +42,10 @@ struct VisionEncoder;
 
 struct VisionEncoder *vision_encoder_create(const char *safetensors_path);
 void                  vision_encoder_destroy(struct VisionEncoder *);
+
+/* Soft-token width of THIS tower checkpoint (embedding_projection rows):
+ * 1536 for E2B, 2560 for E4B. Size output buffers with this. */
+size_t vision_encoder_soft_dim(const struct VisionEncoder *);
 
 /* Full image-tower forward: RGB uint8 → patchify → ViT → pool → projector.
  *   rgb:     (height, width, 3) row-major uint8

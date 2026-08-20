@@ -31,11 +31,18 @@ void                 audio_encoder_destroy(struct AudioEncoder *);
 size_t audio_encoder_max_soft_tokens(size_t n_samples);
 
 /* Full audio-tower pipeline: mel → subsample → 12× Conformer → output_proj →
- * embed_audio. Output is the (T_sub, 1536) soft-token sequence ready for
- * the LM. Caller provides padded mel buffer + per-frame mask analogous to
- * audio_encoder_subsample_run.
+ * embed_audio. Output is the (T_sub, soft_dim) soft-token sequence ready
+ * for the LM. Caller provides padded mel buffer + per-frame mask analogous
+ * to audio_encoder_subsample_run.
  * Returns n_softtokens produced. */
+/* E2B soft-token width AND the tower-internal output_proj width (constant
+ * across variants). The per-instance soft-token width — the text model's
+ * residual stream, 2560 on E4B — comes from audio_encoder_soft_dim(). */
 #define AUDIO_SOFT_TOKEN_DIM 1536
+
+/* Soft-token width of THIS tower checkpoint (embedding_projection rows):
+ * 1536 for E2B, 2560 for E4B. Size pull buffers with this. */
+size_t audio_encoder_soft_dim(const struct AudioEncoder *);
 size_t audio_encoder_run(const struct AudioEncoder *,
                          const float *mel_in,
                          const bool  *mel_mask_in,
@@ -75,7 +82,7 @@ int audio_encoder_push_pcm(struct AudioEncoder *, const int16_t *samples, size_t
  * audio_encoder_segment_done() returns true. */
 void audio_encoder_end_input(struct AudioEncoder *);
 
-/* Drain up to `max_out` soft-tokens (each AUDIO_SOFT_TOKEN_DIM=1536 floats).
+/* Drain up to `max_out` soft-tokens (each audio_encoder_soft_dim() floats).
  * timeout_ms: 0 = non-blocking, -1 = block until ready or shutdown,
  *             >0 = block up to N ms. Returns count copied (0 if none ready
  * or timed out). After the segment is fully drained returns 0. */

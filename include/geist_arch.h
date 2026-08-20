@@ -117,6 +117,13 @@ struct geist_arch_ops_decoder {
      * session-owned scratch buffer. */
     const float *(*peek_logits)(void *session, size_t *n_logits);
 
+    /* Optional: residual-stream width (d_model) of the loaded model.
+     * The engine refuses a modality tower whose soft-token width doesn't
+     * match (e.g. an E2B 1536-dim tower next to an E4B 2560-dim GGUF —
+     * same family, wrong geometry, #258). nullptr = unknown; the engine
+     * then skips the check. */
+    size_t (*hidden_dim)(const void *arch_state);
+
     /* Speculative-decode primitives. Optional — leave nullptr if the
      * architecture has no batched verify path or no truncatable cache.
      * When any of these is nullptr, geist_session_decode_speculative

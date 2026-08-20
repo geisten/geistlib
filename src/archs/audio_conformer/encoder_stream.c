@@ -105,7 +105,7 @@ static int compute_segment_locked(struct AudioEncoder *a) {
     pthread_mutex_unlock(&a->mtx);
 
     const size_t max_soft = audio_soft_bound_from_mel(n_mel);
-    float       *soft     = heap_alloc_array_aligned(float, max_soft *AUDIO_SOFT_TOKEN_DIM);
+    float       *soft     = heap_alloc_array_aligned(float, max_soft * a->soft_dim);
     size_t       n_soft   = audio_encoder_run(a, mel_view, mask, n_mel, soft);
     safe_free((void **) &mask);
 
@@ -145,8 +145,8 @@ audio_encoder_pull_softtokens(struct AudioEncoder *a, float *out, size_t max_out
             if (avail > 0) {
                 const size_t take = avail < max_out ? avail : max_out;
                 memcpy(out,
-                       a->stream->soft + a->stream->n_drained * AUDIO_SOFT_TOKEN_DIM,
-                       take * AUDIO_SOFT_TOKEN_DIM * sizeof(float));
+                       a->stream->soft + a->stream->n_drained * a->soft_dim,
+                       take * a->soft_dim * sizeof(float));
                 a->stream->n_drained += take;
                 pthread_mutex_unlock(&a->mtx);
                 return take;
@@ -163,8 +163,8 @@ audio_encoder_pull_softtokens(struct AudioEncoder *a, float *out, size_t max_out
                 size_t avail = a->n_soft - a->n_emitted;
                 size_t take  = avail < max_out ? avail : max_out;
                 memcpy(out,
-                       a->soft_tokens + a->n_emitted * AUDIO_SOFT_TOKEN_DIM,
-                       take * AUDIO_SOFT_TOKEN_DIM * sizeof(float));
+                       a->soft_tokens + a->n_emitted * a->soft_dim,
+                       take * a->soft_dim * sizeof(float));
                 a->n_emitted += take;
                 pthread_mutex_unlock(&a->mtx);
                 return take;
@@ -232,7 +232,7 @@ void audio_encoder_shutdown(struct AudioEncoder *a) {
 
 /* === Phase 8b chunk-streaming scaffolding (impl in subsequent commit). === */
 
-struct audio_stream_state *audio_stream_state_create(void) {
+struct audio_stream_state *audio_stream_state_create(size_t soft_dim) {
     struct audio_stream_state *s = heap_calloc_array_aligned(struct audio_stream_state, 1);
     if (s == nullptr)
         return nullptr;
@@ -246,7 +246,7 @@ struct audio_stream_state *audio_stream_state_create(void) {
         }
     }
     s->sub_buf = heap_calloc_array_aligned(float, MAX_SUB_TOKENS *AUDIO_HIDDEN);
-    s->soft    = heap_calloc_array_aligned(float, MAX_SUB_TOKENS *AUDIO_SOFT_TOKEN_DIM);
+    s->soft    = heap_calloc_array_aligned(float, MAX_SUB_TOKENS *soft_dim);
     /* Phase-3 subsample cache. l0 dominates the allocation - 128 channels
      * × T_out0 × 64 freq positions × 4 B = up to ~49 MB at the 30 s mel
      * cap. Allocated only when the stream worker may run; on Pi 5 we run
@@ -705,8 +705,8 @@ size_t audio_encoder_stream_push(struct AudioEncoder       *a,
                     nullptr,
                     n_chunk,
                     OUTPUT_PROJ_DIMS,
-                    TEXT_HIDDEN,
-                    state->soft + state->n_soft * AUDIO_SOFT_TOKEN_DIM);
+                    a->soft_dim,
+                    state->soft + state->n_soft * a->soft_dim);
         safe_free((void **) &normed);
 
         /* Publish under the encoder mutex: the pull side reads n_soft and

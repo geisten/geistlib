@@ -1,0 +1,69 @@
+# Weekly E4B geometry gate (#258): the MODELS.md E4B row must have an
+# executing test behind it. Separate from ci.yml on purpose — the 4.6 GB
+# GGUF + 590 MB tower would blow the per-repo cache budget if every PR
+# leg carried them; weekly catches a broken E4B load within days while
+# the E2B reference keeps gating every PR.
+name: E4B smoke
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC
+  workflow_dispatch:
+
+jobs:
+  e4b-smoke:
+    name: Gemma 4 E4B load + modalities
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14
+
+      - name: Build
+        run: make TARGET=linux CC=gcc-14
+
+      - name: Cache E4B model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/gemma4-e4b-Q4_K_M.gguf
+          key: geist-model-gemma4-e4b-q4km-v1
+
+      - name: Fetch E4B model
+        run: make fetch-e4b-model
+
+      - name: Cache E4B audio tower
+        uses: actions/cache@v4
+        with:
+          path: audio_bench/audio_tower_e4b.safetensors
+          key: geist-audio-tower-e4b-299ec2985c56
+
+      - name: Fetch E4B audio tower
+        run: |
+          test -f audio_bench/audio_tower_e4b.safetensors || \
+          python3 tools/fetch_audio_tower.py \
+            --url https://huggingface.co/unsloth/gemma-4-E4B-it/resolve/main/model.safetensors \
+            -o audio_bench/audio_tower_e4b.safetensors \
+            --sha256 299ec2985c5563535eefc42e89e9c517b1a3ef798b002b8ce799f4297e24434d
+
+      # Text: the metadata-driven gemma4 populator must produce a working
+      # 42-layer / d_model-2560 decoder from the GGUF alone.
+      - name: E4B text generation
+        run: |
+          make -C examples TARGET=linux CC=gcc-14
+          out=$(examples/simple_generate gguf_artifacts/gemma4-e4b-Q4_K_M.gguf "The capital of France is" 8)
+          echo "$out"
+          test -n "$out"
+
+      # Modalities: with the E4B tower present the audio bit must be set and
+      # attach_audio must succeed; the test pins the bit ⟺ attach invariant
+      # either way (mask honest).
+      - name: E4B modalities invariant
+        env:
+          GEIST_GGUF_PATH: gguf_artifacts/gemma4-e4b-Q4_K_M.gguf
+          GEIST_AUDIO_MODEL_PATH: audio_bench/audio_tower_e4b.safetensors
+          GEIST_STRICT_FIXTURES: gguf
+        run: bin/linux/release/tests/test_model_modalities_int
