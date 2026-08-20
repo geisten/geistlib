@@ -13,15 +13,17 @@ static void audio_stream_state_reset(struct audio_stream_state *ss);
 
 /* === Phase 8 streaming API ===================================================*/
 
-/* Lazily create the mel pipeline. Constants path is a fixed default for now;
- * a future API can let callers override. */
+/* Lazily create the mel pipeline. GEIST_MEL_CONSTANTS_PATH wins (same
+ * contract as the attach path in arch.c — the hardcoded default made
+ * every installed binary deaf outside a repo checkout, found by the
+ * geist-diktat e2e); the bringup-tree default remains the fallback. */
 static int ensure_mel(struct AudioEncoder *a) {
     if (a->mel)
         return 0;
-    /* Constants live next to the audio_test_data dir of the bringup tree —
-     * resolve relative to CWD to keep the C side tooling-agnostic. */
-    const char *path = "audio_test_data/mel_constants.bin";
-    a->mel           = mel_create(path);
+    const char *path = getenv("GEIST_MEL_CONSTANTS_PATH");
+    if (path == nullptr || path[0] == '\0')
+        path = "audio_test_data/mel_constants.bin";
+    a->mel = mel_create(path);
     return a->mel ? 0 : -1;
 }
 
