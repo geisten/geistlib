@@ -628,8 +628,10 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
         return GEIST_E_INVALID_ARG;
     }
     for (size_t i = 0; i < nx; i++) {
+        /* Overflow-safe sigmoid form (see cpu_scalar_silu, #275). */
         const float v = xp[i];
-        yp[i]         = v / (1.0f + expf(-v));
+        const float e = expf(-fabsf(v));
+        yp[i]         = (v >= 0.0f) ? v / (1.0f + e) : (v * e) / (1.0f + e);
     }
     return GEIST_OK;
 }
