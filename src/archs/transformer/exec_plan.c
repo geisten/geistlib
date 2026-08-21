@@ -88,6 +88,7 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
                                 : (int) i;
         P->compute_kv = !L->is_kv_shared;
         P->apply_gemma_attn_norms = st->config.has_gemma_attn_norms;
+        P->apply_qk_norms         = st->config.has_qk_norms;
         P->apply_sub_ln           = st->config.has_sub_ln;
         P->apply_ple              = st->config.has_ple;
         P->rope_interleaved       = st->config.rope_interleaved;

@@ -220,8 +220,14 @@ cpu_scalar_silu(struct geist_backend *be, const struct geist_tensor *x, struct g
         return GEIST_E_INVALID_ARG;
     }
     for (size_t i = 0; i < nx; i++) {
+        /* Overflow-safe sigmoid form: the exp argument is always <= 0, so
+         * expf never returns inf. The naive v / (1 + expf(-v)) NaNs for
+         * v < -88 under gcc's vectorized finite-math expf (libmvec skips
+         * the overflow saturation the scalar libm does) — Qwen3-0.6B's
+         * gate activations actually reach that range (#275). */
         const float v = xp[i];
-        yp[i]         = v / (1.0f + expf(-v));
+        const float e = expf(-fabsf(v));
+        yp[i]         = (v >= 0.0f) ? v / (1.0f + e) : (v * e) / (1.0f + e);
     }
     return GEIST_OK;
 }

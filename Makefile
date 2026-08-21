@@ -23,7 +23,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run agent-contract-smoke release-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-e4b-model fetch-audio-tower bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
+.PHONY: all lib bin run agent-contract-smoke release-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-e4b-model fetch-audio-tower bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -256,6 +256,35 @@ $(LLAMA_MODEL_PATH):
 	@curl -fL --retry 3 --retry-delay 2 -C - -o "$@.part" "$(LLAMA_MODEL_URL)"
 	@mv "$@.part" "$@"
 
+# Qwen3 reference model (#275). Small third family (609 MB): proves the
+# qwen3 populator (metadata head_dim 128 ≠ d_model/n_heads, per-head
+# QK-norm) and the qwen2 pretokenizer parity path. SHA-pinned like the
+# llama fixture; CI fetches it explicitly.
+QWEN3_MODEL_DIR  ?= gguf_artifacts
+QWEN3_MODEL_FILE ?= qwen3-0.6b-q8_0.gguf
+QWEN3_MODEL_PATH := $(QWEN3_MODEL_DIR)/$(QWEN3_MODEL_FILE)
+QWEN3_MODEL_URL  ?= https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf
+# Upstream LFS oid, verified 2026-08-19.
+QWEN3_MODEL_SHA256 := 9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031
+
+$(QWEN3_MODEL_PATH):
+	@command -v curl >/dev/null 2>&1 || { echo "fetch-qwen3-model: curl not found" >&2; exit 1; }
+	@mkdir -p $(QWEN3_MODEL_DIR)
+	@echo "Downloading $(QWEN3_MODEL_FILE) (~609 MB) from:"
+	@echo "  $(QWEN3_MODEL_URL)"
+	@curl -fL --retry 3 --retry-delay 2 -C - -o "$@.part" "$(QWEN3_MODEL_URL)"
+	@mv "$@.part" "$@"
+
+fetch-qwen3-model: $(QWEN3_MODEL_PATH)
+	@hash=$$( (command -v sha256sum >/dev/null && sha256sum "$(QWEN3_MODEL_PATH)" || shasum -a 256 "$(QWEN3_MODEL_PATH)") | cut -d' ' -f1 ); \
+	if [ "$$hash" != "$(QWEN3_MODEL_SHA256)" ]; then \
+	  echo "fetch-qwen3-model: SHA-256 mismatch for $(QWEN3_MODEL_PATH)" >&2; \
+	  echo "  expected $(QWEN3_MODEL_SHA256)" >&2; \
+	  echo "  actual   $$hash" >&2; \
+	  exit 1; \
+	fi
+	@echo "Qwen3 reference model ready (SHA-256 verified): $(QWEN3_MODEL_PATH)"
+
 fetch-llama-model: $(LLAMA_MODEL_PATH)
 	@hash=$$( (command -v sha256sum >/dev/null && sha256sum "$(LLAMA_MODEL_PATH)" || shasum -a 256 "$(LLAMA_MODEL_PATH)") | cut -d' ' -f1 ); \
 	if [ "$$hash" != "$(LLAMA_MODEL_SHA256)" ]; then \
@@ -376,6 +405,7 @@ help:
 	"  make test-unit|test-int|test-e2e|test-all   [FILTER=substr]" \
 	"  make fetch-model [HF_TOKEN=..]              download reference GGUF (~3.1 GB)" \
 	"  make fetch-llama-model                      download SmolLM2 fixture (~369 MB, SHA-pinned)" \
+	"  make fetch-qwen3-model                      download Qwen3-0.6B fixture (~609 MB, SHA-pinned)" \
 	"  make fetch-audio-tower                      extract Gemma 4 audio tower (~590 MB, SHA-pinned)" \
 	"  make fetch-e4b-model [HF_TOKEN=..]          download Gemma 4 E4B GGUF (~4.6 GB)" \
 	"" \
