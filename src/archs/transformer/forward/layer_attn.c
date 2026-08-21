@@ -232,7 +232,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     }
 
     if (!fused_qkv_prep) {
-        if (ctx->apply_gemma_attn_norms) {
+        if (ctx->apply_qk_norms) {
             struct geist_tensor t_q_perhead =
                     view_2d(sess->scratch_q, ctx->SEQ * st->n_q_heads, (int64_t) ctx->hd);
             struct geist_tensor t_q_norm_w = view_1d(L->q_norm.buffer, (int64_t) ctx->hd);
@@ -268,18 +268,22 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         t0 = profile ? transformer_profile_now_ns() : 0;
         struct geist_tensor t_k_3d =
                 view_3d(sess->scratch_k, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
-        if (ctx->apply_gemma_attn_norms) {
+        if (ctx->apply_qk_norms) {
             struct geist_tensor t_k_perhead =
                     view_2d(sess->scratch_k, ctx->SEQ * st->n_kv_heads, (int64_t) ctx->hd);
-            struct geist_tensor t_v_perhead =
-                    view_2d(sess->scratch_v, ctx->SEQ * st->n_kv_heads, (int64_t) ctx->hd);
             struct geist_tensor t_k_norm_w = view_1d(L->k_norm.buffer, (int64_t) ctx->hd);
-            struct geist_tensor t_ones_hd =
-                    view_1d(sess->scratch_ones_headdim_max, (int64_t) ctx->hd);
             s = prims->rmsnorm(be, &t_k_perhead, &t_k_norm_w, ctx->eps, &t_k_perhead);
             if (s != GEIST_OK) {
                 return s;
             }
+        }
+        /* Gemma-only: V is RMS-normalized too (no learned scale). qwen3
+         * QK-norm leaves V untouched. */
+        if (ctx->apply_gemma_attn_norms) {
+            struct geist_tensor t_v_perhead =
+                    view_2d(sess->scratch_v, ctx->SEQ * st->n_kv_heads, (int64_t) ctx->hd);
+            struct geist_tensor t_ones_hd =
+                    view_1d(sess->scratch_ones_headdim_max, (int64_t) ctx->hd);
             s = prims->rmsnorm(be, &t_v_perhead, &t_ones_hd, ctx->eps, &t_v_perhead);
             if (s != GEIST_OK) {
                 return s;

@@ -165,6 +165,7 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     ctx->apply_sub_ln             = plan_apply_sub_ln && st->runtime_flags.bitnet_sub_ln_enabled;
     ctx->apply_gemma_attn_norms =
             P != nullptr ? P->apply_gemma_attn_norms : st->config.has_gemma_attn_norms;
+    ctx->apply_qk_norms   = P != nullptr ? P->apply_qk_norms : st->config.has_qk_norms;
     ctx->rope_interleaved = P != nullptr ? P->rope_interleaved : st->config.rope_interleaved;
     ctx->apply_ple        = P != nullptr ? P->apply_ple : st->config.has_ple;
     ctx->kv_int8_enabled  = sess->kv_int8_enabled;

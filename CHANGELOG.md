@@ -8,6 +8,21 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+- **Qwen3 family** (#275): `general.architecture = "qwen3"` loads and
+  generates — llama-style GQA stack with per-head QK-norm (new
+  `has_qk_norms` config flag, distinct from the Gemma norm bundle) and
+  head_dim from `qwen3.attention.key_length` (128 on 0.6B, where
+  `d_model/n_heads` would give 64; `q_out > d_model` is now an exercised
+  geometry). The GPT-2 BPE encoder gains the qwen2 pretokenizer
+  (contractions, single-digit splits, punctuation runs, the
+  one-codepoint-prefix and trailing-whitespace rules), selected by
+  `tokenizer.ggml.pre == "qwen2"` — token-id parity with the HF
+  tokenizer is pinned for 10 fixture cases in `test_qwen3_e2e_int`.
+  Special tokens directly after whitespace are no longer shredded (a
+  `\n<|im_start|>` in any GPT-2-mode GGUF hit this). Fixture:
+  `make fetch-qwen3-model` (Qwen3-0.6B Q8_0, SHA-pinned, CI-cached).
+
 ### Fixed
 - **Gemma 4 E4B loads** (#258): the gemma4 family populator now derives the
   per-layer geometry from GGUF metadata (`attention.sliding_window_pattern`,

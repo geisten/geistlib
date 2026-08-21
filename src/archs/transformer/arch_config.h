@@ -112,6 +112,14 @@ struct geist_arch_config {
      * lookup and the forward pass skips the rmsnorm calls. */
     bool has_gemma_attn_norms;
 
+    /* ---- Per-head Q/K RMSNorm alone (qwen3, #275). Gates ONLY the
+     * attn_q_norm / attn_k_norm load + the pre-RoPE rmsnorm on Q and K.
+     * Distinct from has_gemma_attn_norms, which additionally V-norms,
+     * drops the 1/sqrt(head_dim) Q scale and adds the post_attention /
+     * post_ffw residual norms. Gemma sets both flags; qwen3 only this
+     * one (standard scale, plain residual adds). */
+    bool has_qk_norms;
+
     /* ---- BitNet b1.58 family knobs.
      *
      * has_sub_ln: BitNet inserts an extra RMSNorm before each
