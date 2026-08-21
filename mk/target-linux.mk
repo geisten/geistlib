@@ -27,6 +27,14 @@ CC ?= cc
 # ~200× slower scalar path — the same trap #102 fixed in bench_perf_sweep.
 # BACKENDS="cpu_scalar" still builds the portable reference (dedicated CI
 # job). Remember `make clean` when switching BACKENDS.
+# The -Wno-* relaxations below are GCC-only names; clang treats unknown
+# -Wno- options as errors under -Werror. Detect the compiler family once.
+ifeq (,$(findstring clang,$(CC)))
+WARN_RELAX := -Wno-nonnull-compare -Wno-vla-parameter
+else
+WARN_RELAX :=
+endif
+
 ifeq ($(LINUX_ARCH),x86_64)
 
 BACKENDS ?= cpu_x86 cpu_scalar
@@ -34,7 +42,7 @@ BACKENDS ?= cpu_x86 cpu_scalar
 # Baseline x86-64-v3 (Haswell+: AVX2, FMA, BMI2). Per-TU -march= flags in
 # mk/backend-cpu_x86.mk override this for the AVX-512 / +VNNI / +BF16 tiers.
 CFLAGS_TARGET := -march=x86-64-v3 -mtune=generic -fopenmp -ffast-math \
-                 -Wno-nonnull-compare -Wno-vla-parameter
+                 $(WARN_RELAX)
 LDFLAGS_TARGET := -fopenmp
 LDLIBS_TARGET  := -lm
 GEMM_PROVIDER ?= openblas
@@ -53,7 +61,7 @@ BACKENDS ?= cpu_neon cpu_scalar
 # See target-pi5.mk for the rationale behind -ffast-math and the
 # -Wno-nonnull-compare / -Wno-vla-parameter relaxations under stricter GCC.
 CFLAGS_TARGET := -march=armv8.2-a+fp16+dotprod -fopenmp -ffast-math \
-                 -Wno-nonnull-compare -Wno-vla-parameter
+                 $(WARN_RELAX)
 
 LDFLAGS_TARGET := -fopenmp
 LDLIBS_TARGET  := -lm
