@@ -154,15 +154,22 @@ clip set, prompt "Transcribe this audio."):
 
 | config | aggregate WER | median |
 |---|---:|---:|
-| FP32 encoder | **4.2 %** | 0 % (16/30 clips verbatim) |
-| W8A8 attn+lconv (shipping default) | **4.3 %** | — |
-| FP32, instruction-heavy default prompt | 6.1 % | — |
+| FP32 encoder (mac) | **4.2 %** | 0 % (16/30 clips verbatim) |
+| W8A8 attn+lconv (mac) | **4.3 %** | — |
+| **Pi 5, shipping defaults (NEON, W8A8)** | **4.0 %** | 0 % (16/30 clips verbatim) |
+| FP32, instruction-heavy default prompt (mac) | 6.1 % | — |
 
 Gemma 4 E2B at Q4_K_M *is* ASR-grade on this engine — external
 reference for the same weight class: 3.7 % (unquantized). Quantization
 still costs ~0.1 pt (encoder) — the #238 conclusion stands. Prompt
-wording matters mildly (the pre-fix refusal cliff is gone). Pi
-re-baseline of these numbers is pending the board's return (#263).
+wording matters mildly (the pre-fix refusal cliff is gone).
+
+Pi re-baseline (#263, quiesced board, start 47 °C, end 69 °C, no
+throttling, commit c7af9b5): the distribution matches the mac run
+clip-for-clip — the engine is platform-consistent. Timing on the same
+30-clip set (4–10 s clips): mean attach 6.9 s, decode 3.5 s at
+6.7 tok/s — attach roughly tracks clip length (RTF ≈ 1 incl. LM
+injection), decode matches the known ~7 tok/s Pi figure.
 
 **German** (#266's first-class requirement): 30 FLEURS de_de test clips,
 4–18 s (mean 10.5 s), seed-42 selection, scored against FLEURS'
