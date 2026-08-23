@@ -31,6 +31,31 @@ static const bool GEMMA4_LAYER_IS_FULL[] = {
 };
 
 static void populate_gemma4(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
+    /* Gemma-4 owns its defaults — state_create installs a NEUTRAL config
+     * and each family declares what it HAS. Structural values are the
+     * E2B geometry, kept as fallbacks for pre-key GGUFs; current unsloth
+     * GGUFs override every one of them from metadata below. PLE scales
+     * are architectural constants (not in GGUF metadata). */
+    st->n_layers         = 35;
+    st->d_model          = 1536;
+    st->vocab_size       = 262144; /* no gemma4.vocab_size key exists */
+    st->n_q_heads        = 8;
+    st->n_kv_heads       = 1;
+    st->hidden_per_layer = 256;
+
+    st->config.logit_softcap        = 30.0f;
+    st->config.has_ple              = true;
+    st->config.ple_input_scale      = 0.7071067811865476f;
+    st->config.ple_model_proj_scale = 0.02551551815399144f;
+    st->config.ple_table_scale      = 16.0f;
+    /* E2B KV-share sources; populate_layers_gemma4 re-derives them
+     * from the attention pattern (#258). */
+    st->config.kv_sliding_src       = 13;
+    st->config.kv_full_src          = 14;
+    st->config.has_gemma_attn_norms = true;
+    st->config.has_qk_norms         = true;
+    st->config.ffn_activation       = GEIST_FFN_GEGLU;
+
     uint32_t u;
     float    f;
     if (gguf_get_meta_u32(gguf, "gemma4.block_count", &u))
@@ -48,10 +73,6 @@ static void populate_gemma4(struct gguf_ctx *gguf, struct transformer_arch_state
         st->config.rms_eps = f;
     if (gguf_get_meta_f32(gguf, "gemma4.final_logit_softcapping", &f))
         st->config.logit_softcap = f;
-    /* PLE flag + scales are family-constant, not metadata-driven.
-     * state_create installs them in the default config block before
-     * calling this populator. KV-shared layer indices are derived in
-     * populate_layers_gemma4 from the attention pattern (#258). */
 }
 
 static bool populate_layers_gemma4(struct transformer_arch_state *st) {
@@ -157,20 +178,11 @@ static bool populate_layers_gemma4(struct transformer_arch_state *st) {
 /* ---- Llama (P1.5.d) --------------------------------------------------- */
 
 static void populate_llama(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
-    /* Strip every Gemma-family default first; the loader uses these
-     * flags to skip tensors that aren't present in Llama GGUFs. */
-    st->config.has_ple              = false;
-    st->config.logit_softcap        = 0.0f;
-    st->config.has_gemma_attn_norms = false;
-    st->config.has_qk_norms         = false;
-    st->config.kv_sliding_src       = -1;
-    st->config.kv_full_src          = -1;
-    st->config.ple_input_scale      = 0.0f;
-    st->config.ple_model_proj_scale = 0.0f;
-    st->config.ple_table_scale      = 0.0f;
-    st->config.has_sub_ln           = false;
-    st->config.ffn_activation       = GEIST_FFN_SWIGLU;
-    st->config.rope_interleaved     = true; /* LLAMA_ARCH = NORM RoPE; weights are pre-permuted */
+    /* Neutral config from state_create covers Llama; the two family
+     * specifics: SwiGLU (already the neutral default, stated for
+     * clarity) and interleaved RoPE (weights are pre-permuted). */
+    st->config.ffn_activation   = GEIST_FFN_SWIGLU;
+    st->config.rope_interleaved = true; /* LLAMA_ARCH = NORM RoPE */
 
     uint32_t u;
     float    f;
@@ -249,17 +261,10 @@ static bool populate_layers_llama(struct transformer_arch_state *st) {
  * rope_interleaved stays false — unlike llama.
  */
 static void populate_qwen3(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
-    st->config.has_ple              = false;
-    st->config.logit_softcap        = 0.0f;
-    st->config.has_gemma_attn_norms = false;
-    st->config.has_qk_norms         = true;
-    st->config.kv_sliding_src       = -1;
-    st->config.kv_full_src          = -1;
-    st->config.ple_input_scale      = 0.0f;
-    st->config.ple_model_proj_scale = 0.0f;
-    st->config.ple_table_scale      = 0.0f;
-    st->config.has_sub_ln           = false;
-    st->config.ffn_activation       = GEIST_FFN_SWIGLU;
+    /* Neutral config + the two qwen3 specifics: per-head QK-norm and
+     * SwiGLU. NEOX RoPE (no pre-permute) is the neutral default. */
+    st->config.has_qk_norms   = true;
+    st->config.ffn_activation = GEIST_FFN_SWIGLU;
 
     uint32_t u;
     float    f;
@@ -367,18 +372,10 @@ static enum geist_ffn_activation_kind ffn_activation_from_meta(struct gguf_ctx *
 }
 
 static void populate_bitnet_b158(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
-    /* Strip Gemma-family defaults — BitNet is Llama-style underneath. */
-    st->config.has_ple              = false;
-    st->config.logit_softcap        = 0.0f;
-    st->config.has_gemma_attn_norms = false;
-    st->config.has_qk_norms         = false;
-    st->config.kv_sliding_src       = -1;
-    st->config.kv_full_src          = -1;
-    st->config.ple_input_scale      = 0.0f;
-    st->config.ple_model_proj_scale = 0.0f;
-    st->config.ple_table_scale      = 0.0f;
-
-    /* BitNet additions. */
+    /* Neutral config + the BitNet additions: SubLN and the arch-keyed
+     * FFN activation. Llama-style underneath, but NEOX RoPE (the
+     * bitnet.cpp converter does NOT pre-permute Q/K) — the neutral
+     * rope_interleaved=false is correct, unlike the llama family. */
     st->config.has_sub_ln     = true;
     st->config.ffn_activation = ffn_activation_from_meta(gguf);
 
