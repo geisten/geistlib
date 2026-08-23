@@ -153,6 +153,40 @@ static void cpu_neon_w_q8_0_m1(const float               *x,
     linear_q8_0_decode_w8a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
 }
 
+static void cpu_neon_w_q4_0_m1(const float               *x,
+                               const struct geist_weight *w,
+                               struct geist_backend      *be,
+                               float                     *y) {
+    (void) be;
+    linear_q4_0_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+}
+
+static void cpu_neon_w_q4_1_m1(const float               *x,
+                               const struct geist_weight *w,
+                               struct geist_backend      *be,
+                               float                     *y) {
+    (void) be;
+    linear_q4_1_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+}
+
+static void cpu_neon_w_q4_0_mN(const float               *x,
+                               const struct geist_weight *w,
+                               size_t                     m,
+                               struct geist_backend      *be,
+                               float                     *y) {
+    (void) be;
+    linear_q4_0_w4a8_prefill(x, m, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+}
+
+static void cpu_neon_w_q4_1_mN(const float               *x,
+                               const struct geist_weight *w,
+                               size_t                     m,
+                               struct geist_backend      *be,
+                               float                     *y) {
+    (void) be;
+    linear_q4_1_w4a8_prefill(x, m, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+}
+
 static void cpu_neon_w_iq2s_m1(const float               *x,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
@@ -1039,16 +1073,8 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          cpu_neon_w_dequant_trampoline_m1,
          cpu_neon_w_dequant_trampoline_mN,
          "bf16/trampoline"},
-        {GEIST_DTYPE_Q4_0,
-         CPU_NEON_ISA_NEON,
-         cpu_neon_w_dequant_trampoline_m1,
-         cpu_neon_w_dequant_trampoline_mN,
-         "q4_0/trampoline"},
-        {GEIST_DTYPE_Q4_1,
-         CPU_NEON_ISA_NEON,
-         cpu_neon_w_dequant_trampoline_m1,
-         cpu_neon_w_dequant_trampoline_mN,
-         "q4_1/trampoline"},
+        {GEIST_DTYPE_Q4_0, CPU_NEON_ISA_NEON, cpu_neon_w_q4_0_m1, cpu_neon_w_q4_0_mN, "q4_0/w4a8"},
+        {GEIST_DTYPE_Q4_1, CPU_NEON_ISA_NEON, cpu_neon_w_q4_1_m1, cpu_neon_w_q4_1_mN, "q4_1/w4a8"},
 
 /* TQ2_0: ternary BitNet b1.58. Preferred (q8a, requires dotprod)
  * first, fp32 fallback second. The compile-time #if keeps the
