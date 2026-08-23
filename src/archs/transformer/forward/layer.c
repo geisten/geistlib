@@ -22,6 +22,7 @@
 #include <geist.h>
 #include <geist_backend.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -284,6 +285,12 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     }
     case GEIST_DTYPE_Q3_K:
         dequant_q3_K_row(raw + row_idx * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, dst, n_in);
+        break;
+    case GEIST_DTYPE_Q4_0:
+        dequant_q4_0_row(raw + row_idx * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, dst, n_in);
+        break;
+    case GEIST_DTYPE_Q4_1:
+        dequant_q4_1_row(raw + row_idx * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, dst, n_in);
         break;
     case GEIST_DTYPE_Q4_K:
         dequant_q4_K_row(raw + row_idx * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, dst, n_in);

@@ -269,7 +269,7 @@ const char *geist_session_errmsg(const struct geist_session *s) {
             return GEIST_E_OOM;
         }
         size_t n_enc = 0;
-        if (gtok->bos_id >= 0) {
+        if (gtok->bos_id >= 0 && gtok->add_bos) {
             enc_ids[n_enc++] = gtok->bos_id;
         }
         size_t enc_n = 0;

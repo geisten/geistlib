@@ -32,6 +32,7 @@ enum geist_dtype {
 
     /* GGUF traditional quants (32-element blocks). */
     GEIST_DTYPE_Q4_0,
+    GEIST_DTYPE_Q4_1,
     GEIST_DTYPE_Q8_0,
 
     /* GGUF k-quants (256-element super-blocks). Logically signed

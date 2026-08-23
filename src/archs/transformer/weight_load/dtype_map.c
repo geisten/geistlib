@@ -21,6 +21,8 @@ struct dtype_map_entry map_gguf_dtype(gguf_dtype_t gd) {
         return (struct dtype_map_entry) {GEIST_DTYPE_BF16, GEIST_LAYOUT_DENSE, true};
     case GGUF_TYPE_Q4_0:
         return (struct dtype_map_entry) {GEIST_DTYPE_Q4_0, GEIST_LAYOUT_BLOCK_QUANTIZED, true};
+    case GGUF_TYPE_Q4_1:
+        return (struct dtype_map_entry) {GEIST_DTYPE_Q4_1, GEIST_LAYOUT_BLOCK_QUANTIZED, true};
     case GGUF_TYPE_Q3_K:
         return (struct dtype_map_entry) {GEIST_DTYPE_Q3_K, GEIST_LAYOUT_BLOCK_QUANTIZED, true};
     case GGUF_TYPE_Q4_K:
