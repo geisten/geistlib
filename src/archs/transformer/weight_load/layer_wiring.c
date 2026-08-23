@@ -194,6 +194,95 @@ load_layer_proj(struct transformer_arch_state    *st,
 
 #define LP(suffix) snprintf(path, sizeof path, "blk.%d." suffix, L->layer_idx)
 
+    /* ---- Gated-DeltaNet layer (#281): its own compact tensor set.
+     * attn_norm + pre-FFN norm + FFN are shared with the attention
+     * shape; everything between is the dn_* group. The qwen35
+     * converter names the pre-FFN norm "post_attention_norm" (the HF
+     * name) — there is no separate ffn_norm tensor. */
+    if (L->mixer == GEIST_MIXER_DELTANET) {
+        const size_t key_dim   = st->config.dn_n_k_heads * st->config.dn_head_k;
+        const size_t value_dim = st->config.dn_n_v_heads * st->config.dn_head_v;
+        const size_t conv_dim  = 2 * key_dim + value_dim;
+
+        LP("attn_norm.weight");
+        s = load_layer_norm(st, gguf, L, path, st->d_model, &L->attn_norm);
+        if (s != GEIST_OK)
+            return s;
+        LP("post_attention_norm.weight");
+        s = load_layer_norm(st, gguf, L, path, st->d_model, &L->ffn_norm);
+        if (s != GEIST_OK)
+            return s;
+
+        LP("attn_qkv.weight");
+        s = load_layer_proj(st, gguf, L, path, conv_dim, st->d_model, &L->dn_qkv, &L->dn_qkv_w);
+        if (s != GEIST_OK)
+            return s;
+        LP("attn_gate.weight");
+        s = load_layer_proj(st, gguf, L, path, value_dim, st->d_model, &L->dn_z, &L->dn_z_w);
+        if (s != GEIST_OK)
+            return s;
+        LP("ssm_conv1d.weight");
+        s = load_layer_norm(st, gguf, L, path, conv_dim * st->config.dn_conv_kernel, &L->dn_conv);
+        if (s != GEIST_OK)
+            return s;
+        LP("ssm_beta.weight");
+        s = load_layer_proj(st,
+                            gguf,
+                            L,
+                            path,
+                            st->config.dn_n_v_heads,
+                            st->d_model,
+                            &L->dn_beta,
+                            &L->dn_beta_w);
+        if (s != GEIST_OK)
+            return s;
+        LP("ssm_alpha.weight");
+        s = load_layer_proj(st,
+                            gguf,
+                            L,
+                            path,
+                            st->config.dn_n_v_heads,
+                            st->d_model,
+                            &L->dn_alpha,
+                            &L->dn_alpha_w);
+        if (s != GEIST_OK)
+            return s;
+        LP("ssm_a");
+        s = load_layer_norm(st, gguf, L, path, st->config.dn_n_v_heads, &L->dn_a);
+        if (s != GEIST_OK)
+            return s;
+        LP("ssm_dt.bias");
+        s = load_layer_norm(st, gguf, L, path, st->config.dn_n_v_heads, &L->dn_dt_bias);
+        if (s != GEIST_OK)
+            return s;
+        LP("ssm_norm.weight");
+        s = load_layer_norm(st, gguf, L, path, st->config.dn_head_v, &L->dn_norm);
+        if (s != GEIST_OK)
+            return s;
+        LP("ssm_out.weight");
+        s = load_layer_proj(st, gguf, L, path, st->d_model, value_dim, &L->dn_out, &L->dn_out_w);
+        if (s != GEIST_OK)
+            return s;
+
+        LP("ffn_gate.weight");
+        s = load_layer_proj(
+                st, gguf, L, path, L->intermediate, st->d_model, &L->gate_proj, &L->gate_proj_w);
+        if (s != GEIST_OK)
+            return s;
+        LP("ffn_up.weight");
+        s = load_layer_proj(
+                st, gguf, L, path, L->intermediate, st->d_model, &L->up_proj, &L->up_proj_w);
+        if (s != GEIST_OK)
+            return s;
+        LP("ffn_down.weight");
+        s = load_layer_proj(
+                st, gguf, L, path, st->d_model, L->intermediate, &L->down_proj, &L->down_proj_w);
+        if (s != GEIST_OK)
+            return s;
+        L->layer_scalar = 1.0f;
+        return GEIST_OK;
+    }
+
     /* Norms — all F32. Family-conditional gating (P1.5.d):
      * attn_q_norm, attn_k_norm, post_attention_norm, post_ffw_norm
      * are Gemma 3/4 family extras that Llama / Mistral don't have. */
@@ -221,6 +310,10 @@ load_layer_proj(struct transformer_arch_state    *st,
         L->post_attn_norm = (struct geist_tensor) {0};
     }
     LP("ffn_norm.weight");
+    if (gguf_get_tensor(gguf, path) == nullptr && !st->config.has_gemma_attn_norms) {
+        /* qwen35's converter keeps the HF name for the pre-FFN norm. */
+        LP("post_attention_norm.weight");
+    }
     s = load_layer_norm(st, gguf, L, path, st->d_model, &L->ffn_norm);
     if (s != GEIST_OK) {
         return s;
@@ -252,7 +345,10 @@ load_layer_proj(struct transformer_arch_state    *st,
      * fall back to legacy v->linear() when the backend resolver
      * returns UNSUPPORTED (Q5_K, F32, etc.). */
     LP("attn_q.weight");
-    s = load_layer_proj(st, gguf, L, path, L->q_out, st->d_model, &L->q_proj, &L->q_proj_w);
+    /* qwen35: q_proj jointly produces query+gate — 2x rows, per-head
+     * [query(hd) | gate(hd)] (#281). */
+    const size_t q_rows = st->config.has_attn_output_gate ? 2 * L->q_out : L->q_out;
+    s = load_layer_proj(st, gguf, L, path, q_rows, st->d_model, &L->q_proj, &L->q_proj_w);
     if (s != GEIST_OK) {
         return s;
     }

@@ -53,19 +53,29 @@
  * native dtype/layout — the linear() vtable dispatches on these. KV-shared
  * layers (idx >= 15) leave k_proj / v_proj / k_norm as NULL since they
  * reuse the source layer's projections at runtime. */
+/* Per-layer token mixer. The transformer family historically meant
+ * "attention in every layer"; qwen35 (#281) generalizes that to a
+ * per-layer choice — the layer loop dispatches on this BEFORE any
+ * attention code runs, so attention paths stay mixer-agnostic. */
+enum transformer_mixer_kind {
+    GEIST_MIXER_ATTN = 0, /* softmax attention (KV cache) */
+    GEIST_MIXER_DELTANET, /* gated DeltaNet (recurrent conv+delta state) */
+};
+
 struct transformer_layer_weights {
     /* ---- Geometry derived from layer_idx (set by loader). ------------- */
-    int    layer_idx;
-    bool   is_full;        /* full-attn (vs sliding-window) */
-    bool   is_kv_shared;   /* layers 15..34: no own K/V projections */
-    size_t head_dim;       /* 512 if is_full else 256 */
-    size_t q_out;          /* N_Q_HEADS * head_dim */
-    size_t kv_out;         /* N_KV_HEADS * head_dim */
-    size_t intermediate;   /* FFN inner dim — 12288 if kv_shared else 6144 */
-    size_t sliding_window; /* 0 (unbounded) for full; 512 for sliding */
-    float  rope_theta;     /* 1000000.0 for full; 10000.0 for sliding */
-    int    n_rotated_dims; /* 128 for full; head_dim for sliding */
-    float  layer_scalar;   /* per-layer output scale (scalar tensor) */
+    int                         layer_idx;
+    enum transformer_mixer_kind mixer;          /* 0 = attention (all pre-qwen35 families) */
+    bool                        is_full;        /* full-attn (vs sliding-window) */
+    bool                        is_kv_shared;   /* layers 15..34: no own K/V projections */
+    size_t                      head_dim;       /* 512 if is_full else 256 */
+    size_t                      q_out;          /* N_Q_HEADS * head_dim */
+    size_t                      kv_out;         /* N_KV_HEADS * head_dim */
+    size_t                      intermediate;   /* FFN inner dim — 12288 if kv_shared else 6144 */
+    size_t                      sliding_window; /* 0 (unbounded) for full; 512 for sliding */
+    float                       rope_theta;     /* 1000000.0 for full; 10000.0 for sliding */
+    int                         n_rotated_dims; /* 128 for full; head_dim for sliding */
+    float                       layer_scalar;   /* per-layer output scale (scalar tensor) */
 
     /* ---- Norm weights (always F32 DENSE). ----------------------------- */
     struct geist_tensor attn_norm;           /* [HIDDEN] */
@@ -115,6 +125,19 @@ struct transformer_layer_weights {
      * at load time so no runtime AWQ work is needed for those. */
     float *o_awq_inv_scale;    /* [q_out] or nullptr */
     float *down_awq_inv_scale; /* [intermediate] or nullptr */
+
+    /* ---- Gated-DeltaNet weights (mixer == GEIST_MIXER_DELTANET only;
+     * all-zero otherwise). Dims from config.dn_* (#281). ---------------- */
+    struct geist_tensor dn_qkv;     /* [conv_dim, d_model]  in_proj_qkv */
+    struct geist_tensor dn_z;       /* [value_dim, d_model] in_proj_z (output gate) */
+    struct geist_tensor dn_conv;    /* [conv_dim, kernel]   depthwise conv1d */
+    struct geist_tensor dn_beta;    /* [n_v_heads, d_model] in_proj_b */
+    struct geist_tensor dn_alpha;   /* [n_v_heads, d_model] in_proj_a */
+    struct geist_tensor dn_a;       /* [n_v_heads] f32 — GGUF ssm_a = -exp(A_log) */
+    struct geist_tensor dn_dt_bias; /* [n_v_heads] f32 — ssm_dt.bias */
+    struct geist_tensor dn_norm;    /* [head_v] gated RMSNorm weight (1-centered) */
+    struct geist_tensor dn_out;     /* [d_model, value_dim] out_proj */
+    struct geist_weight dn_qkv_w, dn_z_w, dn_beta_w, dn_alpha_w, dn_out_w;
 
     /* ---- Owning buffer handles (so destroy can free them). ------------ *
      * The structs above carry .buffer pointers but the LIST OF buffers we
@@ -249,6 +272,28 @@ struct transformer_arch_session {
      * bind aliased slices directly; scratch_pool_base == buffer_map(buf).
      * CPU backends malloc under the hood — behavior unchanged. */
     struct geist_buffer *scratch_pool_buf;
+
+    /* ---- Gated-DeltaNet recurrent state (#281). Heap f32, allocated
+     * at session_alloc only for layers with mixer == DELTANET; nullptr
+     * slots otherwise. Zeroed on session reset. There is no rewind —
+     * the family leaves verify_forward/kv_truncate-based speculative
+     * decoding unused (engine falls back to sequential decode).
+     *   dn_conv_state[li]: [(kernel-1) * conv_dim]  rolling pre-conv qkv
+     *   dn_S[li]:          [n_v_heads * head_k * head_v]  delta state */
+    float **dn_conv_state;
+    float **dn_S;
+    /* qwen35 scratch (#281): joint q+gate projection result
+     * [m_max, 2*q_out] + saved per-head gate [m_max, q_out], and the
+     * DeltaNet projection outputs (qkv [m_max, conv_dim], z
+     * [m_max, value_dim], beta+alpha [m_max, 2*n_v_heads]) — backend
+     * buffers so the quantized linear kernels write them directly;
+     * the recurrence itself maps them host-side. */
+    struct geist_buffer *qgate_joint;
+    struct geist_buffer *qgate_gate;
+    struct geist_buffer *dn_scratch_qkv;
+    struct geist_buffer *dn_scratch_z;
+    struct geist_buffer *dn_scratch_b; /* beta projection  [m_max, n_v_heads] */
+    struct geist_buffer *dn_scratch_a; /* alpha projection [m_max, n_v_heads] */
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;

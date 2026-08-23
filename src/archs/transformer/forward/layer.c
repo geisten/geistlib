@@ -22,6 +22,7 @@
 #include <geist.h>
 #include <geist_backend.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -209,9 +210,14 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
 
     frame_arena_reset(&sess->scratch_arena);
 
-    const bool        profile = transformer_profile_enabled();
-    uint64_t          t0      = profile ? transformer_profile_now_ns() : 0;
-    enum geist_status s       = transformer_layer_run_attention_block(&ctx);
+    const bool profile = transformer_profile_enabled();
+    uint64_t   t0      = profile ? transformer_profile_now_ns() : 0;
+    /* Per-layer token mixer (#281): DeltaNet layers replace the whole
+     * attention block (incl. its residual add); the FFN/PLE stages are
+     * mixer-agnostic. */
+    enum geist_status s = st->layers[layer_idx].mixer == GEIST_MIXER_DELTANET
+                                  ? transformer_layer_run_deltanet_block(&ctx)
+                                  : transformer_layer_run_attention_block(&ctx);
     transformer_profile_add(TRANSFORMER_PROFILE_ATTENTION, t0);
     if (s != GEIST_OK) {
         return s;
@@ -279,6 +285,12 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     }
     case GEIST_DTYPE_Q3_K:
         dequant_q3_K_row(raw + row_idx * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, dst, n_in);
+        break;
+    case GEIST_DTYPE_Q4_0:
+        dequant_q4_0_row(raw + row_idx * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, dst, n_in);
+        break;
+    case GEIST_DTYPE_Q4_1:
+        dequant_q4_1_row(raw + row_idx * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, dst, n_in);
         break;
     case GEIST_DTYPE_Q4_K:
         dequant_q4_K_row(raw + row_idx * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, dst, n_in);

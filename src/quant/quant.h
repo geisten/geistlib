@@ -48,6 +48,9 @@ void             dequant_q8_0_row(const void *blocks, float *out, size_t n_elems
 constexpr size_t Q4_0_BLOCK_ELEMS = 32;
 constexpr size_t Q4_0_BLOCK_BYTES = 18;
 void             dequant_q4_0_row(const void *blocks, float *out, size_t n_elems);
+constexpr size_t Q4_1_BLOCK_ELEMS = 32;
+constexpr size_t Q4_1_BLOCK_BYTES = 20;
+void             dequant_q4_1_row(const void *blocks, float *out, size_t n_elems);
 
 /* Q3_K super-block: 256 elements, 110 bytes:
  *   32 hmask (high bit), 64 qs (low 2 bits), 12 scales (16 × 6-bit signed), 1 fp16 d */

@@ -607,6 +607,8 @@ static size_t blk_bytes_for(enum geist_dtype dt) {
     switch (dt) {
     case GEIST_DTYPE_Q4_0:
         return Q4_0_BLOCK_BYTES;
+    case GEIST_DTYPE_Q4_1:
+        return Q4_1_BLOCK_BYTES;
     case GEIST_DTYPE_Q4_K:
         return Q4_K_BLOCK_BYTES;
     case GEIST_DTYPE_Q5_K:
@@ -625,6 +627,8 @@ static size_t blk_elems_for(enum geist_dtype dt) {
     switch (dt) {
     case GEIST_DTYPE_Q4_0:
         return Q4_0_BLOCK_ELEMS;
+    case GEIST_DTYPE_Q4_1:
+        return Q4_1_BLOCK_ELEMS;
     case GEIST_DTYPE_Q4_K:
         return Q4_K_BLOCK_ELEMS;
     case GEIST_DTYPE_Q5_K:
@@ -643,6 +647,8 @@ static dequant_row_fn dequant_row_fn_for(enum geist_dtype dt) {
     switch (dt) {
     case GEIST_DTYPE_Q4_0:
         return (dequant_row_fn) dequant_q4_0_row;
+    case GEIST_DTYPE_Q4_1:
+        return (dequant_row_fn) dequant_q4_1_row;
     case GEIST_DTYPE_Q4_K:
         return (dequant_row_fn) dequant_q4_K_row;
     case GEIST_DTYPE_Q5_K:
@@ -1038,6 +1044,11 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          cpu_neon_w_dequant_trampoline_m1,
          cpu_neon_w_dequant_trampoline_mN,
          "q4_0/trampoline"},
+        {GEIST_DTYPE_Q4_1,
+         CPU_NEON_ISA_NEON,
+         cpu_neon_w_dequant_trampoline_m1,
+         cpu_neon_w_dequant_trampoline_mN,
+         "q4_1/trampoline"},
 
 /* TQ2_0: ternary BitNet b1.58. Preferred (q8a, requires dotprod)
  * first, fp32 fallback second. The compile-time #if keeps the
