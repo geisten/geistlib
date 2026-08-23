@@ -307,6 +307,13 @@ void transformer_probe_ffn_sparsity(const struct geist_backend_vtbl *v,
                                     struct geist_buffer             *buf,
                                     size_t                           n_elems);
 
+/* forward/layer_deltanet.c — gated-DeltaNet token mixer (#281). Runs in
+ * place of the attention block for mixer == GEIST_MIXER_DELTANET layers;
+ * writes scratch_h_post_attn like the attention block so the FFN stage
+ * is mixer-agnostic. */
+[[nodiscard]] enum geist_status
+transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx);
+
 /* forward/layer.c — exported helper used across forward/. */
 [[nodiscard]] enum geist_status linear_w_or_legacy(struct geist_backend            *be,
                                                    const struct geist_backend_vtbl *v,

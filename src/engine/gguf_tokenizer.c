@@ -317,7 +317,12 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
         tok->mode           = GGUF_TOK_MODE_GPT2;
         size_t      pre_len = 0;
         const char *pre     = gguf_get_meta_string(ctx, "tokenizer.ggml.pre", &pre_len);
-        tok->pre_qwen2      = pre != nullptr && pre_len == 5 && memcmp(pre, "qwen2", 5) == 0;
+        /* qwen35's regex differs from qwen2 only by \p{M} in the letter
+         * classes; the scanner's non-ASCII approximation already treats
+         * combining marks as letters, so both share one path (#281 —
+         * parity pinned per-family by the e2e tests). */
+        tok->pre_qwen2 = pre != nullptr && ((pre_len == 5 && memcmp(pre, "qwen2", 5) == 0) ||
+                                            (pre_len == 6 && memcmp(pre, "qwen35", 6) == 0));
     } else if (tok->n_merges > 0) {
         tok->mode = GGUF_TOK_MODE_SPM;
     } else if (tok->scores != nullptr) {

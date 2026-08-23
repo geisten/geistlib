@@ -260,8 +260,10 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
      * the source layer's cache at runtime). Three branches, exactly one
      * fires per layer based on the kv_*_enabled flags. */
     for (size_t li = 0; li < (size_t) st->n_layers; li++) {
-        if (st->layers[li].is_kv_shared) {
-            continue; /* all KV pointer slots stay nullptr */
+        if (st->layers[li].is_kv_shared || st->layers[li].mixer == GEIST_MIXER_DELTANET) {
+            continue; /* all KV pointer slots stay nullptr — shared layers
+                       * alias an owner; DeltaNet layers carry recurrent
+                       * state instead (dn_conv_state / dn_S, #281) */
         }
         const size_t hd       = st->layers[li].head_dim;
         const size_t n_elems  = st->max_seq_len * st->n_kv_heads * hd;
@@ -546,6 +548,79 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
             p[i] = 1.0f;
         }
         be->desc->vtbl->buffer_unmap(sess->scratch_ones_headdim_max);
+    }
+
+    /* ---- Gated-DeltaNet recurrent state (#281): heap f32 per DELTANET
+     * layer — conv history (kernel-1 x conv_dim) + delta state S
+     * (n_v_heads x head_k x head_v). Zero-initialized = empty sequence. */
+    {
+        struct transformer_arch_state *stt  = sess->model;
+        size_t                         n_dn = 0;
+        for (size_t li = 0; li < stt->n_layers; li++)
+            if (stt->layers[li].mixer == GEIST_MIXER_DELTANET)
+                n_dn++;
+        if (n_dn > 0) {
+            const size_t key_dim   = stt->config.dn_n_k_heads * stt->config.dn_head_k;
+            const size_t value_dim = stt->config.dn_n_v_heads * stt->config.dn_head_v;
+            const size_t conv_dim  = 2 * key_dim + value_dim;
+            const size_t conv_n    = (stt->config.dn_conv_kernel - 1) * conv_dim;
+            const size_t s_n =
+                    stt->config.dn_n_v_heads * stt->config.dn_head_k * stt->config.dn_head_v;
+            sess->dn_conv_state = heap_alloc_aligned(stt->n_layers * sizeof(float *), 64);
+            sess->dn_S          = heap_alloc_aligned(stt->n_layers * sizeof(float *), 64);
+            if (sess->dn_conv_state == nullptr || sess->dn_S == nullptr) {
+                geist_backend_set_error(be, GEIST_E_OOM, "transformer: dn state alloc failed");
+                return GEIST_E_OOM;
+            }
+            memset(sess->dn_conv_state, 0, stt->n_layers * sizeof(float *));
+            memset(sess->dn_S, 0, stt->n_layers * sizeof(float *));
+            for (size_t li = 0; li < stt->n_layers; li++) {
+                if (stt->layers[li].mixer != GEIST_MIXER_DELTANET)
+                    continue;
+                sess->dn_conv_state[li] = heap_alloc_aligned(conv_n * sizeof(float), 64);
+                sess->dn_S[li]          = heap_alloc_aligned(s_n * sizeof(float), 64);
+                if (sess->dn_conv_state[li] == nullptr || sess->dn_S[li] == nullptr) {
+                    geist_backend_set_error(be, GEIST_E_OOM, "transformer: dn state alloc failed");
+                    return GEIST_E_OOM;
+                }
+                memset(sess->dn_conv_state[li], 0, conv_n * sizeof(float));
+                memset(sess->dn_S[li], 0, s_n * sizeof(float));
+            }
+        }
+        /* qwen35 attention gate + DeltaNet projection scratch buffers. */
+        if (stt->config.has_attn_output_gate) {
+            size_t q_out_max = 0;
+            for (size_t li = 0; li < stt->n_layers; li++)
+                if (stt->layers[li].q_out > q_out_max)
+                    q_out_max = stt->layers[li].q_out;
+            s = alloc_scratch(be, sess->m_max * 2 * q_out_max * sizeof(float), &sess->qgate_joint);
+            if (s != GEIST_OK)
+                return s;
+            s = alloc_scratch(be, sess->m_max * q_out_max * sizeof(float), &sess->qgate_gate);
+            if (s != GEIST_OK)
+                return s;
+        }
+        if (n_dn > 0) {
+            const size_t key_dim   = stt->config.dn_n_k_heads * stt->config.dn_head_k;
+            const size_t value_dim = stt->config.dn_n_v_heads * stt->config.dn_head_v;
+            const size_t conv_dim  = 2 * key_dim + value_dim;
+            s = alloc_scratch(be, sess->m_max * conv_dim * sizeof(float), &sess->dn_scratch_qkv);
+            if (s != GEIST_OK)
+                return s;
+            s = alloc_scratch(be, sess->m_max * value_dim * sizeof(float), &sess->dn_scratch_z);
+            if (s != GEIST_OK)
+                return s;
+            s = alloc_scratch(be,
+                              sess->m_max * stt->config.dn_n_v_heads * sizeof(float),
+                              &sess->dn_scratch_b);
+            if (s != GEIST_OK)
+                return s;
+            s = alloc_scratch(be,
+                              sess->m_max * stt->config.dn_n_v_heads * sizeof(float),
+                              &sess->dn_scratch_a);
+            if (s != GEIST_OK)
+                return s;
+        }
     }
 
     return GEIST_OK;
@@ -1177,6 +1252,41 @@ void transformer_session_free(struct transformer_arch_state   *state,
         return;
     }
     struct geist_backend *be = (state != nullptr) ? state->backend : nullptr;
+
+    /* Gated-DeltaNet state + qwen35 gate scratch (#281). */
+    if (state != nullptr && sess->dn_conv_state != nullptr) {
+        for (size_t li = 0; li < state->n_layers; li++) {
+            void *pc = sess->dn_conv_state[li];
+            safe_free(&pc);
+        }
+        void *pa = sess->dn_conv_state;
+        safe_free(&pa);
+    }
+    if (state != nullptr && sess->dn_S != nullptr) {
+        for (size_t li = 0; li < state->n_layers; li++) {
+            void *ps = sess->dn_S[li];
+            safe_free(&ps);
+        }
+        void *pb = sess->dn_S;
+        safe_free(&pb);
+    }
+    if (be != nullptr) {
+        struct geist_buffer *extra[] = {
+                sess->qgate_joint,
+                sess->qgate_gate,
+                sess->dn_scratch_qkv,
+                sess->dn_scratch_z,
+                sess->dn_scratch_b,
+                sess->dn_scratch_a,
+        };
+        for (size_t i = 0; i < sizeof extra / sizeof extra[0]; i++)
+            if (extra[i] != nullptr)
+                be->desc->vtbl->buffer_destroy(be, extra[i]);
+    }
+    sess->qgate_joint   = nullptr;
+    sess->qgate_gate    = nullptr;
+    sess->dn_conv_state = nullptr;
+    sess->dn_S          = nullptr;
 
     /* Per-layer KV cache buffers. Each slot may be NULL — exactly one
      * representation (FP32 / INT8 / KIVI) was allocated per non-shared
