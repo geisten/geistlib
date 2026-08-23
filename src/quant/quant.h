@@ -183,6 +183,16 @@ void linear_q6k_decode_fp32(const float *x, const void *w_q6k, size_t n_in, size
  */
 float quantize_x_int8_sym(const float *x, size_t n, int8_t *x_q8);
 
+/* Q4_0/Q4_1 W8A8 (#281 perf): int8-dot kernels for the 32-element
+ * traditional quants; replaces the dequant trampoline for the qwen35
+ * Q4_0 exports. Q4_1's min-offset folds via per-block activation sums. */
+void linear_q4_0_decode_w4a8(const float *x, const void *w_q4, size_t n_in, size_t n_out, float *y);
+void linear_q4_1_decode_w4a8(const float *x, const void *w_q4, size_t n_in, size_t n_out, float *y);
+void linear_q4_0_w4a8_prefill(
+        const float *x, size_t m, const void *w_q4, size_t n_in, size_t n_out, float *y);
+void linear_q4_1_w4a8_prefill(
+        const float *x, size_t m, const void *w_q4, size_t n_in, size_t n_out, float *y);
+
 void linear_q4k_decode_w4a8(const float *x, const void *w_q4k, size_t n_in, size_t n_out, float *y);
 void linear_q4k_decode_w4a8_pair(const float *x,
                                  const void  *w0_q4k,
