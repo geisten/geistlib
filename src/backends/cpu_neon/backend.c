@@ -29,6 +29,8 @@
 
 /* ---------- Lifecycle ---------- */
 
+static void cpu_neon_omp_pool_init(void);
+
 [[nodiscard]] static enum geist_status cpu_neon_create(struct geist_backend            *be,
                                                        const struct geist_backend_opts *opts) {
     (void) opts;
@@ -44,6 +46,7 @@
     st->policy = cpu_neon_kernel_policy_default(&st->hw);
 
     be->state = st;
+    cpu_neon_omp_pool_init();
     return GEIST_OK;
 }
 
@@ -199,6 +202,34 @@ static int apple_perf_cores(void) {
 }
 #endif
 
+/* One-time OMP pool sizing at backend create. The region hooks below
+ * cap the ACTIVE thread count per phase, but with an ambient pool of
+ * all cores (OMP default: num_procs) the scheduler is free to place
+ * the capped subset on efficiency cores — measured on M-series
+ * (qwen3.5-4B decode): ambient 10-thread pool 114 ms/tok vs an
+ * 8-thread pool 47 ms/tok, SAME active cap. Size the pool itself to
+ * the performance-core count once, before any parallel region exists.
+ * An explicit OMP_NUM_THREADS wins — never override the user. */
+static void cpu_neon_omp_pool_init(void) {
+    static _Atomic int done = 0;
+    int                exp  = 0;
+    if (!atomic_compare_exchange_strong(&done, &exp, 1))
+        return;
+    /* Decode fires ~200 tiny parallel regions per token; with the
+     * default passive wait policy the workers sleep between them and
+     * the wake latency dominates (measured qwen3.5-4B decode:
+     * 163 ms/tok passive vs 46 ms active, same thread count). The
+     * policy is runtime-init-only, but backend create runs before the
+     * first parallel region, so setenv still takes effect. setenv with
+     * overwrite=0 — an explicit user policy always wins. */
+    setenv("OMP_WAIT_POLICY", "active", 0);
+    if (getenv("OMP_NUM_THREADS") != nullptr)
+        return;
+    const int pc = apple_perf_cores();
+    if (pc > 0)
+        omp_set_num_threads(pc);
+}
+
 /* Target OMP thread count for `region`, cached on first use. 0 = "leave the
  * ambient OMP_NUM_THREADS alone". Env overrides force a count (>0) or disable
  * the adjustment (0): GEIST_PREFILL_THREADS, GEIST_DECODE_THREADS. */
@@ -273,6 +304,9 @@ static void cpu_neon_parallel_region_end(struct geist_backend *be, int token) {
         omp_set_num_threads(token);
 }
 #else  /* !_OPENMP — no host threading to manage. */
+static void cpu_neon_omp_pool_init(void) {
+}
+
 static int cpu_neon_parallel_region_begin(struct geist_backend      *be,
                                           enum geist_parallel_region region) {
     (void) be;

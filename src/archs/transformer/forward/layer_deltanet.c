@@ -40,6 +40,10 @@
 #include <math.h>
 #include <string.h>
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 static inline float silu_f(float v) {
     const float e = expf(-fabsf(v));
     return (v >= 0.0f) ? v / (1.0f + e) : (v * e) / (1.0f + e);
@@ -63,6 +67,81 @@ static void l2norm_row(float *x, size_t n, float eps) {
     const float inv = (float) (1.0 / sqrt(ss + (double) eps));
     for (size_t i = 0; i < n; i++)
         x[i] *= inv;
+}
+
+/* One delta-rule step for one v-head (perf lever 2, #281):
+ *   pass 1: S *= exp(g);  kv_mem = S^T k        (kv_mem stays L1-resident)
+ *   delta  = (v - kv_mem) * beta
+ *   pass 2: S += k (x) delta;  o = S^T q
+ * The two passes are a real data dependency (delta needs the full
+ * kv_mem). NEON: d_v-contiguous rows as float32x4 FMA chains; the
+ * scalar tail covers d_v % 4 != 0 (none of the known variants). */
+static void dn_head_step(float       *S,  /* [d_k, d_v] */
+                         const float *qh, /* [d_k] */
+                         const float *kh, /* [d_k] */
+                         const float *vh, /* [d_v] */
+                         float        decay,
+                         float        beta,
+                         size_t       d_k,
+                         size_t       d_v,
+                         float       *kv_mem, /* scratch [d_v] */
+                         float       *delta,  /* scratch [d_v] */
+                         float       *o_h) {  /* out [d_v] */
+#if defined(__ARM_NEON)
+    const float32x4_t vdec = vdupq_n_f32(decay);
+    for (size_t j = 0; j < d_v; j += 4)
+        vst1q_f32(kv_mem + j, vdupq_n_f32(0.0f));
+    for (size_t i = 0; i < d_k; i++) {
+        float            *Srow = S + i * d_v;
+        const float32x4_t vki  = vdupq_n_f32(kh[i]);
+        for (size_t j = 0; j < d_v; j += 4) {
+            float32x4_t sv = vmulq_f32(vld1q_f32(Srow + j), vdec);
+            vst1q_f32(Srow + j, sv);
+            vst1q_f32(kv_mem + j, vfmaq_f32(vld1q_f32(kv_mem + j), sv, vki));
+        }
+    }
+    const float32x4_t vbeta = vdupq_n_f32(beta);
+    for (size_t j = 0; j < d_v; j += 4) {
+        const float32x4_t dv =
+                vmulq_f32(vsubq_f32(vld1q_f32(vh + j), vld1q_f32(kv_mem + j)), vbeta);
+        vst1q_f32(delta + j, dv);
+        vst1q_f32(o_h + j, vdupq_n_f32(0.0f));
+    }
+    for (size_t i = 0; i < d_k; i++) {
+        float            *Srow = S + i * d_v;
+        const float32x4_t vki  = vdupq_n_f32(kh[i]);
+        const float32x4_t vqi  = vdupq_n_f32(qh[i]);
+        for (size_t j = 0; j < d_v; j += 4) {
+            float32x4_t sv = vfmaq_f32(vld1q_f32(Srow + j), vld1q_f32(delta + j), vki);
+            vst1q_f32(Srow + j, sv);
+            vst1q_f32(o_h + j, vfmaq_f32(vld1q_f32(o_h + j), sv, vqi));
+        }
+    }
+#else
+    for (size_t j = 0; j < d_v; j++)
+        kv_mem[j] = 0.0f;
+    for (size_t i = 0; i < d_k; i++) {
+        float      *Srow = S + i * d_v;
+        const float ki   = kh[i];
+        for (size_t j = 0; j < d_v; j++) {
+            Srow[j] *= decay;
+            kv_mem[j] += Srow[j] * ki;
+        }
+    }
+    for (size_t j = 0; j < d_v; j++) {
+        delta[j] = (vh[j] - kv_mem[j]) * beta;
+        o_h[j]   = 0.0f;
+    }
+    for (size_t i = 0; i < d_k; i++) {
+        float      *Srow = S + i * d_v;
+        const float ki   = kh[i];
+        const float qi   = qh[i];
+        for (size_t j = 0; j < d_v; j++) {
+            Srow[j] += ki * delta[j];
+            o_h[j] += Srow[j] * qi;
+        }
+    }
+#endif
 }
 
 [[nodiscard]] enum geist_status
@@ -190,14 +269,45 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
             geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "deltanet: conv_dim too large");
             return GEIST_E_UNSUPPORTED;
         }
-        for (size_t c = 0; c < convd; c++) {
-            float acc = 0.0f;
-            for (size_t j = 0; j < K; j++) {
-                /* history index: j=0..K-2 from cstate, j=K-1 is current */
-                const float xv = (j + 1 < K) ? cstate[j * convd + c] : qkv_t[c];
-                acc += convw[c * K + j] * xv;
+#if defined(__ARM_NEON)
+        if (K == 4) {
+            /* Kernel-4 fast path: vld4 deinterleaves w[c][4] into 4
+             * per-tap vectors of 4 channels; history rows are channel-
+             * contiguous. silu stays scalar (expf). */
+            const float *h0 = cstate;             /* t-3 */
+            const float *h1 = cstate + convd;     /* t-2 */
+            const float *h2 = cstate + 2 * convd; /* t-1 */
+            size_t       c  = 0;
+            for (; c + 4 <= convd; c += 4) {
+                const float32x4x4_t wv  = vld4q_f32(convw + c * 4);
+                float32x4_t         acc = vmulq_f32(wv.val[0], vld1q_f32(h0 + c));
+                acc                     = vfmaq_f32(acc, wv.val[1], vld1q_f32(h1 + c));
+                acc                     = vfmaq_f32(acc, wv.val[2], vld1q_f32(h2 + c));
+                acc                     = vfmaq_f32(acc, wv.val[3], vld1q_f32(qkv_t + c));
+                float av[4];
+                vst1q_f32(av, acc);
+                y[c]     = silu_f(av[0]);
+                y[c + 1] = silu_f(av[1]);
+                y[c + 2] = silu_f(av[2]);
+                y[c + 3] = silu_f(av[3]);
             }
-            y[c] = silu_f(acc);
+            for (; c < convd; c++) {
+                float acc = convw[c * 4] * h0[c] + convw[c * 4 + 1] * h1[c] +
+                            convw[c * 4 + 2] * h2[c] + convw[c * 4 + 3] * qkv_t[c];
+                y[c]      = silu_f(acc);
+            }
+        } else
+#endif
+        {
+            for (size_t c = 0; c < convd; c++) {
+                float acc = 0.0f;
+                for (size_t j = 0; j < K; j++) {
+                    /* history index: j=0..K-2 from cstate, j=K-1 is current */
+                    const float xv = (j + 1 < K) ? cstate[j * convd + c] : qkv_t[c];
+                    acc += convw[c * K + j] * xv;
+                }
+                y[c] = silu_f(acc);
+            }
         }
         /* roll conv state: drop oldest, append current pre-conv vector */
         if (K >= 2) {
@@ -222,6 +332,9 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
         float       *z_t = zg + t * vald;
         float       *o_t = mix + t * vald; /* == z_t buffer, overwritten below */
 
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
         for (size_t hv = 0; hv < n_vh; hv++) {
             const float beta = 1.0f / (1.0f + expf(-b_t[hv]));
             /* softplus in f32; aw = -exp(A_log) already */
@@ -239,32 +352,8 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
             const float *vh = val + hv * d_v;
             float       *Sh = S + hv * d_k * d_v;
 
-            /* S *= exp(g); kv_mem = S^T k; delta = (v - kv_mem)*beta;
-             * S += k (x) delta; o = S^T q — fused loops. */
             float kv_mem[512], delta[512], o_h[512];
-            for (size_t j = 0; j < d_v; j++)
-                kv_mem[j] = 0.0f;
-            for (size_t i = 0; i < d_k; i++) {
-                float      *Srow = Sh + i * d_v;
-                const float ki   = kh[i];
-                for (size_t j = 0; j < d_v; j++) {
-                    Srow[j] *= decay;
-                    kv_mem[j] += Srow[j] * ki;
-                }
-            }
-            for (size_t j = 0; j < d_v; j++)
-                delta[j] = (vh[j] - kv_mem[j]) * beta;
-            for (size_t j = 0; j < d_v; j++)
-                o_h[j] = 0.0f;
-            for (size_t i = 0; i < d_k; i++) {
-                float      *Srow = Sh + i * d_v;
-                const float ki   = kh[i];
-                const float qi   = qh[i];
-                for (size_t j = 0; j < d_v; j++) {
-                    Srow[j] += ki * delta[j];
-                    o_h[j] += Srow[j] * qi;
-                }
-            }
+            dn_head_step(Sh, qh, kh, vh, decay, beta, d_k, d_v, kv_mem, delta, o_h);
 
             /* 6. gated per-head RMSNorm + silu(z) gate. o_t aliases z_t,
              * so read the gate BEFORE overwriting. */
