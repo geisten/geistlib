@@ -44,6 +44,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Gemma-4 E2B reference geometry — the fixture this test runs against.
+ * (Were GEIST_GEMMA4_* macros in arch_state.h until the neutral-defaults
+ * inversion moved family defaults into the populators.) */
+#define GEIST_GEMMA4_HIDDEN 1536
+#define GEIST_GEMMA4_NUM_LAYERS 35
+#define GEIST_GEMMA4_HIDDEN_PER_LAYER 256
+#define GEIST_GEMMA4_PLE_OUT (GEIST_GEMMA4_NUM_LAYERS * GEIST_GEMMA4_HIDDEN_PER_LAYER)
+#define GEIST_GEMMA4_N_Q_HEADS 8
+#define GEIST_GEMMA4_N_KV_HEADS 1
+#define GEIST_GEMMA4_VOCAB 262144
+
 #define HIDDEN GEIST_GEMMA4_HIDDEN
 #define N_Q_HEADS GEIST_GEMMA4_N_Q_HEADS
 #define N_KV_HEADS GEIST_GEMMA4_N_KV_HEADS
