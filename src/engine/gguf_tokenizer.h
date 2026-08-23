@@ -72,6 +72,11 @@ struct gguf_tokenizer {
     /* Special token IDs from `tokenizer.ggml.<bos|eos|unknown>_token_id`.
      * -1 when the corresponding key is absent. */
     int32_t bos_id;
+    /* tokenizer.ggml.add_bos_token: whether encode should PREPEND bos.
+     * Qwen-family GGUFs carry a bos_id but set this false — blindly
+     * prepending desynced the qwen35 recurrent state (#281). Absent
+     * key falls back to "prepend iff bos_id set" (prior behavior). */
+    bool    add_bos;
     int32_t eos_id;
     int32_t unk_id;
 

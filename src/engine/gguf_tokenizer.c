@@ -332,6 +332,21 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
         tok->mode = GGUF_TOK_MODE_UNSUPPORTED;
     }
 
+    /* BOS prepend policy (llama.cpp convention): explicit
+     * tokenizer.ggml.add_bos_token wins; absent, SentencePiece-style
+     * models default to prepending (Llama/Gemma) while byte-BPE (gpt2
+     * mode — GPT2/Qwen lineage) defaults to NOT prepending. Qwen3.8
+     * GGUFs carry a bos_id with no flag; blindly prepending desynced
+     * the qwen35 recurrent stack into repetition loops (#281). */
+    {
+        bool b;
+        if (gguf_get_meta_bool(ctx, "tokenizer.ggml.add_bos_token", &b)) {
+            tok->add_bos = b;
+        } else {
+            tok->add_bos = tok->bos_id >= 0 && tok->mode != GGUF_TOK_MODE_GPT2;
+        }
+    }
+
     if (tok->mode == GGUF_TOK_MODE_SPM || tok->mode == GGUF_TOK_MODE_UNIGRAM) {
         /* SentencePiece add_dummy_prefix — defaults to true when absent. */
         bool b;

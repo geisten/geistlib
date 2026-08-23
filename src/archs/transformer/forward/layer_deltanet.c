@@ -229,7 +229,11 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
             const float g     = aw[hv] * sp;
             const float decay = expf(g);
 
-            const size_t hk = hv / vh_per_kh; /* shared k-head */
+            /* GGUF v-heads are in TILED order [G0_v0, G1_v0, ...] (the
+             * converter's _reorder_v_heads): v-head position hv maps to
+             * k-head hv % n_kh. Identity when n_vh == n_kh (0.8B);
+             * load-bearing for the 27B's 16:48 split. */
+            const size_t hk = hv % n_kh;
             const float *qh = q + hk * d_k;
             const float *kh = k + hk * d_k;
             const float *vh = val + hv * d_v;

@@ -125,6 +125,9 @@ static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *r
     case GEIST_DTYPE_Q4_0:
         dequant_q4_0_row(base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row, n_in);
         return true;
+    case GEIST_DTYPE_Q4_1:
+        dequant_q4_1_row(base + j * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, row, n_in);
+        return true;
     default:
         return false;
     }
