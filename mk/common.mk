@@ -151,6 +151,7 @@ LIB_SOURCES := \
     src/archs/transformer/forward/kv_store.c \
     src/archs/transformer/forward/layer.c \
     src/archs/transformer/forward/layer_attn.c \
+    src/archs/transformer/forward/layer_deltanet.c \
     src/archs/transformer/forward/layer_ffn.c \
     src/archs/transformer/forward/layer_ple.c \
     src/archs/transformer/forward/linear.c \
@@ -178,6 +179,7 @@ LIB_SOURCES := \
     src/formats/gguf/common.c \
     src/formats/gguf/q8_0.c \
     src/formats/gguf/q4_0.c \
+    src/formats/gguf/q4_1.c \
     src/formats/gguf/q3_K.c \
     src/formats/gguf/q4_K.c \
     src/formats/gguf/q5_K.c \

@@ -151,6 +151,13 @@ jobs:
           path: gguf_artifacts/qwen3-0.6b-q8_0.gguf
           key: geist-model-qwen3-0.6b-q8-9465e63a22ad
 
+      - name: Cache Qwen3.5 reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/qwen3.5-0.8b-q8_0.gguf
+          key: geist-model-qwen35-0.8b-q8-0ad885ffd4bb
+      - name: Fetch Qwen3.5 reference model
+        run: make fetch-qwen35-model
       - name: Fetch Qwen3 reference model
         if: matrix.target == 'linux'
         run: make fetch-qwen3-model
@@ -324,6 +331,13 @@ jobs:
         with:
           path: gguf_artifacts/qwen3-0.6b-q8_0.gguf
           key: geist-model-qwen3-0.6b-q8-9465e63a22ad
+      - name: Cache Qwen3.5 reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/qwen3.5-0.8b-q8_0.gguf
+          key: geist-model-qwen35-0.8b-q8-0ad885ffd4bb
+      - name: Fetch Qwen3.5 reference model
+        run: make fetch-qwen35-model
       - name: Fetch Qwen3 reference model
         run: make fetch-qwen3-model
       - name: Integration + e2e tests (real models, fixtures mandatory)
@@ -773,6 +787,13 @@ jobs:
         with:
           path: gguf_artifacts/qwen3-0.6b-q8_0.gguf
           key: geist-model-qwen3-0.6b-q8-9465e63a22ad
+      - name: Cache Qwen3.5 reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/qwen3.5-0.8b-q8_0.gguf
+          key: geist-model-qwen35-0.8b-q8-0ad885ffd4bb
+      - name: Fetch Qwen3.5 reference model
+        run: make fetch-qwen35-model
       - name: Fetch Qwen3 reference model
         run: make fetch-qwen3-model
       - name: Build + run suites (MODE=cov, fixtures mandatory)

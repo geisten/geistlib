@@ -380,6 +380,22 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
     }
     sess->logits_valid       = false;
     sess->next_token_pending = 0;
+    /* Gated-DeltaNet layers carry recurrent state with no rewind — a
+     * reset clears it to the empty sequence (#281). Prefix pinning is
+     * unsupported for this family (prefix_length stays 0). */
+    if (sess->dn_conv_state != nullptr || sess->dn_S != nullptr) {
+        const struct transformer_arch_state *st = sess->model;
+        const size_t key_dim                    = st->config.dn_n_k_heads * st->config.dn_head_k;
+        const size_t value_dim                  = st->config.dn_n_v_heads * st->config.dn_head_v;
+        const size_t conv_n = (st->config.dn_conv_kernel - 1) * (2 * key_dim + value_dim);
+        const size_t s_n    = st->config.dn_n_v_heads * st->config.dn_head_k * st->config.dn_head_v;
+        for (size_t li = 0; li < st->n_layers; li++) {
+            if (sess->dn_conv_state != nullptr && sess->dn_conv_state[li] != nullptr)
+                memset(sess->dn_conv_state[li], 0, conv_n * sizeof(float));
+            if (sess->dn_S != nullptr && sess->dn_S[li] != nullptr)
+                memset(sess->dn_S[li], 0, s_n * sizeof(float));
+        }
+    }
 }
 
 enum geist_status transformer_session_apply_opts(struct transformer_arch_session *sess,

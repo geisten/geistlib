@@ -114,7 +114,70 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
 
     struct geist_tensor t_q_2d = view_2d(sess->scratch_q, ctx->SEQ, (int64_t) ctx->q_out);
     t0                         = profile ? transformer_profile_now_ns() : 0;
-    if (ctx->compute_kv) {
+    if (st->config.has_attn_output_gate) {
+        /* qwen35 (#281): q_proj jointly emits [query(hd) | gate(hd)] per
+         * head (2x q_out rows). Project into qgate_joint, then split
+         * host-side: query halves -> scratch_q (head-major, the layout
+         * every downstream stage expects), gate halves -> qgate_gate
+         * (applied after attention, before o_proj). */
+        struct geist_tensor t_qg = view_2d(sess->qgate_joint, ctx->SEQ, (int64_t) (2 * ctx->q_out));
+        s                        = linear_w_or_legacy(be,
+                                                      v,
+                                                      sess->scratch_normed,
+                                                      sess->qgate_joint,
+                                                      &L->q_proj_w,
+                                                      ctx->seq,
+                                                      &t_normed_2d,
+                                                      &L->q_proj,
+                                                      &t_qg);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        const float *qg = (const float *) v->buffer_map(sess->qgate_joint);
+        float       *qp = (float *) v->buffer_map(sess->scratch_q);
+        float       *gp = (float *) v->buffer_map(sess->qgate_gate);
+        if (qg == nullptr || qp == nullptr || gp == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+        for (size_t t = 0; t < ctx->seq; t++) {
+            for (size_t h = 0; h < st->n_q_heads; h++) {
+                const float *src = qg + t * 2 * ctx->q_out + h * 2 * ctx->hd;
+                memcpy(qp + t * ctx->q_out + h * ctx->hd, src, ctx->hd * sizeof(float));
+                memcpy(gp + t * ctx->q_out + h * ctx->hd, src + ctx->hd, ctx->hd * sizeof(float));
+            }
+        }
+        v->buffer_unmap(sess->qgate_joint);
+        v->buffer_unmap(sess->scratch_q);
+        v->buffer_unmap(sess->qgate_gate);
+        if (ctx->compute_kv) {
+            struct geist_tensor t_k_2d = view_2d(sess->scratch_k, ctx->SEQ, (int64_t) ctx->kv_out);
+            struct geist_tensor t_v_2d = view_2d(sess->scratch_v, ctx->SEQ, (int64_t) ctx->kv_out);
+            s                          = linear_w_or_legacy(be,
+                                                            v,
+                                                            sess->scratch_normed,
+                                                            sess->scratch_k,
+                                                            &L->k_proj_w,
+                                                            ctx->seq,
+                                                            &t_normed_2d,
+                                                            &L->k_proj,
+                                                            &t_k_2d);
+            if (s == GEIST_OK) {
+                s = linear_w_or_legacy(be,
+                                       v,
+                                       sess->scratch_normed,
+                                       sess->scratch_v,
+                                       &L->v_proj_w,
+                                       ctx->seq,
+                                       &t_normed_2d,
+                                       &L->v_proj,
+                                       &t_v_2d);
+            }
+            if (s != GEIST_OK) {
+                return s;
+            }
+        }
+        transformer_profile_add(&g_attn_profile, ATTN_PROFILE_QKV, t0);
+    } else if (ctx->compute_kv) {
         struct geist_tensor t_k_2d = view_2d(sess->scratch_k, ctx->SEQ, (int64_t) ctx->kv_out);
         struct geist_tensor t_v_2d = view_2d(sess->scratch_v, ctx->SEQ, (int64_t) ctx->kv_out);
         s                          = linear_w_triple_or_legacy(be,
@@ -323,6 +386,21 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     t0 = profile ? transformer_profile_now_ns() : 0;
     apply_per_channel_inv_scale_inplace(
             v, sess->scratch_attn, ctx->seq, ctx->q_out, L->o_awq_inv_scale);
+
+    if (st->config.has_attn_output_gate) {
+        /* attn = attn * sigmoid(gate) elementwise over [seq, q_out]. */
+        float       *ap = (float *) v->buffer_map(sess->scratch_attn);
+        const float *gp = (const float *) v->buffer_map(sess->qgate_gate);
+        if (ap == nullptr || gp == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+        const size_t n = ctx->seq * ctx->q_out;
+        for (size_t i = 0; i < n; i++) {
+            ap[i] *= 1.0f / (1.0f + expf(-gp[i]));
+        }
+        v->buffer_unmap(sess->scratch_attn);
+        v->buffer_unmap(sess->qgate_gate);
+    }
 
     struct geist_tensor t_attn_2d = view_2d(sess->scratch_attn, ctx->SEQ, (int64_t) ctx->q_out);
     if (ctx->apply_sub_ln && L->attn_sub_norm.buffer != nullptr) {

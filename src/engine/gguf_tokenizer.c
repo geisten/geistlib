@@ -317,7 +317,12 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
         tok->mode           = GGUF_TOK_MODE_GPT2;
         size_t      pre_len = 0;
         const char *pre     = gguf_get_meta_string(ctx, "tokenizer.ggml.pre", &pre_len);
-        tok->pre_qwen2      = pre != nullptr && pre_len == 5 && memcmp(pre, "qwen2", 5) == 0;
+        /* qwen35's regex differs from qwen2 only by \p{M} in the letter
+         * classes; the scanner's non-ASCII approximation already treats
+         * combining marks as letters, so both share one path (#281 —
+         * parity pinned per-family by the e2e tests). */
+        tok->pre_qwen2 = pre != nullptr && ((pre_len == 5 && memcmp(pre, "qwen2", 5) == 0) ||
+                                            (pre_len == 6 && memcmp(pre, "qwen35", 6) == 0));
     } else if (tok->n_merges > 0) {
         tok->mode = GGUF_TOK_MODE_SPM;
     } else if (tok->scores != nullptr) {
@@ -325,6 +330,21 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
         tok->mode = GGUF_TOK_MODE_UNIGRAM;
     } else {
         tok->mode = GGUF_TOK_MODE_UNSUPPORTED;
+    }
+
+    /* BOS prepend policy (llama.cpp convention): explicit
+     * tokenizer.ggml.add_bos_token wins; absent, SentencePiece-style
+     * models default to prepending (Llama/Gemma) while byte-BPE (gpt2
+     * mode — GPT2/Qwen lineage) defaults to NOT prepending. Qwen3.8
+     * GGUFs carry a bos_id with no flag; blindly prepending desynced
+     * the qwen35 recurrent stack into repetition loops (#281). */
+    {
+        bool b;
+        if (gguf_get_meta_bool(ctx, "tokenizer.ggml.add_bos_token", &b)) {
+            tok->add_bos = b;
+        } else {
+            tok->add_bos = tok->bos_id >= 0 && tok->mode != GGUF_TOK_MODE_GPT2;
+        }
     }
 
     if (tok->mode == GGUF_TOK_MODE_SPM || tok->mode == GGUF_TOK_MODE_UNIGRAM) {
