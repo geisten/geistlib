@@ -151,6 +151,7 @@ LIB_SOURCES := \
     src/archs/transformer/forward/kv_store.c \
     src/archs/transformer/forward/layer.c \
     src/archs/transformer/forward/layer_attn.c \
+    src/archs/transformer/forward/layer_deltanet.c \
     src/archs/transformer/forward/layer_ffn.c \
     src/archs/transformer/forward/layer_ple.c \
     src/archs/transformer/forward/linear.c \

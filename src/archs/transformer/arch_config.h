@@ -151,6 +151,24 @@ struct geist_arch_config {
      *          pre-permuted — we have to apply interleaved RoPE to
      *          match. */
     bool rope_interleaved;
+
+    /* ---- qwen35 hybrid family (#281) ---------------------------------- *
+     *
+     * has_attn_output_gate: the attention q_proj jointly produces
+     *   query + a per-head gate (2x rows, per-head layout
+     *   [query(hd) | gate(hd)]); after attention the concatenated head
+     *   outputs are multiplied by sigmoid(gate) before o_proj.
+     *
+     * dn_*: gated-DeltaNet geometry, uniform across the family's
+     *   linear-attention layers (mixer == GEIST_MIXER_DELTANET).
+     *   Derived: key_dim = dn_n_k_heads*dn_head_k, value_dim =
+     *   dn_n_v_heads*dn_head_v, conv_dim = 2*key_dim + value_dim. */
+    bool   has_attn_output_gate;
+    size_t dn_n_k_heads;   /* linear_num_key_heads   (0.8B: 16) */
+    size_t dn_n_v_heads;   /* linear_num_value_heads (0.8B: 16) */
+    size_t dn_head_k;      /* linear_key_head_dim    (0.8B: 128) */
+    size_t dn_head_v;      /* linear_value_head_dim  (0.8B: 128) */
+    size_t dn_conv_kernel; /* causal depthwise conv width (4) */
 };
 
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_CONFIG_H */

@@ -330,6 +330,112 @@ static bool populate_layers_qwen3(struct transformer_arch_state *st) {
     return true;
 }
 
+/* ---- qwen35 (Qwen3.5/3.6/3.8 hybrid, #281) ----------------------------- */
+/*
+ * Hybrid token-mixer stack: with full_attention_interval N (default 4),
+ * layer i is softmax attention iff (i+1) % N == 0, else gated DeltaNet
+ * (recurrent conv + delta-rule state — see forward/layer_deltanet.c).
+ * The attention layers are standard GQA with QK-norm, partial NEOX RoPE
+ * (rope.dimension_count of head_dim, theta 1e7) and a sigmoid output
+ * gate fed by a joint q+gate projection (has_attn_output_gate).
+ *
+ * block_count INCLUDES nextn_predict_layers trailing MTP block(s); they
+ * are not part of the autoregressive stack — n_layers excludes them and
+ * their blk.N tensors are simply never referenced.
+ *
+ * GGUF norm weights arrive with the zero-centered (+1) already baked in
+ * by the converter, so the standard rmsnorm path is correct as-is.
+ */
+static void populate_qwen35(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
+    st->config.has_qk_norms         = true;
+    st->config.has_attn_output_gate = true;
+    st->config.ffn_activation       = GEIST_FFN_SWIGLU;
+
+    uint32_t u;
+    float    f;
+    if (gguf_get_meta_u32(gguf, "qwen35.block_count", &u))
+        st->n_layers = u;
+    uint32_t nextn = 0;
+    gguf_get_meta_u32(gguf, "qwen35.nextn_predict_layers", &nextn);
+    if (nextn < st->n_layers)
+        st->n_layers -= nextn; /* trailing MTP blocks: skip */
+    if (gguf_get_meta_u32(gguf, "qwen35.embedding_length", &u))
+        st->d_model = u;
+    if (gguf_get_meta_u32(gguf, "qwen35.attention.head_count", &u))
+        st->n_q_heads = u;
+    if (gguf_get_meta_u32(gguf, "qwen35.attention.head_count_kv", &u))
+        st->n_kv_heads = u;
+    if (gguf_get_meta_f32(gguf, "qwen35.attention.layer_norm_rms_epsilon", &f))
+        st->config.rms_eps = f;
+    { /* vocab from the tokenizer table (no qwen35.vocab_size key) */
+        uint32_t       elem_vt = 0;
+        uint64_t       count   = 0;
+        const uint8_t *payload = nullptr;
+        if (gguf_get_meta_array_info(gguf, "tokenizer.ggml.tokens", &elem_vt, &count, &payload))
+            st->vocab_size = (size_t) count;
+    }
+    /* DeltaNet geometry. GGUF key mapping (see #281 spec): state_size =
+     * head_k (= head_v), group_count = n_k_heads, time_step_rank =
+     * n_v_heads, inner_size = n_v_heads * head_v. */
+    if (gguf_get_meta_u32(gguf, "qwen35.ssm.group_count", &u))
+        st->config.dn_n_k_heads = u;
+    if (gguf_get_meta_u32(gguf, "qwen35.ssm.time_step_rank", &u))
+        st->config.dn_n_v_heads = u;
+    if (gguf_get_meta_u32(gguf, "qwen35.ssm.state_size", &u))
+        st->config.dn_head_k = u;
+    if (gguf_get_meta_u32(gguf, "qwen35.ssm.inner_size", &u) && st->config.dn_n_v_heads > 0)
+        st->config.dn_head_v = u / st->config.dn_n_v_heads;
+    if (gguf_get_meta_u32(gguf, "qwen35.ssm.conv_kernel", &u))
+        st->config.dn_conv_kernel = u;
+    st->hidden_per_layer = 0;
+    st->ple_out          = 0;
+}
+
+static bool populate_layers_qwen35(struct transformer_arch_state *st) {
+    struct gguf_ctx *g = (struct gguf_ctx *) st->gguf;
+
+    uint32_t head_dim = 0, intermediate = 0, rot = 0, interval = 4;
+    float    freq_base = 10000000.0f;
+    if (g != nullptr) {
+        gguf_get_meta_u32(g, "qwen35.attention.key_length", &head_dim);
+        gguf_get_meta_u32(g, "qwen35.feed_forward_length", &intermediate);
+        gguf_get_meta_u32(g, "qwen35.rope.dimension_count", &rot);
+        gguf_get_meta_u32(g, "qwen35.full_attention_interval", &interval);
+        gguf_get_meta_f32(g, "qwen35.rope.freq_base", &freq_base);
+    }
+    if (head_dim == 0 || intermediate == 0 || interval == 0 || rot == 0 || rot > head_dim ||
+        st->config.dn_n_k_heads == 0 || st->config.dn_n_v_heads == 0 || st->config.dn_head_k == 0 ||
+        st->config.dn_head_v == 0 || st->config.dn_conv_kernel < 2) {
+        return false;
+    }
+    /* Optional explicit bool array overrides the interval formula. */
+    uint32_t       rec_vt = 0;
+    uint64_t       rec_n  = 0;
+    const uint8_t *rec    = nullptr;
+    if (g != nullptr &&
+        gguf_get_meta_array_info(g, "qwen35.attention.recurrent_layers", &rec_vt, &rec_n, &rec)) {
+        if (rec_vt != GGUF_META_VT_BOOL || rec_n < st->n_layers)
+            rec = nullptr;
+    }
+
+    for (size_t i = 0; i < st->n_layers; i++) {
+        struct transformer_layer_weights *L = &st->layers[i];
+        const bool is_attn = rec != nullptr ? rec[i] == 0 : ((i + 1) % (size_t) interval == 0);
+        L->layer_idx       = (int) i;
+        L->mixer           = is_attn ? GEIST_MIXER_ATTN : GEIST_MIXER_DELTANET;
+        L->is_full         = true;
+        L->is_kv_shared    = false;
+        L->head_dim        = head_dim;
+        L->q_out           = st->n_q_heads * head_dim;
+        L->kv_out          = st->n_kv_heads * head_dim;
+        L->intermediate    = intermediate;
+        L->sliding_window  = 0;
+        L->rope_theta      = freq_base;
+        L->n_rotated_dims  = (int) rot;
+    }
+    return true;
+}
+
 /* ---- BitNet b1.58 (P1.3) --------------------------------------------- */
 /*
  * BitNet b1.58 is Llama-style transformer with two architectural
@@ -485,6 +591,12 @@ static const struct transformer_family FAMILY_QWEN3 = {
         .populate_layers = populate_layers_qwen3,
 };
 
+static const struct transformer_family FAMILY_QWEN35 = {
+        .name            = "qwen35",
+        .populate        = populate_qwen35,
+        .populate_layers = populate_layers_qwen35,
+};
+
 static const struct transformer_family FAMILY_BITNET_B158 = {
         .name            = "bitnet-b1.58",
         .populate        = populate_bitnet_b158,
@@ -505,6 +617,7 @@ static const struct transformer_family *const REGISTRY[] = {
         &FAMILY_GEMMA4,
         &FAMILY_LLAMA,
         &FAMILY_QWEN3,
+        &FAMILY_QWEN35,
         &FAMILY_BITNET_B158,
         &FAMILY_BITNET,
 };
@@ -520,6 +633,7 @@ const char *const geist_arch_transformer_gguf_names[] = {
         "gemma4",
         "llama",
         "qwen3",
+        "qwen35",
         "bitnet-b1.58",
         "bitnet",
         nullptr,

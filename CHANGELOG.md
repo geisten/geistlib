@@ -9,6 +9,23 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **qwen35 hybrid family** (#281): Qwen3.5/3.6/3.8 dense models load and
+  generate. The transformer family generalizes from "attention in every
+  layer" to a per-layer token mixer: layers dispatch on
+  `GEIST_MIXER_ATTN` vs `GEIST_MIXER_DELTANET` above the attention code,
+  which stays mixer-agnostic. The DeltaNet mixer (gated delta rule,
+  causal depthwise conv, per-head gated RMSNorm) runs its recurrence as
+  host-side scalar f32 over backend-projected activations; its conv +
+  delta state lives on the session (no rewind — speculative decoding
+  falls back to sequential, prefix pinning unsupported). Attention
+  layers gain the joint query+gate projection with a sigmoid output
+  gate and partial NEOX RoPE from `rope.dimension_count`. The gpt2
+  pretokenizer accepts `pre = "qwen35"` (qwen2 + \p{M}; the scanner's
+  letter approximation already covers combining marks — parity pinned).
+  MTP/NextN blocks are skipped at load; MoE variants stay rejected.
+  Fixture: `make fetch-qwen35-model` (Qwen3.5-0.8B Q8_0, SHA-pinned).
+  ponytail: sequential per-token recurrence + scalar kernels — chunked
+  prefill and NEON/x86 SIMD are the next phase, tracked in #281.
 - **Qwen3 family** (#275): `general.architecture = "qwen3"` loads and
   generates — llama-style GQA stack with per-head QK-norm (new
   `has_qk_norms` config flag, distinct from the Gemma norm bundle) and

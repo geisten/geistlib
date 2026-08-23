@@ -19,7 +19,7 @@ OPENBLAS_CFLAGS ?= $(shell pkg-config --cflags openblas 2>/dev/null)
 # clean alpine:3.21: `make lib` stays green, `make test-unit` gets the message.
 OPENBLAS_LINKLESS_GOALS := lib clean distclean help format format-check \
                            fetch-model fetch-bench-model fetch-llama-model \
-                           fetch-qwen3-model fetch-e4b-model fetch-audio-tower
+                           fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower
 OPENBLAS_GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),__default__)
 ifneq ($(strip $(filter-out $(OPENBLAS_LINKLESS_GOALS),$(OPENBLAS_GOALS))),)
 # The probe is the same link the build will attempt: resolving OPENBLAS_LIBS
