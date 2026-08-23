@@ -81,7 +81,9 @@ void i2s_gemv_m1_avx512_vnni(size_t        n_out,
 /* Prefill GEMM. JT tokens share each weight-row load: the 4 unpacked code
  * vectors per block are reused across the token-tile, so the packed weight
  * is read once per (row, block, tile) and the VPDPBUSD throughput is the
- * limiter. y is [m, n_out] row-major. */
+ * limiter. y is [m, n_out] row-major.
+ * Swept 2/4/6/8 on the 9950X (#212): 4 optimal (1053/1078/1057/1035 pp128),
+ * 8 spills the acc[] registers like I2S_X4_TT=8 did. */
 #define I2S_JT 4
 
 void i2s_gemm_avx512_vnni(size_t         m,
