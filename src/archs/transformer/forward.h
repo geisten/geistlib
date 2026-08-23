@@ -39,7 +39,7 @@ transformer_check_kv_room(struct transformer_arch_session *sess, size_t n_new) {
     return GEIST_E_TOO_MANY_TOKENS;
 }
 
-/* Layer loop: feed `seq` token rows through all GEIST_GEMMA4_NUM_LAYERS
+/* Layer loop: feed `seq` token rows through all st->n_layers
  * layers. Writes into out_h_buf (residual stream). KV slot is at
  * q_position; advance_kv inside transformer_forward_one_layer is
  * the caller's job, this helper iterates and orchestrates. */

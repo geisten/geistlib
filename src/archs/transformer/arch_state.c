@@ -581,20 +581,14 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     st->backend       = be;
     st->gguf          = (struct gguf_ctx *) gguf;
     st->runtime_flags = transformer_runtime_flags_from_env();
-    /* P1.4.b: structural dims as runtime fields. Currently hardcoded
-     * to Gemma-4 E2B defaults; future GGUF-metadata reader extension
-     * (P1.4.c) will derive these from `general.architecture`-specific
-     * keys. Existing GEIST_GEMMA4_* macros are bit-equal — kept in
-     * arch_state.h as compile-time caps for the fixed-length
-     * member arrays. */
-    st->n_layers         = GEIST_GEMMA4_NUM_LAYERS;
-    st->d_model          = GEIST_GEMMA4_HIDDEN;
-    st->vocab_size       = GEIST_GEMMA4_VOCAB;
-    st->n_q_heads        = GEIST_GEMMA4_N_Q_HEADS;
-    st->n_kv_heads       = GEIST_GEMMA4_N_KV_HEADS;
-    st->hidden_per_layer = GEIST_GEMMA4_HIDDEN_PER_LAYER;
-    st->ple_out          = st->n_layers * st->hidden_per_layer;
-    st->max_seq_len      = (opts != nullptr && opts->max_seq_len > 0) ? opts->max_seq_len : 4096;
+    /* Structural dims start at ZERO — every family populator fills them
+     * from its GGUF metadata (or its own compiled-in defaults). A field
+     * left at 0 fails loudly in populate_layers / weight wiring instead
+     * of silently inheriting another family's geometry (the pre-#281
+     * design defaulted everything to Gemma-4 E2B and made each other
+     * family strip it — a new config flag then had to be negated in
+     * every foreign populator or it leaked). */
+    st->max_seq_len = (opts != nullptr && opts->max_seq_len > 0) ? opts->max_seq_len : 4096;
 #if defined(GEIST_TARGET_PI5)
     st->m_max = 64; /* Pi 5: m=32 was chosen pre-packing to keep the
                      * activation tile L1-resident (else it re-fetched from
@@ -630,26 +624,17 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         }
     }
 
-    /* P1.4.a: populate the arch-family config from Gemma-4 defaults.
-     * PLE scales are Gemma-4 architectural constants (not in GGUF
-     * metadata); rms_eps + logit_softcap are overwritten from gguf
-     * meta below when present; kv_sliding_src / kv_full_src are E2B
-     * defaults that populate_layers_gemma4 re-derives from the
-     * attention pattern (#258). */
+    /* NEUTRAL family config: every feature off, every scale zero. A
+     * family populator declares only what it HAS (Gemma: PLE + norms +
+     * softcap; BitNet: SubLN; qwen3: QK-norms) instead of every other
+     * family stripping Gemma defaults. rms_eps carries the one value
+     * all families share as a fallback when the meta key is absent. */
     st->config = (struct geist_arch_config) {
-            .family               = "gemma4",
-            .rms_eps              = 1e-6f,
-            .logit_softcap        = 30.0f,
-            .has_ple              = true,
-            .ple_input_scale      = 0.7071067811865476f,
-            .ple_model_proj_scale = 0.02551551815399144f,
-            .ple_table_scale      = 16.0f,
-            .kv_sliding_src       = 13,
-            .kv_full_src          = 14,
-            .has_gemma_attn_norms = true,
-            .has_qk_norms         = true,
-            .has_sub_ln           = false,
-            .ffn_activation       = GEIST_FFN_GEGLU,
+            .family         = "?",
+            .rms_eps        = 1e-6f,
+            .kv_sliding_src = -1,
+            .kv_full_src    = -1,
+            .ffn_activation = GEIST_FFN_SWIGLU,
     };
 
     /* P1.5: dispatch to the per-family populator selected by

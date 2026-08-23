@@ -46,25 +46,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ---- Gemma 4 structural dimensions (E2B variant) ---------------------- *
- *
- * These remain compile-time macros because they size fixed-length arrays
- * in struct transformer_arch_state (k_cache[NUM_LAYERS], scratch
- * pools sized by HIDDEN, VOCAB-wide logits buffer, …). Migrating them
- * to runtime fields is P1.4.b — first the member arrays have to lose
- * their compile-time-sized declarations.
- *
- * Gemma-specific numeric knobs (RMS eps, logit softcap, PLE scales,
- * KV-shared layer indices) have already moved to struct geist_arch_config
- * — st->config.X is the right reader. P1.4.a migrated those. */
-#define GEIST_GEMMA4_HIDDEN 1536
-#define GEIST_GEMMA4_NUM_LAYERS 35
-#define GEIST_GEMMA4_HIDDEN_PER_LAYER 256
-#define GEIST_GEMMA4_PLE_OUT (GEIST_GEMMA4_NUM_LAYERS * GEIST_GEMMA4_HIDDEN_PER_LAYER)
-#define GEIST_GEMMA4_N_Q_HEADS 8
-#define GEIST_GEMMA4_N_KV_HEADS 1
-#define GEIST_GEMMA4_VOCAB 262144
-
 /* ---- Per-layer weight bundle ------------------------------------------- */
 
 /* Holds every weight tensor needed to run one transformer layer. Layouts
@@ -327,10 +308,9 @@ struct transformer_arch_state {
     struct geist_arch_config         config;
     struct transformer_runtime_flags runtime_flags;
 
-    /* ---- Geometry (P1.4.b: structural dims as runtime fields). The
-     * GEIST_GEMMA4_* macros remain in this header as Gemma-4 default
-     * values + as compile-time caps on the fixed-length member arrays
-     * below — runtime code reads these `st->*` fields instead. */
+    /* ---- Geometry: structural dims as runtime fields, filled by the
+     * family populator from GGUF metadata (family defaults live in the
+     * populators themselves — arch_family.c). */
     size_t n_layers;         /* Gemma 4: 35 */
     size_t d_model;          /* Gemma 4: 1536 */
     size_t vocab_size;       /* Gemma 4: 262144 */
@@ -354,8 +334,7 @@ struct transformer_arch_state {
     struct geist_buffer *weight_arena_buf;
     size_t               weight_arena_capacity;
 
-    /* ---- Per-layer weight blocks. P1.4.c heap-sizes this array to
-     * st->n_layers (was GEIST_GEMMA4_NUM_LAYERS-sized in P1.4.b). */
+    /* ---- Per-layer weight blocks, heap-sized to st->n_layers. */
     struct transformer_layer_weights    *layers;
     struct transformer_layer_exec_plan  *layer_plans;
     struct transformer_model_fusion_plan model_fusions; /* exec_plan_build */
