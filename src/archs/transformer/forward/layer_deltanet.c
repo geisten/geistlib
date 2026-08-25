@@ -25,20 +25,30 @@
  *
  * Projections run through the backend's quantized linear kernels into
  * session scratch buffers; conv + recurrence + norms are host-side f32
- * scalar loops over mapped pointers.
- * ponytail: sequential per-token recurrence (exact); the chunked prefill
- * formulation is a later speed phase, NEON/x86 kernels likewise.
+ * loops over mapped pointers. Decode (seq == 1) runs the sequential
+ * per-token recurrence; prefill (seq > 1) runs the chunked GEMM
+ * formulation (dn_head_chunk), equivalence pinned by
+ * test_deltanet_chunk_int. GEIST_DN_SEQ_PREFILL=1 forces the
+ * sequential path everywhere (the test oracle).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
 #include "../arch_state.h"
 
+#include "geist_gemm.h"
+#include "heap.h"
+
 #include <geist.h>
 #include <geist_backend.h>
 
 #include <math.h>
+#include <stddef.h>
 #include <string.h>
+
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
@@ -142,6 +152,259 @@ static void dn_head_step(float       *S,  /* [d_k, d_v] */
         }
     }
 #endif
+}
+
+/* Chunked delta-rule for C tokens of one v-head (#281 prefill phase).
+ * Mathematically equivalent to C sequential dn_head_step calls — pinned
+ * by test_deltanet_chunk_int against the sequential path. Formulation
+ * per the HF/llama.cpp chunk recipe (issue #281 spec, section 5b), with
+ * the (I - A_strict)^-1 forward substitution folded as (A + I) into the
+ * single GEMM that consumes it. All exp arguments are <= 0 (g <= 0 and
+ * gamma is non-increasing), so nothing overflows.
+ *
+ *   Q,K: [C, d_k] rows at stride sq/sk (already l2-normed; Q carries
+ *   d_k^-1/2)   V: [C, d_v] rows at stride sv — strides let the rows
+ *   live directly in the [seq, conv_dim] y buffer, no gather copies.
+ *   beta,g: [C] at element stride sbg   S: [d_k, d_v] in/out
+ *   o: [C, d_v] dense out
+ *
+ * ws layout (see dn_chunk_ws_floats): gamma C | eg C | Kb C*d_k |
+ * KCe C*d_k | Qg C*d_k | Vb C*d_v | vnew C*d_v | A C*C | attn C*C |
+ * row C (scratch for the substitution).
+ */
+static size_t dn_chunk_ws_floats(size_t C, size_t d_k, size_t d_v) {
+    return 2 * C + 3 * C * d_k + 2 * C * d_v + 2 * C * C + C;
+}
+
+static void dn_head_chunk(float       *S,
+                          const float *Q,
+                          size_t       sq,
+                          const float *K,
+                          size_t       sk,
+                          const float *V,
+                          size_t       sv,
+                          const float *beta,
+                          const float *g,
+                          size_t       sbg,
+                          size_t       C,
+                          size_t       d_k,
+                          size_t       d_v,
+                          float       *o,
+                          float       *ws) {
+    float *gamma = ws;
+    float *eg    = gamma + C;
+    float *Kb    = eg + C;
+    float *KCe   = Kb + C * d_k;
+    float *Qg    = KCe + C * d_k;
+    float *Vb    = Qg + C * d_k;
+    float *vnew  = Vb + C * d_v;
+    float *A     = vnew + C * d_v;
+    float *attn  = A + C * C;
+    float *rowt  = attn + C * C;
+
+    /* gamma = cumsum(g); scaled row variants. */
+    float acc = 0.0f;
+    for (size_t t = 0; t < C; t++) {
+        acc += g[t * sbg];
+        gamma[t] = acc;
+        eg[t]    = expf(acc);
+    }
+    for (size_t t = 0; t < C; t++) {
+        const float bt = beta[t * sbg];
+        for (size_t i = 0; i < d_k; i++) {
+            Kb[t * d_k + i]  = bt * K[t * sk + i];
+            KCe[t * d_k + i] = Kb[t * d_k + i] * eg[t];
+            Qg[t * d_k + i]  = Q[t * sq + i] * eg[t];
+        }
+        for (size_t j = 0; j < d_v; j++)
+            Vb[t * d_v + j] = bt * V[t * sv + j];
+    }
+
+    /* A = -(Kb K^T) o D_strict, then forward-substitute (I-A)^-1 rows. */
+    geist_sgemm(GEIST_OP_N, GEIST_OP_T, (int) C, (int) C, (int) d_k,
+                1.0f, Kb, (int) d_k, K, (int) sk, 0.0f, A, (int) C);
+    for (size_t i = 0; i < C; i++) {
+        for (size_t j = 0; j < C; j++) {
+            A[i * C + j] = (i > j) ? -A[i * C + j] * expf(gamma[i] - gamma[j]) : 0.0f;
+        }
+    }
+    for (size_t i = 1; i < C; i++) {
+        memcpy(rowt, A + i * C, i * sizeof(float));
+        for (size_t l = 0; l < i; l++) {
+            float a = rowt[l];
+            for (size_t j = l + 1; j < i; j++)
+                a += rowt[j] * A[j * C + l];
+            A[i * C + l] = a;
+        }
+    }
+
+    /* v_new = (A+I)(Vb - KCe S): the spec transforms Vb and KCe through
+     * (A+I) separately, but both feed the same difference, so fold the
+     * substitution into it — one C x C GEMM instead of two. Stage A*vnew
+     * in Vb, which is dead after the difference. */
+    geist_sgemm(GEIST_OP_N, GEIST_OP_N, (int) C, (int) d_v, (int) d_k,
+                -1.0f, KCe, (int) d_k, S, (int) d_v, 0.0f, vnew, (int) d_v);
+    for (size_t i = 0; i < C * d_v; i++)
+        vnew[i] += Vb[i];
+    geist_sgemm(GEIST_OP_N, GEIST_OP_N, (int) C, (int) d_v, (int) C,
+                1.0f, A, (int) C, vnew, (int) d_v, 0.0f, Vb, (int) d_v);
+    for (size_t i = 0; i < C * d_v; i++)
+        vnew[i] += Vb[i];
+
+    /* attn = (Q K^T) o D_incl */
+    geist_sgemm(GEIST_OP_N, GEIST_OP_T, (int) C, (int) C, (int) d_k,
+                1.0f, Q, (int) sq, K, (int) sk, 0.0f, attn, (int) C);
+    for (size_t i = 0; i < C; i++)
+        for (size_t j = 0; j < C; j++)
+            attn[i * C + j] = (i >= j) ? attn[i * C + j] * expf(gamma[i] - gamma[j]) : 0.0f;
+
+    /* O = Qg S + attn v_new. */
+    geist_sgemm(GEIST_OP_N, GEIST_OP_N, (int) C, (int) d_v, (int) d_k,
+                1.0f, Qg, (int) d_k, S, (int) d_v, 0.0f, o, (int) d_v);
+    geist_sgemm(GEIST_OP_N, GEIST_OP_N, (int) C, (int) d_v, (int) C,
+                1.0f, attn, (int) C, vnew, (int) d_v, 1.0f, o, (int) d_v);
+
+    /* S = e^{gamma_last} S + (K o e^{gamma_last - gamma})^T v_new.
+     * Reuse Kb as the decayed-K staging. */
+    const float glast = gamma[C - 1];
+    for (size_t t = 0; t < C; t++) {
+        const float w = expf(glast - gamma[t]);
+        for (size_t i = 0; i < d_k; i++)
+            Kb[t * d_k + i] = K[t * sk + i] * w;
+    }
+    const float eglast = expf(glast);
+    for (size_t i = 0; i < d_k * d_v; i++)
+        S[i] *= eglast;
+    geist_sgemm(GEIST_OP_T, GEIST_OP_N, (int) d_k, (int) d_v, (int) C,
+                1.0f, Kb, (int) d_k, vnew, (int) d_v, 1.0f, S, (int) d_v);
+}
+
+/* Chunked prefill (#281 phase 3). The engine batches prefill at m_max
+ * (= 64) tokens per forward call, so the whole call is ONE chunk of
+ * C = seq — no chunk loop, no remainder. Conv + norms + gating run as
+ * whole-batch passes into a heap y buffer, then dn_head_chunk per
+ * v-head (OMP). Returns false if scratch allocation fails; the caller
+ * falls back to the sequential token loop. */
+static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, mapped */
+                                   float       *zg,  /* [seq, vald] gate in / mix out */
+                                   const float *bb,
+                                   const float *baa,
+                                   const float *convw,
+                                   const float *aw,
+                                   const float *dtb,
+                                   const float *nrm,
+                                   float       *cstate, /* [(K-1) * convd] */
+                                   float       *S,      /* [n_vh * d_k * d_v] */
+                                   size_t       seq,
+                                   size_t       n_kh,
+                                   size_t       n_vh,
+                                   size_t       d_k,
+                                   size_t       d_v,
+                                   size_t       K,
+                                   size_t       keyd,
+                                   size_t       vald,
+                                   size_t       convd,
+                                   float        eps,
+                                   float        qscale) {
+    const size_t hist_rows = K - 1;
+    const size_t y_f       = seq * convd;
+    const size_t bg_f      = seq * n_vh;
+    const size_t old_f     = hist_rows * convd;
+    const size_t ws_f      = dn_chunk_ws_floats(seq, d_k, d_v) + seq * d_v;
+#if defined(_OPENMP)
+    const size_t nthr = (size_t) omp_get_max_threads();
+#else
+    const size_t nthr = 1;
+#endif
+    /* One allocation up front — no alloc inside the head loop, so a
+     * failure here leaves state untouched and the sequential fallback
+     * stays valid. */
+    float *y = heap_alloc_aligned((y_f + 2 * bg_f + old_f + nthr * ws_f) * sizeof(float),
+                                  OPTIMAL_ALIGNMENT);
+    if (y == nullptr)
+        return false;
+    float *betas   = y + y_f;
+    float *gs      = betas + bg_f;
+    float *old_cst = gs + bg_f;
+    float *ws_all  = old_cst + old_f;
+    memcpy(old_cst, cstate, old_f * sizeof(float));
+
+    /* Conv + silu for every token (reads only pre-conv qkv + old state,
+     * so tokens are independent), then gating scalars. */
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t t = 0; t < seq; t++) {
+        float *y_t = y + t * convd;
+        for (size_t c = 0; c < convd; c++) {
+            float acc = 0.0f;
+            for (size_t j = 0; j < K; j++) {
+                const ptrdiff_t src = (ptrdiff_t) (t + j) - (ptrdiff_t) hist_rows;
+                const float     xv  = (src >= 0) ? qkv[(size_t) src * convd + c]
+                                                 : old_cst[(t + j) * convd + c];
+                acc += convw[c * K + j] * xv;
+            }
+            y_t[c] = silu_f(acc);
+        }
+        float *q = y_t;
+        float *k = y_t + keyd;
+        for (size_t h = 0; h < n_kh; h++) {
+            l2norm_row(q + h * d_k, d_k, eps);
+            l2norm_row(k + h * d_k, d_k, eps);
+            for (size_t i = 0; i < d_k; i++)
+                q[h * d_k + i] *= qscale;
+        }
+        for (size_t hv = 0; hv < n_vh; hv++) {
+            betas[t * n_vh + hv] = 1.0f / (1.0f + expf(-bb[t * n_vh + hv]));
+            const float sp       = log1pf(expf(baa[t * n_vh + hv] + dtb[hv]));
+            gs[t * n_vh + hv]    = aw[hv] * sp;
+        }
+    }
+
+    /* Roll the conv state forward by seq tokens: the new last K-1
+     * pre-conv rows, taking from old state when seq < K-1. */
+    for (size_t j = 0; j < hist_rows; j++) {
+        const ptrdiff_t src = (ptrdiff_t) (seq + j) - (ptrdiff_t) hist_rows;
+        const float *row = (src >= 0) ? qkv + (size_t) src * convd : old_cst + (seq + j) * convd;
+        memcpy(cstate + j * convd, row, convd * sizeof(float));
+    }
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t hv = 0; hv < n_vh; hv++) {
+#if defined(_OPENMP)
+        float *ws = ws_all + (size_t) omp_get_thread_num() * ws_f;
+#else
+        float *ws = ws_all;
+#endif
+        float       *o  = ws + ws_f - seq * d_v;
+        const size_t hk = hv % n_kh; /* tiled v-head order, see decode path */
+        dn_head_chunk(S + hv * d_k * d_v,
+                      y + hk * d_k,
+                      convd,
+                      y + keyd + hk * d_k,
+                      convd,
+                      y + 2 * keyd + hv * d_v,
+                      convd,
+                      betas + hv,
+                      gs + hv,
+                      n_vh,
+                      seq,
+                      d_k,
+                      d_v,
+                      o,
+                      ws);
+        for (size_t t = 0; t < seq; t++) {
+            float *o_t = o + t * d_v;
+            float *z_t = zg + t * vald + hv * d_v;
+            rmsnorm_row(o_t, nrm, d_v, eps);
+            for (size_t j = 0; j < d_v; j++)
+                z_t[j] = o_t[j] * silu_f(z_t[j]); /* gate read, then slot reused as mix */
+        }
+    }
+    safe_free((void **) &y);
+    return true;
 }
 
 [[nodiscard]] enum geist_status
@@ -256,7 +519,33 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     /* mixer output rows accumulate here, then one linear to d_model */
     float *mix = zg; /* reuse the z buffer in place: gate consumed per row */
 
-    for (size_t t = 0; t < seq; t++) {
+    /* Prefill (seq > 1): chunked delta rule — GEMM work instead of seq
+     * sequential state passes. Decode and the (alloc-failure) fallback
+     * take the exact sequential loop below. */
+    const bool chunked = seq > 1 && !st->runtime_flags.dn_seq_prefill &&
+                         dn_run_prefill_chunked(qkv,
+                                                           zg,
+                                                           bb,
+                                                           baa,
+                                                           convw,
+                                                           aw,
+                                                           dtb,
+                                                           nrm,
+                                                           cstate,
+                                                           S,
+                                                           seq,
+                                                           n_kh,
+                                                           n_vh,
+                                                           d_k,
+                                                           d_v,
+                                                           K,
+                                                           keyd,
+                                                           vald,
+                                                           convd,
+                                                           eps,
+                                                           qscale);
+
+    for (size_t t = 0; chunked == false && t < seq; t++) {
         float *qkv_t = qkv + t * convd;
 
         /* 3. causal depthwise conv over [cstate | current]: y[c] =
