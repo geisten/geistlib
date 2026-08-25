@@ -86,17 +86,17 @@ static void l2norm_row(float *x, size_t n, float eps) {
  * The two passes are a real data dependency (delta needs the full
  * kv_mem). NEON: d_v-contiguous rows as float32x4 FMA chains; the
  * scalar tail covers d_v % 4 != 0 (none of the known variants). */
-static void dn_head_step(float       *S,  /* [d_k, d_v] */
-                         const float *qh, /* [d_k] */
-                         const float *kh, /* [d_k] */
-                         const float *vh, /* [d_v] */
-                         float        decay,
-                         float        beta,
-                         size_t       d_k,
-                         size_t       d_v,
-                         float       *kv_mem, /* scratch [d_v] */
-                         float       *delta,  /* scratch [d_v] */
-                         float       *o_h) {  /* out [d_v] */
+void transformer_dn_head_step(float       *S,  /* [d_k, d_v] */
+                              const float *qh, /* [d_k] */
+                              const float *kh, /* [d_k] */
+                              const float *vh, /* [d_v] */
+                              float        decay,
+                              float        beta,
+                              size_t       d_k,
+                              size_t       d_v,
+                              float       *kv_mem, /* scratch [d_v] */
+                              float       *delta,  /* scratch [d_v] */
+                              float       *o_h) {  /* out [d_v] */
 #if defined(__ARM_NEON)
     const float32x4_t vdec = vdupq_n_f32(decay);
     for (size_t j = 0; j < d_v; j += 4)
@@ -172,25 +172,25 @@ static void dn_head_step(float       *S,  /* [d_k, d_v] */
  * KCe C*d_k | Qg C*d_k | Vb C*d_v | vnew C*d_v | A C*C | attn C*C |
  * row C (scratch for the substitution).
  */
-static size_t dn_chunk_ws_floats(size_t C, size_t d_k, size_t d_v) {
+size_t transformer_dn_chunk_ws_floats(size_t C, size_t d_k, size_t d_v) {
     return 2 * C + 3 * C * d_k + 2 * C * d_v + 2 * C * C + C;
 }
 
-static void dn_head_chunk(float       *S,
-                          const float *Q,
-                          size_t       sq,
-                          const float *K,
-                          size_t       sk,
-                          const float *V,
-                          size_t       sv,
-                          const float *beta,
-                          const float *g,
-                          size_t       sbg,
-                          size_t       C,
-                          size_t       d_k,
-                          size_t       d_v,
-                          float       *o,
-                          float       *ws) {
+void transformer_dn_head_chunk(float       *S,
+                               const float *Q,
+                               size_t       sq,
+                               const float *K,
+                               size_t       sk,
+                               const float *V,
+                               size_t       sv,
+                               const float *beta,
+                               const float *g,
+                               size_t       sbg,
+                               size_t       C,
+                               size_t       d_k,
+                               size_t       d_v,
+                               float       *o,
+                               float       *ws) {
     float *gamma = ws;
     float *eg    = gamma + C;
     float *Kb    = eg + C;
@@ -387,7 +387,7 @@ static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, m
     const size_t y_f       = seq * convd;
     const size_t bg_f      = seq * n_vh;
     const size_t old_f     = hist_rows * convd;
-    const size_t ws_f      = dn_chunk_ws_floats(seq, d_k, d_v) + seq * d_v;
+    const size_t ws_f      = transformer_dn_chunk_ws_floats(seq, d_k, d_v) + seq * d_v;
 #if defined(_OPENMP)
     const size_t nthr = (size_t) omp_get_max_threads();
 #else
@@ -457,21 +457,21 @@ static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, m
 #endif
         float       *o  = ws + ws_f - seq * d_v;
         const size_t hk = hv % n_kh; /* tiled v-head order, see decode path */
-        dn_head_chunk(S + hv * d_k * d_v,
-                      y + hk * d_k,
-                      convd,
-                      y + keyd + hk * d_k,
-                      convd,
-                      y + 2 * keyd + hv * d_v,
-                      convd,
-                      betas + hv,
-                      gs + hv,
-                      n_vh,
-                      seq,
-                      d_k,
-                      d_v,
-                      o,
-                      ws);
+        transformer_dn_head_chunk(S + hv * d_k * d_v,
+                                  y + hk * d_k,
+                                  convd,
+                                  y + keyd + hk * d_k,
+                                  convd,
+                                  y + 2 * keyd + hv * d_v,
+                                  convd,
+                                  betas + hv,
+                                  gs + hv,
+                                  n_vh,
+                                  seq,
+                                  d_k,
+                                  d_v,
+                                  o,
+                                  ws);
         for (size_t t = 0; t < seq; t++) {
             float *o_t = o + t * d_v;
             float *z_t = zg + t * vald + hv * d_v;
@@ -719,7 +719,7 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
             float       *Sh = S + hv * d_k * d_v;
 
             float kv_mem[512], delta[512], o_h[512];
-            dn_head_step(Sh, qh, kh, vh, decay, beta, d_k, d_v, kv_mem, delta, o_h);
+            transformer_dn_head_step(Sh, qh, kh, vh, decay, beta, d_k, d_v, kv_mem, delta, o_h);
 
             /* 6. gated per-head RMSNorm + silu(z) gate. o_t aliases z_t,
              * so read the gate BEFORE overwriting. */
