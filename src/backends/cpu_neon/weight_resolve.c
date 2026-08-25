@@ -1221,10 +1221,14 @@ install_q6k_ntile_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
 static enum geist_status
 install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
                                 const struct cpu_neon_kernel_policy *policy) {
-    (void) policy;
-#if defined(GEIST_TARGET_PI5)
-    const char *enabled = getenv("GEIST_Q6K_X8_GEMV");
-    if (enabled == nullptr || enabled[0] != '1') {
+#if defined(__ARM_NEON)
+    /* Interleaved-8-row Q6_K GEMV. Costs a packed copy of the tensor
+     * (~1x source size, heap) — the n_out gate below limits that to
+     * lm_head-class tensors, and the mmap'd source pages go cold after
+     * warmup, so steady-state resident cost is near zero. Mac default
+     * on (measured: 4B lm_head 16.1 -> 11.9 ms/token, +26%); Pi stays
+     * opt-in via GEIST_Q6K_X8_GEMV=1 (4 GB board, RSS headroom). */
+    if (!policy->q6k_x8_gemv) {
         return GEIST_OK;
     }
     if (w == nullptr || w->dtype != GEIST_DTYPE_Q6_K || w->n_in <= 0 || w->n_out <= 0 ||

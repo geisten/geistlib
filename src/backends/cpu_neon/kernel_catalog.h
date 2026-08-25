@@ -83,11 +83,16 @@ struct cpu_neon_kernel_policy {
      * Env: GEIST_QK_SGEMM_TILE_ROWS. */
     size_t qk_sgemm_tile_rows;
     bool   q6k_ntile_prefill;
-    bool   q6k_ntile4_stream_prefill;
-    bool   q8_0_native_mn;
-    bool   q4_01_native_mn;
-    bool   tq2_0_native_mn;
-    bool   tq2_0_tl1_m1;
+    /* Interleaved-8-row Q6_K decode GEMV (packed heap copy of the
+     * tensor; installed only for n_out >= 32768 = lm_head class).
+     * Default on where Accelerate implies desktop-class RAM; opt-in
+     * elsewhere. Env: GEIST_Q6K_X8_GEMV. */
+    bool q6k_x8_gemv;
+    bool q6k_ntile4_stream_prefill;
+    bool q8_0_native_mn;
+    bool q4_01_native_mn;
+    bool tq2_0_native_mn;
+    bool tq2_0_tl1_m1;
 };
 
 struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_hw_probe *hw);
