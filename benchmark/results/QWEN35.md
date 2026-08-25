@@ -46,8 +46,29 @@ tg 19.0. GPU is out of scope for geist — see the #281 positioning.)
 **Reading:** decode is already at or past parity on the small model and
 within 1.2–1.4× on the larger ones; the recurrence itself vectorizes well
 and the W8A8 Q4_0/Q4_1 kernels (#285) closed the FFN gap. Prefill is
-consistently ~3–4× behind — entirely the sequential delta-rule prefill;
-the chunked formulation (spec §5b in #281) converts that into GEMM work.
+consistently ~3–4× behind.
+
+### Chunked delta-rule prefill (#287) — measured 2026-08-25
+
+A/B on the same build, `GEIST_DN_SEQ_PREFILL=1` forcing the sequential
+path (Mac, 8 threads, load < 2 at start):
+
+| model | metric | chunked | sequential | Δ |
+| :-- | :-- | ---: | ---: | :-- |
+| 0.8B Q8_0 | prefill pp128 | 145.3 | 138.3 | +5 % |
+| 0.8B Q8_0 | prefill pp512 | 146.6 | 136.6 | +7 % |
+| 4B Q4_0 | prefill pp128 | 40.0 | 42.3 | −5 % (noisy run) |
+| 4B Q4_0 | prefill pp512 | 42.8 | 41.8 | +2.5 % |
+
+This **falsifies the earlier attribution** of the prefill gap to the
+sequential delta rule: converting the recurrence to GEMMs moves Mac
+prefill by only ~0–7 %. A `GEIST_PROFILE_PREFILL` breakdown on the 4B
+shows where prefill time actually goes: ~58 % FFN and most of the rest
+in the mixer-block *projections* — i.e. the quantized **mN (batched)
+W8A8 linear kernels**, which llama.cpp beats ~3× at m = 64. That is
+the real lever for the remaining prefill gap; the chunked recurrence
+is kept (correct, never slower outside noise, and it becomes load-
+bearing once the mN kernels stop dominating).
 
 ## Raspberry Pi 5 (4 GB, quiesced, thermally gated) — measured 2026-08-24
 
@@ -66,8 +87,10 @@ ended 65.0 °C (soft limit not reached; low throttle nibble 0 throughout).
 **Reading:** on the design target, **geist wins decode on both models** —
 0.8B 13.0 vs 9.3 t/s (**1.39×**), 4B 3.8 vs 3.3 t/s (**1.14×**) — the same
 pattern as the BitNet results: specialized int8 kernels plus no per-layer
-graph overhead. Prefill stays llama's (1.5× / 3.0×) until the chunked
-delta-rule prefill lands. The 0.8B hybrid is fully usable on the Pi
+graph overhead. Prefill stays llama's (1.5× / 3.0×); per the #287
+findings above, closing it is an mN-kernel problem, not a recurrence
+problem (Pi A/B of the chunked prefill pending — the balance may
+differ on 4 cores without Accelerate). The 0.8B hybrid is fully usable on the Pi
 (13 t/s decode, 1 GB resident); the 4B fits the 4 GB board and runs at
 reading speed. The 27B (15 GiB) is not attempted on the Pi.
 
