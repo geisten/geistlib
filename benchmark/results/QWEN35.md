@@ -2,10 +2,10 @@
 
 The qwen35 models are hybrids: 3 of every 4 layers are gated-DeltaNet linear
 attention (recurrent conv + delta-rule state), the rest softmax attention.
-That split shows up directly in the numbers — **decode** is recurrence-friendly
-and competitive with llama.cpp already, while **prefill** pays for geist's
-phase-1 *sequential* per-token recurrence (llama.cpp runs the chunked
-formulation; that is the tracked next step in #281).
+**Decode** is recurrence-friendly and competitive with llama.cpp; the
+original 3–4× **prefill** gap turned out to be the mN linear kernels, not
+the recurrence (#287 falsified that attribution) — #288 closed most of it
+on Mac by unserializing the dequant+SGEMM prefill path.
 
 > ⚠️ Same measurement rules as [PI5.md](PI5.md): quiesced machine, warmed
 > caches, and on the Pi a **thermally settled** board — the per-sweep
@@ -28,27 +28,35 @@ formulation; that is the tracked next step in #281).
   variables needed** (that alone was 6.1 → 22.3 t/s on the 4B; see the PR).
 - **llama protocol:** `llama-bench -ngl 0 -p 128[,512] -n 16|32 -r 2..3`.
 
-## Mac (M-series, 8 threads, CPU-only) — measured 2026-08-24
+## Mac (M-series, 8 threads, CPU-only) — measured 2026-08-25, geist `16b5807`
+
+Post-#288 (parallel dequant+SGEMM prefill for Q8_0/Q4_0). Pre-#288
+prefill for reference: 0.8B 139.1, 4B 44.1/40.5, 27B 6.6.
 
 | model | metric | geist | llama.cpp CPU | ratio |
 | :-- | :-- | ---: | ---: | :-- |
-| 0.8B Q8_0 | prefill pp128 | 139.1 | 496.7 | llama 3.6× |
-| 0.8B Q8_0 | **decode** | **91.8** | 77.9 | **geist 1.18×** |
-| 4B Q4_0 | prefill pp128 | 44.1 | 142.4 | llama 3.2× |
-| 4B Q4_0 | prefill pp512 | 40.5 | 144.9 | llama 3.6× |
-| 4B Q4_0 | **decode** | 22.4 | 27.8 | llama 1.24× |
-| 27B Q4_0 | prefill pp128 | 6.6 | 26.5 | llama 4.0× |
-| 27B Q4_0 | **decode** | 4.3 | 5.8 | llama 1.35× |
+| 0.8B Q8_0 | prefill pp128 | 389.3 | 496.7 | llama 1.28× |
+| 0.8B Q8_0 | prefill pp512 | 383.0 | — | |
+| 0.8B Q8_0 | **decode** | **94.0** | 77.9 | **geist 1.21×** |
+| 4B Q4_0 | prefill pp128 | 84.0 | 142.4 | llama 1.70× |
+| 4B Q4_0 | prefill pp512 | 79.4 | 144.9 | llama 1.83× |
+| 4B Q4_0 | **decode** | 22.6 | 27.8 | llama 1.23× |
+| 27B Q4_0 | prefill pp128 | 13.2 | 26.5 | llama 2.0× |
+| 27B Q4_0 | **decode** | 4.5 | 5.8 | llama 1.29× |
 
 (llama.cpp Metal, for context: 4B pp128 865 / tg 69.5; 27B pp512 106 /
 tg 19.0. GPU is out of scope for geist — see the #281 positioning.)
 
-**Reading:** decode is already at or past parity on the small model and
-within 1.2–1.4× on the larger ones; the recurrence itself vectorizes well
-and the W8A8 Q4_0/Q4_1 kernels (#285) closed the FFN gap. Prefill is
-consistently ~3–4× behind.
+**Reading:** decode is at or past parity on the small model and within
+1.2–1.3× on the larger ones. Prefill went from 3–4× behind to 1.3–2×
+via two findings: chunking the delta-rule recurrence (#287) moved it
+only ~0–7 % — falsifying the original recurrence attribution — while
+the real culprit was the *serial* Mac dequant+SGEMM tile loop, fixed
+in #288. The remaining 1.3–2× is mN quantized-GEMM throughput
+(per-call dequant+SGEMM vs llama.cpp's repacked int8 GEMM) — the next
+lever if prefill matters more than it does today.
 
-### Chunked delta-rule prefill (#287) — measured 2026-08-25
+### Chunked delta-rule prefill (#287) — measured 2026-08-25, pre-#288
 
 A/B on the same build, `GEIST_DN_SEQ_PREFILL=1` forcing the sequential
 path (Mac, 8 threads, load < 2 at start):
@@ -60,15 +68,10 @@ path (Mac, 8 threads, load < 2 at start):
 | 4B Q4_0 | prefill pp128 | 40.0 | 42.3 | −5 % (noisy run) |
 | 4B Q4_0 | prefill pp512 | 42.8 | 41.8 | +2.5 % |
 
-This **falsifies the earlier attribution** of the prefill gap to the
-sequential delta rule: converting the recurrence to GEMMs moves Mac
-prefill by only ~0–7 %. A `GEIST_PROFILE_PREFILL` breakdown on the 4B
-shows where prefill time actually goes: ~58 % FFN and most of the rest
-in the mixer-block *projections* — i.e. the quantized **mN (batched)
-W8A8 linear kernels**, which llama.cpp beats ~3× at m = 64. That is
-the real lever for the remaining prefill gap; the chunked recurrence
-is kept (correct, never slower outside noise, and it becomes load-
-bearing once the mN kernels stop dominating).
+The chunked recurrence is kept: correct (pinned by
+test_deltanet_chunk_unit at f32 precision), never slower outside
+noise, and load-bearing now that #288 stopped the mN kernels from
+dominating prefill time.
 
 ## Raspberry Pi 5 (4 GB, quiesced, thermally gated) — measured 2026-08-24
 
