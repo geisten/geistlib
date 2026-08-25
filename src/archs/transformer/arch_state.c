@@ -55,6 +55,7 @@ static struct transformer_runtime_flags transformer_runtime_flags_from_env(void)
     return (struct transformer_runtime_flags) {
             .bitnet_sub_ln_enabled = !env_flag_enabled("GEIST_BITNET_NO_SUBLN", false),
             .dump_act_sparsity     = env_flag_enabled("GEIST_DUMP_ACT_SPARSITY", false),
+            .dn_seq_prefill        = env_flag_enabled("GEIST_DN_SEQ_PREFILL", false),
     };
 }
 

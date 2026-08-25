@@ -314,6 +314,40 @@ void transformer_probe_ffn_sparsity(const struct geist_backend_vtbl *v,
 [[nodiscard]] enum geist_status
 transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx);
 
+/* DeltaNet recurrence kernels (layer_deltanet.c) — exported for
+ * test_deltanet_chunk_unit, which pins chunked == sequential at f32
+ * precision. The end-to-end logit oracle (test_deltanet_chunk_int)
+ * cannot discriminate subtle kernel bugs from int8-quantization
+ * jitter (a 10% beta error scores ~0.6 max|dlogit|, below the ~1.0
+ * legitimate cross-kernel spread), so the tight pin lives here. */
+void   transformer_dn_head_step(float       *S,
+                                const float *qh,
+                                const float *kh,
+                                const float *vh,
+                                float        decay,
+                                float        beta,
+                                size_t       d_k,
+                                size_t       d_v,
+                                float       *kv_mem,
+                                float       *delta,
+                                float       *o_h);
+size_t transformer_dn_chunk_ws_floats(size_t C, size_t d_k, size_t d_v);
+void   transformer_dn_head_chunk(float       *S,
+                                 const float *Q,
+                                 size_t       sq,
+                                 const float *K,
+                                 size_t       sk,
+                                 const float *V,
+                                 size_t       sv,
+                                 const float *beta,
+                                 const float *g,
+                                 size_t       sbg,
+                                 size_t       C,
+                                 size_t       d_k,
+                                 size_t       d_v,
+                                 float       *o,
+                                 float       *ws);
+
 /* forward/layer.c — exported helper used across forward/. */
 [[nodiscard]] enum geist_status linear_w_or_legacy(struct geist_backend            *be,
                                                    const struct geist_backend_vtbl *v,
