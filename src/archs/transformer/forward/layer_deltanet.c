@@ -221,8 +221,19 @@ static void dn_head_chunk(float       *S,
     }
 
     /* A = -(Kb K^T) o D_strict, then forward-substitute (I-A)^-1 rows. */
-    geist_sgemm(GEIST_OP_N, GEIST_OP_T, (int) C, (int) C, (int) d_k,
-                1.0f, Kb, (int) d_k, K, (int) sk, 0.0f, A, (int) C);
+    geist_sgemm(GEIST_OP_N,
+                GEIST_OP_T,
+                (int) C,
+                (int) C,
+                (int) d_k,
+                1.0f,
+                Kb,
+                (int) d_k,
+                K,
+                (int) sk,
+                0.0f,
+                A,
+                (int) C);
     for (size_t i = 0; i < C; i++) {
         for (size_t j = 0; j < C; j++) {
             A[i * C + j] = (i > j) ? -A[i * C + j] * expf(gamma[i] - gamma[j]) : 0.0f;
@@ -242,27 +253,82 @@ static void dn_head_chunk(float       *S,
      * (A+I) separately, but both feed the same difference, so fold the
      * substitution into it — one C x C GEMM instead of two. Stage A*vnew
      * in Vb, which is dead after the difference. */
-    geist_sgemm(GEIST_OP_N, GEIST_OP_N, (int) C, (int) d_v, (int) d_k,
-                -1.0f, KCe, (int) d_k, S, (int) d_v, 0.0f, vnew, (int) d_v);
+    geist_sgemm(GEIST_OP_N,
+                GEIST_OP_N,
+                (int) C,
+                (int) d_v,
+                (int) d_k,
+                -1.0f,
+                KCe,
+                (int) d_k,
+                S,
+                (int) d_v,
+                0.0f,
+                vnew,
+                (int) d_v);
     for (size_t i = 0; i < C * d_v; i++)
         vnew[i] += Vb[i];
-    geist_sgemm(GEIST_OP_N, GEIST_OP_N, (int) C, (int) d_v, (int) C,
-                1.0f, A, (int) C, vnew, (int) d_v, 0.0f, Vb, (int) d_v);
+    geist_sgemm(GEIST_OP_N,
+                GEIST_OP_N,
+                (int) C,
+                (int) d_v,
+                (int) C,
+                1.0f,
+                A,
+                (int) C,
+                vnew,
+                (int) d_v,
+                0.0f,
+                Vb,
+                (int) d_v);
     for (size_t i = 0; i < C * d_v; i++)
         vnew[i] += Vb[i];
 
     /* attn = (Q K^T) o D_incl */
-    geist_sgemm(GEIST_OP_N, GEIST_OP_T, (int) C, (int) C, (int) d_k,
-                1.0f, Q, (int) sq, K, (int) sk, 0.0f, attn, (int) C);
+    geist_sgemm(GEIST_OP_N,
+                GEIST_OP_T,
+                (int) C,
+                (int) C,
+                (int) d_k,
+                1.0f,
+                Q,
+                (int) sq,
+                K,
+                (int) sk,
+                0.0f,
+                attn,
+                (int) C);
     for (size_t i = 0; i < C; i++)
         for (size_t j = 0; j < C; j++)
             attn[i * C + j] = (i >= j) ? attn[i * C + j] * expf(gamma[i] - gamma[j]) : 0.0f;
 
     /* O = Qg S + attn v_new. */
-    geist_sgemm(GEIST_OP_N, GEIST_OP_N, (int) C, (int) d_v, (int) d_k,
-                1.0f, Qg, (int) d_k, S, (int) d_v, 0.0f, o, (int) d_v);
-    geist_sgemm(GEIST_OP_N, GEIST_OP_N, (int) C, (int) d_v, (int) C,
-                1.0f, attn, (int) C, vnew, (int) d_v, 1.0f, o, (int) d_v);
+    geist_sgemm(GEIST_OP_N,
+                GEIST_OP_N,
+                (int) C,
+                (int) d_v,
+                (int) d_k,
+                1.0f,
+                Qg,
+                (int) d_k,
+                S,
+                (int) d_v,
+                0.0f,
+                o,
+                (int) d_v);
+    geist_sgemm(GEIST_OP_N,
+                GEIST_OP_N,
+                (int) C,
+                (int) d_v,
+                (int) C,
+                1.0f,
+                attn,
+                (int) C,
+                vnew,
+                (int) d_v,
+                1.0f,
+                o,
+                (int) d_v);
 
     /* S = e^{gamma_last} S + (K o e^{gamma_last - gamma})^T v_new.
      * Reuse Kb as the decayed-K staging. */
@@ -275,8 +341,19 @@ static void dn_head_chunk(float       *S,
     const float eglast = expf(glast);
     for (size_t i = 0; i < d_k * d_v; i++)
         S[i] *= eglast;
-    geist_sgemm(GEIST_OP_T, GEIST_OP_N, (int) d_k, (int) d_v, (int) C,
-                1.0f, Kb, (int) d_k, vnew, (int) d_v, 1.0f, S, (int) d_v);
+    geist_sgemm(GEIST_OP_T,
+                GEIST_OP_N,
+                (int) d_k,
+                (int) d_v,
+                (int) C,
+                1.0f,
+                Kb,
+                (int) d_k,
+                vnew,
+                (int) d_v,
+                1.0f,
+                S,
+                (int) d_v);
 }
 
 /* Chunked prefill (#281 phase 3). The engine batches prefill at m_max
@@ -340,8 +417,8 @@ static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, m
             float acc = 0.0f;
             for (size_t j = 0; j < K; j++) {
                 const ptrdiff_t src = (ptrdiff_t) (t + j) - (ptrdiff_t) hist_rows;
-                const float     xv  = (src >= 0) ? qkv[(size_t) src * convd + c]
-                                                 : old_cst[(t + j) * convd + c];
+                const float     xv =
+                        (src >= 0) ? qkv[(size_t) src * convd + c] : old_cst[(t + j) * convd + c];
                 acc += convw[c * K + j] * xv;
             }
             y_t[c] = silu_f(acc);
@@ -365,7 +442,7 @@ static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, m
      * pre-conv rows, taking from old state when seq < K-1. */
     for (size_t j = 0; j < hist_rows; j++) {
         const ptrdiff_t src = (ptrdiff_t) (seq + j) - (ptrdiff_t) hist_rows;
-        const float *row = (src >= 0) ? qkv + (size_t) src * convd : old_cst + (seq + j) * convd;
+        const float    *row = (src >= 0) ? qkv + (size_t) src * convd : old_cst + (seq + j) * convd;
         memcpy(cstate + j * convd, row, convd * sizeof(float));
     }
 
@@ -524,26 +601,26 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
      * take the exact sequential loop below. */
     const bool chunked = seq > 1 && !st->runtime_flags.dn_seq_prefill &&
                          dn_run_prefill_chunked(qkv,
-                                                           zg,
-                                                           bb,
-                                                           baa,
-                                                           convw,
-                                                           aw,
-                                                           dtb,
-                                                           nrm,
-                                                           cstate,
-                                                           S,
-                                                           seq,
-                                                           n_kh,
-                                                           n_vh,
-                                                           d_k,
-                                                           d_v,
-                                                           K,
-                                                           keyd,
-                                                           vald,
-                                                           convd,
-                                                           eps,
-                                                           qscale);
+                                                zg,
+                                                bb,
+                                                baa,
+                                                convw,
+                                                aw,
+                                                dtb,
+                                                nrm,
+                                                cstate,
+                                                S,
+                                                seq,
+                                                n_kh,
+                                                n_vh,
+                                                d_k,
+                                                d_v,
+                                                K,
+                                                keyd,
+                                                vald,
+                                                convd,
+                                                eps,
+                                                qscale);
 
     for (size_t t = 0; chunked == false && t < seq; t++) {
         float *qkv_t = qkv + t * convd;
