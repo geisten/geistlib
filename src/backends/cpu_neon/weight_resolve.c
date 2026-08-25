@@ -956,15 +956,17 @@ static void cpu_neon_w_dequant_trampoline_mN(const float               *x,
     (void) be;
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
-    /* Used for F32/F16/BF16 dense (notably Gemma's PLE model_proj, n×1536→8960).
-     * Parallelize the output-row tiles across OMP threads — each thread dequants
-     * its tile and runs a single-threaded cblas_sgemm. This threads via libgomp
-     * (NOT OpenBLAS's pthread pool, which won't spawn alongside libgomp), so it
-     * scales where a single big cblas_sgemm would stay single-threaded. The
-     * model_proj was previously a fully serial tile loop. Gated to non-Accelerate
-     * (Pi/Linux): on Mac, Accelerate threads its own cblas, so we keep the serial
-     * tile loop there to avoid OMP×Accelerate oversubscription. */
-#if defined(_OPENMP) && !defined(HAVE_ACCELERATE)
+    /* Used for F16/BF16 dense and the quantized formats without a native
+     * mN kernel (Q5_K / Q8_0 / Q4_0 / Q4_1 on Mac). Parallelize the
+     * output-row tiles across OMP threads — each thread dequants its tile
+     * and runs a single-threaded cblas_sgemm. This threads via libgomp
+     * (NOT OpenBLAS's pthread pool, which won't spawn alongside libgomp).
+     * Previously gated to non-Accelerate on the theory that Accelerate
+     * threads its own cblas — it does NOT for these tile shapes (N = 32
+     * rows stays single-threaded; same finding as cpu_neon_qk_sgemm_run,
+     * the Q4_K prefill path), which left Mac Q8_0 prefill fully serial:
+     * the 3.6x qwen35-0.8B prefill gap vs llama.cpp in QWEN35.md. */
+#if defined(_OPENMP)
     const size_t n_tiles = (n_out + DEQ_TILE_ROWS_DEFAULT - 1) / DEQ_TILE_ROWS_DEFAULT;
 #pragma omp parallel
     {
@@ -1283,6 +1285,15 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
         return;
     case GEIST_DTYPE_Q8_0:
         if (!policy->q8_0_native_mn) {
+            w->linear_mN = cpu_neon_w_dequant_trampoline_mN;
+        }
+        return;
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+        /* Same crossover as Q8_0: Mac AMX SGEMM beats the SDOT W4A8
+         * prefill kernels; Pi/Linux keeps them (OpenBLAS lags). m1
+         * decode stays native either way. */
+        if (!policy->q4_01_native_mn) {
             w->linear_mN = cpu_neon_w_dequant_trampoline_mN;
         }
         return;
