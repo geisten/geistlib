@@ -334,6 +334,9 @@ struct transformer_arch_session {
 struct transformer_runtime_flags {
     bool bitnet_sub_ln_enabled;
     bool dump_act_sparsity;
+    bool dn_seq_prefill; /* force the sequential DeltaNet prefill path
+                          * (GEIST_DN_SEQ_PREFILL=1) — the equivalence
+                          * oracle for the chunked formulation */
 };
 
 /* ---- Top-level state --------------------------------------------------- */
