@@ -60,6 +60,7 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
             .q6k_ntile_prefill         = has_accelerate,
             .q6k_ntile4_stream_prefill = has_accelerate,
             .q8_0_native_mn            = !has_accelerate,
+            .q4_01_native_mn           = !has_accelerate,
             .tq2_0_native_mn           = !has_accelerate,
             .tq2_0_tl1_m1              = false,
     };
@@ -92,6 +93,7 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
         }
     }
     p.q8_0_native_mn  = cpu_neon_env_bool("GEIST_Q8_0_NATIVE_MN", p.q8_0_native_mn);
+    p.q4_01_native_mn = cpu_neon_env_bool("GEIST_Q4_01_NATIVE_MN", p.q4_01_native_mn);
     p.tq2_0_native_mn = cpu_neon_env_bool("GEIST_TQ2_0_NATIVE_MN", p.tq2_0_native_mn);
     p.tq2_0_tl1_m1    = cpu_neon_env_bool("GEIST_TL1", p.tq2_0_tl1_m1);
 
