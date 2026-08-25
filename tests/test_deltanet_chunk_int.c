@@ -10,6 +10,14 @@
  * agree. Batch-vs-tokenwise is NOT a valid oracle here — the m1 and
  * mN quantized kernels legitimately differ by ~1.0 in logits.
  *
+ * Tolerance: the hard gates are identical argmax and identical greedy
+ * continuations. MAX_DIFF is only a garbage detector (a real math bug
+ * produces logit deltas far above 2): on Accelerate the two paths land
+ * bit-identical, but on OpenBLAS (Linux CI) the GEMM rounding drifts
+ * activations across int8 quantization boundaries, giving ~1.0 logit
+ * steps with unchanged ranking — same magnitude the engine's own
+ * kernel paths differ by among themselves.
+ *
  * Two prompt lengths: one inside a single engine batch (m_max = 64)
  * and one spanning multiple batches, which additionally exercises the
  * conv/delta state carry between consecutive chunks.
@@ -28,8 +36,8 @@
 #include <string.h>
 
 #define MAX_TOKENS 256
-#define N_CONT     5
-#define MAX_DIFF   0.05f
+#define N_CONT 5
+#define MAX_DIFF 2.0f
 
 static const char *resolve_path(void) {
     const char *env = getenv("GEIST_QWEN35_GGUF_PATH");
