@@ -199,23 +199,20 @@ static int q4_0_x8_valid(const void *packed, size_t n_in, size_t n_out) {
            h->n_out == n_out && h->block_bytes == sizeof(struct q4_0_x8_block);
 }
 
-void linear_q4_0_decode_w4a8_x8_pre(const int8_t  *x_q8,
-                                    float          scale_x,
-                                    const int32_t *bsum,
-                                    const void    *packed,
-                                    size_t         n_in,
-                                    size_t         n_out,
-                                    float         *y) {
-    if (!q4_0_x8_valid(packed, n_in, n_out))
-        return;
-    const size_t                nb_per_row = n_in / Q4_0_BLOCK_ELEMS;
-    const struct q4_0_x8_block *w = (const struct q4_0_x8_block *) ((const uint8_t *) packed +
-                                                                    sizeof(struct q4_0_x8_header));
-
+/* Tile sweep body — orphaned `omp for`, so it distributes when called
+ * from inside a parallel region and runs serially otherwise. Lets the
+ * pair entry below cover two weights with ONE region. */
+static void q4_0_x8_tiles(const struct q4_0_x8_block *w,
+                          size_t                      nb_per_row,
+                          size_t                      n_tiles,
+                          const int8_t               *x_q8,
+                          const int32_t              *bsum,
+                          float                       scale_x,
+                          float                      *y) {
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
+#pragma omp for schedule(static) nowait
 #endif
-    for (size_t tile = 0; tile < n_out / 8; tile++) {
+    for (size_t tile = 0; tile < n_tiles; tile++) {
         const struct q4_0_x8_block *row     = w + tile * nb_per_row;
         float                       accf[8] = {0};
         for (size_t b = 0; b < nb_per_row; b++) {
@@ -248,6 +245,69 @@ void linear_q4_0_decode_w4a8_x8_pre(const int8_t  *x_q8,
         for (int r = 0; r < 8; r++)
             y[tile * 8 + r] = accf[r] * scale_x;
     }
+}
+
+void linear_q4_0_decode_w4a8_x8_pre(const int8_t  *x_q8,
+                                    float          scale_x,
+                                    const int32_t *bsum,
+                                    const void    *packed,
+                                    size_t         n_in,
+                                    size_t         n_out,
+                                    float         *y) {
+    if (!q4_0_x8_valid(packed, n_in, n_out))
+        return;
+    const size_t                nb_per_row = n_in / Q4_0_BLOCK_ELEMS;
+    const struct q4_0_x8_block *w = (const struct q4_0_x8_block *) ((const uint8_t *) packed +
+                                                                    sizeof(struct q4_0_x8_header));
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+        q4_0_x8_tiles(w, nb_per_row, n_out / 8, x_q8, bsum, scale_x, y);
+    }
+}
+
+/* Two x8 weights, one activation quantization, ONE parallel region
+ * (#294: the DN block's qkv+z projections — 3 of every 4 qwen35 layers
+ * otherwise pay two thread-pool wakes per token here). */
+void linear_q4_0_decode_w4a8_x8_pair(const float *x,
+                                     const void  *p0,
+                                     const void  *p1,
+                                     size_t       n_in,
+                                     size_t       n_out0,
+                                     size_t       n_out1,
+                                     float       *y0,
+                                     float       *y1) {
+    if (!q4_0_x8_valid(p0, n_in, n_out0) || !q4_0_x8_valid(p1, n_in, n_out1))
+        return;
+    const size_t nb   = n_in / Q4_0_BLOCK_ELEMS;
+    int8_t      *x_q8 = heap_alloc_array_aligned(int8_t, n_in);
+    int32_t     *bsum = heap_alloc_array_aligned(int32_t, nb);
+    if (x_q8 == NULL || bsum == NULL) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &bsum);
+        return;
+    }
+    const float scale_x = quantize_x_int8_sym(x, n_in, x_q8);
+    for (size_t b = 0; b < nb; b++) {
+        int32_t acc = 0;
+        for (size_t j = 0; j < Q4_0_BLOCK_ELEMS; j++)
+            acc += x_q8[b * Q4_0_BLOCK_ELEMS + j];
+        bsum[b] = acc;
+    }
+    const struct q4_0_x8_block *w0 =
+            (const struct q4_0_x8_block *) ((const uint8_t *) p0 + sizeof(struct q4_0_x8_header));
+    const struct q4_0_x8_block *w1 =
+            (const struct q4_0_x8_block *) ((const uint8_t *) p1 + sizeof(struct q4_0_x8_header));
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+        q4_0_x8_tiles(w0, nb, n_out0 / 8, x_q8, bsum, scale_x, y0);
+        q4_0_x8_tiles(w1, nb, n_out1 / 8, x_q8, bsum, scale_x, y1);
+    }
+    safe_free((void **) &x_q8);
+    safe_free((void **) &bsum);
 }
 
 void linear_q4_0_decode_w4a8_x8(

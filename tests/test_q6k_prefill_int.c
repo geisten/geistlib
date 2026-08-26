@@ -126,6 +126,23 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
             printf("  x8 gemv cosine=%.6f\n", cos);
         }
         free(x8);
+
+        const size_t pd8_bytes = q6k_pd8_gemv_size_bytes(n_in, n_out);
+        void        *pd8       = pd8_bytes > 0 ? malloc(pd8_bytes) : nullptr;
+        if (pd8 == nullptr || q6k_pd8_gemv_pack(t->data, n_in, n_out, pd8) != 0) {
+            fprintf(stderr, "  Q6_K pd8 gemv pack failed\n");
+            fails++;
+        } else {
+            memset(y_fast, 0, n_out * sizeof(float));
+            linear_q6k_decode_w6a8_pd8(x, pd8, n_in, n_out, y_fast);
+            const float cos = cosine_sim(y_ref, y_fast, n_out);
+            if (cos < 0.999f) {
+                fprintf(stderr, "  pd8 gemv cos=%.6f < 0.999\n", cos);
+                fails++;
+            }
+            printf("  pd8 gemv cosine=%.6f\n", cos);
+        }
+        free(pd8);
     }
 
     const size_t packed_bytes = q6k_predecode_ntile4_size_bytes(n_in, n_out);
