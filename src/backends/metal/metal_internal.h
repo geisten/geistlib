@@ -78,6 +78,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_COPY_U32,
     METAL_PROFILE_DISPATCH_ARGMAX,
     METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
+    METAL_PROFILE_DISPATCH_DELTANET_DECODE,
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -187,8 +188,8 @@ struct metal_state {
     void    *gelu_rows_pipeline;
     void    *silu_rows_function;
     void    *silu_rows_pipeline;
-    void    *deltanet_prefill_function;
-    void    *deltanet_prefill_pipeline;
+    void    *deltanet_mix_function;
+    void    *deltanet_mix_pipeline;
     void    *mul_rows_function;
     void    *mul_rows_pipeline;
     void    *gelu_mul_rows_function;

@@ -5,7 +5,7 @@
  * greedy continuation must match cpu_neon token-for-token, contain the
  * known answer, and reproduce after session_reset. This exercises Metal
  * Q8_0 projections/embeddings + SiLU, full-attention layers and GPU
- * DeltaNet prefill in one path.
+ * DeltaNet prefill/decode in one path.
  */
 #include "test_helpers.h"
 
