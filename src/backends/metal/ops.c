@@ -306,6 +306,42 @@ static void metal_encode_scale_rows(struct metal_state                   *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
+static void metal_encode_qgate_split(struct metal_state              *st,
+                                     void                            *enc,
+                                     const struct geist_tensor       *joint,
+                                     const struct geist_tensor       *q,
+                                     const struct geist_tensor       *gate,
+                                     const struct metal_qgate_params *params) {
+    metal_msg_send_set_pipeline(st, enc, st->qgate_split_pipeline);
+    metal_msg_send_set_buffer(st, enc, joint->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, gate->buffer->buffer, 0, 2);
+    metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+    const size_t            total  = (size_t) params->rows * params->heads * params->head_dim;
+    const struct metal_size groups = {(total + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS, 1, 1};
+    const struct metal_size threads = {METAL_ELEM_THREADS, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_QGATE_SPLIT, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+}
+
+static void metal_encode_sigmoid_mul(struct metal_state                    *st,
+                                     void                                  *enc,
+                                     const struct geist_tensor             *x,
+                                     const struct geist_tensor             *gate,
+                                     const struct geist_tensor             *y,
+                                     const struct metal_binary_rows_params *params) {
+    metal_msg_send_set_pipeline(st, enc, st->sigmoid_mul_pipeline);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, gate->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+    const size_t            total  = (size_t) params->rows * params->cols;
+    const struct metal_size groups = {(total + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS, 1, 1};
+    const struct metal_size threads = {METAL_ELEM_THREADS, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_SIGMOID_MUL, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+}
+
 static void metal_encode_gelu_rows(struct metal_state                   *st,
                                    void                                 *enc,
                                    const struct geist_tensor            *x,
@@ -878,6 +914,109 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
         return GEIST_E_BACKEND;
     }
     metal_encode_scale_rows(st, enc, x, y, &params);
+    metal_msg_send_void0(st, enc, "endEncoding");
+    metal_msg_send_void0(st, cmd, "commit");
+    metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
+}
+
+[[nodiscard]] static enum geist_status metal_attn_qgate_split(struct geist_backend      *be,
+                                                              const struct geist_tensor *joint,
+                                                              size_t                     heads,
+                                                              size_t                     head_dim,
+                                                              struct geist_tensor       *q,
+                                                              struct geist_tensor       *gate) {
+    if (be == nullptr || be->state == nullptr || heads == 0 || head_dim == 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t rows = 0, cols = 0, jo = 0, js = 0;
+    size_t qr = 0, qc = 0, qo = 0, qs = 0;
+    size_t gr = 0, gc = 0, go = 0, gs = 0;
+    if (!metal_tensor_is_f32_matrix(joint, &rows, &cols, &jo, &js) ||
+        !metal_tensor_is_f32_matrix(q, &qr, &qc, &qo, &qs) ||
+        !metal_tensor_is_f32_matrix(gate, &gr, &gc, &go, &gs) || cols != heads * 2u * head_dim ||
+        qr != rows || gr != rows || qc != heads * head_dim || gc != heads * head_dim) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (rows > UINT32_MAX || heads > UINT32_MAX || head_dim > UINT32_MAX || jo > UINT32_MAX ||
+        qo > UINT32_MAX || go > UINT32_MAX || js > UINT32_MAX || qs > UINT32_MAX ||
+        gs > UINT32_MAX || joint->buffer->owner != be->state || q->buffer->owner != be->state ||
+        gate->buffer->owner != be->state) {
+        return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    if (s != GEIST_OK)
+        return s;
+    struct metal_state             *st     = be->state;
+    const struct metal_qgate_params params = {.rows             = (uint32_t) rows,
+                                              .heads            = (uint32_t) heads,
+                                              .head_dim         = (uint32_t) head_dim,
+                                              .joint_offset     = (uint32_t) jo,
+                                              .q_offset         = (uint32_t) qo,
+                                              .gate_offset      = (uint32_t) go,
+                                              .joint_row_stride = (uint32_t) js,
+                                              .q_row_stride     = (uint32_t) qs,
+                                              .gate_row_stride  = (uint32_t) gs};
+    if (st->sequence_active) {
+        metal_encode_qgate_split(st, metal_sequence_encoder(st), joint, q, gate, &params);
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
+    if (enc == nullptr)
+        return GEIST_E_BACKEND;
+    metal_encode_qgate_split(st, enc, joint, q, gate, &params);
+    metal_msg_send_void0(st, enc, "endEncoding");
+    metal_msg_send_void0(st, cmd, "commit");
+    metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
+}
+
+[[nodiscard]] static enum geist_status metal_sigmoid_mul(struct geist_backend      *be,
+                                                         const struct geist_tensor *x,
+                                                         const struct geist_tensor *gate,
+                                                         struct geist_tensor       *y) {
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t rows = 0, cols = 0, xo = 0, xs = 0;
+    size_t gr = 0, gc = 0, go = 0, gs = 0;
+    size_t yr = 0, yc = 0, yo = 0, ys = 0;
+    if (!metal_tensor_is_f32_rows(x, &rows, &cols, &xo, &xs) ||
+        !metal_tensor_is_f32_rows(gate, &gr, &gc, &go, &gs) ||
+        !metal_tensor_is_f32_rows(y, &yr, &yc, &yo, &ys) || gr != rows || yr != rows ||
+        gc != cols || yc != cols) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (rows > UINT32_MAX || cols > UINT32_MAX || xo > UINT32_MAX || go > UINT32_MAX ||
+        yo > UINT32_MAX || xs > UINT32_MAX || gs > UINT32_MAX || ys > UINT32_MAX ||
+        x->buffer->owner != be->state || gate->buffer->owner != be->state ||
+        y->buffer->owner != be->state) {
+        return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    if (s != GEIST_OK)
+        return s;
+    struct metal_state                   *st     = be->state;
+    const struct metal_binary_rows_params params = {.rows         = (uint32_t) rows,
+                                                    .cols         = (uint32_t) cols,
+                                                    .a_offset     = (uint32_t) xo,
+                                                    .b_offset     = (uint32_t) go,
+                                                    .y_offset     = (uint32_t) yo,
+                                                    .a_row_stride = (uint32_t) xs,
+                                                    .b_row_stride = (uint32_t) gs,
+                                                    .y_row_stride = (uint32_t) ys};
+    if (st->sequence_active) {
+        metal_encode_sigmoid_mul(st, metal_sequence_encoder(st), x, gate, y, &params);
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
+    if (enc == nullptr)
+        return GEIST_E_BACKEND;
+    metal_encode_sigmoid_mul(st, enc, x, gate, y, &params);
     metal_msg_send_void0(st, enc, "endEncoding");
     metal_msg_send_void0(st, cmd, "commit");
     metal_msg_send_void0(st, cmd, "waitUntilCompleted");
@@ -3289,6 +3428,8 @@ static const struct geist_backend_fused metal_fused = {
         .ple_block               = metal_ple_block,
         .rmsnorm_add             = metal_rmsnorm_add,
         .deltanet_mix            = metal_deltanet_mix,
+        .attn_qgate_split        = metal_attn_qgate_split,
+        .sigmoid_mul             = metal_sigmoid_mul,
 };
 
 const struct geist_backend_descriptor geist_backend_metal = {

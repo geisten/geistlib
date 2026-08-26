@@ -624,6 +624,24 @@ static const char metal_elem_source[] =
         "c]=res[p.residual_offset+row*p.residual_row_stride+c]+n;}\n"
         "}\n";
 
+static const char metal_qgate_source[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct QG{uint rows,heads,hd,jo,qo,go,js,qs,gs;};\n"
+        "struct Bin{uint "
+        "rows,cols,a_offset,b_offset,y_offset,a_row_stride,b_row_stride,y_row_stride;};\n"
+        "kernel void qgate_split(device const float*jv[[buffer(0)]],device float*q[[buffer(1)]],"
+        "device float*g[[buffer(2)]],constant QG&p[[buffer(3)]],uint i[[thread_position_in_grid]]){"
+        "uint total=p.rows*p.heads*p.hd;if(i>=total)return;uint "
+        "d=i%p.hd,x=i/p.hd,h=x%p.heads,r=x/p.heads;"
+        "uint src=p.jo+r*p.js+h*2u*p.hd+d;q[p.qo+r*p.qs+h*p.hd+d]=jv[src];"
+        "g[p.go+r*p.gs+h*p.hd+d]=jv[src+p.hd];}\n"
+        "kernel void sigmoid_mul_rows(device const float*x[[buffer(0)]],device const "
+        "float*g[[buffer(1)]],device float*y[[buffer(2)]],constant Bin&p[[buffer(3)]],uint "
+        "i[[thread_position_in_grid]]){uint total=p.rows*p.cols;if(i>=total)return;uint "
+        "r=i/p.cols,c=i-r*p.cols;float v=g[p.b_offset+r*p.b_row_stride+c];"
+        "y[p.y_offset+r*p.y_row_stride+c]=x[p.a_offset+r*p.a_row_stride+c]/(1.0f+exp(-v));}\n";
+
 static const char metal_silu_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"

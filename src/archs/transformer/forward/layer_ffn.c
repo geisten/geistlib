@@ -320,8 +320,12 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     }
 
 ffn_post:
-    struct geist_tensor t_h_post_ff_2d = view_2d(sess->scratch_h_post_ff, ctx->SEQ, st->d_model);
-    t0                                 = profile ? transformer_profile_now_ns() : 0;
+    /* Families without PLE can write the residual result straight into the
+     * layer output. Besides avoiding a copy, this preserves one uninterrupted
+     * GPU command sequence for Qwen3.5. */
+    struct geist_buffer *post_ff_buf    = ctx->apply_ple ? sess->scratch_h_post_ff : ctx->h_out_buf;
+    struct geist_tensor  t_h_post_ff_2d = view_2d(post_ff_buf, ctx->SEQ, st->d_model);
+    t0                                  = profile ? transformer_profile_now_ns() : 0;
     if (ctx->apply_gemma_attn_norms) {
         struct geist_tensor t_post_ff_2d = view_2d(sess->scratch_post_ff, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_ffw = view_1d(L->post_ffw_norm.buffer, st->d_model);

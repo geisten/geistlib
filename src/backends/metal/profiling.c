@@ -53,6 +53,8 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_ARGMAX]               = "dispatch.argmax",
         [METAL_PROFILE_DISPATCH_DELTANET_PREFILL]     = "dispatch.deltanet_prefill",
         [METAL_PROFILE_DISPATCH_DELTANET_DECODE]      = "dispatch.deltanet_decode",
+        [METAL_PROFILE_DISPATCH_QGATE_SPLIT]          = "dispatch.qgate_split",
+        [METAL_PROFILE_DISPATCH_SIGMOID_MUL]          = "dispatch.sigmoid_mul",
 };
 
 #include "metal_shaders.h"

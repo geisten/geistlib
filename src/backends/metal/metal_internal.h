@@ -79,6 +79,8 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_ARGMAX,
     METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
     METAL_PROFILE_DISPATCH_DELTANET_DECODE,
+    METAL_PROFILE_DISPATCH_QGATE_SPLIT,
+    METAL_PROFILE_DISPATCH_SIGMOID_MUL,
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -121,6 +123,7 @@ struct metal_state {
     void    *elem_library;
     void    *silu_library;
     void    *deltanet_library;
+    void    *qgate_library;
     void    *elem_simd_library;
     void    *attn_library;
     void    *attn_f16_library;
@@ -190,6 +193,10 @@ struct metal_state {
     void    *silu_rows_pipeline;
     void    *deltanet_mix_function;
     void    *deltanet_mix_pipeline;
+    void    *qgate_split_function;
+    void    *qgate_split_pipeline;
+    void    *sigmoid_mul_function;
+    void    *sigmoid_mul_pipeline;
     void    *mul_rows_function;
     void    *mul_rows_pipeline;
     void    *gelu_mul_rows_function;
@@ -625,6 +632,18 @@ struct metal_deltanet_params {
     uint32_t conv_state_offset;
     uint32_t delta_state_offset;
     float    eps;
+};
+
+struct metal_qgate_params {
+    uint32_t rows;
+    uint32_t heads;
+    uint32_t head_dim;
+    uint32_t joint_offset;
+    uint32_t q_offset;
+    uint32_t gate_offset;
+    uint32_t joint_row_stride;
+    uint32_t q_row_stride;
+    uint32_t gate_row_stride;
 };
 /* ---- Shared data (defined in profiling.c) ----------------------------- */
 extern const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT];

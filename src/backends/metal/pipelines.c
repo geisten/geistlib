@@ -99,9 +99,10 @@
         st->silu_rows_pipeline != nullptr && st->mul_rows_pipeline != nullptr &&
         st->gelu_mul_rows_pipeline != nullptr && st->add_rows_pipeline != nullptr &&
         st->scale_rows_pipeline != nullptr && st->rmsnorm_add_rows_pipeline != nullptr &&
-        st->rmsnorm_add_rows_simd_pipeline != nullptr &&
-        st->embed_lookup_scaled_pipeline != nullptr && st->f32_matmul_pipeline != nullptr &&
-        st->f32_ple_gate_pipeline != nullptr && st->f32_ple_proj_norm_pipeline != nullptr) {
+        st->rmsnorm_add_rows_simd_pipeline != nullptr && st->qgate_split_pipeline != nullptr &&
+        st->sigmoid_mul_pipeline != nullptr && st->embed_lookup_scaled_pipeline != nullptr &&
+        st->f32_matmul_pipeline != nullptr && st->f32_ple_gate_pipeline != nullptr &&
+        st->f32_ple_proj_norm_pipeline != nullptr) {
         return GEIST_OK;
     }
 
@@ -147,6 +148,8 @@
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_elem_source);
     void *silu_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_silu_source);
+    void *qgate_source =
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_qgate_source);
     void *elem_simd_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_elem_simd_source);
     void *embed_source =
@@ -171,7 +174,8 @@
         (st->use_q4k_mm_sg && q4k_mm_sg_ns_source == nullptr) || q4k_gate_up_n4_src == nullptr ||
         q4k_pair_n4_src == nullptr || q6_source == nullptr || q6_n4_source == nullptr ||
         q6_m16_source == nullptr || elem_source == nullptr || silu_source == nullptr ||
-        elem_simd_source == nullptr || embed_source == nullptr || f32_source == nullptr) {
+        qgate_source == nullptr || elem_simd_source == nullptr || embed_source == nullptr ||
+        f32_source == nullptr) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal: failed to create shader source");
         return GEIST_E_BACKEND;
     }
@@ -387,6 +391,18 @@
         geist_backend_set_error(be,
                                 GEIST_E_BACKEND,
                                 "metal: SiLU shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    err               = nullptr;
+    st->qgate_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", qgate_source, nullptr, &err);
+    if (st->qgate_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: Qwen gate shader compile failed%s%s",
                                 msg != nullptr ? ": " : "",
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
@@ -616,6 +632,22 @@
                                         "scale_rows",
                                         &st->scale_rows_function,
                                         &st->scale_rows_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->qgate_library,
+                                        ns_string,
+                                        "qgate_split",
+                                        &st->qgate_split_function,
+                                        &st->qgate_split_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->qgate_library,
+                                        ns_string,
+                                        "sigmoid_mul_rows",
+                                        &st->sigmoid_mul_function,
+                                        &st->sigmoid_mul_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,
