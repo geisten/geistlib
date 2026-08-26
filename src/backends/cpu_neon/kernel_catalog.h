@@ -88,6 +88,11 @@ struct cpu_neon_kernel_policy {
      * Default on where Accelerate implies desktop-class RAM; opt-in
      * elsewhere. Env: GEIST_Q6K_X8_GEMV. */
     bool q6k_x8_gemv;
+    /* Same interleaved-8-row GEMV for Q4_0 — applies to every eligible
+     * Q4_0 tensor (FFN/attention/DN projections), so the packed copies
+     * sum to ~1x the model's Q4_0 bytes on heap; the mmap'd source goes
+     * cold after warmup. Env: GEIST_Q4_0_X8_GEMV. */
+    bool q4_0_x8_gemv;
     bool q6k_ntile4_stream_prefill;
     bool q8_0_native_mn;
     bool q4_01_native_mn;

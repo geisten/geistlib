@@ -50,6 +50,12 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
         bytes_per_call = (n_out * n_in / Q6_K_BLOCK_ELEMS) * Q6_K_BLOCK_BYTES;
         kind           = "Q6_K fp32 ";
         break;
+    case GGUF_TYPE_Q4_0:
+        if (n_in % Q4_0_BLOCK_ELEMS != 0)
+            goto skip_align;
+        bytes_per_call = (n_out * n_in / Q4_0_BLOCK_ELEMS) * Q4_0_BLOCK_BYTES;
+        kind           = "Q4_0 W4A8";
+        break;
     default:
         fprintf(stderr, "  %-32s SKIP (dtype %d)\n", name, t->dtype);
         return;
@@ -78,6 +84,8 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
     do {                                                                               \
         if (t->dtype == GGUF_TYPE_Q4_K)                                                \
             linear_q4k_decode_w4a8_pre(x_q8, scale_x, sum32, t->data, n_in, n_out, y); \
+        else if (t->dtype == GGUF_TYPE_Q4_0)                                           \
+            linear_q4_0_decode_w4a8(x, t->data, n_in, n_out, y);                       \
         else                                                                           \
             linear_q6k_decode_fp32(x, t->data, n_in, n_out, y);                        \
     } while (0)
@@ -91,6 +99,38 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
         n_iter = 5000;
     if (n_iter < 3)
         n_iter = 3;
+
+    /* Q4_0: also check + bench the x8 interleaved layout. */
+    void *x8p = NULL;
+    if (t->dtype == GGUF_TYPE_Q4_0) {
+        const size_t x8b = (q4_0_x8_gemv_size_bytes(n_in, n_out) + 63) & ~(size_t) 63;
+        x8p              = x8b > 0 ? aligned_alloc(64, x8b) : NULL;
+        if (x8p != NULL && q4_0_x8_gemv_pack(t->data, n_in, n_out, x8p) == 0) {
+            float *y_ref = (float *) aligned_alloc(64, n_out * sizeof(float));
+            linear_q4_0_decode_w4a8(x, t->data, n_in, n_out, y_ref);
+            linear_q4_0_decode_w4a8_x8(x, x8p, n_in, n_out, y);
+            double md = 0, sc = 1e-6;
+            for (size_t i = 0; i < n_out; i++) {
+                const double d = fabs((double) y[i] - (double) y_ref[i]);
+                if (d > md)
+                    md = d;
+                if (fabs((double) y_ref[i]) > sc)
+                    sc = fabs((double) y_ref[i]);
+            }
+            printf("  %-32s [x8 parity] max rel diff %.2e\n", name, md / sc);
+            free(y_ref);
+            const double tx0 = now_ms();
+            for (int it = 0; it < n_iter; it++)
+                linear_q4_0_decode_w4a8_x8(x, x8p, n_in, n_out, y);
+            const double xdt = (now_ms() - tx0) / n_iter;
+            printf("  %-32s [Q4_0 x8  ] n_out=%6zu n_in=%5zu %19.2f ms  %5.2f GB/s\n",
+                   name,
+                   n_out,
+                   n_in,
+                   xdt,
+                   (double) bytes_per_call / (xdt * 1e6));
+        }
+    }
 
     /* Hot loop. */
     const double t0 = now_ms();

@@ -188,6 +188,18 @@ float quantize_x_int8_sym(const float *x, size_t n, int8_t *x_q8);
  * Q4_0 exports. Q4_1's min-offset folds via per-block activation sums. */
 void linear_q4_0_decode_w4a8(const float *x, const void *w_q4, size_t n_in, size_t n_out, float *y);
 void linear_q4_1_decode_w4a8(const float *x, const void *w_q4, size_t n_in, size_t n_out, float *y);
+size_t q4_0_x8_gemv_size_bytes(size_t n_in, size_t n_out);
+int    q4_0_x8_gemv_pack(const void *w_q4, size_t n_in, size_t n_out, void *dst);
+void   linear_q4_0_decode_w4a8_x8(
+        const float *x, const void *packed, size_t n_in, size_t n_out, float *y);
+void linear_q4_0_decode_w4a8_x8_pre(const int8_t  *x_q8,
+                                    float          scale_x,
+                                    const int32_t *bsum,
+                                    const void    *packed,
+                                    size_t         n_in,
+                                    size_t         n_out,
+                                    float         *y);
+
 void linear_q4_0_w4a8_prefill(
         const float *x, size_t m, const void *w_q4, size_t n_in, size_t n_out, float *y);
 void linear_q4_1_w4a8_prefill(
