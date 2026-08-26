@@ -46,6 +46,43 @@
     return GEIST_OK;
 }
 
+[[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be) {
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st = be->state;
+    if (st->deltanet_prefill_pipeline != nullptr) {
+        return GEIST_OK;
+    }
+    void *ns_string = metal_objc_get_class(st, "NSString");
+    void *source    = ns_string != nullptr
+                              ? metal_msg_send_id_cstr(
+                                        st, ns_string, "stringWithUTF8String:", metal_deltanet_source)
+                              : nullptr;
+    if (source == nullptr) {
+        geist_backend_set_error(be, GEIST_E_BACKEND, "metal: DeltaNet shader source failed");
+        return GEIST_E_BACKEND;
+    }
+    void *err            = nullptr;
+    st->deltanet_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
+    if (st->deltanet_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: DeltaNet shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    return metal_create_named_pipeline(be,
+                                       st->deltanet_library,
+                                       ns_string,
+                                       "deltanet_prefill",
+                                       &st->deltanet_prefill_function,
+                                       &st->deltanet_prefill_pipeline);
+}
+
 [[nodiscard]] enum geist_status metal_ensure_q4k_pipeline(struct geist_backend *be) {
 
     if (be == nullptr || be->state == nullptr) {
