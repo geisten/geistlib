@@ -307,6 +307,32 @@ struct geist_fusion_query {
     const struct geist_weight *down_w;
 };
 
+/* Complete Gated-DeltaNet mixer after its four input projections. All
+ * tensors are F32 DENSE backend views. qkv is [seq, conv_dim], z is
+ * [seq, n_v_heads * head_v] and is overwritten with the mixer output,
+ * beta/alpha are [seq, n_v_heads]. conv_state and delta_state are
+ * persistent, mutable session state. A backend fusion must advance both
+ * state tensors exactly once for every input row before returning OK. */
+struct geist_deltanet_mix_args {
+    struct geist_tensor       *qkv;
+    struct geist_tensor       *z;
+    const struct geist_tensor *beta;
+    const struct geist_tensor *alpha;
+    const struct geist_tensor *conv_w;
+    const struct geist_tensor *ssm_a;
+    const struct geist_tensor *dt_bias;
+    const struct geist_tensor *norm_w;
+    struct geist_tensor       *conv_state;
+    struct geist_tensor       *delta_state;
+    size_t                     seq;
+    size_t                     n_k_heads;
+    size_t                     n_v_heads;
+    size_t                     head_k;
+    size_t                     head_v;
+    size_t                     conv_kernel;
+    float                      eps;
+};
+
 /* Every slot here is an OPTIMIZATION: the arch must be able to produce the
  * same result from core + primitives. nullptr = always decomposed; a
  * non-null slot may still return GEIST_E_UNSUPPORTED for geometries its
@@ -506,6 +532,15 @@ struct geist_backend_fused {
                                      const struct geist_tensor *w,
                                      float                      eps,
                                      struct geist_tensor       *y);
+
+    /* Gated-DeltaNet's causal depthwise convolution, q/k normalization,
+     * gated delta-rule recurrence, per-head RMSNorm and SiLU output gate.
+     * See geist_deltanet_mix_args. This is a stateful fusion: OK means z
+     * contains the mixer output and both recurrent state tensors have
+     * advanced; GEIST_E_UNSUPPORTED guarantees neither state was changed
+     * and lets the architecture run its host reference implementation. */
+    enum geist_status (*deltanet_mix)(struct geist_backend                  *be,
+                                      const struct geist_deltanet_mix_args *args);
 };
 
 /* ====================================================================== */

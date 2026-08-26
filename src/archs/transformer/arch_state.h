@@ -273,15 +273,15 @@ struct transformer_arch_session {
      * CPU backends malloc under the hood — behavior unchanged. */
     struct geist_buffer *scratch_pool_buf;
 
-    /* ---- Gated-DeltaNet recurrent state (#281). Heap f32, allocated
-     * at session_alloc only for layers with mixer == DELTANET; nullptr
+    /* ---- Gated-DeltaNet recurrent state (#281/#296). Backend buffers,
+     * allocated at session_alloc only for layers with mixer == DELTANET; nullptr
      * slots otherwise. Zeroed on session reset. There is no rewind —
      * the family leaves verify_forward/kv_truncate-based speculative
      * decoding unused (engine falls back to sequential decode).
      *   dn_conv_state[li]: [(kernel-1) * conv_dim]  rolling pre-conv qkv
      *   dn_S[li]:          [n_v_heads * head_k * head_v]  delta state */
-    float **dn_conv_state;
-    float **dn_S;
+    struct geist_buffer **dn_conv_state;
+    struct geist_buffer **dn_S;
     /* qwen35 scratch (#281): joint q+gate projection result
      * [m_max, 2*q_out] + saved per-head gate [m_max, q_out], and the
      * DeltaNet projection outputs (qkv [m_max, conv_dim], z
