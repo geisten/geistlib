@@ -28,33 +28,39 @@ on Mac by unserializing the dequant+SGEMM prefill path.
   variables needed** (that alone was 6.1 → 22.3 t/s on the 4B; see the PR).
 - **llama protocol:** `llama-bench -ngl 0 -p 128[,512] -n 16|32 -r 2..3`.
 
-## Mac (M-series, 8 threads, CPU-only) — measured 2026-08-25, geist `b0a031b`
+## Mac (M-series, 8 threads, CPU-only) — measured 2026-08-26, geist `f3ef6a8`
 
-Full #287 + #288 + #289 stack (chunked delta-rule prefill, parallel
-dequant+SGEMM prefill, Q6_K x8 lm_head GEMV). Pre-stack reference
-(2026-08-24): prefill 0.8B 139.1, 4B 44.1/40.5, 27B 6.6; decode
-0.8B 91.8, 4B 22.4, 27B 4.3.
+Full #287 + #288 + #289 + #291 stack (chunked delta-rule prefill,
+parallel dequant+SGEMM prefill, Q6_K x8 lm_head GEMV, Q4_0 x8 decode
+GEMV). Pre-stack reference (2026-08-24): prefill 0.8B 139.1,
+4B 44.1/40.5, 27B 6.6; decode 0.8B 91.8, 4B 22.4, 27B 4.3.
 
 | model | metric | geist | llama.cpp CPU | ratio |
 | :-- | :-- | ---: | ---: | :-- |
 | 0.8B Q8_0 | prefill pp128 | 467.3 | 496.7 | llama 1.06× |
 | 0.8B Q8_0 | prefill pp512 | 448.8 | — | |
 | 0.8B Q8_0 | **decode** | **99.9** | 77.9 | **geist 1.28×** |
-| 4B Q4_0 | prefill pp128 | 87.7 | 142.4 | llama 1.62× |
-| 4B Q4_0 | prefill pp512 | 88.6 | 144.9 | llama 1.64× |
-| 4B Q4_0 | **decode** | 23.0 | 27.8 | llama 1.21× |
-| 27B Q4_0 | prefill pp128 | 13.3 | 26.5 | llama 2.0× |
-| 27B Q4_0 | **decode** | 4.9 | 5.8 | llama 1.20× |
+| 4B Q4_0 | prefill pp128 | 88.7 | 142.4 | llama 1.61× |
+| 4B Q4_0 | prefill pp512 | 89.7 | 144.9 | llama 1.62× |
+| 4B Q4_0 | **decode** | **27.1** | 27.8 | ~parity (0.97×) |
+| 27B Q4_0 | prefill pp128 | 13.5 | 26.5 | llama 2.0× |
+| 27B Q4_0 | **decode** | **5.6** | 5.8 | ~parity (0.96×) |
 
-Decode here is measured after a 128/512-token prefill (real KV +
-recurrent state); short-context decode runs higher (4B ~25.6 at
-seq 2). RSS includes the #289 packed lm_head copy (4B 3.98 GB).
+Decode is measured after a 128/512-token prefill (real KV + recurrent
+state); 4B decode at 512 context is 25.5. RSS includes the packed x8
+copies (#289 lm_head + #291 all Q4_0 projections): 4B 5.7 GB,
+27B 27.7 GB — `GEIST_Q4_0_X8_GEMV=0` / `GEIST_Q6K_X8_GEMV=0` trade
+the speed back for the memory. #291 A/B, same run: 4B decode
+27.1 vs 25.4 (+7 %), 27B 5.6 vs 4.9 (+14 %); prefill untouched.
 
 (llama.cpp Metal, for context: 4B pp128 865 / tg 69.5; 27B pp512 106 /
 tg 19.0. GPU is out of scope for geist — see the #281 positioning.)
 
-**Reading:** the 0.8B now beats llama.cpp on decode by 1.28× at
-prefill parity; the 4B/27B decode gap is down to 1.2×. Prefill went
+**Reading:** the 0.8B beats llama.cpp on decode by 1.28× at prefill
+parity, and the 4B/27B reach decode parity (0.96–0.97×) with #291's
+interleaved Q4_0 GEMV (kernel-level +61–72 % GB/s, end-to-end +7–14 %
+— the rest of the budget is the Q6_K head near its compute bound and
+the DN recurrence). Prefill went
 from 3–4× behind to 1.06–2× via two findings: chunking the delta-rule
 recurrence (#287) moved it only ~0–7 % in isolation — falsifying the
 original recurrence attribution — while the real culprit was the
