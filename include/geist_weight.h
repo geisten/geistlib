@@ -128,6 +128,7 @@ enum geist_weight_backend_layout {
     GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4,
     GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4_STREAM,
     GEIST_W_LAYOUT_Q6_K_X8_GEMV,
+    GEIST_W_LAYOUT_Q4_0_X8_GEMV,
 };
 
 struct geist_weight {
