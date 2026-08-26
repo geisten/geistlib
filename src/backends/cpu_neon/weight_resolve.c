@@ -158,6 +158,10 @@ static void cpu_neon_w_q4_0_m1(const float               *x,
                                struct geist_backend      *be,
                                float                     *y) {
     (void) be;
+    if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w->aux_fp32 != nullptr) {
+        linear_q4_0_decode_w4a8_x8(x, w->aux_fp32, (size_t) w->n_in, (size_t) w->n_out, y);
+        return;
+    }
     linear_q4_0_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
 }
 
@@ -1258,6 +1262,45 @@ install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
     return GEIST_OK;
 }
 
+static enum geist_status
+install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
+                                 const struct cpu_neon_kernel_policy *policy) {
+#if defined(__ARM_NEON)
+    /* Interleaved-8-row Q4_0 GEMV. Unlike the Q6_K variant this hits
+     * every projection tensor, so the packed copies sum to ~1x the
+     * model's Q4_0 bytes — heap, with the mmap'd source going cold
+     * after warmup. Mac default on; Pi opt-in (GEIST_Q4_0_X8_GEMV=1). */
+    if (!policy->q4_0_x8_gemv) {
+        return GEIST_OK;
+    }
+    if (w == nullptr || w->dtype != GEIST_DTYPE_Q4_0 || w->n_in <= 0 || w->n_out <= 0 ||
+        w->n_out < 1024 || (w->n_out % 8) != 0 || ((size_t) w->n_in % 32) != 0) {
+        return GEIST_OK;
+    }
+    const size_t bytes = q4_0_x8_gemv_size_bytes((size_t) w->n_in, (size_t) w->n_out);
+    if (bytes == 0 || bytes > (size_t) INT32_MAX) {
+        return GEIST_OK;
+    }
+    void *buf = heap_alloc_aligned(bytes, 64);
+    if (buf == nullptr) {
+        return GEIST_OK;
+    }
+    if (q4_0_x8_gemv_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf) != 0) {
+        safe_free(&buf);
+        return GEIST_OK;
+    }
+    w->aux_fp32 = (const float *) buf;
+    w->aux_n    = (int32_t) bytes;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->backend_layout    = GEIST_W_LAYOUT_Q4_0_X8_GEMV;
+    w->backend_alignment = 64;
+#else
+    (void) w;
+    (void) policy;
+#endif
+    return GEIST_OK;
+}
+
 /* Apply per-dtype policy overrides after the table match. These are
  * platform-tuning decisions (native NEON vs Accelerate/OpenBLAS dequant
  * trampoline for M>1), not ISA-capability decisions. Q5_K + Q8_0 +
@@ -1296,9 +1339,13 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
     case GEIST_DTYPE_Q4_1:
         /* Same crossover as Q8_0: Mac AMX SGEMM beats the SDOT W4A8
          * prefill kernels; Pi/Linux keeps them (OpenBLAS lags). m1
-         * decode stays native either way. */
+         * decode stays native either way — with the x8 interleave
+         * over-install where eligible (Q4_0 only). */
         if (!policy->q4_01_native_mn) {
             w->linear_mN = cpu_neon_w_dequant_trampoline_mN;
+        }
+        if (w->dtype == GEIST_DTYPE_Q4_0) {
+            (void) install_q4_0_x8_gemv_if_eligible(w, policy);
         }
         return;
     case GEIST_DTYPE_TQ2_0:
