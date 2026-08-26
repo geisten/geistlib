@@ -3063,9 +3063,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         args->norm_w == nullptr || args->conv_state == nullptr || args->delta_state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    /* PR4 covers prefill. Decode deliberately negotiates back to the host
-     * until its dedicated latency kernel is installed in the next step. */
-    if (args->seq <= 1 || args->n_k_heads == 0 || args->n_k_heads != args->n_v_heads ||
+    if (args->seq == 0 || args->n_k_heads == 0 || args->n_k_heads != args->n_v_heads ||
         args->head_k == 0 || args->head_k > 256 || args->head_v == 0 || args->head_v > 256 ||
         args->conv_kernel < 2) {
         return GEIST_E_UNSUPPORTED;
@@ -3162,14 +3160,17 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal DeltaNet: encoder failed");
         return GEIST_E_BACKEND;
     }
-    metal_msg_send_set_pipeline(st, enc, st->deltanet_prefill_pipeline);
+    metal_msg_send_set_pipeline(st, enc, st->deltanet_mix_pipeline);
     for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
         metal_msg_send_set_buffer(st, enc, all[i]->buffer->buffer, 0, i);
     }
     metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
     const struct metal_size groups  = {args->n_v_heads, 1, 1};
     const struct metal_size threads = {256, 1, 1};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, groups);
+    metal_profile_add_dispatch(st,
+                               args->seq == 1 ? METAL_PROFILE_DISPATCH_DELTANET_DECODE
+                                              : METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
+                               groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
     if (st->sequence_active) {
         st->sequence_has_work = true;

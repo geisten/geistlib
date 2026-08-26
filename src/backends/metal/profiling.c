@@ -52,6 +52,7 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_COPY_U32]             = "dispatch.copy_u32",
         [METAL_PROFILE_DISPATCH_ARGMAX]               = "dispatch.argmax",
         [METAL_PROFILE_DISPATCH_DELTANET_PREFILL]     = "dispatch.deltanet_prefill",
+        [METAL_PROFILE_DISPATCH_DELTANET_DECODE]      = "dispatch.deltanet_decode",
 };
 
 #include "metal_shaders.h"

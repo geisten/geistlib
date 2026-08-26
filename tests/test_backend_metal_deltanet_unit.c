@@ -1,6 +1,6 @@
-/* Metal Gated-DeltaNet prefill parity (#296). Exercises the fused backend
- * contract directly with non-zero recurrent state, then compares mixer
- * output plus both advanced states against a scalar reference. */
+/* Metal Gated-DeltaNet prefill/decode parity (#296). Exercises the fused
+ * backend contract directly with non-zero recurrent state, then compares
+ * mixer output plus both advanced states against a scalar reference. */
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -18,18 +18,19 @@ static float silu_ref(float x) {
     return x >= 0.0f ? x / (1.0f + e) : x * e / (1.0f + e);
 }
 
-static void mix_ref(float       qkv[SEQ * CD],
-                    float       z[SEQ * VD],
-                    const float beta[SEQ * NH],
-                    const float alpha[SEQ * NH],
-                    const float cw[CD * K],
-                    const float aw[NH],
-                    const float dt[NH],
-                    const float nw[DV],
-                    float       cs[(K - 1) * CD],
-                    float       state[NH * DK * DV]) {
+static void mix_ref(size_t       seq,
+                    float       *qkv,
+                    float       *z,
+                    const float *beta,
+                    const float *alpha,
+                    const float  cw[CD * K],
+                    const float  aw[NH],
+                    const float  dt[NH],
+                    const float  nw[DV],
+                    float        cs[(K - 1) * CD],
+                    float        state[NH * DK * DV]) {
     const float eps = 1e-6f;
-    for (size_t t = 0; t < SEQ; t++) {
+    for (size_t t = 0; t < seq; t++) {
         float y[CD];
         for (size_t c = 0; c < CD; c++) {
             float acc = 0.0f;
@@ -164,7 +165,7 @@ int main(void) {
     memcpy(z_ref, z, sizeof z);
     memcpy(cs_ref, cs, sizeof cs);
     memcpy(s_ref, state, sizeof state);
-    mix_ref(q_ref, z_ref, beta, alpha, cw, aw, dt, nw, cs_ref, s_ref);
+    mix_ref(SEQ, q_ref, z_ref, beta, alpha, cw, aw, dt, nw, cs_ref, s_ref);
 
     struct geist_buffer *buf[10] = {0};
     const float         *src[10] = {qkv, z, beta, alpha, cw, aw, dt, nw, cs, state};
@@ -215,22 +216,62 @@ int main(void) {
     const double ze = max_abs(z_got, z_ref, SEQ * VD);
     const double ce = max_abs(cs_got, cs_ref, (K - 1) * CD);
     const double se = max_abs(s_got, s_ref, NH * DK * DV);
-    args.seq        = 1;
-    ok &= f->deltanet_mix(be, &args) == GEIST_E_UNSUPPORTED;
-    float unchanged[NH * DK * DV];
-    ok &= v->buffer_download(sizeof unchanged, (uint8_t *) unchanged, buf[9]) == GEIST_OK;
-    ok &= memcmp(unchanged, s_got, sizeof unchanged) == 0;
     printf("prefill max_abs: qkv %.2e, z %.2e, conv-state %.2e, delta-state %.2e\n",
            qe,
            ze,
            ce,
            se);
     ok &= qe < 2e-5 && ze < 2e-5 && ce < 1e-7 && se < 2e-5;
+
+    /* Continue from the prefill states with one decode row. This catches
+     * accidental state reset, double-advance and the seq==1 dispatch path. */
+    float qd[CD], zd[VD], bd[NH], ad[NH];
+    for (size_t i = 0; i < CD; i++)
+        qd[i] = cosf((float) i * 0.19f) * 0.35f;
+    for (size_t i = 0; i < VD; i++)
+        zd[i] = sinf((float) i * 0.23f) * 0.25f;
+    for (size_t i = 0; i < NH; i++) {
+        bd[i] = 0.2f - (float) i * 0.3f;
+        ad[i] = -0.1f + (float) i * 0.2f;
+    }
+    float qd_ref[CD], zd_ref[VD];
+    memcpy(qd_ref, qd, sizeof qd);
+    memcpy(zd_ref, zd, sizeof zd);
+    mix_ref(1, qd_ref, zd_ref, bd, ad, cw, aw, dt, nw, cs_ref, s_ref);
+    ok &= v->buffer_upload(buf[0], sizeof qd, (const uint8_t *) qd) == GEIST_OK;
+    ok &= v->buffer_upload(buf[1], sizeof zd, (const uint8_t *) zd) == GEIST_OK;
+    ok &= v->buffer_upload(buf[2], sizeof bd, (const uint8_t *) bd) == GEIST_OK;
+    ok &= v->buffer_upload(buf[3], sizeof ad, (const uint8_t *) ad) == GEIST_OK;
+    tq         = matrix(buf[0], 1, CD);
+    tz         = matrix(buf[1], 1, VD);
+    tb         = matrix(buf[2], 1, NH);
+    ta         = matrix(buf[3], 1, NH);
+    args.qkv   = &tq;
+    args.z     = &tz;
+    args.beta  = &tb;
+    args.alpha = &ta;
+    args.seq   = 1;
+    ok &= f->deltanet_mix(be, &args) == GEIST_OK;
+    float qd_got[CD], zd_got[VD];
+    ok &= v->buffer_download(sizeof qd_got, (uint8_t *) qd_got, buf[0]) == GEIST_OK;
+    ok &= v->buffer_download(sizeof zd_got, (uint8_t *) zd_got, buf[1]) == GEIST_OK;
+    ok &= v->buffer_download(sizeof cs_got, (uint8_t *) cs_got, buf[8]) == GEIST_OK;
+    ok &= v->buffer_download(sizeof s_got, (uint8_t *) s_got, buf[9]) == GEIST_OK;
+    const double dqe = max_abs(qd_got, qd_ref, CD);
+    const double dze = max_abs(zd_got, zd_ref, VD);
+    const double dce = max_abs(cs_got, cs_ref, (K - 1) * CD);
+    const double dse = max_abs(s_got, s_ref, NH * DK * DV);
+    printf("decode  max_abs: qkv %.2e, z %.2e, conv-state %.2e, delta-state %.2e\n",
+           dqe,
+           dze,
+           dce,
+           dse);
+    ok &= dqe < 2e-5 && dze < 2e-5 && dce < 1e-7 && dse < 2e-5;
     for (size_t i = 0; i < 10; i++)
         if (buf[i] != nullptr)
             v->buffer_destroy(be, buf[i]);
     geist_backend_destroy(be);
     if (ok)
-        printf("PASS: Metal DeltaNet prefill parity + unsupported decode is side-effect free\n");
+        printf("PASS: Metal DeltaNet prefill and stateful decode parity\n");
     return ok ? GEIST_TEST_PASS : GEIST_TEST_FAIL;
 }

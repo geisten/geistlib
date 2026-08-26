@@ -51,7 +51,7 @@
         return GEIST_E_INVALID_ARG;
     }
     struct metal_state *st = be->state;
-    if (st->deltanet_prefill_pipeline != nullptr) {
+    if (st->deltanet_mix_pipeline != nullptr) {
         return GEIST_OK;
     }
     void *ns_string = metal_objc_get_class(st, "NSString");
@@ -78,9 +78,9 @@
     return metal_create_named_pipeline(be,
                                        st->deltanet_library,
                                        ns_string,
-                                       "deltanet_prefill",
-                                       &st->deltanet_prefill_function,
-                                       &st->deltanet_prefill_pipeline);
+                                       "deltanet_mix",
+                                       &st->deltanet_mix_function,
+                                       &st->deltanet_mix_pipeline);
 }
 
 [[nodiscard]] enum geist_status metal_ensure_q4k_pipeline(struct geist_backend *be) {

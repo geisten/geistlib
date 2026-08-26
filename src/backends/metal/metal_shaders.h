@@ -1568,7 +1568,7 @@ static const char metal_attn_dec_combine_source[] =
         "s=0u;s<p.ns;s++)acc+=pb[b0+s*(hd+2u)+2u+i]*exp(pb[b0+s*(hd+2u)]-M);y[p.yo+h*hd+i]=acc*inv;"
         "}}\n";
 
-/* Correctness-first Gated-DeltaNet prefill kernel. One workgroup owns one
+/* Correctness-first Gated-DeltaNet mixer kernel. One workgroup owns one
  * head and advances its convolution channels and delta state serially over
  * the sequence; 256 lanes parallelize the head dimensions. */
 static const char metal_deltanet_source[] =
@@ -1577,7 +1577,7 @@ static const char metal_deltanet_source[] =
         "struct P{uint seq,nkh,nvh,dk,dv,K,qo,zo,bo,ao,cwo,awo,dto,no,cso,so;float eps;};\n"
         "inline float silu1(float x){float e=exp(-fabs(x));return "
         "x>=0.0f?x/(1.0f+e):x*e/(1.0f+e);}\n"
-        "kernel void deltanet_prefill(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
+        "kernel void deltanet_mix(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
         "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
         "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
         "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
