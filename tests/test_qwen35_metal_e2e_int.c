@@ -143,7 +143,15 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
     if (memcmp(cpu_tokens, metal_tokens, sizeof(cpu_tokens)) != 0) {
-        fprintf(stderr, "FAIL: Metal greedy tokens differ from cpu_neon\n");
+        fprintf(stderr, "FAIL: Metal greedy tokens differ from cpu_neon\n  cpu:");
+        for (size_t i = 0; i < N_TOKENS; i++) {
+            fprintf(stderr, " %d", (int) cpu_tokens[i]);
+        }
+        fprintf(stderr, " (%s)\n  metal:", cpu_text);
+        for (size_t i = 0; i < N_TOKENS; i++) {
+            fprintf(stderr, " %d", (int) metal_tokens[i]);
+        }
+        fprintf(stderr, " (%s)\n", metal_text);
         return GEIST_TEST_FAIL;
     }
     if (strstr(metal_text, "Paris") == nullptr) {
