@@ -135,13 +135,18 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                         const struct geist_tensor     *y,
                                         const struct metal_q4k_params *params,
                                         enum geist_dtype               dtype) {
-    metal_msg_send_set_pipeline(
-            st, enc, dtype == GEIST_DTYPE_Q4_0 ? st->q40_pipeline : st->q80_pipeline);
+    const bool tiled = params->rows >= 8u;
+    void *pipeline = dtype == GEIST_DTYPE_Q4_0   ? (tiled ? st->q40_m8_pipeline : st->q40_pipeline)
+                     : dtype == GEIST_DTYPE_Q8_0 ? (tiled ? st->q80_m8_pipeline : st->q80_pipeline)
+                     : dtype == GEIST_DTYPE_Q4_1 ? (tiled ? st->q41_m8_pipeline : st->q41_pipeline)
+                                                 : (tiled ? st->q5k_m8_pipeline : st->q5k_pipeline);
+    metal_msg_send_set_pipeline(st, enc, pipeline);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, 0, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
-    const struct metal_size groups  = {params->n_out, params->rows, 1};
+    const struct metal_size groups = {
+            params->n_out, tiled ? (params->rows + 7u) / 8u : params->rows, 1};
     const struct metal_size threads = {METAL_Q4K_THREADS_PER_ROW, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q4K_LINEAR_BASE, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
@@ -1365,8 +1370,19 @@ metal_embedding_lookup(struct geist_backend      *be,
         x_row_stride = n_in;
         y_row_stride = y_cols;
     }
-    if (!ok || !metal_tensor_is_q40_q80_matrix(w, dtype, &n_out, &w_cols, &w_offset) ||
-        w_cols != n_in || y_cols != n_out) {
+    const bool w_ok = metal_tensor_is_q40_q80_matrix(w, dtype, &n_out, &w_cols, &w_offset);
+    if (!ok || !w_ok || w_cols != n_in || y_cols != n_out) {
+        geist_backend_set_error(
+                be,
+                GEIST_E_UNSUPPORTED,
+                "metal quant linear shape: io=%d w=%d rows=%zu n=%zu/%zu out=%zu/%zu",
+                ok,
+                w_ok,
+                rows,
+                n_in,
+                w_cols,
+                y_cols,
+                n_out);
         return GEIST_E_UNSUPPORTED;
     }
     if (rows > UINT32_MAX || n_in > UINT32_MAX || n_out > UINT32_MAX || x_offset > UINT32_MAX ||
@@ -1587,6 +1603,89 @@ metal_embedding_lookup(struct geist_backend      *be,
         return GEIST_E_BACKEND;
     }
     return GEIST_OK;
+}
+
+[[nodiscard]] static enum geist_status metal_q5k_linear(struct geist_backend      *be,
+                                                        const struct geist_tensor *x,
+                                                        const struct geist_tensor *w,
+                                                        struct geist_tensor       *y,
+                                                        bool                       matrix) {
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t rows = 1, n_in = 0, x_offset = 0, x_row_stride = 0;
+    size_t y_rows = 1, y_cols = 0, y_offset = 0, y_row_stride = 0;
+    size_t n_out = 0, w_cols = 0, w_offset = 0;
+    bool   ok;
+    if (matrix) {
+        ok = metal_tensor_is_f32_matrix(x, &rows, &n_in, &x_offset, &x_row_stride) &&
+             metal_tensor_is_f32_matrix(y, &y_rows, &y_cols, &y_offset, &y_row_stride) &&
+             y_rows == rows;
+    } else {
+        ok           = metal_tensor_is_f32_vector(x, &n_in, &x_offset) &&
+                       metal_tensor_is_f32_vector(y, &y_cols, &y_offset);
+        x_row_stride = n_in;
+        y_row_stride = y_cols;
+    }
+    if (!ok || !metal_tensor_is_q5k_matrix(w, &n_out, &w_cols, &w_offset) || w_cols != n_in ||
+        y_cols != n_out) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (rows > UINT32_MAX || n_in > UINT32_MAX || n_out > UINT32_MAX || x_offset > UINT32_MAX ||
+        y_offset > UINT32_MAX || w_offset > UINT32_MAX || x_row_stride > UINT32_MAX ||
+        y_row_stride > UINT32_MAX) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (x->buffer->owner != be->state || w->buffer->owner != be->state ||
+        y->buffer->owner != be->state) {
+        return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct metal_state           *st     = be->state;
+    const struct metal_q4k_params params = {
+            .n_in           = (uint32_t) n_in,
+            .n_out          = (uint32_t) n_out,
+            .rows           = (uint32_t) rows,
+            .blocks_per_row = (uint32_t) (n_in / METAL_Q5K_BLOCK_ELEMS),
+            .x_offset       = (uint32_t) x_offset,
+            .w_byte_offset  = (uint32_t) w_offset,
+            .y_offset       = (uint32_t) y_offset,
+            .x_row_stride   = (uint32_t) x_row_stride,
+            .y_row_stride   = (uint32_t) y_row_stride,
+    };
+    if (st->sequence_active) {
+        metal_encode_q40_q80_linear(
+                st, metal_sequence_encoder(st), x, w, y, &params, GEIST_DTYPE_Q5_K);
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
+    if (enc == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    metal_encode_q40_q80_linear(st, enc, x, w, y, &params, GEIST_DTYPE_Q5_K);
+    metal_msg_send_void0(st, enc, "endEncoding");
+    metal_msg_send_void0(st, cmd, "commit");
+    metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
+}
+
+[[nodiscard]] static enum geist_status metal_matvec_q5k(struct geist_backend      *be,
+                                                        const struct geist_tensor *x,
+                                                        const struct geist_tensor *w,
+                                                        struct geist_tensor       *y) {
+    return metal_q5k_linear(be, x, w, y, false);
+}
+
+[[nodiscard]] static enum geist_status metal_matmul_q5k(struct geist_backend      *be,
+                                                        const struct geist_tensor *x,
+                                                        const struct geist_tensor *w,
+                                                        struct geist_tensor       *y) {
+    return metal_q5k_linear(be, x, w, y, true);
 }
 
 [[nodiscard]] static enum geist_status metal_q6k_linear(struct geist_backend      *be,
@@ -3014,8 +3113,14 @@ static void metal_linear_mN(const float               *x,
             case GEIST_DTYPE_Q4_K:
                 dequant_q4_K_row(base + j * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, row, n_in);
                 break;
+            case GEIST_DTYPE_Q5_K:
+                dequant_q5_K_row(base + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, row, n_in);
+                break;
             case GEIST_DTYPE_Q4_0:
                 dequant_q4_0_row(base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row, n_in);
+                break;
+            case GEIST_DTYPE_Q4_1:
+                dequant_q4_1_row(base + j * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, row, n_in);
                 break;
             case GEIST_DTYPE_Q8_0:
                 dequant_q8_0_row(base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row, n_in);
@@ -3069,11 +3174,15 @@ static void metal_linear_mN(const float               *x,
     enum geist_status s;
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
     case GEIST_DTYPE_Q8_0:
         s = metal_q40_q80_linear(be, &tx, &tw, &ty, (enum geist_dtype) w->dtype, true);
         break;
     case GEIST_DTYPE_Q4_K:
         s = metal_matmul_q4k(be, &tx, &tw, &ty);
+        break;
+    case GEIST_DTYPE_Q5_K:
+        s = metal_matmul_q5k(be, &tx, &tw, &ty);
         break;
     case GEIST_DTYPE_Q6_K:
         s = metal_matmul_q6k(be, &tx, &tw, &ty);
@@ -3091,7 +3200,8 @@ static void metal_linear_mN(const float               *x,
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "geist metal: linear dispatch failed "
-                "(dtype=%u m=%zu %zux%zu xo=%zu wo=%zu yo=%zu): %s\n",
+                "(status=%d dtype=%u m=%zu %zux%zu xo=%zu wo=%zu yo=%zu): %s\n",
+                (int) s,
                 (unsigned) w->dtype,
                 m,
                 n_out,
@@ -3146,10 +3256,13 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
         }
         switch ((enum geist_dtype) w->dtype) {
         case GEIST_DTYPE_Q4_0:
+        case GEIST_DTYPE_Q4_1:
         case GEIST_DTYPE_Q8_0:
             return metal_q40_q80_linear(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
         case GEIST_DTYPE_Q4_K:
             return metal_matvec_q4k(be, &x1, t_w, &y1);
+        case GEIST_DTYPE_Q5_K:
+            return metal_matvec_q5k(be, &x1, t_w, &y1);
         case GEIST_DTYPE_Q6_K:
             return metal_matvec_q6k(be, &x1, t_w, &y1);
         case GEIST_DTYPE_F32:
@@ -3160,10 +3273,13 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     }
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
     case GEIST_DTYPE_Q8_0:
         return metal_q40_q80_linear(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
     case GEIST_DTYPE_Q4_K:
         return metal_matmul_q4k(be, x, t_w, y);
+    case GEIST_DTYPE_Q5_K:
+        return metal_matmul_q5k(be, x, t_w, y);
     case GEIST_DTYPE_Q6_K:
         return metal_matmul_q6k(be, x, t_w, y);
     case GEIST_DTYPE_F32:
@@ -3181,8 +3297,10 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     }
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
     case GEIST_DTYPE_Q8_0:
     case GEIST_DTYPE_Q4_K:
+    case GEIST_DTYPE_Q5_K:
     case GEIST_DTYPE_Q6_K:
     case GEIST_DTYPE_F32:
         w->linear_m1 = metal_linear_m1;
@@ -3202,9 +3320,9 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         args->norm_w == nullptr || args->conv_state == nullptr || args->delta_state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    if (args->seq == 0 || args->n_k_heads == 0 || args->n_k_heads != args->n_v_heads ||
-        args->head_k == 0 || args->head_k > 256 || args->head_v == 0 || args->head_v > 256 ||
-        args->conv_kernel < 2) {
+    if (args->seq == 0 || args->n_k_heads == 0 || args->n_v_heads == 0 ||
+        args->n_v_heads % args->n_k_heads != 0 || args->head_k == 0 || args->head_k > 256 ||
+        args->head_v == 0 || args->head_v > 256 || args->conv_kernel < 2) {
         return GEIST_E_UNSUPPORTED;
     }
 
@@ -3304,7 +3422,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         metal_msg_send_set_buffer(st, enc, all[i]->buffer->buffer, 0, i);
     }
     metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
-    const struct metal_size groups  = {args->n_v_heads, 1, 1};
+    const struct metal_size groups  = {args->n_k_heads, 1, 1};
     const struct metal_size threads = {256, 1, 1};
     metal_profile_add_dispatch(st,
                                args->seq == 1 ? METAL_PROFILE_DISPATCH_DELTANET_DECODE

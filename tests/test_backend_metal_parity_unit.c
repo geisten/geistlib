@@ -1,7 +1,7 @@
 /*
  * test_backend_metal_parity_unit — numerical parity gate for the Metal
  * linear path (#181/#296): resolve_weight + linear_m1/linear_mN for Q4_0,
- * Q8_0, Q4_K, Q6_K and F32 weights, compared against cpu_scalar on the SAME
+ * Q4_1, Q8_0, Q4_K, Q5_K, Q6_K and F32 weights, compared against cpu_scalar on the SAME
  * weight bytes. cpu_scalar dequantizes with an independent implementation
  * (src/formats/gguf), so agreement means the MSL dequant and the full
  * dispatch chain (pipeline creation, buffer registry, batching) are
@@ -51,7 +51,15 @@ static double max_abs(const float *a, const float *b, size_t n) {
     return out;
 }
 
-enum { Q40_BB = 18, Q80_BB = 34, Q4K_BB = 144, Q6K_BB = 210, K_BLOCK = 256 };
+enum {
+    Q40_BB  = 18,
+    Q41_BB  = 20,
+    Q80_BB  = 34,
+    Q4K_BB  = 144,
+    Q5K_BB  = 176,
+    Q6K_BB  = 210,
+    K_BLOCK = 256
+};
 
 static uint32_t rng_state = 0x12345678u;
 static uint8_t  rng_u8(void) {
@@ -61,12 +69,15 @@ static uint8_t  rng_u8(void) {
 
 /* Random-but-finite quant blob: random bytes, f16 scale fields pinned. */
 static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
-    const bool   small = dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0;
+    const bool small =
+            dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 || dtype == GEIST_DTYPE_Q8_0;
     const size_t block = small ? 32u : K_BLOCK;
     const size_t bpr   = n_in / block;
     const size_t bb    = dtype == GEIST_DTYPE_Q4_0   ? Q40_BB
+                         : dtype == GEIST_DTYPE_Q4_1 ? Q41_BB
                          : dtype == GEIST_DTYPE_Q8_0 ? Q80_BB
                          : dtype == GEIST_DTYPE_Q4_K ? Q4K_BB
+                         : dtype == GEIST_DTYPE_Q5_K ? Q5K_BB
                                                      : Q6K_BB;
     for (size_t r = 0; r < n_out; r++) {
         for (size_t b = 0; b < bpr; b++) {
@@ -74,10 +85,15 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
             for (size_t i = 0; i < bb; i++) {
                 blk[i] = rng_u8();
             }
-            if (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0) {
+            if (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 ||
+                dtype == GEIST_DTYPE_Q8_0) {
                 blk[0] = 0x00; /* d = fp16(1.0) */
                 blk[1] = 0x3C;
-            } else if (dtype == GEIST_DTYPE_Q4_K) {
+                if (dtype == GEIST_DTYPE_Q4_1) {
+                    blk[2] = 0x00; /* m = fp16(0.5) */
+                    blk[3] = 0x38;
+                }
+            } else if (dtype == GEIST_DTYPE_Q4_K || dtype == GEIST_DTYPE_Q5_K) {
                 blk[0] = 0x00; /* d    = fp16(1.0)    */
                 blk[1] = 0x3C;
                 blk[2] = 0x00; /* dmin = fp16(0.5)    */
@@ -121,13 +137,17 @@ static void run_case(struct geist_backend *mt,
     if (dtype == GEIST_DTYPE_F32) {
         w_bytes = n_in * n_out * sizeof(float);
     } else {
-        const size_t block =
-                (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0) ? 32u : K_BLOCK;
-        const size_t bb = dtype == GEIST_DTYPE_Q4_0   ? Q40_BB
-                          : dtype == GEIST_DTYPE_Q8_0 ? Q80_BB
-                          : dtype == GEIST_DTYPE_Q4_K ? Q4K_BB
-                                                      : Q6K_BB;
-        w_bytes         = n_out * (n_in / block) * bb;
+        const size_t block = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 ||
+                              dtype == GEIST_DTYPE_Q8_0)
+                                     ? 32u
+                                     : K_BLOCK;
+        const size_t bb    = dtype == GEIST_DTYPE_Q4_0   ? Q40_BB
+                             : dtype == GEIST_DTYPE_Q4_1 ? Q41_BB
+                             : dtype == GEIST_DTYPE_Q8_0 ? Q80_BB
+                             : dtype == GEIST_DTYPE_Q4_K ? Q4K_BB
+                             : dtype == GEIST_DTYPE_Q5_K ? Q5K_BB
+                                                         : Q6K_BB;
+        w_bytes            = n_out * (n_in / block) * bb;
     }
     const struct geist_backend_vtbl *v = mt->desc->vtbl;
 
@@ -253,6 +273,7 @@ static void run_embedding_case(struct geist_backend *mt, int dtype, const char *
     const size_t bb    = dtype == GEIST_DTYPE_Q4_0   ? Q40_BB
                          : dtype == GEIST_DTYPE_Q8_0 ? Q80_BB
                          : dtype == GEIST_DTYPE_Q4_K ? Q4K_BB
+                         : dtype == GEIST_DTYPE_Q5_K ? Q5K_BB
                                                      : Q6K_BB;
     const size_t bytes = vocab * (dim / block) * bb;
     const struct geist_backend_vtbl *v  = mt->desc->vtbl;
@@ -274,6 +295,8 @@ static void run_embedding_case(struct geist_backend *mt, int dtype, const char *
         dequant_q8_0_row(row, expected, dim);
     } else if (dtype == GEIST_DTYPE_Q4_K) {
         dequant_q4_K_row(row, expected, dim);
+    } else if (dtype == GEIST_DTYPE_Q5_K) {
+        dequant_q5_K_row(row, expected, dim);
     } else {
         dequant_q6_K_row(row, expected, dim);
     }
@@ -382,10 +405,14 @@ int main(void) {
      * multiple of the threadgroup width to catch tail bugs. */
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 8);
+    run_case(mt, ref, GEIST_DTYPE_Q4_1, "Q4_1", 512, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_Q4_1, "Q4_1", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_Q8_0, "Q8_0", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q8_0, "Q8_0", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 8);
+    run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 1);

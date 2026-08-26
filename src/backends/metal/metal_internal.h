@@ -117,6 +117,8 @@ struct metal_state {
     bool     seq_ref_overflow;
     void    *q4k_library;
     void    *q40_q80_library;
+    void    *q5k_library;
+    void    *q41_library;
     void    *q4k_n4_library;
     void    *q6k_library;
     void    *q6k_n4_library;
@@ -136,8 +138,20 @@ struct metal_state {
     void    *q4k_pipeline;
     void    *q40_function;
     void    *q40_pipeline;
+    void    *q40_m8_function;
+    void    *q40_m8_pipeline;
     void    *q80_function;
     void    *q80_pipeline;
+    void    *q80_m8_function;
+    void    *q80_m8_pipeline;
+    void    *q5k_function;
+    void    *q41_function;
+    void    *q41_pipeline;
+    void    *q41_m8_function;
+    void    *q41_m8_pipeline;
+    void    *q5k_pipeline;
+    void    *q5k_m8_function;
+    void    *q5k_m8_pipeline;
     void    *q4k_n4_function;
     void    *q4k_n4_pipeline;
     void    *q4k_matmul_m8_function;
@@ -345,6 +359,7 @@ enum {
     METAL_Q6K_BLOCK_BYTES               = 210u,
     METAL_Q40_Q80_BLOCK_ELEMS           = 32u,
     METAL_Q40_BLOCK_BYTES               = 18u,
+    METAL_Q41_BLOCK_BYTES               = 20u,
     METAL_Q80_BLOCK_BYTES               = 34u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
@@ -721,6 +736,10 @@ bool metal_tensor_is_q4k_matrix(const struct geist_tensor *t,
                                 size_t                    *out_offset_bytes);
 
 bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
+                                size_t                    *out_rows,
+                                size_t                    *out_cols,
+                                size_t                    *out_offset_bytes);
+bool metal_tensor_is_q5k_matrix(const struct geist_tensor *t,
                                 size_t                    *out_rows,
                                 size_t                    *out_cols,
                                 size_t                    *out_offset_bytes);
