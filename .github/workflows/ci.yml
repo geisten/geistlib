@@ -736,8 +736,33 @@ jobs:
   # runner family executes it), cpu_x86/metal/vulkan (cannot execute on
   # this runner), third_party and generated *_spv.h (not ours). The control
   # test tests/test_coverage_gate_py.py proves the gate actually fires.
+  changes:
+    name: change classification
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.cls.outputs.docs_only }}
+    steps:
+      - name: Classify PR diff
+        id: cls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DOCS=false
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --paginate -q '.[].filename')
+            if [ -n "$FILES" ] && ! echo "$FILES" | grep -qvE '\.(md|txt)$'; then
+              DOCS=true
+            fi
+          fi
+          echo "docs_only=$DOCS" >> "$GITHUB_OUTPUT"
+          echo "docs_only=$DOCS"
+
   coverage:
     name: coverage ratchet (Linux arm64, unit + int)
+    needs: changes
+    # Docs-only PRs skip the 60-90 minute instrumented run — nothing a
+    # .md change does can move line coverage. Push builds always run.
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04-arm
     # An instrumented -O1 build prefills the real model many times across
     # the int suite: 58 minutes measured. e2e re-drives the same engine
@@ -799,6 +824,11 @@ jobs:
       - name: Build + run suites (MODE=cov, fixtures mandatory)
         env:
           GEIST_STRICT_FIXTURES: gguf
+          # Repetition-heavy int tests honor this by shrinking their loop
+          # counts: line coverage is identical (same code paths), but the
+          # instrumented -O1 build stops paying 24 min for 4x32x2 parallel
+          # decodes (races are the TSan job's business, not this one's).
+          GEIST_TEST_LIGHT: 1
         run: |
           make MODE=cov TARGET=linux CC="ccache gcc-14" test-unit
           make MODE=cov TARGET=linux CC="ccache gcc-14" test-int
