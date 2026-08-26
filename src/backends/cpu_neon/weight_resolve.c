@@ -179,6 +179,14 @@ static void cpu_neon_w_q4_0_mN(const float               *x,
                                struct geist_backend      *be,
                                float                     *y) {
     (void) be;
+    /* #295: int8 GEMM on the x8 layout beats both the row-major SDOT
+     * sweep and the dequant+SGEMM trampoline — one weight pass,
+     * amortized 4 tokens per block load. Falls through when the x8
+     * aux is absent (non-Mac defaults). */
+    if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w->aux_fp32 != nullptr) {
+        linear_q4_0_w4a8_prefill_x8(x, m, w->aux_fp32, (size_t) w->n_in, (size_t) w->n_out, y);
+        return;
+    }
     linear_q4_0_w4a8_prefill(x, m, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
 }
 
@@ -1346,6 +1354,11 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
         }
         if (w->dtype == GEIST_DTYPE_Q4_0) {
             (void) install_q4_0_x8_gemv_if_eligible(w, policy);
+            if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV) {
+                /* #295: with the x8 aux present, the int8 mN GEMM
+                 * replaces the dequant+SGEMM trampoline. */
+                w->linear_mN = cpu_neon_w_q4_0_mN;
+            }
         }
         return;
     case GEIST_DTYPE_TQ2_0:

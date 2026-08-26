@@ -200,6 +200,8 @@ void linear_q4_0_decode_w4a8_x8_pre(const int8_t  *x_q8,
                                     size_t         n_out,
                                     float         *y);
 
+void linear_q4_0_w4a8_prefill_x8(
+        const float *x, size_t m, const void *packed, size_t n_in, size_t n_out, float *y);
 void linear_q4_0_w4a8_prefill(
         const float *x, size_t m, const void *w_q4, size_t n_in, size_t n_out, float *y);
 void linear_q4_1_w4a8_prefill(
