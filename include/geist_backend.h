@@ -541,6 +541,23 @@ struct geist_backend_fused {
      * and lets the architecture run its host reference implementation. */
     enum geist_status (*deltanet_mix)(struct geist_backend                  *be,
                                       const struct geist_deltanet_mix_args *args);
+
+    /* Split qwen35's joint per-head [query | output-gate] projection into
+     * dense query and gate rows without a host gather. joint is
+     * [rows, heads * 2 * head_dim], q/gate are [rows, heads * head_dim]. */
+    enum geist_status (*attn_qgate_split)(struct geist_backend      *be,
+                                          const struct geist_tensor *joint,
+                                          size_t                     heads,
+                                          size_t                     head_dim,
+                                          struct geist_tensor       *q,
+                                          struct geist_tensor       *gate);
+
+    /* y = x * sigmoid(gate), elementwise over matching F32 DENSE rows.
+     * y may alias x; nullptr leaves the architecture's mapped fallback. */
+    enum geist_status (*sigmoid_mul)(struct geist_backend      *be,
+                                     const struct geist_tensor *x,
+                                     const struct geist_tensor *gate,
+                                     struct geist_tensor       *y);
 };
 
 /* ====================================================================== */

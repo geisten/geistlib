@@ -416,6 +416,13 @@ void *metal_buffer_map(struct geist_buffer *buf) {
     {
         struct metal_state *st = buf->owner;
         if (metal_seq_references(st, buf->buffer)) {
+            if (metal_env_enabled("GEIST_METAL_STRICT_BATCH")) {
+                geist_backend_set_error(st->backend,
+                                        GEIST_E_BACKEND,
+                                        "metal: host map of active sequence buffer (%zu bytes)",
+                                        buf->bytes);
+                return nullptr;
+            }
             static _Atomic int dbg = -1;
             if (dbg < 0) {
                 const char *e = getenv("GEIST_SEQ_COUNT");

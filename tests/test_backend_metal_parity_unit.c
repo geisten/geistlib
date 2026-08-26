@@ -41,6 +41,16 @@ static void check(bool cond, const char *what) {
     }
 }
 
+static double max_abs(const float *a, const float *b, size_t n) {
+    double out = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        const double d = fabs((double) a[i] - b[i]);
+        if (d > out)
+            out = d;
+    }
+    return out;
+}
+
 enum { Q40_BB = 18, Q80_BB = 34, Q4K_BB = 144, Q6K_BB = 210, K_BLOCK = 256 };
 
 static uint32_t rng_state = 0x12345678u;
@@ -297,6 +307,61 @@ static void run_embedding_case(struct geist_backend *mt, int dtype, const char *
     free(expected);
 }
 
+static void run_qwen35_attention_ops(struct geist_backend *mt) {
+    enum { ROWS = 3, HEADS = 2, HD = 5, QOUT = HEADS * HD };
+    const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
+    const struct geist_backend_fused *f  = geist_backend_fused_tbl(mt);
+    struct geist_buffer              *bj = nullptr, *bq = nullptr, *bg = nullptr;
+    float                            *joint = dev_alloc(mt, ROWS * 2 * QOUT * sizeof(float), &bj);
+    float                            *q     = dev_alloc(mt, ROWS * QOUT * sizeof(float), &bq);
+    float                            *gate  = dev_alloc(mt, ROWS * QOUT * sizeof(float), &bg);
+    float                             got[ROWS * QOUT], expected[ROWS * QOUT];
+    check(joint != nullptr && q != nullptr && gate != nullptr, "qwen35 attention-op buffers");
+    if (joint == nullptr || q == nullptr || gate == nullptr)
+        return;
+    for (size_t i = 0; i < ROWS * 2 * QOUT; i++)
+        joint[i] = (float) i * 0.07f - 1.1f;
+    struct geist_tensor tj = {.buffer = bj,
+                              .dtype  = GEIST_DTYPE_F32,
+                              .layout = GEIST_LAYOUT_DENSE,
+                              .ndim   = 2,
+                              .shape  = {ROWS, 2 * QOUT},
+                              .stride = {2 * QOUT, 1}};
+    struct geist_tensor tq = {.buffer = bq,
+                              .dtype  = GEIST_DTYPE_F32,
+                              .layout = GEIST_LAYOUT_DENSE,
+                              .ndim   = 2,
+                              .shape  = {ROWS, QOUT},
+                              .stride = {QOUT, 1}};
+    struct geist_tensor tg = tq;
+    tg.buffer              = bg;
+    check(f->attn_qgate_split != nullptr && f->sigmoid_mul != nullptr,
+          "qwen35 attention fusions installed");
+    check(f->attn_qgate_split(mt, &tj, HEADS, HD, &tq, &tg) == GEIST_OK, "qgate split dispatch");
+    check(mt->desc->prims->scale_f32(mt, &tq, 0.25f, &tq) == GEIST_OK, "q scale dispatch");
+    check(f->sigmoid_mul(mt, &tq, &tg, &tq) == GEIST_OK, "sigmoid gate dispatch");
+    check(v->buffer_download(sizeof got, (uint8_t *) got, bq) == GEIST_OK,
+          "qwen35 attention-op download");
+    for (size_t r = 0; r < ROWS; r++) {
+        for (size_t h = 0; h < HEADS; h++) {
+            for (size_t d = 0; d < HD; d++) {
+                const size_t dst = r * QOUT + h * HD + d;
+                const size_t src = r * 2 * QOUT + h * 2 * HD + d;
+                const float  g   = joint[src + HD];
+                expected[dst]    = joint[src] * 0.25f / (1.0f + expf(-g));
+            }
+        }
+    }
+    const double err = max_abs(got, expected, ROWS * QOUT);
+    check(err < 2e-6, "qwen35 attention ops parity");
+    printf("  qgate split + qscale + sigmoid_mul max_abs %.2e %s\n",
+           err,
+           err < 2e-6 ? "OK" : "FAIL");
+    v->buffer_destroy(mt, bj);
+    v->buffer_destroy(mt, bq);
+    v->buffer_destroy(mt, bg);
+}
+
 int main(void) {
     struct geist_backend *mt = nullptr;
     enum geist_status     ms = geist_backend_create("metal", nullptr, nullptr, &mt);
@@ -328,6 +393,7 @@ int main(void) {
     run_silu_case(mt);
     run_embedding_case(mt, GEIST_DTYPE_Q4_0, "Q4_0");
     run_embedding_case(mt, GEIST_DTYPE_Q8_0, "Q8_0");
+    run_qwen35_attention_ops(mt);
 
     geist_backend_destroy(mt);
     geist_backend_destroy(ref);

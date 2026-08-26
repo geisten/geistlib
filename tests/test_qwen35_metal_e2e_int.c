@@ -87,6 +87,11 @@ static enum geist_status run_once(const char   *path,
             s = geist_session_decode_step(sess, &reset_tokens[i]);
         }
         if (s == GEIST_OK && memcmp(tokens, reset_tokens, sizeof(reset_tokens)) != 0) {
+            fprintf(stderr, "%s reset token mismatch:", backend_name);
+            for (size_t i = 0; i < N_TOKENS; i++) {
+                fprintf(stderr, " %d/%d", (int) tokens[i], (int) reset_tokens[i]);
+            }
+            fputc('\n', stderr);
             s = GEIST_E_INTERNAL;
         }
     }
@@ -128,7 +133,11 @@ int main(void) {
         fprintf(stderr, "cpu reference failed: %s\n", geist_status_to_string(s));
         return GEIST_TEST_FAIL;
     }
+    /* Acceptance gate: any map of a buffer referenced by the open Metal
+     * command sequence is an unintended CPU/GPU synchronization point. */
+    setenv("GEIST_METAL_STRICT_BATCH", "1", 1);
     s = run_once(path, "metal", metal_tokens, metal_text, sizeof(metal_text), true);
+    unsetenv("GEIST_METAL_STRICT_BATCH");
     if (s != GEIST_OK) {
         fprintf(stderr, "metal run/reset failed: %s\n", geist_status_to_string(s));
         return GEIST_TEST_FAIL;
