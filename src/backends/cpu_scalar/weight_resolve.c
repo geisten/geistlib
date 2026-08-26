@@ -238,6 +238,7 @@ static void cpu_scalar_w_quant_mN(const float               *x,
         w->linear_mN = cpu_scalar_w_f32_mN;
         return GEIST_OK;
     case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_Q4_K:
     case GEIST_DTYPE_Q5_K:

@@ -89,9 +89,13 @@
         return GEIST_E_INVALID_ARG;
     }
     struct metal_state *st = be->state;
-    if (st->q4k_pipeline != nullptr && st->q40_pipeline != nullptr && st->q80_pipeline != nullptr &&
-        st->q4k_n4_pipeline != nullptr && st->q4k_matmul_m8_pipeline != nullptr &&
-        st->q4k_matmul_m16_pipeline != nullptr && st->q4k_matmul_m16_n2_pipeline != nullptr &&
+    if (st->q4k_pipeline != nullptr && st->q40_pipeline != nullptr &&
+        st->q40_m8_pipeline != nullptr && st->q80_pipeline != nullptr &&
+        st->q80_m8_pipeline != nullptr && st->q5k_pipeline != nullptr &&
+        st->q5k_m8_pipeline != nullptr && st->q41_pipeline != nullptr &&
+        st->q41_m8_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
+        st->q4k_matmul_m8_pipeline != nullptr && st->q4k_matmul_m16_pipeline != nullptr &&
+        st->q4k_matmul_m16_n2_pipeline != nullptr &&
         (!st->use_q4k_mm_sg || st->q4k_mm_sg_pipeline != nullptr) && st->q6k_pipeline != nullptr &&
         st->q6k_n4_pipeline != nullptr && st->q6k_matmul_m8_pipeline != nullptr &&
         st->q6k_matmul_m16_pipeline != nullptr && st->rmsnorm_rows_pipeline != nullptr &&
@@ -114,6 +118,10 @@
     void *source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_source);
     void *q40_q80_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q40_q80_source);
+    void *q5k_source =
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q5k_source);
+    void *q41_source =
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q41_source);
     void *q4k_n4_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_n4_source);
     void *q4k_m16_source =
@@ -200,6 +208,30 @@
         geist_backend_set_error(be,
                                 GEIST_E_BACKEND,
                                 "metal: Q4_0/Q8_0 shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    err             = nullptr;
+    st->q5k_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", q5k_source, nullptr, &err);
+    if (st->q5k_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: Q5_K shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    err             = nullptr;
+    st->q41_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", q41_source, nullptr, &err);
+    if (st->q41_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: Q4_1 shader compile failed%s%s",
                                 msg != nullptr ? ": " : "",
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
@@ -457,9 +489,49 @@
         s = metal_create_named_pipeline(be,
                                         st->q40_q80_library,
                                         ns_string,
+                                        "linear_q40_m8",
+                                        &st->q40_m8_function,
+                                        &st->q40_m8_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->q40_q80_library,
+                                        ns_string,
                                         "linear_q80",
                                         &st->q80_function,
                                         &st->q80_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->q40_q80_library,
+                                        ns_string,
+                                        "linear_q80_m8",
+                                        &st->q80_m8_function,
+                                        &st->q80_m8_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(
+                be, st->q5k_library, ns_string, "linear_q5k", &st->q5k_function, &st->q5k_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->q5k_library,
+                                        ns_string,
+                                        "linear_q5k_m8",
+                                        &st->q5k_m8_function,
+                                        &st->q5k_m8_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(
+                be, st->q41_library, ns_string, "linear_q41", &st->q41_function, &st->q41_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->q41_library,
+                                        ns_string,
+                                        "linear_q41_m8",
+                                        &st->q41_m8_function,
+                                        &st->q41_m8_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,

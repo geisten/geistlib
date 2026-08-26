@@ -11,7 +11,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { SEQ = 4, NH = 2, DK = 7, DV = 9, K = 4, KEYD = NH * DK, VD = NH * DV, CD = 2 * KEYD + VD };
+enum {
+    SEQ  = 4,
+    NKH  = 1,
+    NH   = 2,
+    DK   = 7,
+    DV   = 9,
+    K    = 4,
+    KEYD = NKH * DK,
+    VD   = NH * DV,
+    CD   = 2 * KEYD + VD
+};
 
 static float silu_ref(float x) {
     const float e = expf(-fabsf(x));
@@ -44,7 +54,7 @@ static void mix_ref(size_t       seq,
         memcpy(cs + (K - 2) * CD, qkv + t * CD, CD * sizeof(float));
         memcpy(qkv + t * CD, y, CD * sizeof(float));
 
-        for (size_t h = 0; h < NH; h++) {
+        for (size_t h = 0; h < NKH; h++) {
             double qss = 0.0, kss = 0.0;
             for (size_t i = 0; i < DK; i++) {
                 qss += (double) y[h * DK + i] * y[h * DK + i];
@@ -59,21 +69,22 @@ static void mix_ref(size_t       seq,
         }
 
         for (size_t h = 0; h < NH; h++) {
-            const float b       = 1.0f / (1.0f + expf(-beta[t * NH + h]));
-            const float decay   = expf(aw[h] * log1pf(expf(alpha[t * NH + h] + dt[h])));
-            float       out[DV] = {0};
+            const size_t hk      = h % NKH;
+            const float  b       = 1.0f / (1.0f + expf(-beta[t * NH + h]));
+            const float  decay   = expf(aw[h] * log1pf(expf(alpha[t * NH + h] + dt[h])));
+            float        out[DV] = {0};
             for (size_t j = 0; j < DV; j++) {
                 float mem = 0.0f;
                 for (size_t i = 0; i < DK; i++) {
                     float *s = state + (h * DK + i) * DV + j;
                     *s *= decay;
-                    mem += *s * qkv[t * CD + KEYD + h * DK + i];
+                    mem += *s * qkv[t * CD + KEYD + hk * DK + i];
                 }
                 const float d = (qkv[t * CD + 2 * KEYD + h * DV + j] - mem) * b;
                 for (size_t i = 0; i < DK; i++) {
                     float *s = state + (h * DK + i) * DV + j;
-                    *s += qkv[t * CD + KEYD + h * DK + i] * d;
-                    out[j] += *s * qkv[t * CD + h * DK + i];
+                    *s += qkv[t * CD + KEYD + hk * DK + i] * d;
+                    out[j] += *s * qkv[t * CD + hk * DK + i];
                 }
             }
             double ss = 0.0;
@@ -178,32 +189,36 @@ int main(void) {
     struct geist_tensor            tb = matrix(buf[2], SEQ, NH), ta = matrix(buf[3], SEQ, NH);
     struct geist_tensor            tcw = matrix(buf[4], CD, K), taw = vector(buf[5], NH);
     struct geist_tensor            tdt = vector(buf[6], NH), tnw = vector(buf[7], DV);
-    struct geist_tensor            tcs  = matrix(buf[8], K - 1, CD);
-    struct geist_tensor            tst  = {.buffer = buf[9],
-                                           .dtype  = GEIST_DTYPE_F32,
-                                           .layout = GEIST_LAYOUT_DENSE,
-                                           .ndim   = 3,
-                                           .shape  = {NH, DK, DV},
-                                           .stride = {DK * DV, DV, 1}};
-    struct geist_deltanet_mix_args args = {.qkv         = &tq,
-                                           .z           = &tz,
-                                           .beta        = &tb,
-                                           .alpha       = &ta,
-                                           .conv_w      = &tcw,
-                                           .ssm_a       = &taw,
-                                           .dt_bias     = &tdt,
-                                           .norm_w      = &tnw,
-                                           .conv_state  = &tcs,
-                                           .delta_state = &tst,
-                                           .seq         = SEQ,
-                                           .n_k_heads   = NH,
-                                           .n_v_heads   = NH,
-                                           .head_k      = DK,
-                                           .head_v      = DV,
-                                           .conv_kernel = K,
-                                           .eps         = 1e-6f};
-    if (!ok || f->deltanet_mix(be, &args) != GEIST_OK) {
-        fprintf(stderr, "FAIL: Metal DeltaNet dispatch: %s\n", geist_backend_errmsg(be));
+    struct geist_tensor            tcs        = matrix(buf[8], K - 1, CD);
+    struct geist_tensor            tst        = {.buffer = buf[9],
+                                                 .dtype  = GEIST_DTYPE_F32,
+                                                 .layout = GEIST_LAYOUT_DENSE,
+                                                 .ndim   = 3,
+                                                 .shape  = {NH, DK, DV},
+                                                 .stride = {DK * DV, DV, 1}};
+    struct geist_deltanet_mix_args args       = {.qkv         = &tq,
+                                                 .z           = &tz,
+                                                 .beta        = &tb,
+                                                 .alpha       = &ta,
+                                                 .conv_w      = &tcw,
+                                                 .ssm_a       = &taw,
+                                                 .dt_bias     = &tdt,
+                                                 .norm_w      = &tnw,
+                                                 .conv_state  = &tcs,
+                                                 .delta_state = &tst,
+                                                 .seq         = SEQ,
+                                                 .n_k_heads   = NKH,
+                                                 .n_v_heads   = NH,
+                                                 .head_k      = DK,
+                                                 .head_v      = DV,
+                                                 .conv_kernel = K,
+                                                 .eps         = 1e-6f};
+    const enum geist_status        mix_status = ok ? f->deltanet_mix(be, &args) : GEIST_E_BACKEND;
+    if (!ok || mix_status != GEIST_OK) {
+        fprintf(stderr,
+                "FAIL: Metal DeltaNet dispatch (%d): %s\n",
+                (int) mix_status,
+                geist_backend_errmsg(be));
         return GEIST_TEST_FAIL;
     }
     float q_got[SEQ * CD], z_got[SEQ * VD], cs_got[(K - 1) * CD], s_got[NH * DK * DV];
