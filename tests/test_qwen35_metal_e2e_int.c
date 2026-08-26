@@ -4,8 +4,8 @@
  * Runs the public API on the pinned Qwen3.5-0.8B Q8_0 fixture. The first
  * greedy continuation must match cpu_neon token-for-token, contain the
  * known answer, and reproduce after session_reset. This exercises Metal
- * Q8_0 projections/embeddings + SiLU, full-attention layers and the current
- * host DeltaNet fallback in one path.
+ * Q8_0 projections/embeddings + SiLU, full-attention layers and GPU
+ * DeltaNet prefill in one path.
  */
 #include "test_helpers.h"
 
@@ -89,6 +89,10 @@ static enum geist_status run_once(const char   *path,
         if (s == GEIST_OK && memcmp(tokens, reset_tokens, sizeof(reset_tokens)) != 0) {
             s = GEIST_E_INTERNAL;
         }
+    }
+
+    if (s != GEIST_OK) {
+        fprintf(stderr, "%s detail: %s\n", backend_name, geist_backend_errmsg(be));
     }
 
     geist_session_destroy(sess);

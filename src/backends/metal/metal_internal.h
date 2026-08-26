@@ -77,6 +77,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_GELU_ROWS,
     METAL_PROFILE_DISPATCH_COPY_U32,
     METAL_PROFILE_DISPATCH_ARGMAX,
+    METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -118,6 +119,7 @@ struct metal_state {
     void    *q6k_n4_library;
     void    *elem_library;
     void    *silu_library;
+    void    *deltanet_library;
     void    *elem_simd_library;
     void    *attn_library;
     void    *attn_f16_library;
@@ -185,6 +187,8 @@ struct metal_state {
     void    *gelu_rows_pipeline;
     void    *silu_rows_function;
     void    *silu_rows_pipeline;
+    void    *deltanet_prefill_function;
+    void    *deltanet_prefill_pipeline;
     void    *mul_rows_function;
     void    *mul_rows_pipeline;
     void    *gelu_mul_rows_function;
@@ -601,6 +605,26 @@ struct metal_argmax_batch_params {
     uint32_t x_row_stride;
     uint32_t out_offset;
 };
+
+struct metal_deltanet_params {
+    uint32_t seq;
+    uint32_t n_k_heads;
+    uint32_t n_v_heads;
+    uint32_t head_k;
+    uint32_t head_v;
+    uint32_t conv_kernel;
+    uint32_t qkv_offset;
+    uint32_t z_offset;
+    uint32_t beta_offset;
+    uint32_t alpha_offset;
+    uint32_t conv_w_offset;
+    uint32_t ssm_a_offset;
+    uint32_t dt_bias_offset;
+    uint32_t norm_w_offset;
+    uint32_t conv_state_offset;
+    uint32_t delta_state_offset;
+    float    eps;
+};
 /* ---- Shared data (defined in profiling.c) ----------------------------- */
 extern const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT];
 
@@ -704,6 +728,8 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
 [[nodiscard]] enum geist_status metal_ensure_attention_pipeline(struct geist_backend *be);
 
 [[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be);
+
+[[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);
 
 bool metal_ranges_overlap(size_t a_offset, size_t b_offset, size_t n_bytes);
 

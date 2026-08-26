@@ -33,6 +33,9 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->argmax_batch_function, "release");
         metal_msg_send_void0(st, st->argmax_pipeline, "release");
         metal_msg_send_void0(st, st->argmax_function, "release");
+        metal_msg_send_void0(st, st->deltanet_prefill_pipeline, "release");
+        metal_msg_send_void0(st, st->deltanet_prefill_function, "release");
+        metal_msg_send_void0(st, st->deltanet_library, "release");
         metal_msg_send_void0(st, st->rmsnorm_add_rows_simd_pipeline, "release");
         metal_msg_send_void0(st, st->rmsnorm_add_rows_simd_function, "release");
         metal_msg_send_void0(st, st->rmsnorm_add_rows_pipeline, "release");
@@ -190,6 +193,7 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->q80_function                          = nullptr;
     st->q40_q80_library                       = nullptr;
     st->silu_library                          = nullptr;
+    st->deltanet_library                      = nullptr;
     st->q4k_n4_pipeline                       = nullptr;
     st->q4k_n4_function                       = nullptr;
     st->q4k_matmul_m8_pipeline                = nullptr;
@@ -236,6 +240,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->gelu_rows_function                    = nullptr;
     st->silu_rows_pipeline                    = nullptr;
     st->silu_rows_function                    = nullptr;
+    st->deltanet_prefill_pipeline             = nullptr;
+    st->deltanet_prefill_function             = nullptr;
     st->mul_rows_pipeline                     = nullptr;
     st->mul_rows_function                     = nullptr;
     st->gelu_mul_rows_pipeline                = nullptr;
