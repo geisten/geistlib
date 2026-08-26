@@ -272,6 +272,124 @@ void linear_q4_0_decode_w4a8_x8(
     safe_free((void **) &bsum);
 }
 
+/* ---- Q4_0 x8 int8 mN GEMM (#295 prefill lever) ------------------------ *
+ *
+ * The Mac prefill path dequantizes weight tiles to f32 and calls
+ * Accelerate SGEMM — two memory passes and 8x the weight traffic.
+ * This kernel runs int8 GEMM directly on the #291 x8 layout: each
+ * 144-byte block (8 rows x 32 elems) is loaded ONCE and dotted
+ * against T activation rows, so weight traffic amortizes T-fold and
+ * the arithmetic is SDOT. Register tiling: 8 rows x 4 tokens = 16
+ * int32x4 accumulators alive per block column pass.
+ */
+
+void linear_q4_0_w4a8_prefill_x8(
+        const float *x, size_t m, const void *packed, size_t n_in, size_t n_out, float *y) {
+    if (!q4_0_x8_valid(packed, n_in, n_out) || m == 0)
+        return;
+    const size_t nb     = n_in / Q4_0_BLOCK_ELEMS;
+    int8_t      *x_q8   = heap_alloc_array_aligned(int8_t, m *n_in);
+    float       *scales = heap_alloc_array_aligned(float, m);
+    int32_t     *bsums  = heap_alloc_array_aligned(int32_t, m *nb);
+    if (x_q8 == NULL || scales == NULL || bsums == NULL) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &scales);
+        safe_free((void **) &bsums);
+        return;
+    }
+    for (size_t i = 0; i < m; i++) {
+        scales[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+        for (size_t b = 0; b < nb; b++) {
+            int32_t acc = 0;
+            for (size_t j = 0; j < Q4_0_BLOCK_ELEMS; j++)
+                acc += x_q8[i * n_in + b * Q4_0_BLOCK_ELEMS + j];
+            bsums[i * nb + b] = acc;
+        }
+    }
+    const struct q4_0_x8_block *w = (const struct q4_0_x8_block *) ((const uint8_t *) packed +
+                                                                    sizeof(struct q4_0_x8_header));
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t tile = 0; tile < n_out / 8; tile++) {
+        const struct q4_0_x8_block *row = w + tile * nb;
+        for (size_t t0 = 0; t0 < m; t0 += 4) {
+            const size_t tcnt = (m - t0 < 4) ? (m - t0) : 4;
+#if defined(__ARM_NEON)
+            /* f32 accumulators per token (d varies per block) */
+            float32x4_t facc[4][2];
+            for (size_t t = 0; t < 4; t++) {
+                facc[t][0] = vdupq_n_f32(0.0f);
+                facc[t][1] = vdupq_n_f32(0.0f);
+            }
+            for (size_t b = 0; b < nb; b++) {
+                const struct q4_0_x8_block *blk = row + b;
+                __builtin_prefetch(blk + 2, 0, 0);
+                float d_arr[8];
+                for (int r = 0; r < 8; r++)
+                    d_arr[r] = fp16_to_fp32(blk->d[r]);
+                const float32x4_t d0 = vld1q_f32(d_arr + 0);
+                const float32x4_t d1 = vld1q_f32(d_arr + 4);
+                int8x16_t         lo[8], hi[8];
+                for (int r = 0; r < 8; r++) {
+                    const uint8x16_t q = vld1q_u8(blk->qs + r * 16);
+                    lo[r]              = vreinterpretq_s8_u8(vandq_u8(q, vdupq_n_u8(0x0F)));
+                    hi[r]              = vreinterpretq_s8_u8(vshrq_n_u8(q, 4));
+                }
+                for (size_t t = 0; t < tcnt; t++) {
+                    const int8_t   *xb = x_q8 + (t0 + t) * n_in + b * Q4_0_BLOCK_ELEMS;
+                    const int8x16_t xa = vld1q_s8(xb);
+                    const int8x16_t xz = vld1q_s8(xb + 16);
+                    int32_t         d[8];
+                    for (int r = 0; r < 8; r++) {
+                        int32x4_t dd = vdotq_s32(vdupq_n_s32(0), lo[r], xa);
+                        dd           = vdotq_s32(dd, hi[r], xz);
+                        d[r]         = vaddvq_s32(dd);
+                    }
+                    const float bias8 = 8.0f * (float) bsums[(t0 + t) * nb + b];
+                    facc[t][0]        = vfmaq_f32(
+                            facc[t][0],
+                            d0,
+                            vsubq_f32(vcvtq_f32_s32(vld1q_s32(d + 0)), vdupq_n_f32(bias8)));
+                    facc[t][1] = vfmaq_f32(
+                            facc[t][1],
+                            d1,
+                            vsubq_f32(vcvtq_f32_s32(vld1q_s32(d + 4)), vdupq_n_f32(bias8)));
+                }
+            }
+            for (size_t t = 0; t < tcnt; t++) {
+                float *yt = y + (t0 + t) * n_out + tile * 8;
+                vst1q_f32(yt + 0, vmulq_n_f32(facc[t][0], scales[t0 + t]));
+                vst1q_f32(yt + 4, vmulq_n_f32(facc[t][1], scales[t0 + t]));
+            }
+#else
+            for (size_t t = 0; t < tcnt; t++) {
+                float *yt = y + (t0 + t) * n_out + tile * 8;
+                for (int r = 0; r < 8; r++) {
+                    float acc_f = 0.0f;
+                    for (size_t b = 0; b < nb; b++) {
+                        const struct q4_0_x8_block *blk = row + b;
+                        const int8_t *xb = x_q8 + (t0 + t) * n_in + b * Q4_0_BLOCK_ELEMS;
+                        int32_t       dt = 0;
+                        for (int j = 0; j < 16; j++) {
+                            dt += (int32_t) xb[j] * (int32_t) (blk->qs[r * 16 + j] & 0x0F);
+                            dt += (int32_t) xb[j + 16] * (int32_t) (blk->qs[r * 16 + j] >> 4);
+                        }
+                        acc_f += fp16_to_fp32(blk->d[r]) *
+                                 ((float) dt - 8.0f * (float) bsums[(t0 + t) * nb + b]);
+                    }
+                    yt[r] = acc_f * scales[t0 + t];
+                }
+            }
+#endif
+        }
+    }
+    safe_free((void **) &x_q8);
+    safe_free((void **) &scales);
+    safe_free((void **) &bsums);
+}
+
 /* ---- M>1 prefill: quantize each row once, tile over output rows. ---- */
 
 void linear_q4_0_w4a8_prefill(
