@@ -112,10 +112,12 @@ struct metal_state {
     size_t   seq_ref_count;
     bool     seq_ref_overflow;
     void    *q4k_library;
+    void    *q40_q80_library;
     void    *q4k_n4_library;
     void    *q6k_library;
     void    *q6k_n4_library;
     void    *elem_library;
+    void    *silu_library;
     void    *elem_simd_library;
     void    *attn_library;
     void    *attn_f16_library;
@@ -126,6 +128,10 @@ struct metal_state {
     void    *kv_norm_append_f16_library;
     void    *q4k_function;
     void    *q4k_pipeline;
+    void    *q40_function;
+    void    *q40_pipeline;
+    void    *q80_function;
+    void    *q80_pipeline;
     void    *q4k_n4_function;
     void    *q4k_n4_pipeline;
     void    *q4k_matmul_m8_function;
@@ -177,6 +183,8 @@ struct metal_state {
     void    *rmsnorm_rows_simd_pipeline;
     void    *gelu_rows_function;
     void    *gelu_rows_pipeline;
+    void    *silu_rows_function;
+    void    *silu_rows_pipeline;
     void    *mul_rows_function;
     void    *mul_rows_pipeline;
     void    *gelu_mul_rows_function;
@@ -323,6 +331,9 @@ enum {
     METAL_Q5K_BLOCK_BYTES               = 176u,
     METAL_Q6K_BLOCK_ELEMS               = 256u,
     METAL_Q6K_BLOCK_BYTES               = 210u,
+    METAL_Q40_Q80_BLOCK_ELEMS           = 32u,
+    METAL_Q40_BLOCK_BYTES               = 18u,
+    METAL_Q80_BLOCK_BYTES               = 34u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,
@@ -669,6 +680,12 @@ bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
                                 size_t                    *out_rows,
                                 size_t                    *out_cols,
                                 size_t                    *out_offset_bytes);
+
+bool metal_tensor_is_q40_q80_matrix(const struct geist_tensor *t,
+                                    enum geist_dtype           dtype,
+                                    size_t                    *out_rows,
+                                    size_t                    *out_cols,
+                                    size_t                    *out_offset_bytes);
 
 bool metal_tensor_is_f32_3d(const struct geist_tensor *t,
                             size_t                    *out_d0,

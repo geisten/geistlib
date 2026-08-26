@@ -87,6 +87,35 @@ static const char metal_q4k_source[] =
         "    }\n"
         "}\n";
 
+/* Correctness-first row-major Q4_0/Q8_0 linear kernels. Both formats use
+ * 32-element blocks with an fp16 scale followed by packed nibbles or int8s.
+ * One threadgroup computes one output row for one activation row. */
+static const char metal_q40_q80_source[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct P{uint ni,no,rows,bpr,xo,wo,yo,xs,ys;};\n"
+        "static inline float h(device const uchar*w,uint o){ushort "
+        "b=ushort(w[o])|(ushort(w[o+1])<<8);return float(as_type<half>(b));}\n"
+        "kernel void linear_q40(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup "
+        "float part[256];uint r=tg.x,b=tg.y;if(r>=p.no||b>=p.rows)return;float s=0.0f;for(uint "
+        "k=lid;k<p.ni;k+=256u){uint bi=k>>5u,j=k&31u,bo=p.wo+(r*p.bpr+bi)*18u;uchar "
+        "q=w[bo+2u+(j&15u)];int "
+        "v=int(j<16u?(q&15u):(q>>4u))-8;s+=x[p.xo+b*p.xs+k]*h(w,bo)*float(v);}part[lid]=s;"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint "
+        "z=128u;z>0u;z>>=1u){if(lid<z)part[lid]+=part[lid+z];threadgroup_barrier(mem_flags::mem_"
+        "threadgroup);}if(lid==0u)y[p.yo+b*p.ys+r]=part[0];}\n"
+        "kernel void linear_q80(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup "
+        "float part[256];uint r=tg.x,b=tg.y;if(r>=p.no||b>=p.rows)return;float s=0.0f;for(uint "
+        "k=lid;k<p.ni;k+=256u){uint bi=k>>5u,j=k&31u,bo=p.wo+(r*p.bpr+bi)*34u;char "
+        "q=as_type<char>(w[bo+2u+j]);s+=x[p.xo+b*p.xs+k]*h(w,bo)*float(q);}part[lid]=s;threadgroup_"
+        "barrier(mem_flags::mem_threadgroup);for(uint "
+        "z=128u;z>0u;z>>=1u){if(lid<z)part[lid]+=part[lid+z];threadgroup_barrier(mem_flags::mem_"
+        "threadgroup);}if(lid==0u)y[p.yo+b*p.ys+r]=part[0];}\n";
+
 static const char metal_q4k_n4_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -595,6 +624,15 @@ static const char metal_elem_source[] =
         "c]=res[p.residual_offset+row*p.residual_row_stride+c]+n;}\n"
         "}\n";
 
+static const char metal_silu_source[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct Sc{uint rows,cols,x_offset,y_offset,x_row_stride,y_row_stride;float scale;};\n"
+        "kernel void silu_rows(device const float*x[[buffer(0)]],device "
+        "float*y[[buffer(1)]],constant Sc&p[[buffer(2)]],uint gid[[thread_position_in_grid]]){uint "
+        "total=p.rows*p.cols;if(gid>=total)return;uint r=gid/p.cols,c=gid-r*p.cols;float "
+        "v=x[p.x_offset+r*p.x_row_stride+c];y[p.y_offset+r*p.y_row_stride+c]=v/(1.0f+exp(-v));}\n";
+
 static const char metal_elem_simd_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -646,6 +684,11 @@ static const char metal_embed_source[] =
         "as_type<float>(uint(w[o])|(uint(w[o+1])<<8)|(uint(w[o+2])<<16)|(uint(w[o+3])<<24));}\n"
         "static inline int i8(device const uchar*w,uint o){uint u=uint(w[o]);return "
         "u<128u?int(u):int(u)-256;}\n"
+        "static inline float q40(device const uchar*w,constant E&p,uint row,uint k){uint "
+        "br=k/32u,j=k&31u,bo=p.wbo+(row*p.bpr+br)*18u;uint qb=uint(w[bo+2u+(j&15u)]);int "
+        "q=int(j<16u?(qb&15u):(qb>>4u))-8;return h(w,bo)*float(q);}\n"
+        "static inline float q80(device const uchar*w,constant E&p,uint row,uint k){uint "
+        "br=k/32u,j=k&31u,bo=p.wbo+(row*p.bpr+br)*34u;return h(w,bo)*float(i8(w,bo+2u+j));}\n"
         "static inline void sm(uint j,device const uchar*q,thread uint&s,thread "
         "uint&m){if(j<4){s=uint(q[j])&63u;m=uint(q[j+4])&63u;}else{uint "
         "a=uint(q[j+4]),b=uint(q[j-4]),c=uint(q[j]);s=(a&15u)|((b>>6u)<<4u);m=(a>>4u)|((c>>6u)<<4u)"
@@ -674,8 +717,9 @@ static const char metal_embed_source[] =
         "float*y[[buffer(1)]],constant E&p[[buffer(2)]],uint "
         "gid[[thread_position_in_grid]]){if(gid>=p.n)return;float "
         "v=p.dtype==0u?f32(w,p.wbo+(p.token*p.n+gid)*4u):(p.dtype==1u?h(w,p.wbo+(p.token*p.n+gid)*"
-        "2u):(p.dtype==2u?bf(w,p.wbo+(p.token*p.n+gid)*2u):(p.dtype==8u?q4(w,p,p.token,gid):(p."
-        "dtype==9u?q5(w,p,p.token,gid):q6(w,p,p.token,gid)))));y[p.yo+gid]=v*p.scale;}\n";
+        "2u):(p.dtype==2u?bf(w,p.wbo+(p.token*p.n+gid)*2u):(p.dtype==5u?q40(w,p,p.token,gid):(p."
+        "dtype==7u?q80(w,p,p.token,gid):(p.dtype==9u?q4(w,p,p.token,gid):(p.dtype==10u?q5(w,p,p."
+        "token,gid):q6(w,p,p.token,gid)))))));y[p.yo+gid]=v*p.scale;}\n";
 
 static const char metal_f32_source[] =
         "#include <metal_stdlib>\n"

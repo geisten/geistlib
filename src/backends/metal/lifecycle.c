@@ -103,6 +103,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->mul_rows_function, "release");
         metal_msg_send_void0(st, st->gelu_rows_pipeline, "release");
         metal_msg_send_void0(st, st->gelu_rows_function, "release");
+        metal_msg_send_void0(st, st->silu_rows_pipeline, "release");
+        metal_msg_send_void0(st, st->silu_rows_function, "release");
         metal_msg_send_void0(st, st->rmsnorm_rows_simd_pipeline, "release");
         metal_msg_send_void0(st, st->rmsnorm_rows_simd_function, "release");
         metal_msg_send_void0(st, st->rmsnorm_rows_pipeline, "release");
@@ -141,6 +143,10 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->q4k_n4_function, "release");
         metal_msg_send_void0(st, st->q4k_pipeline, "release");
         metal_msg_send_void0(st, st->q4k_function, "release");
+        metal_msg_send_void0(st, st->q40_pipeline, "release");
+        metal_msg_send_void0(st, st->q40_function, "release");
+        metal_msg_send_void0(st, st->q80_pipeline, "release");
+        metal_msg_send_void0(st, st->q80_function, "release");
         metal_msg_send_void0(st, st->attn_library, "release");
         metal_msg_send_void0(st, st->attn_qnorm_dec_f16_library, "release");
         metal_msg_send_void0(st, st->attn_dec_combine_library, "release");
@@ -170,12 +176,20 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->q6k_n4_library, "release");
         metal_msg_send_void0(st, st->q6k_library, "release");
         metal_msg_send_void0(st, st->q4k_library, "release");
+        metal_msg_send_void0(st, st->q40_q80_library, "release");
+        metal_msg_send_void0(st, st->silu_library, "release");
         metal_msg_send_void0(st, st->attn_f16_library, "release");
         metal_msg_send_void0(st, st->command_queue, "release");
         metal_msg_send_void0(st, st->device, "release");
     }
     st->q4k_pipeline                          = nullptr;
     st->q4k_function                          = nullptr;
+    st->q40_pipeline                          = nullptr;
+    st->q40_function                          = nullptr;
+    st->q80_pipeline                          = nullptr;
+    st->q80_function                          = nullptr;
+    st->q40_q80_library                       = nullptr;
+    st->silu_library                          = nullptr;
     st->q4k_n4_pipeline                       = nullptr;
     st->q4k_n4_function                       = nullptr;
     st->q4k_matmul_m8_pipeline                = nullptr;
@@ -220,6 +234,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->rmsnorm_rows_simd_function            = nullptr;
     st->gelu_rows_pipeline                    = nullptr;
     st->gelu_rows_function                    = nullptr;
+    st->silu_rows_pipeline                    = nullptr;
+    st->silu_rows_function                    = nullptr;
     st->mul_rows_pipeline                     = nullptr;
     st->mul_rows_function                     = nullptr;
     st->gelu_mul_rows_pipeline                = nullptr;
