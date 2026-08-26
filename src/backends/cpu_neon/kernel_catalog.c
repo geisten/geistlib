@@ -60,6 +60,7 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
             .q6k_ntile_prefill         = has_accelerate,
             .q6k_ntile4_stream_prefill = has_accelerate,
             .q6k_x8_gemv               = has_accelerate,
+            .q6k_pd8_gemv              = has_accelerate,
             .q4_0_x8_gemv              = has_accelerate,
             .q8_0_native_mn            = !has_accelerate,
             .q4_01_native_mn           = !has_accelerate,
@@ -79,6 +80,7 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
     p.q4k_sgemm_prefill = cpu_neon_env_bool("GEIST_Q4K_SGEMM_PREFILL", p.q4k_sgemm_prefill);
     p.q6k_sgemm_prefill = cpu_neon_env_bool("GEIST_Q6K_SGEMM_PREFILL", p.q6k_sgemm_prefill);
     p.q6k_x8_gemv       = cpu_neon_env_bool("GEIST_Q6K_X8_GEMV", p.q6k_x8_gemv);
+    p.q6k_pd8_gemv      = cpu_neon_env_bool("GEIST_Q6K_PD8_GEMV", p.q6k_pd8_gemv);
     p.q4_0_x8_gemv      = cpu_neon_env_bool("GEIST_Q4_0_X8_GEMV", p.q4_0_x8_gemv);
     const char *thresh  = getenv("GEIST_QK_SGEMM_THRESHOLD");
     if (thresh != nullptr && *thresh != '\0') {

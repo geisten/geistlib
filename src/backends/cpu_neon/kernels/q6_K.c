@@ -471,6 +471,128 @@ void linear_q6k_decode_w6a8_pre(
 #endif
 }
 
+/* ---- Q6_K predecoded-int8 x8 GEMV (#293) ------------------------------ *
+ *
+ * The x8 kernel above is compute-bound: 6-bit unpack + the vmlal bias
+ * cascade cap it at ~44 GB/s while the Q4_0 x8 cousin streams 85+.
+ * This layout does that work ONCE at load: weights become plain int8
+ * (q - 32) and each 16-element sub-block carries its combined scale
+ * d * scale[s] as f32 (exact: fp16 x int8 fits f32). The hot loop is
+ * one SDOT + one FMA per sub-block row — no unpack, no bias, no
+ * bsums. Cost: 2560 B per 8-row super-block vs 1680 B source (1.52x).
+ */
+
+struct q6k_pd8_block {
+    float  sc[16][8];     /* [sub-block][row] = d * scale, exact f32 */
+    int8_t qs[16][8][16]; /* [sub-block][row][elem], q - 32 */
+};
+static_assert(sizeof(struct q6k_pd8_block) == 2560, "q6k_pd8_block layout changed");
+
+static constexpr uint32_t Q6K_PD8_GEMV_MAGIC = 0x38445036u; /* "6PD8" */
+
+size_t q6k_pd8_gemv_size_bytes(size_t n_in, size_t n_out) {
+    if (n_in == 0 || n_out == 0 || n_in % Q6_K_BLOCK_ELEMS != 0 || n_out % 8 != 0)
+        return 0;
+    if (n_in > UINT32_MAX || n_out > UINT32_MAX)
+        return 0;
+    const size_t n_blocks = (n_out / 8) * (n_in / Q6_K_BLOCK_ELEMS);
+    if (n_blocks > (SIZE_MAX - sizeof(struct q6k_x8_header)) / sizeof(struct q6k_pd8_block))
+        return 0;
+    return sizeof(struct q6k_x8_header) + n_blocks * sizeof(struct q6k_pd8_block);
+}
+
+int q6k_pd8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst) {
+    if (q6k_pd8_gemv_size_bytes(n_in, n_out) == 0 || w_q6k == NULL || dst == NULL)
+        return -1;
+    const struct block_q6_K_t *src        = (const struct block_q6_K_t *) w_q6k;
+    const size_t               nb_per_row = n_in / Q6_K_BLOCK_ELEMS;
+    struct q6k_x8_header      *h          = (struct q6k_x8_header *) dst;
+    h->magic                              = Q6K_PD8_GEMV_MAGIC;
+    h->n_in                               = (uint32_t) n_in;
+    h->n_out                              = (uint32_t) n_out;
+    h->block_bytes                        = (uint32_t) sizeof(struct q6k_pd8_block);
+    struct q6k_pd8_block *out             = (struct q6k_pd8_block *) (h + 1);
+    for (size_t tile = 0; tile < n_out / 8; tile++) {
+        for (size_t b = 0; b < nb_per_row; b++) {
+            struct q6k_pd8_block *ob = out + tile * nb_per_row + b;
+            for (size_t r = 0; r < 8; r++) {
+                const struct block_q6_K_t *sb = src + (tile * 8 + r) * nb_per_row + b;
+                struct q6k_predecode_block pd;
+                q6k_predecode_one_block(sb, &pd);
+                for (int s = 0; s < 16; s++) {
+                    ob->sc[s][r] = pd.d * (float) pd.scales[s];
+                    for (int j = 0; j < 16; j++)
+                        ob->qs[s][r][j] = pd.qs[s * 16 + j];
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int q6k_pd8_valid(const void *packed, size_t n_in, size_t n_out) {
+    const struct q6k_x8_header *h = (const struct q6k_x8_header *) packed;
+    return packed != NULL && h->magic == Q6K_PD8_GEMV_MAGIC && h->n_in == n_in &&
+           h->n_out == n_out && h->block_bytes == sizeof(struct q6k_pd8_block);
+}
+
+void linear_q6k_decode_w6a8_pd8_pre(const int8_t *x_q8,
+                                    float         scale_x,
+                                    const void   *packed,
+                                    size_t        n_in,
+                                    size_t        n_out,
+                                    float        *y) {
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+    if (!q6k_pd8_valid(packed, n_in, n_out))
+        return;
+    const size_t                nb_per_row = n_in / Q6_K_BLOCK_ELEMS;
+    const struct q6k_pd8_block *w = (const struct q6k_pd8_block *) ((const uint8_t *) packed +
+                                                                    sizeof(struct q6k_x8_header));
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t tile = 0; tile < n_out / 8; tile++) {
+        const struct q6k_pd8_block *row  = w + tile * nb_per_row;
+        float32x4_t                 acc0 = vdupq_n_f32(0.0f);
+        float32x4_t                 acc1 = vdupq_n_f32(0.0f);
+        for (size_t b = 0; b < nb_per_row; b++) {
+            const struct q6k_pd8_block *blk = row + b;
+            __builtin_prefetch((const uint8_t *) (blk + 1), 0, 0);
+            __builtin_prefetch((const uint8_t *) (blk + 1) + 1280, 0, 0);
+            for (int s = 0; s < 16; s++) {
+                const int8x16_t xa = vld1q_s8(x_q8 + b * Q6_K_BLOCK_ELEMS + s * 16);
+                int32_t         d[8];
+                for (int r = 0; r < 8; r++)
+                    d[r] = vaddvq_s32(vdotq_s32(vdupq_n_s32(0), vld1q_s8(blk->qs[s][r]), xa));
+                const int32x4_t d0 = vld1q_s32(d + 0);
+                const int32x4_t d1 = vld1q_s32(d + 4);
+                acc0               = vfmaq_f32(acc0, vld1q_f32(blk->sc[s] + 0), vcvtq_f32_s32(d0));
+                acc1               = vfmaq_f32(acc1, vld1q_f32(blk->sc[s] + 4), vcvtq_f32_s32(d1));
+            }
+        }
+        vst1q_f32(y + tile * 8 + 0, vmulq_n_f32(acc0, scale_x));
+        vst1q_f32(y + tile * 8 + 4, vmulq_n_f32(acc1, scale_x));
+    }
+#else
+    (void) x_q8;
+    (void) scale_x;
+    (void) packed;
+    (void) n_in;
+    (void) n_out;
+    (void) y;
+#endif
+}
+
+void linear_q6k_decode_w6a8_pd8(
+        const float *x, const void *packed, size_t n_in, size_t n_out, float *y) {
+    int8_t *x_q8 = heap_alloc_array_aligned(int8_t, n_in);
+    if (x_q8 == NULL)
+        return;
+    const float scale_x = quantize_x_int8_sym(x, n_in, x_q8);
+    linear_q6k_decode_w6a8_pd8_pre(x_q8, scale_x, packed, n_in, n_out, y);
+    safe_free((void **) &x_q8);
+}
+
 void linear_q6k_decode_w6a8_x8_pre(const int8_t *x_q8,
                                    float         scale_x,
                                    const void   *packed,

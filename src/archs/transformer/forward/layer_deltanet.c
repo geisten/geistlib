@@ -524,28 +524,24 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
         return s;
 
     /* 2. Projections through the backend linear kernels. */
+    /* qkv + z as one pair call (#294): shared activation quantization
+     * and a single thread-pool wake when the backend installs a pair
+     * kernel (Q4_0 x8 on Mac); falls back to two calls otherwise. */
     struct geist_tensor t_qkv = view_2d(sess->dn_scratch_qkv, ctx->SEQ, (int64_t) convd);
-    s                         = linear_w_or_legacy(be,
-                                                   v,
-                                                   sess->scratch_normed,
-                                                   sess->dn_scratch_qkv,
-                                                   &L->dn_qkv_w,
-                                                   seq,
-                                                   &t_x_2d,
-                                                   &L->dn_qkv,
-                                                   &t_qkv);
-    if (s != GEIST_OK)
-        return s;
-    struct geist_tensor t_z = view_2d(sess->dn_scratch_z, ctx->SEQ, (int64_t) vald);
-    s                       = linear_w_or_legacy(be,
-                                                 v,
-                                                 sess->scratch_normed,
-                                                 sess->dn_scratch_z,
-                                                 &L->dn_z_w,
-                                                 seq,
-                                                 &t_x_2d,
-                                                 &L->dn_z,
-                                                 &t_z);
+    struct geist_tensor t_z   = view_2d(sess->dn_scratch_z, ctx->SEQ, (int64_t) vald);
+    s                         = linear_w_pair_or_legacy(be,
+                                                        v,
+                                                        sess->scratch_normed,
+                                                        sess->dn_scratch_qkv,
+                                                        sess->dn_scratch_z,
+                                                        &L->dn_qkv_w,
+                                                        &L->dn_z_w,
+                                                        seq,
+                                                        &t_x_2d,
+                                                        &L->dn_qkv,
+                                                        &L->dn_z,
+                                                        &t_qkv,
+                                                        &t_z);
     if (s != GEIST_OK)
         return s;
     /* beta and alpha each in their own scratch — the resolved CPU

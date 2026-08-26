@@ -190,6 +190,14 @@ void linear_q4_0_decode_w4a8(const float *x, const void *w_q4, size_t n_in, size
 void linear_q4_1_decode_w4a8(const float *x, const void *w_q4, size_t n_in, size_t n_out, float *y);
 size_t q4_0_x8_gemv_size_bytes(size_t n_in, size_t n_out);
 int    q4_0_x8_gemv_pack(const void *w_q4, size_t n_in, size_t n_out, void *dst);
+void   linear_q4_0_decode_w4a8_x8_pair(const float *x,
+                                       const void  *p0,
+                                       const void  *p1,
+                                       size_t       n_in,
+                                       size_t       n_out0,
+                                       size_t       n_out1,
+                                       float       *y0,
+                                       float       *y1);
 void   linear_q4_0_decode_w4a8_x8(
         const float *x, const void *packed, size_t n_in, size_t n_out, float *y);
 void linear_q4_0_decode_w4a8_x8_pre(const int8_t  *x_q8,
@@ -354,7 +362,13 @@ void linear_q6k_decode_w6a8_pre(
         const int8_t *x_q8, float scale_x, const void *w_q6k, size_t n_in, size_t n_out, float *y);
 size_t q6k_x8_gemv_size_bytes(size_t n_in, size_t n_out);
 int    q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst);
-void   linear_q6k_decode_w6a8_x8(
+size_t q6k_pd8_gemv_size_bytes(size_t n_in, size_t n_out);
+int    q6k_pd8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst);
+void   linear_q6k_decode_w6a8_pd8(
+        const float *x, const void *packed, size_t n_in, size_t n_out, float *y);
+void linear_q6k_decode_w6a8_pd8_pre(
+        const int8_t *x_q8, float scale_x, const void *packed, size_t n_in, size_t n_out, float *y);
+void linear_q6k_decode_w6a8_x8(
         const float *x, const void *packed, size_t n_in, size_t n_out, float *y);
 void linear_q6k_decode_w6a8_x8_pre(
         const int8_t *x_q8, float scale_x, const void *packed, size_t n_in, size_t n_out, float *y);

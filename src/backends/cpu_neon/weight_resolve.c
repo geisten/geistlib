@@ -133,11 +133,42 @@ static void cpu_neon_w_q4k_pair_m1(const float               *x,
             x, w0->raw, w1->raw, (size_t) w0->n_in, (size_t) w0->n_out, (size_t) w1->n_out, y0, y1);
 }
 
+/* #294: DN qkv+z pair — both weights must carry the x8 layout, else
+ * the generic pair helper falls back to two sequential m1 calls. */
+static void cpu_neon_w_q4_0_pair_m1(const float               *x,
+                                    const struct geist_weight *w0,
+                                    const struct geist_weight *w1,
+                                    struct geist_backend      *be,
+                                    float                     *y0,
+                                    float                     *y1) {
+    (void) be;
+    if (w0->n_in != w1->n_in)
+        return;
+    if (w0->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w0->aux_fp32 != nullptr &&
+        w1->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w1->aux_fp32 != nullptr) {
+        linear_q4_0_decode_w4a8_x8_pair(x,
+                                        w0->aux_fp32,
+                                        w1->aux_fp32,
+                                        (size_t) w0->n_in,
+                                        (size_t) w0->n_out,
+                                        (size_t) w1->n_out,
+                                        y0,
+                                        y1);
+        return;
+    }
+    linear_q4_0_decode_w4a8(x, w0->raw, (size_t) w0->n_in, (size_t) w0->n_out, y0);
+    linear_q4_0_decode_w4a8(x, w1->raw, (size_t) w1->n_in, (size_t) w1->n_out, y1);
+}
+
 static void cpu_neon_w_q6k_m1(const float               *x,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
                               float                     *y) {
     (void) be;
+    if (w->backend_layout == GEIST_W_LAYOUT_Q6_K_PD8_GEMV && w->aux_fp32 != nullptr) {
+        linear_q6k_decode_w6a8_pd8(x, w->aux_fp32, (size_t) w->n_in, (size_t) w->n_out, y);
+        return;
+    }
     if (w->backend_layout == GEIST_W_LAYOUT_Q6_K_X8_GEMV && w->aux_fp32 != nullptr) {
         linear_q6k_decode_w6a8_x8(x, w->aux_fp32, (size_t) w->n_in, (size_t) w->n_out, y);
         return;
@@ -1222,6 +1253,43 @@ install_q6k_ntile_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
     return GEIST_OK;
 }
 
+/* #293: predecoded-int8 x8 head layout — same eligibility class as the
+ * x8 GEMV (lm_head-size Q6_K), preferred over it when enabled. */
+static enum geist_status
+install_q6k_pd8_gemv_if_eligible(struct geist_weight                 *w,
+                                 const struct cpu_neon_kernel_policy *policy) {
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+    if (!policy->q6k_pd8_gemv) {
+        return GEIST_OK;
+    }
+    if (w == nullptr || w->dtype != GEIST_DTYPE_Q6_K || w->n_in <= 0 || w->n_out <= 0 ||
+        w->n_out < 32768 || (w->n_out % 8) != 0) {
+        return GEIST_OK;
+    }
+    const size_t bytes = q6k_pd8_gemv_size_bytes((size_t) w->n_in, (size_t) w->n_out);
+    if (bytes == 0 || bytes > (size_t) INT32_MAX) {
+        return GEIST_OK;
+    }
+    void *buf = heap_alloc_aligned(bytes, 64);
+    if (buf == nullptr) {
+        return GEIST_OK;
+    }
+    if (q6k_pd8_gemv_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf) != 0) {
+        safe_free(&buf);
+        return GEIST_OK;
+    }
+    w->aux_fp32 = (const float *) buf;
+    w->aux_n    = (int32_t) bytes;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->backend_layout    = GEIST_W_LAYOUT_Q6_K_PD8_GEMV;
+    w->backend_alignment = 64;
+#else
+    (void) w;
+    (void) policy;
+#endif
+    return GEIST_OK;
+}
+
 static enum geist_status
 install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
                                 const struct cpu_neon_kernel_policy *policy) {
@@ -1319,6 +1387,10 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
         (void) install_q4k_predecode_if_eligible(w, policy);
         return;
     case GEIST_DTYPE_Q6_K:
+        (void) install_q6k_pd8_gemv_if_eligible(w, policy);
+        if (w->backend_layout == GEIST_W_LAYOUT_Q6_K_PD8_GEMV) {
+            return;
+        }
         (void) install_q6k_x8_gemv_if_eligible(w, policy);
         if (w->backend_layout == GEIST_W_LAYOUT_Q6_K_X8_GEMV) {
             return;
@@ -1450,6 +1522,9 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
         if (w->dtype == GEIST_DTYPE_Q4_K) {
             w->linear_pair_m1 = cpu_neon_w_q4k_pair_m1;
             w->linear_pair_mN = cpu_neon_w_q4k_pair_mN;
+        }
+        if (w->dtype == GEIST_DTYPE_Q4_0) {
+            w->linear_pair_m1 = cpu_neon_w_q4_0_pair_m1;
         }
         if (w->backend_layout == 0) {
             w->backend_layout = GEIST_W_LAYOUT_SOURCE;
