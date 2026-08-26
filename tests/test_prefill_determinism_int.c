@@ -28,7 +28,14 @@
 #include <string.h>
 
 #define N_PROMPT 301
-#define N_REPEATS 3
+/* GEIST_TEST_LIGHT=1 (coverage CI): two repeats prove determinism
+ * (one comparison) at 2/3 of the 12.6-minute instrumented cost;
+ * the third repeat only re-executes identical lines. */
+static int n_repeats(void) {
+    const char *l = getenv("GEIST_TEST_LIGHT");
+    return (l != NULL && l[0] == '1') ? 2 : 3;
+}
+#define N_REPEATS 3 /* array bound; runtime count via n_repeats() */
 
 int main(void) {
     GEIST_REQUIRE_GGUF(model_path);
@@ -72,7 +79,7 @@ int main(void) {
     size_t ref_n  = 0;
     int    result = GEIST_TEST_PASS;
 
-    for (int rep = 0; rep < N_REPEATS; rep++) {
+    for (int rep = 0; rep < n_repeats(); rep++) {
         s = geist_session_reset(sess);
         if (s != GEIST_OK) {
             fprintf(stderr, "reset failed (rep %d)\n", rep);

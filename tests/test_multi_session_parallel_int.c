@@ -34,8 +34,16 @@
 #include <string.h>
 
 #define N_SESSIONS 4
-#define N_DECODE 32
 #define N_ROUNDS 2
+/* GEIST_TEST_LIGHT=1 (coverage CI) cuts decode length: line coverage is
+ * identical after the first few tokens and the instrumented -O1 build
+ * made this test the suite's whale (24 min of the 66-min ratchet job).
+ * Race detection does not live here — that is the TSan job. */
+static int n_decode(void) {
+    const char *l = getenv("GEIST_TEST_LIGHT");
+    return (l != NULL && l[0] == '1') ? 8 : 32;
+}
+#define N_DECODE 32 /* array bound; runtime length via n_decode() */
 
 /* Distinct short prompts, pre-tokenized with small in-vocab ids (every
  * model fixture has vocab >> 4096). The token VALUES only need to be
@@ -66,7 +74,7 @@ static void *worker_main(void *arg) {
             w->failed = 2;
             return nullptr;
         }
-        for (int i = 0; i < N_DECODE; i++) {
+        for (int i = 0; i < n_decode(); i++) {
             if (geist_session_decode_step(w->sess, &w->out[round][i]) != GEIST_OK) {
                 w->failed = 3;
                 return nullptr;
@@ -161,7 +169,7 @@ int main(void) {
         if (geist_session_prefill_tokens(ref, PROMPT_LEN, PROMPTS[i]) != GEIST_OK) {
             ok = 0;
         }
-        for (int t = 0; ok && t < N_DECODE; t++) {
+        for (int t = 0; ok && t < n_decode(); t++) {
             if (geist_session_decode_step(ref, &ref_out[t]) != GEIST_OK) {
                 ok = 0;
             }
@@ -169,14 +177,16 @@ int main(void) {
         fails += geist_expect(ok, "serial reference decode succeeded");
         if (ok) {
             for (int round = 0; round < N_ROUNDS; round++) {
-                const bool same = memcmp(workers[i].out[round], ref_out, sizeof ref_out) == 0;
+                const bool same = memcmp(workers[i].out[round],
+                                         ref_out,
+                                         (size_t) n_decode() * sizeof(geist_token_t)) == 0;
                 if (!same) {
                     fprintf(stderr,
                             "session %d round %d: parallel tokens diverge from serial "
                             "(first at ",
                             i,
                             round);
-                    for (int t = 0; t < N_DECODE; t++) {
+                    for (int t = 0; t < n_decode(); t++) {
                         if (workers[i].out[round][t] != ref_out[t]) {
                             fprintf(stderr,
                                     "pos %d: %d != %d)\n",
@@ -207,6 +217,6 @@ int main(void) {
            "bit-identical to serial\n",
            N_SESSIONS,
            N_ROUNDS,
-           N_DECODE);
+           n_decode());
     return GEIST_TEST_PASS;
 }
