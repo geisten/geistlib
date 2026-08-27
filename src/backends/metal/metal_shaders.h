@@ -2181,61 +2181,92 @@ static const char metal_dn_chunk_ws_source[] =
                                   "threadgroup_barrier(mem_flags::mem_threadgroup);}}\n";
 
 static const char metal_dn_chunk_wide_source[] =
-        /* wide: A (strict) and attn (inclusive) in one K-pass. */
+        /* wide: A (strict) and attn (inclusive) in one K-pass; 4 rows per
+         * thread so the cd-strided K column row loads once per x (the
+         * 1-output-per-thread versions of these kernels profiled at
+         * ~250 GFLOP/s, 2026-08-27). Host gates the chunked path on
+         * head_v%4==0 for the 4-wide j blocks below. */
         GEIST_DN_SIG(
                 "dn_chunk_amat") "uint2 tg[[threadgroup_position_in_grid]],uint "
                                  "ti[[thread_index_in_threadgroup]]){"
                                  "uint hv=tg.y;if(hv>=p.nvh)return;"
-                                 "uint C=p.seq,dk=p.dk,keyd=p.nkh*dk,cd=2u*keyd+p.nvh*p.dv;"
-                                 "uint i=tg.x*256u+ti;if(i>=C*C)return;uint r=i/C,c=i%C;"
+                                 "uint "
+                                 "C=p.seq,dk=p.dk,keyd=p.nkh*dk,cd=2u*keyd+p.nvh*p.dv,rq=(C+3u)/4u;"
+                                 "uint i=tg.x*256u+ti;if(i>=rq*C)return;uint rb=(i/C)*4u,c=i%C;"
                                  "uint hk=hv%p.nkh;DW w=dnws(scr,p,hv);"
                                  "device const float*Q=scr+hk*dk;device const "
                                  "float*Kr=scr+keyd+hk*dk;"
-                                 "float av=0.0f,tv=0.0f;"
-                                 "if(r>=c){float e=exp(w.gma[r]-w.gma[c]);float qa=0.0f,ka=0.0f;"
-                                 "for(uint x=0u;x<dk;x++){float "
-                                 "kc=Kr[c*cd+x];qa+=Q[r*cd+x]*kc;ka+=w.Kb[r*dk+x]*kc;}"
-                                 "tv=qa*e;av=(r>c)?-ka*e:0.0f;}"
-                                 "w.A[i]=av;w.att[i]=tv;}\n"
-        /* wide: vnew = Vb - KCe S. */
+                                 "float qa[4]={0.0f,0.0f,0.0f,0.0f};float "
+                                 "ka[4]={0.0f,0.0f,0.0f,0.0f};"
+                                 "uint nr=min(C-rb,4u);"
+                                 "if(rb+nr>c){for(uint x=0u;x<dk;x++){float kc=Kr[c*cd+x];"
+                                 "for(uint u=0u;u<nr;u++){uint r=rb+u;if(r>=c){"
+                                 "qa[u]+=Q[r*cd+x]*kc;ka[u]+=w.Kb[r*dk+x]*kc;}}}}"
+                                 "float gc=w.gma[c];"
+                                 "for(uint u=0u;u<nr;u++){uint r=rb+u;float av=0.0f,tv=0.0f;"
+                                 "if(r>=c){float "
+                                 "e=exp(w.gma[r]-gc);tv=qa[u]*e;av=(r>c)?-ka[u]*e:0.0f;}"
+                                 "w.A[r*C+c]=av;w.att[r*C+c]=tv;}}\n"
+        /* wide: vnew = Vb - KCe S, 4 j per thread (KCe row reuse). */
         GEIST_DN_SIG(
                 "dn_chunk_vnew1") "uint2 tg[[threadgroup_position_in_grid]],uint "
                                   "ti[[thread_index_in_threadgroup]]){"
-                                  "uint hv=tg.y;if(hv>=p.nvh)return;uint C=p.seq,dk=p.dk,dv=p.dv;"
-                                  "uint i=tg.x*256u+ti;if(i>=C*dv)return;uint t=i/dv,j=i%dv;"
+                                  "uint hv=tg.y;if(hv>=p.nvh)return;uint "
+                                  "C=p.seq,dk=p.dk,dv=p.dv,q=dv/4u;"
+                                  "uint i=tg.x*256u+ti;if(i>=C*q)return;uint t=i/q,jb=(i%q)*4u;"
                                   "DW w=dnws(scr,p,hv);device float*S=Sb+p.so+hv*dk*dv;"
-                                  "float a=0.0f;for(uint x=0u;x<dk;x++)a+=w.KCe[t*dk+x]*S[x*dv+j];"
-                                  "w.vnew[i]=w.Vb[i]-a;}\n"
-        /* wide: Vb = (A+I) vnew (A is strictly lower after substitution). */
-        GEIST_DN_SIG("dn_chunk_vnew2") "uint2 tg[[threadgroup_position_in_grid]],uint "
-                                       "ti[[thread_index_in_threadgroup]]){"
-                                       "uint hv=tg.y;if(hv>=p.nvh)return;uint C=p.seq,dv=p.dv;"
-                                       "uint i=tg.x*256u+ti;if(i>=C*dv)return;uint t=i/dv,j=i%dv;"
-                                       "DW w=dnws(scr,p,hv);"
-                                       "float a=w.vnew[i];for(uint "
-                                       "x=0u;x<t;x++)a+=w.A[t*C+x]*w.vnew[x*dv+j];"
-                                       "w.Vb[i]=a;}\n";
+                                  "float a0=0.0f,a1=0.0f,a2=0.0f,a3=0.0f;"
+                                  "for(uint x=0u;x<dk;x++){float kc=w.KCe[t*dk+x];device const "
+                                  "float*sr=S+x*dv+jb;"
+                                  "a0+=kc*sr[0];a1+=kc*sr[1];a2+=kc*sr[2];a3+=kc*sr[3];}"
+                                  "uint o=t*dv+jb;w.vnew[o]=w.Vb[o]-a0;w.vnew[o+1u]=w.Vb[o+1u]-a1;"
+                                  "w.vnew[o+2u]=w.Vb[o+2u]-a2;w.vnew[o+3u]=w.Vb[o+3u]-a3;}\n"
+        /* wide: Vb = (A+I) vnew (A strictly lower), 4 j per thread. */
+        GEIST_DN_SIG(
+                "dn_chunk_vnew2") "uint2 tg[[threadgroup_position_in_grid]],uint "
+                                  "ti[[thread_index_in_threadgroup]]){"
+                                  "uint hv=tg.y;if(hv>=p.nvh)return;uint C=p.seq,dv=p.dv,q=dv/4u;"
+                                  "uint i=tg.x*256u+ti;if(i>=C*q)return;uint t=i/q,jb=(i%q)*4u;"
+                                  "DW w=dnws(scr,p,hv);uint o=t*dv+jb;"
+                                  "float "
+                                  "a0=w.vnew[o],a1=w.vnew[o+1u],a2=w.vnew[o+2u],a3=w.vnew[o+3u];"
+                                  "for(uint x=0u;x<t;x++){float av=w.A[t*C+x];device const "
+                                  "float*vr=w.vnew+x*dv+jb;"
+                                  "a0+=av*vr[0];a1+=av*vr[1];a2+=av*vr[2];a3+=av*vr[3];}"
+                                  "w.Vb[o]=a0;w.Vb[o+1u]=a1;w.Vb[o+2u]=a2;w.Vb[o+3u]=a3;}\n";
 
 static const char metal_dn_chunk_wide2_source[] =
-        /* wide: o = Qg S + attn v_new (attn lower-inclusive). */
+        /* wide: o = Qg S + attn v_new (attn lower-inclusive), 4 j per
+         * thread. */
         GEIST_DN_SIG(
                 "dn_chunk_out") "uint2 tg[[threadgroup_position_in_grid]],uint "
                                 "ti[[thread_index_in_threadgroup]]){"
-                                "uint hv=tg.y;if(hv>=p.nvh)return;uint C=p.seq,dk=p.dk,dv=p.dv;"
-                                "uint i=tg.x*256u+ti;if(i>=C*dv)return;uint t=i/dv,j=i%dv;"
+                                "uint hv=tg.y;if(hv>=p.nvh)return;uint "
+                                "C=p.seq,dk=p.dk,dv=p.dv,q=dv/4u;"
+                                "uint i=tg.x*256u+ti;if(i>=C*q)return;uint t=i/q,jb=(i%q)*4u;"
                                 "DW w=dnws(scr,p,hv);device float*S=Sb+p.so+hv*dk*dv;"
-                                "float a=0.0f;for(uint x=0u;x<dk;x++)a+=w.Qg[t*dk+x]*S[x*dv+j];"
-                                "for(uint x=0u;x<=t;x++)a+=w.att[t*C+x]*w.Vb[x*dv+j];"
-                                "w.o[i]=a;}\n"
-        /* wide: S = e^{gl} S + Kd^T v_new. */
+                                "float a0=0.0f,a1=0.0f,a2=0.0f,a3=0.0f;"
+                                "for(uint x=0u;x<dk;x++){float qg=w.Qg[t*dk+x];device const "
+                                "float*sr=S+x*dv+jb;"
+                                "a0+=qg*sr[0];a1+=qg*sr[1];a2+=qg*sr[2];a3+=qg*sr[3];}"
+                                "for(uint x=0u;x<=t;x++){float at=w.att[t*C+x];device const "
+                                "float*vr=w.Vb+x*dv+jb;"
+                                "a0+=at*vr[0];a1+=at*vr[1];a2+=at*vr[2];a3+=at*vr[3];}"
+                                "uint "
+                                "o=t*dv+jb;w.o[o]=a0;w.o[o+1u]=a1;w.o[o+2u]=a2;w.o[o+3u]=a3;}\n"
+        /* wide: S = e^{gl} S + Kd^T v_new, 4 j per thread. */
         GEIST_DN_SIG(
                 "dn_chunk_supd") "uint2 tg[[threadgroup_position_in_grid]],uint "
                                  "ti[[thread_index_in_threadgroup]]){"
-                                 "uint hv=tg.y;if(hv>=p.nvh)return;uint dk=p.dk,dv=p.dv;"
-                                 "uint i=tg.x*256u+ti;if(i>=dk*dv)return;uint x=i/dv,j=i%dv;"
+                                 "uint hv=tg.y;if(hv>=p.nvh)return;uint dk=p.dk,dv=p.dv,q=dv/4u;"
+                                 "uint i=tg.x*256u+ti;if(i>=dk*q)return;uint x=i/q,jb=(i%q)*4u;"
                                  "DW w=dnws(scr,p,hv);device float*S=Sb+p.so+hv*dk*dv;"
-                                 "float a=S[i]*exp(w.gma[p.seq-1u]);"
-                                 "for(uint t=0u;t<p.seq;t++)a+=w.Kd[t*dk+x]*w.Vb[t*dv+j];S[i]=a;}\n"
+                                 "float egl=exp(w.gma[p.seq-1u]);uint o=x*dv+jb;"
+                                 "float a0=S[o]*egl,a1=S[o+1u]*egl,a2=S[o+2u]*egl,a3=S[o+3u]*egl;"
+                                 "for(uint t=0u;t<p.seq;t++){float kd=w.Kd[t*dk+x];device const "
+                                 "float*vr=w.Vb+t*dv+jb;"
+                                 "a0+=kd*vr[0];a1+=kd*vr[1];a2+=kd*vr[2];a3+=kd*vr[3];}"
+                                 "S[o]=a0;S[o+1u]=a1;S[o+2u]=a2;S[o+3u]=a3;}\n"
         /* per (token, v-head): gated RMS norm into z. */
         GEIST_DN_SIG(
                 "dn_chunk_gate") "uint2 tg[[threadgroup_position_in_grid]],uint "
