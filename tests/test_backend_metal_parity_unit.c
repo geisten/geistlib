@@ -418,19 +418,24 @@ int main(void) {
      * multiple of the threadgroup width to catch tail bugs. */
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 8);
-    /* m=33: two batch-row tiles of the simdgroup GEMM, both partial. */
+    /* m=33: two batch-row tiles of the simdgroup GEMM, both partial.
+     * m=32 x n_out=384: full tiles -> the _fast interior variant. */
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 384, 32);
     run_case(mt, ref, GEIST_DTYPE_Q4_1, "Q4_1", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_1, "Q4_1", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_Q4_1, "Q4_1", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_Q4_1, "Q4_1", 512, 384, 32);
     run_case(mt, ref, GEIST_DTYPE_Q8_0, "Q8_0", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q8_0, "Q8_0", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_Q8_0, "Q8_0", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_Q8_0, "Q8_0", 512, 384, 32);
     run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 384, 32);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 1);

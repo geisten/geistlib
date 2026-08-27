@@ -149,23 +149,40 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
      * envs (reused from the q4k levers). */
     const bool n_tile4 =
             params->rows == 1u && params->n_out >= 4u && st->use_q4k_n4 && n4 != nullptr;
+    void      *mm_fast = dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_fast_pipeline
+                         : dtype == GEIST_DTYPE_Q8_0 ? st->q80_mm_fast_pipeline
+                         : dtype == GEIST_DTYPE_Q4_1 ? st->q41_mm_fast_pipeline
+                                                     : st->q5k_mm_fast_pipeline;
     const bool m_tile_sg =
             params->rows >= 8u && params->n_out >= 64u && st->use_q4k_mm_sg && mm != nullptr;
-    const bool tiled = !n_tile4 && !m_tile_sg && params->rows >= 8u;
+    /* interior fast variant: no bounds checks, vectorized activation
+     * staging (needs full tiles, n_in%32 and 8-float-aligned x rows). */
+    const bool m_tile_sg_fast = m_tile_sg && mm_fast != nullptr && (params->rows % 32u) == 0u &&
+                                (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
+                                (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u;
+    const bool tiled          = !n_tile4 && !m_tile_sg && params->rows >= 8u;
     void *base = dtype == GEIST_DTYPE_Q4_0   ? (tiled ? st->q40_m8_pipeline : st->q40_pipeline)
                  : dtype == GEIST_DTYPE_Q8_0 ? (tiled ? st->q80_m8_pipeline : st->q80_pipeline)
                  : dtype == GEIST_DTYPE_Q4_1 ? (tiled ? st->q41_m8_pipeline : st->q41_pipeline)
                                              : (tiled ? st->q5k_m8_pipeline : st->q5k_pipeline);
-    metal_msg_send_set_pipeline(st, enc, n_tile4 ? n4 : m_tile_sg ? mm : base);
+    metal_msg_send_set_pipeline(st,
+                                enc,
+                                n_tile4          ? n4
+                                : m_tile_sg_fast ? mm_fast
+                                : m_tile_sg      ? mm
+                                                 : base);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, 0, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     if (m_tile_sg) {
-        metal_msg_send_set_threadgroup_memory(st, enc, 8192u, 0u);
+        metal_msg_send_set_threadgroup_memory(st, enc, m_tile_sg_fast ? 6144u : 8192u, 0u);
     }
+    /* q40/q80 n4 kernels run 4 rows per simdgroup (8 per threadgroup);
+     * q41/q5k still run 2 (4 per threadgroup). */
+    const uint32_t n4_tile = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0) ? 8u : 4u;
     const struct metal_size groups = {
-            .width  = n_tile4     ? (params->n_out + 3u) / 4u
+            .width  = n_tile4     ? (params->n_out + n4_tile - 1u) / n4_tile
                       : m_tile_sg ? (params->rows + 31u) / 32u
                                   : params->n_out,
             .height = n_tile4     ? params->rows

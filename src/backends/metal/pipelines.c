@@ -138,7 +138,11 @@
                                      metal_qsg_mm_q40_source,
                                      metal_qsg_mm_q80_source,
                                      metal_qsg_mm_q41_source,
-                                     metal_qsg_mm_q5k_source};
+                                     metal_qsg_mm_q5k_source,
+                                     metal_qsg_mm_q40_fast_source,
+                                     metal_qsg_mm_q80_fast_source,
+                                     metal_qsg_mm_q41_fast_source,
+                                     metal_qsg_mm_q5k_fast_source};
         size_t            total   = 0;
         for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
             total += strlen(parts[i]);
@@ -642,6 +646,38 @@
                                         "matmul_q5k_mm_sg",
                                         &st->q5k_mm_function,
                                         &st->q5k_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q40_mm_sg_fast",
+                                        &st->q40_mm_fast_function,
+                                        &st->q40_mm_fast_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q80_mm_sg_fast",
+                                        &st->q80_mm_fast_function,
+                                        &st->q80_mm_fast_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q41_mm_sg_fast",
+                                        &st->q41_mm_fast_function,
+                                        &st->q41_mm_fast_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q5k_mm_sg_fast",
+                                        &st->q5k_mm_fast_function,
+                                        &st->q5k_mm_fast_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,
