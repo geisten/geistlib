@@ -53,6 +53,11 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_ARGMAX]               = "dispatch.argmax",
         [METAL_PROFILE_DISPATCH_DELTANET_PREFILL]     = "dispatch.deltanet_prefill",
         [METAL_PROFILE_DISPATCH_DELTANET_DECODE]      = "dispatch.deltanet_decode",
+        [METAL_PROFILE_DISPATCH_DN_PREP]              = "dispatch.dn.prep",
+        [METAL_PROFILE_DISPATCH_DN_NORM]              = "dispatch.dn.norm",
+        [METAL_PROFILE_DISPATCH_DN_STAGE]             = "dispatch.dn.stage",
+        [METAL_PROFILE_DISPATCH_DN_SUBST]             = "dispatch.dn.subst",
+        [METAL_PROFILE_DISPATCH_DN_WIDE]              = "dispatch.dn.wide",
         [METAL_PROFILE_DISPATCH_QGATE_SPLIT]          = "dispatch.qgate_split",
         [METAL_PROFILE_DISPATCH_SIGMOID_MUL]          = "dispatch.sigmoid_mul",
 };
@@ -179,6 +184,16 @@ static bool metal_skip_stage(enum metal_profile_stage s) {
     case METAL_PROFILE_DISPATCH_DELTANET_PREFILL:
     case METAL_PROFILE_DISPATCH_DELTANET_DECODE:
         return metal_env_enabled("GEIST_SKIP_DELTANET");
+    case METAL_PROFILE_DISPATCH_DN_PREP:
+        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_PREP");
+    case METAL_PROFILE_DISPATCH_DN_NORM:
+        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_NORM");
+    case METAL_PROFILE_DISPATCH_DN_STAGE:
+        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_STAGE");
+    case METAL_PROFILE_DISPATCH_DN_SUBST:
+        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_SUBST");
+    case METAL_PROFILE_DISPATCH_DN_WIDE:
+        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_WIDE");
     default:
         return false;
     }
