@@ -135,20 +135,56 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                         const struct geist_tensor     *y,
                                         const struct metal_q4k_params *params,
                                         enum geist_dtype               dtype) {
-    const bool tiled = params->rows >= 8u;
-    void *pipeline = dtype == GEIST_DTYPE_Q4_0   ? (tiled ? st->q40_m8_pipeline : st->q40_pipeline)
-                     : dtype == GEIST_DTYPE_Q8_0 ? (tiled ? st->q80_m8_pipeline : st->q80_pipeline)
-                     : dtype == GEIST_DTYPE_Q4_1 ? (tiled ? st->q41_m8_pipeline : st->q41_pipeline)
-                                                 : (tiled ? st->q5k_m8_pipeline : st->q5k_pipeline);
-    metal_msg_send_set_pipeline(st, enc, pipeline);
+    void *n4 = dtype == GEIST_DTYPE_Q4_0   ? st->q40_n4_pipeline
+               : dtype == GEIST_DTYPE_Q8_0 ? st->q80_n4_pipeline
+               : dtype == GEIST_DTYPE_Q4_1 ? st->q41_n4_pipeline
+                                           : st->q5k_n4_pipeline;
+    void *mm = dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_pipeline
+               : dtype == GEIST_DTYPE_Q8_0 ? st->q80_mm_pipeline
+               : dtype == GEIST_DTYPE_Q4_1 ? st->q41_mm_pipeline
+                                           : st->q5k_mm_pipeline;
+    /* rows==1 → simdgroup GEMV (llama mul_mv structure); rows>=8 → 64x32
+     * simdgroup GEMM (bounds-checked, arbitrary rows/n_out); the naive
+     * kernels remain the fallback for tiny shapes and the two kill-switch
+     * envs (reused from the q4k levers). */
+    const bool n_tile4 =
+            params->rows == 1u && params->n_out >= 4u && st->use_q4k_n4 && n4 != nullptr;
+    const bool m_tile_sg =
+            params->rows >= 8u && params->n_out >= 64u && st->use_q4k_mm_sg && mm != nullptr;
+    const bool tiled = !n_tile4 && !m_tile_sg && params->rows >= 8u;
+    void *base = dtype == GEIST_DTYPE_Q4_0   ? (tiled ? st->q40_m8_pipeline : st->q40_pipeline)
+                 : dtype == GEIST_DTYPE_Q8_0 ? (tiled ? st->q80_m8_pipeline : st->q80_pipeline)
+                 : dtype == GEIST_DTYPE_Q4_1 ? (tiled ? st->q41_m8_pipeline : st->q41_pipeline)
+                                             : (tiled ? st->q5k_m8_pipeline : st->q5k_pipeline);
+    metal_msg_send_set_pipeline(st, enc, n_tile4 ? n4 : m_tile_sg ? mm : base);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, 0, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+    if (m_tile_sg) {
+        metal_msg_send_set_threadgroup_memory(st, enc, 8192u, 0u);
+    }
     const struct metal_size groups = {
-            params->n_out, tiled ? (params->rows + 7u) / 8u : params->rows, 1};
-    const struct metal_size threads = {METAL_Q4K_THREADS_PER_ROW, 1, 1};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q4K_LINEAR_BASE, groups);
+            .width  = n_tile4     ? (params->n_out + 3u) / 4u
+                      : m_tile_sg ? (params->rows + 31u) / 32u
+                                  : params->n_out,
+            .height = n_tile4     ? params->rows
+                      : m_tile_sg ? (params->n_out + 63u) / 64u
+                      : tiled     ? (params->rows + 7u) / 8u
+                                  : params->rows,
+            .depth  = 1,
+    };
+    const struct metal_size threads = {
+            .width  = n_tile4     ? METAL_Q4K_N4_THREADS
+                      : m_tile_sg ? 32u
+                                  : METAL_Q4K_THREADS_PER_ROW,
+            .height = m_tile_sg ? 4u : 1u,
+            .depth  = 1,
+    };
+    metal_profile_add_dispatch(st,
+                               n_tile4 ? METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4
+                                       : METAL_PROFILE_DISPATCH_Q4K_LINEAR_BASE,
+                               groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
