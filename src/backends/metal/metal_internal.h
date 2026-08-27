@@ -79,6 +79,14 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_ARGMAX,
     METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
     METAL_PROFILE_DISPATCH_DELTANET_DECODE,
+    /* chunked-prefill sub-stages, individually skippable for the
+     * subtractive profiler (all still count as DELTANET for the
+     * category-level GEIST_SKIP_DELTANET). */
+    METAL_PROFILE_DISPATCH_DN_PREP,  /* cst_copy + conv_prep + state_roll */
+    METAL_PROFILE_DISPATCH_DN_NORM,  /* qk_norm */
+    METAL_PROFILE_DISPATCH_DN_STAGE, /* dn_chunk_stage */
+    METAL_PROFILE_DISPATCH_DN_SUBST, /* dn_chunk_subst */
+    METAL_PROFILE_DISPATCH_DN_WIDE,  /* amat/vnew/out/supd/gate */
     METAL_PROFILE_DISPATCH_QGATE_SPLIT,
     METAL_PROFILE_DISPATCH_SIGMOID_MUL,
     METAL_PROFILE_STAGE_COUNT,
