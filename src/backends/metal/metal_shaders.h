@@ -87,6 +87,110 @@ static const char metal_q4k_source[] =
         "    }\n"
         "}\n";
 
+/* Shared 64x32 simdgroup GEMM template (the proven matmul_q4k_mm_sg tile
+ * structure, bounds-checked variant). Instantiated per quant format by
+ * splicing in the block struct name BLK, a 16-element dequant function DQ
+ * (device const BLK*, short il, thread half4x4&) and QKNL = 16-element
+ * chunks per block, all defined in the surrounding shader source. Differs
+ * from the q4k original in two ways: the staging bounds check uses il0
+ * (the k position inside the tile; il drifts ahead of it across a block,
+ * so the original check was wrong for partial tiles — dead code there
+ * because its dispatch gate excluded them), and the partial-tile epilogue
+ * copies scalars only (the float4 fast path needs a 16-byte-aligned y row,
+ * which arbitrary n_out does not give). */
+#define GEIST_METAL_MM_SG_KERNEL(NAME, BLK, DQ, QKNL)                                         \
+    "kernel void matmul_" NAME "_mm_sg(device const float*x[[buffer(0)]],device const "       \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup " \
+    "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "           \
+    "ti[[thread_index_in_threadgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){\n"       \
+    "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "          \
+    "half*)(shmem+4096);constexpr short NR0=64;constexpr short NR1=32;constexpr short "       \
+    "NK=32;constexpr short NL0=2;constexpr short NL1=4;constexpr short QK_NL=" QKNL ";uint "  \
+    "r0=tg.y*uint(NR0);uint r1=tg.x*uint(NR1);if(r0>=p.no||r1>=p.rows)return;short "          \
+    "nr0=short(min(p.no-r0,uint(NR0)));short nr1=short(min(p.rows-r1,uint(NR1)));short "      \
+    "lr0=min(short(ti/NL0),short(nr0-1));short lr1=min(short(ti/NL1),short(nr1-1));short "    \
+    "il0=short(ti%NL0);short il=il0;device const " BLK "*wp=(device const " BLK               \
+    "*)(w+p.wo)+(r0+uint(lr0))*p.bpr;short iy=short(8*(ti%NL1));device const "                \
+    "float*xp=x+p.xo+(r1+uint(lr1))*p.xs+uint(iy);simdgroup_half8x8 ma[4];simdgroup_half8x8 " \
+    "mb[2];simdgroup_float8x8 mc[8];FOR_UNROLL(short "                                        \
+    "i=0;i<8;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}for(uint "               \
+    "loop_k=0u;loop_k<p.ni;loop_k+=uint(NK)){half4x4 ta;" DQ "(wp,il,ta);"                    \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);FOR_UNROLL(short "                       \
+    "i=0;i<16;i++){short sx=short(2*il0+i/8);short sy=short((ti/NL0)/8);short "               \
+    "lx=short((ti/NL0)%8);short ly=short(i%8);short "                                         \
+    "ib=short(8*sx+sy);*(sa+64*ib+8*ly+lx)=(loop_k+uint(16*il0+i)<p.ni)?ta[i/"                \
+    "4][i%4]:half(0.0);}short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short "             \
+    "ly=short((ti/NL1)%8);short ib=short(4*sx+sy);FOR_UNROLL(short i=0;i<8;i++){uint "        \
+    "kk=loop_k+uint(iy+i);*(sb+64*ib+8*ly+i)=kk<p.ni?half(xp[i]):half(0.0);}"                 \
+    "il=(il+2<QK_NL)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=NK;"                                     \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                        \
+    "threadgroup const half*lsma=sa+4*64*(sg%2);threadgroup const "                           \
+    "half*lsmb=sb+2*64*(sg/2);FOR_UNROLL(short "                                              \
+    "ik=0;ik<NK/8;ik++){simdgroup_barrier(mem_flags::mem_none);FOR_UNROLL(short "             \
+    "i=0;i<4;i++){simdgroup_load(ma[i],lsma+64*i,8,0,false);}simdgroup_barrier(mem_flags::"   \
+    "mem_none);FOR_UNROLL(short "                                                             \
+    "i=0;i<2;i++){simdgroup_load(mb[i],lsmb+64*i,8,0,false);}simdgroup_barrier(mem_flags::"   \
+    "mem_none);FOR_UNROLL(short "                                                             \
+    "i=0;i<8;i++){simdgroup_multiply_accumulate(mc[i],mb[i/"                                  \
+    "4],ma[i%4],mc[i]);}lsma+=8*64;lsmb+=4*64;}}\n"                                           \
+    "if(r0+uint(NR0)<=p.no&&r1+uint(NR1)<=p.rows){device "                                    \
+    "float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);FOR_UNROLL(short "            \
+    "i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/"                                 \
+    "4),p.ys,0,false);}}else{threadgroup_barrier(mem_flags::mem_threadgroup);threadgroup "    \
+    "float*tmp=((threadgroup float*)shmem)+32*(sg&1)+16*(sg>>1)*NR0;FOR_UNROLL(short "        \
+    "i=0;i<8;i++){simdgroup_store(mc[i],tmp+8*(i%4)+8*NR0*(i/"                                \
+    "4),NR0,0,false);}threadgroup_barrier(mem_flags::mem_threadgroup);if(sg==0){for(uint "    \
+    "j=ti;j<uint(nr1);j+=uint(NR1)){device float*D=y+p.yo+(r1+j)*p.ys+r0;threadgroup "        \
+    "float*C=((threadgroup float*)shmem)+j*NR0;for(uint "                                     \
+    "i=0u;i<uint(nr0);i++){D[i]=C[i];}}}}\n"                                                  \
+    "}\n"
+
+/* Interior fast path of the template above (matmul_q4k_mm_sg_fast
+ * structure): no bounds checks, vectorized 8-wide activation staging,
+ * direct simdgroup_store output. Dispatched only when rows%32==0,
+ * n_out%64==0, n_in%32==0 and x is 8-float aligned. */
+#define GEIST_METAL_MM_SG_FAST_KERNEL(NAME, BLK, DQ, QKNL)                                    \
+    "kernel void matmul_" NAME "_mm_sg_fast(device const float*x[[buffer(0)]],device const "  \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup " \
+    "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "           \
+    "ti[[thread_index_in_threadgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){\n"       \
+    "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "          \
+    "half*)(shmem+4096);"                                                                     \
+    "constexpr short NK=32;constexpr short NL0=2;constexpr short NL1=4;constexpr short "      \
+    "QK_NL=" QKNL ";"                                                                         \
+    "uint r0=tg.y*64u;uint r1=tg.x*32u;"                                                      \
+    "short lr0=short(ti/NL0);short lr1=short(ti/NL1);short il0=short(ti%NL0);short il=il0;"   \
+    "device const " BLK "*wp=(device const " BLK "*)(w+p.wo)+(r0+uint(lr0))*p.bpr;"           \
+    "short iy=short(8*(ti%NL1));"                                                             \
+    "device const float*xp=x+p.xo+(r1+uint(lr1))*p.xs+uint(iy);"                              \
+    "simdgroup_half8x8 ma[4];simdgroup_half8x8 mb[2];simdgroup_float8x8 mc[8];"               \
+    "FOR_UNROLL(short i=0;i<8;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}"       \
+    "short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short lyb=short((ti/NL1)%8);short "    \
+    "ibb=short(4*sx+sy);"                                                                     \
+    "for(uint loop_k=0u;loop_k<p.ni;loop_k+=uint(NK)){"                                       \
+    "half4x4 ta;" DQ "(wp,il,ta);"                                                            \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                        \
+    "FOR_UNROLL(short i=0;i<16;i++){short ax=short(2*il0+i/8);short ay=short((ti/NL0)/8);"    \
+    "short lx=short((ti/NL0)%8);short ly=short(i%8);short "                                   \
+    "ib=short(8*ax+ay);*(sa+64*ib+8*ly+lx)=ta[i/4][i%4];}"                                    \
+    "*(threadgroup half2x4*)(sb+64*ibb+8*lyb)=half2x4(*((device const float2x4*)xp));"        \
+    "il=(il+2<QK_NL)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=NK;"                                     \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                        \
+    "threadgroup const half*lsma=sa+4*64*(sg%2);threadgroup const half*lsmb=sb+2*64*(sg/2);"  \
+    "FOR_UNROLL(short ik=0;ik<NK/8;ik++){"                                                    \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                 \
+    "FOR_UNROLL(short i=0;i<4;i++){simdgroup_load(ma[i],lsma+64*i,8,0,false);}"               \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                 \
+    "FOR_UNROLL(short i=0;i<2;i++){simdgroup_load(mb[i],lsmb+64*i,8,0,false);}"               \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                 \
+    "FOR_UNROLL(short i=0;i<8;i++){simdgroup_multiply_accumulate(mc[i],mb[i/4],ma[i%4],"      \
+    "mc[i]);}"                                                                                \
+    "lsma+=8*64;lsmb+=4*64;}}"                                                                \
+    "device float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);"                      \
+    "FOR_UNROLL(short i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/4),p.ys,0,"      \
+    "false);}"                                                                                \
+    "}\n"
+
 /* Correctness-first row-major Q4_0/Q8_0 linear kernels. Both formats use
  * 32-element blocks with an fp16 scale followed by packed nibbles or int8s.
  * One threadgroup computes one output row for one activation row. */
@@ -140,6 +244,119 @@ static const char metal_q40_q80_source[] =
         "threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid==0u){for(uint "
         "m=0u;m<8u;m++){uint b=bb+m;if(b<p.rows)y[p.yo+b*p.ys+r]=part[m][0];}}}\n";
 
+/* Simdgroup quant kernels, one MSL unit built by concatenating the
+ * metal_qsg_* arrays at library-create time (each C literal stays under the
+ * 4095-char ISO limit). Common part: FOR_UNROLL, params struct, the q5_K
+ * scale/min decoder and the per-format block structs + 16-element dequant
+ * chunk loaders used by the shared GEMM template. */
+static const char metal_qsg_common_source[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "#define FOR_UNROLL(x) _Pragma(\"clang loop unroll(full)\") for(x)\n"
+        "struct P{uint ni,no,rows,bpr,xo,wo,yo,xs,ys;};\n"
+        "static inline void sm5(uint j,device const uchar*q,thread uint&s,thread uint&m){if(j<4u){"
+        "s=uint(q[j])&63u;m=uint(q[j+4u])&63u;}else{uint a=uint(q[j+4u]),b=uint(q[j-4u]),"
+        "c=uint(q[j]);s=(a&15u)|((b>>6u)<<4u);m=(a>>4u)|((c>>6u)<<4u);}}\n"
+        "struct bq40{half d;uchar qs[16];};\n"
+        "static inline void dq40(device const bq40*xb,short il,thread half4x4&r){"
+        "device const ushort*qs=(device const ushort*)(xb->qs);"
+        "float d1=il?float(xb->d)*(1.0f/16.0f):float(xb->d);float d2=d1*(1.0f/256.0f);"
+        "float md=-8.0f*float(xb->d);"
+        "ushort m0=il?0x00F0:0x000F;ushort m1=m0<<8;"
+        "FOR_UNROLL(short i=0;i<8;i++){"
+        "r[i/2][2*(i%2)+0]=half(d1*float(qs[i]&m0)+md);"
+        "r[i/2][2*(i%2)+1]=half(d2*float(qs[i]&m1)+md);}}\n"
+        "struct bq80{half d;char qs[32];};\n"
+        "static inline void dq80(device const bq80*xb,short il,thread half4x4&r){"
+        "float d=float(xb->d);device const char*q=xb->qs+16*il;"
+        "FOR_UNROLL(short i=0;i<16;i++){r[i/4][i%4]=half(d*float(q[i]));}}\n"
+        "struct bq41{half d;half m;uchar qs[16];};\n"
+        "static inline void dq41(device const bq41*xb,short il,thread half4x4&r){"
+        "device const ushort*qs=(device const ushort*)(xb->qs);"
+        "float d1=il?float(xb->d)*(1.0f/16.0f):float(xb->d);float d2=d1*(1.0f/256.0f);"
+        "float ml=float(xb->m);"
+        "ushort m0=il?0x00F0:0x000F;ushort m1=m0<<8;"
+        "FOR_UNROLL(short i=0;i<8;i++){"
+        "r[i/2][2*(i%2)+0]=half(d1*float(qs[i]&m0)+ml);"
+        "r[i/2][2*(i%2)+1]=half(d2*float(qs[i]&m1)+ml);}}\n"
+        "struct bq5k{half d;half dmin;uchar scales[12];uchar qh[32];uchar qs[128];};\n"
+        "static inline void dq5k(device const bq5k*xb,short il,thread half4x4&r){"
+        "short sb=il/4;short lo16=il&1;short hi=(il&3)/2;"
+        "device const uchar*q=xb->qs+sb*32+lo16*16;"
+        "device const uchar*qh=xb->qh+lo16*16;"
+        "uint j=uint(sb*2+hi);uint s,m;sm5(j,xb->scales,s,m);"
+        "float dl=float(xb->d)*float(s);float ml=float(xb->dmin)*float(m);"
+        "ushort sh=hi?4:0;uchar hb=uchar(1u<<j);"
+        "FOR_UNROLL(short i=0;i<16;i++){uint v=(uint(q[i])>>sh)&15u;"
+        "if((qh[i]&hb)!=0)v+=16u;r[i/4][i%4]=half(dl*float(v)-ml);}}\n";
+
+/* Simdgroup decode GEMVs, llama mul_mv structure: 2 simdgroups per
+ * threadgroup, 2 rows each. Q4_0/Q4_1: a thread covers 8 q bytes (elements
+ * il..il+7 low nibbles, il+16..il+23 high) with pre-scaled y so the masked
+ * ushort products need no shifts; the block offset folds into sumy. Q5_K: a
+ * thread owns one 8-element run of every 256-block, so d/dmin and the 6-bit
+ * scale pair load once per run. */
+static const char metal_qsg_n4_q40_source[] =
+        "kernel void matvec_q40_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*4u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>5u,ix=uint(ti)>>1u,il=(uint(ti)&1u)*8u;"
+        "uint nr=min(p.no-fr,4u);"
+        "device const float*yb=x+p.xo+b*p.xs+ix*32u+il;"
+        "float sf[4]={0.0f,0.0f,0.0f,0.0f};"
+        "for(uint ib=ix;ib<nb;ib+=16u){"
+        "float yl[16];float sumy=0.0f;"
+        "for(uint i=0u;i<8u;i+=2u){"
+        "float a0=yb[i],a1=yb[i+1u],c0=yb[i+16u],c1=yb[i+17u];"
+        "sumy+=a0+a1+c0+c1;"
+        "yl[i]=a0;yl[i+1u]=a1*(1.0f/256.0f);"
+        "yl[i+8u]=c0*(1.0f/16.0f);yl[i+9u]=c1*(1.0f/4096.0f);}"
+        "for(uint rr=0u;rr<nr;rr++){"
+        "uint bo=p.wo+((fr+rr)*p.bpr+ib)*18u;"
+        "device const ushort*qs=(device const ushort*)(w+bo+2u+il);"
+        "float acc0=0.0f,acc1=0.0f;"
+        "for(uint i=0u;i<4u;i++){uint q=uint(qs[i]);"
+        "acc0+=yl[2u*i]*float(q&0x000Fu)+yl[2u*i+1u]*float(q&0x0F00u);"
+        "acc1+=yl[2u*i+8u]*float(q&0x00F0u)+yl[2u*i+9u]*float(q&0xF000u);}"
+        "float d=float(*((device const half*)(w+bo)));"
+        "sf[rr]+=d*(acc0+acc1-8.0f*sumy);}"
+        "yb+=512u;}"
+        "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
+        "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
+
+static const char metal_qsg_n4_q80_source[] =
+        "kernel void matvec_q80_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*4u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>5u,ix=uint(ti)>>1u,il=(uint(ti)&1u)*16u;"
+        "uint nr=min(p.no-fr,4u);"
+        "device const float*yb=x+p.xo+b*p.xs+ix*32u+il;"
+        "float sf[4]={0.0f,0.0f,0.0f,0.0f};"
+        "for(uint ib=ix;ib<nb;ib+=16u){"
+        "float yl[16];for(uint i=0u;i<16u;i++)yl[i]=yb[i];"
+        "for(uint rr=0u;rr<nr;rr++){"
+        "uint bo=p.wo+((fr+rr)*p.bpr+ib)*34u;"
+        "device const char*qs=(device const char*)(w+bo+2u+il);"
+        "float acc=0.0f;for(uint i=0u;i<16u;i++)acc+=yl[i]*float(qs[i]);"
+        "float d=float(*((device const half*)(w+bo)));"
+        "sf[rr]+=d*acc;}"
+        "yb+=512u;}"
+        "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
+        "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
+
+/* GEMM instances of the shared 64x32 simdgroup tile, one array each to
+ * stay under the 4095-char literal limit. */
+static const char metal_qsg_mm_q40_source[] = GEIST_METAL_MM_SG_KERNEL("q40", "bq40", "dq40", "2");
+static const char metal_qsg_mm_q80_source[] = GEIST_METAL_MM_SG_KERNEL("q80", "bq80", "dq80", "2");
+static const char metal_qsg_mm_q40_fast_source[] =
+        GEIST_METAL_MM_SG_FAST_KERNEL("q40", "bq40", "dq40", "2");
+static const char metal_qsg_mm_q80_fast_source[] =
+        GEIST_METAL_MM_SG_FAST_KERNEL("q80", "bq80", "dq80", "2");
+
 static const char metal_q5k_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -177,6 +394,39 @@ static const char metal_q5k_source[] =
         "threadgroup);}if(lid==0u){for(uint m=0u;m<8u;m++){uint b=bb+m;if(b<p.rows)"
         "y[p.yo+b*p.ys+r]=part[m][0];}}}\n";
 
+static const char metal_qsg_n4_q5k_source[] =
+        "kernel void matvec_q5k_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>8u;"
+        "uint sb=uint(ti)>>3u,rr8=uint(ti)&7u,hi=rr8>>2u,i0=(rr8&3u)*8u;"
+        "uint sj=sb*2u+hi,hm=1u<<sj,qsh=hi*4u;"
+        "uint qso=48u+sb*32u+i0,qho=16u+i0;"
+        "device const float*yb=x+p.xo+b*p.xs+sb*64u+hi*32u+i0;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=0u;ib<nb;ib++){"
+        "float yl[8];float sumy=0.0f;"
+        "for(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i];}"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*176u;"
+        "uint sc,mn;sm5(sj,w+bo+4u,sc,mn);"
+        "float acc=0.0f;"
+        "for(uint i=0u;i<8u;i++){uint v=(uint(w[bo+qso+i])>>qsh)&15u;"
+        "if((uint(w[bo+qho+i])&hm)!=0u)v+=16u;acc+=yl[i]*float(v);}"
+        "float d=float(*((device const half*)(w+bo)));"
+        "float dm=float(*((device const half*)(w+bo+2u)));"
+        "float r=d*float(sc)*acc-dm*float(mn)*sumy;"
+        "if(rr==0u)s0+=r;else s1+=r;}"
+        "yb+=256u;}"
+        "float a0=simd_sum(s0),a1=simd_sum(s1);"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+static const char metal_qsg_mm_q5k_source[] = GEIST_METAL_MM_SG_KERNEL("q5k", "bq5k", "dq5k", "16");
+static const char metal_qsg_mm_q5k_fast_source[] =
+        GEIST_METAL_MM_SG_FAST_KERNEL("q5k", "bq5k", "dq5k", "16");
+
 static const char metal_q41_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -207,6 +457,43 @@ static const char metal_q41_source[] =
         "for(uint m=0u;m<8u;m++)part[m][lid]+=part[m][lid+z];}threadgroup_barrier(mem_flags::mem_"
         "threadgroup);}if(lid==0u){for(uint m=0u;m<8u;m++){uint b=bb+m;if(b<p.rows)"
         "y[p.yo+b*p.ys+r]=part[m][0];}}}\n";
+
+/* Simdgroup decode GEMV, matvec_q40_n4 structure; v = d*q + m, so the
+ * offset term is +m*sumy instead of -8d*sumy. */
+static const char metal_qsg_n4_q41_source[] =
+        "kernel void matvec_q41_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>5u,ix=uint(ti)>>1u,il=(uint(ti)&1u)*8u;"
+        "device const float*yb=x+p.xo+b*p.xs+ix*32u+il;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=ix;ib<nb;ib+=16u){"
+        "float yl[16];float sumy=0.0f;"
+        "for(uint i=0u;i<8u;i+=2u){"
+        "float a0=yb[i],a1=yb[i+1u],c0=yb[i+16u],c1=yb[i+17u];"
+        "sumy+=a0+a1+c0+c1;"
+        "yl[i]=a0;yl[i+1u]=a1*(1.0f/256.0f);"
+        "yl[i+8u]=c0*(1.0f/16.0f);yl[i+9u]=c1*(1.0f/4096.0f);}"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*20u;"
+        "device const ushort*qs=(device const ushort*)(w+bo+4u+il);"
+        "float acc0=0.0f,acc1=0.0f;"
+        "for(uint i=0u;i<4u;i++){uint q=uint(qs[i]);"
+        "acc0+=yl[2u*i]*float(q&0x000Fu)+yl[2u*i+1u]*float(q&0x0F00u);"
+        "acc1+=yl[2u*i+8u]*float(q&0x00F0u)+yl[2u*i+9u]*float(q&0xF000u);}"
+        "float d=float(*((device const half*)(w+bo)));"
+        "float mv=float(*((device const half*)(w+bo+2u)));"
+        "float r=d*(acc0+acc1)+mv*sumy;"
+        "if(rr==0u)s0+=r;else s1+=r;}"
+        "yb+=512u;}"
+        "float a0=simd_sum(s0),a1=simd_sum(s1);"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+static const char metal_qsg_mm_q41_source[] = GEIST_METAL_MM_SG_KERNEL("q41", "bq41", "dq41", "2");
+static const char metal_qsg_mm_q41_fast_source[] =
+        GEIST_METAL_MM_SG_FAST_KERNEL("q41", "bq41", "dq41", "2");
 
 static const char metal_q4k_n4_source[] =
         "#include <metal_stdlib>\n"
@@ -336,7 +623,7 @@ static const char metal_q4k_mm_sg_source[] =
         "ta;dq4(wp,il,ta);threadgroup_barrier(mem_flags::mem_threadgroup);FOR_UNROLL(short "
         "i=0;i<16;i++){short sx=short(2*il0+i/8);short sy=short((ti/NL0)/8);short "
         "lx=short((ti/NL0)%8);short ly=short(i%8);short "
-        "ib=short(8*sx+sy);*(sa+64*ib+8*ly+lx)=(loop_k+uint(16*il+i)<p.ni)?ta[i/"
+        "ib=short(8*sx+sy);*(sa+64*ib+8*ly+lx)=(loop_k+uint(16*il0+i)<p.ni)?ta[i/"
         "4][i%4]:half(0.0);}short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short "
         "ly=short((ti/NL1)%8);short ib=short(4*sx+sy);FOR_UNROLL(short i=0;i<8;i++){uint "
         "kk=loop_k+uint(iy+i);*(sb+64*ib+8*ly+i)=kk<p.ni?half(xp[i]):half(0.0);}il=(il+2<QK_NL)?il+"
@@ -1734,5 +2021,226 @@ static const char metal_deltanet_source[] =
         "threadgroup_barrier(mem_flags::mem_threadgroup);}if(j<p.dv){"
         "float inv=rsqrt(red[0]/float(p.dv)+p.eps);z[p.zo+t*vd+h*p.dv+j]="
         "out*inv*nw[p.no+j]*silu1(gate);}threadgroup_barrier(mem_flags::mem_threadgroup);}}}\n";
+
+/* Chunked DeltaNet prefill (metal port of transformer_dn_head_chunk /
+ * dn_run_prefill_chunked): token-parallel conv+gating and q/k norms into
+ * a device scratch buffer, then one threadgroup per v-head runs the whole
+ * C=seq chunk as small dense matmuls plus the triangular substitution.
+ * Concatenated after metal_deltanet_source into one MSL unit (shares
+ * struct P and silu1). All kernels take the serial kernel's 10 buffers
+ * plus scratch at buffer(10) and params at buffer(11); scratch region
+ * offsets are recomputed from P in every kernel (layout: y[C*cd] |
+ * betas[C*nvh] | gs[C*nvh] | old_cst[(K-1)*cd] | per-head ws). */
+static const char metal_dn_chunk_prep_source[] =
+        /* K0: snapshot conv state so conv and the roll are race-free. */
+        "kernel void dn_cst_copy(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
+        "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
+        "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
+        "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
+        "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],"
+        "device float*scr[[buffer(10)]],constant P&p[[buffer(11)]],"
+        "uint gid[[thread_position_in_grid]]){"
+        "uint C=p.seq,cd=2u*p.nkh*p.dk+p.nvh*p.dv,hist=p.K-1u,n=hist*cd;"
+        "uint o0=C*cd+2u*C*p.nvh;"
+        "if(gid<n)scr[o0+gid]=cs[p.cso+gid];}\n"
+        /* K1: conv + silu into y, plus the beta/decay scalars. */
+        "kernel void dn_conv_prep(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
+        "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
+        "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
+        "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
+        "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],"
+        "device float*scr[[buffer(10)]],constant P&p[[buffer(11)]],"
+        "uint t[[threadgroup_position_in_grid]],uint ti[[thread_index_in_threadgroup]]){"
+        "uint C=p.seq,cd=2u*p.nkh*p.dk+p.nvh*p.dv,hist=p.K-1u;"
+        "uint b0=C*cd,g0=b0+C*p.nvh,oc0=g0+C*p.nvh;"
+        "if(t>=C)return;"
+        "for(uint c=ti;c<cd;c+=256u){float acc=0.0f;"
+        "for(uint j=0u;j<p.K;j++){int src=int(t+j)-int(hist);"
+        "float xv=src>=0?qkv[p.qo+uint(src)*cd+c]:scr[oc0+(t+j)*cd+c];"
+        "acc+=cw[p.cwo+c*p.K+j]*xv;}"
+        "scr[t*cd+c]=silu1(acc);}"
+        "for(uint h=ti;h<p.nvh;h+=256u){"
+        "scr[b0+t*p.nvh+h]=1.0f/(1.0f+exp(-beta[p.bo+t*p.nvh+h]));"
+        "float sp=log(1.0f+exp(alpha[p.ao+t*p.nvh+h]+dt[p.dto+h]));"
+        "scr[g0+t*p.nvh+h]=aw[p.awo+h]*sp;}}\n"
+        /* K2: per (token, k-head) L2 norms; q also carries dk^-1/2. */
+        "kernel void dn_qk_norm(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
+        "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
+        "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
+        "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
+        "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],"
+        "device float*scr[[buffer(10)]],constant P&p[[buffer(11)]],"
+        "uint2 tg[[threadgroup_position_in_grid]],uint ti[[thread_index_in_threadgroup]]){"
+        "threadgroup float red[256];"
+        "uint C=p.seq,keyd=p.nkh*p.dk,cd=2u*keyd+p.nvh*p.dv;"
+        "uint t=tg.x,h=tg.y;if(t>=C||h>=p.nkh)return;"
+        "device float*q=scr+t*cd+h*p.dk;device float*k=q+keyd;"
+        "float qs=rsqrt(float(p.dk));"
+        "float ss=0.0f;for(uint i=ti;i<p.dk;i+=256u){float v=q[i];ss+=v*v;}"
+        "red[ti]=ss;threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint s=128u;s>0u;s>>=1u){if(ti<s)red[ti]+=red[ti+s];"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);}"
+        "float qi=rsqrt(red[0]+p.eps);"
+        "for(uint i=ti;i<p.dk;i+=256u)q[i]*=qi*qs;"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "ss=0.0f;for(uint i=ti;i<p.dk;i+=256u){float v=k[i];ss+=v*v;}"
+        "red[ti]=ss;threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint s=128u;s>0u;s>>=1u){if(ti<s)red[ti]+=red[ti+s];"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);}"
+        "float ki=rsqrt(red[0]+p.eps);"
+        "for(uint i=ti;i<p.dk;i+=256u)k[i]*=ki;}\n"
+        /* K3: roll the conv state forward by C pre-conv rows. */
+        "kernel void dn_state_roll(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
+        "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
+        "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
+        "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
+        "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],"
+        "device float*scr[[buffer(10)]],constant P&p[[buffer(11)]],"
+        "uint gid[[thread_position_in_grid]]){"
+        "uint C=p.seq,cd=2u*p.nkh*p.dk+p.nvh*p.dv,hist=p.K-1u;"
+        "uint oc0=C*cd+2u*C*p.nvh;"
+        "if(gid>=hist*cd)return;"
+        "uint j=gid/cd,c=gid%cd;int src=int(C+j)-int(hist);"
+        "cs[p.cso+j*cd+c]=src>=0?qkv[p.qo+uint(src)*cd+c]:scr[oc0+(C+j)*cd+c];}\n";
+
+/* Chunk delta rule, split for occupancy (#profiling 2026-08-27: the
+ * single per-head kernel ran at ~46 GFLOP/s — n_vh threadgroups cannot
+ * fill the GPU). The heavy O(C^2 dk) / O(C dk dv) terms now run on wide
+ * (elements/256 x n_vh) grids; only the cumsum/staging and the serial
+ * triangular substitution stay one-threadgroup-per-head. ws per head:
+ * gma C | eg C | Kb C*dk | KCe C*dk | Qg C*dk | Vb C*dv | vnew C*dv |
+ * o C*dv | A C*C | att C*C | rowt C | Kd C*dk. */
+#define GEIST_DN_SIG(NAME)                                                            \
+    "kernel void " NAME "(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]]," \
+    "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"     \
+    "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"          \
+    "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"          \
+    "device float*cs[[buffer(8)]],device float*Sb[[buffer(9)]],"                      \
+    "device float*scr[[buffer(10)]],constant P&p[[buffer(11)]],"
+
+static const char metal_dn_chunk_ws_source[] =
+        "struct DW{device float*gma;device float*eg;device float*Kb;device float*KCe;"
+        "device float*Qg;device float*Vb;device float*vnew;device float*o;device float*A;"
+        "device float*att;device float*rowt;device float*Kd;};\n"
+        "static inline DW dnws(device float*scr,constant P&p,uint hv){"
+        "uint C=p.seq,dk=p.dk,dv=p.dv,cd=2u*p.nkh*dk+p.nvh*dv,hist=p.K-1u;"
+        "uint ws0=C*cd+2u*C*p.nvh+hist*cd;"
+        "uint wsf=3u*C+4u*C*dk+3u*C*dv+2u*C*C;"
+        "device float*b=scr+ws0+hv*wsf;DW w;"
+        "w.gma=b;w.eg=b+C;w.Kb=w.eg+C;w.KCe=w.Kb+C*dk;w.Qg=w.KCe+C*dk;"
+        "w.Vb=w.Qg+C*dk;w.vnew=w.Vb+C*dv;w.o=w.vnew+C*dv;w.A=w.o+C*dv;"
+        "w.att=w.A+C*C;w.rowt=w.att+C*C;w.Kd=w.rowt+C;return w;}\n"
+        /* per-head: gamma cumsum + all linear stagings (incl. decayed Kd). */
+        GEIST_DN_SIG("dn_chunk_stage") "uint hv[[threadgroup_position_in_grid]],uint "
+                                       "ti[[thread_index_in_threadgroup]]){"
+                                       "if(hv>=p.nvh)return;uint "
+                                       "C=p.seq,dk=p.dk,dv=p.dv,keyd=p.nkh*dk,cd=2u*keyd+p.nvh*dv;"
+                                       "uint hk=hv%p.nkh,b0=C*cd,g0=b0+C*p.nvh;DW w=dnws(scr,p,hv);"
+                                       "device const float*Q=scr+hk*dk;device const "
+                                       "float*Kr=scr+keyd+hk*dk;"
+                                       "device const float*Vr=scr+2u*keyd+hv*dv;"
+                                       "if(ti==0){float a=0.0f;for(uint "
+                                       "t=0u;t<C;t++){a+=scr[g0+t*p.nvh+hv];"
+                                       "w.gma[t]=a;w.eg[t]=exp(a);}}"
+                                       "threadgroup_barrier(mem_flags::mem_device);"
+                                       "float gl=w.gma[C-1u];"
+                                       "for(uint i=ti;i<C*dk;i+=256u){uint t=i/dk,x=i%dk;float "
+                                       "bt=scr[b0+t*p.nvh+hv];"
+                                       "float kv=Kr[t*cd+x];float "
+                                       "kb=bt*kv;w.Kb[i]=kb;w.KCe[i]=kb*w.eg[t];"
+                                       "w.Qg[i]=Q[t*cd+x]*w.eg[t];w.Kd[i]=kv*exp(gl-w.gma[t]);}"
+                                       "for(uint i=ti;i<C*dv;i+=256u){uint t=i/dv,j=i%dv;"
+                                       "w.Vb[i]=scr[b0+t*p.nvh+hv]*Vr[t*cd+j];}}\n"
+        /* per-head: forward substitution of (I - A_strict)^-1 rows.
+         * Thread ti owns columns {ti, ti+256}: A[j][l] reads at iteration
+         * r>j were written by the same thread at iteration j, so no device
+         * fence is needed — the profiled 2*C mem_device barriers were ~54us
+         * each and the whole DeltaNet chain (2026-08-27). Cross-thread data
+         * moves only through the threadgroup rowt copy of the row\'s
+         * pre-substitution values (device-visible from dn_chunk_amat).
+         * rowt[512] caps the chunk length; the host gates seq<=512. */
+        GEIST_DN_SIG(
+                "dn_chunk_subst") "uint hv[[threadgroup_position_in_grid]],uint "
+                                  "ti[[thread_index_in_threadgroup]]){"
+                                  "threadgroup float rowt[512];"
+                                  "if(hv>=p.nvh)return;uint C=p.seq;DW w=dnws(scr,p,hv);"
+                                  "for(uint r=1u;r<C;r++){"
+                                  "for(uint l=ti;l<r;l+=256u)rowt[l]=w.A[r*C+l];"
+                                  "threadgroup_barrier(mem_flags::mem_threadgroup);"
+                                  "for(uint l=ti;l<r;l+=256u){float a=rowt[l];"
+                                  "for(uint j=l+1u;j<r;j++)a+=rowt[j]*w.A[j*C+l];w.A[r*C+l]=a;}"
+                                  "threadgroup_barrier(mem_flags::mem_threadgroup);}}\n";
+
+static const char metal_dn_chunk_wide_source[] =
+        /* wide: A (strict) and attn (inclusive) in one K-pass. */
+        GEIST_DN_SIG(
+                "dn_chunk_amat") "uint2 tg[[threadgroup_position_in_grid]],uint "
+                                 "ti[[thread_index_in_threadgroup]]){"
+                                 "uint hv=tg.y;if(hv>=p.nvh)return;"
+                                 "uint C=p.seq,dk=p.dk,keyd=p.nkh*dk,cd=2u*keyd+p.nvh*p.dv;"
+                                 "uint i=tg.x*256u+ti;if(i>=C*C)return;uint r=i/C,c=i%C;"
+                                 "uint hk=hv%p.nkh;DW w=dnws(scr,p,hv);"
+                                 "device const float*Q=scr+hk*dk;device const "
+                                 "float*Kr=scr+keyd+hk*dk;"
+                                 "float av=0.0f,tv=0.0f;"
+                                 "if(r>=c){float e=exp(w.gma[r]-w.gma[c]);float qa=0.0f,ka=0.0f;"
+                                 "for(uint x=0u;x<dk;x++){float "
+                                 "kc=Kr[c*cd+x];qa+=Q[r*cd+x]*kc;ka+=w.Kb[r*dk+x]*kc;}"
+                                 "tv=qa*e;av=(r>c)?-ka*e:0.0f;}"
+                                 "w.A[i]=av;w.att[i]=tv;}\n"
+        /* wide: vnew = Vb - KCe S. */
+        GEIST_DN_SIG(
+                "dn_chunk_vnew1") "uint2 tg[[threadgroup_position_in_grid]],uint "
+                                  "ti[[thread_index_in_threadgroup]]){"
+                                  "uint hv=tg.y;if(hv>=p.nvh)return;uint C=p.seq,dk=p.dk,dv=p.dv;"
+                                  "uint i=tg.x*256u+ti;if(i>=C*dv)return;uint t=i/dv,j=i%dv;"
+                                  "DW w=dnws(scr,p,hv);device float*S=Sb+p.so+hv*dk*dv;"
+                                  "float a=0.0f;for(uint x=0u;x<dk;x++)a+=w.KCe[t*dk+x]*S[x*dv+j];"
+                                  "w.vnew[i]=w.Vb[i]-a;}\n"
+        /* wide: Vb = (A+I) vnew (A is strictly lower after substitution). */
+        GEIST_DN_SIG("dn_chunk_vnew2") "uint2 tg[[threadgroup_position_in_grid]],uint "
+                                       "ti[[thread_index_in_threadgroup]]){"
+                                       "uint hv=tg.y;if(hv>=p.nvh)return;uint C=p.seq,dv=p.dv;"
+                                       "uint i=tg.x*256u+ti;if(i>=C*dv)return;uint t=i/dv,j=i%dv;"
+                                       "DW w=dnws(scr,p,hv);"
+                                       "float a=w.vnew[i];for(uint "
+                                       "x=0u;x<t;x++)a+=w.A[t*C+x]*w.vnew[x*dv+j];"
+                                       "w.Vb[i]=a;}\n";
+
+static const char metal_dn_chunk_wide2_source[] =
+        /* wide: o = Qg S + attn v_new (attn lower-inclusive). */
+        GEIST_DN_SIG(
+                "dn_chunk_out") "uint2 tg[[threadgroup_position_in_grid]],uint "
+                                "ti[[thread_index_in_threadgroup]]){"
+                                "uint hv=tg.y;if(hv>=p.nvh)return;uint C=p.seq,dk=p.dk,dv=p.dv;"
+                                "uint i=tg.x*256u+ti;if(i>=C*dv)return;uint t=i/dv,j=i%dv;"
+                                "DW w=dnws(scr,p,hv);device float*S=Sb+p.so+hv*dk*dv;"
+                                "float a=0.0f;for(uint x=0u;x<dk;x++)a+=w.Qg[t*dk+x]*S[x*dv+j];"
+                                "for(uint x=0u;x<=t;x++)a+=w.att[t*C+x]*w.Vb[x*dv+j];"
+                                "w.o[i]=a;}\n"
+        /* wide: S = e^{gl} S + Kd^T v_new. */
+        GEIST_DN_SIG(
+                "dn_chunk_supd") "uint2 tg[[threadgroup_position_in_grid]],uint "
+                                 "ti[[thread_index_in_threadgroup]]){"
+                                 "uint hv=tg.y;if(hv>=p.nvh)return;uint dk=p.dk,dv=p.dv;"
+                                 "uint i=tg.x*256u+ti;if(i>=dk*dv)return;uint x=i/dv,j=i%dv;"
+                                 "DW w=dnws(scr,p,hv);device float*S=Sb+p.so+hv*dk*dv;"
+                                 "float a=S[i]*exp(w.gma[p.seq-1u]);"
+                                 "for(uint t=0u;t<p.seq;t++)a+=w.Kd[t*dk+x]*w.Vb[t*dv+j];S[i]=a;}\n"
+        /* per (token, v-head): gated RMS norm into z. */
+        GEIST_DN_SIG(
+                "dn_chunk_gate") "uint2 tg[[threadgroup_position_in_grid]],uint "
+                                 "ti[[thread_index_in_threadgroup]]){"
+                                 "threadgroup float red[256];"
+                                 "uint t=tg.x,hv=tg.y;if(t>=p.seq||hv>=p.nvh)return;"
+                                 "uint dv=p.dv,vald=p.nvh*dv;DW w=dnws(scr,p,hv);"
+                                 "float ss=0.0f;for(uint j=ti;j<dv;j+=256u){float "
+                                 "v=w.o[t*dv+j];ss+=v*v;}"
+                                 "red[ti]=ss;threadgroup_barrier(mem_flags::mem_threadgroup);"
+                                 "for(uint s2=128u;s2>0u;s2>>=1u){if(ti<s2)red[ti]+=red[ti+s2];"
+                                 "threadgroup_barrier(mem_flags::mem_threadgroup);}"
+                                 "float inv=rsqrt(red[0]/float(dv)+p.eps);"
+                                 "for(uint j=ti;j<dv;j+=256u){float g=z[p.zo+t*vald+hv*dv+j];"
+                                 "z[p.zo+t*vald+hv*dv+j]=w.o[t*dv+j]*inv*nw[p.no+j]*silu1(g);}}\n";
 
 #endif /* GEIST_METAL_SHADERS_H */

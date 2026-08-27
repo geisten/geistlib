@@ -231,12 +231,17 @@ int main(void) {
     const double ze = max_abs(z_got, z_ref, SEQ * VD);
     const double ce = max_abs(cs_got, cs_ref, (K - 1) * CD);
     const double se = max_abs(s_got, s_ref, NH * DK * DV);
-    printf("prefill max_abs: qkv %.2e, z %.2e, conv-state %.2e, delta-state %.2e\n",
+    printf("prefill max_abs: qkv %.2e (informational), z %.2e, conv-state %.2e, "
+           "delta-state %.2e\n",
            qe,
            ze,
            ce,
            se);
-    ok &= qe < 2e-5 && ze < 2e-5 && ce < 1e-7 && se < 2e-5;
+    /* qkv is NOT asserted for prefill: the fusion contract only defines z
+     * and the two state tensors as outputs. The serial kernel happens to
+     * mutate qkv in place; the chunked path (like the CPU chunked fusion)
+     * stages in scratch and leaves qkv pre-conv. */
+    ok &= ze < 2e-5 && ce < 1e-7 && se < 2e-5;
 
     /* Continue from the prefill states with one decode row. This catches
      * accidental state reset, double-advance and the seq==1 dispatch path. */
