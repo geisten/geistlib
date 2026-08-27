@@ -147,6 +147,20 @@ struct transformer_layer_weights {
     size_t               n_bufs;
 };
 
+/* One Qwen3.5 multi-token-prediction block. GGUF appends these blocks
+ * after the autoregressive stack and gives them the regular attention/FFN
+ * tensors plus four nextn-specific tensors. They stay separate from
+ * `layers`: normal decoding must never traverse an MTP block. */
+struct transformer_mtp_layer_weights {
+    struct transformer_layer_weights block;
+
+    struct geist_tensor eh_proj;          /* [HIDDEN, 2 * HIDDEN] */
+    struct geist_tensor enorm;            /* [HIDDEN] */
+    struct geist_tensor hnorm;            /* [HIDDEN] */
+    struct geist_tensor shared_head_norm; /* [HIDDEN] */
+    struct geist_weight eh_proj_w;
+};
+
 /* ---- Per-session mutable state (P1.2.d refactor v2) -------------------- *
  *
  * All mutable state for ONE inference stream lives here. Separated from
@@ -359,7 +373,8 @@ struct transformer_arch_state {
     /* ---- Geometry: structural dims as runtime fields, filled by the
      * family populator from GGUF metadata (family defaults live in the
      * populators themselves — arch_family.c). */
-    size_t n_layers;         /* Gemma 4: 35 */
+    size_t n_layers;         /* autoregressive layers; Gemma 4: 35 */
+    size_t n_mtp_layers;     /* trailing MTP blocks, excluded from n_layers */
     size_t d_model;          /* Gemma 4: 1536 */
     size_t vocab_size;       /* Gemma 4: 262144 */
     size_t n_q_heads;        /* Gemma 4: 8 */
@@ -383,9 +398,10 @@ struct transformer_arch_state {
     size_t               weight_arena_capacity;
 
     /* ---- Per-layer weight blocks, heap-sized to st->n_layers. */
-    struct transformer_layer_weights    *layers;
-    struct transformer_layer_exec_plan  *layer_plans;
-    struct transformer_model_fusion_plan model_fusions; /* exec_plan_build */
+    struct transformer_layer_weights     *layers;
+    struct transformer_mtp_layer_weights *mtp_layers;
+    struct transformer_layer_exec_plan   *layer_plans;
+    struct transformer_model_fusion_plan  model_fusions; /* exec_plan_build */
 
     struct geist_tensor embed_table;     /* [VOCAB, HIDDEN] — Q-format */
     struct geist_tensor ple_table;       /* [VOCAB, PLE_OUT] — Q-format */
