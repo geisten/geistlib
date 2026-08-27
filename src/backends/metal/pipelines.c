@@ -51,7 +51,7 @@
         return GEIST_E_INVALID_ARG;
     }
     struct metal_state *st = be->state;
-    if (st->deltanet_mix_pipeline != nullptr && st->dn_head_chunk_pipeline != nullptr) {
+    if (st->deltanet_mix_pipeline != nullptr && st->dn_chunk_gate_pipeline != nullptr) {
         return GEIST_OK;
     }
     void *ns_string = metal_objc_get_class(st, "NSString");
@@ -59,9 +59,12 @@
      * (the chunk sources reuse struct P and silu1). */
     void *source = nullptr;
     if (ns_string != nullptr) {
-        const char *const parts[] = {
-                metal_deltanet_source, metal_dn_chunk_prep_source, metal_dn_chunk_head_source};
-        size_t total = 0;
+        const char *const parts[] = {metal_deltanet_source,
+                                     metal_dn_chunk_prep_source,
+                                     metal_dn_chunk_ws_source,
+                                     metal_dn_chunk_wide_source,
+                                     metal_dn_chunk_wide2_source};
+        size_t            total   = 0;
         for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
             total += strlen(parts[i]);
         }
@@ -136,9 +139,65 @@
         s = metal_create_named_pipeline(be,
                                         st->deltanet_library,
                                         ns_string,
-                                        "dn_head_chunk",
-                                        &st->dn_head_chunk_function,
-                                        &st->dn_head_chunk_pipeline);
+                                        "dn_chunk_stage",
+                                        &st->dn_chunk_stage_function,
+                                        &st->dn_chunk_stage_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_subst",
+                                        &st->dn_chunk_subst_function,
+                                        &st->dn_chunk_subst_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_amat",
+                                        &st->dn_chunk_amat_function,
+                                        &st->dn_chunk_amat_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_vnew1",
+                                        &st->dn_chunk_vnew1_function,
+                                        &st->dn_chunk_vnew1_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_vnew2",
+                                        &st->dn_chunk_vnew2_function,
+                                        &st->dn_chunk_vnew2_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_out",
+                                        &st->dn_chunk_out_function,
+                                        &st->dn_chunk_out_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_supd",
+                                        &st->dn_chunk_supd_function,
+                                        &st->dn_chunk_supd_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_gate",
+                                        &st->dn_chunk_gate_function,
+                                        &st->dn_chunk_gate_pipeline);
     }
     return s;
 }

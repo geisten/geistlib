@@ -240,8 +240,22 @@ struct metal_state {
     void  *dn_qk_norm_pipeline;
     void  *dn_state_roll_function;
     void  *dn_state_roll_pipeline;
-    void  *dn_head_chunk_function;
-    void  *dn_head_chunk_pipeline;
+    void  *dn_chunk_stage_function;
+    void  *dn_chunk_stage_pipeline;
+    void  *dn_chunk_subst_function;
+    void  *dn_chunk_subst_pipeline;
+    void  *dn_chunk_amat_function;
+    void  *dn_chunk_amat_pipeline;
+    void  *dn_chunk_vnew1_function;
+    void  *dn_chunk_vnew1_pipeline;
+    void  *dn_chunk_vnew2_function;
+    void  *dn_chunk_vnew2_pipeline;
+    void  *dn_chunk_out_function;
+    void  *dn_chunk_out_pipeline;
+    void  *dn_chunk_supd_function;
+    void  *dn_chunk_supd_pipeline;
+    void  *dn_chunk_gate_function;
+    void  *dn_chunk_gate_pipeline;
     /* Grow-only private MTLBuffer scratch for the chunked DeltaNet
      * prefill (raw handle, argmax_result_buffer pattern). */
     void    *dn_scratch;
