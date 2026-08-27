@@ -176,6 +176,9 @@ static bool metal_skip_stage(enum metal_profile_stage s) {
         return metal_env_enabled("GEIST_SKIP_ELEM");
     case METAL_PROFILE_DISPATCH_COPY_U32:
         return metal_env_enabled("GEIST_SKIP_COPY");
+    case METAL_PROFILE_DISPATCH_DELTANET_PREFILL:
+    case METAL_PROFILE_DISPATCH_DELTANET_DECODE:
+        return metal_env_enabled("GEIST_SKIP_DELTANET");
     default:
         return false;
     }
