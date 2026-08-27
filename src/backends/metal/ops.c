@@ -3473,11 +3473,13 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
     /* seq>1 runs the chunked-prefill kernel sequence (CPU
      * dn_run_prefill_chunked port); the serial per-token mixer stays for
      * decode and as the fallback when scratch allocation fails. */
-    bool chunked = args->seq > 1 && st->use_dn_chunk && st->dn_head_chunk_pipeline != nullptr;
+    /* seq<=512: the substitution kernel's threadgroup row cache. */
+    bool chunked = args->seq > 1 && args->seq <= 512 && st->use_dn_chunk &&
+                   st->dn_chunk_gate_pipeline != nullptr;
     if (chunked) {
         const size_t C    = args->seq;
         const size_t hist = args->conv_kernel - 1u;
-        const size_t wsf  = 3u * C + 3u * C * args->head_k + 3u * C * args->head_v + 2u * C * C;
+        const size_t wsf  = 3u * C + 4u * C * args->head_k + 3u * C * args->head_v + 2u * C * C;
         const size_t scr_bytes = (C * conv_dim + 2u * C * args->n_v_heads + hist * conv_dim +
                                   args->n_v_heads * wsf) *
                                  sizeof(float);
@@ -3520,9 +3522,35 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         metal_msg_send_set_pipeline(st, enc, st->dn_state_roll_pipeline);
         metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_flat);
         metal_msg_send_dispatch(st, enc, g_flat, t256);
-        metal_msg_send_set_pipeline(st, enc, st->dn_head_chunk_pipeline);
+        const struct metal_size g_cc  = {(C * C + 255u) / 256u, params.n_v_heads, 1};
+        const struct metal_size g_cdv = {(C * params.head_v + 255u) / 256u, params.n_v_heads, 1};
+        const struct metal_size g_kv  = {
+                (params.head_k * params.head_v + 255u) / 256u, params.n_v_heads, 1};
+        const struct metal_size g_tv = {C, params.n_v_heads, 1};
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_stage_pipeline);
         metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_heads);
         metal_msg_send_dispatch(st, enc, g_heads, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_amat_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_cc);
+        metal_msg_send_dispatch(st, enc, g_cc, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_subst_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_heads);
+        metal_msg_send_dispatch(st, enc, g_heads, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_vnew1_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_cdv);
+        metal_msg_send_dispatch(st, enc, g_cdv, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_vnew2_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_cdv);
+        metal_msg_send_dispatch(st, enc, g_cdv, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_out_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_cdv);
+        metal_msg_send_dispatch(st, enc, g_cdv, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_supd_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_kv);
+        metal_msg_send_dispatch(st, enc, g_kv, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_gate_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_tv);
+        metal_msg_send_dispatch(st, enc, g_tv, t256);
     } else {
         metal_msg_send_set_pipeline(st, enc, st->deltanet_mix_pipeline);
         metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
