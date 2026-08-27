@@ -98,6 +98,19 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
                 blk[1] = 0x3C;
                 blk[2] = 0x00; /* dmin = fp16(0.5)    */
                 blk[3] = 0x38;
+                if (dtype == GEIST_DTYPE_Q5_K) {
+                    /* Pin the packed 6-bit scales to <=7 (same reasoning as
+                     * the Q6_K branch below): Q5_K quants reach 31, and
+                     * 63*31 ~ 1953 sits where half's lattice is 1.0, so the
+                     * GEMM's half staging would round 0.5 steps. Scales
+                     * <=7 keep every staged weight exact. */
+                    for (size_t s = 4; s < 12; s++) {
+                        blk[s] = rng_u8() & 0x07u;
+                    }
+                    for (size_t s = 12; s < 16; s++) {
+                        blk[s] = rng_u8() & 0x77u;
+                    }
+                }
             } else {
                 blk[208] = 0x00; /* d = fp16(1.0), trailing field in Q6_K */
                 blk[209] = 0x3C;
@@ -405,14 +418,19 @@ int main(void) {
      * multiple of the threadgroup width to catch tail bugs. */
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 8);
+    /* m=33: two batch-row tiles of the simdgroup GEMM, both partial. */
+    run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_Q4_1, "Q4_1", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_1, "Q4_1", 512, 383, 8);
+    run_case(mt, ref, GEIST_DTYPE_Q4_1, "Q4_1", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_Q8_0, "Q8_0", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q8_0, "Q8_0", 512, 383, 8);
+    run_case(mt, ref, GEIST_DTYPE_Q8_0, "Q8_0", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 8);
+    run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 1);

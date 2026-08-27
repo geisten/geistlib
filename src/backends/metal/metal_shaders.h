@@ -87,6 +87,64 @@ static const char metal_q4k_source[] =
         "    }\n"
         "}\n";
 
+/* Shared 64x32 simdgroup GEMM template (the proven matmul_q4k_mm_sg tile
+ * structure, bounds-checked variant). Instantiated per quant format by
+ * splicing in the block struct name BLK, a 16-element dequant function DQ
+ * (device const BLK*, short il, thread half4x4&) and QKNL = 16-element
+ * chunks per block, all defined in the surrounding shader source. Differs
+ * from the q4k original in two ways: the staging bounds check uses il0
+ * (the k position inside the tile; il drifts ahead of it across a block,
+ * so the original check was wrong for partial tiles — dead code there
+ * because its dispatch gate excluded them), and the partial-tile epilogue
+ * copies scalars only (the float4 fast path needs a 16-byte-aligned y row,
+ * which arbitrary n_out does not give). */
+#define GEIST_METAL_MM_SG_KERNEL(NAME, BLK, DQ, QKNL)                                         \
+    "kernel void matmul_" NAME "_mm_sg(device const float*x[[buffer(0)]],device const "       \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup " \
+    "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "           \
+    "ti[[thread_index_in_threadgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){\n"       \
+    "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "          \
+    "half*)(shmem+4096);constexpr short NR0=64;constexpr short NR1=32;constexpr short "       \
+    "NK=32;constexpr short NL0=2;constexpr short NL1=4;constexpr short QK_NL=" QKNL ";uint "  \
+    "r0=tg.y*uint(NR0);uint r1=tg.x*uint(NR1);if(r0>=p.no||r1>=p.rows)return;short "          \
+    "nr0=short(min(p.no-r0,uint(NR0)));short nr1=short(min(p.rows-r1,uint(NR1)));short "      \
+    "lr0=min(short(ti/NL0),short(nr0-1));short lr1=min(short(ti/NL1),short(nr1-1));short "    \
+    "il0=short(ti%NL0);short il=il0;device const " BLK "*wp=(device const " BLK               \
+    "*)(w+p.wo)+(r0+uint(lr0))*p.bpr;short iy=short(8*(ti%NL1));device const "                \
+    "float*xp=x+p.xo+(r1+uint(lr1))*p.xs+uint(iy);simdgroup_half8x8 ma[4];simdgroup_half8x8 " \
+    "mb[2];simdgroup_float8x8 mc[8];FOR_UNROLL(short "                                        \
+    "i=0;i<8;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}for(uint "               \
+    "loop_k=0u;loop_k<p.ni;loop_k+=uint(NK)){half4x4 ta;" DQ "(wp,il,ta);"                    \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);FOR_UNROLL(short "                       \
+    "i=0;i<16;i++){short sx=short(2*il0+i/8);short sy=short((ti/NL0)/8);short "               \
+    "lx=short((ti/NL0)%8);short ly=short(i%8);short "                                         \
+    "ib=short(8*sx+sy);*(sa+64*ib+8*ly+lx)=(loop_k+uint(16*il0+i)<p.ni)?ta[i/"                \
+    "4][i%4]:half(0.0);}short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short "             \
+    "ly=short((ti/NL1)%8);short ib=short(4*sx+sy);FOR_UNROLL(short i=0;i<8;i++){uint "        \
+    "kk=loop_k+uint(iy+i);*(sb+64*ib+8*ly+i)=kk<p.ni?half(xp[i]):half(0.0);}"                 \
+    "il=(il+2<QK_NL)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=NK;"                                     \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                        \
+    "threadgroup const half*lsma=sa+4*64*(sg%2);threadgroup const "                           \
+    "half*lsmb=sb+2*64*(sg/2);FOR_UNROLL(short "                                              \
+    "ik=0;ik<NK/8;ik++){simdgroup_barrier(mem_flags::mem_none);FOR_UNROLL(short "             \
+    "i=0;i<4;i++){simdgroup_load(ma[i],lsma+64*i,8,0,false);}simdgroup_barrier(mem_flags::"   \
+    "mem_none);FOR_UNROLL(short "                                                             \
+    "i=0;i<2;i++){simdgroup_load(mb[i],lsmb+64*i,8,0,false);}simdgroup_barrier(mem_flags::"   \
+    "mem_none);FOR_UNROLL(short "                                                             \
+    "i=0;i<8;i++){simdgroup_multiply_accumulate(mc[i],mb[i/"                                  \
+    "4],ma[i%4],mc[i]);}lsma+=8*64;lsmb+=4*64;}}\n"                                           \
+    "if(r0+uint(NR0)<=p.no&&r1+uint(NR1)<=p.rows){device "                                    \
+    "float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);FOR_UNROLL(short "            \
+    "i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/"                                 \
+    "4),p.ys,0,false);}}else{threadgroup_barrier(mem_flags::mem_threadgroup);threadgroup "    \
+    "float*tmp=((threadgroup float*)shmem)+32*(sg&1)+16*(sg>>1)*NR0;FOR_UNROLL(short "        \
+    "i=0;i<8;i++){simdgroup_store(mc[i],tmp+8*(i%4)+8*NR0*(i/"                                \
+    "4),NR0,0,false);}threadgroup_barrier(mem_flags::mem_threadgroup);if(sg==0){for(uint "    \
+    "j=ti;j<uint(nr1);j+=uint(NR1)){device float*D=y+p.yo+(r1+j)*p.ys+r0;threadgroup "        \
+    "float*C=((threadgroup float*)shmem)+j*NR0;for(uint "                                     \
+    "i=0u;i<uint(nr0);i++){D[i]=C[i];}}}}\n"                                                  \
+    "}\n"
+
 /* Correctness-first row-major Q4_0/Q8_0 linear kernels. Both formats use
  * 32-element blocks with an fp16 scale followed by packed nibbles or int8s.
  * One threadgroup computes one output row for one activation row. */
@@ -140,6 +198,114 @@ static const char metal_q40_q80_source[] =
         "threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid==0u){for(uint "
         "m=0u;m<8u;m++){uint b=bb+m;if(b<p.rows)y[p.yo+b*p.ys+r]=part[m][0];}}}\n";
 
+/* Simdgroup quant kernels, one MSL unit built by concatenating the
+ * metal_qsg_* arrays at library-create time (each C literal stays under the
+ * 4095-char ISO limit). Common part: FOR_UNROLL, params struct, the q5_K
+ * scale/min decoder and the per-format block structs + 16-element dequant
+ * chunk loaders used by the shared GEMM template. */
+static const char metal_qsg_common_source[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "#define FOR_UNROLL(x) _Pragma(\"clang loop unroll(full)\") for(x)\n"
+        "struct P{uint ni,no,rows,bpr,xo,wo,yo,xs,ys;};\n"
+        "static inline void sm5(uint j,device const uchar*q,thread uint&s,thread uint&m){if(j<4u){"
+        "s=uint(q[j])&63u;m=uint(q[j+4u])&63u;}else{uint a=uint(q[j+4u]),b=uint(q[j-4u]),"
+        "c=uint(q[j]);s=(a&15u)|((b>>6u)<<4u);m=(a>>4u)|((c>>6u)<<4u);}}\n"
+        "struct bq40{half d;uchar qs[16];};\n"
+        "static inline void dq40(device const bq40*xb,short il,thread half4x4&r){"
+        "device const ushort*qs=(device const ushort*)(xb->qs);"
+        "float d1=il?float(xb->d)*(1.0f/16.0f):float(xb->d);float d2=d1*(1.0f/256.0f);"
+        "float md=-8.0f*float(xb->d);"
+        "ushort m0=il?0x00F0:0x000F;ushort m1=m0<<8;"
+        "FOR_UNROLL(short i=0;i<8;i++){"
+        "r[i/2][2*(i%2)+0]=half(d1*float(qs[i]&m0)+md);"
+        "r[i/2][2*(i%2)+1]=half(d2*float(qs[i]&m1)+md);}}\n"
+        "struct bq80{half d;char qs[32];};\n"
+        "static inline void dq80(device const bq80*xb,short il,thread half4x4&r){"
+        "float d=float(xb->d);device const char*q=xb->qs+16*il;"
+        "FOR_UNROLL(short i=0;i<16;i++){r[i/4][i%4]=half(d*float(q[i]));}}\n"
+        "struct bq41{half d;half m;uchar qs[16];};\n"
+        "static inline void dq41(device const bq41*xb,short il,thread half4x4&r){"
+        "device const ushort*qs=(device const ushort*)(xb->qs);"
+        "float d1=il?float(xb->d)*(1.0f/16.0f):float(xb->d);float d2=d1*(1.0f/256.0f);"
+        "float ml=float(xb->m);"
+        "ushort m0=il?0x00F0:0x000F;ushort m1=m0<<8;"
+        "FOR_UNROLL(short i=0;i<8;i++){"
+        "r[i/2][2*(i%2)+0]=half(d1*float(qs[i]&m0)+ml);"
+        "r[i/2][2*(i%2)+1]=half(d2*float(qs[i]&m1)+ml);}}\n"
+        "struct bq5k{half d;half dmin;uchar scales[12];uchar qh[32];uchar qs[128];};\n"
+        "static inline void dq5k(device const bq5k*xb,short il,thread half4x4&r){"
+        "short sb=il/4;short lo16=il&1;short hi=(il&3)/2;"
+        "device const uchar*q=xb->qs+sb*32+lo16*16;"
+        "device const uchar*qh=xb->qh+lo16*16;"
+        "uint j=uint(sb*2+hi);uint s,m;sm5(j,xb->scales,s,m);"
+        "float dl=float(xb->d)*float(s);float ml=float(xb->dmin)*float(m);"
+        "ushort sh=hi?4:0;uchar hb=uchar(1u<<j);"
+        "FOR_UNROLL(short i=0;i<16;i++){uint v=(uint(q[i])>>sh)&15u;"
+        "if((qh[i]&hb)!=0)v+=16u;r[i/4][i%4]=half(dl*float(v)-ml);}}\n";
+
+/* Simdgroup decode GEMVs, llama mul_mv structure: 2 simdgroups per
+ * threadgroup, 2 rows each. Q4_0/Q4_1: a thread covers 8 q bytes (elements
+ * il..il+7 low nibbles, il+16..il+23 high) with pre-scaled y so the masked
+ * ushort products need no shifts; the block offset folds into sumy. Q5_K: a
+ * thread owns one 8-element run of every 256-block, so d/dmin and the 6-bit
+ * scale pair load once per run. */
+static const char metal_qsg_n4_q40_source[] =
+        "kernel void matvec_q40_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>5u,ix=uint(ti)>>1u,il=(uint(ti)&1u)*8u;"
+        "device const float*yb=x+p.xo+b*p.xs+ix*32u+il;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=ix;ib<nb;ib+=16u){"
+        "float yl[16];float sumy=0.0f;"
+        "for(uint i=0u;i<8u;i+=2u){"
+        "float a0=yb[i],a1=yb[i+1u],c0=yb[i+16u],c1=yb[i+17u];"
+        "sumy+=a0+a1+c0+c1;"
+        "yl[i]=a0;yl[i+1u]=a1*(1.0f/256.0f);"
+        "yl[i+8u]=c0*(1.0f/16.0f);yl[i+9u]=c1*(1.0f/4096.0f);}"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*18u;"
+        "device const ushort*qs=(device const ushort*)(w+bo+2u+il);"
+        "float acc0=0.0f,acc1=0.0f;"
+        "for(uint i=0u;i<4u;i++){uint q=uint(qs[i]);"
+        "acc0+=yl[2u*i]*float(q&0x000Fu)+yl[2u*i+1u]*float(q&0x0F00u);"
+        "acc1+=yl[2u*i+8u]*float(q&0x00F0u)+yl[2u*i+9u]*float(q&0xF000u);}"
+        "float d=float(*((device const half*)(w+bo)));"
+        "float r=d*(acc0+acc1-8.0f*sumy);"
+        "if(rr==0u)s0+=r;else s1+=r;}"
+        "yb+=512u;}"
+        "float a0=simd_sum(s0),a1=simd_sum(s1);"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+static const char metal_qsg_n4_q80_source[] =
+        "kernel void matvec_q80_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>5u,ix=uint(ti)>>1u,il=(uint(ti)&1u)*16u;"
+        "device const float*yb=x+p.xo+b*p.xs+ix*32u+il;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=ix;ib<nb;ib+=16u){"
+        "float yl[16];for(uint i=0u;i<16u;i++)yl[i]=yb[i];"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*34u;"
+        "device const char*qs=(device const char*)(w+bo+2u+il);"
+        "float acc=0.0f;for(uint i=0u;i<16u;i++)acc+=yl[i]*float(qs[i]);"
+        "float d=float(*((device const half*)(w+bo)));"
+        "if(rr==0u)s0+=d*acc;else s1+=d*acc;}"
+        "yb+=512u;}"
+        "float a0=simd_sum(s0),a1=simd_sum(s1);"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+/* GEMM instances of the shared 64x32 simdgroup tile, one array each to
+ * stay under the 4095-char literal limit. */
+static const char metal_qsg_mm_q40_source[] = GEIST_METAL_MM_SG_KERNEL("q40", "bq40", "dq40", "2");
+static const char metal_qsg_mm_q80_source[] = GEIST_METAL_MM_SG_KERNEL("q80", "bq80", "dq80", "2");
+
 static const char metal_q5k_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -177,6 +343,37 @@ static const char metal_q5k_source[] =
         "threadgroup);}if(lid==0u){for(uint m=0u;m<8u;m++){uint b=bb+m;if(b<p.rows)"
         "y[p.yo+b*p.ys+r]=part[m][0];}}}\n";
 
+static const char metal_qsg_n4_q5k_source[] =
+        "kernel void matvec_q5k_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>8u;"
+        "uint sb=uint(ti)>>3u,rr8=uint(ti)&7u,hi=rr8>>2u,i0=(rr8&3u)*8u;"
+        "uint sj=sb*2u+hi,hm=1u<<sj,qsh=hi*4u;"
+        "uint qso=48u+sb*32u+i0,qho=16u+i0;"
+        "device const float*yb=x+p.xo+b*p.xs+sb*64u+hi*32u+i0;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=0u;ib<nb;ib++){"
+        "float yl[8];float sumy=0.0f;"
+        "for(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i];}"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*176u;"
+        "uint sc,mn;sm5(sj,w+bo+4u,sc,mn);"
+        "float acc=0.0f;"
+        "for(uint i=0u;i<8u;i++){uint v=(uint(w[bo+qso+i])>>qsh)&15u;"
+        "if((uint(w[bo+qho+i])&hm)!=0u)v+=16u;acc+=yl[i]*float(v);}"
+        "float d=float(*((device const half*)(w+bo)));"
+        "float dm=float(*((device const half*)(w+bo+2u)));"
+        "float r=d*float(sc)*acc-dm*float(mn)*sumy;"
+        "if(rr==0u)s0+=r;else s1+=r;}"
+        "yb+=256u;}"
+        "float a0=simd_sum(s0),a1=simd_sum(s1);"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+static const char metal_qsg_mm_q5k_source[] = GEIST_METAL_MM_SG_KERNEL("q5k", "bq5k", "dq5k", "16");
+
 static const char metal_q41_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -207,6 +404,41 @@ static const char metal_q41_source[] =
         "for(uint m=0u;m<8u;m++)part[m][lid]+=part[m][lid+z];}threadgroup_barrier(mem_flags::mem_"
         "threadgroup);}if(lid==0u){for(uint m=0u;m<8u;m++){uint b=bb+m;if(b<p.rows)"
         "y[p.yo+b*p.ys+r]=part[m][0];}}}\n";
+
+/* Simdgroup decode GEMV, matvec_q40_n4 structure; v = d*q + m, so the
+ * offset term is +m*sumy instead of -8d*sumy. */
+static const char metal_qsg_n4_q41_source[] =
+        "kernel void matvec_q41_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>5u,ix=uint(ti)>>1u,il=(uint(ti)&1u)*8u;"
+        "device const float*yb=x+p.xo+b*p.xs+ix*32u+il;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=ix;ib<nb;ib+=16u){"
+        "float yl[16];float sumy=0.0f;"
+        "for(uint i=0u;i<8u;i+=2u){"
+        "float a0=yb[i],a1=yb[i+1u],c0=yb[i+16u],c1=yb[i+17u];"
+        "sumy+=a0+a1+c0+c1;"
+        "yl[i]=a0;yl[i+1u]=a1*(1.0f/256.0f);"
+        "yl[i+8u]=c0*(1.0f/16.0f);yl[i+9u]=c1*(1.0f/4096.0f);}"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*20u;"
+        "device const ushort*qs=(device const ushort*)(w+bo+4u+il);"
+        "float acc0=0.0f,acc1=0.0f;"
+        "for(uint i=0u;i<4u;i++){uint q=uint(qs[i]);"
+        "acc0+=yl[2u*i]*float(q&0x000Fu)+yl[2u*i+1u]*float(q&0x0F00u);"
+        "acc1+=yl[2u*i+8u]*float(q&0x00F0u)+yl[2u*i+9u]*float(q&0xF000u);}"
+        "float d=float(*((device const half*)(w+bo)));"
+        "float mv=float(*((device const half*)(w+bo+2u)));"
+        "float r=d*(acc0+acc1)+mv*sumy;"
+        "if(rr==0u)s0+=r;else s1+=r;}"
+        "yb+=512u;}"
+        "float a0=simd_sum(s0),a1=simd_sum(s1);"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+static const char metal_qsg_mm_q41_source[] = GEIST_METAL_MM_SG_KERNEL("q41", "bq41", "dq41", "2");
 
 static const char metal_q4k_n4_source[] =
         "#include <metal_stdlib>\n"
@@ -336,7 +568,7 @@ static const char metal_q4k_mm_sg_source[] =
         "ta;dq4(wp,il,ta);threadgroup_barrier(mem_flags::mem_threadgroup);FOR_UNROLL(short "
         "i=0;i<16;i++){short sx=short(2*il0+i/8);short sy=short((ti/NL0)/8);short "
         "lx=short((ti/NL0)%8);short ly=short(i%8);short "
-        "ib=short(8*sx+sy);*(sa+64*ib+8*ly+lx)=(loop_k+uint(16*il+i)<p.ni)?ta[i/"
+        "ib=short(8*sx+sy);*(sa+64*ib+8*ly+lx)=(loop_k+uint(16*il0+i)<p.ni)?ta[i/"
         "4][i%4]:half(0.0);}short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short "
         "ly=short((ti/NL1)%8);short ib=short(4*sx+sy);FOR_UNROLL(short i=0;i<8;i++){uint "
         "kk=loop_k+uint(iy+i);*(sb+64*ib+8*ly+i)=kk<p.ni?half(xp[i]):half(0.0);}il=(il+2<QK_NL)?il+"
