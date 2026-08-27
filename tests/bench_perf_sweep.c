@@ -263,7 +263,11 @@ int main(int argc, char **argv) {
             s                      = geist_session_prefill_tokens(sess, (size_t) n_p, ids);
             const double t_prefill = monotonic_ms() - t0;
             if (s != GEIST_OK) {
-                fprintf(stderr, "prefill failed at seq_len=%d repeat=%d\n", n_p, r);
+                fprintf(stderr,
+                        "prefill failed at seq_len=%d repeat=%d (status %d)\n",
+                        n_p,
+                        r,
+                        (int) s);
                 continue;
             }
 
