@@ -730,6 +730,19 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
     st->config.family = fam->name;
     fam->populate(gguf, st);
+    if (st->n_layers == 0) {
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: invalid layer metadata for %s "
+                                "(autoregressive=%zu, mtp=%zu)",
+                                fam->name,
+                                st->n_layers,
+                                st->n_mtp_layers);
+        void *p = st;
+        safe_free(&p);
+        gguf_close(gguf);
+        return GEIST_E_FORMAT;
+    }
 
     /* P1.4.c: heap-allocate the per-layer weight array sized to the
      * model's actual layer count. (Was a compile-time `[NUM_LAYERS]`
@@ -749,6 +762,19 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         return GEIST_E_OOM;
     }
     memset(st->layers, 0, st->n_layers * sizeof(*st->layers));
+    if (st->n_mtp_layers > 0) {
+        st->mtp_layers = heap_alloc_aligned(st->n_mtp_layers * sizeof(*st->mtp_layers),
+                                            alignof(struct transformer_mtp_layer_weights));
+        if (st->mtp_layers == nullptr) {
+            geist_backend_set_error(be,
+                                    GEIST_E_OOM,
+                                    "transformer: MTP layer array alloc failed (%zu layers)",
+                                    st->n_mtp_layers);
+            transformer_state_destroy(st);
+            return GEIST_E_OOM;
+        }
+        memset(st->mtp_layers, 0, st->n_mtp_layers * sizeof(*st->mtp_layers));
+    }
 
     /* P1.5.c: fill per-layer geometry. The family populator decides
      * the attention pattern (Gemma: sliding/full mix + KV sharing from
@@ -832,6 +858,13 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     for (size_t i = 0; i < (size_t) st->n_layers; i++) {
         st->layers[i].layer_idx = (int) i;
         s                       = load_one_layer(st, gguf, &st->layers[i]);
+        if (s != GEIST_OK) {
+            transformer_state_destroy(st);
+            return s;
+        }
+    }
+    for (size_t i = 0; i < st->n_mtp_layers; i++) {
+        s = load_mtp_layer(st, gguf, &st->mtp_layers[i]);
         if (s != GEIST_OK) {
             transformer_state_destroy(st);
             return s;
@@ -975,6 +1008,17 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
                 L->down_awq_inv_scale = nullptr;
             }
         }
+        for (size_t l = 0; st->mtp_layers != nullptr && l < st->n_mtp_layers; l++) {
+            struct transformer_mtp_layer_weights *M = &st->mtp_layers[l];
+            struct transformer_layer_weights     *L = &M->block;
+            release_layer_weight_aux(L);
+            release_weight_aux(&M->eh_proj_w);
+            for (size_t b = 0; b < L->n_bufs; b++) {
+                if (L->bufs[b] != nullptr) {
+                    be->desc->vtbl->buffer_destroy(be, L->bufs[b]);
+                }
+            }
+        }
         release_weight_aux(&st->embed_table_w);
         release_weight_aux(&st->model_proj_w);
         safe_free((void **) &st->spec_sketch);
@@ -1024,6 +1068,11 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         void *p_layers = st->layers;
         safe_free(&p_layers);
         st->layers = nullptr;
+    }
+    if (st->mtp_layers != nullptr) {
+        void *p_mtp = st->mtp_layers;
+        safe_free(&p_mtp);
+        st->mtp_layers = nullptr;
     }
     void *p = st;
     safe_free(&p);

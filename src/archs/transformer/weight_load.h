@@ -29,6 +29,12 @@
                                                struct gguf_ctx                  *gguf,
                                                struct transformer_layer_weights *L);
 
+/* Load one trailing Qwen3.5 MTP block. The regular attention/FFN block and
+ * its nextn-specific fusion/norm tensors share one owning-buffer list. */
+[[nodiscard]] enum geist_status load_mtp_layer(struct transformer_arch_state        *st,
+                                               struct gguf_ctx                      *gguf,
+                                               struct transformer_mtp_layer_weights *M);
+
 /* Load all non-per-layer tensors: embed_table, ple_table, model_proj,
  * model_proj_norm, output_norm, and the per-layer-input embed for the
  * audio path. Resolves geist_weight wrappers for each. */

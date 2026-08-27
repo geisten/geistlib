@@ -339,9 +339,9 @@ static bool populate_layers_qwen3(struct transformer_arch_state *st) {
  * (rope.dimension_count of head_dim, theta 1e7) and a sigmoid output
  * gate fed by a joint q+gate projection (has_attn_output_gate).
  *
- * block_count INCLUDES nextn_predict_layers trailing MTP block(s); they
- * are not part of the autoregressive stack — n_layers excludes them and
- * their blk.N tensors are simply never referenced.
+ * block_count INCLUDES nextn_predict_layers trailing MTP block(s). They
+ * are not part of the autoregressive stack: n_layers excludes them and
+ * n_mtp_layers records them for separate loading/execution.
  *
  * GGUF norm weights arrive with the zero-centered (+1) already baked in
  * by the converter, so the standard rmsnorm path is correct as-is.
@@ -357,8 +357,15 @@ static void populate_qwen35(struct gguf_ctx *gguf, struct transformer_arch_state
         st->n_layers = u;
     uint32_t nextn = 0;
     gguf_get_meta_u32(gguf, "qwen35.nextn_predict_layers", &nextn);
-    if (nextn < st->n_layers)
-        st->n_layers -= nextn; /* trailing MTP blocks: skip */
+    if (nextn < st->n_layers) {
+        st->n_mtp_layers = nextn;
+        st->n_layers -= nextn;
+    } else if (nextn != 0) {
+        /* Make malformed geometry fail in state_create instead of treating
+         * MTP blocks as autoregressive layers. */
+        st->n_layers     = 0;
+        st->n_mtp_layers = nextn;
+    }
     if (gguf_get_meta_u32(gguf, "qwen35.embedding_length", &u))
         st->d_model = u;
     if (gguf_get_meta_u32(gguf, "qwen35.attention.head_count", &u))
@@ -432,6 +439,20 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
         L->sliding_window  = 0;
         L->rope_theta      = freq_base;
         L->n_rotated_dims  = (int) rot;
+    }
+    for (size_t i = 0; i < st->n_mtp_layers; i++) {
+        struct transformer_layer_weights *L = &st->mtp_layers[i].block;
+        L->layer_idx                        = (int) (st->n_layers + i);
+        L->mixer                            = GEIST_MIXER_ATTN;
+        L->is_full                          = true;
+        L->is_kv_shared                     = false;
+        L->head_dim                         = head_dim;
+        L->q_out                            = st->n_q_heads * head_dim;
+        L->kv_out                           = st->n_kv_heads * head_dim;
+        L->intermediate                     = intermediate;
+        L->sliding_window                   = 0;
+        L->rope_theta                       = freq_base;
+        L->n_rotated_dims                   = (int) rot;
     }
     return true;
 }
