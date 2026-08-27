@@ -3470,18 +3470,70 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal DeltaNet: encoder failed");
         return GEIST_E_BACKEND;
     }
-    metal_msg_send_set_pipeline(st, enc, st->deltanet_mix_pipeline);
+    /* seq>1 runs the chunked-prefill kernel sequence (CPU
+     * dn_run_prefill_chunked port); the serial per-token mixer stays for
+     * decode and as the fallback when scratch allocation fails. */
+    bool chunked = args->seq > 1 && st->use_dn_chunk && st->dn_head_chunk_pipeline != nullptr;
+    if (chunked) {
+        const size_t C    = args->seq;
+        const size_t hist = args->conv_kernel - 1u;
+        const size_t wsf  = 3u * C + 3u * C * args->head_k + 3u * C * args->head_v + 2u * C * C;
+        const size_t scr_bytes = (C * conv_dim + 2u * C * args->n_v_heads + hist * conv_dim +
+                                  args->n_v_heads * wsf) *
+                                 sizeof(float);
+        if (scr_bytes > (size_t) 1u << 31) {
+            chunked = false;
+        } else if (st->dn_scratch_bytes < scr_bytes) {
+            metal_msg_send_void0(st, st->dn_scratch, "release");
+            st->dn_scratch       = metal_msg_send_id_size_uint(st,
+                                                               st->device,
+                                                               "newBufferWithLength:options:",
+                                                               scr_bytes,
+                                                               METAL_RESOURCE_STORAGE_MODE_PRIVATE);
+            st->dn_scratch_bytes = st->dn_scratch != nullptr ? scr_bytes : 0;
+            chunked              = st->dn_scratch != nullptr;
+        }
+    }
     for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
         metal_msg_send_set_buffer(st, enc, all[i]->buffer->buffer, 0, i);
     }
-    metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
-    const struct metal_size groups  = {args->n_k_heads, 1, 1};
-    const struct metal_size threads = {256, 1, 1};
-    metal_profile_add_dispatch(st,
-                               args->seq == 1 ? METAL_PROFILE_DISPATCH_DELTANET_DECODE
-                                              : METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
-                               groups);
-    metal_msg_send_dispatch(st, enc, groups, threads);
+    if (chunked) {
+        const uint32_t          C       = params.seq;
+        const uint32_t          cd      = (uint32_t) conv_dim;
+        const uint32_t          hist    = params.conv_kernel - 1u;
+        const struct metal_size t256    = {256, 1, 1};
+        const struct metal_size g_flat  = {(hist * cd + 255u) / 256u, 1, 1};
+        const struct metal_size g_tok   = {C, 1, 1};
+        const struct metal_size g_norm  = {C, params.n_k_heads, 1};
+        const struct metal_size g_heads = {params.n_v_heads, 1, 1};
+        metal_msg_send_set_buffer(st, enc, st->dn_scratch, 0, 10);
+        metal_msg_send_set_bytes(st, enc, &params, sizeof params, 11);
+        metal_msg_send_set_pipeline(st, enc, st->dn_cst_copy_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_flat);
+        metal_msg_send_dispatch(st, enc, g_flat, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_conv_prep_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_tok);
+        metal_msg_send_dispatch(st, enc, g_tok, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_qk_norm_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_norm);
+        metal_msg_send_dispatch(st, enc, g_norm, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_state_roll_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_flat);
+        metal_msg_send_dispatch(st, enc, g_flat, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_head_chunk_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_heads);
+        metal_msg_send_dispatch(st, enc, g_heads, t256);
+    } else {
+        metal_msg_send_set_pipeline(st, enc, st->deltanet_mix_pipeline);
+        metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
+        const struct metal_size groups  = {args->n_k_heads, 1, 1};
+        const struct metal_size threads = {256, 1, 1};
+        metal_profile_add_dispatch(st,
+                                   args->seq == 1 ? METAL_PROFILE_DISPATCH_DELTANET_DECODE
+                                                  : METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
+                                   groups);
+        metal_msg_send_dispatch(st, enc, groups, threads);
+    }
     if (st->sequence_active) {
         st->sequence_has_work = true;
         return GEIST_OK;

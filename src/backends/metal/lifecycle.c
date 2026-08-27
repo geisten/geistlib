@@ -29,12 +29,23 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         }
         metal_release_sequence_objects(st);
         metal_msg_send_void0(st, st->argmax_result_buffer, "release");
+        metal_msg_send_void0(st, st->dn_scratch, "release");
         metal_msg_send_void0(st, st->argmax_batch_pipeline, "release");
         metal_msg_send_void0(st, st->argmax_batch_function, "release");
         metal_msg_send_void0(st, st->argmax_pipeline, "release");
         metal_msg_send_void0(st, st->argmax_function, "release");
         metal_msg_send_void0(st, st->deltanet_mix_pipeline, "release");
         metal_msg_send_void0(st, st->deltanet_mix_function, "release");
+        metal_msg_send_void0(st, st->dn_cst_copy_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_cst_copy_function, "release");
+        metal_msg_send_void0(st, st->dn_conv_prep_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_conv_prep_function, "release");
+        metal_msg_send_void0(st, st->dn_qk_norm_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_qk_norm_function, "release");
+        metal_msg_send_void0(st, st->dn_state_roll_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_state_roll_function, "release");
+        metal_msg_send_void0(st, st->dn_head_chunk_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_head_chunk_function, "release");
         metal_msg_send_void0(st, st->deltanet_library, "release");
         metal_msg_send_void0(st, st->qgate_split_pipeline, "release");
         metal_msg_send_void0(st, st->qgate_split_function, "release");
@@ -277,6 +288,16 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->quant_sg_library                      = nullptr;
     st->silu_library                          = nullptr;
     st->deltanet_library                      = nullptr;
+    st->dn_cst_copy_pipeline                  = nullptr;
+    st->dn_cst_copy_function                  = nullptr;
+    st->dn_conv_prep_pipeline                 = nullptr;
+    st->dn_conv_prep_function                 = nullptr;
+    st->dn_qk_norm_pipeline                   = nullptr;
+    st->dn_qk_norm_function                   = nullptr;
+    st->dn_state_roll_pipeline                = nullptr;
+    st->dn_state_roll_function                = nullptr;
+    st->dn_head_chunk_pipeline                = nullptr;
+    st->dn_head_chunk_function                = nullptr;
     st->qgate_library                         = nullptr;
     st->q4k_n4_pipeline                       = nullptr;
     st->q4k_n4_function                       = nullptr;
@@ -359,6 +380,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->argmax_batch_pipeline                 = nullptr;
     st->argmax_batch_function                 = nullptr;
     st->argmax_result_buffer                  = nullptr;
+    st->dn_scratch                            = nullptr;
+    st->dn_scratch_bytes                      = 0;
     st->argmax_result_mapped                  = nullptr;
     st->argmax_result_capacity                = 0;
     st->rope_rows_pipeline                    = nullptr;
@@ -539,6 +562,11 @@ void metal_destroy(struct geist_backend *be) {
     const char *pipeline_env = getenv("GEIST_METAL_PIPELINE");
     st->seq_rotate_every     = pipeline_env != nullptr ? (uint32_t) atoi(pipeline_env) : 192u;
     st->profile_enabled      = metal_env_enabled("GEIST_METAL_PROFILE");
+    /* Chunked DeltaNet prefill (CPU dn_run_prefill_chunked port). Default
+     * ON for seq>1; GEIST_METAL_DN_CHUNK=0 falls back to the serial
+     * per-token mixer kernel. */
+    const char *dn_chunk = getenv("GEIST_METAL_DN_CHUNK");
+    st->use_dn_chunk     = dn_chunk == nullptr || strcmp(dn_chunk, "0") != 0;
 
     enum geist_status s = metal_load_runtime(be, st);
     if (s != GEIST_OK) {
