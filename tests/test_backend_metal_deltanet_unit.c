@@ -12,11 +12,14 @@
 #include <string.h>
 
 enum {
-    SEQ  = 4,
-    NKH  = 1,
-    NH   = 2,
-    DK   = 7,
-    DV   = 9,
+    SEQ = 4,
+    NKH = 1,
+    NH  = 2,
+    DK  = 7,
+    /* dv%4==0 keeps the chunked prefill path engaged (its wide kernels
+     * emit 4-wide j blocks and the host falls back to the serial mixer
+     * otherwise); 12 stays a non-power-of-two awkward size. */
+    DV   = 12,
     K    = 4,
     KEYD = NKH * DK,
     VD   = NH * DV,
