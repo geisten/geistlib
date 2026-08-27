@@ -1980,7 +1980,12 @@ static const char metal_deltanet_source[] =
         "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
         "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],constant P&p[[buffer(10)]],"
         "uint hk[[threadgroup_position_in_grid]],uint j[[thread_index_in_threadgroup]]){"
-        "threadgroup float red[256];uint keyd=p.nkh*p.dk,vd=p.nvh*p.dv,cd=2u*keyd+vd;"
+        /* tq/tk stage the normed q/k rows in threadgroup memory: the state
+         * loop reads them cross-thread, and mem_threadgroup barriers only
+         * fence threadgroup-address-space data — the old device reads were
+         * formally unfenced (worked on M1 by luck) and slower. */
+        "threadgroup float red[256];threadgroup float tq[256];threadgroup float tk[256];"
+        "uint keyd=p.nkh*p.dk,vd=p.nvh*p.dv,cd=2u*keyd+vd;"
         "if(hk>=p.nkh)return;float qs=rsqrt(float(p.dk));"
         "for(uint t=0;t<p.seq;t++){uint qb=p.qo+t*cd,kb=qb+keyd,vb=kb+keyd;"
         "float qr=0.0f,kr=0.0f,qc=0.0f,kc=0.0f;"
@@ -1996,12 +2001,14 @@ static const char metal_deltanet_source[] =
         "red[j]=j<p.dk?qkv[qb+hk*p.dk+j]*qkv[qb+hk*p.dk+j]:0.0f;"
         "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint s=128u;s>0u;s>>=1u){"
         "if(j<s)red[j]+=red[j+s];threadgroup_barrier(mem_flags::mem_threadgroup);}"
-        "float qi=rsqrt(red[0]+p.eps);if(j<p.dk)qkv[qb+hk*p.dk+j]*=qi*qs;"
+        "float qi=rsqrt(red[0]+p.eps);if(j<p.dk){float v=qkv[qb+hk*p.dk+j]*qi*qs;"
+        "qkv[qb+hk*p.dk+j]=v;tq[j]=v;}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "red[j]=j<p.dk?qkv[kb+hk*p.dk+j]*qkv[kb+hk*p.dk+j]:0.0f;"
         "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint s=128u;s>0u;s>>=1u){"
         "if(j<s)red[j]+=red[j+s];threadgroup_barrier(mem_flags::mem_threadgroup);}"
-        "float ki=rsqrt(red[0]+p.eps);if(j<p.dk)qkv[kb+hk*p.dk+j]*=ki;"
+        "float ki=rsqrt(red[0]+p.eps);if(j<p.dk){float v=qkv[kb+hk*p.dk+j]*ki;"
+        "qkv[kb+hk*p.dk+j]=v;tk[j]=v;}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint h=hk;h<p.nvh;h+=p.nkh){"
         "float vr=0.0f,vc=0.0f;if(j<p.dv){uint cv=2u*keyd+h*p.dv+j;vr=qkv[qb+cv];"
         "for(uint r=0;r<p.K;r++){float vx=r+1u<p.K?cs[p.cso+r*cd+cv]:vr;"
@@ -2012,10 +2019,12 @@ static const char metal_deltanet_source[] =
         "if(j<p.dv){float be=1.0f/(1.0f+exp(-beta[p.bo+t*p.nvh+h]));"
         "float sp=log(1.0f+exp(alpha[p.ao+t*p.nvh+h]+dt[p.dto+h]));"
         "float decay=exp(aw[p.awo+h]*sp),mem=0.0f;uint sb=p.so+h*p.dk*p.dv;"
-        "for(uint i=0;i<p.dk;i++){uint si=sb+i*p.dv+j;float sv=S[si]*decay;S[si]=sv;"
-        "mem+=sv*qkv[kb+hk*p.dk+i];}float d=(qkv[vb+h*p.dv+j]-mem)*be;"
-        "for(uint i=0;i<p.dk;i++){uint si=sb+i*p.dv+j;float sv=S[si]+qkv[kb+hk*p.dk+i]*d;"
-        "S[si]=sv;out+=sv*qkv[qb+hk*p.dk+i];}gate=z[p.zo+t*vd+h*p.dv+j];}"
+        /* decay folds into both passes: one read-only mem pass, one fused
+         * decay+update pass — 2R+1W over S instead of 2R+2W. */
+        "for(uint i=0;i<p.dk;i++){mem+=S[sb+i*p.dv+j]*tk[i];}mem*=decay;"
+        "float d=(qkv[vb+h*p.dv+j]-mem)*be;"
+        "for(uint i=0;i<p.dk;i++){uint si=sb+i*p.dv+j;float sv=S[si]*decay+tk[i]*d;"
+        "S[si]=sv;out+=sv*tq[i];}gate=z[p.zo+t*vd+h*p.dv+j];}"
         "red[j]=j<p.dv?out*out:0.0f;threadgroup_barrier(mem_flags::mem_threadgroup);"
         "for(uint s=128u;s>0u;s>>=1u){if(j<s)red[j]+=red[j+s];"
         "threadgroup_barrier(mem_flags::mem_threadgroup);}if(j<p.dv){"
