@@ -135,20 +135,73 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                         const struct geist_tensor     *y,
                                         const struct metal_q4k_params *params,
                                         enum geist_dtype               dtype) {
-    const bool tiled = params->rows >= 8u;
-    void *pipeline = dtype == GEIST_DTYPE_Q4_0   ? (tiled ? st->q40_m8_pipeline : st->q40_pipeline)
-                     : dtype == GEIST_DTYPE_Q8_0 ? (tiled ? st->q80_m8_pipeline : st->q80_pipeline)
-                     : dtype == GEIST_DTYPE_Q4_1 ? (tiled ? st->q41_m8_pipeline : st->q41_pipeline)
-                                                 : (tiled ? st->q5k_m8_pipeline : st->q5k_pipeline);
-    metal_msg_send_set_pipeline(st, enc, pipeline);
+    void *n4 = dtype == GEIST_DTYPE_Q4_0   ? st->q40_n4_pipeline
+               : dtype == GEIST_DTYPE_Q8_0 ? st->q80_n4_pipeline
+               : dtype == GEIST_DTYPE_Q4_1 ? st->q41_n4_pipeline
+                                           : st->q5k_n4_pipeline;
+    void *mm = dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_pipeline
+               : dtype == GEIST_DTYPE_Q8_0 ? st->q80_mm_pipeline
+               : dtype == GEIST_DTYPE_Q4_1 ? st->q41_mm_pipeline
+                                           : st->q5k_mm_pipeline;
+    /* rows==1 → simdgroup GEMV (llama mul_mv structure); rows>=8 → 64x32
+     * simdgroup GEMM (bounds-checked, arbitrary rows/n_out); the naive
+     * kernels remain the fallback for tiny shapes and the two kill-switch
+     * envs (reused from the q4k levers). */
+    const bool n_tile4 =
+            params->rows == 1u && params->n_out >= 4u && st->use_q4k_n4 && n4 != nullptr;
+    void      *mm_fast = dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_fast_pipeline
+                         : dtype == GEIST_DTYPE_Q8_0 ? st->q80_mm_fast_pipeline
+                         : dtype == GEIST_DTYPE_Q4_1 ? st->q41_mm_fast_pipeline
+                                                     : st->q5k_mm_fast_pipeline;
+    const bool m_tile_sg =
+            params->rows >= 8u && params->n_out >= 64u && st->use_q4k_mm_sg && mm != nullptr;
+    /* interior fast variant: no bounds checks, vectorized activation
+     * staging (needs full tiles, n_in%32 and 8-float-aligned x rows). */
+    const bool m_tile_sg_fast = m_tile_sg && mm_fast != nullptr && (params->rows % 32u) == 0u &&
+                                (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
+                                (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u;
+    const bool tiled          = !n_tile4 && !m_tile_sg && params->rows >= 8u;
+    void *base = dtype == GEIST_DTYPE_Q4_0   ? (tiled ? st->q40_m8_pipeline : st->q40_pipeline)
+                 : dtype == GEIST_DTYPE_Q8_0 ? (tiled ? st->q80_m8_pipeline : st->q80_pipeline)
+                 : dtype == GEIST_DTYPE_Q4_1 ? (tiled ? st->q41_m8_pipeline : st->q41_pipeline)
+                                             : (tiled ? st->q5k_m8_pipeline : st->q5k_pipeline);
+    metal_msg_send_set_pipeline(st,
+                                enc,
+                                n_tile4          ? n4
+                                : m_tile_sg_fast ? mm_fast
+                                : m_tile_sg      ? mm
+                                                 : base);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, 0, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+    if (m_tile_sg) {
+        metal_msg_send_set_threadgroup_memory(st, enc, m_tile_sg_fast ? 6144u : 8192u, 0u);
+    }
+    /* q40/q80 n4 kernels run 4 rows per simdgroup (8 per threadgroup);
+     * q41/q5k still run 2 (4 per threadgroup). */
+    const uint32_t n4_tile = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0) ? 8u : 4u;
     const struct metal_size groups = {
-            params->n_out, tiled ? (params->rows + 7u) / 8u : params->rows, 1};
-    const struct metal_size threads = {METAL_Q4K_THREADS_PER_ROW, 1, 1};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q4K_LINEAR_BASE, groups);
+            .width  = n_tile4     ? (params->n_out + n4_tile - 1u) / n4_tile
+                      : m_tile_sg ? (params->rows + 31u) / 32u
+                                  : params->n_out,
+            .height = n_tile4     ? params->rows
+                      : m_tile_sg ? (params->n_out + 63u) / 64u
+                      : tiled     ? (params->rows + 7u) / 8u
+                                  : params->rows,
+            .depth  = 1,
+    };
+    const struct metal_size threads = {
+            .width  = n_tile4     ? METAL_Q4K_N4_THREADS
+                      : m_tile_sg ? 32u
+                                  : METAL_Q4K_THREADS_PER_ROW,
+            .height = m_tile_sg ? 4u : 1u,
+            .depth  = 1,
+    };
+    metal_profile_add_dispatch(st,
+                               n_tile4 ? METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4
+                                       : METAL_PROFILE_DISPATCH_Q4K_LINEAR_BASE,
+                               groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
@@ -3417,18 +3470,98 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal DeltaNet: encoder failed");
         return GEIST_E_BACKEND;
     }
-    metal_msg_send_set_pipeline(st, enc, st->deltanet_mix_pipeline);
+    /* seq>1 runs the chunked-prefill kernel sequence (CPU
+     * dn_run_prefill_chunked port); the serial per-token mixer stays for
+     * decode and as the fallback when scratch allocation fails. */
+    /* seq<=512: the substitution kernel's threadgroup row cache. */
+    bool chunked = args->seq > 1 && args->seq <= 512 && st->use_dn_chunk &&
+                   st->dn_chunk_gate_pipeline != nullptr;
+    if (chunked) {
+        const size_t C    = args->seq;
+        const size_t hist = args->conv_kernel - 1u;
+        const size_t wsf  = 3u * C + 4u * C * args->head_k + 3u * C * args->head_v + 2u * C * C;
+        const size_t scr_bytes = (C * conv_dim + 2u * C * args->n_v_heads + hist * conv_dim +
+                                  args->n_v_heads * wsf) *
+                                 sizeof(float);
+        if (scr_bytes > (size_t) 1u << 31) {
+            chunked = false;
+        } else if (st->dn_scratch_bytes < scr_bytes) {
+            metal_msg_send_void0(st, st->dn_scratch, "release");
+            st->dn_scratch       = metal_msg_send_id_size_uint(st,
+                                                               st->device,
+                                                               "newBufferWithLength:options:",
+                                                               scr_bytes,
+                                                               METAL_RESOURCE_STORAGE_MODE_PRIVATE);
+            st->dn_scratch_bytes = st->dn_scratch != nullptr ? scr_bytes : 0;
+            chunked              = st->dn_scratch != nullptr;
+        }
+    }
     for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
         metal_msg_send_set_buffer(st, enc, all[i]->buffer->buffer, 0, i);
     }
-    metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
-    const struct metal_size groups  = {args->n_k_heads, 1, 1};
-    const struct metal_size threads = {256, 1, 1};
-    metal_profile_add_dispatch(st,
-                               args->seq == 1 ? METAL_PROFILE_DISPATCH_DELTANET_DECODE
-                                              : METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
-                               groups);
-    metal_msg_send_dispatch(st, enc, groups, threads);
+    if (chunked) {
+        const uint32_t          C       = params.seq;
+        const uint32_t          cd      = (uint32_t) conv_dim;
+        const uint32_t          hist    = params.conv_kernel - 1u;
+        const struct metal_size t256    = {256, 1, 1};
+        const struct metal_size g_flat  = {(hist * cd + 255u) / 256u, 1, 1};
+        const struct metal_size g_tok   = {C, 1, 1};
+        const struct metal_size g_norm  = {C, params.n_k_heads, 1};
+        const struct metal_size g_heads = {params.n_v_heads, 1, 1};
+        metal_msg_send_set_buffer(st, enc, st->dn_scratch, 0, 10);
+        metal_msg_send_set_bytes(st, enc, &params, sizeof params, 11);
+        metal_msg_send_set_pipeline(st, enc, st->dn_cst_copy_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_flat);
+        metal_msg_send_dispatch(st, enc, g_flat, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_conv_prep_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_tok);
+        metal_msg_send_dispatch(st, enc, g_tok, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_qk_norm_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_norm);
+        metal_msg_send_dispatch(st, enc, g_norm, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_state_roll_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_flat);
+        metal_msg_send_dispatch(st, enc, g_flat, t256);
+        const struct metal_size g_cc  = {(C * C + 255u) / 256u, params.n_v_heads, 1};
+        const struct metal_size g_cdv = {(C * params.head_v + 255u) / 256u, params.n_v_heads, 1};
+        const struct metal_size g_kv  = {
+                (params.head_k * params.head_v + 255u) / 256u, params.n_v_heads, 1};
+        const struct metal_size g_tv = {C, params.n_v_heads, 1};
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_stage_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_heads);
+        metal_msg_send_dispatch(st, enc, g_heads, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_amat_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_cc);
+        metal_msg_send_dispatch(st, enc, g_cc, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_subst_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_heads);
+        metal_msg_send_dispatch(st, enc, g_heads, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_vnew1_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_cdv);
+        metal_msg_send_dispatch(st, enc, g_cdv, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_vnew2_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_cdv);
+        metal_msg_send_dispatch(st, enc, g_cdv, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_out_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_cdv);
+        metal_msg_send_dispatch(st, enc, g_cdv, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_supd_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_kv);
+        metal_msg_send_dispatch(st, enc, g_kv, t256);
+        metal_msg_send_set_pipeline(st, enc, st->dn_chunk_gate_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_PREFILL, g_tv);
+        metal_msg_send_dispatch(st, enc, g_tv, t256);
+    } else {
+        metal_msg_send_set_pipeline(st, enc, st->deltanet_mix_pipeline);
+        metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
+        const struct metal_size groups  = {args->n_k_heads, 1, 1};
+        const struct metal_size threads = {256, 1, 1};
+        metal_profile_add_dispatch(st,
+                                   args->seq == 1 ? METAL_PROFILE_DISPATCH_DELTANET_DECODE
+                                                  : METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
+                                   groups);
+        metal_msg_send_dispatch(st, enc, groups, threads);
+    }
     if (st->sequence_active) {
         st->sequence_has_work = true;
         return GEIST_OK;
