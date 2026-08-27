@@ -3630,10 +3630,12 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
          * must be even (mirrors metal_attn_qkv_prep's hd % 2 check). */
         return q->head_dim > 0 && (q->head_dim % 2u) == 0u;
     case GEIST_FUSED_PLE_BLOCK:
-        /* F32 gate/proj matrices only (mirrors metal_ple_block's
-         * metal_tensor_is_f32_matrix checks). */
-        return q->gate_w != nullptr && q->up_w != nullptr && q->gate_w->dtype == GEIST_DTYPE_F32 &&
-               q->up_w->dtype == GEIST_DTYPE_F32;
+        /* F32 gate/proj matrices AND m==1 (mirrors metal_ple_block's
+         * checks — its kernels are naive decode GEMVs, rows==1 only).
+         * The missing m check made the plan bind fuse_ple_block_mN and
+         * hard-fail every gemma4 Metal prefill at layer 0. */
+        return q->m == 1 && q->gate_w != nullptr && q->up_w != nullptr &&
+               q->gate_w->dtype == GEIST_DTYPE_F32 && q->up_w->dtype == GEIST_DTYPE_F32;
     case GEIST_FUSED_EMBEDDING_LOOKUP_SCALED:
         /* Dtype set of metal_embedding_lookup_scaled's row decoders. */
         switch ((enum geist_dtype) q->table_dtype) {
@@ -3689,9 +3691,15 @@ const struct geist_backend_descriptor geist_backend_metal = {
         .vtbl  = &metal_vtbl,
         .prims = &metal_prims,
         .fused = &metal_fused,
-        .caps  = {.kv_f16_attention  = true,
-                  .batched_submit    = true,
-                  .preferred_m_max   = 128,
-                  .max_m             = 512, /* batched-submit pipeline bound */
-                  .preferred_kv_mode = GEIST_KV_FP32},
+        .caps  = {.kv_f16_attention = true,
+                  .batched_submit   = true,
+                  /* 256 since the simdgroup GEMM work (2026-08-27 A/B,
+                   * drift-controlled): gemma4-e2b 818->864 tok/s pp512,
+                   * qwen3.5-4b +5%, 27b flat; 512 adds ~4% on gemma only
+                   * but doubles the m_max-scaled logits scratch
+                   * (m_max x VOCAB floats — 256 MB at vocab 262k). The
+                   * old 128 "sweet spot" predates the mm_sg kernels. */
+                 .preferred_m_max   = 256,
+                 .max_m             = 512, /* batched-submit pipeline bound */
+                 .preferred_kv_mode = GEIST_KV_FP32},
 };
