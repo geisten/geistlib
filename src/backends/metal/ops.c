@@ -135,26 +135,42 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                         const struct geist_tensor     *y,
                                         const struct metal_q4k_params *params,
                                         enum geist_dtype               dtype) {
-    void *n4 = dtype == GEIST_DTYPE_Q4_0   ? st->q40_n4_pipeline
-               : dtype == GEIST_DTYPE_Q8_0 ? st->q80_n4_pipeline
-               : dtype == GEIST_DTYPE_Q4_1 ? st->q41_n4_pipeline
-                                           : st->q5k_n4_pipeline;
-    void *mm = dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_pipeline
-               : dtype == GEIST_DTYPE_Q8_0 ? st->q80_mm_pipeline
-               : dtype == GEIST_DTYPE_Q4_1 ? st->q41_mm_pipeline
-                                           : st->q5k_mm_pipeline;
+    void *n4 = dtype == GEIST_DTYPE_Q4_0     ? st->q40_n4_pipeline
+               : dtype == GEIST_DTYPE_Q8_0   ? st->q80_n4_pipeline
+               : dtype == GEIST_DTYPE_Q4_1   ? st->q41_n4_pipeline
+               : dtype == GEIST_DTYPE_IQ4_NL ? st->iq4nl_n4_pipeline
+               : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_n4_pipeline
+               : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_n4_pipeline
+               : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_n4_pipeline
+                                             : st->q5k_n4_pipeline;
+    void *mm = dtype == GEIST_DTYPE_Q4_0     ? st->q40_mm_pipeline
+               : dtype == GEIST_DTYPE_Q8_0   ? st->q80_mm_pipeline
+               : dtype == GEIST_DTYPE_Q4_1   ? st->q41_mm_pipeline
+               : dtype == GEIST_DTYPE_IQ4_NL ? st->iq4nl_mm_pipeline
+               : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_mm_pipeline
+               : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_mm_pipeline
+               : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_mm_pipeline
+                                             : st->q5k_mm_pipeline;
+    /* IQ4/Q3_K/IQ3_S: no naive fallback kernels and no fast GEMM
+     * instances — n4 for rows==1, the bounded simdgroup GEMM for every
+     * rows>=2 shape. */
+    const bool iq4 = dtype == GEIST_DTYPE_IQ4_NL || dtype == GEIST_DTYPE_IQ4_XS ||
+                     dtype == GEIST_DTYPE_Q3_K || dtype == GEIST_DTYPE_IQ3_S;
     /* rows==1 → simdgroup GEMV (llama mul_mv structure); rows>=8 → 64x32
      * simdgroup GEMM (bounds-checked, arbitrary rows/n_out); the naive
      * kernels remain the fallback for tiny shapes and the two kill-switch
      * envs (reused from the q4k levers). */
     const bool n_tile4 =
-            params->rows == 1u && params->n_out >= 4u && st->use_q4k_n4 && n4 != nullptr;
+            params->rows == 1u && params->n_out >= 4u && (st->use_q4k_n4 || iq4) && n4 != nullptr;
     void      *mm_fast = dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_fast_pipeline
                          : dtype == GEIST_DTYPE_Q8_0 ? st->q80_mm_fast_pipeline
                          : dtype == GEIST_DTYPE_Q4_1 ? st->q41_mm_fast_pipeline
+                         : iq4                       ? nullptr
                                                      : st->q5k_mm_fast_pipeline;
     const bool m_tile_sg =
-            params->rows >= 8u && params->n_out >= 64u && st->use_q4k_mm_sg && mm != nullptr;
+            (iq4 ? params->rows >= 2u
+                 : (params->rows >= 8u && params->n_out >= 64u && st->use_q4k_mm_sg)) &&
+            mm != nullptr;
     /* interior fast variant: no bounds checks, vectorized activation
      * staging (needs full tiles, n_in%32 and 8-float-aligned x rows). */
     const bool m_tile_sg_fast = m_tile_sg && mm_fast != nullptr && (params->rows % 32u) == 0u &&
@@ -180,7 +196,10 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     }
     /* q40/q80 n4 kernels run 4 rows per simdgroup (8 per threadgroup);
      * q41/q5k still run 2 (4 per threadgroup). */
-    const uint32_t n4_tile = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0) ? 8u : 4u;
+    const uint32_t n4_tile =
+            (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL)
+                    ? 8u
+                    : 4u;
     const struct metal_size groups = {
             .width  = n_tile4     ? (params->n_out + n4_tile - 1u) / n4_tile
                       : m_tile_sg ? (params->rows + 31u) / 32u
@@ -1450,15 +1469,19 @@ metal_embedding_lookup(struct geist_backend      *be,
     }
     struct metal_state           *st     = be->state;
     const struct metal_q4k_params params = {
-            .n_in           = (uint32_t) n_in,
-            .n_out          = (uint32_t) n_out,
-            .rows           = (uint32_t) rows,
-            .blocks_per_row = (uint32_t) (n_in / METAL_Q40_Q80_BLOCK_ELEMS),
-            .x_offset       = (uint32_t) x_offset,
-            .w_byte_offset  = (uint32_t) w_offset,
-            .y_offset       = (uint32_t) y_offset,
-            .x_row_stride   = (uint32_t) x_row_stride,
-            .y_row_stride   = (uint32_t) y_row_stride,
+            .n_in  = (uint32_t) n_in,
+            .n_out = (uint32_t) n_out,
+            .rows  = (uint32_t) rows,
+            .blocks_per_row =
+                    (uint32_t) (n_in / ((dtype == GEIST_DTYPE_IQ4_XS || dtype == GEIST_DTYPE_Q3_K ||
+                                         dtype == GEIST_DTYPE_IQ3_S)
+                                                ? METAL_IQ4XS_BLOCK_ELEMS
+                                                : METAL_Q40_Q80_BLOCK_ELEMS)),
+            .x_offset      = (uint32_t) x_offset,
+            .w_byte_offset = (uint32_t) w_offset,
+            .y_offset      = (uint32_t) y_offset,
+            .x_row_stride  = (uint32_t) x_row_stride,
+            .y_row_stride  = (uint32_t) y_row_stride,
     };
     if (st->sequence_active) {
         metal_encode_q40_q80_linear(st, metal_sequence_encoder(st), x, w, y, &params, dtype);
@@ -3229,6 +3252,10 @@ static void metal_linear_mN(const float               *x,
     case GEIST_DTYPE_Q4_0:
     case GEIST_DTYPE_Q4_1:
     case GEIST_DTYPE_Q8_0:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ3_S:
         s = metal_q40_q80_linear(be, &tx, &tw, &ty, (enum geist_dtype) w->dtype, true);
         break;
     case GEIST_DTYPE_Q4_K:
@@ -3311,6 +3338,10 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
         case GEIST_DTYPE_Q4_0:
         case GEIST_DTYPE_Q4_1:
         case GEIST_DTYPE_Q8_0:
+        case GEIST_DTYPE_IQ4_NL:
+        case GEIST_DTYPE_IQ4_XS:
+        case GEIST_DTYPE_Q3_K:
+        case GEIST_DTYPE_IQ3_S:
             return metal_q40_q80_linear(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
         case GEIST_DTYPE_Q4_K:
             return metal_matvec_q4k(be, &x1, t_w, &y1);
@@ -3328,6 +3359,10 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_Q4_0:
     case GEIST_DTYPE_Q4_1:
     case GEIST_DTYPE_Q8_0:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ3_S:
         return metal_q40_q80_linear(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
     case GEIST_DTYPE_Q4_K:
         return metal_matmul_q4k(be, x, t_w, y);
@@ -3355,6 +3390,10 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_Q4_K:
     case GEIST_DTYPE_Q5_K:
     case GEIST_DTYPE_Q6_K:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_F32:
         w->linear_m1 = metal_linear_m1;
         w->linear_mN = metal_linear_mN;
