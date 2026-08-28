@@ -3733,12 +3733,15 @@ const struct geist_backend_descriptor geist_backend_metal = {
         .fused = &metal_fused,
         .caps  = {.kv_f16_attention = true,
                   .batched_submit   = true,
-                  /* 256 since the simdgroup GEMM work (2026-08-27 A/B,
-                   * drift-controlled): gemma4-e2b 818->864 tok/s pp512,
-                   * qwen3.5-4b +5%, 27b flat; 512 adds ~4% on gemma only
-                   * but doubles the m_max-scaled logits scratch
-                   * (m_max x VOCAB floats — 256 MB at vocab 262k). The
-                   * old 128 "sweet spot" predates the mm_sg kernels. */
+                  /* 256 since the simdgroup GEMM work. The original
+                   * 2026-08-27 A/B was void — pre-#312, m_max requests
+                   * below the default were silently ignored, so both
+                   * arms ran identical configs. The post-#312 re-check
+                   * with real chunking keeps 256 (gemma4-e2b 972 tok/s
+                   * pp512). 512 doubles the m_max-scaled logits scratch
+                   * (m_max x VOCAB floats — 256 MB at vocab 262k); DN
+                   * models are capped at 64 in arch_state anyway
+                   * (O(C^2) chunk cost). */
                  .preferred_m_max   = 256,
                  .max_m             = 512, /* batched-submit pipeline bound */
                  .preferred_kv_mode = GEIST_KV_FP32},
