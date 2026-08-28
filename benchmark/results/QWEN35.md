@@ -28,23 +28,24 @@ on Mac by unserializing the dequant+SGEMM prefill path.
   variables needed** (that alone was 6.1 → 22.3 t/s on the 4B; see the PR).
 - **llama protocol:** `llama-bench -ngl 0 -p 128[,512] -n 16|32 -r 2..3`.
 
-## Mac (M-series, 8 threads, CPU-only) — measured 2026-08-26, geist `f3ef6a8`
+## Mac (M-series, 8 threads, CPU-only) — measured 2026-08-27, geist #295 branch
 
-Full #287 + #288 + #289 + #291 stack (chunked delta-rule prefill,
-parallel dequant+SGEMM prefill, Q6_K x8 lm_head GEMV, Q4_0 x8 decode
-GEMV). Pre-stack reference (2026-08-24): prefill 0.8B 139.1,
-4B 44.1/40.5, 27B 6.6; decode 0.8B 91.8, 4B 22.4, 27B 4.3.
+Full #287 + #288 + #289 + #291 + #295 stack (chunked delta-rule
+prefill, parallel dequant+SGEMM prefill, Q6_K x8 lm_head GEMV, Q4_0
+x8 decode GEMV, int8 mN GEMM on the x8 layout). Pre-stack reference
+(2026-08-24): prefill 0.8B 139.1, 4B 44.1/40.5, 27B 6.6; decode
+0.8B 91.8, 4B 22.4, 27B 4.3.
 
 | model | metric | geist | llama.cpp CPU | ratio |
 | :-- | :-- | ---: | ---: | :-- |
 | 0.8B Q8_0 | prefill pp128 | 467.3 | 496.7 | llama 1.06× |
 | 0.8B Q8_0 | prefill pp512 | 448.8 | — | |
 | 0.8B Q8_0 | **decode** | **99.9** | 77.9 | **geist 1.28×** |
-| 4B Q4_0 | prefill pp128 | 88.7 | 142.4 | llama 1.61× |
-| 4B Q4_0 | prefill pp512 | 89.7 | 144.9 | llama 1.62× |
-| 4B Q4_0 | **decode** | **27.1** | 27.8 | ~parity (0.97×) |
-| 27B Q4_0 | prefill pp128 | 13.5 | 26.5 | llama 2.0× |
-| 27B Q4_0 | **decode** | **5.6** | 5.8 | ~parity (0.96×) |
+| 4B Q4_0 | prefill pp128 | 114.0 | 142.4 | llama 1.25× |
+| 4B Q4_0 | prefill pp512 | 113.3 | 144.9 | llama 1.28× |
+| 4B Q4_0 | **decode** | **27.6** | 27.8 | ~parity |
+| 27B Q4_0 | prefill pp128 | 18.4 | 26.5 | llama 1.44× |
+| 27B Q4_0 | **decode** | **5.7** | 5.8 | ~parity |
 
 Decode is measured after a 128/512-token prefill (real KV + recurrent
 state); 4B decode at 512 context is 25.5. RSS includes the packed x8
