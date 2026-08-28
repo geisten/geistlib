@@ -150,6 +150,37 @@ Quality remains target-exact by construction and by the 30-token equality
 test: MTP only proposes tokens; the target model verifies every committed
 token.
 
+### Experimental MTP sketch head (#296 PR 5) — 2026-08-28
+
+PR 5 evaluates the existing host i8-sketch output head inside the recursive
+single-row MTP draft. It is gated independently by `GEIST_MTP_SPEC_HEAD=1`;
+the default remains the dense MTP head. The fast path preserves the target
+head's dense/sparse metadata and falls back to the dense projection whenever
+the model, backend, or sampling mode is ineligible.
+
+The mandatory 27B Q4_0 test exercises both the dense fallback and enabled
+sketch path. Fast drafts are valid and deterministic, and the end-to-end
+greedy loop remains target-exact: 30/30 tokens match sequential decoding. On
+the repetitive integration prompt it emitted 31 tokens in 8 verification
+calls (3.88 tokens/call).
+
+The full five-prompt, 50-token sweep measured both configurations on the same
+revision:
+
+| 27B Q4_0 draft head | sequential | speculative | speedup | tokens/spec call |
+| :-- | ---: | ---: | ---: | ---: |
+| dense (default) | 3.2 tok/s | 2.4 tok/s | 0.76× | 3.38 |
+| i8 sketch (opt-in) | 3.4 tok/s | 2.2 tok/s | 0.65× | 3.16 |
+
+This is a measured rejection for the default path. Compared with PR 4's dense
+MTP head, acceptance falls from 3.38 to 3.16 tokens/call and the end-to-end
+speedup factor from 0.76× to 0.65×. Approximate finalist ranking changes enough
+draft tokens to require more expensive target verification, overwhelming the
+cheaper head. The default result reproduces PR 4's 0.78×/3.38 within run noise.
+The opt-in remains useful for profiling and future sketch tuning, but it is not
+enabled automatically; therefore PR 5 introduces no default performance or
+quality regression.
+
 (llama.cpp Metal, for context: 4B pp128 865 / tg 69.5; 27B pp512 106 /
 tg 19.0. GPU is out of scope for geist — see the #281 positioning.)
 

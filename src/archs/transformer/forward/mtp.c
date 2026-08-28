@@ -8,7 +8,13 @@
 #include <geist.h>
 #include <geist_backend.h>
 
+#include <stdlib.h>
 #include <string.h>
+
+static bool mtp_spec_head_enabled(void) {
+    const char *env = getenv("GEIST_MTP_SPEC_HEAD");
+    return env != nullptr && env[0] == '1';
+}
 
 static enum geist_status
 mtp_embed_tokens(struct transformer_arch_session *sess, size_t n, const geist_token_t *ids) {
@@ -158,6 +164,24 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
     s                          = prims->rmsnorm(be, &t_raw, &t_wn, st->config.rms_eps, &t_norm);
     if (s != GEIST_OK)
         return s;
+
+    /* Draft logits are greedy and never exposed to the caller. Reuse the
+     * host i8-sketch head for the recursive single-row case instead of
+     * streaming the complete tied vocabulary matrix for every MTP token.
+     * Keep the target head's metadata intact: the sketch shares scratch
+     * buffers with it, but an MTP draft must not change whether the last
+     * authoritative target logits were dense or sparse. */
+    if (n == 1 && mtp_spec_head_enabled()) {
+        const bool logits_sparse     = sess->logits_sparse;
+        const bool logits_softcapped = sess->logits_softcapped;
+        const bool handled           = transformer_spec_head_try(sess, out_tokens);
+        sess->logits_sparse          = logits_sparse;
+        sess->logits_softcapped      = logits_softcapped;
+        if (handled) {
+            sess->mtp_kv_len++;
+            return GEIST_OK;
+        }
+    }
 
     struct geist_tensor t_logits = view_2d(sess->scratch_logits, N, st->vocab_size);
     s                            = linear_w_or_legacy(be,
