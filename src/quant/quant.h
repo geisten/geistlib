@@ -100,6 +100,13 @@ constexpr size_t IQ4_XS_BLOCK_ELEMS = 256;
 constexpr size_t IQ4_XS_BLOCK_BYTES = 136;
 void             dequant_iq4_xs_row(const void *blocks, float *out, size_t n_elems);
 
+/* W4A8 NEON decode GEMVs for the IQ4 LUT formats (one vqtbl1q per 16
+ * nibbles). M=1 only; prefill stays on the dequant+SGEMM trampoline. */
+void linear_iq4xs_decode_w4a8(
+        const float *x, const void *w_iq4xs, size_t n_in, size_t n_out, float *y);
+void linear_iq4nl_decode_w4a8(
+        const float *x, const void *w_iq4nl, size_t n_in, size_t n_out, float *y);
+
 /* TQ2_0 super-block: 256 elements, 66 bytes, 2.0625 bpw.
  *   qs[64]: 256 trits packed 4-per-byte (encoding: 0/1/2 mapped to -1/0/+1)
  *   d: fp16 scale.

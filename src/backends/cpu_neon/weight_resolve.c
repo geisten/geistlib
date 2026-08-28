@@ -215,6 +215,22 @@ static void cpu_neon_w_iq3s_m1(const float               *x,
     linear_iq3s_decode_w3a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
 }
 
+static void cpu_neon_w_iq4xs_m1(const float               *x,
+                                const struct geist_weight *w,
+                                struct geist_backend      *be,
+                                float                     *y) {
+    (void) be;
+    linear_iq4xs_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+}
+
+static void cpu_neon_w_iq4nl_m1(const float               *x,
+                                const struct geist_weight *w,
+                                struct geist_backend      *be,
+                                float                     *y) {
+    (void) be;
+    linear_iq4nl_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+}
+
 /* F32 dense (P1.1.e): cblas-backed SGEMV / SGEMM. Row-major weight is
  * [n_out, n_in]; we compute y = W @ x as a sgemv with TransA=NoTrans
  * since the row-major layout already has the right shape. */
@@ -1071,18 +1087,19 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
         /* IQ-series. */
         {GEIST_DTYPE_IQ2_S, CPU_NEON_ISA_NEON, cpu_neon_w_iq2s_m1, cpu_neon_w_iq2s_mN, "iq2_s"},
         {GEIST_DTYPE_IQ3_S, CPU_NEON_ISA_NEON, cpu_neon_w_iq3s_m1, cpu_neon_w_iq3s_mN, "iq3_s"},
-        /* IQ4: no native NEON kernel yet — dequant-and-sgemm trampolines
-         * (correct, and prefill lands on Accelerate/OpenBLAS). */
+        /* IQ4: native W4A8 decode GEMVs (vqtbl1q LUT + SDOT); M>1
+         * prefill stays on the dequant+SGEMM trampoline, which already
+         * reaches Q8_0-class throughput through the batched GEMM. */
         {GEIST_DTYPE_IQ4_NL,
          CPU_NEON_ISA_NEON,
-         cpu_neon_w_dequant_trampoline_m1,
+         cpu_neon_w_iq4nl_m1,
          cpu_neon_w_dequant_trampoline_mN,
-         "iq4_nl/dequant"},
+         "iq4_nl/w4a8-m1"},
         {GEIST_DTYPE_IQ4_XS,
          CPU_NEON_ISA_NEON,
-         cpu_neon_w_dequant_trampoline_m1,
+         cpu_neon_w_iq4xs_m1,
          cpu_neon_w_dequant_trampoline_mN,
-         "iq4_xs/dequant"},
+         "iq4_xs/w4a8-m1"},
 
         /* F32 native both paths. */
         {GEIST_DTYPE_F32, CPU_NEON_ISA_NEON, cpu_neon_w_f32_m1, cpu_neon_w_f32_mN, "f32"},
