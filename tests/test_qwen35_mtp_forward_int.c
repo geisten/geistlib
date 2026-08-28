@@ -140,6 +140,48 @@ int main(void) {
     fails += geist_expect(finite_hidden && max_abs > 0.0f,
                           "MTP returns finite, non-zero hidden rows");
 
+    /* PR 5 routes recursive one-row drafts through the i8 sketch head. The
+     * dense fallback remains available, fast candidates are deterministic,
+     * and shared scratch must not leak sparse-logit metadata into the
+     * authoritative target state. End-to-end target-token equality is covered
+     * by test_speculative_loop_int because drafts may intentionally differ. */
+    if (st->spec_state == 1) {
+        geist_token_t dense_tok = -1, fast_tok = -1, fast_tok_2 = -1;
+        float        *fast_h = calloc(H, sizeof(float));
+        if (fast_h == nullptr) {
+            fails++;
+        } else {
+            transformer_mtp_reset(sess);
+            if (setenv("GEIST_SPEC_HEAD", "0", 1) != 0)
+                fails++;
+            if (setenv("GEIST_MTP_SPEC_HEAD", "0", 1) != 0)
+                fails++;
+            s = transformer_mtp_forward(sess, 1, ids, hidden, &dense_tok, nullptr);
+            fails += geist_expect(s == GEIST_OK, "dense one-row MTP reference succeeds");
+            fails += geist_expect(dense_tok >= 0 && (size_t) dense_tok < st->vocab_size,
+                                  "dense one-row MTP token is in vocabulary");
+
+            transformer_mtp_reset(sess);
+            sess->logits_sparse     = false;
+            sess->logits_softcapped = true;
+            if (setenv("GEIST_SPEC_HEAD", "1", 1) != 0)
+                fails++;
+            if (setenv("GEIST_MTP_SPEC_HEAD", "1", 1) != 0)
+                fails++;
+            s = transformer_mtp_forward(sess, 1, ids, hidden, &fast_tok, fast_h);
+            fails += geist_expect(s == GEIST_OK, "sketch one-row MTP forward succeeds");
+            fails += geist_expect(fast_tok >= 0 && (size_t) fast_tok < st->vocab_size,
+                                  "27B sketch MTP token is in vocabulary");
+            fails += geist_expect(!sess->logits_sparse && sess->logits_softcapped,
+                                  "MTP sketch preserves target logit metadata");
+            transformer_mtp_reset(sess);
+            s = transformer_mtp_forward(sess, 1, ids, hidden, &fast_tok_2, nullptr);
+            fails += geist_expect(s == GEIST_OK && fast_tok_2 == fast_tok,
+                                  "27B sketch MTP token is deterministic");
+            free(fast_h);
+        }
+    }
+
     const size_t        before_bad = sess->mtp_kv_len;
     const geist_token_t bad        = (geist_token_t) st->vocab_size;
     s                              = transformer_mtp_forward(sess, 1, &bad, hidden, tok_b, nullptr);
