@@ -121,7 +121,7 @@ static struct transformer_forward_profile g_head_profile = {
                                                          &st->embed_table_w,
                                                          /* seq = */ 1,
                                                          &t_h_2d,
-                                                         &st->embed_table,
+                                                         &st->output_table,
                                                          &t_logits_2d);
     transformer_profile_add(&g_head_profile, HEAD_PROFILE_LM_HEAD, t0);
     if (s != GEIST_OK) {
@@ -207,7 +207,7 @@ transformer_head_dense_recompute(struct transformer_arch_session *sess) {
                                                                       &st->embed_table_w,
                                                                       /* seq = */ 1,
                                                                       &t_h_2d,
-                                                                      &st->embed_table,
+                                                                      &st->output_table,
                                                                       &t_logits_2d);
     if (s == GEIST_OK) {
         sess->logits_sparse = false;
@@ -258,7 +258,7 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
                                                          &st->embed_table_w,
                                                          k,
                                                          &t_h_2d,
-                                                         &st->embed_table,
+                                                         &st->output_table,
                                                          &t_logits_2d);
     if (s != GEIST_OK) {
         return s;

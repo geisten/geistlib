@@ -94,15 +94,27 @@ int main(void) {
 
     /* Non-zero sentinels prove that the isolated head preserves an existing
      * target transaction rather than merely leaving fresh zero state alone. */
-    sess->kv_len             = 3;
-    sess->logits_valid       = true;
-    sess->next_token_pending = 123;
-    size_t dn_sentinel_layer = st->n_layers;
+    sess->kv_len                                       = 3;
+    sess->logits_valid                                 = true;
+    sess->next_token_pending                           = 123;
+    size_t                           dn_sentinel_layer = st->n_layers;
+    const struct geist_backend_vtbl *v                 = st->backend->desc->vtbl;
     for (size_t li = 0; li < st->n_layers; li++) {
         if (sess->dn_conv_state[li] != nullptr && sess->dn_S[li] != nullptr) {
-            dn_sentinel_layer          = li;
-            sess->dn_conv_state[li][0] = 1.25f;
-            sess->dn_S[li][0]          = -2.5f;
+            float *conv = (float *) v->buffer_map(sess->dn_conv_state[li]);
+            float *S    = (float *) v->buffer_map(sess->dn_S[li]);
+            if (conv == nullptr || S == nullptr) {
+                if (conv != nullptr)
+                    v->buffer_unmap(sess->dn_conv_state[li]);
+                if (S != nullptr)
+                    v->buffer_unmap(sess->dn_S[li]);
+                continue;
+            }
+            dn_sentinel_layer = li;
+            conv[0]           = 1.25f;
+            S[0]              = -2.5f;
+            v->buffer_unmap(sess->dn_conv_state[li]);
+            v->buffer_unmap(sess->dn_S[li]);
             break;
         }
     }
@@ -113,10 +125,18 @@ int main(void) {
     fails += geist_expect(sess->kv_len == 3, "MTP forward does not advance target KV");
     fails += geist_expect(sess->logits_valid && sess->next_token_pending == 123,
                           "MTP forward preserves pending target logits");
-    fails += geist_expect(dn_sentinel_layer < st->n_layers &&
-                                  sess->dn_conv_state[dn_sentinel_layer][0] == 1.25f &&
-                                  sess->dn_S[dn_sentinel_layer][0] == -2.5f,
-                          "MTP forward preserves target recurrent state");
+    bool dn_sentinel_preserved = false;
+    if (dn_sentinel_layer < st->n_layers) {
+        const float *conv = (const float *) v->buffer_map(sess->dn_conv_state[dn_sentinel_layer]);
+        const float *S    = (const float *) v->buffer_map(sess->dn_S[dn_sentinel_layer]);
+        if (conv != nullptr && S != nullptr)
+            dn_sentinel_preserved = conv[0] == 1.25f && S[0] == -2.5f;
+        if (conv != nullptr)
+            v->buffer_unmap(sess->dn_conv_state[dn_sentinel_layer]);
+        if (S != nullptr)
+            v->buffer_unmap(sess->dn_S[dn_sentinel_layer]);
+    }
+    fails += geist_expect(dn_sentinel_preserved, "MTP forward preserves target recurrent state");
     fails += geist_expect(tok_a[0] >= 0 && (size_t) tok_a[0] < st->vocab_size && tok_a[1] >= 0 &&
                                   (size_t) tok_a[1] < st->vocab_size,
                           "MTP argmax tokens are in vocabulary");

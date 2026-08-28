@@ -237,7 +237,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
                                                       &st->embed_table_w,
                                                       n,
                                                       &t_norm,
-                                                      &st->embed_table,
+                                                      &st->output_table,
                                                       &t_logits);
     if (s != GEIST_OK)
         return s;

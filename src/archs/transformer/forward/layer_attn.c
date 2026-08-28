@@ -133,22 +133,41 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         if (s != GEIST_OK) {
             return s;
         }
-        const float *qg = (const float *) v->buffer_map(sess->qgate_joint);
-        float       *qp = (float *) v->buffer_map(sess->scratch_q);
-        float       *gp = (float *) v->buffer_map(sess->qgate_gate);
-        if (qg == nullptr || qp == nullptr || gp == nullptr) {
-            return GEIST_E_BACKEND;
+        struct geist_tensor t_gate = view_2d(sess->qgate_gate, ctx->SEQ, (int64_t) ctx->q_out);
+        bool                split_on_backend = false;
+        if (fused->attn_qgate_split != nullptr) {
+            s = fused->attn_qgate_split(be, &t_qg, st->n_q_heads, ctx->hd, &t_q_2d, &t_gate);
+            if (s == GEIST_OK)
+                split_on_backend = true;
+            else if (s != GEIST_E_UNSUPPORTED)
+                return s;
         }
-        for (size_t t = 0; t < ctx->seq; t++) {
-            for (size_t h = 0; h < st->n_q_heads; h++) {
-                const float *src = qg + t * 2 * ctx->q_out + h * 2 * ctx->hd;
-                memcpy(qp + t * ctx->q_out + h * ctx->hd, src, ctx->hd * sizeof(float));
-                memcpy(gp + t * ctx->q_out + h * ctx->hd, src + ctx->hd, ctx->hd * sizeof(float));
+        if (!split_on_backend) {
+            const float *qg = (const float *) v->buffer_map(sess->qgate_joint);
+            float       *qp = (float *) v->buffer_map(sess->scratch_q);
+            float       *gp = (float *) v->buffer_map(sess->qgate_gate);
+            if (qg == nullptr || qp == nullptr || gp == nullptr) {
+                if (qg != nullptr)
+                    v->buffer_unmap(sess->qgate_joint);
+                if (qp != nullptr)
+                    v->buffer_unmap(sess->scratch_q);
+                if (gp != nullptr)
+                    v->buffer_unmap(sess->qgate_gate);
+                return GEIST_E_BACKEND;
             }
+            for (size_t t = 0; t < ctx->seq; t++) {
+                for (size_t h = 0; h < st->n_q_heads; h++) {
+                    const float *src = qg + t * 2 * ctx->q_out + h * 2 * ctx->hd;
+                    memcpy(qp + t * ctx->q_out + h * ctx->hd, src, ctx->hd * sizeof(float));
+                    memcpy(gp + t * ctx->q_out + h * ctx->hd,
+                           src + ctx->hd,
+                           ctx->hd * sizeof(float));
+                }
+            }
+            v->buffer_unmap(sess->qgate_joint);
+            v->buffer_unmap(sess->scratch_q);
+            v->buffer_unmap(sess->qgate_gate);
         }
-        v->buffer_unmap(sess->qgate_joint);
-        v->buffer_unmap(sess->scratch_q);
-        v->buffer_unmap(sess->qgate_gate);
         if (ctx->compute_kv) {
             struct geist_tensor t_k_2d = view_2d(sess->scratch_k, ctx->SEQ, (int64_t) ctx->kv_out);
             struct geist_tensor t_v_2d = view_2d(sess->scratch_v, ctx->SEQ, (int64_t) ctx->kv_out);
@@ -319,11 +338,18 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
 
     if (!ctx->apply_gemma_attn_norms) {
         const float scale = 1.0f / sqrtf((float) ctx->hd);
-        float      *qp    = (float *) v->buffer_map(sess->scratch_q);
-        for (size_t i = 0; i < ctx->seq * ctx->q_out; i++) {
-            qp[i] *= scale;
+        if (prims->scale_f32 != nullptr) {
+            s = prims->scale_f32(be, &t_q_2d, scale, &t_q_2d);
+            if (s != GEIST_OK)
+                return s;
+        } else {
+            float *qp = (float *) v->buffer_map(sess->scratch_q);
+            if (qp == nullptr)
+                return GEIST_E_BACKEND;
+            for (size_t i = 0; i < ctx->seq * ctx->q_out; i++)
+                qp[i] *= scale;
+            v->buffer_unmap(sess->scratch_q);
         }
-        v->buffer_unmap(sess->scratch_q);
     }
     transformer_profile_add(&g_attn_profile, ATTN_PROFILE_Q_PREP, t0);
 
@@ -389,17 +415,33 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
 
     if (st->config.has_attn_output_gate) {
         /* attn = attn * sigmoid(gate) elementwise over [seq, q_out]. */
-        float       *ap = (float *) v->buffer_map(sess->scratch_attn);
-        const float *gp = (const float *) v->buffer_map(sess->qgate_gate);
-        if (ap == nullptr || gp == nullptr) {
-            return GEIST_E_BACKEND;
+        struct geist_tensor t_gate = view_2d(sess->qgate_gate, ctx->SEQ, (int64_t) ctx->q_out);
+        struct geist_tensor t_attn_gate =
+                view_2d(sess->scratch_attn, ctx->SEQ, (int64_t) ctx->q_out);
+        bool gated_on_backend = false;
+        if (fused->sigmoid_mul != nullptr) {
+            s = fused->sigmoid_mul(be, &t_attn_gate, &t_gate, &t_attn_gate);
+            if (s == GEIST_OK)
+                gated_on_backend = true;
+            else if (s != GEIST_E_UNSUPPORTED)
+                return s;
         }
-        const size_t n = ctx->seq * ctx->q_out;
-        for (size_t i = 0; i < n; i++) {
-            ap[i] *= 1.0f / (1.0f + expf(-gp[i]));
+        if (!gated_on_backend) {
+            float       *ap = (float *) v->buffer_map(sess->scratch_attn);
+            const float *gp = (const float *) v->buffer_map(sess->qgate_gate);
+            if (ap == nullptr || gp == nullptr) {
+                if (ap != nullptr)
+                    v->buffer_unmap(sess->scratch_attn);
+                if (gp != nullptr)
+                    v->buffer_unmap(sess->qgate_gate);
+                return GEIST_E_BACKEND;
+            }
+            const size_t n = ctx->seq * ctx->q_out;
+            for (size_t i = 0; i < n; i++)
+                ap[i] *= 1.0f / (1.0f + expf(-gp[i]));
+            v->buffer_unmap(sess->scratch_attn);
+            v->buffer_unmap(sess->qgate_gate);
         }
-        v->buffer_unmap(sess->scratch_attn);
-        v->buffer_unmap(sess->qgate_gate);
     }
 
     struct geist_tensor t_attn_2d = view_2d(sess->scratch_attn, ctx->SEQ, (int64_t) ctx->q_out);

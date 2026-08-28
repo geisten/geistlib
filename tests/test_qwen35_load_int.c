@@ -109,6 +109,13 @@ int main(void) {
 
     int fails = 0;
 
+    if (st->output_table.buffer == nullptr ||
+        st->output_table.dtype != (enum geist_dtype) st->embed_table_w.dtype ||
+        st->output_table.shape[0] != (int64_t) st->vocab_size ||
+        st->output_table.shape[1] != (int64_t) st->d_model) {
+        fprintf(stderr, "FAIL: lm_head tensor view does not match resolved output weight\n");
+        fails++;
+    }
     if (strcmp(st->config.family, "qwen35") != 0) {
         fprintf(stderr, "FAIL: family=%s\n", st->config.family);
         fails++;

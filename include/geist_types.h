@@ -65,6 +65,14 @@ enum geist_dtype {
      * distribution format for BitNet-2B-4T. layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
     GEIST_DTYPE_I2_S,
 
+    /* GGUF IQ4 quants: 4-bit indices into a fixed non-linear 16-value
+     * table (kvalues_iq4nl). IQ4_NL: 32-elem blocks, one fp16 scale.
+     * IQ4_XS: 256-elem super-blocks with 6-bit sub-scales. Appended after
+     * I2_S so no existing dtype value shifts (metal shaders hardcode
+     * embed-table dtype numbers). layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
+    GEIST_DTYPE_IQ4_NL,
+    GEIST_DTYPE_IQ4_XS,
+
     GEIST_DTYPE_BINARY,  /* 1-bit values; storage via layout */
     GEIST_DTYPE_TERNARY, /* {-1, 0, +1}; storage via layout */
 

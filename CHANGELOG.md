@@ -9,6 +9,28 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Metal simdgroup quant kernels + chunked DeltaNet** (#300–#303, #308):
+  llama-class GEMV/GEMM kernels for Q4_0/Q4_1/Q8_0/Q5_K, `_fast` interior
+  GEMM variants, a chunked DeltaNet prefill (the serial mixer's
+  `mem_device` barriers alone carried 1.4 s per 512 tokens), and a fenced,
+  lower-traffic decode mixer. Qwen3.8-27B q4_0 on an M1 Max:
+  5.3 → 95.4 tok/s prefill, 2.7 → 12.1 decode (llama.cpp Metal: 93.1/8.2).
+  `preferred_m_max` 128 → 256 (+5–6 % prefill, model-independent).
+- **IQ4_XS / IQ4_NL loader + Metal kernels for mixed quants** (#304, #308):
+  the two formats decode end to end (bit-exact vs gguf-py) with cpu and
+  Metal kernels; Q3_K/IQ3_S get Metal kernels alongside. The 27B
+  UD-Q4_K_M runs at 78.7 pp / 7.8 tg on Metal (llama decode parity).
+- **Weekly gemma4-on-Metal smoke** (#305–#307): probe, kernel parity and
+  an end-to-end generation on the cached E2B reference on hosted macOS.
+
+### Fixed
+- **gemma4 Metal prefill** (#305, also on the qwen35 branch as #303): the
+  PLE fused probe accepted any m while the kernel handles rows==1 only —
+  under the strict probe-and-bind contract every gemma4 Metal prefill
+  hard-failed at layer 0. Probe now mirrors the kernel gate; the
+  fused-probe agreement test pins the contract.
+- Vanilla-mac (no libomp) build: unused `tq2_0` mt8 helper vs `-Werror`
+  (#306).
 - **qwen35 hybrid family** (#281): Qwen3.5/3.6/3.8 dense models load and
   generate. The transformer family generalizes from "attention in every
   layer" to a per-layer token mixer: layers dispatch on

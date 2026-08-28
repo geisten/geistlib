@@ -398,10 +398,20 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
         const size_t conv_n = (st->config.dn_conv_kernel - 1) * (2 * key_dim + value_dim);
         const size_t s_n    = st->config.dn_n_v_heads * st->config.dn_head_k * st->config.dn_head_v;
         for (size_t li = 0; li < st->n_layers; li++) {
-            if (sess->dn_conv_state != nullptr && sess->dn_conv_state[li] != nullptr)
-                memset(sess->dn_conv_state[li], 0, conv_n * sizeof(float));
-            if (sess->dn_S != nullptr && sess->dn_S[li] != nullptr)
-                memset(sess->dn_S[li], 0, s_n * sizeof(float));
+            if (sess->dn_conv_state != nullptr && sess->dn_conv_state[li] != nullptr) {
+                float *p = (float *) st->backend->desc->vtbl->buffer_map(sess->dn_conv_state[li]);
+                if (p != nullptr) {
+                    memset(p, 0, conv_n * sizeof(float));
+                    st->backend->desc->vtbl->buffer_unmap(sess->dn_conv_state[li]);
+                }
+            }
+            if (sess->dn_S != nullptr && sess->dn_S[li] != nullptr) {
+                float *p = (float *) st->backend->desc->vtbl->buffer_map(sess->dn_S[li]);
+                if (p != nullptr) {
+                    memset(p, 0, s_n * sizeof(float));
+                    st->backend->desc->vtbl->buffer_unmap(sess->dn_S[li]);
+                }
+            }
         }
     }
 }

@@ -287,17 +287,17 @@ struct transformer_arch_session {
      * CPU backends malloc under the hood — behavior unchanged. */
     struct geist_buffer *scratch_pool_buf;
 
-    /* ---- Gated-DeltaNet recurrent state (#281). Heap f32, allocated
-     * at session_alloc only for layers with mixer == DELTANET; nullptr
-     * slots otherwise. Zeroed on session reset.
+    /* ---- Gated-DeltaNet recurrent state (#281/#296). Backend buffers,
+     * allocated at session_alloc only for layers with mixer == DELTANET;
+     * nullptr slots otherwise. Zeroed on session reset.
      *   dn_conv_state[li]: [(kernel-1) * conv_dim]  rolling pre-conv qkv
      *   dn_S[li]:          [n_v_heads * head_k * head_v]  delta state */
-    float **dn_conv_state;
-    float **dn_S;
+    struct geist_buffer **dn_conv_state;
+    struct geist_buffer **dn_S;
     /* verify_forward mutates DeltaNet state in place. A single lazy,
-     * contiguous checkpoint lets kv_truncate restore the pre-verify state
-     * and replay exactly the accepted draft prefix. Its size is independent
-     * of the speculative width, which matters for Qwen3.5-27B. */
+     * host-side checkpoint lets kv_truncate restore the backend buffers and
+     * replay exactly the accepted draft prefix. Its size is independent of
+     * the speculative width, which matters for Qwen3.5-27B. */
     float         *dn_txn_conv;
     float         *dn_txn_S;
     geist_token_t *dn_txn_ids;
@@ -434,6 +434,7 @@ struct transformer_arch_state {
     struct transformer_model_fusion_plan  model_fusions; /* exec_plan_build */
 
     struct geist_tensor embed_table;     /* [VOCAB, HIDDEN] — Q-format */
+    struct geist_tensor output_table;    /* lm_head; aliases embed_table when tied */
     struct geist_tensor ple_table;       /* [VOCAB, PLE_OUT] — Q-format */
     struct geist_tensor model_proj;      /* [PLE_OUT, HIDDEN] — Q-format */
     struct geist_tensor model_proj_norm; /* [HIDDEN_PER_LAYER] — F32 */

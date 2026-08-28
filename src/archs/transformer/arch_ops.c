@@ -95,12 +95,27 @@ deltanet_txn_begin(struct transformer_arch_session *sess, size_t k, const geist_
         return GEIST_E_OOM;
     }
 
-    size_t dn = 0;
+    size_t                           dn = 0;
+    const struct geist_backend_vtbl *v  = sess->model->backend->desc->vtbl;
     for (size_t li = 0; li < sess->model->n_layers; li++) {
         if (sess->model->layers[li].mixer != GEIST_MIXER_DELTANET)
             continue;
-        memcpy(sess->dn_txn_conv + dn * conv_n, sess->dn_conv_state[li], conv_n * sizeof(float));
-        memcpy(sess->dn_txn_S + dn * s_n, sess->dn_S[li], s_n * sizeof(float));
+        const float *conv = (const float *) v->buffer_map(sess->dn_conv_state[li]);
+        const float *S    = (const float *) v->buffer_map(sess->dn_S[li]);
+        if (conv == nullptr || S == nullptr) {
+            if (conv != nullptr)
+                v->buffer_unmap(sess->dn_conv_state[li]);
+            if (S != nullptr)
+                v->buffer_unmap(sess->dn_S[li]);
+            geist_backend_set_error(sess->model->backend,
+                                    GEIST_E_BACKEND,
+                                    "transformer: DeltaNet transaction map failed");
+            return GEIST_E_BACKEND;
+        }
+        memcpy(sess->dn_txn_conv + dn * conv_n, conv, conv_n * sizeof(float));
+        memcpy(sess->dn_txn_S + dn * s_n, S, s_n * sizeof(float));
+        v->buffer_unmap(sess->dn_conv_state[li]);
+        v->buffer_unmap(sess->dn_S[li]);
         dn++;
     }
     memcpy(sess->dn_txn_ids, ids, k * sizeof(*ids));
@@ -119,16 +134,31 @@ deltanet_txn_begin(struct transformer_arch_session *sess, size_t k, const geist_
     return GEIST_OK;
 }
 
-static void deltanet_txn_restore(struct transformer_arch_session *sess) {
+static enum geist_status deltanet_txn_restore(struct transformer_arch_session *sess) {
     size_t n_dn, conv_n, s_n;
     if (!sess->dn_txn_active || !deltanet_state_geometry(sess, &n_dn, &conv_n, &s_n))
-        return;
-    size_t dn = 0;
+        return GEIST_OK;
+    size_t                           dn = 0;
+    const struct geist_backend_vtbl *v  = sess->model->backend->desc->vtbl;
     for (size_t li = 0; li < sess->model->n_layers; li++) {
         if (sess->model->layers[li].mixer != GEIST_MIXER_DELTANET)
             continue;
-        memcpy(sess->dn_conv_state[li], sess->dn_txn_conv + dn * conv_n, conv_n * sizeof(float));
-        memcpy(sess->dn_S[li], sess->dn_txn_S + dn * s_n, s_n * sizeof(float));
+        float *conv = (float *) v->buffer_map(sess->dn_conv_state[li]);
+        float *S    = (float *) v->buffer_map(sess->dn_S[li]);
+        if (conv == nullptr || S == nullptr) {
+            if (conv != nullptr)
+                v->buffer_unmap(sess->dn_conv_state[li]);
+            if (S != nullptr)
+                v->buffer_unmap(sess->dn_S[li]);
+            geist_backend_set_error(sess->model->backend,
+                                    GEIST_E_BACKEND,
+                                    "transformer: DeltaNet transaction restore map failed");
+            return GEIST_E_BACKEND;
+        }
+        memcpy(conv, sess->dn_txn_conv + dn * conv_n, conv_n * sizeof(float));
+        memcpy(S, sess->dn_txn_S + dn * s_n, s_n * sizeof(float));
+        v->buffer_unmap(sess->dn_conv_state[li]);
+        v->buffer_unmap(sess->dn_S[li]);
         dn++;
     }
     sess->kv_len              = sess->dn_txn_base_kv_len;
@@ -139,6 +169,7 @@ static void deltanet_txn_restore(struct transformer_arch_session *sess) {
         sess->mtp_kv_len = sess->mtp_txn_base_len;
         memcpy(sess->mtp_pending_h, sess->mtp_txn_pending_h, sess->model->d_model * sizeof(float));
     }
+    return GEIST_OK;
 }
 
 /* ---- Batched text prefill -------------------------------------------- */
@@ -379,7 +410,9 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     if (k == 1) {
         s = finalize_logits_one_row(sess, 0, &out_tokens[0]);
         if (s != GEIST_OK) {
-            deltanet_txn_restore(sess);
+            const enum geist_status restore = deltanet_txn_restore(sess);
+            if (restore != GEIST_OK)
+                return restore;
             transformer_recurrent_txn_commit(sess);
             return s;
         }

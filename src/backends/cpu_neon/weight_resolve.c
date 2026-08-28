@@ -665,6 +665,10 @@ static size_t blk_bytes_for(enum geist_dtype dt) {
         return Q8_0_BLOCK_BYTES;
     case GEIST_DTYPE_TQ2_0:
         return TQ2_0_BLOCK_BYTES;
+    case GEIST_DTYPE_IQ4_NL:
+        return IQ4_NL_BLOCK_BYTES;
+    case GEIST_DTYPE_IQ4_XS:
+        return IQ4_XS_BLOCK_BYTES;
     default:
         return 0; /* F16/BF16: not block-quantized */
     }
@@ -685,6 +689,10 @@ static size_t blk_elems_for(enum geist_dtype dt) {
         return Q8_0_BLOCK_ELEMS;
     case GEIST_DTYPE_TQ2_0:
         return TQ2_0_BLOCK_ELEMS;
+    case GEIST_DTYPE_IQ4_NL:
+        return IQ4_NL_BLOCK_ELEMS;
+    case GEIST_DTYPE_IQ4_XS:
+        return IQ4_XS_BLOCK_ELEMS;
     default:
         return 1;
     }
@@ -705,6 +713,10 @@ static dequant_row_fn dequant_row_fn_for(enum geist_dtype dt) {
         return (dequant_row_fn) dequant_q8_0_row;
     case GEIST_DTYPE_TQ2_0:
         return (dequant_row_fn) dequant_tq2_0_row;
+    case GEIST_DTYPE_IQ4_NL:
+        return (dequant_row_fn) dequant_iq4_nl_row;
+    case GEIST_DTYPE_IQ4_XS:
+        return (dequant_row_fn) dequant_iq4_xs_row;
     default:
         return nullptr; /* F16/BF16 handled inline */
     }
@@ -1059,6 +1071,18 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
         /* IQ-series. */
         {GEIST_DTYPE_IQ2_S, CPU_NEON_ISA_NEON, cpu_neon_w_iq2s_m1, cpu_neon_w_iq2s_mN, "iq2_s"},
         {GEIST_DTYPE_IQ3_S, CPU_NEON_ISA_NEON, cpu_neon_w_iq3s_m1, cpu_neon_w_iq3s_mN, "iq3_s"},
+        /* IQ4: no native NEON kernel yet — dequant-and-sgemm trampolines
+         * (correct, and prefill lands on Accelerate/OpenBLAS). */
+        {GEIST_DTYPE_IQ4_NL,
+         CPU_NEON_ISA_NEON,
+         cpu_neon_w_dequant_trampoline_m1,
+         cpu_neon_w_dequant_trampoline_mN,
+         "iq4_nl/dequant"},
+        {GEIST_DTYPE_IQ4_XS,
+         CPU_NEON_ISA_NEON,
+         cpu_neon_w_dequant_trampoline_m1,
+         cpu_neon_w_dequant_trampoline_mN,
+         "iq4_xs/dequant"},
 
         /* F32 native both paths. */
         {GEIST_DTYPE_F32, CPU_NEON_ISA_NEON, cpu_neon_w_f32_m1, cpu_neon_w_f32_mN, "f32"},
