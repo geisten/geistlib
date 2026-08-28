@@ -232,6 +232,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->iq3s_n4_function, "release");
         metal_msg_send_void0(st, st->iq3s_mm_pipeline, "release");
         metal_msg_send_void0(st, st->iq3s_mm_function, "release");
+        metal_msg_send_void0(st, st->iq4xs_mm_fast_pipeline, "release");
+        metal_msg_send_void0(st, st->iq4xs_mm_fast_function, "release");
         metal_msg_send_void0(st, st->attn_library, "release");
         metal_msg_send_void0(st, st->attn_qnorm_dec_f16_library, "release");
         metal_msg_send_void0(st, st->attn_dec_combine_library, "release");
@@ -328,6 +330,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->iq3s_n4_function                      = nullptr;
     st->iq3s_mm_pipeline                      = nullptr;
     st->iq3s_mm_function                      = nullptr;
+    st->iq4xs_mm_fast_pipeline                = nullptr;
+    st->iq4xs_mm_fast_function                = nullptr;
     st->q40_q80_library                       = nullptr;
     st->q5k_library                           = nullptr;
     st->q41_library                           = nullptr;
