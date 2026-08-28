@@ -268,9 +268,9 @@ test_deltanet_chunk_unit at f32 precision), never slower outside
 noise, and load-bearing now that #288 stopped the mN kernels from
 dominating prefill time.
 
-## Mac Metal backend (M1 Max GPU) — measured 2026-08-28, `feat/296-qwen35-metal` @ `aa3eb4d`
+## Mac Metal backend (M1 Max GPU) — measured 2026-08-28, main (post #309/#312)
 
-The #300–#308 stack: simdgroup GEMV/GEMM kernels for
+The #300–#312 stack: simdgroup GEMV/GEMM kernels for
 Q4_0/Q4_1/Q8_0/Q5_K/IQ4_XS/IQ4_NL/Q3_K/IQ3_S (llama mul_mv / mul_mm
 structures), chunked DeltaNet prefill (port of the CPU chunk recipe;
 its serial predecessor was 72 % of prefill wall), and the IQ4 loader
@@ -288,22 +288,21 @@ discarded 64-token warmup. Reference: llama.cpp Metal `3fc4e10`
 
 | model | metric | geist Metal | llama.cpp Metal | ratio |
 | :-- | :-- | ---: | ---: | :-- |
-| 27B Q4_0 | prefill pp512 | **95.4** | 93.1 ±15 | ~parity |
-| 27B Q4_0 | **decode tg64** | **12.1** | 8.2 | **geist 1.48×** |
-| 27B UD-Q4_K_M | prefill pp512 | 78.7 | 105.2 ±7 | llama 1.34× |
-| 27B UD-Q4_K_M | **decode tg64** | **7.8** | 8.1 | ~parity (0.97×) |
-| 4B Q4_0 | prefill pp512 | 470.5 | 926 (warm) | llama ~2× |
-| 4B Q4_0 | decode tg64 | 52.0 | 61.8 (warm) | llama 1.19× |
+| 27B Q4_0 | prefill pp512 | **104.4** | 93.1 ±15 | **geist 1.12×** |
+| 27B Q4_0 | **decode tg64** | **11.6** | 8.2 | **geist 1.41×** |
+| 27B UD-Q4_K_M | prefill pp512 | 91.6 | 105.2 ±7 | llama 1.15× |
+| 27B UD-Q4_K_M | **decode tg64** | **7.8** | 8.1 | ~parity (0.96×) |
+| 4B Q4_0 | prefill pp512 | 626.2 | 926 (warm) | llama 1.48× |
+| 4B Q4_0 | decode tg64 | 52.2 | 61.8 (warm) | llama 1.18× |
 | gemma4-e2b Q4_K_M | prefill pp512 | 992.4 | 1540 (2026-07 ref) | llama 1.55× |
 | gemma4-e2b Q4_K_M | decode tg64 | 79.3 | 92.8 (2026-07 ref) | llama 1.17× |
 
-**Reading:** the 27B — the model this branch is for — beats llama.cpp
-Metal on decode by 1.48× at prefill parity. The UD mixed quant reaches
-decode parity; its prefill gap is the first-pass IQ4_XS GEMM (llama's
-IQ kernels are mature). The 4B prefill gap is small-shape GEMM
-efficiency plus the remaining DeltaNet chain (~360 ms per 512 tokens
-after the barrier fix; simdgroup-MMA for the chunk matmuls and a panel
-substitution are the documented follow-ups). gemma4 numbers are the
+**Reading:** the 27B — the model this stack is for — now beats
+llama.cpp Metal on **both** axes (1.12× prefill, 1.41× decode). The
+UD mixed quant reaches decode parity; its remaining prefill gap is
+IQ4_XS GEMM maturity (91.6 vs 105 after the #309 LUT-kernel tuning).
+The 4B prefill gap is small-shape GEMM efficiency (626 vs 926; the
+DeltaNet chain shrank to a minor term with the #312 chunk cap). gemma4 numbers are the
 old 2026-07 program state restored (the PLE probe regression had
 silently zeroed them) on the new kernel stack.
 
@@ -326,6 +325,8 @@ ended 65.0 °C (soft limit not reached; low throttle nibble 0 throughout).
 | 0.8B Q8_0 | prefill pp128 | 61.8 | 90.6 | RSS 1.0 GB |
 | 0.8B Q8_0 | prefill pp256 | 62.3 | — | |
 | 0.8B Q8_0 | **decode** | **13.0** | 9.3 | |
+| 0.8B IQ4_XS | prefill pp256 | 62.3 | — | measured 2026-08-28, #314 |
+| 0.8B IQ4_XS | **decode** | **18.5** | — | was 4.4 via the dequant trampoline |
 | 4B Q4_0 | prefill pp128 | 8.2 | 24.8 | RSS 2.9 GB — fits the 4 GB board |
 | 4B Q4_0 | **decode** | 3.8 | 3.3 | |
 
@@ -336,8 +337,16 @@ graph overhead. Prefill stays llama's (1.5× / 3.0×); per the #287
 findings above, closing it is an mN-kernel problem, not a recurrence
 problem (Pi A/B of the chunked prefill pending — the balance may
 differ on 4 cores without Accelerate). The 0.8B hybrid is fully usable on the Pi
-(13 t/s decode, 1 GB resident); the 4B fits the 4 GB board and runs at
-reading speed. The 27B (15 GiB) is not attempted on the Pi.
+(13 t/s decode Q8_0, 18.5 t/s IQ4_XS via the #314 native W4A8 GEMVs);
+the 4B fits the 4 GB board and runs at reading speed. The 27B (15 GiB)
+is not attempted on the Pi.
+
+Quality gate (2026-08-28, on-board): the `bench_quality` battery ran
+for every Pi-resident model (qwen3.5 0.8B Q8_0/IQ4_XS, 4B Q4_0,
+qwen3-0.6B, gemma4-e2b, bitnet-2b4t) with coherent greedy output on
+all of them, and the IQ4_XS NEON kernel matches the f32 scalar
+reference to top-4 logit rank (top-1 identical; the residual is
+gcc `-ffast-math` reassociation, not the kernel).
 
 ## Reproduce
 
