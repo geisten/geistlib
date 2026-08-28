@@ -720,8 +720,10 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         const char  *mm     = getenv("GEIST_M_MAX");
         if (mm != nullptr && mm[0] != '\0') {
             const int v = atoi(mm);
-            if (v > 0 && v <= cap)
-                st->m_max = (size_t) v;
+            if (v > 0 && v <= cap) {
+                st->m_max          = (size_t) v;
+                st->m_max_from_env = true;
+            }
         }
     }
 
@@ -755,6 +757,17 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
     st->config.family = fam->name;
     fam->populate(gguf, st);
+
+    /* DeltaNet hybrids prefer SMALL prefill chunks: the chunked
+     * delta-rule carries O(C^2) work per chunk (A/attn matrices +
+     * substitution), so total prefill cost grows with the chunk size.
+     * Measured on the metal backend, 4B pp512: m_max 64 -> 626 tok/s,
+     * 128 -> 430, 256 -> 335 (llama.cpp's delta-net chunk is 64 too);
+     * attention-only models keep the backend's larger preferred value
+     * (gemma4-e2b: 972 at 256 vs 753 at 64). GEIST_M_MAX still wins. */
+    if (st->config.dn_n_v_heads > 0 && !st->m_max_from_env && st->m_max > 64) {
+        st->m_max = 64;
+    }
 
     /* P1.4.c: heap-allocate the per-layer weight array sized to the
      * model's actual layer count. (Was a compile-time `[NUM_LAYERS]`
