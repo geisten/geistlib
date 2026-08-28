@@ -123,6 +123,31 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             for (int it = 0; it < n_iter; it++)
                 linear_q4_0_decode_w4a8_x8(x, x8p, n_in, n_out, y);
             const double xdt = (now_ms() - tx0) / n_iter;
+            /* mN parity: int8 GEMM on x8 vs the row-major prefill kernel */
+            {
+                enum { MP = 8 };
+                float *xm  = (float *) aligned_alloc(64, MP * n_in * sizeof(float));
+                float *ym  = (float *) aligned_alloc(64, MP * n_out * sizeof(float));
+                float *ymr = (float *) aligned_alloc(64, MP * n_out * sizeof(float));
+                if (xm && ym && ymr) {
+                    for (size_t i = 0; i < MP * n_in; i++)
+                        xm[i] = ((float) (i % 977)) * 0.021f - 9.7f;
+                    linear_q4_0_w4a8_prefill(xm, MP, t->data, n_in, n_out, ymr);
+                    linear_q4_0_w4a8_prefill_x8(xm, MP, x8p, n_in, n_out, ym);
+                    double md = 0, sc = 1e-6;
+                    for (size_t i = 0; i < MP * n_out; i++) {
+                        const double d = fabs((double) ym[i] - (double) ymr[i]);
+                        if (d > md)
+                            md = d;
+                        if (fabs((double) ymr[i]) > sc)
+                            sc = fabs((double) ymr[i]);
+                    }
+                    printf("  %-32s [x8 mN parity m=8] max rel diff %.2e\n", name, md / sc);
+                }
+                free(xm);
+                free(ym);
+                free(ymr);
+            }
             printf("  %-32s [Q4_0 x8  ] n_out=%6zu n_in=%5zu %19.2f ms  %5.2f GB/s\n",
                    name,
                    n_out,
