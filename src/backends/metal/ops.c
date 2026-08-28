@@ -162,11 +162,12 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
      * envs (reused from the q4k levers). */
     const bool n_tile4 =
             params->rows == 1u && params->n_out >= 4u && (st->use_q4k_n4 || iq4) && n4 != nullptr;
-    void      *mm_fast = dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_fast_pipeline
-                         : dtype == GEIST_DTYPE_Q8_0 ? st->q80_mm_fast_pipeline
-                         : dtype == GEIST_DTYPE_Q4_1 ? st->q41_mm_fast_pipeline
-                         : iq4                       ? nullptr
-                                                     : st->q5k_mm_fast_pipeline;
+    void      *mm_fast = dtype == GEIST_DTYPE_Q4_0     ? st->q40_mm_fast_pipeline
+                         : dtype == GEIST_DTYPE_Q8_0   ? st->q80_mm_fast_pipeline
+                         : dtype == GEIST_DTYPE_Q4_1   ? st->q41_mm_fast_pipeline
+                         : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_mm_fast_pipeline
+                         : iq4                         ? nullptr
+                                                       : st->q5k_mm_fast_pipeline;
     const bool m_tile_sg =
             (iq4 ? params->rows >= 2u
                  : (params->rows >= 8u && params->n_out >= 64u && st->use_q4k_mm_sg)) &&

@@ -415,29 +415,28 @@ static const char metal_qsg_n4_q5k_source[] =
         "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
         "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
         "sg[[simdgroup_index_in_threadgroup]]){"
-        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
-        "uint nb=p.ni>>8u;"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*4u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>8u;uint nr=min(p.no-fr,4u);"
         "uint sb=uint(ti)>>3u,rr8=uint(ti)&7u,hi=rr8>>2u,i0=(rr8&3u)*8u;"
         "uint sj=sb*2u+hi,hm=1u<<sj,qsh=hi*4u;"
         "uint qso=48u+sb*32u+i0,qho=16u+i0;"
         "device const float*yb=x+p.xo+b*p.xs+sb*64u+hi*32u+i0;"
-        "float s0=0.0f,s1=0.0f;"
+        "float sf[4]={0.0f,0.0f,0.0f,0.0f};"
         "for(uint ib=0u;ib<nb;ib++){"
         "float yl[8];float sumy=0.0f;"
         "for(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i];}"
-        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
-        "uint bo=p.wo+(row*p.bpr+ib)*176u;"
+        "for(uint rr=0u;rr<nr;rr++){"
+        "uint bo=p.wo+((fr+rr)*p.bpr+ib)*176u;"
         "uint sc,mn;sm5(sj,w+bo+4u,sc,mn);"
         "float acc=0.0f;"
         "for(uint i=0u;i<8u;i++){uint v=(uint(w[bo+qso+i])>>qsh)&15u;"
         "if((uint(w[bo+qho+i])&hm)!=0u)v+=16u;acc+=yl[i]*float(v);}"
         "float d=float(*((device const half*)(w+bo)));"
         "float dm=float(*((device const half*)(w+bo+2u)));"
-        "float r=d*float(sc)*acc-dm*float(mn)*sumy;"
-        "if(rr==0u)s0+=r;else s1+=r;}"
+        "sf[rr]+=d*float(sc)*acc-dm*float(mn)*sumy;}"
         "yb+=256u;}"
-        "float a0=simd_sum(s0),a1=simd_sum(s1);"
-        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+        "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
+        "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
 
 /* Q3_K and IQ3_S chunk loaders + structs for the shared GEMM template.
  * Their own MSL fragment: the qsg common literal is near the 4095-char
@@ -567,32 +566,35 @@ static const char metal_qsg_n4_iq4xs_source[] =
         "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
         "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
         "sg[[simdgroup_index_in_threadgroup]]){"
-        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
-        "uint nb=p.ni>>8u;"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*4u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>8u;uint nr=min(p.no-fr,4u);"
         "uint b32=uint(ti)>>2u,r4=uint(ti)&3u,nib=r4>>1u,j0=(r4&1u)*8u;"
         "ushort nsh=ushort(4u*nib);"
         "uint qso=8u+b32*16u+j0;"
         "device const float*yb=x+p.xo+b*p.xs+b32*32u+nib*16u+j0;"
-        "float s0=0.0f,s1=0.0f;"
+        "float sf[4]={0.0f,0.0f,0.0f,0.0f};"
         "for(uint ib=0u;ib<nb;ib++){"
         "float yl[8];for(uint i=0u;i<8u;i++)yl[i]=yb[i];"
-        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
-        "uint bo=p.wo+(row*p.bpr+ib)*136u;"
+        "for(uint rr=0u;rr<nr;rr++){"
+        "uint bo=p.wo+((fr+rr)*p.bpr+ib)*136u;"
         "uint sh=uint(*((device const ushort*)(w+bo+2u)));"
         "uint ls=((uint(w[bo+4u+b32/2u])>>(4u*(b32&1u)))&15u)|(((sh>>(2u*b32))&3u)<<4u);"
         "float dl=float(*((device const half*)(w+bo)))*(float(ls)-32.0f);"
-        "device const uchar*q=w+bo+qso;"
+        "device const ushort*q2=(device const ushort*)(w+bo+qso);"
         "float acc=0.0f;"
-        "for(uint i=0u;i<8u;i++)acc+=yl[i]*kiq4[(uint(q[i])>>nsh)&15u];"
-        "if(rr==0u)s0+=dl*acc;else s1+=dl*acc;}"
+        "for(uint i=0u;i<4u;i++){uint q=uint(q2[i]);"
+        "acc+=yl[2u*i]*kiq4[(q>>nsh)&15u]+yl[2u*i+1u]*kiq4[(q>>(nsh+8u))&15u];}"
+        "sf[rr]+=dl*acc;}"
         "yb+=256u;}"
-        "float a0=simd_sum(s0),a1=simd_sum(s1);"
-        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+        "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
+        "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
 
 static const char metal_qsg_mm_iq4nl_source[] =
         GEIST_METAL_MM_SG_KERNEL("iq4nl", "biq4nl", "dqiq4nl", "2");
 static const char metal_qsg_mm_iq4xs_source[] =
         GEIST_METAL_MM_SG_KERNEL("iq4xs", "biq4xs", "dqiq4xs", "16");
+static const char metal_qsg_mm_iq4xs_fast_source[] =
+        GEIST_METAL_MM_SG_FAST_KERNEL("iq4xs", "biq4xs", "dqiq4xs", "16");
 
 static const char metal_qsg_mm_q5k_source[] = GEIST_METAL_MM_SG_KERNEL("q5k", "bq5k", "dq5k", "16");
 static const char metal_qsg_mm_q5k_fast_source[] =
