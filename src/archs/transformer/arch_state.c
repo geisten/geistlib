@@ -622,6 +622,40 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
             if (s != GEIST_OK)
                 return s;
         }
+
+        /* The MTP attention block is not part of the target stack and must
+         * not alias its cache.  One dense cache is modest compared with the
+         * 27B weights and gives the draft head an unambiguous correctness
+         * baseline before optional cache quantization is considered. */
+        if (stt->n_mtp_layers > 0) {
+            const struct transformer_layer_weights *ML = &stt->mtp_layers[0].block;
+            const size_t kv_elems = sess->max_seq_len * stt->n_kv_heads * ML->head_dim;
+            s                     = be->desc->vtbl->buffer_create(be,
+                                                                  kv_elems * sizeof(float),
+                                                                  GEIST_BUFFER_KV_CACHE,
+                                                                  GEIST_MEMORY_AUTO,
+                                                                  &sess->mtp_k_cache);
+            if (s != GEIST_OK)
+                return s;
+            s = be->desc->vtbl->buffer_create(be,
+                                              kv_elems * sizeof(float),
+                                              GEIST_BUFFER_KV_CACHE,
+                                              GEIST_MEMORY_AUTO,
+                                              &sess->mtp_v_cache);
+            if (s != GEIST_OK)
+                return s;
+            const size_t hidden_bytes = sess->m_max * stt->d_model * sizeof(float);
+            s                         = alloc_scratch(be, hidden_bytes, &sess->mtp_embed);
+            if (s != GEIST_OK)
+                return s;
+            s = alloc_scratch(be, hidden_bytes, &sess->mtp_hidden_norm);
+            if (s != GEIST_OK)
+                return s;
+            s = alloc_scratch(be, 2 * hidden_bytes, &sess->mtp_concat);
+            if (s != GEIST_OK)
+                return s;
+            sess->mtp_kv_len = 0;
+        }
     }
 
     return GEIST_OK;
@@ -1334,18 +1368,28 @@ void transformer_session_free(struct transformer_arch_state   *state,
                 sess->dn_scratch_z,
                 sess->dn_scratch_b,
                 sess->dn_scratch_a,
+                sess->mtp_k_cache,
+                sess->mtp_v_cache,
+                sess->mtp_embed,
+                sess->mtp_hidden_norm,
+                sess->mtp_concat,
         };
         for (size_t i = 0; i < sizeof extra / sizeof extra[0]; i++)
             if (extra[i] != nullptr)
                 be->desc->vtbl->buffer_destroy(be, extra[i]);
     }
-    sess->qgate_joint   = nullptr;
-    sess->qgate_gate    = nullptr;
-    sess->dn_conv_state = nullptr;
-    sess->dn_S          = nullptr;
-    sess->dn_txn_conv   = nullptr;
-    sess->dn_txn_S      = nullptr;
-    sess->dn_txn_ids    = nullptr;
+    sess->qgate_joint     = nullptr;
+    sess->qgate_gate      = nullptr;
+    sess->dn_conv_state   = nullptr;
+    sess->dn_S            = nullptr;
+    sess->dn_txn_conv     = nullptr;
+    sess->dn_txn_S        = nullptr;
+    sess->dn_txn_ids      = nullptr;
+    sess->mtp_k_cache     = nullptr;
+    sess->mtp_v_cache     = nullptr;
+    sess->mtp_embed       = nullptr;
+    sess->mtp_hidden_norm = nullptr;
+    sess->mtp_concat      = nullptr;
 
     /* Per-layer KV cache buffers. Each slot may be NULL — exactly one
      * representation (FP32 / INT8 / KIVI) was allocated per non-shared

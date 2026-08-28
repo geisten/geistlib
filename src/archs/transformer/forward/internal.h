@@ -283,6 +283,14 @@ void attention_int4_via_buffers(const float   *q,
 [[nodiscard]] enum geist_status
 transformer_layer_run_attention_block(struct transformer_layer_forward_ctx *ctx);
 
+[[nodiscard]] enum geist_status
+transformer_forward_mtp_layer(struct transformer_arch_session  *sess,
+                              struct transformer_layer_weights *layer,
+                              size_t                            q_position,
+                              size_t                            seq,
+                              struct geist_buffer              *h_in_buf,
+                              struct geist_buffer              *h_out_buf);
+
 /* forward/kv_store.c */
 [[nodiscard]] enum geist_status
 transformer_kv_store_append(struct transformer_layer_forward_ctx *ctx);
