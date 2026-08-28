@@ -321,6 +321,19 @@ struct transformer_arch_session {
     struct geist_buffer *dn_scratch_b; /* beta projection  [m_max, n_v_heads] */
     struct geist_buffer *dn_scratch_a; /* alpha projection [m_max, n_v_heads] */
 
+    /* Qwen3.5 MTP owns a cache independent from the target trunk.  PR 3
+     * exposes the head as an isolated forward primitive; PR 4 will decide
+     * when target hidden rows are fed into it.  Keep dense FP32 storage here
+     * deliberately: it is one layer, avoids coupling draft correctness to
+     * the target cache's optional quantization, and makes reset/truncate
+     * semantics explicit. */
+    struct geist_buffer *mtp_k_cache;
+    struct geist_buffer *mtp_v_cache;
+    struct geist_buffer *mtp_embed;
+    struct geist_buffer *mtp_hidden_norm;
+    struct geist_buffer *mtp_concat;
+    size_t               mtp_kv_len;
+
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;
     /* Whether scratch_logits already carries the Gemma final-logit softcap.
@@ -503,6 +516,22 @@ transformer_forward_one_layer(struct transformer_arch_session *sess,
                               struct geist_buffer             *h_in_buf,
                               struct geist_buffer             *per_layer_input_buf,
                               struct geist_buffer             *h_out_buf);
+
+/* Execute the separately loaded Qwen3.5 next-token-prediction block.
+ * `target_hidden` is row-major [n, d_model] host F32 from the target trunk;
+ * `ids` are the shifted token embeddings paired with those rows.  The call
+ * appends to the MTP-only KV cache, returns one greedy token per row, and may
+ * return the raw post-block hidden rows for recursive drafting.  It never
+ * changes the target trunk's kv_len, recurrent state, or pending logits. */
+[[nodiscard]] enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
+                                                        size_t                           n,
+                                                        const geist_token_t             *ids,
+                                                        const float   *target_hidden,
+                                                        geist_token_t *out_tokens,
+                                                        float         *out_hidden);
+
+/* Discard all MTP attention history without touching target-model state. */
+void transformer_mtp_reset(struct transformer_arch_session *sess);
 
 /* Compute the PLE per-layer-input for ONE token (decode m=1) starting
  * from the residual stream `h` at this point in the pipeline.

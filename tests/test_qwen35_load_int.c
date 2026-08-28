@@ -197,11 +197,34 @@ int main(void) {
             fprintf(stderr, "FAIL: model without MTP allocated MTP layers\n");
             fails++;
         }
+        if (st->default_sess->mtp_k_cache != nullptr || st->default_sess->mtp_v_cache != nullptr ||
+            st->default_sess->mtp_embed != nullptr || st->default_sess->mtp_concat != nullptr) {
+            fprintf(stderr, "FAIL: model without MTP allocated MTP runtime buffers\n");
+            fails++;
+        }
+        {
+            const geist_token_t id = 0;
+            const float         h  = 0.0f;
+            geist_token_t       out;
+            if (transformer_mtp_forward(st->default_sess, 1, &id, &h, &out, nullptr) !=
+                GEIST_E_UNSUPPORTED) {
+                fprintf(stderr, "FAIL: model without MTP did not reject MTP forward\n");
+                fails++;
+            }
+        }
     } else {
         if (st->mtp_layers == nullptr) {
             fprintf(stderr, "FAIL: MTP layer array missing\n");
             fails++;
         } else {
+            if (st->default_sess->mtp_k_cache == nullptr ||
+                st->default_sess->mtp_v_cache == nullptr ||
+                st->default_sess->mtp_embed == nullptr ||
+                st->default_sess->mtp_hidden_norm == nullptr ||
+                st->default_sess->mtp_concat == nullptr || st->default_sess->mtp_kv_len != 0) {
+                fprintf(stderr, "FAIL: MTP runtime buffers/state missing\n");
+                fails++;
+            }
             for (size_t i = 0; i < st->n_mtp_layers; i++) {
                 const struct transformer_mtp_layer_weights *M = &st->mtp_layers[i];
                 const struct transformer_layer_weights     *L = &M->block;

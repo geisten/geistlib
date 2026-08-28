@@ -74,6 +74,34 @@ establishes correctness and bounded memory; later MTP PRs must beat this
 baseline through higher acceptance and should avoid replay on the common
 full-accept path.
 
+### Isolated MTP forward gate (#296 PR 3) — 2026-08-28
+
+PR 3 executes the separately loaded 27B MTP block but deliberately does not
+enable it in the speculative engine yet. The real-weight integration test
+feeds a deterministic two-row hidden fixture through token/hidden RMSNorm,
+`eh_proj`, the gated full-attention + SwiGLU block, shared-head RMSNorm and
+the tied output head. Reset/repeat is byte-identical (`tokens=34,4180`), all
+10,240 returned hidden values are finite, the MTP KV length advances from 0
+to 2, and non-zero sentinels prove the target KV/recurrent/logit state remains
+untouched. The 0.8B fixture (which has no MTP block) is the negative
+allocation/API gate.
+
+The normal target path was also A/B checked on the mandatory 27B Q4_0 model
+(`pp128`, eight decode tokens, two discarded warm-up tokens, two repeats,
+eight threads). The short sweep is intentionally a regression smoke test,
+not a new headline benchmark:
+
+| revision | prefill | decode | RSS |
+| :-- | --: | --: | --: |
+| PR 2 base | 13.70 tok/s | 3.61 tok/s | 29,405 MiB |
+| PR 3 | 14.69 tok/s | 4.02 tok/s | 29,414 MiB |
+
+There is no target-path slowdown within run-to-run noise; the small RSS delta
+comes from the session-sized MTP KV/scratch at this benchmark's short context.
+Draft acceptance and end-to-end quality are intentionally not claimed here:
+those require PR 4 to feed real target hidden rows and compare the resulting
+draft/verify sequence directly with llama.cpp.
+
 (llama.cpp Metal, for context: 4B pp128 865 / tg 69.5; 27B pp512 106 /
 tg 19.0. GPU is out of scope for geist — see the #281 positioning.)
 
