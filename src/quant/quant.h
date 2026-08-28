@@ -90,6 +90,16 @@ constexpr size_t IQ3_S_BLOCK_ELEMS = 256;
 constexpr size_t IQ3_S_BLOCK_BYTES = 110;
 void             dequant_iq3_s_row(const void *blocks, float *out, size_t n_elems);
 
+/* IQ4_NL: 32 elements, 18 bytes (fp16 d + 16 packed nibbles), values from
+ * the fixed non-linear kvalues_iq4nl table. IQ4_XS: 256-element super-block,
+ * 136 bytes, same LUT with 6-bit per-32 sub-scales. */
+constexpr size_t IQ4_NL_BLOCK_ELEMS = 32;
+constexpr size_t IQ4_NL_BLOCK_BYTES = 18;
+void             dequant_iq4_nl_row(const void *blocks, float *out, size_t n_elems);
+constexpr size_t IQ4_XS_BLOCK_ELEMS = 256;
+constexpr size_t IQ4_XS_BLOCK_BYTES = 136;
+void             dequant_iq4_xs_row(const void *blocks, float *out, size_t n_elems);
+
 /* TQ2_0 super-block: 256 elements, 66 bytes, 2.0625 bpw.
  *   qs[64]: 256 trits packed 4-per-byte (encoding: 0/1/2 mapped to -1/0/+1)
  *   d: fp16 scale.

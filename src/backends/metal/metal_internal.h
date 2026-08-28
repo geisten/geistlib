@@ -185,6 +185,22 @@ struct metal_state {
     void  *q41_mm_fast_pipeline;
     void  *q5k_mm_fast_function;
     void  *q5k_mm_fast_pipeline;
+    void  *iq4nl_n4_function;
+    void  *iq4nl_n4_pipeline;
+    void  *iq4nl_mm_function;
+    void  *iq4nl_mm_pipeline;
+    void  *iq4xs_n4_function;
+    void  *iq4xs_n4_pipeline;
+    void  *iq4xs_mm_function;
+    void  *iq4xs_mm_pipeline;
+    void  *q3k_n4_function;
+    void  *q3k_n4_pipeline;
+    void  *q3k_mm_function;
+    void  *q3k_mm_pipeline;
+    void  *iq3s_n4_function;
+    void  *iq3s_n4_pipeline;
+    void  *iq3s_mm_function;
+    void  *iq3s_mm_pipeline;
     void  *q4k_n4_function;
     void  *q4k_n4_pipeline;
     void  *q4k_matmul_m8_function;
@@ -423,6 +439,11 @@ enum {
     METAL_Q40_BLOCK_BYTES               = 18u,
     METAL_Q41_BLOCK_BYTES               = 20u,
     METAL_Q80_BLOCK_BYTES               = 34u,
+    METAL_IQ4NL_BLOCK_BYTES             = 18u,
+    METAL_IQ4XS_BLOCK_ELEMS             = 256u,
+    METAL_IQ4XS_BLOCK_BYTES             = 136u,
+    METAL_Q3K_BLOCK_BYTES               = 110u,
+    METAL_IQ3S_BLOCK_BYTES              = 110u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,

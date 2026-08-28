@@ -52,13 +52,17 @@ static double max_abs(const float *a, const float *b, size_t n) {
 }
 
 enum {
-    Q40_BB  = 18,
-    Q41_BB  = 20,
-    Q80_BB  = 34,
-    Q4K_BB  = 144,
-    Q5K_BB  = 176,
-    Q6K_BB  = 210,
-    K_BLOCK = 256
+    Q40_BB   = 18,
+    Q41_BB   = 20,
+    Q80_BB   = 34,
+    Q4K_BB   = 144,
+    Q5K_BB   = 176,
+    IQ4NL_BB = 18,
+    IQ4XS_BB = 136,
+    Q3K_BB   = 110,
+    IQ3S_BB  = 110,
+    Q6K_BB   = 210,
+    K_BLOCK  = 256
 };
 
 static uint32_t rng_state = 0x12345678u;
@@ -69,24 +73,52 @@ static uint8_t  rng_u8(void) {
 
 /* Random-but-finite quant blob: random bytes, f16 scale fields pinned. */
 static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
-    const bool small =
-            dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 || dtype == GEIST_DTYPE_Q8_0;
+    const bool   small = dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 ||
+                         dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL;
     const size_t block = small ? 32u : K_BLOCK;
     const size_t bpr   = n_in / block;
-    const size_t bb    = dtype == GEIST_DTYPE_Q4_0   ? Q40_BB
-                         : dtype == GEIST_DTYPE_Q4_1 ? Q41_BB
-                         : dtype == GEIST_DTYPE_Q8_0 ? Q80_BB
-                         : dtype == GEIST_DTYPE_Q4_K ? Q4K_BB
-                         : dtype == GEIST_DTYPE_Q5_K ? Q5K_BB
-                                                     : Q6K_BB;
+    const size_t bb    = dtype == GEIST_DTYPE_Q4_0     ? Q40_BB
+                         : dtype == GEIST_DTYPE_Q4_1   ? Q41_BB
+                         : dtype == GEIST_DTYPE_Q8_0   ? Q80_BB
+                         : dtype == GEIST_DTYPE_IQ4_NL ? IQ4NL_BB
+                         : dtype == GEIST_DTYPE_IQ4_XS ? IQ4XS_BB
+                         : dtype == GEIST_DTYPE_Q3_K   ? Q3K_BB
+                         : dtype == GEIST_DTYPE_IQ3_S  ? IQ3S_BB
+                         : dtype == GEIST_DTYPE_Q4_K   ? Q4K_BB
+                         : dtype == GEIST_DTYPE_Q5_K   ? Q5K_BB
+                                                       : Q6K_BB;
     for (size_t r = 0; r < n_out; r++) {
         for (size_t b = 0; b < bpr; b++) {
             uint8_t *blk = dst + (r * bpr + b) * bb;
             for (size_t i = 0; i < bb; i++) {
                 blk[i] = rng_u8();
             }
-            if (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 ||
-                dtype == GEIST_DTYPE_Q8_0) {
+            if (dtype == GEIST_DTYPE_Q3_K) {
+                blk[108] = 0x00; /* d = fp16(1.0), trailing field */
+                blk[109] = 0x3C;
+            } else if (dtype == GEIST_DTYPE_IQ3_S) {
+                blk[0] = 0x00; /* d = fp16(1.0) */
+                blk[1] = 0x3C;
+                /* scales nibbles <= 7 keep db = 1+2s <= 15; grid bytes
+                 * reach ~46, so staged weights stay under the half
+                 * integer lattice. */
+                for (size_t sc = 106; sc < 110; sc++) {
+                    blk[sc] = rng_u8() & 0x77u;
+                }
+            } else if (dtype == GEIST_DTYPE_IQ4_XS) {
+                blk[0] = 0x00; /* d = fp16(1.0) */
+                blk[1] = 0x3C;
+                /* Pin the 6-bit sub-scales to |ls-32| <= 4 (scales_h 2-bit
+                 * fields = 1, scales_l nibbles = 12..15): LUT values reach
+                 * 127, and the GEMM's half staging is exact only under
+                 * ~2048 — same reasoning as the Q5_K/Q6_K pins. */
+                blk[2] = 0x55;
+                blk[3] = 0x55;
+                for (size_t sc = 4; sc < 8; sc++) {
+                    blk[sc] = (uint8_t) (0xCCu | (rng_u8() & 0x33u));
+                }
+            } else if (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 ||
+                       dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL) {
                 blk[0] = 0x00; /* d = fp16(1.0) */
                 blk[1] = 0x3C;
                 if (dtype == GEIST_DTYPE_Q4_1) {
@@ -151,15 +183,19 @@ static void run_case(struct geist_backend *mt,
         w_bytes = n_in * n_out * sizeof(float);
     } else {
         const size_t block = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 ||
-                              dtype == GEIST_DTYPE_Q8_0)
+                              dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL)
                                      ? 32u
                                      : K_BLOCK;
-        const size_t bb    = dtype == GEIST_DTYPE_Q4_0   ? Q40_BB
-                             : dtype == GEIST_DTYPE_Q4_1 ? Q41_BB
-                             : dtype == GEIST_DTYPE_Q8_0 ? Q80_BB
-                             : dtype == GEIST_DTYPE_Q4_K ? Q4K_BB
-                             : dtype == GEIST_DTYPE_Q5_K ? Q5K_BB
-                                                         : Q6K_BB;
+        const size_t bb    = dtype == GEIST_DTYPE_Q4_0     ? Q40_BB
+                             : dtype == GEIST_DTYPE_Q4_1   ? Q41_BB
+                             : dtype == GEIST_DTYPE_Q8_0   ? Q80_BB
+                             : dtype == GEIST_DTYPE_IQ4_NL ? IQ4NL_BB
+                             : dtype == GEIST_DTYPE_IQ4_XS ? IQ4XS_BB
+                             : dtype == GEIST_DTYPE_Q3_K   ? Q3K_BB
+                             : dtype == GEIST_DTYPE_IQ3_S  ? IQ3S_BB
+                             : dtype == GEIST_DTYPE_Q4_K   ? Q4K_BB
+                             : dtype == GEIST_DTYPE_Q5_K   ? Q5K_BB
+                                                           : Q6K_BB;
         w_bytes            = n_out * (n_in / block) * bb;
     }
     const struct geist_backend_vtbl *v = mt->desc->vtbl;
@@ -436,6 +472,23 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 384, 32);
+    /* IQ4: n4 GEMV at m=1; the bounded simdgroup GEMM covers m>=2 (no
+     * naive kernels) — m=4 pins the small-rows route, m=33 the partial
+     * tiles. */
+    run_case(mt, ref, GEIST_DTYPE_IQ4_NL, "IQ4NL", 512, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_IQ4_NL, "IQ4NL", 512, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_IQ4_NL, "IQ4NL", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_Q3_K, "Q3_K", 512, 384, 32);
+    run_case(mt, ref, GEIST_DTYPE_Q3_K, "Q3_K", 512, 384, 8);
+    run_case(mt, ref, GEIST_DTYPE_Q3_K, "Q3_K", 512, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_Q3_K, "Q3_K", 512, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_Q3_K, "Q3_K", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_IQ3_S, "IQ3_S", 512, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_IQ3_S, "IQ3_S", 512, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_IQ3_S, "IQ3_S", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 1);
