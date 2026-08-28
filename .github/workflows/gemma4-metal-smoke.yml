@@ -1,0 +1,62 @@
+# Weekly gemma4-on-Metal gate. The PLE fused-probe regression (missing
+# m-gate, fixed alongside this file) hard-failed every gemma4 Metal
+# prefill at layer 0 and shipped unnoticed: nothing in per-PR CI runs a
+# gemma model on the Metal backend. Same shape as e4b-smoke.yml — weekly
+# with a cached model, deliberately outside ci.yml so the 3.1 GB E2B
+# reference doesn't ride along on every PR leg.
+name: gemma4 Metal smoke
+
+on:
+  schedule:
+    - cron: "43 4 * * 1" # Mondays 04:43 UTC
+  workflow_dispatch:
+
+jobs:
+  gemma4-metal-smoke:
+    name: Gemma 4 E2B prefill + decode on Metal
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (metal)
+        run: make BACKENDS="cpu_scalar cpu_neon metal" -j3
+
+      # Runners without a usable Metal device skip cleanly — the probe is
+      # the same gate the local parity suite uses.
+      - name: Probe Metal device
+        id: probe
+        run: |
+          if ./bin/*/release/tests/test_backend_metal_probe; then
+            echo "metal=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "metal=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::no Metal device on this runner — smoke skipped"
+          fi
+
+      - name: Kernel parity (no model needed)
+        if: steps.probe.outputs.metal == 'yes'
+        run: ./bin/*/release/tests/test_backend_metal_parity_unit
+
+      - name: Cache E2B model
+        if: steps.probe.outputs.metal == 'yes'
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+          key: geist-model-gemma4-e2b-q4km-v1
+
+      - name: Fetch E2B model
+        if: steps.probe.outputs.metal == 'yes'
+        run: make fetch-model
+
+      # simple_generate exits non-zero when any forward stage fails —
+      # exactly how the PLE probe regression surfaced (prefill returned
+      # UNSUPPORTED). Output text is not asserted, only that generation
+      # runs end to end on the Metal backend.
+      - name: Generate on Metal
+        if: steps.probe.outputs.metal == 'yes'
+        run: |
+          OUT=$(GEIST_BACKEND=metal ./bin/*/release/examples/simple_generate \
+                gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "Hello" 8)
+          echo "generated: $OUT"
+          test -n "$OUT"
