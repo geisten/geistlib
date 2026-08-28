@@ -551,7 +551,7 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
         be->desc->vtbl->buffer_unmap(sess->scratch_ones_headdim_max);
     }
 
-    /* ---- Gated-DeltaNet recurrent state (#281): heap f32 per DELTANET
+    /* ---- Gated-DeltaNet recurrent state (#281/#296): backend buffers per DELTANET
      * layer — conv history (kernel-1 x conv_dim) + delta state S
      * (n_v_heads x head_k x head_v). Zero-initialized = empty sequence. */
     {
@@ -567,25 +567,50 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
             const size_t conv_n    = (stt->config.dn_conv_kernel - 1) * conv_dim;
             const size_t s_n =
                     stt->config.dn_n_v_heads * stt->config.dn_head_k * stt->config.dn_head_v;
-            sess->dn_conv_state = heap_alloc_aligned(stt->n_layers * sizeof(float *), 64);
-            sess->dn_S          = heap_alloc_aligned(stt->n_layers * sizeof(float *), 64);
+            sess->dn_conv_state =
+                    heap_alloc_aligned(stt->n_layers * sizeof(*sess->dn_conv_state), 64);
+            sess->dn_S = heap_alloc_aligned(stt->n_layers * sizeof(*sess->dn_S), 64);
             if (sess->dn_conv_state == nullptr || sess->dn_S == nullptr) {
                 geist_backend_set_error(be, GEIST_E_OOM, "transformer: dn state alloc failed");
                 return GEIST_E_OOM;
             }
-            memset(sess->dn_conv_state, 0, stt->n_layers * sizeof(float *));
-            memset(sess->dn_S, 0, stt->n_layers * sizeof(float *));
+            memset(sess->dn_conv_state, 0, stt->n_layers * sizeof(*sess->dn_conv_state));
+            memset(sess->dn_S, 0, stt->n_layers * sizeof(*sess->dn_S));
             for (size_t li = 0; li < stt->n_layers; li++) {
                 if (stt->layers[li].mixer != GEIST_MIXER_DELTANET)
                     continue;
-                sess->dn_conv_state[li] = heap_alloc_aligned(conv_n * sizeof(float), 64);
-                sess->dn_S[li]          = heap_alloc_aligned(s_n * sizeof(float), 64);
-                if (sess->dn_conv_state[li] == nullptr || sess->dn_S[li] == nullptr) {
+                s = be->desc->vtbl->buffer_create(be,
+                                                  conv_n * sizeof(float),
+                                                  GEIST_BUFFER_KV_CACHE,
+                                                  GEIST_MEMORY_AUTO,
+                                                  &sess->dn_conv_state[li]);
+                if (s == GEIST_OK) {
+                    s = be->desc->vtbl->buffer_create(be,
+                                                      s_n * sizeof(float),
+                                                      GEIST_BUFFER_KV_CACHE,
+                                                      GEIST_MEMORY_AUTO,
+                                                      &sess->dn_S[li]);
+                }
+                if (s != GEIST_OK || sess->dn_conv_state[li] == nullptr ||
+                    sess->dn_S[li] == nullptr) {
                     geist_backend_set_error(be, GEIST_E_OOM, "transformer: dn state alloc failed");
                     return GEIST_E_OOM;
                 }
-                memset(sess->dn_conv_state[li], 0, conv_n * sizeof(float));
-                memset(sess->dn_S[li], 0, s_n * sizeof(float));
+                float *conv  = be->desc->vtbl->buffer_map(sess->dn_conv_state[li]);
+                float *delta = be->desc->vtbl->buffer_map(sess->dn_S[li]);
+                if (conv == nullptr || delta == nullptr) {
+                    if (conv != nullptr)
+                        be->desc->vtbl->buffer_unmap(sess->dn_conv_state[li]);
+                    if (delta != nullptr)
+                        be->desc->vtbl->buffer_unmap(sess->dn_S[li]);
+                    geist_backend_set_error(
+                            be, GEIST_E_BACKEND, "transformer: dn state map failed");
+                    return GEIST_E_BACKEND;
+                }
+                memset(conv, 0, conv_n * sizeof(float));
+                memset(delta, 0, s_n * sizeof(float));
+                be->desc->vtbl->buffer_unmap(sess->dn_conv_state[li]);
+                be->desc->vtbl->buffer_unmap(sess->dn_S[li]);
             }
         }
         /* qwen35 attention gate + DeltaNet projection scratch buffers. */
@@ -1255,18 +1280,18 @@ void transformer_session_free(struct transformer_arch_state   *state,
     struct geist_backend *be = (state != nullptr) ? state->backend : nullptr;
 
     /* Gated-DeltaNet state + qwen35 gate scratch (#281). */
-    if (state != nullptr && sess->dn_conv_state != nullptr) {
+    if (state != nullptr && be != nullptr && sess->dn_conv_state != nullptr) {
         for (size_t li = 0; li < state->n_layers; li++) {
-            void *pc = sess->dn_conv_state[li];
-            safe_free(&pc);
+            if (sess->dn_conv_state[li] != nullptr)
+                be->desc->vtbl->buffer_destroy(be, sess->dn_conv_state[li]);
         }
         void *pa = sess->dn_conv_state;
         safe_free(&pa);
     }
-    if (state != nullptr && sess->dn_S != nullptr) {
+    if (state != nullptr && be != nullptr && sess->dn_S != nullptr) {
         for (size_t li = 0; li < state->n_layers; li++) {
-            void *ps = sess->dn_S[li];
-            safe_free(&ps);
+            if (sess->dn_S[li] != nullptr)
+                be->desc->vtbl->buffer_destroy(be, sess->dn_S[li]);
         }
         void *pb = sess->dn_S;
         safe_free(&pb);

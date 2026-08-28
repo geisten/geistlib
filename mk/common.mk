@@ -177,6 +177,7 @@ LIB_SOURCES := \
     src/archs/vision_siglip/vision_kernels.c \
     src/archs/vision_siglip/image_pipeline.c \
     src/formats/gguf/common.c \
+    src/formats/gguf/iq4.c \
     src/formats/gguf/q8_0.c \
     src/formats/gguf/q4_0.c \
     src/formats/gguf/q4_1.c \
@@ -230,7 +231,7 @@ STB_OBJ := $(BUILD_DIR)/third_party/stb/stb_impl.o
 # path under bin/ (tests/test_foo -> bin/.../tests/test_foo; tools/eval_geist ->
 # bin/.../tools/eval_geist).
 TEST_SOURCES := $(wildcard tests/test_*.c tests/bench_*.c)
-DEMO_SOURCES := tools/eval_geist.c
+DEMO_SOURCES := tools/eval_geist.c tools/dump_geist_logits.c
 
 # These tests call cblas_* directly as an independent reference to validate
 # geist's own kernels. They can't link under GEMM_PROVIDER=native (no cblas to

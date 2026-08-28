@@ -4,7 +4,12 @@
 and the same machine, without giving up bit-exactness against the `cpu_scalar`
 reference.
 
-**Status: closed 2026-07-04, re-confirmed 2026-07-05.** Decode lands within
+**Status: closed 2026-07-04, re-confirmed 2026-07-05; superseded for the
+qwen35 family by the 2026-08 #300–#308 stack — see
+[QWEN35.md](QWEN35.md#mac-metal-backend-m1-max-gpu--measured-2026-08-28-feat296-qwen35-metal--aa3eb4d).
+Note for gemma4 readers: the PLE fused-probe m-gate regression broke every
+gemma4 Metal prefill between the probe-and-bind migration and 2026-08-28
+(#305 fixed it; a weekly gemma4-metal-smoke workflow now guards it).** Decode lands within
 **12 %** of llama.cpp; prefill remains **1.56×** behind. The backend is
 `EXPERIMENTAL` — build it with `BACKENDS="… metal"`.
 
@@ -59,12 +64,11 @@ numbers, so the program was closed rather than left open.
 
 ## Reproducing
 
-```sh
-benchmark/compare_metal.sh        # cool-state A/B against llama.cpp
-```
-
-Read [METHODOLOGY.md](../METHODOLOGY.md) first — a warm GPU reads differently,
-and the numbers above are cool-state.
+The `compare_metal.sh` harness this program used depended on the retired
+`bench_session_throughput`; the current protocol (cool-state, page-cache
+pre-touch, `bench_perf_sweep`) is documented in
+[QWEN35.md](QWEN35.md). Read [METHODOLOGY.md](../METHODOLOGY.md) first —
+a warm GPU reads differently, and the numbers above are cool-state.
 
 The full session-by-session lab log (phase plans, falsified theories, the
 execution ledger, the long-context MQA root-cause hunt) is kept outside the

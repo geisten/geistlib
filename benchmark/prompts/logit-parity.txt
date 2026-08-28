@@ -1,0 +1,4 @@
+Question: What is the capital of France?
+Answer: Paris.
+Question: What is 17 + 25?
+Answer:
