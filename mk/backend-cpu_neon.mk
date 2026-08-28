@@ -12,6 +12,7 @@ BACKEND_SOURCES += \
     src/backends/cpu_neon/kernel_catalog.c \
     src/backends/cpu_neon/kernels/iq2_s.c \
     src/backends/cpu_neon/kernels/iq3_s.c \
+    src/backends/cpu_neon/kernels/iq4_xs.c \
     src/backends/cpu_neon/kernels/q3_K.c \
     src/backends/cpu_neon/kernels/q4_01.c \
     src/backends/cpu_neon/kernels/q4_K.c \
