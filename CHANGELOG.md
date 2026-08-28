@@ -9,6 +9,23 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **NEON IQ4_XS/IQ4_NL W4A8 decode GEMVs** (#314): `vqtbl1q` LUT +
+  SDOT kernels replace the dequant trampoline on the m=1 path. Pi 5
+  0.8B IQ4_XS decode 4.4 → 18.5 tok/s; Mac CPU 18.5 → 101. Logit-gated
+  against the f32 scalar reference on both clang and gcc builds.
+- **Metal IQ4 LUT-kernel tuning** (#309): 27B UD-Q4_K_M prefill
+  78.7 → 91.6 tok/s; 27B q4_0 104.4 pp / 11.6 tg — ahead of llama.cpp
+  Metal on both axes.
+
+### Fixed
+- **Prefill chunking used the state m_max instead of the session's**
+  (#312): scratch overruns for any session m_max below the state
+  default; DeltaNet models now cap chunks at 64 (O(C²) per-chunk cost,
+  same cap llama.cpp uses). Also voids the #303 m_max A/B (both arms
+  had run identical configs).
+- **bench_quality used the Llama chat template for qwen archs** (#315):
+  qwen3.5 instruct models degenerated into template-token loops; the
+  battery now sends ChatML.
 - **Metal simdgroup quant kernels + chunked DeltaNet** (#300–#303, #308):
   llama-class GEMV/GEMM kernels for Q4_0/Q4_1/Q8_0/Q5_K, `_fast` interior
   GEMM variants, a chunked DeltaNet prefill (the serial mixer's
