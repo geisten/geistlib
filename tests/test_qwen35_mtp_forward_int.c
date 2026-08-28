@@ -35,7 +35,7 @@ static const char *resolve_model(void) {
 int main(void) {
     const char *path = resolve_model();
     if (path == nullptr)
-        GEIST_SKIP_FIXTURE("no Qwen3.5/3.8 GGUF with an MTP block");
+        GEIST_SKIP("no Qwen3.5/3.8 GGUF with an MTP block");
 
     /* PR 4 keeps MTP opt-in so ordinary decode has no synchronization cost. */
     if (setenv("GEIST_MTP", "1", 1) != 0)
