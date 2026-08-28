@@ -5,6 +5,7 @@
  * pure moves, no behavior change.
  */
 #include "metal_internal.h"
+#include "iq_grids.h"
 
 [[nodiscard]] static enum geist_status metal_create_named_pipeline(struct geist_backend *be,
                                                                    void                 *library,
@@ -46,24 +47,192 @@
     return GEIST_OK;
 }
 
+[[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be) {
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st = be->state;
+    if (st->deltanet_mix_pipeline != nullptr && st->dn_chunk_gate_pipeline != nullptr) {
+        return GEIST_OK;
+    }
+    void *ns_string = metal_objc_get_class(st, "NSString");
+    /* Serial mixer + chunked-prefill kernels compile as one MSL unit
+     * (the chunk sources reuse struct P and silu1). */
+    void *source = nullptr;
+    if (ns_string != nullptr) {
+        const char *const parts[] = {metal_deltanet_source,
+                                     metal_dn_chunk_prep_source,
+                                     metal_dn_chunk_ws_source,
+                                     metal_dn_chunk_wide_source,
+                                     metal_dn_chunk_wide2_source};
+        size_t            total   = 0;
+        for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+            total += strlen(parts[i]);
+        }
+        char *buf = malloc(total + 1u);
+        if (buf != nullptr) {
+            size_t off = 0;
+            for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+                const size_t len = strlen(parts[i]);
+                memcpy(buf + off, parts[i], len);
+                off += len;
+            }
+            buf[off] = '\0';
+            source   = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", buf);
+            free(buf);
+        }
+    }
+    if (source == nullptr) {
+        geist_backend_set_error(be, GEIST_E_BACKEND, "metal: DeltaNet shader source failed");
+        return GEIST_E_BACKEND;
+    }
+    void *err            = nullptr;
+    st->deltanet_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
+    if (st->deltanet_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: DeltaNet shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    enum geist_status s = metal_create_named_pipeline(be,
+                                                      st->deltanet_library,
+                                                      ns_string,
+                                                      "deltanet_mix",
+                                                      &st->deltanet_mix_function,
+                                                      &st->deltanet_mix_pipeline);
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_cst_copy",
+                                        &st->dn_cst_copy_function,
+                                        &st->dn_cst_copy_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_conv_prep",
+                                        &st->dn_conv_prep_function,
+                                        &st->dn_conv_prep_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_qk_norm",
+                                        &st->dn_qk_norm_function,
+                                        &st->dn_qk_norm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_state_roll",
+                                        &st->dn_state_roll_function,
+                                        &st->dn_state_roll_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_stage",
+                                        &st->dn_chunk_stage_function,
+                                        &st->dn_chunk_stage_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_subst",
+                                        &st->dn_chunk_subst_function,
+                                        &st->dn_chunk_subst_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_amat",
+                                        &st->dn_chunk_amat_function,
+                                        &st->dn_chunk_amat_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_vnew1",
+                                        &st->dn_chunk_vnew1_function,
+                                        &st->dn_chunk_vnew1_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_vnew2",
+                                        &st->dn_chunk_vnew2_function,
+                                        &st->dn_chunk_vnew2_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_out",
+                                        &st->dn_chunk_out_function,
+                                        &st->dn_chunk_out_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_supd",
+                                        &st->dn_chunk_supd_function,
+                                        &st->dn_chunk_supd_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_chunk_gate",
+                                        &st->dn_chunk_gate_function,
+                                        &st->dn_chunk_gate_pipeline);
+    }
+    return s;
+}
+
 [[nodiscard]] enum geist_status metal_ensure_q4k_pipeline(struct geist_backend *be) {
 
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
     struct metal_state *st = be->state;
-    if (st->q4k_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
+    if (st->q4k_pipeline != nullptr && st->q40_pipeline != nullptr &&
+        st->q40_m8_pipeline != nullptr && st->q80_pipeline != nullptr &&
+        st->q80_m8_pipeline != nullptr && st->q5k_pipeline != nullptr &&
+        st->q5k_m8_pipeline != nullptr && st->q41_pipeline != nullptr &&
+        st->q41_m8_pipeline != nullptr && st->q40_n4_pipeline != nullptr &&
+        st->q40_mm_pipeline != nullptr && st->q80_n4_pipeline != nullptr &&
+        st->q80_mm_pipeline != nullptr && st->q41_n4_pipeline != nullptr &&
+        st->q41_mm_pipeline != nullptr && st->q5k_n4_pipeline != nullptr &&
+        st->q5k_mm_pipeline != nullptr && st->iq4nl_mm_pipeline != nullptr &&
+        st->iq4xs_mm_pipeline != nullptr && st->q3k_mm_pipeline != nullptr &&
+        st->iq3s_mm_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
         st->q4k_matmul_m8_pipeline != nullptr && st->q4k_matmul_m16_pipeline != nullptr &&
         st->q4k_matmul_m16_n2_pipeline != nullptr &&
         (!st->use_q4k_mm_sg || st->q4k_mm_sg_pipeline != nullptr) && st->q6k_pipeline != nullptr &&
         st->q6k_n4_pipeline != nullptr && st->q6k_matmul_m8_pipeline != nullptr &&
         st->q6k_matmul_m16_pipeline != nullptr && st->rmsnorm_rows_pipeline != nullptr &&
         st->rmsnorm_rows_simd_pipeline != nullptr && st->gelu_rows_pipeline != nullptr &&
-        st->mul_rows_pipeline != nullptr && st->gelu_mul_rows_pipeline != nullptr &&
-        st->add_rows_pipeline != nullptr && st->scale_rows_pipeline != nullptr &&
-        st->rmsnorm_add_rows_pipeline != nullptr && st->rmsnorm_add_rows_simd_pipeline != nullptr &&
-        st->embed_lookup_scaled_pipeline != nullptr && st->f32_matmul_pipeline != nullptr &&
-        st->f32_ple_gate_pipeline != nullptr && st->f32_ple_proj_norm_pipeline != nullptr) {
+        st->silu_rows_pipeline != nullptr && st->mul_rows_pipeline != nullptr &&
+        st->gelu_mul_rows_pipeline != nullptr && st->add_rows_pipeline != nullptr &&
+        st->scale_rows_pipeline != nullptr && st->rmsnorm_add_rows_pipeline != nullptr &&
+        st->rmsnorm_add_rows_simd_pipeline != nullptr && st->qgate_split_pipeline != nullptr &&
+        st->sigmoid_mul_pipeline != nullptr && st->embed_lookup_scaled_pipeline != nullptr &&
+        st->f32_matmul_pipeline != nullptr && st->f32_ple_gate_pipeline != nullptr &&
+        st->f32_ple_proj_norm_pipeline != nullptr) {
         return GEIST_OK;
     }
 
@@ -73,6 +242,62 @@
         return GEIST_E_BACKEND;
     }
     void *source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_source);
+    void *q40_q80_source =
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q40_q80_source);
+    void *q5k_source =
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q5k_source);
+    void *q41_source =
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q41_source);
+    /* The simdgroup quant kernels ship as several sub-4095-char C literals
+     * and compile as one MSL unit; concatenate them here. The IQ3_S grid
+     * (quant/iq_grids.h) is emitted as an MSL constant array at build
+     * time — 512 hex literals nobody wants to hand-maintain twice. */
+    void *quant_sg_source = nullptr;
+    {
+        enum { GRID_STR_CAP = 512 * 12 + 64 };
+        char *grid_src = malloc(GRID_STR_CAP);
+        if (grid_src != nullptr) {
+            size_t off = (size_t) snprintf(grid_src, GRID_STR_CAP, "constant uint iq3sg[512]={");
+            for (size_t gi = 0; gi < 512; gi++) {
+                off += (size_t) snprintf(grid_src + off,
+                                         GRID_STR_CAP - off,
+                                         "%s0x%08xu",
+                                         gi == 0 ? "" : ",",
+                                         iq3s_grid[gi]);
+            }
+            off += (size_t) snprintf(grid_src + off, GRID_STR_CAP - off, "};\n");
+        }
+        const char *const parts[] = {
+                metal_qsg_common_source,      grid_src != nullptr ? grid_src : "",
+                metal_qsg_common2_source,     metal_qsg_n4_q40_source,
+                metal_qsg_n4_q80_source,      metal_qsg_n4_q41_source,
+                metal_qsg_n4_q5k_source,      metal_qsg_mm_q40_source,
+                metal_qsg_mm_q80_source,      metal_qsg_mm_q41_source,
+                metal_qsg_mm_q5k_source,      metal_qsg_n4_iq4nl_source,
+                metal_qsg_n4_iq4xs_source,    metal_qsg_mm_iq4nl_source,
+                metal_qsg_mm_iq4xs_source,    metal_qsg_n4_q3k_source,
+                metal_qsg_n4_iq3s_source,     metal_qsg_mm_q3k_source,
+                metal_qsg_mm_iq3s_source,     metal_qsg_mm_q40_fast_source,
+                metal_qsg_mm_q80_fast_source, metal_qsg_mm_q41_fast_source,
+                metal_qsg_mm_q5k_fast_source, metal_qsg_mm_iq4xs_fast_source};
+        size_t total = 0;
+        for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+            total += strlen(parts[i]);
+        }
+        char *buf = malloc(total + 1u);
+        if (buf != nullptr) {
+            size_t off = 0;
+            for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+                const size_t len = strlen(parts[i]);
+                memcpy(buf + off, parts[i], len);
+                off += len;
+            }
+            buf[off]        = '\0';
+            quant_sg_source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", buf);
+            free(buf);
+        }
+        free(grid_src);
+    }
     void *q4k_n4_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_n4_source);
     void *q4k_m16_source =
@@ -105,6 +330,10 @@
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q6k_m16_source);
     void *elem_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_elem_source);
+    void *silu_source =
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_silu_source);
+    void *qgate_source =
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_qgate_source);
     void *elem_simd_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_elem_simd_source);
     void *embed_source =
@@ -124,11 +353,13 @@
         f32_source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", f32_src);
         free(f32_src);
     }
-    if (source == nullptr || q4k_n4_source == nullptr || q4k_m16_source == nullptr ||
-        q4k_m16_n2_source == nullptr || (st->use_q4k_mm_sg && q4k_mm_sg_ns_source == nullptr) ||
-        q4k_gate_up_n4_src == nullptr || q4k_pair_n4_src == nullptr || q6_source == nullptr ||
-        q6_n4_source == nullptr || q6_m16_source == nullptr || elem_source == nullptr ||
-        elem_simd_source == nullptr || embed_source == nullptr || f32_source == nullptr) {
+    if (source == nullptr || q40_q80_source == nullptr || quant_sg_source == nullptr ||
+        q4k_m16_source == nullptr || q4k_m16_n2_source == nullptr || q4k_n4_source == nullptr ||
+        (st->use_q4k_mm_sg && q4k_mm_sg_ns_source == nullptr) || q4k_gate_up_n4_src == nullptr ||
+        q4k_pair_n4_src == nullptr || q6_source == nullptr || q6_n4_source == nullptr ||
+        q6_m16_source == nullptr || elem_source == nullptr || silu_source == nullptr ||
+        qgate_source == nullptr || elem_simd_source == nullptr || embed_source == nullptr ||
+        f32_source == nullptr) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal: failed to create shader source");
         return GEIST_E_BACKEND;
     }
@@ -141,6 +372,54 @@
         geist_backend_set_error(be,
                                 GEIST_E_BACKEND,
                                 "metal: Q4_K shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    err                 = nullptr;
+    st->q40_q80_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", q40_q80_source, nullptr, &err);
+    if (st->q40_q80_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: Q4_0/Q8_0 shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    err             = nullptr;
+    st->q5k_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", q5k_source, nullptr, &err);
+    if (st->q5k_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: Q5_K shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    err             = nullptr;
+    st->q41_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", q41_source, nullptr, &err);
+    if (st->q41_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: Q4_1 shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    err                  = nullptr;
+    st->quant_sg_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", quant_sg_source, nullptr, &err);
+    if (st->quant_sg_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: simdgroup quant shader compile failed%s%s",
                                 msg != nullptr ? ": " : "",
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
@@ -324,6 +603,30 @@
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
     }
+    err              = nullptr;
+    st->silu_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", silu_source, nullptr, &err);
+    if (st->silu_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: SiLU shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    err               = nullptr;
+    st->qgate_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", qgate_source, nullptr, &err);
+    if (st->qgate_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: Qwen gate shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
     err                   = nullptr;
     st->elem_simd_library = metal_msg_send_id_id_id_err(
             st, st->device, "newLibraryWithSource:options:error:", elem_simd_source, nullptr, &err);
@@ -362,6 +665,230 @@
     }
     enum geist_status s = metal_create_named_pipeline(
             be, st->q4k_library, ns_string, "matvec_q4k", &st->q4k_function, &st->q4k_pipeline);
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->q40_q80_library,
+                                        ns_string,
+                                        "linear_q40",
+                                        &st->q40_function,
+                                        &st->q40_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->q40_q80_library,
+                                        ns_string,
+                                        "linear_q40_m8",
+                                        &st->q40_m8_function,
+                                        &st->q40_m8_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->q40_q80_library,
+                                        ns_string,
+                                        "linear_q80",
+                                        &st->q80_function,
+                                        &st->q80_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->q40_q80_library,
+                                        ns_string,
+                                        "linear_q80_m8",
+                                        &st->q80_m8_function,
+                                        &st->q80_m8_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(
+                be, st->q5k_library, ns_string, "linear_q5k", &st->q5k_function, &st->q5k_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->q5k_library,
+                                        ns_string,
+                                        "linear_q5k_m8",
+                                        &st->q5k_m8_function,
+                                        &st->q5k_m8_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(
+                be, st->q41_library, ns_string, "linear_q41", &st->q41_function, &st->q41_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->q41_library,
+                                        ns_string,
+                                        "linear_q41_m8",
+                                        &st->q41_m8_function,
+                                        &st->q41_m8_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_q40_n4",
+                                        &st->q40_n4_function,
+                                        &st->q40_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q40_mm_sg",
+                                        &st->q40_mm_function,
+                                        &st->q40_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_q80_n4",
+                                        &st->q80_n4_function,
+                                        &st->q80_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q80_mm_sg",
+                                        &st->q80_mm_function,
+                                        &st->q80_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_q41_n4",
+                                        &st->q41_n4_function,
+                                        &st->q41_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q41_mm_sg",
+                                        &st->q41_mm_function,
+                                        &st->q41_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_q5k_n4",
+                                        &st->q5k_n4_function,
+                                        &st->q5k_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q5k_mm_sg",
+                                        &st->q5k_mm_function,
+                                        &st->q5k_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_iq4nl_n4",
+                                        &st->iq4nl_n4_function,
+                                        &st->iq4nl_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_iq4nl_mm_sg",
+                                        &st->iq4nl_mm_function,
+                                        &st->iq4nl_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_iq4xs_n4",
+                                        &st->iq4xs_n4_function,
+                                        &st->iq4xs_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_iq4xs_mm_sg",
+                                        &st->iq4xs_mm_function,
+                                        &st->iq4xs_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_q3k_n4",
+                                        &st->q3k_n4_function,
+                                        &st->q3k_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q3k_mm_sg",
+                                        &st->q3k_mm_function,
+                                        &st->q3k_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_iq3s_n4",
+                                        &st->iq3s_n4_function,
+                                        &st->iq3s_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_iq3s_mm_sg",
+                                        &st->iq3s_mm_function,
+                                        &st->iq3s_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_iq4xs_mm_sg_fast",
+                                        &st->iq4xs_mm_fast_function,
+                                        &st->iq4xs_mm_fast_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q40_mm_sg_fast",
+                                        &st->q40_mm_fast_function,
+                                        &st->q40_mm_fast_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q80_mm_sg_fast",
+                                        &st->q80_mm_fast_function,
+                                        &st->q80_mm_fast_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q41_mm_sg_fast",
+                                        &st->q41_mm_fast_function,
+                                        &st->q41_mm_fast_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_q5k_mm_sg_fast",
+                                        &st->q5k_mm_fast_function,
+                                        &st->q5k_mm_fast_pipeline);
+    }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,
                                         st->q4k_n4_library,
@@ -496,6 +1023,14 @@
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,
+                                        st->silu_library,
+                                        ns_string,
+                                        "silu_rows",
+                                        &st->silu_rows_function,
+                                        &st->silu_rows_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
                                         st->elem_library,
                                         ns_string,
                                         "mul_rows",
@@ -525,6 +1060,22 @@
                                         "scale_rows",
                                         &st->scale_rows_function,
                                         &st->scale_rows_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->qgate_library,
+                                        ns_string,
+                                        "qgate_split",
+                                        &st->qgate_split_function,
+                                        &st->qgate_split_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->qgate_library,
+                                        ns_string,
+                                        "sigmoid_mul_rows",
+                                        &st->sigmoid_mul_function,
+                                        &st->sigmoid_mul_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,

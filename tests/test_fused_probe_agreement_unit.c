@@ -71,6 +71,25 @@ static int check_backend(const char *name) {
                               "kernel present but probe rejects the plain F32 case");
     }
 
+    /* ---- PLE block negative agreement: the metal kernels are decode
+     * GEMVs, so an m>1 probe must answer no. The missing m check here
+     * bound fuse_ple_block_mN and hard-failed every gemma4 Metal prefill
+     * at layer 0 (found 2026-08-27). */
+    {
+        struct geist_weight       gate = {.dtype = GEIST_DTYPE_F32, .n_in = 64, .n_out = 32};
+        struct geist_weight       up   = {.dtype = GEIST_DTYPE_F32, .n_in = 32, .n_out = 64};
+        struct geist_fusion_query pq   = {.op      = GEIST_FUSED_PLE_BLOCK,
+                                          .m       = 4,
+                                          .d_model = 64,
+                                          .inter   = 32,
+                                          .gate_w  = &gate,
+                                          .up_w    = &up};
+        const bool probe_yes           = fused->supported != nullptr && fused->supported(be, &pq);
+        if (fused->ple_block != nullptr && probe_yes) {
+            fails += geist_expect(false, "PLE probe accepts m>1 but the backend has no mN kernel");
+        }
+    }
+
     /* ---- GEGLU tile negative agreement: wrong dtype + misaligned dims.
      * Entry checks reject before touching weight bytes. */
     if (fused->ffn_geglu_q4q6_mN != nullptr) {

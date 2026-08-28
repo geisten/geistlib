@@ -492,6 +492,7 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     struct geist_backend                  *be    = ctx->be;
     const struct geist_backend_vtbl       *v     = ctx->v;
     const struct geist_backend_primitives *prims = ctx->prims;
+    const struct geist_backend_fused      *fused = ctx->fused;
     const size_t                           seq   = ctx->seq;
 
     const size_t n_kh   = st->config.dn_n_k_heads;
@@ -576,169 +577,215 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     if (s != GEIST_OK)
         return s;
 
-    /* 3..7 host-side: conv + gating + recurrence + gated norm. */
-    float       *qkv    = (float *) v->buffer_map(sess->dn_scratch_qkv);
-    float       *zg     = (float *) v->buffer_map(sess->dn_scratch_z);
-    float       *bb     = (float *) v->buffer_map(sess->dn_scratch_b);
-    float       *baa    = (float *) v->buffer_map(sess->dn_scratch_a);
-    const float *convw  = (const float *) v->buffer_map(L->dn_conv.buffer);
-    const float *aw     = (const float *) v->buffer_map(L->dn_a.buffer);
-    const float *dtb    = (const float *) v->buffer_map(L->dn_dt_bias.buffer);
-    const float *nrm    = (const float *) v->buffer_map(L->dn_norm.buffer);
-    float       *cstate = sess->dn_conv_state[ctx->layer_idx]; /* [(K-1) * convd] */
-    float       *S      = sess->dn_S[ctx->layer_idx];          /* [n_vh * d_k * d_v] */
-    if (qkv == nullptr || zg == nullptr || bb == nullptr || baa == nullptr || convw == nullptr ||
-        aw == nullptr || dtb == nullptr || nrm == nullptr || d_v > 512 || d_k > 512) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "deltanet: buffer_map failed");
-        return GEIST_E_BACKEND;
+    /* 3..7: a batched-submit backend may keep the complete stateful mixer
+     * on-device. Unsupported is side-effect free by contract, so the host
+     * oracle below remains the universal fallback. */
+    bool mixed_on_backend = false;
+    if (fused != nullptr && fused->deltanet_mix != nullptr) {
+        struct geist_tensor t_conv_w = view_2d(L->dn_conv.buffer, (int64_t) convd, (int64_t) K);
+        struct geist_tensor t_aw     = view_1d(L->dn_a.buffer, (int64_t) n_vh);
+        struct geist_tensor t_dtb    = view_1d(L->dn_dt_bias.buffer, (int64_t) n_vh);
+        struct geist_tensor t_nrm    = view_1d(L->dn_norm.buffer, (int64_t) d_v);
+        struct geist_tensor t_cstate =
+                view_2d(sess->dn_conv_state[ctx->layer_idx], (int64_t) (K - 1), (int64_t) convd);
+        struct geist_tensor t_S = {.buffer = sess->dn_S[ctx->layer_idx],
+                                   .dtype  = GEIST_DTYPE_F32,
+                                   .layout = GEIST_LAYOUT_DENSE,
+                                   .ndim   = 3,
+                                   .shape  = {(int64_t) n_vh, (int64_t) d_k, (int64_t) d_v},
+                                   .stride = {(int64_t) (d_k * d_v), (int64_t) d_v, 1}};
+        const struct geist_deltanet_mix_args args = {.qkv         = &t_qkv,
+                                                     .z           = &t_z,
+                                                     .beta        = &t_b,
+                                                     .alpha       = &t_a,
+                                                     .conv_w      = &t_conv_w,
+                                                     .ssm_a       = &t_aw,
+                                                     .dt_bias     = &t_dtb,
+                                                     .norm_w      = &t_nrm,
+                                                     .conv_state  = &t_cstate,
+                                                     .delta_state = &t_S,
+                                                     .seq         = seq,
+                                                     .n_k_heads   = n_kh,
+                                                     .n_v_heads   = n_vh,
+                                                     .head_k      = d_k,
+                                                     .head_v      = d_v,
+                                                     .conv_kernel = K,
+                                                     .eps         = eps};
+        s                                         = fused->deltanet_mix(be, &args);
+        if (s == GEIST_OK)
+            mixed_on_backend = true;
+        else if (s != GEIST_E_UNSUPPORTED)
+            return s;
     }
 
-    /* mixer output rows accumulate here, then one linear to d_model */
-    float *mix = zg; /* reuse the z buffer in place: gate consumed per row */
-
-    /* Prefill (seq > 1): chunked delta rule — GEMM work instead of seq
-     * sequential state passes. Decode and the (alloc-failure) fallback
-     * take the exact sequential loop below. */
-    const bool chunked = seq > 1 && !st->runtime_flags.dn_seq_prefill &&
-                         dn_run_prefill_chunked(qkv,
-                                                zg,
-                                                bb,
-                                                baa,
-                                                convw,
-                                                aw,
-                                                dtb,
-                                                nrm,
-                                                cstate,
-                                                S,
-                                                seq,
-                                                n_kh,
-                                                n_vh,
-                                                d_k,
-                                                d_v,
-                                                K,
-                                                keyd,
-                                                vald,
-                                                convd,
-                                                eps,
-                                                qscale);
-
-    for (size_t t = 0; chunked == false && t < seq; t++) {
-        float *qkv_t = qkv + t * convd;
-
-        /* 3. causal depthwise conv over [cstate | current]: y[c] =
-         * silu(sum_j w[c][j] * hist[j][c]) where hist is the last K
-         * pre-conv vectors ending at t. Conv weight layout from GGUF
-         * [K, convd] row-major C: convw[c*K + j]. Update the rolling
-         * state BEFORE overwriting qkv_t with the conv result. */
-        float y[16384]; /* convd <= 16384 for all known variants (27B: 10240) */
-        if (convd > sizeof y / sizeof y[0]) {
-            geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "deltanet: conv_dim too large");
-            return GEIST_E_UNSUPPORTED;
+    if (!mixed_on_backend) {
+        /* Host oracle: conv + gating + recurrence + gated norm. */
+        float       *qkv    = (float *) v->buffer_map(sess->dn_scratch_qkv);
+        float       *zg     = (float *) v->buffer_map(sess->dn_scratch_z);
+        float       *bb     = (float *) v->buffer_map(sess->dn_scratch_b);
+        float       *baa    = (float *) v->buffer_map(sess->dn_scratch_a);
+        const float *convw  = (const float *) v->buffer_map(L->dn_conv.buffer);
+        const float *aw     = (const float *) v->buffer_map(L->dn_a.buffer);
+        const float *dtb    = (const float *) v->buffer_map(L->dn_dt_bias.buffer);
+        const float *nrm    = (const float *) v->buffer_map(L->dn_norm.buffer);
+        float       *cstate = (float *) v->buffer_map(sess->dn_conv_state[ctx->layer_idx]);
+        float       *S      = (float *) v->buffer_map(sess->dn_S[ctx->layer_idx]);
+        if (qkv == nullptr || zg == nullptr || bb == nullptr || baa == nullptr ||
+            convw == nullptr || aw == nullptr || dtb == nullptr || nrm == nullptr ||
+            cstate == nullptr || S == nullptr || d_v > 512 || d_k > 512) {
+            geist_backend_set_error(be, GEIST_E_BACKEND, "deltanet: buffer_map failed");
+            return GEIST_E_BACKEND;
         }
+
+        /* mixer output rows accumulate here, then one linear to d_model */
+        float *mix = zg; /* reuse the z buffer in place: gate consumed per row */
+
+        /* Prefill (seq > 1): chunked delta rule — GEMM work instead of seq
+         * sequential state passes. Decode and the (alloc-failure) fallback
+         * take the exact sequential loop below. */
+        const bool chunked = seq > 1 && !st->runtime_flags.dn_seq_prefill &&
+                             dn_run_prefill_chunked(qkv,
+                                                    zg,
+                                                    bb,
+                                                    baa,
+                                                    convw,
+                                                    aw,
+                                                    dtb,
+                                                    nrm,
+                                                    cstate,
+                                                    S,
+                                                    seq,
+                                                    n_kh,
+                                                    n_vh,
+                                                    d_k,
+                                                    d_v,
+                                                    K,
+                                                    keyd,
+                                                    vald,
+                                                    convd,
+                                                    eps,
+                                                    qscale);
+
+        for (size_t t = 0; chunked == false && t < seq; t++) {
+            float *qkv_t = qkv + t * convd;
+
+            /* 3. causal depthwise conv over [cstate | current]: y[c] =
+             * silu(sum_j w[c][j] * hist[j][c]) where hist is the last K
+             * pre-conv vectors ending at t. Conv weight layout from GGUF
+             * [K, convd] row-major C: convw[c*K + j]. Update the rolling
+             * state BEFORE overwriting qkv_t with the conv result. */
+            float y[16384]; /* convd <= 16384 for all known variants (27B: 10240) */
+            if (convd > sizeof y / sizeof y[0]) {
+                geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "deltanet: conv_dim too large");
+                return GEIST_E_UNSUPPORTED;
+            }
 #if defined(__ARM_NEON)
-        if (K == 4) {
-            /* Kernel-4 fast path: vld4 deinterleaves w[c][4] into 4
-             * per-tap vectors of 4 channels; history rows are channel-
-             * contiguous. silu stays scalar (expf). */
-            const float *h0 = cstate;             /* t-3 */
-            const float *h1 = cstate + convd;     /* t-2 */
-            const float *h2 = cstate + 2 * convd; /* t-1 */
-            size_t       c  = 0;
-            for (; c + 4 <= convd; c += 4) {
-                const float32x4x4_t wv  = vld4q_f32(convw + c * 4);
-                float32x4_t         acc = vmulq_f32(wv.val[0], vld1q_f32(h0 + c));
-                acc                     = vfmaq_f32(acc, wv.val[1], vld1q_f32(h1 + c));
-                acc                     = vfmaq_f32(acc, wv.val[2], vld1q_f32(h2 + c));
-                acc                     = vfmaq_f32(acc, wv.val[3], vld1q_f32(qkv_t + c));
-                float av[4];
-                vst1q_f32(av, acc);
-                y[c]     = silu_f(av[0]);
-                y[c + 1] = silu_f(av[1]);
-                y[c + 2] = silu_f(av[2]);
-                y[c + 3] = silu_f(av[3]);
-            }
-            for (; c < convd; c++) {
-                float acc = convw[c * 4] * h0[c] + convw[c * 4 + 1] * h1[c] +
-                            convw[c * 4 + 2] * h2[c] + convw[c * 4 + 3] * qkv_t[c];
-                y[c]      = silu_f(acc);
-            }
-        } else
-#endif
-        {
-            for (size_t c = 0; c < convd; c++) {
-                float acc = 0.0f;
-                for (size_t j = 0; j < K; j++) {
-                    /* history index: j=0..K-2 from cstate, j=K-1 is current */
-                    const float xv = (j + 1 < K) ? cstate[j * convd + c] : qkv_t[c];
-                    acc += convw[c * K + j] * xv;
+            if (K == 4) {
+                /* Kernel-4 fast path: vld4 deinterleaves w[c][4] into 4
+                 * per-tap vectors of 4 channels; history rows are channel-
+                 * contiguous. silu stays scalar (expf). */
+                const float *h0 = cstate;             /* t-3 */
+                const float *h1 = cstate + convd;     /* t-2 */
+                const float *h2 = cstate + 2 * convd; /* t-1 */
+                size_t       c  = 0;
+                for (; c + 4 <= convd; c += 4) {
+                    const float32x4x4_t wv  = vld4q_f32(convw + c * 4);
+                    float32x4_t         acc = vmulq_f32(wv.val[0], vld1q_f32(h0 + c));
+                    acc                     = vfmaq_f32(acc, wv.val[1], vld1q_f32(h1 + c));
+                    acc                     = vfmaq_f32(acc, wv.val[2], vld1q_f32(h2 + c));
+                    acc                     = vfmaq_f32(acc, wv.val[3], vld1q_f32(qkv_t + c));
+                    float av[4];
+                    vst1q_f32(av, acc);
+                    y[c]     = silu_f(av[0]);
+                    y[c + 1] = silu_f(av[1]);
+                    y[c + 2] = silu_f(av[2]);
+                    y[c + 3] = silu_f(av[3]);
                 }
-                y[c] = silu_f(acc);
+                for (; c < convd; c++) {
+                    float acc = convw[c * 4] * h0[c] + convw[c * 4 + 1] * h1[c] +
+                                convw[c * 4 + 2] * h2[c] + convw[c * 4 + 3] * qkv_t[c];
+                    y[c]      = silu_f(acc);
+                }
+            } else
+#endif
+            {
+                for (size_t c = 0; c < convd; c++) {
+                    float acc = 0.0f;
+                    for (size_t j = 0; j < K; j++) {
+                        /* history index: j=0..K-2 from cstate, j=K-1 is current */
+                        const float xv = (j + 1 < K) ? cstate[j * convd + c] : qkv_t[c];
+                        acc += convw[c * K + j] * xv;
+                    }
+                    y[c] = silu_f(acc);
+                }
             }
-        }
-        /* roll conv state: drop oldest, append current pre-conv vector */
-        if (K >= 2) {
-            memmove(cstate, cstate + convd, (K - 2) * convd * sizeof(float));
-            memcpy(cstate + (K - 2) * convd, qkv_t, convd * sizeof(float));
-        }
+            /* roll conv state: drop oldest, append current pre-conv vector */
+            if (K >= 2) {
+                memmove(cstate, cstate + convd, (K - 2) * convd * sizeof(float));
+                memcpy(cstate + (K - 2) * convd, qkv_t, convd * sizeof(float));
+            }
 
-        /* 4. split + per-head l2 norm + q scale */
-        float *q   = y;            /* [n_kh, d_k] */
-        float *k   = y + keyd;     /* [n_kh, d_k] */
-        float *val = y + 2 * keyd; /* [n_vh, d_v] */
-        for (size_t h = 0; h < n_kh; h++) {
-            l2norm_row(q + h * d_k, d_k, eps);
-            l2norm_row(k + h * d_k, d_k, eps);
-            for (size_t i = 0; i < d_k; i++)
-                q[h * d_k + i] *= qscale;
-        }
+            /* 4. split + per-head l2 norm + q scale */
+            float *q   = y;            /* [n_kh, d_k] */
+            float *k   = y + keyd;     /* [n_kh, d_k] */
+            float *val = y + 2 * keyd; /* [n_vh, d_v] */
+            for (size_t h = 0; h < n_kh; h++) {
+                l2norm_row(q + h * d_k, d_k, eps);
+                l2norm_row(k + h * d_k, d_k, eps);
+                for (size_t i = 0; i < d_k; i++)
+                    q[h * d_k + i] *= qscale;
+            }
 
-        /* 5. gating scalars + delta-rule recurrence per v-head */
-        const float *b_t = bb + t * n_vh;
-        const float *a_t = baa + t * n_vh;
-        float       *z_t = zg + t * vald;
-        float       *o_t = mix + t * vald; /* == z_t buffer, overwritten below */
+            /* 5. gating scalars + delta-rule recurrence per v-head */
+            const float *b_t = bb + t * n_vh;
+            const float *a_t = baa + t * n_vh;
+            float       *z_t = zg + t * vald;
+            float       *o_t = mix + t * vald; /* == z_t buffer, overwritten below */
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
-        for (size_t hv = 0; hv < n_vh; hv++) {
-            const float beta = 1.0f / (1.0f + expf(-b_t[hv]));
-            /* softplus in f32; aw = -exp(A_log) already */
-            const float sp    = log1pf(expf(a_t[hv] + dtb[hv]));
-            const float g     = aw[hv] * sp;
-            const float decay = expf(g);
+            for (size_t hv = 0; hv < n_vh; hv++) {
+                const float beta = 1.0f / (1.0f + expf(-b_t[hv]));
+                /* softplus in f32; aw = -exp(A_log) already */
+                const float sp    = log1pf(expf(a_t[hv] + dtb[hv]));
+                const float g     = aw[hv] * sp;
+                const float decay = expf(g);
 
-            /* GGUF v-heads are in TILED order [G0_v0, G1_v0, ...] (the
-             * converter's _reorder_v_heads): v-head position hv maps to
-             * k-head hv % n_kh. Identity when n_vh == n_kh (0.8B);
-             * load-bearing for the 27B's 16:48 split. */
-            const size_t hk = hv % n_kh;
-            const float *qh = q + hk * d_k;
-            const float *kh = k + hk * d_k;
-            const float *vh = val + hv * d_v;
-            float       *Sh = S + hv * d_k * d_v;
+                /* GGUF v-heads are in TILED order [G0_v0, G1_v0, ...] (the
+                 * converter's _reorder_v_heads): v-head position hv maps to
+                 * k-head hv % n_kh. Identity when n_vh == n_kh (0.8B);
+                 * load-bearing for the 27B's 16:48 split. */
+                const size_t hk = hv % n_kh;
+                const float *qh = q + hk * d_k;
+                const float *kh = k + hk * d_k;
+                const float *vh = val + hv * d_v;
+                float       *Sh = S + hv * d_k * d_v;
 
-            float kv_mem[512], delta[512], o_h[512];
-            transformer_dn_head_step(Sh, qh, kh, vh, decay, beta, d_k, d_v, kv_mem, delta, o_h);
+                float kv_mem[512], delta[512], o_h[512];
+                transformer_dn_head_step(Sh, qh, kh, vh, decay, beta, d_k, d_v, kv_mem, delta, o_h);
 
-            /* 6. gated per-head RMSNorm + silu(z) gate. o_t aliases z_t,
-             * so read the gate BEFORE overwriting. */
-            rmsnorm_row(o_h, nrm, d_v, eps);
-            for (size_t j = 0; j < d_v; j++) {
-                const float gate  = silu_f(z_t[hv * d_v + j]);
-                o_t[hv * d_v + j] = o_h[j] * gate;
+                /* 6. gated per-head RMSNorm + silu(z) gate. o_t aliases z_t,
+                 * so read the gate BEFORE overwriting. */
+                rmsnorm_row(o_h, nrm, d_v, eps);
+                for (size_t j = 0; j < d_v; j++) {
+                    const float gate  = silu_f(z_t[hv * d_v + j]);
+                    o_t[hv * d_v + j] = o_h[j] * gate;
+                }
             }
         }
-    }
 
-    v->buffer_unmap(sess->dn_scratch_qkv);
-    v->buffer_unmap(sess->dn_scratch_z);
-    v->buffer_unmap(sess->dn_scratch_b);
-    v->buffer_unmap(sess->dn_scratch_a);
-    v->buffer_unmap(L->dn_conv.buffer);
-    v->buffer_unmap(L->dn_a.buffer);
-    v->buffer_unmap(L->dn_dt_bias.buffer);
-    v->buffer_unmap(L->dn_norm.buffer);
+        v->buffer_unmap(sess->dn_scratch_qkv);
+        v->buffer_unmap(sess->dn_scratch_z);
+        v->buffer_unmap(sess->dn_scratch_b);
+        v->buffer_unmap(sess->dn_scratch_a);
+        v->buffer_unmap(L->dn_conv.buffer);
+        v->buffer_unmap(L->dn_a.buffer);
+        v->buffer_unmap(L->dn_dt_bias.buffer);
+        v->buffer_unmap(L->dn_norm.buffer);
+        v->buffer_unmap(sess->dn_conv_state[ctx->layer_idx]);
+        v->buffer_unmap(sess->dn_S[ctx->layer_idx]);
+    }
 
     /* 7. out projection [seq, vald] -> [seq, d_model] into scratch_o,
      * then plain residual add into h_out (h_post_attn slot, so the FFN

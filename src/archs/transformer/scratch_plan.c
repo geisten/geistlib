@@ -18,7 +18,12 @@ void transformer_scratch_plan_build(const struct transformer_arch_state *st,
     const size_t head_dim_max = 512;
     const size_t q_out_max    = st->n_q_heads * head_dim_max;
     const size_t kv_out_max   = st->n_kv_heads * head_dim_max;
-    const size_t inter_max    = 12288;
+    size_t       inter_max    = 0;
+    for (size_t i = 0; i < st->n_layers; i++) {
+        if (st->layers[i].intermediate > inter_max) {
+            inter_max = st->layers[i].intermediate;
+        }
+    }
 
     out->hidden           = M * st->d_model * F;
     out->q_out            = M * q_out_max * F;

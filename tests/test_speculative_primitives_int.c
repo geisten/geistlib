@@ -73,6 +73,7 @@ static void teardown(void) {
 static int compare_deltanet_state(const struct transformer_arch_session *a,
                                   const struct transformer_arch_session *b) {
     const struct transformer_arch_state *st        = a->model;
+    const struct geist_backend_vtbl     *v         = st->backend->desc->vtbl;
     const size_t                         key_dim   = st->config.dn_n_k_heads * st->config.dn_head_k;
     const size_t                         value_dim = st->config.dn_n_v_heads * st->config.dn_head_v;
     const size_t conv_n = (st->config.dn_conv_kernel - 1) * (2 * key_dim + value_dim);
@@ -80,11 +81,33 @@ static int compare_deltanet_state(const struct transformer_arch_session *a,
     for (size_t li = 0; li < st->n_layers; li++) {
         if (st->layers[li].mixer != GEIST_MIXER_DELTANET)
             continue;
-        if (memcmp(a->dn_conv_state[li], b->dn_conv_state[li], conv_n * sizeof(float)) != 0) {
+        const float *a_conv = (const float *) v->buffer_map(a->dn_conv_state[li]);
+        const float *b_conv = (const float *) v->buffer_map(b->dn_conv_state[li]);
+        const float *a_S    = (const float *) v->buffer_map(a->dn_S[li]);
+        const float *b_S    = (const float *) v->buffer_map(b->dn_S[li]);
+        if (a_conv == nullptr || b_conv == nullptr || a_S == nullptr || b_S == nullptr) {
+            fprintf(stderr, "FAIL: DeltaNet state map failed at layer %zu\n", li);
+            if (a_conv != nullptr)
+                v->buffer_unmap(a->dn_conv_state[li]);
+            if (b_conv != nullptr)
+                v->buffer_unmap(b->dn_conv_state[li]);
+            if (a_S != nullptr)
+                v->buffer_unmap(a->dn_S[li]);
+            if (b_S != nullptr)
+                v->buffer_unmap(b->dn_S[li]);
+            return 1;
+        }
+        const bool conv_diff = memcmp(a_conv, b_conv, conv_n * sizeof(float)) != 0;
+        const bool S_diff    = memcmp(a_S, b_S, s_n * sizeof(float)) != 0;
+        v->buffer_unmap(a->dn_conv_state[li]);
+        v->buffer_unmap(b->dn_conv_state[li]);
+        v->buffer_unmap(a->dn_S[li]);
+        v->buffer_unmap(b->dn_S[li]);
+        if (conv_diff) {
             fprintf(stderr, "FAIL: DeltaNet conv state differs at layer %zu\n", li);
             return 1;
         }
-        if (memcmp(a->dn_S[li], b->dn_S[li], s_n * sizeof(float)) != 0) {
+        if (S_diff) {
             fprintf(stderr, "FAIL: DeltaNet S state differs at layer %zu\n", li);
             return 1;
         }

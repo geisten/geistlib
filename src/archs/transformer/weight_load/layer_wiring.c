@@ -598,6 +598,11 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
                         .n_out = (int32_t) st->vocab_size,
                         .dtype = (uint16_t) dmo.dtype,
                 };
+                st->output_table = make_view_2d(buf_out,
+                                                dmo.dtype,
+                                                dmo.layout,
+                                                (int64_t) st->vocab_size,
+                                                (int64_t) st->d_model);
                 v->buffer_unmap(buf_out);
                 untied = true;
             } else {
@@ -619,6 +624,7 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
                     .n_out = (int32_t) st->vocab_size,
                     .dtype = (uint16_t) dm.dtype,
             };
+            st->output_table = st->embed_table;
             v->buffer_unmap(buf);
         }
         if (v->resolve_weight != nullptr) {

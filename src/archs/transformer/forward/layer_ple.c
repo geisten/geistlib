@@ -172,13 +172,6 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
                 return s;
             }
         }
-    } else {
-        const size_t bytes = ctx->seq * st->d_model * sizeof(float);
-        uint8_t     *src   = (uint8_t *) v->buffer_map(sess->scratch_h_post_ff);
-        uint8_t     *dst   = (uint8_t *) v->buffer_map(ctx->h_out_buf);
-        memcpy(dst, src, bytes);
-        v->buffer_unmap(sess->scratch_h_post_ff);
-        v->buffer_unmap(ctx->h_out_buf);
     }
     return GEIST_OK;
 }

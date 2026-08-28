@@ -25,25 +25,27 @@
 #include <stdint.h>
 
 typedef enum {
-    GGUF_TYPE_F32   = 0,
-    GGUF_TYPE_F16   = 1,
-    GGUF_TYPE_Q4_0  = 2,
-    GGUF_TYPE_Q4_1  = 3,
-    GGUF_TYPE_Q5_0  = 6,
-    GGUF_TYPE_Q5_1  = 7,
-    GGUF_TYPE_Q8_0  = 8,
-    GGUF_TYPE_Q8_1  = 9,
-    GGUF_TYPE_Q2_K  = 10,
-    GGUF_TYPE_Q3_K  = 11,
-    GGUF_TYPE_Q4_K  = 12,
-    GGUF_TYPE_Q5_K  = 13,
-    GGUF_TYPE_Q6_K  = 14,
-    GGUF_TYPE_Q8_K  = 15,
-    GGUF_TYPE_IQ3_S = 21, /* 3.4 bpw, codebook-based */
-    GGUF_TYPE_IQ2_S = 22, /* 2.5 bpw, codebook-based */
-    GGUF_TYPE_BF16  = 30,
-    GGUF_TYPE_TQ1_0 = 34, /* 1.69 bpw ternary; 256-elem block; 5 trits/byte */
-    GGUF_TYPE_TQ2_0 = 35, /* 2.06 bpw ternary; 256-elem block; 4 trits/byte */
+    GGUF_TYPE_F32    = 0,
+    GGUF_TYPE_F16    = 1,
+    GGUF_TYPE_Q4_0   = 2,
+    GGUF_TYPE_Q4_1   = 3,
+    GGUF_TYPE_Q5_0   = 6,
+    GGUF_TYPE_Q5_1   = 7,
+    GGUF_TYPE_Q8_0   = 8,
+    GGUF_TYPE_Q8_1   = 9,
+    GGUF_TYPE_Q2_K   = 10,
+    GGUF_TYPE_Q3_K   = 11,
+    GGUF_TYPE_Q4_K   = 12,
+    GGUF_TYPE_Q5_K   = 13,
+    GGUF_TYPE_Q6_K   = 14,
+    GGUF_TYPE_Q8_K   = 15,
+    GGUF_TYPE_IQ4_NL = 20, /* 4.5 bpw, non-linear 16-value LUT, 32-elem blocks */
+    GGUF_TYPE_IQ3_S  = 21, /* 3.4 bpw, codebook-based */
+    GGUF_TYPE_IQ2_S  = 22, /* 2.5 bpw, codebook-based */
+    GGUF_TYPE_IQ4_XS = 23, /* 4.25 bpw, IQ4_NL LUT + 6-bit super-block scales */
+    GGUF_TYPE_BF16   = 30,
+    GGUF_TYPE_TQ1_0  = 34, /* 1.69 bpw ternary; 256-elem block; 5 trits/byte */
+    GGUF_TYPE_TQ2_0  = 35, /* 2.06 bpw ternary; 256-elem block; 4 trits/byte */
     /* I2_S is Microsoft bitnet.cpp's custom ggml extension type for BitNet
      * b1.58 weights — NOT in mainline llama.cpp. 2-bit packed signed ternary
      * (4 trits/byte, 2.0 bpw, 256-elem/64-byte blocks) + ONE f32 per-TENSOR

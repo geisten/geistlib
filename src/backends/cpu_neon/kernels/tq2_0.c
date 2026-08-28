@@ -294,9 +294,11 @@ static inline void tq2_0_block_dot_q8a_neon_unbiased_mt4(const uint8_t *qs,
  * accumulators stay in registers; the transient weight sub-vector + the
  * 8 activation loads pressure but fit the 32 NEON registers. Bit-identical
  * to 8x the single-token dot. */
-static inline void tq2_0_block_dot_q8a_neon_unbiased_mt8(const uint8_t      *qs,
-                                                         const int8_t *const xb[8],
-                                                         int32_t             out[8]) {
+/* Only referenced from the _OPENMP prefill tile below; a vanilla-mac
+ * build (no libomp) hits -Werror=unused-function otherwise. */
+[[maybe_unused]] static inline void tq2_0_block_dot_q8a_neon_unbiased_mt8(const uint8_t      *qs,
+                                                                          const int8_t *const xb[8],
+                                                                          int32_t out[8]) {
     const uint8x16_t three = vdupq_n_u8(3);
     int32x4_t        a0 = vdupq_n_s32(0), a1 = vdupq_n_s32(0);
     int32x4_t        a2 = vdupq_n_s32(0), a3 = vdupq_n_s32(0);
