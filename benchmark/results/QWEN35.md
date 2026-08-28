@@ -54,7 +54,8 @@ the speed back for the memory. #291 A/B, same run: 4B decode
 27.1 vs 25.4 (+7 %), 27B 5.6 vs 4.9 (+14 %); prefill untouched.
 
 (llama.cpp Metal, for context: 4B pp128 865 / tg 69.5; 27B pp512 106 /
-tg 19.0. GPU is out of scope for geist — see the #281 positioning.)
+tg 19.0. The geist Metal backend has since caught up — see the Metal
+section below.)
 
 **Reading:** the 0.8B beats llama.cpp on decode by 1.28× at prefill
 parity, and the 4B/27B reach decode parity (0.96–0.97×) with #291's
@@ -89,6 +90,53 @@ The chunked recurrence is kept: correct (pinned by
 test_deltanet_chunk_unit at f32 precision), never slower outside
 noise, and load-bearing now that #288 stopped the mN kernels from
 dominating prefill time.
+
+## Mac Metal backend (M1 Max GPU) — measured 2026-08-28, `feat/296-qwen35-metal` @ `aa3eb4d`
+
+The #300–#308 stack: simdgroup GEMV/GEMM kernels for
+Q4_0/Q4_1/Q8_0/Q5_K/IQ4_XS/IQ4_NL/Q3_K/IQ3_S (llama mul_mv / mul_mm
+structures), chunked DeltaNet prefill (port of the CPU chunk recipe;
+its serial predecessor was 72 % of prefill wall), and the IQ4 loader
+that makes the UD mixed quant run at all. Starting point on this
+branch was 5.3 pp / 2.7 tg on the 27B (correctness-first kernels).
+
+**Protocol:** cool state = 240 s GPU cooldown **and** a resident model —
+the two fight each other when several 15 GiB files rotate through the
+page cache, so every run is preceded by a full `cat model > /dev/null`
+pre-touch. An eviction shows up as RSS below the model size and drags
+both engines equally (measured: UD at 35 pp with 9 GB resident vs 79 pp
+at 33 GB). `bench_perf_sweep` pp512/tg64, mean of 2 repeats after a
+discarded 64-token warmup. Reference: llama.cpp Metal `3fc4e10`
+(b9820, Homebrew), same GGUF, back-to-back on the same protocol.
+
+| model | metric | geist Metal | llama.cpp Metal | ratio |
+| :-- | :-- | ---: | ---: | :-- |
+| 27B Q4_0 | prefill pp512 | **95.4** | 93.1 ±15 | ~parity |
+| 27B Q4_0 | **decode tg64** | **12.1** | 8.2 | **geist 1.48×** |
+| 27B UD-Q4_K_M | prefill pp512 | 78.7 | 105.2 ±7 | llama 1.34× |
+| 27B UD-Q4_K_M | **decode tg64** | **7.8** | 8.1 | ~parity (0.97×) |
+| 4B Q4_0 | prefill pp512 | 470.5 | 926 (warm) | llama ~2× |
+| 4B Q4_0 | decode tg64 | 52.0 | 61.8 (warm) | llama 1.19× |
+| gemma4-e2b Q4_K_M | prefill pp512 | 992.4 | 1540 (2026-07 ref) | llama 1.55× |
+| gemma4-e2b Q4_K_M | decode tg64 | 79.3 | 92.8 (2026-07 ref) | llama 1.17× |
+
+**Reading:** the 27B — the model this branch is for — beats llama.cpp
+Metal on decode by 1.48× at prefill parity. The UD mixed quant reaches
+decode parity; its prefill gap is the first-pass IQ4_XS GEMM (llama's
+IQ kernels are mature). The 4B prefill gap is small-shape GEMM
+efficiency plus the remaining DeltaNet chain (~360 ms per 512 tokens
+after the barrier fix; simdgroup-MMA for the chunk matmuls and a panel
+substitution are the documented follow-ups). gemma4 numbers are the
+old 2026-07 program state restored (the PLE probe regression had
+silently zeroed them) on the new kernel stack.
+
+Attribution highlights, for whoever continues: prefill wall = max of
+overlapping GPU chains, not their sum — single-category skips of the
+subtractive profiler show nothing, combinations do
+(`GEIST_METAL_PROFILE=1`, repeats=1 only). The whole 1.4 s DeltaNet
+chain on the 4B was 2·C `mem_device` threadgroup barriers at ~54 µs
+each, not compute. Half-staged GEMM weights make unpinned-scale parity
+noise of √n·ulp size — the test pins are deliberate.
 
 ## Raspberry Pi 5 (4 GB, quiesced, thermally gated) — measured 2026-08-24
 
