@@ -1320,6 +1320,12 @@ void transformer_session_free(struct transformer_arch_state   *state,
         void *pb = sess->dn_S;
         safe_free(&pb);
     }
+    void *txn_conv = sess->dn_txn_conv;
+    void *txn_S    = sess->dn_txn_S;
+    void *txn_ids  = sess->dn_txn_ids;
+    safe_free(&txn_conv);
+    safe_free(&txn_S);
+    safe_free(&txn_ids);
     if (be != nullptr) {
         struct geist_buffer *extra[] = {
                 sess->qgate_joint,
@@ -1337,6 +1343,9 @@ void transformer_session_free(struct transformer_arch_state   *state,
     sess->qgate_gate    = nullptr;
     sess->dn_conv_state = nullptr;
     sess->dn_S          = nullptr;
+    sess->dn_txn_conv   = nullptr;
+    sess->dn_txn_S      = nullptr;
+    sess->dn_txn_ids    = nullptr;
 
     /* Per-layer KV cache buffers. Each slot may be NULL — exactly one
      * representation (FP32 / INT8 / KIVI) was allocated per non-shared

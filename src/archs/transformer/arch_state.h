@@ -289,13 +289,25 @@ struct transformer_arch_session {
 
     /* ---- Gated-DeltaNet recurrent state (#281). Heap f32, allocated
      * at session_alloc only for layers with mixer == DELTANET; nullptr
-     * slots otherwise. Zeroed on session reset. There is no rewind —
-     * the family leaves verify_forward/kv_truncate-based speculative
-     * decoding unused (engine falls back to sequential decode).
+     * slots otherwise. Zeroed on session reset.
      *   dn_conv_state[li]: [(kernel-1) * conv_dim]  rolling pre-conv qkv
      *   dn_S[li]:          [n_v_heads * head_k * head_v]  delta state */
     float **dn_conv_state;
     float **dn_S;
+    /* verify_forward mutates DeltaNet state in place. A single lazy,
+     * contiguous checkpoint lets kv_truncate restore the pre-verify state
+     * and replay exactly the accepted draft prefix. Its size is independent
+     * of the speculative width, which matters for Qwen3.5-27B. */
+    float         *dn_txn_conv;
+    float         *dn_txn_S;
+    geist_token_t *dn_txn_ids;
+    size_t         dn_txn_conv_count;
+    size_t         dn_txn_S_count;
+    size_t         dn_txn_base_kv_len;
+    size_t         dn_txn_k;
+    size_t         dn_txn_kivi_residual_count;
+    size_t         dn_txn_kivi_drained_count;
+    bool           dn_txn_active;
     /* qwen35 scratch (#281): joint q+gate projection result
      * [m_max, 2*q_out] + saved per-head gate [m_max, q_out], and the
      * DeltaNet projection outputs (qkv [m_max, conv_dim], z
@@ -581,14 +593,20 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
  *
  * transformer_kv_truncate: shrink kv_len to new_len. KV state at
  * positions ≥ new_len is implicitly invalid (future writes will
- * overwrite). Invalidates logits_valid. Used to undo speculative-pass
- * KV writes after a draft mismatch. */
+ * overwrite). For DeltaNet, restore the pending verify checkpoint and
+ * replay the accepted draft prefix. Invalidates logits_valid. */
 [[nodiscard]] enum geist_status transformer_verify_forward(struct transformer_arch_session *sess,
                                                            size_t                           k,
                                                            const geist_token_t             *ids,
                                                            geist_token_t *out_tokens);
 
-void transformer_kv_truncate(struct transformer_arch_session *sess, size_t new_len);
+[[nodiscard]] enum geist_status transformer_kv_truncate(struct transformer_arch_session *sess,
+                                                        size_t                           new_len);
+
+/* Normal appends after a successful verify mean that the complete draft was
+ * accepted. Drop the pending checkpoint while retaining its allocation for
+ * the next transaction. */
+void transformer_recurrent_txn_commit(struct transformer_arch_session *sess);
 
 /* ---- Public functions (architecture-internal) -------------------------- */
 

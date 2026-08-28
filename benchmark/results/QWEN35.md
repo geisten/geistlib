@@ -54,6 +54,26 @@ copies (#289 lm_head + #291 all Q4_0 projections): 4B 5.7 GB,
 the speed back for the memory. #291 A/B, same run: 4B decode
 27.1 vs 25.4 (+7 %), 27B 5.6 vs 4.9 (+14 %); prefill untouched.
 
+### Transactional speculative-state baseline (#296 PR 2) — 2026-08-28
+
+Before wiring the MTP head, `bench_speculative` was run with the existing
+n-gram drafter and `GEIST_SPEC_MIN_L=1`, deliberately forcing the new
+DeltaNet checkpoint/restore path. This is a transaction-cost baseline, not
+an MTP result. Greedy output equivalence is covered separately by
+`test_speculative_primitives_int`, including byte-identical conv and S state
+for every accepted prefix (0..4 on 0.8B, 0..2 on 27B).
+
+| model | sequential | transactional spec | speedup | tokens/spec call |
+| :-- | ---: | ---: | ---: | ---: |
+| 0.8B Q8_0 | 31.7 tok/s | 19.3 tok/s | 0.61× | 4.63 |
+| 27B Q4_0 | 1.7 tok/s | 1.1 tok/s | 0.67× | 1.74 |
+
+The forced n-gram path is a loss on both sizes. On 27B, a lazy checkpoint is
+about 150 MiB and low draft acceptance compounds that cost. PR 2 therefore
+establishes correctness and bounded memory; later MTP PRs must beat this
+baseline through higher acceptance and should avoid replay on the common
+full-accept path.
+
 (llama.cpp Metal, for context: 4B pp128 865 / tg 69.5; 27B pp512 106 /
 tg 19.0. GPU is out of scope for geist — see the #281 positioning.)
 

@@ -204,8 +204,8 @@ static enum geist_status op_verify_forward(void               *session,
             (struct transformer_arch_session *) session, k, ids, out_tokens);
 }
 
-static void op_kv_truncate(void *session, size_t new_len) {
-    transformer_kv_truncate((struct transformer_arch_session *) session, new_len);
+static enum geist_status op_kv_truncate(void *session, size_t new_len) {
+    return transformer_kv_truncate((struct transformer_arch_session *) session, new_len);
 }
 
 static size_t op_kv_len(const void *session) {

@@ -142,7 +142,7 @@ struct geist_arch_ops_decoder {
                                         size_t              k,
                                         const geist_token_t ids[static k],
                                         geist_token_t       out_tokens[static k]);
-    void (*kv_truncate)(void *session, size_t new_len);
+    enum geist_status (*kv_truncate)(void *session, size_t new_len);
     size_t (*kv_len)(const void *session);
 
     /* Session lifecycle. Each engine-level geist_session owns one arch
