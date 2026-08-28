@@ -391,6 +391,11 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
             return s;
         }
     }
+    /* The verified batch already computed the exact prediction following its
+     * last row. Retain it as the normal pending token; the engine can leave it
+     * unconsumed instead of paying a redundant single-token prefill. */
+    sess->next_token_pending = out_tokens[k - 1];
+    sess->logits_valid       = true;
     return GEIST_OK;
 }
 
@@ -400,6 +405,7 @@ enum geist_status transformer_kv_truncate(struct transformer_arch_session *sess,
     if (new_len > sess->kv_len)
         return GEIST_E_INVALID_ARG; /* monotonic shrink only */
 
+    bool keep_pending = false;
     if (sess->dn_txn_active) {
         const size_t base = sess->dn_txn_base_kv_len;
         const size_t k    = sess->dn_txn_k;
@@ -408,6 +414,7 @@ enum geist_status transformer_kv_truncate(struct transformer_arch_session *sess,
         const size_t accepted = new_len - base;
         if (accepted == k) {
             transformer_recurrent_txn_commit(sess);
+            keep_pending = sess->logits_valid;
         } else {
             deltanet_txn_restore(sess);
             transformer_recurrent_txn_commit(sess);
@@ -425,6 +432,10 @@ enum geist_status transformer_kv_truncate(struct transformer_arch_session *sess,
                     sess->next_token_pending = 0;
                     return rs;
                 }
+                /* Replay materialized the exact prediction following the
+                 * accepted prefix, which is the correction token the verify
+                 * pass returned at accepted-1. */
+                keep_pending = sess->logits_valid;
             }
         }
     }
@@ -445,8 +456,10 @@ enum geist_status transformer_kv_truncate(struct transformer_arch_session *sess,
          * (verify_forward burst → accept → truncate at kv_len_old + a). */
         transformer_kivi_drain_full(sess);
     }
-    sess->logits_valid       = false;
-    sess->next_token_pending = 0;
+    if (!keep_pending) {
+        sess->logits_valid       = false;
+        sess->next_token_pending = 0;
+    }
     return GEIST_OK;
 }
 
