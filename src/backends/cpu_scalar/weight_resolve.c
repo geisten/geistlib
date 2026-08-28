@@ -97,6 +97,12 @@ static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *r
     case GEIST_DTYPE_IQ3_S:
         dequant_iq3_s_row(base + j * n_in / IQ3_S_BLOCK_ELEMS * IQ3_S_BLOCK_BYTES, row, n_in);
         return true;
+    case GEIST_DTYPE_IQ4_NL:
+        dequant_iq4_nl_row(base + j * n_in / IQ4_NL_BLOCK_ELEMS * IQ4_NL_BLOCK_BYTES, row, n_in);
+        return true;
+    case GEIST_DTYPE_IQ4_XS:
+        dequant_iq4_xs_row(base + j * n_in / IQ4_XS_BLOCK_ELEMS * IQ4_XS_BLOCK_BYTES, row, n_in);
+        return true;
     case GEIST_DTYPE_TQ2_0:
         dequant_tq2_0_row(base + j * n_in / TQ2_0_BLOCK_ELEMS * TQ2_0_BLOCK_BYTES, row, n_in);
         return true;
@@ -246,6 +252,8 @@ static void cpu_scalar_w_quant_mN(const float               *x,
     case GEIST_DTYPE_Q8_0:
     case GEIST_DTYPE_IQ2_S:
     case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
     case GEIST_DTYPE_TQ2_0:
     case GEIST_DTYPE_I2_S:
     case GEIST_DTYPE_F16:
