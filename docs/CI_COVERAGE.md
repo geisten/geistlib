@@ -93,23 +93,26 @@ expose a usable Metal device**. The macOS matrix leg therefore builds
 
 - `test_backend_metal_probe` — registration, backend lifecycle, buffer
   round-trip (host↔device);
-- `test_backend_metal_parity_unit` — Q4_K/Q6_K/F32 `linear_m1`/`linear_mN`
-  numerical parity against `cpu_scalar` on identical weight bytes, with x/w/y
-  allocated through the backend's buffer API so the GPU path runs by
-  construction (unregistered pointers would take the host fallback and gate
-  the CPU). Tolerance 1e-3 relative; the Q6_K test data pins block scales
-  small because the simdgroup GEMM stages weights in **half**, whose integer
-  lattice ends at 2048 — a documented staging-precision property, not a bug.
+- `test_backend_metal_parity_unit` — `linear_m1`/`linear_mN` numerical
+  parity against `cpu_scalar` on identical weight bytes for every dtype the
+  metal resolver covers (Q4_0/Q4_1/Q8_0, the K-quants, IQ4_XS/IQ4_NL,
+  Q3_K/IQ3_S, F32), with x/w/y allocated through the backend's buffer API so
+  the GPU path runs by construction. Tolerance 1e-3 relative; several
+  formats pin their block scales small because the simdgroup GEMM stages
+  weights in **half**, whose integer lattice ends at 2048 — a documented
+  staging-precision property, not a bug (unpinned scales produce √n·ulp
+  noise, measured and triaged 2026-08-28).
 
 In this step a SKIP (exit 77) **fails**: on `macos-15` a device is expected,
 and a skipped gate must not read as a green one. On Linux legs metal is not
 built and both tests skip cleanly in the unit suite.
 
-Not yet covered: a full GGUF e2e **on** metal. The metal resolver covers
-Q4_K/Q6_K/F32 only (the SmolLM2 fixture is Q8_0), and the gemma-on-metal
-path currently fails at head resolution (`output.weight` on a
-tied-embedding model) — tracked in #181/#186 as backend feature work, not
-CI wiring.
+Model e2e on metal: `test_qwen35_metal_e2e_int` (generation + reset
+parity, fixture-gated) runs wherever the qwen35 fixture is present, and
+the weekly `gemma4-metal-smoke` workflow generates end-to-end on the
+cached E2B reference on a hosted macOS runner — added after the PLE
+fused-probe regression shipped unnoticed for weeks precisely because no
+CI leg ran a gemma model on metal (#305–#307).
 
 ## Vulkan: software tier on every PR, hardware tier self-hosted (#182)
 
