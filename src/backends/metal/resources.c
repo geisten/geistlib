@@ -637,18 +637,28 @@ bool metal_tensor_is_q40_q80_matrix(const struct geist_tensor *t,
                                     size_t                    *out_rows,
                                     size_t                    *out_cols,
                                     size_t                    *out_offset_bytes) {
-    if ((dtype != GEIST_DTYPE_Q4_0 && dtype != GEIST_DTYPE_Q4_1 && dtype != GEIST_DTYPE_Q8_0) ||
+    const size_t blk_elems =
+            (dtype == GEIST_DTYPE_IQ4_XS || dtype == GEIST_DTYPE_Q3_K || dtype == GEIST_DTYPE_IQ3_S)
+                    ? METAL_IQ4XS_BLOCK_ELEMS
+                    : METAL_Q40_Q80_BLOCK_ELEMS;
+    if ((dtype != GEIST_DTYPE_Q4_0 && dtype != GEIST_DTYPE_Q4_1 && dtype != GEIST_DTYPE_Q8_0 &&
+         dtype != GEIST_DTYPE_IQ4_NL && dtype != GEIST_DTYPE_IQ4_XS && dtype != GEIST_DTYPE_Q3_K &&
+         dtype != GEIST_DTYPE_IQ3_S) ||
         t == nullptr || t->buffer == nullptr || t->dtype != dtype ||
         t->layout != GEIST_LAYOUT_BLOCK_QUANTIZED || t->ndim != 2 || t->shape[0] <= 0 ||
-        t->shape[1] <= 0 || ((size_t) t->shape[1] % METAL_Q40_Q80_BLOCK_ELEMS) != 0) {
+        t->shape[1] <= 0 || ((size_t) t->shape[1] % blk_elems) != 0) {
         return false;
     }
     const size_t rows           = (size_t) t->shape[0];
     const size_t cols           = (size_t) t->shape[1];
-    const size_t blocks_per_row = cols / METAL_Q40_Q80_BLOCK_ELEMS;
-    const size_t block_bytes    = dtype == GEIST_DTYPE_Q4_0   ? METAL_Q40_BLOCK_BYTES
-                                  : dtype == GEIST_DTYPE_Q4_1 ? METAL_Q41_BLOCK_BYTES
-                                                              : METAL_Q80_BLOCK_BYTES;
+    const size_t blocks_per_row = cols / blk_elems;
+    const size_t block_bytes    = dtype == GEIST_DTYPE_Q4_0     ? METAL_Q40_BLOCK_BYTES
+                                  : dtype == GEIST_DTYPE_Q4_1   ? METAL_Q41_BLOCK_BYTES
+                                  : dtype == GEIST_DTYPE_IQ4_NL ? METAL_IQ4NL_BLOCK_BYTES
+                                  : dtype == GEIST_DTYPE_IQ4_XS ? METAL_IQ4XS_BLOCK_BYTES
+                                  : dtype == GEIST_DTYPE_Q3_K   ? METAL_Q3K_BLOCK_BYTES
+                                  : dtype == GEIST_DTYPE_IQ3_S  ? METAL_IQ3S_BLOCK_BYTES
+                                                                : METAL_Q80_BLOCK_BYTES;
     if (rows > SIZE_MAX / blocks_per_row || rows * blocks_per_row > SIZE_MAX / block_bytes) {
         return false;
     }

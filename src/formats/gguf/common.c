@@ -132,6 +132,20 @@ bool gguf_dequant_row_to_fp32(const struct gguf_tensor_t *t,
         dequant_iq3_s_row(base, out, row_elems);
         return true;
     }
+    case GGUF_TYPE_IQ4_NL: {
+        const size_t   blocks_per_row = row_elems / IQ4_NL_BLOCK_ELEMS;
+        const uint8_t *base =
+                (const uint8_t *) t->data + row_idx * blocks_per_row * IQ4_NL_BLOCK_BYTES;
+        dequant_iq4_nl_row(base, out, row_elems);
+        return true;
+    }
+    case GGUF_TYPE_IQ4_XS: {
+        const size_t   blocks_per_row = row_elems / IQ4_XS_BLOCK_ELEMS;
+        const uint8_t *base =
+                (const uint8_t *) t->data + row_idx * blocks_per_row * IQ4_XS_BLOCK_BYTES;
+        dequant_iq4_xs_row(base, out, row_elems);
+        return true;
+    }
     case GGUF_TYPE_TQ2_0: {
         const size_t   blocks_per_row = row_elems / TQ2_0_BLOCK_ELEMS;
         const uint8_t *base =
@@ -190,6 +204,12 @@ float *gguf_dequant_to_fp32(const struct gguf_tensor_t *t) {
         break;
     case GGUF_TYPE_IQ3_S:
         dequant_iq3_s_row(t->data, out, elems);
+        break;
+    case GGUF_TYPE_IQ4_NL:
+        dequant_iq4_nl_row(t->data, out, elems);
+        break;
+    case GGUF_TYPE_IQ4_XS:
+        dequant_iq4_xs_row(t->data, out, elems);
         break;
     case GGUF_TYPE_TQ2_0:
         dequant_tq2_0_row(t->data, out, elems);

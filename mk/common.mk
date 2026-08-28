@@ -177,6 +177,7 @@ LIB_SOURCES := \
     src/archs/vision_siglip/vision_kernels.c \
     src/archs/vision_siglip/image_pipeline.c \
     src/formats/gguf/common.c \
+    src/formats/gguf/iq4.c \
     src/formats/gguf/q8_0.c \
     src/formats/gguf/q4_0.c \
     src/formats/gguf/q4_1.c \

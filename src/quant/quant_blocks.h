@@ -95,6 +95,20 @@ struct block_iq3_s_t {
 } __attribute__((packed));
 _Static_assert(sizeof(struct block_iq3_s_t) == 110, "struct block_iq3_s_t size");
 
+struct block_iq4_nl_t {
+    uint16_t d;
+    uint8_t  qs[16]; /* 32 4-bit indices into kvalues_iq4nl */
+} __attribute__((packed));
+_Static_assert(sizeof(struct block_iq4_nl_t) == 18, "struct block_iq4_nl_t size");
+
+struct block_iq4_xs_t {
+    uint16_t d;
+    uint16_t scales_h;    /* 2 high bits per 32-elem sub-block */
+    uint8_t  scales_l[4]; /* 4 low bits per sub-block, packed pairs */
+    uint8_t  qs[128];     /* 256 4-bit indices into kvalues_iq4nl */
+} __attribute__((packed));
+_Static_assert(sizeof(struct block_iq4_xs_t) == 136, "struct block_iq4_xs_t size");
+
 /* Shared Q4_K / Q5_K scale-min unpacker.
  *
  * Both formats encode 8 sub-blocks of 32 elements with a 6-bit scale and

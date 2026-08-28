@@ -1,0 +1,156 @@
+/*
+ * tests/test_iq4_dequant_unit.c — IQ4_NL / IQ4_XS block decode, model-free.
+ *
+ * Exists for two reasons: pin the LUT/scale/nibble layout against
+ * hand-computed values (the gguf-py cross-check needs a model file and
+ * only runs where fixtures exist), and keep the coverage ratchet honest —
+ * without it the iq4 decoders and the cpu_scalar resolve path for the two
+ * dtypes only execute under the UD model fixture.
+ */
+#include <geist_backend.h>
+#include <geist_types.h>
+
+#include "quant.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+static int  g_fail = 0;
+static void check(bool ok, const char *what) {
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        g_fail++;
+    }
+}
+
+/* The fixed non-linear table both formats index into (ggml kvalues_iq4nl). */
+static const float KV[16] = {
+        -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+
+static void put_f16_one(uint8_t *p) { /* fp16(1.0) */
+    p[0] = 0x00;
+    p[1] = 0x3C;
+}
+
+int main(void) {
+    /* ---- IQ4_NL: one 18-byte block, d = 1.0, qs[j] = (j+1)<<4 | j:
+     * element j (low nibble) = KV[j], element j+16 (high) = KV[j+1&15]. */
+    {
+        uint8_t blk[18];
+        put_f16_one(blk);
+        for (int j = 0; j < 16; j++) {
+            blk[2 + j] = (uint8_t) ((((j + 1) & 15) << 4) | j);
+        }
+        float out[32];
+        dequant_iq4_nl_row(blk, out, 32);
+        bool ok = true;
+        for (int j = 0; j < 16; j++) {
+            ok &= out[j] == KV[j];
+            ok &= out[j + 16] == KV[(j + 1) & 15];
+        }
+        check(ok, "IQ4_NL nibble/LUT layout");
+    }
+
+    /* ---- IQ4_XS: one 136-byte block, d = 1.0. Sub-block scales:
+     * scales_l nibbles = ib32, scales_h 2-bit fields = 1
+     * -> ls = 16 + ib32, dl = ls - 32 = ib32 - 16. All qs = 0x98:
+     * low nibble 8 -> KV[8] = 1, high nibble 9 -> KV[9] = 13. */
+    {
+        uint8_t blk[136];
+        memset(blk, 0x98, sizeof blk);
+        put_f16_one(blk);
+        blk[2] = 0x55; /* scales_h: eight 2-bit fields, all = 1 */
+        blk[3] = 0x55;
+        for (int i = 0; i < 4; i++) {
+            const int lo = 2 * i, hi = 2 * i + 1;
+            blk[4 + i] = (uint8_t) ((hi << 4) | lo);
+        }
+        float out[256];
+        dequant_iq4_xs_row(blk, out, 256);
+        bool ok = true;
+        for (int ib32 = 0; ib32 < 8; ib32++) {
+            const float dl = (float) (16 + ib32 - 32);
+            for (int j = 0; j < 16; j++) {
+                ok &= out[32 * ib32 + j] == dl * 1.0f;       /* KV[8]  */
+                ok &= out[32 * ib32 + 16 + j] == dl * 13.0f; /* KV[9]  */
+            }
+        }
+        check(ok, "IQ4_XS sub-scale/nibble layout");
+    }
+
+    /* ---- cpu_scalar linear over an IQ4_XS weight: resolve installs the
+     * row-dequant kernel; y must equal the dequant-then-dot reference.
+     * Covers the weight_resolve dtype switch and dequant_one_row_for. */
+    {
+        enum { N_IN = 256, N_OUT = 3 };
+        /* Row bytes: IQ4_XS 136 (1 block), IQ4_NL 144 (8x18) — size for
+         * the larger of the two, gcc's stringop-overflow checks the
+         * IQ4_NL writes against the full object. */
+        static uint8_t wblob[N_OUT * 144];
+        for (size_t i = 0; i < sizeof wblob; i++) {
+            wblob[i] = (uint8_t) (i * 37u + 11u);
+        }
+        for (int r = 0; r < N_OUT; r++) {
+            put_f16_one(wblob + (size_t) r * 136); /* keep d finite */
+        }
+        struct geist_backend *be = nullptr;
+        if (geist_backend_create("cpu_scalar", nullptr, nullptr, &be) != GEIST_OK) {
+            check(false, "cpu_scalar create");
+            return 1;
+        }
+        struct geist_weight w = {
+                .raw = wblob, .n_in = N_IN, .n_out = N_OUT, .dtype = GEIST_DTYPE_IQ4_XS};
+        check(be->desc->vtbl->resolve_weight(be, &w) == GEIST_OK, "IQ4_XS resolve");
+        check(w.linear_m1 != nullptr, "IQ4_XS kernel installed");
+        if (w.linear_m1 != nullptr) {
+            float x[N_IN], y[N_OUT], row[N_IN];
+            for (int i = 0; i < N_IN; i++) {
+                x[i] = (float) ((i % 17) - 8) * 0.25f;
+            }
+            w.linear_m1(x, &w, be, y);
+            for (int r = 0; r < N_OUT; r++) {
+                dequant_iq4_xs_row(wblob + (size_t) r * 136, row, N_IN);
+                float ref = 0.0f;
+                for (int i = 0; i < N_IN; i++) {
+                    ref += row[i] * x[i];
+                }
+                check(fabsf(y[r] - ref) <= 1e-3f * fmaxf(fabsf(ref), 1.0f),
+                      "IQ4_XS scalar linear matches dequant+dot");
+            }
+        }
+        /* Same round-trip for IQ4_NL (32-elem blocks). */
+        struct geist_weight wn = {
+                .raw = wblob, .n_in = N_IN, .n_out = N_OUT, .dtype = GEIST_DTYPE_IQ4_NL};
+        /* 256/32 = 8 blocks/row x 18 B = 144 B/row < 136*... reuse blob,
+         * pin each block's d. */
+        for (int r = 0; r < N_OUT; r++) {
+            for (int b = 0; b < N_IN / 32; b++) {
+                put_f16_one(wblob + (size_t) r * (N_IN / 32) * 18 + (size_t) b * 18);
+            }
+        }
+        check(be->desc->vtbl->resolve_weight(be, &wn) == GEIST_OK, "IQ4_NL resolve");
+        if (wn.linear_m1 != nullptr) {
+            float x[N_IN], y[N_OUT], row[N_IN];
+            for (int i = 0; i < N_IN; i++) {
+                x[i] = (float) ((i % 13) - 6) * 0.5f;
+            }
+            wn.linear_m1(x, &wn, be, y);
+            for (int r = 0; r < N_OUT; r++) {
+                dequant_iq4_nl_row(wblob + (size_t) r * (N_IN / 32) * 18, row, N_IN);
+                float ref = 0.0f;
+                for (int i = 0; i < N_IN; i++) {
+                    ref += row[i] * x[i];
+                }
+                check(fabsf(y[r] - ref) <= 1e-3f * fmaxf(fabsf(ref), 1.0f),
+                      "IQ4_NL scalar linear matches dequant+dot");
+            }
+        }
+        geist_backend_destroy(be);
+    }
+
+    if (g_fail == 0) {
+        printf("test_iq4_dequant_unit: all checks passed\n");
+    }
+    return g_fail == 0 ? 0 : 1;
+}

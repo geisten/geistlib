@@ -279,6 +279,22 @@ static const char metal_qsg_common_source[] =
         "FOR_UNROLL(short i=0;i<8;i++){"
         "r[i/2][2*(i%2)+0]=half(d1*float(qs[i]&m0)+ml);"
         "r[i/2][2*(i%2)+1]=half(d2*float(qs[i]&m1)+ml);}}\n"
+        "constant float kiq4[16]={-127.0f,-104.0f,-83.0f,-65.0f,-49.0f,-35.0f,-22.0f,"
+        "-10.0f,1.0f,13.0f,25.0f,38.0f,53.0f,69.0f,89.0f,113.0f};\n"
+        "struct biq4nl{half d;uchar qs[16];};\n"
+        "static inline void dqiq4nl(device const biq4nl*xb,short il,thread half4x4&r){"
+        "float d=float(xb->d);ushort sh=ushort(4*il);"
+        "FOR_UNROLL(short i=0;i<16;i++){"
+        "r[i/4][i%4]=half(d*kiq4[(xb->qs[i]>>sh)&15]);}}\n"
+        "struct biq4xs{half d;ushort sh;uchar sl[4];uchar qs[128];};\n"
+        "static inline void dqiq4xs(device const biq4xs*xb,short il,thread half4x4&r){"
+        "short b32=il/2;ushort nsh=ushort(4*(il&1));"
+        "uint ls=(uint(xb->sl[b32/2])>>(4u*uint(b32&1))&15u)|"
+        "(((uint(xb->sh)>>(2u*uint(b32)))&3u)<<4u);"
+        "float dl=float(xb->d)*(float(ls)-32.0f);"
+        "device const uchar*q=xb->qs+16*b32;"
+        "FOR_UNROLL(short i=0;i<16;i++){"
+        "r[i/4][i%4]=half(dl*kiq4[(q[i]>>nsh)&15]);}}\n"
         "struct bq5k{half d;half dmin;uchar scales[12];uchar qh[32];uchar qs[128];};\n"
         "static inline void dq5k(device const bq5k*xb,short il,thread half4x4&r){"
         "short sb=il/4;short lo16=il&1;short hi=(il&3)/2;"
@@ -422,6 +438,161 @@ static const char metal_qsg_n4_q5k_source[] =
         "yb+=256u;}"
         "float a0=simd_sum(s0),a1=simd_sum(s1);"
         "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+/* Q3_K and IQ3_S chunk loaders + structs for the shared GEMM template.
+ * Their own MSL fragment: the qsg common literal is near the 4095-char
+ * limit. IQ3_S references iq3sg[512], a constant array generated into
+ * the source string at library-build time from quant/iq_grids.h. */
+static const char metal_qsg_common2_source[] =
+        "struct bq3k{uchar hmask[32];uchar qs[64];uchar scales[12];half d;};\n"
+        "static inline float q3ksc(device const uchar*sc,short j){"
+        "uint lo=(uint(sc[j%8])>>((j/8)*4))&15u;"
+        "uint hi=(uint(sc[8+(j%4)])>>((j/4)*2))&3u;"
+        "return float(int(lo|(hi<<4u))-32);}\n"
+        "static inline void dq3k(device const bq3k*xb,short il,thread half4x4&r){"
+        "float dl=float(xb->d)*q3ksc(xb->scales,il);"
+        "ushort sl=ushort(((il/2)&3)*2);ushort sh=ushort(il/2);"
+        "device const uchar*ql=xb->qs+(il/8)*32+16*(il&1);"
+        "device const uchar*hm=xb->hmask+16*(il&1);"
+        "FOR_UNROLL(short i=0;i<16;i++){"
+        "int lo2=int((ql[i]>>sl)&3u);int hi1=int((hm[i]>>sh)&1u);"
+        "r[i/4][i%4]=half(dl*float(lo2+4*hi1-4));}}\n"
+        "struct biq3s{half d;uchar qs[64];uchar qh[8];uchar signs[32];uchar scales[4];};\n"
+        "static inline void dqiq3s(device const biq3s*xb,short il,thread half4x4&r){"
+        "short k=il/2;short h8=(il&1)*4;"
+        "float db=float(xb->d)*(1.0f+2.0f*float((uint(xb->scales[k/2])>>(4*(k&1)))&15u));"
+        "device const uchar*q=xb->qs+8*k+h8;"
+        "uint qh=uint(xb->qh[k])>>ushort(h8);"
+        "device const uchar*sg=xb->signs+4*k+2*(il&1);"
+        "FOR_UNROLL(short i=0;i<16;i++){"
+        "short j2=i/4;uint gi=uint(q[j2])|(((qh>>ushort(j2))&1u)<<8u);"
+        "float gb=float((iq3sg[gi]>>(8u*uint(i&3)))&255u);"
+        "float sn=((uint(sg[i>>3])>>ushort(i&7))&1u)!=0u?-1.0f:1.0f;"
+        "r[i/4][i%4]=half(db*gb*sn);}}\n";
+
+/* Simdgroup decode GEMVs: 2 simdgroups x 2 rows, a thread owns one
+ * 8-element run of every 256-block. */
+static const char metal_qsg_n4_q3k_source[] =
+        "kernel void matvec_q3k_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>8u;"
+        "short il2=short(ti>>1u);uint i0=(uint(ti)&1u)*8u;"
+        "ushort sl=ushort(((il2/2)&3)*2);ushort shh=ushort(il2/2);"
+        "uint qlo=32u+uint(il2/8)*32u+16u*uint(il2&1)+i0;"
+        "uint hmo=16u*uint(il2&1)+i0;"
+        "device const float*yb=x+p.xo+b*p.xs+uint(il2)*16u+i0;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=0u;ib<nb;ib++){"
+        "float yl[8];for(uint i=0u;i<8u;i++)yl[i]=yb[i];"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*110u;"
+        "float sc=q3ksc(w+bo+96u,il2);"
+        "float d=float(*((device const half*)(w+bo+108u)));"
+        "float acc=0.0f;"
+        "for(uint i=0u;i<8u;i++){"
+        "int lo2=int((w[bo+qlo+i]>>sl)&3u);int hi1=int((w[bo+hmo+i]>>shh)&1u);"
+        "acc+=yl[i]*float(lo2+4*hi1-4);}"
+        "if(rr==0u)s0+=d*sc*acc;else s1+=d*sc*acc;}"
+        "yb+=256u;}"
+        "float a0=simd_sum(s0),a1=simd_sum(s1);"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+static const char metal_qsg_n4_iq3s_source[] =
+        "kernel void matvec_iq3s_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>8u;"
+        "uint k=uint(ti)>>2u,r4=uint(ti)&3u;"
+        "device const float*yb=x+p.xo+b*p.xs+k*32u+r4*8u;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=0u;ib<nb;ib++){"
+        "float yl[8];for(uint i=0u;i<8u;i++)yl[i]=yb[i];"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*110u;"
+        "float d=float(*((device const half*)(w+bo)));"
+        "float db=d*(1.0f+2.0f*float((uint(w[bo+106u+k/2u])>>(4u*(k&1u)))&15u));"
+        "uint qh=uint(w[bo+66u+k]);"
+        "uint gi0=uint(w[bo+2u+8u*k+2u*r4])|(((qh>>(2u*r4))&1u)<<8u);"
+        "uint gi1=uint(w[bo+2u+8u*k+2u*r4+1u])|(((qh>>(2u*r4+1u))&1u)<<8u);"
+        "uint g0=iq3sg[gi0],g1=iq3sg[gi1];"
+        "uint s8=uint(w[bo+74u+4u*k+r4]);"
+        "float acc=0.0f;"
+        "for(uint i=0u;i<8u;i++){"
+        "uint gb=((i<4u?g0:g1)>>(8u*(i&3u)))&255u;"
+        "float sn=((s8>>i)&1u)!=0u?-1.0f:1.0f;"
+        "acc+=yl[i]*float(gb)*sn;}"
+        "if(rr==0u)s0+=db*acc;else s1+=db*acc;}"
+        "yb+=256u;}"
+        "float a0=simd_sum(s0),a1=simd_sum(s1);"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+static const char metal_qsg_mm_q3k_source[] = GEIST_METAL_MM_SG_KERNEL("q3k", "bq3k", "dq3k", "16");
+static const char metal_qsg_mm_iq3s_source[] =
+        GEIST_METAL_MM_SG_KERNEL("iq3s", "biq3s", "dqiq3s", "16");
+
+/* IQ4 simdgroup decode GEMVs. IQ4_NL shares the Q4_0 18-byte geometry
+ * (4 rows per simdgroup); IQ4_XS follows the q5k_n4 structure (2 rows,
+ * a thread owns one 8-element nibble run of every 256-block). */
+static const char metal_qsg_n4_iq4nl_source[] =
+        "kernel void matvec_iq4nl_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*4u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>5u,ix=uint(ti)>>1u,il=(uint(ti)&1u)*8u;"
+        "uint nr=min(p.no-fr,4u);"
+        "device const float*yb=x+p.xo+b*p.xs+ix*32u+il;"
+        "float sf[4]={0.0f,0.0f,0.0f,0.0f};"
+        "for(uint ib=ix;ib<nb;ib+=16u){"
+        "float yl[16];for(uint i=0u;i<8u;i++){yl[i]=yb[i];yl[i+8u]=yb[i+16u];}"
+        "for(uint rr=0u;rr<nr;rr++){"
+        "uint bo=p.wo+((fr+rr)*p.bpr+ib)*18u;"
+        "device const uchar*qs=w+bo+2u+il;"
+        "float acc=0.0f;"
+        "for(uint i=0u;i<8u;i++){uint q=uint(qs[i]);"
+        "acc+=yl[i]*kiq4[q&15u]+yl[i+8u]*kiq4[q>>4u];}"
+        "float d=float(*((device const half*)(w+bo)));"
+        "sf[rr]+=d*acc;}"
+        "yb+=512u;}"
+        "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
+        "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
+
+static const char metal_qsg_n4_iq4xs_source[] =
+        "kernel void matvec_iq4xs_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>8u;"
+        "uint b32=uint(ti)>>2u,r4=uint(ti)&3u,nib=r4>>1u,j0=(r4&1u)*8u;"
+        "ushort nsh=ushort(4u*nib);"
+        "uint qso=8u+b32*16u+j0;"
+        "device const float*yb=x+p.xo+b*p.xs+b32*32u+nib*16u+j0;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=0u;ib<nb;ib++){"
+        "float yl[8];for(uint i=0u;i<8u;i++)yl[i]=yb[i];"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*136u;"
+        "uint sh=uint(*((device const ushort*)(w+bo+2u)));"
+        "uint ls=((uint(w[bo+4u+b32/2u])>>(4u*(b32&1u)))&15u)|(((sh>>(2u*b32))&3u)<<4u);"
+        "float dl=float(*((device const half*)(w+bo)))*(float(ls)-32.0f);"
+        "device const uchar*q=w+bo+qso;"
+        "float acc=0.0f;"
+        "for(uint i=0u;i<8u;i++)acc+=yl[i]*kiq4[(uint(q[i])>>nsh)&15u];"
+        "if(rr==0u)s0+=dl*acc;else s1+=dl*acc;}"
+        "yb+=256u;}"
+        "float a0=simd_sum(s0),a1=simd_sum(s1);"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+static const char metal_qsg_mm_iq4nl_source[] =
+        GEIST_METAL_MM_SG_KERNEL("iq4nl", "biq4nl", "dqiq4nl", "2");
+static const char metal_qsg_mm_iq4xs_source[] =
+        GEIST_METAL_MM_SG_KERNEL("iq4xs", "biq4xs", "dqiq4xs", "16");
 
 static const char metal_qsg_mm_q5k_source[] = GEIST_METAL_MM_SG_KERNEL("q5k", "bq5k", "dq5k", "16");
 static const char metal_qsg_mm_q5k_fast_source[] =
