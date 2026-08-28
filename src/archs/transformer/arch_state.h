@@ -644,8 +644,9 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
  *
  * transformer_kv_truncate: shrink kv_len to new_len. KV state at
  * positions ≥ new_len is implicitly invalid (future writes will
- * overwrite). For DeltaNet, restore the pending verify checkpoint and
- * replay the accepted draft prefix. Invalidates logits_valid. */
+ * overwrite). For DeltaNet, restore the pending verify checkpoint and replay
+ * the accepted draft prefix. A non-empty prefix retains the pending prediction
+ * produced by that replay; a full rewind invalidates logits. */
 [[nodiscard]] enum geist_status transformer_verify_forward(struct transformer_arch_session *sess,
                                                            size_t                           k,
                                                            const geist_token_t             *ids,

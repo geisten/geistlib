@@ -181,6 +181,49 @@ The opt-in remains useful for profiling and future sketch tuning, but it is not
 enabled automatically; therefore PR 5 introduces no default performance or
 quality regression.
 
+### MTP stage profile and retained verification result (#296 PR 6) — 2026-08-28
+
+PR 6 adds the MTP path to the existing `GEIST_PROFILE_FORWARD=1` diagnostic.
+On the mandatory 27B Q4_0 model, 102 MTP input rows from the integration loop
+split the measured MTP time as follows:
+
+| MTP stage | time | share |
+| :-- | --: | --: |
+| gated attention + SwiGLU block | 423.59 ms | 46.2% |
+| tied dense vocabulary head | 322.50 ms | 35.2% |
+| `eh_proj` | 168.31 ms | 18.4% |
+| input, norms, concat, copies | 1.54 ms | 0.2% |
+
+The profile rules out host-side input preparation as the next useful target:
+81.4% is in the MTP block and tied head, with another 18.4% in the input
+projection. A material CPU speedup therefore needs cheaper/batched model math,
+not another memcpy-level optimization.
+
+Verification also already computes the correction/bonus token and its logits.
+The transformer primitives now retain that exact pending result across a full
+accept, or reconstruct it while replaying a partially accepted DeltaNet
+prefix. `GEIST_SPEC_RETAIN_PENDING=1` lets the engine defer emitting that token
+until the next call, avoiding the old immediate single-token correction
+prefill. The switch is deliberately experimental: changing the call boundary
+also changes the n-gram history available to the drafter.
+
+Both modes are greedy-exact on the 0.8B and mandatory 27B fixtures (30/30 tokens
+match sequential decode), and the rollback test covers every accepted prefix.
+The 0.8B paths are ASan-clean. The controlled 27B five-prompt sweep was:
+
+| 27B Q4_0 cadence | sequential | MTP speculative | speedup | tokens/spec call |
+| :-- | ---: | ---: | ---: | ---: |
+| established/default | 3.7 tok/s | 2.5 tok/s | 0.67× | 3.38 |
+| retain pending (opt-in) | 2.5 tok/s | 1.3 tok/s | 0.54× | 2.60 |
+
+Absolute rates varied with machine state versus PR 5, but the within-run
+result is unambiguous. Saving the redundant prefill does not compensate for
+the lower n-gram acceptance caused by deferring the correction token. The
+default cadence is therefore unchanged. llama.cpp's earlier controlled
+4.76 tok/s result remains ahead of both geist modes; this PR narrows the next
+optimization target to the three model-math stages above rather than token
+bookkeeping.
+
 (llama.cpp Metal, for context: 4B pp128 865 / tg 69.5; 27B pp512 106 /
 tg 19.0. GPU is out of scope for geist — see the #281 positioning.)
 

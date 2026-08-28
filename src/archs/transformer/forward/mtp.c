@@ -2,6 +2,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "profile.h"
 #include "../arch_state.h"
 #include "../forward.h"
 
@@ -10,6 +11,36 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+enum mtp_profile_stage {
+    MTP_PROFILE_INPUT = 0,
+    MTP_PROFILE_NORMS,
+    MTP_PROFILE_CONCAT,
+    MTP_PROFILE_EH_PROJ,
+    MTP_PROFILE_BLOCK,
+    MTP_PROFILE_HIDDEN_COPY,
+    MTP_PROFILE_HEAD,
+    MTP_PROFILE_COUNT,
+};
+
+static uint64_t          g_mtp_profile_ns[MTP_PROFILE_COUNT];
+static uint64_t          g_mtp_profile_calls[MTP_PROFILE_COUNT];
+static const char *const g_mtp_profile_names[MTP_PROFILE_COUNT] = {
+        "input",
+        "norms",
+        "concat",
+        "eh_proj",
+        "block",
+        "hidden_copy",
+        "head",
+};
+static struct transformer_forward_profile g_mtp_profile = {
+        .title       = "transformer MTP",
+        .stage_names = g_mtp_profile_names,
+        .stage_count = MTP_PROFILE_COUNT,
+        .ns          = g_mtp_profile_ns,
+        .calls       = g_mtp_profile_calls,
+};
 
 static bool mtp_spec_head_enabled(void) {
     const char *env = getenv("GEIST_MTP_SPEC_HEAD");
@@ -88,6 +119,8 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
     const size_t                           H     = st->d_model;
     const int64_t                          N     = (int64_t) n;
     enum geist_status                      s;
+    const bool                             profile = transformer_profile_enabled(&g_mtp_profile);
+    uint64_t                               t0      = profile ? transformer_profile_now_ns() : 0;
 
     /* Upload target residual rows before executing any stateful attention. */
     float *hp = (float *) v->buffer_map(sess->mtp_hidden_norm);
@@ -97,6 +130,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
     v->buffer_unmap(sess->mtp_hidden_norm);
 
     s = mtp_embed_tokens(sess, n, ids);
+    transformer_profile_add(&g_mtp_profile, MTP_PROFILE_INPUT, t0);
     if (s != GEIST_OK)
         return s;
 
@@ -104,9 +138,11 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
     struct geist_tensor t_h  = view_2d(sess->mtp_hidden_norm, N, (int64_t) H);
     struct geist_tensor t_en = view_1d(M->enorm.buffer, (int64_t) H);
     struct geist_tensor t_hn = view_1d(M->hnorm.buffer, (int64_t) H);
+    t0                       = profile ? transformer_profile_now_ns() : 0;
     s                        = prims->rmsnorm(be, &t_e, &t_en, st->config.rms_eps, &t_e);
     if (s == GEIST_OK)
         s = prims->rmsnorm(be, &t_h, &t_hn, st->config.rms_eps, &t_h);
+    transformer_profile_add(&g_mtp_profile, MTP_PROFILE_NORMS, t0);
     if (s != GEIST_OK)
         return s;
 
@@ -114,6 +150,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
      * target hidden].  Keep this explicit; swapping the halves produces
      * plausible but incorrect draft logits. */
     const float *ep = (const float *) v->buffer_map(sess->mtp_embed);
+    t0              = profile ? transformer_profile_now_ns() : 0;
     hp              = (float *) v->buffer_map(sess->mtp_hidden_norm);
     float *cp       = (float *) v->buffer_map(sess->mtp_concat);
     if (ep == nullptr || hp == nullptr || cp == nullptr)
@@ -125,9 +162,11 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
     v->buffer_unmap(sess->mtp_embed);
     v->buffer_unmap(sess->mtp_hidden_norm);
     v->buffer_unmap(sess->mtp_concat);
+    transformer_profile_add(&g_mtp_profile, MTP_PROFILE_CONCAT, t0);
 
     struct geist_tensor t_cat  = view_2d(sess->mtp_concat, N, (int64_t) (2 * H));
     struct geist_tensor t_seed = view_2d(sess->scratch_h_a, N, (int64_t) H);
+    t0                         = profile ? transformer_profile_now_ns() : 0;
     s                          = linear_w_or_legacy(be,
                                                     v,
                                                     sess->mtp_concat,
@@ -137,20 +176,25 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
                                                     &t_cat,
                                                     &M->eh_proj,
                                                     &t_seed);
+    transformer_profile_add(&g_mtp_profile, MTP_PROFILE_EH_PROJ, t0);
     if (s != GEIST_OK)
         return s;
 
-    s = transformer_forward_mtp_layer(
+    t0 = profile ? transformer_profile_now_ns() : 0;
+    s  = transformer_forward_mtp_layer(
             sess, &M->block, sess->mtp_kv_len, n, sess->scratch_h_a, sess->scratch_h_b);
+    transformer_profile_add(&g_mtp_profile, MTP_PROFILE_BLOCK, t0);
     if (s != GEIST_OK)
         return s;
 
     if (out_hidden != nullptr) {
+        t0               = profile ? transformer_profile_now_ns() : 0;
         const float *raw = (const float *) v->buffer_map(sess->scratch_h_b);
         if (raw == nullptr)
             return GEIST_E_BACKEND;
         memcpy(out_hidden, raw, n * H * sizeof(float));
         v->buffer_unmap(sess->scratch_h_b);
+        transformer_profile_add(&g_mtp_profile, MTP_PROFILE_HIDDEN_COPY, t0);
     }
 
     if (out_tokens == nullptr) {
@@ -158,6 +202,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
         return GEIST_OK;
     }
 
+    t0                         = profile ? transformer_profile_now_ns() : 0;
     struct geist_tensor t_raw  = view_2d(sess->scratch_h_b, N, (int64_t) H);
     struct geist_tensor t_norm = view_2d(sess->scratch_h_a, N, (int64_t) H);
     struct geist_tensor t_wn   = view_1d(M->shared_head_norm.buffer, (int64_t) H);
@@ -178,6 +223,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
         sess->logits_sparse          = logits_sparse;
         sess->logits_softcapped      = logits_softcapped;
         if (handled) {
+            transformer_profile_add(&g_mtp_profile, MTP_PROFILE_HEAD, t0);
             sess->mtp_kv_len++;
             return GEIST_OK;
         }
@@ -203,6 +249,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
         out_tokens[row] = geist_sampler_argmax(st->vocab_size, logits + row * st->vocab_size);
     }
     v->buffer_unmap(sess->scratch_logits);
+    transformer_profile_add(&g_mtp_profile, MTP_PROFILE_HEAD, t0);
     sess->mtp_kv_len += n;
     return GEIST_OK;
 }

@@ -7,8 +7,8 @@
  *     Advances kv_len by k.
  *
  *   transformer_kv_truncate(state, new_len):
- *     shrinks kv_len; invalidates pending logits. Subsequent prefill
- *     overwrites KV from new_len onwards.
+ *     shrinks kv_len; a non-empty accepted prefix retains the prediction
+ *     materialized by replay, while a full rewind invalidates it.
  *
  * Three sub-tests:
  *
@@ -158,6 +158,7 @@ int main(void) {
      * (verify[K-1]) predicts the K-th token (not in our ref). */
     geist_token_t verify_out[K];
     size_t        kv_after_verify = 0;
+    int           fails           = 0;
     {
         struct geist_session          *sess = nullptr;
         struct transformer_arch_state *st   = open_session(&sess);
@@ -187,6 +188,10 @@ int main(void) {
             teardown();
             return GEIST_TEST_FAIL;
         }
+        if (!asess->logits_valid || asess->next_token_pending != verify_out[K - 1]) {
+            fprintf(stderr, "FAIL: verify_forward did not retain its last prediction\n");
+            fails++;
+        }
         geist_session_destroy(sess);
     }
     printf("verify_forward(K=4):");
@@ -197,7 +202,6 @@ int main(void) {
     /* verify_out[i] is model's prediction at position kv_before + i,
      * = what should come after consuming ref_tokens[0..i].
      * That's ref_tokens[i+1] for i < K-1. */
-    int fails = 0;
     for (size_t i = 0; i + 1 < K; i++) {
         if (verify_out[i] != ref_tokens[i + 1]) {
             fprintf(stderr,
@@ -365,6 +369,18 @@ int main(void) {
                             accepted,
                             txn_asess->kv_len,
                             ref_asess->kv_len);
+                    fails++;
+                }
+                if (accepted == 0) {
+                    if (txn_asess->logits_valid) {
+                        fprintf(stderr, "FAIL: full rewind retained pending logits\n");
+                        fails++;
+                    }
+                } else if (!txn_asess->logits_valid ||
+                           txn_asess->next_token_pending != txn_out[accepted - 1]) {
+                    fprintf(stderr,
+                            "FAIL: accepted=%zu did not retain replay prediction\n",
+                            accepted);
                     fails++;
                 }
             }
