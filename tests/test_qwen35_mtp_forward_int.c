@@ -37,6 +37,10 @@ int main(void) {
     if (path == nullptr)
         GEIST_SKIP_FIXTURE("no Qwen3.5/3.8 GGUF with an MTP block");
 
+    /* PR 4 keeps MTP opt-in so ordinary decode has no synchronization cost. */
+    if (setenv("GEIST_MTP", "1", 1) != 0)
+        return GEIST_TEST_ERROR;
+
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
     if (s != GEIST_OK)
@@ -147,12 +151,34 @@ int main(void) {
     fails +=
             geist_expect(sess->mtp_kv_len == 0, "session reset also clears the isolated MTP cache");
 
-    printf("MTP 27B: tokens=%d,%d hidden-bytes=%zu max|h|=%.4f advanced-cache=%zu "
-           "reset-cache=%zu\n",
+    /* Target catch-up uses the one-position hidden shift expected by Qwen's
+     * nextn block. Drafting must then leave its provisional cache writes at
+     * the target boundary so batched verification can overwrite them. */
+    s = transformer_prefill_text_batch(sess, 2, ids);
+    fails += geist_expect(s == GEIST_OK, "target prefill with MTP synchronization succeeds");
+    fails += geist_expect(sess->kv_len == 2 && sess->mtp_kv_len == 2,
+                          "target and MTP cache lengths stay synchronized");
+    geist_token_t drafts[2] = {-1, -1};
+    size_t        n_drafts  = 0;
+    s = transformer_mtp_draft(sess, 2, sess->next_token_pending, drafts, &n_drafts);
+    fails += geist_expect(s == GEIST_OK && n_drafts == 2,
+                          "native MTP produces the requested greedy draft chain");
+    fails += geist_expect(sess->mtp_kv_len == sess->kv_len && sess->kv_len == 2,
+                          "drafting restores the provisional MTP cache boundary");
+    for (size_t i = 0; i < n_drafts; i++) {
+        fails += geist_expect(drafts[i] >= 0 && (size_t) drafts[i] < st->vocab_size,
+                              "native draft token is in vocabulary");
+    }
+
+    transformer_session_reset(sess);
+
+    printf("MTP 27B: tokens=%d,%d hidden-bytes=%zu max|h|=%.4f drafts=%zu "
+           "advanced-cache=%zu reset-cache=%zu\n",
            tok_a[0],
            tok_a[1],
            2 * H * sizeof(float),
            max_abs,
+           n_drafts,
            before_bad,
            sess->mtp_kv_len);
     free(hidden);

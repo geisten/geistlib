@@ -110,7 +110,12 @@ deltanet_txn_begin(struct transformer_arch_session *sess, size_t k, const geist_
     sess->dn_txn_k                   = k;
     sess->dn_txn_kivi_residual_count = sess->kivi_residual_count;
     sess->dn_txn_kivi_drained_count  = sess->kivi_drained_count;
-    sess->dn_txn_active              = true;
+    if (sess->model->n_mtp_layers > 0 && sess->mtp_pending_h != nullptr &&
+        sess->mtp_txn_pending_h != nullptr) {
+        memcpy(sess->mtp_txn_pending_h, sess->mtp_pending_h, sess->model->d_model * sizeof(float));
+        sess->mtp_txn_base_len = sess->mtp_kv_len;
+    }
+    sess->dn_txn_active = true;
     return GEIST_OK;
 }
 
@@ -129,6 +134,11 @@ static void deltanet_txn_restore(struct transformer_arch_session *sess) {
     sess->kv_len              = sess->dn_txn_base_kv_len;
     sess->kivi_residual_count = sess->dn_txn_kivi_residual_count;
     sess->kivi_drained_count  = sess->dn_txn_kivi_drained_count;
+    if (sess->model->n_mtp_layers > 0 && sess->mtp_pending_h != nullptr &&
+        sess->mtp_txn_pending_h != nullptr) {
+        sess->mtp_kv_len = sess->mtp_txn_base_len;
+        memcpy(sess->mtp_pending_h, sess->mtp_txn_pending_h, sess->model->d_model * sizeof(float));
+    }
 }
 
 /* ---- Batched text prefill -------------------------------------------- */
@@ -216,6 +226,10 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
         const size_t q_pos = sess->kv_len;
         s                  = transformer_run_all_layers(
                 sess, q_pos, chunk, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        s = transformer_mtp_sync_target(sess, chunk, ids + off, sess->scratch_h_b);
         if (s != GEIST_OK) {
             return s;
         }
@@ -327,6 +341,12 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
         return s;
     const size_t q_pos = sess->kv_len;
     s = transformer_run_all_layers(sess, q_pos, k, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
+    if (s != GEIST_OK) {
+        deltanet_txn_restore(sess);
+        transformer_recurrent_txn_commit(sess);
+        return s;
+    }
+    s = transformer_mtp_sync_target(sess, k, ids, sess->scratch_h_b);
     if (s != GEIST_OK) {
         deltanet_txn_restore(sess);
         transformer_recurrent_txn_commit(sess);
