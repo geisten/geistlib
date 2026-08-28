@@ -60,7 +60,14 @@ static int env_int_or_default(const char *name, int fallback, int min, int max) 
  * (BitNet 2B-4T, …) uses the <|user|> … <|end|> <|assistant|> format (the GGUF
  * ships no chat_template, so we hardcode per general.architecture). */
 static void format_chat(char *buf, size_t buf_size, const char *user_prompt, const char *arch) {
-    if (arch != nullptr && strcmp(arch, "gemma4") != 0) {
+    if (arch != nullptr && strncmp(arch, "qwen", 4) == 0) {
+        /* Qwen3/3.5 use ChatML; the Llama-style markers below make the
+         * 0.8B+ instruct models loop on template tokens. */
+        snprintf(buf,
+                 buf_size,
+                 "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n",
+                 user_prompt);
+    } else if (arch != nullptr && strcmp(arch, "gemma4") != 0) {
         snprintf(buf, buf_size, "<|user|>\n%s<|end|>\n<|assistant|>\n", user_prompt);
     } else {
         snprintf(buf, buf_size, "<bos><|turn>user\n%s<turn|>\n<|turn>model\n", user_prompt);
