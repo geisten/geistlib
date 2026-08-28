@@ -147,6 +147,55 @@ int main(void) {
             }
         }
         geist_backend_destroy(be);
+
+        /* Same round-trips through cpu_neon: exercises the W4A8 decode
+         * GEMVs (vqtbl1q LUT + SDOT). Activations are int8-quantized on
+         * the way in, so parity vs the f32 dequant+dot reference is
+         * tolerance-based, not exact. */
+        struct geist_backend *bn = nullptr;
+        if (geist_backend_create("cpu_neon", nullptr, nullptr, &bn) == GEIST_OK) {
+            struct geist_weight wx = {
+                    .raw = wblob, .n_in = N_IN, .n_out = N_OUT, .dtype = GEIST_DTYPE_IQ4_XS};
+            check(bn->desc->vtbl->resolve_weight(bn, &wx) == GEIST_OK, "neon IQ4_XS resolve");
+            if (wx.linear_m1 != nullptr) {
+                float x[N_IN], y[N_OUT], row[N_IN];
+                for (int i = 0; i < N_IN; i++) {
+                    x[i] = (float) ((i % 17) - 8) * 0.25f;
+                }
+                wx.linear_m1(x, &wx, bn, y);
+                for (int r = 0; r < N_OUT; r++) {
+                    dequant_iq4_xs_row(wblob + (size_t) r * 136, row, N_IN);
+                    float ref = 0.0f, mag = 0.0f;
+                    for (int i = 0; i < N_IN; i++) {
+                        ref += row[i] * x[i];
+                        mag += fabsf(row[i] * x[i]);
+                    }
+                    check(fabsf(y[r] - ref) <= 2e-2f * fmaxf(mag, 1.0f),
+                          "neon IQ4_XS w4a8 matches dequant+dot (a8 tolerance)");
+                }
+            }
+            struct geist_weight wn2 = {
+                    .raw = wblob, .n_in = N_IN, .n_out = N_OUT, .dtype = GEIST_DTYPE_IQ4_NL};
+            check(bn->desc->vtbl->resolve_weight(bn, &wn2) == GEIST_OK, "neon IQ4_NL resolve");
+            if (wn2.linear_m1 != nullptr) {
+                float x[N_IN], y[N_OUT], row[N_IN];
+                for (int i = 0; i < N_IN; i++) {
+                    x[i] = (float) ((i % 13) - 6) * 0.5f;
+                }
+                wn2.linear_m1(x, &wn2, bn, y);
+                for (int r = 0; r < N_OUT; r++) {
+                    dequant_iq4_nl_row(wblob + (size_t) r * (N_IN / 32) * 18, row, N_IN);
+                    float ref = 0.0f, mag = 0.0f;
+                    for (int i = 0; i < N_IN; i++) {
+                        ref += row[i] * x[i];
+                        mag += fabsf(row[i] * x[i]);
+                    }
+                    check(fabsf(y[r] - ref) <= 2e-2f * fmaxf(mag, 1.0f),
+                          "neon IQ4_NL w4a8 matches dequant+dot (a8 tolerance)");
+                }
+            }
+            geist_backend_destroy(bn);
+        }
     }
 
     if (g_fail == 0) {
