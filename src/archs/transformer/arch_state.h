@@ -367,6 +367,7 @@ struct transformer_arch_state {
     size_t hidden_per_layer; /* Gemma 4: 256 (PLE slice per layer) */
     size_t ple_out;          /* Gemma 4: n_layers * hidden_per_layer = 8960 */
     size_t max_seq_len;      /* from opts, default 4096 */
+    bool   m_max_from_env;   /* GEIST_M_MAX set — family caps must not override */
     size_t m_max;            /* prefill chunk size — scratch sized for this many
                               * tokens; longer prompts are chunked. Default 64. */
 

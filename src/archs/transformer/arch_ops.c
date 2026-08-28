@@ -62,8 +62,14 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
      * don't scale. has_ple gates Gemma family identity. */
     const float embed_scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
 
-    for (size_t off = 0; off < n; off += st->m_max) {
-        const size_t chunk = (n - off > st->m_max) ? st->m_max : (n - off);
+    /* Chunk by the SESSION cap: every scratch buffer is sized with
+     * sess->m_max (arch_state.c), and a session opt below the state's
+     * preferred value must shrink the chunks with it — since the metal
+     * preferred_m_max moved to 256, chunking by st->m_max overran the
+     * scratch of any session created with a smaller m_max (embed failed
+     * at row sess->m_max exactly). */
+    for (size_t off = 0; off < n; off += sess->m_max) {
+        const size_t chunk = (n - off > sess->m_max) ? sess->m_max : (n - off);
 
         /* 1. Embed all chunk tokens into scratch_h_a [chunk, HIDDEN].
          * Device path first: per-row fused lookup+scale dispatches keep
@@ -181,7 +187,7 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     if (st == nullptr || k == 0 || ids == nullptr || out_tokens == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    if (k > st->m_max) {
+    if (k > sess->m_max) {
         /* Spec K should fit in one prefill chunk. Larger requires chunking. */
         return GEIST_E_INVALID_ARG;
     }
