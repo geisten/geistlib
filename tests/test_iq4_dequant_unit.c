@@ -84,7 +84,10 @@ int main(void) {
      * Covers the weight_resolve dtype switch and dequant_one_row_for. */
     {
         enum { N_IN = 256, N_OUT = 3 };
-        static uint8_t wblob[N_OUT * 136];
+        /* Row bytes: IQ4_XS 136 (1 block), IQ4_NL 144 (8x18) — size for
+         * the larger of the two, gcc's stringop-overflow checks the
+         * IQ4_NL writes against the full object. */
+        static uint8_t wblob[N_OUT * 144];
         for (size_t i = 0; i < sizeof wblob; i++) {
             wblob[i] = (uint8_t) (i * 37u + 11u);
         }
