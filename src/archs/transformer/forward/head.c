@@ -302,7 +302,18 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
             }
             out_tokens[row] = best_id;
         }
+        /* The last row predicts the token after the verified batch. Keep its
+         * logits in the canonical row zero so peek_logits and the next-token
+         * cadence can use the already-computed result without an immediate
+         * single-token correction prefill. */
+        if (k > 1) {
+            memmove(all,
+                    all + (k - 1) * (size_t) st->vocab_size,
+                    (size_t) st->vocab_size * sizeof(float));
+        }
         v->buffer_unmap(sess->scratch_logits);
+        sess->logits_softcapped = do_softcap;
+        sess->logits_sparse     = false;
     }
     return GEIST_OK;
 }

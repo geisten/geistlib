@@ -514,6 +514,15 @@ static size_t propose_drafts_ngram(const geist_token_t *history,
 
 #define GEIST_SPEC_KMAX_HARDCAP 16
 
+/* Retaining the verified correction avoids one redundant target prefill, but
+ * changes speculative call boundaries and can lower n-gram acceptance enough
+ * to regress end-to-end throughput. Keep it opt-in until a drafter can carry
+ * the pending token across calls without losing useful matches. */
+static bool spec_retain_verified_pending_enabled(void) {
+    const char *env = getenv("GEIST_SPEC_RETAIN_PENDING");
+    return env != nullptr && strcmp(env, "1") == 0;
+}
+
 /* Single-token fallback used whenever spec_step can't draft or verify
  * (missing arch primitives, no pending logits, empty drafter result).
  * Sequential decode_step path is contractually identical so the caller
@@ -566,9 +575,21 @@ geist_session_decode_speculative(struct geist_session *s,
         return spec_fallback_single(s, out_tokens, n_out);
 
     geist_token_t drafts[GEIST_SPEC_KMAX_HARDCAP];
-    size_t        match_L = 0;
-    const size_t  k       = propose_drafts_ngram(
-            history, history_n, seed, k_max, /*max_suffix=*/4, drafts, &match_L);
+    size_t        match_L      = 0;
+    size_t        k            = 0;
+    bool          native_draft = false;
+    if (ops->draft_tokens != nullptr) {
+        const enum geist_status ds = ops->draft_tokens(st, k_max, seed, drafts, &k);
+        if (ds == GEIST_OK) {
+            native_draft = k > 0;
+        } else if (ds != GEIST_E_UNSUPPORTED) {
+            return session_op_failed(sf, ds, "architecture-native draft");
+        }
+    }
+    if (!native_draft) {
+        k = propose_drafts_ngram(
+                history, history_n, seed, k_max, /*max_suffix=*/4, drafts, &match_L);
+    }
     if (k <= 1)
         return spec_fallback_single(s, out_tokens, n_out);
 
@@ -586,7 +607,7 @@ geist_session_decode_speculative(struct geist_session *s,
         const long  v   = (env != nullptr) ? atol(env) : 2;
         min_L_cached    = (v <= 0) ? 1 : (v > 8 ? 8 : (int) v);
     }
-    if ((int) match_L < min_L_cached) {
+    if (!native_draft && (int) match_L < min_L_cached) {
         return spec_fallback_single(s, out_tokens, n_out);
     }
 
@@ -606,31 +627,40 @@ geist_session_decode_speculative(struct geist_session *s,
     }
 
     geist_token_t correction;
-    size_t        emitted;
+    size_t        accepted_tokens;
     if (accepted_extras == k - 1) {
-        /* All drafts verified — emit them + the model's bonus prediction. */
-        memcpy(out_tokens, drafts, k * sizeof(geist_token_t));
-        correction    = verify_out[k - 1];
-        out_tokens[k] = correction;
-        emitted       = k + 1;
+        /* All drafts verified. The model's bonus prediction remains pending
+         * when the architecture can retain its verified last-row logits. */
+        correction      = verify_out[k - 1];
+        accepted_tokens = k;
     } else {
         /* Partial accept. Keep KV[..kv_before + accepted_extras + 1) (= the
-         * accepted draft positions), discard the rest, then re-push the
-         * correction so the cache + logits are ready for the next call. */
-        ops->kv_truncate(st, kv_before + accepted_extras + 1);
-        memcpy(out_tokens, drafts, (accepted_extras + 1) * sizeof(geist_token_t));
-        correction                      = verify_out[accepted_extras];
-        out_tokens[accepted_extras + 1] = correction;
-        emitted                         = accepted_extras + 2;
+         * accepted draft positions) and discard the rest. Architectures with
+         * recurrent state replay that prefix and retain its prediction. */
+        const enum geist_status ts = ops->kv_truncate(st, kv_before + accepted_extras + 1);
+        if (ts != GEIST_OK) {
+            return session_op_failed(sf, ts, "speculative state rollback");
+        }
+        correction      = verify_out[accepted_extras];
+        accepted_tokens = accepted_extras + 1;
     }
 
-    /* The last emit (bonus or correction) is not yet in the cache. The
-     * next spec_step / decode_step needs pending logits computed from
-     * it, so push it now via a single-token prefill. Numerically the
-     * same as ending the previous batched forward one token earlier. */
-    const enum geist_status cs = ops->prefill(st, 1, &correction);
-    if (cs != GEIST_OK) {
-        return session_op_failed(sf, cs, "speculative correction prefill");
+    memcpy(out_tokens, drafts, accepted_tokens * sizeof(geist_token_t));
+    size_t emitted = accepted_tokens;
+
+    /* A capable architecture retains the prediction after the committed
+     * verify prefix as its pending token. Leave it for the next API call: it
+     * has not been emitted yet, so no cache advance is required. Older
+     * architectures, and the default mode, keep the established
+     * correction-emission fallback. */
+    const bool correction_ready =
+            spec_retain_verified_pending_enabled() && ops->peek_next_token(st) == correction;
+    if (!correction_ready) {
+        out_tokens[emitted++]      = correction;
+        const enum geist_status cs = ops->prefill(st, 1, &correction);
+        if (cs != GEIST_OK) {
+            return session_op_failed(sf, cs, "speculative correction prefill");
+        }
     }
 
     *n_out = emitted;

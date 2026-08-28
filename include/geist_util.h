@@ -212,10 +212,12 @@ const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits
 
 /* @stability EXPERIMENTAL — speculative-decode API.
  *
- * One speculative-decode step: drafts up to k_max candidate tokens via
- * an internal n-gram lookup over `history`, then verifies them in a
- * single batched forward pass. Writes the emitted tokens (1..k_max+1)
- * to `out_tokens` and the count to `*n_out`.
+ * One speculative-decode step: drafts up to k_max candidate tokens via an
+ * architecture-native head when available and enabled (Qwen3.5 MTP with
+ * GEIST_MTP=1), otherwise via an internal n-gram lookup over `history`, then
+ * verifies them in one batched forward pass. MTP is opt-in so ordinary decode
+ * does not pay its synchronization cost. Writes the emitted tokens
+ * (1..k_max+1) to `out_tokens` and the count to `*n_out`.
  *
  * The drafter's first guess is always the model's own argmax over the
  * already-pending logits (zero cost), so spec_step emits at least 1

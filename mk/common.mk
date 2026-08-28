@@ -159,6 +159,7 @@ LIB_SOURCES := \
     src/archs/transformer/forward/probes.c \
     src/archs/transformer/forward/step.c \
     src/archs/transformer/forward/head.c \
+    src/archs/transformer/forward/mtp.c \
     src/archs/transformer/forward/spec_head.c \
     src/archs/transformer/weight_load/dtype_map.c \
     src/archs/transformer/weight_load/tensor_views.c \
