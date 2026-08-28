@@ -566,9 +566,21 @@ geist_session_decode_speculative(struct geist_session *s,
         return spec_fallback_single(s, out_tokens, n_out);
 
     geist_token_t drafts[GEIST_SPEC_KMAX_HARDCAP];
-    size_t        match_L = 0;
-    const size_t  k       = propose_drafts_ngram(
-            history, history_n, seed, k_max, /*max_suffix=*/4, drafts, &match_L);
+    size_t        match_L      = 0;
+    size_t        k            = 0;
+    bool          native_draft = false;
+    if (ops->draft_tokens != nullptr) {
+        const enum geist_status ds = ops->draft_tokens(st, k_max, seed, drafts, &k);
+        if (ds == GEIST_OK) {
+            native_draft = k > 0;
+        } else if (ds != GEIST_E_UNSUPPORTED) {
+            return session_op_failed(sf, ds, "architecture-native draft");
+        }
+    }
+    if (!native_draft) {
+        k = propose_drafts_ngram(
+                history, history_n, seed, k_max, /*max_suffix=*/4, drafts, &match_L);
+    }
     if (k <= 1)
         return spec_fallback_single(s, out_tokens, n_out);
 
@@ -586,7 +598,7 @@ geist_session_decode_speculative(struct geist_session *s,
         const long  v   = (env != nullptr) ? atol(env) : 2;
         min_L_cached    = (v <= 0) ? 1 : (v > 8 ? 8 : (int) v);
     }
-    if ((int) match_L < min_L_cached) {
+    if (!native_draft && (int) match_L < min_L_cached) {
         return spec_fallback_single(s, out_tokens, n_out);
     }
 

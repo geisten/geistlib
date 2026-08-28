@@ -102,6 +102,54 @@ Draft acceptance and end-to-end quality are intentionally not claimed here:
 those require PR 4 to feed real target hidden rows and compare the resulting
 draft/verify sequence directly with llama.cpp.
 
+### Native MTP speculative decode (#296 PR 4) — 2026-08-28
+
+PR 4 wires the isolated head into the engine. After every target batch, the
+raw target hidden rows are shifted by one position and mirrored into the
+MTP-only cache. The native drafter starts with the target model's free greedy
+seed, recursively proposes up to `k_max` tokens, and leaves provisional cache
+writes at the target boundary. Verification then overwrites those positions
+with authoritative target hidden rows. Partial accepts restore the MTP hidden
+carry/cache boundary together with the DeltaNet transaction and replay only
+the accepted prefix.
+
+MTP is opt-in via `GEIST_MTP=1`. Without it, ordinary decode does not execute
+the additional block and speculative decode keeps the existing n-gram
+fallback. The 27B real-weight test now covers target catch-up, equal target/MTP
+cache lengths, a native greedy draft chain, provisional-write rollback, and
+reset. The isolated known result remains `tokens=34,4180`,
+`max|hidden|=55.2256`; therefore engine synchronization did not change the PR 3
+primitive numerically.
+
+Greedy correctness was measured end-to-end on the mandatory 27B Q4_0 model:
+30 sequential tokens and 30 MTP-speculative tokens were identical. The run
+needed 7 speculative calls (4.29 emitted tokens/call), including partial-accept
+rollback. The no-MTP 0.8B path also remains identical and ASan-clean.
+
+The five-prompt `bench_speculative` sweep used 50 tokens per prompt,
+`k_max=4`, greedy sampling, CPU NEON, and `GEIST_MTP=1`:
+
+| model | sequential | MTP speculative | speedup | tokens/spec call |
+| :-- | ---: | ---: | ---: | ---: |
+| 27B Q4_0 | 4.5 tok/s | 3.5 tok/s | 0.78× | 3.38 |
+
+Acceptance is high enough to reduce target invocations, but the current CPU
+implementation loses 22% overall because every generated draft token performs
+an unbatched MTP block and full tied-vocabulary head. This makes MTP useful as
+a correctness-complete experimental path, not a default CPU optimization.
+Batching/accelerating the draft head is the next performance gate.
+
+For an external reference, llama.cpp `1fd6dfe` was built CPU-only against the
+same 27B Q4_0 file and run greedy with `draft-mtp`, `n_max=4`. On the exact
+first benchmark input it decoded 51 tokens at 4.76 tok/s with 40/40 accepted
+drafts; geist reached 2.84 tok/s on that prompt with 3.33 emitted tokens/call.
+The absolute comparison is conservative for llama.cpp because its MTP tool
+maps the same GGUF twice and the local build lacked OpenMP, but it still shows
+that geist's bottleneck is draft execution rather than target acceptance.
+Quality remains target-exact by construction and by the 30-token equality
+test: MTP only proposes tokens; the target model verifies every committed
+token.
+
 (llama.cpp Metal, for context: 4B pp128 865 / tg 69.5; 27B pp512 106 /
 tg 19.0. GPU is out of scope for geist — see the #281 positioning.)
 

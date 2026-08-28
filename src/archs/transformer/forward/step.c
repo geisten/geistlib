@@ -295,6 +295,10 @@ transformer_run_one_step(struct transformer_arch_session *sess,
     if (s != GEIST_OK) {
         return s;
     }
+    s = transformer_mtp_sync_target(sess, 1, &ple_token_id, sess->scratch_h_b);
+    if (s != GEIST_OK) {
+        return s;
+    }
 
     geist_token_t best_id;
     s = finalize_logits_one_row(sess, 0, &best_id);

@@ -654,6 +654,20 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
             s = alloc_scratch(be, 2 * hidden_bytes, &sess->mtp_concat);
             if (s != GEIST_OK)
                 return s;
+            sess->mtp_pending_h = heap_alloc_aligned(stt->d_model * sizeof(float), 64);
+            sess->mtp_target_raw =
+                    heap_alloc_aligned(sess->m_max * stt->d_model * sizeof(float), 64);
+            sess->mtp_target_shifted =
+                    heap_alloc_aligned(sess->m_max * stt->d_model * sizeof(float), 64);
+            sess->mtp_txn_pending_h = heap_alloc_aligned(stt->d_model * sizeof(float), 64);
+            if (sess->mtp_pending_h == nullptr || sess->mtp_target_raw == nullptr ||
+                sess->mtp_target_shifted == nullptr || sess->mtp_txn_pending_h == nullptr) {
+                geist_backend_set_error(
+                        be, GEIST_E_OOM, "transformer: MTP host state alloc failed");
+                return GEIST_E_OOM;
+            }
+            memset(sess->mtp_pending_h, 0, stt->d_model * sizeof(float));
+            memset(sess->mtp_txn_pending_h, 0, stt->d_model * sizeof(float));
             sess->mtp_kv_len = 0;
         }
     }
@@ -1157,8 +1171,9 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         return nullptr;
     }
     memset(sess, 0, sizeof(*sess));
-    sess->model = state;
-    sess->m_max = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
+    sess->model       = state;
+    sess->mtp_enabled = state->n_mtp_layers > 0 && env_flag_enabled("GEIST_MTP", false);
+    sess->m_max       = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
     /* caps.max_m is the backend's per-call row limit (CPU quant kernels
      * size stack arrays from it; batched-submit GPUs allow larger
      * batches). 0 = uncapped. */
@@ -1354,12 +1369,20 @@ void transformer_session_free(struct transformer_arch_state   *state,
         void *pb = sess->dn_S;
         safe_free(&pb);
     }
-    void *txn_conv = sess->dn_txn_conv;
-    void *txn_S    = sess->dn_txn_S;
-    void *txn_ids  = sess->dn_txn_ids;
+    void *txn_conv        = sess->dn_txn_conv;
+    void *txn_S           = sess->dn_txn_S;
+    void *txn_ids         = sess->dn_txn_ids;
+    void *mtp_pending     = sess->mtp_pending_h;
+    void *mtp_raw         = sess->mtp_target_raw;
+    void *mtp_shifted     = sess->mtp_target_shifted;
+    void *mtp_txn_pending = sess->mtp_txn_pending_h;
     safe_free(&txn_conv);
     safe_free(&txn_S);
     safe_free(&txn_ids);
+    safe_free(&mtp_pending);
+    safe_free(&mtp_raw);
+    safe_free(&mtp_shifted);
+    safe_free(&mtp_txn_pending);
     if (be != nullptr) {
         struct geist_buffer *extra[] = {
                 sess->qgate_joint,
@@ -1378,18 +1401,22 @@ void transformer_session_free(struct transformer_arch_state   *state,
             if (extra[i] != nullptr)
                 be->desc->vtbl->buffer_destroy(be, extra[i]);
     }
-    sess->qgate_joint     = nullptr;
-    sess->qgate_gate      = nullptr;
-    sess->dn_conv_state   = nullptr;
-    sess->dn_S            = nullptr;
-    sess->dn_txn_conv     = nullptr;
-    sess->dn_txn_S        = nullptr;
-    sess->dn_txn_ids      = nullptr;
-    sess->mtp_k_cache     = nullptr;
-    sess->mtp_v_cache     = nullptr;
-    sess->mtp_embed       = nullptr;
-    sess->mtp_hidden_norm = nullptr;
-    sess->mtp_concat      = nullptr;
+    sess->qgate_joint        = nullptr;
+    sess->qgate_gate         = nullptr;
+    sess->dn_conv_state      = nullptr;
+    sess->dn_S               = nullptr;
+    sess->dn_txn_conv        = nullptr;
+    sess->dn_txn_S           = nullptr;
+    sess->dn_txn_ids         = nullptr;
+    sess->mtp_k_cache        = nullptr;
+    sess->mtp_v_cache        = nullptr;
+    sess->mtp_embed          = nullptr;
+    sess->mtp_hidden_norm    = nullptr;
+    sess->mtp_concat         = nullptr;
+    sess->mtp_pending_h      = nullptr;
+    sess->mtp_target_raw     = nullptr;
+    sess->mtp_target_shifted = nullptr;
+    sess->mtp_txn_pending_h  = nullptr;
 
     /* Per-layer KV cache buffers. Each slot may be NULL — exactly one
      * representation (FP32 / INT8 / KIVI) was allocated per non-shared

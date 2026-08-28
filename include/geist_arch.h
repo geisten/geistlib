@@ -160,6 +160,16 @@ struct geist_arch_ops_decoder {
      * session explicitly on every call. */
     void *(*session_alloc)(void *arch_state, const struct geist_session_opts *opts);
     void (*session_free)(void *arch_state, void *session);
+
+    /* Optional architecture-native drafter. Appended to preserve offsets of
+     * the pre-existing decoder ABI. Returns a candidate chain whose first
+     * token is `seed`; GEIST_E_UNSUPPORTED asks the engine to use its generic
+     * n-gram drafter instead. */
+    enum geist_status (*draft_tokens)(void          *session,
+                                      size_t         k_max,
+                                      geist_token_t  seed,
+                                      geist_token_t *out_tokens,
+                                      size_t        *n_out);
 };
 
 /* ====================================================================== */

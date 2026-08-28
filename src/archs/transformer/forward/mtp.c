@@ -45,8 +45,12 @@ mtp_embed_tokens(struct transformer_arch_session *sess, size_t n, const geist_to
 }
 
 void transformer_mtp_reset(struct transformer_arch_session *sess) {
-    if (sess != nullptr)
-        sess->mtp_kv_len = 0;
+    if (sess != nullptr) {
+        sess->mtp_kv_len       = 0;
+        sess->mtp_txn_base_len = 0;
+        if (sess->mtp_pending_h != nullptr && sess->model != nullptr)
+            memset(sess->mtp_pending_h, 0, sess->model->d_model * sizeof(float));
+    }
 }
 
 enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
@@ -56,7 +60,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
                                           geist_token_t                   *out_tokens,
                                           float                           *out_hidden) {
     if (sess == nullptr || sess->model == nullptr || n == 0 || ids == nullptr ||
-        target_hidden == nullptr || out_tokens == nullptr) {
+        target_hidden == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
     struct transformer_arch_state *st = sess->model;
@@ -143,6 +147,11 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
         v->buffer_unmap(sess->scratch_h_b);
     }
 
+    if (out_tokens == nullptr) {
+        sess->mtp_kv_len += n;
+        return GEIST_OK;
+    }
+
     struct geist_tensor t_raw  = view_2d(sess->scratch_h_b, N, (int64_t) H);
     struct geist_tensor t_norm = view_2d(sess->scratch_h_a, N, (int64_t) H);
     struct geist_tensor t_wn   = view_1d(M->shared_head_norm.buffer, (int64_t) H);
@@ -171,5 +180,92 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
     }
     v->buffer_unmap(sess->scratch_logits);
     sess->mtp_kv_len += n;
+    return GEIST_OK;
+}
+
+enum geist_status transformer_mtp_sync_target(struct transformer_arch_session *sess,
+                                              size_t                           n,
+                                              const geist_token_t             *ids,
+                                              struct geist_buffer             *target_hidden_buf) {
+    if (sess == nullptr || sess->model == nullptr || n == 0 || n > sess->m_max || ids == nullptr ||
+        target_hidden_buf == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (sess->model->n_mtp_layers == 0 || !sess->mtp_enabled)
+        return GEIST_OK;
+    if (sess->mtp_pending_h == nullptr || sess->mtp_target_raw == nullptr ||
+        sess->mtp_target_shifted == nullptr)
+        return GEIST_E_INVALID_STATE;
+
+    const size_t                     H     = sess->model->d_model;
+    const size_t                     bytes = n * H * sizeof(float);
+    const struct geist_backend_vtbl *v     = sess->model->backend->desc->vtbl;
+    const float                     *raw   = (const float *) v->buffer_map(target_hidden_buf);
+    if (raw == nullptr)
+        return GEIST_E_BACKEND;
+    memcpy(sess->mtp_target_raw, raw, bytes);
+    v->buffer_unmap(target_hidden_buf);
+
+    memcpy(sess->mtp_target_shifted, sess->mtp_pending_h, H * sizeof(float));
+    if (n > 1) {
+        memcpy(sess->mtp_target_shifted + H, sess->mtp_target_raw, (n - 1) * H * sizeof(float));
+    }
+
+    enum geist_status s =
+            transformer_mtp_forward(sess, n, ids, sess->mtp_target_shifted, nullptr, nullptr);
+
+    /* MTP shares the generic layer scratch with the target trunk. Restore
+     * authoritative raw rows so the target output head sees its own state. */
+    float *restore = (float *) v->buffer_map(target_hidden_buf);
+    if (restore == nullptr)
+        return GEIST_E_BACKEND;
+    memcpy(restore, sess->mtp_target_raw, bytes);
+    v->buffer_unmap(target_hidden_buf);
+    if (s != GEIST_OK)
+        return s;
+
+    memcpy(sess->mtp_pending_h, sess->mtp_target_raw + (n - 1) * H, H * sizeof(float));
+    return GEIST_OK;
+}
+
+enum geist_status transformer_mtp_draft(struct transformer_arch_session *sess,
+                                        size_t                           k_max,
+                                        geist_token_t                    seed,
+                                        geist_token_t                   *out_tokens,
+                                        size_t                          *n_out) {
+    if (sess == nullptr || sess->model == nullptr || k_max == 0 || out_tokens == nullptr ||
+        n_out == nullptr || seed < 0 || (size_t) seed >= sess->model->vocab_size) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *n_out = 0;
+    if (!sess->mtp_enabled || sess->model->n_mtp_layers != 1 || sess->mtp_pending_h == nullptr ||
+        sess->temperature != 0.0f) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (sess->mtp_kv_len != sess->kv_len || sess->mtp_kv_len + k_max > sess->max_seq_len)
+        return GEIST_E_INVALID_STATE;
+
+    const size_t base     = sess->mtp_kv_len;
+    out_tokens[0]         = seed;
+    *n_out                = 1;
+    geist_token_t current = seed;
+    const float  *hidden  = sess->mtp_pending_h;
+    while (*n_out < k_max) {
+        geist_token_t     next = -1;
+        enum geist_status s =
+                transformer_mtp_forward(sess, 1, &current, hidden, &next, sess->mtp_target_raw);
+        if (s != GEIST_OK) {
+            sess->mtp_kv_len = base;
+            *n_out           = 0;
+            return s;
+        }
+        out_tokens[(*n_out)++] = next;
+        current                = next;
+        hidden                 = sess->mtp_target_raw;
+    }
+
+    /* Draft rows are provisional. Target verification will overwrite them
+     * at the same positions using authoritative target hidden states. */
+    sess->mtp_kv_len = base;
     return GEIST_OK;
 }

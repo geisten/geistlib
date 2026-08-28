@@ -321,18 +321,23 @@ struct transformer_arch_session {
     struct geist_buffer *dn_scratch_b; /* beta projection  [m_max, n_v_heads] */
     struct geist_buffer *dn_scratch_a; /* alpha projection [m_max, n_v_heads] */
 
-    /* Qwen3.5 MTP owns a cache independent from the target trunk.  PR 3
-     * exposes the head as an isolated forward primitive; PR 4 will decide
-     * when target hidden rows are fed into it.  Keep dense FP32 storage here
-     * deliberately: it is one layer, avoids coupling draft correctness to
-     * the target cache's optional quantization, and makes reset/truncate
-     * semantics explicit. */
+    /* Qwen3.5 MTP owns a cache independent from the target trunk. Target
+     * batches feed it one-position-shifted hidden rows when GEIST_MTP=1.
+     * Keep dense FP32 storage here deliberately: it is one layer, avoids
+     * coupling draft correctness to the target cache's optional quantization,
+     * and makes reset/truncate semantics explicit. */
     struct geist_buffer *mtp_k_cache;
     struct geist_buffer *mtp_v_cache;
     struct geist_buffer *mtp_embed;
     struct geist_buffer *mtp_hidden_norm;
     struct geist_buffer *mtp_concat;
+    bool                 mtp_enabled; /* GEIST_MTP=1, opt-in drafting */
     size_t               mtp_kv_len;
+    float               *mtp_pending_h;      /* target h at kv_len - 1 */
+    float               *mtp_target_raw;     /* [m_max, H], sync staging */
+    float               *mtp_target_shifted; /* [m_max, H], h shifted right */
+    float               *mtp_txn_pending_h;  /* pre-verify pending h snapshot */
+    size_t               mtp_txn_base_len;
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;
@@ -532,6 +537,23 @@ transformer_forward_one_layer(struct transformer_arch_session *sess,
 
 /* Discard all MTP attention history without touching target-model state. */
 void transformer_mtp_reset(struct transformer_arch_session *sess);
+
+/* Mirror a completed target batch into the MTP cache. `target_hidden_buf`
+ * contains the raw post-trunk rows for `ids`; the helper performs Qwen's
+ * one-position hidden shift and restores the target scratch before return. */
+[[nodiscard]] enum geist_status transformer_mtp_sync_target(struct transformer_arch_session *sess,
+                                                            size_t                           n,
+                                                            const geist_token_t             *ids,
+                                                            struct geist_buffer *target_hidden_buf);
+
+/* Build a greedy candidate chain beginning with the target model's free seed.
+ * Speculative MTP cache writes are logically discarded before return; target
+ * verification will re-append the candidates with authoritative hidden rows. */
+[[nodiscard]] enum geist_status transformer_mtp_draft(struct transformer_arch_session *sess,
+                                                      size_t                           k_max,
+                                                      geist_token_t                    seed,
+                                                      geist_token_t                   *out_tokens,
+                                                      size_t                          *n_out);
 
 /* Compute the PLE per-layer-input for ONE token (decode m=1) starting
  * from the residual stream `h` at this point in the pipeline.
