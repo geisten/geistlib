@@ -244,6 +244,72 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     return GEIST_OK;
 }
 
+enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session  *sess,
+                                                struct transformer_layer_weights *layer,
+                                                size_t                            q_position,
+                                                size_t                            seq,
+                                                struct geist_buffer              *h_in_buf,
+                                                struct geist_buffer              *h_out_buf) {
+    if (sess == nullptr || sess->model == nullptr || layer == nullptr || h_in_buf == nullptr ||
+        h_out_buf == nullptr || sess->mtp_k_cache == nullptr || sess->mtp_v_cache == nullptr ||
+        seq == 0 || seq > sess->m_max || q_position + seq > sess->max_seq_len) {
+        return GEIST_E_INVALID_ARG;
+    }
+
+    /* Start from the family defaults established by the normal initializer,
+     * then replace all layer- and cache-specific bindings.  The MTP block is
+     * intentionally planless: target-layer fusion decisions and KV aliases
+     * are invalid for the separately loaded trailing block. */
+    struct transformer_layer_forward_ctx ctx;
+    transformer_layer_ctx_init(&ctx, sess, 0, q_position, seq, false, h_in_buf, nullptr, h_out_buf);
+    ctx.L                        = layer;
+    ctx.P                        = nullptr;
+    ctx.layer_idx                = layer->layer_idx;
+    ctx.kv_src                   = -1;
+    ctx.compute_kv               = true;
+    ctx.apply_bitnet_input_quant = false;
+    ctx.apply_sub_ln             = false;
+    ctx.apply_gemma_attn_norms   = false;
+    ctx.apply_qk_norms           = true;
+    ctx.rope_interleaved         = sess->model->config.rope_interleaved;
+    ctx.apply_ple                = false;
+    ctx.kv_int8_enabled          = false;
+    ctx.kv_kivi_enabled          = false;
+    ctx.kv_f16_enabled           = false;
+    ctx.ffn_activation           = GEIST_FFN_SWIGLU;
+    ctx.hd                       = layer->head_dim;
+    ctx.q_out                    = layer->q_out;
+    ctx.kv_out                   = layer->kv_out;
+    ctx.inter                    = layer->intermediate;
+    ctx.k_cache_buf              = sess->mtp_k_cache;
+    ctx.v_cache_buf              = sess->mtp_v_cache;
+    ctx.k_cache_q8_buf           = nullptr;
+    ctx.v_cache_q8_buf           = nullptr;
+    ctx.k_cache_scale_buf        = nullptr;
+    ctx.v_cache_scale_buf        = nullptr;
+    ctx.k_kivi_q_buf             = nullptr;
+    ctx.v_kivi_q_buf             = nullptr;
+    ctx.k_kivi_scales_buf        = nullptr;
+    ctx.k_kivi_zeros_buf         = nullptr;
+    ctx.v_kivi_scales_buf        = nullptr;
+    ctx.v_kivi_zeros_buf         = nullptr;
+    ctx.k_residual_buf           = nullptr;
+    ctx.v_residual_buf           = nullptr;
+
+    frame_arena_reset(&sess->scratch_arena);
+    enum geist_status s = transformer_layer_run_attention_block(&ctx);
+    if (s == GEIST_OK) {
+        s = transformer_layer_run_ffn_block(&ctx);
+    }
+    if (s == GEIST_OK) {
+        s = transformer_layer_run_ple_or_copy(&ctx);
+    }
+    if (s == GEIST_OK) {
+        transformer_layer_scale_output(&ctx);
+    }
+    return s;
+}
+
 /* ---- PLE per-layer-input precompute ----------------------------------- */
 
 /* Dequantize one row of a 2D weight tensor (by row index) into a host

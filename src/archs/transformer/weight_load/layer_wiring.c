@@ -491,6 +491,43 @@ load_layer_proj(struct transformer_arch_state    *st,
     return GEIST_OK;
 }
 
+/* ---- One Qwen3.5 MTP layer ------------------------------------------- */
+
+[[nodiscard]] enum geist_status load_mtp_layer(struct transformer_arch_state        *st,
+                                               struct gguf_ctx                      *gguf,
+                                               struct transformer_mtp_layer_weights *M) {
+    if (st == nullptr || gguf == nullptr || M == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+
+    enum geist_status s = load_one_layer(st, gguf, &M->block);
+    if (s != GEIST_OK) {
+        return s;
+    }
+
+    char path[96];
+#define MP(suffix) snprintf(path, sizeof path, "blk.%d.nextn." suffix, M->block.layer_idx)
+
+    MP("eh_proj.weight");
+    s = load_layer_proj(
+            st, gguf, &M->block, path, st->d_model, 2 * st->d_model, &M->eh_proj, &M->eh_proj_w);
+    if (s != GEIST_OK)
+        return s;
+    MP("enorm.weight");
+    s = load_layer_norm(st, gguf, &M->block, path, st->d_model, &M->enorm);
+    if (s != GEIST_OK)
+        return s;
+    MP("hnorm.weight");
+    s = load_layer_norm(st, gguf, &M->block, path, st->d_model, &M->hnorm);
+    if (s != GEIST_OK)
+        return s;
+    MP("shared_head_norm.weight");
+    s = load_layer_norm(st, gguf, &M->block, path, st->d_model, &M->shared_head_norm);
+
+#undef MP
+    return s;
+}
+
 /* ---- Global weights ---------------------------------------------------- */
 
 [[nodiscard]] enum geist_status

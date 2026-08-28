@@ -54,6 +54,182 @@ copies (#289 lm_head + #291 all Q4_0 projections): 4B 5.7 GB,
 the speed back for the memory. #291 A/B, same run: 4B decode
 27.1 vs 25.4 (+7 %), 27B 5.6 vs 4.9 (+14 %); prefill untouched.
 
+### Transactional speculative-state baseline (#296 PR 2) — 2026-08-28
+
+Before wiring the MTP head, `bench_speculative` was run with the existing
+n-gram drafter and `GEIST_SPEC_MIN_L=1`, deliberately forcing the new
+DeltaNet checkpoint/restore path. This is a transaction-cost baseline, not
+an MTP result. Greedy output equivalence is covered separately by
+`test_speculative_primitives_int`, including byte-identical conv and S state
+for every accepted prefix (0..4 on 0.8B, 0..2 on 27B).
+
+| model | sequential | transactional spec | speedup | tokens/spec call |
+| :-- | ---: | ---: | ---: | ---: |
+| 0.8B Q8_0 | 31.7 tok/s | 19.3 tok/s | 0.61× | 4.63 |
+| 27B Q4_0 | 1.7 tok/s | 1.1 tok/s | 0.67× | 1.74 |
+
+The forced n-gram path is a loss on both sizes. On 27B, a lazy checkpoint is
+about 150 MiB and low draft acceptance compounds that cost. PR 2 therefore
+establishes correctness and bounded memory; later MTP PRs must beat this
+baseline through higher acceptance and should avoid replay on the common
+full-accept path.
+
+### Isolated MTP forward gate (#296 PR 3) — 2026-08-28
+
+PR 3 executes the separately loaded 27B MTP block but deliberately does not
+enable it in the speculative engine yet. The real-weight integration test
+feeds a deterministic two-row hidden fixture through token/hidden RMSNorm,
+`eh_proj`, the gated full-attention + SwiGLU block, shared-head RMSNorm and
+the tied output head. Reset/repeat is byte-identical (`tokens=34,4180`), all
+10,240 returned hidden values are finite, the MTP KV length advances from 0
+to 2, and non-zero sentinels prove the target KV/recurrent/logit state remains
+untouched. The 0.8B fixture (which has no MTP block) is the negative
+allocation/API gate.
+
+The normal target path was also A/B checked on the mandatory 27B Q4_0 model
+(`pp128`, eight decode tokens, two discarded warm-up tokens, two repeats,
+eight threads). The short sweep is intentionally a regression smoke test,
+not a new headline benchmark:
+
+| revision | prefill | decode | RSS |
+| :-- | --: | --: | --: |
+| PR 2 base | 13.70 tok/s | 3.61 tok/s | 29,405 MiB |
+| PR 3 | 14.69 tok/s | 4.02 tok/s | 29,414 MiB |
+
+There is no target-path slowdown within run-to-run noise; the small RSS delta
+comes from the session-sized MTP KV/scratch at this benchmark's short context.
+Draft acceptance and end-to-end quality are intentionally not claimed here:
+those require PR 4 to feed real target hidden rows and compare the resulting
+draft/verify sequence directly with llama.cpp.
+
+### Native MTP speculative decode (#296 PR 4) — 2026-08-28
+
+PR 4 wires the isolated head into the engine. After every target batch, the
+raw target hidden rows are shifted by one position and mirrored into the
+MTP-only cache. The native drafter starts with the target model's free greedy
+seed, recursively proposes up to `k_max` tokens, and leaves provisional cache
+writes at the target boundary. Verification then overwrites those positions
+with authoritative target hidden rows. Partial accepts restore the MTP hidden
+carry/cache boundary together with the DeltaNet transaction and replay only
+the accepted prefix.
+
+MTP is opt-in via `GEIST_MTP=1`. Without it, ordinary decode does not execute
+the additional block and speculative decode keeps the existing n-gram
+fallback. The 27B real-weight test now covers target catch-up, equal target/MTP
+cache lengths, a native greedy draft chain, provisional-write rollback, and
+reset. The isolated known result remains `tokens=34,4180`,
+`max|hidden|=55.2256`; therefore engine synchronization did not change the PR 3
+primitive numerically.
+
+Greedy correctness was measured end-to-end on the mandatory 27B Q4_0 model:
+30 sequential tokens and 30 MTP-speculative tokens were identical. The run
+needed 7 speculative calls (4.29 emitted tokens/call), including partial-accept
+rollback. The no-MTP 0.8B path also remains identical and ASan-clean.
+
+The five-prompt `bench_speculative` sweep used 50 tokens per prompt,
+`k_max=4`, greedy sampling, CPU NEON, and `GEIST_MTP=1`:
+
+| model | sequential | MTP speculative | speedup | tokens/spec call |
+| :-- | ---: | ---: | ---: | ---: |
+| 27B Q4_0 | 4.5 tok/s | 3.5 tok/s | 0.78× | 3.38 |
+
+Acceptance is high enough to reduce target invocations, but the current CPU
+implementation loses 22% overall because every generated draft token performs
+an unbatched MTP block and full tied-vocabulary head. This makes MTP useful as
+a correctness-complete experimental path, not a default CPU optimization.
+Batching/accelerating the draft head is the next performance gate.
+
+For an external reference, llama.cpp `1fd6dfe` was built CPU-only against the
+same 27B Q4_0 file and run greedy with `draft-mtp`, `n_max=4`. On the exact
+first benchmark input it decoded 51 tokens at 4.76 tok/s with 40/40 accepted
+drafts; geist reached 2.84 tok/s on that prompt with 3.33 emitted tokens/call.
+The absolute comparison is conservative for llama.cpp because its MTP tool
+maps the same GGUF twice and the local build lacked OpenMP, but it still shows
+that geist's bottleneck is draft execution rather than target acceptance.
+Quality remains target-exact by construction and by the 30-token equality
+test: MTP only proposes tokens; the target model verifies every committed
+token.
+
+### Experimental MTP sketch head (#296 PR 5) — 2026-08-28
+
+PR 5 evaluates the existing host i8-sketch output head inside the recursive
+single-row MTP draft. It is gated independently by `GEIST_MTP_SPEC_HEAD=1`;
+the default remains the dense MTP head. The fast path preserves the target
+head's dense/sparse metadata and falls back to the dense projection whenever
+the model, backend, or sampling mode is ineligible.
+
+The mandatory 27B Q4_0 test exercises both the dense fallback and enabled
+sketch path. Fast drafts are valid and deterministic, and the end-to-end
+greedy loop remains target-exact: 30/30 tokens match sequential decoding. On
+the repetitive integration prompt it emitted 31 tokens in 8 verification
+calls (3.88 tokens/call).
+
+The full five-prompt, 50-token sweep measured both configurations on the same
+revision:
+
+| 27B Q4_0 draft head | sequential | speculative | speedup | tokens/spec call |
+| :-- | ---: | ---: | ---: | ---: |
+| dense (default) | 3.2 tok/s | 2.4 tok/s | 0.76× | 3.38 |
+| i8 sketch (opt-in) | 3.4 tok/s | 2.2 tok/s | 0.65× | 3.16 |
+
+This is a measured rejection for the default path. Compared with PR 4's dense
+MTP head, acceptance falls from 3.38 to 3.16 tokens/call and the end-to-end
+speedup factor from 0.76× to 0.65×. Approximate finalist ranking changes enough
+draft tokens to require more expensive target verification, overwhelming the
+cheaper head. The default result reproduces PR 4's 0.78×/3.38 within run noise.
+The opt-in remains useful for profiling and future sketch tuning, but it is not
+enabled automatically; therefore PR 5 introduces no default performance or
+quality regression.
+
+### MTP stage profile and retained verification result (#296 PR 6) — 2026-08-28
+
+PR 6 adds the MTP path to the existing `GEIST_PROFILE_FORWARD=1` diagnostic.
+On the mandatory 27B Q4_0 model, 102 MTP input rows from the integration loop
+split the measured MTP time as follows:
+
+| MTP stage | time | share |
+| :-- | --: | --: |
+| gated attention + SwiGLU block | 423.59 ms | 46.2% |
+| tied dense vocabulary head | 322.50 ms | 35.2% |
+| `eh_proj` | 168.31 ms | 18.4% |
+| input, norms, concat, copies | 1.54 ms | 0.2% |
+
+The profile rules out host-side input preparation as the next useful target:
+81.4% is in the MTP block and tied head, with another 18.4% in the input
+projection. A material CPU speedup therefore needs cheaper/batched model math,
+not another memcpy-level optimization.
+
+Verification also already computes the correction/bonus token and its logits.
+The transformer primitives now retain that exact pending result across a full
+accept, or reconstruct it while replaying a partially accepted DeltaNet
+prefix. `GEIST_SPEC_RETAIN_PENDING=1` lets the engine defer emitting that token
+until the next call, avoiding the old immediate single-token correction
+prefill. The switch is deliberately experimental: changing the call boundary
+also changes the n-gram history available to the drafter.
+
+Both modes are greedy-exact on the 0.8B and mandatory 27B fixtures (30/30 tokens
+match sequential decode), and the rollback test covers every accepted prefix.
+The 0.8B paths are ASan-clean. The controlled 27B five-prompt sweep was:
+
+| 27B Q4_0 cadence | sequential | MTP speculative | speedup | tokens/spec call |
+| :-- | ---: | ---: | ---: | ---: |
+| established/default | 3.7 tok/s | 2.5 tok/s | 0.67× | 3.38 |
+| retain pending (opt-in) | 2.5 tok/s | 1.3 tok/s | 0.54× | 2.60 |
+| default after `origin/main` `5cf2b10` | 4.0 tok/s | 2.9 tok/s | 0.72× | 3.38 |
+
+Absolute rates varied with machine state versus PR 5, but the within-run
+result is unambiguous. Saving the redundant prefill does not compensate for
+the lower n-gram acceptance caused by deferring the correction token. The
+default cadence is therefore unchanged. llama.cpp's earlier controlled
+4.76 tok/s result remains ahead of both geist modes; this PR narrows the next
+optimization target to the three model-math stages above rather than token
+bookkeeping.
+
+The post-merge isolated real-weight check also exercises Main's untied
+`output.weight` in the MTP head. It is reset/repeat deterministic at
+`tokens=34,375`, `max|hidden|=67.5937`, preserves the target recurrent
+sentinels, and leaves target KV/logits untouched.
+
 (For the GPU story — geist Metal now ahead of llama.cpp Metal on the
 27B — see the Metal section below; the CPU numbers here stand on their
 own.)

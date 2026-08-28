@@ -147,6 +147,20 @@ struct transformer_layer_weights {
     size_t               n_bufs;
 };
 
+/* One Qwen3.5 multi-token-prediction block. GGUF appends these blocks
+ * after the autoregressive stack and gives them the regular attention/FFN
+ * tensors plus four nextn-specific tensors. They stay separate from
+ * `layers`: normal decoding must never traverse an MTP block. */
+struct transformer_mtp_layer_weights {
+    struct transformer_layer_weights block;
+
+    struct geist_tensor eh_proj;          /* [HIDDEN, 2 * HIDDEN] */
+    struct geist_tensor enorm;            /* [HIDDEN] */
+    struct geist_tensor hnorm;            /* [HIDDEN] */
+    struct geist_tensor shared_head_norm; /* [HIDDEN] */
+    struct geist_weight eh_proj_w;
+};
+
 /* ---- Per-session mutable state (P1.2.d refactor v2) -------------------- *
  *
  * All mutable state for ONE inference stream lives here. Separated from
@@ -274,14 +288,26 @@ struct transformer_arch_session {
     struct geist_buffer *scratch_pool_buf;
 
     /* ---- Gated-DeltaNet recurrent state (#281/#296). Backend buffers,
-     * allocated at session_alloc only for layers with mixer == DELTANET; nullptr
-     * slots otherwise. Zeroed on session reset. There is no rewind —
-     * the family leaves verify_forward/kv_truncate-based speculative
-     * decoding unused (engine falls back to sequential decode).
+     * allocated at session_alloc only for layers with mixer == DELTANET;
+     * nullptr slots otherwise. Zeroed on session reset.
      *   dn_conv_state[li]: [(kernel-1) * conv_dim]  rolling pre-conv qkv
      *   dn_S[li]:          [n_v_heads * head_k * head_v]  delta state */
     struct geist_buffer **dn_conv_state;
     struct geist_buffer **dn_S;
+    /* verify_forward mutates DeltaNet state in place. A single lazy,
+     * host-side checkpoint lets kv_truncate restore the backend buffers and
+     * replay exactly the accepted draft prefix. Its size is independent of
+     * the speculative width, which matters for Qwen3.5-27B. */
+    float         *dn_txn_conv;
+    float         *dn_txn_S;
+    geist_token_t *dn_txn_ids;
+    size_t         dn_txn_conv_count;
+    size_t         dn_txn_S_count;
+    size_t         dn_txn_base_kv_len;
+    size_t         dn_txn_k;
+    size_t         dn_txn_kivi_residual_count;
+    size_t         dn_txn_kivi_drained_count;
+    bool           dn_txn_active;
     /* qwen35 scratch (#281): joint q+gate projection result
      * [m_max, 2*q_out] + saved per-head gate [m_max, q_out], and the
      * DeltaNet projection outputs (qkv [m_max, conv_dim], z
@@ -294,6 +320,24 @@ struct transformer_arch_session {
     struct geist_buffer *dn_scratch_z;
     struct geist_buffer *dn_scratch_b; /* beta projection  [m_max, n_v_heads] */
     struct geist_buffer *dn_scratch_a; /* alpha projection [m_max, n_v_heads] */
+
+    /* Qwen3.5 MTP owns a cache independent from the target trunk. Target
+     * batches feed it one-position-shifted hidden rows when GEIST_MTP=1.
+     * Keep dense FP32 storage here deliberately: it is one layer, avoids
+     * coupling draft correctness to the target cache's optional quantization,
+     * and makes reset/truncate semantics explicit. */
+    struct geist_buffer *mtp_k_cache;
+    struct geist_buffer *mtp_v_cache;
+    struct geist_buffer *mtp_embed;
+    struct geist_buffer *mtp_hidden_norm;
+    struct geist_buffer *mtp_concat;
+    bool                 mtp_enabled; /* GEIST_MTP=1, opt-in drafting */
+    size_t               mtp_kv_len;
+    float               *mtp_pending_h;      /* target h at kv_len - 1 */
+    float               *mtp_target_raw;     /* [m_max, H], sync staging */
+    float               *mtp_target_shifted; /* [m_max, H], h shifted right */
+    float               *mtp_txn_pending_h;  /* pre-verify pending h snapshot */
+    size_t               mtp_txn_base_len;
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;
@@ -359,7 +403,8 @@ struct transformer_arch_state {
     /* ---- Geometry: structural dims as runtime fields, filled by the
      * family populator from GGUF metadata (family defaults live in the
      * populators themselves — arch_family.c). */
-    size_t n_layers;         /* Gemma 4: 35 */
+    size_t n_layers;         /* autoregressive layers; Gemma 4: 35 */
+    size_t n_mtp_layers;     /* trailing MTP blocks, excluded from n_layers */
     size_t d_model;          /* Gemma 4: 1536 */
     size_t vocab_size;       /* Gemma 4: 262144 */
     size_t n_q_heads;        /* Gemma 4: 8 */
@@ -384,9 +429,10 @@ struct transformer_arch_state {
     size_t               weight_arena_capacity;
 
     /* ---- Per-layer weight blocks, heap-sized to st->n_layers. */
-    struct transformer_layer_weights    *layers;
-    struct transformer_layer_exec_plan  *layer_plans;
-    struct transformer_model_fusion_plan model_fusions; /* exec_plan_build */
+    struct transformer_layer_weights     *layers;
+    struct transformer_mtp_layer_weights *mtp_layers;
+    struct transformer_layer_exec_plan   *layer_plans;
+    struct transformer_model_fusion_plan  model_fusions; /* exec_plan_build */
 
     struct geist_tensor embed_table;     /* [VOCAB, HIDDEN] — Q-format */
     struct geist_tensor output_table;    /* lm_head; aliases embed_table when tied */
@@ -478,6 +524,39 @@ transformer_forward_one_layer(struct transformer_arch_session *sess,
                               struct geist_buffer             *per_layer_input_buf,
                               struct geist_buffer             *h_out_buf);
 
+/* Execute the separately loaded Qwen3.5 next-token-prediction block.
+ * `target_hidden` is row-major [n, d_model] host F32 from the target trunk;
+ * `ids` are the shifted token embeddings paired with those rows.  The call
+ * appends to the MTP-only KV cache, returns one greedy token per row, and may
+ * return the raw post-block hidden rows for recursive drafting.  It never
+ * changes the target trunk's kv_len, recurrent state, or pending logits. */
+[[nodiscard]] enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
+                                                        size_t                           n,
+                                                        const geist_token_t             *ids,
+                                                        const float   *target_hidden,
+                                                        geist_token_t *out_tokens,
+                                                        float         *out_hidden);
+
+/* Discard all MTP attention history without touching target-model state. */
+void transformer_mtp_reset(struct transformer_arch_session *sess);
+
+/* Mirror a completed target batch into the MTP cache. `target_hidden_buf`
+ * contains the raw post-trunk rows for `ids`; the helper performs Qwen's
+ * one-position hidden shift and restores the target scratch before return. */
+[[nodiscard]] enum geist_status transformer_mtp_sync_target(struct transformer_arch_session *sess,
+                                                            size_t                           n,
+                                                            const geist_token_t             *ids,
+                                                            struct geist_buffer *target_hidden_buf);
+
+/* Build a greedy candidate chain beginning with the target model's free seed.
+ * Speculative MTP cache writes are logically discarded before return; target
+ * verification will re-append the candidates with authoritative hidden rows. */
+[[nodiscard]] enum geist_status transformer_mtp_draft(struct transformer_arch_session *sess,
+                                                      size_t                           k_max,
+                                                      geist_token_t                    seed,
+                                                      geist_token_t                   *out_tokens,
+                                                      size_t                          *n_out);
+
 /* Compute the PLE per-layer-input for ONE token (decode m=1) starting
  * from the residual stream `h` at this point in the pipeline.
  *
@@ -567,14 +646,21 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
  *
  * transformer_kv_truncate: shrink kv_len to new_len. KV state at
  * positions ≥ new_len is implicitly invalid (future writes will
- * overwrite). Invalidates logits_valid. Used to undo speculative-pass
- * KV writes after a draft mismatch. */
+ * overwrite). For DeltaNet, restore the pending verify checkpoint and replay
+ * the accepted draft prefix. A non-empty prefix retains the pending prediction
+ * produced by that replay; a full rewind invalidates logits. */
 [[nodiscard]] enum geist_status transformer_verify_forward(struct transformer_arch_session *sess,
                                                            size_t                           k,
                                                            const geist_token_t             *ids,
                                                            geist_token_t *out_tokens);
 
-void transformer_kv_truncate(struct transformer_arch_session *sess, size_t new_len);
+[[nodiscard]] enum geist_status transformer_kv_truncate(struct transformer_arch_session *sess,
+                                                        size_t                           new_len);
+
+/* Normal appends after a successful verify mean that the complete draft was
+ * accepted. Drop the pending checkpoint while retaining its allocation for
+ * the next transaction. */
+void transformer_recurrent_txn_commit(struct transformer_arch_session *sess);
 
 /* ---- Public functions (architecture-internal) -------------------------- */
 

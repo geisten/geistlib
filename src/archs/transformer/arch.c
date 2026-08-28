@@ -204,8 +204,14 @@ static enum geist_status op_verify_forward(void               *session,
             (struct transformer_arch_session *) session, k, ids, out_tokens);
 }
 
-static void op_kv_truncate(void *session, size_t new_len) {
-    transformer_kv_truncate((struct transformer_arch_session *) session, new_len);
+static enum geist_status op_draft_tokens(
+        void *session, size_t k_max, geist_token_t seed, geist_token_t *out_tokens, size_t *n_out) {
+    return transformer_mtp_draft(
+            (struct transformer_arch_session *) session, k_max, seed, out_tokens, n_out);
+}
+
+static enum geist_status op_kv_truncate(void *session, size_t new_len) {
+    return transformer_kv_truncate((struct transformer_arch_session *) session, new_len);
 }
 
 static size_t op_kv_len(const void *session) {
@@ -238,6 +244,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .peek_logits              = op_peek_logits,
         .hidden_dim               = op_hidden_dim,
         .peek_next_token          = op_peek_next_token,
+        .draft_tokens             = op_draft_tokens,
         .verify_forward           = op_verify_forward,
         .kv_truncate              = op_kv_truncate,
         .kv_len                   = op_kv_len,

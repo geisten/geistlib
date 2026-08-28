@@ -647,6 +647,54 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
             if (s != GEIST_OK)
                 return s;
         }
+
+        /* The MTP attention block is not part of the target stack and must
+         * not alias its cache.  One dense cache is modest compared with the
+         * 27B weights and gives the draft head an unambiguous correctness
+         * baseline before optional cache quantization is considered. */
+        if (stt->n_mtp_layers > 0) {
+            const struct transformer_layer_weights *ML = &stt->mtp_layers[0].block;
+            const size_t kv_elems = sess->max_seq_len * stt->n_kv_heads * ML->head_dim;
+            s                     = be->desc->vtbl->buffer_create(be,
+                                                                  kv_elems * sizeof(float),
+                                                                  GEIST_BUFFER_KV_CACHE,
+                                                                  GEIST_MEMORY_AUTO,
+                                                                  &sess->mtp_k_cache);
+            if (s != GEIST_OK)
+                return s;
+            s = be->desc->vtbl->buffer_create(be,
+                                              kv_elems * sizeof(float),
+                                              GEIST_BUFFER_KV_CACHE,
+                                              GEIST_MEMORY_AUTO,
+                                              &sess->mtp_v_cache);
+            if (s != GEIST_OK)
+                return s;
+            const size_t hidden_bytes = sess->m_max * stt->d_model * sizeof(float);
+            s                         = alloc_scratch(be, hidden_bytes, &sess->mtp_embed);
+            if (s != GEIST_OK)
+                return s;
+            s = alloc_scratch(be, hidden_bytes, &sess->mtp_hidden_norm);
+            if (s != GEIST_OK)
+                return s;
+            s = alloc_scratch(be, 2 * hidden_bytes, &sess->mtp_concat);
+            if (s != GEIST_OK)
+                return s;
+            sess->mtp_pending_h = heap_alloc_aligned(stt->d_model * sizeof(float), 64);
+            sess->mtp_target_raw =
+                    heap_alloc_aligned(sess->m_max * stt->d_model * sizeof(float), 64);
+            sess->mtp_target_shifted =
+                    heap_alloc_aligned(sess->m_max * stt->d_model * sizeof(float), 64);
+            sess->mtp_txn_pending_h = heap_alloc_aligned(stt->d_model * sizeof(float), 64);
+            if (sess->mtp_pending_h == nullptr || sess->mtp_target_raw == nullptr ||
+                sess->mtp_target_shifted == nullptr || sess->mtp_txn_pending_h == nullptr) {
+                geist_backend_set_error(
+                        be, GEIST_E_OOM, "transformer: MTP host state alloc failed");
+                return GEIST_E_OOM;
+            }
+            memset(sess->mtp_pending_h, 0, stt->d_model * sizeof(float));
+            memset(sess->mtp_txn_pending_h, 0, stt->d_model * sizeof(float));
+            sess->mtp_kv_len = 0;
+        }
     }
 
     return GEIST_OK;
@@ -757,6 +805,19 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
     st->config.family = fam->name;
     fam->populate(gguf, st);
+    if (st->n_layers == 0) {
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: invalid layer metadata for %s "
+                                "(autoregressive=%zu, mtp=%zu)",
+                                fam->name,
+                                st->n_layers,
+                                st->n_mtp_layers);
+        void *p = st;
+        safe_free(&p);
+        gguf_close(gguf);
+        return GEIST_E_FORMAT;
+    }
 
     /* DeltaNet hybrids prefer SMALL prefill chunks: the chunked
      * delta-rule carries O(C^2) work per chunk (A/attn matrices +
@@ -787,6 +848,19 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         return GEIST_E_OOM;
     }
     memset(st->layers, 0, st->n_layers * sizeof(*st->layers));
+    if (st->n_mtp_layers > 0) {
+        st->mtp_layers = heap_alloc_aligned(st->n_mtp_layers * sizeof(*st->mtp_layers),
+                                            alignof(struct transformer_mtp_layer_weights));
+        if (st->mtp_layers == nullptr) {
+            geist_backend_set_error(be,
+                                    GEIST_E_OOM,
+                                    "transformer: MTP layer array alloc failed (%zu layers)",
+                                    st->n_mtp_layers);
+            transformer_state_destroy(st);
+            return GEIST_E_OOM;
+        }
+        memset(st->mtp_layers, 0, st->n_mtp_layers * sizeof(*st->mtp_layers));
+    }
 
     /* P1.5.c: fill per-layer geometry. The family populator decides
      * the attention pattern (Gemma: sliding/full mix + KV sharing from
@@ -870,6 +944,13 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     for (size_t i = 0; i < (size_t) st->n_layers; i++) {
         st->layers[i].layer_idx = (int) i;
         s                       = load_one_layer(st, gguf, &st->layers[i]);
+        if (s != GEIST_OK) {
+            transformer_state_destroy(st);
+            return s;
+        }
+    }
+    for (size_t i = 0; i < st->n_mtp_layers; i++) {
+        s = load_mtp_layer(st, gguf, &st->mtp_layers[i]);
         if (s != GEIST_OK) {
             transformer_state_destroy(st);
             return s;
@@ -1013,6 +1094,17 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
                 L->down_awq_inv_scale = nullptr;
             }
         }
+        for (size_t l = 0; st->mtp_layers != nullptr && l < st->n_mtp_layers; l++) {
+            struct transformer_mtp_layer_weights *M = &st->mtp_layers[l];
+            struct transformer_layer_weights     *L = &M->block;
+            release_layer_weight_aux(L);
+            release_weight_aux(&M->eh_proj_w);
+            for (size_t b = 0; b < L->n_bufs; b++) {
+                if (L->bufs[b] != nullptr) {
+                    be->desc->vtbl->buffer_destroy(be, L->bufs[b]);
+                }
+            }
+        }
         release_weight_aux(&st->embed_table_w);
         release_weight_aux(&st->model_proj_w);
         safe_free((void **) &st->spec_sketch);
@@ -1063,6 +1155,11 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         safe_free(&p_layers);
         st->layers = nullptr;
     }
+    if (st->mtp_layers != nullptr) {
+        void *p_mtp = st->mtp_layers;
+        safe_free(&p_mtp);
+        st->mtp_layers = nullptr;
+    }
     void *p = st;
     safe_free(&p);
 }
@@ -1112,8 +1209,9 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         return nullptr;
     }
     memset(sess, 0, sizeof(*sess));
-    sess->model = state;
-    sess->m_max = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
+    sess->model       = state;
+    sess->mtp_enabled = state->n_mtp_layers > 0 && env_flag_enabled("GEIST_MTP", false);
+    sess->m_max       = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
     /* caps.max_m is the backend's per-call row limit (CPU quant kernels
      * size stack arrays from it; batched-submit GPUs allow larger
      * batches). 0 = uncapped. */
@@ -1309,6 +1407,20 @@ void transformer_session_free(struct transformer_arch_state   *state,
         void *pb = sess->dn_S;
         safe_free(&pb);
     }
+    void *txn_conv        = sess->dn_txn_conv;
+    void *txn_S           = sess->dn_txn_S;
+    void *txn_ids         = sess->dn_txn_ids;
+    void *mtp_pending     = sess->mtp_pending_h;
+    void *mtp_raw         = sess->mtp_target_raw;
+    void *mtp_shifted     = sess->mtp_target_shifted;
+    void *mtp_txn_pending = sess->mtp_txn_pending_h;
+    safe_free(&txn_conv);
+    safe_free(&txn_S);
+    safe_free(&txn_ids);
+    safe_free(&mtp_pending);
+    safe_free(&mtp_raw);
+    safe_free(&mtp_shifted);
+    safe_free(&mtp_txn_pending);
     if (be != nullptr) {
         struct geist_buffer *extra[] = {
                 sess->qgate_joint,
@@ -1317,15 +1429,32 @@ void transformer_session_free(struct transformer_arch_state   *state,
                 sess->dn_scratch_z,
                 sess->dn_scratch_b,
                 sess->dn_scratch_a,
+                sess->mtp_k_cache,
+                sess->mtp_v_cache,
+                sess->mtp_embed,
+                sess->mtp_hidden_norm,
+                sess->mtp_concat,
         };
         for (size_t i = 0; i < sizeof extra / sizeof extra[0]; i++)
             if (extra[i] != nullptr)
                 be->desc->vtbl->buffer_destroy(be, extra[i]);
     }
-    sess->qgate_joint   = nullptr;
-    sess->qgate_gate    = nullptr;
-    sess->dn_conv_state = nullptr;
-    sess->dn_S          = nullptr;
+    sess->qgate_joint        = nullptr;
+    sess->qgate_gate         = nullptr;
+    sess->dn_conv_state      = nullptr;
+    sess->dn_S               = nullptr;
+    sess->dn_txn_conv        = nullptr;
+    sess->dn_txn_S           = nullptr;
+    sess->dn_txn_ids         = nullptr;
+    sess->mtp_k_cache        = nullptr;
+    sess->mtp_v_cache        = nullptr;
+    sess->mtp_embed          = nullptr;
+    sess->mtp_hidden_norm    = nullptr;
+    sess->mtp_concat         = nullptr;
+    sess->mtp_pending_h      = nullptr;
+    sess->mtp_target_raw     = nullptr;
+    sess->mtp_target_shifted = nullptr;
+    sess->mtp_txn_pending_h  = nullptr;
 
     /* Per-layer KV cache buffers. Each slot may be NULL — exactly one
      * representation (FP32 / INT8 / KIVI) was allocated per non-shared

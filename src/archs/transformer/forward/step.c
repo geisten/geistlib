@@ -295,6 +295,10 @@ transformer_run_one_step(struct transformer_arch_session *sess,
     if (s != GEIST_OK) {
         return s;
     }
+    s = transformer_mtp_sync_target(sess, 1, &ple_token_id, sess->scratch_h_b);
+    if (s != GEIST_OK) {
+        return s;
+    }
 
     geist_token_t best_id;
     s = finalize_logits_one_row(sess, 0, &best_id);
@@ -322,6 +326,7 @@ enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
     if (st == nullptr || out_token == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
+    transformer_recurrent_txn_commit(sess);
     /* Decode is memory-bound; let the backend enter its decode thread regime
      * (cpu_neon caps OMP threads). Restored after the step. */
     struct geist_backend            *be = st->backend;
@@ -346,6 +351,7 @@ enum geist_status transformer_advance_audio_token(struct transformer_arch_sessio
     if (st == nullptr || h_in_host == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
+    transformer_recurrent_txn_commit(sess);
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
 
@@ -366,6 +372,7 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
     if (sess == nullptr) {
         return;
     }
+    transformer_recurrent_txn_commit(sess);
     /* Truncate to pinned prefix length (0 if no prefix has been pinned).
      * The KV state up to prefix_length stays valid in the cache buffers;
      * future prefill/decode appends start at kv_len. */
@@ -380,6 +387,7 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
     }
     sess->logits_valid       = false;
     sess->next_token_pending = 0;
+    transformer_mtp_reset(sess);
     /* Gated-DeltaNet layers carry recurrent state with no rewind — a
      * reset clears it to the empty sequence (#281). Prefix pinning is
      * unsupported for this family (prefix_length stays 0). */
