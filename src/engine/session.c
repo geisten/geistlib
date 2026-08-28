@@ -617,7 +617,10 @@ geist_session_decode_speculative(struct geist_session *s,
         /* Partial accept. Keep KV[..kv_before + accepted_extras + 1) (= the
          * accepted draft positions), discard the rest, then re-push the
          * correction so the cache + logits are ready for the next call. */
-        ops->kv_truncate(st, kv_before + accepted_extras + 1);
+        const enum geist_status ts = ops->kv_truncate(st, kv_before + accepted_extras + 1);
+        if (ts != GEIST_OK) {
+            return session_op_failed(sf, ts, "speculative state rollback");
+        }
         memcpy(out_tokens, drafts, (accepted_extras + 1) * sizeof(geist_token_t));
         correction                      = verify_out[accepted_extras];
         out_tokens[accepted_extras + 1] = correction;

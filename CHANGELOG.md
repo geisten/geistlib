@@ -16,13 +16,15 @@ minor release.
   which stays mixer-agnostic. The DeltaNet mixer (gated delta rule,
   causal depthwise conv, per-head gated RMSNorm) runs its recurrence as
   host-side scalar f32 over backend-projected activations; its conv +
-  delta state lives on the session (no rewind — speculative decoding
-  falls back to sequential, prefix pinning unsupported). Attention
+  delta state lives on the session. Speculative verification checkpoints
+  that state lazily and restores/replays an accepted prefix transactionally;
+  prefix pinning remains unsupported. Attention
   layers gain the joint query+gate projection with a sigmoid output
   gate and partial NEOX RoPE from `rope.dimension_count`. The gpt2
   pretokenizer accepts `pre = "qwen35"` (qwen2 + \p{M}; the scanner's
   letter approximation already covers combining marks — parity pinned).
-  MTP/NextN blocks are skipped at load; MoE variants stay rejected.
+  MTP/NextN blocks load into a separate layer array and are never traversed
+  by normal autoregressive decode; MoE variants stay rejected.
   Fixture: `make fetch-qwen35-model` (Qwen3.5-0.8B Q8_0, SHA-pinned).
   ponytail: sequential per-token recurrence + scalar kernels — chunked
   prefill and NEON/x86 SIMD are the next phase, tracked in #281.
