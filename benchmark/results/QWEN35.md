@@ -53,9 +53,9 @@ copies (#289 lm_head + #291 all Q4_0 projections): 4B 5.7 GB,
 the speed back for the memory. #291 A/B, same run: 4B decode
 27.1 vs 25.4 (+7 %), 27B 5.6 vs 4.9 (+14 %); prefill untouched.
 
-(llama.cpp Metal, for context: 4B pp128 865 / tg 69.5; 27B pp512 106 /
-tg 19.0. The geist Metal backend has since caught up — see the Metal
-section below.)
+(For the GPU story — geist Metal now ahead of llama.cpp Metal on the
+27B — see the Metal section below; the CPU numbers here stand on their
+own.)
 
 **Reading:** the 0.8B beats llama.cpp on decode by 1.28× at prefill
 parity, and the 4B/27B reach decode parity (0.96–0.97×) with #291's

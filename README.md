@@ -159,8 +159,9 @@ by side — [how this was made, and more demos](docs/DEMOS.md).*
 any `llama.cpp`/`bitnet.cpp` it finds on your box, against the byte-identical
 GGUF, and prints the spread. Greedy output is bit-identical to the scalar
 reference before any speedup is quoted. Frozen protocol, raw data and full
-per-system tables: [`benchmark/`](benchmark/README.md); experimental GPU
-backends (Metal, Vulkan): [`docs/BACKENDS.md`](docs/BACKENDS.md).
+per-system tables: [`benchmark/`](benchmark/README.md). The experimental GPU
+backends are catching up fast — Metal decodes the Qwen3.8-27B at 1.48×
+llama.cpp Metal on an M1 Max: [`docs/BACKENDS.md`](docs/BACKENDS.md).
 
 ---
 

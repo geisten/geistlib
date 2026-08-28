@@ -11,7 +11,7 @@ benchmarks exercise.
 | Gemma 4 E4B-it | text · audio | `Q4_K_M` | 4.6 GB | ≥ 8 GB | Mac | `make fetch-e4b-model` · [⬇ gguf](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf) |
 | Llama family (e.g. SmolLM2, Llama 3.2) | text | any GGUF quant | varies | varies | everywhere | e.g. [⬇ SmolLM2-360M](https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf) (the CI reference) |
 | Qwen3 (0.6B / 1.7B / 4B) | text | any GGUF quant | 0.6–4 GB | ≥ 1 GB | everywhere | `make fetch-qwen3-model` · [⬇ Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf) (the CI reference) |
-| Qwen3.5/3.6/3.8 dense (0.8B – 27B) | text | any GGUF quant | 0.8–16 GB | ≥ 2 GB | Mac (27B: ≥ 24 GB) | `make fetch-qwen35-model` · [⬇ Qwen3.5-0.8B](https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q8_0.gguf) (the CI reference) — hybrid DeltaNet/attention; MoE variants (A3B etc.) unsupported |
+| Qwen3.5/3.6/3.8 dense (0.8B – 27B) | text | any GGUF quant incl. UD mixed (IQ4_XS/IQ4_NL/Q3_K/IQ3_S) | 0.8–16 GB | ≥ 2 GB | Mac (27B: ≥ 32 GB) | `make fetch-qwen35-model` · [⬇ Qwen3.5-0.8B](https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q8_0.gguf) (the CI reference) — hybrid DeltaNet/attention; MoE variants (A3B etc.) unsupported |
 | BitNet b1.58-large | text (ternary) | `TQ2_0` | 207 MB | ≥ 1 GB | smallest footprint | convert from [1bitLLM ↗](https://huggingface.co/1bitLLM/bitnet_b1_58-large) |
 
 ```bash
