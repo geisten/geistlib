@@ -365,8 +365,11 @@ IQ4_XS buys the 4B nothing: Q4_0 and IQ4_XS are both ~4.25 bpw, so the
 bandwidth-bound decode ties, and IQ4 prefill still rides the dequant
 trampoline — the 0.8B's 13→18.5 decode jump came from the Q8_0→IQ4
 byte halving, not the format. (3) The remaining ~1.35× prefill gap to
-llama.cpp is the per-(row,token) `vaddvq` horizontal adds in the x8
-inner loop vs llama's lane-SDOT accumulation — the documented next lever.
+llama.cpp was the per-(row,token) `vaddvq` horizontal adds in the x8
+inner loop vs llama's lane-SDOT accumulation. That lever is executed:
+4×4 u32 row transposes + `vdotq_laneq_s32` (bit-identical logits,
+pinned on-board) take pp256 from 16.5 to **19.4 t/s** — 1.28× behind
+llama.cpp's 24.8 on prefill while ahead 1.3× on decode.
 
 Quality gate (2026-08-28, on-board): the `bench_quality` battery ran
 for every Pi-resident model (qwen3.5 0.8B Q8_0/IQ4_XS, 4B Q4_0,
