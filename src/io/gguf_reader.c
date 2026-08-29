@@ -1,4 +1,5 @@
 #include "gguf_reader.h"
+#include "checked.h"
 #include "heap.h"
 
 #include <fcntl.h>
@@ -114,12 +115,21 @@ const char *gguf_dtype_name(gguf_dtype_t dt) {
     return r ? r->name : "?";
 }
 
+/* Element count, or 0 when the dimensions cannot be multiplied in a size_t.
+ * gguf_parse() rejects such a tensor at open time, so a tensor reachable
+ * through a live ctx never takes the overflow path — but the helper is
+ * exported, and an unchecked product here is exactly the "huge logical size
+ * becomes a small allocation" bug. 0 is already this function's "nothing to
+ * read" answer and every caller compares against an expected count. */
 size_t gguf_tensor_elem_count(const struct gguf_tensor_t *t) {
     if (!t)
         return 0;
     size_t n = 1;
-    for (int i = 0; i < t->n_dims; i++)
-        n *= (size_t) t->dims[i];
+    for (int i = 0; i < t->n_dims; i++) {
+        if (t->dims[i] > (uint64_t) SIZE_MAX || ckd_mul(&n, n, (size_t) t->dims[i])) {
+            return 0;
+        }
+    }
     return n;
 }
 
@@ -131,46 +141,63 @@ struct cur_t {
     bool           ok;
 };
 
-[[maybe_unused]] static uint8_t read_u8(struct cur_t *c) {
-    if (c->p + 1 > c->end) {
+/* Bytes still readable at the cursor. The ONLY way this file asks "is there
+ * room?": `c->p + n > c->end` forms a pointer past the end of the mapping
+ * before comparing it, which is undefined behaviour for an attacker-chosen
+ * `n` — the compiler is entitled to assume no such pointer exists and fold
+ * the check away. Subtraction of two pointers into the same object is
+ * always defined. */
+static size_t cur_avail(const struct cur_t *c) {
+    return (size_t) (c->end - c->p);
+}
+
+/* Take `n` bytes, or fail the cursor. Returns the start of the taken range
+ * and advances past it; nullptr (cursor marked bad) when short. `n` is
+ * uint64 because GGUF length prefixes are: on a 32-bit host a 2^40 length
+ * must be rejected, not truncated into a plausible size_t. */
+static const uint8_t *cur_take(struct cur_t *c, uint64_t n) {
+    if (!c->ok || n > (uint64_t) cur_avail(c)) {
         c->ok = false;
-        return 0;
+        return nullptr;
     }
-    return *c->p++;
+    const uint8_t *src = c->p;
+    c->p += (size_t) n;
+    return src;
+}
+
+[[maybe_unused]] static uint8_t read_u8(struct cur_t *c) {
+    const uint8_t *src = cur_take(c, 1);
+    return src ? *src : 0;
 }
 static uint32_t read_u32(struct cur_t *c) {
-    if (c->p + 4 > c->end) {
-        c->ok = false;
+    const uint8_t *src = cur_take(c, 4);
+    if (!src) {
         return 0;
     }
     uint32_t v;
-    memcpy(&v, c->p, 4);
-    c->p += 4;
+    memcpy(&v, src, 4);
     return v;
 }
 static uint64_t read_u64(struct cur_t *c) {
-    if (c->p + 8 > c->end) {
-        c->ok = false;
+    const uint8_t *src = cur_take(c, 8);
+    if (!src) {
         return 0;
     }
     uint64_t v;
-    memcpy(&v, c->p, 8);
-    c->p += 8;
+    memcpy(&v, src, 8);
     return v;
 }
 
 /* Read a GGUF string (uint64 len + bytes). Returns pointer (into mmap) and length. */
 static const char *read_str(struct cur_t *c, size_t *out_len) {
-    uint64_t len = read_u64(c);
-    if (!c->ok || c->p + len > c->end) {
-        c->ok    = false;
+    const uint64_t len = read_u64(c);
+    const uint8_t *s   = cur_take(c, len);
+    if (!s) {
         *out_len = 0;
         return nullptr;
     }
-    const char *s = (const char *) c->p;
-    c->p += len;
     *out_len = (size_t) len;
-    return s;
+    return (const char *) s;
 }
 
 /* Walk a value of given type, advancing cursor. Returns false on bad data. */
@@ -181,21 +208,21 @@ static bool skip_value(struct cur_t *c, uint32_t vt) {
     case GGUF_VT_U8:
     case GGUF_VT_I8:
     case GGUF_VT_BOOL:
-        c->p += 1;
+        (void) cur_take(c, 1);
         break;
     case GGUF_VT_U16:
     case GGUF_VT_I16:
-        c->p += 2;
+        (void) cur_take(c, 2);
         break;
     case GGUF_VT_U32:
     case GGUF_VT_I32:
     case GGUF_VT_F32:
-        c->p += 4;
+        (void) cur_take(c, 4);
         break;
     case GGUF_VT_U64:
     case GGUF_VT_I64:
     case GGUF_VT_F64:
-        c->p += 8;
+        (void) cur_take(c, 8);
         break;
     case GGUF_VT_STRING: {
         size_t len;
@@ -203,23 +230,25 @@ static bool skip_value(struct cur_t *c, uint32_t vt) {
         break;
     }
     case GGUF_VT_ARRAY: {
-        uint32_t elem_vt = read_u32(c);
-        uint64_t n       = read_u64(c);
+        const uint32_t elem_vt = read_u32(c);
+        const uint64_t n       = read_u64(c);
         if (!c->ok)
             return false;
+        /* No element of any type occupies zero bytes, so a declared count
+         * larger than the bytes left cannot possibly be walked. Rejecting it
+         * up front also stops a 2^64 count from turning into a very long
+         * loop that fails on its first iteration anyway. */
+        if (n > (uint64_t) cur_avail(c)) {
+            c->ok = false;
+            return false;
+        }
         for (uint64_t i = 0; i < n; i++) {
             if (!skip_value(c, elem_vt))
-                return false;
-            if (!c->ok)
                 return false;
         }
         break;
     }
     default:
-        c->ok = false;
-        return false;
-    }
-    if (c->p > c->end) {
         c->ok = false;
         return false;
     }
@@ -262,6 +291,15 @@ static bool record_meta_kv(struct gguf_ctx *ctx,
         vlen == 4) {
         uint32_t a;
         memcpy(&a, vp_start, 4);
+        /* The GGUF spec requires a non-zero power of two. Zero would reach
+         * `info_end % alignment` below (division by zero); a non-power-of-two
+         * is outside the accepted contract and its padding is unrepresentable
+         * in the rest of the loader. Reject rather than silently substitute
+         * the default — a file that disagrees with us about padding lays its
+         * tensor data somewhere we would not look. */
+        if (a == 0u || (a & (a - 1u)) != 0u) {
+            return false;
+        }
         ctx->alignment = (uint64_t) a;
     }
     return true;
@@ -408,10 +446,17 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         }
     }
 
-    /* Compute data section start: align (c.p - map) up to alignment. */
-    size_t info_end  = (size_t) (c.p - (const uint8_t *) map);
-    size_t pad       = (ctx->alignment - (info_end % ctx->alignment)) % ctx->alignment;
-    ctx->data_offset = info_end + pad;
+    /* Compute data section start: align (c.p - map) up to alignment.
+     * `alignment` is a validated non-zero power of two (record_meta_kv
+     * rejects anything else, and the spec default 32 is one), so the
+     * round-up is well defined; it can still overflow on a pathological
+     * info_end, hence the checked helper. */
+    const size_t info_end = (size_t) (c.p - (const uint8_t *) map);
+    if (geist_ckd_round_up_pow2(info_end, (size_t) ctx->alignment, &ctx->data_offset)) {
+        gguf_close(ctx);
+        set_err(errmsg, "tensor-info end overflows alignment padding");
+        return nullptr;
+    }
     if (ctx->data_offset > fsize) {
         gguf_close(ctx);
         set_err(errmsg, "data section past EOF");
@@ -428,7 +473,15 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
             t->data   = nullptr;
             continue;
         }
-        size_t elems = gguf_tensor_elem_count(t);
+        const size_t elems = gguf_tensor_elem_count(t);
+        /* 0 means the dimension product did not fit in a size_t (or the
+         * tensor is genuinely empty, which is equally unusable). Either way
+         * the byte count below would be meaningless. */
+        if (elems == 0u) {
+            gguf_close(ctx);
+            set_err(errmsg, "tensor dimensions overflow or are empty");
+            return nullptr;
+        }
         /* Some quants (Microsoft's I2_S) don't fit the "fixed block size"
          * model — their storage is per-row not per-256-element-block.
          * For those entries we register block_bytes=0, block_elems=0 so
@@ -447,13 +500,26 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
             set_err(errmsg, "tensor elem count not divisible by block size");
             return nullptr;
         }
-        t->nbytes = (elems / dt->block_elems) * dt->block_bytes;
-        if (ctx->data_offset + t->offset + t->nbytes > fsize) {
+        size_t nbytes = 0;
+        if (ckd_mul(&nbytes, elems / dt->block_elems, dt->block_bytes)) {
+            gguf_close(ctx);
+            set_err(errmsg, "tensor byte count overflows");
+            return nullptr;
+        }
+        t->nbytes = nbytes;
+        /* data_offset + offset + nbytes, every step checked: a crafted
+         * offset near SIZE_MAX otherwise wraps to a small sum that passes
+         * the EOF test and then points outside the mapping. */
+        size_t abs_off = 0;
+        size_t abs_end = 0;
+        if (t->offset > (uint64_t) SIZE_MAX ||
+            ckd_add(&abs_off, ctx->data_offset, (size_t) t->offset) ||
+            ckd_add(&abs_end, abs_off, nbytes) || abs_end > fsize) {
             gguf_close(ctx);
             set_err(errmsg, "tensor data past EOF");
             return nullptr;
         }
-        t->data = (const uint8_t *) map + ctx->data_offset + t->offset;
+        t->data = (const uint8_t *) map + abs_off;
     }
 
     return ctx;
