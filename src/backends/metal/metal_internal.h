@@ -306,6 +306,8 @@ struct metal_state {
     void    *rmsnorm_add_rows_simd_pipeline;
     void    *embed_lookup_scaled_function;
     void    *embed_lookup_scaled_pipeline;
+    void    *embed_lookup_scaled_rows_function;
+    void    *embed_lookup_scaled_rows_pipeline;
     void    *f32_library;
     void    *f32_matmul_function;
     void    *f32_matmul_pipeline;
