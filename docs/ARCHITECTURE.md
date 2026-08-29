@@ -8,19 +8,19 @@ the codebase and the design rationale referenced from
 ## Three layers
 
 ```
-include/geist.h          public C ABI (the only supported surface)
+include/geist*.h         public C ABI (geist.h + geist_util.h for consumers)
   │
 src/engine/              orchestration: model load, sessions, sampler,
   │                      tokenizers, allocators, backend/arch registries
 src/archs/               architectures: how a model's forward pass is wired
-  │   transformer/         Gemma 4 family (RoPE, GQA, KV cache, PLE, head)
+  │   transformer/         Gemma, Llama, Qwen and BitNet families
   │   audio_conformer/     Conformer audio tower (mel → encoder → soft tokens)
   │   vision_siglip/       SigLIP vision tower (image/video → soft tokens)
 src/backends/            compute: the kernels that actually run the ops
       common/              shared compute library (GEMM facade, gemma4 kernels, KIVI)
       cpu_neon/            Apple Silicon + ARM64, OpenMP-parallel
       cpu_scalar/          portable reference (correctness oracle)
-      cpu_x86/             x86-64 AVX-512 / VNNI (opt-in; runtime hw_probe dispatch)
+      cpu_x86/             x86-64-v3 + runtime AVX-512/VNNI dispatch (default on x86)
       metal/               Apple GPU (opt-in, experimental; dlopen'd Metal.framework)
       vulkan/              Linux/NVIDIA GPU (opt-in, experimental; dlopen'd libvulkan)
 src/formats/             GGUF + PTQTP quant (de)quantization
@@ -68,13 +68,15 @@ via the kernel bound at load time.
 
 ```mermaid
 flowchart TD
-    subgraph LOAD["Load time — decide everything expensive once"]
-        A["geist_model_load(path)<br/>GGUF parse · io/"] --> B["arch_registry_lookup<br/>match general.architecture"]
-        B --> C["decoder_ops.state_create<br/>load weights · KV layout"]
-        C --> D["resolve_weight per tensor<br/>bind (op,dtype,layout) → kernel ptr<br/>backends/*/weight_resolve.c"]
+    A["geist_backend_create<br/>auto | cpu_neon | cpu_x86 | metal | vulkan"]
+    subgraph LOAD["Model load — decide everything expensive once"]
+        B["geist_model_load(path, backend)<br/>GGUF parse · io/"]
+        B --> C["arch_registry_lookup<br/>match general.architecture"]
+        C --> D["decoder_ops.state_create<br/>load weights · KV layout"]
+        D --> E["resolve_weight per tensor<br/>bind (op,dtype,layout) → kernel ptr<br/>backends/*"]
     end
 
-    D --> E["geist_backend_create<br/>auto | cpu_neon | cpu_scalar"]
+    A --> B
     E --> F["geist_session_create<br/>KV cache · sampler · scratch"]
 
     F --> G{"input modality"}
@@ -88,7 +90,7 @@ flowchart TD
     L --> M["per layer: RMSNorm → attention<br/>RoPE · GQA · KV append · fused QK^T·softmax·V"]
     M --> N["residual → RMSNorm → FFN<br/>gate/up linear · SiLU/GELU · down linear"]
     N --> O{"linear weight dtype"}
-    O -->|quantized| P["NEON W*A8 kernel<br/>cpu_neon/kernels/*"]
+    O -->|quantized| P["bound backend linear kernel<br/>CPU SIMD or GPU pipeline"]
     O -->|dense fp32| Q["geist_sgemm<br/>GEMM_PROVIDER: accelerate | openblas | native"]
     P --> R["head → logits"]
     Q --> R
@@ -140,10 +142,11 @@ at plan-build time through `geist_backend_vtbl_fused::supported`.
 
 ### Where the oracle stops: ternary
 
-`cpu_scalar` is the correctness oracle — every other backend is expected to
-produce bit-identical greedy output against it, and that is how the Metal
-backend is validated. **For ternary weights (`I2_S`, `TQ2_0`) it is not, and
-cannot be.**
+`cpu_scalar` is the numerical reference for backend parity, with tolerances
+defined per dtype and operation. CPU quant kernels are generally expected to be
+bit-exact where they implement the same arithmetic; GPU paths use documented
+floating-point tolerances. **For ternary weights (`I2_S`, `TQ2_0`), scalar is
+not the numerical oracle and cannot be.**
 
 The two paths bind different arithmetic. `cpu_scalar` dequantizes a weight row
 to fp32 and dots it against fp32 activations — W2A32. `cpu_neon` binds
@@ -159,8 +162,9 @@ the shapes line up and the forward pass runs — not as a numerical gold
 standard.
 
 Measured on BitNet 2B-4T `i2_s`: greedy output agrees for 36 tokens, then
-the 37th lands on a near-tie and the trajectories separate. Q4_K and every other quant stay bit-identical, so a
-divergence **outside** ternary is a real bug and should be treated as one.
+the 37th lands on a near-tie and the trajectories separate. A divergence
+outside the tolerance defined for a non-ternary backend/dtype pair is a real bug
+and should be treated as one.
 
 ## Tensors: dtype vs layout
 
@@ -171,13 +175,16 @@ exact rational (`158/100` for 1.58-bit), block size, and scale/zero offsets.
 This is what lets ternary BitNet be a first-class citizen rather than a bolt-on:
 the kernel for a `TERNARY` weight does only adds/subtracts, no multiplies.
 
-## Op vocabulary
+## Backend operation surface
 
-The backend op set (`enum geist_op`) is deliberately small: `LINEAR`,
-`RMSNORM`, `RESIDUAL_ADD`, `SILU_GATE`, `EMBEDDING_LOOKUP`, `ATTENTION`,
-`ROPE`, plus reserved SSM ops (`SSM_STEP`/`SSM_SCAN`/`CONV1D`) for a future
-Mamba arch. Fused attention (QKᵀ → softmax → V) is one op so the backend can
-keep the score matrix in registers/L1.
+There is no generic `enum geist_op` dispatch in the forward loop. The backend
+vtable exposes typed operations (`rmsnorm`, `add`, `mul`, activations, RoPE,
+embedding lookup and attention), while each resolved weight carries its bound
+`linear_m1`/`linear_mN` function pointers. Optional fast paths are identified by
+`enum geist_fused_op` and selected while the execution plan is built; every
+fusion has a decomposed equivalent. Qwen35's Gated-DeltaNet mixer has a dedicated
+optional backend hook and a portable architecture-layer implementation rather
+than placeholder SSM enum values.
 
 ## Sessions and the KV cache
 
@@ -209,10 +216,8 @@ text bottleneck would discard.
 - The forward pass: `src/archs/transformer/forward/step.c`.
 - Kernel binding: `src/backends/cpu_neon/weight_resolve.c`.
 - A representative low-bit kernel: `src/backends/cpu_neon/kernels/q4_K.c`.
-- The public contract: `include/geist.h` (stability tags per symbol), and
-  what those tags promise across a release boundary:
-  [API_CONTRACT.md](API_CONTRACT.md).
-- What the engine promises an out-of-tree runtime:
+- The public headers: `include/geist.h` and `include/geist_util.h`; what their
+  stability tags promise across a release boundary:
   [API_CONTRACT.md](API_CONTRACT.md).
 - Building self-contained binaries and deploying: [DEPLOY.md](DEPLOY.md).
 

@@ -1,29 +1,30 @@
 # Building & consuming the library
 
-geistlib builds one artefact: `libgeist.a` plus the public headers. It has no CLI
-and no daemon — a resident runtime, a tool-use service and the single-file binary
-with a model baked in are things a *consumer* builds on top. This page is about
-producing and consuming the library.
+The supported engine artefact is `libgeist.a` plus the public headers. The release
+workflow also compiles `examples/simple_generate.c` into thin Linux convenience
+CLIs, including a BitNet binary with embedded weights; these are raw-completion
+examples, not an additional library API or daemon. This page is about producing
+and consuming the SDK.
 
 ## Build locally
 
 ```sh
 make lib                   # auto-detect target, MODE=release -> lib/<target>/<mode>/libgeist.a
-make TARGET=pi5 CC=gcc lib # cross-target (see mk/target-*.mk)
-make bin                   # dev tools (eval/profile) — not shipped
-make test                  # unit + int suites (auto-fetches the model)
+make TARGET=pi5 CC=aarch64-linux-gnu-gcc-14 lib # cross-compile for Pi 5
+make bin                   # tests, benchmarks and eval tools — not SDK contents
+make test                  # unit + integration + Python suites (auto-fetches the model)
 make run ARGS='model.gguf "The capital of France is"'   # examples/simple_generate
 ```
 
 ### Self-contained / dependency-free build
 
-`GEMM_PROVIDER=native` drops the BLAS dependency; static linking drops libc.
-This is what `release.yml` ships:
+`GEMM_PROVIDER=native` drops the BLAS dependency. The release workflow builds
+inside Alpine/musl, then links the convenience executables with `-static`:
 
 ```sh
-# Linux: build against musl, no libc dependency at all
+# Linux: run inside a matching musl environment (as release.yml does)
 make TARGET=linux CC=gcc GEMM_PROVIDER=native \
-     EXTRA_CFLAGS=-D_GNU_SOURCE lib
+     lib
 ```
 
 The release builds run inside `alpine:3.21` so the archive is musl-built.
@@ -67,4 +68,5 @@ if a signature moves — in this repository, not in the consumer's build.
 | option | how | best for |
 |---|---|---|
 | **Release artifacts** ✅ `.github/workflows/release.yml` | push a `v*` tag → builds `libgeist.a` + headers for linux-arm64/x86-64 (musl) and macos-arm64, attaches them with `SHA256SUMS` | consuming the SDK from another project |
+| **Linux convenience CLIs** ✅ `.github/workflows/release.yml` | the same tag also attaches `geist-linux-{arm64,x86_64}` and `geist-bitnet-linux-{arm64,x86_64}` | quick raw-completion smoke or the one-file BitNet appliance |
 | **GHCR container** *(not wired up)* | there is no image to publish: a library is not a runnable artefact | — |

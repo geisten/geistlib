@@ -12,7 +12,7 @@ the test suite**, not just built.
 | :-- | :--: | :--: | :--: | :--: | :--: | :-- |
 | **macOS arm64** (Accelerate/AMX) | ✅ | ✅ | ⚪ skip¹ | — | — | `build-test` |
 | **Linux arm64** (cpu_neon, glibc) | ✅ | ✅ | ✅ | ✅ | ✅ | `build-test`, `build-test-musl`, `asan` |
-| **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ⚠️³ non-blocking | ✅ | ⚪² | `build-test-x86_64`, `build-test-musl-x86_64` |
+| **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅³ | ✅ | ⚪² | `build-test-x86_64`, `build-test-musl-x86_64` |
 | **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar` |
 
 Every environment in [`release.yml`](../.github/workflows/release.yml)
@@ -32,7 +32,7 @@ section below.
 2. **x86_64 ASan/UBSan — not yet.** The sanitizer job runs on arm64; it catches
    memory/UB bugs in the shared C engine + kernels regardless of SIMD path. An
    x86-specific ASan leg is a reasonable follow-up if an x86-only UB is suspected.
-3. **x86_64 int/e2e — required again (#96 resolved).** This leg once caught a
+3. **x86_64 int/e2e — required (#96 resolved).** This leg once caught a
    real shipping bug: AVX-512 kernels in the forward path without a runtime CPU
    guard, SIGILLing on AVX-512-less x86-64-v3 runners. The kernels are guarded
    now, the step gates every PR, and a dedicated
@@ -75,6 +75,8 @@ explicitly either way).
 | :-- | :-- | :-- | :-- |
 | `gemma4-e2b-Q4_K_M.gguf` (~3.1 GB) | gemma (primary reference) | `unsloth/gemma-4-E2B-it-GGUF` | Linux arm64 + x86_64 int/e2e |
 | `smollm2-360m-instruct-q8_0.gguf` (~369 MB) | llama populator + GPT-2-BPE tokenizer mode | `HuggingFaceTB/SmolLM2-360M-Instruct-GGUF`, SHA-256-pinned in the Makefile (`LLAMA_MODEL_SHA256`), Apache-2.0 | Linux arm64 + x86_64 int/e2e |
+| `qwen3-0.6b-q8_0.gguf` (~609 MB) | qwen3 geometry, per-head Q/K norm and tokenizer mode | `Qwen/Qwen3-0.6B-GGUF`, SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
+| `qwen3.5-0.8b-q8_0.gguf` (~780 MB) | qwen35 hybrid DeltaNet/attention family | `unsloth/Qwen3.5-0.8B-GGUF`, SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
 
 The llama tests (`test_llama_load_int`, `test_llama_e2e_int`) are **executed,
 not merely built**: both Linux int/e2e legs fetch the model
@@ -107,12 +109,13 @@ In this step a SKIP (exit 77) **fails**: on `macos-15` a device is expected,
 and a skipped gate must not read as a green one. On Linux legs metal is not
 built and both tests skip cleanly in the unit suite.
 
-Model e2e on metal: `test_qwen35_metal_e2e_int` (generation + reset
-parity, fixture-gated) runs wherever the qwen35 fixture is present, and
-the weekly `gemma4-metal-smoke` workflow generates end-to-end on the
-cached E2B reference on a hosted macOS runner — added after the PLE
-fused-probe regression shipped unnoticed for weeks precisely because no
-CI leg ran a gemma model on metal (#305–#307).
+Model e2e on Metal is intentionally a separate tier. Every PR builds the
+fixture-gated `test_qwen35_metal_e2e_int`, but the macOS PR leg does not run the
+real-model integration suite. The weekly `gemma4-metal-smoke` workflow does
+generate end-to-end on the cached E2B reference on a hosted macOS runner — added
+after the PLE fused-probe regression shipped unnoticed for weeks precisely
+because no CI leg ran a Gemma model on Metal (#305–#307). Qwen35 Metal e2e
+therefore remains a manual/fixture-provisioned gate rather than per-PR coverage.
 
 ## Vulkan: software tier on every PR, hardware tier self-hosted (#182)
 
@@ -171,17 +174,16 @@ the overall figure and per-subsystem table published to the job summary.
   fails the gate and prints the measured value, so new subsystems enter by
   deliberate commit, not by silent adoption.
 - **Security floor**: `src/io` (the malformed-GGUF parser surface) holds a
-  hard line-coverage floor regardless of the ratchet — pinned at the
-  measured 34 % for now (the safetensors half of `src/io` is fixture-gated
-  and skips on CI, which keeps the intended 35 % just out of reach); raise
-  it with the coverage, never let it drift down.
+  hard 35 % line-coverage floor regardless of the ratchet. Raise it with the
+  coverage; never let it drift down.
 - **Self-test**: `tests/test_coverage_gate_py.py` (hermetic, runs in
   `make test-py`) proves the gate fires on regression, empty scope, unset
   baseline and floor violation — and passes when on-baseline.
 
 ## Non-goals
 
-- **Windows** — geist is POSIX (fork/execvp, Unix-domain sockets, mmap); the
-  installer is POSIX `sh`. Not a target.
-- **x86 without AVX-512** — runs via the runtime-dispatched `cpu_scalar` fallback;
-  no separate SIMD tier below AVX2/x86-64-v3 is maintained.
+- **Windows** — no supported toolchain, CI leg or release artifact exists; it is
+  not a target.
+- **x86 below x86-64-v3** — the shipped baseline is AVX2/FMA. AVX-512/VNNI is
+  runtime-dispatched where present, with per-kernel AVX2/scalar fallbacks; no
+  separate SIMD tier below x86-64-v3 is maintained.

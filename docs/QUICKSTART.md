@@ -8,9 +8,9 @@ own C program. Everything here uses the stable, public API (`include/geist.h` +
 - Want the numbers? See [../benchmark/results/PI5.md](../benchmark/results/PI5.md).
 
 geistlib is an engine, not an application: it loads models and produces tokens.
-It ships no CLI, no chat templating and no tool use — those belong to whatever
-links it. What it does ship is a ~15-line example program, and that is the
-fastest way to see it work.
+Its API has no chat templating or tool use — those belong to whatever links it.
+Linux releases also package the thin `simple_generate` example as a convenience
+CLI, but it remains a raw completion demo rather than a product interface.
 
 ---
 
@@ -27,11 +27,12 @@ Mac, `brew install libomp` enables multi-threading (the `mac-omp` target).
 
 ### Get a model
 
-Any GGUF that carries its own tokenizer works. Two helpers:
+Use a GGUF for one of the supported model families and dtypes listed in
+[MODELS.md](MODELS.md). Two text-model helpers:
 
 ```bash
 make fetch-bench-model     # BitNet b1.58 2B-4T, ternary, ~1.1 GB — the fast one
-make fetch-model           # Gemma 4 E2B-it Q4_K_M, ~3.1 GB — text + vision + audio
+make fetch-model           # Gemma 4 E2B-it Q4_K_M, ~3.1 GB — text weights
 ```
 
 ### Generate
@@ -68,9 +69,10 @@ geist_backend_create → geist_model_load → geist_session_create
 
 ### Get the SDK — prebuilt or from source
 
-The library is for **embedding into your own app or experiment** — it is never a
-standalone download-and-run binary. Two ways to get `libgeist.a` + the public
-headers:
+For **embedding into your own app or experiment**, get `libgeist.a` plus the
+public headers in one of two ways. The separate Linux convenience binaries on
+the release page are built from `examples/simple_generate.c`; they are not the
+SDK or a second API surface.
 
 - **Prebuilt** (per release): download `libgeist-<platform>.tar.gz` from the
   [latest release](https://github.com/geisten/geistlib/releases/latest) — it holds
@@ -98,6 +100,10 @@ headers do not break within 0.x. Only the STABLE surface is the SDK contract.
 #include <geist_util.h>   /* eos token id, for a clean stop condition */
 
 int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s model.gguf [prompt]\n", argv[0]);
+        return 2;
+    }
     const char *model_path = argv[1];
     const char *prompt     = argc > 2 ? argv[2] : "The capital of France is";
 
@@ -110,13 +116,21 @@ int main(int argc, char **argv) {
     struct geist_model *model = nullptr;
     if (geist_model_load(model_path, be, &model) != GEIST_OK) {
         fprintf(stderr, "load: %s\n", geist_last_create_error());
+        geist_backend_destroy(be);
         return 1;
     }
 
     struct geist_session_opts opts = {0};   /* all-zero = greedy decoding */
     struct geist_session *sess = nullptr;
-    geist_session_create(model, be, &opts, &sess);
-    geist_session_set_prompt(sess, prompt);
+    if (geist_session_create(model, be, &opts, &sess) != GEIST_OK ||
+        geist_session_set_prompt(sess, prompt) != GEIST_OK) {
+        fprintf(stderr, "session: %s\n",
+                sess != nullptr ? geist_session_errmsg(sess) : geist_last_create_error());
+        if (sess != nullptr) geist_session_destroy(sess);
+        geist_model_destroy(model);
+        geist_backend_destroy(be);
+        return 1;
+    }
 
     /* Stop cleanly on the model's end-of-sequence id (from geist_util.h),
      * instead of string-matching the decoded text. */
@@ -128,7 +142,7 @@ int main(int argc, char **argv) {
         if (geist_session_decode_step(sess, &tok) != GEIST_OK) break;
         if (tok == eos) break;
         const char *piece = geist_session_token_to_str(sess, tok);
-        if (!piece) break;
+        if (piece == nullptr) break;
         fputs(piece, stdout);
     }
     putchar('\n');
@@ -157,15 +171,18 @@ make -C examples                           # builds examples/simple_generate the
 
 To compile a standalone file by hand, point the compiler at `include/` and the
 static archive, then add the platform link libs (Accelerate on macOS, OpenBLAS +
-OpenMP on Linux/Pi). The canonical recipe is in
-[`examples/Makefile`](../examples/Makefile) — it `include`s
-`mk/target-$(TARGET).mk` and uses `$(LDFLAGS_TARGET) $(LDLIBS_TARGET)`, e.g.:
+OpenMP on Linux/Pi). The canonical, executable recipe is in
+[`examples/Makefile`](../examples/Makefile); inspect the fully expanded command
+for your detected target with:
 
 ```bash
-cc -std=c23 -O2 -Iinclude -o mygen mygen.c \
-   lib/$(mk/detect-target.sh)/release/libgeist.a \
-   $(LDFLAGS_TARGET) $(LDLIBS_TARGET)   # values from mk/target-<target>.mk
+make lib
+make -n -C examples simple_generate
 ```
+
+Do not paste Make variables such as `$(LDFLAGS_TARGET)` into a shell command:
+the shell interprets that syntax as command substitution. Copy the expanded
+flags printed by `make -n`, or add your program to the example Makefile.
 
 See [`examples/simple_generate.c`](../examples/simple_generate.c) for a complete,
 buildable version.

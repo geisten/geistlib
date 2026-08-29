@@ -11,7 +11,7 @@ experimental and never required.
 | :-- | :-- | :-- |
 | `cpu_neon` | ARM NEON + SDOT (Pi 5, Apple Silicon, any armv8.2+) | default on arm64 |
 | `cpu_x86` | AVX-512/VNNI, runtime-dispatched over an x86-64-v3 (AVX2) baseline — one binary, no SIGILL on older CPUs | default on x86-64 (`BACKENDS="cpu_x86 cpu_scalar"`) |
-| `cpu_scalar` | portable C, no SIMD | reference — every SIMD kernel is checked bit-exact against it |
+| `cpu_scalar` | portable C, no SIMD | numerical reference; parity is dtype-specific (ternary W2A8 is intentionally not bit-exact to scalar W2A32) |
 
 CI guarantees all three: NEON on arm64 runners, AVX-512/VNNI under Intel SDE
 emulation (a silent downgrade fails the build), scalar everywhere. Concurrency
@@ -22,7 +22,7 @@ is TSan-gated. Details: [`CI_COVERAGE.md`](CI_COVERAGE.md).
 Build with `BACKENDS="metal cpu_neon cpu_scalar"`. Simdgroup GEMV/GEMM
 kernels cover 13 GGUF dtypes (incl. the IQ4/Q3_K/IQ3_S mixed quants) and a
 chunked DeltaNet prefill runs the qwen35 hybrids: the 27B decodes at
-**1.48× llama.cpp Metal** at prefill parity on an M1 Max; gemma4-e2b sits
+**1.41× llama.cpp Metal** while prefill is 1.12× on an M1 Max; gemma4-e2b sits
 at 992 pp / 79 tg. Every PR executes the Metal device probe and the
 quant linear-parity gate on a real GPU in CI; a weekly smoke generates
 end-to-end on a gemma model. Ledger:
@@ -44,8 +44,8 @@ linear-parity tests on Mesa lavapipe in CI. Phase-by-phase lab log:
 
 | model | platform | metric | **geistlib** | baseline |
 | :-- | :-- | :-- | --: | --: |
-| Qwen3.8-27B (Q4_0) | **M1 Max GPU** *(Metal)* | prefill t/s (pp512) | 95.4 | 93.1 *(llama.cpp Metal)* |
-| Qwen3.8-27B (Q4_0) | **M1 Max GPU** *(Metal)* | **decode t/s (tg64)** | **12.1** | 8.2 *(llama.cpp Metal)* |
+| Qwen3.8-27B (Q4_0) | **M1 Max GPU** *(Metal)* | prefill t/s (pp512) | **104.4** | 93.1 *(llama.cpp Metal)* |
+| Qwen3.8-27B (Q4_0) | **M1 Max GPU** *(Metal)* | **decode t/s (tg64)** | **11.6** | 8.2 *(llama.cpp Metal)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal)* | prefill t/s (pp512) | 992 | 1540 *(llama.cpp Metal)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max GPU** *(Metal)* | decode t/s (tg64) | 79.3 | 92.8 *(llama.cpp Metal)* |
 | Gemma 4 E2B-it (Q4_K_M) | **RTX 2080 Ti** *(Vulkan)* | prefill t/s (pp512) | 1150 | 4639 *(llama.cpp Vulkan)* |
