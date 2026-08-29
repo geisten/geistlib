@@ -8,6 +8,8 @@ minor release.
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-08-30
+
 ### Added
 - **IQ4_XS int8 mN prefill tile kernel** (#321): replaces the
   dequant+SGEMM trampoline for M>1 on non-Accelerate hosts — 4-token
