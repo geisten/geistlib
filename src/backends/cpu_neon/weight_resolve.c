@@ -37,6 +37,9 @@
 #include <geist_weight.h>
 
 #include "quant.h"
+
+#include <pthread.h>
+#include <stdatomic.h>
 #include "heap.h"
 
 #include <stddef.h>
@@ -55,12 +58,13 @@
  * time from the matmul wall time in the m>1 (prefill) path, to decide whether a
  * quantize-once-per-activation refactor is worth it. Calls happen one matmul at
  * a time from the (single-threaded) forward loop, so plain accumulators suffice. */
-static uint64_t g_qprof_quant_ns = 0;
-static uint64_t g_qprof_mm_ns    = 0;
-static int      g_qprof_state    = -1;
-static void     qprof_print(void) {
-    const double q   = (double) g_qprof_quant_ns / 1e6;
-    const double mm  = (double) g_qprof_mm_ns / 1e6;
+static _Atomic uint64_t g_qprof_quant_ns = 0;
+static _Atomic uint64_t g_qprof_mm_ns    = 0;
+static _Atomic int      g_qprof_state    = -1;
+static pthread_once_t   g_qprof_once     = PTHREAD_ONCE_INIT;
+static void             qprof_print(void) {
+    const double q   = (double) atomic_load_explicit(&g_qprof_quant_ns, memory_order_relaxed) / 1e6;
+    const double mm  = (double) atomic_load_explicit(&g_qprof_mm_ns, memory_order_relaxed) / 1e6;
     const double tot = q + mm;
     fprintf(stderr,
             "quant-profile: activation-quant %.2f ms (%.1f%%), matmul %.2f ms (%.1f%%)\n",
@@ -69,15 +73,23 @@ static void     qprof_print(void) {
             mm,
             tot > 0 ? 100.0 * mm / tot : 0.0);
 }
-static inline bool qprof_on(void) {
-    if (g_qprof_state < 0) {
-        const char *e = getenv("GEIST_PROFILE_QUANT");
-        g_qprof_state = (e != nullptr && e[0] == '1') ? 1 : 0;
-        if (g_qprof_state) {
-            atexit(qprof_print);
-        }
+/* pthread_once, not a racy first-use check: two threads both seeing the
+ * uninitialized state would each call atexit(qprof_print) and the profile
+ * would print twice. The accumulators are shared across concurrent
+ * sessions too, so the "single-threaded forward loop" the comment above
+ * assumed is not the whole truth — they are atomic now. */
+static void qprof_init_once(void) {
+    const char *e  = getenv("GEIST_PROFILE_QUANT");
+    const int   on = (e != nullptr && e[0] == '1') ? 1 : 0;
+    atomic_store_explicit(&g_qprof_state, on, memory_order_relaxed);
+    if (on) {
+        atexit(qprof_print);
     }
-    return g_qprof_state != 0;
+}
+
+static inline bool qprof_on(void) {
+    (void) pthread_once(&g_qprof_once, qprof_init_once);
+    return atomic_load_explicit(&g_qprof_state, memory_order_relaxed) != 0;
 }
 static inline uint64_t qprof_now_ns(void) {
     struct timespec ts;
@@ -491,12 +503,12 @@ static void cpu_neon_w_q4k_mN(const float               *x,
         cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
     }
     if (qp) {
-        g_qprof_quant_ns += qprof_now_ns() - t0;
+        atomic_fetch_add_explicit(&g_qprof_quant_ns, qprof_now_ns() - t0, memory_order_relaxed);
         t0 = qprof_now_ns();
     }
     cpu_neon_q4k_run_prequantized(st, ws, w, use_block_scales, m, y);
     if (qp) {
-        g_qprof_mm_ns += qprof_now_ns() - t0;
+        atomic_fetch_add_explicit(&g_qprof_mm_ns, qprof_now_ns() - t0, memory_order_relaxed);
     }
 }
 
@@ -580,7 +592,7 @@ static void cpu_neon_w_q6k_mN(const float               *x,
         ws->qk_mN_sc[i] = quantize_x_int8_sym(x + i * n_in, n_in, ws->qk_mN_xq + i * n_in);
     }
     if (qp6) {
-        g_qprof_quant_ns += qprof_now_ns() - t6;
+        atomic_fetch_add_explicit(&g_qprof_quant_ns, qprof_now_ns() - t6, memory_order_relaxed);
         t6 = qprof_now_ns();
     }
     if (q6k_weight_ntile4_stream(w)) {
@@ -594,7 +606,7 @@ static void cpu_neon_w_q6k_mN(const float               *x,
                 ws->qk_mN_xq, ws->qk_mN_sc, m, w->raw, n_in, (size_t) w->n_out, y);
     }
     if (qp6) {
-        g_qprof_mm_ns += qprof_now_ns() - t6;
+        atomic_fetch_add_explicit(&g_qprof_mm_ns, qprof_now_ns() - t6, memory_order_relaxed);
     }
 }
 

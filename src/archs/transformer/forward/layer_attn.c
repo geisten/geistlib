@@ -25,8 +25,8 @@ enum attn_profile_stage {
     ATTN_PROFILE_COUNT,
 };
 
-static uint64_t          g_attn_profile_ns[ATTN_PROFILE_COUNT];
-static uint64_t          g_attn_profile_calls[ATTN_PROFILE_COUNT];
+static _Atomic uint64_t  g_attn_profile_ns[ATTN_PROFILE_COUNT];
+static _Atomic uint64_t  g_attn_profile_calls[ATTN_PROFILE_COUNT];
 static const char *const g_attn_profile_names[ATTN_PROFILE_COUNT] = {
         "norm",
         "qkv",
