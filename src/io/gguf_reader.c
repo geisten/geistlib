@@ -97,9 +97,9 @@ static const struct dtype_row_t DTYPE_ROWS[] = {
         {GGUF_TYPE_IQ3_S, 110, 256, 0, "IQ3_S"},   /* fp16 d + 64 qs + 8 qh + 32 signs + 4 scales */
         {GGUF_TYPE_IQ4_NL, 18, 32, 0, "IQ4_NL"},   /* fp16 d + 16 packed LUT nibbles */
         {GGUF_TYPE_IQ4_XS, 136, 256, 0, "IQ4_XS"}, /* fp16 d + u16 scales_h + 4 scales_l + 128 qs */
-        {GGUF_TYPE_IQ2_S, 82, 256, 0, "IQ2_S"},    /* fp16 d + 64 qs (incl signs) + 8 qh + 8 scales */
-        {GGUF_TYPE_TQ1_0, 54, 256, 0, "TQ1_0"},    /* 5-trit packed; 52 + 2-byte fp16 scale */
-        {GGUF_TYPE_TQ2_0, 66, 256, 0, "TQ2_0"},    /* 4-trit packed; 64 + 2-byte fp16 scale */
+        {GGUF_TYPE_IQ2_S, 82, 256, 0, "IQ2_S"}, /* fp16 d + 64 qs (incl signs) + 8 qh + 8 scales */
+        {GGUF_TYPE_TQ1_0, 54, 256, 0, "TQ1_0"}, /* 5-trit packed; 52 + 2-byte fp16 scale */
+        {GGUF_TYPE_TQ2_0, 66, 256, 0, "TQ2_0"}, /* 4-trit packed; 64 + 2-byte fp16 scale */
         /* I2_S (BitNet b1.58 official): 256-elem blocks of 64 packed bytes (4
          * trits/byte, 2.0 bpw), NO per-block scale. A single f32 per-TENSOR scale
          * is stored right after the packed bytes (offset n_elems/4); it sits just
