@@ -276,6 +276,84 @@ static void test_gguf_malformed(void) {
     put_u32(&o, 0); /* ...but only 4 bytes present */
     check_gguf_rejected(&o, "tensor data past EOF");
 
+    /* ---- arithmetic-abuse seeds (issue #332) --------------------------
+     * Each of these used to reach a pointer add, a modulo, or a product on
+     * an attacker-chosen value BEFORE anything validated it. The assertion
+     * is the same for all of them — rejected, with a message — but the
+     * point is that they run clean under ASan/UBSan. */
+
+    /* String length within one byte of UINT64_MAX. `c->p + len` for this
+     * value is undefined; `len > (size_t)(end - p)` is not. */
+    gguf_header(&o, 3, 0, 1);
+    put_gstr(&o, "k");
+    put_u32(&o, VT_STRING);
+    put_u64(&o, UINT64_MAX - 8u);
+    check_gguf_rejected(&o, "metadata string length near UINT64_MAX");
+
+    /* Array element count of UINT64_MAX: no element type is zero bytes, so
+     * this cannot fit however many bytes remain. Must be rejected up front
+     * rather than walked 2^64 times. */
+    gguf_header(&o, 3, 0, 1);
+    put_gstr(&o, "k");
+    put_u32(&o, VT_ARRAY);
+    put_u32(&o, VT_U32);
+    put_u64(&o, UINT64_MAX);
+    check_gguf_rejected(&o, "metadata array count UINT64_MAX");
+
+    /* general.alignment = 0 — reached `info_end % alignment`. */
+    gguf_header(&o, 3, 0, 1);
+    put_gstr(&o, "general.alignment");
+    put_u32(&o, VT_U32);
+    put_u32(&o, 0);
+    check_gguf_rejected(&o, "zero alignment");
+
+    /* general.alignment = 24 — not a power of two; the padding it implies
+     * is not the padding the rest of the loader computes. */
+    gguf_header(&o, 3, 0, 1);
+    put_gstr(&o, "general.alignment");
+    put_u32(&o, VT_U32);
+    put_u32(&o, 24);
+    check_gguf_rejected(&o, "non-power-of-two alignment");
+
+    /* Dimensions whose product overflows size_t: 2^32 x 2^32 x 2^32 x 2^32. */
+    gguf_header(&o, 3, 1, 0);
+    put_gstr(&o, "w");
+    put_u32(&o, 4);
+    put_u64(&o, 1ull << 32);
+    put_u64(&o, 1ull << 32);
+    put_u64(&o, 1ull << 32);
+    put_u64(&o, 1ull << 32);
+    put_u32(&o, GGUF_TYPE_F32);
+    put_u64(&o, 0);
+    pad_to(&o, 32);
+    check_gguf_rejected(&o, "overflowing tensor dimensions");
+
+    /* A single dimension larger than the byte count can ever be: the
+     * element count fits, but elems/block * block_bytes overflows. */
+    gguf_header(&o, 3, 1, 0);
+    put_gstr(&o, "w");
+    put_u32(&o, 1);
+    put_u64(&o, (UINT64_MAX / 2u) + 1u); /* x4 bytes/elem overflows */
+    put_u32(&o, GGUF_TYPE_F32);
+    put_u64(&o, 0);
+    pad_to(&o, 32);
+    check_gguf_rejected(&o, "overflowing tensor byte count");
+
+    /* Tensor offset near UINT64_MAX: data_offset + offset + nbytes wrapped
+     * to a small sum that passed the EOF test. */
+    gguf_header(&o, 3, 1, 0);
+    put_gstr(&o, "w");
+    put_u32(&o, 1);
+    put_u64(&o, 32);
+    put_u32(&o, GGUF_TYPE_F32);
+    put_u64(&o, UINT64_MAX - 64u);
+    pad_to(&o, 32);
+    for (int i = 0; i < 128; i++) {
+        uint8_t z = 0;
+        put_bytes(&o, &z, 1);
+    }
+    check_gguf_rejected(&o, "overflowing tensor offset");
+
     /* unknown dtype id: accepted, but surfaced with nbytes=0/data=null */
     gguf_header(&o, 3, 1, 0);
     put_gstr(&o, "w");
