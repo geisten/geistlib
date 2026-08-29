@@ -341,6 +341,33 @@ differ on 4 cores without Accelerate). The 0.8B hybrid is fully usable on the Pi
 the 4B fits the 4 GB board and runs at reading speed. The 27B (15 GiB)
 is not attempted on the Pi.
 
+### Pi 5 4B six-way A/B (2026-08-29, main `93ef84f`) — the x8 policy flip
+
+pp128/pp256 + 16-token decode, 3 repeats, thermally gated 46–57 °C;
+"3.8-4B" is the community `empero-ai/Qwen3.8-4B-Distill` (qwen35 arch,
+32+1 NextN blocks — the extra block is never traversed, and it measures
+identically to the 3.5-4B). llama.cpp on-board reference: 24.8 pp / 3.3 tg.
+
+| model | variant | prefill pp256 | decode | RSS |
+| :-- | :-- | --: | --: | --: |
+| 3.5-4B | Q4_0 default (pre-flip) | 9.1 | 4.0 | 2.84 GB |
+| 3.5-4B | Q4_0 + x8 int8 GEMM | **16.5** | 4.1 | 3.44 GB |
+| 3.5-4B | IQ4_XS | 8.7 | 3.9 | 2.96 GB |
+| 3.8-4B | Q4_0 default (pre-flip) | 9.2 | 4.2 | 2.94 GB |
+| 3.8-4B | Q4_0 + x8 int8 GEMM | **18.4** | 4.3 | 3.34 GB |
+| 3.8-4B | IQ4_XS | 8.6 | 4.1 | 3.00 GB |
+
+Findings: (1) the #295 x8 int8 GEMM doubles Pi prefill and costs only
+~0.5 GB net RSS — the cold Q4_0 mmap pages get evicted, so the feared
++1× packed-copy residency never materializes; it is default-on wherever
+SDOT exists since this A/B (`GEIST_Q4_0_X8_GEMV=0` opts out). (2)
+IQ4_XS buys the 4B nothing: Q4_0 and IQ4_XS are both ~4.25 bpw, so the
+bandwidth-bound decode ties, and IQ4 prefill still rides the dequant
+trampoline — the 0.8B's 13→18.5 decode jump came from the Q8_0→IQ4
+byte halving, not the format. (3) The remaining ~1.35× prefill gap to
+llama.cpp is the per-(row,token) `vaddvq` horizontal adds in the x8
+inner loop vs llama's lane-SDOT accumulation — the documented next lever.
+
 Quality gate (2026-08-28, on-board): the `bench_quality` battery ran
 for every Pi-resident model (qwen3.5 0.8B Q8_0/IQ4_XS, 4B Q4_0,
 qwen3-0.6B, gemma4-e2b, bitnet-2b4t) with coherent greedy output on

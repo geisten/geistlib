@@ -1318,7 +1318,9 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
     /* Interleaved-8-row Q4_0 GEMV. Unlike the Q6_K variant this hits
      * every projection tensor, so the packed copies sum to ~1x the
      * model's Q4_0 bytes — heap, with the mmap'd source going cold
-     * after warmup. Mac default on; Pi opt-in (GEIST_Q4_0_X8_GEMV=1). */
+     * after warmup (measured on the Pi 5 4B: net RSS +0.5 GB, not
+     * +2.3 GB). Default on wherever SDOT exists since the Pi A/B
+     * (prefill 9.1->16.5 t/s); GEIST_Q4_0_X8_GEMV=0 opts out. */
     if (!policy->q4_0_x8_gemv) {
         return GEIST_OK;
     }

@@ -272,6 +272,27 @@ void linear_q4_0_decode_w4a8_x8(
     safe_free((void **) &bsum);
 }
 
+#if defined(__ARM_NEON)
+/* 4x4 transpose of the 32-bit lanes across four int8x16 registers:
+ * out[j] = [in0.g_j, in1.g_j, in2.g_j, in3.g_j] where g_j is the j-th
+ * 4-byte group. Feeds vdotq_laneq_s32 so one accumulator carries four
+ * output rows in its lanes — the llama.cpp GEMM shape. */
+static inline void tr4x4_u32(const int8x16_t in[4], int8x16_t out[4]) {
+    const uint32x4_t a = vreinterpretq_u32_s8(in[0]);
+    const uint32x4_t b = vreinterpretq_u32_s8(in[1]);
+    const uint32x4_t c = vreinterpretq_u32_s8(in[2]);
+    const uint32x4_t d = vreinterpretq_u32_s8(in[3]);
+    const uint32x4_t e = vzip1q_u32(a, c);
+    const uint32x4_t f = vzip2q_u32(a, c);
+    const uint32x4_t g = vzip1q_u32(b, d);
+    const uint32x4_t h = vzip2q_u32(b, d);
+    out[0]             = vreinterpretq_s8_u32(vzip1q_u32(e, g));
+    out[1]             = vreinterpretq_s8_u32(vzip2q_u32(e, g));
+    out[2]             = vreinterpretq_s8_u32(vzip1q_u32(f, h));
+    out[3]             = vreinterpretq_s8_u32(vzip2q_u32(f, h));
+}
+#endif
+
 /* ---- Q4_0 x8 int8 mN GEMM (#295 prefill lever) ------------------------ *
  *
  * The Mac prefill path dequantizes weight tiles to f32 and calls
@@ -337,25 +358,43 @@ void linear_q4_0_w4a8_prefill_x8(
                     lo[r]              = vreinterpretq_s8_u8(vandq_u8(q, vdupq_n_u8(0x0F)));
                     hi[r]              = vreinterpretq_s8_u8(vshrq_n_u8(q, 4));
                 }
+                /* Row-transposed views: one lane-SDOT accumulates rows
+                 * r..r+3 at once, so the per-(row,token) vaddvq horizontal
+                 * adds (32 per block, each a vector->scalar->vector
+                 * roundtrip) disappear. Integer sums are exact and the f32
+                 * tail is unchanged — bit-identical to the addv version. */
+                int8x16_t tl0[4], th0[4], tl1[4], th1[4];
+                tr4x4_u32(lo + 0, tl0);
+                tr4x4_u32(hi + 0, th0);
+                tr4x4_u32(lo + 4, tl1);
+                tr4x4_u32(hi + 4, th1);
                 for (size_t t = 0; t < tcnt; t++) {
                     const int8_t   *xb = x_q8 + (t0 + t) * n_in + b * Q4_0_BLOCK_ELEMS;
                     const int8x16_t xa = vld1q_s8(xb);
                     const int8x16_t xz = vld1q_s8(xb + 16);
-                    int32_t         d[8];
-                    for (int r = 0; r < 8; r++) {
-                        int32x4_t dd = vdotq_s32(vdupq_n_s32(0), lo[r], xa);
-                        dd           = vdotq_s32(dd, hi[r], xz);
-                        d[r]         = vaddvq_s32(dd);
-                    }
-                    const float bias8 = 8.0f * (float) bsums[(t0 + t) * nb + b];
-                    facc[t][0]        = vfmaq_f32(
-                            facc[t][0],
-                            d0,
-                            vsubq_f32(vcvtq_f32_s32(vld1q_s32(d + 0)), vdupq_n_f32(bias8)));
+                    int32x4_t       a0 = vdupq_n_s32(0);
+                    int32x4_t       a1 = vdupq_n_s32(0);
+                    a0                 = vdotq_laneq_s32(a0, tl0[0], xa, 0);
+                    a0                 = vdotq_laneq_s32(a0, tl0[1], xa, 1);
+                    a0                 = vdotq_laneq_s32(a0, tl0[2], xa, 2);
+                    a0                 = vdotq_laneq_s32(a0, tl0[3], xa, 3);
+                    a0                 = vdotq_laneq_s32(a0, th0[0], xz, 0);
+                    a0                 = vdotq_laneq_s32(a0, th0[1], xz, 1);
+                    a0                 = vdotq_laneq_s32(a0, th0[2], xz, 2);
+                    a0                 = vdotq_laneq_s32(a0, th0[3], xz, 3);
+                    a1                 = vdotq_laneq_s32(a1, tl1[0], xa, 0);
+                    a1                 = vdotq_laneq_s32(a1, tl1[1], xa, 1);
+                    a1                 = vdotq_laneq_s32(a1, tl1[2], xa, 2);
+                    a1                 = vdotq_laneq_s32(a1, tl1[3], xa, 3);
+                    a1                 = vdotq_laneq_s32(a1, th1[0], xz, 0);
+                    a1                 = vdotq_laneq_s32(a1, th1[1], xz, 1);
+                    a1                 = vdotq_laneq_s32(a1, th1[2], xz, 2);
+                    a1                 = vdotq_laneq_s32(a1, th1[3], xz, 3);
+                    const float bias8  = 8.0f * (float) bsums[(t0 + t) * nb + b];
+                    facc[t][0]         = vfmaq_f32(
+                            facc[t][0], d0, vsubq_f32(vcvtq_f32_s32(a0), vdupq_n_f32(bias8)));
                     facc[t][1] = vfmaq_f32(
-                            facc[t][1],
-                            d1,
-                            vsubq_f32(vcvtq_f32_s32(vld1q_s32(d + 4)), vdupq_n_f32(bias8)));
+                            facc[t][1], d1, vsubq_f32(vcvtq_f32_s32(a1), vdupq_n_f32(bias8)));
                 }
             }
             for (size_t t = 0; t < tcnt; t++) {
