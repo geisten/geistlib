@@ -219,8 +219,9 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
             .depth  = 1,
     };
     metal_profile_add_dispatch(st,
-                               n_tile4 ? METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4
-                                       : METAL_PROFILE_DISPATCH_Q4K_LINEAR_BASE,
+                               n_tile4          ? METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4
+                               : m_tile_sg_fast ? METAL_PROFILE_DISPATCH_Q4K_LINEAR_MM_FAST
+                                                : METAL_PROFILE_DISPATCH_Q4K_LINEAR_BASE,
                                groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
