@@ -723,6 +723,58 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     return GEIST_OK;
 }
 
+/* ---- ZO-tuning gains --------------------------------------------------- *
+ *
+ * Allocate one f32 per linear weight and point each weight's gain_slot at
+ * it. Runs once, after every weight is resolved, so the slot order is a
+ * pure function of n_layers — see the contract on transformer_arch_state
+ * .gains. Without GEIST_TUNE this is a no-op and st->gains stays null, so
+ * the dispatcher's gain path is not merely skipped but absent.
+ *
+ * ponytail: per-tensor, not per-block. The TQ2_0 block scales sit f16 at a
+ * 66-byte stride inside the weight bytes and the q8a repack copies them
+ * out again; reaching them means a backend-layout-aware accessor. Add that
+ * only once per-tensor gains measurably run out of capacity. */
+[[nodiscard]] static enum geist_status gains_wire(struct transformer_arch_state *st) {
+#ifndef GEIST_TUNE
+    (void) st;
+    return GEIST_OK;
+#else
+    const size_t n = 9u * st->n_layers + 2u;
+
+    st->gains = heap_alloc_array_aligned(float, n);
+    if (st->gains == nullptr) {
+        return GEIST_E_OOM;
+    }
+    for (size_t i = 0; i < n; i++) {
+        st->gains[i] = 1.0f;
+    }
+    st->n_gains = n;
+
+    for (size_t l = 0; l < st->n_layers; l++) {
+        struct transformer_layer_weights *L     = &st->layers[l];
+        struct geist_weight *const        ws[9] = {
+                &L->q_proj_w,
+                &L->k_proj_w,
+                &L->v_proj_w,
+                &L->o_proj_w,
+                &L->gate_proj_w,
+                &L->up_proj_w,
+                &L->down_proj_w,
+                &L->per_layer_gate_w,
+                &L->per_layer_proj_w,
+        };
+        for (size_t i = 0; i < 9; i++) {
+            ws[i]->gain_slot = &st->gains[9u * l + i];
+        }
+    }
+    st->embed_table_w.gain_slot = &st->gains[9u * st->n_layers + 0u];
+    st->model_proj_w.gain_slot  = &st->gains[9u * st->n_layers + 1u];
+
+    return GEIST_OK;
+#endif
+}
+
 /* ---- Public entry points ---------------------------------------------- */
 
 /* Shared body: takes ownership of an already-open `gguf` (closes it on error,
@@ -1042,6 +1094,11 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         st->gguf = nullptr;
     }
 
+    if (gains_wire(st) != GEIST_OK) {
+        transformer_state_destroy(st);
+        return GEIST_E_OOM;
+    }
+
     *out = st;
     return GEIST_OK;
 }
@@ -1093,6 +1150,11 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         return;
     }
     struct geist_backend *be = st->backend;
+
+    /* Gains first: every weight's gain_slot aliases this array, so it must
+     * outlive nothing and die before the weights it points into. */
+    safe_free((void **) &st->gains);
+    st->n_gains = 0;
 
     /* P1.2.f: tear down the default session first — releases its KV
      * buffers + scratch pool + per-forward arena + sampler workspace +

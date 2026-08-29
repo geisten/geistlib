@@ -156,6 +156,16 @@ struct geist_weight {
      * flags. nullptr if none. Length encoded in aux_n. */
     const float *aux_fp32;
     int32_t      aux_n;
+
+    /* Optional ZO-tuning gain: points into the model-owned gains array
+     * (geist_model_gains). The linear dispatcher multiplies this weight's
+     * output by *gain_slot. nullptr — the default, and the only value a
+     * build without GEIST_TUNE ever sees — means "no gain, no work".
+     *
+     * The field is present unconditionally so that a TU compiled with
+     * GEIST_TUNE and one compiled without agree on the struct layout;
+     * only the *use* in the dispatcher is #ifdef'd. */
+    const float *gain_slot;
 };
 
 #ifdef __cplusplus
