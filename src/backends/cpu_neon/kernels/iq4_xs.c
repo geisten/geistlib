@@ -6,9 +6,9 @@
  * table — exactly one vqtbl1q_s8 per 16 nibbles, no reconstruction
  * scratch. Block layouts from src/quant/quant_blocks.h. Replaces the
  * dequant-and-sgemv trampoline for M=1 (Pi 5 baseline: 4.4 tok/s decode
- * on a 0.8B IQ4_XS vs 13.2 on the twice-as-large Q8_0); M>1 prefill
- * stays on the trampoline, which already reaches Q8_0-class throughput
- * through the batched SGEMM.
+ * on a 0.8B IQ4_XS vs 13.2 on the twice-as-large Q8_0) and — for
+ * IQ4_XS on non-Accelerate hosts — for M>1 via the #321 tile kernel
+ * below. IQ4_NL prefill stays on the trampoline.
  */
 #include "heap.h"
 #include "quant.h"
