@@ -32,6 +32,7 @@
  */
 #include "vision_encoder.h"
 
+#include "checked.h"
 #include "heap.h"
 #include "gemma4_kernels.h"
 #include "image_pipeline.h"
@@ -790,7 +791,8 @@ size_t vision_encoder_run_image(const struct VisionEncoder *v,
                                 size_t                      height,
                                 size_t                      width,
                                 float                      *out) {
-    if (v == nullptr || rgb == nullptr || out == nullptr || height == 0 || width == 0) {
+    if (v == nullptr || rgb == nullptr || out == nullptr || height == 0 || width == 0 ||
+        height > IMAGE_PIPELINE_MAX_DIM || width > IMAGE_PIPELINE_MAX_DIM) {
         return 0;
     }
     return run_image_internal(v, rgb, height, width, VISION_SOFT_TOKENS_PER_IMAGE, out);
@@ -808,12 +810,21 @@ size_t vision_encoder_run_video(const struct VisionEncoder *v,
                                 size_t                      width,
                                 float                      *out) {
     if (v == nullptr || frames == nullptr || out == nullptr || n_frames == 0 || height == 0 ||
-        width == 0) {
+        width == 0 || height > IMAGE_PIPELINE_MAX_DIM || width > IMAGE_PIPELINE_MAX_DIM) {
         return 0;
     }
     const size_t per_frame_soft = VISION_SOFT_TOKENS_PER_VIDEO_FRAME;
-    const size_t frame_bytes    = height * width * 3;
-    size_t       total_soft     = 0;
+    /* frame_bytes and the whole-clip extent, checked: the loop below walks
+     * `frames` in frame_bytes strides, and both the per-frame product and
+     * n_frames * frame_bytes come from the caller. */
+    size_t frame_px    = 0;
+    size_t frame_bytes = 0;
+    size_t clip_bytes  = 0;
+    if (ckd_mul(&frame_px, height, width) || ckd_mul(&frame_bytes, frame_px, 3u) ||
+        ckd_mul(&clip_bytes, frame_bytes, n_frames)) {
+        return 0;
+    }
+    size_t total_soft = 0;
     for (size_t f = 0; f < n_frames; f++) {
         size_t got = run_image_internal(v,
                                         frames + f * frame_bytes,

@@ -2,6 +2,8 @@
 // Created by germar on 09.03.25.
 //
 #include "heap.h"
+
+#include "checked.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -16,19 +18,6 @@
  * undefined otherwise. */
 static bool size_is_pow2(const size_t x) {
     return x != 0u && (x & (x - 1u)) == 0u;
-}
-
-/* Round `size` up to a multiple of `alignment` (a power of two), reporting
- * size_t overflow instead of silently wrapping to a small value. A wrapped
- * result would under-allocate and hand back a buffer smaller than requested
- * (AGENT.md: "No silent truncation", correctness first). Returns false on
- * overflow; *out is left untouched. */
-static bool checked_round_up(const size_t size, const size_t alignment, size_t *out) {
-    if (size > SIZE_MAX - (alignment - 1u)) {
-        return false;
-    }
-    *out = (size + alignment - 1u) & ~(alignment - 1u);
-    return true;
 }
 
 /* Portable aligned allocation that pairs with plain free()/safe_free().
@@ -81,7 +70,7 @@ void *heap_alloc_aligned(const size_t size, size_t alignment) {
     }
     /* aligned_alloc requires the size be a multiple of alignment; the
      * checked round-up enforces that and rejects size_t overflow. */
-    if (!checked_round_up(size, alignment, &aligned)) {
+    if (geist_ckd_round_up_pow2(size, alignment, &aligned)) {
         return nullptr;
     }
     void *p = portable_aligned_alloc(alignment, aligned);
@@ -105,19 +94,31 @@ void *heap_alloc_aligned(const size_t size, size_t alignment) {
     return p;
 }
 
+void *heap_alloc_n_aligned(const size_t count, const size_t size, const size_t alignment) {
+    size_t bytes = 0;
+    if (count == 0u || size == 0u) {
+        return nullptr;
+    }
+    if (ckd_mul(&bytes, count, size)) {
+        return nullptr;
+    }
+    return heap_alloc_aligned(bytes, alignment);
+}
+
 void *heap_calloc_aligned(const size_t count, const size_t size, const size_t alignment) {
     void *memory = nullptr;
     if (count == 0u || size == 0u) {
         return nullptr;
     }
-    if (count > (SIZE_MAX / size)) {
+    size_t bytes = 0;
+    if (ckd_mul(&bytes, count, size)) {
         return nullptr;
     }
-    memory = heap_alloc_aligned(count * size, alignment);
+    memory = heap_alloc_aligned(bytes, alignment);
     if (!memory) {
         return nullptr;
     }
-    memset(memory, 0, count * size);
+    memset(memory, 0, bytes);
     return memory;
 }
 

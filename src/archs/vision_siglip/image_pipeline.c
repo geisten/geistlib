@@ -18,6 +18,7 @@
  */
 #include "image_pipeline.h"
 
+#include "checked.h"
 #include "heap.h"
 
 #include "stb_image_resize2.h"
@@ -31,6 +32,12 @@
  * pathological 0×0 case (which HF raises on). */
 bool image_pipeline_plan(size_t in_h, size_t in_w, size_t max_soft, struct image_plan *out) {
     if (out == nullptr || in_h == 0 || in_w == 0 || max_soft == 0) {
+        return false;
+    }
+    /* Geometry comes from the caller of geist_session_attach_image; bound
+     * it here, at the entry to the only code that turns it into byte
+     * counts and int strides. */
+    if (in_h > IMAGE_PIPELINE_MAX_DIM || in_w > IMAGE_PIPELINE_MAX_DIM) {
         return false;
     }
 
@@ -115,7 +122,15 @@ bool image_pipeline_preprocess(const uint8_t           *rgb_in,
     if (in_h == out_h && in_w == out_w) {
         src = rgb_in;
     } else {
-        resized = heap_alloc_array_aligned(uint8_t, out_h * out_w * 3);
+        /* out_h/out_w are planner output, but the planner's inputs were
+         * the caller's: check the product rather than assume it. */
+        size_t resized_px    = 0;
+        size_t resized_bytes = 0;
+        if (ckd_mul(&resized_px, out_h, out_w) || ckd_mul(&resized_bytes, resized_px, 3u) ||
+            out_h > IMAGE_PIPELINE_MAX_DIM || out_w > IMAGE_PIPELINE_MAX_DIM) {
+            return false;
+        }
+        resized = heap_alloc_array_aligned(uint8_t, resized_bytes);
         if (resized == nullptr) {
             return false;
         }
