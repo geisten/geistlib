@@ -357,6 +357,12 @@ identically to the 3.5-4B). llama.cpp on-board reference: 24.8 pp / 3.3 tg.
 | 3.8-4B | Q4_0 + x8 int8 GEMM | **18.4** | 4.3 | 3.34 GB |
 | 3.8-4B | IQ4_XS | 8.6 | 4.1 | 3.00 GB |
 
+Post-A/B addendum (2026-08-29, #321): the IQ4_XS mN trampoline is
+replaced by a native 4-token tile kernel — 4B IQ4_XS prefill 8.6 →
+15.3 t/s, 0.8B 62.3 → 86.3, decode/RSS unchanged — so finding (2)'s
+"IQ4 prefill rides the trampoline" no longer holds; the bpw argument
+for decode still does.
+
 Findings: (1) the #295 x8 int8 GEMM doubles Pi prefill and costs only
 ~0.5 GB net RSS — the cold Q4_0 mmap pages get evicted, so the feared
 +1× packed-copy residency never materializes; it is default-on wherever
