@@ -23,8 +23,8 @@ enum mtp_profile_stage {
     MTP_PROFILE_COUNT,
 };
 
-static uint64_t          g_mtp_profile_ns[MTP_PROFILE_COUNT];
-static uint64_t          g_mtp_profile_calls[MTP_PROFILE_COUNT];
+static _Atomic uint64_t  g_mtp_profile_ns[MTP_PROFILE_COUNT];
+static _Atomic uint64_t  g_mtp_profile_calls[MTP_PROFILE_COUNT];
 static const char *const g_mtp_profile_names[MTP_PROFILE_COUNT] = {
         "input",
         "norms",

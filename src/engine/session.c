@@ -629,13 +629,17 @@ geist_session_decode_speculative(struct geist_session *s,
      * is a net loss. L≥2 means at least one prior token of context
      * matched too, which empirically maps to materially higher accept
      * rates. Override the threshold via GEIST_SPEC_MIN_L=N. */
-    static int min_L_cached = -1;
-    if (min_L_cached < 0) {
+    /* Relaxed-atomic first-use cache: concurrent sessions reach this on
+     * their own threads. */
+    static _Atomic int min_L_cached = -1;
+    int                min_L        = atomic_load_explicit(&min_L_cached, memory_order_relaxed);
+    if (min_L < 0) {
         const char *env = getenv("GEIST_SPEC_MIN_L");
         const long  v   = (env != nullptr) ? atol(env) : 2;
-        min_L_cached    = (v <= 0) ? 1 : (v > 8 ? 8 : (int) v);
+        min_L           = (v <= 0) ? 1 : (v > 8 ? 8 : (int) v);
+        atomic_store_explicit(&min_L_cached, min_L, memory_order_relaxed);
     }
-    if (!native_draft && (int) match_L < min_L_cached) {
+    if (!native_draft && (int) match_L < min_L) {
         return spec_fallback_single(s, out_tokens, n_out);
     }
 
