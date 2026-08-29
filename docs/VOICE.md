@@ -99,8 +99,7 @@ the loop *is*:
 | command recognition | few-shot anchor: `The user gave a smart home command. Common commands: 'Lampe an', 'Licht aus', 'Musik an'. Which command did you hear?` |
 
 Short commands (< 1 s) need the few-shot vocabulary anchor — without it
-Gemma 4 E2B falls back to "I don't know" (analysis in
-`docs/audio-chunk-streaming/short-command-analysis.md`).
+Gemma 4 E2B commonly falls back to "I don't know".
 
 ## System-wide dictation
 
@@ -136,10 +135,11 @@ Everything here runs on the **CPU backends** (`cpu_neon` on ARM with
 runtime-probed DOTPROD kernels, AVX-512 VNNI on capable x86). On Apple
 Silicon the dense fp32 matmuls go through Accelerate (the AMX matrix
 unit); the experimental Metal/Vulkan GPU backends are not used by the
-audio path. Latency after end-of-speech is currently utterance-level
-(`attach_audio` re-encodes the whole clip); #256 tracks exposing the
-internal streaming encoder (measured 202 ms tail on the Pi) through the
-public API.
+audio path. The examples use the public experimental streaming turn
+(`audio_begin` → `audio_push` / `audio_poll` → `audio_end`), so encoder work
+overlaps capture; the measured residual tail is 202 ms on the Pi. The
+one-shot `attach_audio` API remains available as the monolithic convenience
+path.
 
 ## Troubleshooting
 
