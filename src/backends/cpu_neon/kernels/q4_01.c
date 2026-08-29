@@ -151,11 +151,22 @@ struct q4_0_x8_header {
 
 struct q4_0_x8_block {
     uint16_t d[8];
-    uint8_t  qs[16 * 8]; /* row r nibbles at qs + r*16 */
+    /* v2 layout: nibble bytes stored 4x4-u32-transposed per 4-row
+     * group, so a 16-byte load feeds vdotq_laneq_s32 directly (no
+     * in-kernel zips). Byte for (row r, row-major byte jb):
+     *   qs[(r/4)*64 + (jb/4)*16 + (r%4)*4 + (jb%4)]
+     * i.e. group g = r/4, vector j = jb/4 holds byte-group j of the
+     * four rows g*4..g*4+3 back to back. */
+    uint8_t qs[16 * 8];
 };
 _Static_assert(sizeof(struct q4_0_x8_block) == 8 * 18, "q4_0 x8 block size");
 
-static const uint32_t Q4_0_X8_GEMV_MAGIC = 0x38583430u; /* "04X8" */
+static const uint32_t Q4_0_X8_GEMV_MAGIC = 0x38583431u; /* "14X8" (v2) */
+
+/* v2 qs index for (row r in 0..7, row-major nibble byte jb in 0..15). */
+static inline size_t q4_0_x8_v2_idx(size_t r, size_t jb) {
+    return (r / 4) * 64 + (jb / 4) * 16 + (r % 4) * 4 + (jb % 4);
+}
 
 size_t q4_0_x8_gemv_size_bytes(size_t n_in, size_t n_out) {
     if (n_in == 0 || n_out == 0 || n_in % Q4_0_BLOCK_ELEMS != 0 || n_out % 8 != 0)
@@ -185,8 +196,8 @@ int q4_0_x8_gemv_pack(const void *w_q4, size_t n_in, size_t n_out, void *dst) {
             for (size_t r = 0; r < 8; r++) {
                 const struct block_q4_0k_t *sb = src + (tile * 8 + r) * nb_per_row + b;
                 ob->d[r]                       = sb->d;
-                for (int j = 0; j < 16; j++)
-                    ob->qs[r * 16 + j] = sb->qs[j];
+                for (size_t j = 0; j < 16; j++)
+                    ob->qs[q4_0_x8_v2_idx(r, j)] = sb->qs[j];
             }
         }
     }
@@ -216,37 +227,65 @@ void linear_q4_0_decode_w4a8_x8_pre(const int8_t  *x_q8,
 #pragma omp parallel for schedule(static)
 #endif
     for (size_t tile = 0; tile < n_out / 8; tile++) {
-        const struct q4_0_x8_block *row     = w + tile * nb_per_row;
-        float                       accf[8] = {0};
+        const struct q4_0_x8_block *row = w + tile * nb_per_row;
+#if defined(__ARM_NEON)
+        /* Lane-SDOT on the v2 pre-transposed layout: acc lanes are four
+         * output rows, so there is no per-row horizontal add; the f32
+         * update runs the same per-lane op order as the old scalar
+         * accf[r] chain — bit-identical. */
+        float32x4_t accv0 = vdupq_n_f32(0.0f);
+        float32x4_t accv1 = vdupq_n_f32(0.0f);
         for (size_t b = 0; b < nb_per_row; b++) {
             const struct q4_0_x8_block *blk = row + b;
             __builtin_prefetch(blk + 2, 0, 0);
-            const int8_t *xb    = x_q8 + b * Q4_0_BLOCK_ELEMS;
-            const float   bias8 = 8.0f * (float) bsum[b];
-#if defined(__ARM_NEON)
-            const int8x16_t xa = vld1q_s8(xb);
-            const int8x16_t xz = vld1q_s8(xb + 16);
-            for (int r = 0; r < 8; r++) {
-                const uint8x16_t q   = vld1q_u8(blk->qs + r * 16);
-                const int8x16_t  lo  = vreinterpretq_s8_u8(vandq_u8(q, vdupq_n_u8(0x0F)));
-                const int8x16_t  hi  = vreinterpretq_s8_u8(vshrq_n_u8(q, 4));
-                int32x4_t        d32 = vdotq_s32(vdupq_n_s32(0), lo, xa);
-                d32                  = vdotq_s32(d32, hi, xz);
-                accf[r] += fp16_to_fp32(blk->d[r]) * ((float) vaddvq_s32(d32) - bias8);
-            }
+            const int8_t     *xb     = x_q8 + b * Q4_0_BLOCK_ELEMS;
+            const float32x4_t bias8v = vdupq_n_f32(8.0f * (float) bsum[b]);
+            const int8x16_t   xa     = vld1q_s8(xb);
+            const int8x16_t   xz     = vld1q_s8(xb + 16);
+            const float16x8_t dh     = vreinterpretq_f16_u16(vld1q_u16(blk->d));
+            const float32x4_t d0     = vcvt_f32_f16(vget_low_f16(dh));
+            const float32x4_t d1     = vcvt_f32_f16(vget_high_f16(dh));
+            int32x4_t         a0     = vdupq_n_s32(0);
+            int32x4_t         a1     = vdupq_n_s32(0);
+/* lane index must be a literal — unrolled via macro */
+#define Q4_0_X8_V2_LANE(j)                                                                       \
+    do {                                                                                         \
+        const uint8x16_t q0_ = vld1q_u8(blk->qs + (j) * 16);                                     \
+        const uint8x16_t q1_ = vld1q_u8(blk->qs + 64 + (j) * 16);                                \
+        a0 = vdotq_laneq_s32(a0, vreinterpretq_s8_u8(vandq_u8(q0_, vdupq_n_u8(0x0F))), xa, (j)); \
+        a0 = vdotq_laneq_s32(a0, vreinterpretq_s8_u8(vshrq_n_u8(q0_, 4)), xz, (j));              \
+        a1 = vdotq_laneq_s32(a1, vreinterpretq_s8_u8(vandq_u8(q1_, vdupq_n_u8(0x0F))), xa, (j)); \
+        a1 = vdotq_laneq_s32(a1, vreinterpretq_s8_u8(vshrq_n_u8(q1_, 4)), xz, (j));              \
+    } while (0)
+            Q4_0_X8_V2_LANE(0);
+            Q4_0_X8_V2_LANE(1);
+            Q4_0_X8_V2_LANE(2);
+            Q4_0_X8_V2_LANE(3);
+#undef Q4_0_X8_V2_LANE
+            accv0 = vfmaq_f32(accv0, d0, vsubq_f32(vcvtq_f32_s32(a0), bias8v));
+            accv1 = vfmaq_f32(accv1, d1, vsubq_f32(vcvtq_f32_s32(a1), bias8v));
+        }
+        vst1q_f32(y + tile * 8 + 0, vmulq_n_f32(accv0, scale_x));
+        vst1q_f32(y + tile * 8 + 4, vmulq_n_f32(accv1, scale_x));
 #else
-            for (int r = 0; r < 8; r++) {
+        float accf[8] = {0};
+        for (size_t b = 0; b < nb_per_row; b++) {
+            const struct q4_0_x8_block *blk   = row + b;
+            const int8_t               *xb    = x_q8 + b * Q4_0_BLOCK_ELEMS;
+            const float                 bias8 = 8.0f * (float) bsum[b];
+            for (size_t r = 0; r < 8; r++) {
                 int32_t acc = 0;
-                for (int j = 0; j < 16; j++) {
-                    acc += (int32_t) xb[j] * (int32_t) (blk->qs[r * 16 + j] & 0x0F);
-                    acc += (int32_t) xb[j + 16] * (int32_t) (blk->qs[r * 16 + j] >> 4);
+                for (size_t j = 0; j < 16; j++) {
+                    const uint8_t qb = blk->qs[q4_0_x8_v2_idx(r, j)];
+                    acc += (int32_t) xb[j] * (int32_t) (qb & 0x0F);
+                    acc += (int32_t) xb[j + 16] * (int32_t) (qb >> 4);
                 }
                 accf[r] += fp16_to_fp32(blk->d[r]) * ((float) acc - bias8);
             }
-#endif
         }
         for (int r = 0; r < 8; r++)
             y[tile * 8 + r] = accf[r] * scale_x;
+#endif
     }
 }
 
@@ -271,27 +310,6 @@ void linear_q4_0_decode_w4a8_x8(
     safe_free((void **) &x_q8);
     safe_free((void **) &bsum);
 }
-
-#if defined(__ARM_NEON)
-/* 4x4 transpose of the 32-bit lanes across four int8x16 registers:
- * out[j] = [in0.g_j, in1.g_j, in2.g_j, in3.g_j] where g_j is the j-th
- * 4-byte group. Feeds vdotq_laneq_s32 so one accumulator carries four
- * output rows in its lanes — the llama.cpp GEMM shape. */
-static inline void tr4x4_u32(const int8x16_t in[4], int8x16_t out[4]) {
-    const uint32x4_t a = vreinterpretq_u32_s8(in[0]);
-    const uint32x4_t b = vreinterpretq_u32_s8(in[1]);
-    const uint32x4_t c = vreinterpretq_u32_s8(in[2]);
-    const uint32x4_t d = vreinterpretq_u32_s8(in[3]);
-    const uint32x4_t e = vzip1q_u32(a, c);
-    const uint32x4_t f = vzip2q_u32(a, c);
-    const uint32x4_t g = vzip1q_u32(b, d);
-    const uint32x4_t h = vzip2q_u32(b, d);
-    out[0]             = vreinterpretq_s8_u32(vzip1q_u32(e, g));
-    out[1]             = vreinterpretq_s8_u32(vzip2q_u32(e, g));
-    out[2]             = vreinterpretq_s8_u32(vzip1q_u32(f, h));
-    out[3]             = vreinterpretq_s8_u32(vzip2q_u32(f, h));
-}
-#endif
 
 /* ---- Q4_0 x8 int8 mN GEMM (#295 prefill lever) ------------------------ *
  *
@@ -352,22 +370,22 @@ void linear_q4_0_w4a8_prefill_x8(
                     d_arr[r] = fp16_to_fp32(blk->d[r]);
                 const float32x4_t d0 = vld1q_f32(d_arr + 0);
                 const float32x4_t d1 = vld1q_f32(d_arr + 4);
-                int8x16_t         lo[8], hi[8];
-                for (int r = 0; r < 8; r++) {
-                    const uint8x16_t q = vld1q_u8(blk->qs + r * 16);
-                    lo[r]              = vreinterpretq_s8_u8(vandq_u8(q, vdupq_n_u8(0x0F)));
-                    hi[r]              = vreinterpretq_s8_u8(vshrq_n_u8(q, 4));
-                }
-                /* Row-transposed views: one lane-SDOT accumulates rows
-                 * r..r+3 at once, so the per-(row,token) vaddvq horizontal
-                 * adds (32 per block, each a vector->scalar->vector
-                 * roundtrip) disappear. Integer sums are exact and the f32
-                 * tail is unchanged — bit-identical to the addv version. */
+                /* v2 layout: the pack step already stores each 4-row
+                 * group 4x4-u32-transposed, so a plain load + nibble
+                 * split yields the lane-SDOT operand directly — the
+                 * in-kernel zips of the v1 kernel are gone. One
+                 * accumulator carries four output rows in its lanes;
+                 * integer sums are exact and the f32 tail is unchanged,
+                 * so results stay bit-identical. */
                 int8x16_t tl0[4], th0[4], tl1[4], th1[4];
-                tr4x4_u32(lo + 0, tl0);
-                tr4x4_u32(hi + 0, th0);
-                tr4x4_u32(lo + 4, tl1);
-                tr4x4_u32(hi + 4, th1);
+                for (int j = 0; j < 4; j++) {
+                    const uint8x16_t q0 = vld1q_u8(blk->qs + j * 16);
+                    const uint8x16_t q1 = vld1q_u8(blk->qs + 64 + j * 16);
+                    tl0[j]              = vreinterpretq_s8_u8(vandq_u8(q0, vdupq_n_u8(0x0F)));
+                    th0[j]              = vreinterpretq_s8_u8(vshrq_n_u8(q0, 4));
+                    tl1[j]              = vreinterpretq_s8_u8(vandq_u8(q1, vdupq_n_u8(0x0F)));
+                    th1[j]              = vreinterpretq_s8_u8(vshrq_n_u8(q1, 4));
+                }
                 for (size_t t = 0; t < tcnt; t++) {
                     const int8_t   *xb = x_q8 + (t0 + t) * n_in + b * Q4_0_BLOCK_ELEMS;
                     const int8x16_t xa = vld1q_s8(xb);
@@ -411,9 +429,10 @@ void linear_q4_0_w4a8_prefill_x8(
                         const struct q4_0_x8_block *blk = row + b;
                         const int8_t *xb = x_q8 + (t0 + t) * n_in + b * Q4_0_BLOCK_ELEMS;
                         int32_t       dt = 0;
-                        for (int j = 0; j < 16; j++) {
-                            dt += (int32_t) xb[j] * (int32_t) (blk->qs[r * 16 + j] & 0x0F);
-                            dt += (int32_t) xb[j + 16] * (int32_t) (blk->qs[r * 16 + j] >> 4);
+                        for (size_t j = 0; j < 16; j++) {
+                            const uint8_t qb = blk->qs[q4_0_x8_v2_idx((size_t) r, j)];
+                            dt += (int32_t) xb[j] * (int32_t) (qb & 0x0F);
+                            dt += (int32_t) xb[j + 16] * (int32_t) (qb >> 4);
                         }
                         acc_f += fp16_to_fp32(blk->d[r]) *
                                  ((float) dt - 8.0f * (float) bsums[(t0 + t) * nb + b]);
