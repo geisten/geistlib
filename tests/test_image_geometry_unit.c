@@ -53,7 +53,10 @@ int main(void) {
      * The point of the positive case: a bound that rejects real images
      * would be worse than no bound. 224x320 exercises the resize branch
      * (input dims are not already the planner's target). */
-    constexpr size_t H = 224, W = 320;
+    /* One declarator each: GCC rejects a constexpr declaration with more
+     * than one, and CI builds with gcc-14 on every Linux target. */
+    constexpr size_t H = 224;
+    constexpr size_t W = 320;
     CHECK(image_pipeline_plan(H, W, 280, &plan));
     if (g_fail) {
         return GEIST_TEST_FAIL;
