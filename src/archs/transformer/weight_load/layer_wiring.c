@@ -134,10 +134,11 @@ load_layer_proj(struct transformer_arch_state    *st,
             return GEIST_E_BACKEND;
         }
         *out_weight = (struct geist_weight) {
-                .raw   = (const uint8_t *) host + out_view->offset,
-                .n_in  = (int32_t) n_in,
-                .n_out = (int32_t) n_out,
-                .dtype = (uint16_t) dm.dtype,
+                .raw        = (const uint8_t *) host + out_view->offset,
+                .raw_nbytes = t->nbytes - (size_t) out_view->offset,
+                .n_in       = (int32_t) n_in,
+                .n_out      = (int32_t) n_out,
+                .dtype      = (uint16_t) dm.dtype,
         };
         v->buffer_unmap(buf);
         if (v->resolve_weight != nullptr) {
@@ -593,10 +594,11 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
                     return GEIST_E_BACKEND;
                 }
                 st->embed_table_w = (struct geist_weight) {
-                        .raw   = host_out,
-                        .n_in  = (int32_t) st->d_model,
-                        .n_out = (int32_t) st->vocab_size,
-                        .dtype = (uint16_t) dmo.dtype,
+                        .raw        = host_out,
+                        .raw_nbytes = t_out->nbytes,
+                        .n_in       = (int32_t) st->d_model,
+                        .n_out      = (int32_t) st->vocab_size,
+                        .dtype      = (uint16_t) dmo.dtype,
                 };
                 st->output_table = make_view_2d(buf_out,
                                                 dmo.dtype,
@@ -619,10 +621,11 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
                 return GEIST_E_BACKEND;
             }
             st->embed_table_w = (struct geist_weight) {
-                    .raw   = host,
-                    .n_in  = (int32_t) st->d_model,
-                    .n_out = (int32_t) st->vocab_size,
-                    .dtype = (uint16_t) dm.dtype,
+                    .raw        = host,
+                    .raw_nbytes = t->nbytes,
+                    .n_in       = (int32_t) st->d_model,
+                    .n_out      = (int32_t) st->vocab_size,
+                    .dtype      = (uint16_t) dm.dtype,
             };
             st->output_table = st->embed_table;
             v->buffer_unmap(buf);
@@ -762,10 +765,11 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
             return GEIST_E_BACKEND;
         }
         st->model_proj_w = (struct geist_weight) {
-                .raw   = host,
-                .n_in  = (int32_t) st->d_model,
-                .n_out = (int32_t) st->ple_out,
-                .dtype = (uint16_t) GEIST_DTYPE_F32,
+                .raw        = host,
+                .raw_nbytes = (size_t) st->ple_out * st->d_model * sizeof(float),
+                .n_in       = (int32_t) st->d_model,
+                .n_out      = (int32_t) st->ple_out,
+                .dtype      = (uint16_t) GEIST_DTYPE_F32,
         };
         v->buffer_unmap(buf);
         if (v->resolve_weight != nullptr) {

@@ -1492,8 +1492,17 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
 
 [[nodiscard]] enum geist_status cpu_neon_resolve_weight(struct geist_backend *be,
                                                         struct geist_weight  *w) {
-    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
+    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
+    }
+    /* The source extent, before anything reads it. Several kernels install
+     * a repacked layout (Q4_K predecode, Q6_K n-tile, TL1) that streams the
+     * whole tensor in one pass; with `raw` sized from the caller's buffer
+     * rather than from (dtype, n_in, n_out), a short source used to be read
+     * straight past its end. Shape and storage have to agree here or not at
+     * all. */
+    if (!quant_weight_extent_ok(w)) {
+        return GEIST_E_FORMAT;
     }
     /* Fail-fast on missing backend state: the policy carries the runtime
      * ISA bits that gate kernel installation. Silently falling back to a

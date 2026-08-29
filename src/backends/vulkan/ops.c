@@ -224,8 +224,14 @@ enum { VK_Q6K_GPU_BLOCK = 216 };
 [[nodiscard]] static enum geist_status vk_resolve_weight(struct geist_backend *be,
                                                          struct geist_weight  *w) {
     struct vk_state *st = be->state;
-    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
+    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
+    }
+    /* vk_weight_bytes(w) below derives the upload size from the shape and
+     * reads that many bytes out of `raw`, so a short source is read past
+     * its end before it ever reaches the device. */
+    if (!quant_weight_extent_ok(w)) {
+        return GEIST_E_FORMAT;
     }
     geist_kernel_linear_m1_fn m1;
     geist_kernel_linear_mN_fn mN;
