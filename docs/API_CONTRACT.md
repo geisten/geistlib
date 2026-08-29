@@ -83,11 +83,11 @@ CPU-only design.
 
 ### Explicitly NOT in the contract
 
-`geist_session_attach_audio` / `attach_image` / `attach_video`,
-`geist_session_decode_speculative`, and the `geist_session_stats` family
-remain `EXPERIMENTAL`. They are useful and
-supported, but an agent runtime must not build its core loop on them expecting
-release-boundary stability.
+`geist_model_modalities`, `geist_session_attach_audio` / `attach_image` /
+`attach_video`, the `geist_session_audio_*` streaming family,
+`geist_session_decode_speculative`, and the `geist_session_stats` family remain
+`EXPERIMENTAL`. They are useful and supported, but an agent runtime must not
+build its core loop on them expecting release-boundary stability.
 
 ## Consuming this contract
 
@@ -95,8 +95,8 @@ Pin a minimum version and check it at compile time:
 
 ```c
 #include <geist.h>
-#if (GEIST_VERSION_MAJOR * 10000 + GEIST_VERSION_MINOR * 100) < 600
-#  error "geistlib >= 0.6.0 required for the agent-runtime contract"
+#if (GEIST_VERSION_MAJOR * 10000 + GEIST_VERSION_MINOR * 100) < 900
+#  error "geistlib >= 0.9.0 required for the complete agent-runtime contract"
 #endif
 ```
 
