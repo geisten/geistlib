@@ -223,6 +223,15 @@ static void cpu_neon_w_iq4xs_m1(const float               *x,
     linear_iq4xs_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
 }
 
+static void cpu_neon_w_iq4xs_mN(const float               *x,
+                                const struct geist_weight *w,
+                                size_t                     m,
+                                struct geist_backend      *be,
+                                float                     *y) {
+    (void) be;
+    linear_iq4xs_w4a8_prefill(x, m, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+}
+
 static void cpu_neon_w_iq4nl_m1(const float               *x,
                                 const struct geist_weight *w,
                                 struct geist_backend      *be,
@@ -1098,8 +1107,8 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
         {GEIST_DTYPE_IQ4_XS,
          CPU_NEON_ISA_NEON,
          cpu_neon_w_iq4xs_m1,
-         cpu_neon_w_dequant_trampoline_mN,
-         "iq4_xs/w4a8-m1"},
+         cpu_neon_w_iq4xs_mN,
+         "iq4_xs/w4a8"},
 
         /* F32 native both paths. */
         {GEIST_DTYPE_F32, CPU_NEON_ISA_NEON, cpu_neon_w_f32_m1, cpu_neon_w_f32_mN, "f32"},
@@ -1378,6 +1387,13 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
         return;
     case GEIST_DTYPE_Q5_K:
         if (!policy->q5k_native_mn) {
+            w->linear_mN = cpu_neon_w_dequant_trampoline_mN;
+        }
+        return;
+    case GEIST_DTYPE_IQ4_XS:
+        /* Same crossover as Q4_0/Q8_0: Accelerate's dequant+SGEMM wins
+         * on Mac; Pi/Linux keeps the native #321 tile kernel. */
+        if (!policy->iq4xs_native_mn) {
             w->linear_mN = cpu_neon_w_dequant_trampoline_mN;
         }
         return;

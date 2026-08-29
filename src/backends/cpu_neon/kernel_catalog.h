@@ -96,6 +96,7 @@ struct cpu_neon_kernel_policy {
     bool q6k_ntile4_stream_prefill;
     bool q8_0_native_mn;
     bool q4_01_native_mn;
+    bool iq4xs_native_mn;
     bool tq2_0_native_mn;
     bool tq2_0_tl1_m1;
 };

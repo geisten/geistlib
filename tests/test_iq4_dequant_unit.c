@@ -174,6 +174,27 @@ int main(void) {
                           "neon IQ4_XS w4a8 matches dequant+dot (a8 tolerance)");
                 }
             }
+#if defined(__ARM_NEON)
+            /* #321 mN prefill: per (row, token) the op order matches the
+             * m1 GEMV exactly, so the batched result must be BIT-equal
+             * to m separate m1 calls — no tolerance. m=5 covers the
+             * 4-token register tile plus the tail. */
+            {
+                enum { M_TOK = 5 };
+                float xs[M_TOK * N_IN], ym[M_TOK * N_OUT], y1[N_OUT];
+                for (int t = 0; t < M_TOK; t++) {
+                    for (int i = 0; i < N_IN; i++) {
+                        xs[t * N_IN + i] = (float) (((i + 3 * t) % 19) - 9) * 0.3f;
+                    }
+                }
+                linear_iq4xs_w4a8_prefill(xs, M_TOK, wblob, N_IN, N_OUT, ym);
+                for (int t = 0; t < M_TOK; t++) {
+                    linear_iq4xs_decode_w4a8(xs + t * N_IN, wblob, N_IN, N_OUT, y1);
+                    check(memcmp(ym + t * N_OUT, y1, sizeof y1) == 0,
+                          "neon IQ4_XS mN prefill bit-equal to m1 per token");
+                }
+            }
+#endif
             struct geist_weight wn2 = {
                     .raw = wblob, .n_in = N_IN, .n_out = N_OUT, .dtype = GEIST_DTYPE_IQ4_NL};
             check(bn->desc->vtbl->resolve_weight(bn, &wn2) == GEIST_OK, "neon IQ4_NL resolve");
