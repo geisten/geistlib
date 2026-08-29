@@ -8,6 +8,14 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+- **IQ4_XS int8 mN prefill tile kernel** (#321): replaces the
+  dequant+SGEMM trampoline for M>1 on non-Accelerate hosts — 4-token
+  register tile over the `vqtbl1q` LUT decode, rows L1-resident across
+  token groups. Pi 5 prefill: 4B IQ4_XS 8.6 → 15.3 t/s, 0.8B 62.3 →
+  86.3; decode and RSS unchanged. Batched path pinned bit-equal to the
+  m1 GEMV per token. IQ4_NL prefill keeps the trampoline.
+
 ## [0.10.0] — 2026-08-29
 
 ### Changed
