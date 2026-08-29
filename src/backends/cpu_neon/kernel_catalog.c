@@ -60,11 +60,16 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
             .q6k_ntile_prefill         = has_accelerate,
             .q6k_ntile4_stream_prefill = has_accelerate,
             .q6k_x8_gemv               = has_accelerate,
-            .q4_0_x8_gemv              = has_accelerate,
-            .q8_0_native_mn            = !has_accelerate,
-            .q4_01_native_mn           = !has_accelerate,
-            .tq2_0_native_mn           = !has_accelerate,
-            .tq2_0_tl1_m1              = false,
+            /* Default-on wherever SDOT exists: the packed copy reads as
+             * +~0.5 GB RSS, not +1x model bytes — the cold Q4_0 mmap
+             * pages get evicted (Pi 5 4B A/B: RSS 2.8->3.4 GB, prefill
+             * 9.1->16.5 t/s; decode flat). GEIST_Q4_0_X8_GEMV=0 trades
+             * the speed back when RAM is tighter than time. */
+            .q4_0_x8_gemv    = has_accelerate || (hw != nullptr && hw->has_dotprod),
+            .q8_0_native_mn  = !has_accelerate,
+            .q4_01_native_mn = !has_accelerate,
+            .tq2_0_native_mn = !has_accelerate,
+            .tq2_0_tl1_m1    = false,
     };
 
     p.q5k_native_mn     = cpu_neon_env_bool("GEIST_Q5K_NATIVE_MN", p.q5k_native_mn);

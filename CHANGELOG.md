@@ -8,6 +8,13 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+- **Q4_0 x8 interleave default-on wherever SDOT exists** (was Mac-only,
+  Pi opt-in): the Pi 5 4B A/B shows prefill 9.1 → 16.5 t/s via the #295
+  int8 mN GEMM at a net +0.5 GB RSS — the cold Q4_0 mmap pages get
+  evicted, so the packed copy never doubles residency.
+  `GEIST_Q4_0_X8_GEMV=0` opts out on RAM-tight boards.
+
 ### Added
 - **NEON IQ4_XS/IQ4_NL W4A8 decode GEMVs** (#314): `vqtbl1q` LUT +
   SDOT kernels replace the dequant trampoline on the m=1 path. Pi 5
