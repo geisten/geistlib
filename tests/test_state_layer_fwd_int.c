@@ -280,18 +280,28 @@ static void reference_layer_forward(
     (void) is_full;
 }
 
-/* Run one layer through transformer_forward_one_layer and download h_out. */
-static int run_layer(struct transformer_arch_state *st,
-                     int                            layer_idx,
-                     size_t                         q_position,
-                     const float                   *h_in_host,
-                     float                         *h_out_host) {
+/* Run one layer through transformer_forward_one_layer and download h_out.
+ * `ple_in_host` is the PLE per-layer input: nullptr exercises the API's
+ * documented shortcut (treat it as zero), a real buffer exercises the PLE
+ * block itself.
+ *
+ * h_out is poisoned with a sentinel before the call and every element is
+ * checked afterwards: a layer that returns GEIST_OK must have written all
+ * of its output, never left the caller's buffer as it found it. */
+static int run_layer_ple(struct transformer_arch_state *st,
+                         int                            layer_idx,
+                         size_t                         q_position,
+                         const float                   *h_in_host,
+                         const float                   *ple_in_host,
+                         float                         *h_out_host) {
     struct transformer_arch_session *sess = transformer_default_session(st);
     struct geist_backend            *be   = st->backend;
     const struct geist_backend_vtbl *v    = be->desc->vtbl;
 
+    constexpr float      POISON    = -12345.0f;
     struct geist_buffer *h_in_buf  = nullptr;
     struct geist_buffer *h_out_buf = nullptr;
+    struct geist_buffer *ple_buf   = nullptr;
     enum geist_status    s         = v->buffer_create(
             be, HIDDEN * sizeof(float), GEIST_BUFFER_ACTIVATION, GEIST_MEMORY_AUTO, &h_in_buf);
     if (s != GEIST_OK) {
@@ -303,7 +313,33 @@ static int run_layer(struct transformer_arch_state *st,
         v->buffer_destroy(be, h_in_buf);
         return -1;
     }
+    if (ple_in_host != nullptr) {
+        s = v->buffer_create(be,
+                             GEIST_GEMMA4_HIDDEN_PER_LAYER * sizeof(float),
+                             GEIST_BUFFER_ACTIVATION,
+                             GEIST_MEMORY_AUTO,
+                             &ple_buf);
+        if (s != GEIST_OK) {
+            v->buffer_destroy(be, h_in_buf);
+            v->buffer_destroy(be, h_out_buf);
+            return -1;
+        }
+        s = v->buffer_upload(ple_buf,
+                             GEIST_GEMMA4_HIDDEN_PER_LAYER * sizeof(float),
+                             (const uint8_t *) ple_in_host);
+        if (s != GEIST_OK) {
+            goto cleanup;
+        }
+    }
     s = v->buffer_upload(h_in_buf, HIDDEN * sizeof(float), (const uint8_t *) h_in_host);
+    if (s != GEIST_OK) {
+        goto cleanup;
+    }
+    /* Poison the output so "left untouched" cannot pass as "computed". */
+    for (size_t i = 0; i < HIDDEN; i++) {
+        h_out_host[i] = POISON;
+    }
+    s = v->buffer_upload(h_out_buf, HIDDEN * sizeof(float), (const uint8_t *) h_out_host);
     if (s != GEIST_OK) {
         goto cleanup;
     }
@@ -314,7 +350,7 @@ static int run_layer(struct transformer_arch_state *st,
                                       /* seq = */ 1,
                                       /* advance_kv = */ false,
                                       h_in_buf,
-                                      /* per_layer_input = */ nullptr,
+                                      ple_buf,
                                       h_out_buf);
     if (s != GEIST_OK) {
         fprintf(stderr,
@@ -325,11 +361,35 @@ static int run_layer(struct transformer_arch_state *st,
         goto cleanup;
     }
     s = v->buffer_download(HIDDEN * sizeof(float), (uint8_t *) h_out_host, h_out_buf);
+    if (s == GEIST_OK) {
+        for (size_t i = 0; i < HIDDEN; i++) {
+            if (h_out_host[i] == POISON) {
+                fprintf(stderr,
+                        "L%d returned OK but left h_out[%zu] untouched (PLE %s)\n",
+                        layer_idx,
+                        i,
+                        ple_in_host ? "present" : "absent");
+                s = GEIST_E_INTERNAL;
+                break;
+            }
+        }
+    }
 
 cleanup:
     v->buffer_destroy(be, h_in_buf);
     v->buffer_destroy(be, h_out_buf);
+    if (ple_buf != nullptr) {
+        v->buffer_destroy(be, ple_buf);
+    }
     return s == GEIST_OK ? 0 : -1;
+}
+
+static int run_layer(struct transformer_arch_state *st,
+                     int                            layer_idx,
+                     size_t                         q_position,
+                     const float                   *h_in_host,
+                     float                         *h_out_host) {
+    return run_layer_ple(st, layer_idx, q_position, h_in_host, nullptr, h_out_host);
 }
 
 static int check_one_layer(struct transformer_arch_state *st, int layer_idx) {
@@ -752,6 +812,72 @@ cleanup:
     return 1;
 }
 
+/* PLE input present vs absent (issue #326).
+ *
+ * transformer_forward_one_layer documents a null per-layer input as "skip
+ * the PLE block". That is only sound because a zero per-layer input makes
+ * the whole block vanish arithmetically: gate * ple_in is zero, the
+ * projection of zero is zero, and the residual add returns h_post_ff
+ * unchanged. So the shortcut and the full path must agree exactly on a
+ * zero input — and must NOT agree on a non-zero one, or the first half of
+ * this check would be passing for the wrong reason.
+ *
+ * Both runs also go through run_layer_ple's poison check, so neither can
+ * report success while leaving h_out as the caller left it. */
+static int check_ple_present_vs_absent(struct transformer_arch_state *st, int layer_idx) {
+    float h_in[HIDDEN];
+    for (size_t i = 0; i < HIDDEN; i++) {
+        h_in[i] = 0.02f * (float) ((i % 41) - 20);
+    }
+    float ple_zero[GEIST_GEMMA4_HIDDEN_PER_LAYER] = {0};
+    float ple_nz[GEIST_GEMMA4_HIDDEN_PER_LAYER];
+    for (size_t i = 0; i < GEIST_GEMMA4_HIDDEN_PER_LAYER; i++) {
+        ple_nz[i] = 0.05f * (float) ((i % 17) - 8);
+    }
+
+    float h_absent[HIDDEN], h_zero[HIDDEN], h_nonzero[HIDDEN];
+    if (run_layer_ple(st, layer_idx, 0, h_in, nullptr, h_absent) != 0 ||
+        run_layer_ple(st, layer_idx, 0, h_in, ple_zero, h_zero) != 0 ||
+        run_layer_ple(st, layer_idx, 0, h_in, ple_nz, h_nonzero) != 0) {
+        return 1;
+    }
+
+    size_t mismatch = 0;
+    for (size_t i = 0; i < HIDDEN; i++) {
+        if (h_absent[i] != h_zero[i]) {
+            mismatch++;
+        }
+    }
+    if (mismatch != 0) {
+        fprintf(stderr,
+                "L%d: absent PLE input and zero PLE input disagree on %zu/%d outputs\n",
+                layer_idx,
+                mismatch,
+                (int) HIDDEN);
+        return 1;
+    }
+
+    size_t differ = 0;
+    for (size_t i = 0; i < HIDDEN; i++) {
+        if (h_nonzero[i] != h_zero[i]) {
+            differ++;
+        }
+    }
+    if (differ == 0) {
+        fprintf(stderr,
+                "L%d: a non-zero PLE input changed nothing — the PLE block "
+                "did not run, so the equivalence above proves nothing\n",
+                layer_idx);
+        return 1;
+    }
+    printf("layer %d PLE present/absent PASS (zero-input equivalent, %zu/%d outputs move "
+           "on a non-zero input)\n",
+           layer_idx,
+           differ,
+           (int) HIDDEN);
+    return 0;
+}
+
 int main(void) {
     GEIST_REQUIRE_GGUF(model_path);
 
@@ -789,6 +915,9 @@ int main(void) {
     /* Layer 15 + 19: KV-shared smoke (uses caches from layer 13 and 14). */
     fails += check_kv_shared_layer_smoke(st, 13, 15);
     fails += check_kv_shared_layer_smoke(st, 14, 19);
+
+    /* PLE input present vs absent, on a PLE-carrying layer. */
+    fails += check_ple_present_vs_absent(st, 0);
 
     /* PLE precompute cross-ref. */
     fails += check_ple_precompute(st, /* token_id = */ 9259);
