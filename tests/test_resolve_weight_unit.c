@@ -186,6 +186,32 @@ expect_short_buffer_rejected(struct geist_backend *be, enum geist_dtype dtype, c
     return bad;
 }
 
+/* The extent check is only as good as quant_raw_bytes' coverage: a dtype
+ * the kernel table can install but the size table does not know passes
+ * validation unchecked. That gap opens silently whenever a new dtype
+ * lands (IQ4_NL and IQ4_XS did exactly that), so assert the two tables
+ * agree rather than trusting them to be edited together.
+ *
+ * Sweeps the whole enum: nothing to keep in sync here either. */
+static int expect_extent_known_for_every_supported_dtype(struct geist_backend *be) {
+    int bad = 0;
+    for (int d = 0; d <= (int) GEIST_DTYPE_CUSTOM; d++) {
+        const enum geist_dtype dt = (enum geist_dtype) d;
+        if (cpu_neon_linear_support(be, dt) == CPU_NEON_SUPPORT_NONE) {
+            continue;
+        }
+        size_t need = 0;
+        if (quant_raw_bytes(dt, STUB_N_IN * STUB_N_OUT, &need) || need == 0) {
+            fprintf(stderr,
+                    "  [dtype %d] cpu_neon installs a kernel for it, but quant_raw_bytes "
+                    "cannot size it — resolve_weight cannot check its source extent\n",
+                    d);
+            bad = 1;
+        }
+    }
+    return bad;
+}
+
 /* raw_nbytes is not optional: a caller that forgets it gets an argument
  * error, not an unvalidated repack. */
 static int expect_missing_extent_rejected(struct geist_backend *be) {
@@ -271,7 +297,11 @@ int main(void) {
     fails += expect_short_buffer_rejected(be, GEIST_DTYPE_F16, "F16 short");
     fails += expect_short_buffer_rejected(be, GEIST_DTYPE_BF16, "BF16 short");
     fails += expect_short_buffer_rejected(be, GEIST_DTYPE_F32, "F32 short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_IQ4_NL, "IQ4_NL short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_IQ4_XS, "IQ4_XS short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_Q4_0, "Q4_0 short");
     fails += expect_missing_extent_rejected(be);
+    fails += expect_extent_known_for_every_supported_dtype(be);
 
     geist_backend_destroy(be);
 

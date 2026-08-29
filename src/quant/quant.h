@@ -178,6 +178,9 @@ quant_raw_bytes(const enum geist_dtype dt, const size_t n_elems, size_t *out) {
     case GEIST_DTYPE_Q4_0:
         blk_elems = Q4_0_BLOCK_ELEMS, blk_bytes = Q4_0_BLOCK_BYTES;
         break;
+    case GEIST_DTYPE_Q4_1:
+        blk_elems = Q4_1_BLOCK_ELEMS, blk_bytes = Q4_1_BLOCK_BYTES;
+        break;
     case GEIST_DTYPE_Q8_0:
         blk_elems = Q8_0_BLOCK_ELEMS, blk_bytes = Q8_0_BLOCK_BYTES;
         break;
@@ -198,6 +201,12 @@ quant_raw_bytes(const enum geist_dtype dt, const size_t n_elems, size_t *out) {
         break;
     case GEIST_DTYPE_IQ3_S:
         blk_elems = IQ3_S_BLOCK_ELEMS, blk_bytes = IQ3_S_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_IQ4_NL:
+        blk_elems = IQ4_NL_BLOCK_ELEMS, blk_bytes = IQ4_NL_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_IQ4_XS:
+        blk_elems = IQ4_XS_BLOCK_ELEMS, blk_bytes = IQ4_XS_BLOCK_BYTES;
         break;
     case GEIST_DTYPE_TQ2_0:
         blk_elems = TQ2_0_BLOCK_ELEMS, blk_bytes = TQ2_0_BLOCK_BYTES;
