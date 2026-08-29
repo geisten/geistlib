@@ -72,6 +72,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->rmsnorm_add_rows_function, "release");
         metal_msg_send_void0(st, st->embed_lookup_scaled_pipeline, "release");
         metal_msg_send_void0(st, st->embed_lookup_scaled_function, "release");
+        metal_msg_send_void0(st, st->embed_lookup_scaled_rows_pipeline, "release");
+        metal_msg_send_void0(st, st->embed_lookup_scaled_rows_function, "release");
         metal_msg_send_void0(st, st->f32_matmul_pipeline, "release");
         metal_msg_send_void0(st, st->f32_matmul_function, "release");
     }
@@ -429,6 +431,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->rmsnorm_add_rows_simd_function        = nullptr;
     st->embed_lookup_scaled_pipeline          = nullptr;
     st->embed_lookup_scaled_function          = nullptr;
+    st->embed_lookup_scaled_rows_pipeline     = nullptr;
+    st->embed_lookup_scaled_rows_function     = nullptr;
     st->f32_matmul_pipeline                   = nullptr;
     st->f32_matmul_function                   = nullptr;
     st->f32_matmul_sg_pipeline                = nullptr;

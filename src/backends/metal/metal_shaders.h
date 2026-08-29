@@ -1291,6 +1291,20 @@ static const char metal_embed_source[] =
         "dtype==7u?q80(w,p,p.token,gid):(p.dtype==9u?q4(w,p,p.token,gid):(p.dtype==10u?q5(w,p,p."
         "token,gid):q6(w,p,p.token,gid)))))));y[p.yo+gid]=v*p.scale;}\n";
 
+/* Batched variant (#322 step 3): ids arrive via a small constant buffer,
+ * p.token carries the row count, one dispatch embeds the whole prefill
+ * chunk. Same per-element math as the single-token kernel; separate
+ * array (4095-char literal limit), concatenated at library build. */
+static const char metal_embed_rows_source[] =
+        "kernel void embed_lookup_scaled_rows(device const uchar*w[[buffer(0)]],device "
+        "float*y[[buffer(1)]],constant E&p[[buffer(2)]],constant uint*ids[[buffer(3)]],uint2 "
+        "gid[[thread_position_in_grid]]){if(gid.x>=p.n||gid.y>=p.token)return;uint "
+        "row=ids[gid.y];float "
+        "v=p.dtype==0u?f32(w,p.wbo+(row*p.n+gid.x)*4u):(p.dtype==1u?h(w,p.wbo+(row*p.n+gid.x)*"
+        "2u):(p.dtype==2u?bf(w,p.wbo+(row*p.n+gid.x)*2u):(p.dtype==5u?q40(w,p,row,gid.x):(p."
+        "dtype==7u?q80(w,p,row,gid.x):(p.dtype==9u?q4(w,p,row,gid.x):(p.dtype==10u?q5(w,p,row,"
+        "gid.x):q6(w,p,row,gid.x)))))));y[p.yo+gid.y*p.n+gid.x]=v*p.scale;}\n";
+
 static const char metal_f32_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"

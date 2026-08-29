@@ -424,6 +424,18 @@ struct geist_backend_fused {
                                                  float                      scale,
                                                  struct geist_tensor       *out);
 
+    /* Batched twin of embedding_lookup_scaled: one dispatch embeds
+     * n_rows chunk tokens into out [n_rows, d_model]. Decomposed twin:
+     * n_rows calls of embedding_lookup_scaled (the arch falls back to
+     * that loop on nullptr or non-OK). Consumer: the prefill chunk
+     * loop, which otherwise pays one tiny dispatch per token. */
+    enum geist_status (*embedding_lookup_scaled_rows)(struct geist_backend      *be,
+                                                      const struct geist_tensor *embed_table,
+                                                      const geist_token_t       *ids,
+                                                      size_t                     n_rows,
+                                                      float                      scale,
+                                                      struct geist_tensor       *out);
+
     /* Fused f32→f16 KV-cache append: convert k_src/v_src (F32 DENSE
      * [seq, kv_heads, head_dim]) and store them at row q_position of the
      * F16 caches (F16 DENSE 3D views onto the cache buffers). Whether the

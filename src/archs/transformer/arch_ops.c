@@ -210,7 +210,25 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
          * batched GPU backends from flushing the pipeline through a
          * mapped host pointer (and skip the host dequant loop). */
         bool embed_on_device = st->model_fusions.embed_lookup_scaled;
-        if (embed_on_device) {
+        bool embed_batched   = false;
+        if (embed_on_device && fused->embedding_lookup_scaled_rows != nullptr) {
+            /* #322: one dispatch for the whole chunk instead of one tiny
+             * dispatch per token. Non-OK (row cap, unsupported dtype)
+             * falls through to the per-token loop below. */
+            struct geist_tensor t_rows = {
+                    .buffer = sess->scratch_h_a,
+                    .offset = 0,
+                    .dtype  = GEIST_DTYPE_F32,
+                    .layout = GEIST_LAYOUT_DENSE,
+                    .ndim   = 2,
+                    .shape  = {(int64_t) chunk, (int64_t) st->d_model, 0, 0, 0, 0, 0, 0},
+                    .stride = {(int64_t) st->d_model, 1, 0, 0, 0, 0, 0, 0},
+            };
+            embed_batched = fused->embedding_lookup_scaled_rows(
+                                    be, &st->embed_table, ids + off, chunk, embed_scale, &t_rows) ==
+                            GEIST_OK;
+        }
+        if (embed_on_device && !embed_batched) {
             for (size_t t = 0; t < chunk; t++) {
                 struct geist_tensor t_row = {
                         .buffer = sess->scratch_h_a,
