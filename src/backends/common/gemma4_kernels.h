@@ -8,6 +8,7 @@
 #ifndef GEMMA4_KERNELS_H
 #define GEMMA4_KERNELS_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -105,8 +106,27 @@ void attention_mqa_causal_kv(const float *q,
                              size_t       sliding_window,
                              float       *out);
 
+/* Rotary position embedding is defined on PAIRS of channels: element i is
+ * rotated against element i + head_dim/2. An odd head_dim leaves the last
+ * channel with no partner, and every function in this family then quietly
+ * skips it — rope_compute_at fills only 2*(head_dim/2) table entries and
+ * leaves the last one as the allocator left it, and the interleaved-layout
+ * permutation in the arch layer copies that same uninitialized tail into
+ * the activation. head_dim is model metadata (d_model / n_q_heads for the
+ * Llama and BitNet families), so a malformed file can pick it.
+ *
+ * Rather than invent a meaning for a half-pair, the contract is: rotary
+ * requires an even, non-zero head_dim, checked once when the RoPE plan is
+ * built. This predicate is that check, in one place, so the load-time
+ * rejection and the hot-path guard cannot drift apart. */
+[[nodiscard]] static inline bool rope_head_dim_supported(const size_t head_dim) {
+    return head_dim != 0u && (head_dim % 2u) == 0u;
+}
+
 /* Compute RoPE cos/sin tables starting from a position offset.
- * For decode: pos_offset = cache_length (so the new token gets the right pos). */
+ * For decode: pos_offset = cache_length (so the new token gets the right pos).
+ * Requires rope_head_dim_supported(head_dim); the caller checks. Writes
+ * exactly n_positions * head_dim entries to each of cos_out and sin_out. */
 void rope_compute_at(size_t pos_offset,
                      size_t n_positions,
                      size_t head_dim,
