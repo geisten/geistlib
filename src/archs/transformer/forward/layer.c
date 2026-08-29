@@ -382,7 +382,7 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
          * total_elems/4). Used for the token-embedding table on BitNet-2B-4T. */
         const size_t total = (size_t) t->shape[0] * (size_t) t->shape[1];
         float        scale;
-        memcpy(&scale, raw + total / 4, sizeof scale);
+        memcpy(&scale, raw + i2_s_scale_offset(total), sizeof scale);
         const uint8_t *row = raw + row_idx * (n_in / 4);
         for (size_t b = 0; b < n_in / 256; b++) {
             const uint8_t *qs = row + b * 64;

@@ -1,6 +1,7 @@
 #include "gguf_reader.h"
 #include "checked.h"
 #include "heap.h"
+#include "quant.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -68,38 +69,44 @@ struct dtype_row_t {
     gguf_dtype_t dt;
     size_t       block_bytes;
     size_t       block_elems;
-    const char  *name;
+    /* Bytes that follow the last block and belong to the tensor all the
+     * same. Zero for every self-describing block format; 4 for I2_S, whose
+     * single f32 per-tensor scale lives past the packed trits and is read
+     * by every I2_S kernel. Counting it here is what stops a tensor
+     * truncated mid-scale from passing the extent check. */
+    size_t      tail_bytes;
+    const char *name;
 };
 
 static const struct dtype_row_t DTYPE_ROWS[] = {
-        {GGUF_TYPE_F32, 4, 1, "F32"},
-        {GGUF_TYPE_F16, 2, 1, "F16"},
-        {GGUF_TYPE_BF16, 2, 1, "BF16"},
-        {GGUF_TYPE_Q4_0, 18, 32, "Q4_0"}, /* fp16 d + 32 nibbles */
-        {GGUF_TYPE_Q4_1, 20, 32, "Q4_1"}, /* fp16 d, fp16 m + 32 nibbles */
-        {GGUF_TYPE_Q5_0, 22, 32, "Q5_0"},
-        {GGUF_TYPE_Q5_1, 24, 32, "Q5_1"},
-        {GGUF_TYPE_Q8_0, 34, 32, "Q8_0"}, /* fp16 d + 32 int8 */
-        {GGUF_TYPE_Q8_1, 36, 32, "Q8_1"},
-        {GGUF_TYPE_Q2_K, 82, 256, "Q2_K"},
-        {GGUF_TYPE_Q3_K, 110, 256, "Q3_K"},
-        {GGUF_TYPE_Q4_K, 144, 256, "Q4_K"}, /* k-quant 4-bit super-block */
-        {GGUF_TYPE_Q5_K, 176, 256, "Q5_K"},
-        {GGUF_TYPE_Q6_K, 210, 256, "Q6_K"},
-        {GGUF_TYPE_Q8_K, 292, 256, "Q8_K"},
-        {GGUF_TYPE_IQ3_S, 110, 256, "IQ3_S"},   /* fp16 d + 64 qs + 8 qh + 32 signs + 4 scales */
-        {GGUF_TYPE_IQ4_NL, 18, 32, "IQ4_NL"},   /* fp16 d + 16 packed LUT nibbles */
-        {GGUF_TYPE_IQ4_XS, 136, 256, "IQ4_XS"}, /* fp16 d + u16 scales_h + 4 scales_l + 128 qs */
-        {GGUF_TYPE_IQ2_S, 82, 256, "IQ2_S"},    /* fp16 d + 64 qs (incl signs) + 8 qh + 8 scales */
-        {GGUF_TYPE_TQ1_0, 54, 256, "TQ1_0"},    /* 5-trit packed; 52 + 2-byte fp16 scale */
-        {GGUF_TYPE_TQ2_0, 66, 256, "TQ2_0"},    /* 4-trit packed; 64 + 2-byte fp16 scale */
+        {GGUF_TYPE_F32, 4, 1, 0, "F32"},
+        {GGUF_TYPE_F16, 2, 1, 0, "F16"},
+        {GGUF_TYPE_BF16, 2, 1, 0, "BF16"},
+        {GGUF_TYPE_Q4_0, 18, 32, 0, "Q4_0"}, /* fp16 d + 32 nibbles */
+        {GGUF_TYPE_Q4_1, 20, 32, 0, "Q4_1"}, /* fp16 d, fp16 m + 32 nibbles */
+        {GGUF_TYPE_Q5_0, 22, 32, 0, "Q5_0"},
+        {GGUF_TYPE_Q5_1, 24, 32, 0, "Q5_1"},
+        {GGUF_TYPE_Q8_0, 34, 32, 0, "Q8_0"}, /* fp16 d + 32 int8 */
+        {GGUF_TYPE_Q8_1, 36, 32, 0, "Q8_1"},
+        {GGUF_TYPE_Q2_K, 82, 256, 0, "Q2_K"},
+        {GGUF_TYPE_Q3_K, 110, 256, 0, "Q3_K"},
+        {GGUF_TYPE_Q4_K, 144, 256, 0, "Q4_K"}, /* k-quant 4-bit super-block */
+        {GGUF_TYPE_Q5_K, 176, 256, 0, "Q5_K"},
+        {GGUF_TYPE_Q6_K, 210, 256, 0, "Q6_K"},
+        {GGUF_TYPE_Q8_K, 292, 256, 0, "Q8_K"},
+        {GGUF_TYPE_IQ3_S, 110, 256, 0, "IQ3_S"},   /* fp16 d + 64 qs + 8 qh + 32 signs + 4 scales */
+        {GGUF_TYPE_IQ4_NL, 18, 32, 0, "IQ4_NL"},   /* fp16 d + 16 packed LUT nibbles */
+        {GGUF_TYPE_IQ4_XS, 136, 256, 0, "IQ4_XS"}, /* fp16 d + u16 scales_h + 4 scales_l + 128 qs */
+        {GGUF_TYPE_IQ2_S, 82, 256, 0, "IQ2_S"},    /* fp16 d + 64 qs (incl signs) + 8 qh + 8 scales */
+        {GGUF_TYPE_TQ1_0, 54, 256, 0, "TQ1_0"},    /* 5-trit packed; 52 + 2-byte fp16 scale */
+        {GGUF_TYPE_TQ2_0, 66, 256, 0, "TQ2_0"},    /* 4-trit packed; 64 + 2-byte fp16 scale */
         /* I2_S (BitNet b1.58 official): 256-elem blocks of 64 packed bytes (4
          * trits/byte, 2.0 bpw), NO per-block scale. A single f32 per-TENSOR scale
          * is stored right after the packed bytes (offset n_elems/4); it sits just
          * past the block-computed nbytes but inside the mmap, so the kernel reads
          * it from raw + n_in*n_out/4. (Confirmed against bitnet.cpp quantize_i2_s:
          * one scale_ptr[0] per tensor, not per row.) */
-        {GGUF_TYPE_I2_S, 64, 256, "I2_S"},
+        {GGUF_TYPE_I2_S, I2_S_BLOCK_BYTES, I2_S_BLOCK_ELEMS, sizeof(float), "I2_S"},
 };
 static const size_t DTYPE_ROWS_N = sizeof(DTYPE_ROWS) / sizeof(DTYPE_ROWS[0]);
 
@@ -482,26 +489,14 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
             set_err(errmsg, "tensor dimensions overflow or are empty");
             return nullptr;
         }
-        /* Some quants (Microsoft's I2_S) don't fit the "fixed block size"
-         * model — their storage is per-row not per-256-element-block.
-         * For those entries we register block_bytes=0, block_elems=0 so
-         * the reader can recognize the dtype id and still surface the
-         * tensor, while the dispatcher in the loader fails on it
-         * explicitly. The data pointer is set so callers that DO
-         * understand the layout (P1.6 native I2_S resolver) can read
-         * the raw bytes — but nbytes is left at 0 to flag the gap. */
-        if (dt->block_elems == 0) {
-            t->nbytes = 0;
-            t->data   = (const uint8_t *) map + ctx->data_offset + t->offset;
-            continue;
-        }
         if (elems % dt->block_elems != 0) {
             gguf_close(ctx);
             set_err(errmsg, "tensor elem count not divisible by block size");
             return nullptr;
         }
         size_t nbytes = 0;
-        if (ckd_mul(&nbytes, elems / dt->block_elems, dt->block_bytes)) {
+        if (ckd_mul(&nbytes, elems / dt->block_elems, dt->block_bytes) ||
+            ckd_add(&nbytes, nbytes, dt->tail_bytes)) {
             gguf_close(ctx);
             set_err(errmsg, "tensor byte count overflows");
             return nullptr;

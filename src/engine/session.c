@@ -1089,8 +1089,8 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
         sf->err_code = GEIST_E_UNSUPPORTED;
         return GEIST_E_UNSUPPORTED;
     }
-    ops->pin_prefix(arch_sess(sf), n, ids);
-    return GEIST_OK;
+    const enum geist_status ps = ops->pin_prefix(arch_sess(sf), n, ids);
+    return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "pin_prefix");
 }
 
 [[nodiscard]] enum geist_status geist_session_get_stats(const struct geist_session *s,

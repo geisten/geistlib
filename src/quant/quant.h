@@ -15,6 +15,8 @@
 #ifndef QUANT_H
 #define QUANT_H
 
+#include "checked.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -118,6 +120,36 @@ void linear_iq4xs_w4a8_prefill(
 constexpr size_t TQ2_0_BLOCK_ELEMS = 256;
 constexpr size_t TQ2_0_BLOCK_BYTES = 66;
 void             dequant_tq2_0_row(const void *blocks, float *out, size_t n_elems);
+
+/* I2_S super-block (Microsoft bitnet.cpp's BitNet b1.58 format): 256
+ * elements, 64 bytes, 2.0 bpw, four 2-bit trit fields per byte. Unlike
+ * TQ2_0 there is NO per-block scale — a SINGLE f32 per-TENSOR scale sits
+ * immediately after the last packed byte.
+ *
+ * That trailing scale is part of the tensor. Everything that sizes an I2_S
+ * tensor — the GGUF reader's extent check, the arena copy in β mode, the
+ * kernels that read `raw + i2_s_scale_offset(...)` — has to agree on that,
+ * or a tensor truncated by four bytes passes validation and the scale is
+ * read from whatever follows it. These two helpers are the agreement. */
+constexpr size_t I2_S_BLOCK_ELEMS = 256;
+constexpr size_t I2_S_BLOCK_BYTES = 64;
+
+/* Byte offset of the per-tensor f32 scale: right past the packed trits. */
+static inline size_t i2_s_scale_offset(const size_t n_elems) {
+    return n_elems / 4u;
+}
+
+/* Full on-disk extent of an I2_S tensor with `n_elems` elements: packed
+ * trits plus the trailing f32 scale. Returns true on size_t overflow,
+ * writing *out only on success. */
+[[nodiscard]] static inline bool i2_s_tensor_bytes(const size_t n_elems, size_t *out) {
+    size_t bytes = 0;
+    if (ckd_add(&bytes, i2_s_scale_offset(n_elems), sizeof(float))) {
+        return true;
+    }
+    *out = bytes;
+    return false;
+}
 
 /* Hard cap on the M dimension of native prefill kernels. The engine's
  * default m_max remains lower, but sessions can opt into larger prefill

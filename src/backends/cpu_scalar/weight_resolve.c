@@ -110,9 +110,8 @@ static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *r
         /* BitNet b1.58 official: 256-elem/64-byte ternary blocks, four 2-bit
          * fields per byte in REVERSE order (element 32*g+bb at shift 6-2g),
          * ONE f32 per-TENSOR scale at the tail (offset n_in*n_out/4). */
-        float        scale;
-        const size_t packed = n_in * (size_t) w->n_out / 4;
-        memcpy(&scale, base + packed, sizeof scale);
+        float scale;
+        memcpy(&scale, base + i2_s_scale_offset(n_in * (size_t) w->n_out), sizeof scale);
         const uint8_t *Wr = base + j * (n_in / 4);
         for (size_t b = 0; b < n_in / 256; b++) {
             const uint8_t *qs = Wr + b * 64;

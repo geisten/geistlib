@@ -12,6 +12,7 @@
  * Every rejection asserts BOTH the nullptr result and that an error
  * message was set; every acceptance asserts the parsed values. */
 #include "gguf_reader.h"
+#include "quant.h"
 #include "safetensors_reader.h"
 #include "test_helpers.h"
 
@@ -353,6 +354,53 @@ static void test_gguf_malformed(void) {
         put_bytes(&o, &z, 1);
     }
     check_gguf_rejected(&o, "overflowing tensor offset");
+
+    /* ---- I2_S trailing per-tensor scale (issue #334) -------------------
+     * I2_S stores 256 elements in 64 packed bytes with NO per-block scale
+     * and ONE f32 for the whole tensor, sitting immediately after the last
+     * packed byte. The reader used to size the tensor from the blocks
+     * alone, so a file that stopped four bytes early validated fine and the
+     * kernel then read the scale from whatever followed. */
+    {
+        /* Exact size: 256 elems -> 64 packed bytes + 4 scale bytes. */
+        gguf_header(&o, 3, 1, 0);
+        put_gstr(&o, "w");
+        put_u32(&o, 1);
+        put_u64(&o, 256);
+        put_u32(&o, GGUF_TYPE_I2_S);
+        put_u64(&o, 0);
+        pad_to(&o, 32);
+        for (int i = 0; i < 64; i++) {
+            uint8_t z = (uint8_t) i;
+            put_bytes(&o, &z, 1);
+        }
+        put_f32(&o, 0.125f);
+        const size_t exact_n = o.n;
+
+        struct gguf_ctx *i2s = gguf_open_memory(o.b, o.n, &err);
+        CHECK(i2s != nullptr);
+        if (i2s) {
+            const struct gguf_tensor_t *t = gguf_get_tensor(i2s, "w");
+            CHECK(t != nullptr && t->nbytes == 68); /* 64 packed + 4 scale */
+            if (t) {
+                /* The scale is inside the tensor's own extent, which is the
+                 * whole point: the arena copy in beta mode copies nbytes. */
+                float sc = 0.0f;
+                memcpy(&sc, (const uint8_t *) t->data + i2_s_scale_offset(256), sizeof sc);
+                CHECK(sc == 0.125f);
+            }
+            gguf_close(i2s);
+        }
+
+        /* One byte short of the scale: must be rejected, not accepted with
+         * a three-byte scale and a one-byte over-read. */
+        o.n = exact_n - 1;
+        check_gguf_rejected(&o, "I2_S tensor one byte short of its scale");
+
+        /* Packed blocks complete, scale entirely absent. */
+        o.n = exact_n - 4;
+        check_gguf_rejected(&o, "I2_S tensor missing its trailing scale");
+    }
 
     /* unknown dtype id: accepted, but surfaced with nbytes=0/data=null */
     gguf_header(&o, 3, 1, 0);
