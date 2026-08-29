@@ -825,8 +825,12 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
      * Measured on the metal backend, 4B pp512: m_max 64 -> 626 tok/s,
      * 128 -> 430, 256 -> 335 (llama.cpp's delta-net chunk is 64 too);
      * attention-only models keep the backend's larger preferred value
-     * (gemma4-e2b: 972 at 256 vs 753 at 64). GEIST_M_MAX still wins. */
-    if (st->config.dn_n_v_heads > 0 && !st->m_max_from_env && st->m_max > 64) {
+     * (gemma4-e2b: 972 at 256 vs 753 at 64). GEIST_M_MAX still wins.
+     * Backends whose deltanet_mix sub-chunks internally (caps.dn_subchunk)
+     * skip the cap: their DN cost is chunk-size-invariant, and the
+     * surrounding GEMMs need the large batch for occupancy (#322). */
+    if (st->config.dn_n_v_heads > 0 && !st->m_max_from_env && st->m_max > 64 &&
+        (be->desc == nullptr || !be->desc->caps.dn_subchunk)) {
         st->m_max = 64;
     }
 
