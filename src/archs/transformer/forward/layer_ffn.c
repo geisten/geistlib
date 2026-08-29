@@ -21,8 +21,8 @@ enum ffn_profile_stage {
     FFN_PROFILE_COUNT,
 };
 
-static uint64_t          g_ffn_profile_ns[FFN_PROFILE_COUNT];
-static uint64_t          g_ffn_profile_calls[FFN_PROFILE_COUNT];
+static _Atomic uint64_t  g_ffn_profile_ns[FFN_PROFILE_COUNT];
+static _Atomic uint64_t  g_ffn_profile_calls[FFN_PROFILE_COUNT];
 static const char *const g_ffn_profile_names[FFN_PROFILE_COUNT] = {
         "norm",
         "gate_up",
@@ -320,10 +320,15 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     }
 
 ffn_post:
-    /* Families without PLE can write the residual result straight into the
-     * layer output. Besides avoiding a copy, this preserves one uninterrupted
-     * GPU command sequence for Qwen3.5. */
-    struct geist_buffer *post_ff_buf    = ctx->apply_ple ? sess->scratch_h_post_ff : ctx->h_out_buf;
+    /* When the PLE stage will not run, write the residual result straight
+     * into the layer output. Besides avoiding a copy, this preserves one
+     * uninterrupted GPU command sequence for Qwen3.5.
+     *
+     * The condition is ctx->run_ple, not ctx->apply_ple: a PLE family
+     * called with no per-layer input skips the PLE stage, so routing to
+     * the scratch buffer on apply_ple alone left h_out untouched and the
+     * caller reading whatever it already held. */
+    struct geist_buffer *post_ff_buf    = ctx->run_ple ? sess->scratch_h_post_ff : ctx->h_out_buf;
     struct geist_tensor  t_h_post_ff_2d = view_2d(post_ff_buf, ctx->SEQ, st->d_model);
     t0                                  = profile ? transformer_profile_now_ns() : 0;
     if (ctx->apply_gemma_attn_norms) {
