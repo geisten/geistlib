@@ -50,18 +50,3 @@ geist_ckd_round_up_pow2(const size_t v, const size_t align, size_t *out) {
     *out = (v + align - 1u) & ~(align - 1u);
     return false;
 }
-
-/* Product of `n` size_t terms. Returns true on overflow; *out is written only
- * on success. An empty product is 1 (the identity), matching how tensor
- * element counts fold over dimensions. */
-[[nodiscard]] static inline bool
-geist_ckd_mul_n(const size_t n, const size_t terms[static 1], size_t *out) {
-    size_t acc = 1u;
-    for (size_t i = 0; i < n; i++) {
-        if (ckd_mul(&acc, acc, terms[i])) {
-            return true;
-        }
-    }
-    *out = acc;
-    return false;
-}
