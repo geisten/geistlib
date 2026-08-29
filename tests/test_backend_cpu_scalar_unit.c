@@ -122,10 +122,11 @@ int main(void) {
         void *w_host = be->desc->vtbl->buffer_map(bw);
         fails += check(w_host != nullptr, "buffer_map w OK");
         struct geist_weight wkr = {
-                .raw   = w_host,
-                .n_in  = (int32_t) KK,
-                .n_out = (int32_t) N,
-                .dtype = (uint16_t) GEIST_DTYPE_F32,
+                .raw        = w_host,
+                .raw_nbytes = sizeof(wdata),
+                .n_in       = (int32_t) KK,
+                .n_out      = (int32_t) N,
+                .dtype      = (uint16_t) GEIST_DTYPE_F32,
         };
         s = be->desc->vtbl->resolve_weight(be, &wkr);
         fails += check(s == GEIST_OK && wkr.linear_mN != nullptr,

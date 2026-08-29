@@ -234,8 +234,14 @@ static void cpu_scalar_w_quant_mN(const float               *x,
 [[nodiscard]] enum geist_status cpu_scalar_resolve_weight(struct geist_backend *be,
                                                           struct geist_weight  *w) {
     (void) be;
-    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
+    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
+    }
+    /* Same source-extent contract as cpu_neon: the row dequant helpers
+     * below index `raw` by (dtype, n_in, n_out), so a short buffer reads
+     * past its end. */
+    if (!quant_weight_extent_ok(w)) {
+        return GEIST_E_FORMAT;
     }
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_F32:
