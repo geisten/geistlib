@@ -8,7 +8,18 @@ minor release.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-29
+
 ### Changed
+- **x8 layout v2 — pre-transposed pack, zip-free GEMM, lane-SDOT m1
+  GEMV** (#324, closes #319): the pack step stores each 4-row group
+  4×4-u32-transposed, the mN GEMM drops its 32 in-kernel zips per
+  block, and the m1 decode GEMV migrates to lane-SDOT. Bit-identical
+  logits and greedy output (pinned on-board, gcc + clang); Pi 5 4B
+  prefill 19.4 → 21.1 t/s, decode 4.2 → 4.36. Cumulative Pi 4B
+  prefill across #317/#318/#324: 9.1 → 21.1 t/s (llama.cpp on-board:
+  24.8; decode ahead 1.32×). New layout regression test
+  `test_q4_0_x8_layout_unit`.
 - **Lane-SDOT accumulation in the Q4_0 x8 int8 GEMM**: 4×4 u32 row
   transposes + `vdotq_laneq_s32` replace the per-(row,token) `vaddvq`
   horizontal adds — one accumulator carries four output rows in its
