@@ -8,6 +8,16 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+- **Metal DeltaNet sub-chunking** (#322 step 1): `deltanet_mix` encodes
+  the chunk recipe in 64-token sub-chunks internally, so DN models keep
+  the backend's `preferred_m_max` (256) instead of the arch-level cap —
+  the surrounding GEMMs regain their occupancy (4B pp512 626 → ~726
+  tok/s on M1 Max; DN math granularity unchanged, top-3 logits stable
+  across a 241-token multi-sub-chunk prompt, gemma4 untouched). New
+  backend cap `dn_subchunk`. The remaining 4B gap to llama.cpp Metal
+  is GEMM-chain tuning (~500 ms of the wall), tracked in #322.
+
 ## [0.10.1] — 2026-08-30
 
 ### Added
