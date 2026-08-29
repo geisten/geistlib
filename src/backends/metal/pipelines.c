@@ -336,8 +336,22 @@
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_qgate_source);
     void *elem_simd_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_elem_simd_source);
-    void *embed_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_embed_source);
+    void *embed_source = nullptr;
+    {
+        /* single + batched embed kernels share the dequant helpers —
+         * concatenated at init (4095-char literal limit). */
+        const size_t em_a   = strlen(metal_embed_source);
+        const size_t em_b   = strlen(metal_embed_rows_source);
+        char        *em_src = malloc(em_a + em_b + 1u);
+        if (em_src == nullptr) {
+            geist_backend_set_error(be, GEIST_E_OOM, "metal: embed shader source alloc failed");
+            return GEIST_E_OOM;
+        }
+        memcpy(em_src, metal_embed_source, em_a);
+        memcpy(em_src + em_a, metal_embed_rows_source, em_b + 1u);
+        embed_source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", em_src);
+        free(em_src);
+    }
     void *f32_source = nullptr;
     {
         /* two literals concatenated at init (C99 4095-char literal limit) */
@@ -1100,6 +1114,14 @@
                                         "embed_lookup_scaled",
                                         &st->embed_lookup_scaled_function,
                                         &st->embed_lookup_scaled_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->embed_library,
+                                        ns_string,
+                                        "embed_lookup_scaled_rows",
+                                        &st->embed_lookup_scaled_rows_function,
+                                        &st->embed_lookup_scaled_rows_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,

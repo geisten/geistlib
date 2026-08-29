@@ -1254,29 +1254,14 @@ metal_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_
     return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
 }
 
+/* Shared table-geometry check for the embed lookups: row_bytes /
+ * blocks_per_row per dtype, UNSUPPORTED for anything else. */
 [[nodiscard]] static enum geist_status
-metal_embedding_lookup_scaled(struct geist_backend      *be,
-                              const struct geist_tensor *embed_table,
-                              geist_token_t              token_id,
-                              float                      scale,
-                              struct geist_tensor       *out) {
-
-    if (be == nullptr || be->state == nullptr || embed_table == nullptr || out == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-
-    size_t out_n      = 0;
-    size_t out_offset = 0;
-    if (!metal_tensor_is_f32_vector(out, &out_n, &out_offset) || embed_table->buffer == nullptr ||
-        embed_table->ndim != 2 || embed_table->shape[0] <= 0 || embed_table->shape[1] <= 0) {
-        return GEIST_E_INVALID_ARG;
-    }
-    const size_t vocab   = (size_t) embed_table->shape[0];
-    const size_t d_model = (size_t) embed_table->shape[1];
-    if (token_id < 0 || (size_t) token_id >= vocab || out_n != d_model) {
-        return GEIST_E_INVALID_ARG;
-    }
-
+metal_embed_table_geometry(struct geist_backend      *be,
+                           const struct geist_tensor *embed_table,
+                           size_t                     d_model,
+                           size_t                    *out_row_bytes,
+                           size_t                    *out_blocks_per_row) {
     size_t row_bytes      = 0;
     size_t blocks_per_row = 0;
     if (embed_table->layout == GEIST_LAYOUT_DENSE && embed_table->dtype == GEIST_DTYPE_F32) {
@@ -1337,6 +1322,43 @@ metal_embedding_lookup_scaled(struct geist_backend      *be,
                                 GEIST_E_UNSUPPORTED,
                                 "metal embedding_lookup_scaled: unsupported table dtype/layout");
         return GEIST_E_UNSUPPORTED;
+    }
+    *out_row_bytes      = row_bytes;
+    *out_blocks_per_row = blocks_per_row;
+    return GEIST_OK;
+}
+
+[[nodiscard]] static enum geist_status
+metal_embedding_lookup_scaled(struct geist_backend      *be,
+                              const struct geist_tensor *embed_table,
+                              geist_token_t              token_id,
+                              float                      scale,
+                              struct geist_tensor       *out) {
+
+    if (be == nullptr || be->state == nullptr || embed_table == nullptr || out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+
+    size_t out_n      = 0;
+    size_t out_offset = 0;
+    if (!metal_tensor_is_f32_vector(out, &out_n, &out_offset) || embed_table->buffer == nullptr ||
+        embed_table->ndim != 2 || embed_table->shape[0] <= 0 || embed_table->shape[1] <= 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t vocab   = (size_t) embed_table->shape[0];
+    const size_t d_model = (size_t) embed_table->shape[1];
+    if (token_id < 0 || (size_t) token_id >= vocab || out_n != d_model) {
+        return GEIST_E_INVALID_ARG;
+    }
+
+    size_t row_bytes      = 0;
+    size_t blocks_per_row = 0;
+    {
+        const enum geist_status gs =
+                metal_embed_table_geometry(be, embed_table, d_model, &row_bytes, &blocks_per_row);
+        if (gs != GEIST_OK) {
+            return gs;
+        }
     }
 
     if (row_bytes == 0 || vocab > SIZE_MAX / row_bytes ||
@@ -1409,6 +1431,103 @@ metal_embedding_lookup_scaled(struct geist_backend      *be,
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
     }
+    return GEIST_OK;
+}
+
+/* Batched twin (#322 step 3): one dispatch embeds a whole prefill chunk.
+ * ids travel via setBytes (constant buffer), so the row count is bounded
+ * by the 4 KB setBytes budget. */
+enum { METAL_EMBED_ROWS_MAX = 1024 };
+
+[[nodiscard]] static enum geist_status
+metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
+                                   const struct geist_tensor *embed_table,
+                                   const geist_token_t       *ids,
+                                   size_t                     n_rows,
+                                   float                      scale,
+                                   struct geist_tensor       *out) {
+    if (be == nullptr || be->state == nullptr || embed_table == nullptr || ids == nullptr ||
+        out == nullptr || n_rows == 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (n_rows > METAL_EMBED_ROWS_MAX) {
+        return GEIST_E_UNSUPPORTED; /* caller falls back to the per-token loop */
+    }
+    size_t rows = 0, cols = 0, o_off = 0, o_stride = 0;
+    if (!metal_tensor_is_f32_matrix(out, &rows, &cols, &o_off, &o_stride) ||
+        embed_table->buffer == nullptr || embed_table->ndim != 2 || embed_table->shape[0] <= 0 ||
+        embed_table->shape[1] <= 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t vocab   = (size_t) embed_table->shape[0];
+    const size_t d_model = (size_t) embed_table->shape[1];
+    if (rows != n_rows || cols != d_model || o_stride != d_model) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t row_bytes = 0, blocks_per_row = 0;
+    {
+        const enum geist_status gs =
+                metal_embed_table_geometry(be, embed_table, d_model, &row_bytes, &blocks_per_row);
+        if (gs != GEIST_OK) {
+            return gs;
+        }
+    }
+    if (row_bytes == 0 || vocab > SIZE_MAX / row_bytes ||
+        embed_table->offset > embed_table->buffer->bytes ||
+        vocab * row_bytes > embed_table->buffer->bytes - embed_table->offset ||
+        out->offset > out->buffer->bytes ||
+        n_rows * d_model > (out->buffer->bytes - out->offset) / sizeof(float) ||
+        d_model > UINT32_MAX || blocks_per_row > UINT32_MAX || embed_table->offset > UINT32_MAX ||
+        o_off > UINT32_MAX) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (embed_table->buffer->owner != be->state || out->buffer->owner != be->state) {
+        return GEIST_E_INVALID_ARG;
+    }
+    uint32_t ids_u32[METAL_EMBED_ROWS_MAX];
+    for (size_t i = 0; i < n_rows; i++) {
+        if (ids[i] < 0 || (size_t) ids[i] >= vocab) {
+            return GEIST_E_INVALID_ARG;
+        }
+        ids_u32[i] = (uint32_t) ids[i];
+    }
+    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct metal_state             *st     = be->state;
+    const struct metal_embed_params params = {
+            .n              = (uint32_t) d_model,
+            .dtype          = (uint32_t) embed_table->dtype,
+            .blocks_per_row = (uint32_t) blocks_per_row,
+            .w_byte_offset  = (uint32_t) embed_table->offset,
+            .y_offset       = (uint32_t) o_off,
+            .token_id       = (uint32_t) n_rows, /* row count in the batch kernel */
+            .scale          = scale,
+    };
+    if (!st->sequence_active) {
+        return GEIST_E_UNSUPPORTED; /* prefill runs sequenced; loop covers the rest */
+    }
+    void *enc = metal_sequence_encoder(st);
+    if (enc == nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_BACKEND, "metal embedding_lookup_scaled_rows: no encoder");
+        return GEIST_E_BACKEND;
+    }
+    metal_msg_send_set_pipeline(st, enc, st->embed_lookup_scaled_rows_pipeline);
+    metal_msg_send_set_buffer(st, enc, embed_table->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, 0, 1);
+    metal_msg_send_set_bytes(st, enc, &params, sizeof params, 2);
+    metal_msg_send_set_bytes(st, enc, ids_u32, n_rows * sizeof(uint32_t), 3);
+    const struct metal_size groups = {
+            .width  = ((uint32_t) d_model + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
+            .height = (uint32_t) n_rows,
+            .depth  = 1,
+    };
+    const struct metal_size threads = {.width = METAL_ELEM_THREADS, .height = 1, .depth = 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_EMBED, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+    st->sequence_has_work = true;
     return GEIST_OK;
 }
 
@@ -3728,20 +3847,21 @@ static const struct geist_backend_primitives metal_prims = {
 };
 
 static const struct geist_backend_fused metal_fused = {
-        .supported               = metal_fused_supported,
-        .gelu_tanh_mul           = metal_gelu_tanh_mul,
-        .linear_t                = metal_linear_t,
-        .linear_t_pair           = metal_linear_t_pair,
-        .embedding_lookup_scaled = metal_embedding_lookup_scaled,
-        .kv_append_f16           = metal_kv_append_f16,
-        .argmax_f32              = metal_argmax_f32,
-        .ffn_gate_up             = metal_ffn_gate_up,
-        .attn_qkv_prep           = metal_attn_qkv_prep,
-        .ple_block               = metal_ple_block,
-        .rmsnorm_add             = metal_rmsnorm_add,
-        .deltanet_mix            = metal_deltanet_mix,
-        .attn_qgate_split        = metal_attn_qgate_split,
-        .sigmoid_mul             = metal_sigmoid_mul,
+        .supported                    = metal_fused_supported,
+        .gelu_tanh_mul                = metal_gelu_tanh_mul,
+        .linear_t                     = metal_linear_t,
+        .linear_t_pair                = metal_linear_t_pair,
+        .embedding_lookup_scaled      = metal_embedding_lookup_scaled,
+        .embedding_lookup_scaled_rows = metal_embedding_lookup_scaled_rows,
+        .kv_append_f16                = metal_kv_append_f16,
+        .argmax_f32                   = metal_argmax_f32,
+        .ffn_gate_up                  = metal_ffn_gate_up,
+        .attn_qkv_prep                = metal_attn_qkv_prep,
+        .ple_block                    = metal_ple_block,
+        .rmsnorm_add                  = metal_rmsnorm_add,
+        .deltanet_mix                 = metal_deltanet_mix,
+        .attn_qgate_split             = metal_attn_qgate_split,
+        .sigmoid_mul                  = metal_sigmoid_mul,
 };
 
 const struct geist_backend_descriptor geist_backend_metal = {
