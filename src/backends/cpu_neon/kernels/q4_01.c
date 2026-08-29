@@ -248,10 +248,10 @@ void linear_q4_0_decode_w4a8_x8_pre(const int8_t  *x_q8,
             int32x4_t         a0     = vdupq_n_s32(0);
             int32x4_t         a1     = vdupq_n_s32(0);
 /* lane index must be a literal — unrolled via macro */
-#define Q4_0_X8_V2_LANE(j)                                                                        \
-    do {                                                                                          \
-        const uint8x16_t q0_ = vld1q_u8(blk->qs + (j) *16);                                       \
-        const uint8x16_t q1_ = vld1q_u8(blk->qs + 64 + (j) *16);                                  \
+#define Q4_0_X8_V2_LANE(j)                                                                       \
+    do {                                                                                         \
+        const uint8x16_t q0_ = vld1q_u8(blk->qs + (j) * 16);                                     \
+        const uint8x16_t q1_ = vld1q_u8(blk->qs + 64 + (j) * 16);                                \
         a0 = vdotq_laneq_s32(a0, vreinterpretq_s8_u8(vandq_u8(q0_, vdupq_n_u8(0x0F))), xa, (j)); \
         a0 = vdotq_laneq_s32(a0, vreinterpretq_s8_u8(vshrq_n_u8(q0_, 4)), xz, (j));              \
         a1 = vdotq_laneq_s32(a1, vreinterpretq_s8_u8(vandq_u8(q1_, vdupq_n_u8(0x0F))), xa, (j)); \
@@ -381,10 +381,10 @@ void linear_q4_0_w4a8_prefill_x8(
                 for (int j = 0; j < 4; j++) {
                     const uint8x16_t q0 = vld1q_u8(blk->qs + j * 16);
                     const uint8x16_t q1 = vld1q_u8(blk->qs + 64 + j * 16);
-                    tl0[j] = vreinterpretq_s8_u8(vandq_u8(q0, vdupq_n_u8(0x0F)));
-                    th0[j] = vreinterpretq_s8_u8(vshrq_n_u8(q0, 4));
-                    tl1[j] = vreinterpretq_s8_u8(vandq_u8(q1, vdupq_n_u8(0x0F)));
-                    th1[j] = vreinterpretq_s8_u8(vshrq_n_u8(q1, 4));
+                    tl0[j]              = vreinterpretq_s8_u8(vandq_u8(q0, vdupq_n_u8(0x0F)));
+                    th0[j]              = vreinterpretq_s8_u8(vshrq_n_u8(q0, 4));
+                    tl1[j]              = vreinterpretq_s8_u8(vandq_u8(q1, vdupq_n_u8(0x0F)));
+                    th1[j]              = vreinterpretq_s8_u8(vshrq_n_u8(q1, 4));
                 }
                 for (size_t t = 0; t < tcnt; t++) {
                     const int8_t   *xb = x_q8 + (t0 + t) * n_in + b * Q4_0_BLOCK_ELEMS;
