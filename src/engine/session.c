@@ -197,12 +197,37 @@ void *geist_session_internal_arch_session(struct geist_session *s) {
     return s != nullptr ? arch_sess(as_full(s)) : nullptr;
 }
 
+/* Close an open streaming audio turn and release its scratch, without
+ * finishing it. Idempotent: safe when no turn is open and safe to call
+ * twice, so destroy can call it unconditionally.
+ *
+ * Both halves matter. The scratch is a session-lifetime allocation that
+ * only audio_end used to free, so a session destroyed mid-turn leaked it.
+ * And the encoder stream is state inside the ENCODER, shared across
+ * sessions of the same model: leaving it open outlives the session that
+ * opened it. */
+static void session_audio_stream_release(struct geist_session_full *sf) {
+    if (sf->audio_streaming) {
+        const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
+        void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+        if (enc_ops != nullptr && enc_st != nullptr && enc_ops->stream_abort != nullptr) {
+            enc_ops->stream_abort(enc_st);
+        }
+        sf->audio_streaming = false;
+    }
+    safe_free((void **) &sf->audio_stream_buf);
+    sf->audio_stream_cap      = 0;
+    sf->audio_stream_injected = 0;
+}
+
 void geist_session_destroy(struct geist_session *s) {
     if (s == nullptr) {
         return;
     }
     struct geist_session_full           *sf  = as_full(s);
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    /* A turn still open at destroy is aborted, not abandoned. */
+    session_audio_stream_release(sf);
     /* P1.2.f: release this session's per-session arch state if it owns
      * one. */
     if (sf->arch_session != nullptr && ops != nullptr && ops->session_free != nullptr) {
@@ -822,24 +847,33 @@ geist_session_attach_audio(struct geist_session *s,
         sf->err_code = GEIST_E_INVALID_STATE;
         return GEIST_E_INVALID_STATE;
     }
-    if (!enc_ops->stream_begin(enc_st)) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: encoder stream_begin failed");
-        sf->err_code = GEIST_E_BACKEND;
-        return GEIST_E_BACKEND;
-    }
     /* Scratch for poll/end, sized for the encoder's 30 s worst case so
-     * incremental injection never reallocates mid-turn. */
+     * incremental injection never reallocates mid-turn.
+     *
+     * Allocated BEFORE stream_begin, deliberately. The other order left a
+     * window where the encoder stream was running and the allocation had
+     * failed: audio_begin returned OOM, audio_streaming stayed false, and
+     * nothing afterwards could reach the open stream to close it. Every
+     * fallible step now happens while there is still nothing to unwind,
+     * so the only thing after the commit point is bookkeeping. */
     size_t cap = 256;
     if (enc_ops->max_soft_tokens != nullptr) {
         cap = enc_ops->max_soft_tokens(enc_st, (size_t) -1); /* clamped internally */
     }
     const size_t soft_dim = enc_ops->soft_token_dim(enc_st);
-    sf->audio_stream_buf  = heap_alloc_array_aligned(float, cap *soft_dim);
-    if (sf->audio_stream_buf == nullptr) {
+    float       *scratch  = heap_alloc_n_aligned(cap, soft_dim * sizeof(float), alignof(float));
+    if (scratch == nullptr) {
         snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: scratch alloc failed");
         sf->err_code = GEIST_E_OOM;
         return GEIST_E_OOM;
     }
+    if (!enc_ops->stream_begin(enc_st)) {
+        safe_free((void **) &scratch);
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: encoder stream_begin failed");
+        sf->err_code = GEIST_E_BACKEND;
+        return GEIST_E_BACKEND;
+    }
+    sf->audio_stream_buf      = scratch;
     sf->audio_stream_cap      = cap;
     sf->audio_stream_injected = 0;
     sf->audio_streaming       = true;
