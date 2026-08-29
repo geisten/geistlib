@@ -9,6 +9,11 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **Lane-SDOT accumulation in the Q4_0 x8 int8 GEMM**: 4×4 u32 row
+  transposes + `vdotq_laneq_s32` replace the per-(row,token) `vaddvq`
+  horizontal adds — one accumulator carries four output rows in its
+  lanes. Bit-identical logits (pinned on-board); Pi 5 4B prefill
+  16.5 → 19.4 t/s on top of the x8 default flip.
 - **Q4_0 x8 interleave default-on wherever SDOT exists** (was Mac-only,
   Pi opt-in): the Pi 5 4B A/B shows prefill 9.1 → 16.5 t/s via the #295
   int8 mN GEMM at a net +0.5 GB RSS — the cold Q4_0 mmap pages get
