@@ -134,6 +134,23 @@ int main(void) {
         }
     }
 
+    /* Failure propagation: pinning past max_seq_len must report the error,
+     * not a silent GEIST_OK with an empty cache. Runs last — a failed pin
+     * leaves the session truncated. */
+    static geist_token_t too_many[1025];
+    for (size_t i = 0; i < sizeof(too_many) / sizeof(too_many[0]); i++) {
+        too_many[i] = 2;
+    }
+    s = geist_session_pin_prefix(sess, sizeof(too_many) / sizeof(too_many[0]), too_many);
+    if (s == GEIST_OK) {
+        fprintf(stderr, "MISMATCH: pin_prefix of 1025 tokens into a 1024-slot KV returned OK\n");
+        fails++;
+    } else {
+        printf("overflow pin rejected: %s — %s\n",
+               geist_status_to_string(s),
+               geist_session_errmsg(sess));
+    }
+
     geist_session_destroy(sess);
     geist_model_destroy(model);
     geist_backend_destroy(be);
