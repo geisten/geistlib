@@ -590,6 +590,12 @@ struct geist_backend_caps {
      * mode). Unified-memory GPUs (metal) leave this false. */
     bool weights_need_backend_arena;
 
+    /* deltanet_mix() sub-chunks long sequences internally (the O(C²)
+     * chunk recipe runs at its own optimal granularity regardless of
+     * the caller's m). Consumer: state_create skips the DN m_max cap,
+     * so the surrounding GEMMs keep their occupancy-friendly batch. */
+    bool dn_subchunk;
+
     /* Preferred prefill batch size (m_max) measured for this backend;
      * 0 = use the arch default. Consumer: state_create's m_max default.
      * (metal: 128 — mm_sg GEMM fast paths want rows%64==0 and fewer,
