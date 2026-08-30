@@ -336,12 +336,12 @@ void metal_capture_end(struct metal_state *st) {
 /* GEIST_METAL_DEBUG_LINEAR=1: per-linear x/y absmax trace. Every layer
  * stage flows through linear, so the first all-zero input pinpoints which
  * in-between op (rmsnorm/rope/attention/add/mul) lost the data. */
-void metal_linear_debug_stats(const float               *x,
-                              size_t                     nx,
-                              const float               *y,
+void metal_linear_debug_stats(size_t                     nx,
                               size_t                     ny,
-                              const struct geist_weight *w,
-                              size_t                     m) {
+                              size_t                     m,
+                              const float               *x,
+                              const float               *y,
+                              const struct geist_weight *w) {
     static _Atomic int enabled = -1;
     if (enabled < 0) {
         const char *e = getenv("GEIST_METAL_DEBUG_LINEAR");

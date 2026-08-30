@@ -34,19 +34,19 @@
  *
  * Buffer pointers via buffer_map by the caller. Geometry parameters
  * R, head_dim, n_kv_heads are per layer (R is KIVI-fixed). */
-void kivi_drain_one_layer(float   *k_residual,
+void kivi_drain_one_layer(size_t   drained_count,
+                          size_t   residual_count,
+                          size_t   R,
+                          size_t   head_dim,
+                          size_t   n_kv_heads,
+                          float   *k_residual,
                           float   *v_residual,
                           uint8_t *k_q4,
                           uint8_t *v_q4,
                           float   *k_scales,
                           float   *k_zeros,
                           float   *v_scales,
-                          float   *v_zeros,
-                          size_t   drained_count,
-                          size_t   residual_count,
-                          size_t   R,
-                          size_t   head_dim,
-                          size_t   n_kv_heads) {
+                          float   *v_zeros) {
 
     const size_t group_idx            = drained_count / R;
     const size_t packed_bytes_per_tok = head_dim / 4;
@@ -94,10 +94,16 @@ void kivi_drain_one_layer(float   *k_residual,
  * dot-products against Q. V is dequant-and-weighted-sum inline.
  * Q is FP32 throughout (no INT8 sym-quant) to keep numerical fidelity
  * on the high-precision side. */
-void attention_kivi_via_buffers(const float   *q,
-                                size_t         n_q,
+void attention_kivi_via_buffers(size_t         n_q,
                                 size_t         n_q_heads,
                                 size_t         head_dim,
+                                size_t         n_kv,
+                                size_t         n_kv_heads,
+                                size_t         q_offset,
+                                size_t         sliding_window,
+                                size_t         drained_count,
+                                size_t         R,
+                                const float   *q,
                                 const uint8_t *k_q4,
                                 const float   *k_scales,
                                 const float   *k_zeros,
@@ -106,12 +112,6 @@ void attention_kivi_via_buffers(const float   *q,
                                 const float   *v_zeros,
                                 const float   *k_residual,
                                 const float   *v_residual,
-                                size_t         n_kv,
-                                size_t         n_kv_heads,
-                                size_t         q_offset,
-                                size_t         sliding_window,
-                                size_t         drained_count,
-                                size_t         R,
                                 float          scores[static n_kv],
                                 float         *out) {
 
@@ -217,18 +217,18 @@ void attention_kivi_via_buffers(const float   *q,
  *   k_scale[n_kv, n_kv_heads]                     F32
  *   v_scale[n_kv, n_kv_heads]                     F32
  *   out[seq, n_q_heads, head_dim]                 F32 */
-void attention_int8_via_buffers(const float  *q,
-                                size_t        n_q,
+void attention_int8_via_buffers(size_t        n_q,
                                 size_t        n_q_heads,
                                 size_t        head_dim,
-                                const int8_t *k_q8,
-                                const float  *k_scale,
-                                const int8_t *v_q8,
-                                const float  *v_scale,
                                 size_t        n_kv,
                                 size_t        n_kv_heads,
                                 size_t        q_offset,
                                 size_t        sliding_window,
+                                const float  *q,
+                                const int8_t *k_q8,
+                                const float  *k_scale,
+                                const int8_t *v_q8,
+                                const float  *v_scale,
                                 float        *out) {
 
     const size_t kv_group_size = n_q_heads / n_kv_heads;
@@ -345,18 +345,18 @@ void attention_int8_via_buffers(const float  *q,
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #endif
-void attention_int4_via_buffers(const float   *q,
-                                size_t         n_q,
+void attention_int4_via_buffers(size_t         n_q,
                                 size_t         n_q_heads,
                                 size_t         head_dim,
-                                const uint8_t *k_q4,
-                                const float   *k_scale,
-                                const uint8_t *v_q4,
-                                const float   *v_scale,
                                 size_t         n_kv,
                                 size_t         n_kv_heads,
                                 size_t         q_offset,
                                 size_t         sliding_window,
+                                const float   *q,
+                                const uint8_t *k_q4,
+                                const float   *k_scale,
+                                const uint8_t *v_q4,
+                                const float   *v_scale,
                                 float         *out) {
 
     const size_t kv_group_size = n_q_heads / n_kv_heads;
@@ -397,7 +397,7 @@ void attention_int4_via_buffers(const float   *q,
 
             for (size_t s = s_lo; s <= s_hi; s++) {
                 int8_t k[512];
-                int4_unpack_row(k_q4 + (s * n_kv_heads + kv_h) * packed, k, head_dim);
+                int4_unpack_row(head_dim, k_q4 + (s * n_kv_heads + kv_h) * packed, k);
                 const float ks      = k_scale[s * n_kv_heads + kv_h];
                 int32_t     int_dot = 0;
 #if defined(__ARM_NEON)
@@ -438,7 +438,7 @@ void attention_int4_via_buffers(const float   *q,
             }
             for (size_t s = s_lo; s <= s_hi; s++) {
                 int8_t vv[512];
-                int4_unpack_row(v_q4 + (s * n_kv_heads + kv_h) * packed, vv, head_dim);
+                int4_unpack_row(head_dim, v_q4 + (s * n_kv_heads + kv_h) * packed, vv);
                 const float vs  = v_scale[s * n_kv_heads + kv_h];
                 const float wvs = scores[s] * inv_sum * vs;
                 for (size_t i = 0; i < head_dim; i++) {

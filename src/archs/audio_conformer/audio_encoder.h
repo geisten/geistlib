@@ -44,23 +44,23 @@ size_t audio_encoder_max_soft_tokens(size_t n_samples);
  * 1536 for E2B, 2560 for E4B. Size pull buffers with this. */
 size_t audio_encoder_soft_dim(const struct AudioEncoder *);
 size_t audio_encoder_run(const struct AudioEncoder *,
+                         size_t       n_mel_frames,
                          const float *mel_in,
                          const bool  *mel_mask_in,
-                         size_t       n_mel_frames,
                          float       *softtokens_out);
 
 /* === Phase 8 — streaming push/pull API (thread-safe) ===
  *
  * Frontend pattern (single-thread / stdin-style):
- *   while ((n = read(stdin, pcm))) audio_encoder_push_pcm(enc, pcm, n);
+ *   while ((n = read(stdin, pcm))) audio_encoder_push_pcm(enc, n, pcm);
  *   audio_encoder_end_input(enc);
- *   while ((m = audio_encoder_pull_softtokens(enc, soft, 32, 0))) handle(m);
+ *   while ((m = audio_encoder_pull_softtokens(enc, 32, soft, 0))) handle(m);
  *
  * Frontend pattern (multi-thread / mic-style):
- *   audio thread:   audio_encoder_push_pcm(enc, samples, n);  // fast, memcpy
+ *   audio thread:   audio_encoder_push_pcm(enc, n, samples);  // fast, memcpy
  *   user button:    audio_encoder_end_input(enc);
  *   inf thread:     while (running) {
- *                       n = audio_encoder_pull_softtokens(enc, buf, 32, -1);
+ *                       n = audio_encoder_pull_softtokens(enc, 32, buf, -1);
  *                       if (n) ... else if (audio_encoder_segment_done(enc)) ...
  *                   }
  *
@@ -75,7 +75,7 @@ size_t audio_encoder_run(const struct AudioEncoder *,
 
 /* Append PCM samples to the internal buffer. Returns 0 on success, -1 on
  * overflow (>30s buffered = audio_seq_length limit) or after shutdown. */
-int audio_encoder_push_pcm(struct AudioEncoder *, const int16_t *samples, size_t n);
+int audio_encoder_push_pcm(struct AudioEncoder *, size_t n, const int16_t samples[static n]);
 
 /* Mark end-of-input. The next pull call will trigger encoder execution.
  * After end_input, pull calls drain the soft-token sequence and then
@@ -87,7 +87,7 @@ void audio_encoder_end_input(struct AudioEncoder *);
  *             >0 = block up to N ms. Returns count copied (0 if none ready
  * or timed out). After the segment is fully drained returns 0. */
 size_t
-audio_encoder_pull_softtokens(struct AudioEncoder *, float *out, size_t max_out, int timeout_ms);
+audio_encoder_pull_softtokens(struct AudioEncoder *, size_t max_out, float *out, int timeout_ms);
 
 /* True iff end_input was called AND all soft-tokens have been pulled.
  * Use to decide when to call audio_encoder_reset() for a new utterance. */
@@ -105,9 +105,9 @@ void audio_encoder_reset(struct AudioEncoder *);
 struct audio_stream_state;
 size_t                     audio_encoder_stream_push(struct AudioEncoder *,
                                                      struct audio_stream_state *,
+                                                     size_t       n_mel_total,
                                                      const float *mel_full,
                                                      const bool  *mel_mask,
-                                                     size_t       n_mel_total,
                                                      bool         is_final);
 struct audio_stream_state *audio_encoder_stream_state(struct AudioEncoder *);
 const float               *audio_stream_state_soft(const struct audio_stream_state *);

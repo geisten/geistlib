@@ -42,7 +42,7 @@ static size_t encode(const char *tower, const int16_t *pcm, float *soft, bool li
     }
     for (size_t off = 0; off < N_PCM; off += PUSH_CHUNK) {
         size_t take = N_PCM - off < PUSH_CHUNK ? N_PCM - off : PUSH_CHUNK;
-        if (audio_encoder_push_pcm(enc, pcm + off, take) != 0) {
+        if (audio_encoder_push_pcm(enc, take, pcm + off) != 0) {
             audio_encoder_destroy(enc);
             return 0;
         }
@@ -51,7 +51,7 @@ static size_t encode(const char *tower, const int16_t *pcm, float *soft, bool li
     size_t total = 0;
     while (total < AUDIO_TEST_MAX_SOFT && !audio_encoder_segment_done(enc)) {
         size_t got = audio_encoder_pull_softtokens(
-                enc, soft + total * AUDIO_TEST_SOFT_DIM, AUDIO_TEST_MAX_SOFT - total, -1);
+                enc, AUDIO_TEST_MAX_SOFT - total, soft + total * AUDIO_TEST_SOFT_DIM, -1);
         if (got == 0 && audio_encoder_segment_done(enc)) {
             break;
         }

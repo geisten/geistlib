@@ -24,6 +24,6 @@ static inline bool fwht_supported(size_t n) {
 
 /* In-place orthonormal FWHT over a[0..n). n MUST be a power of two
  * (see fwht_supported). O(n log n). */
-void fwht_orthonormal(float *a, size_t n);
+void fwht_orthonormal(size_t n, float a[static n]);
 
 #endif /* GEIST_FWHT_H */

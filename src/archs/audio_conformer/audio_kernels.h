@@ -57,10 +57,10 @@ void layernorm_fp32_ws(
         const float *x, const float *gamma, size_t batch, size_t d, float eps, float *y);
 
 /* In-place SiLU (a.k.a. swish): y = x * sigmoid(x). */
-void silu_fp32(float *x, size_t n);
+void silu_fp32(size_t n, float x[static n]);
 
 /* In-place clamp: x[i] = clamp(x[i], lo, hi). */
-void clamp_fp32(float *x, size_t n, float lo, float hi);
+void clamp_fp32(size_t n, float x[static n], float lo, float hi);
 
 /* In-place GLU on rows: split last axis (length 2*d) in half, output dim d.
  *   y[r, i] = x[r, i] * sigmoid(x[r, d + i])    for i in [0, d)
@@ -78,6 +78,6 @@ void depthwise_conv1d_causal_fp32(
         const float *in, const float *w, float *out, int channels, int t_in, int kernel);
 
 /* In-place softmax on each row of length d (n_rows × d total). */
-void softmax_fp32(float *x, size_t n_rows, size_t d);
+void softmax_fp32(size_t n_rows, size_t d, float *x);
 
 #endif

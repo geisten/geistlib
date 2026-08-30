@@ -43,13 +43,13 @@ static size_t encode_once(const char *tower_path, const int16_t *pcm, float *sof
     if (enc == nullptr) {
         return 0;
     }
-    audio_encoder_push_pcm(enc, pcm, N_PCM);
+    audio_encoder_push_pcm(enc, N_PCM, pcm);
     audio_encoder_end_input(enc);
     size_t total = 0;
     size_t got;
     while (total < AUDIO_TEST_MAX_SOFT &&
            (got = audio_encoder_pull_softtokens(
-                    enc, soft + total * AUDIO_TEST_SOFT_DIM, AUDIO_TEST_MAX_SOFT - total, -1)) >
+                    enc, AUDIO_TEST_MAX_SOFT - total, soft + total * AUDIO_TEST_SOFT_DIM, -1)) >
                    0) {
         total += got;
     }

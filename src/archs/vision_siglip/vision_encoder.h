@@ -56,14 +56,14 @@ size_t vision_encoder_soft_dim(const struct VisionEncoder *);
  * projector land in P4). For per-block parity testing, call
  * vision_encoder_run_tower() directly. */
 size_t vision_encoder_run_image(
-        const struct VisionEncoder *, const uint8_t *rgb, size_t height, size_t width, float *out);
+        const struct VisionEncoder *, size_t height, size_t width, const uint8_t *rgb, float *out);
 
 /* Batched video-tower forward. */
 size_t vision_encoder_run_video(const struct VisionEncoder *,
-                                const uint8_t *frames,
                                 size_t         n_frames,
                                 size_t         height,
                                 size_t         width,
+                                const uint8_t *frames,
                                 float         *out);
 
 /* P3 entry point: full tower forward on pre-processed patches.

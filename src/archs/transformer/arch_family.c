@@ -495,7 +495,7 @@ static enum geist_ffn_activation_kind ffn_activation_from_meta(struct gguf_ctx *
     if (s == nullptr) {
         s = gguf_get_meta_string(gguf, "general.feed_forward_activation", &len);
     }
-    return geist_ffn_activation_select(arch, al, s, s != nullptr ? len : 0);
+    return geist_ffn_activation_select(al, s != nullptr ? len : 0, arch, s);
 }
 
 static void populate_bitnet_b158(struct gguf_ctx *gguf, struct transformer_arch_state *st) {

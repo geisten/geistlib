@@ -19,8 +19,8 @@ static int test_levels_exact(void) {
     x[15] = 0.0f;
     uint8_t packed[8];
     int8_t  out[16];
-    int4_pack_row(x, 1.0f, packed, 16);
-    int4_unpack_row(packed, out, 16);
+    int4_pack_row(16, x, 1.0f, packed);
+    int4_unpack_row(16, packed, out);
     for (size_t i = 0; i < 16; i++) {
         if (out[i] != (int8_t) lrintf(x[i])) {
             printf("level %zu: got %d want %d (packed sign-extension wrong?)\n",
@@ -37,14 +37,14 @@ static int test_levels_exact(void) {
 static int test_nibble_order(void) {
     float   x[2] = {3.0f, -5.0f};
     uint8_t b;
-    int4_pack_row(x, 1.0f, &b, 2);
+    int4_pack_row(2, x, 1.0f, &b);
     /* low = 3 (0x3), high = -5 (0xB) → byte 0xB3 */
     if (b != 0xB3) {
         printf("nibble order: byte=0x%02X want 0xB3\n", b);
         return 1;
     }
     int8_t out[2];
-    int4_unpack_row(&b, out, 2);
+    int4_unpack_row(2, &b, out);
     if (out[0] != 3 || out[1] != -5) {
         printf("nibble order unpack: %d,%d want 3,-5\n", out[0], out[1]);
         return 1;
@@ -67,8 +67,8 @@ static int test_scaled_roundtrip(void) {
     const float scale = amax / 7.0f;
     uint8_t     packed[N / 2];
     int8_t      q[N];
-    int4_pack_row(x, 1.0f / scale, packed, N);
-    int4_unpack_row(packed, q, N);
+    int4_pack_row(N, x, 1.0f / scale, packed);
+    int4_unpack_row(N, packed, q);
     for (size_t i = 0; i < N; i++) {
         const float deq = (float) q[i] * scale;
         if (fabsf(deq - x[i]) > 0.5f * scale + 1e-4f) {
