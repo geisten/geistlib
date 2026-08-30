@@ -183,7 +183,7 @@ int main(int argc, char **argv) {
     /* Run end-to-end. */
     float *soft = malloc(VISION_SOFT_TOKENS_PER_IMAGE * V_SOFT * sizeof(float));
     fprintf(stdout, "running vision_encoder_run_image (h=%d w=%d)...\n", h, w);
-    size_t n_soft = vision_encoder_run_image(enc, rgb, (size_t) h, (size_t) w, soft);
+    size_t n_soft = vision_encoder_run_image(enc, (size_t) h, (size_t) w, rgb, soft);
     vision_encoder_destroy(enc);
     stbi_image_free(rgb);
 

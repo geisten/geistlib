@@ -5,7 +5,7 @@
 
 #include <math.h>
 
-void fwht_orthonormal(float *a, size_t n) {
+void fwht_orthonormal(size_t n, float a[static n]) {
     /* Butterfly passes: unnormalized Hadamard (H_n = H_2 ⊗ H_{n/2}). */
     for (size_t len = 1; len < n; len <<= 1) {
         for (size_t i = 0; i < n; i += (len << 1)) {

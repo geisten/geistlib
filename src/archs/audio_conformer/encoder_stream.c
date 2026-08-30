@@ -27,7 +27,7 @@ static int ensure_mel(struct AudioEncoder *a) {
     return a->mel ? 0 : -1;
 }
 
-int audio_encoder_push_pcm(struct AudioEncoder *a, const int16_t *samples, size_t n) {
+int audio_encoder_push_pcm(struct AudioEncoder *a, size_t n, const int16_t samples[static n]) {
     pthread_mutex_lock(&a->mtx);
     if (a->shutdown_flag || a->end_input_flag || a->pcm_len + n > a->pcm_cap) {
         pthread_mutex_unlock(&a->mtx);
@@ -108,7 +108,7 @@ static int compute_segment_locked(struct AudioEncoder *a) {
 
     const size_t max_soft = audio_soft_bound_from_mel(n_mel);
     float       *soft     = heap_alloc_array_aligned(float, max_soft * a->soft_dim);
-    size_t       n_soft   = audio_encoder_run(a, mel_view, mask, n_mel, soft);
+    size_t       n_soft   = audio_encoder_run(a, n_mel, mel_view, mask, soft);
     safe_free((void **) &mask);
 
     pthread_mutex_lock(&a->mtx);
@@ -130,7 +130,7 @@ static void make_deadline(struct timespec *ts, int timeout_ms) {
 }
 
 size_t
-audio_encoder_pull_softtokens(struct AudioEncoder *a, float *out, size_t max_out, int timeout_ms) {
+audio_encoder_pull_softtokens(struct AudioEncoder *a, size_t max_out, float *out, int timeout_ms) {
     pthread_mutex_lock(&a->mtx);
     while (true) {
         if (a->shutdown_flag) {
@@ -455,7 +455,7 @@ static void attn_run_streaming_block(struct audio_stream_state *state,
                 scores_ac[i * CONTEXT_SIZE + j] = s;
             }
         }
-        softmax_fp32(scores_ac, CHUNK_SIZE, CONTEXT_SIZE);
+        softmax_fp32(CHUNK_SIZE, CONTEXT_SIZE, scores_ac);
         for (int i = 0; i < CHUNK_SIZE; i++) {
             float *out_row = attn_out + (size_t) i * AUDIO_HIDDEN + (size_t) hd * HEAD_DIM;
             zero_head_fp32(out_row);
@@ -570,7 +570,7 @@ static void lconv_run_streaming(struct audio_stream_state *state,
     safe_free((void **) &h_glu);
 
     rmsnorm_fp32(n, AUDIO_HIDDEN, h, lc->conv_norm, RMS_EPS, h);
-    silu_fp32(h, hsize);
+    silu_fp32(hsize, h);
     float *end_in = heap_alloc_array_aligned(float, hsize);
     memcpy(end_in, h, hsize * sizeof(float));
     clip_linear_apply(&lc->linear_end, end_in, n, AUDIO_HIDDEN, AUDIO_HIDDEN, h);
@@ -631,9 +631,9 @@ static void audio_encoder_layer_run_streaming(const struct AudioEncoder *a,
  * appended to state->soft. */
 size_t audio_encoder_stream_push(struct AudioEncoder       *a,
                                  struct audio_stream_state *state,
+                                 size_t                     n_mel_total,
                                  const float               *mel_full,
                                  const bool                *mel_mask,
-                                 size_t                     n_mel_total,
                                  bool                       is_final) {
     if (state == nullptr || n_mel_total == 0)
         return 0;
@@ -753,7 +753,7 @@ static void worker_do_push(struct AudioEncoder *a, size_t mel_snap, bool is_fina
      * segment with the same padded extra frame the monolithic path uses. */
     size_t n_mel;
     bool  *mask = audio_mel_mask_alloc(mel_snap, is_final, &n_mel);
-    (void) audio_encoder_stream_push(a, a->stream, a->mel_buf, mask, n_mel, is_final);
+    (void) audio_encoder_stream_push(a, a->stream, n_mel, a->mel_buf, mask, is_final);
     safe_free((void **) &mask);
 }
 

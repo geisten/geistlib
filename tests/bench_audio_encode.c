@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
     printf("encoder loaded: %.0f ms (cold)\n", t_create);
 
     const double t_push_0 = now_ms();
-    if (audio_encoder_push_pcm(enc, pcm, n_samples) != 0) {
+    if (audio_encoder_push_pcm(enc, n_samples, pcm) != 0) {
         fprintf(stderr, "push_pcm failed\n");
         audio_encoder_destroy(enc);
         free(pcm);
@@ -90,7 +90,7 @@ int main(int argc, char **argv) {
     }
 
     const double t_encode_0 = now_ms();
-    const size_t n_soft     = audio_encoder_pull_softtokens(enc, soft, max_soft, -1);
+    const size_t n_soft     = audio_encoder_pull_softtokens(enc, max_soft, soft, -1);
     const double t_encode   = now_ms() - t_encode_0;
 
     printf("\n--- bench_audio_encode results ---\n");

@@ -23,7 +23,7 @@ void clip_linear_apply(const struct ClippableLinear *cl,
                        size_t                        in_dim,
                        size_t                        out_dim,
                        float                        *y) {
-    clamp_fp32(x, n * in_dim, cl->input_min, cl->input_max);
+    clamp_fp32(n * in_dim, x, cl->input_min, cl->input_max);
 
     const enum audio_linear_prec   prec = cl->prec;
     const struct audio_linear_ops *ops  = audio_linear_bind();
@@ -44,7 +44,7 @@ void clip_linear_apply(const struct ClippableLinear *cl,
         linear_fp32(n, in_dim, out_dim, x, cl->w, nullptr, y);
         break;
     }
-    clamp_fp32(y, n * out_dim, cl->output_min, cl->output_max);
+    clamp_fp32(n * out_dim, y, cl->output_min, cl->output_max);
 }
 
 /* Macaron-style struct FFN: y = norm_post(SiLU(norm_pre(x) @ W1) @ W2) * 0.5 + x */
@@ -57,7 +57,7 @@ void ffn_run(const struct FFN *ffn, float *h, size_t n) {
 
     float *mid = heap_alloc_array_aligned(float, (size_t) n *FFN_INTER);
     clip_linear_apply(&ffn->ffw1, h, n, AUDIO_HIDDEN, FFN_INTER, mid);
-    silu_fp32(mid, (size_t) n * FFN_INTER);
+    silu_fp32((size_t) n * FFN_INTER, mid);
     clip_linear_apply(&ffn->ffw2, mid, n, FFN_INTER, AUDIO_HIDDEN, h);
     safe_free((void **) &mid);
 
@@ -216,7 +216,7 @@ void attn_run(const struct Attn *attn,
                     scores_ac[i * CONTEXT_SIZE + j] = s; /* reuse scores_ac as combined */
                 }
             }
-            softmax_fp32(scores_ac, CHUNK_SIZE, CONTEXT_SIZE);
+            softmax_fp32(CHUNK_SIZE, CONTEXT_SIZE, scores_ac);
 
             /* attn @ V → (CHUNK_SIZE, HEAD_DIM) into attn_out at this block/head slot. */
             for (int i = 0; i < CHUNK_SIZE; i++) {
@@ -282,7 +282,7 @@ void lconv_run(const struct LConv *lc, float *h, size_t n) {
 
     /* conv_norm + SiLU + linear_end + residual */
     rmsnorm_fp32(n, AUDIO_HIDDEN, h, lc->conv_norm, RMS_EPS, h);
-    silu_fp32(h, hsize);
+    silu_fp32(hsize, h);
     float *end_in = heap_alloc_array_aligned(float, hsize);
     memcpy(end_in, h, hsize * sizeof(float));
     clip_linear_apply(&lc->linear_end, end_in, n, AUDIO_HIDDEN, AUDIO_HIDDEN, h);
@@ -763,9 +763,9 @@ size_t audio_encoder_subsample_run_inc(const struct AudioEncoder *a,
 /* Full audio-tower forward: subsample + 12 Conformer layers + output_proj +
  * embed_audio. Caller passes padded mel + mask; output is the soft-token sequence. */
 size_t audio_encoder_run(const struct AudioEncoder *a,
+                         size_t                     n_mel_frames,
                          const float               *mel_in,
                          const bool                *mel_mask_in,
-                         size_t                     n_mel_frames,
                          float                     *softtokens_out) {
     /* Step 1: subsample → (T_sub, 1024). */
     float *sub = heap_alloc_array_aligned(float, (n_mel_frames / 4 + 4) * AUDIO_HIDDEN);

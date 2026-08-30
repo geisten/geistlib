@@ -12,7 +12,7 @@
 #include <stdint.h>
 
 /* Quantize `n` floats at scale `inv` (= 1/scale) into n/2 packed bytes. */
-static inline void int4_pack_row(const float *x, float inv, uint8_t *out, size_t n) {
+static inline void int4_pack_row(size_t n, const float x[static n], float inv, uint8_t *out) {
     for (size_t i = 0; i < n; i += 2) {
         const int lo = (int) lrintf(x[i] * inv);
         const int hi = (int) lrintf(x[i + 1] * inv);
@@ -21,7 +21,7 @@ static inline void int4_pack_row(const float *x, float inv, uint8_t *out, size_t
 }
 
 /* Unpack n/2 bytes into `n` sign-extended int8 values in [-8,7]. */
-static inline void int4_unpack_row(const uint8_t *in, int8_t *out, size_t n) {
+static inline void int4_unpack_row(size_t n, const uint8_t *in, int8_t out[static n]) {
     for (size_t j = 0; j < n / 2; j++) {
         const uint8_t b = in[j];
         out[2 * j]      = (int8_t) ((int8_t) (b << 4) >> 4);   /* low nibble  */

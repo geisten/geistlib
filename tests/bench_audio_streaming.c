@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
     for (size_t off = 0; off < n_samples; off += CHUNK_PCM_SAMPLES) {
         const size_t take =
                 (n_samples - off) < CHUNK_PCM_SAMPLES ? (n_samples - off) : CHUNK_PCM_SAMPLES;
-        audio_encoder_push_pcm(enc, pcm + off, take);
+        audio_encoder_push_pcm(enc, take, pcm + off);
 
         const double target_ms = t0_total + (double) (off + take) / 16.0;
         const double now       = now_ms();
@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
      * incrementally and pull returns as soon as ANY are available. */
     size_t n_soft = 0;
     while (!audio_encoder_segment_done(enc) && n_soft < 256) {
-        size_t take = audio_encoder_pull_softtokens(enc, soft + n_soft * 1536, 256 - n_soft, -1);
+        size_t take = audio_encoder_pull_softtokens(enc, 256 - n_soft, soft + n_soft * 1536, -1);
         if (take == 0)
             break;
         n_soft += take;

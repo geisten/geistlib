@@ -22,7 +22,7 @@
 
 static int                            fails = 0;
 static enum geist_ffn_activation_kind sel(const char *a, size_t al, const char *k, size_t kl) {
-    return geist_ffn_activation_select(a, al, k, kl);
+    return geist_ffn_activation_select(al, kl, a, k);
 }
 
 int main(void) {

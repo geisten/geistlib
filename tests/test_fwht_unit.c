@@ -48,8 +48,8 @@ static int test_self_inverse(void) {
     uint32_t seed = 0x1234u;
     for (size_t i = 0; i < N; i++)
         x[i] = y[i] = gauss(&seed);
-    fwht_orthonormal(y, N);
-    fwht_orthonormal(y, N);
+    fwht_orthonormal(N, y);
+    fwht_orthonormal(N, y);
     for (size_t i = 0; i < N; i++) {
         if (fabsf(y[i] - x[i]) > 1e-4f) {
             printf("self-inverse: y[%zu]=%.6f != x=%.6f\n", i, y[i], x[i]);
@@ -68,8 +68,8 @@ static int test_dot_preserved(void) {
         a[i] = ra[i] = gauss(&seed);
         b[i] = rb[i] = gauss(&seed);
     }
-    fwht_orthonormal(ra, N);
-    fwht_orthonormal(rb, N);
+    fwht_orthonormal(N, ra);
+    fwht_orthonormal(N, rb);
     const float d0 = dot(a, b, N);
     const float d1 = dot(ra, rb, N);
     if (fabsf(d0 - d1) > 1e-3f * (1.0f + fabsf(d0))) {
@@ -89,7 +89,7 @@ static int test_outlier_suppressed(void) {
         x[i] = 0.1f * gauss(&seed);
     x[42]             = 20.0f; /* the outlier */
     const float peak0 = absmax(x, N);
-    fwht_orthonormal(x, N);
+    fwht_orthonormal(N, x);
     const float peak1 = absmax(x, N);
     /* 20.0 spread over sqrt(256)=16 → peak ~1.25, far below 20. Assert a
      * clear drop rather than the exact figure. */

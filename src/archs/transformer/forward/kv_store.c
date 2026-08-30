@@ -133,8 +133,8 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
                 if (rot) {
                     memcpy(krot, k_row, hd * sizeof(float));
                     memcpy(vrot, v_row, hd * sizeof(float));
-                    fwht_orthonormal(krot, hd);
-                    fwht_orthonormal(vrot, hd);
+                    fwht_orthonormal(hd, krot);
+                    fwht_orthonormal(hd, vrot);
                     k_row = krot;
                     v_row = vrot;
                 }
@@ -145,8 +145,8 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
                 if (v_scale == 0.0f)
                     v_scale = 1.0f;
                 const size_t byte_off = (slot * row_elems + h * hd) / 2;
-                int4_pack_row(k_row, 1.0f / k_scale, k_dst + byte_off, hd);
-                int4_pack_row(v_row, 1.0f / v_scale, v_dst + byte_off, hd);
+                int4_pack_row(hd, k_row, 1.0f / k_scale, k_dst + byte_off);
+                int4_pack_row(hd, v_row, 1.0f / v_scale, v_dst + byte_off);
                 k_sca[slot * scales_per_row + h] = k_scale;
                 v_sca[slot * scales_per_row + h] = v_scale;
             }
@@ -181,8 +181,8 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
                 if (rot) {
                     memcpy(krot, k_row, hd * sizeof(float));
                     memcpy(vrot, v_row, hd * sizeof(float));
-                    fwht_orthonormal(krot, hd);
-                    fwht_orthonormal(vrot, hd);
+                    fwht_orthonormal(hd, krot);
+                    fwht_orthonormal(hd, vrot);
                     k_row = krot;
                     v_row = vrot;
                 }
@@ -260,10 +260,16 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                     kv_len_now);
             return GEIST_E_OOM;
         }
-        attention_kivi_via_buffers(qp,
-                                   ctx->seq,
+        attention_kivi_via_buffers(ctx->seq,
                                    st->n_q_heads,
                                    ctx->hd,
+                                   kv_len_now,
+                                   st->n_kv_heads,
+                                   ctx->q_position,
+                                   L->sliding_window,
+                                   sess->kivi_drained_count,
+                                   KIVI_K_GROUP_SIZE,
+                                   qp,
                                    kqp,
                                    kscp,
                                    kzep,
@@ -272,12 +278,6 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                    vzep,
                                    krp,
                                    vrp,
-                                   kv_len_now,
-                                   st->n_kv_heads,
-                                   ctx->q_position,
-                                   L->sliding_window,
-                                   sess->kivi_drained_count,
-                                   KIVI_K_GROUP_SIZE,
                                    scores,
                                    outp);
         v->buffer_unmap(sess->scratch_q);
@@ -301,25 +301,25 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         const size_t   n_rows   = ctx->seq * st->n_q_heads;
         if (rot) {
             for (size_t r = 0; r < n_rows; r++) {
-                fwht_orthonormal(qp + r * ctx->hd, ctx->hd);
+                fwht_orthonormal(ctx->hd, qp + r * ctx->hd);
             }
         }
-        attention_int4_via_buffers(qp,
-                                   ctx->seq,
+        attention_int4_via_buffers(ctx->seq,
                                    st->n_q_heads,
                                    ctx->hd,
-                                   k_q4p,
-                                   k_scalep,
-                                   v_q4p,
-                                   v_scalep,
                                    kv_len_now,
                                    st->n_kv_heads,
                                    ctx->q_position,
                                    L->sliding_window,
+                                   qp,
+                                   k_q4p,
+                                   k_scalep,
+                                   v_q4p,
+                                   v_scalep,
                                    outp);
         if (rot) {
             for (size_t r = 0; r < n_rows; r++) {
-                fwht_orthonormal(outp + r * ctx->hd, ctx->hd);
+                fwht_orthonormal(ctx->hd, outp + r * ctx->hd);
             }
         }
         v->buffer_unmap(sess->scratch_q);
@@ -342,27 +342,27 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         const size_t n_rows = ctx->seq * st->n_q_heads;
         if (rot) {
             for (size_t r = 0; r < n_rows; r++) {
-                fwht_orthonormal(qp + r * ctx->hd, ctx->hd);
+                fwht_orthonormal(ctx->hd, qp + r * ctx->hd);
             }
         }
         /* `scores` scratch is now private per query position inside the kernel
          * (the loop is parallelized), so no shared arena buffer is needed. */
-        attention_int8_via_buffers(qp,
-                                   ctx->seq,
+        attention_int8_via_buffers(ctx->seq,
                                    st->n_q_heads,
                                    ctx->hd,
-                                   k_q8p,
-                                   k_scalep,
-                                   v_q8p,
-                                   v_scalep,
                                    kv_len_now,
                                    st->n_kv_heads,
                                    ctx->q_position,
                                    L->sliding_window,
+                                   qp,
+                                   k_q8p,
+                                   k_scalep,
+                                   v_q8p,
+                                   v_scalep,
                                    outp);
         if (rot) {
             for (size_t r = 0; r < n_rows; r++) {
-                fwht_orthonormal(outp + r * ctx->hd, ctx->hd);
+                fwht_orthonormal(ctx->hd, outp + r * ctx->hd);
             }
         }
         v->buffer_unmap(sess->scratch_q);
