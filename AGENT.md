@@ -120,9 +120,16 @@ stays uniform. That is enough; do not oversell it in a commit message.
 
 ## 3. Memory
 
-- **All allocation flows through `src/base/heap.h`** — `heap_alloc_aligned`,
-  `heap_calloc_aligned`, `heap_alloc_n_aligned`, and the array macros. Not
-  raw `malloc` / `aligned_alloc`.
+- **Engine, arch and kernel allocation flows through `src/base/heap.h`** —
+  `heap_alloc_aligned`, `heap_calloc_aligned`, `heap_alloc_n_aligned`, and
+  the array macros. Not raw `malloc` / `aligned_alloc`. heap.h is where the
+  alignment guarantee, the overflow check and the huge-page hint live, so
+  anything a kernel will read from belongs there.
+  Narrow exceptions, and they are the only ones: one-time setup that builds
+  C strings (`strdup` for a path, shader-source concatenation in
+  `metal/pipelines.c`), and `realloc`, for which heap.h currently has no
+  equivalent — a gap, not a licence. If you are about to add a
+  twenty-sixth exception, fix heap.h instead.
 - **No runtime heap allocation in hot paths** (per-token, per-layer, per
   block). Use caller-provided workspace or a thread-local high-water buffer.
 - Free through `safe_free(&p)`; it tolerates null and nulls your pointer.
@@ -145,6 +152,30 @@ p += len;
 `p + len` and `&p[len]` are the same expression, and neither is a valid
 check: forming a pointer past one-past-the-end is already undefined, so the
 comparison you meant to make may be folded away.
+
+### `&a->b[n]` versus `a->b + n` — a style choice, nothing more
+
+These are **the same expression**, not two options with different safety.
+C23 6.5.2.1p2 defines `E1[E2]` as `(*((E1)+(E2)))`, so:
+
+```
+&a->b[n]  ==  &(*(a->b + n))  ==  a->b + n
+```
+
+Verified on this project's compilers: identical instruction sequences, and
+identical undefined behaviour past one-past-the-end. Writing the index form
+does **not** reduce pointer arithmetic and does not make a bounds mistake
+safer. If you reach for it hoping for that, you have the bug that #332 was
+about — the only safe bound is the subtraction above.
+
+As pure readability, the house split is:
+
+- `&arr[i]`, `&st->layers[i]` — you mean *the address of that element*.
+  92 uses; keep it.
+- `base + i * stride` — you mean *stride arithmetic*, and the multipliers
+  belong in the open where they can be read. 733 uses; keep that too.
+
+Neither is "cleaner" in general. Match the surrounding code.
 
 ## 5. Errors
 
