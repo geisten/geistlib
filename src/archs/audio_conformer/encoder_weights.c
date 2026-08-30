@@ -26,7 +26,7 @@ float *load_bf16(struct st_ctx *sf, const char *name, size_t expect_elems) {
         fprintf(stderr, "audio_encoder: %s expected %zu elems, got %zu\n", name, expect_elems, n);
         return nullptr;
     }
-    return bf16_alloc_fp32((const uint16_t *) t->data, n);
+    return bf16_alloc_fp32(t->data, n);
 }
 
 /* Read a scalar bf16 tensor (shape ()) → float. */
@@ -36,8 +36,11 @@ static bool load_bf16_scalar(struct st_ctx *sf, const char *name, float *out) {
         fprintf(stderr, "audio_encoder: bad scalar %s\n", name);
         return false;
     }
-    /* Reuse bf16_to_fp32 from gemma4_kernels.h */
-    *out = bf16_to_fp32(*(const uint16_t *) t->data);
+    /* memcpy, not *(const uint16_t *): tensor data sits at an arbitrary byte
+     * offset in the mmap and may be odd-aligned. */
+    uint16_t raw;
+    memcpy(&raw, t->data, sizeof raw);
+    *out = bf16_to_fp32(raw);
     return true;
 }
 

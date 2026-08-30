@@ -16,12 +16,20 @@
  * OpenBLAS / native fallback, selected at build time). */
 #include "geist_gemm.h"
 
-void bf16_array_to_fp32(const uint16_t *src, float *dst, size_t n) {
-    for (size_t i = 0; i < n; i++)
-        dst[i] = bf16_to_fp32(src[i]);
+void bf16_array_to_fp32(const void *src, float *dst, size_t n) {
+    /* Byte pointer + memcpy: safetensors tensor data starts at an arbitrary
+     * byte offset in the mmap, so a uint16_t load off it can be misaligned
+     * (UB, caught by UBSan). memcpy of 2 bytes costs nothing — the compiler
+     * still emits an unaligned vector load. */
+    const unsigned char *p = (const unsigned char *) src;
+    for (size_t i = 0; i < n; i++) {
+        uint16_t bf;
+        memcpy(&bf, p + i * 2, sizeof bf);
+        dst[i] = bf16_to_fp32(bf);
+    }
 }
 
-float *bf16_alloc_fp32(const uint16_t *src, size_t n) {
+float *bf16_alloc_fp32(const void *src, size_t n) {
     float *dst = heap_alloc_array_aligned(float, n);
     if (!dst)
         return nullptr;
