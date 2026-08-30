@@ -340,15 +340,15 @@ static void run_embedding_case(struct geist_backend *mt, int dtype, const char *
     fill_blob(table, dim, vocab, dtype);
     const uint8_t *row = table + token * (dim / block) * bb;
     if (dtype == GEIST_DTYPE_Q4_0) {
-        dequant_q4_0_row(row, expected, dim);
+        dequant_q4_0_row(dim, row, expected);
     } else if (dtype == GEIST_DTYPE_Q8_0) {
-        dequant_q8_0_row(row, expected, dim);
+        dequant_q8_0_row(dim, row, expected);
     } else if (dtype == GEIST_DTYPE_Q4_K) {
-        dequant_q4_K_row(row, expected, dim);
+        dequant_q4_K_row(dim, row, expected);
     } else if (dtype == GEIST_DTYPE_Q5_K) {
-        dequant_q5_K_row(row, expected, dim);
+        dequant_q5_K_row(dim, row, expected);
     } else {
-        dequant_q6_K_row(row, expected, dim);
+        dequant_q6_K_row(dim, row, expected);
     }
     struct geist_tensor tt = {.buffer = bt,
                               .dtype  = (enum geist_dtype) dtype,

@@ -77,34 +77,34 @@ static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *r
         return true;
     }
     case GEIST_DTYPE_Q3_K:
-        dequant_q3_K_row(base + j * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, row, n_in);
+        dequant_q3_K_row(n_in, base + j * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_Q4_K:
-        dequant_q4_K_row(base + j * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, row, n_in);
+        dequant_q4_K_row(n_in, base + j * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_Q5_K:
-        dequant_q5_K_row(base + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, row, n_in);
+        dequant_q5_K_row(n_in, base + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_Q6_K:
-        dequant_q6_K_row(base + j * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES, row, n_in);
+        dequant_q6_K_row(n_in, base + j * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_Q8_0:
-        dequant_q8_0_row(base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row, n_in);
+        dequant_q8_0_row(n_in, base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_IQ2_S:
-        dequant_iq2_s_row(base + j * n_in / IQ2_S_BLOCK_ELEMS * IQ2_S_BLOCK_BYTES, row, n_in);
+        dequant_iq2_s_row(n_in, base + j * n_in / IQ2_S_BLOCK_ELEMS * IQ2_S_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_IQ3_S:
-        dequant_iq3_s_row(base + j * n_in / IQ3_S_BLOCK_ELEMS * IQ3_S_BLOCK_BYTES, row, n_in);
+        dequant_iq3_s_row(n_in, base + j * n_in / IQ3_S_BLOCK_ELEMS * IQ3_S_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_IQ4_NL:
-        dequant_iq4_nl_row(base + j * n_in / IQ4_NL_BLOCK_ELEMS * IQ4_NL_BLOCK_BYTES, row, n_in);
+        dequant_iq4_nl_row(n_in, base + j * n_in / IQ4_NL_BLOCK_ELEMS * IQ4_NL_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_IQ4_XS:
-        dequant_iq4_xs_row(base + j * n_in / IQ4_XS_BLOCK_ELEMS * IQ4_XS_BLOCK_BYTES, row, n_in);
+        dequant_iq4_xs_row(n_in, base + j * n_in / IQ4_XS_BLOCK_ELEMS * IQ4_XS_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_TQ2_0:
-        dequant_tq2_0_row(base + j * n_in / TQ2_0_BLOCK_ELEMS * TQ2_0_BLOCK_BYTES, row, n_in);
+        dequant_tq2_0_row(n_in, base + j * n_in / TQ2_0_BLOCK_ELEMS * TQ2_0_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_I2_S: {
         /* BitNet b1.58 official: 256-elem/64-byte ternary blocks, four 2-bit
@@ -128,10 +128,10 @@ static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *r
         return true;
     }
     case GEIST_DTYPE_Q4_0:
-        dequant_q4_0_row(base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row, n_in);
+        dequant_q4_0_row(n_in, base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_Q4_1:
-        dequant_q4_1_row(base + j * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, row, n_in);
+        dequant_q4_1_row(n_in, base + j * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, row);
         return true;
     default:
         return false;

@@ -87,70 +87,70 @@ bool gguf_dequant_row_to_fp32(const struct gguf_tensor_t *t,
         const size_t   blocks_per_row = row_elems / Q8_0_BLOCK_ELEMS;
         const uint8_t *base =
                 (const uint8_t *) t->data + row_idx * blocks_per_row * Q8_0_BLOCK_BYTES;
-        dequant_q8_0_row(base, out, row_elems);
+        dequant_q8_0_row(row_elems, base, out);
         return true;
     }
     case GGUF_TYPE_Q3_K: {
         const size_t   blocks_per_row = row_elems / Q3_K_BLOCK_ELEMS;
         const uint8_t *base =
                 (const uint8_t *) t->data + row_idx * blocks_per_row * Q3_K_BLOCK_BYTES;
-        dequant_q3_K_row(base, out, row_elems);
+        dequant_q3_K_row(row_elems, base, out);
         return true;
     }
     case GGUF_TYPE_Q4_K: {
         const size_t   blocks_per_row = row_elems / Q4_K_BLOCK_ELEMS;
         const uint8_t *base =
                 (const uint8_t *) t->data + row_idx * blocks_per_row * Q4_K_BLOCK_BYTES;
-        dequant_q4_K_row(base, out, row_elems);
+        dequant_q4_K_row(row_elems, base, out);
         return true;
     }
     case GGUF_TYPE_Q5_K: {
         const size_t   blocks_per_row = row_elems / Q5_K_BLOCK_ELEMS;
         const uint8_t *base =
                 (const uint8_t *) t->data + row_idx * blocks_per_row * Q5_K_BLOCK_BYTES;
-        dequant_q5_K_row(base, out, row_elems);
+        dequant_q5_K_row(row_elems, base, out);
         return true;
     }
     case GGUF_TYPE_Q6_K: {
         const size_t   blocks_per_row = row_elems / Q6_K_BLOCK_ELEMS;
         const uint8_t *base =
                 (const uint8_t *) t->data + row_idx * blocks_per_row * Q6_K_BLOCK_BYTES;
-        dequant_q6_K_row(base, out, row_elems);
+        dequant_q6_K_row(row_elems, base, out);
         return true;
     }
     case GGUF_TYPE_IQ2_S: {
         const size_t   blocks_per_row = row_elems / 256;
         const uint8_t *base =
                 (const uint8_t *) t->data + row_idx * blocks_per_row * IQ2_S_BLOCK_BYTES;
-        dequant_iq2_s_row(base, out, row_elems);
+        dequant_iq2_s_row(row_elems, base, out);
         return true;
     }
     case GGUF_TYPE_IQ3_S: {
         const size_t   blocks_per_row = row_elems / 256;
         const uint8_t *base =
                 (const uint8_t *) t->data + row_idx * blocks_per_row * IQ3_S_BLOCK_BYTES;
-        dequant_iq3_s_row(base, out, row_elems);
+        dequant_iq3_s_row(row_elems, base, out);
         return true;
     }
     case GGUF_TYPE_IQ4_NL: {
         const size_t   blocks_per_row = row_elems / IQ4_NL_BLOCK_ELEMS;
         const uint8_t *base =
                 (const uint8_t *) t->data + row_idx * blocks_per_row * IQ4_NL_BLOCK_BYTES;
-        dequant_iq4_nl_row(base, out, row_elems);
+        dequant_iq4_nl_row(row_elems, base, out);
         return true;
     }
     case GGUF_TYPE_IQ4_XS: {
         const size_t   blocks_per_row = row_elems / IQ4_XS_BLOCK_ELEMS;
         const uint8_t *base =
                 (const uint8_t *) t->data + row_idx * blocks_per_row * IQ4_XS_BLOCK_BYTES;
-        dequant_iq4_xs_row(base, out, row_elems);
+        dequant_iq4_xs_row(row_elems, base, out);
         return true;
     }
     case GGUF_TYPE_TQ2_0: {
         const size_t   blocks_per_row = row_elems / TQ2_0_BLOCK_ELEMS;
         const uint8_t *base =
                 (const uint8_t *) t->data + row_idx * blocks_per_row * TQ2_0_BLOCK_BYTES;
-        dequant_tq2_0_row(base, out, row_elems);
+        dequant_tq2_0_row(row_elems, base, out);
         return true;
     }
     default:
@@ -185,34 +185,34 @@ float *gguf_dequant_to_fp32(const struct gguf_tensor_t *t) {
         break;
     }
     case GGUF_TYPE_Q8_0:
-        dequant_q8_0_row(t->data, out, elems);
+        dequant_q8_0_row(elems, t->data, out);
         break;
     case GGUF_TYPE_Q3_K:
-        dequant_q3_K_row(t->data, out, elems);
+        dequant_q3_K_row(elems, t->data, out);
         break;
     case GGUF_TYPE_Q4_K:
-        dequant_q4_K_row(t->data, out, elems);
+        dequant_q4_K_row(elems, t->data, out);
         break;
     case GGUF_TYPE_Q5_K:
-        dequant_q5_K_row(t->data, out, elems);
+        dequant_q5_K_row(elems, t->data, out);
         break;
     case GGUF_TYPE_Q6_K:
-        dequant_q6_K_row(t->data, out, elems);
+        dequant_q6_K_row(elems, t->data, out);
         break;
     case GGUF_TYPE_IQ2_S:
-        dequant_iq2_s_row(t->data, out, elems);
+        dequant_iq2_s_row(elems, t->data, out);
         break;
     case GGUF_TYPE_IQ3_S:
-        dequant_iq3_s_row(t->data, out, elems);
+        dequant_iq3_s_row(elems, t->data, out);
         break;
     case GGUF_TYPE_IQ4_NL:
-        dequant_iq4_nl_row(t->data, out, elems);
+        dequant_iq4_nl_row(elems, t->data, out);
         break;
     case GGUF_TYPE_IQ4_XS:
-        dequant_iq4_xs_row(t->data, out, elems);
+        dequant_iq4_xs_row(elems, t->data, out);
         break;
     case GGUF_TYPE_TQ2_0:
-        dequant_tq2_0_row(t->data, out, elems);
+        dequant_tq2_0_row(elems, t->data, out);
         break;
     default:
         safe_free((void **) &out);

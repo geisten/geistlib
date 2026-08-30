@@ -67,7 +67,7 @@ static void dequant_iq3_s_block(const struct block_iq3_s_t *blk, float *y) {
     }
 }
 
-void dequant_iq3_s_row(const void *blocks, float *out, size_t n_elems) {
+void dequant_iq3_s_row(size_t n_elems, const void *blocks, float out[static n_elems]) {
     const struct block_iq3_s_t *b  = (const struct block_iq3_s_t *) blocks;
     const size_t                nb = n_elems / 256;
     for (size_t i = 0; i < nb; i++)

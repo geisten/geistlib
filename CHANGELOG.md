@@ -8,6 +8,33 @@ minor release.
 
 ## [Unreleased]
 
+## [0.10.3] — 2026-08-30
+
+### Changed
+- **C23 API style, documented and first batch migrated** (#328): the
+  contributor guide gains a "C API style" section — lengths before the
+  arrays they describe, `T arr[static len]` where the precondition is
+  real, `nullptr`/`constexpr`/`[[nodiscard]]`, `restrict` only where
+  non-aliasing is proven, subtraction-based cursor bounds, and the rule
+  that signature migrations land in bounded, independently benchmarkable
+  batches.
+
+  Batch 1 is the 13 `dequant_*_row` codecs, which move to
+  `(size_t n_elems, const void *blocks, float out[static n_elems])` — 76
+  call sites across 26 files. The `dequant_row_fn` typedef they are
+  dispatched through now matches that signature exactly instead of being
+  cast to; calling through an incompatible function pointer is undefined
+  however compatible the representations look, and the exact typedef
+  immediately turned two missed indirect call sites into compile errors.
+
+  Verified as a pure reorder: the optimized disassembly of all 11 dequant
+  translation units has an **identical opcode sequence** with only the
+  argument registers permuted, `__text` is byte-identical in every one,
+  and `libgeist.a` is 88 bytes smaller (the retired casts). Internal
+  signatures only — no public ABI change.
+- **`NULL` retired from live code**: 81 occurrences across 7 files become
+  `nullptr`. The 25 that remain are prose in comments.
+
 ## [0.10.2] — 2026-08-30
 
 Bug-fix release: the eight open correctness and hardening tickets against
@@ -1001,7 +1028,8 @@ First public release.
   reproducible perf benchmark harness (`make bench-small`).
 - `examples/simple_generate` demonstrating the stable text-generation core.
 
-[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/geisten/geistlib/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/geisten/geistlib/compare/v0.10.1...v0.10.2
 [0.3.0]: https://github.com/geisten/geistlib/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/geisten/geistlib/compare/v0.2.0...v0.2.1

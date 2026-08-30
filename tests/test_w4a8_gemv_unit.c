@@ -135,7 +135,7 @@ static int scenario_random_gemv(void) {
     float y_ref[N_ROWS];
     float w_dq[N_IN]; /* per-row fp32 weights, reused across rows */
     for (size_t m = 0; m < N_ROWS; m++) {
-        dequant_q4_K_row(w_q4k[m], w_dq, N_IN);
+        dequant_q4_K_row(N_IN, w_q4k[m], w_dq);
         double acc = 0.0;
         for (size_t i = 0; i < N_IN; i++) {
             acc += (double) w_dq[i] * (double) x[i];

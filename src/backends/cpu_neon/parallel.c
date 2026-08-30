@@ -107,7 +107,7 @@ static void *worker_main(void *arg) {
             if (epoch != last_seen)
                 break;
             if (atomic_load_explicit(&g_state.shutdown, memory_order_relaxed))
-                return NULL;
+                return nullptr;
             if (++spin >= GEIST_PP_SPIN_BUDGET) {
                 /* Long idle: fall through to cond_wait so we stop
                  * burning a core. Increment `sleeping` so the master
@@ -148,7 +148,7 @@ static int detect_thread_count(void) {
 #if defined(__APPLE__)
     int    ncpu = 0;
     size_t sz   = sizeof(ncpu);
-    if (sysctlbyname("hw.perflevel0.physicalcpu", &ncpu, &sz, NULL, 0) == 0 && ncpu > 0) {
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &ncpu, &sz, nullptr, 0) == 0 && ncpu > 0) {
         return ncpu > GEIST_PP_MAX_THREADS ? GEIST_PP_MAX_THREADS : ncpu;
     }
 #endif
@@ -169,7 +169,8 @@ static void init_pool(void) {
         return; /* no workers; master does all */
     for (int w = 1; w < g_state.n_threads; w++) {
         g_state.worker_ids[w] = w;
-        if (pthread_create(&g_state.workers[w], NULL, worker_main, &g_state.worker_ids[w]) != 0) {
+        if (pthread_create(&g_state.workers[w], nullptr, worker_main, &g_state.worker_ids[w]) !=
+            0) {
             fprintf(stderr, "geist_pp: pthread_create(%d) failed\n", w);
             /* Reduce thread count to whatever we got. */
             g_state.n_threads = w;

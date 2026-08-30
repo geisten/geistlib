@@ -152,13 +152,13 @@ static bool vk_dequant_row(const struct geist_weight *w, size_t j, float *row) {
         return true;
     }
     case GEIST_DTYPE_Q3_K:
-        dequant_q3_K_row(base + j * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, row, n_in);
+        dequant_q3_K_row(n_in, base + j * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_Q5_K:
-        dequant_q5_K_row(base + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, row, n_in);
+        dequant_q5_K_row(n_in, base + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_Q8_0:
-        dequant_q8_0_row(base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row, n_in);
+        dequant_q8_0_row(n_in, base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row);
         return true;
     default:
         return false;
