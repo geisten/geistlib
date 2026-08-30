@@ -475,7 +475,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             float *w_fp32 = gguf_dequant_to_fp32(t);
             if (w_fp32) {
                 const double t_warm2 = now_ms();
-                linear_fp32(x, w_fp32, nullptr, 1, n_in, n_out, y);
+                linear_fp32(1, n_in, n_out, x, w_fp32, nullptr, y);
                 const double single_ms2 = now_ms() - t_warm2;
                 int          n_iter2    = (int) (200.0 / (single_ms2 + 0.001)) + 5;
                 if (n_iter2 > 5000)
@@ -484,7 +484,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                     n_iter2 = 3;
                 const double t02 = now_ms();
                 for (int it = 0; it < n_iter2; it++)
-                    linear_fp32(x, w_fp32, nullptr, 1, n_in, n_out, y);
+                    linear_fp32(1, n_in, n_out, x, w_fp32, nullptr, y);
                 const double dt_ms2 = (now_ms() - t02) / n_iter2;
                 const size_t bytes2 = n_out * n_in * sizeof(float);
                 const double gbps2  = (double) bytes2 / (dt_ms2 * 1e6);

@@ -55,7 +55,7 @@ static float *load_bf16(struct st_ctx *ctx, const char *name, size_t expected) {
         fprintf(stderr, "elem mismatch %s: got %zu expected %zu\n", name, elems, expected);
         return nullptr;
     }
-    return bf16_alloc_fp32((const uint16_t *) t->data, elems);
+    return bf16_alloc_fp32(elems, (const uint16_t *) t->data);
 }
 
 int main(int argc, char **argv) {
@@ -101,36 +101,36 @@ int main(int argc, char **argv) {
             h[t * HIDDEN + i] = bf16_to_fp32(row[i]) * embed_scale;
     }
     float *normed = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(h, in_ln_w, n_ids, HIDDEN, RMS_EPS, normed);
+    rmsnorm_fp32(n_ids, HIDDEN, h, in_ln_w, RMS_EPS, normed);
 
     /* Q/K/V proj */
     float *q = (float *) malloc(n_ids * Q_OUT * sizeof(float));
     float *k = (float *) malloc(n_ids * KV_OUT * sizeof(float));
     float *v = (float *) malloc(n_ids * KV_OUT * sizeof(float));
-    linear_fp32(normed, q_w, nullptr, n_ids, HIDDEN, Q_OUT, q);
-    linear_fp32(normed, k_w, nullptr, n_ids, HIDDEN, KV_OUT, k);
-    linear_fp32(normed, v_w, nullptr, n_ids, HIDDEN, KV_OUT, v);
+    linear_fp32(n_ids, HIDDEN, Q_OUT, normed, q_w, nullptr, q);
+    linear_fp32(n_ids, HIDDEN, KV_OUT, normed, k_w, nullptr, k);
+    linear_fp32(n_ids, HIDDEN, KV_OUT, normed, v_w, nullptr, v);
 
     /* Per-head Q/K/V norm (in-place is fine since rmsnorm supports y == x).
      * v has no norm weight (with_scale=False -> just the rms division). */
-    rmsnorm_fp32(q, q_norm_w, n_ids * Q_HEADS, HEAD_DIM, RMS_EPS, q);
-    rmsnorm_fp32(k, k_norm_w, n_ids * KV_HEADS, HEAD_DIM, RMS_EPS, k);
-    rmsnorm_fp32(v, /*weight=*/nullptr, n_ids * KV_HEADS, HEAD_DIM, RMS_EPS, v);
+    rmsnorm_fp32(n_ids * Q_HEADS, HEAD_DIM, q, q_norm_w, RMS_EPS, q);
+    rmsnorm_fp32(n_ids * KV_HEADS, HEAD_DIM, k, k_norm_w, RMS_EPS, k);
+    rmsnorm_fp32(n_ids * KV_HEADS, HEAD_DIM, v, /*weight=*/nullptr, RMS_EPS, v);
 
     /* RoPE on Q and K (V is not rotated). */
     float *cos_buf = (float *) malloc(n_ids * HEAD_DIM * sizeof(float));
     float *sin_buf = (float *) malloc(n_ids * HEAD_DIM * sizeof(float));
     rope_compute(n_ids, HEAD_DIM, HEAD_DIM, ROPE_THETA, cos_buf, sin_buf);
-    rope_apply(q, cos_buf, sin_buf, n_ids, Q_HEADS, HEAD_DIM);
-    rope_apply(k, cos_buf, sin_buf, n_ids, KV_HEADS, HEAD_DIM);
+    rope_apply(n_ids, Q_HEADS, HEAD_DIM, q, cos_buf, sin_buf);
+    rope_apply(n_ids, KV_HEADS, HEAD_DIM, k, cos_buf, sin_buf);
 
     /* Attention with MQA broadcast and sliding-window-512 causal mask. */
     float *attn_out = (float *) malloc(n_ids * Q_OUT * sizeof(float));
-    attention_mqa_causal(q, k, v, n_ids, Q_HEADS, KV_HEADS, HEAD_DIM, SLIDING_WINDOW, attn_out);
+    attention_mqa_causal(n_ids, Q_HEADS, KV_HEADS, HEAD_DIM, SLIDING_WINDOW, q, k, v, attn_out);
 
     /* O projection */
     float *out = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    linear_fp32(attn_out, o_w, nullptr, n_ids, Q_OUT, HIDDEN, out);
+    linear_fp32(n_ids, Q_OUT, HIDDEN, attn_out, o_w, nullptr, out);
 
     FILE *fo = fopen(argv[3], "wb");
     xfwrite(out, sizeof(float), n_ids * HIDDEN, fo);

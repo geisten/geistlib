@@ -59,7 +59,7 @@ static float *load_bf16(struct st_ctx *ctx, const char *name, size_t expected) {
         fprintf(stderr, "elem mismatch %s: got %zu expected %zu\n", name, elems, expected);
         return nullptr;
     }
-    return bf16_alloc_fp32((const uint16_t *) t->data, elems);
+    return bf16_alloc_fp32(elems, (const uint16_t *) t->data);
 }
 
 int main(int argc, char **argv) {
@@ -104,24 +104,24 @@ int main(int argc, char **argv) {
             h[t * HIDDEN + i] = bf16_to_fp32(row[i]) * embed_scale;
     }
     float *normed = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(h, in_ln_w, n_ids, HIDDEN, RMS_EPS, normed);
+    rmsnorm_fp32(n_ids, HIDDEN, h, in_ln_w, RMS_EPS, normed);
 
     /* Step 3: Q/K/V proj */
     float *q = (float *) malloc(n_ids * Q_OUT * sizeof(float));
     float *k = (float *) malloc(n_ids * KV_OUT * sizeof(float));
     float *v = (float *) malloc(n_ids * KV_OUT * sizeof(float));
-    linear_fp32(normed, q_w, nullptr, n_ids, HIDDEN, Q_OUT, q);
-    linear_fp32(normed, k_w, nullptr, n_ids, HIDDEN, KV_OUT, k);
-    linear_fp32(normed, v_w, nullptr, n_ids, HIDDEN, KV_OUT, v);
+    linear_fp32(n_ids, HIDDEN, Q_OUT, normed, q_w, nullptr, q);
+    linear_fp32(n_ids, HIDDEN, KV_OUT, normed, k_w, nullptr, k);
+    linear_fp32(n_ids, HIDDEN, KV_OUT, normed, v_w, nullptr, v);
 
     /* Step 4: per-head RMSNorm on last dim. Q is (n_ids, 8 heads, 256);
      * pass as (n_ids*8 rows, 256 hidden). Same idea for K/V (n_ids*1). */
     float *q_n = (float *) malloc(n_ids * Q_OUT * sizeof(float));
     float *k_n = (float *) malloc(n_ids * KV_OUT * sizeof(float));
     float *v_n = (float *) malloc(n_ids * KV_OUT * sizeof(float));
-    rmsnorm_fp32(q, q_norm_w, n_ids * Q_HEADS, HEAD_DIM, RMS_EPS, q_n);
-    rmsnorm_fp32(k, k_norm_w, n_ids * KV_HEADS, HEAD_DIM, RMS_EPS, k_n);
-    rmsnorm_fp32(v, /*weight=*/nullptr, n_ids * KV_HEADS, HEAD_DIM, RMS_EPS, v_n);
+    rmsnorm_fp32(n_ids * Q_HEADS, HEAD_DIM, q, q_norm_w, RMS_EPS, q_n);
+    rmsnorm_fp32(n_ids * KV_HEADS, HEAD_DIM, k, k_norm_w, RMS_EPS, k_n);
+    rmsnorm_fp32(n_ids * KV_HEADS, HEAD_DIM, v, /*weight=*/nullptr, RMS_EPS, v_n);
 
     /* Write outputs */
     char path[1024];

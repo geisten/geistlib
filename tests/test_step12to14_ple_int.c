@@ -82,7 +82,7 @@ static float *load_bf16(struct st_ctx *c, const char *n, size_t expected) {
         fprintf(stderr, "elem mismatch %s: %zu vs %zu\n", n, elems, expected);
         return nullptr;
     }
-    return bf16_alloc_fp32((const uint16_t *) t->data, elems);
+    return bf16_alloc_fp32(elems, (const uint16_t *) t->data);
 }
 
 int main(int argc, char **argv) {
@@ -191,13 +191,13 @@ int main(int argc, char **argv) {
 
     /* (b) Model-level projection of input_embeds → (seq, 8960) × scale */
     float *ple_proj = (float *) malloc(n_ids * PLE_OUT * sizeof(float));
-    linear_fp32(h_pre, model_proj_w, nullptr, n_ids, HIDDEN, PLE_OUT, ple_proj);
+    linear_fp32(n_ids, HIDDEN, PLE_OUT, h_pre, model_proj_w, nullptr, ple_proj);
     for (size_t i = 0; i < n_ids * PLE_OUT; i++)
         ple_proj[i] *= PLE_MODEL_PROJ_SCALE;
 
     /* (c) Reshape implicit; apply RMSNorm per (35, 256) slice */
     rmsnorm_fp32(
-            ple_proj, model_proj_norm_w, n_ids * NUM_LAYERS, HIDDEN_PER_LAYER, RMS_EPS, ple_proj);
+            n_ids * NUM_LAYERS, HIDDEN_PER_LAYER, ple_proj, model_proj_norm_w, RMS_EPS, ple_proj);
 
     /* (d) Mix: per_layer_inputs = (ple_proj + ple_table_lookup) * (1/sqrt(2)) */
     float *per_layer_inputs = (float *) malloc(n_ids * PLE_OUT * sizeof(float));
@@ -209,61 +209,61 @@ int main(int argc, char **argv) {
 
     /* === Steps 2-11: Layer 0 forward up to post_ff_norm + 2nd residual === */
     float *normed = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(h_pre, in_ln_w, n_ids, HIDDEN, RMS_EPS, normed);
+    rmsnorm_fp32(n_ids, HIDDEN, h_pre, in_ln_w, RMS_EPS, normed);
 
     float *q = (float *) malloc(n_ids * Q_OUT * sizeof(float));
     float *k = (float *) malloc(n_ids * KV_OUT * sizeof(float));
     float *v = (float *) malloc(n_ids * KV_OUT * sizeof(float));
-    linear_fp32(normed, q_w, nullptr, n_ids, HIDDEN, Q_OUT, q);
-    linear_fp32(normed, k_w, nullptr, n_ids, HIDDEN, KV_OUT, k);
-    linear_fp32(normed, v_w, nullptr, n_ids, HIDDEN, KV_OUT, v);
-    rmsnorm_fp32(q, q_norm_w, n_ids * Q_HEADS, HEAD_DIM, RMS_EPS, q);
-    rmsnorm_fp32(k, k_norm_w, n_ids * KV_HEADS, HEAD_DIM, RMS_EPS, k);
-    rmsnorm_fp32(v, nullptr, n_ids * KV_HEADS, HEAD_DIM, RMS_EPS, v);
+    linear_fp32(n_ids, HIDDEN, Q_OUT, normed, q_w, nullptr, q);
+    linear_fp32(n_ids, HIDDEN, KV_OUT, normed, k_w, nullptr, k);
+    linear_fp32(n_ids, HIDDEN, KV_OUT, normed, v_w, nullptr, v);
+    rmsnorm_fp32(n_ids * Q_HEADS, HEAD_DIM, q, q_norm_w, RMS_EPS, q);
+    rmsnorm_fp32(n_ids * KV_HEADS, HEAD_DIM, k, k_norm_w, RMS_EPS, k);
+    rmsnorm_fp32(n_ids * KV_HEADS, HEAD_DIM, v, nullptr, RMS_EPS, v);
 
     float *cos_b = (float *) malloc(n_ids * HEAD_DIM * sizeof(float));
     float *sin_b = (float *) malloc(n_ids * HEAD_DIM * sizeof(float));
     rope_compute(n_ids, HEAD_DIM, HEAD_DIM, ROPE_THETA, cos_b, sin_b);
-    rope_apply(q, cos_b, sin_b, n_ids, Q_HEADS, HEAD_DIM);
-    rope_apply(k, cos_b, sin_b, n_ids, KV_HEADS, HEAD_DIM);
+    rope_apply(n_ids, Q_HEADS, HEAD_DIM, q, cos_b, sin_b);
+    rope_apply(n_ids, KV_HEADS, HEAD_DIM, k, cos_b, sin_b);
 
     float *attn_out = (float *) malloc(n_ids * Q_OUT * sizeof(float));
-    attention_mqa_causal(q, k, v, n_ids, Q_HEADS, KV_HEADS, HEAD_DIM, SLIDING_WINDOW, attn_out);
+    attention_mqa_causal(n_ids, Q_HEADS, KV_HEADS, HEAD_DIM, SLIDING_WINDOW, q, k, v, attn_out);
 
     float *o = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    linear_fp32(attn_out, o_w, nullptr, n_ids, Q_OUT, HIDDEN, o);
+    linear_fp32(n_ids, Q_OUT, HIDDEN, attn_out, o_w, nullptr, o);
 
     /* post_attn_norm + residual_1 */
     float *post_attn = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(o, post_attn_w, n_ids, HIDDEN, RMS_EPS, post_attn);
+    rmsnorm_fp32(n_ids, HIDDEN, o, post_attn_w, RMS_EPS, post_attn);
     float *h_post_attn = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    add_fp32(h_pre, post_attn, n_ids * HIDDEN, h_post_attn);
+    add_fp32(n_ids * HIDDEN, h_pre, post_attn, h_post_attn);
 
     /* pre_ff_norm */
     float *pre_ff_normed = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(h_post_attn, pre_ff_w, n_ids, HIDDEN, RMS_EPS, pre_ff_normed);
+    rmsnorm_fp32(n_ids, HIDDEN, h_post_attn, pre_ff_w, RMS_EPS, pre_ff_normed);
 
     /* MLP */
     float *gate_out = (float *) malloc(n_ids * INTER * sizeof(float));
     float *up_out   = (float *) malloc(n_ids * INTER * sizeof(float));
-    linear_fp32(pre_ff_normed, gate_w, nullptr, n_ids, HIDDEN, INTER, gate_out);
-    linear_fp32(pre_ff_normed, up_w, nullptr, n_ids, HIDDEN, INTER, up_out);
-    gelu_tanh_fp32(gate_out, n_ids * INTER, gate_out);
-    mul_fp32(gate_out, up_out, n_ids * INTER, gate_out); /* gate_out = gelu(gate) * up */
+    linear_fp32(n_ids, HIDDEN, INTER, pre_ff_normed, gate_w, nullptr, gate_out);
+    linear_fp32(n_ids, HIDDEN, INTER, pre_ff_normed, up_w, nullptr, up_out);
+    gelu_tanh_fp32(n_ids * INTER, gate_out, gate_out);
+    mul_fp32(n_ids * INTER, gate_out, up_out, gate_out); /* gate_out = gelu(gate) * up */
     float *down_out = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    linear_fp32(gate_out, down_w, nullptr, n_ids, INTER, HIDDEN, down_out);
+    linear_fp32(n_ids, INTER, HIDDEN, gate_out, down_w, nullptr, down_out);
 
     /* post_ff_norm + residual_2 */
     float *post_ff = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(down_out, post_ff_w, n_ids, HIDDEN, RMS_EPS, post_ff);
+    rmsnorm_fp32(n_ids, HIDDEN, down_out, post_ff_w, RMS_EPS, post_ff);
     float *h_post_ff = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    add_fp32(h_post_attn, post_ff, n_ids * HIDDEN, h_post_ff);
+    add_fp32(n_ids * HIDDEN, h_post_attn, post_ff, h_post_ff);
     /* h_post_ff is the input to PLE merge. residual_3 = h_post_ff. */
 
     /* === Step 13: Per-Layer PLE merge === */
     /* per_layer_input_gate(h): 1536 -> 256 */
     float *gate_ple = (float *) malloc(n_ids * HIDDEN_PER_LAYER * sizeof(float));
-    linear_fp32(h_post_ff, layer_input_gate_w, nullptr, n_ids, HIDDEN, HIDDEN_PER_LAYER, gate_ple);
+    linear_fp32(n_ids, HIDDEN, HIDDEN_PER_LAYER, h_post_ff, layer_input_gate_w, nullptr, gate_ple);
     {
         char path[1024];
         snprintf(path, sizeof(path), "%s.per_layer_input_gate.bin", argv[3]);
@@ -271,7 +271,7 @@ int main(int argc, char **argv) {
     }
 
     /* GELU + element-wise mul with per_layer_inputs[:, 0, :] */
-    gelu_tanh_fp32(gate_ple, n_ids * HIDDEN_PER_LAYER, gate_ple);
+    gelu_tanh_fp32(n_ids * HIDDEN_PER_LAYER, gate_ple, gate_ple);
     /* per_layer_inputs has shape (seq, 35, 256). Slice [:, 0, :] is at offset
      * t * 35 * 256 + 0 * 256, i.e. the FIRST 256 floats per token. */
     for (size_t t = 0; t < n_ids; t++) {
@@ -283,7 +283,7 @@ int main(int argc, char **argv) {
 
     /* per_layer_projection: 256 -> 1536 */
     float *proj_ple = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    linear_fp32(gate_ple, layer_proj_w, nullptr, n_ids, HIDDEN_PER_LAYER, HIDDEN, proj_ple);
+    linear_fp32(n_ids, HIDDEN_PER_LAYER, HIDDEN, gate_ple, layer_proj_w, nullptr, proj_ple);
     {
         char path[1024];
         snprintf(path, sizeof(path), "%s.per_layer_projection.bin", argv[3]);
@@ -292,7 +292,7 @@ int main(int argc, char **argv) {
 
     /* post_per_layer_input_norm */
     float *normed_ple = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(proj_ple, post_per_layer_norm_w, n_ids, HIDDEN, RMS_EPS, normed_ple);
+    rmsnorm_fp32(n_ids, HIDDEN, proj_ple, post_per_layer_norm_w, RMS_EPS, normed_ple);
     {
         char path[1024];
         snprintf(path, sizeof(path), "%s.post_per_layer_input_norm.bin", argv[3]);
@@ -301,7 +301,7 @@ int main(int argc, char **argv) {
 
     /* residual_3 + normed_ple */
     float *layer_out = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    add_fp32(h_post_ff, normed_ple, n_ids * HIDDEN, layer_out);
+    add_fp32(n_ids * HIDDEN, h_post_ff, normed_ple, layer_out);
 
     /* === Step 14: layer_scalar multiply === */
     float ls = layer_scalar_w[0];
