@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
     }
 
     /* Convert norm weight BF16 -> FP32 once */
-    float *norm_w = bf16_alloc_fp32((const uint16_t *) norm->data, HIDDEN);
+    float *norm_w = bf16_alloc_fp32(HIDDEN, (const uint16_t *) norm->data);
     if (!norm_w) {
         st_close(ctx);
         return 1;
@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
         st_close(ctx);
         return 1;
     }
-    rmsnorm_fp32(hidden_states, norm_w, n_ids, HIDDEN, RMS_EPS, out);
+    rmsnorm_fp32(n_ids, HIDDEN, hidden_states, norm_w, RMS_EPS, out);
 
     /* Write output */
     FILE *fo = fopen(argv[3], "wb");

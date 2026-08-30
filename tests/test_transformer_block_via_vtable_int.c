@@ -108,7 +108,7 @@ static void reference_block(const float *x_in,
                             float        eps,
                             float       *y_out) {
     float x_norm[D_MODEL];
-    rmsnorm_fp32(x_in, w_attn_norm, 1, D_MODEL, eps, x_norm);
+    rmsnorm_fp32(1, D_MODEL, x_in, w_attn_norm, eps, x_norm);
 
     /* Q/K/V projections: y = x @ W^T */
     float q_proj[N_Q_HEADS * HEAD_DIM];
@@ -160,13 +160,13 @@ static void reference_block(const float *x_in,
     /* RoPE: precompute cos/sin for seq_len=1 starting at position 0. */
     float cos[HEAD_DIM], sin_[HEAD_DIM];
     rope_compute_at(0, 1, HEAD_DIM, HEAD_DIM, 10000.0f, cos, sin_);
-    rope_apply(q_proj, cos, sin_, 1, N_Q_HEADS, HEAD_DIM);
-    rope_apply(k_proj, cos, sin_, 1, N_KV_HEADS, HEAD_DIM);
+    rope_apply(1, N_Q_HEADS, HEAD_DIM, q_proj, cos, sin_);
+    rope_apply(1, N_KV_HEADS, HEAD_DIM, k_proj, cos, sin_);
 
     /* Attention with KV cache len=1 (single-token decode). */
     float attn_out[N_Q_HEADS * HEAD_DIM];
     attention_mqa_causal_kv(
-            q_proj, k_proj, v_proj, 1, 1, 0, N_Q_HEADS, N_KV_HEADS, HEAD_DIM, 0, attn_out);
+            1, 1, 0, N_Q_HEADS, N_KV_HEADS, HEAD_DIM, 0, q_proj, k_proj, v_proj, attn_out);
 
     /* O projection. */
     float o_proj[D_MODEL];
@@ -187,11 +187,11 @@ static void reference_block(const float *x_in,
 
     /* Residual. */
     float x_post_attn[D_MODEL];
-    add_fp32(x_in, o_proj, D_MODEL, x_post_attn);
+    add_fp32(D_MODEL, x_in, o_proj, x_post_attn);
 
     /* FFN. */
     float ffn_norm[D_MODEL];
-    rmsnorm_fp32(x_post_attn, w_ffn_norm, 1, D_MODEL, eps, ffn_norm);
+    rmsnorm_fp32(1, D_MODEL, x_post_attn, w_ffn_norm, eps, ffn_norm);
 
     float gate[D_FF], up[D_FF];
     cblas_sgemm(CblasRowMajor,
@@ -222,8 +222,8 @@ static void reference_block(const float *x_in,
                 0.0f,
                 up,
                 D_FF);
-    gelu_tanh_fp32(gate, D_FF, gate);
-    mul_fp32(gate, up, D_FF, gate);
+    gelu_tanh_fp32(D_FF, gate, gate);
+    mul_fp32(D_FF, gate, up, gate);
 
     float ffn_out[D_MODEL];
     cblas_sgemm(CblasRowMajor,
@@ -242,7 +242,7 @@ static void reference_block(const float *x_in,
                 D_MODEL);
 
     /* Residual. */
-    add_fp32(x_post_attn, ffn_out, D_MODEL, y_out);
+    add_fp32(D_MODEL, x_post_attn, ffn_out, y_out);
 }
 
 /* Helper to (re-)allocate + upload a tensor's contents. */

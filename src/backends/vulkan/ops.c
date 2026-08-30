@@ -736,7 +736,7 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan rope_apply: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    rope_apply(xp, cosp, sinp, (size_t) x->shape[0], (size_t) x->shape[1], (size_t) x->shape[2]);
+    rope_apply((size_t) x->shape[0], (size_t) x->shape[1], (size_t) x->shape[2], xp, cosp, sinp);
     return GEIST_OK;
 }
 
@@ -893,16 +893,16 @@ attn_generic:;
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan attention: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    attention_mqa_causal_kv(qp,
-                            kp,
-                            vp,
-                            (size_t) q->shape[0],
+    attention_mqa_causal_kv((size_t) q->shape[0],
                             (size_t) k->shape[0],
                             q_offset,
                             (size_t) q->shape[1],
                             (size_t) k->shape[1],
                             (size_t) q->shape[2],
                             sliding_window,
+                            qp,
+                            kp,
+                            vp,
                             op);
     return GEIST_OK;
 }

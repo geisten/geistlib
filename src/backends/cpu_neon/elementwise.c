@@ -48,7 +48,7 @@ static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon add: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    add_fp32(ap, bp, na, yp);
+    add_fp32(na, ap, bp, yp);
     return GEIST_OK;
 }
 
@@ -64,7 +64,7 @@ static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon mul: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    mul_fp32(ap, bp, na, yp);
+    mul_fp32(na, ap, bp, yp);
     return GEIST_OK;
 }
 
@@ -77,7 +77,7 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon gelu_tanh: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    gelu_tanh_fp32(xp, nx, yp);
+    gelu_tanh_fp32(nx, xp, yp);
     return GEIST_OK;
 }
 
@@ -121,7 +121,7 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
         return GEIST_OK;
     }
 #endif
-    gelu_tanh_mul_fp32(xp, zp, nx, yp);
+    gelu_tanh_mul_fp32(nx, xp, zp, yp);
     return GEIST_OK;
 }
 
@@ -199,7 +199,7 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon relu_squared: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    relu_squared_fp32(xp, nx, yp);
+    relu_squared_fp32(nx, xp, yp);
     return GEIST_OK;
 }
 
@@ -212,7 +212,7 @@ cpu_neon_silu(struct geist_backend *be, const struct geist_tensor *x, struct gei
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon silu: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    silu_fp32_ooo(xp, nx, yp);
+    silu_fp32_ooo(nx, xp, yp);
     return GEIST_OK;
 }
 
@@ -235,6 +235,6 @@ cpu_neon_silu(struct geist_backend *be, const struct geist_tensor *x, struct gei
         return GEIST_E_INVALID_ARG;
     }
     size_t n_rows = nx / feat;
-    rmsnorm_fp32(xp, wp, n_rows, feat, eps, yp);
+    rmsnorm_fp32(n_rows, feat, xp, wp, eps, yp);
     return GEIST_OK;
 }

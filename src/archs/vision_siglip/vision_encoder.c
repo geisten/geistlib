@@ -176,7 +176,7 @@ static float *load_bf16(struct st_ctx *sf, const char *name, size_t n) {
                 n * 2);
         return nullptr;
     }
-    return bf16_alloc_fp32(t->data, n);
+    return bf16_alloc_fp32(n, t->data);
 }
 
 static bool load_layer(struct st_ctx *sf, int idx, struct vision_layer *L) {
@@ -413,7 +413,7 @@ static void rmsnorm_per_head(float       *x,
                              size_t       n_heads,
                              size_t       head_dim,
                              float        eps) {
-    rmsnorm_fp32(x, weight, n_tokens * n_heads, head_dim, eps, x);
+    rmsnorm_fp32(n_tokens * n_heads, head_dim, x, weight, eps, x);
 }
 
 /* In-place clamp x to [lo, hi] (Gemma4ClippableLinear input/output gates).
@@ -485,7 +485,7 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
             scaled[i] = 2.0f * (patches_in[i] - 0.5f);
     }
     /* hidden = scaled @ input_proj^T  → (n, 768) */
-    linear_fp32(scaled, v->input_proj, nullptr, n_patches, VTH, VTH, hidden_out);
+    linear_fp32(n_patches, VTH, VTH, scaled, v->input_proj, nullptr, hidden_out);
 
     /* pos_embed += table[0, x] + table[1, y]; HF clamps -1 → 0.
      * Padding rows (px==py==-1) end up with table[0, 0] + table[1, 0],
@@ -515,12 +515,12 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
 
         /* residual = h */
         memcpy(resid, hidden_out, n_patches * VTH * sizeof(float));
-        rmsnorm_fp32(hidden_out, L->input_layernorm, n_patches, VTH, V_EPS, normed);
+        rmsnorm_fp32(n_patches, VTH, hidden_out, L->input_layernorm, V_EPS, normed);
 
         /* Q/K/V share `normed` input — clamp once with their common range,
          * then run a fused (3*VTH, VTH) sgemm and split into q/k/vbuf. */
         clamp_fp32(normed, n_patches * VTH, L->q_clip.in_min, L->q_clip.in_max);
-        linear_fp32(normed, L->qkv_proj, nullptr, n_patches, VTH, 3 * VTH, qkv_combined);
+        linear_fp32(n_patches, VTH, 3 * VTH, normed, L->qkv_proj, nullptr, qkv_combined);
         {
             const float qlo = L->q_clip.out_min, qhi = L->q_clip.out_max;
             const float klo = L->k_clip.out_min, khi = L->k_clip.out_max;
@@ -599,21 +599,21 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
         vision_attention_bidir_fp32(q, k, vbuf, n_patches, V_HEADS, V_HEAD_D, attn);
 
         clamp_fp32(attn, n_patches * VTH, L->o_clip.in_min, L->o_clip.in_max);
-        linear_fp32(attn, L->o_proj, nullptr, n_patches, VTH, VTH, proj);
+        linear_fp32(n_patches, VTH, VTH, attn, L->o_proj, nullptr, proj);
         clamp_fp32(proj, n_patches * VTH, L->o_clip.out_min, L->o_clip.out_max);
 
-        rmsnorm_fp32(proj, L->post_attention_layernorm, n_patches, VTH, V_EPS, proj);
-        add_fp32(resid, proj, n_patches * VTH, hidden_out);
+        rmsnorm_fp32(n_patches, VTH, proj, L->post_attention_layernorm, V_EPS, proj);
+        add_fp32(n_patches * VTH, resid, proj, hidden_out);
 
         memcpy(resid, hidden_out, n_patches * VTH * sizeof(float));
-        rmsnorm_fp32(hidden_out, L->pre_feedforward_layernorm, n_patches, VTH, V_EPS, normed);
+        rmsnorm_fp32(n_patches, VTH, hidden_out, L->pre_feedforward_layernorm, V_EPS, normed);
 
         clamp_fp32(normed, n_patches * VTH, L->gate_clip.in_min, L->gate_clip.in_max);
 
         /* Fused gate+up sgemm: one (n, 2*INTER) matmul, then split-and-
          * clamp in one fused pass into separate gate/up buffers. */
         linear_fp32(
-                normed, L->gate_up_proj, nullptr, n_patches, VTH, 2 * V_INTER, gate_up_combined);
+                n_patches, VTH, 2 * V_INTER, normed, L->gate_up_proj, nullptr, gate_up_combined);
         {
             const float glo = L->gate_clip.out_min, ghi = L->gate_clip.out_max;
             const float ulo = L->up_clip.out_min, uhi = L->up_clip.out_max;
@@ -664,14 +664,14 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
             }
         }
 
-        gelu_tanh_mul_fp32(gate, up, n_patches * V_INTER, gate);
+        gelu_tanh_mul_fp32(n_patches * V_INTER, gate, up, gate);
 
         clamp_fp32(gate, n_patches * V_INTER, L->down_clip.in_min, L->down_clip.in_max);
-        linear_fp32(gate, L->down_proj, nullptr, n_patches, V_INTER, VTH, proj);
+        linear_fp32(n_patches, V_INTER, VTH, gate, L->down_proj, nullptr, proj);
         clamp_fp32(proj, n_patches * VTH, L->down_clip.out_min, L->down_clip.out_max);
 
-        rmsnorm_fp32(proj, L->post_feedforward_layernorm, n_patches, VTH, V_EPS, proj);
-        add_fp32(resid, proj, n_patches * VTH, hidden_out);
+        rmsnorm_fp32(n_patches, VTH, proj, L->post_feedforward_layernorm, V_EPS, proj);
+        add_fp32(n_patches * VTH, resid, proj, hidden_out);
 
         /* Optional per-layer debug dump. */
         char nm[32];
@@ -761,8 +761,8 @@ static size_t run_image_internal(const struct VisionEncoder *v,
             pooled[i] *= scale;
     }
     dbg_dump("pool_out", pooled, n_soft * VTH);
-    rmsnorm_fp32(pooled, nullptr, n_soft, VTH, V_EPS, normed);
-    linear_fp32(normed, v->projector_weight, nullptr, n_soft, VTH, v->soft_dim, out);
+    rmsnorm_fp32(n_soft, VTH, pooled, nullptr, V_EPS, normed);
+    linear_fp32(n_soft, VTH, v->soft_dim, normed, v->projector_weight, nullptr, out);
     dbg_dump("soft_tokens", out, n_soft * v->soft_dim);
 
     safe_free((void **) &patches);

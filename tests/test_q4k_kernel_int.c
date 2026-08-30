@@ -71,7 +71,7 @@ int main(int argc, char **argv) {
     int    n_iter = 5;
     double t0     = now_us();
     for (int it = 0; it < n_iter; it++) {
-        linear_fp32(x, w_fp32, nullptr, 1, n_in, n_out, y_a);
+        linear_fp32(1, n_in, n_out, x, w_fp32, nullptr, y_a);
     }
     double t_a = (now_us() - t0) / n_iter;
     fprintf(stderr, "Method A (sgemv on FP32): %.2f ms/call\n", t_a / 1000.0);

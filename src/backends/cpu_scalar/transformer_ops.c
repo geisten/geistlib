@@ -53,7 +53,7 @@ static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar rope_apply: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    rope_apply(xp, cosp, sinp, (size_t) x->shape[0], (size_t) x->shape[1], (size_t) x->shape[2]);
+    rope_apply((size_t) x->shape[0], (size_t) x->shape[1], (size_t) x->shape[2], xp, cosp, sinp);
     return GEIST_OK;
 }
 
@@ -112,6 +112,6 @@ static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n
     size_t n_kv       = (size_t) k->shape[0];
     size_t n_kv_heads = (size_t) k->shape[1];
     attention_mqa_causal_kv(
-            qp, kp, vp, n_q, n_kv, q_offset, n_q_heads, n_kv_heads, head_dim, sliding_window, op);
+            n_q, n_kv, q_offset, n_q_heads, n_kv_heads, head_dim, sliding_window, qp, kp, vp, op);
     return GEIST_OK;
 }
