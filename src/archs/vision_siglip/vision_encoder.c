@@ -176,7 +176,7 @@ static float *load_bf16(struct st_ctx *sf, const char *name, size_t n) {
                 n * 2);
         return nullptr;
     }
-    return bf16_alloc_fp32((const uint16_t *) t->data, n);
+    return bf16_alloc_fp32(t->data, n);
 }
 
 static bool load_layer(struct st_ctx *sf, int idx, struct vision_layer *L) {
