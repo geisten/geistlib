@@ -257,6 +257,8 @@ struct metal_state {
     void  *gelu_rows_pipeline;
     void  *silu_rows_function;
     void  *silu_rows_pipeline;
+    void  *silu_mul_rows_function;
+    void  *silu_mul_rows_pipeline;
     void  *deltanet_mix_function;
     void  *deltanet_mix_pipeline;
     void  *dn_cst_copy_function;

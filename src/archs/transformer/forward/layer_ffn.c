@@ -200,6 +200,13 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             t0 = profile ? transformer_profile_now_ns() : 0;
             s  = prims->mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_MUL, t0);
+        } else if (ctx->ffn_activation == GEIST_FFN_SWIGLU && P != nullptr && P->fuse_silu_mul) {
+            /* #322 3b: one fused pass instead of silu + mul — same
+             * formula, bit-identical, halves the FFN elementwise
+             * dispatches on batched-submit backends. */
+            t0 = profile ? transformer_profile_now_ns() : 0;
+            s  = fused->silu_mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
+            transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
         } else if (ctx->ffn_activation == GEIST_FFN_SWIGLU) {
             t0 = profile ? transformer_profile_now_ns() : 0;
             if (prims->silu != nullptr) {
