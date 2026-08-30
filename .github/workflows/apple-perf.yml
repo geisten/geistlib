@@ -1,0 +1,66 @@
+name: Apple performance guard
+
+on:
+  schedule:
+    - cron: "23 4 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: apple-perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apple-cpu-q4km:
+    name: Apple CPU Q4_K regression guard
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libomp
+        run: brew install libomp
+
+      - name: Cache reference model
+        uses: actions/cache@v4
+        with:
+          path: gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+          key: geist-apple-perf-gemma4-e2b-q4km-740185b21d22
+
+      - name: Fetch and verify reference model
+        run: |
+          make fetch-model
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          protocol = json.loads(pathlib.Path("benchmark/apple_cpu_protocol.json").read_text())
+          model = pathlib.Path("gguf_artifacts/gemma4-e2b-Q4_K_M.gguf")
+          digest = hashlib.sha256()
+          with model.open("rb") as stream:
+              for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                  digest.update(chunk)
+          actual = digest.hexdigest()
+          expected = protocol["model"]["sha256"]
+          if actual != expected:
+              raise SystemExit(f"model SHA-256 mismatch: {actual} != {expected}")
+          PY
+
+      - name: Build CPU benchmark
+        run: make -j3 TARGET=mac-omp CC=clang BACKENDS="cpu_neon cpu_scalar" bin/mac-omp/release/tests/bench_perf_sweep
+
+      - name: Detailed protocol and guard band
+        env:
+          BENCH_GGUF: gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+          OMP_WAIT_POLICY: active
+        run: |
+          python3 tools/bench_quality_perf.py \
+            --suite detailed --target mac-omp --mode release \
+            --bin-dir bin/mac-omp/release/tests --out-dir bench-artifacts
+          python3 benchmark/perf_gate.py --min-prefill 60 --min-decode 10 \
+            < bench-artifacts/*_mac-omp_detailed.jsonl
+
+      - name: Upload raw samples and provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-cpu-q4km-${{ github.sha }}
+          path: bench-artifacts
+          if-no-files-found: error

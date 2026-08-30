@@ -1,0 +1,36 @@
+{
+  "schema": "geist.benchmark.apple-cpu.v1",
+  "model": {
+    "file": "gemma4-e2b-Q4_K_M.gguf",
+    "sha256": "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8"
+  },
+  "suites": {
+    "small": {
+      "seq_lens": [128],
+      "decode_n": 32,
+      "warmup": 8,
+      "repeats": 3,
+      "aggregation": "mean"
+    },
+    "detailed": {
+      "seq_lens": [512],
+      "decode_n": 64,
+      "warmup": 64,
+      "repeats": 10,
+      "aggregation": "mean"
+    }
+  },
+  "interleaved_ab": {
+    "seq_lens": [128, 256, 512, 1024],
+    "decode_n": 64,
+    "warmup": 64,
+    "repeats": 3,
+    "cycles": 3,
+    "aggregation": "median",
+    "dispersion": "median_absolute_deviation",
+    "cooldown_seconds": 60,
+    "settle_seconds": 30,
+    "max_load_per_core": 0.2,
+    "regression_guard_pct": 5.0
+  }
+}
