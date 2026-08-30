@@ -8,7 +8,9 @@
  *
  * Hot-path footprint: argmax is O(n), no allocation. Temperature is O(n),
  * no allocation. Top-k / top-p need scratch — the _ws variants take a
- * caller-owned workspace so the per-token call is allocation-free.
+ * caller-owned workspace so the per-token call is allocation-free (#331).
+ * Selection is a bounded min-heap, O(n log k) with k = the requested top-k
+ * or the nucleus size, not a full O(n log n) sort of the vocabulary.
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
@@ -139,8 +141,9 @@ geist_token_t geist_sampler_temperature(size_t            n_vocab,
         return GEIST_E_INVALID_ARG;
     }
     ws->probs = heap_alloc_array_aligned(float, n_vocab);
-    if (ws->probs == nullptr) {
-        ws->n_vocab = 0;
+    ws->pairs = heap_alloc_array_aligned(struct geist_sampler_pair, n_vocab);
+    if (ws->probs == nullptr || ws->pairs == nullptr) {
+        geist_sampler_workspace_destroy(ws);
         return GEIST_E_OOM;
     }
     ws->n_vocab = n_vocab;
@@ -153,27 +156,94 @@ void geist_sampler_workspace_destroy(struct geist_sampler_workspace *ws) {
     }
     if (ws->probs != nullptr)
         safe_free((void **) &ws->probs);
+    if (ws->pairs != nullptr)
+        safe_free((void **) &ws->pairs);
     ws->n_vocab = 0;
 }
 
-/* ---- Top-K -------------------------------------------------------------- */
+/* ---- Selection --------------------------------------------------------- */
 
-/* Comparator for descending-by-logit qsort. */
-struct kv_pair {
-    float    logit;
-    uint32_t idx;
-};
-
-static int cmp_desc_logit(const void *a, const void *b) {
-    float la = ((const struct kv_pair *) a)->logit;
-    float lb = ((const struct kv_pair *) b)->logit;
-    /* NaN-safe: NaN sorts to the bottom. */
-    if (la > lb)
-        return -1;
-    if (la < lb)
-        return 1;
-    return 0;
+/* Total order over pairs: higher score first, lower index on ties. NaN
+ * scores are mapped to -inf on the way in, so the order is a real one
+ * (qsort's NaN-"equal" comparator was not). */
+static inline bool pair_worse(struct geist_sampler_pair a, struct geist_sampler_pair b) {
+    if (a.score != b.score) {
+        return a.score < b.score;
+    }
+    return a.idx > b.idx;
 }
+
+static void sift_down(struct geist_sampler_pair *heap, size_t n, size_t root) {
+    for (;;) {
+        size_t worst = root;
+        size_t left  = 2 * root + 1;
+        if (left < n && pair_worse(heap[left], heap[worst])) {
+            worst = left;
+        }
+        if (left + 1 < n && pair_worse(heap[left + 1], heap[worst])) {
+            worst = left + 1;
+        }
+        if (worst == root) {
+            return;
+        }
+        struct geist_sampler_pair tmp = heap[root];
+        heap[root]                    = heap[worst];
+        heap[worst]                   = tmp;
+        root                          = worst;
+    }
+}
+
+/* Writes the k highest-scoring entries of scores[0..n) into out[0..k),
+ * sorted descending. O(n log k): a min-heap of size k, then heapsort of
+ * that heap. Requires 1 <= k <= n. */
+static void
+select_top_desc(size_t n, const float scores[static n], size_t k, struct geist_sampler_pair *out) {
+    for (size_t i = 0; i < k; i++) {
+        float s = scores[i];
+        out[i]  = (struct geist_sampler_pair) {isnan(s) ? -INFINITY : s, (uint32_t) i};
+    }
+    for (size_t i = k / 2; i-- > 0;) {
+        sift_down(out, k, i);
+    }
+    for (size_t i = k; i < n; i++) {
+        float s = scores[i];
+        if (isnan(s)) {
+            s = -INFINITY;
+        }
+        /* Cheap reject first: the tail of a logit vector loses here almost
+         * always, so this branch is what the loop actually costs. */
+        if (s < out[0].score) {
+            continue;
+        }
+        struct geist_sampler_pair cand = {s, (uint32_t) i};
+        if (pair_worse(cand, out[0])) {
+            continue;
+        }
+        out[0] = cand;
+        sift_down(out, k, 0);
+    }
+    /* Heapsort the min-heap in place — extracting the minimum to the back
+     * repeatedly leaves the array in descending order. */
+    for (size_t m = k; m > 1; m--) {
+        struct geist_sampler_pair tmp = out[0];
+        out[0]                        = out[m - 1];
+        out[m - 1]                    = tmp;
+        sift_down(out, m - 1, 0);
+    }
+}
+
+/* Temperature sampling over the workspace buffer — the _ws entry points must
+ * not fall back to the allocating geist_sampler_temperature(). */
+static geist_token_t sample_temperature_ws(struct geist_sampler_workspace *ws,
+                                           const float                     logits[static 1],
+                                           float                           temperature,
+                                           struct geist_rng               *rng) {
+    const size_t n   = ws->n_vocab;
+    double       sum = softmax_into(n, logits, temperature, ws->probs);
+    return inv_cdf_sample(n, ws->probs, sum, rng);
+}
+
+/* ---- Top-K -------------------------------------------------------------- */
 
 geist_token_t geist_sampler_top_k_ws(struct geist_sampler_workspace *ws,
                                      const float                     logits[static ws->n_vocab],
@@ -185,46 +255,20 @@ geist_token_t geist_sampler_top_k_ws(struct geist_sampler_workspace *ws,
         return geist_sampler_argmax(n, logits);
     }
     if ((size_t) top_k >= n) {
-        return geist_sampler_temperature(n, logits, temperature, rng);
+        return sample_temperature_ws(ws, logits, temperature, rng);
     }
+    const size_t k = (size_t) top_k; /* 1 < k < n */
 
-    /* Build (logit, idx) pairs — a stack array for typical n, heap beyond. */
-    struct kv_pair  pairs_stack[1024];
-    struct kv_pair *pairs         = pairs_stack;
-    bool            pairs_on_heap = false;
-    if (n > 1024) {
-        pairs = heap_alloc_array_aligned(struct kv_pair, n);
-        if (pairs == nullptr) {
-            return geist_sampler_argmax(n, logits);
-        }
-        pairs_on_heap = true;
+    select_top_desc(n, logits, k, ws->pairs);
+
+    /* Softmax over the k selected logits, in place in the probs scratch. */
+    for (size_t i = 0; i < k; i++) {
+        ws->probs[i] = ws->pairs[i].score;
     }
-    for (size_t i = 0; i < n; i++) {
-        pairs[i].logit = logits[i];
-        pairs[i].idx   = (uint32_t) i;
-    }
-    /* Full sort is O(n log n); partial-sort optimization left for later. */
-    qsort(pairs, n, sizeof(struct kv_pair), cmp_desc_logit);
+    double sum = softmax_into(k, ws->probs, temperature, ws->probs);
 
-    /* Softmax over the top-k entries only. */
-    float top_logits[8192];
-    float top_probs[8192];
-    /* top_k is capped at 8192 (stack budget). Beyond that, fall back. */
-    int k = top_k;
-    if (k > 8192)
-        k = 8192;
-
-    for (int i = 0; i < k; i++)
-        top_logits[i] = pairs[i].logit;
-    double sum = softmax_into((size_t) k, top_logits, temperature, top_probs);
-
-    geist_token_t local_pick = inv_cdf_sample((size_t) k, top_probs, sum, rng);
-    geist_token_t picked     = (geist_token_t) pairs[local_pick].idx;
-
-    if (pairs_on_heap) {
-        safe_free((void **) &pairs);
-    }
-    return picked;
+    geist_token_t local = inv_cdf_sample(k, ws->probs, sum, rng);
+    return (geist_token_t) ws->pairs[local].idx;
 }
 
 /* ---- Top-P -------------------------------------------------------------- */
@@ -239,67 +283,51 @@ geist_token_t geist_sampler_top_p_ws(struct geist_sampler_workspace *ws,
         return geist_sampler_argmax(n, logits);
     }
     if (top_p >= 1.0f) {
-        return geist_sampler_temperature(n, logits, temperature, rng);
+        return sample_temperature_ws(ws, logits, temperature, rng);
     }
 
-    /* Full softmax + sort-by-prob-descending → cumsum → cutoff. */
-    double sum = softmax_into(n, logits, temperature, ws->probs);
-    if (sum <= 0.0) {
+    /* Unnormalized softmax; the nucleus test scales the target by the sum
+     * instead of normalizing all n probabilities (same cutoff, one pass
+     * less, one rounding less). */
+    const double sum = softmax_into(n, logits, temperature, ws->probs);
+    if (!(sum > 0.0)) {
         return geist_sampler_argmax(n, logits);
     }
-    /* Normalize in place. */
-    for (size_t i = 0; i < n; i++) {
-        ws->probs[i] = (float) ((double) ws->probs[i] / sum);
-    }
+    const double target = (double) top_p * sum;
 
-    /* Build (prob, idx) pairs and sort descending. Reuse stack for n<=1024. */
-    struct kv_pair  pairs_stack[1024];
-    struct kv_pair *pairs         = pairs_stack;
-    bool            pairs_on_heap = false;
-    if (n > 1024) {
-        pairs = heap_alloc_array_aligned(struct kv_pair, n);
-        if (pairs == nullptr) {
-            return geist_sampler_argmax(n, logits);
-        }
-        pairs_on_heap = true;
-    }
-    for (size_t i = 0; i < n; i++) {
-        pairs[i].logit = ws->probs[i]; /* reuse field as "prob" */
-        pairs[i].idx   = (uint32_t) i;
-    }
-    qsort(pairs, n, sizeof(struct kv_pair), cmp_desc_logit);
-
-    /* Find smallest prefix whose cumulative prob >= top_p. */
-    double cum    = 0.0;
+    /* The nucleus is a few dozen tokens for any realistic distribution, so
+     * select a small prefix and grow only if it misses the target. Each
+     * attempt is O(n log k); the doubling makes the total ~2x the last one. */
+    size_t k      = 32 < n ? 32 : n;
     size_t cutoff = 0;
-    for (cutoff = 0; cutoff < n; cutoff++) {
-        cum += (double) pairs[cutoff].logit;
-        if (cum >= (double) top_p) {
+    double cum    = 0.0;
+    for (;;) {
+        select_top_desc(n, ws->probs, k, ws->pairs);
+        cum    = 0.0;
+        cutoff = 0;
+        while (cutoff < k) {
+            cum += (double) ws->pairs[cutoff].score;
             cutoff++;
+            if (cum >= target) {
+                break;
+            }
+        }
+        if (cum >= target || k == n) {
             break;
         }
+        k = k > n / 2 ? n : k * 2;
     }
-    if (cutoff < 1)
-        cutoff = 1;
 
-    /* Sample within the nucleus, renormalized. */
-    double nucleus_sum = 0.0;
-    for (size_t i = 0; i < cutoff; i++) {
-        nucleus_sum += (double) pairs[i].logit;
-    }
-    double        u      = (double) geist_rng_next_unit(rng) * nucleus_sum;
+    /* Sample within the nucleus, renormalized (u is drawn against `cum`). */
+    double        u      = (double) geist_rng_next_unit(rng) * cum;
     double        acc    = 0.0;
-    geist_token_t picked = (geist_token_t) pairs[cutoff - 1].idx;
+    geist_token_t picked = (geist_token_t) ws->pairs[cutoff - 1].idx;
     for (size_t i = 0; i < cutoff; i++) {
-        acc += (double) pairs[i].logit;
+        acc += (double) ws->pairs[i].score;
         if (u < acc) {
-            picked = (geist_token_t) pairs[i].idx;
+            picked = (geist_token_t) ws->pairs[i].idx;
             break;
         }
-    }
-
-    if (pairs_on_heap) {
-        safe_free((void **) &pairs);
     }
     return picked;
 }

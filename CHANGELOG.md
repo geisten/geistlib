@@ -8,6 +8,22 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed
+- **Sampler: bounded selection instead of a full vocabulary sort** (#331):
+  `top_k`/`top_p` built an (logit, index) pair array — on the heap for any
+  vocabulary above 1024 — and `qsort`ed all of it per token, then capped
+  `top_k` at 8192 without telling anyone. Both now select through a
+  size-k min-heap held in the sampler workspace: O(n log k) instead of
+  O(n log n), zero allocations after `geist_sampler_workspace_init`, and
+  every `top_k` in [1, n_vocab] keeps the semantics it asked for. Ties
+  break by lowest index (`qsort`'s comparator called every NaN equal, so
+  the old order was not even well defined). Measured on M1 Max, vocab
+  262144: `top_k=40` 23.9 ms → 181 us/token, `top_p=0.9` 24.7 ms →
+  1.01 ms/token; end-to-end sampled decode on gemma4-e2b 20.5 → 41.1 tok/s.
+  The one regime that loses is `top_k` at a quarter of the vocabulary or
+  more (`top_k=40000` at 151936: 13.2 → 15.8 ms) — where the old path was
+  silently sampling from the top 8192 instead.
+
 ### Added
 - **Batched Metal embed lookup** (#345): new fused slot
   `embedding_lookup_scaled_rows` — chunk token ids travel via

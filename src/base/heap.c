@@ -4,6 +4,7 @@
 #include "heap.h"
 
 #include "checked.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -12,6 +13,13 @@
 #if defined(__linux__)
 #include <sys/mman.h>
 #endif
+
+/* See heap_alloc_count(). Relaxed: readers want a count, not ordering. */
+static _Atomic uint64_t g_heap_allocs;
+
+uint64_t heap_alloc_count(void) {
+    return atomic_load_explicit(&g_heap_allocs, memory_order_relaxed);
+}
 
 /* True iff x is a non-zero power of two. Allocation alignments must satisfy
  * this: the rounding mask ~(alignment-1) and aligned_alloc() are both
@@ -74,6 +82,9 @@ void *heap_alloc_aligned(const size_t size, size_t alignment) {
         return nullptr;
     }
     void *p = portable_aligned_alloc(alignment, aligned);
+    if (p != nullptr) {
+        atomic_fetch_add_explicit(&g_heap_allocs, 1u, memory_order_relaxed);
+    }
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
     /* Big streaming allocations (backend weight repacks, lm_head sketch/Q8
      * blobs — hundreds of MB read every token) benefit from THP the same way
