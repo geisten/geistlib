@@ -20,12 +20,14 @@ static inline float bf16_to_fp32(uint16_t bf) {
     return f;
 }
 
-/* Convert n BF16 values into a FP32 buffer. dst MUST be at least n*4 bytes. */
-void bf16_array_to_fp32(const uint16_t *src, float *dst, size_t n);
+/* Convert n BF16 values into a FP32 buffer. dst MUST be at least n*4 bytes.
+ * src is void* on purpose: safetensors packs tensor data at arbitrary byte
+ * offsets in the mapping, so it is read unaligned (see the .c). */
+void bf16_array_to_fp32(const void *src, float *dst, size_t n);
 
 /* Allocate (calloc-style) FP32 array and convert n BF16 values into it.
  * Returns nullptr on alloc failure. */
-float *bf16_alloc_fp32(const uint16_t *src, size_t n);
+float *bf16_alloc_fp32(const void *src, size_t n);
 
 /* RMSNorm — Gemma 4 style:
  *   for each row of x [n_rows][hidden]:
