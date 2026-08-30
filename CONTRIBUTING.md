@@ -101,6 +101,10 @@ make format-check    # verify only (CI runs this as a hard gate)
 The project is C23. These are the house rules; they exist so that a
 signature tells you its contract without reading the body.
 
+> The short, checkable form of this section — and of the memory, bounds and
+> error rules that source comments cite as "per AGENT.md" — is
+> [AGENT.md](AGENT.md) at the repository root. Keep the two in step.
+
 ### Lengths before the arrays they describe
 
 ```c

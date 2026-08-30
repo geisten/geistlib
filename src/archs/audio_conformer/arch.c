@@ -166,10 +166,10 @@ static size_t pcm_to_mel(struct MelState *mel,
 }
 
 static size_t audio_conformer_encode_pcm(void          *encoder_state,
-                                         const int16_t *pcm,
                                          size_t         n_samples,
-                                         float         *out_soft,
-                                         size_t         max_soft) {
+                                         size_t         max_soft,
+                                         const int16_t *pcm,
+                                         float         *out_soft) {
     if (encoder_state == nullptr || pcm == nullptr || out_soft == nullptr || max_soft == 0) {
         return 0;
     }
@@ -254,7 +254,7 @@ static bool audio_conformer_stream_begin(void *encoder_state) {
     return true;
 }
 
-static bool audio_conformer_stream_push(void *encoder_state, const int16_t *pcm, size_t n) {
+static bool audio_conformer_stream_push(void *encoder_state, size_t n, const int16_t *pcm) {
     struct audio_conformer_state *st = encoder_state;
     if (st == nullptr || st->enc == nullptr || pcm == nullptr) {
         return false;
@@ -262,7 +262,7 @@ static bool audio_conformer_stream_push(void *encoder_state, const int16_t *pcm,
     return audio_encoder_push_pcm(st->enc, pcm, n) == 0;
 }
 
-static size_t audio_conformer_stream_poll(void *encoder_state, float *out_soft, size_t max_soft) {
+static size_t audio_conformer_stream_poll(void *encoder_state, size_t max_soft, float *out_soft) {
     struct audio_conformer_state *st = encoder_state;
     if (st == nullptr || st->enc == nullptr || out_soft == nullptr || max_soft == 0) {
         return 0;
@@ -271,7 +271,7 @@ static size_t audio_conformer_stream_poll(void *encoder_state, float *out_soft, 
     return audio_encoder_pull_softtokens(st->enc, out_soft, max_soft, 0);
 }
 
-static size_t audio_conformer_stream_end(void *encoder_state, float *out_soft, size_t max_soft) {
+static size_t audio_conformer_stream_end(void *encoder_state, size_t max_soft, float *out_soft) {
     struct audio_conformer_state *st = encoder_state;
     if (st == nullptr || st->enc == nullptr || out_soft == nullptr || max_soft == 0) {
         return 0;

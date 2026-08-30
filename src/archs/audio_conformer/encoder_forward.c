@@ -41,7 +41,7 @@ void clip_linear_apply(const struct ClippableLinear *cl,
         ops->w8a32(cl->w_q8, cl->w_scales, x, n, in_dim, out_dim, y);
         break;
     default:
-        linear_fp32(x, cl->w, nullptr, n, in_dim, out_dim, y);
+        linear_fp32(n, in_dim, out_dim, x, cl->w, nullptr, y);
         break;
     }
     clamp_fp32(y, n * out_dim, cl->output_min, cl->output_max);
@@ -53,7 +53,7 @@ void ffn_run(const struct FFN *ffn, float *h, size_t n) {
     float       *residual = heap_alloc_array_aligned(float, hsize);
     memcpy(residual, h, hsize * sizeof(float));
 
-    rmsnorm_fp32(h, ffn->pre_norm, n, AUDIO_HIDDEN, RMS_EPS, h);
+    rmsnorm_fp32(n, AUDIO_HIDDEN, h, ffn->pre_norm, RMS_EPS, h);
 
     float *mid = heap_alloc_array_aligned(float, (size_t) n *FFN_INTER);
     clip_linear_apply(&ffn->ffw1, h, n, AUDIO_HIDDEN, FFN_INTER, mid);
@@ -61,7 +61,7 @@ void ffn_run(const struct FFN *ffn, float *h, size_t n) {
     clip_linear_apply(&ffn->ffw2, mid, n, FFN_INTER, AUDIO_HIDDEN, h);
     safe_free((void **) &mid);
 
-    rmsnorm_fp32(h, ffn->post_norm, n, AUDIO_HIDDEN, RMS_EPS, h);
+    rmsnorm_fp32(n, AUDIO_HIDDEN, h, ffn->post_norm, RMS_EPS, h);
     for (size_t i = 0; i < hsize; i++)
         h[i] = h[i] * 0.5f + residual[i];
     safe_free((void **) &residual);
@@ -148,7 +148,7 @@ void attn_run(const struct Attn *attn,
      */
     float *rel_k = heap_alloc_array_aligned(float, (size_t) POS_LEN *AUDIO_HIDDEN);
     linear_fp32(
-            pos_emb, attn->relative_k_proj, nullptr, POS_LEN, AUDIO_HIDDEN, AUDIO_HIDDEN, rel_k);
+            POS_LEN, AUDIO_HIDDEN, AUDIO_HIDDEN, pos_emb, attn->relative_k_proj, nullptr, rel_k);
 
     /* Output of attention before post-proj: (n_padded, 1024). */
     float *attn_out = heap_calloc_array_aligned(float, (size_t) n_padded *AUDIO_HIDDEN);
@@ -253,7 +253,7 @@ void lconv_run(const struct LConv *lc, float *h, size_t n) {
     float       *residual = heap_alloc_array_aligned(float, hsize);
     memcpy(residual, h, hsize * sizeof(float));
 
-    rmsnorm_fp32(h, lc->pre_norm, n, AUDIO_HIDDEN, RMS_EPS, h);
+    rmsnorm_fp32(n, AUDIO_HIDDEN, h, lc->pre_norm, RMS_EPS, h);
 
     /* linear_start: (n, 1024) → (n, 2048) */
     float *doubled = heap_alloc_array_aligned(float, (size_t) n * 2 * AUDIO_HIDDEN);
@@ -281,7 +281,7 @@ void lconv_run(const struct LConv *lc, float *h, size_t n) {
     safe_free((void **) &conv_out);
 
     /* conv_norm + SiLU + linear_end + residual */
-    rmsnorm_fp32(h, lc->conv_norm, n, AUDIO_HIDDEN, RMS_EPS, h);
+    rmsnorm_fp32(n, AUDIO_HIDDEN, h, lc->conv_norm, RMS_EPS, h);
     silu_fp32(h, hsize);
     float *end_in = heap_alloc_array_aligned(float, hsize);
     memcpy(end_in, h, hsize * sizeof(float));
@@ -318,7 +318,7 @@ void audio_encoder_layer_run(const struct AudioEncoder *a,
     memcpy(residual, h, hsize * sizeof(float));
     {
         AE_TIC();
-        rmsnorm_fp32(h, L->norm_pre_attn, n, AUDIO_HIDDEN, RMS_EPS, h);
+        rmsnorm_fp32(n, AUDIO_HIDDEN, h, L->norm_pre_attn, RMS_EPS, h);
         AE_TOC(g_ae_norm_pre_attn);
     }
 
@@ -333,7 +333,7 @@ void audio_encoder_layer_run(const struct AudioEncoder *a,
 
     {
         AE_TIC();
-        rmsnorm_fp32(h, L->norm_post_attn, n, AUDIO_HIDDEN, RMS_EPS, h);
+        rmsnorm_fp32(n, AUDIO_HIDDEN, h, L->norm_post_attn, RMS_EPS, h);
         AE_TOC(g_ae_norm_post_attn);
     }
     for (size_t i = 0; i < hsize; i++)
@@ -357,7 +357,7 @@ void audio_encoder_layer_run(const struct AudioEncoder *a,
     /* 5. norm_out */
     {
         AE_TIC();
-        rmsnorm_fp32(h, L->norm_out, n, AUDIO_HIDDEN, RMS_EPS, h_out);
+        rmsnorm_fp32(n, AUDIO_HIDDEN, h, L->norm_out, RMS_EPS, h_out);
         AE_TOC(g_ae_norm_out);
     }
 
@@ -580,7 +580,7 @@ size_t audio_encoder_subsample_run(const struct AudioEncoder *a,
     safe_free((void **) &l1);
 
     /* Linear projection: (T_out1, 1024) @ in_proj^T (1024, 1024) → (T_out1, 1024). */
-    linear_fp32(flat, a->in_proj, nullptr, (size_t) T_out1, AUDIO_HIDDEN, AUDIO_HIDDEN, out);
+    linear_fp32((size_t) T_out1, AUDIO_HIDDEN, AUDIO_HIDDEN, flat, a->in_proj, nullptr, out);
     safe_free((void **) &flat);
 
     return (size_t) T_out1;
@@ -737,12 +737,12 @@ size_t audio_encoder_subsample_run_inc(const struct AudioEncoder *a,
     }
     safe_free((void **) &l1_tmp);
 
-    linear_fp32(flat,
+    linear_fp32((size_t) new_t1,
+                AUDIO_HIDDEN,
+                AUDIO_HIDDEN,
+                flat,
                 a->in_proj,
                 nullptr,
-                (size_t) new_t1,
-                AUDIO_HIDDEN,
-                AUDIO_HIDDEN,
                 out_sub_buf + (size_t) subs->n_t_out1 * AUDIO_HIDDEN);
     safe_free((void **) &flat);
 
@@ -808,7 +808,7 @@ size_t audio_encoder_run(const struct AudioEncoder *a,
     {
         AE_TIC();
         linear_fp32(
-                h_a, a->output_proj_w, a->output_proj_b, n_sub, AUDIO_HIDDEN, OUTPUT_PROJ_DIMS, op);
+                n_sub, AUDIO_HIDDEN, OUTPUT_PROJ_DIMS, h_a, a->output_proj_w, a->output_proj_b, op);
         AE_TOC(g_ae_output_proj);
     }
     safe_free((void **) &h_a);
@@ -816,16 +816,16 @@ size_t audio_encoder_run(const struct AudioEncoder *a,
     /* Step 5: embed_audio.embedding_pre_projection_norm (RMSNorm with_scale=False)
      *         then embedding_projection (1536 → soft_dim, no bias). */
     float *normed = heap_alloc_array_aligned(float, n_sub *OUTPUT_PROJ_DIMS);
-    rmsnorm_fp32(op, nullptr, n_sub, OUTPUT_PROJ_DIMS, RMS_EPS, normed);
+    rmsnorm_fp32(n_sub, OUTPUT_PROJ_DIMS, op, nullptr, RMS_EPS, normed);
     safe_free((void **) &op);
     {
         AE_TIC();
-        linear_fp32(normed,
-                    a->embed_audio_proj,
-                    nullptr,
-                    n_sub,
+        linear_fp32(n_sub,
                     OUTPUT_PROJ_DIMS,
                     a->soft_dim,
+                    normed,
+                    a->embed_audio_proj,
+                    nullptr,
                     softtokens_out);
         AE_TOC(g_ae_embed_proj);
     }

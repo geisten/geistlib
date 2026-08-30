@@ -26,7 +26,7 @@ float *load_bf16(struct st_ctx *sf, const char *name, size_t expect_elems) {
         fprintf(stderr, "audio_encoder: %s expected %zu elems, got %zu\n", name, expect_elems, n);
         return nullptr;
     }
-    return bf16_alloc_fp32(t->data, n);
+    return bf16_alloc_fp32(n, t->data);
 }
 
 /* Read a scalar bf16 tensor (shape ()) → float. */

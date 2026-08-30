@@ -117,8 +117,8 @@ static void run_case_tol(struct geist_backend *vk,
         w_vk.linear_m1(x, &w_vk, vk, y_vk);
         w_rf.linear_m1(x, &w_rf, ref, y_rf);
     } else {
-        w_vk.linear_mN(x, &w_vk, m, vk, y_vk);
-        w_rf.linear_mN(x, &w_rf, m, ref, y_rf);
+        w_vk.linear_mN(m, x, &w_vk, vk, y_vk);
+        w_rf.linear_mN(m, x, &w_rf, ref, y_rf);
     }
 
     double max_rel = 0.0;

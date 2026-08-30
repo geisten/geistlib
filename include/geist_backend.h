@@ -383,15 +383,15 @@ struct geist_backend_fused {
      * not match their fused kernel. The caller then falls back to
      * decomposed ops. */
     enum geist_status (*ffn_geglu_q4q6_mN)(struct geist_backend      *be,
-                                           const float               *x,
                                            size_t                     m,
                                            size_t                     d_model,
                                            size_t                     inter,
+                                           const float                x[static m * d_model],
                                            const struct geist_weight *gate,
                                            const struct geist_weight *up,
                                            const struct geist_weight *down,
-                                           const float               *down_scale,
-                                           float                     *y);
+                                           const float               *down_scale, /* nullable */
+                                           float                      y[static m * d_model]);
 
     /* Tensor-based linear for batched-submit (GPU) backends. The engine
      * passes the x/weight/y views it already builds alongside the
@@ -439,9 +439,9 @@ struct geist_backend_fused {
      * that loop on nullptr or non-OK). Consumer: the prefill chunk
      * loop, which otherwise pays one tiny dispatch per token. */
     enum geist_status (*embedding_lookup_scaled_rows)(struct geist_backend      *be,
-                                                      const struct geist_tensor *embed_table,
-                                                      const geist_token_t       *ids,
                                                       size_t                     n_rows,
+                                                      const struct geist_tensor *embed_table,
+                                                      const geist_token_t        ids[static n_rows],
                                                       float                      scale,
                                                       struct geist_tensor       *out);
 
@@ -560,7 +560,7 @@ struct geist_backend_fused {
      * contains the mixer output and both recurrent state tensors have
      * advanced; GEIST_E_UNSUPPORTED guarantees neither state was changed
      * and lets the architecture run its host reference implementation. */
-    enum geist_status (*deltanet_mix)(struct geist_backend                  *be,
+    enum geist_status (*deltanet_mix)(struct geist_backend                 *be,
                                       const struct geist_deltanet_mix_args *args);
 
     /* Split qwen35's joint per-head [query | output-gate] projection into

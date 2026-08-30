@@ -120,13 +120,13 @@ static void fill_random_f32(float *p, size_t n, uint32_t seed) {
     }
 
     /* Warm-up call (BLAS often does first-call lazy init). */
-    wkr.linear_mN((const float *) x_host, &wkr, M, be, (float *) y_host);
+    wkr.linear_mN(M, (const float *) x_host, &wkr, be, (float *) y_host);
 
     /* Timed runs: take min over 5 iterations. */
     double best = 1e30;
     for (int rep = 0; rep < 5; rep++) {
         double t0 = monotonic_ms();
-        wkr.linear_mN((const float *) x_host, &wkr, M, be, (float *) y_host);
+        wkr.linear_mN(M, (const float *) x_host, &wkr, be, (float *) y_host);
         double dt = monotonic_ms() - t0;
         if (dt < best)
             best = dt;

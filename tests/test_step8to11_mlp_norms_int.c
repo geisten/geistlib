@@ -65,7 +65,7 @@ static float *load_bf16(struct st_ctx *ctx, const char *name, size_t expected) {
         fprintf(stderr, "elem mismatch %s: %zu vs %zu\n", name, elems, expected);
         return nullptr;
     }
-    return bf16_alloc_fp32((const uint16_t *) t->data, elems);
+    return bf16_alloc_fp32(elems, (const uint16_t *) t->data);
 }
 
 int main(int argc, char **argv) {
@@ -125,34 +125,34 @@ int main(int argc, char **argv) {
             h_pre[t * HIDDEN + i] = bf16_to_fp32(row[i]) * embed_scale;
     }
     float *normed = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(h_pre, in_ln_w, n_ids, HIDDEN, RMS_EPS, normed);
+    rmsnorm_fp32(n_ids, HIDDEN, h_pre, in_ln_w, RMS_EPS, normed);
 
     float *q = (float *) malloc(n_ids * Q_OUT * sizeof(float));
     float *k = (float *) malloc(n_ids * KV_OUT * sizeof(float));
     float *v = (float *) malloc(n_ids * KV_OUT * sizeof(float));
-    linear_fp32(normed, q_w, nullptr, n_ids, HIDDEN, Q_OUT, q);
-    linear_fp32(normed, k_w, nullptr, n_ids, HIDDEN, KV_OUT, k);
-    linear_fp32(normed, v_w, nullptr, n_ids, HIDDEN, KV_OUT, v);
-    rmsnorm_fp32(q, q_norm_w, n_ids * Q_HEADS, HEAD_DIM, RMS_EPS, q);
-    rmsnorm_fp32(k, k_norm_w, n_ids * KV_HEADS, HEAD_DIM, RMS_EPS, k);
-    rmsnorm_fp32(v, nullptr, n_ids * KV_HEADS, HEAD_DIM, RMS_EPS, v);
+    linear_fp32(n_ids, HIDDEN, Q_OUT, normed, q_w, nullptr, q);
+    linear_fp32(n_ids, HIDDEN, KV_OUT, normed, k_w, nullptr, k);
+    linear_fp32(n_ids, HIDDEN, KV_OUT, normed, v_w, nullptr, v);
+    rmsnorm_fp32(n_ids * Q_HEADS, HEAD_DIM, q, q_norm_w, RMS_EPS, q);
+    rmsnorm_fp32(n_ids * KV_HEADS, HEAD_DIM, k, k_norm_w, RMS_EPS, k);
+    rmsnorm_fp32(n_ids * KV_HEADS, HEAD_DIM, v, nullptr, RMS_EPS, v);
 
     float *cos_b = (float *) malloc(n_ids * HEAD_DIM * sizeof(float));
     float *sin_b = (float *) malloc(n_ids * HEAD_DIM * sizeof(float));
     rope_compute(n_ids, HEAD_DIM, HEAD_DIM, ROPE_THETA, cos_b, sin_b);
-    rope_apply(q, cos_b, sin_b, n_ids, Q_HEADS, HEAD_DIM);
-    rope_apply(k, cos_b, sin_b, n_ids, KV_HEADS, HEAD_DIM);
+    rope_apply(n_ids, Q_HEADS, HEAD_DIM, q, cos_b, sin_b);
+    rope_apply(n_ids, KV_HEADS, HEAD_DIM, k, cos_b, sin_b);
 
     float *attn_out = (float *) malloc(n_ids * Q_OUT * sizeof(float));
-    attention_mqa_causal(q, k, v, n_ids, Q_HEADS, KV_HEADS, HEAD_DIM, SLIDING_WINDOW, attn_out);
+    attention_mqa_causal(n_ids, Q_HEADS, KV_HEADS, HEAD_DIM, SLIDING_WINDOW, q, k, v, attn_out);
 
     float *o = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    linear_fp32(attn_out, o_w, nullptr, n_ids, Q_OUT, HIDDEN, o);
+    linear_fp32(n_ids, Q_OUT, HIDDEN, attn_out, o_w, nullptr, o);
     /* o is now the o_proj output, validated in Step 5+6+7. */
 
     /* === Step 8: post_attention_layernorm === */
     float *post_attn = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(o, post_attn_w, n_ids, HIDDEN, RMS_EPS, post_attn);
+    rmsnorm_fp32(n_ids, HIDDEN, o, post_attn_w, RMS_EPS, post_attn);
 
     char path[1024];
     snprintf(path, sizeof(path), "%s.post_attn_norm.bin", argv[3]);
@@ -160,20 +160,20 @@ int main(int argc, char **argv) {
 
     /* === Residual 1: h_post_attn = h_pre + post_attn === */
     float *h_post_attn = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    add_fp32(h_pre, post_attn, n_ids * HIDDEN, h_post_attn);
+    add_fp32(n_ids * HIDDEN, h_pre, post_attn, h_post_attn);
     /* h_post_attn becomes "residual_2" later */
 
     /* === Step 9: pre_feedforward_layernorm === */
     float *pre_ff_normed = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(h_post_attn, pre_ff_w, n_ids, HIDDEN, RMS_EPS, pre_ff_normed);
+    rmsnorm_fp32(n_ids, HIDDEN, h_post_attn, pre_ff_w, RMS_EPS, pre_ff_normed);
     snprintf(path, sizeof(path), "%s.pre_ff_norm.bin", argv[3]);
     write_bin(path, pre_ff_normed, n_ids * HIDDEN * sizeof(float));
 
     /* === Step 10: MLP === */
     float *gate_out = (float *) malloc(n_ids * INTER * sizeof(float));
     float *up_out   = (float *) malloc(n_ids * INTER * sizeof(float));
-    linear_fp32(pre_ff_normed, gate_w, nullptr, n_ids, HIDDEN, INTER, gate_out);
-    linear_fp32(pre_ff_normed, up_w, nullptr, n_ids, HIDDEN, INTER, up_out);
+    linear_fp32(n_ids, HIDDEN, INTER, pre_ff_normed, gate_w, nullptr, gate_out);
+    linear_fp32(n_ids, HIDDEN, INTER, pre_ff_normed, up_w, nullptr, up_out);
     snprintf(path, sizeof(path), "%s.gate_proj.bin", argv[3]);
     write_bin(path, gate_out, n_ids * INTER * sizeof(float));
     snprintf(path, sizeof(path), "%s.up_proj.bin", argv[3]);
@@ -181,17 +181,17 @@ int main(int argc, char **argv) {
 
     /* GELU-tanh on gate, then mul with up, then down_proj */
     float *gate_act = (float *) malloc(n_ids * INTER * sizeof(float));
-    gelu_tanh_fp32(gate_out, n_ids * INTER, gate_act);
+    gelu_tanh_fp32(n_ids * INTER, gate_out, gate_act);
     float *gate_up = (float *) malloc(n_ids * INTER * sizeof(float));
-    mul_fp32(gate_act, up_out, n_ids * INTER, gate_up);
+    mul_fp32(n_ids * INTER, gate_act, up_out, gate_up);
     float *down_out = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    linear_fp32(gate_up, down_w, nullptr, n_ids, INTER, HIDDEN, down_out);
+    linear_fp32(n_ids, INTER, HIDDEN, gate_up, down_w, nullptr, down_out);
     snprintf(path, sizeof(path), "%s.down_proj.bin", argv[3]);
     write_bin(path, down_out, n_ids * HIDDEN * sizeof(float));
 
     /* === Step 11: post_feedforward_layernorm === */
     float *post_ff = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(down_out, post_ff_w, n_ids, HIDDEN, RMS_EPS, post_ff);
+    rmsnorm_fp32(n_ids, HIDDEN, down_out, post_ff_w, RMS_EPS, post_ff);
     snprintf(path, sizeof(path), "%s.post_ff_norm.bin", argv[3]);
     write_bin(path, post_ff, n_ids * HIDDEN * sizeof(float));
 

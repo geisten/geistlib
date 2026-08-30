@@ -185,9 +185,9 @@ static void cpu_neon_w_q4_1_m1(const float               *x,
     linear_q4_1_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
 }
 
-static void cpu_neon_w_q4_0_mN(const float               *x,
+static void cpu_neon_w_q4_0_mN(size_t                     m,
+                               const float               *x,
                                const struct geist_weight *w,
-                               size_t                     m,
                                struct geist_backend      *be,
                                float                     *y) {
     (void) be;
@@ -202,9 +202,9 @@ static void cpu_neon_w_q4_0_mN(const float               *x,
     linear_q4_0_w4a8_prefill(x, m, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
 }
 
-static void cpu_neon_w_q4_1_mN(const float               *x,
+static void cpu_neon_w_q4_1_mN(size_t                     m,
+                               const float               *x,
                                const struct geist_weight *w,
-                               size_t                     m,
                                struct geist_backend      *be,
                                float                     *y) {
     (void) be;
@@ -235,9 +235,9 @@ static void cpu_neon_w_iq4xs_m1(const float               *x,
     linear_iq4xs_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
 }
 
-static void cpu_neon_w_iq4xs_mN(const float               *x,
+static void cpu_neon_w_iq4xs_mN(size_t                     m,
+                                const float               *x,
                                 const struct geist_weight *w,
-                                size_t                     m,
                                 struct geist_backend      *be,
                                 float                     *y) {
     (void) be;
@@ -273,9 +273,9 @@ static void cpu_neon_w_f32_m1(const float               *x,
                 1);
 }
 
-static void cpu_neon_w_f32_mN(const float               *x,
+static void cpu_neon_w_f32_mN(size_t                     m,
+                              const float               *x,
                               const struct geist_weight *w,
-                              size_t                     m,
                               struct geist_backend      *be,
                               float                     *y) {
     (void) be;
@@ -297,9 +297,9 @@ static void cpu_neon_w_f32_mN(const float               *x,
 
 /* ---- M>1 (prefill) trampolines --------------------------------------- */
 
-static void cpu_neon_w_q3k_mN(const float               *x,
+static void cpu_neon_w_q3k_mN(size_t                     m,
+                              const float               *x,
                               const struct geist_weight *w,
-                              size_t                     m,
                               struct geist_backend      *be,
                               float                     *y) {
     (void) be;
@@ -473,9 +473,9 @@ static void   cpu_neon_qk_sgemm_run(const float               *x,
                                     float                     *y);
 static size_t qk_sgemm_tile_rows_for(const struct cpu_neon_state *st);
 
-static void cpu_neon_w_q4k_mN(const float               *x,
+static void cpu_neon_w_q4k_mN(size_t                     m,
+                              const float               *x,
                               const struct geist_weight *w,
-                              size_t                     m,
                               struct geist_backend      *be,
                               float                     *y) {
     struct cpu_neon_state     *st   = (struct cpu_neon_state *) be->state;
@@ -512,10 +512,10 @@ static void cpu_neon_w_q4k_mN(const float               *x,
     }
 }
 
-static void cpu_neon_w_q4k_pair_mN(const float               *x,
+static void cpu_neon_w_q4k_pair_mN(size_t                     m,
+                                   const float               *x,
                                    const struct geist_weight *w0,
                                    const struct geist_weight *w1,
-                                   size_t                     m,
                                    struct geist_backend      *be,
                                    float                     *y0,
                                    float                     *y1) {
@@ -566,9 +566,9 @@ static void cpu_neon_w_q4k_pair_mN(const float               *x,
     }
 }
 
-static void cpu_neon_w_q6k_mN(const float               *x,
+static void cpu_neon_w_q6k_mN(size_t                     m,
+                              const float               *x,
                               const struct geist_weight *w,
-                              size_t                     m,
                               struct geist_backend      *be,
                               float                     *y) {
     struct cpu_neon_state     *st   = (struct cpu_neon_state *) be->state;
@@ -610,18 +610,18 @@ static void cpu_neon_w_q6k_mN(const float               *x,
     }
 }
 
-static void cpu_neon_w_iq2s_mN(const float               *x,
+static void cpu_neon_w_iq2s_mN(size_t                     m,
+                               const float               *x,
                                const struct geist_weight *w,
-                               size_t                     m,
                                struct geist_backend      *be,
                                float                     *y) {
     (void) be;
     linear_iq2s_w2a8_prefill(x, w->raw, m, (size_t) w->n_in, (size_t) w->n_out, y);
 }
 
-static void cpu_neon_w_iq3s_mN(const float               *x,
+static void cpu_neon_w_iq3s_mN(size_t                     m,
+                               const float               *x,
                                const struct geist_weight *w,
-                               size_t                     m,
                                struct geist_backend      *be,
                                float                     *y) {
     (void) be;
@@ -639,9 +639,9 @@ static void cpu_neon_w_q5k_m1(const float               *x,
     (void) be;
     linear_q5k_decode_w5a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
 }
-static void cpu_neon_w_q5k_mN(const float               *x,
+static void cpu_neon_w_q5k_mN(size_t                     m,
+                              const float               *x,
                               const struct geist_weight *w,
-                              size_t                     m,
                               struct geist_backend      *be,
                               float                     *y) {
     (void) be;
@@ -652,9 +652,9 @@ static void cpu_neon_w_q5k_mN(const float               *x,
  * (cpu_neon_w_q8_0_m1 above). Same platform cross-over pattern as
  * Q5_K — Mac AMX SGEMM may win at high M, Pi 5 native expected to
  * win since OpenBLAS lags. */
-static void cpu_neon_w_q8_0_mN(const float               *x,
+static void cpu_neon_w_q8_0_mN(size_t                     m,
+                               const float               *x,
                                const struct geist_weight *w,
-                               size_t                     m,
                                struct geist_backend      *be,
                                float                     *y) {
     (void) be;
@@ -1014,9 +1014,9 @@ static void cpu_neon_qk_sgemm_run(const float               *x,
 
 /* M>1: tile through output rows, dequant each tile + sgemm against
  * the full activation block. */
-static void cpu_neon_w_dequant_trampoline_mN(const float               *x,
+static void cpu_neon_w_dequant_trampoline_mN(size_t                     m,
+                                             const float               *x,
                                              const struct geist_weight *w,
-                                             size_t                     m,
                                              struct geist_backend      *be,
                                              float                     *y) {
     (void) be;

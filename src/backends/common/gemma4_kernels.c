@@ -16,7 +16,7 @@
  * OpenBLAS / native fallback, selected at build time). */
 #include "geist_gemm.h"
 
-void bf16_array_to_fp32(const void *src, float *dst, size_t n) {
+void bf16_array_to_fp32(size_t n, const void *src, float dst[static n]) {
     /* Byte pointer + memcpy: safetensors tensor data starts at an arbitrary
      * byte offset in the mmap, so a uint16_t load off it can be misaligned
      * (UB, caught by UBSan). memcpy of 2 bytes costs nothing — the compiler
@@ -29,15 +29,15 @@ void bf16_array_to_fp32(const void *src, float *dst, size_t n) {
     }
 }
 
-float *bf16_alloc_fp32(const void *src, size_t n) {
+float *bf16_alloc_fp32(size_t n, const void *src) {
     float *dst = heap_alloc_array_aligned(float, n);
     if (!dst)
         return nullptr;
-    bf16_array_to_fp32(src, dst, n);
+    bf16_array_to_fp32(n, src, dst);
     return dst;
 }
 
-void gelu_tanh_fp32(const float *x, size_t n, float *y) {
+void gelu_tanh_fp32(size_t n, const float *x, float *y) {
     /* gelu_tanh: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³))) */
     const float kAlpha = 0.7978845608028654f; /* sqrt(2/π) */
     const float kBeta  = 0.044715f;
@@ -68,7 +68,7 @@ static int fast_tanh_enabled(void) {
 }
 #endif
 
-void gelu_tanh_mul_fp32(const float *x, const float *z, size_t n, float *y) {
+void gelu_tanh_mul_fp32(size_t n, const float *x, const float *z, float *y) {
     const float kAlpha = 0.7978845608028654f;
     const float kBeta  = 0.044715f;
 #if defined(__APPLE__)
@@ -93,7 +93,7 @@ void gelu_tanh_mul_fp32(const float *x, const float *z, size_t n, float *y) {
     }
 }
 
-void relu_squared_fp32(const float *x, size_t n, float *y) {
+void relu_squared_fp32(size_t n, const float *x, float *y) {
     /* BitNet b1.58 2B-4T FFN activation: y = max(x, 0)^2. The compiler
      * auto-vectorizes this loop into NEON vmaxq+vmulq on aarch64; no
      * intrinsics needed here. Fused threshold + square avoids a second
@@ -104,7 +104,7 @@ void relu_squared_fp32(const float *x, size_t n, float *y) {
     }
 }
 
-void silu_fp32_ooo(const float *x, size_t n, float *y) {
+void silu_fp32_ooo(size_t n, const float *x, float *y) {
     /* SiLU (Swish): y = x * sigmoid(x) = x / (1 + exp(-x)).
      * Llama 2/3 + BitNet b1.58 3B + Qwen3 SwiGLU activation.
      * Overflow-safe form: exp argument always <= 0 — the naive
@@ -117,12 +117,12 @@ void silu_fp32_ooo(const float *x, size_t n, float *y) {
     }
 }
 
-void add_fp32(const float *a, const float *b, size_t n, float *y) {
+void add_fp32(size_t n, const float *a, const float *b, float *y) {
     for (size_t i = 0; i < n; i++)
         y[i] = a[i] + b[i];
 }
 
-void mul_fp32(const float *a, const float *b, size_t n, float *y) {
+void mul_fp32(size_t n, const float *a, const float *b, float *y) {
     for (size_t i = 0; i < n; i++)
         y[i] = a[i] * b[i];
 }
@@ -162,12 +162,12 @@ void rope_compute(size_t seq_len,
     safe_free((void **) &inv_freq);
 }
 
-void rope_apply(float       *x,
-                const float *cos,
-                const float *sin,
-                size_t       seq_len,
+void rope_apply(size_t       seq_len,
                 size_t       n_heads,
-                size_t       head_dim) {
+                size_t       head_dim,
+                float       *x,
+                const float *cos,
+                const float *sin) {
     size_t half = head_dim / 2;
     for (size_t s = 0; s < seq_len; s++) {
         const float *cos_s = cos + s * head_dim;
@@ -220,16 +220,16 @@ void rope_compute_at(size_t pos_offset,
     safe_free((void **) &inv_freq);
 }
 
-void attention_mqa_causal_kv(const float *q,
-                             const float *k,
-                             const float *v,
-                             size_t       n_q,
+void attention_mqa_causal_kv(size_t       n_q,
                              size_t       n_kv,
                              size_t       q_offset,
                              size_t       n_q_heads,
                              size_t       n_kv_heads,
                              size_t       head_dim,
                              size_t       sliding_window,
+                             const float *q,
+                             const float *k,
+                             const float *v,
                              float       *out) {
     const float  scale         = 1.0f; /* Gemma 4: scaling encoded via Q/K-norms. */
     const size_t kv_group_size = n_q_heads / n_kv_heads;
@@ -294,14 +294,14 @@ void attention_mqa_causal_kv(const float *q,
     safe_free((void **) &scores);
 }
 
-void attention_mqa_causal(const float *q,
-                          const float *k,
-                          const float *v,
-                          size_t       seq_len,
+void attention_mqa_causal(size_t       seq_len,
                           size_t       n_q_heads,
                           size_t       n_kv_heads,
                           size_t       head_dim,
                           size_t       sliding_window,
+                          const float *q,
+                          const float *k,
+                          const float *v,
                           float       *out) {
     /* Gemma 4 sets self_attn.scaling = 1.0 (not the conventional
      * 1/sqrt(head_dim)). The Q/K RMSNorms normalize magnitudes such
@@ -369,12 +369,12 @@ void attention_mqa_causal(const float *q,
     safe_free((void **) &scores);
 }
 
-void linear_fp32(const float *x,
-                 const float *weight,
-                 const float *bias,
-                 size_t       m,
+void linear_fp32(size_t       m,
                  size_t       n_in,
                  size_t       n_out,
+                 const float *x,
+                 const float *weight,
+                 const float *bias,
                  float       *y) {
     if (m == 1) {
         /* gemv path: y = W * x, W is (n_out, n_in) row-major. Lower per-call
@@ -406,7 +406,7 @@ void linear_fp32(const float *x,
 }
 
 void rmsnorm_fp32(
-        const float *x, const float *weight, size_t n_rows, size_t hidden, float eps, float *y) {
+        size_t n_rows, size_t hidden, const float *x, const float *weight, float eps, float *y) {
     for (size_t r = 0; r < n_rows; r++) {
         const float *xr = x + r * hidden;
         float       *yr = y + r * hidden;
