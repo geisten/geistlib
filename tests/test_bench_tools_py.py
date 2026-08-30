@@ -123,6 +123,48 @@ class BenchmarkToolsTest(unittest.TestCase):
         self.assertAlmostEqual(candidate["prefill"]["vs_baseline_pct"], 25.0)
         self.assertAlmostEqual(candidate["decode"]["vs_baseline_pct"], 25.0)
 
+    def test_resume_requires_an_exact_rotated_schedule_prefix(self):
+        variants = [
+            {"label": label, "binary": f"/{label}", "binary_sha256": label * 8}
+            for label in ("a", "b", "c")
+        ]
+        protocol = {"cycles": 3}
+        metadata = {
+            "schema": "geist.benchmark.apple-ab.v1",
+            "baseline": "a",
+            "model": {"sha256": "model"},
+            "protocol": protocol,
+            "environment": {"OMP_NUM_THREADS": "default"},
+            "variants": variants,
+        }
+        runs = [
+            {"kind": "run", "cycle": 0, "position": 0, "variant": "a"},
+            {"kind": "run", "cycle": 0, "position": 1, "variant": "b"},
+        ]
+        schedule = apple_ab.validate_resume(metadata, runs, metadata, variants, "a")
+        self.assertEqual(
+            [(cycle, position, variant["label"]) for cycle, position, variant in schedule],
+            [(0, 0, "a"), (0, 1, "b"), (0, 2, "c"),
+             (1, 0, "b"), (1, 1, "c"), (1, 2, "a"),
+             (2, 0, "c"), (2, 1, "a"), (2, 2, "b")],
+        )
+        runs[1]["variant"] = "c"
+        with self.assertRaisesRegex(ValueError, "exact schedule prefix"):
+            apple_ab.validate_resume(metadata, runs, metadata, variants, "a")
+
+    def test_resume_rejects_a_changed_binary(self):
+        variants = [{"label": "base", "binary": "/base", "binary_sha256": "old"}]
+        metadata = {
+            "schema": "geist.benchmark.apple-ab.v1",
+            "model": {},
+            "protocol": {"cycles": 1},
+            "environment": {},
+            "variants": variants,
+        }
+        active = [{**variants[0], "binary_sha256": "new"}]
+        with self.assertRaisesRegex(ValueError, "variant binaries"):
+            apple_ab.validate_resume(metadata, [], metadata, active, "base")
+
 
 if __name__ == "__main__":
     unittest.main()

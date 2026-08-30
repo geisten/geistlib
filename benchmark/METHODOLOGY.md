@@ -29,6 +29,9 @@ for the load/cooldown gate before every run, evaluates sequences
 [`results/APPLE.md`](results/APPLE.md#methodology) for the exact command and
 guard band. It records the `pmset` thermal/power state before and after each
 measurement, and marks interrupted artifacts as partial.
+An interrupted campaign can be continued with `--resume` only when its model,
+protocol, environment, baseline, binary hashes and rotated run prefix still
+match exactly.
 
 Raw timing probes for individual subsystems:
 
