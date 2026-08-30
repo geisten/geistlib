@@ -180,7 +180,7 @@ size_t q4_0_x8_gemv_size_bytes(size_t n_in, size_t n_out) {
 }
 
 int q4_0_x8_gemv_pack(const void *w_q4, size_t n_in, size_t n_out, void *dst) {
-    if (q4_0_x8_gemv_size_bytes(n_in, n_out) == 0 || w_q4 == NULL || dst == NULL)
+    if (q4_0_x8_gemv_size_bytes(n_in, n_out) == 0 || w_q4 == nullptr || dst == nullptr)
         return -1;
     const struct block_q4_0k_t *src        = (const struct block_q4_0k_t *) w_q4;
     const size_t                nb_per_row = n_in / Q4_0_BLOCK_ELEMS;
@@ -206,7 +206,7 @@ int q4_0_x8_gemv_pack(const void *w_q4, size_t n_in, size_t n_out, void *dst) {
 
 static int q4_0_x8_valid(const void *packed, size_t n_in, size_t n_out) {
     const struct q4_0_x8_header *h = (const struct q4_0_x8_header *) packed;
-    return packed != NULL && h->magic == Q4_0_X8_GEMV_MAGIC && h->n_in == n_in &&
+    return packed != nullptr && h->magic == Q4_0_X8_GEMV_MAGIC && h->n_in == n_in &&
            h->n_out == n_out && h->block_bytes == sizeof(struct q4_0_x8_block);
 }
 
@@ -294,7 +294,7 @@ void linear_q4_0_decode_w4a8_x8(
     const size_t nb   = n_in / Q4_0_BLOCK_ELEMS;
     int8_t      *x_q8 = heap_alloc_array_aligned(int8_t, n_in);
     int32_t     *bsum = heap_alloc_array_aligned(int32_t, nb);
-    if (x_q8 == NULL || bsum == NULL) {
+    if (x_q8 == nullptr || bsum == nullptr) {
         safe_free((void **) &x_q8);
         safe_free((void **) &bsum);
         return;
@@ -330,7 +330,7 @@ void linear_q4_0_w4a8_prefill_x8(
     int8_t      *x_q8   = heap_alloc_array_aligned(int8_t, m *n_in);
     float       *scales = heap_alloc_array_aligned(float, m);
     int32_t     *bsums  = heap_alloc_array_aligned(int32_t, m *nb);
-    if (x_q8 == NULL || scales == NULL || bsums == NULL) {
+    if (x_q8 == nullptr || scales == nullptr || bsums == nullptr) {
         safe_free((void **) &x_q8);
         safe_free((void **) &scales);
         safe_free((void **) &bsums);

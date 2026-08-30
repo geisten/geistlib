@@ -43,7 +43,7 @@ static int q4k_pp_enabled(void) {
         return v;
     }
     const char *e = getenv("GEIST_PP");
-    v             = (e != NULL && e[0] == '1') ? 1 : 0;
+    v             = (e != nullptr && e[0] == '1') ? 1 : 0;
     atomic_store_explicit(&enabled, v, memory_order_relaxed);
     return v;
 }
@@ -81,7 +81,7 @@ static inline const struct q4k_predecode_block *q4k_predecode_ntile4_blocks(cons
 }
 
 static inline bool q4k_predecode_valid(const void *packed, size_t n_in, size_t n_out) {
-    if (packed == NULL)
+    if (packed == nullptr)
         return false;
     const struct q4k_predecode_header *h = (const struct q4k_predecode_header *) packed;
     return h->magic == Q4K_PREDECODE_MAGIC && h->n_in == (uint32_t) n_in &&
@@ -91,7 +91,7 @@ static inline bool q4k_predecode_valid(const void *packed, size_t n_in, size_t n
 }
 
 static inline bool q4k_predecode_ntile4_valid(const void *packed, size_t n_in, size_t n_out) {
-    if (packed == NULL)
+    if (packed == nullptr)
         return false;
     const struct q4k_predecode_header *h = (const struct q4k_predecode_header *) packed;
     return h->magic == Q4K_PREDECODE_NTILE4_MAGIC && h->n_in == (uint32_t) n_in &&
@@ -130,7 +130,7 @@ size_t q4k_predecode_ntile4_size_bytes(size_t n_in, size_t n_out) {
 }
 
 int q4k_predecode_pack(const void *w_q4k, size_t n_in, size_t n_out, void *dst) {
-    if (w_q4k == NULL || dst == NULL)
+    if (w_q4k == nullptr || dst == nullptr)
         return -1;
     const size_t bytes = q4k_predecode_size_bytes(n_in, n_out);
     if (bytes == 0)
@@ -175,7 +175,7 @@ int q4k_predecode_pack(const void *w_q4k, size_t n_in, size_t n_out, void *dst) 
 }
 
 int q4k_predecode_ntile4_pack(const void *w_q4k, size_t n_in, size_t n_out, void *dst) {
-    if (w_q4k == NULL || dst == NULL)
+    if (w_q4k == nullptr || dst == nullptr)
         return -1;
     const size_t bytes = q4k_predecode_ntile4_size_bytes(n_in, n_out);
     if (bytes == 0)
@@ -314,7 +314,7 @@ float quantize_x_for_q4k(const float *x, size_t n, int8_t *x_q8, int32_t *sum32)
 
 void quantize_x_for_q4k_blocks(
         const float *x, size_t n, int8_t *x_q8, int32_t *sum32, float *scale_blocks) {
-    if (x == NULL || x_q8 == NULL || sum32 == NULL || scale_blocks == NULL)
+    if (x == nullptr || x_q8 == nullptr || sum32 == nullptr || scale_blocks == nullptr)
         return;
     if (n % Q4_K_BLOCK_ELEMS != 0)
         return;
@@ -486,10 +486,10 @@ void linear_q4k_decode_w4a8(
      * cache hangs off the master thread (this function runs serially before
      * the inner-loop OMP team is spawned). Key: (x ptr, n_in, fingerprint).
      * Fingerprint guards against same-pointer reuse across rmsnorm cycles. */
-    static _Thread_local int8_t      *tl_x_q8         = NULL;
-    static _Thread_local int32_t     *tl_sum32        = NULL;
+    static _Thread_local int8_t      *tl_x_q8         = nullptr;
+    static _Thread_local int32_t     *tl_sum32        = nullptr;
     static _Thread_local size_t       tl_cap_n_in     = 0;
-    static _Thread_local const float *tl_last_x       = NULL;
+    static _Thread_local const float *tl_last_x       = nullptr;
     static _Thread_local size_t       tl_last_n_in    = 0;
     static _Thread_local uint64_t     tl_last_sig     = 0;
     static _Thread_local float        tl_last_scale_x = 0.0f;
@@ -500,12 +500,12 @@ void linear_q4k_decode_w4a8(
         safe_free((void **) &tl_sum32);
         tl_x_q8  = heap_alloc_array_aligned(int8_t, n_in);
         tl_sum32 = heap_alloc_array_aligned(int32_t, n_in / 32);
-        if (tl_x_q8 == NULL || tl_sum32 == NULL) {
+        if (tl_x_q8 == nullptr || tl_sum32 == nullptr) {
             tl_cap_n_in = 0;
             return;
         }
         tl_cap_n_in = n_in;
-        tl_last_x   = NULL; /* invalidate */
+        tl_last_x   = nullptr; /* invalidate */
     }
 
     /* Cheap fingerprint: 5 fp32 samples across the vector. ~5 ns vs ~1.5 μs
@@ -545,13 +545,13 @@ void linear_q4k_decode_w4a8_pair(const float *x,
                                  size_t       n_out1,
                                  float       *y0,
                                  float       *y1) {
-    if (x == NULL || w0_q4k == NULL || w1_q4k == NULL || y0 == NULL || y1 == NULL || n_in == 0 ||
-        n_out0 == 0 || n_out1 == 0) {
+    if (x == nullptr || w0_q4k == nullptr || w1_q4k == nullptr || y0 == nullptr || y1 == nullptr ||
+        n_in == 0 || n_out0 == 0 || n_out1 == 0) {
         return;
     }
 
-    static _Thread_local int8_t  *tl_x_q8     = NULL;
-    static _Thread_local int32_t *tl_sum32    = NULL;
+    static _Thread_local int8_t  *tl_x_q8     = nullptr;
+    static _Thread_local int32_t *tl_sum32    = nullptr;
     static _Thread_local size_t   tl_cap_n_in = 0;
 
     if (n_in > tl_cap_n_in) {
@@ -559,7 +559,7 @@ void linear_q4k_decode_w4a8_pair(const float *x,
         safe_free((void **) &tl_sum32);
         tl_x_q8  = heap_alloc_array_aligned(int8_t, n_in);
         tl_sum32 = heap_alloc_array_aligned(int32_t, n_in / 32);
-        if (tl_x_q8 == NULL || tl_sum32 == NULL) {
+        if (tl_x_q8 == nullptr || tl_sum32 == nullptr) {
             tl_cap_n_in = 0;
             return;
         }
@@ -697,12 +697,12 @@ void linear_q4k_w4a8_prefill_pre(const int8_t  *x_q8,
     int                pack_on  = atomic_load_explicit(&pack_act, memory_order_relaxed);
     if (pack_on < 0) {
         const char *e = getenv("GEIST_Q4K_PACK_ACT");
-        pack_on       = (e != NULL && e[0] == '0') ? 0 : 1;
+        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
         atomic_store_explicit(&pack_act, pack_on, memory_order_relaxed);
     }
-    int8_t *packed = NULL;
+    int8_t *packed = nullptr;
     if (pack_on && m >= 2) {
-        static _Thread_local int8_t *pack_tl  = NULL;
+        static _Thread_local int8_t *pack_tl  = nullptr;
         static _Thread_local size_t  pack_cap = 0;
         const size_t                 need     = m * n_in;
         if (need > pack_cap) {
@@ -711,7 +711,7 @@ void linear_q4k_w4a8_prefill_pre(const int8_t  *x_q8,
              * contents on grow is safe. */
             safe_free((void **) &pack_tl);
             pack_tl  = heap_alloc_array_aligned(int8_t, need);
-            pack_cap = (pack_tl != NULL) ? need : 0;
+            pack_cap = (pack_tl != nullptr) ? need : 0;
         }
         if (pack_cap >= need) {
             packed = pack_tl;
@@ -2152,7 +2152,7 @@ void linear_q4k_w4a8_prefill(
     int8_t  *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
     int32_t *sum32   = heap_alloc_array_aligned(int32_t, m *(n_in / 32));
     float   *scale_x = heap_alloc_array_aligned(float, m);
-    if (x_q8 == NULL || sum32 == NULL || scale_x == NULL) {
+    if (x_q8 == nullptr || sum32 == nullptr || scale_x == nullptr) {
         safe_free((void **) &x_q8);
         safe_free((void **) &sum32);
         safe_free((void **) &scale_x);
@@ -2174,7 +2174,7 @@ void linear_q4k_decode_w4a8_predecoded(
         return;
     int8_t  *x_q8  = heap_alloc_array_aligned(int8_t, n_in);
     int32_t *sum32 = heap_alloc_array_aligned(int32_t, n_in / 32);
-    if (x_q8 == NULL || sum32 == NULL) {
+    if (x_q8 == nullptr || sum32 == nullptr) {
         safe_free((void **) &x_q8);
         safe_free((void **) &sum32);
         return;
