@@ -245,6 +245,58 @@ def render_report(metadata: dict, summary: dict, baseline: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def build_schedule(variants: list[dict], cycles: int) -> list[tuple[int, int, dict]]:
+    schedule = []
+    for cycle in range(cycles):
+        offset = cycle % len(variants)
+        order = variants[offset:] + variants[:offset]
+        schedule.extend((cycle, position, variant) for position, variant in enumerate(order))
+    return schedule
+
+
+def load_partial(path: Path) -> tuple[dict, list[dict]]:
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    if not records or records[0].get("kind") != "metadata":
+        raise ValueError("resume artifact does not start with metadata")
+    if any(record.get("kind") == "summary" for record in records):
+        raise ValueError("resume artifact already contains a completed summary")
+    unexpected = [record.get("kind") for record in records[1:]
+                  if record.get("kind") not in {"run", "resume"}]
+    if unexpected:
+        raise ValueError(f"resume artifact contains unexpected records: {unexpected}")
+    metadata = {key: value for key, value in records[0].items() if key != "kind"}
+    runs = [record for record in records[1:] if record.get("kind") == "run"]
+    return metadata, runs
+
+
+def validate_resume(metadata: dict, runs: list[dict], current: dict,
+                    variants: list[dict], baseline: str) -> list[tuple[int, int, dict]]:
+    if metadata.get("schema") != "geist.benchmark.apple-ab.v1":
+        raise ValueError("resume artifact has an unsupported schema")
+    for field in ("model", "protocol", "environment"):
+        if metadata.get(field) != current.get(field):
+            raise ValueError(f"resume {field} does not match this invocation")
+    if metadata.get("baseline", metadata["variants"][0]["label"]) != baseline:
+        raise ValueError("resume baseline does not match this invocation")
+
+    stable_fields = ("label", "binary", "binary_sha256")
+    saved_variants = metadata.get("variants", [])
+    if len(saved_variants) != len(variants):
+        raise ValueError("resume variant count does not match this invocation")
+    for saved, active in zip(saved_variants, variants):
+        if any(saved.get(field) != active.get(field) for field in stable_fields):
+            raise ValueError("resume variant binaries do not match this invocation")
+
+    schedule = build_schedule(variants, metadata["protocol"]["cycles"])
+    if len(runs) > len(schedule):
+        raise ValueError("resume artifact contains too many runs")
+    for run, (cycle, position, variant) in zip(runs, schedule):
+        if (run.get("cycle"), run.get("position"), run.get("variant")) != (
+                cycle, position, variant["label"]):
+            raise ValueError("resume runs are not an exact schedule prefix")
+    return schedule
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variant", action="append", required=True,
@@ -254,6 +306,8 @@ def main() -> int:
     parser.add_argument("--threads", type=int)
     parser.add_argument("--out-dir", type=Path,
                         default=Path.home() / "bench-geistlib" / "apple-ab")
+    parser.add_argument("--resume", type=Path,
+                        help="continue a validated .jsonl.partial artifact")
     parser.add_argument("--quiet-timeout", type=int, default=3600,
                         help="seconds to wait for an uncontended host before failing")
     args = parser.parse_args()
@@ -279,6 +333,7 @@ def main() -> int:
     metadata = {
         "schema": "geist.benchmark.apple-ab.v1",
         "created_utc": datetime.now(timezone.utc).isoformat(),
+        "baseline": baseline,
         "model": {"file": gguf.name, "path": str(gguf), "sha256": model_sha},
         "protocol": protocol,
         "variants": variants,
@@ -297,37 +352,59 @@ def main() -> int:
         },
     }
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
-    raw_path = args.out_dir / f"{timestamp}_apple_cpu_ab.jsonl"
-    partial_path = raw_path.with_suffix(".jsonl.partial")
-    report_path = args.out_dir / f"{timestamp}_apple_cpu_ab.md"
-    runs = []
-    with partial_path.open("w") as raw:
-        raw.write(json.dumps({"kind": "metadata", **metadata}, sort_keys=True) + "\n")
+    if args.resume is not None:
+        partial_path = args.resume.expanduser().resolve()
+        if partial_path.suffix != ".partial" or not partial_path.is_file():
+            parser.error("--resume must name an existing .jsonl.partial artifact")
+        raw_path = partial_path.with_suffix("")
+        report_path = raw_path.with_suffix(".md")
+        try:
+            saved_metadata, runs = load_partial(partial_path)
+            schedule = validate_resume(saved_metadata, runs, metadata, variants, baseline)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            parser.error(str(error))
+        metadata = saved_metadata
+        open_mode = "a"
+    else:
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+        raw_path = args.out_dir / f"{timestamp}_apple_cpu_ab.jsonl"
+        partial_path = raw_path.with_suffix(".jsonl.partial")
+        report_path = args.out_dir / f"{timestamp}_apple_cpu_ab.md"
+        runs = []
+        schedule = build_schedule(variants, protocol["cycles"])
+        open_mode = "w"
+
+    with partial_path.open(open_mode) as raw:
+        if open_mode == "w":
+            raw.write(json.dumps({"kind": "metadata", **metadata}, sort_keys=True) + "\n")
+        else:
+            raw.write(json.dumps({
+                "kind": "resume",
+                "resumed_utc": datetime.now(timezone.utc).isoformat(),
+                "runner_commit": command_output(["git", "-C", str(ROOT),
+                                                   "rev-parse", "HEAD"]),
+            }, sort_keys=True) + "\n")
         raw.flush()
-        for cycle in range(protocol["cycles"]):
-            offset = cycle % len(variants)
-            order = variants[offset:] + variants[:offset]
-            for position, variant in enumerate(order):
-                print(f"cycle {cycle + 1}/{protocol['cycles']}: {variant['label']}",
-                      file=sys.stderr, flush=True)
-                try:
-                    machine = wait_for_quiet(
-                        protocol["max_load_per_core"],
-                        protocol["settle_seconds"],
-                        protocol["cooldown_seconds"],
-                        args.quiet_timeout,
-                    )
-                    run = run_variant(variant, gguf, protocol, args.threads)
-                except (RuntimeError, TimeoutError) as error:
-                    print(f"ERROR: {error}", file=sys.stderr)
-                    return ERROR
-                run.update({"kind": "run", "cycle": cycle, "position": position,
-                            "machine_before": machine})
-                runs.append(run)
-                raw.write(json.dumps(run, sort_keys=True) + "\n")
-                raw.flush()
+        for cycle, position, variant in schedule[len(runs):]:
+            print(f"cycle {cycle + 1}/{protocol['cycles']}: {variant['label']}",
+                  file=sys.stderr, flush=True)
+            try:
+                machine = wait_for_quiet(
+                    protocol["max_load_per_core"],
+                    protocol["settle_seconds"],
+                    protocol["cooldown_seconds"],
+                    args.quiet_timeout,
+                )
+                run = run_variant(variant, gguf, protocol, args.threads)
+            except (RuntimeError, TimeoutError) as error:
+                print(f"ERROR: {error}", file=sys.stderr)
+                return ERROR
+            run.update({"kind": "run", "cycle": cycle, "position": position,
+                        "machine_before": machine})
+            runs.append(run)
+            raw.write(json.dumps(run, sort_keys=True) + "\n")
+            raw.flush()
 
         summary = summarize(runs, variants, protocol, baseline)
         raw.write(json.dumps({"kind": "summary", "summary": summary}, sort_keys=True) + "\n")

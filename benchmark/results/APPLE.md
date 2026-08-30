@@ -95,7 +95,10 @@ JSONL and the Markdown report are written outside the checkout under
 power source both immediately before and after measurement. Package temperature
 is recorded as unavailable when macOS does not expose it without privilege.
 Interrupted runs retain a `.jsonl.partial` suffix and cannot be mistaken for a
-complete baseline.
+complete baseline. Resume a long campaign without discarding already accepted
+runs by repeating the identical model and `--variant` arguments and adding
+`--resume /path/to/run.jsonl.partial`; the runner rejects a changed binary hash,
+model, protocol, environment, baseline or non-prefix run order.
 
 To prove which resolved CPU weight paths actually execute, build the opt-in
 profile (the release build compiles the counters out completely):
