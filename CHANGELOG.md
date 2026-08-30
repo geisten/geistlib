@@ -8,6 +8,35 @@ minor release.
 
 ## [Unreleased]
 
+## [0.10.6] — 2026-08-30
+
+### Fixed
+- **Allocation-free linear-kernel contract, batch 1** (#336): `geist_weight.h`
+  documents `linear_m1` / `linear_mN` as allocation-free; the NEON resolver
+  wrappers discarded their `be` argument and called quant.h's convenience
+  entry points, which `malloc` a per-call activation buffer. Two of them —
+  `linear_q8_0_decode_w8a8` and `linear_q8_0_w8a8_prefill` — dereferenced
+  that allocation **without checking it**, so OOM was a null write rather
+  than a degraded answer.
+
+  Q8_0, Q3_K and Q5_K (decode) now quantize into the existing per-thread
+  workspace and call the `_pre` kernel variants. No new infrastructure was
+  needed: the workspace (lock-free, TLS-cached, grow-on-demand via heap.h)
+  and the `_pre` variants both already existed and had simply never been
+  connected.
+
+  New `test_kernel_no_alloc_unit` guards it by asserting what is
+  observable: 200 decode calls plus every prefill shape up to the
+  high-water mark leave the workspace pointer *and* capacity untouched.
+  Built against the parent it fails; here it passes.
+
+  Throughput is **not** measured and no claim is made — the host was at
+  load 119–335 and the reference model contains neither Q3_K nor Q8_0.
+  Numbers belong on the quiesced Pi 5 and will be posted to #336.
+
+  Batch 1 of several, per the ticket. Still allocating per call: IQ2_S,
+  IQ3_S, IQ4_XS, Q4_0/Q4_1, Q5_K's M>1 path, and the x86 side.
+
 ## [0.10.5] — 2026-08-30
 
 ### Changed
@@ -1105,7 +1134,8 @@ First public release.
   reproducible perf benchmark harness (`make bench-small`).
 - `examples/simple_generate` demonstrating the stable text-generation core.
 
-[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.5...HEAD
+[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.6...HEAD
+[0.10.6]: https://github.com/geisten/geistlib/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/geisten/geistlib/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/geisten/geistlib/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/geisten/geistlib/compare/v0.10.2...v0.10.3
