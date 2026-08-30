@@ -44,19 +44,19 @@ int main(int argc, char **argv) {
         float *out = (float *) malloc(n_elems * sizeof(float));
 
         /* Warm */
-        dequant_q4_K_row(q4_data, out, n_elems);
-        dequant_q3_K_row(q3_data, out, n_elems);
+        dequant_q4_K_row(n_elems, q4_data, out);
+        dequant_q3_K_row(n_elems, q3_data, out);
 
         double t0 = now_s();
         for (int i = 0; i < iters; i++)
-            dequant_q4_K_row(q4_data, out, n_elems);
+            dequant_q4_K_row(n_elems, q4_data, out);
         double t1    = now_s();
         double q4_ms = (t1 - t0) / iters * 1000.0;
         double q4_gb = (q4_bytes / 1e9) / ((t1 - t0) / iters);
 
         t0 = now_s();
         for (int i = 0; i < iters; i++)
-            dequant_q3_K_row(q3_data, out, n_elems);
+            dequant_q3_K_row(n_elems, q3_data, out);
         t1           = now_s();
         double q3_ms = (t1 - t0) / iters * 1000.0;
         double q3_gb = (q3_bytes / 1e9) / ((t1 - t0) / iters);

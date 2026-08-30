@@ -43,7 +43,7 @@ int main(void) {
             blk[2 + j] = (uint8_t) ((((j + 1) & 15) << 4) | j);
         }
         float out[32];
-        dequant_iq4_nl_row(blk, out, 32);
+        dequant_iq4_nl_row(32, blk, out);
         bool ok = true;
         for (int j = 0; j < 16; j++) {
             ok &= out[j] == KV[j];
@@ -67,7 +67,7 @@ int main(void) {
             blk[4 + i] = (uint8_t) ((hi << 4) | lo);
         }
         float out[256];
-        dequant_iq4_xs_row(blk, out, 256);
+        dequant_iq4_xs_row(256, blk, out);
         bool ok = true;
         for (int ib32 = 0; ib32 < 8; ib32++) {
             const float dl = (float) (16 + ib32 - 32);
@@ -113,7 +113,7 @@ int main(void) {
             }
             w.linear_m1(x, &w, be, y);
             for (int r = 0; r < N_OUT; r++) {
-                dequant_iq4_xs_row(wblob + (size_t) r * 136, row, N_IN);
+                dequant_iq4_xs_row(N_IN, wblob + (size_t) r * 136, row);
                 float ref = 0.0f;
                 for (int i = 0; i < N_IN; i++) {
                     ref += row[i] * x[i];
@@ -143,7 +143,7 @@ int main(void) {
             }
             wn.linear_m1(x, &wn, be, y);
             for (int r = 0; r < N_OUT; r++) {
-                dequant_iq4_nl_row(wblob + (size_t) r * (N_IN / 32) * 18, row, N_IN);
+                dequant_iq4_nl_row(N_IN, wblob + (size_t) r * (N_IN / 32) * 18, row);
                 float ref = 0.0f;
                 for (int i = 0; i < N_IN; i++) {
                     ref += row[i] * x[i];
@@ -173,7 +173,7 @@ int main(void) {
                 }
                 wx.linear_m1(x, &wx, bn, y);
                 for (int r = 0; r < N_OUT; r++) {
-                    dequant_iq4_xs_row(wblob + (size_t) r * 136, row, N_IN);
+                    dequant_iq4_xs_row(N_IN, wblob + (size_t) r * 136, row);
                     float ref = 0.0f, mag = 0.0f;
                     for (int i = 0; i < N_IN; i++) {
                         ref += row[i] * x[i];
@@ -217,7 +217,7 @@ int main(void) {
                 }
                 wn2.linear_m1(x, &wn2, bn, y);
                 for (int r = 0; r < N_OUT; r++) {
-                    dequant_iq4_nl_row(wblob + (size_t) r * (N_IN / 32) * 18, row, N_IN);
+                    dequant_iq4_nl_row(N_IN, wblob + (size_t) r * (N_IN / 32) * 18, row);
                     float ref = 0.0f, mag = 0.0f;
                     for (int i = 0; i < N_IN; i++) {
                         ref += row[i] * x[i];

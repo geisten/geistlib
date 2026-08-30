@@ -65,7 +65,7 @@ static inline void q3k_store16_scaled(int8x16_t q, float scale, float *y) {
 }
 #endif
 
-void dequant_q3_K_row(const void *blocks, float *out, size_t n_elems) {
+void dequant_q3_K_row(size_t n_elems, const void *blocks, float out[static n_elems]) {
     const struct block_q3_K_t *b  = (const struct block_q3_K_t *) blocks;
     const size_t               nb = n_elems / Q3_K_BLOCK_ELEMS;
 

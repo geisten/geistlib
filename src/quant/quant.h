@@ -45,65 +45,65 @@ float fp16_to_fp32(uint16_t h);
 /* Q8_0 block: 32 elements, 1 fp16 scale + 32 int8 quants = 34 bytes. */
 constexpr size_t Q8_0_BLOCK_ELEMS = 32;
 constexpr size_t Q8_0_BLOCK_BYTES = 34;
-void             dequant_q8_0_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_q8_0_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
 /* Q4_0 block: 32 elements, 1 fp16 scale + 16 int4 quant bytes = 18 bytes.
  * Each byte packs two nibbles: low nibble is element [2*i], high is
  * [2*i+1]. Values are unsigned [0..15] biased to signed [-8..+7]. */
 constexpr size_t Q4_0_BLOCK_ELEMS = 32;
 constexpr size_t Q4_0_BLOCK_BYTES = 18;
-void             dequant_q4_0_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_q4_0_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 constexpr size_t Q4_1_BLOCK_ELEMS = 32;
 constexpr size_t Q4_1_BLOCK_BYTES = 20;
-void             dequant_q4_1_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_q4_1_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
 /* Q3_K super-block: 256 elements, 110 bytes:
  *   32 hmask (high bit), 64 qs (low 2 bits), 12 scales (16 × 6-bit signed), 1 fp16 d */
 constexpr size_t Q3_K_BLOCK_ELEMS = 256;
 constexpr size_t Q3_K_BLOCK_BYTES = 110;
-void             dequant_q3_K_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_q3_K_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
 /* Q4_K (k-quants) super-block: 256 elements, 144 bytes:
  *   fp16 d, fp16 dmin, 12 bytes scales/mins (8 × 6-bit pairs), 128 bytes 4-bit qs */
 constexpr size_t Q4_K_BLOCK_ELEMS = 256;
 constexpr size_t Q4_K_BLOCK_BYTES = 144;
-void             dequant_q4_K_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_q4_K_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
 /* Q5_K super-block: 256 elements, 176 bytes:
  *   fp16 d, fp16 dmin, 12 bytes scales/mins (Q4_K-style), 32 qh (high bit), 128 qs (low 4) */
 constexpr size_t Q5_K_BLOCK_ELEMS = 256;
 constexpr size_t Q5_K_BLOCK_BYTES = 176;
-void             dequant_q5_K_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_q5_K_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
 /* Q6_K super-block: 256 elements, 210 bytes:
  *   128 lower-4-bit qs, 64 upper-2-bit qh, 16 scales (int8), 1 fp16 d */
 constexpr size_t Q6_K_BLOCK_ELEMS = 256;
 constexpr size_t Q6_K_BLOCK_BYTES = 210;
-void             dequant_q6_K_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_q6_K_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
 /* IQ2_S super-block: 256 elements, 82 bytes, ~2.56 bits/value.
  * Codebook-based: ggml's 1024-entry 8-element grid + per-sub-block scale.
  * Used by IQ2_M quantization variants (most weight tensors). */
 constexpr size_t IQ2_S_BLOCK_ELEMS = 256;
 constexpr size_t IQ2_S_BLOCK_BYTES = 82;
-void             dequant_iq2_s_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_iq2_s_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
 /* IQ3_S super-block: 256 elements, 110 bytes, ~3.44 bits/value.
  * Codebook-based: ggml's 512-entry 8-element grid + per-sub-block scale.
  * Used by IQ2_M for higher-precision weight tensors (attn projections etc.). */
 constexpr size_t IQ3_S_BLOCK_ELEMS = 256;
 constexpr size_t IQ3_S_BLOCK_BYTES = 110;
-void             dequant_iq3_s_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_iq3_s_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
 /* IQ4_NL: 32 elements, 18 bytes (fp16 d + 16 packed nibbles), values from
  * the fixed non-linear kvalues_iq4nl table. IQ4_XS: 256-element super-block,
  * 136 bytes, same LUT with 6-bit per-32 sub-scales. */
 constexpr size_t IQ4_NL_BLOCK_ELEMS = 32;
 constexpr size_t IQ4_NL_BLOCK_BYTES = 18;
-void             dequant_iq4_nl_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_iq4_nl_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 constexpr size_t IQ4_XS_BLOCK_ELEMS = 256;
 constexpr size_t IQ4_XS_BLOCK_BYTES = 136;
-void             dequant_iq4_xs_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_iq4_xs_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
 /* W4A8 NEON decode GEMVs for the IQ4 LUT formats (one vqtbl1q per 16
  * nibbles). IQ4_NL prefill stays on the dequant+SGEMM trampoline. */
@@ -122,7 +122,7 @@ void linear_iq4xs_w4a8_prefill(
  * Used by BitNet b1.58 (W1.58A8) weight tensors. */
 constexpr size_t TQ2_0_BLOCK_ELEMS = 256;
 constexpr size_t TQ2_0_BLOCK_BYTES = 66;
-void             dequant_tq2_0_row(const void *blocks, float *out, size_t n_elems);
+void             dequant_tq2_0_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
 /* I2_S super-block (Microsoft bitnet.cpp's BitNet b1.58 format): 256
  * elements, 64 bytes, 2.0 bpw, four 2-bit trit fields per byte. Unlike
