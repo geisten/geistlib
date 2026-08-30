@@ -8,6 +8,19 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+- **Batched Metal embed lookup** (#345): new fused slot
+  `embedding_lookup_scaled_rows` — chunk token ids travel via
+  `setBytes`, one dispatch embeds the whole prefill chunk instead of
+  one tiny dispatch per token (pp512: 513 → 3 dispatches,
+  bit-identical logits).
+- **Fused silu_mul** (#347): the SwiGLU FFN epilogue in one pass
+  (every qwen35 model) — plan-bound via `GEIST_FUSED_SILU_MUL`,
+  greedy-generation-gated (register-vs-memory rounding, top-5 stable).
+  Together with #340/#345 the #322 program lands the 4B Metal prefill
+  at 626 → 734 t/s; the 27B UD re-baselines at 94 pp (was 91.6 —
+  protocol noise; `GEIST_M_MAX` 64/256 is a wash at 27B shapes).
+
 ## [0.10.6] — 2026-08-30
 
 ### Fixed
