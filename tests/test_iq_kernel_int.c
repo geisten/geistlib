@@ -69,7 +69,7 @@ static float cosine_similarity(const float *a, const float *b, size_t n) {
 static int verify_kernel(const struct gguf_tensor_t *t,
                          const char                 *label,
                          void (*kernel)(const float *, const void *, size_t, size_t, float *),
-                         void (*dequant_row)(const void *, float *, size_t),
+                         void (*dequant_row)(size_t, const void *, float *),
                          size_t block_bytes,
                          size_t block_elems) {
     /* Tensor layout: [n_out rows, n_in cols] row-major. */
@@ -91,9 +91,9 @@ static int verify_kernel(const struct gguf_tensor_t *t,
     float       *w_fp32           = malloc(n_out * n_in * sizeof(float));
     const size_t n_blocks_per_row = n_in / block_elems;
     for (size_t r = 0; r < n_out; r++) {
-        dequant_row((const uint8_t *) t->data + r * n_blocks_per_row * block_bytes,
-                    w_fp32 + r * n_in,
-                    n_in);
+        dequant_row(n_in,
+                    (const uint8_t *) t->data + r * n_blocks_per_row * block_bytes,
+                    w_fp32 + r * n_in);
     }
     float *y_ref = malloc(n_out * sizeof(float));
     cblas_sgemv(CblasRowMajor_,
@@ -217,9 +217,9 @@ int main(void) {
             }
             float *w_fp32 = malloc(n_out * n_in * sizeof(float));
             for (size_t r = 0; r < n_out; r++) {
-                dequant_iq2_s_row((const uint8_t *) iq2s->data + r * nbpr * IQ2_S_BLOCK_BYTES,
-                                  w_fp32 + r * n_in,
-                                  n_in);
+                dequant_iq2_s_row(n_in,
+                                  (const uint8_t *) iq2s->data + r * nbpr * IQ2_S_BLOCK_BYTES,
+                                  w_fp32 + r * n_in);
             }
             cblas_sgemm(CblasRowMajor_,
                         CblasNoTrans_,
@@ -265,9 +265,9 @@ int main(void) {
             }
             float *w_fp32 = malloc(n_out * n_in * sizeof(float));
             for (size_t r = 0; r < n_out; r++) {
-                dequant_iq3_s_row((const uint8_t *) iq3s->data + r * nbpr * IQ3_S_BLOCK_BYTES,
-                                  w_fp32 + r * n_in,
-                                  n_in);
+                dequant_iq3_s_row(n_in,
+                                  (const uint8_t *) iq3s->data + r * nbpr * IQ3_S_BLOCK_BYTES,
+                                  w_fp32 + r * n_in);
             }
             cblas_sgemm(CblasRowMajor_,
                         CblasNoTrans_,

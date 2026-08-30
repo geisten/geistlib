@@ -685,7 +685,12 @@ static size_t qk_sgemm_tile_rows_for(const struct cpu_neon_state *st) {
     return st->policy.qk_sgemm_tile_rows;
 }
 
-typedef void (*dequant_row_fn)(const uint8_t *blocks, float *out, size_t n_elems);
+/* Exactly the family's signature — `const void *` for the blocks, length
+ * first. It used to say `const uint8_t *` and every table entry cast to
+ * it; calling a function through a pointer of incompatible type is
+ * undefined regardless of how compatible the representations happen to
+ * be, so the casts are gone with it. */
+typedef void (*dequant_row_fn)(size_t n_elems, const void *blocks, float *out);
 static size_t blk_bytes_for(enum geist_dtype dt) {
     switch (dt) {
     case GEIST_DTYPE_Q4_0:
@@ -737,23 +742,23 @@ static size_t blk_elems_for(enum geist_dtype dt) {
 static dequant_row_fn dequant_row_fn_for(enum geist_dtype dt) {
     switch (dt) {
     case GEIST_DTYPE_Q4_0:
-        return (dequant_row_fn) dequant_q4_0_row;
+        return dequant_q4_0_row;
     case GEIST_DTYPE_Q4_1:
-        return (dequant_row_fn) dequant_q4_1_row;
+        return dequant_q4_1_row;
     case GEIST_DTYPE_Q4_K:
-        return (dequant_row_fn) dequant_q4_K_row;
+        return dequant_q4_K_row;
     case GEIST_DTYPE_Q5_K:
-        return (dequant_row_fn) dequant_q5_K_row;
+        return dequant_q5_K_row;
     case GEIST_DTYPE_Q6_K:
-        return (dequant_row_fn) dequant_q6_K_row;
+        return dequant_q6_K_row;
     case GEIST_DTYPE_Q8_0:
-        return (dequant_row_fn) dequant_q8_0_row;
+        return dequant_q8_0_row;
     case GEIST_DTYPE_TQ2_0:
-        return (dequant_row_fn) dequant_tq2_0_row;
+        return dequant_tq2_0_row;
     case GEIST_DTYPE_IQ4_NL:
-        return (dequant_row_fn) dequant_iq4_nl_row;
+        return dequant_iq4_nl_row;
     case GEIST_DTYPE_IQ4_XS:
-        return (dequant_row_fn) dequant_iq4_xs_row;
+        return dequant_iq4_xs_row;
     default:
         return nullptr; /* F16/BF16 handled inline */
     }
@@ -773,7 +778,7 @@ dequant_tile(const struct geist_weight *w, size_t row_start, size_t tile_rows, f
         const size_t   row_bytes = (n_in / blk_elems) * blk_bytes;
         const uint8_t *src       = (const uint8_t *) w->raw + row_start * row_bytes;
         for (size_t r = 0; r < tile_rows; r++) {
-            fn(src + r * row_bytes, tile_fp32 + r * n_in, n_in);
+            fn(n_in, src + r * row_bytes, tile_fp32 + r * n_in);
         }
         return;
     }

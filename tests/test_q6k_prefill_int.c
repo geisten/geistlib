@@ -72,9 +72,9 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
     /* Reference: dequant whole weight then sgemm M × n_in × n_out. */
     float *w_fp32 = malloc(n_out * n_in * sizeof(float));
     for (size_t r = 0; r < n_out; r++) {
-        dequant_q6_K_row((const uint8_t *) t->data + r * n_blocks_per_row * Q6_K_BLOCK_BYTES,
-                         w_fp32 + r * n_in,
-                         n_in);
+        dequant_q6_K_row(n_in,
+                         (const uint8_t *) t->data + r * n_blocks_per_row * Q6_K_BLOCK_BYTES,
+                         w_fp32 + r * n_in);
     }
     cblas_sgemm(CblasRowMajor_,
                 CblasNoTrans_,

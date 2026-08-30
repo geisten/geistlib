@@ -377,19 +377,19 @@ static void spec_row_to_f32(uint16_t dt, const uint8_t *row, size_t n, float *ds
         memcpy(dst, row, n * sizeof(float));
         break;
     case GEIST_DTYPE_Q3_K:
-        dequant_q3_K_row(row, dst, n);
+        dequant_q3_K_row(n, row, dst);
         break;
     case GEIST_DTYPE_Q4_K:
-        dequant_q4_K_row(row, dst, n);
+        dequant_q4_K_row(n, row, dst);
         break;
     case GEIST_DTYPE_Q5_K:
-        dequant_q5_K_row(row, dst, n);
+        dequant_q5_K_row(n, row, dst);
         break;
     case GEIST_DTYPE_Q6_K:
-        dequant_q6_K_row(row, dst, n);
+        dequant_q6_K_row(n, row, dst);
         break;
     case GEIST_DTYPE_Q8_0:
-        dequant_q8_0_row(row, dst, n);
+        dequant_q8_0_row(n, row, dst);
         break;
     default:
         memset(dst, 0, n * sizeof(float));

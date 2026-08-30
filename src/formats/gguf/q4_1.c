@@ -17,7 +17,7 @@ struct block_q4_1_t {
 } __attribute__((packed));
 _Static_assert(sizeof(struct block_q4_1_t) == 20, "struct block_q4_1_t size");
 
-void dequant_q4_1_row(const void *blocks, float *out, size_t n_elems) {
+void dequant_q4_1_row(size_t n_elems, const void *blocks, float out[static n_elems]) {
     const struct block_q4_1_t *b  = (const struct block_q4_1_t *) blocks;
     size_t                     nb = n_elems / Q4_1_BLOCK_ELEMS;
     for (size_t i = 0; i < nb; i++) {

@@ -15,7 +15,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-void dequant_q4_K_row(const void *blocks, float *out, size_t n_elems) {
+void dequant_q4_K_row(size_t n_elems, const void *blocks, float out[static n_elems]) {
     const struct block_q4_K_t *b  = (const struct block_q4_K_t *) blocks;
     size_t                     nb = n_elems / Q4_K_BLOCK_ELEMS;
 

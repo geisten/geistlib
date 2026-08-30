@@ -15,7 +15,7 @@
 static const int8_t kvalues_iq4nl[16] = {
         -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
-void dequant_iq4_nl_row(const void *blocks, float *out, size_t n_elems) {
+void dequant_iq4_nl_row(size_t n_elems, const void *blocks, float out[static n_elems]) {
     const struct block_iq4_nl_t *b  = (const struct block_iq4_nl_t *) blocks;
     const size_t                 nb = n_elems / IQ4_NL_BLOCK_ELEMS;
     for (size_t i = 0; i < nb; i++) {
@@ -29,7 +29,7 @@ void dequant_iq4_nl_row(const void *blocks, float *out, size_t n_elems) {
     }
 }
 
-void dequant_iq4_xs_row(const void *blocks, float *out, size_t n_elems) {
+void dequant_iq4_xs_row(size_t n_elems, const void *blocks, float out[static n_elems]) {
     const struct block_iq4_xs_t *b  = (const struct block_iq4_xs_t *) blocks;
     const size_t                 nb = n_elems / IQ4_XS_BLOCK_ELEMS;
     for (size_t i = 0; i < nb; i++) {

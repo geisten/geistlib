@@ -111,31 +111,31 @@ static float *dequant_proj_to_fp32(struct geist_backend      *be,
     case GEIST_DTYPE_Q3_K:
         for (size_t j = 0; j < n_out; j++) {
             dequant_q3_K_row(
-                    raw + j * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, fp32 + j * n_in, n_in);
+                    n_in, raw + j * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, fp32 + j * n_in);
         }
         break;
     case GEIST_DTYPE_Q4_K:
         for (size_t j = 0; j < n_out; j++) {
             dequant_q4_K_row(
-                    raw + j * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, fp32 + j * n_in, n_in);
+                    n_in, raw + j * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, fp32 + j * n_in);
         }
         break;
     case GEIST_DTYPE_Q5_K:
         for (size_t j = 0; j < n_out; j++) {
             dequant_q5_K_row(
-                    raw + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, fp32 + j * n_in, n_in);
+                    n_in, raw + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, fp32 + j * n_in);
         }
         break;
     case GEIST_DTYPE_Q6_K:
         for (size_t j = 0; j < n_out; j++) {
             dequant_q6_K_row(
-                    raw + j * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES, fp32 + j * n_in, n_in);
+                    n_in, raw + j * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES, fp32 + j * n_in);
         }
         break;
     case GEIST_DTYPE_Q8_0:
         for (size_t j = 0; j < n_out; j++) {
             dequant_q8_0_row(
-                    raw + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, fp32 + j * n_in, n_in);
+                    n_in, raw + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, fp32 + j * n_in);
         }
         break;
     default:
@@ -743,24 +743,24 @@ static int check_ple_precompute(struct transformer_arch_state *st, geist_token_t
             memcpy(ple_lookup_row, raw + row_idx * n_in * sizeof(float), n_in * sizeof(float));
             break;
         case GEIST_DTYPE_Q3_K:
-            dequant_q3_K_row(raw + row_idx * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES,
-                             ple_lookup_row,
-                             n_in);
+            dequant_q3_K_row(n_in,
+                             raw + row_idx * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES,
+                             ple_lookup_row);
             break;
         case GEIST_DTYPE_Q4_K:
-            dequant_q4_K_row(raw + row_idx * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES,
-                             ple_lookup_row,
-                             n_in);
+            dequant_q4_K_row(n_in,
+                             raw + row_idx * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES,
+                             ple_lookup_row);
             break;
         case GEIST_DTYPE_Q5_K:
-            dequant_q5_K_row(raw + row_idx * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES,
-                             ple_lookup_row,
-                             n_in);
+            dequant_q5_K_row(n_in,
+                             raw + row_idx * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES,
+                             ple_lookup_row);
             break;
         case GEIST_DTYPE_Q6_K:
-            dequant_q6_K_row(raw + row_idx * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES,
-                             ple_lookup_row,
-                             n_in);
+            dequant_q6_K_row(n_in,
+                             raw + row_idx * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES,
+                             ple_lookup_row);
             break;
         default:
             fprintf(stderr, "PLE table dtype %d unsupported in test\n", (int) st->ple_table.dtype);

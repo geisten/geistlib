@@ -296,7 +296,7 @@ int main(int argc, char **argv) {
                                  float,
                                  float *,
                                  int);
-        extern void  dequant_q4_K_row(const void *, float *, size_t);
+        extern void  dequant_q4_K_row(size_t, const void *, float *);
         const int    Cb_RowMajor = 101, Cb_NoTrans = 111, Cb_Trans = 112;
         const size_t DEQ_TILE = 32;
         float       *y_sg     = (float *) malloc(m_test * n_out * sizeof(float));
@@ -305,7 +305,7 @@ int main(int argc, char **argv) {
             const size_t blk_bytes = (n_in / Q4_K_BLOCK_ELEMS) * 144;
             for (size_t r0 = 0; r0 < n_out; r0 += DEQ_TILE) {
                 const size_t tr = (n_out - r0 < DEQ_TILE) ? (n_out - r0) : DEQ_TILE;
-                dequant_q4_K_row((const uint8_t *) t->data + r0 * blk_bytes, tile, tr * n_in);
+                dequant_q4_K_row(tr * n_in, (const uint8_t *) t->data + r0 * blk_bytes, tile);
                 cblas_sgemm(Cb_RowMajor,
                             Cb_NoTrans,
                             Cb_Trans,

@@ -352,31 +352,31 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
         break;
     }
     case GEIST_DTYPE_Q3_K:
-        dequant_q3_K_row(raw + row_idx * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, dst, n_in);
+        dequant_q3_K_row(n_in, raw + row_idx * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, dst);
         break;
     case GEIST_DTYPE_Q4_0:
-        dequant_q4_0_row(raw + row_idx * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, dst, n_in);
+        dequant_q4_0_row(n_in, raw + row_idx * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, dst);
         break;
     case GEIST_DTYPE_Q4_1:
-        dequant_q4_1_row(raw + row_idx * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, dst, n_in);
+        dequant_q4_1_row(n_in, raw + row_idx * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, dst);
         break;
     case GEIST_DTYPE_Q4_K:
-        dequant_q4_K_row(raw + row_idx * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, dst, n_in);
+        dequant_q4_K_row(n_in, raw + row_idx * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, dst);
         break;
     case GEIST_DTYPE_Q5_K:
-        dequant_q5_K_row(raw + row_idx * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, dst, n_in);
+        dequant_q5_K_row(n_in, raw + row_idx * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, dst);
         break;
     case GEIST_DTYPE_Q6_K:
-        dequant_q6_K_row(raw + row_idx * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES, dst, n_in);
+        dequant_q6_K_row(n_in, raw + row_idx * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES, dst);
         break;
     case GEIST_DTYPE_Q8_0:
-        dequant_q8_0_row(raw + row_idx * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, dst, n_in);
+        dequant_q8_0_row(n_in, raw + row_idx * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, dst);
         break;
     case GEIST_DTYPE_IQ2_S:
-        dequant_iq2_s_row(raw + row_idx * n_in / IQ2_S_BLOCK_ELEMS * IQ2_S_BLOCK_BYTES, dst, n_in);
+        dequant_iq2_s_row(n_in, raw + row_idx * n_in / IQ2_S_BLOCK_ELEMS * IQ2_S_BLOCK_BYTES, dst);
         break;
     case GEIST_DTYPE_IQ3_S:
-        dequant_iq3_s_row(raw + row_idx * n_in / IQ3_S_BLOCK_ELEMS * IQ3_S_BLOCK_BYTES, dst, n_in);
+        dequant_iq3_s_row(n_in, raw + row_idx * n_in / IQ3_S_BLOCK_ELEMS * IQ3_S_BLOCK_BYTES, dst);
         break;
     case GEIST_DTYPE_I2_S: {
         /* BitNet i2_s: 256-elem/64-byte ternary blocks, reversed in-byte field
