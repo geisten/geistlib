@@ -290,21 +290,27 @@ discarded 64-token warmup. Reference: llama.cpp Metal `3fc4e10`
 | :-- | :-- | ---: | ---: | :-- |
 | 27B Q4_0 | prefill pp512 | **104.4** | 93.1 ±15 | **geist 1.12×** |
 | 27B Q4_0 | **decode tg64** | **11.6** | 8.2 | **geist 1.41×** |
-| 27B UD-Q4_K_M | prefill pp512 | 91.6 | 105.2 ±7 | llama 1.15× |
-| 27B UD-Q4_K_M | **decode tg64** | **7.8** | 8.1 | ~parity (0.96×) |
-| 4B Q4_0 | prefill pp512 | 626.2 | 926 (warm) | llama 1.48× |
-| 4B Q4_0 | decode tg64 | 52.2 | 61.8 (warm) | llama 1.18× |
+| 27B UD-Q4_K_M | prefill pp512 | 94.2 | 105.2 ±7 | llama 1.12× |
+| 27B UD-Q4_K_M | **decode tg64** | 7.5–8.4 | 8.1 | ~parity |
+| 4B Q4_0 | prefill pp512 | 733.8 | 926 (warm) | llama 1.26× |
+| 4B Q4_0 | decode tg64 | 52.3 | 61.8 (warm) | llama 1.18× |
 | gemma4-e2b Q4_K_M | prefill pp512 | 992.4 | 1540 (2026-07 ref) | llama 1.55× |
 | gemma4-e2b Q4_K_M | decode tg64 | 79.3 | 92.8 (2026-07 ref) | llama 1.17× |
 
 **Reading:** the 27B — the model this stack is for — now beats
 llama.cpp Metal on **both** axes (1.12× prefill, 1.41× decode). The
-UD mixed quant reaches decode parity; its remaining prefill gap is
-IQ4_XS GEMM maturity (91.6 vs 105 after the #309 LUT-kernel tuning).
-The 4B prefill gap is small-shape GEMM efficiency (626 vs 926; the
-DeltaNet chain shrank to a minor term with the #312 chunk cap). gemma4 numbers are the
-old 2026-07 program state restored (the PLE probe regression had
-silently zeroed them) on the new kernel stack.
+UD mixed quant reaches decode parity; its remaining 1.12× prefill
+gap spreads across the K-quant + IQ4 mm kernels (IQ4_XS is only
+29 % of the UD's weight bytes) — all on the shared mm_sg template
+at its ~6–7 TF plateau, so the recoverable share is small (#323).
+The 4B row is the #322 program end state (626 → 734 via DN
+sub-chunking #340, batched embed #345 and the fused silu_mul #347;
+the remaining gap is the same GEMM plateau plus a
+dependency-chained small-dispatch floor — analysis and priced-out
+options in the issue). `GEIST_M_MAX` 64-vs-256 is a wash on the
+27B — the #340 occupancy win is a small-model effect. gemma4
+numbers are the old 2026-07 program state restored (the PLE probe
+regression had silently zeroed them) on the new kernel stack.
 
 Attribution highlights, for whoever continues: prefill wall = max of
 overlapping GPU chains, not their sum — single-category skips of the
