@@ -420,7 +420,7 @@ static void rmsnorm_per_head(float       *x,
  * NEON-vectorized 16-wide on ARM; bit-exact vs scalar for finite inputs
  * (NaN behavior is irrelevant since activations are guaranteed finite
  * by the upstream clamp chain). */
-static void clamp_fp32(float *x, size_t n, float lo, float hi) {
+static void clamp_fp32(size_t n, float *x, float lo, float hi) {
     size_t i = 0;
 #if defined(__ARM_NEON)
     const float32x4_t vlo = vdupq_n_f32(lo);
@@ -519,7 +519,7 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
 
         /* Q/K/V share `normed` input — clamp once with their common range,
          * then run a fused (3*VTH, VTH) sgemm and split into q/k/vbuf. */
-        clamp_fp32(normed, n_patches * VTH, L->q_clip.in_min, L->q_clip.in_max);
+        clamp_fp32(n_patches * VTH, normed, L->q_clip.in_min, L->q_clip.in_max);
         linear_fp32(n_patches, VTH, 3 * VTH, normed, L->qkv_proj, nullptr, qkv_combined);
         {
             const float qlo = L->q_clip.out_min, qhi = L->q_clip.out_max;
@@ -593,14 +593,14 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
         rmsnorm_per_head(k, L->k_norm, n_patches, V_HEADS, V_HEAD_D, V_EPS);
         rmsnorm_per_head(vbuf, nullptr, n_patches, V_HEADS, V_HEAD_D, V_EPS);
 
-        rope_2d_split_fp32(q, positions, n_patches, V_HEADS, V_HEAD_D, V_THETA);
-        rope_2d_split_fp32(k, positions, n_patches, V_HEADS, V_HEAD_D, V_THETA);
+        rope_2d_split_fp32(n_patches, V_HEADS, V_HEAD_D, V_THETA, q, positions);
+        rope_2d_split_fp32(n_patches, V_HEADS, V_HEAD_D, V_THETA, k, positions);
 
-        vision_attention_bidir_fp32(q, k, vbuf, n_patches, V_HEADS, V_HEAD_D, attn);
+        vision_attention_bidir_fp32(n_patches, V_HEADS, V_HEAD_D, q, k, vbuf, attn);
 
-        clamp_fp32(attn, n_patches * VTH, L->o_clip.in_min, L->o_clip.in_max);
+        clamp_fp32(n_patches * VTH, attn, L->o_clip.in_min, L->o_clip.in_max);
         linear_fp32(n_patches, VTH, VTH, attn, L->o_proj, nullptr, proj);
-        clamp_fp32(proj, n_patches * VTH, L->o_clip.out_min, L->o_clip.out_max);
+        clamp_fp32(n_patches * VTH, proj, L->o_clip.out_min, L->o_clip.out_max);
 
         rmsnorm_fp32(n_patches, VTH, proj, L->post_attention_layernorm, V_EPS, proj);
         add_fp32(n_patches * VTH, resid, proj, hidden_out);
@@ -608,7 +608,7 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
         memcpy(resid, hidden_out, n_patches * VTH * sizeof(float));
         rmsnorm_fp32(n_patches, VTH, hidden_out, L->pre_feedforward_layernorm, V_EPS, normed);
 
-        clamp_fp32(normed, n_patches * VTH, L->gate_clip.in_min, L->gate_clip.in_max);
+        clamp_fp32(n_patches * VTH, normed, L->gate_clip.in_min, L->gate_clip.in_max);
 
         /* Fused gate+up sgemm: one (n, 2*INTER) matmul, then split-and-
          * clamp in one fused pass into separate gate/up buffers. */
@@ -666,9 +666,9 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
 
         gelu_tanh_mul_fp32(n_patches * V_INTER, gate, up, gate);
 
-        clamp_fp32(gate, n_patches * V_INTER, L->down_clip.in_min, L->down_clip.in_max);
+        clamp_fp32(n_patches * V_INTER, gate, L->down_clip.in_min, L->down_clip.in_max);
         linear_fp32(n_patches, V_INTER, VTH, gate, L->down_proj, nullptr, proj);
-        clamp_fp32(proj, n_patches * VTH, L->down_clip.out_min, L->down_clip.out_max);
+        clamp_fp32(n_patches * VTH, proj, L->down_clip.out_min, L->down_clip.out_max);
 
         rmsnorm_fp32(n_patches, VTH, proj, L->post_feedforward_layernorm, V_EPS, proj);
         add_fp32(n_patches * VTH, resid, proj, hidden_out);
@@ -787,9 +787,9 @@ fail:
 }
 
 size_t vision_encoder_run_image(const struct VisionEncoder *v,
-                                const uint8_t              *rgb,
                                 size_t                      height,
                                 size_t                      width,
+                                const uint8_t              *rgb,
                                 float                      *out) {
     if (v == nullptr || rgb == nullptr || out == nullptr || height == 0 || width == 0 ||
         height > IMAGE_PIPELINE_MAX_DIM || width > IMAGE_PIPELINE_MAX_DIM) {
@@ -804,10 +804,10 @@ size_t vision_encoder_run_image(const struct VisionEncoder *v,
  * chain as a still image, just with max_soft=70 per frame so 32 frames
  * fit in a reasonable LM context. */
 size_t vision_encoder_run_video(const struct VisionEncoder *v,
-                                const uint8_t              *frames,
                                 size_t                      n_frames,
                                 size_t                      height,
                                 size_t                      width,
+                                const uint8_t              *frames,
                                 float                      *out) {
     if (v == nullptr || frames == nullptr || out == nullptr || n_frames == 0 || height == 0 ||
         width == 0 || height > IMAGE_PIPELINE_MAX_DIM || width > IMAGE_PIPELINE_MAX_DIM) {

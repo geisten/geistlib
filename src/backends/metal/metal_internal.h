@@ -907,11 +907,11 @@ void metal_capture_begin(struct metal_state *st, enum geist_command_sequence_kin
 
 void metal_capture_end(struct metal_state *st);
 
-void metal_linear_debug_stats(const float               *x,
-                              size_t                     nx,
-                              const float               *y,
+void metal_linear_debug_stats(size_t                     nx,
                               size_t                     ny,
-                              const struct geist_weight *w,
-                              size_t                     m);
+                              size_t                     m,
+                              const float               *x,
+                              const float               *y,
+                              const struct geist_weight *w);
 
 #endif /* GEIST_INTERNAL_METAL_INTERNAL_H */

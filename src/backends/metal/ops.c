@@ -3419,7 +3419,7 @@ static void metal_linear_mN(size_t                     m,
             }
         }
         safe_free((void **) &row);
-        metal_linear_debug_stats(x, m * n_in, y, m * n_out, w, m);
+        metal_linear_debug_stats(m * n_in, m * n_out, m, x, y, w);
         return;
     }
     struct geist_tensor tx = {
@@ -3494,7 +3494,7 @@ static void metal_linear_mN(size_t                     m,
                 geist_backend_errmsg(be));
         memset(y, 0, m * n_out * sizeof(float));
     }
-    metal_linear_debug_stats(x, m * n_in, y, m * n_out, w, m);
+    metal_linear_debug_stats(m * n_in, m * n_out, m, x, y, w);
 }
 
 static void

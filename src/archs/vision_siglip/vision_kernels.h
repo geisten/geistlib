@@ -45,12 +45,12 @@ void avgpool2d_k3_fp32(const float *in, float *out, size_t grid_h, size_t grid_w
  *   theta     rope base (100 for Gemma 4 vision)
  *
  * head_dim must be a multiple of 4 (each half is a multiple of 2). */
-void rope_2d_split_fp32(float         *x,
-                        const int32_t *positions,
-                        size_t         n_tokens,
+void rope_2d_split_fp32(size_t         n_tokens,
                         size_t         n_heads,
                         size_t         head_dim,
-                        float          theta);
+                        float          theta,
+                        float         *x,
+                        const int32_t *positions);
 
 /* Bidirectional (non-causal) multi-head attention.
  *
@@ -64,12 +64,12 @@ void rope_2d_split_fp32(float         *x,
  *
  * Implementation runs per-head GEMMs via cblas to amortize the n²
  * score-matrix workload. */
-void vision_attention_bidir_fp32(const float *q,
-                                 const float *k,
-                                 const float *v,
-                                 size_t       n_tokens,
+void vision_attention_bidir_fp32(size_t       n_tokens,
                                  size_t       n_heads,
                                  size_t       head_dim,
+                                 const float *q,
+                                 const float *k,
+                                 const float *v,
                                  float       *out);
 
 #endif

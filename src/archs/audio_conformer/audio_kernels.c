@@ -142,14 +142,14 @@ void layernorm_fp32_ws(
     }
 }
 
-void silu_fp32(float *x, size_t n) {
+void silu_fp32(size_t n, float x[static n]) {
     for (size_t i = 0; i < n; i++) {
         float v = x[i];
         x[i]    = v / (1.0f + expf(-v));
     }
 }
 
-void clamp_fp32(float *x, size_t n, float lo, float hi) {
+void clamp_fp32(size_t n, float x[static n], float lo, float hi) {
     for (size_t i = 0; i < n; i++) {
         float v = x[i];
         x[i]    = v < lo ? lo : (v > hi ? hi : v);
@@ -188,7 +188,7 @@ void depthwise_conv1d_causal_fp32(
     }
 }
 
-void softmax_fp32(float *x, size_t n_rows, size_t d) {
+void softmax_fp32(size_t n_rows, size_t d, float *x) {
     /* GEIST_FAST_TANH=1 enables vForce vvexpf on macOS (~3x faster than the
      * NEON poly path, ~1-2 ULP drift). Reuses the existing Vision env flag.
      * Pi 5 and other ARM targets use the NEON poly exp by default. */

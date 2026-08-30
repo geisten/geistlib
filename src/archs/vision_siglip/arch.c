@@ -121,7 +121,7 @@ static size_t vision_siglip_encode_image(void          *encoder_state,
         return 0;
     }
     struct vision_siglip_state *st = encoder_state;
-    size_t n_soft = vision_encoder_run_image(st->enc, rgb, height, width, out_soft);
+    size_t n_soft = vision_encoder_run_image(st->enc, height, width, rgb, out_soft);
     if (n_soft > max_soft) {
         return 0;
     }
@@ -140,7 +140,7 @@ static size_t vision_siglip_encode_video(void          *encoder_state,
         return 0;
     }
     struct vision_siglip_state *st = encoder_state;
-    size_t n_soft = vision_encoder_run_video(st->enc, frames, n_frames, height, width, out_soft);
+    size_t n_soft = vision_encoder_run_video(st->enc, n_frames, height, width, frames, out_soft);
     if (n_soft > max_soft) {
         return 0;
     }

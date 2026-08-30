@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
      * Phase 2 worker fire mid-stream when GEIST_AUDIO_STREAM=1. */
     for (size_t off = 0; off < n_samples; off += PUSH_CHUNK_S) {
         size_t take = (n_samples - off) < PUSH_CHUNK_S ? (n_samples - off) : PUSH_CHUNK_S;
-        if (audio_encoder_push_pcm(enc, pcm + off, take) != 0) {
+        if (audio_encoder_push_pcm(enc, take, pcm + off) != 0) {
             fprintf(stderr, "push_pcm failed at offset %zu\n", off);
             free(pcm);
             audio_encoder_destroy(enc);
@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
     size_t n_soft = 0;
     while (!audio_encoder_segment_done(enc) && n_soft < MAX_SOFT) {
         size_t take =
-                audio_encoder_pull_softtokens(enc, soft + n_soft * SOFT_DIM, MAX_SOFT - n_soft, -1);
+                audio_encoder_pull_softtokens(enc, MAX_SOFT - n_soft, soft + n_soft * SOFT_DIM, -1);
         if (take == 0)
             break;
         n_soft += take;

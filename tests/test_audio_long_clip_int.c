@@ -42,13 +42,13 @@ int main(void) {
 
     struct AudioEncoder *enc = audio_encoder_create(tower);
     GEIST_SKIP_IF(enc == nullptr, "encoder load failed (mel_constants.bin missing?)");
-    audio_encoder_push_pcm(enc, pcm, N_PCM);
+    audio_encoder_push_pcm(enc, N_PCM, pcm);
     audio_encoder_end_input(enc);
     size_t total = 0;
     size_t got;
     while (total < bound &&
            (got = audio_encoder_pull_softtokens(
-                    enc, soft + total * AUDIO_TEST_SOFT_DIM, bound - total, -1)) > 0) {
+                    enc, bound - total, soft + total * AUDIO_TEST_SOFT_DIM, -1)) > 0) {
         total += got;
     }
     audio_encoder_destroy(enc);
