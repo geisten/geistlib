@@ -96,6 +96,78 @@ make format          # rewrite in place (clang-format 22, .clang-format at root)
 make format-check    # verify only (CI runs this as a hard gate)
 ```
 
+## C API style
+
+The project is C23. These are the house rules; they exist so that a
+signature tells you its contract without reading the body.
+
+### Lengths before the arrays they describe
+
+```c
+void dequant_q4_K_row(size_t n_elems, const void *blocks, float out[static n_elems]);
+```
+
+Not style for its own sake: `T arr[static len]` is only expressible when
+`len` is already in scope, and it is the only way to state "non-null, and
+at least this many elements" to both the reader and the optimizer. Put
+every length/capacity parameter before the array it sizes.
+
+Use `[static len]` where the precondition is real. Do not use it on a
+parameter that is legitimately null or legitimately shorter — a false
+contract is worse than none, because the compiler is entitled to believe it.
+
+### Nullability, constants, attributes
+
+- `nullptr`, `true`, `false`, `bool` — never `NULL` or integer booleans.
+- `constexpr` for typed constants instead of object-like macros, where
+  compile-time and ABI requirements permit.
+- `[[nodiscard]]` on every returned status or size that a caller must check.
+- `const` on pointer parameters that are not written through.
+- `restrict` **only** when non-aliasing is proven for every call site in
+  the tree, not merely expected. Aliasing that the compiler was told could
+  not happen is a miscompile, not a slow path.
+- `typeof` / `auto` only where they improve clarity; never where they hide
+  ownership or change what is generated.
+
+### Bounds and arithmetic
+
+Untrusted lengths are checked by subtraction, before any pointer moves:
+
+```c
+if (len > (size_t) (end - p))
+    return GEIST_ERR_FORMAT;
+const uint8_t *src = p;
+p += len;
+```
+
+`p + len` and `&p[len]` are the same expression and neither is a valid
+check: forming a pointer past one-past-the-end is already undefined, so the
+comparison you were about to make may never run. Every size product
+reaching an allocation, an index, or an alignment goes through
+`src/base/checked.h` (`ckd_mul`, `ckd_add`, `geist_ckd_round_up_pow2`).
+
+### Migrating an existing API
+
+Signature changes land in **bounded batches**, one family at a time, each
+independently reviewable and independently benchmarkable:
+
+1. Move the whole family together — including any function-pointer typedef
+   it is dispatched through. Make the typedef match the signature exactly
+   rather than casting to it; a call through an incompatible function
+   pointer is undefined however compatible the representations look, and an
+   exact typedef turns a missed call site into a compile error.
+2. Rerun the focused microbenchmark for that family plus the standard
+   prefill/decode sweep.
+3. For hot code, diff the optimized disassembly. A pure reorder should show
+   an identical opcode sequence with permuted argument registers; anything
+   else needs explaining before it lands.
+4. A pure signature change must be bit-identical in output. Do not widen a
+   tolerance to absorb one.
+
+Public headers under `include/` additionally need an ABI note in
+`CHANGELOG.md` and a version bump — see `docs/API_CONTRACT.md` for what
+`STABLE` promises.
+
 ## Pull requests
 
 1. Branch from `main`.

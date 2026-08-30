@@ -113,7 +113,7 @@ void linear_iq4xs_w4a8_prefill(
 
     int8_t *x_q8   = heap_alloc_array_aligned(int8_t, m *n_in);
     float  *scales = heap_alloc_array_aligned(float, m);
-    if (x_q8 == NULL || scales == NULL) {
+    if (x_q8 == nullptr || scales == nullptr) {
         safe_free((void **) &x_q8);
         safe_free((void **) &scales);
         return;

@@ -136,7 +136,7 @@ static int scenario_endtoend_m4(void) {
     /* Reference: dequant each weight row → fp32 sgemm against fp32 acts. */
     float W_fp32[N * K];
     for (size_t r = 0; r < N; r++) {
-        dequant_q4_K_row(&W_q4k[r * N_SUPER], W_fp32 + r * K, K);
+        dequant_q4_K_row(K, &W_q4k[r * N_SUPER], W_fp32 + r * K);
     }
     float Y_ref[M * N];
     for (size_t i = 0; i < M; i++) {

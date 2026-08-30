@@ -3389,22 +3389,22 @@ static void metal_linear_mN(const float               *x,
                 memcpy(row, base + j * n_in * sizeof(float), n_in * sizeof(float));
                 break;
             case GEIST_DTYPE_Q4_K:
-                dequant_q4_K_row(base + j * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, row, n_in);
+                dequant_q4_K_row(n_in, base + j * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, row);
                 break;
             case GEIST_DTYPE_Q5_K:
-                dequant_q5_K_row(base + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, row, n_in);
+                dequant_q5_K_row(n_in, base + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, row);
                 break;
             case GEIST_DTYPE_Q4_0:
-                dequant_q4_0_row(base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row, n_in);
+                dequant_q4_0_row(n_in, base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row);
                 break;
             case GEIST_DTYPE_Q4_1:
-                dequant_q4_1_row(base + j * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, row, n_in);
+                dequant_q4_1_row(n_in, base + j * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, row);
                 break;
             case GEIST_DTYPE_Q8_0:
-                dequant_q8_0_row(base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row, n_in);
+                dequant_q8_0_row(n_in, base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row);
                 break;
             case GEIST_DTYPE_Q6_K:
-                dequant_q6_K_row(base + j * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES, row, n_in);
+                dequant_q6_K_row(n_in, base + j * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES, row);
                 break;
             default:
                 memset(row, 0, n_in * sizeof(float));

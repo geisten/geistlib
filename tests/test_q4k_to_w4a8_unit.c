@@ -159,7 +159,7 @@ static int scenario_handcrafted_super_block(void) {
     }
 
     float ref[256];
-    dequant_q4_K_row(&blk, ref, 256);
+    dequant_q4_K_row(256, &blk, ref);
 
     uint8_t w_w4a8[128]; /* 256 / 2 */
     float   w_scales[8]; /* 256 / 32 */
@@ -202,7 +202,7 @@ static int scenario_random_multi_super_block(void) {
     }
 
     float ref[N_IN];
-    dequant_q4_K_row(blocks, ref, N_IN);
+    dequant_q4_K_row(N_IN, blocks, ref);
 
     uint8_t w_w4a8[N_IN / 2];
     float   w_scales[N_IN / W4A8_BLOCK_ELEMS];

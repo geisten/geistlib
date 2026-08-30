@@ -169,12 +169,12 @@ void cpu_neon_w_tl1_m1(const float               *x,
      * reads TQ2_0 from raw, so raw must stay intact). */
     const uint8_t *base = (const uint8_t *) w->aux_fp32;
 
-    static _Thread_local int8_t *xq_cache = NULL;
+    static _Thread_local int8_t *xq_cache = nullptr;
     static _Thread_local size_t  xq_cap   = 0;
     if (xq_cap < n_in) {
         safe_free((void **) &xq_cache);
         xq_cache = heap_alloc_array_aligned(int8_t, n_in);
-        if (xq_cache == NULL) {
+        if (xq_cache == nullptr) {
             xq_cap = 0;
             memset(y, 0, n_out * sizeof *y);
             return;
@@ -210,12 +210,12 @@ void cpu_neon_w_tl1_m1(const float               *x,
     const size_t                 lut_bytes_per_inner = TL1_KPAIRS_PER_INNER * 2 * 16;   /* 128 */
     const size_t                 lut_bytes_per_kt = TL1_K_INNERS * lut_bytes_per_inner; /* 2048 */
     const size_t                 lut_total        = n_k_tiles * lut_bytes_per_kt;
-    static _Thread_local int8_t *lut_scratch_tl   = NULL;
+    static _Thread_local int8_t *lut_scratch_tl   = nullptr;
     static _Thread_local size_t  lut_cap          = 0;
     if (lut_cap < lut_total) {
         safe_free((void **) &lut_scratch_tl);
         lut_scratch_tl = heap_alloc_array_aligned(int8_t, lut_total);
-        if (lut_scratch_tl == NULL) {
+        if (lut_scratch_tl == nullptr) {
             lut_cap = 0;
             memset(y, 0, n_out * sizeof *y);
             return;

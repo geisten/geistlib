@@ -35,7 +35,7 @@ static int q6k_pp_enabled(void) {
     if (enabled >= 0)
         return enabled;
     const char *e = getenv("GEIST_PP");
-    if (e != NULL && e[0] != '\0') {
+    if (e != nullptr && e[0] != '\0') {
         enabled = (e[0] == '1') ? 1 : 0;
         return enabled;
     }
@@ -109,7 +109,7 @@ static inline const struct q6k_x8_block *q6k_x8_blocks(const void *packed) {
 }
 
 static inline bool q6k_predecode_ntile4_valid(const void *packed, size_t n_in, size_t n_out) {
-    if (packed == NULL)
+    if (packed == nullptr)
         return false;
     const struct q6k_predecode_header *h = (const struct q6k_predecode_header *) packed;
     return h->magic == Q6K_PREDECODE_NTILE4_MAGIC && h->n_in == (uint32_t) n_in &&
@@ -120,7 +120,7 @@ static inline bool q6k_predecode_ntile4_valid(const void *packed, size_t n_in, s
 
 static inline bool
 q6k_predecode_ntile4_stream_valid(const void *packed, size_t n_in, size_t n_out) {
-    if (packed == NULL)
+    if (packed == nullptr)
         return false;
     const struct q6k_predecode_header *h = (const struct q6k_predecode_header *) packed;
     return h->magic == Q6K_PREDECODE_NTILE4_STREAM_MAGIC && h->n_in == (uint32_t) n_in &&
@@ -130,7 +130,7 @@ q6k_predecode_ntile4_stream_valid(const void *packed, size_t n_in, size_t n_out)
 }
 
 static inline bool q6k_x8_valid(const void *packed, size_t n_in, size_t n_out) {
-    if (packed == NULL || n_out % 8 != 0)
+    if (packed == nullptr || n_out % 8 != 0)
         return false;
     const struct q6k_x8_header *h = (const struct q6k_x8_header *) packed;
     return h->magic == Q6K_X8_GEMV_MAGIC && h->n_in == (uint32_t) n_in &&
@@ -234,7 +234,7 @@ static void q6k_predecode_one_block(const struct block_q6_K_t *s, struct q6k_pre
 }
 
 int q6k_predecode_ntile4_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst) {
-    if (w_q6k == NULL || dst == NULL)
+    if (w_q6k == nullptr || dst == nullptr)
         return -1;
     const size_t bytes = q6k_predecode_ntile4_size_bytes(n_in, n_out);
     if (bytes == 0)
@@ -273,7 +273,7 @@ int q6k_predecode_ntile4_pack(const void *w_q6k, size_t n_in, size_t n_out, void
 }
 
 int q6k_predecode_ntile4_stream_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst) {
-    if (w_q6k == NULL || dst == NULL)
+    if (w_q6k == nullptr || dst == nullptr)
         return -1;
     const size_t bytes = q6k_predecode_ntile4_stream_size_bytes(n_in, n_out);
     if (bytes == 0)
@@ -348,7 +348,7 @@ static struct q6k_x8_block q6k_x8_make_block(const struct block_q6_K_t in[8]) {
 }
 
 int q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst) {
-    if (w_q6k == NULL || dst == NULL)
+    if (w_q6k == nullptr || dst == nullptr)
         return -1;
     const size_t bytes = q6k_x8_gemv_size_bytes(n_in, n_out);
     if (bytes == 0)
@@ -396,14 +396,14 @@ void linear_q6k_decode_w6a8_pre(
      * where bsums[j] is the sum of 16 contiguous int8 activations for
      * sub-block j. Saves 16 vsubq_s8 per super-block (~25% of inner
      * NEON ops). Mirrors ggml_vec_dot_q6_K_q8_K's deferred-bias trick. */
-    static _Thread_local int16_t *bsums_tl  = NULL;
+    static _Thread_local int16_t *bsums_tl  = nullptr;
     static _Thread_local size_t   bsums_cap = 0;
     /* 16 int16 sub-block bsums per super-block. */
     const size_t bsums_need = n_blocks_per_row * 16;
     if (bsums_cap < bsums_need) {
         safe_free((void **) &bsums_tl);
         bsums_tl = heap_alloc_array_aligned(int16_t, bsums_need);
-        if (bsums_tl == NULL) {
+        if (bsums_tl == nullptr) {
             bsums_cap = 0;
             return;
         }
@@ -481,12 +481,12 @@ void linear_q6k_decode_w6a8_x8_pre(const int8_t *x_q8,
     if (!q6k_x8_valid(packed, n_in, n_out))
         return;
     const size_t                                      n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
-    static _Thread_local struct q8k_activation_block *q8_tl            = NULL;
+    static _Thread_local struct q8k_activation_block *q8_tl            = nullptr;
     static _Thread_local size_t                       q8_cap           = 0;
     if (q8_cap < n_blocks_per_row) {
         safe_free((void **) &q8_tl);
         q8_tl = heap_alloc_array_aligned(struct q8k_activation_block, n_blocks_per_row);
-        if (q8_tl == NULL) {
+        if (q8_tl == nullptr) {
             q8_cap = 0;
             return;
         }
@@ -811,12 +811,12 @@ void linear_q6k_w6a8_prefill_pre(const int8_t *x_q8,
     int                pack_on      = atomic_load_explicit(&q6k_pack_act, memory_order_relaxed);
     if (pack_on < 0) {
         const char *e = getenv("GEIST_Q6K_PACK_ACT");
-        pack_on       = (e != NULL && e[0] == '0') ? 0 : 1;
+        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
         atomic_store_explicit(&q6k_pack_act, pack_on, memory_order_relaxed);
     }
-    const int8_t *packed = NULL;
+    const int8_t *packed = nullptr;
     if (pack_on && m >= 2) {
-        static _Thread_local int8_t *q6kpack_tl  = NULL;
+        static _Thread_local int8_t *q6kpack_tl  = nullptr;
         static _Thread_local size_t  q6kpack_cap = 0;
         const size_t                 need        = m * n_in;
         if (need > q6kpack_cap) {
@@ -825,7 +825,7 @@ void linear_q6k_w6a8_prefill_pre(const int8_t *x_q8,
              * contents on grow is safe. */
             safe_free((void **) &q6kpack_tl);
             q6kpack_tl  = heap_alloc_array_aligned(int8_t, need);
-            q6kpack_cap = (q6kpack_tl != NULL) ? need : 0;
+            q6kpack_cap = (q6kpack_tl != nullptr) ? need : 0;
         }
         if (q6kpack_cap >= need) {
             int8_t *pk = q6kpack_tl;
@@ -1066,8 +1066,8 @@ void linear_q6k_w6a8_prefill_pre_accum_blocks(const int8_t *x_q8,
                                               size_t        n_blocks,
                                               float        *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP || n_blocks == 0 || x_q8 == NULL || scale_x == NULL ||
-        w_q6k == NULL || y == NULL) {
+    if (m == 0 || m > GEIST_QUANT_M_CAP || n_blocks == 0 || x_q8 == nullptr || scale_x == nullptr ||
+        w_q6k == nullptr || y == nullptr) {
         return;
     }
     const struct block_q6_K_t *w                = (const struct block_q6_K_t *) w_q6k;
@@ -1396,7 +1396,7 @@ void linear_q6k_w6a8_prefill(
         return;
     int8_t *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
     float  *scale_x = heap_alloc_array_aligned(float, m);
-    if (x_q8 == NULL || scale_x == NULL) {
+    if (x_q8 == nullptr || scale_x == nullptr) {
         safe_free((void **) &x_q8);
         safe_free((void **) &scale_x);
         return;
@@ -1411,12 +1411,12 @@ void linear_q6k_w6a8_prefill(
 
 void linear_q6k_decode_w6a8(
         const float *x, const void *w_q6k, size_t n_in, size_t n_out, float *y) {
-    static _Thread_local int8_t *tl_x_q8     = NULL;
+    static _Thread_local int8_t *tl_x_q8     = nullptr;
     static _Thread_local size_t  tl_cap_n_in = 0;
     if (n_in > tl_cap_n_in) {
         safe_free((void **) &tl_x_q8);
         tl_x_q8 = heap_alloc_array_aligned(int8_t, n_in);
-        if (tl_x_q8 == NULL) {
+        if (tl_x_q8 == nullptr) {
             tl_cap_n_in = 0;
             return;
         }
@@ -1428,12 +1428,12 @@ void linear_q6k_decode_w6a8(
 
 void linear_q6k_decode_w6a8_x8(
         const float *x, const void *packed, size_t n_in, size_t n_out, float *y) {
-    static _Thread_local int8_t *tl_x_q8     = NULL;
+    static _Thread_local int8_t *tl_x_q8     = nullptr;
     static _Thread_local size_t  tl_cap_n_in = 0;
     if (n_in > tl_cap_n_in) {
         safe_free((void **) &tl_x_q8);
         tl_x_q8 = heap_alloc_array_aligned(int8_t, n_in);
-        if (tl_x_q8 == NULL) {
+        if (tl_x_q8 == nullptr) {
             tl_cap_n_in = 0;
             return;
         }
