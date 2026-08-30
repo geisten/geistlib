@@ -1201,7 +1201,19 @@ static const char metal_silu_source[] =
         "kernel void silu_rows(device const float*x[[buffer(0)]],device "
         "float*y[[buffer(1)]],constant Sc&p[[buffer(2)]],uint gid[[thread_position_in_grid]]){uint "
         "total=p.rows*p.cols;if(gid>=total)return;uint r=gid/p.cols,c=gid-r*p.cols;float "
-        "v=x[p.x_offset+r*p.x_row_stride+c];y[p.y_offset+r*p.y_row_stride+c]=v/(1.0f+exp(-v));}\n";
+        "v=x[p.x_offset+r*p.x_row_stride+c];y[p.y_offset+r*p.y_row_stride+c]=v/(1.0f+exp(-v));}\n"
+        /* Fused SwiGLU epilogue (#322 step 3b): silu(a)*b in one pass,
+         * exact same silu formula as silu_rows above so the fused path
+         * is bit-identical to silu+mul. Field layout matches struct Bin
+         * (metal_binary_rows_params). */
+        "struct BinS{uint rows,cols,a_offset,b_offset,y_offset,a_row_stride,b_row_stride,y_row_"
+        "stride;};\n"
+        "kernel void silu_mul_rows(device const float*a[[buffer(0)]],device const "
+        "float*b[[buffer(1)]],device float*y[[buffer(2)]],constant BinS&p[[buffer(3)]],uint "
+        "gid[[thread_position_in_grid]]){uint total=p.rows*p.cols;if(gid>=total)return;uint "
+        "r=gid/p.cols,c=gid-r*p.cols;float av=a[p.a_offset+r*p.a_row_stride+c];float "
+        "bv=b[p.b_offset+r*p.b_row_stride+c];y[p.y_offset+r*p.y_row_stride+c]=(av/(1.0f+exp(-av)))"
+        "*bv;}\n";
 
 static const char metal_elem_simd_source[] =
         "#include <metal_stdlib>\n"

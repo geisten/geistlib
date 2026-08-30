@@ -54,6 +54,7 @@ struct transformer_layer_exec_plan {
     bool fuse_ffn_geglu_tile_mN;   /* whole-FFN q4/q6 tile kernel (prefill) */
     bool fuse_gelu_mul_scaled;     /* GEGLU epilogue with AWQ scale, any m */
     bool fuse_gelu_mul;            /* GEGLU epilogue, any m */
+    bool fuse_silu_mul;            /* SwiGLU epilogue, any m */
     bool fuse_rmsnorm_add;         /* post-norm residual, any m */
     bool fuse_attn_qkv_prep;       /* per-head norms + RoPE + KV append; the
                                     * session KV-mode conditions stay inline
