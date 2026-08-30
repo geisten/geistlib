@@ -195,9 +195,9 @@ void cpu_x86_linear_q4k_m1(const float               *x,
  * Fallback: if n_out is not divisible by 8 (no Gemma 4 matrix is, this
  * is purely defensive), drop to the per-row m1 path. q4kx8_gemm_avx512
  * guards its own ISA at runtime (AVX2 GEMV fallback on non-AVX512 hosts). */
-void cpu_x86_linear_q4k_mN(const float               *x,
+void cpu_x86_linear_q4k_mN(size_t                     m,
+                           const float               *x,
                            const struct geist_weight *w,
-                           size_t                     m,
                            struct geist_backend      *be,
                            float                     *y) {
     (void) be;

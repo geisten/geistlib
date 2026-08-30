@@ -603,9 +603,9 @@ static void q8a_mN_row_body(size_t r, void *vctx) {
     }
 }
 
-void cpu_neon_w_tq2_0_q8a_mN(const float               *x,
+void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
+                             const float               *x,
                              const struct geist_weight *w,
-                             size_t                     m,
                              struct geist_backend      *be,
                              float                     *y) {
     struct cpu_neon_workspace *ws             = cpu_neon_ws((struct cpu_neon_state *) be->state);
@@ -1202,9 +1202,9 @@ static void i2s_mN_row_body(size_t r, void *vctx) {
 
 /* M>1 prefill: per-row int8 activation quant (shared across output rows), then
  * mt4 token-tiled dots reusing each weight row once. Mirrors tq2_0/q8a_mN. */
-void cpu_neon_w_i2_s_q8a_mN(const float               *x,
+void cpu_neon_w_i2_s_q8a_mN(size_t                     m,
+                            const float               *x,
                             const struct geist_weight *w,
-                            size_t                     m,
                             struct geist_backend      *be,
                             float                     *y) {
     struct cpu_neon_workspace *ws             = cpu_neon_ws((struct cpu_neon_state *) be->state);

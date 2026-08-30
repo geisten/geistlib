@@ -106,7 +106,7 @@ static int check_backend(const char *name) {
         fails += geist_expect(!probe_yes, "probe rejects misaligned/wrong-dtype GEGLU");
         float             x[4], y[4];
         enum geist_status s =
-                fused->ffn_geglu_q4q6_mN(be, x, 4, 100, 300, &gate, &up, &down, nullptr, y);
+                fused->ffn_geglu_q4q6_mN(be, 4, 100, 300, x, &gate, &up, &down, nullptr, y);
         fails += geist_expect(s == GEIST_E_UNSUPPORTED,
                               "kernel entry checks agree: GEIST_E_UNSUPPORTED");
     }

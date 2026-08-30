@@ -53,7 +53,7 @@ enum geist_status linear_w_or_legacy(struct geist_backend            *be,
     if (seq == 1) {
         w->linear_m1(xp, w, be, yp);
     } else {
-        w->linear_mN(xp, w, seq, be, yp);
+        w->linear_mN(seq, xp, w, be, yp);
     }
     v->buffer_unmap(x_buf);
     v->buffer_unmap(y_buf);
@@ -141,10 +141,10 @@ enum geist_status linear_w_pair_or_legacy(struct geist_backend            *be,
     } else {
         if (w0->linear_pair_mN != nullptr && w0->linear_pair_mN == w1->linear_pair_mN &&
             w0->n_in == w1->n_in) {
-            w0->linear_pair_mN(xp, w0, w1, seq, be, y0p, y1p);
+            w0->linear_pair_mN(seq, xp, w0, w1, be, y0p, y1p);
         } else {
-            w0->linear_mN(xp, w0, seq, be, y0p);
-            w1->linear_mN(xp, w1, seq, be, y1p);
+            w0->linear_mN(seq, xp, w0, be, y0p);
+            w1->linear_mN(seq, xp, w1, be, y1p);
         }
     }
     v->buffer_unmap(x_buf);
@@ -238,12 +238,12 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
         w2->linear_m1(xp, w2, be, y2p);
     } else if (w1->linear_pair_mN != nullptr && w1->linear_pair_mN == w2->linear_pair_mN &&
                w1->n_in == w2->n_in) {
-        w0->linear_mN(xp, w0, seq, be, y0p);
-        w1->linear_pair_mN(xp, w1, w2, seq, be, y1p, y2p);
+        w0->linear_mN(seq, xp, w0, be, y0p);
+        w1->linear_pair_mN(seq, xp, w1, w2, be, y1p, y2p);
     } else {
-        w0->linear_mN(xp, w0, seq, be, y0p);
-        w1->linear_mN(xp, w1, seq, be, y1p);
-        w2->linear_mN(xp, w2, seq, be, y2p);
+        w0->linear_mN(seq, xp, w0, be, y0p);
+        w1->linear_mN(seq, xp, w1, be, y1p);
+        w2->linear_mN(seq, xp, w2, be, y2p);
     }
 
     v->buffer_unmap(x_buf);

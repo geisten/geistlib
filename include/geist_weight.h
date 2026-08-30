@@ -76,8 +76,12 @@ typedef void (*geist_kernel_linear_m1_fn)(const float               *x,
 /* Linear Y = X @ W^T for M>1 (prefill-style). X is [m, n_in],
  * Y is [m, n_out], both row-major dense FP32. See linear_m1_fn for
  * the `be` contract. */
+/* m leads, per the length-first rule. The extents cannot be spelled as
+ * `[static ...]` here: x is [m, w->n_in] and y is [m, w->n_out], and those
+ * dimensions live in `w` rather than in a parameter, so a contract on them
+ * is not expressible. Plain pointers say so honestly. */
 typedef void (*geist_kernel_linear_mN_fn)(
-        const float *x, const struct geist_weight *w, size_t m, struct geist_backend *be, float *y);
+        size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
 
 /* Optional fused/pair path for two M=1 projections sharing the same X.
  * Backends use this to avoid duplicate scheduling overhead in decode
@@ -92,10 +96,10 @@ typedef void (*geist_kernel_linear_pair_m1_fn)(const float               *x,
 /* Optional fused/pair path for two M>1 projections sharing the same X.
  * Backends use this for cases such as FFN gate/up where activation
  * quantization can be shared across two weights. */
-typedef void (*geist_kernel_linear_pair_mN_fn)(const float               *x,
+typedef void (*geist_kernel_linear_pair_mN_fn)(size_t                     m,
+                                               const float               *x,
                                                const struct geist_weight *w0,
                                                const struct geist_weight *w1,
-                                               size_t                     m,
                                                struct geist_backend      *be,
                                                float                     *y0,
                                                float                     *y1);

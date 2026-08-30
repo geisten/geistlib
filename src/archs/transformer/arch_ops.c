@@ -225,7 +225,7 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
                     .stride = {(int64_t) st->d_model, 1, 0, 0, 0, 0, 0, 0},
             };
             embed_batched = fused->embedding_lookup_scaled_rows(
-                                    be, &st->embed_table, ids + off, chunk, embed_scale, &t_rows) ==
+                                    be, chunk, &st->embed_table, ids + off, embed_scale, &t_rows) ==
                             GEIST_OK;
         }
         if (embed_on_device && !embed_batched) {

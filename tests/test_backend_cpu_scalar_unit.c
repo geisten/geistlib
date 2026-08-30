@@ -137,7 +137,7 @@ int main(void) {
         void *y_host = be->desc->vtbl->buffer_map(by);
         fails += check(x_host != nullptr && y_host != nullptr, "map x,y OK");
         if (wkr.linear_mN != nullptr && x_host != nullptr && y_host != nullptr) {
-            wkr.linear_mN((const float *) x_host, &wkr, M, be, (float *) y_host);
+            wkr.linear_mN(M, (const float *) x_host, &wkr, be, (float *) y_host);
         }
         be->desc->vtbl->buffer_unmap(bx);
         be->desc->vtbl->buffer_unmap(by);

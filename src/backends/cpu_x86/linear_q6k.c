@@ -231,9 +231,9 @@ void cpu_x86_linear_q6k_m1(const float               *x,
  * the whole token batch — the amortization the scalar mN fallback lacked.
  * Q6_K ffn_down is the dominant prefill cost in Q4_K_M models
  * (docs/LINUX_X86_PERF_PROFILE.md); this is what makes it cheap. */
-void cpu_x86_linear_q6k_mN(const float               *x,
+void cpu_x86_linear_q6k_mN(size_t                     m,
+                           const float               *x,
                            const struct geist_weight *w,
-                           size_t                     m,
                            struct geist_backend      *be,
                            float                     *y) {
     const size_t n_in             = (size_t) w->n_in;

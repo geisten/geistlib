@@ -195,11 +195,11 @@ struct geist_arch_ops_encoder {
     /* encode_pcm: 16 kHz int16 PCM → soft-token sequence. Caller provides
      * out_soft buffer of size (max_soft × soft_token_dim() floats). Returns
      * the number of soft tokens produced (≤ max_soft), or 0 on error. */
-    size_t (*encode_pcm)(void          *encoder_state,
-                         const int16_t *pcm,
-                         size_t         n_samples,
-                         float         *out_soft,
-                         size_t         max_soft);
+    size_t (*encode_pcm)(void         *encoder_state,
+                         size_t        n_samples,
+                         size_t        max_soft,
+                         const int16_t pcm[static n_samples],
+                         float        *out_soft);
 
     /* soft_token_dim: dimensionality of each soft-token vector (1536 for
      * Gemma 4 audio tower). */
@@ -214,15 +214,15 @@ struct geist_arch_ops_encoder {
      * All three nullptr when the encoder has no streaming path. */
     bool (*stream_begin)(void *encoder_state);
     /* Returns false on overflow (>30 s buffered) or before begin. */
-    bool (*stream_push)(void *encoder_state, const int16_t *pcm, size_t n);
+    bool (*stream_push)(void *encoder_state, size_t n, const int16_t pcm[static n]);
     /* Non-blocking: drain whatever soft tokens are ready NOW (0 when
      * none). Lets the session inject tokens into the LM while the user
      * is still speaking — phase 2 of #256. */
-    size_t (*stream_poll)(void *encoder_state, float *out_soft, size_t max_soft);
+    size_t (*stream_poll)(void *encoder_state, size_t max_soft, float *out_soft);
 
     /* Finish the tail, write up to max_soft soft tokens, return the
      * count (0 on error). */
-    size_t (*stream_end)(void *encoder_state, float *out_soft, size_t max_soft);
+    size_t (*stream_end)(void *encoder_state, size_t max_soft, float *out_soft);
 
     /* Drop an open stream without finishing it: discard buffered audio
      * and any soft tokens the worker has produced, and leave the encoder
@@ -274,12 +274,12 @@ struct geist_arch_ops_vision {
      * Image preprocessing (aspect-preserving bicubic resize, patchify,
      * bilinear pos-embed interp) is owned by the encoder — caller hands
      * over already-decoded RGB pixels at whatever native resolution. */
-    size_t (*encode_image)(void          *encoder_state,
-                           const uint8_t *rgb,
-                           size_t         height,
-                           size_t         width,
-                           float         *out_soft,
-                           size_t         max_soft);
+    size_t (*encode_image)(void         *encoder_state,
+                           size_t        height,
+                           size_t        width,
+                           size_t        max_soft,
+                           const uint8_t rgb[static height * width * 3],
+                           float        *out_soft);
 
     /* encode_video: stack of n_frames RGB uint8 images, each (H, W, 3).
      * Frames are tower-encoded in one batched pass for SGEMM amortization.
@@ -288,13 +288,13 @@ struct geist_arch_ops_vision {
      *
      * Frame sampling (picking n_frames from a longer clip) is the
      * caller's responsibility — geist does not link a video decoder. */
-    size_t (*encode_video)(void          *encoder_state,
-                           const uint8_t *frames,
-                           size_t         n_frames,
-                           size_t         height,
-                           size_t         width,
-                           float         *out_soft,
-                           size_t         max_soft);
+    size_t (*encode_video)(void         *encoder_state,
+                           size_t        n_frames,
+                           size_t        height,
+                           size_t        width,
+                           size_t        max_soft,
+                           const uint8_t frames[static n_frames * height * width * 3],
+                           float        *out_soft);
 
     /* soft_token_dim: dimensionality of each soft-token vector. Projector
      * output dim — matches LM hidden_size so soft tokens splice directly
