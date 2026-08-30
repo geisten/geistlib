@@ -789,7 +789,7 @@ geist_session_attach_audio(struct geist_session *s,
         return GEIST_E_OOM;
     }
     const uint64_t t_enc0 = monotonic_ns();
-    size_t         n_soft = enc_ops->encode_pcm(enc_st, pcm_samples, n_samples, soft, max_soft);
+    size_t         n_soft = enc_ops->encode_pcm(enc_st, n_samples, max_soft, pcm_samples, soft);
     sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
     if (n_soft == 0) {
         safe_free((void **) &soft);
@@ -904,7 +904,7 @@ geist_session_attach_audio(struct geist_session *s,
     }
     const uint64_t t0  = monotonic_ns();
     const size_t   got = enc_ops->stream_poll(
-            enc_st, sf->audio_stream_buf, sf->audio_stream_cap - sf->audio_stream_injected);
+            enc_st, sf->audio_stream_cap - sf->audio_stream_injected, sf->audio_stream_buf);
     sf->total_audio_encode_ns += monotonic_ns() - t0;
     if (got == 0) {
         return GEIST_OK;
@@ -928,7 +928,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[st
     if (!sf->audio_streaming) {
         return GEIST_E_INVALID_STATE;
     }
-    if (!enc_ops->stream_push(enc_st, pcm, n)) {
+    if (!enc_ops->stream_push(enc_st, n, pcm)) {
         /* Buffer overflow (>30 s) or encoder shutdown — surface loudly,
          * never drop audio silently (#247's rule). */
         snprintf(sf->err_msg,
@@ -963,7 +963,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[st
                                          : 0;
 
     const uint64_t t_enc0 = monotonic_ns();
-    const size_t n_soft = remaining_cap > 0 ? enc_ops->stream_end(enc_st, soft, remaining_cap) : 0;
+    const size_t n_soft = remaining_cap > 0 ? enc_ops->stream_end(enc_st, remaining_cap, soft) : 0;
     sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
 
     const size_t total = sf->audio_stream_injected + n_soft;
@@ -1043,7 +1043,7 @@ geist_session_attach_image(struct geist_session *s,
         return GEIST_E_OOM;
     }
     const uint64_t t_enc0 = monotonic_ns();
-    size_t         n_soft = enc_ops->encode_image(enc_st, rgb, height, width, soft, max_soft);
+    size_t         n_soft = enc_ops->encode_image(enc_st, height, width, max_soft, rgb, soft);
     sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
     if (n_soft == 0) {
         safe_free((void **) &soft);
@@ -1123,7 +1123,7 @@ geist_session_attach_video(struct geist_session *s,
         return GEIST_E_OOM;
     }
     const uint64_t t_enc0 = monotonic_ns();
-    size_t n_soft = enc_ops->encode_video(enc_st, frames, n_frames, height, width, soft, max_soft);
+    size_t n_soft = enc_ops->encode_video(enc_st, n_frames, height, width, max_soft, frames, soft);
     sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
     if (n_soft == 0) {
         safe_free((void **) &soft);

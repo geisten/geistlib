@@ -1522,9 +1522,9 @@ enum { METAL_EMBED_ROWS_MAX = 1024 };
 
 [[nodiscard]] static enum geist_status
 metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
-                                   const struct geist_tensor *embed_table,
-                                   const geist_token_t       *ids,
                                    size_t                     n_rows,
+                                   const struct geist_tensor *embed_table,
+                                   const geist_token_t        ids[static n_rows],
                                    float                      scale,
                                    struct geist_tensor       *out) {
     if (be == nullptr || be->state == nullptr || embed_table == nullptr || ids == nullptr ||
@@ -3356,9 +3356,9 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     return GEIST_OK;
 }
 
-static void metal_linear_mN(const float               *x,
+static void metal_linear_mN(size_t                     m,
+                            const float               *x,
                             const struct geist_weight *w,
-                            size_t                     m,
                             struct geist_backend      *be,
                             float                     *y) {
     struct metal_state  *st    = be->state;
@@ -3499,7 +3499,7 @@ static void metal_linear_mN(const float               *x,
 
 static void
 metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backend *be, float *y) {
-    metal_linear_mN(x, w, 1, be, y);
+    metal_linear_mN(1, x, w, be, y);
 }
 
 /* Tensor-based linear (main's optional vtbl slot): dispatch the GEMM from

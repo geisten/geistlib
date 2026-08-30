@@ -106,9 +106,9 @@ static void cpu_x86_linear_f32_m1(const float               *x,
                 1);
 }
 
-static void cpu_x86_linear_f32_mN(const float               *x,
+static void cpu_x86_linear_f32_mN(size_t                     m,
+                                  const float               *x,
                                   const struct geist_weight *w,
-                                  size_t                     m,
                                   struct geist_backend      *be,
                                   float                     *y) {
     (void) be;
@@ -144,9 +144,9 @@ static void cpu_x86_linear_i2s_m1(const float               *x,
     i2s_gemv_m1(n_out, n_in, x, raw, scale, y);
 }
 
-static void cpu_x86_linear_i2s_mN(const float               *x,
+static void cpu_x86_linear_i2s_mN(size_t                     m,
+                                  const float               *x,
                                   const struct geist_weight *w,
-                                  size_t                     m,
                                   struct geist_backend      *be,
                                   float                     *y) {
     (void) be;
@@ -217,9 +217,9 @@ static void cpu_x86_linear_i2s_t5_pair_m1(const float               *x,
                         y1);
 }
 
-static void cpu_x86_linear_i2s_x4_mN(const float               *x,
+static void cpu_x86_linear_i2s_x4_mN(size_t                     m,
+                                     const float               *x,
                                      const struct geist_weight *w,
-                                     size_t                     m,
                                      struct geist_backend      *be,
                                      float                     *y) {
     (void) be;

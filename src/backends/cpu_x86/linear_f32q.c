@@ -195,9 +195,9 @@ void cpu_x86_linear_f32q_m1(const float               *x,
               y);
 }
 
-void cpu_x86_linear_f32q_mN(const float               *x,
+void cpu_x86_linear_f32q_mN(size_t                     m,
+                            const float               *x,
                             const struct geist_weight *w,
-                            size_t                     m,
                             struct geist_backend      *be,
                             float                     *y) {
     (void) be;

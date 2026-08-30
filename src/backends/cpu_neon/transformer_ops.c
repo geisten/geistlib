@@ -101,10 +101,10 @@ static size_t ffn_tile_blocks(void) {
 }
 
 [[nodiscard]] enum geist_status cpu_neon_ffn_geglu_q4q6_mN(struct geist_backend      *be,
-                                                           const float               *x,
                                                            size_t                     m,
                                                            size_t                     d_model,
                                                            size_t                     inter,
+                                                           const float               *x,
                                                            const struct geist_weight *gate,
                                                            const struct geist_weight *up,
                                                            const struct geist_weight *down,

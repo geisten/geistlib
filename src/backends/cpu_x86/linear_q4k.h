@@ -53,6 +53,6 @@ void cpu_x86_linear_q4k_m1(const float               *x,
  * here because cpu_scalar dequants Q4_K → fp32 per row inside the
  * inner. */
 void cpu_x86_linear_q4k_mN(
-        const float *x, const struct geist_weight *w, size_t m, struct geist_backend *be, float *y);
+        size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_LINEAR_Q4K_H */

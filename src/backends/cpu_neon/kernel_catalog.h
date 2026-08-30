@@ -51,10 +51,13 @@ struct cpu_neon_kernel_entry {
     enum geist_dtype dtype;
     cpu_neon_isa_mask
         requires;
-    void (*linear_m1)(const float *, const struct geist_weight *, struct geist_backend *, float *);
-    void (*linear_mN)(
-            const float *, const struct geist_weight *, size_t, struct geist_backend *, float *);
-    const char *name;
+    /* The canonical types from geist_weight.h, not a hand-spelled copy.
+     * This table re-declared the signature inline and drifted out of step
+     * with the typedef the moment the parameter order changed; naming the
+     * typedef makes that impossible. */
+    geist_kernel_linear_m1_fn linear_m1;
+    geist_kernel_linear_mN_fn linear_mN;
+    const char               *name;
 };
 
 struct cpu_neon_kernel_policy {

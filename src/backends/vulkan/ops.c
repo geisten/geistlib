@@ -92,9 +92,9 @@ vk_w_q4k_m1(const float *x, const struct geist_weight *w, struct geist_backend *
     vk_linear_run(x, w, 1, be, y, VK_PIPE_MATVEC_Q4K, VK_PIPE_MATMUL_Q4K);
 }
 
-static void vk_w_q4k_mN(const float               *x,
+static void vk_w_q4k_mN(size_t                     m,
+                        const float               *x,
                         const struct geist_weight *w,
-                        size_t                     m,
                         struct geist_backend      *be,
                         float                     *y) {
     vk_linear_run(x, w, m, be, y, VK_PIPE_MATVEC_Q4K, VK_PIPE_MATMUL_Q4K);
@@ -105,9 +105,9 @@ vk_w_q6k_m1(const float *x, const struct geist_weight *w, struct geist_backend *
     vk_linear_run(x, w, 1, be, y, VK_PIPE_MATVEC_Q6K, VK_PIPE_MATMUL_Q6K);
 }
 
-static void vk_w_q6k_mN(const float               *x,
+static void vk_w_q6k_mN(size_t                     m,
+                        const float               *x,
                         const struct geist_weight *w,
-                        size_t                     m,
                         struct geist_backend      *be,
                         float                     *y) {
     vk_linear_run(x, w, m, be, y, VK_PIPE_MATVEC_Q6K, VK_PIPE_MATMUL_Q6K);
@@ -118,9 +118,9 @@ vk_w_f32_m1(const float *x, const struct geist_weight *w, struct geist_backend *
     vk_linear_run(x, w, 1, be, y, VK_PIPE_MATVEC_F32, VK_PIPE_MATMUL_F32);
 }
 
-static void vk_w_f32_mN(const float               *x,
+static void vk_w_f32_mN(size_t                     m,
+                        const float               *x,
                         const struct geist_weight *w,
-                        size_t                     m,
                         struct geist_backend      *be,
                         float                     *y) {
     vk_linear_run(x, w, m, be, y, VK_PIPE_MATVEC_F32, VK_PIPE_MATMUL_F32);
@@ -165,9 +165,9 @@ static bool vk_dequant_row(const struct geist_weight *w, size_t j, float *row) {
     }
 }
 
-static void vk_w_cpu_mN(const float               *x,
+static void vk_w_cpu_mN(size_t                     m,
+                        const float               *x,
                         const struct geist_weight *w,
-                        size_t                     m,
                         struct geist_backend      *be,
                         float                     *y) {
     (void) be;
@@ -197,7 +197,7 @@ static void vk_w_cpu_mN(const float               *x,
 
 static void
 vk_w_cpu_m1(const float *x, const struct geist_weight *w, struct geist_backend *be, float *y) {
-    vk_w_cpu_mN(x, w, 1, be, y);
+    vk_w_cpu_mN(1, x, w, be, y);
 }
 
 /* ---- resolve_weight: upload GPU-supported dtypes to VRAM, register,     */

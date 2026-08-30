@@ -104,10 +104,10 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         }
         t0 = profile ? transformer_profile_now_ns() : 0;
         s  = fused->ffn_geglu_q4q6_mN(be,
-                                      xp,
                                       ctx->seq,
                                       (size_t) st->d_model,
                                       ctx->inter,
+                                      xp,
                                       &L->gate_proj_w,
                                       &L->up_proj_w,
                                       &L->down_proj_w,
