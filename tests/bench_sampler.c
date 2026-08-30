@@ -84,6 +84,28 @@ int main(int argc, char **argv) {
                    (unsigned long long) allocs);
         }
 
+        /* Plain temperature: the allocating public entry point against the
+         * workspace variant — same O(n) softmax, so this isolates the cost
+         * of the per-token n_vocab-sized allocation itself. */
+        for (int variant = 0; variant < 2; variant++) {
+            volatile geist_token_t sink = 0;
+            const uint64_t         a0   = heap_alloc_count();
+            const double           t0   = now_s();
+            for (int i = 0; i < iters; i++) {
+                sink = variant == 0 ? geist_sampler_temperature(n, logits, 0.8f, &rng)
+                                    : geist_sampler_temperature_ws(&ws, logits, 0.8f, &rng);
+            }
+            const double   dt     = now_s() - t0;
+            const uint64_t allocs = heap_alloc_count() - a0;
+            (void) sink;
+            printf("%-10zu %-14s %12.1f %12.3f %8llu\n",
+                   n,
+                   variant == 0 ? "temp(alloc)" : "temp(ws)",
+                   dt / iters * 1e9,
+                   (double) iters / dt * 1e-6,
+                   (unsigned long long) allocs);
+        }
+
         const float tps[] = {0.5f, 0.9f, 0.99f};
         for (size_t t = 0; t < sizeof tps / sizeof *tps; t++) {
             volatile geist_token_t sink = 0;

@@ -23,6 +23,16 @@ minor release.
   The one regime that loses is `top_k` at a quarter of the vocabulary or
   more (`top_k=40000` at 151936: 13.2 → 15.8 ms) — where the old path was
   silently sampling from the top 8192 instead.
+- **Plain temperature sampling no longer allocates per token** (#331):
+  `geist_sampler_temperature` heap-allocates a `n_vocab` probability buffer
+  for every vocabulary above 8192, and the decode head called it directly
+  whenever `temperature > 0` without a top-k/top-p filter — a 1 MB
+  malloc/free per token on gemma4. New `geist_sampler_temperature_ws`
+  samples out of the workspace, and the session now sizes that workspace
+  for every non-greedy mode (about 4 MB at vocab 262144; greedy still skips
+  it). Throughput is unchanged — measured 967 vs 962 us/token at vocab
+  262144, the allocation is lost in the softmax — so this is the
+  allocation-free contract, not a speedup.
 
 ### Added
 - **Batched Metal embed lookup** (#345): new fused slot

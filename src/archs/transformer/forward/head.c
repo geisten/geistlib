@@ -178,8 +178,8 @@ static struct transformer_forward_profile g_head_profile = {
             best_id = geist_sampler_top_p_ws(
                     &sess->sampler_ws, logits, sess->top_p, sess->temperature, &sess->rng);
         } else {
-            best_id = geist_sampler_temperature(
-                    (size_t) st->vocab_size, logits, sess->temperature, &sess->rng);
+            best_id = geist_sampler_temperature_ws(
+                    &sess->sampler_ws, logits, sess->temperature, &sess->rng);
         }
         v->buffer_unmap(sess->scratch_logits);
         transformer_profile_add(&g_head_profile, HEAD_PROFILE_SAMPLE, t0);
@@ -297,8 +297,8 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
                 best_id = geist_sampler_top_p_ws(
                         &sess->sampler_ws, p, sess->top_p, sess->temperature, &sess->rng);
             } else {
-                best_id = geist_sampler_temperature(
-                        (size_t) st->vocab_size, p, sess->temperature, &sess->rng);
+                best_id = geist_sampler_temperature_ws(
+                        &sess->sampler_ws, p, sess->temperature, &sess->rng);
             }
             out_tokens[row] = best_id;
         }

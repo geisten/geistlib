@@ -232,14 +232,21 @@ select_top_desc(size_t n, const float scores[static n], size_t k, struct geist_s
     }
 }
 
-/* Temperature sampling over the workspace buffer — the _ws entry points must
- * not fall back to the allocating geist_sampler_temperature(). */
-static geist_token_t sample_temperature_ws(struct geist_sampler_workspace *ws,
-                                           const float                     logits[static 1],
-                                           float                           temperature,
-                                           struct geist_rng               *rng) {
-    const size_t n   = ws->n_vocab;
-    double       sum = softmax_into(n, logits, temperature, ws->probs);
+/* Temperature sampling over the workspace buffer — this is also what the
+ * top-k / top-p entry points degrade to at their no-filter boundaries, so
+ * they must not fall back to the allocating geist_sampler_temperature(). */
+geist_token_t geist_sampler_temperature_ws(struct geist_sampler_workspace *ws,
+                                           const float       logits[static ws->n_vocab],
+                                           float             temperature,
+                                           struct geist_rng *rng) {
+    const size_t n = ws->n_vocab;
+    if (n == 0 || ws->probs == nullptr) {
+        return 0; /* workspace never initialized — nothing sane to sample */
+    }
+    if (temperature <= 0.0f) {
+        return geist_sampler_argmax(n, logits);
+    }
+    double sum = softmax_into(n, logits, temperature, ws->probs);
     return inv_cdf_sample(n, ws->probs, sum, rng);
 }
 
@@ -255,7 +262,7 @@ geist_token_t geist_sampler_top_k_ws(struct geist_sampler_workspace *ws,
         return geist_sampler_argmax(n, logits);
     }
     if ((size_t) top_k >= n) {
-        return sample_temperature_ws(ws, logits, temperature, rng);
+        return geist_sampler_temperature_ws(ws, logits, temperature, rng);
     }
     const size_t k = (size_t) top_k; /* 1 < k < n */
 
@@ -283,7 +290,7 @@ geist_token_t geist_sampler_top_p_ws(struct geist_sampler_workspace *ws,
         return geist_sampler_argmax(n, logits);
     }
     if (top_p >= 1.0f) {
-        return sample_temperature_ws(ws, logits, temperature, rng);
+        return geist_sampler_temperature_ws(ws, logits, temperature, rng);
     }
 
     /* Unnormalized softmax; the nucleus test scales the target by the sum
