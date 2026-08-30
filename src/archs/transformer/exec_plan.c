@@ -36,6 +36,9 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_GELU_TANH_MUL:
         have = fused->gelu_tanh_mul != nullptr;
         break;
+    case GEIST_FUSED_SILU_MUL:
+        have = fused->silu_mul != nullptr;
+        break;
     case GEIST_FUSED_GELU_TANH_MUL_SCALED:
         have = fused->gelu_tanh_mul_scaled != nullptr;
         break;
@@ -142,6 +145,11 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         q.op             = GEIST_FUSED_GELU_TANH_MUL;
         q.m              = m_cap;
         P->fuse_gelu_mul = probe(be, q);
+
+        q                = base;
+        q.op             = GEIST_FUSED_SILU_MUL;
+        q.m              = m_cap;
+        P->fuse_silu_mul = probe(be, q);
 
         q                   = base;
         q.op                = GEIST_FUSED_RMSNORM_ADD;

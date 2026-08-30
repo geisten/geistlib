@@ -1045,6 +1045,14 @@
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,
+                                        st->silu_library,
+                                        ns_string,
+                                        "silu_mul_rows",
+                                        &st->silu_mul_rows_function,
+                                        &st->silu_mul_rows_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
                                         st->elem_library,
                                         ns_string,
                                         "mul_rows",
