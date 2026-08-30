@@ -275,6 +275,7 @@ struct geist_backend_primitives {
  * their call sites migrate (policy rule 3). */
 enum geist_fused_op {
     GEIST_FUSED_GELU_TANH_MUL,
+    GEIST_FUSED_SILU_MUL,
     GEIST_FUSED_GELU_TANH_MUL_SCALED,
     GEIST_FUSED_FFN_GEGLU_Q4Q6_MN,
     GEIST_FUSED_FFN_GATE_UP,
@@ -357,6 +358,14 @@ struct geist_backend_fused {
                                        const struct geist_tensor *x,
                                        const struct geist_tensor *z,
                                        struct geist_tensor       *y);
+
+    /* Fused y = silu(x) * z — the SwiGLU epilogue twin of
+     * gelu_tanh_mul. Must match prims->silu + prims->mul bit-exactly
+     * (same formula, one pass). nullptr = callers run the pair. */
+    enum geist_status (*silu_mul)(struct geist_backend      *be,
+                                  const struct geist_tensor *x,
+                                  const struct geist_tensor *z,
+                                  struct geist_tensor       *y);
 
     /* y[t,j] = gelu_tanh(x[t,j]) * z[t,j] * scale[j].
      * GEGLU+AWQ fusion for transformer FFNs. scale is per-channel

@@ -362,6 +362,32 @@ static void metal_encode_gelu_mul_rows(struct metal_state                    *st
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
+static void metal_encode_silu_mul_rows(struct metal_state                    *st,
+                                       void                                  *enc,
+                                       const struct geist_tensor             *a,
+                                       const struct geist_tensor             *b,
+                                       const struct geist_tensor             *y,
+                                       const struct metal_binary_rows_params *params) {
+
+    metal_msg_send_set_pipeline(st, enc, st->silu_mul_rows_pipeline);
+    metal_msg_send_set_buffer(st, enc, a->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, b->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+    const struct metal_size groups = {
+            .width  = (params->rows * params->cols + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
+            .height = 1,
+            .depth  = 1,
+    };
+    const struct metal_size threads = {
+            .width  = METAL_ELEM_THREADS,
+            .height = 1,
+            .depth  = 1,
+    };
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_GELU_MUL_ROWS, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+}
+
 static void metal_encode_scale_rows(struct metal_state                   *st,
                                     void                                 *enc,
                                     const struct geist_tensor            *x,
@@ -1248,6 +1274,61 @@ metal_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_
         return GEIST_E_BACKEND;
     }
     metal_encode_gelu_mul_rows(st, enc, x, z, y, &params);
+    metal_msg_send_void0(st, enc, "endEncoding");
+    metal_msg_send_void0(st, cmd, "commit");
+    metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
+}
+
+[[nodiscard]] static enum geist_status metal_silu_mul(struct geist_backend      *be,
+                                                      const struct geist_tensor *x,
+                                                      const struct geist_tensor *z,
+                                                      struct geist_tensor       *y) {
+
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t rows = 0, cols = 0, x_off = 0, x_stride = 0;
+    size_t z_rows = 0, z_cols = 0, z_off = 0, z_stride = 0;
+    size_t y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
+    if (!metal_tensor_is_f32_rows(x, &rows, &cols, &x_off, &x_stride) ||
+        !metal_tensor_is_f32_rows(z, &z_rows, &z_cols, &z_off, &z_stride) ||
+        !metal_tensor_is_f32_rows(y, &y_rows, &y_cols, &y_off, &y_stride) || z_rows != rows ||
+        y_rows != rows || z_cols != cols || y_cols != cols) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (rows > UINT32_MAX || cols > UINT32_MAX || x_off > UINT32_MAX || z_off > UINT32_MAX ||
+        y_off > UINT32_MAX || x_stride > UINT32_MAX || z_stride > UINT32_MAX ||
+        y_stride > UINT32_MAX || x->buffer->owner != be->state || z->buffer->owner != be->state ||
+        y->buffer->owner != be->state) {
+        return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct metal_state                   *st     = be->state;
+    const struct metal_binary_rows_params params = {
+            .rows         = (uint32_t) rows,
+            .cols         = (uint32_t) cols,
+            .a_offset     = (uint32_t) x_off,
+            .b_offset     = (uint32_t) z_off,
+            .y_offset     = (uint32_t) y_off,
+            .a_row_stride = (uint32_t) x_stride,
+            .b_row_stride = (uint32_t) z_stride,
+            .y_row_stride = (uint32_t) y_stride,
+    };
+    if (st->sequence_active) {
+        metal_encode_silu_mul_rows(st, metal_sequence_encoder(st), x, z, y, &params);
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
+    if (cmd == nullptr || enc == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    metal_encode_silu_mul_rows(st, enc, x, z, y, &params);
     metal_msg_send_void0(st, enc, "endEncoding");
     metal_msg_send_void0(st, cmd, "commit");
     metal_msg_send_void0(st, cmd, "waitUntilCompleted");
@@ -3790,6 +3871,7 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
     }
     switch (q->op) {
     case GEIST_FUSED_GELU_TANH_MUL:
+    case GEIST_FUSED_SILU_MUL:
         return true; /* F32 elementwise, any geometry, any m */
     case GEIST_FUSED_FFN_GATE_UP:
         if (q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr ||
@@ -3855,6 +3937,7 @@ static const struct geist_backend_primitives metal_prims = {
 static const struct geist_backend_fused metal_fused = {
         .supported                    = metal_fused_supported,
         .gelu_tanh_mul                = metal_gelu_tanh_mul,
+        .silu_mul                     = metal_silu_mul,
         .linear_t                     = metal_linear_t,
         .linear_t_pair                = metal_linear_t_pair,
         .embedding_lookup_scaled      = metal_embedding_lookup_scaled,
