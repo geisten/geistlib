@@ -115,6 +115,18 @@ suite weekly on Apple hardware, uploads raw provenance and enforces conservative
 `-O0` or lost parallelism; the interleaved local run remains the arbiter for
 single-digit drift.
 
+### Q4_0 regression attribution
+
+An opt-in path-profile run of the pinned Gemma model at pp128/tg8 on commit
+`02cb4fc` counted `q4_K` m1=2186/mN=543, `q6_K` m1=288/mN=72 and F32
+m1=852/mN=213. Every Q4_0 counter was exactly zero. The recent Q4_0 x8 changes
+therefore cannot directly affect this model's linear kernels; only a shared
+runtime/workspace change or host interference could explain a measured delta.
+The profiler is compiled out of release builds: the release `linear.o` before
+and after instrumentation was byte-identical (SHA-256
+`3395ffabdb746e1ab33d58619963a59c6a35b811c0c2b5e447d4acab73a3152c`).
+Throughput from the profiling run is intentionally not used as a baseline.
+
 `OMP_WAIT_POLICY=active` (or `KMP_BLOCKTIME=infinite`) matters on the `mac-omp`
 target — passive wait adds large per-matmul thread-pool wake-up overhead. The
 backend sets it itself at create time (`setenv` with `overwrite=0`, so an
