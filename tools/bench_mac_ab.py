@@ -302,6 +302,7 @@ def main() -> int:
     runs = []
     with partial_path.open("w") as raw:
         raw.write(json.dumps({"kind": "metadata", **metadata}, sort_keys=True) + "\n")
+        raw.flush()
         for cycle in range(protocol["cycles"]):
             offset = cycle % len(variants)
             order = variants[offset:] + variants[:offset]
