@@ -110,12 +110,12 @@ static void vision_siglip_state_destroy(void *encoder_state) {
     safe_free(&encoder_state);
 }
 
-static size_t vision_siglip_encode_image(void         *encoder_state,
-                                         size_t        height,
-                                         size_t        width,
-                                         size_t        max_soft,
-                                         const uint8_t rgb[static height * width * 3],
-                                         float        *out_soft) {
+static size_t vision_siglip_encode_image(void          *encoder_state,
+                                         size_t         height,
+                                         size_t         width,
+                                         size_t         max_soft,
+                                         const uint8_t *rgb,
+                                         float         *out_soft) {
     if (encoder_state == nullptr || rgb == nullptr || out_soft == nullptr || max_soft == 0 ||
         height == 0 || width == 0) {
         return 0;
@@ -128,13 +128,13 @@ static size_t vision_siglip_encode_image(void         *encoder_state,
     return n_soft;
 }
 
-static size_t vision_siglip_encode_video(void         *encoder_state,
-                                         size_t        n_frames,
-                                         size_t        height,
-                                         size_t        width,
-                                         size_t        max_soft,
-                                         const uint8_t frames[static n_frames * height * width * 3],
-                                         float        *out_soft) {
+static size_t vision_siglip_encode_video(void          *encoder_state,
+                                         size_t         n_frames,
+                                         size_t         height,
+                                         size_t         width,
+                                         size_t         max_soft,
+                                         const uint8_t *frames,
+                                         float         *out_soft) {
     if (encoder_state == nullptr || frames == nullptr || out_soft == nullptr || max_soft == 0 ||
         n_frames == 0 || height == 0 || width == 0) {
         return 0;

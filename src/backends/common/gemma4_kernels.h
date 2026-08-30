@@ -40,12 +40,16 @@ float *bf16_alloc_fp32(size_t n, const void *src);
  * weight may be nullptr (skip the per-element scale, e.g. for "with_scale=False").
  * x and y may alias (in-place is supported).
  */
+/* x and y are [n_rows, hidden] and stay plain pointers: the bound is a
+ * product containing a runtime dimension that may be 0, and `[static 0]`
+ * is a contract gcc's -Wstringop-overflow rightly refuses. The length-first
+ * order is the part that matters here. */
 void rmsnorm_fp32(size_t       n_rows,
                   size_t       hidden,
-                  const float  x[static n_rows * hidden],
+                  const float *x,
                   const float *weight, /* nullable: skips the per-element scale */
                   float        eps,
-                  float        y[static n_rows * hidden]);
+                  float       *y);
 
 /* Compute RoPE cos/sin tables for positions 0..seq_len-1 over `head_dim`
  * dimensions (must be even) using base `theta`. Output buffers are
@@ -182,12 +186,14 @@ void mul_fp32(size_t n, const float a[static n], const float b[static n], float 
  * loop otherwise. For seq_len = 1 this still goes through sgemm — the
  * library handles the gemv case efficiently.
  */
+/* Same as rmsnorm_fp32: the extents are products over runtime dimensions
+ * that may be 0, so they are documented above rather than declared. */
 void linear_fp32(size_t       m,
                  size_t       n_in,
                  size_t       n_out,
-                 const float  x[static m * n_in],
-                 const float  weight[static n_out * n_in],
+                 const float *x,
+                 const float *weight,
                  const float *bias, /* nullable */
-                 float        y[static m * n_out]);
+                 float       *y);
 
 #endif

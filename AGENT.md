@@ -52,8 +52,26 @@ elements. Otherwise use a plain pointer.
 |---|---|
 | always present, exactly/at least `n` elements | `float x[static n]` |
 | legitimately `nullptr` (optional bias, optional weight) | `const float *bias` |
+| the function defensively null-checks it | `const float *x` — see below |
+| bound is a product over runtime dims that may be 0 | `float *y` — see below |
 | length is a bound, not a guarantee (may write fewer) | `float out[static cap]` + return the count |
 | size is not a parameter (opaque blob, `void *`) | `const void *blocks` |
+
+Two of those rows are earned the hard way; gcc enforces both and clang
+does not, so they surface only in CI unless you run the check in §7.
+
+**A parameter the function null-checks must not be `[static]`.** The
+contract says non-null; the check says maybe. gcc calls that
+`-Wnonnull-compare` and it is right — one of the two is wrong. Public
+vtable entry points here defensively accept null and return 0, so they
+take plain pointers (`encode_pcm`'s `pcm`, `encode_image`'s `rgb`).
+
+**A bound that is a product over runtime dimensions must not be
+`[static]` either**, when any factor can be 0. `float y[static m * n_out]`
+reads well and breaks as soon as gcc cannot prove `m > 0`: it reports
+`accessing 4 bytes in a region of size 0` at every call site.
+`linear_fp32` and `rmsnorm_fp32` document their extents in prose for
+exactly this reason. A single dimension (`[static n]`) is fine.
 
 A false `[static]` is worse than none: the compiler is entitled to believe it.
 Real examples in this tree — `linear_fp32`'s `bias` and `rmsnorm_fp32`'s
@@ -175,16 +193,27 @@ make MODE=asan test-unit           # ASan + UBSan
 ```
 
 CI builds every Linux target with **gcc**; local macOS builds use clang, and
-they disagree on parts of C23. Syntax-check what you changed with the local
-gcc before pushing — a `constexpr` with two declarators compiles here and
+they disagree on parts of C23. Compile what you changed with the local gcc
+before pushing — a `constexpr` with two declarators compiles under clang and
 fails all nine Linux jobs:
 
 ```sh
-gcc-15 -std=c23 -Wall -Wextra -Wpedantic -Werror -Wshadow -Wundef \
-       -fsyntax-only -D_GNU_SOURCE -Wno-vla-parameter \
+gcc-15 -std=c23 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+       -Wshadow -Wundef -D_GNU_SOURCE -Wno-vla-parameter \
+       -DGEIST_BACKEND_CPU_NEON=1 -DGEIST_BACKEND_CPU_SCALAR=1 \
        -Iinclude -I. -Isrc/base -Isrc/quant -Isrc/backends/common \
-       -Isrc/formats/gguf -Isrc/io -Isrc/engine <changed>.c
+       -Isrc/formats/gguf -Isrc/io -Isrc/engine -c <changed>.c -o /dev/null
 ```
+
+**`-O3 -c`, not `-fsyntax-only`.** The diagnostics that matter for the
+rules above — `-Wstringop-overflow`, `-Wstringop-overread`,
+`-Wnonnull-compare` — come out of the optimizer, so a syntax-only pass
+reports none of them and CI finds them for you instead. Skip
+`src/backends/{metal,vulkan,cpu_x86}`; those need SDKs or target
+intrinsics this host lacks, and CI covers them.
+
+gcc-15 is stricter than CI's gcc-14. A hit that also reproduces on
+`origin/main` is pre-existing, not yours — check before chasing it.
 
 Commits: one logical change each, and say *why*. For kernel or perf work,
 include before/after numbers and the host.
