@@ -30,11 +30,14 @@ minor release.
   sites.
 
   `[static len]` is stated where an extent is expressible and deliberately
-  omitted where it would be a lie: `linear_fp32`'s `bias` and
-  `rmsnorm_fp32`'s `weight` are nullable at 84 and 12 call sites, and the
-  linear kernels' x/y extents live in the weight rather than in a
-  parameter. Nothing gained `restrict` — these kernels document "y may
-  alias x".
+  omitted where it would be a lie — three separate reasons, all recorded
+  in AGENT.md: a nullable parameter (`linear_fp32`'s `bias`,
+  `rmsnorm_fp32`'s `weight`, nullptr at 84 and 12 call sites); a parameter
+  the callee defensively null-checks (the encoder vtable entry points,
+  which gcc reports as `-Wnonnull-compare`); and a bound that is a product
+  over runtime dimensions that may be zero (`linear_fp32`/`rmsnorm_fp32`'s
+  x and y, which gcc reports as "region of size 0"). Nothing gained
+  `restrict` — these kernels document "y may alias x".
 
   **ABI:** `geist_arch.h`, `geist_backend.h` and `geist_weight.h` are all
   `@stability EXPERIMENTAL` and absent from `docs/API_CONTRACT.md`, so no
@@ -47,6 +50,10 @@ minor release.
   measured to change nothing — one TU compiled three ways gave 2824
   instructions (old order) vs 2819 (new order) vs 2819 (new order with
   `[static n]`).
+- **`xmalloc` in `tests/test_helpers.h`** — 113 unchecked `malloc` call
+  sites across four logits/layer tests now abort instead of feeding a
+  possibly-null buffer into a kernel. Found by gcc once the kernels
+  declared their contracts.
 - **`cpu_neon/kernel_catalog.h` names the canonical kernel typedefs**
   instead of re-spelling the signature inline, which had silently drifted
   from `geist_weight.h`.
