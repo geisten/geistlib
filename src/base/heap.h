@@ -38,6 +38,12 @@ void *heap_calloc_aligned(size_t count, size_t size, size_t alignment);
  * Returns nullptr on overflow or on a zero count/size. */
 void *heap_alloc_n_aligned(size_t count, size_t size, size_t alignment);
 
+/* Successful heap_alloc_aligned calls since process start. Hot paths are
+ * specified allocation-free (include/geist_weight.h, src/engine/sampler.h);
+ * a bench or test asserts a zero delta across its measured loop instead of
+ * trusting the comment. Monotonic, relaxed — a counter, not a barrier. */
+[[nodiscard]] uint64_t heap_alloc_count(void);
+
 /* The array macros multiplied `count * sizeof(type)` at the call site and
  * handed the allocator whatever came out. Model- and caller-controlled
  * counts reach these (GGUF tensor dimensions, image geometry, KV
