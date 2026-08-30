@@ -156,6 +156,8 @@ void linear_iq3s_w3a8_prefill_pre(const int8_t *x_q8,
                                   size_t        n_out,
                                   float        *y) {
 #if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
     const struct block_iq3_s_t *w                = (const struct block_iq3_s_t *) w_iq3s;
     const size_t                n_blocks_per_row = n_in / IQ3_S_BLOCK_ELEMS;
 
@@ -167,7 +169,12 @@ void linear_iq3s_w3a8_prefill_pre(const int8_t *x_q8,
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
 
-        float *accs = heap_alloc_array_aligned(float, m);
+        /* m is bounded by GEIST_QUANT_M_CAP (checked above), so both
+         * accumulators live on the stack: this runs inside an omp parallel
+         * for, where a per-row allocation meant n_out × (1 + blocks/row)
+         * malloc/free pairs per call, all contending on the allocator.
+         * geist_weight.h: linear_mN must be allocation-free. */
+        float accs[GEIST_QUANT_M_CAP];
         for (size_t i = 0; i < m; i++)
             accs[i] = 0.0f;
 
@@ -177,7 +184,7 @@ void linear_iq3s_w3a8_prefill_pre(const int8_t *x_q8,
                 __builtin_prefetch(&row[b + 2], 0, 0);
             const float d = fp16_to_fp32(blk->d);
 
-            int32x4_t *row_acc = heap_alloc_array_aligned(int32x4_t, m);
+            int32x4_t row_acc[GEIST_QUANT_M_CAP];
             for (size_t i = 0; i < m; i++)
                 row_acc[i] = vdupq_n_s32(0);
 
@@ -220,11 +227,9 @@ void linear_iq3s_w3a8_prefill_pre(const int8_t *x_q8,
             for (size_t i = 0; i < m; i++) {
                 accs[i] += d * scale_x[i] * (float) vaddvq_s32(row_acc[i]);
             }
-            safe_free((void **) &row_acc);
         }
         for (size_t i = 0; i < m; i++)
             y[i * n_out + n] = accs[i];
-        safe_free((void **) &accs);
     }
 #else
     (void) x_q8;
