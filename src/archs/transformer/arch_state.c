@@ -204,6 +204,25 @@ alloc_scratch(struct geist_backend *be, size_t bytes, struct geist_buffer **out)
     if (sliding_idx == -1)
         sliding_idx = full_idx;
 
+    /* Rotary is pairwise, so an odd head_dim has a channel with no partner
+     * (see rope_head_dim_supported). head_dim comes from model metadata —
+     * d_model / n_q_heads for the Llama and BitNet families — so a
+     * malformed file reaches here with one. Reject at plan construction,
+     * once, rather than let every rotary call skip a channel and read the
+     * table entry nobody wrote. */
+    for (size_t i = 0; i < st->n_layers; i++) {
+        const size_t hd = st->layers[i].head_dim;
+        if (!rope_head_dim_supported(hd)) {
+            geist_backend_set_error(be,
+                                    GEIST_E_FORMAT,
+                                    "transformer: layer %zu has head_dim %zu; rotary "
+                                    "embedding requires an even, non-zero head_dim",
+                                    i,
+                                    hd);
+            return GEIST_E_FORMAT;
+        }
+    }
+
     const size_t sliding_hd  = st->layers[sliding_idx].head_dim;
     const size_t full_hd     = st->layers[full_idx].head_dim;
     const size_t sliding_rot = (size_t) st->layers[sliding_idx].n_rotated_dims;

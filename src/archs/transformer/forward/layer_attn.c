@@ -5,6 +5,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "gemma4_kernels.h"
 #include <geist_types.h>
 #include "profile.h"
 
@@ -24,8 +25,8 @@ enum attn_profile_stage {
     ATTN_PROFILE_COUNT,
 };
 
-static uint64_t          g_attn_profile_ns[ATTN_PROFILE_COUNT];
-static uint64_t          g_attn_profile_calls[ATTN_PROFILE_COUNT];
+static _Atomic uint64_t  g_attn_profile_ns[ATTN_PROFILE_COUNT];
+static _Atomic uint64_t  g_attn_profile_calls[ATTN_PROFILE_COUNT];
 static const char *const g_attn_profile_names[ATTN_PROFILE_COUNT] = {
         "norm",
         "qkv",
@@ -60,7 +61,12 @@ static enum geist_status permute_interleaved_rope_inplace(const struct geist_bac
                                                           size_t                           n_heads,
                                                           size_t head_dim) {
 
-    if (head_dim > PERMUTE_ROPE_MAX_HEAD_DIM) {
+    /* Both bounds, once per call and outside the loops. The evenness check
+     * is redundant with the load-time rejection in allocate_runtime_rope and
+     * deliberately so: this helper writes only 2*(head_dim/2) entries of
+     * `tmp` and then copies head_dim of them, so an odd head_dim reaching
+     * here would copy a stack slot nobody wrote. */
+    if (head_dim > PERMUTE_ROPE_MAX_HEAD_DIM || !rope_head_dim_supported(head_dim)) {
         return GEIST_E_INVALID_ARG;
     }
     float *x = (float *) v->buffer_map(buf);

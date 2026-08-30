@@ -139,6 +139,7 @@ int main(void) {
     /* TL1 output. */
     struct geist_weight w = {0};
     w.raw                 = tq2_buf;
+    w.raw_nbytes          = n_out * row_bytes;
     w.aux_fp32            = (const float *) tl1_buf;
     w.n_in                = (int32_t) n_in;
     w.n_out               = (int32_t) n_out;

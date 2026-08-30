@@ -134,10 +134,11 @@ int main(void) {
     if (w_host == nullptr)
         goto fail;
     struct geist_weight wkr = {
-            .raw   = w_host,
-            .n_in  = (int32_t) n_in,
-            .n_out = (int32_t) n_out,
-            .dtype = (uint16_t) GEIST_DTYPE_Q4_K,
+            .raw        = w_host,
+            .raw_nbytes = t->nbytes,
+            .n_in       = (int32_t) n_in,
+            .n_out      = (int32_t) n_out,
+            .dtype      = (uint16_t) GEIST_DTYPE_Q4_K,
     };
     s = be->desc->vtbl->resolve_weight(be, &wkr);
     if (s != GEIST_OK || wkr.linear_m1 == nullptr) {

@@ -8,6 +8,62 @@ minor release.
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-08-30
+
+Bug-fix release: the eight open correctness and hardening tickets against
+the GGUF reader, the weight resolvers, the transformer forward path, the
+audio streaming lifecycle, and the shared profiler.
+
+### Fixed
+- **PLE stage and FFN destination decided once** (#326): the FFN chose
+  where to write its residual result on `apply_ple` while the PLE stage
+  ran on `apply_ple && per-layer input != NULL`. In between, the result
+  went to a scratch buffer nothing then read, and
+  `transformer_forward_one_layer` returned `GEIST_OK` with `h_out`
+  untouched — 1536 zeros on every Gemma 4 layer reached with a null
+  per-layer input. One `ctx->run_ple`, read by both. Prefill and decode
+  always pass a per-layer input, so shipped inference was unaffected.
+- **I2_S per-tensor scale counted as part of the tensor** (#334): the
+  reader sized an I2_S tensor from its packed blocks alone, so a file
+  four bytes short passed validation and the kernels read the scale from
+  whatever followed. In β weight mode (`GEIST_WEIGHT_MMAP=0`, and all GPU
+  backends) only `nbytes` was copied into the arena, so the scale was
+  never copied at all and BitNet-2B-4T produced fluent garbage; it now
+  matches the mmap path token for token.
+- **GGUF cursor bounds by subtraction, and checked size arithmetic**
+  (#332): bounds were tested by forming `p + len` for an
+  attacker-chosen `len` — undefined before the comparison runs — and
+  `skip_value` advanced before validating. Tensor dimensions,
+  byte counts, offsets and alignment padding are checked; zero and
+  non-power-of-two `general.alignment` are rejected.
+- **Weight resolvers validate the source extent** (#325): `struct
+  geist_weight` gains `raw_nbytes`, and cpu_neon / cpu_scalar / metal /
+  vulkan reject a source shorter than (dtype, n_in, n_out) before
+  installing a kernel or repacking. The Q4_K predecode hook was
+  repacking whole tensors out of short buffers.
+- **Odd rotary `head_dim` rejected** (#329): rotary rotates channel *i*
+  against *i + head_dim/2*, so an odd `head_dim` left the last channel
+  unpaired, its cos/sin table entry unwritten, and an uninitialized
+  stack slot copied into the activation. `head_dim` is model metadata
+  (`d_model / n_q_heads` for Llama and BitNet), so a malformed file can
+  pick it.
+- **Checked allocation and tensor-view arithmetic** (#330): the heap
+  array macros multiplied `count * sizeof(type)` before the allocator
+  could refuse it; the elementwise ops folded `shape[]` unchecked,
+  ignored `ndim > 8`, and never compared the resulting byte range with
+  the buffer; image and video geometry reached `height * width * 3` and
+  an `int` row stride unbounded.
+- **Streaming audio turn is failure-atomic and closeable** (#333):
+  `audio_begin` committed `stream_begin` before allocating its scratch,
+  and only a successful `audio_end` released either. A session destroyed
+  mid-turn leaked the scratch (9.3 MB over two turns, measured) and left
+  the encoder stream open for the next session. The encoder vtable gains
+  `stream_abort`; destruction is idempotent.
+- **Profiler and lazy policy caches no longer race** (#335): the shared
+  per-stage counters were incremented with a plain `+=` and the
+  registration flag read outside its mutex. Four concurrent sessions with
+  profiling on produced 34 TSan data races and an abort; now zero.
+
 ### Changed
 - **Metal DeltaNet sub-chunking** (#322 step 1): `deltanet_mix` encodes
   the chunk recipe in 64-token sub-chunks internally, so DN models keep
@@ -945,7 +1001,8 @@ First public release.
   reproducible perf benchmark harness (`make bench-small`).
 - `examples/simple_generate` demonstrating the stable text-generation core.
 
-[Unreleased]: https://github.com/geisten/geistlib/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/geisten/geistlib/compare/v0.10.1...v0.10.2
 [0.3.0]: https://github.com/geisten/geistlib/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/geisten/geistlib/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/geisten/geistlib/compare/v0.1.3...v0.2.0

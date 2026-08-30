@@ -224,6 +224,18 @@ struct geist_arch_ops_encoder {
      * count (0 on error). */
     size_t (*stream_end)(void *encoder_state, float *out_soft, size_t max_soft);
 
+    /* Drop an open stream without finishing it: discard buffered audio
+     * and any soft tokens the worker has produced, and leave the encoder
+     * ready for the next stream_begin. Unlike stream_end it computes
+     * nothing and returns nothing — it exists so a caller that cannot
+     * continue (an allocation failed, the session is being destroyed) can
+     * close the stream instead of leaking it. Must be safe to call when
+     * no stream is open, and safe to call twice.
+     *
+     * Optional: an encoder without it leaves the caller only stream_end,
+     * which pays for a tail nobody will read. */
+    void (*stream_abort)(void *encoder_state);
+
     /* max_soft_tokens: upper bound on soft tokens encode_pcm can produce
      * for n_samples of PCM — lets the engine size the output buffer from
      * the audio length instead of guessing a fixed cap (#247: a hardcoded

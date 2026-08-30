@@ -23,8 +23,8 @@ enum ple_profile_stage {
     PLE_ADD,
     PLE_PROFILE_COUNT,
 };
-static uint64_t          g_ple_ns[PLE_PROFILE_COUNT];
-static uint64_t          g_ple_calls[PLE_PROFILE_COUNT];
+static _Atomic uint64_t  g_ple_ns[PLE_PROFILE_COUNT];
+static _Atomic uint64_t  g_ple_calls[PLE_PROFILE_COUNT];
 static const char *const g_ple_names[PLE_PROFILE_COUNT] = {
         "gate_lin",
         "gelu",
@@ -54,7 +54,7 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
 
     struct geist_tensor t_h_post_ff_2d = view_2d(sess->scratch_h_post_ff, ctx->SEQ, st->d_model);
     struct geist_tensor t_h_out_2d     = view_2d(ctx->h_out_buf, ctx->SEQ, st->d_model);
-    if (ctx->apply_ple && ctx->per_layer_input_buf != nullptr) {
+    if (ctx->run_ple) {
         const bool          prof = transformer_profile_enabled(&g_ple_profile);
         uint64_t            t0;
         struct geist_tensor t_gate_ple_2d =

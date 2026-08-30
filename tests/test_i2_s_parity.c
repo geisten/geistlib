@@ -97,6 +97,7 @@ int main(void) {
 
     struct geist_weight w = {0};
     w.raw                 = buf;
+    w.raw_nbytes          = i2_s_scale_offset(n_in * n_out) + sizeof(float);
     w.n_in                = (int32_t) n_in;
     w.n_out               = (int32_t) n_out;
     w.dtype               = GEIST_DTYPE_I2_S;
@@ -174,6 +175,7 @@ int main(void) {
         float              *y  = malloc(fn_out * sizeof(float));
         struct geist_weight wf = {0};
         wf.raw                 = Wf;
+        wf.raw_nbytes          = fn_in * fn_out * sizeof(uint16_t);
         wf.n_in                = (int32_t) fn_in;
         wf.n_out               = (int32_t) fn_out;
         wf.dtype               = GEIST_DTYPE_F16;

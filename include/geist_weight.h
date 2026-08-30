@@ -51,7 +51,7 @@
 #define GEIST_WEIGHT_H
 
 #include <geist.h>
-#include <geist_types.h>  /* enum geist_dtype */
+#include <geist_types.h> /* enum geist_dtype */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -76,11 +76,8 @@ typedef void (*geist_kernel_linear_m1_fn)(const float               *x,
 /* Linear Y = X @ W^T for M>1 (prefill-style). X is [m, n_in],
  * Y is [m, n_out], both row-major dense FP32. See linear_m1_fn for
  * the `be` contract. */
-typedef void (*geist_kernel_linear_mN_fn)(const float               *x,
-                                          const struct geist_weight *w,
-                                          size_t                     m,
-                                          struct geist_backend      *be,
-                                          float                     *y);
+typedef void (*geist_kernel_linear_mN_fn)(
+        const float *x, const struct geist_weight *w, size_t m, struct geist_backend *be, float *y);
 
 /* Optional fused/pair path for two M=1 projections sharing the same X.
  * Backends use this to avoid duplicate scheduling overhead in decode
@@ -105,7 +102,7 @@ typedef void (*geist_kernel_linear_pair_mN_fn)(const float               *x,
 
 enum geist_weight_flags {
     /* aux_fp32 holds AWQ inverse-scales of length n_out. */
-    GEIST_W_HAS_AWQ_INV  = 1U << 0,
+    GEIST_W_HAS_AWQ_INV = 1U << 0,
     /* The weight has been transpiled into a backend-private layout
      * (P1.1.f end-state). raw points to backend arena, not mmap. */
     GEIST_W_BACKEND_OWNS = 1U << 1,
@@ -132,16 +129,22 @@ enum geist_weight_backend_layout {
 };
 
 struct geist_weight {
-    const void *raw;         /* mmap or backend-arena bytes */
-    int32_t     n_in;
-    int32_t     n_out;
-    uint16_t    dtype;       /* enum geist_dtype */
-    uint16_t    flags;       /* enum geist_weight_flags bitmask */
-    uint16_t    backend_layout; /* enum geist_weight_backend_layout */
-    uint16_t    backend_alignment;
+    const void *raw; /* mmap or backend-arena bytes */
+    /* Bytes readable at `raw`. NOT derived from (dtype, n_in, n_out) — it
+     * is what the loader actually mapped or copied, and the two disagree
+     * exactly when a file is truncated or a repack was sized wrong. A
+     * resolver must reject the weight rather than read past it, so this
+     * has to be set: resolve_weight rejects 0. */
+    size_t   raw_nbytes;
+    int32_t  n_in;
+    int32_t  n_out;
+    uint16_t dtype;          /* enum geist_dtype */
+    uint16_t flags;          /* enum geist_weight_flags bitmask */
+    uint16_t backend_layout; /* enum geist_weight_backend_layout */
+    uint16_t backend_alignment;
 
-    geist_kernel_linear_m1_fn linear_m1;
-    geist_kernel_linear_mN_fn linear_mN;
+    geist_kernel_linear_m1_fn      linear_m1;
+    geist_kernel_linear_mN_fn      linear_mN;
     geist_kernel_linear_pair_m1_fn linear_pair_m1;
     geist_kernel_linear_pair_mN_fn linear_pair_mN;
 

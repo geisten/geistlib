@@ -894,9 +894,10 @@ static inline int32_t i2_s_block_dot_q8a_neon_unbiased(const uint8_t *qs, const 
 #endif
 
 static inline float i2_s_tensor_scale(const struct geist_weight *w) {
-    const size_t packed = (size_t) w->n_in * (size_t) w->n_out / 4;
-    float        s;
-    memcpy(&s, (const uint8_t *) w->raw + packed, sizeof s);
+    float s;
+    memcpy(&s,
+           (const uint8_t *) w->raw + i2_s_scale_offset((size_t) w->n_in * (size_t) w->n_out),
+           sizeof s);
     return s;
 }
 

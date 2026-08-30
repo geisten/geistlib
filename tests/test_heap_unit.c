@@ -77,11 +77,45 @@ int main(void) {
     }
     safe_free((void **) &zeros);
 
+    /* ---- heap_alloc_n_aligned + the array macro (issue #330) -----------
+     * heap_alloc_array_aligned used to compute `count * sizeof(type)` at
+     * the call site and hand the allocator the wrapped product: a request
+     * for 2^62 int32s became a 0-byte or 16-byte allocation that the
+     * caller then wrote 16 exabytes into. The count and the element size
+     * stay apart until the check now. */
+
+    CHECK(heap_alloc_n_aligned(0, 4, 64) == nullptr, "alloc_n(0,*) null");
+    CHECK(heap_alloc_n_aligned(4, 0, 64) == nullptr, "alloc_n(*,0) null");
+    CHECK(heap_alloc_n_aligned(SIZE_MAX, 2, 64) == nullptr, "alloc_n overflow must be refused");
+    CHECK(heap_alloc_n_aligned(SIZE_MAX / 2 + 1, 2, 64) == nullptr,
+          "alloc_n exact-boundary overflow must be refused");
+    /* SIZE_MAX * 1 does not overflow the multiply — it has to be refused
+     * one step later, by the round-up inside heap_alloc_aligned. */
+    CHECK(heap_alloc_n_aligned(SIZE_MAX, 1, 64) == nullptr, "alloc_n(SIZE_MAX,1) must be refused");
+
+    /* Through the macro, with the element size the compiler supplies. */
+    CHECK(heap_alloc_array_aligned(int32_t, SIZE_MAX) == nullptr,
+          "array macro must refuse a count that overflows sizeof(int32_t)");
+    CHECK(heap_alloc_array_aligned(int32_t, SIZE_MAX / 4 + 1) == nullptr,
+          "array macro must refuse the exact overflow boundary");
+    CHECK(heap_alloc_array_aligned(float, 0) == nullptr, "array macro with count 0 is null");
+
+    /* And the valid case still allocates something writable of the right
+     * size — a guard that refuses everything is not a guard. */
+    int32_t *arr = heap_alloc_array_aligned(int32_t, 1024);
+    CHECK(arr != nullptr, "array macro must still allocate a valid request");
+    if (arr != nullptr) {
+        memset(arr, 0x5A, 1024 * sizeof(int32_t)); /* ASan catches under-allocation */
+        CHECK(((uintptr_t) arr & (alignof(int32_t) - 1)) == 0, "array macro alignment");
+    }
+    safe_free((void **) &arr);
+
     /* safe_free null tolerance. */
     void *nullp = nullptr;
     safe_free(&nullp);
     safe_free(nullptr);
 
-    printf("PASS: heap alloc/calloc — zero/overflow/alignment guards\n");
+    printf("PASS: heap alloc/calloc/alloc_n — zero/overflow/alignment guards, "
+           "including the array macros at the SIZE_MAX boundary\n");
     return GEIST_TEST_PASS;
 }

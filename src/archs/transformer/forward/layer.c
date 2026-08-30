@@ -169,6 +169,7 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     ctx->apply_qk_norms   = P != nullptr ? P->apply_qk_norms : st->config.has_qk_norms;
     ctx->rope_interleaved = P != nullptr ? P->rope_interleaved : st->config.rope_interleaved;
     ctx->apply_ple        = P != nullptr ? P->apply_ple : st->config.has_ple;
+    ctx->run_ple          = ctx->apply_ple && per_layer_input_buf != nullptr;
     ctx->kv_int8_enabled  = sess->kv_int8_enabled;
     ctx->kv_kivi_enabled  = sess->kv_kivi_enabled;
     ctx->kv_f16_enabled   = sess->kv_f16_enabled;
@@ -273,6 +274,7 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
     ctx.apply_qk_norms           = true;
     ctx.rope_interleaved         = sess->model->config.rope_interleaved;
     ctx.apply_ple                = false;
+    ctx.run_ple                  = false;
     ctx.kv_int8_enabled          = false;
     ctx.kv_kivi_enabled          = false;
     ctx.kv_f16_enabled           = false;
@@ -382,7 +384,7 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
          * total_elems/4). Used for the token-embedding table on BitNet-2B-4T. */
         const size_t total = (size_t) t->shape[0] * (size_t) t->shape[1];
         float        scale;
-        memcpy(&scale, raw + total / 4, sizeof scale);
+        memcpy(&scale, raw + i2_s_scale_offset(total), sizeof scale);
         const uint8_t *row = raw + row_idx * (n_in / 4);
         for (size_t b = 0; b < n_in / 256; b++) {
             const uint8_t *qs = row + b * 64;

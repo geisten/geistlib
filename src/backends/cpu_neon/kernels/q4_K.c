@@ -19,6 +19,7 @@
 #include "gemma4_kernels.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,16 +37,15 @@ extern void geist_pp_parallel_for(size_t n, geist_pp_body_fn body_fn, void *ctx)
         __attribute__((weak));
 
 static int q4k_pp_enabled(void) {
-    static int enabled = -1;
-    if (enabled >= 0)
-        return enabled;
-    const char *e = getenv("GEIST_PP");
-    if (e != NULL && e[0] != '\0') {
-        enabled = (e[0] == '1') ? 1 : 0;
-        return enabled;
+    static _Atomic int enabled = -1;
+    int                v       = atomic_load_explicit(&enabled, memory_order_relaxed);
+    if (v >= 0) {
+        return v;
     }
-    enabled = 0;
-    return enabled;
+    const char *e = getenv("GEIST_PP");
+    v             = (e != NULL && e[0] == '1') ? 1 : 0;
+    atomic_store_explicit(&enabled, v, memory_order_relaxed);
+    return v;
 }
 
 struct q4k_predecode_header {
@@ -693,13 +693,15 @@ void linear_q4k_w4a8_prefill_pre(const int8_t  *x_q8,
      * Scratch is a reused thread-local high-water buffer (the kernel runs on
      * the single layer-loop thread; its omp panels only READ the buffer, so no
      * race). Skipped at m<2 where the per-token access is already sequential. */
-    static int pack_act = -1;
-    if (pack_act < 0) {
+    static _Atomic int pack_act = -1;
+    int                pack_on  = atomic_load_explicit(&pack_act, memory_order_relaxed);
+    if (pack_on < 0) {
         const char *e = getenv("GEIST_Q4K_PACK_ACT");
-        pack_act      = (e != NULL && e[0] == '0') ? 0 : 1;
+        pack_on       = (e != NULL && e[0] == '0') ? 0 : 1;
+        atomic_store_explicit(&pack_act, pack_on, memory_order_relaxed);
     }
     int8_t *packed = NULL;
-    if (pack_act && m >= 2) {
+    if (pack_on && m >= 2) {
         static _Thread_local int8_t *pack_tl  = NULL;
         static _Thread_local size_t  pack_cap = 0;
         const size_t                 need     = m * n_in;
