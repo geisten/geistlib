@@ -18,6 +18,7 @@
 #include <stdatomic.h>
 #include <geist.h>
 #include <geist_types.h>
+#include "heap.h"
 #include "hw_probe.h"
 #include "kernel_catalog.h"
 
@@ -89,7 +90,64 @@ struct cpu_neon_workspace {
     /* F32 elementwise workspace (currently vForce tanh input). */
     float *elt_f32;
     size_t elt_f32_cap;
+    /* Shared W*A8 activation-quant scratch for the resolver wrappers.
+     * Every quantized dtype with a _pre kernel variant quantizes into
+     * this instead of malloc'ing per call (geist_weight.h: linear_m1 /
+     * linear_mN must be allocation-free). One set is enough: a thread
+     * runs exactly one linear kernel at a time, and the pair kernels
+     * quantize their shared x once and use it for both weights. */
+    int8_t  *act_xq;
+    size_t   act_xq_cap;
+    float   *act_scale;
+    size_t   act_scale_cap;
+    int32_t *act_sum32;
+    size_t   act_sum32_cap;
 };
+
+/* Grow-on-demand helpers for the workspace buffers. Return false on OOM,
+ * leaving the capacity at 0 so the next call retries. The kernels are
+ * void — see each call site for how it degrades. */
+[[nodiscard]] static inline bool cpu_neon_grow_i8(int8_t **p, size_t *cap, size_t need) {
+    if (*cap >= need) {
+        return true;
+    }
+    safe_free((void **) p);
+    *p = heap_alloc_array_aligned(int8_t, need);
+    if (*p == nullptr) {
+        *cap = 0;
+        return false;
+    }
+    *cap = need;
+    return true;
+}
+
+[[nodiscard]] static inline bool cpu_neon_grow_i32(int32_t **p, size_t *cap, size_t need) {
+    if (*cap >= need) {
+        return true;
+    }
+    safe_free((void **) p);
+    *p = heap_alloc_array_aligned(int32_t, need);
+    if (*p == nullptr) {
+        *cap = 0;
+        return false;
+    }
+    *cap = need;
+    return true;
+}
+
+[[nodiscard]] static inline bool cpu_neon_grow_f32(float **p, size_t *cap, size_t need) {
+    if (*cap >= need) {
+        return true;
+    }
+    safe_free((void **) p);
+    *p = heap_alloc_array_aligned(float, need);
+    if (*p == nullptr) {
+        *cap = 0;
+        return false;
+    }
+    *cap = need;
+    return true;
+}
 
 void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws);
 
