@@ -19,6 +19,11 @@ import sys
 def gate(line: str, min_prefill: float, min_decode: float) -> str | None:
     """Return an error string if below a floor, else None."""
     d = json.loads(line)
+    # bench_quality_perf.py wraps the measurement with commit/model/binary
+    # provenance. Direct bench_perf_sweep JSON remains accepted for local and
+    # Linux CI callers.
+    if "measurement" in d:
+        d = d["measurement"]
     pp, tg = float(d["prefill_tps"]), float(d["decode_tps"])
     print(f"perf: prefill={pp:.1f} tok/s (floor {min_prefill}), "
           f"decode={tg:.1f} tok/s (floor {min_decode})")
@@ -33,6 +38,7 @@ def gate(line: str, min_prefill: float, min_decode: float) -> str | None:
 def _selftest() -> None:
     ok = '{"prefill_tps": 40.0, "decode_tps": 8.0}'
     assert gate(ok, 20, 4) is None
+    assert gate('{"metadata": {}, "measurement": ' + ok + '}', 20, 4) is None
     assert gate('{"prefill_tps": 5.0, "decode_tps": 8.0}', 20, 4) is not None   # prefill cliff
     assert gate('{"prefill_tps": 40.0, "decode_tps": 1.0}', 20, 4) is not None  # decode cliff
     print("perf_gate selftest ok")
