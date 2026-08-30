@@ -8,6 +8,49 @@ minor release.
 
 ## [Unreleased]
 
+## [0.10.4] — 2026-08-30
+
+### Added
+- **`AGENT.md`** — the coding rules the source already cited. Twenty
+  comments across sixteen files deferred to "AGENT.md" (the heap.h
+  allocation rule, the hot-path no-allocation rule, "no silent
+  truncation", "explicit validation over assertions") and the file did not
+  exist. It now does, leading with parameter order, and records what
+  `[static len]` measurably buys so nobody has to guess. `CLAUDE.md` and
+  an `AGENTS.md` symlink make it discoverable to tooling.
+
+### Changed
+- **C23 length-first migration, batch 2** (#328): the 13 shared fp32
+  kernels in `gemma4_kernels.h` (rmsnorm, rope, both attention variants,
+  the elementwise family, `linear_fp32`, the bf16 helpers) and the ten
+  public vtable members that took an array before its length —
+  `encode_pcm`, `stream_push/poll/end`, `encode_image/video`,
+  `ffn_geglu_q4q6_mN`, `embedding_lookup_scaled_rows`, and the
+  `geist_kernel_linear_mN_fn` / `_pair_mN_fn` kernel typedefs. ~340 call
+  sites.
+
+  `[static len]` is stated where an extent is expressible and deliberately
+  omitted where it would be a lie: `linear_fp32`'s `bias` and
+  `rmsnorm_fp32`'s `weight` are nullable at 84 and 12 call sites, and the
+  linear kernels' x/y extents live in the weight rather than in a
+  parameter. Nothing gained `restrict` — these kernels document "y may
+  alias x".
+
+  **ABI:** `geist_arch.h`, `geist_backend.h` and `geist_weight.h` are all
+  `@stability EXPERIMENTAL` and absent from `docs/API_CONTRACT.md`, so no
+  versioned migration is required. Out-of-tree implementors of the encoder
+  or backend vtables must reorder their function signatures to match;
+  the compiler reports each one as an incompatible function pointer.
+
+  Codegen: no function changed its vector instruction mix and none gained
+  a spill; net +76 bytes on a 1.36 MB archive. `[static n]` itself was
+  measured to change nothing — one TU compiled three ways gave 2824
+  instructions (old order) vs 2819 (new order) vs 2819 (new order with
+  `[static n]`).
+- **`cpu_neon/kernel_catalog.h` names the canonical kernel typedefs**
+  instead of re-spelling the signature inline, which had silently drifted
+  from `geist_weight.h`.
+
 ## [0.10.3] — 2026-08-30
 
 ### Changed
@@ -1028,7 +1071,8 @@ First public release.
   reproducible perf benchmark harness (`make bench-small`).
 - `examples/simple_generate` demonstrating the stable text-generation core.
 
-[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.4...HEAD
+[0.10.4]: https://github.com/geisten/geistlib/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/geisten/geistlib/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/geisten/geistlib/compare/v0.10.1...v0.10.2
 [0.3.0]: https://github.com/geisten/geistlib/compare/v0.2.1...v0.3.0
