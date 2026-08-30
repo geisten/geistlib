@@ -8,6 +8,33 @@ minor release.
 
 ## [Unreleased]
 
+## [0.10.5] — 2026-08-30
+
+### Changed
+- **C23 length-first migration, batch 3** (#328): twenty helpers across the
+  audio, vision, KV and attention layers, 122 call sites — the
+  `attention_{int4,int8,kivi}_via_buffers` family (whose lengths were
+  scattered through up to twenty parameters), `kivi_drain_one_layer`, the
+  audio encoder entry points, the vision tower runners, and the small
+  elementwise/FWHT/int4-KV helpers.
+
+  `[static n]` applied to five parameters only — those passing all three
+  of AGENT.md's tests (single dimension, no defensive null-check, no
+  nullptr call site). The rest keep plain pointers because their extents
+  are products over runtime dimensions, which batch 2 established gcc will
+  not accept as a contract.
+
+  Codegen: vector instruction count **identical in all eight touched
+  objects**, spills net −3, +24 bytes total. No function changed shape.
+
+  Two scanner hits were left alone as false positives:
+  `i2s_x4_gemv_pair_m1` and `i2s_t5_gemv_pair_m1` already place `n_out0`
+  before the `y0` it sizes.
+
+  After this batch, ~57 pointer-before-length declarations remain, 55 of
+  them the `linear_*` GEMV/GEMM family in `quant.h` — deliberately
+  deferred, see #328.
+
 ## [0.10.4] — 2026-08-30
 
 ### Added
@@ -1078,7 +1105,8 @@ First public release.
   reproducible perf benchmark harness (`make bench-small`).
 - `examples/simple_generate` demonstrating the stable text-generation core.
 
-[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.4...HEAD
+[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.5...HEAD
+[0.10.5]: https://github.com/geisten/geistlib/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/geisten/geistlib/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/geisten/geistlib/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/geisten/geistlib/compare/v0.10.1...v0.10.2
