@@ -208,6 +208,8 @@ Where the leverage is right now:
 - **Portability** — Windows, wider x86-64 quant coverage, the open Vulkan prefill front.
 
 Ground rules, build modes and the review bar: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Coding rules in checkable form — parameter order, allocation, bounds, error
+contracts — [`AGENT.md`](AGENT.md); source comments cite it by name.
 Not sure where to start? Ask in
 [Discussions](https://github.com/geisten/geistlib/discussions) — a half-formed
 idea is a fine opening message.
