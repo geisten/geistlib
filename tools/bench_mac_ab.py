@@ -99,6 +99,7 @@ def wait_for_quiet(max_per_core: float, settle_seconds: int,
     """
     deadline = time.monotonic() + timeout_seconds
     quiet_since = None
+    last_report = float("-inf")
     while True:
         load, per_core = load_per_core()
         now = time.monotonic()
@@ -119,8 +120,10 @@ def wait_for_quiet(max_per_core: float, settle_seconds: int,
                 f"host did not become quiet: load={load:.2f}, per_core={per_core:.2f}, "
                 f"limit={max_per_core:.2f}"
             )
-        print(f"  waiting for quiet host: load {load:.2f} ({per_core:.2f}/core)",
-              file=sys.stderr, flush=True)
+        if now - last_report >= 60:
+            print(f"  waiting for quiet host: load {load:.2f} ({per_core:.2f}/core)",
+                  file=sys.stderr, flush=True)
+            last_report = now
         time.sleep(10)
 
 
