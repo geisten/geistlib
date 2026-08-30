@@ -72,6 +72,14 @@ void                            geist_sampler_workspace_destroy(struct geist_sam
                                                    float             temperature,
                                                    struct geist_rng *rng);
 
+/* Temperature-only sampling over the workspace — same result as
+ * geist_sampler_temperature, without its per-call allocation for
+ * vocabularies above 8192. */
+[[nodiscard]] geist_token_t geist_sampler_temperature_ws(struct geist_sampler_workspace *ws,
+                                                         const float logits[static ws->n_vocab],
+                                                         float       temperature,
+                                                         struct geist_rng *rng);
+
 [[nodiscard]] geist_token_t geist_sampler_top_p_ws(struct geist_sampler_workspace *ws,
                                                    const float       logits[static ws->n_vocab],
                                                    float             top_p,
