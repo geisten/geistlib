@@ -504,10 +504,19 @@ struct transformer_arch_state {
  * tests; the full prefill/decode wrappers land in sub-steps 2-loop and 3.
  *
  *   h_in_buf            [HIDDEN]  — residual stream input (F32).
- *   per_layer_input_buf [HIDDEN_PER_LAYER] — PLE input (or NULL to skip
- *                                            PLE block, useful for tests).
+ *   per_layer_input_buf [HIDDEN_PER_LAYER] — PLE input, or NULL.
  *   h_out_buf           [HIDDEN]  — residual stream output.
  *   q_position          — absolute position of this token (KV cache index).
+ *
+ * NULL per_layer_input_buf means "the per-layer input is zero", not "the
+ * output is undefined": a zero PLE input makes the block vanish
+ * arithmetically (gate * 0 projects to 0, the residual add returns
+ * h_post_ff), so the implementation takes the shortcut of copying
+ * h_post_ff instead of computing it. Either way h_out_buf is FULLY
+ * written on every GEIST_OK return — no path leaves the caller's buffer
+ * as it found it. test_state_layer_fwd_int gates both halves of that:
+ * the shortcut must match a real zero-filled input exactly, and a
+ * non-zero input must change the result.
  *
  * Side effects: appends one (K, V) pair into the layer's KV cache (or the
  * source layer's cache if kv_shared); advances sess->kv_len IFF

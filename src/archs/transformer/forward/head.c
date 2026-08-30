@@ -38,8 +38,8 @@ enum head_profile_stage {
     HEAD_PROFILE_COUNT,
 };
 
-static uint64_t          g_head_profile_ns[HEAD_PROFILE_COUNT];
-static uint64_t          g_head_profile_calls[HEAD_PROFILE_COUNT];
+static _Atomic uint64_t  g_head_profile_ns[HEAD_PROFILE_COUNT];
+static _Atomic uint64_t  g_head_profile_calls[HEAD_PROFILE_COUNT];
 static const char *const g_head_profile_names[HEAD_PROFILE_COUNT] = {
         "copy",
         "norm",

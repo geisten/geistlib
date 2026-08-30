@@ -45,23 +45,38 @@ int main(void) {
 #include <stdlib.h>
 #include <string.h>
 
+constexpr size_t STUB_N_IN  = 1536;
+constexpr size_t STUB_N_OUT = 1536;
+
+/* Format-correct storage for a [n_out, n_in] tensor of `dtype`, sized by
+ * the same helper the resolver validates against. The old fixture handed
+ * every dtype a flat 64-byte buffer; the Q4_K predecode hook then repacked
+ * the whole tensor out of it. Under-sizing is now its own test case
+ * (expect_short_buffer_rejected) rather than an accident here. */
+static size_t stub_raw_bytes(enum geist_dtype dtype) {
+    size_t need = 0;
+    if (quant_raw_bytes(dtype, STUB_N_IN * STUB_N_OUT, &need)) {
+        return 64; /* no fixed raw layout (CUSTOM): any non-zero stub */
+    }
+    return need;
+}
+
 static int expect_resolved(struct geist_backend *be,
                            enum geist_dtype      dtype,
                            const char           *name,
                            bool                  expect_mN) {
-    /* Stub raw pointer — we never call the kernel here, only resolve. */
-    const size_t raw_bytes =
-            dtype == GEIST_DTYPE_Q4_K ? (1536 / Q4_K_BLOCK_ELEMS) * 1536 * Q4_K_BLOCK_BYTES : 64;
-    void *raw = calloc(1, raw_bytes);
+    const size_t raw_bytes = stub_raw_bytes(dtype);
+    void        *raw       = calloc(1, raw_bytes);
     if (raw == nullptr) {
         fprintf(stderr, "  [%s] raw stub allocation failed\n", name);
         return 1;
     }
     struct geist_weight w = {
-            .raw   = raw,
-            .n_in  = 1536,
-            .n_out = 1536,
-            .dtype = (uint16_t) dtype,
+            .raw        = raw,
+            .raw_nbytes = raw_bytes,
+            .n_in       = (int32_t) STUB_N_IN,
+            .n_out      = (int32_t) STUB_N_OUT,
+            .dtype      = (uint16_t) dtype,
     };
     const enum geist_status s = be->desc->vtbl->resolve_weight(be, &w);
     if (s != GEIST_OK) {
@@ -93,16 +108,18 @@ static int expect_resolved(struct geist_backend *be,
  * in the kernel table). */
 static int
 expect_support_agrees(struct geist_backend *be, enum geist_dtype dtype, const char *name) {
-    void *raw = calloc(1, 64);
+    const size_t raw_bytes = stub_raw_bytes(dtype);
+    void        *raw       = calloc(1, raw_bytes);
     if (raw == nullptr) {
         fprintf(stderr, "  [%s] raw stub allocation failed\n", name);
         return 1;
     }
     struct geist_weight w = {
-            .raw   = raw,
-            .n_in  = 1536,
-            .n_out = 1536,
-            .dtype = (uint16_t) dtype,
+            .raw        = raw,
+            .raw_nbytes = raw_bytes,
+            .n_in       = (int32_t) STUB_N_IN,
+            .n_out      = (int32_t) STUB_N_OUT,
+            .dtype      = (uint16_t) dtype,
     };
     const bool resolves = be->desc->vtbl->resolve_weight(be, &w) == GEIST_OK;
     if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
@@ -118,6 +135,102 @@ expect_support_agrees(struct geist_backend *be, enum geist_dtype dtype, const ch
                 name,
                 advertised ? "supported" : "NONE",
                 resolves ? "succeeded" : "failed");
+        return 1;
+    }
+    return 0;
+}
+
+/* A source buffer one byte short of what (dtype, n_in, n_out) requires must
+ * be refused before any repack reads it — not repacked out of whatever
+ * follows the allocation. Runs for every dtype with a fixed raw layout;
+ * ASan is what makes this test worth having. */
+static int
+expect_short_buffer_rejected(struct geist_backend *be, enum geist_dtype dtype, const char *name) {
+    size_t need = 0;
+    if (quant_raw_bytes(dtype, STUB_N_IN * STUB_N_OUT, &need) || need == 0) {
+        return 0; /* no fixed raw layout: nothing to be short of */
+    }
+    void *raw = calloc(1, need - 1);
+    if (raw == nullptr) {
+        fprintf(stderr, "  [%s] short stub allocation failed\n", name);
+        return 1;
+    }
+    struct geist_weight w = {
+            .raw        = raw,
+            .raw_nbytes = need - 1,
+            .n_in       = (int32_t) STUB_N_IN,
+            .n_out      = (int32_t) STUB_N_OUT,
+            .dtype      = (uint16_t) dtype,
+    };
+    const enum geist_status s   = be->desc->vtbl->resolve_weight(be, &w);
+    int                     bad = 0;
+    if (s == GEIST_OK) {
+        fprintf(stderr,
+                "  [%s] resolve_weight accepted a source %zu bytes short of %zu\n",
+                name,
+                (size_t) 1,
+                need);
+        bad = 1;
+    }
+    if (w.linear_m1 != nullptr || w.linear_mN != nullptr) {
+        fprintf(stderr, "  [%s] rejected resolve still installed a kernel\n", name);
+        bad = 1;
+    }
+    if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
+        void *aux = (void *) w.aux_fp32;
+        free(aux);
+        fprintf(stderr, "  [%s] rejected resolve still allocated aux\n", name);
+        bad = 1;
+    }
+    free(raw);
+    return bad;
+}
+
+/* The extent check is only as good as quant_raw_bytes' coverage: a dtype
+ * the kernel table can install but the size table does not know passes
+ * validation unchecked. That gap opens silently whenever a new dtype
+ * lands (IQ4_NL and IQ4_XS did exactly that), so assert the two tables
+ * agree rather than trusting them to be edited together.
+ *
+ * Sweeps the whole enum: nothing to keep in sync here either. */
+static int expect_extent_known_for_every_supported_dtype(struct geist_backend *be) {
+    int bad = 0;
+    for (int d = 0; d <= (int) GEIST_DTYPE_CUSTOM; d++) {
+        const enum geist_dtype dt = (enum geist_dtype) d;
+        if (cpu_neon_linear_support(be, dt) == CPU_NEON_SUPPORT_NONE) {
+            continue;
+        }
+        size_t need = 0;
+        if (quant_raw_bytes(dt, STUB_N_IN * STUB_N_OUT, &need) || need == 0) {
+            fprintf(stderr,
+                    "  [dtype %d] cpu_neon installs a kernel for it, but quant_raw_bytes "
+                    "cannot size it — resolve_weight cannot check its source extent\n",
+                    d);
+            bad = 1;
+        }
+    }
+    return bad;
+}
+
+/* raw_nbytes is not optional: a caller that forgets it gets an argument
+ * error, not an unvalidated repack. */
+static int expect_missing_extent_rejected(struct geist_backend *be) {
+    void *raw = calloc(1, stub_raw_bytes(GEIST_DTYPE_Q4_K));
+    if (raw == nullptr) {
+        return 1;
+    }
+    struct geist_weight w = {
+            .raw   = raw,
+            .n_in  = (int32_t) STUB_N_IN,
+            .n_out = (int32_t) STUB_N_OUT,
+            .dtype = (uint16_t) GEIST_DTYPE_Q4_K,
+    };
+    const enum geist_status s = be->desc->vtbl->resolve_weight(be, &w);
+    free(raw);
+    if (s != GEIST_E_INVALID_ARG) {
+        fprintf(stderr,
+                "  [raw_nbytes=0] expected GEIST_E_INVALID_ARG, got %s\n",
+                geist_status_to_string(s));
         return 1;
     }
     return 0;
@@ -171,6 +284,25 @@ int main(void) {
     fails += expect_support_agrees(be, GEIST_DTYPE_F32, "F32");
     fails += expect_support_agrees(be, GEIST_DTYPE_CUSTOM, "CUSTOM (unsupported)");
 
+    /* Short-source rejection, for every repacked dtype. */
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_Q3_K, "Q3_K short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_Q4_K, "Q4_K short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_Q5_K, "Q5_K short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_Q6_K, "Q6_K short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_Q8_0, "Q8_0 short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_IQ2_S, "IQ2_S short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_IQ3_S, "IQ3_S short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_TQ2_0, "TQ2_0 short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_I2_S, "I2_S short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_F16, "F16 short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_BF16, "BF16 short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_F32, "F32 short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_IQ4_NL, "IQ4_NL short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_IQ4_XS, "IQ4_XS short");
+    fails += expect_short_buffer_rejected(be, GEIST_DTYPE_Q4_0, "Q4_0 short");
+    fails += expect_missing_extent_rejected(be);
+    fails += expect_extent_known_for_every_supported_dtype(be);
+
     geist_backend_destroy(be);
 
     if (fails > 0) {
@@ -179,7 +311,8 @@ int main(void) {
     }
     printf("PASS: cpu_neon resolve_weight covers Q3_K/Q4_K/Q5_K/Q6_K/Q8_0/"
            "IQ2_S/IQ3_S/F32/F16/BF16 (M=1 and M>1); linear_support agrees "
-           "with the resolver on every dtype.\n");
+           "with the resolver on every dtype; short and unset source extents "
+           "are refused.\n");
     return GEIST_TEST_PASS;
 }
 

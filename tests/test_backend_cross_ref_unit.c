@@ -101,10 +101,11 @@ static void fill_random_f32(float *p, size_t n, uint32_t seed) {
         goto cleanup;
     }
     struct geist_weight wkr = {
-            .raw   = w_host,
-            .n_in  = (int32_t) K,
-            .n_out = (int32_t) N,
-            .dtype = (uint16_t) GEIST_DTYPE_F32,
+            .raw        = w_host,
+            .raw_nbytes = (size_t) K * N * sizeof(float),
+            .n_in       = (int32_t) K,
+            .n_out      = (int32_t) N,
+            .dtype      = (uint16_t) GEIST_DTYPE_F32,
     };
     s = be->desc->vtbl->resolve_weight(be, &wkr);
     be->desc->vtbl->buffer_unmap(bw);

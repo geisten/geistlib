@@ -32,8 +32,20 @@ static_assert(OPTIMAL_ALIGNMENT >= 8, "OPTIMAL_ALIGNMENT must be at least 8 byte
 void *heap_alloc_aligned(size_t size, size_t alignment);
 void *heap_calloc_aligned(size_t count, size_t size, size_t alignment);
 
+/* count * size, computed by the allocator so it can refuse the overflow
+ * instead of receiving a wrapped total. The uninitialized counterpart of
+ * heap_calloc_aligned, which has always split its arguments this way.
+ * Returns nullptr on overflow or on a zero count/size. */
+void *heap_alloc_n_aligned(size_t count, size_t size, size_t alignment);
+
+/* The array macros multiplied `count * sizeof(type)` at the call site and
+ * handed the allocator whatever came out. Model- and caller-controlled
+ * counts reach these (GGUF tensor dimensions, image geometry, KV
+ * capacities), and a wrapped product is a small allocation followed by a
+ * large write. The count and the element size stay separate now, all the
+ * way to the check. */
 #define heap_alloc_array_aligned(_type, _num) \
-    ((_type *) heap_alloc_aligned((_num) * sizeof(_type), alignof(_type)))
+    ((_type *) heap_alloc_n_aligned((_num), sizeof(_type), alignof(_type)))
 
 #define heap_calloc_array_aligned(_type, _num) \
     ((_type *) heap_calloc_aligned((_num), sizeof(_type), alignof(_type)))

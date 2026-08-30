@@ -56,14 +56,23 @@ struct transformer_layer_forward_ctx {
     struct geist_buffer *per_layer_input_buf;
     struct geist_buffer *h_out_buf;
 
-    int                            kv_src;
-    bool                           compute_kv;
-    bool                           apply_bitnet_input_quant;
-    bool                           apply_sub_ln;
-    bool                           apply_gemma_attn_norms;
-    bool                           apply_qk_norms;
-    bool                           rope_interleaved;
-    bool                           apply_ple;
+    int  kv_src;
+    bool compute_kv;
+    bool apply_bitnet_input_quant;
+    bool apply_sub_ln;
+    bool apply_gemma_attn_norms;
+    bool apply_qk_norms;
+    bool rope_interleaved;
+    bool apply_ple;
+    /* Whether the PLE stage will actually run this layer: apply_ple AND a
+     * per-layer input to run it on. TWO stages branch on this — the FFN
+     * picks its destination buffer, and the PLE stage decides whether to
+     * execute — and they must agree, so it is decided once here rather
+     * than re-derived in each. They did drift: the FFN switched on
+     * apply_ple alone while the PLE stage also required a non-null input,
+     * and the combination in between wrote the FFN result to a scratch
+     * buffer that nothing then copied out. */
+    bool                           run_ple;
     bool                           kv_int8_enabled;
     bool                           kv_kivi_enabled;
     bool                           kv_f16_enabled;

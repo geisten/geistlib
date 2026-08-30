@@ -110,9 +110,8 @@ static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *r
         /* BitNet b1.58 official: 256-elem/64-byte ternary blocks, four 2-bit
          * fields per byte in REVERSE order (element 32*g+bb at shift 6-2g),
          * ONE f32 per-TENSOR scale at the tail (offset n_in*n_out/4). */
-        float        scale;
-        const size_t packed = n_in * (size_t) w->n_out / 4;
-        memcpy(&scale, base + packed, sizeof scale);
+        float scale;
+        memcpy(&scale, base + i2_s_scale_offset(n_in * (size_t) w->n_out), sizeof scale);
         const uint8_t *Wr = base + j * (n_in / 4);
         for (size_t b = 0; b < n_in / 256; b++) {
             const uint8_t *qs = Wr + b * 64;
@@ -235,8 +234,14 @@ static void cpu_scalar_w_quant_mN(const float               *x,
 [[nodiscard]] enum geist_status cpu_scalar_resolve_weight(struct geist_backend *be,
                                                           struct geist_weight  *w) {
     (void) be;
-    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
+    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
+    }
+    /* Same source-extent contract as cpu_neon: the row dequant helpers
+     * below index `raw` by (dtype, n_in, n_out), so a short buffer reads
+     * past its end. */
+    if (!quant_weight_extent_ok(w)) {
+        return GEIST_E_FORMAT;
     }
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_F32:

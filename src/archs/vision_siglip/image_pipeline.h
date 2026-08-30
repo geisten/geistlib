@@ -29,9 +29,19 @@
 #ifndef IMAGE_PIPELINE_H
 #define IMAGE_PIPELINE_H
 
+#include <limits.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
+
+/* Largest input height or width the pipeline can carry. Not a policy
+ * number: stb_image_resize2 takes int dimensions AND an int row stride,
+ * and the row stride is width * 3. Anything above this narrows to a
+ * negative or wrapped int on the way into the resizer, which is where a
+ * caller-supplied image geometry stops being representable rather than
+ * merely large. Sizes that are representable but absurd fail honestly at
+ * the allocator. */
+constexpr size_t IMAGE_PIPELINE_MAX_DIM = (size_t) (INT_MAX / 3);
 
 #define VISION_PATCH_SIZE 16
 #define VISION_POOL_KERNEL 3

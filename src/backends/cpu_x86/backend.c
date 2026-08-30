@@ -140,7 +140,7 @@ static void cpu_x86_linear_i2s_m1(const float               *x,
     const size_t   n_out = (size_t) w->n_out;
     const uint8_t *raw   = (const uint8_t *) w->raw;
     float          scale;
-    memcpy(&scale, raw + n_in * n_out / 4, sizeof scale);
+    memcpy(&scale, raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
     i2s_gemv_m1(n_out, n_in, x, raw, scale, y);
 }
 
@@ -154,7 +154,7 @@ static void cpu_x86_linear_i2s_mN(const float               *x,
     const size_t   n_out = (size_t) w->n_out;
     const uint8_t *raw   = (const uint8_t *) w->raw;
     float          scale;
-    memcpy(&scale, raw + n_in * n_out / 4, sizeof scale);
+    memcpy(&scale, raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
     i2s_gemm_mN(m, n_out, n_in, x, raw, scale, y);
 }
 
@@ -168,7 +168,7 @@ static void cpu_x86_linear_i2s_x4_m1(const float               *x,
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
     float        scale;
-    memcpy(&scale, (const uint8_t *) w->raw + n_in * n_out / 4, sizeof scale);
+    memcpy(&scale, (const uint8_t *) w->raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
     i2s_x4_gemv_m1(n_out, n_in, x, (const uint8_t *) w->aux_fp32, scale, y);
 }
 
@@ -186,7 +186,7 @@ static void cpu_x86_linear_i2s_t5_m1(const float               *x,
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
     float        scale;
-    memcpy(&scale, (const uint8_t *) w->raw + n_in * n_out / 4, sizeof scale);
+    memcpy(&scale, (const uint8_t *) w->raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
     i2s_t5_gemv_m1(n_out, n_in, x, i2s_t5_section(w), scale, y);
 }
 
@@ -199,8 +199,12 @@ static void cpu_x86_linear_i2s_t5_pair_m1(const float               *x,
     (void) be;
     const size_t n_in = (size_t) w0->n_in;
     float        s0, s1;
-    memcpy(&s0, (const uint8_t *) w0->raw + n_in * (size_t) w0->n_out / 4, sizeof s0);
-    memcpy(&s1, (const uint8_t *) w1->raw + n_in * (size_t) w1->n_out / 4, sizeof s1);
+    memcpy(&s0,
+           (const uint8_t *) w0->raw + i2_s_scale_offset(n_in * (size_t) w0->n_out),
+           sizeof s0);
+    memcpy(&s1,
+           (const uint8_t *) w1->raw + i2_s_scale_offset(n_in * (size_t) w1->n_out),
+           sizeof s1);
     i2s_t5_gemv_pair_m1(n_in,
                         x,
                         i2s_t5_section(w0),
@@ -222,7 +226,7 @@ static void cpu_x86_linear_i2s_x4_mN(const float               *x,
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
     float        scale;
-    memcpy(&scale, (const uint8_t *) w->raw + n_in * n_out / 4, sizeof scale);
+    memcpy(&scale, (const uint8_t *) w->raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
     i2s_x4_gemm_mN(m, n_out, n_in, x, (const uint8_t *) w->aux_fp32, scale, y);
 }
 
@@ -238,8 +242,12 @@ static void cpu_x86_linear_i2s_x4_pair_m1(const float               *x,
     (void) be;
     const size_t n_in = (size_t) w0->n_in;
     float        s0, s1;
-    memcpy(&s0, (const uint8_t *) w0->raw + n_in * (size_t) w0->n_out / 4, sizeof s0);
-    memcpy(&s1, (const uint8_t *) w1->raw + n_in * (size_t) w1->n_out / 4, sizeof s1);
+    memcpy(&s0,
+           (const uint8_t *) w0->raw + i2_s_scale_offset(n_in * (size_t) w0->n_out),
+           sizeof s0);
+    memcpy(&s1,
+           (const uint8_t *) w1->raw + i2_s_scale_offset(n_in * (size_t) w1->n_out),
+           sizeof s1);
     i2s_x4_gemv_pair_m1(n_in,
                         x,
                         (const uint8_t *) w0->aux_fp32,

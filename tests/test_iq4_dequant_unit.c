@@ -99,8 +99,11 @@ int main(void) {
             check(false, "cpu_scalar create");
             return 1;
         }
-        struct geist_weight w = {
-                .raw = wblob, .n_in = N_IN, .n_out = N_OUT, .dtype = GEIST_DTYPE_IQ4_XS};
+        struct geist_weight w = {.raw        = wblob,
+                                 .raw_nbytes = sizeof wblob,
+                                 .n_in       = N_IN,
+                                 .n_out      = N_OUT,
+                                 .dtype      = GEIST_DTYPE_IQ4_XS};
         check(be->desc->vtbl->resolve_weight(be, &w) == GEIST_OK, "IQ4_XS resolve");
         check(w.linear_m1 != nullptr, "IQ4_XS kernel installed");
         if (w.linear_m1 != nullptr) {
@@ -120,8 +123,11 @@ int main(void) {
             }
         }
         /* Same round-trip for IQ4_NL (32-elem blocks). */
-        struct geist_weight wn = {
-                .raw = wblob, .n_in = N_IN, .n_out = N_OUT, .dtype = GEIST_DTYPE_IQ4_NL};
+        struct geist_weight wn = {.raw        = wblob,
+                                  .raw_nbytes = sizeof wblob,
+                                  .n_in       = N_IN,
+                                  .n_out      = N_OUT,
+                                  .dtype      = GEIST_DTYPE_IQ4_NL};
         /* 256/32 = 8 blocks/row x 18 B = 144 B/row < 136*... reuse blob,
          * pin each block's d. */
         for (int r = 0; r < N_OUT; r++) {
@@ -154,8 +160,11 @@ int main(void) {
          * tolerance-based, not exact. */
         struct geist_backend *bn = nullptr;
         if (geist_backend_create("cpu_neon", nullptr, nullptr, &bn) == GEIST_OK) {
-            struct geist_weight wx = {
-                    .raw = wblob, .n_in = N_IN, .n_out = N_OUT, .dtype = GEIST_DTYPE_IQ4_XS};
+            struct geist_weight wx = {.raw        = wblob,
+                                      .raw_nbytes = sizeof wblob,
+                                      .n_in       = N_IN,
+                                      .n_out      = N_OUT,
+                                      .dtype      = GEIST_DTYPE_IQ4_XS};
             check(bn->desc->vtbl->resolve_weight(bn, &wx) == GEIST_OK, "neon IQ4_XS resolve");
             if (wx.linear_m1 != nullptr) {
                 float x[N_IN], y[N_OUT], row[N_IN];
@@ -195,8 +204,11 @@ int main(void) {
                 }
             }
 #endif
-            struct geist_weight wn2 = {
-                    .raw = wblob, .n_in = N_IN, .n_out = N_OUT, .dtype = GEIST_DTYPE_IQ4_NL};
+            struct geist_weight wn2 = {.raw        = wblob,
+                                       .raw_nbytes = sizeof wblob,
+                                       .n_in       = N_IN,
+                                       .n_out      = N_OUT,
+                                       .dtype      = GEIST_DTYPE_IQ4_NL};
             check(bn->desc->vtbl->resolve_weight(bn, &wn2) == GEIST_OK, "neon IQ4_NL resolve");
             if (wn2.linear_m1 != nullptr) {
                 float x[N_IN], y[N_OUT], row[N_IN];

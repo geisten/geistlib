@@ -3501,8 +3501,14 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
 [[nodiscard]] static enum geist_status metal_resolve_weight(struct geist_backend *be,
                                                             struct geist_weight  *w) {
     (void) be;
-    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
+    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
+    }
+    /* The kernels installed below index `raw` by shape, so a source shorter
+     * than the shape reads past its end. Same contract as the CPU
+     * resolvers. */
+    if (!quant_weight_extent_ok(w)) {
+        return GEIST_E_FORMAT;
     }
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_0:

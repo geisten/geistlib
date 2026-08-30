@@ -807,13 +807,15 @@ void linear_q6k_w6a8_prefill_pre(const int8_t *x_q8,
      * strided access made it slower AND thrash at large m. GEIST_Q6K_PACK_ACT=0
      * disables. Reused thread-local high-water buffer (kernel runs on the single
      * layer-loop thread; its omp panels only READ the buffer). m<2 skipped. */
-    static int q6k_pack_act = -1;
-    if (q6k_pack_act < 0) {
+    static _Atomic int q6k_pack_act = -1;
+    int                pack_on      = atomic_load_explicit(&q6k_pack_act, memory_order_relaxed);
+    if (pack_on < 0) {
         const char *e = getenv("GEIST_Q6K_PACK_ACT");
-        q6k_pack_act  = (e != NULL && e[0] == '0') ? 0 : 1;
+        pack_on       = (e != NULL && e[0] == '0') ? 0 : 1;
+        atomic_store_explicit(&q6k_pack_act, pack_on, memory_order_relaxed);
     }
     const int8_t *packed = NULL;
-    if (q6k_pack_act && m >= 2) {
+    if (pack_on && m >= 2) {
         static _Thread_local int8_t *q6kpack_tl  = NULL;
         static _Thread_local size_t  q6kpack_cap = 0;
         const size_t                 need        = m * n_in;

@@ -288,6 +288,19 @@ static size_t audio_conformer_stream_end(void *encoder_state, float *out_soft, s
     return total;
 }
 
+/* Abort: drop buffered PCM and any soft tokens the worker already
+ * produced, and leave the worker idle and ready for the next
+ * stream_begin. audio_encoder_reset does exactly that, which is also why
+ * stream_begin calls it — a stream that was aborted and one that was
+ * never opened are the same state. */
+static void audio_conformer_stream_abort(void *encoder_state) {
+    struct audio_conformer_state *st = encoder_state;
+    if (st == nullptr || st->enc == nullptr) {
+        return;
+    }
+    audio_encoder_reset(st->enc);
+}
+
 static size_t audio_conformer_max_soft_tokens(const void *encoder_state, size_t n_samples) {
     (void) encoder_state;
     return audio_encoder_max_soft_tokens(n_samples);
@@ -310,5 +323,6 @@ const struct geist_arch_ops_encoder geist_arch_audio_conformer = {
         .stream_push     = audio_conformer_stream_push,
         .stream_poll     = audio_conformer_stream_poll,
         .stream_end      = audio_conformer_stream_end,
+        .stream_abort    = audio_conformer_stream_abort,
         .max_soft_tokens = audio_conformer_max_soft_tokens,
 };

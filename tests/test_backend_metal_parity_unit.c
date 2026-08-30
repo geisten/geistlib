@@ -222,10 +222,11 @@ static void run_case(struct geist_backend *mt,
         x[i] = ((float) rng_u8() - 127.5f) / 32.0f;
     }
 
-    struct geist_weight w_mt = {.raw   = blob,
-                                .n_in  = (int32_t) n_in,
-                                .n_out = (int32_t) n_out,
-                                .dtype = (uint16_t) dtype};
+    struct geist_weight w_mt = {.raw        = blob,
+                                .raw_nbytes = w_bytes,
+                                .n_in       = (int32_t) n_in,
+                                .n_out      = (int32_t) n_out,
+                                .dtype      = (uint16_t) dtype};
     struct geist_weight w_rf = w_mt;
 
     check(mt->desc->vtbl->resolve_weight(mt, &w_mt) == GEIST_OK, "metal resolve_weight");

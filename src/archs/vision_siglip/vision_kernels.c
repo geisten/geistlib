@@ -14,6 +14,7 @@
 #include "heap.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -210,10 +211,17 @@ void vision_attention_bidir_fp32(const float *q,
     /* GEIST_FAST_TANH=1 enables vForce vvexpf for softmax — ~10x faster
      * than scalar expf loop, but introduces 1-2 ULP per element drift.
      * Reuses the GEIST_FAST_TANH env flag (same precision/perf trade). */
-    static int fast_expf = -1;
-    if (fast_expf < 0) {
+    /* Racy-benign first-use cache: several sessions can reach it at once.
+     * Both would compute the same answer, but a plain int read/written
+     * concurrently is still a data race (and TSan says so). Relaxed
+     * atomics make it defined at no cost — the load is a plain load on
+     * every target. */
+    static _Atomic int fast_expf = -1;
+    int                fe        = atomic_load_explicit(&fast_expf, memory_order_relaxed);
+    if (fe < 0) {
         const char *s = getenv("GEIST_FAST_TANH");
-        fast_expf     = (s != nullptr && s[0] == '1') ? 1 : 0;
+        fe            = (s != nullptr && s[0] == '1') ? 1 : 0;
+        atomic_store_explicit(&fast_expf, fe, memory_order_relaxed);
     }
 
 #if defined(_OPENMP)
@@ -254,7 +262,7 @@ void vision_attention_bidir_fp32(const float *q,
          * loop so the default path stays bit-for-bit identical to the
          * pre-vvexpf code. */
 #if defined(__APPLE__)
-        if (fast_expf) {
+        if (fe) {
             extern void vvexpf(float *y, const float *x, const int *n_int);
             int         n_int = (int) n_tokens;
             for (size_t i = 0; i < n_tokens; i++) {

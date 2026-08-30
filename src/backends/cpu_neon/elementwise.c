@@ -13,6 +13,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"
+#include "tensor_view.h"
 
 #include "gemma4_kernels.h"
 #include "heap.h"
@@ -29,19 +30,10 @@ extern void vvtanhf(float *y, const float *x, const int *n);
 #endif
 
 static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
-    if (t == nullptr || t->dtype != GEIST_DTYPE_F32 || t->layout != GEIST_LAYOUT_DENSE ||
-        t->buffer == nullptr || t->ndim < 1) {
+    if (t == nullptr || t->buffer == nullptr) {
         return nullptr;
     }
-    size_t n = 1;
-    for (int d = 0; d < t->ndim; d++) {
-        if (t->shape[d] <= 0) {
-            return nullptr;
-        }
-        n *= (size_t) t->shape[d];
-    }
-    *out_n = n;
-    return (float *) ((uint8_t *) t->buffer->host + t->offset);
+    return geist_tensor_f32_dense(t, t->buffer->host, t->buffer->bytes, out_n);
 }
 
 [[nodiscard]] enum geist_status cpu_neon_add(struct geist_backend      *be,

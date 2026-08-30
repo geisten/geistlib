@@ -16,13 +16,17 @@ enum { TRANSFORMER_PROFILE_MAX_SINKS = 16 };
 /* Diagnostics only (env-gated); still made thread-safe so concurrent
  * sessions with profiling on don't race the cache/registry (TSan). */
 static struct transformer_forward_profile *g_profiles[TRANSFORMER_PROFILE_MAX_SINKS];
-static size_t                              g_profile_count;
+static _Atomic size_t                      g_profile_count;
 static pthread_mutex_t                     g_profile_mu      = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int                         g_profile_enabled = -1;
 static bool                                g_profile_atexit_registered;
 
 static void transformer_profile_print_all(void) {
-    for (size_t p = 0; p < g_profile_count; p++) {
+    /* atexit: single-threaded by the time this runs, but the count was
+     * published by other threads — acquire pairs with the release in
+     * transformer_profile_register so the slots are visible too. */
+    const size_t n = atomic_load_explicit(&g_profile_count, memory_order_acquire);
+    for (size_t p = 0; p < n; p++) {
         struct transformer_forward_profile *profile = g_profiles[p];
         if (profile == nullptr) {
             continue;
@@ -30,7 +34,7 @@ static void transformer_profile_print_all(void) {
 
         uint64_t total = 0;
         for (size_t i = 0; i < profile->stage_count; i++) {
-            total += profile->ns[i];
+            total += atomic_load_explicit(&profile->ns[i], memory_order_relaxed);
         }
         if (total == 0) {
             continue;
@@ -38,14 +42,14 @@ static void transformer_profile_print_all(void) {
 
         fprintf(stderr, "%s profile:\n", profile->title);
         for (size_t i = 0; i < profile->stage_count; i++) {
-            const double ms  = (double) profile->ns[i] / 1000000.0;
-            const double pct = 100.0 * (double) profile->ns[i] / (double) total;
+            const uint64_t ns_i    = atomic_load_explicit(&profile->ns[i], memory_order_relaxed);
+            const uint64_t calls_i = atomic_load_explicit(&profile->calls[i], memory_order_relaxed);
             fprintf(stderr,
                     "  %-10s %10.2f ms  %5.1f%%  (%llu calls)\n",
                     profile->stage_names[i],
-                    ms,
-                    pct,
-                    (unsigned long long) profile->calls[i]);
+                    (double) ns_i / 1000000.0,
+                    100.0 * (double) ns_i / (double) total,
+                    (unsigned long long) calls_i);
         }
     }
 }
@@ -71,13 +75,23 @@ static bool transformer_profile_env_enabled(void) {
 }
 
 static void transformer_profile_register(struct transformer_forward_profile *profile) {
-    if (profile == nullptr || profile->registered) {
+    /* The uncontended fast path reads `registered` without the mutex —
+     * that is the point of it — so the flag has to be atomic. It used to
+     * be a plain bool written under the lock and read outside it, which
+     * is a race in the exact case the fast path exists for: every call
+     * after the first, on every thread. */
+    if (profile == nullptr || atomic_load_explicit(&profile->registered, memory_order_acquire)) {
         return;
     }
     pthread_mutex_lock(&g_profile_mu);
-    if (!profile->registered && g_profile_count < TRANSFORMER_PROFILE_MAX_SINKS) {
-        g_profiles[g_profile_count++] = profile;
-        profile->registered           = true;
+    const size_t n = atomic_load_explicit(&g_profile_count, memory_order_relaxed);
+    if (!atomic_load_explicit(&profile->registered, memory_order_relaxed) &&
+        n < TRANSFORMER_PROFILE_MAX_SINKS) {
+        g_profiles[n] = profile;
+        /* Publish the slot before the count: a reader that sees the new
+         * count must see the pointer written into it. */
+        atomic_store_explicit(&g_profile_count, n + 1, memory_order_release);
+        atomic_store_explicit(&profile->registered, true, memory_order_release);
     }
     pthread_mutex_unlock(&g_profile_mu);
 }
@@ -102,6 +116,7 @@ void transformer_profile_add(struct transformer_forward_profile *profile,
     if (profile == nullptr || t0 == 0 || stage >= profile->stage_count) {
         return;
     }
-    profile->ns[stage] += transformer_profile_now_ns() - t0;
-    profile->calls[stage]++;
+    atomic_fetch_add_explicit(
+            &profile->ns[stage], transformer_profile_now_ns() - t0, memory_order_relaxed);
+    atomic_fetch_add_explicit(&profile->calls[stage], 1, memory_order_relaxed);
 }

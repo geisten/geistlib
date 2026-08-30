@@ -100,10 +100,11 @@ static void run_case_tol(struct geist_backend *vk,
         x[i] = ((float) rng_u8() - 127.5f) / 32.0f;
     }
 
-    struct geist_weight w_vk = {.raw   = blob,
-                                .n_in  = (int32_t) n_in,
-                                .n_out = (int32_t) n_out,
-                                .dtype = (uint16_t) dtype};
+    struct geist_weight w_vk = {.raw        = blob,
+                                .raw_nbytes = w_bytes,
+                                .n_in       = (int32_t) n_in,
+                                .n_out      = (int32_t) n_out,
+                                .dtype      = (uint16_t) dtype};
     struct geist_weight w_rf = w_vk;
 
     check(vk->desc->vtbl->resolve_weight(vk, &w_vk) == GEIST_OK, "vulkan resolve_weight");

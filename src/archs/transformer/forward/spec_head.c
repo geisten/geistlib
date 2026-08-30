@@ -813,6 +813,7 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
             struct geist_weight rw = st->embed_table_w;
             rw.n_out               = 1;
             rw.raw                 = rb;
+            rw.raw_nbytes          = stride; /* this single row, not the table */
             rw.aux_fp32            = nullptr;
             rw.aux_n               = 0;
             float out1             = 0.0f;

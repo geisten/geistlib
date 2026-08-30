@@ -263,10 +263,11 @@ static struct geist_weight
 resolve_w_f32(struct geist_backend *be, struct geist_buffer *bw, int32_t n_in, int32_t n_out) {
     void               *w_host = be->desc->vtbl->buffer_map(bw);
     struct geist_weight wkr    = {
-            .raw   = w_host,
-            .n_in  = n_in,
-            .n_out = n_out,
-            .dtype = (uint16_t) GEIST_DTYPE_F32,
+            .raw        = w_host,
+            .raw_nbytes = (size_t) n_in * (size_t) n_out * sizeof(float),
+            .n_in       = n_in,
+            .n_out      = n_out,
+            .dtype      = (uint16_t) GEIST_DTYPE_F32,
     };
     (void) be->desc->vtbl->resolve_weight(be, &wkr);
     be->desc->vtbl->buffer_unmap(bw);

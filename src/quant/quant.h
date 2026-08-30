@@ -15,6 +15,11 @@
 #ifndef QUANT_H
 #define QUANT_H
 
+#include "checked.h"
+
+#include <geist_types.h>  /* enum geist_dtype */
+#include <geist_weight.h> /* struct geist_weight */
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -119,10 +124,128 @@ constexpr size_t TQ2_0_BLOCK_ELEMS = 256;
 constexpr size_t TQ2_0_BLOCK_BYTES = 66;
 void             dequant_tq2_0_row(const void *blocks, float *out, size_t n_elems);
 
+/* I2_S super-block (Microsoft bitnet.cpp's BitNet b1.58 format): 256
+ * elements, 64 bytes, 2.0 bpw, four 2-bit trit fields per byte. Unlike
+ * TQ2_0 there is NO per-block scale — a SINGLE f32 per-TENSOR scale sits
+ * immediately after the last packed byte.
+ *
+ * That trailing scale is part of the tensor. Everything that sizes an I2_S
+ * tensor — the GGUF reader's extent check, the arena copy in β mode, the
+ * kernels that read `raw + i2_s_scale_offset(...)` — has to agree on that,
+ * or a tensor truncated by four bytes passes validation and the scale is
+ * read from whatever follows it. These two helpers are the agreement. */
+constexpr size_t I2_S_BLOCK_ELEMS = 256;
+constexpr size_t I2_S_BLOCK_BYTES = 64;
+
+/* Byte offset of the per-tensor f32 scale: right past the packed trits. */
+static inline size_t i2_s_scale_offset(const size_t n_elems) {
+    return n_elems / 4u;
+}
+
 /* Hard cap on the M dimension of native prefill kernels. The engine's
  * default m_max remains lower, but sessions can opt into larger prefill
  * chunks up to this cap when memory allows. Lets kernels stack-allocate
  * per-row accumulators without heap in the inner loop. */
+/* Bytes a tensor of `n_elems` elements occupies in its raw (on-disk /
+ * as-loaded) form. This is the extent a resolver, a repack, or a dequant
+ * kernel is allowed to read from `geist_weight::raw` — nothing computes it
+ * privately any more.
+ *
+ * Returns true (failure) for a dtype with no fixed raw layout, for an
+ * element count that is not a whole number of blocks, or on overflow;
+ * *out is written only on success.
+ *
+ * Kept next to the block constants deliberately: when a dtype's storage
+ * changes, the size formula has to change in the same edit. */
+[[nodiscard]] static inline bool
+quant_raw_bytes(const enum geist_dtype dt, const size_t n_elems, size_t *out) {
+    size_t blk_elems = 0;
+    size_t blk_bytes = 0;
+    size_t tail      = 0;
+
+    switch (dt) {
+    case GEIST_DTYPE_F32:
+        blk_elems = 1, blk_bytes = 4;
+        break;
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+        blk_elems = 1, blk_bytes = 2;
+        break;
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+        blk_elems = 1, blk_bytes = 1;
+        break;
+    case GEIST_DTYPE_Q4_0:
+        blk_elems = Q4_0_BLOCK_ELEMS, blk_bytes = Q4_0_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_Q4_1:
+        blk_elems = Q4_1_BLOCK_ELEMS, blk_bytes = Q4_1_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_Q8_0:
+        blk_elems = Q8_0_BLOCK_ELEMS, blk_bytes = Q8_0_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_Q3_K:
+        blk_elems = Q3_K_BLOCK_ELEMS, blk_bytes = Q3_K_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_Q4_K:
+        blk_elems = Q4_K_BLOCK_ELEMS, blk_bytes = Q4_K_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_Q5_K:
+        blk_elems = Q5_K_BLOCK_ELEMS, blk_bytes = Q5_K_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_Q6_K:
+        blk_elems = Q6_K_BLOCK_ELEMS, blk_bytes = Q6_K_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_IQ2_S:
+        blk_elems = IQ2_S_BLOCK_ELEMS, blk_bytes = IQ2_S_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_IQ3_S:
+        blk_elems = IQ3_S_BLOCK_ELEMS, blk_bytes = IQ3_S_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_IQ4_NL:
+        blk_elems = IQ4_NL_BLOCK_ELEMS, blk_bytes = IQ4_NL_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_IQ4_XS:
+        blk_elems = IQ4_XS_BLOCK_ELEMS, blk_bytes = IQ4_XS_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_TQ2_0:
+        blk_elems = TQ2_0_BLOCK_ELEMS, blk_bytes = TQ2_0_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_I2_S:
+        /* Plus the single f32 per-tensor scale at the tail. */
+        blk_elems = I2_S_BLOCK_ELEMS, blk_bytes = I2_S_BLOCK_BYTES, tail = sizeof(float);
+        break;
+    default:
+        /* TQ1_0, BINARY, TERNARY, CUSTOM: no fixed raw layout here. */
+        return true;
+    }
+
+    if (n_elems == 0u || n_elems % blk_elems != 0u) {
+        return true;
+    }
+    size_t bytes = 0;
+    if (ckd_mul(&bytes, n_elems / blk_elems, blk_bytes) || ckd_add(&bytes, bytes, tail)) {
+        return true;
+    }
+    *out = bytes;
+    return false;
+}
+
+/* True when `w->raw` holds at least as many bytes as (dtype, n_in, n_out)
+ * requires. Every resolve_weight implementation calls this before it
+ * installs a kernel or repacks: the kernels index `raw` by shape, so a
+ * source shorter than the shape is read straight past its end.
+ *
+ * A dtype with no fixed raw layout cannot be checked this way and passes;
+ * the kernel tables only match dtypes that do have one. */
+[[nodiscard]] static inline bool quant_weight_extent_ok(const struct geist_weight *w) {
+    size_t need = 0;
+    if (quant_raw_bytes((enum geist_dtype) w->dtype, (size_t) w->n_in * (size_t) w->n_out, &need)) {
+        return true;
+    }
+    return w->raw_nbytes >= need;
+}
+
 constexpr size_t GEIST_QUANT_M_CAP = 128;
 
 /* W2A8 fast path for IQ2_S. Reconstructs 32 int8 weights per sub-block
