@@ -22,12 +22,14 @@ static inline float bf16_to_fp32(uint16_t bf) {
 
 /* Convert n BF16 values into a FP32 buffer. dst MUST be at least n*4 bytes.
  * src is void* on purpose: safetensors packs tensor data at arbitrary byte
- * offsets in the mapping, so it is read unaligned (see the .c). */
-void bf16_array_to_fp32(const void *src, float *dst, size_t n);
+ * offsets in the mapping, so it is read unaligned (see the .c) — which is
+ * also why it gets no [static] contract: a void* has no element count.
+ * dst does, and states it. */
+void bf16_array_to_fp32(size_t n, const void *src, float dst[static n]);
 
 /* Allocate (calloc-style) FP32 array and convert n BF16 values into it.
  * Returns nullptr on alloc failure. */
-float *bf16_alloc_fp32(const void *src, size_t n);
+float *bf16_alloc_fp32(size_t n, const void *src);
 
 /* RMSNorm — Gemma 4 style:
  *   for each row of x [n_rows][hidden]:
@@ -38,8 +40,16 @@ float *bf16_alloc_fp32(const void *src, size_t n);
  * weight may be nullptr (skip the per-element scale, e.g. for "with_scale=False").
  * x and y may alias (in-place is supported).
  */
-void rmsnorm_fp32(
-        const float *x, const float *weight, size_t n_rows, size_t hidden, float eps, float *y);
+/* x and y are [n_rows, hidden] and stay plain pointers: the bound is a
+ * product containing a runtime dimension that may be 0, and `[static 0]`
+ * is a contract gcc's -Wstringop-overflow rightly refuses. The length-first
+ * order is the part that matters here. */
+void rmsnorm_fp32(size_t       n_rows,
+                  size_t       hidden,
+                  const float *x,
+                  const float *weight, /* nullable: skips the per-element scale */
+                  float        eps,
+                  float       *y);
 
 /* Compute RoPE cos/sin tables for positions 0..seq_len-1 over `head_dim`
  * dimensions (must be even) using base `theta`. Output buffers are
@@ -61,12 +71,12 @@ void rope_compute(size_t seq_len,
 
 /* Apply RoPE in-place. x has shape [seq_len, n_heads, head_dim].
  * cos/sin are [seq_len, head_dim]. */
-void rope_apply(float       *x,
-                const float *cos,
-                const float *sin,
-                size_t       seq_len,
-                size_t       n_heads,
-                size_t       head_dim);
+void rope_apply(size_t      seq_len,
+                size_t      n_heads,
+                size_t      head_dim,
+                float       x[static seq_len * n_heads * head_dim],
+                const float cos[static seq_len * head_dim],
+                const float sin[static seq_len * head_dim]);
 
 /* Scaled dot-product attention with MQA broadcast and causal mask.
  *   q   shape [seq_len, n_q_heads,  head_dim]
@@ -75,15 +85,15 @@ void rope_apply(float       *x,
  *   out shape [seq_len, n_q_heads,  head_dim]
  * sliding_window: 0 = unbounded causal; >0 = q at position t only sees
  *   k positions in (t - sliding_window, t]. */
-void attention_mqa_causal(const float *q,
-                          const float *k,
-                          const float *v,
-                          size_t       seq_len,
-                          size_t       n_q_heads,
-                          size_t       n_kv_heads,
-                          size_t       head_dim,
-                          size_t       sliding_window,
-                          float       *out);
+void attention_mqa_causal(size_t      seq_len,
+                          size_t      n_q_heads,
+                          size_t      n_kv_heads,
+                          size_t      head_dim,
+                          size_t      sliding_window,
+                          const float q[static seq_len * n_q_heads * head_dim],
+                          const float k[static seq_len * n_kv_heads * head_dim],
+                          const float v[static seq_len * n_kv_heads * head_dim],
+                          float       out[static seq_len * n_q_heads * head_dim]);
 
 /* Decoupled-length variant for KV-cached inference.
  *   q       shape [n_q,  n_q_heads,  head_dim]
@@ -96,17 +106,17 @@ void attention_mqa_causal(const float *q,
  *
  * For prefill: n_q = n_kv, q_offset = 0  (equivalent to attention_mqa_causal).
  * For decode:  n_q = 1, n_kv = cache_len_after_append, q_offset = cache_len_before. */
-void attention_mqa_causal_kv(const float *q,
-                             const float *k,
-                             const float *v,
-                             size_t       n_q,
-                             size_t       n_kv,
-                             size_t       q_offset,
-                             size_t       n_q_heads,
-                             size_t       n_kv_heads,
-                             size_t       head_dim,
-                             size_t       sliding_window,
-                             float       *out);
+void attention_mqa_causal_kv(size_t      n_q,
+                             size_t      n_kv,
+                             size_t      q_offset,
+                             size_t      n_q_heads,
+                             size_t      n_kv_heads,
+                             size_t      head_dim,
+                             size_t      sliding_window,
+                             const float q[static n_q * n_q_heads * head_dim],
+                             const float k[static n_kv * n_kv_heads * head_dim],
+                             const float v[static n_kv * n_kv_heads * head_dim],
+                             float       out[static n_q * n_q_heads * head_dim]);
 
 /* Rotary position embedding is defined on PAIRS of channels: element i is
  * rotated against element i + head_dim/2. An odd head_dim leaves the last
@@ -140,27 +150,30 @@ void rope_compute_at(size_t pos_offset,
 /* GELU-tanh activation in-place (or out-of-place if y != x):
  *   y[i] = 0.5 * x[i] * (1 + tanh(sqrt(2/π) * (x[i] + 0.044715 * x[i]³)))
  * Matches PyTorch's "gelu_pytorch_tanh" / config "gelu_pytorch_tanh". */
-void gelu_tanh_fp32(const float *x, size_t n, float *y);
+void gelu_tanh_fp32(size_t n, const float x[static n], float y[static n]);
 
 /* Fused GEGLU inner activation: y[i] = gelu_tanh(x[i]) * z[i].
  * y may alias x or z. */
-void gelu_tanh_mul_fp32(const float *x, const float *z, size_t n, float *y);
+void gelu_tanh_mul_fp32(size_t      n,
+                        const float x[static n],
+                        const float z[static n],
+                        float       y[static n]);
 
 /* Squared-ReLU activation: y[i] = max(x[i], 0) * max(x[i], 0). BitNet
  * b1.58 2B-4T FFN activation. y may alias x. */
-void relu_squared_fp32(const float *x, size_t n, float *y);
+void relu_squared_fp32(size_t n, const float x[static n], float y[static n]);
 
 /* SiLU activation: y[i] = x[i] / (1 + exp(-x[i])). Llama / BitNet 3B
  * SwiGLU activation function. y may alias x.
  * Named *_ooo (out-of-place) to avoid collision with audio_conformer's
  * in-place silu_fp32(x, n). */
-void silu_fp32_ooo(const float *x, size_t n, float *y);
+void silu_fp32_ooo(size_t n, const float x[static n], float y[static n]);
 
 /* Element-wise addition: y[i] = a[i] + b[i].  y may alias a or b. */
-void add_fp32(const float *a, const float *b, size_t n, float *y);
+void add_fp32(size_t n, const float a[static n], const float b[static n], float y[static n]);
 
 /* Element-wise multiplication: y[i] = a[i] * b[i].  y may alias a or b. */
-void mul_fp32(const float *a, const float *b, size_t n, float *y);
+void mul_fp32(size_t n, const float a[static n], const float b[static n], float y[static n]);
 
 /* Linear: y = x @ weight^T + (bias if non-null)
  *
@@ -173,12 +186,14 @@ void mul_fp32(const float *a, const float *b, size_t n, float *y);
  * loop otherwise. For seq_len = 1 this still goes through sgemm — the
  * library handles the gemv case efficiently.
  */
-void linear_fp32(const float *x,
-                 const float *weight,
-                 const float *bias,
-                 size_t       m,
+/* Same as rmsnorm_fp32: the extents are products over runtime dimensions
+ * that may be 0, so they are documented above rather than declared. */
+void linear_fp32(size_t       m,
                  size_t       n_in,
                  size_t       n_out,
+                 const float *x,
+                 const float *weight,
+                 const float *bias, /* nullable */
                  float       *y);
 
 #endif

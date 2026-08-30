@@ -185,25 +185,25 @@ static void reference_layer_forward(
 
     /* 1. rmsnorm(h_in, attn_norm) → normed */
     float normed[HIDDEN];
-    rmsnorm_fp32(h_pre, attn_norm, 1, HIDDEN, RMS_EPS, normed);
+    rmsnorm_fp32(1, HIDDEN, h_pre, attn_norm, RMS_EPS, normed);
 
     /* 2. Q/K/V projections (1 × HIDDEN) × (n_out × HIDDEN)^T → (1 × n_out). */
     float *q   = aligned_alloc(64, q_out * sizeof(float));
     float *k   = aligned_alloc(64, kv_out * sizeof(float));
     float *vbu = aligned_alloc(64, kv_out * sizeof(float));
-    linear_fp32(normed, q_proj, nullptr, 1, HIDDEN, q_out, q);
-    linear_fp32(normed, k_proj, nullptr, 1, HIDDEN, kv_out, k);
-    linear_fp32(normed, v_proj, nullptr, 1, HIDDEN, kv_out, vbu);
+    linear_fp32(1, HIDDEN, q_out, normed, q_proj, nullptr, q);
+    linear_fp32(1, HIDDEN, kv_out, normed, k_proj, nullptr, k);
+    linear_fp32(1, HIDDEN, kv_out, normed, v_proj, nullptr, vbu);
 
     /* 3-5. q_norm, rope(q), k_norm, v_norm, rope(k). */
-    rmsnorm_fp32(q, q_norm, N_Q_HEADS, head_dim, RMS_EPS, q);
+    rmsnorm_fp32(N_Q_HEADS, head_dim, q, q_norm, RMS_EPS, q);
     float *cos_b = aligned_alloc(64, head_dim * sizeof(float));
     float *sin_b = aligned_alloc(64, head_dim * sizeof(float));
     rope_compute_at(q_position, 1, head_dim, n_rotated_dims, rope_theta, cos_b, sin_b);
-    rope_apply(q, cos_b, sin_b, 1, N_Q_HEADS, head_dim);
-    rmsnorm_fp32(k, k_norm, N_KV_HEADS, head_dim, RMS_EPS, k);
-    rmsnorm_fp32(vbu, nullptr, N_KV_HEADS, head_dim, RMS_EPS, vbu);
-    rope_apply(k, cos_b, sin_b, 1, N_KV_HEADS, head_dim);
+    rope_apply(1, N_Q_HEADS, head_dim, q, cos_b, sin_b);
+    rmsnorm_fp32(N_KV_HEADS, head_dim, k, k_norm, RMS_EPS, k);
+    rmsnorm_fp32(N_KV_HEADS, head_dim, vbu, nullptr, RMS_EPS, vbu);
+    rope_apply(1, N_KV_HEADS, head_dim, k, cos_b, sin_b);
 
     /* 6-7. Build a fresh single-slot KV cache and run attention. */
     const size_t kv_len = q_position + 1;
@@ -223,43 +223,43 @@ static void reference_layer_forward(
            (size_t) N_KV_HEADS * head_dim * sizeof(float));
 
     float *attn_out = aligned_alloc(64, q_out * sizeof(float));
-    attention_mqa_causal_kv(q,
-                            k_cache,
-                            v_cache,
-                            1,
+    attention_mqa_causal_kv(1,
                             kv_len,
                             q_position,
                             N_Q_HEADS,
                             N_KV_HEADS,
                             head_dim,
                             sliding_window,
+                            q,
+                            k_cache,
+                            v_cache,
                             attn_out);
 
     /* 8. O projection. */
     float o[HIDDEN];
-    linear_fp32(attn_out, o_proj, nullptr, 1, q_out, HIDDEN, o);
+    linear_fp32(1, q_out, HIDDEN, attn_out, o_proj, nullptr, o);
 
     /* 9. post_attn_norm + residual. */
     float post_attn[HIDDEN], h_post_attn[HIDDEN];
-    rmsnorm_fp32(o, post_attn_norm, 1, HIDDEN, RMS_EPS, post_attn);
-    add_fp32(h_pre, post_attn, HIDDEN, h_post_attn);
+    rmsnorm_fp32(1, HIDDEN, o, post_attn_norm, RMS_EPS, post_attn);
+    add_fp32(HIDDEN, h_pre, post_attn, h_post_attn);
 
     /* 10. ffn_norm + gate/up + GeGLU + down. */
     float pre_ff[HIDDEN];
-    rmsnorm_fp32(h_post_attn, ffn_norm, 1, HIDDEN, RMS_EPS, pre_ff);
+    rmsnorm_fp32(1, HIDDEN, h_post_attn, ffn_norm, RMS_EPS, pre_ff);
     float *gate = aligned_alloc(64, intermediate * sizeof(float));
     float *up   = aligned_alloc(64, intermediate * sizeof(float));
-    linear_fp32(pre_ff, gate_proj, nullptr, 1, HIDDEN, intermediate, gate);
-    linear_fp32(pre_ff, up_proj, nullptr, 1, HIDDEN, intermediate, up);
-    gelu_tanh_fp32(gate, intermediate, gate);
-    mul_fp32(gate, up, intermediate, gate);
+    linear_fp32(1, HIDDEN, intermediate, pre_ff, gate_proj, nullptr, gate);
+    linear_fp32(1, HIDDEN, intermediate, pre_ff, up_proj, nullptr, up);
+    gelu_tanh_fp32(intermediate, gate, gate);
+    mul_fp32(intermediate, gate, up, gate);
     float ffn_out[HIDDEN];
-    linear_fp32(gate, down_proj, nullptr, 1, intermediate, HIDDEN, ffn_out);
+    linear_fp32(1, intermediate, HIDDEN, gate, down_proj, nullptr, ffn_out);
 
     /* 11. post_ffw_norm + residual. */
     float post_ff[HIDDEN], h_post_ff[HIDDEN];
-    rmsnorm_fp32(ffn_out, post_ffw_norm, 1, HIDDEN, RMS_EPS, post_ff);
-    add_fp32(h_post_attn, post_ff, HIDDEN, h_post_ff);
+    rmsnorm_fp32(1, HIDDEN, ffn_out, post_ffw_norm, RMS_EPS, post_ff);
+    add_fp32(HIDDEN, h_post_attn, post_ff, h_post_ff);
 
     /* 12. PLE skipped (per_layer_input = 0). h_out = h_post_ff. */
     /* 13. Per-layer scalar. */
@@ -662,14 +662,14 @@ static void reference_ple_precompute(const float               *h,
      * aren't directly importable here. */
     float *ple_proj = aligned_alloc(64, GEIST_GEMMA4_PLE_OUT * sizeof(float));
     linear_fp32(
-            h, model_proj_host, nullptr, 1, GEIST_GEMMA4_HIDDEN, GEIST_GEMMA4_PLE_OUT, ple_proj);
+            1, GEIST_GEMMA4_HIDDEN, GEIST_GEMMA4_PLE_OUT, h, model_proj_host, nullptr, ple_proj);
     for (size_t i = 0; i < (size_t) GEIST_GEMMA4_PLE_OUT; i++) {
         ple_proj[i] *= 0.02551551815399144f;
     }
-    rmsnorm_fp32(ple_proj,
-                 model_proj_norm_host,
-                 GEIST_GEMMA4_NUM_LAYERS,
+    rmsnorm_fp32(GEIST_GEMMA4_NUM_LAYERS,
                  GEIST_GEMMA4_HIDDEN_PER_LAYER,
+                 ple_proj,
+                 model_proj_norm_host,
                  RMS_EPS,
                  ple_proj);
     for (size_t i = 0; i < (size_t) GEIST_GEMMA4_PLE_OUT; i++) {

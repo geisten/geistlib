@@ -133,7 +133,7 @@ int main(void) {
         for (size_t i = 0; i < m * n_in; i++)
             x[i] = ((rand() % 2001) - 1000) * 0.01f;
         float *y = malloc(m * n_out * sizeof(float));
-        cpu_neon_w_i2_s_q8a_mN(x, &w, m, be, y);
+        cpu_neon_w_i2_s_q8a_mN(m, x, &w, be, y);
         int mm = 0;
         for (size_t t = 0; t < m; t++) {
             for (size_t r = 0; r < n_out; r++) {

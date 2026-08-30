@@ -126,7 +126,7 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
                              struct geist_backend      *be,
                              float                     *y);
 void cpu_neon_w_tq2_0_q8a_mN(
-        const float *x, const struct geist_weight *w, size_t m, struct geist_backend *be, float *y);
+        size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
 void cpu_neon_w_tq2_0_m1(const float               *x,
                          const struct geist_weight *w,
                          struct geist_backend      *be,
@@ -140,7 +140,7 @@ void cpu_neon_w_i2_s_q8a_m1(const float               *x,
                             struct geist_backend      *be,
                             float                     *y);
 void cpu_neon_w_i2_s_q8a_mN(
-        const float *x, const struct geist_weight *w, size_t m, struct geist_backend *be, float *y);
+        size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
 
 /* Fused F16 × A32 GEMV (M=1) — in-register vcvt_f32_f16, no f32 materialization.
  * Used for the BitNet-2B-4T tied f16 lm_head (the decode bottleneck). */
@@ -222,10 +222,10 @@ cpu_neon_silu(struct geist_backend *be, const struct geist_tensor *x, struct gei
                                                    size_t                     sliding_window,
                                                    struct geist_tensor       *out);
 [[nodiscard]] enum geist_status cpu_neon_ffn_geglu_q4q6_mN(struct geist_backend      *be,
-                                                           const float               *x,
                                                            size_t                     m,
                                                            size_t                     d_model,
                                                            size_t                     inter,
+                                                           const float               *x,
                                                            const struct geist_weight *gate,
                                                            const struct geist_weight *up,
                                                            const struct geist_weight *down,

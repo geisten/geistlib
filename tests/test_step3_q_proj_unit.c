@@ -58,8 +58,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    float *in_ln_w = bf16_alloc_fp32((const uint16_t *) in_ln->data, HIDDEN);
-    float *q_w_f   = bf16_alloc_fp32((const uint16_t *) q_w->data, (size_t) Q_OUT * HIDDEN);
+    float *in_ln_w = bf16_alloc_fp32(HIDDEN, (const uint16_t *) in_ln->data);
+    float *q_w_f   = bf16_alloc_fp32((size_t) Q_OUT * HIDDEN, (const uint16_t *) q_w->data);
 
     size_t   n_ids = 0;
     int32_t *ids   = read_input_ids(argv[2], &n_ids);
@@ -77,11 +77,11 @@ int main(int argc, char **argv) {
 
     /* Step 2: input_layernorm */
     float *normed = (float *) malloc(n_ids * HIDDEN * sizeof(float));
-    rmsnorm_fp32(h, in_ln_w, n_ids, HIDDEN, RMS_EPS, normed);
+    rmsnorm_fp32(n_ids, HIDDEN, h, in_ln_w, RMS_EPS, normed);
 
     /* Step 3: q_proj */
     float *q = (float *) malloc(n_ids * Q_OUT * sizeof(float));
-    linear_fp32(normed, q_w_f, /*bias=*/nullptr, n_ids, HIDDEN, Q_OUT, q);
+    linear_fp32(n_ids, HIDDEN, Q_OUT, normed, q_w_f, /*bias=*/nullptr, q);
 
     FILE *fo = fopen(argv[3], "wb");
     xfwrite(q, sizeof(float), n_ids * Q_OUT, fo);

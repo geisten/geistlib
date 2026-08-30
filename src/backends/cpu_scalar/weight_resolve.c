@@ -157,9 +157,9 @@ static void cpu_scalar_w_f32_m1(const float               *x,
     }
 }
 
-static void cpu_scalar_w_f32_mN(const float               *x,
+static void cpu_scalar_w_f32_mN(size_t                     m,
+                                const float               *x,
                                 const struct geist_weight *w,
-                                size_t                     m,
                                 struct geist_backend      *be,
                                 float                     *y) {
     (void) be;
@@ -203,9 +203,9 @@ static void cpu_scalar_w_quant_m1(const float               *x,
     safe_free((void **) &row);
 }
 
-static void cpu_scalar_w_quant_mN(const float               *x,
+static void cpu_scalar_w_quant_mN(size_t                     m,
+                                  const float               *x,
                                   const struct geist_weight *w,
-                                  size_t                     m,
                                   struct geist_backend      *be,
                                   float                     *y) {
     (void) be;

@@ -404,7 +404,7 @@ static void attn_run_streaming_block(struct audio_stream_state *state,
      *    (small: POS_LEN×1024). */
     float *rel_k = heap_alloc_array_aligned(float, (size_t) POS_LEN *AUDIO_HIDDEN);
     linear_fp32(
-            pos_emb, attn->relative_k_proj, nullptr, POS_LEN, AUDIO_HIDDEN, AUDIO_HIDDEN, rel_k);
+            POS_LEN, AUDIO_HIDDEN, AUDIO_HIDDEN, pos_emb, attn->relative_k_proj, nullptr, rel_k);
 
     /* 7. Attention output (CHUNK_SIZE, AUDIO_HIDDEN); only first n_valid used. */
     float *attn_out = heap_calloc_array_aligned(float, (size_t) CHUNK_SIZE *AUDIO_HIDDEN);
@@ -497,7 +497,7 @@ static void lconv_run_streaming(struct audio_stream_state *state,
     float *residual = heap_alloc_array_aligned(float, hsize);
     memcpy(residual, h, hsize * sizeof(float));
 
-    rmsnorm_fp32(h, lc->pre_norm, n, AUDIO_HIDDEN, RMS_EPS, h);
+    rmsnorm_fp32(n, AUDIO_HIDDEN, h, lc->pre_norm, RMS_EPS, h);
 
     float *doubled = heap_alloc_array_aligned(float, (size_t) n * 2 * AUDIO_HIDDEN);
     clip_linear_apply(&lc->linear_start, h, n, AUDIO_HIDDEN, 2 * AUDIO_HIDDEN, doubled);
@@ -569,7 +569,7 @@ static void lconv_run_streaming(struct audio_stream_state *state,
     lcs->n_filled = new_n_filled;
     safe_free((void **) &h_glu);
 
-    rmsnorm_fp32(h, lc->conv_norm, n, AUDIO_HIDDEN, RMS_EPS, h);
+    rmsnorm_fp32(n, AUDIO_HIDDEN, h, lc->conv_norm, RMS_EPS, h);
     silu_fp32(h, hsize);
     float *end_in = heap_alloc_array_aligned(float, hsize);
     memcpy(end_in, h, hsize * sizeof(float));
@@ -599,7 +599,7 @@ static void audio_encoder_layer_run_streaming(const struct AudioEncoder *a,
     /* 2. norm_pre_attn + streaming attention + norm_post_attn + residual. */
     float *residual = heap_alloc_array_aligned(float, hsize);
     memcpy(residual, h_io, hsize * sizeof(float));
-    rmsnorm_fp32(h_io, L->norm_pre_attn, n_valid, AUDIO_HIDDEN, RMS_EPS, h_io);
+    rmsnorm_fp32(n_valid, AUDIO_HIDDEN, h_io, L->norm_pre_attn, RMS_EPS, h_io);
 
     float *attn_out = heap_alloc_array_aligned(float, hsize);
     attn_run_streaming_block(
@@ -607,7 +607,7 @@ static void audio_encoder_layer_run_streaming(const struct AudioEncoder *a,
     memcpy(h_io, attn_out, hsize * sizeof(float));
     safe_free((void **) &attn_out);
 
-    rmsnorm_fp32(h_io, L->norm_post_attn, n_valid, AUDIO_HIDDEN, RMS_EPS, h_io);
+    rmsnorm_fp32(n_valid, AUDIO_HIDDEN, h_io, L->norm_post_attn, RMS_EPS, h_io);
     for (size_t i = 0; i < hsize; i++)
         h_io[i] += residual[i];
     safe_free((void **) &residual);
@@ -619,7 +619,7 @@ static void audio_encoder_layer_run_streaming(const struct AudioEncoder *a,
     ffn_run(&L->ff2, h_io, n_valid);
 
     /* 5. norm_out. */
-    rmsnorm_fp32(h_io, L->norm_out, n_valid, AUDIO_HIDDEN, RMS_EPS, h_io);
+    rmsnorm_fp32(n_valid, AUDIO_HIDDEN, h_io, L->norm_out, RMS_EPS, h_io);
 }
 
 /* Top-level streaming entry: drives chunk processing. Runs incremental
@@ -690,24 +690,24 @@ size_t audio_encoder_stream_push(struct AudioEncoder       *a,
 
         /* output_proj + embed_audio on the n_chunk real rows. */
         float *op = heap_alloc_array_aligned(float, n_chunk *OUTPUT_PROJ_DIMS);
-        linear_fp32(h_chunk,
-                    a->output_proj_w,
-                    a->output_proj_b,
-                    n_chunk,
+        linear_fp32(n_chunk,
                     AUDIO_HIDDEN,
                     OUTPUT_PROJ_DIMS,
+                    h_chunk,
+                    a->output_proj_w,
+                    a->output_proj_b,
                     op);
 
         float *normed = heap_alloc_array_aligned(float, n_chunk *OUTPUT_PROJ_DIMS);
-        rmsnorm_fp32(op, nullptr, n_chunk, OUTPUT_PROJ_DIMS, RMS_EPS, normed);
+        rmsnorm_fp32(n_chunk, OUTPUT_PROJ_DIMS, op, nullptr, RMS_EPS, normed);
         safe_free((void **) &op);
 
-        linear_fp32(normed,
-                    a->embed_audio_proj,
-                    nullptr,
-                    n_chunk,
+        linear_fp32(n_chunk,
                     OUTPUT_PROJ_DIMS,
                     a->soft_dim,
+                    normed,
+                    a->embed_audio_proj,
+                    nullptr,
                     state->soft + state->n_soft * a->soft_dim);
         safe_free((void **) &normed);
 

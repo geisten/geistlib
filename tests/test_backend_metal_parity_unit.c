@@ -239,8 +239,8 @@ static void run_case(struct geist_backend *mt,
         w_mt.linear_m1(x, &w_mt, mt, y_mt);
         w_rf.linear_m1(x, &w_rf, ref, y_rf);
     } else {
-        w_mt.linear_mN(x, &w_mt, m, mt, y_mt);
-        w_rf.linear_mN(x, &w_rf, m, ref, y_rf);
+        w_mt.linear_mN(m, x, &w_mt, mt, y_mt);
+        w_rf.linear_mN(m, x, &w_rf, ref, y_rf);
     }
     /* Drains the pending GPU batch before reading y. */
     check(v->buffer_download(m * n_out * sizeof(float), (uint8_t *) y_dl, by) == GEIST_OK,

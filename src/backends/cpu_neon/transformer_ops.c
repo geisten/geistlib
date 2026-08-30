@@ -101,10 +101,10 @@ static size_t ffn_tile_blocks(void) {
 }
 
 [[nodiscard]] enum geist_status cpu_neon_ffn_geglu_q4q6_mN(struct geist_backend      *be,
-                                                           const float               *x,
                                                            size_t                     m,
                                                            size_t                     d_model,
                                                            size_t                     inter,
+                                                           const float               *x,
                                                            const struct geist_weight *gate,
                                                            const struct geist_weight *up,
                                                            const struct geist_weight *down,
@@ -245,7 +245,7 @@ static size_t ffn_tile_blocks(void) {
                 be, GEIST_E_INVALID_ARG, "cpu_neon rope_apply: cos/sin seq_len mismatch");
         return GEIST_E_INVALID_ARG;
     }
-    rope_apply(xp, cosp, sinp, seq_len, n_heads, head_dim);
+    rope_apply(seq_len, n_heads, head_dim, xp, cosp, sinp);
     return GEIST_OK;
 }
 
@@ -743,6 +743,6 @@ static bool attention_mqa_causal_kv_neon(const float *q,
     }
 #endif
     attention_mqa_causal_kv(
-            qp, kp, vp, n_q, n_kv, q_offset, n_q_heads, n_kv_heads, head_dim, sliding_window, op);
+            n_q, n_kv, q_offset, n_q_heads, n_kv_heads, head_dim, sliding_window, qp, kp, vp, op);
     return GEIST_OK;
 }
