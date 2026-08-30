@@ -42,7 +42,7 @@ static int geist_gemm_prof(void) {
     int                e       = atomic_load(&enabled);
     if (e < 0) {
         const char *s = getenv("GEIST_PROFILE_GEMM");
-        e             = (s != NULL && s[0] == '1') ? 1 : 0;
+        e             = (s != nullptr && s[0] == '1') ? 1 : 0;
         int expected  = -1;
         if (atomic_compare_exchange_strong(&enabled, &expected, e) && e)
             atexit(geist_gemm_report);
