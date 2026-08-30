@@ -68,7 +68,13 @@ preferred over understating it as `[static n_in]`.
 Measured on this project's toolchains, so you can calibrate:
 
 - **Codegen: nothing.** clang 21 and gcc 15 emit identical instructions with
-  and without it. Do not justify a change by "the optimizer".
+  and without it — verified by compiling a real kernel TU both ways, same
+  parameter order: 2819 instructions and 11571 bytes either way. Do not
+  justify a change by "the optimizer".
+- **The reorder itself can shift register allocation**, slightly and in our
+  favour: the same TU went 2824 -> 2819 instructions and 11591 -> 11571
+  bytes purely from arguments arriving where the callee wants them (15
+  fewer `mov`). Small, real, and not the reason to do it.
 - **Diagnostics: gcc only.** gcc warns `reading 16 bytes from a region of
   size 8` when the caller's array is visibly too small (stack arrays and
   tracked `malloc`). clang warns only on a literal `nullptr`.
@@ -147,9 +153,12 @@ Signature migrations land in **bounded batches**, one family at a time:
    partial, revert and redo; do not patch over it.
 3. Rerun the family's focused benchmark plus the standard prefill/decode
    sweep (`bench_perf_sweep`).
-4. For hot code, diff the optimized disassembly. A pure reorder shows an
-   **identical opcode sequence with permuted argument registers**; anything
-   else needs explaining before it lands.
+4. For hot code, diff the optimized disassembly. A pure reorder shows either
+   an **identical opcode sequence with permuted argument registers**, or a
+   small drop in register shuffles (`mov`) with the instruction count flat
+   or lower. Anything that *grows* the function, changes the vector
+   instruction mix, or introduces spills is not a pure reorder and needs
+   explaining before it lands.
 5. A pure signature change must be bit-identical in output. Never widen a
    tolerance to absorb one.
 
