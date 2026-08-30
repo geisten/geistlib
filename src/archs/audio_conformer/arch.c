@@ -165,11 +165,11 @@ static size_t pcm_to_mel(struct MelState *mel,
     return n_frames;
 }
 
-static size_t audio_conformer_encode_pcm(void         *encoder_state,
-                                         size_t        n_samples,
-                                         size_t        max_soft,
-                                         const int16_t pcm[static n_samples],
-                                         float        *out_soft) {
+static size_t audio_conformer_encode_pcm(void          *encoder_state,
+                                         size_t         n_samples,
+                                         size_t         max_soft,
+                                         const int16_t *pcm,
+                                         float         *out_soft) {
     if (encoder_state == nullptr || pcm == nullptr || out_soft == nullptr || max_soft == 0) {
         return 0;
     }
@@ -254,8 +254,7 @@ static bool audio_conformer_stream_begin(void *encoder_state) {
     return true;
 }
 
-static bool
-audio_conformer_stream_push(void *encoder_state, size_t n, const int16_t pcm[static n]) {
+static bool audio_conformer_stream_push(void *encoder_state, size_t n, const int16_t *pcm) {
     struct audio_conformer_state *st = encoder_state;
     if (st == nullptr || st->enc == nullptr || pcm == nullptr) {
         return false;
