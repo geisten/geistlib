@@ -101,8 +101,13 @@ void linear_iq4xs_decode_w4a8(
  * (pinned by test_iq4_dequant_unit). No repack, no extra RSS; the
  * 8-row interleaved lane-SDOT variant stays a documented follow-up if
  * this plateau is not enough. */
-void linear_iq4xs_w4a8_prefill(
-        const float *x, size_t m, const void *w_iq4xs, size_t n_in, size_t n_out, float *y) {
+void linear_iq4xs_w4a8_prefill_pre(const int8_t *x_q8,
+                                   const float  *scale_x,
+                                   size_t        m,
+                                   const void   *w_iq4xs,
+                                   size_t        n_in,
+                                   size_t        n_out,
+                                   float        *y) {
 #if defined(__ARM_NEON)
     if (m == 0)
         return;
@@ -110,16 +115,7 @@ void linear_iq4xs_w4a8_prefill(
     const size_t                 n_blocks_per_row = n_in / IQ4_XS_BLOCK_ELEMS;
     const int8x16_t              kv               = vld1q_s8(kvalues_iq4nl_k);
     const uint8x16_t             low4             = vdupq_n_u8(0x0f);
-
-    int8_t *x_q8   = heap_alloc_array_aligned(int8_t, m *n_in);
-    float  *scales = heap_alloc_array_aligned(float, m);
-    if (x_q8 == nullptr || scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &scales);
-        return;
-    }
-    for (size_t i = 0; i < m; i++)
-        scales[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+    const float                 *scales           = scale_x;
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
@@ -159,17 +155,32 @@ void linear_iq4xs_w4a8_prefill(
                 y[(t0 + t) * n_out + n] = accf[t] * scales[t0 + t];
         }
     }
-    safe_free((void **) &x_q8);
-    safe_free((void **) &scales);
 #else
-    (void) x;
+    (void) x_q8;
+    (void) scale_x;
     (void) m;
     (void) w_iq4xs;
     (void) n_in;
     (void) n_out;
     (void) y;
-    fprintf(stderr, "linear_iq4xs_w4a8_prefill: NEON required\n");
+    fprintf(stderr, "linear_iq4xs_w4a8_prefill_pre: NEON required\n");
 #endif
+}
+
+void linear_iq4xs_w4a8_prefill(
+        const float *x, size_t m, const void *w_iq4xs, size_t n_in, size_t n_out, float *y) {
+    int8_t *x_q8   = heap_alloc_array_aligned(int8_t, m *n_in);
+    float  *scales = heap_alloc_array_aligned(float, m);
+    if (x_q8 == nullptr || scales == nullptr) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &scales);
+        return;
+    }
+    for (size_t i = 0; i < m; i++)
+        scales[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+    linear_iq4xs_w4a8_prefill_pre(x_q8, scales, m, w_iq4xs, n_in, n_out, y);
+    safe_free((void **) &x_q8);
+    safe_free((void **) &scales);
 }
 
 void linear_iq4nl_decode_w4a8_pre(const int8_t *x_q8,

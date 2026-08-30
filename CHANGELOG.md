@@ -21,6 +21,44 @@ minor release.
   at 626 → 734 t/s; the 27B UD re-baselines at 94 pp (was 91.6 —
   protocol noise; `GEIST_M_MAX` 64/256 is a wash at 27B shapes).
 
+## [0.10.7] — 2026-08-30
+
+### Fixed
+- **Allocation-free linear-kernel contract, batch 2** (#336): the rest of the
+  NEON resolver table. Twelve wrappers still discarded `be` and called
+  quant.h's allocating convenience entry points; they now quantize into the
+  per-thread workspace and call the `_pre` variants. Four `_pre` variants
+  existed but had never been declared in `quant.h`, so no caller could reach
+  them. Four prefill kernels had none at all — Q4_0, Q4_1, IQ4_XS and the
+  Q4_0 x8 prefill — and were split into a `_pre` on caller-owned scratch plus
+  a thin allocating wrapper, matching the seventeen that already had that
+  shape.
+- **IQ2_S / IQ3_S prefill allocated inside an OpenMP loop** (#336):
+  `linear_iq2s_w2a8_prefill_pre` and its IQ3_S twin allocated `accs` once per
+  output row and `row_acc` once per block per row, *inside* `omp parallel
+  for`, and dereferenced both unchecked. A 2048-row layer meant ~16k
+  malloc/free pairs contending on the allocator in a single linear call.
+  `m` is bounded by `GEIST_QUANT_M_CAP`, so both are stack arrays now, and
+  the `m` guard the sibling kernels already carried was added.
+
+  Measured on a quiesced Pi 5 (Cortex-A76 ×4, mean-of-10, reversed-order
+  control, every run gated below 56 °C): **iq2s prefill +36.6 % at m=32 and
+  +27.3 % at m=8, iq3s prefill +19.5 % at m=8 and +8.7 % at m=32**, against a
+  null-control band of +0.06 % (−1.14…+0.40 %) over 13 deliberately untouched
+  kernel/shape pairs. On the resolver path `linear_m1` gains +1.07 % (Q4_0),
+  +0.49 % (IQ4_XS), +0.32 % (Q4_1), +0.28 % (Q3_K), +0.25 % (Q8_0);
+  end-to-end on a Q4_0 model that is +0.32 % decode and +0.32 % prefill.
+
+  After this batch no cpu_neon resolver path allocates per call. What remains
+  in the kernels are the `static _Thread_local` high-water buffers AGENT.md
+  §3 allows, and the thin convenience wrappers themselves.
+
+### Changed
+- `test_kernel_no_alloc_unit` covers eight dtypes instead of one and compares
+  the whole workspace rather than the activation scratch alone, so a dtype
+  whose M>1 path is rebound to the dequant trampoline is held to the same
+  standard.
+
 ## [0.10.6] — 2026-08-30
 
 ### Fixed

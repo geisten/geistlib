@@ -251,20 +251,37 @@ static void cpu_neon_w_q4_0_m1(const float               *x,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
-    (void) be;
+    const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w->aux_fp32 != nullptr) {
-        linear_q4_0_decode_w4a8_x8(x, w->aux_fp32, (size_t) w->n_in, (size_t) w->n_out, y);
+        float        *sc  = nullptr;
+        int32_t      *s32 = nullptr;
+        const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, n_out, y, &sc, &s32);
+        if (xq == nullptr) {
+            return;
+        }
+        linear_q4_0_decode_w4a8_x8_pre(xq, sc[0], s32, w->aux_fp32, n_in, n_out, y);
         return;
     }
-    linear_q4_0_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_q4_0_decode_w4a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
 }
 
 static void cpu_neon_w_q4_1_m1(const float               *x,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
-    (void) be;
-    linear_q4_1_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc  = nullptr;
+    int32_t      *s32 = nullptr;
+    const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, n_out, y, &sc, &s32);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_q4_1_decode_w4a8_pre(xq, sc[0], s32, w->raw, n_in, n_out, y);
 }
 
 static void cpu_neon_w_q4_0_mN(size_t                     m,
@@ -272,16 +289,27 @@ static void cpu_neon_w_q4_0_mN(size_t                     m,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
-    (void) be;
+    const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     /* #295: int8 GEMM on the x8 layout beats both the row-major SDOT
      * sweep and the dequant+SGEMM trampoline — one weight pass,
      * amortized 4 tokens per block load. Falls through when the x8
      * aux is absent (non-Mac defaults). */
     if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w->aux_fp32 != nullptr) {
-        linear_q4_0_w4a8_prefill_x8(x, m, w->aux_fp32, (size_t) w->n_in, (size_t) w->n_out, y);
+        float        *sc  = nullptr;
+        int32_t      *s32 = nullptr;
+        const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, n_out, y, &sc, &s32);
+        if (xq == nullptr) {
+            return;
+        }
+        linear_q4_0_w4a8_prefill_x8_pre(xq, sc, s32, m, w->aux_fp32, n_in, n_out, y);
         return;
     }
-    linear_q4_0_w4a8_prefill(x, m, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, m, n_in, x, n_out, y, &sc);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_q4_0_w4a8_prefill_pre(xq, sc, m, w->raw, n_in, n_out, y);
 }
 
 static void cpu_neon_w_q4_1_mN(size_t                     m,
@@ -289,32 +317,53 @@ static void cpu_neon_w_q4_1_mN(size_t                     m,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
-    (void) be;
-    linear_q4_1_w4a8_prefill(x, m, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc  = nullptr;
+    int32_t      *s32 = nullptr;
+    const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, n_out, y, &sc, &s32);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_q4_1_w4a8_prefill_pre(xq, sc, s32, m, w->raw, n_in, n_out, y);
 }
 
 static void cpu_neon_w_iq2s_m1(const float               *x,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
-    (void) be;
-    linear_iq2s_decode_w2a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_iq2s_decode_w2a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
 }
 
 static void cpu_neon_w_iq3s_m1(const float               *x,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
-    (void) be;
-    linear_iq3s_decode_w3a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_iq3s_decode_w3a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
 }
 
 static void cpu_neon_w_iq4xs_m1(const float               *x,
                                 const struct geist_weight *w,
                                 struct geist_backend      *be,
                                 float                     *y) {
-    (void) be;
-    linear_iq4xs_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_iq4xs_decode_w4a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
 }
 
 static void cpu_neon_w_iq4xs_mN(size_t                     m,
@@ -322,16 +371,26 @@ static void cpu_neon_w_iq4xs_mN(size_t                     m,
                                 const struct geist_weight *w,
                                 struct geist_backend      *be,
                                 float                     *y) {
-    (void) be;
-    linear_iq4xs_w4a8_prefill(x, m, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, m, n_in, x, n_out, y, &sc);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_iq4xs_w4a8_prefill_pre(xq, sc, m, w->raw, n_in, n_out, y);
 }
 
 static void cpu_neon_w_iq4nl_m1(const float               *x,
                                 const struct geist_weight *w,
                                 struct geist_backend      *be,
                                 float                     *y) {
-    (void) be;
-    linear_iq4nl_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_iq4nl_decode_w4a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
 }
 
 /* F32 dense (P1.1.e): cblas-backed SGEMV / SGEMM. Row-major weight is
@@ -702,8 +761,13 @@ static void cpu_neon_w_iq2s_mN(size_t                     m,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
-    (void) be;
-    linear_iq2s_w2a8_prefill(x, w->raw, m, (size_t) w->n_in, (size_t) w->n_out, y);
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, m, n_in, x, n_out, y, &sc);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_iq2s_w2a8_prefill_pre(xq, sc, m, w->raw, n_in, n_out, y);
 }
 
 static void cpu_neon_w_iq3s_mN(size_t                     m,
@@ -711,8 +775,13 @@ static void cpu_neon_w_iq3s_mN(size_t                     m,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
-    (void) be;
-    linear_iq3s_w3a8_prefill(x, w->raw, m, (size_t) w->n_in, (size_t) w->n_out, y);
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, m, n_in, x, n_out, y, &sc);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_iq3s_w3a8_prefill_pre(xq, sc, m, w->raw, n_in, n_out, y);
 }
 
 /* P2.b: native Q5_K W5A8 NEON kernels. M=1 always wins over the
@@ -737,8 +806,14 @@ static void cpu_neon_w_q5k_mN(size_t                     m,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
                               float                     *y) {
-    (void) be;
-    linear_q5k_w5a8_prefill(x, w->raw, m, (size_t) w->n_in, (size_t) w->n_out, y);
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc  = nullptr;
+    int32_t      *s32 = nullptr;
+    const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, n_out, y, &sc, &s32);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_q5k_w5a8_prefill_pre(xq, sc, s32, m, w->raw, n_in, n_out, y);
 }
 
 /* P2.d: native Q8_0 W8A8 prefill kernel (M>1). M=1 already native
