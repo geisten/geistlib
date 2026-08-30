@@ -59,7 +59,7 @@ enum geist_ffn_activation_kind {
  * exact decision that, when it wrongly defaulted 2B-4T to SwiGLU, dropped MMLU
  * to chance. Keep test_bitnet_arch_unit in sync. */
 static inline enum geist_ffn_activation_kind
-geist_ffn_activation_select(const char *arch, size_t arch_len, const char *act, size_t act_len) {
+geist_ffn_activation_select(size_t arch_len, size_t act_len, const char *arch, const char *act) {
     enum geist_ffn_activation_kind out =
             (arch != nullptr && arch_len == sizeof("bitnet-b1.58") - 1 &&
              memcmp(arch, "bitnet-b1.58", arch_len) == 0)

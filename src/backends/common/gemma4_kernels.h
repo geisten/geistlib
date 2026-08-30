@@ -166,7 +166,7 @@ void relu_squared_fp32(size_t n, const float x[static n], float y[static n]);
 /* SiLU activation: y[i] = x[i] / (1 + exp(-x[i])). Llama / BitNet 3B
  * SwiGLU activation function. y may alias x.
  * Named *_ooo (out-of-place) to avoid collision with audio_conformer's
- * in-place silu_fp32(x, n). */
+ * in-place silu_fp32(n, x). */
 void silu_fp32_ooo(size_t n, const float x[static n], float y[static n]);
 
 /* Element-wise addition: y[i] = a[i] + b[i].  y may alias a or b. */

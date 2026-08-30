@@ -87,7 +87,7 @@ int main(int argc, char **argv) {
     }
 
     /* Warmup */
-    size_t n_soft = vision_encoder_run_image(enc, rgb, (size_t) h, (size_t) w, soft);
+    size_t n_soft = vision_encoder_run_image(enc, (size_t) h, (size_t) w, rgb, soft);
     if (n_soft == 0) {
         fprintf(stderr, "vision_encoder_run_image returned 0\n");
         free(soft);
@@ -101,7 +101,7 @@ int main(int argc, char **argv) {
     double tmin = 1e30, tmax = 0;
     for (int r = 0; r < BENCH_RUNS; r++) {
         double t0 = now_ms();
-        (void) vision_encoder_run_image(enc, rgb, (size_t) h, (size_t) w, soft);
+        (void) vision_encoder_run_image(enc, (size_t) h, (size_t) w, rgb, soft);
         double dt = now_ms() - t0;
         total += dt;
         if (dt < tmin)

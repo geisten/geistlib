@@ -114,7 +114,7 @@ int main(int argc, char **argv) {
 
     /* Warmup */
     size_t n_soft = vision_encoder_run_video(
-            enc, frames, (size_t) n_frames, (size_t) frame_h, (size_t) frame_w, soft);
+            enc, (size_t) n_frames, (size_t) frame_h, (size_t) frame_w, frames, soft);
     if (n_soft == 0) {
         fprintf(stderr, "vision_encoder_run_video returned 0\n");
         free(soft);
@@ -128,7 +128,7 @@ int main(int argc, char **argv) {
     for (int r = 0; r < BENCH_RUNS; r++) {
         double t0 = now_ms();
         (void) vision_encoder_run_video(
-                enc, frames, (size_t) n_frames, (size_t) frame_h, (size_t) frame_w, soft);
+                enc, (size_t) n_frames, (size_t) frame_h, (size_t) frame_w, frames, soft);
         double dt = now_ms() - t0;
         total += dt;
         if (dt < tmin)

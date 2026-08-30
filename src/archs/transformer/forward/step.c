@@ -58,19 +58,19 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
             float       *k_zeros  = (float *) v->buffer_map(sess->k_kivi_zeros[li]);
             float       *v_scales = (float *) v->buffer_map(sess->v_kivi_scales[li]);
             float       *v_zeros  = (float *) v->buffer_map(sess->v_kivi_zeros[li]);
-            kivi_drain_one_layer(k_res,
+            kivi_drain_one_layer(sess->kivi_drained_count,
+                                 sess->kivi_residual_count,
+                                 R,
+                                 hd,
+                                 st->n_kv_heads,
+                                 k_res,
                                  v_res,
                                  k_q4,
                                  v_q4,
                                  k_scales,
                                  k_zeros,
                                  v_scales,
-                                 v_zeros,
-                                 sess->kivi_drained_count,
-                                 sess->kivi_residual_count,
-                                 R,
-                                 hd,
-                                 st->n_kv_heads);
+                                 v_zeros);
             v->buffer_unmap(sess->k_residual[li]);
             v->buffer_unmap(sess->v_residual[li]);
             v->buffer_unmap(sess->k_kivi_q[li]);

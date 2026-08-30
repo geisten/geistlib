@@ -85,7 +85,7 @@ int main(void) {
         if (!pcm)
             continue;
         audio_encoder_reset(enc);
-        audio_encoder_push_pcm(enc, pcm, n_samples);
+        audio_encoder_push_pcm(enc, n_samples, pcm);
         audio_encoder_end_input(enc);
         free(pcm);
         durs[k] = (double) n_samples / 16000.0;
@@ -93,7 +93,7 @@ int main(void) {
         softs[k] = calloc(MAX_SOFT * SOFT_DIM, sizeof(float));
         while (!audio_encoder_segment_done(enc) && n_soft[k] < MAX_SOFT) {
             size_t take = audio_encoder_pull_softtokens(
-                    enc, softs[k] + n_soft[k] * SOFT_DIM, MAX_SOFT - n_soft[k], -1);
+                    enc, MAX_SOFT - n_soft[k], softs[k] + n_soft[k] * SOFT_DIM, -1);
             if (take == 0)
                 break;
             n_soft[k] += take;

@@ -210,7 +210,7 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
         return 0;
     }
 
-    size_t n_soft = audio_encoder_run(st->enc, mel, mask, n_mel, out_soft);
+    size_t n_soft = audio_encoder_run(st->enc, n_mel, mel, mask, out_soft);
 
     /* GEIST_AUDIO_DEBUG_DUMP=<prefix>: write the mel and soft-token
      * stages as raw fp32 for reference-parity diagnosis (#268). */
@@ -259,7 +259,7 @@ static bool audio_conformer_stream_push(void *encoder_state, size_t n, const int
     if (st == nullptr || st->enc == nullptr || pcm == nullptr) {
         return false;
     }
-    return audio_encoder_push_pcm(st->enc, pcm, n) == 0;
+    return audio_encoder_push_pcm(st->enc, n, pcm) == 0;
 }
 
 static size_t audio_conformer_stream_poll(void *encoder_state, size_t max_soft, float *out_soft) {
@@ -268,7 +268,7 @@ static size_t audio_conformer_stream_poll(void *encoder_state, size_t max_soft, 
         return 0;
     }
     /* timeout 0 = non-blocking: only tokens the worker already emitted. */
-    return audio_encoder_pull_softtokens(st->enc, out_soft, max_soft, 0);
+    return audio_encoder_pull_softtokens(st->enc, max_soft, out_soft, 0);
 }
 
 static size_t audio_conformer_stream_end(void *encoder_state, size_t max_soft, float *out_soft) {
@@ -282,7 +282,7 @@ static size_t audio_conformer_stream_end(void *encoder_state, size_t max_soft, f
     size_t       got;
     while (total < max_soft &&
            (got = audio_encoder_pull_softtokens(
-                    st->enc, out_soft + total * dim, max_soft - total, -1)) > 0) {
+                    st->enc, max_soft - total, out_soft + total * dim, -1)) > 0) {
         total += got;
     }
     return total;

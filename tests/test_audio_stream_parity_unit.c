@@ -98,7 +98,7 @@ int main(void) {
         free(mask);
         return GEIST_TEST_ERROR;
     }
-    const size_t n_soft_ref = audio_encoder_run(enc, mel, mask, N_MEL_FRAMES, ref_soft);
+    const size_t n_soft_ref = audio_encoder_run(enc, N_MEL_FRAMES, mel, mask, ref_soft);
     printf("audio_stream_parity: monolithic produced %zu soft tokens\n", n_soft_ref);
     if (n_soft_ref == 0) {
         fprintf(stderr, "FAIL: monolithic encode returned 0 soft tokens\n");
@@ -125,10 +125,10 @@ int main(void) {
      *    (K/V cache + LConv hist must survive between push calls). */
     const size_t n_half = N_MEL_FRAMES / 2;
 
-    const size_t emit_a = audio_encoder_stream_push(enc, state, mel, mask, n_half, false);
+    const size_t emit_a = audio_encoder_stream_push(enc, state, n_half, mel, mask, false);
     printf("audio_stream_parity: push#1 (%zu mel) emitted %zu soft tokens\n", n_half, emit_a);
 
-    const size_t emit_b = audio_encoder_stream_push(enc, state, mel, mask, N_MEL_FRAMES, true);
+    const size_t emit_b = audio_encoder_stream_push(enc, state, N_MEL_FRAMES, mel, mask, true);
     printf("audio_stream_parity: push#2 (%zu mel, final) emitted %zu soft\n",
            (size_t) N_MEL_FRAMES,
            emit_b);
