@@ -1,0 +1,29 @@
+{
+  "schema": "geist.benchmark.cross-engine-cpu.v1",
+  "model": {
+    "file": "gemma4-e2b-Q4_K_M.gguf",
+    "sha256": "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8"
+  },
+  "workload": {
+    "seq_lens": [128, 256, 512, 1024],
+    "decode_n": 64,
+    "prefill_threads": 8,
+    "decode_threads": 7,
+    "affinity": "thread-count-only; operating-system scheduled for both engines",
+    "thread_polling": "active",
+    "repeats": 3,
+    "cycles": 4,
+    "aggregation": "median",
+    "dispersion": "median_absolute_deviation",
+    "backend": "cpu-only",
+    "kv_cache": "f16",
+    "model_load_included": false,
+    "warmup": "one discarded engine-native warmup before each measured test"
+  },
+  "host_gate": {
+    "max_load_per_core": 0.2,
+    "settle_seconds": 30,
+    "cooldown_seconds": 60,
+    "timeout_seconds": 14400
+  }
+}

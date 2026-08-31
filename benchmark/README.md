@@ -41,7 +41,13 @@ is quoted — a faster engine that produces different tokens is not iso-quality.
 The protocol is frozen in [`../tools/bench_reproduce.py`](../tools/bench_reproduce.py);
 every row in [`reference_runs.json`](reference_runs.json) came from it.
 
-## Full CPU numbers
+## Historical headline CPU numbers
+
+These rows are useful within each linked campaign, but they are **not one
+cross-system table under identical conditions**: models, prompt/decode shapes,
+engine commits and aggregation rules differ. The strict current-coverage table
+is [results/MATRIX.md](results/MATRIX.md); it leaves incompatible or unmeasured
+cells blank instead of combining them.
 
 | model | platform | metric | **geistlib** | baseline |
 | :-- | :-- | :-- | --: | --: |
@@ -68,6 +74,7 @@ Sub-parity rows are kept on purpose — nothing cherry-picked.</sub>
 | Question | File |
 |---|---|
 | **How do I produce a trustworthy number?** | [METHODOLOGY.md](METHODOLOGY.md) — protocol, per-machine aggregation, quality/MMLU procedures, the correctness gate |
+| Which results share the **same current protocol**? | [results/MATRIX.md](results/MATRIX.md) — strict coverage matrix; missing and incompatible cells remain explicit |
 | What came out on the **Raspberry Pi 5**? | [results/PI5.md](results/PI5.md) — the edge target: full sweep, thread placement, int8-vs-OpenBLAS analysis |
 | …on **Apple M1 Max**? | [results/APPLE.md](results/APPLE.md) — AMX reference, the auto-recorded `make bench-*` table, decode-kernel investigation |
 | …on **AMD x86-64** (AVX-512)? | [results/X86.md](results/X86.md) — Gemma & Llama vs llama.cpp, BitNet vs bitnet.cpp |
