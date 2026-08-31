@@ -32,6 +32,7 @@
 #include "linear_q6k.h"
 
 #include "geist_gemm.h"
+#include "checked.h"
 #include "heap.h"
 #include "quant.h"
 
@@ -144,18 +145,57 @@ static void cpu_x86_linear_i2s_m1(const float               *x,
     i2s_gemv_m1(n_out, n_in, x, raw, scale, y);
 }
 
+/* Per-thread prefill scratch for the I2S GEMMs (#336 batch 3). Returns
+ * nullptr when the backend state is missing or the workspace cannot be
+ * sized; both callers then take the path they already took when their
+ * per-call malloc failed. `perm_bytes` is 0 for the x4 layout, which needs
+ * no activation permute. */
+static struct cpu_x86_workspace *
+i2s_mN_scratch(struct geist_backend *be, size_t m, size_t n_in, bool want_perm) {
+    if (be == nullptr || be->state == nullptr) {
+        return nullptr;
+    }
+    size_t acts_bytes = 0;
+    if (ckd_mul(&acts_bytes, m, n_in)) {
+        return nullptr;
+    }
+    size_t sum_bytes = 0, scale_bytes = 0;
+    if (ckd_mul(&sum_bytes, m, sizeof(int32_t)) || ckd_mul(&scale_bytes, m, sizeof(float))) {
+        return nullptr;
+    }
+    return cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state,
+                                 acts_bytes,
+                                 sum_bytes,
+                                 scale_bytes,
+                                 want_perm ? acts_bytes : 0);
+}
+
 static void cpu_x86_linear_i2s_mN(size_t                     m,
                                   const float               *x,
                                   const struct geist_weight *w,
                                   struct geist_backend      *be,
                                   float                     *y) {
-    (void) be;
     const size_t   n_in  = (size_t) w->n_in;
     const size_t   n_out = (size_t) w->n_out;
     const uint8_t *raw   = (const uint8_t *) w->raw;
     float          scale;
     memcpy(&scale, raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
-    i2s_gemm_mN(m, n_out, n_in, x, raw, scale, y);
+    struct cpu_x86_workspace *ws = i2s_mN_scratch(be, m, n_in, true);
+    if (ws == nullptr) {
+        i2s_gemm_mN_scalar(m, n_out, n_in, x, raw, scale, y);
+        return;
+    }
+    i2s_gemm_mN_pre(m,
+                    n_out,
+                    n_in,
+                    x,
+                    raw,
+                    scale,
+                    ws->mN_acts,
+                    ws->mN_sum_a,
+                    ws->mN_scale,
+                    (int8_t *) ws->mN_aux,
+                    y);
 }
 
 /* I2_S x4 row-interleaved fast path: codes live in w->aux_fp32 (the
@@ -222,12 +262,19 @@ static void cpu_x86_linear_i2s_x4_mN(size_t                     m,
                                      const struct geist_weight *w,
                                      struct geist_backend      *be,
                                      float                     *y) {
-    (void) be;
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
     float        scale;
     memcpy(&scale, (const uint8_t *) w->raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
-    i2s_x4_gemm_mN(m, n_out, n_in, x, (const uint8_t *) w->aux_fp32, scale, y);
+    const uint8_t            *x4 = (const uint8_t *) w->aux_fp32;
+    struct cpu_x86_workspace *ws = i2s_mN_scratch(be, m, n_in, false);
+    if (ws == nullptr) {
+        for (size_t i = 0; i < m; i++) {
+            i2s_x4_gemv_m1(n_out, n_in, x + i * n_in, x4, scale, y + i * n_out);
+        }
+        return;
+    }
+    i2s_x4_gemm_mN_pre(m, n_out, n_in, x, x4, scale, ws->mN_acts, ws->mN_sum_a, ws->mN_scale, y);
 }
 
 /* Fused decode of two same-input I2_S x4 weights (gate+up, q+k): one shared

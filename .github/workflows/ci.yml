@@ -580,7 +580,8 @@ jobs:
           for t in test_x86_isa_dispatch_unit test_q4k_to_w4a8_unit \
                    test_q4k_to_q4kx8_unit test_q4kx8_gemm_unit \
                    test_q6k_gemv_unit test_q8w_gemv_unit test_f32q_unit \
-                   test_i2s_gemv_unit test_gelu_x86_unit; do
+                   test_i2s_gemv_unit test_gelu_x86_unit \
+                   test_x86_kernel_no_alloc_unit; do
             echo "=== $t (sde -spr) ==="
             "$SDE_PATH/sde64" -spr -- "bin/linux/release/tests/$t" 2>&1 \
               | tee -a ci-diagnostics/avx512-tests.txt

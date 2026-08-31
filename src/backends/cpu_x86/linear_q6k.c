@@ -14,6 +14,7 @@
 #include "linear_q6k.h"
 
 #include "backend_state.h"
+#include "checked.h"
 #include "kernel_w4a8.h" /* w4a8_quantize_acts_row */
 #include "kernel_w8a8.h"
 #include "kernel_q6k_gemv.h"
@@ -245,20 +246,28 @@ void cpu_x86_linear_q6k_mN(size_t                     m,
     const float   *w_offsets;
     blob_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
 
-    /* Per-call scratch: int8 acts + 16-elem sum_a + per-token scale, all m
-     * tokens. Small relative to the GEMM (m=64,n_in=12288 ≈ 836 KB). */
-    int8_t  *acts  = heap_alloc_aligned(m * n_in * sizeof(int8_t), OPTIMAL_ALIGNMENT);
-    int32_t *sum_a = heap_alloc_aligned(m * n_blocks_per_row * sizeof(int32_t), OPTIMAL_ALIGNMENT);
-    float   *scale_x = heap_alloc_aligned(m * sizeof(float), OPTIMAL_ALIGNMENT);
-    if (acts == nullptr || sum_a == nullptr || scale_x == nullptr) {
-        safe_free((void **) &acts);
-        safe_free((void **) &sum_a);
-        safe_free((void **) &scale_x);
+    /* Prefill scratch: int8 acts + 16-elem sum_a + per-token scale, all m
+     * tokens (m=64, n_in=12288 ≈ 836 KB). #336 batch 3: from the per-thread
+     * workspace, not three heap_allocs per projection per layer per chunk. */
+    size_t                    acts_bytes = 0, sum_elems = 0, sum_bytes = 0, scale_bytes = 0;
+    struct cpu_x86_workspace *ws = nullptr;
+    if (be != nullptr && be->state != nullptr && !ckd_mul(&acts_bytes, m, n_in) &&
+        !ckd_mul(&sum_elems, m, n_blocks_per_row) &&
+        !ckd_mul(&sum_bytes, sum_elems, sizeof(int32_t)) &&
+        !ckd_mul(&scale_bytes, m, sizeof(float))) {
+        ws = cpu_x86_ws_acquire_mN(
+                (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, 0);
+    }
+    if (ws == nullptr) {
         for (size_t row = 0; row < m; row++) {
             cpu_x86_linear_q6k_m1(x + row * n_in, w, be, y + row * n_out);
         }
         return;
     }
+
+    int8_t  *acts    = ws->mN_acts;
+    int32_t *sum_a   = ws->mN_sum_a;
+    float   *scale_x = ws->mN_scale;
 
     for (size_t j = 0; j < m; j++) {
         /* w4a8 quantizer gives int8 acts + per-row scale; its 32-elem sum_a
@@ -292,8 +301,4 @@ void cpu_x86_linear_q6k_mN(size_t                     m,
         w8a8_gemm(
                 m, n_out, n_blocks_per_row, weights, w_scales, w_offsets, acts, sum_a, scale_x, y);
     }
-
-    safe_free((void **) &acts);
-    safe_free((void **) &sum_a);
-    safe_free((void **) &scale_x);
 }
