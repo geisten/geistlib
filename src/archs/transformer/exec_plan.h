@@ -97,6 +97,15 @@ struct transformer_model_fusion_plan {
      * (geist_backend.h), so a failure is now returned, not papered over. */
     bool prim_scale_f32; /* Metal + Vulkan; the CPU backends take the host loop */
     bool prim_silu;      /* every in-tree backend; gelu_tanh is the bound alternative */
+
+    /* Same treatment for the one BACKEND vtable member that is optional and
+     * sits in a per-token path (#352 batch 3). buffer_copy exists on the
+     * batched-submit backends (Metal, Vulkan) and nowhere else: its whole
+     * point is that mapping a buffer would force those backends to flush a
+     * pending pipeline, so the copy stays on the device. The five call
+     * sites tested the pointer AND fell back to a host memcpy when the copy
+     * FAILED, which turns a real device error into a silent slow path. */
+    bool backend_buffer_copy;
 };
 
 enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st);
