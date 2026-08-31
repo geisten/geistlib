@@ -203,17 +203,19 @@ jobs:
 
       # Same cliff detector on the Apple leg (#327). It runs on the qwen3.5
       # 0.8B Q8_0 that this leg already caches — the gemma4 reference is a
-      # 3.1 GB download the mac runner deliberately does not do. Floors are
-      # placeholders on purpose: the runner's real numbers are unknown, the
-      # step prints them, and they get tightened toward ~60% of what the log
-      # shows. A guard band that flakes is worse than none.
+      # 3.1 GB download the mac runner deliberately does not do. Two green
+      # runs measured prefill 127.5 then 108.7, decode 59.2 then 46.7 — a
+      # 15-21% swing between consecutive runs on the same commit, which is the
+      # shared-runner noise perf_gate.py's docstring warns about. Floors are
+      # ~60% of the LOWER of those, the same margin the Linux gate above uses.
+      # A guard band that flakes is worse than none.
       - name: Perf regression gate (Apple, Q8_0)
         if: runner.os == 'macOS'
         run: |
           bin/${{ matrix.target }}/release/tests/bench_perf_sweep \
             --gguf gguf_artifacts/qwen3.5-0.8b-q8_0.gguf \
             --seq-lens 128 --decode-n 16 --warmup 4 --repeats 3 \
-            | python3 benchmark/perf_gate.py --min-prefill 5 --min-decode 1
+            | python3 benchmark/perf_gate.py --min-prefill 65 --min-decode 28
 
       - name: Build example
         run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
