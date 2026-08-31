@@ -483,10 +483,16 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         struct geist_tensor t_post_attn_2d =
                 view_2d(sess->scratch_post_attn, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_attn = view_1d(L->post_attn_norm.buffer, st->d_model);
-        if (fused->rmsnorm_add == nullptr ||
-            fused->rmsnorm_add(
-                    be, &t_h_in_2d, &t_o_2d, &t_w_post_attn, ctx->eps, &t_h_post_attn_2d) !=
-                    GEIST_OK) {
+        /* Bound once (#352). The old form re-ran norm+add on the host when
+         * the fused op FAILED as well as when it was absent — over an
+         * output the fused kernel may already have written. */
+        if (ctx->P != nullptr && ctx->P->fuse_attn_rmsnorm_add) {
+            s = fused->rmsnorm_add(
+                    be, &t_h_in_2d, &t_o_2d, &t_w_post_attn, ctx->eps, &t_h_post_attn_2d);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        } else {
             s = prims->rmsnorm(be, &t_o_2d, &t_w_post_attn, ctx->eps, &t_post_attn_2d);
             if (s != GEIST_OK) {
                 return s;
