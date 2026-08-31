@@ -19,9 +19,11 @@ minor release.
   (`benchmark/perf_gate.py`) ran only on the Linux leg. It now runs on the
   macOS leg too, against the qwen3.5-0.8B Q8_0 that leg already caches — the
   3.1 GB gemma4 reference is a download the mac runner deliberately skips.
-  Floors are ~60 % of the lower of two observed green runs (prefill 127.5 then
-  108.7, decode 59.2 then 46.7 tok/s — a 15–21 % swing between consecutive runs
-  on the same commit), the same margin the Linux gate uses.
+  Floors are ~40 % of the worst of four observed runs (prefill 127.5 / 108.7 /
+  132.3 / 75.1, decode 59.2 / 46.7 / 58.7 / 25.5 — a 1.8× spread on the shared
+  runner). Calibrating from one sample, then from the lower of two, produced a
+  gate that failed an unrelated PR; a cliff detector is for multiples, not
+  percentages.
 
 ### Fixed
 - **APPLE.md described a benchmark protocol that no longer existed** (#327):
