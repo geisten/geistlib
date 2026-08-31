@@ -315,7 +315,8 @@ transformer_layer_run_ffn_block(struct transformer_layer_forward_ctx *ctx);
 /* forward/layer_ple.c */
 [[nodiscard]] enum geist_status
 transformer_layer_run_ple_or_copy(struct transformer_layer_forward_ctx *ctx);
-void transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx);
+[[nodiscard]] enum geist_status
+transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx);
 
 /* forward/probes.c */
 void transformer_probe_ffn_sparsity(const struct geist_backend_vtbl *v,

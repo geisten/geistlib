@@ -209,11 +209,11 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
         } else if (ctx->ffn_activation == GEIST_FFN_SWIGLU) {
             t0 = profile ? transformer_profile_now_ns() : 0;
-            if (prims->silu != nullptr) {
-                s = prims->silu(be, &t_gate_2d, &t_gate_2d);
-            } else {
-                s = prims->gelu_tanh(be, &t_gate_2d, &t_gate_2d);
-            }
+            /* Bound once (#352). Every in-tree backend implements silu, so
+             * the gelu_tanh arm is the documented alternative for an
+             * out-of-tree backend that does not — it has never run here. */
+            s = ctx->st->model_fusions.prim_silu ? prims->silu(be, &t_gate_2d, &t_gate_2d)
+                                                 : prims->gelu_tanh(be, &t_gate_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
             if (s != GEIST_OK) {
                 return s;
