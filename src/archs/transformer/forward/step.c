@@ -429,10 +429,10 @@ enum geist_status transformer_session_apply_opts(struct transformer_arch_session
     }
 
     /* (Re)allocate the sampler workspace if a non-greedy mode is now in
-     * play and the workspace isn't already sized for the vocab. ~3 MB
-     * for VOCAB=262144; greedy mode skips this. */
-    const bool needs_ws = sess->temperature > 0.0f &&
-                          (sess->top_k > 1 || (sess->top_p > 0.0f && sess->top_p < 1.0f));
+     * play and the workspace isn't already sized for the vocab. ~4 MB
+     * for VOCAB=262144; greedy mode skips this. Every non-greedy path —
+     * plain temperature included (#331) — samples out of the workspace. */
+    const bool needs_ws = sess->temperature > 0.0f;
     if (needs_ws && sess->sampler_ws.n_vocab != (size_t) sess->model->vocab_size) {
         geist_sampler_workspace_destroy(&sess->sampler_ws);
         const enum geist_status ws =

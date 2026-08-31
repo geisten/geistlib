@@ -21,6 +21,9 @@
  *                              report the MEAN over the repeats, plus best/worst
  *                              (default 10)
  *   --m-max N                  session prefill chunk cap (default arch cap)
+ *   --temperature F            sampler temperature (default 0 = greedy, which
+ *                              bypasses the sampler entirely)
+ *   --top-k N                  top-k filter when --temperature > 0 (default 0)
  *   --vocab N                  pseudo-random token range upper bound
  *                              (default 32000 — works for Llama2 SP and Llama3 BPE)
  *   --threads N                informational only; the active thread count is
@@ -112,14 +115,16 @@ static double mean_of(const double *v, int n) {
 
 int main(int argc, char **argv) {
     int         seq_lens[16];
-    int         n_seq_lens = 0;
-    int         decode_n   = 64;
-    int         warmup     = 64;
-    int         repeats    = 10;
-    int         m_max      = 0;
-    int         vocab_cap  = 32000;
-    int         threads    = 0; /* informational; the runtime reads OMP_NUM_THREADS. */
-    const char *gguf_arg   = nullptr;
+    int         n_seq_lens  = 0;
+    int         decode_n    = 64;
+    int         warmup      = 64;
+    int         repeats     = 10;
+    int         m_max       = 0;
+    int         vocab_cap   = 32000;
+    int         threads     = 0;    /* informational; the runtime reads OMP_NUM_THREADS. */
+    float       temperature = 0.0f; /* 0 = greedy; >0 engages the sampler */
+    int         top_k       = 0;
+    const char *gguf_arg    = nullptr;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--seq-lens") == 0 && i + 1 < argc) {
             parse_csv_ints(argv[++i], seq_lens, 16, &n_seq_lens);
@@ -131,6 +136,10 @@ int main(int argc, char **argv) {
             repeats = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--m-max") == 0 && i + 1 < argc) {
             m_max = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--temperature") == 0 && i + 1 < argc) {
+            temperature = (float) atof(argv[++i]);
+        } else if (strcmp(argv[i], "--top-k") == 0 && i + 1 < argc) {
+            top_k = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--vocab") == 0 && i + 1 < argc) {
             vocab_cap = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
@@ -198,7 +207,9 @@ int main(int argc, char **argv) {
     const int                 session_seq = max_seq + decode_n + warmup + 32;
     struct geist_session_opts opts        = {
             .max_seq_len = (size_t) session_seq,
-            .temperature = 0.0f,
+            .temperature = temperature,
+            .top_k       = top_k,
+            .random_seed = 20260830u, /* fixed: same token stream every run */
             .m_max       = m_max > 0 ? (size_t) m_max : 0,
     };
     struct geist_session *sess = nullptr;

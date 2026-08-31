@@ -44,23 +44,41 @@ void                   geist_rng_seed(struct geist_rng *rng, uint64_t seed);
                                                       float             temperature,
                                                       struct geist_rng *rng);
 
+/* (score, token) pair — the sampler's selection scratch. `score` carries a
+ * logit or a probability depending on the caller. */
+struct geist_sampler_pair {
+    float    score;
+    uint32_t idx;
+};
+
 /* Pre-allocated workspace for the sampler functions that need scratch
- * (top-k, top-p). Caller-owned, reusable across calls — avoids heap churn
- * in the decode hot path. */
+ * (top-k, top-p). Caller-owned, reusable across calls — the per-token call
+ * is allocation-free (verified by bench_sampler via heap_alloc_count()). */
 struct geist_sampler_workspace {
-    float *probs; /* size n_vocab */
-    size_t n_vocab;
+    float                     *probs; /* size n_vocab */
+    struct geist_sampler_pair *pairs; /* size n_vocab */
+    size_t                     n_vocab;
 };
 
 [[nodiscard]] enum geist_status geist_sampler_workspace_init(struct geist_sampler_workspace *ws,
                                                              size_t n_vocab);
 void                            geist_sampler_workspace_destroy(struct geist_sampler_workspace *ws);
 
+/* top_k is clamped to [1, n_vocab]; every value in that range keeps its
+ * requested semantics (no silent cap). */
 [[nodiscard]] geist_token_t geist_sampler_top_k_ws(struct geist_sampler_workspace *ws,
                                                    const float       logits[static ws->n_vocab],
                                                    int               top_k,
                                                    float             temperature,
                                                    struct geist_rng *rng);
+
+/* Temperature-only sampling over the workspace — same result as
+ * geist_sampler_temperature, without its per-call allocation for
+ * vocabularies above 8192. */
+[[nodiscard]] geist_token_t geist_sampler_temperature_ws(struct geist_sampler_workspace *ws,
+                                                         const float logits[static ws->n_vocab],
+                                                         float       temperature,
+                                                         struct geist_rng *rng);
 
 [[nodiscard]] geist_token_t geist_sampler_top_p_ws(struct geist_sampler_workspace *ws,
                                                    const float       logits[static ws->n_vocab],
