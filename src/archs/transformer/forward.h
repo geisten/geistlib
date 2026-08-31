@@ -39,6 +39,29 @@ transformer_check_kv_room(struct transformer_arch_session *sess, size_t n_new) {
     return GEIST_E_TOO_MANY_TOKENS;
 }
 
+/* Bounds guard: token ids arrive from callers (prefill_tokens,
+ * pin_prefix) and from draft models with their own vocabulary. An id
+ * outside [0, vocab_size) indexes the embed table out of bounds — a
+ * wild read, not a garbage token. Check before the pointer moves
+ * (AGENT.md §4). */
+[[nodiscard]] static inline enum geist_status transformer_check_token_ids(
+        struct transformer_arch_session *sess, size_t n, const geist_token_t ids[static n]) {
+    const size_t vocab = sess->model->vocab_size;
+    for (size_t i = 0; i < n; i++) {
+        if (ids[i] < 0 || (size_t) ids[i] >= vocab) {
+            geist_backend_set_error(sess->model->backend,
+                                    GEIST_E_INVALID_ARG,
+                                    "transformer: token id %d at index %zu is outside "
+                                    "vocabulary [0, %zu)",
+                                    ids[i],
+                                    i,
+                                    vocab);
+            return GEIST_E_INVALID_ARG;
+        }
+    }
+    return GEIST_OK;
+}
+
 /* Layer loop: feed `seq` token rows through all st->n_layers
  * layers. Writes into out_h_buf (residual stream). KV slot is at
  * q_position; advance_kv inside transformer_forward_one_layer is
