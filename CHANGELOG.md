@@ -8,7 +8,38 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+- **`GEIST_LOG_KERNELS=1`** (#327): the cpu_neon resolver counts its own
+  decisions per catalog row and prints them at backend destroy. "Which kernels
+  does this model actually run" was being answered by reading the GGUF's dtype
+  histogram and reasoning about the table — which is how a Q4_0-only change
+  came to be suspected of moving a Q4_K model's throughput. The reference model
+  reports `q4_K 182, q6_K 24, f32 71` and no Q4_0 row at all.
+- **Apple perf guard band in CI** (#327): the coarse cliff detector
+  (`benchmark/perf_gate.py`) ran only on the Linux leg. It now runs on the
+  macOS leg too, against the qwen3.5-0.8B Q8_0 that leg already caches — the
+  3.1 GB gemma4 reference is a download the mac runner deliberately skips.
+  Floors start deliberately loose and get tightened once the log shows the
+  runner's real numbers.
+
 ### Fixed
+- **APPLE.md described a benchmark protocol that no longer existed** (#327):
+  it documented pp200/tg50 and best-of-2 / best-of-5, while
+  `tools/bench_quality_perf.py` runs 128/32 (warm-up 8, 3 repeats) and 512/64
+  (warm-up 64, 10 repeats) and reports the **mean** with best/worst alongside.
+  It also documented two environment variables, `GEIST_BENCH_PP` and
+  `GEIST_BENCH_TG`, that are not in the source at all. The prose now follows
+  the driver, names it as the single source of truth, and adds two things the
+  file was missing: why `BENCH_THREADS` must stay unset on Apple silicon
+  (measured — 8 threads hold a 1.3 % spread, 6 threads 15 %, 4 threads 29 %),
+  and how to A/B two commits on a desktop that cannot be quiesced.
+  The tok/s drop reported in the issue does not reproduce: a paired,
+  order-alternating series of 8 pairs puts `c1e74ad` against today's main at a
+  median of −1.1 % prefill and −1.0 % decode, with both signs represented
+  (sign test p = 0.73) — inside a noise band of roughly ±5 %. The gap to the
+  June comparison table stays unexplained, but it is not the code in that
+  range, and not the OS either (that row's `Darwin 25.5.0` is still this
+  host's kernel release).
 - **Sampler: bounded selection instead of a full vocabulary sort** (#331):
   `top_k`/`top_p` built an (logit, index) pair array — on the heap for any
   vocabulary above 1024 — and `qsort`ed all of it per token, then capped
