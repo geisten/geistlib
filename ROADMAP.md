@@ -34,10 +34,11 @@ people who share it.
 
 ## Near-term: hardening without regressions
 
-The next engineering pass turns the whole-codebase review into production
-invariants. Correctness and memory safety land before broader API cleanup;
-performance work remains incremental so every change can be measured against its
-parent rather than hidden inside a large rewrite.
+The first whole-codebase-review tranche shipped the P0 safety/correctness and
+concurrency fixes (#325–#335). Remaining work stays bounded: public/internal C23
+contracts, allocation-free kernel fallbacks, probe-and-bind cleanup and measured
+platform-specific performance. Every change is compared with its parent rather
+than hidden inside a large rewrite.
 
 | Priority | Workstream | Issues | Done when |
 | :-- | :-- | :-- | :-- |
