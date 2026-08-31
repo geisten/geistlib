@@ -58,6 +58,7 @@ static void cpu_neon_destroy(struct geist_backend *be) {
     /* Backend-owned scratch: freed directly via the workspace. No OMP
      * barrier needed because the storage lives on `st`, not in TLS. */
     cpu_neon_ws_destroy_all(st);
+    cpu_neon_dump_kernel_hits();
     geist_backend_free(be, be->state);
     be->state = nullptr;
 }

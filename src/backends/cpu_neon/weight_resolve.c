@@ -1357,6 +1357,37 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          "i2_s/q8a"},
 #endif
 };
+/* ---- Resolution counters (#327) ---------------------------------------
+ *
+ * "Which kernels does this model actually execute?" used to be answered by
+ * reading the GGUF dtype histogram and reasoning about the table below —
+ * which is how a Q4_0-only change came to be suspected of moving a Q4_K
+ * model's throughput. With GEIST_LOG_KERNELS=1 the resolver counts its own
+ * decisions and prints them at backend destroy, so the binary answers it.
+ *
+ * Diagnostic only: relaxed increments on an opt-in path, never read by the
+ * engine. */
+static _Atomic uint32_t g_kernel_hits[sizeof(CPU_NEON_KERNELS) / sizeof(CPU_NEON_KERNELS[0])];
+
+static bool kernel_log_enabled(void) {
+    const char *e = getenv("GEIST_LOG_KERNELS");
+    return e != nullptr && e[0] == '1';
+}
+
+void cpu_neon_dump_kernel_hits(void) {
+    if (!kernel_log_enabled()) {
+        return;
+    }
+    const size_t n = sizeof(CPU_NEON_KERNELS) / sizeof(CPU_NEON_KERNELS[0]);
+    fprintf(stderr, "[geist] resolved kernels (tensors per catalog row):\n");
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t hits = atomic_load_explicit(&g_kernel_hits[i], memory_order_relaxed);
+        if (hits > 0) {
+            fprintf(stderr, "[geist]   %-24s %6u\n", CPU_NEON_KERNELS[i].name, hits);
+        }
+    }
+}
+
 static_assert(sizeof(CPU_NEON_KERNELS) / sizeof(CPU_NEON_KERNELS[0]) > 0,
               "kernel table must not be empty");
 
@@ -1715,6 +1746,9 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
         }
         if ((e->requires & host_isa) != e->requires) {
             continue;
+        }
+        if (kernel_log_enabled()) {
+            atomic_fetch_add_explicit(&g_kernel_hits[i], 1u, memory_order_relaxed);
         }
         w->linear_m1 = e->linear_m1;
         w->linear_mN = e->linear_mN;
