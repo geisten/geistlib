@@ -8,6 +8,32 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed
+- **Sampler: bounded selection instead of a full vocabulary sort** (#331):
+  `top_k`/`top_p` built an (logit, index) pair array — on the heap for any
+  vocabulary above 1024 — and `qsort`ed all of it per token, then capped
+  `top_k` at 8192 without telling anyone. Both now select through a
+  size-k min-heap held in the sampler workspace: O(n log k) instead of
+  O(n log n), zero allocations after `geist_sampler_workspace_init`, and
+  every `top_k` in [1, n_vocab] keeps the semantics it asked for. Ties
+  break by lowest index (`qsort`'s comparator called every NaN equal, so
+  the old order was not even well defined). Measured on M1 Max, vocab
+  262144: `top_k=40` 23.9 ms → 181 us/token, `top_p=0.9` 24.7 ms →
+  1.01 ms/token; end-to-end sampled decode on gemma4-e2b 20.5 → 41.1 tok/s.
+  The one regime that loses is `top_k` at a quarter of the vocabulary or
+  more (`top_k=40000` at 151936: 13.2 → 15.8 ms) — where the old path was
+  silently sampling from the top 8192 instead.
+- **Plain temperature sampling no longer allocates per token** (#331):
+  `geist_sampler_temperature` heap-allocates a `n_vocab` probability buffer
+  for every vocabulary above 8192, and the decode head called it directly
+  whenever `temperature > 0` without a top-k/top-p filter — a 1 MB
+  malloc/free per token on gemma4. New `geist_sampler_temperature_ws`
+  samples out of the workspace, and the session now sizes that workspace
+  for every non-greedy mode (about 4 MB at vocab 262144; greedy still skips
+  it). Throughput is unchanged — measured 967 vs 962 us/token at vocab
+  262144, the allocation is lost in the softmax — so this is the
+  allocation-free contract, not a speedup.
+
 ### Added
 - **Batched Metal embed lookup** (#345): new fused slot
   `embedding_lookup_scaled_rows` — chunk token ids travel via

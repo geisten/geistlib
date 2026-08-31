@@ -11,6 +11,8 @@
 
 #include "src/engine/sampler.h"
 
+#include "heap.h"
+
 #include <geist.h>
 
 #include <math.h>
@@ -168,8 +170,86 @@ int main(void) {
         printf("RNG is deterministic per seed\n");
     }
 
+    /* ---- 9. Top-K boundaries: 0, 1, 1024, 8192, vocab size (#331) ----
+     * The returned token must always sit in the true top-k set, computed
+     * here by an independent full sort of the vocabulary. */
+    {
+        const size_t     n      = 9001;
+        float           *logits = (float *) malloc(n * sizeof(float));
+        uint32_t        *order  = (uint32_t *) malloc(n * sizeof(uint32_t));
+        struct geist_rng rng;
+        geist_rng_seed(&rng, 2024);
+        for (size_t i = 0; i < n; i++) {
+            logits[i] = -4.0f + 8.0f * geist_rng_next_unit(&rng);
+            order[i]  = (uint32_t) i;
+        }
+        /* Independent reference ranking: descending logit, ascending index —
+         * insertion sort, O(n^2) but obviously correct, which is the point of
+         * a reference. */
+        for (size_t i = 1; i < n; i++) {
+            uint32_t v = order[i];
+            size_t   j = i;
+            while (j > 0 && (logits[order[j - 1]] < logits[v] ||
+                             (logits[order[j - 1]] == logits[v] && order[j - 1] > v))) {
+                order[j] = order[j - 1];
+                j--;
+            }
+            order[j] = v;
+        }
+
+        struct geist_sampler_workspace ws = {0};
+        fails += check(geist_sampler_workspace_init(&ws, n) == GEIST_OK, "boundary ws init");
+
+        const int ks[] = {0, 1, 2, 1024, 8192, (int) n, (int) n + 5};
+        for (size_t c = 0; c < sizeof ks / sizeof *ks; c++) {
+            size_t limit = (size_t) (ks[c] < 1 ? 1 : ks[c]);
+            if (limit > n)
+                limit = n;
+            for (int rep = 0; rep < 200; rep++) {
+                geist_token_t t      = geist_sampler_top_k_ws(&ws, logits, ks[c], 1.0f, &rng);
+                bool          in_set = false;
+                for (size_t r = 0; r < limit && !in_set; r++) {
+                    in_set = (order[r] == (uint32_t) t);
+                }
+                if (!in_set) {
+                    fprintf(stderr,
+                            "  top_k=%d returned token %d outside the top-%zu\n",
+                            ks[c],
+                            (int) t,
+                            limit);
+                    fails++;
+                    break;
+                }
+            }
+        }
+        printf("top-k boundaries (0,1,2,1024,8192,n,n+5) stay inside the true top-k\n");
+
+        /* ---- 10. Zero heap allocations per token after init (#331) ---- */
+        {
+            const uint64_t before = heap_alloc_count();
+            for (int i = 0; i < 200; i++) {
+                geist_token_t a  = geist_sampler_top_k_ws(&ws, logits, 40, 0.8f, &rng);
+                geist_token_t b  = geist_sampler_top_k_ws(&ws, logits, (int) n, 0.8f, &rng);
+                geist_token_t c2 = geist_sampler_top_p_ws(&ws, logits, 0.9f, 0.8f, &rng);
+                geist_token_t d  = geist_sampler_top_p_ws(&ws, logits, 1.0f, 0.8f, &rng);
+                (void) a;
+                (void) b;
+                (void) c2;
+                (void) d;
+            }
+            const uint64_t after = heap_alloc_count();
+            fails += check(after == before, "sampling allocates nothing after workspace init");
+            printf("heap allocations across 800 sampler calls: %llu\n",
+                   (unsigned long long) (after - before));
+        }
+
+        geist_sampler_workspace_destroy(&ws);
+        free(logits);
+        free(order);
+    }
+
     if (fails == 0) {
-        printf("PASS: all 8 sampler checks\n");
+        printf("PASS: all 10 sampler checks\n");
         return GEIST_TEST_PASS;
     }
     fprintf(stderr, "FAILED: %d check(s)\n", fails);
