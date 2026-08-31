@@ -176,20 +176,24 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
     return GEIST_OK;
 }
 
-void transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
-    const struct geist_backend_primitives *prims = ctx->prims;
-    /* Device path first: batched GPU backends keep the per-layer scale
-     * on-device instead of flushing their pipeline for a host loop. */
-    if (prims->scale_f32 != nullptr) {
+enum geist_status transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
+    /* Bound once (#352): batched GPU backends keep the per-layer scale
+     * on-device instead of flushing their pipeline for a host loop; the CPU
+     * backends have no scale_f32 and take the host loop. This used to fall
+     * through to the host loop when the device op FAILED as well as when it
+     * was absent — which scales twice if the op failed after writing. */
+    if (ctx->st->model_fusions.prim_scale_f32) {
         struct geist_tensor t_h = view_2d(ctx->h_out_buf, ctx->SEQ, ctx->st->d_model);
-        if (prims->scale_f32(ctx->be, &t_h, ctx->L->layer_scalar, &t_h) == GEIST_OK) {
-            return;
-        }
+        return ctx->prims->scale_f32(ctx->be, &t_h, ctx->L->layer_scalar, &t_h);
     }
-    float       *hout    = (float *) ctx->v->buffer_map(ctx->h_out_buf);
+    float *hout = (float *) ctx->v->buffer_map(ctx->h_out_buf);
+    if (hout == nullptr) {
+        return GEIST_E_BACKEND;
+    }
     const size_t n_total = ctx->seq * ctx->st->d_model;
     for (size_t i = 0; i < n_total; i++) {
         hout[i] *= ctx->L->layer_scalar;
     }
     ctx->v->buffer_unmap(ctx->h_out_buf);
+    return GEIST_OK;
 }

@@ -82,6 +82,16 @@ geist_ffn_activation_select(size_t arch_len, size_t act_len, const char *arch, c
     return out;
 }
 
+/* True iff this activation needs the relu_squared primitive. It has no
+ * bound alternative — it cannot be composed from the other prims (there is
+ * no relu, and no max) — so a backend that lacks it cannot run such a
+ * model, and transformer_exec_plan_build refuses at load rather than
+ * calling a null pointer per layer (#352). Pure, so the list of kinds that
+ * need it is testable without a backend. */
+[[nodiscard]] static inline bool geist_ffn_needs_relu_squared(enum geist_ffn_activation_kind act) {
+    return act == GEIST_FFN_SQUARED_RELU || act == GEIST_FFN_GATED_SQUARED_RELU;
+}
+
 struct geist_arch_config {
     /* ---- Family identity. Future use by sub-vtable dispatch
      * (PLE precompute / logit softcap routing). */

@@ -71,6 +71,24 @@ struct transformer_model_fusion_plan {
     bool embed_lookup_scaled; /* embed_table on-device lookup+scale */
     bool ple_lookup_scaled;   /* ple_table on-device lookup+scale */
     bool argmax;              /* device argmax over [1, vocab] logits */
+
+    /* ---- Probe-and-bind for the OPTIONAL primitives (#352). Same
+     * contract as the fused ops above: bound true means the hot path calls
+     * the prim UNCONDITIONALLY and propagates its status; bound false
+     * selects the host path, decided once here rather than re-tested at
+     * every call. Backend capability, so model-level rather than per-layer.
+     *
+     * These replaced call sites of the form
+     *
+     *     if (prims->op == nullptr || prims->op(...) != GEIST_OK) { host }
+     *
+     * which conflate "absent" with "failed". The second arm re-did work the
+     * op may already have done — layer.c's PLE combine carries a comment
+     * about exactly that hazard for `add`, while the `scale_f32` sites had
+     * the same shape and no such guard. Probe true ⇒ must succeed
+     * (geist_backend.h), so a failure is now returned, not papered over. */
+    bool prim_scale_f32; /* Metal + Vulkan; the CPU backends take the host loop */
+    bool prim_silu;      /* every in-tree backend; gelu_tanh is the bound alternative */
 };
 
 enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st);

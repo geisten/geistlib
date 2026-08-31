@@ -6,6 +6,7 @@
 #include "exec_plan.h"
 #include "arch_state.h"
 
+#include "error.h"
 #include "heap.h"
 
 #include <geist.h>
@@ -193,6 +194,32 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         q                                     = (struct geist_fusion_query) {
                 .op = GEIST_FUSED_ARGMAX_F32, .m = 1, .d_model = st->vocab_size};
         st->model_fusions.argmax = probe(be, q);
+
+        /* Optional primitives: a plain null test, bound once (#352). There
+         * is no `supported` probe for prims — the pointer IS the
+         * capability. */
+        const struct geist_backend_primitives *prims = be->desc->prims;
+        st->model_fusions.prim_scale_f32             = prims->scale_f32 != nullptr;
+        st->model_fusions.prim_silu                  = prims->silu != nullptr;
+
+        /* relu_squared has no bound alternative: it cannot be composed from
+         * the other prims (there is no relu, and no max), and the two call
+         * sites in layer_ffn.c invoke it UNCONDITIONALLY. Metal declares it
+         * nullptr. A model whose FFN activation selects it, on a backend
+         * that lacks it, was therefore a null function-pointer call in the
+         * per-layer path — refuse it here instead, where the message can
+         * name the cause. */
+        if (geist_ffn_needs_relu_squared(st->config.ffn_activation) &&
+            prims->relu_squared == nullptr) {
+            geist_error_set_create_time(
+                    GEIST_E_UNSUPPORTED,
+                    "transformer_exec_plan_build",
+                    "backend '%s' does not implement the relu_squared primitive, which this "
+                    "model's FFN activation requires (gguf 'activation' = squared_relu / relu2 / "
+                    "gated_squared_relu, or architecture bitnet-b1.58)",
+                    geist_backend_name(be));
+            return GEIST_E_UNSUPPORTED;
+        }
     }
     return GEIST_OK;
 }
