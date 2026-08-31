@@ -157,6 +157,18 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         q.m                 = m_cap;
         P->fuse_rmsnorm_add = probe(be, q);
 
+        /* The post-attention norm+residual is the same op at a different
+         * site: d_model rows, none of the FFN weights. Probed separately
+         * rather than reusing fuse_rmsnorm_add above (#352). */
+        q = (struct geist_fusion_query) {
+                .op = GEIST_FUSED_RMSNORM_ADD, .m = m_cap, .d_model = st->d_model};
+        P->fuse_attn_rmsnorm_add = probe(be, q);
+
+        /* The PLE gate epilogue runs on hidden_per_layer-wide rows. */
+        q = (struct geist_fusion_query) {
+                .op = GEIST_FUSED_GELU_TANH_MUL, .m = m_cap, .d_model = st->hidden_per_layer};
+        P->fuse_ple_gelu_mul = P->apply_ple && probe(be, q);
+
         /* Session KV-mode conditions (kivi/int8 off, f16-vs-f32 cache
          * views) stay inline at the call site — sess->kv_*_enabled is
          * the per-session overlay, frozen at session_alloc. */

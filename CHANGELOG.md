@@ -9,6 +9,18 @@ minor release.
 ## [Unreleased]
 
 ### Fixed
+- **Probe-and-bind, batch 2 — the two `fused->*` sites that were the hazard**
+  (#352): the post-attention `rmsnorm_add` and the PLE gate's `gelu_tanh_mul`
+  both had the `op == nullptr || op(...) != GEIST_OK` shape, re-running the
+  host path over an output the fused kernel may already have written. Each got
+  its own probe rather than reusing an existing bit: `geist_fusion_query`
+  carries shapes and the layer's weight pointers, so the FFN-probed
+  `fuse_rmsnorm_add` does not answer for the attention post-norm even where a
+  backend happens to accept any geometry today. The other nine `fused->*`
+  checks are deliberately left: they implement a documented three-way protocol
+  (absent / `GEIST_E_UNSUPPORTED`, which is side-effect-free by contract /
+  real error, propagated) that is per-weight routing rather than capability
+  detection — see the triage table on the issue.
 - **A model with a squared-ReLU FFN crashed on Metal** (#352): `layer_ffn.c`
   calls `prims->relu_squared` unconditionally, and the Metal backend declares
   that slot `nullptr` — a null function-pointer call, once per layer. Reachable
