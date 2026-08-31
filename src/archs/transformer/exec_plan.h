@@ -62,6 +62,14 @@ struct transformer_layer_exec_plan {
                                     * overlay) */
     bool fuse_ple_block_m1;        /* fused PLE block, decode */
     bool fuse_ple_block_mN;        /* fused PLE block, prefill */
+
+    /* Two more sites bound in batch 2 (#352). Each needs its OWN probe:
+     * geist_fusion_query carries shapes and the layer's weight pointers, so
+     * a bit probed for the FFN geometry does not answer for the attention
+     * post-norm or the PLE gate, even where a given backend happens to
+     * accept any geometry today. */
+    bool fuse_attn_rmsnorm_add; /* post-attn norm+residual, d_model rows */
+    bool fuse_ple_gelu_mul;     /* PLE gate epilogue, hidden_per_layer rows */
 };
 
 /* Model-level fusion decisions (not per-layer): lookup tables and the

@@ -118,9 +118,15 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             return s;
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
-        if (fused->gelu_tanh_mul != nullptr &&
-            fused->gelu_tanh_mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d) == GEIST_OK) {
+        /* Bound once (#352). The old form fell through to the two-op host
+         * path when the fused op FAILED as well as when it was absent —
+         * re-running gelu over a buffer it may already have written. */
+        if (ctx->P != nullptr && ctx->P->fuse_ple_gelu_mul) {
+            s = fused->gelu_tanh_mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d);
             transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
+            if (s != GEIST_OK) {
+                return s;
+            }
         } else {
             s = prims->gelu_tanh(be, &t_gate_ple_2d, &t_gate_ple_2d);
             transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
