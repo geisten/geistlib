@@ -93,12 +93,15 @@ void i2s_gemm_avx512_vnni(size_t         m,
                           const int32_t *sum_a,
                           const float   *scale,
                           const uint8_t  w_raw[],
+                          int8_t         perm[],
                           float          y[]) {
     const size_t n_blocks  = n_in / I2S_BLOCK_ELEMS;
     const size_t row_bytes = n_in / 4;
 
-    /* Permute every token's activations once (shared, read-only). */
-    int8_t *perm = (int8_t *) malloc(m * n_in);
+    /* `perm` is caller-owned scratch of m*n_in bytes (#336 batch 3): this
+     * used to be a raw malloc here, per GEMM, giving 16-byte alignment to a
+     * buffer that AVX-512 loads out of. The caller either hands over
+     * workspace or takes the M=1 loop below. */
     if (perm == nullptr) {
         for (size_t i = 0; i < m; i++) {
             i2s_gemv_m1_avx512_vnni(
@@ -148,7 +151,6 @@ void i2s_gemm_avx512_vnni(size_t         m,
             }
         }
     }
-    free(perm);
 }
 
 /* ===================== x4 row-interleaved kernels ========================= */

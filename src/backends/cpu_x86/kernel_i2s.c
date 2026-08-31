@@ -22,6 +22,8 @@
 #include <omp.h>
 #endif
 
+#include "heap.h"
+
 #include <stdlib.h>
 
 /* VNNI path (kernel_i2s_avx512_vnni.c). */
@@ -40,6 +42,7 @@ void i2s_gemm_avx512_vnni(size_t         m,
                           const int32_t *sum_a, /* [m] */
                           const float   *scale, /* [m] = tensor_scale * inv_act_scale */
                           const uint8_t  w_raw[],
+                          int8_t         perm[], /* [m * n_in] caller scratch */
                           float          y[]);
 
 /* x4 row-interleaved kernels (kernel_i2s_avx512_vnni.c). xq is natural-order
@@ -194,6 +197,38 @@ void i2s_gemm_mN_scalar(size_t        m,
     }
 }
 
+void i2s_gemm_mN_pre(size_t        m,
+                     size_t        n_out,
+                     size_t        n_in,
+                     const float  *x,
+                     const uint8_t w_raw[],
+                     float         tensor_scale,
+                     int8_t        xq[],
+                     int32_t       sum_a[],
+                     float         scale[],
+                     int8_t        perm[],
+                     float         y[]) {
+    if (m == 0) {
+        return;
+    }
+    if (n_in % I2S_BLOCK_ELEMS != 0 || !i2s_isa_is_vnni() || xq == nullptr || sum_a == nullptr ||
+        scale == nullptr) {
+        i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
+        return;
+    }
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t i = 0; i < m; i++) {
+        scale[i] = tensor_scale * quantize_act_row(n_in, x + i * n_in, xq + i * n_in, &sum_a[i]);
+    }
+    /* A null `perm` is not an error — the GEMM falls back to its M=1 loop. */
+    i2s_gemm_avx512_vnni(m, n_out, n_in, xq, sum_a, scale, w_raw, perm, y);
+}
+
+/* Convenience wrapper: allocates the scratch the _pre form expects. The
+ * backend resolver does NOT use this (it passes workspace); it is here for
+ * tests and one-off callers. */
 void i2s_gemm_mN(size_t        m,
                  size_t        n_out,
                  size_t        n_in,
@@ -208,26 +243,19 @@ void i2s_gemm_mN(size_t        m,
         i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
-    int8_t  *xq    = (int8_t *) malloc(m * n_in);
-    int32_t *sum_a = (int32_t *) malloc(m * sizeof(int32_t));
-    float   *scale = (float *) malloc(m * sizeof(float));
+    int8_t  *xq    = heap_alloc_n_aligned(m, n_in, OPTIMAL_ALIGNMENT);
+    int32_t *sum_a = heap_alloc_n_aligned(m, sizeof(int32_t), OPTIMAL_ALIGNMENT);
+    float   *scale = heap_alloc_n_aligned(m, sizeof(float), OPTIMAL_ALIGNMENT);
+    int8_t  *perm  = heap_alloc_n_aligned(m, n_in, OPTIMAL_ALIGNMENT);
     if (xq == nullptr || sum_a == nullptr || scale == nullptr) {
-        free(xq);
-        free(sum_a);
-        free(scale);
         i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
-        return;
+    } else {
+        i2s_gemm_mN_pre(m, n_out, n_in, x, w_raw, tensor_scale, xq, sum_a, scale, perm, y);
     }
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t i = 0; i < m; i++) {
-        scale[i] = tensor_scale * quantize_act_row(n_in, x + i * n_in, xq + i * n_in, &sum_a[i]);
-    }
-    i2s_gemm_avx512_vnni(m, n_out, n_in, xq, sum_a, scale, w_raw, y);
-    free(xq);
-    free(sum_a);
-    free(scale);
+    safe_free((void **) &xq);
+    safe_free((void **) &sum_a);
+    safe_free((void **) &scale);
+    safe_free((void **) &perm);
 }
 
 /* --- x4 row-interleaved layout ------------------------------------------- */
@@ -276,20 +304,17 @@ void i2s_x4_gemv_m1(size_t        n_out,
     i2s_x4_gemv_m1_avx512_vnni(n_out, n_in, xq, sum_a, x4, scale, y);
 }
 
-void i2s_x4_gemm_mN(size_t        m,
-                    size_t        n_out,
-                    size_t        n_in,
-                    const float  *x,
-                    const uint8_t x4[],
-                    float         tensor_scale,
-                    float         y[]) {
-    int8_t  *xq    = (int8_t *) malloc(m * n_in);
-    int32_t *sum_a = (int32_t *) malloc(m * sizeof(int32_t));
-    float   *scale = (float *) malloc(m * sizeof(float));
+void i2s_x4_gemm_mN_pre(size_t        m,
+                        size_t        n_out,
+                        size_t        n_in,
+                        const float  *x,
+                        const uint8_t x4[],
+                        float         tensor_scale,
+                        int8_t        xq[],
+                        int32_t       sum_a[],
+                        float         scale[],
+                        float         y[]) {
     if (xq == nullptr || sum_a == nullptr || scale == nullptr) {
-        free(xq);
-        free(sum_a);
-        free(scale);
         for (size_t i = 0; i < m; i++) {
             i2s_x4_gemv_m1(n_out, n_in, x + i * n_in, x4, tensor_scale, y + i * n_out);
         }
@@ -302,9 +327,23 @@ void i2s_x4_gemm_mN(size_t        m,
         scale[i] = tensor_scale * quantize_act_row(n_in, x + i * n_in, xq + i * n_in, &sum_a[i]);
     }
     i2s_x4_gemm_avx512_vnni(m, n_out, n_in, xq, sum_a, scale, x4, y);
-    free(xq);
-    free(sum_a);
-    free(scale);
+}
+
+/* Convenience wrapper — see i2s_gemm_mN above. */
+void i2s_x4_gemm_mN(size_t        m,
+                    size_t        n_out,
+                    size_t        n_in,
+                    const float  *x,
+                    const uint8_t x4[],
+                    float         tensor_scale,
+                    float         y[]) {
+    int8_t  *xq    = heap_alloc_n_aligned(m, n_in, OPTIMAL_ALIGNMENT);
+    int32_t *sum_a = heap_alloc_n_aligned(m, sizeof(int32_t), OPTIMAL_ALIGNMENT);
+    float   *scale = heap_alloc_n_aligned(m, sizeof(float), OPTIMAL_ALIGNMENT);
+    i2s_x4_gemm_mN_pre(m, n_out, n_in, x, x4, tensor_scale, xq, sum_a, scale, y);
+    safe_free((void **) &xq);
+    safe_free((void **) &sum_a);
+    safe_free((void **) &scale);
 }
 
 void i2s_x4_gemv_pair_m1(size_t        n_in,

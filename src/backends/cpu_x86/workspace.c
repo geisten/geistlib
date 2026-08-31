@@ -15,6 +15,7 @@
 
 #include "heap.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 /* Global generation source so a recycled cpu_x86_state address can't
@@ -88,12 +89,51 @@ struct cpu_x86_workspace *cpu_x86_ws_acquire(struct cpu_x86_state *st, size_t n_
     return ws;
 }
 
+/* Grow one high-water buffer to `need` bytes. Keeps the existing pointer
+ * when it already covers the request — the steady state after the first
+ * prefill chunk is "no allocation at all". */
+static bool ws_grow_bytes(void **p, size_t *cap, size_t need) {
+    if (need == 0 || *cap >= need) {
+        return true;
+    }
+    void *fresh = heap_alloc_aligned(need, OPTIMAL_ALIGNMENT);
+    if (fresh == nullptr) {
+        return false;
+    }
+    safe_free(p);
+    *p   = fresh;
+    *cap = need;
+    return true;
+}
+
+struct cpu_x86_workspace *cpu_x86_ws_acquire_mN(struct cpu_x86_state *st,
+                                                size_t                acts_bytes,
+                                                size_t                sum_a_bytes,
+                                                size_t                scale_bytes,
+                                                size_t                aux_bytes) {
+    struct cpu_x86_workspace *ws = ws_find_or_mint(st);
+    if (ws == nullptr) {
+        return nullptr;
+    }
+    if (!ws_grow_bytes((void **) &ws->mN_acts, &ws->mN_acts_cap, acts_bytes) ||
+        !ws_grow_bytes((void **) &ws->mN_sum_a, &ws->mN_sum_a_cap, sum_a_bytes) ||
+        !ws_grow_bytes((void **) &ws->mN_scale, &ws->mN_scale_cap, scale_bytes) ||
+        !ws_grow_bytes((void **) &ws->mN_aux, &ws->mN_aux_cap, aux_bytes)) {
+        return nullptr;
+    }
+    return ws;
+}
+
 void cpu_x86_ws_destroy_all(struct cpu_x86_state *st) {
     struct cpu_x86_ws_node *n = atomic_exchange(&st->ws_head, nullptr);
     while (n != nullptr) {
         struct cpu_x86_ws_node *next = atomic_load(&n->next);
         safe_free((void **) &n->ws.acts_scratch);
         safe_free((void **) &n->ws.sum_a_scratch);
+        safe_free((void **) &n->ws.mN_acts);
+        safe_free((void **) &n->ws.mN_sum_a);
+        safe_free((void **) &n->ws.mN_scale);
+        safe_free((void **) &n->ws.mN_aux);
         void *p = n;
         safe_free(&p);
         n = next;

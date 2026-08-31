@@ -21,6 +21,7 @@
 #include "linear_f32q.h"
 
 #include "backend_state.h"
+#include "checked.h"
 #include "kernel_w4a8.h" /* w4a8_quantize_acts_row */
 #include "kernel_w8a8.h"
 
@@ -200,7 +201,6 @@ void cpu_x86_linear_f32q_mN(size_t                     m,
                             const struct geist_weight *w,
                             struct geist_backend      *be,
                             float                     *y) {
-    (void) be;
     const size_t   n_in  = (size_t) w->n_in;
     const size_t   n_out = (size_t) w->n_out;
     const size_t   nblk  = n_in / W8A8_BLOCK_ELEMS;
@@ -208,17 +208,31 @@ void cpu_x86_linear_f32q_mN(size_t                     m,
     const float   *w_scales, *w_offsets;
     f32q_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
 
-    int8_t  *acts    = heap_alloc_aligned(m * n_in * sizeof(int8_t), OPTIMAL_ALIGNMENT);
-    int32_t *sum_a   = heap_alloc_aligned(m * nblk * sizeof(int32_t), OPTIMAL_ALIGNMENT);
-    float   *scale_x = heap_alloc_aligned(m * sizeof(float), OPTIMAL_ALIGNMENT);
-    int32_t *tmp     = heap_alloc_aligned((n_in / 32 + 1) * sizeof(int32_t), OPTIMAL_ALIGNMENT);
-    if (acts == nullptr || sum_a == nullptr || scale_x == nullptr || tmp == nullptr) {
-        safe_free((void **) &acts);
-        safe_free((void **) &sum_a);
-        safe_free((void **) &scale_x);
-        safe_free((void **) &tmp);
+    /* #336 batch 3: four per-call heap_allocs became the per-thread
+     * workspace. `tmp` is the quantizer's throwaway sum buffer and rides in
+     * the aux slot, which no f32q path uses otherwise. */
+    size_t                    acts_bytes = 0, sum_elems = 0, sum_bytes = 0;
+    size_t                    scale_bytes = 0, tmp_bytes = 0;
+    struct cpu_x86_workspace *ws = nullptr;
+    if (be != nullptr && be->state != nullptr && !ckd_mul(&acts_bytes, m, n_in) &&
+        !ckd_mul(&sum_elems, m, nblk) && !ckd_mul(&sum_bytes, sum_elems, sizeof(int32_t)) &&
+        !ckd_mul(&scale_bytes, m, sizeof(float)) &&
+        !ckd_mul(&tmp_bytes, n_in / 32 + 1, sizeof(int32_t))) {
+        ws = cpu_x86_ws_acquire_mN(
+                (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, tmp_bytes);
+    }
+    if (ws == nullptr) {
+        /* Was a bare `return` — leaving y untouched is a silently wrong
+         * answer. The M=1 kernel needs no prefill scratch. */
+        for (size_t row = 0; row < m; row++) {
+            cpu_x86_linear_f32q_m1(x + row * n_in, w, be, y + row * n_out);
+        }
         return;
     }
+    int8_t  *acts    = ws->mN_acts;
+    int32_t *sum_a   = ws->mN_sum_a;
+    float   *scale_x = ws->mN_scale;
+    int32_t *tmp     = (int32_t *) ws->mN_aux;
     for (size_t j = 0; j < m; j++) {
         scale_x[j] = w4a8_quantize_acts_row(n_in, x + j * n_in, acts + j * n_in, tmp);
         int8_t  *a = acts + j * n_in;
@@ -242,8 +256,4 @@ void cpu_x86_linear_f32q_mN(size_t                     m,
     } else {
         w8a8_gemm(m, n_out, nblk, weights, w_scales, w_offsets, acts, sum_a, scale_x, y);
     }
-    safe_free((void **) &acts);
-    safe_free((void **) &sum_a);
-    safe_free((void **) &scale_x);
-    safe_free((void **) &tmp);
 }
