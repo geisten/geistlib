@@ -237,8 +237,11 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     }
 
     t0 = profile ? transformer_profile_now_ns() : 0;
-    transformer_layer_scale_output(&ctx);
+    s  = transformer_layer_scale_output(&ctx);
     transformer_profile_add(TRANSFORMER_PROFILE_SCALE, t0);
+    if (s != GEIST_OK) {
+        return s;
+    }
     if (ctx.advance_kv) {
         sess->kv_len = ctx.kv_len_now;
     }
@@ -307,7 +310,7 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
         s = transformer_layer_run_ple_or_copy(&ctx);
     }
     if (s == GEIST_OK) {
-        transformer_layer_scale_output(&ctx);
+        s = transformer_layer_scale_output(&ctx);
     }
     return s;
 }
@@ -478,8 +481,12 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
      *    backends from flushing for a host loop). */
     {
         struct geist_tensor t_all = view_1d(per_layer_input_buf, st->ple_out);
-        if (prims->scale_f32 == nullptr ||
-            prims->scale_f32(be, &t_all, st->config.ple_model_proj_scale, &t_all) != GEIST_OK) {
+        if (st->model_fusions.prim_scale_f32) {
+            s = prims->scale_f32(be, &t_all, st->config.ple_model_proj_scale, &t_all);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        } else {
             float *p = (float *) v->buffer_map(per_layer_input_buf);
             for (size_t i = 0; i < (size_t) st->ple_out; i++) {
                 p[i] *= st->config.ple_model_proj_scale;
@@ -506,8 +513,12 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
     }
     {
         struct geist_tensor t_all = view_1d(per_layer_input_buf, st->ple_out);
-        if (prims->scale_f32 == nullptr ||
-            prims->scale_f32(be, &t_all, st->config.ple_input_scale, &t_all) != GEIST_OK) {
+        if (st->model_fusions.prim_scale_f32) {
+            s = prims->scale_f32(be, &t_all, st->config.ple_input_scale, &t_all);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        } else {
             float *p = (float *) v->buffer_map(per_layer_input_buf);
             for (size_t i = 0; i < (size_t) st->ple_out; i++) {
                 p[i] *= st->config.ple_input_scale;
@@ -679,8 +690,12 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
 
     /* 4. *= PLE_MODEL_PROJ_SCALE. */
     t0 = prof ? transformer_profile_now_ns() : 0;
-    if (prims->scale_f32 == nullptr ||
-        prims->scale_f32(be, &t_out_2d, st->config.ple_model_proj_scale, &t_out_2d) != GEIST_OK) {
+    if (st->model_fusions.prim_scale_f32) {
+        s = prims->scale_f32(be, &t_out_2d, st->config.ple_model_proj_scale, &t_out_2d);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    } else {
         float *p = (float *) v->buffer_map(out_buf);
         for (size_t i = 0; i < n * PLE_OUT; i++) {
             p[i] *= st->config.ple_model_proj_scale;
@@ -702,30 +717,32 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
 
     /* 6. out_buf = (out_buf + ple_lookup) * PLE_INPUT_SCALE. */
     t0 = prof ? transformer_profile_now_ns() : 0;
-    {
-        bool combined_on_device = false;
-        if (prims->add != nullptr && prims->scale_f32 != nullptr) {
-            struct geist_tensor t_plu_2d =
-                    view_2d(sess->scratch_ple_lookup, (int64_t) n, (int64_t) PLE_OUT);
-            /* add validates before encoding; once it succeeded out_buf is
-             * mutated and the host fallback must NOT rerun the combine. */
-            if (prims->add(be, &t_out_2d, &t_plu_2d, &t_out_2d) == GEIST_OK) {
-                s = prims->scale_f32(be, &t_out_2d, st->config.ple_input_scale, &t_out_2d);
-                if (s != GEIST_OK) {
-                    return s;
-                }
-                combined_on_device = true;
-            }
+    /* Bound once (#352). `add` is a required member — six other sites in
+     * this arch call it without a null test — so only scale_f32 decides.
+     * The old shape ran the device add, and on failure re-ran the whole
+     * combine on the host over a buffer the add had already mutated; the
+     * comment there warned about it rather than preventing it. */
+    if (st->model_fusions.prim_scale_f32) {
+        struct geist_tensor t_plu_2d =
+                view_2d(sess->scratch_ple_lookup, (int64_t) n, (int64_t) PLE_OUT);
+        s = prims->add(be, &t_out_2d, &t_plu_2d, &t_out_2d);
+        if (s == GEIST_OK) {
+            s = prims->scale_f32(be, &t_out_2d, st->config.ple_input_scale, &t_out_2d);
         }
-        if (!combined_on_device) {
-            float *p   = (float *) v->buffer_map(out_buf);
-            float *plu = (float *) v->buffer_map(sess->scratch_ple_lookup);
-            for (size_t i = 0; i < n * PLE_OUT; i++) {
-                p[i] = (p[i] + plu[i]) * st->config.ple_input_scale;
-            }
-            v->buffer_unmap(sess->scratch_ple_lookup);
-            v->buffer_unmap(out_buf);
+        if (s != GEIST_OK) {
+            return s;
         }
+    } else {
+        float *p   = (float *) v->buffer_map(out_buf);
+        float *plu = (float *) v->buffer_map(sess->scratch_ple_lookup);
+        if (p == nullptr || plu == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+        for (size_t i = 0; i < n * PLE_OUT; i++) {
+            p[i] = (p[i] + plu[i]) * st->config.ple_input_scale;
+        }
+        v->buffer_unmap(sess->scratch_ple_lookup);
+        v->buffer_unmap(out_buf);
     }
     plepre_add(PLEPRE_COMBINE, t0);
     return GEIST_OK;

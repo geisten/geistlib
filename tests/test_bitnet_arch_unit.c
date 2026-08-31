@@ -52,10 +52,30 @@ int main(void) {
     fails += geist_expect(sel(S("bitnet-b1.58"), S("bogus")) == GEIST_FFN_GATED_SQUARED_RELU,
                           "unknown activation string falls back to the arch default");
 
+    /* Which activations need the relu_squared primitive (#352). A backend
+     * without it cannot run these, and exec_plan_build refuses at load
+     * instead of calling a null pointer once per layer — so a new gated
+     * variant added to the enum must be added to this predicate too, and
+     * this is where that is caught. */
+    fails += geist_expect(geist_ffn_needs_relu_squared(GEIST_FFN_GATED_SQUARED_RELU),
+                          "gated squared ReLU needs the relu_squared prim");
+    fails += geist_expect(geist_ffn_needs_relu_squared(GEIST_FFN_SQUARED_RELU),
+                          "gateless squared ReLU needs the relu_squared prim");
+    fails += geist_expect(!geist_ffn_needs_relu_squared(GEIST_FFN_SWIGLU),
+                          "SwiGLU does not need the relu_squared prim");
+    fails += geist_expect(!geist_ffn_needs_relu_squared(GEIST_FFN_GEGLU),
+                          "GEGLU does not need the relu_squared prim");
+    /* And the two are wired together: every activation string that selects
+     * a squared-ReLU kind must answer true. */
+    fails += geist_expect(geist_ffn_needs_relu_squared(sel(S("bitnet-b1.58"), S(""))),
+                          "the bitnet-b1.58 default requires relu_squared");
+    fails += geist_expect(geist_ffn_needs_relu_squared(sel(S("llama"), S("relu2"))),
+                          "a non-bitnet arch with activation=relu2 requires it too");
+
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("bitnet arch: FFN-activation selection pass\n");
+    printf("bitnet arch: FFN-activation selection + relu_squared requirement pass\n");
     return GEIST_TEST_PASS;
 }

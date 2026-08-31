@@ -72,6 +72,16 @@ void geist_error_set_create_time(enum geist_status code,
     }
 }
 
+void geist_error_clear_create_time(void) {
+    t_create_error.code        = GEIST_OK;
+    t_create_error.origin_func = nullptr;
+    t_create_error.message[0]  = '\0';
+}
+
+bool geist_have_create_error(void) {
+    return t_create_error.message[0] != '\0';
+}
+
 const char *geist_last_create_error(void) {
     if (t_create_error.message[0] == '\0') {
         return "(no error)";

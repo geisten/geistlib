@@ -9,6 +9,33 @@ minor release.
 ## [Unreleased]
 
 ### Fixed
+- **A model with a squared-ReLU FFN crashed on Metal** (#352): `layer_ffn.c`
+  calls `prims->relu_squared` unconditionally, and the Metal backend declares
+  that slot `nullptr` — a null function-pointer call, once per layer. Reachable
+  for any GGUF whose `activation` key says `squared_relu` / `relu2` /
+  `gated_squared_relu` (the key is read regardless of architecture) on a
+  backend that lacks the primitive. It is refused at plan build now, naming
+  the backend and the cause, instead of dereferencing null in the hot path.
+  The bitnet-b1.58 model in this repo does not reach it — Metal rejects its
+  I2_S weights in the linear first — so the crash is shown by construction,
+  not by a run.
+- **`geist_model_load` replaced a specific diagnosis with a guess** (#352):
+  `state_create` returns `void *`, so a failure carries no status upward and
+  the caller reported `GEIST_E_IO` "file missing or malformed" for every
+  cause, overwriting whatever the arch layer had put in the create-time error
+  slot. It now keeps a message a lower layer already set.
+- **Probe-and-bind for the optional primitives, batch 1** (#352): the seven
+  `prims->op != nullptr` tests in per-token and per-layer paths are bound once
+  in the exec plan. Four had the shape
+  `if (op == nullptr || op(...) != GEIST_OK) { host loop }`, which conflates
+  "absent" with "failed" and re-ran work the device op may already have done —
+  `layer.c` carries a comment about exactly that hazard for `add` while the
+  `scale_f32` sites had the same shape and no such guard. Bound paths now call
+  the primitive unconditionally and propagate its status, per the
+  `geist_backend.h` contract that a successful probe means the op must
+  succeed. `transformer_layer_scale_output` returns a status instead of `void`
+  for the same reason. Behaviour is unchanged on both arms (verified against
+  the unmodified tree on Metal and cpu_neon).
 - **Allocation-free linear-kernel contract, batch 3 — the x86 side** (#336,
   closes #353): the five cpu_x86 prefill paths allocated their activation
   scratch on every call. `kernel_i2s.c` and `kernel_i2s_avx512_vnni.c` used

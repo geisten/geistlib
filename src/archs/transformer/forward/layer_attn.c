@@ -344,7 +344,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
 
     if (!ctx->apply_gemma_attn_norms) {
         const float scale = 1.0f / sqrtf((float) ctx->hd);
-        if (prims->scale_f32 != nullptr) {
+        if (ctx->st->model_fusions.prim_scale_f32) {
             s = prims->scale_f32(be, &t_q_2d, scale, &t_q_2d);
             if (s != GEIST_OK)
                 return s;

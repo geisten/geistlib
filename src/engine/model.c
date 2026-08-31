@@ -243,14 +243,20 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
      * transformer arch this opens the GGUF and loads weights into
      * backend-owned buffers; for future archs it'll be SSM-state or
      * whatever the arch needs. */
+    /* state_create returns void*, so a failure carries no status up here.
+     * If it named the cause in the create-time slot, keep that message —
+     * the guess below is only right when nothing below said anything. */
+    geist_error_clear_create_time();
     void *arch_state = desc->decoder_ops->state_create(be, path, nullptr);
     if (arch_state == nullptr) {
         model_load_undo(sp_tok, gguf_tok, arch_copy);
-        geist_error_set_create_time(GEIST_E_IO,
-                                    "geist_model_load",
-                                    "decoder state_create failed for '%s' (file missing or "
-                                    "malformed, or out of memory?)",
-                                    path);
+        if (!geist_have_create_error()) {
+            geist_error_set_create_time(GEIST_E_IO,
+                                        "geist_model_load",
+                                        "decoder state_create failed for '%s' (file missing or "
+                                        "malformed, or out of memory?)",
+                                        path);
+        }
         return GEIST_E_IO;
     }
 
