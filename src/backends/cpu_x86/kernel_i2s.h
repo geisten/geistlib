@@ -72,6 +72,22 @@ void i2s_gemm_mN(size_t        m,
                  float         tensor_scale,
                  float         y[]);
 
+/* Same GEMM on caller-owned scratch (#336 batch 3): the backend resolver
+ * hands over the per-thread workspace so the hot path allocates nothing.
+ * `xq` and `perm` are [m*n_in], `sum_a` and `scale` are [m]. The wrapper
+ * above is the convenience form kept for tests and one-off callers. */
+void i2s_gemm_mN_pre(size_t        m,
+                     size_t        n_out,
+                     size_t        n_in,
+                     const float  *x,
+                     const uint8_t w_raw[],
+                     float         tensor_scale,
+                     int8_t        xq[],
+                     int32_t       sum_a[],
+                     float         scale[],
+                     int8_t        perm[],
+                     float         y[]);
+
 void i2s_gemm_mN_scalar(size_t        m,
                         size_t        n_out,
                         size_t        n_in,
@@ -112,6 +128,19 @@ void i2s_x4_gemm_mN(size_t        m,
                     const uint8_t x4[],
                     float         tensor_scale,
                     float         y[]);
+
+/* x4 prefill on caller-owned scratch (#336 batch 3). No `perm` — the x4
+ * layout reads activations in natural order. */
+void i2s_x4_gemm_mN_pre(size_t        m,
+                        size_t        n_out,
+                        size_t        n_in,
+                        const float  *x,
+                        const uint8_t x4[],
+                        float         tensor_scale,
+                        int8_t        xq[],
+                        int32_t       sum_a[],
+                        float         scale[],
+                        float         y[]);
 
 /* Fused decode of two same-`n_in` weights (gate+up, q+k) sharing one
  * activation quant + one OMP region. Opt-in via GEIST_I2S_PAIR=1 (perf-neutral

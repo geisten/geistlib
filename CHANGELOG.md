@@ -8,6 +8,28 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed
+- **Allocation-free linear-kernel contract, batch 3 — the x86 side** (#336,
+  closes #353): the five cpu_x86 prefill paths allocated their activation
+  scratch on every call. `kernel_i2s.c` and `kernel_i2s_avx512_vnni.c` used
+  raw `malloc` — outside `heap.h`, and 16-byte aligned on x86-64 for buffers
+  that feed AVX-512 loads; `linear_q4k.c`, `linear_q6k.c` and `linear_f32q.c`
+  used `heap_alloc_aligned`, three or four per call, per projection, per
+  layer, per chunk. All five now take the per-thread cpu_x86 workspace, which
+  grows to a high-water mark and is reused. The I2S GEMMs gained `_pre`
+  variants on caller-owned scratch (the shape the NEON side already has), and
+  `i2s_gemm_avx512_vnni` takes its activation-permute buffer from the caller
+  instead of allocating one per GEMM. `linear_f32q`'s scratch-failure path
+  used to `return` with `y` untouched — a silently wrong answer; it now falls
+  back to the M=1 kernel like its siblings. New `test_x86_kernel_no_alloc_unit`
+  asserts a zero `heap_alloc_count()` delta across 200 decode calls plus every
+  prefill shape, and runs under Intel SDE so the VNNI paths are what is gated.
+  **Throughput is unmeasured and declared so:** there is no x86 hardware in
+  this setup (bench board is a Cortex-A76, dev machine is Apple silicon), and
+  numbers from an emulator would be meaningless. The case here is the
+  contract, as on the ARM side, where the equivalent change measured neutral
+  except where allocations sat inside a parallel region.
+
 ### Added
 - **`GEIST_LOG_KERNELS=1`** (#327): the cpu_neon resolver counts its own
   decisions per catalog row and prints them at backend destroy. "Which kernels

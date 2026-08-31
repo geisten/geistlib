@@ -22,6 +22,7 @@
 #include "linear_q4k.h"
 
 #include "backend_state.h"
+#include "checked.h"
 #include "kernel_q4kx8_gemm.h" /* Phase 3 lane-parallel Q4_Kx8 GEMV */
 #include "kernel_w4a8.h"
 #include "kernel_w8a8.h" /* sum_a sized for W8A8 to also cover Q6_K */
@@ -200,7 +201,6 @@ void cpu_x86_linear_q4k_mN(size_t                     m,
                            const struct geist_weight *w,
                            struct geist_backend      *be,
                            float                     *y) {
-    (void) be;
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
 
@@ -229,22 +229,28 @@ void cpu_x86_linear_q4k_mN(size_t                     m,
     }
 
     /* Quantize acts into block_q8_Kx4 scratch — 4 rows interleaved per
-     * super-block. Allocated per call from heap.h (small: m/4 × n_in/256
-     * × ~1.2 KB ≈ 36 KB for m=128, n_in=1536). */
-    const size_t         n_super_k   = n_in / 256;
-    const size_t         q8kx4_count = (m / 4) * n_super_k;
-    struct block_q8_Kx4 *acts =
-            heap_alloc_aligned(q8kx4_count * sizeof(struct block_q8_Kx4), OPTIMAL_ALIGNMENT);
-    if (acts == nullptr) {
+     * super-block, m/4 × n_in/256 × ~1.2 KB (≈36 KB at m=128, n_in=1536).
+     * #336 batch 3: this came from the per-thread workspace instead of a
+     * per-call heap_alloc, so a prefill sweep allocates once and then not
+     * again. */
+    const size_t              n_super_k   = n_in / 256;
+    size_t                    q8kx4_count = 0;
+    size_t                    acts_bytes  = 0;
+    struct cpu_x86_workspace *ws          = nullptr;
+    if (be != nullptr && be->state != nullptr && !ckd_mul(&q8kx4_count, m / 4, n_super_k) &&
+        !ckd_mul(&acts_bytes, q8kx4_count, sizeof(struct block_q8_Kx4))) {
+        ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, 0, 0, 0, acts_bytes);
+    }
+    if (ws == nullptr) {
         for (size_t row = 0; row < m; row++) {
             cpu_x86_linear_q4k_m1(x + row * n_in, w, be, y + row * n_out);
         }
         return;
     }
+    struct block_q8_Kx4 *acts = (struct block_q8_Kx4 *) ws->mN_aux;
     for (size_t mt = 0; mt < m / 4; mt++) {
         quantize_q8_Kx4(n_in, x + mt * 4 * n_in, acts + mt * n_super_k);
     }
 
     q4kx8_gemm_avx512(m, n_out, n_in, acts, q4kx8, y);
-    safe_free((void **) &acts);
 }
