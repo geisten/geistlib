@@ -20,25 +20,119 @@ warm-up, repeats, and the mean/best/worst aggregation — and emits it as JSONL,
 so every recorded row carries its own provenance:
 
 - **Model:** Gemma 4 E2B-it, Q4_K_M (`make fetch-model`).
-- **Warm-up:** 64-token prefill, then reset (excludes cold caches / page-ins).
-- **Prefill:** time to prefill 200 tokens → tok/s.
-- **Decode:** time to autoregressively decode 50 tokens → tok/s.
-- **Best-of-N:** `small` takes the best of 2 runs, `detailed` the best of 5,
-  to suppress scheduler noise.
+- **Workload** — the two suites in `SWEEP_WORKLOAD`
+  (`tools/bench_quality_perf.py`), which is the single source of truth:
+
+  | suite | prefill | decode | warm-up | repeats |
+  | :-- | ---: | ---: | ---: | ---: |
+  | `small` (`make bench-small`) | 128 tok | 32 tok | 8 tok | 3 |
+  | `detailed` (`make bench-detailed`) | 512 tok | 64 tok | 64 tok | 10 |
+
+- **Warm-up:** discarded, not measured — it pages the weights resident,
+  resolves the backend kernels and spins up the OMP pool, so the repeats
+  measure steady state rather than cold start.
+- **Aggregation:** the sweep reports the **mean** over the repeats as the
+  headline `*_tps`, and carries `*_best` / `*_worst` in the same record. The
+  recorded table below is the mean; the comparison tables further down quote
+  the **best**, for the reason in the methodology note.
 
 ```sh
-make fetch-model                        # one-time, ~3.1 GB
+make fetch-model                         # one-time, ~3.1 GB
 OMP_WAIT_POLICY=active make bench-small  # records a row below
-# tune threads:
-BENCH_THREADS=6 OMP_WAIT_POLICY=active make bench-detailed
+OMP_WAIT_POLICY=active make bench-detailed
 ```
 
+**Do not set `BENCH_THREADS` on Apple silicon.** Left unset, the backend sizes
+the OMP pool to the performance-core count (`hw.perflevel0.physicalcpu`, 8 on
+an M1 Max) — an explicit value always wins, and every other value is worse.
+OMP's own default is `num_procs`, which includes the two efficiency cores, and
+a static partition then waits on the E-core chunks; the sizing comment in
+`src/backends/cpu_neon/backend.c` records that one as pp512 91 tps on 10 cores
+vs 145 on the 8 P-cores. Fewer threads than P-cores is worse *and* noisier —
+measured 2026-08-31 on this M1 Max, three back-to-back runs of one binary at
+`--seq-lens 512 --decode-n 32 --warmup 64 --repeats 5`:
+
+| `OMP_NUM_THREADS` | pp512 best-of-5, three runs | spread |
+| ---: | :-- | ---: |
+| 8 (= P-cores, the default) | 140.7 / 141.9 / 140.1 | **1.3 %** |
+| 6 | 141.1 / 122.4 / 126.4 | 15 % |
+| 4 | 126.7 / 98.0 / 99.3 | 29 % |
+
+Below the P-core count the desktop's own load lands on the cores geist is not
+using *and* on the ones it is, so the spread grows faster than the mean falls.
+A number quoted without its thread count is not comparable to anything.
+
 `OMP_WAIT_POLICY=active` (or `KMP_BLOCKTIME=infinite`) matters on the `mac-omp`
-target — passive wait adds large per-matmul thread-pool wake-up overhead. Thread
-*placement* is handled automatically: geist pins prefill to the performance
-cores and decode to P-cores−1 (see the comparison below). Override the workload
-size with `GEIST_BENCH_PP` / `GEIST_BENCH_TG` to match an external reference
-(e.g. `llama-bench -p 512 -n 128`).
+target — passive wait adds large per-matmul thread-pool wake-up overhead. The
+backend sets it itself at create time (`setenv` with `overwrite=0`, so an
+explicit policy still wins); the command lines above state it because the
+recorded rows should say what they ran under. Thread *placement* is handled
+automatically: geist pins prefill to the performance cores and decode to
+P-cores−1 (see the comparison below).
+
+**Which kernels a number actually measures.** `GEIST_LOG_KERNELS=1` makes the
+cpu_neon resolver count its decisions and print them per catalog row at
+backend destroy — so "does this model even run the code I changed?" is
+answered by the binary rather than by reading the GGUF's dtype histogram:
+
+```
+$ GEIST_LOG_KERNELS=1 bin/mac-omp/release/tests/bench_perf_sweep ... 2>&1 >/dev/null
+[geist] resolved kernels (tensors per catalog row):
+[geist]   q4_K                        182
+[geist]   q6_K                         24
+[geist]   f32                          71
+```
+
+The reference model is Q4_K/Q6_K/F32 and nothing else. A change confined to,
+say, the Q4_0 paths cannot move this number, however suggestive the timings
+look — check here before attributing a swing to a commit (#327).
+
+To match an external reference workload (e.g. `llama-bench -p 512 -n 128`),
+drive the sweep binary directly — it takes the shape on the command line:
+
+```sh
+GEIST_GGUF_PATH=... OMP_WAIT_POLICY=active \
+  bin/mac-omp/release/tests/bench_perf_sweep \
+  --seq-lens 512 --decode-n 128 --warmup 64 --repeats 10
+```
+
+### A/B-ing two commits on a desktop that cannot be quiesced
+
+Comparing two builds here needs a **paired** design, not two campaigns: the
+absolute level moves ~27 % between windows on this machine (WindowServer, a
+browser, an indexer), which is five times the effect sizes anyone is chasing.
+Run the two binaries 15 s apart with the order alternating per pair, then read
+the **within-pair ratio** — the drift is common to both members and cancels.
+Freeze the binaries outside the build tree first; a `make` during the series
+silently swaps one side.
+
+Worked example — `c1e74ad` (before the Q4_0 x8 series) vs `0792e55` (main),
+2026-08-31, M1 Max / Darwin 25.5.0 (macOS 26.5.1) / Apple clang 21.0.0 /
+libomp 22.1.8,
+`OMP_NUM_THREADS=8`, `OMP_WAIT_POLICY=active`, gemma4-e2b-Q4_K_M
+(`9378bc47…`), 8 pairs at `--seq-lens 512 --decode-n 32 --warmup 64
+--repeats 5`:
+
+| | median paired Δ | per-pair range | absolute level swing |
+| :-- | ---: | :-- | ---: |
+| prefill pp512 | **−1.1 %** | −10.6 % … +12.1 % | 101.7 … 129.1 (27 %) |
+| decode tg32 | **−1.0 %** | −11.5 % … +28.9 % | 16.4 … 22.9 (39 %) |
+
+Both directions appear (3 of 8 pairs positive on each axis; sign test
+p = 0.73), so the two trees are indistinguishable here. Note what that costs:
+16 runs over ~25 minutes resolve nothing finer than about ±5 %. **A number
+below that threshold cannot be established on this machine at all** — take it
+to the quiesced Pi 5 ([PI5.md](PI5.md)), or expect the answer to be "noise".
+
+What this does *not* explain is why the June comparison table below reads
+pp512 150 while a calm window on 2026-08-31 topped out at 140.7. The paired
+series rules out the code between `c1e74ad` and main as the cause, and the OS
+is not it either (the recorded row's `Darwin 25.5.0` is still this host's
+kernel release — the macOS *product* version moved to 26.x on the same
+Darwin major, which is a different numbering, not a different kernel). The
+residual is either machine state that the tags do not capture, or a change
+older than `c1e74ad`. Either way it is not a regression this ticket can
+attribute, and a June best-of number is not a baseline anyone can re-derive.
 
 ## Comparison vs llama.cpp (Apple M1 Max, CPU, measured June 2026)
 

@@ -173,7 +173,11 @@ struct cpu_neon_state {
  * Returns nullptr only on OOM of the ~200-byte node. */
 struct cpu_neon_workspace *cpu_neon_ws(struct cpu_neon_state *st);
 void                       cpu_neon_ws_destroy_all(struct cpu_neon_state *st);
-uint64_t                   cpu_neon_ws_next_generation(void);
+
+/* Prints the per-catalog-row tensor counts collected by the resolver, if
+ * GEIST_LOG_KERNELS=1. Diagnostic; a no-op otherwise (#327). */
+void     cpu_neon_dump_kernel_hits(void);
+uint64_t cpu_neon_ws_next_generation(void);
 
 /* TQ2_0 (ternary BitNet b1.58) compute kernels — implemented in
  * kernels/tq2_0.c, referenced by the resolver table in weight_resolve.c.
