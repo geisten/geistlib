@@ -695,6 +695,15 @@ jobs:
             echo "=== driver ==="
             nvidia-smi 2>&1 || true
           } | tee ci-diagnostics/vulkan-env.txt
+          # The host also exposes an integrated GPU and llvmpipe. vk_pick_device
+          # prefers the first discrete device but falls back to device 0 when
+          # there is none — so a driver that fails to enumerate would leave this
+          # leg green on llvmpipe, i.e. a second lavapipe job wearing the
+          # hardware tier's name. Same rule as SKIP=failure below.
+          grep -q PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ci-diagnostics/vulkan-env.txt || {
+            echo "no discrete GPU enumerated — refusing to pass on a software device"
+            exit 1
+          }
       - name: Build (vulkan + shipped x86 CPU backends)
         run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
       - name: Vulkan tests on GPU (SKIP = failure)

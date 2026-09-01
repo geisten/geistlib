@@ -9,27 +9,54 @@ that job queues — the rest of the PR gates are unaffected.
 
 ## Setup
 
-Get the current package URL and a registration token from
-`https://github.com/geisten/geistlib/settings/actions/runners/new`, then:
+What the job needs is a runner carrying the label **`geist-vulkan`** (the
+contract fixed in `docs/CI_COVERAGE.md`, alongside the defaults
+`self-hosted`, `Linux`, `X64` — label matching is case-insensitive).
+
+If a runner is already registered on the machine, do not add a second one;
+give the existing one the label:
+
+```sh
+gh api -X POST repos/geisten/geistlib/actions/runners/<id>/labels \
+  -f 'labels[]=geist-vulkan'
+gh api repos/geisten/geistlib/actions/runners \
+  -q '.runners[] | {name, status, labels: [.labels[].name]}'
+```
+
+(Settings -> Actions -> Runners does the same thing by hand.) That is how
+this leg was brought up: the desktop already ran
+`actions.runner.geisten-geistlib.geisten_amd_nvidea.service` out of
+`~/action-runner`, so it only needed the label.
+
+From scratch, take the package URL and registration token from
+`https://github.com/geisten/geistlib/settings/actions/runners/new`:
 
 ```sh
 mkdir -p ~/actions-runner && cd ~/actions-runner
 curl -o r.tar.gz -L <url from that page>
 tar xzf r.tar.gz
-./config.sh --url https://github.com/geisten/geistlib --token <TOKEN> \
-  --labels self-hosted,linux,x64,geist-vulkan
+./config.sh --unattended --url https://github.com/geisten/geistlib --token <TOKEN> \
+  --name "$(hostname)-vulkan" --labels geist-vulkan
 sudo ./svc.sh install "$USER"   # systemd unit, starts on boot
 sudo ./svc.sh start
 ```
 
-`runs-on: [self-hosted, linux, x64, geist-vulkan]` matches those labels; the
-contract is fixed in `docs/CI_COVERAGE.md`. The runner polls GitHub outbound;
-no inbound port, no firewall change.
+The runner polls GitHub outbound; no inbound port, no firewall change.
 
 Host prerequisites, installed once by hand (the job has no apt step):
 `gcc >= 14`, `make`, the Vulkan loader and headers (`libvulkan-dev`),
 `vulkan-tools` for `vulkaninfo`, and a working vendor driver — verify with
 `vulkaninfo --summary` before blaming CI.
+
+### The device the job actually runs on
+
+This host enumerates three Vulkan devices: the discrete GPU, the iGPU
+(RADV), and llvmpipe. `vk_pick_device` takes the first discrete one, but
+falls back to device 0 when it finds none — which would leave this leg
+green on llvmpipe, a second lavapipe job wearing the hardware tier's name.
+The environment step therefore fails the job if no
+`PHYSICAL_DEVICE_TYPE_DISCRETE_GPU` is enumerated. `GEIST_VK_DEVICE=<index>`
+pins a specific device when a host has more than one discrete GPU.
 
 ## Model e2e (GGUF)
 
@@ -53,6 +80,11 @@ the runner user and point the variable at it. Nothing is downloaded per job —
 3 GB per PR is not worth the bandwidth on a machine that already has the file.
 
 ### Why this step is worth its runtime
+
+The whole leg — checkout, full build, three kernel tests, both e2e binaries —
+takes **42 s** on this host (run 33515052429). The 30 min timeout is there for
+a cold page cache, not for the normal case.
+
 
 It is the gate that caught the bug the kernel tests could not see. All three
 Vulkan kernel tests passed on the device while every prompt produced nothing:
