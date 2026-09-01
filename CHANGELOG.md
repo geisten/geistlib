@@ -9,6 +9,15 @@ minor release.
 ## [Unreleased]
 
 ### Fixed
+- **Probe-and-bind, batch 3 — `buffer_copy` stops swallowing device errors**
+  (#352): the five per-token/per-layer sites (`step.c` ×3, `head.c`,
+  `kv_store.c`) tested `v->buffer_copy != nullptr` *and* fell back to a host
+  `memcpy` when the copy **failed** — `kv_store.c` said so outright ("fall
+  through to the host path on failure"). `buffer_copy` exists only on the
+  batched-submit backends (Metal, Vulkan), whose whole reason for having it
+  is that mapping a buffer forces a pipeline flush; a failure there is a
+  device error, and it was becoming a silent slow path. The capability is
+  bound at plan build now and failures propagate.
 - **Probe-and-bind, batch 2 — the two `fused->*` sites that were the hazard**
   (#352): the post-attention `rmsnorm_add` and the PLE gate's `gelu_tanh_mul`
   both had the `op == nullptr || op(...) != GEIST_OK` shape, re-running the

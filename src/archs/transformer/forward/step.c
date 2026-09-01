@@ -116,8 +116,15 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
 
     /* Seed scratch_h_a with seq rows of HIDDEN. */
     {
-        if (v->buffer_copy == nullptr ||
-            v->buffer_copy(sess->scratch_h_a, 0, initial_h_buf, 0, seq * row_bytes_h) != GEIST_OK) {
+        /* Bound once (#352): a device copy that FAILS is a device error, not
+         * a missing capability, and must not become a quiet host memcpy. */
+        if (st->model_fusions.backend_buffer_copy) {
+            const enum geist_status cs =
+                    v->buffer_copy(sess->scratch_h_a, 0, initial_h_buf, 0, seq * row_bytes_h);
+            if (cs != GEIST_OK) {
+                return cs;
+            }
+        } else {
             const uint8_t *src = (const uint8_t *) v->buffer_map(initial_h_buf);
             uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_h_a);
             memcpy(dst, src, seq * row_bytes_h);
@@ -143,7 +150,7 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
              * gather would be seq*n_layers copy dispatches per chunk. */
             layer_ple_buf = per_layer_input_buf;
         } else if (per_layer_input_buf != nullptr) {
-            if (v->buffer_copy != nullptr) {
+            if (st->model_fusions.backend_buffer_copy) {
                 /* Device-side gather: keeps batched GPU backends from
                  * flushing their pipeline for a host memcpy each layer. */
                 enum geist_status cs = GEIST_OK;
@@ -192,8 +199,12 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
     /* After the loop, h_in is the latest output (post-swap). Copy seq rows
      * to out_h_buf. */
     {
-        if (v->buffer_copy == nullptr ||
-            v->buffer_copy(out_h_buf, 0, h_in, 0, seq * row_bytes_h) != GEIST_OK) {
+        if (st->model_fusions.backend_buffer_copy) {
+            const enum geist_status cs = v->buffer_copy(out_h_buf, 0, h_in, 0, seq * row_bytes_h);
+            if (cs != GEIST_OK) {
+                return cs;
+            }
+        } else {
             const uint8_t *src = (const uint8_t *) v->buffer_map(h_in);
             uint8_t       *dst = (uint8_t *) v->buffer_map(out_h_buf);
             memcpy(dst, src, seq * row_bytes_h);
