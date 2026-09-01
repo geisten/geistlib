@@ -667,6 +667,74 @@ jobs:
           path: ci-diagnostics/
           if-no-files-found: warn
 
+  # Same Vulkan suite as vulkan-lavapipe, on real hardware. Lavapipe is a CPU
+  # implementation of the API: it proves the code is spec-correct, not that it
+  # runs on a vendor driver, where the failures actually live (memory type
+  # flags, descriptor limits, subgroup width, timeline semaphore behaviour).
+  # Self-hosted runner — a desktop with a discrete GPU, see
+  # docs/CI_SELF_HOSTED.md for the runner contract and setup.
+  vulkan-gpu:
+    name: Vulkan backend (Linux x86_64, discrete GPU)
+    # Fork PRs stay on the hosted legs. The runner is a personal desktop and
+    # executes job code as the logged-in user with no sandbox; a self-hosted
+    # leg on a public repo is otherwise a shell for anyone who can open a PR.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, geist-vulkan]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # No apt step: the runner is a fixed machine, its toolchain and Vulkan
+      # loader are installed once by hand, not per job.
+      - name: Report Vulkan environment
+        run: |
+          mkdir -p ci-diagnostics
+          {
+            echo "=== vulkaninfo --summary ==="
+            vulkaninfo --summary 2>&1 || echo "vulkaninfo failed"
+            echo
+            echo "=== driver ==="
+            nvidia-smi 2>&1 || true
+          } | tee ci-diagnostics/vulkan-env.txt
+      - name: Build (vulkan + shipped x86 CPU backends)
+        run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: Vulkan tests on GPU (SKIP = failure)
+        # Same pipefail contract as the lavapipe leg: tee would otherwise mask
+        # the test exit code, and exit 77 (SKIP) has to fail the job — a job
+        # whose whole point is the real device must not pass by not finding one.
+        run: |
+          set -eo pipefail
+          for t in test_backend_vulkan_registry_unit \
+                   test_backend_vulkan_buffer_unit \
+                   test_backend_vulkan_linear_parity; do
+            echo "=== $t ==="
+            bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
+          done
+      # The gate the kernel tests cannot be: a full GGUF forward pass on the
+      # device. It is what caught the ones-vector pool bug — all three tests
+      # above passed while prefill returned UNSUPPORTED and the model emitted
+      # nothing. GEIST_GGUF_PATH is a repo variable pointing OUTSIDE the
+      # workspace: checkout's `git clean -ffdx` deletes gguf_artifacts/, which
+      # is gitignored. STRICT_FIXTURES so an unset or wrong path fails the job
+      # instead of skipping green.
+      - name: Model e2e on GPU (known-answer cloze + prefill determinism)
+        env:
+          GEIST_BACKEND: vulkan
+          GEIST_GGUF_PATH: ${{ vars.GEIST_GGUF_PATH }}
+          GEIST_STRICT_FIXTURES: gguf
+        run: |
+          set -eo pipefail
+          for t in test_known_answer_e2e test_prefill_determinism_int; do
+            echo "=== $t ==="
+            bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
+          done
+      - name: Upload Vulkan diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-gpu-diagnostics
+          path: ci-diagnostics/
+          if-no-files-found: warn
+
   # AGENT.md requires the code to be ASan/UBSan-friendly; nothing enforced it.
   # Build MODE=asan (-fsanitize=address,undefined) and run the model-free unit
   # suite — catches use-after-free / overflow / UB in the kernels + engine the
