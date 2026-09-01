@@ -25,14 +25,19 @@ void transformer_scratch_plan_build(const struct transformer_arch_state *st,
         }
     }
 
-    out->hidden           = M * st->d_model * F;
-    out->q_out            = M * q_out_max * F;
-    out->kv_out           = M * kv_out_max * F;
-    out->inter            = M * inter_max * F;
-    out->ple_out          = M * st->ple_out * F;
-    out->hidden_per       = M * st->hidden_per_layer * F;
-    out->vocab            = M * st->vocab_size * F;
-    out->pool_align_slack = 21u * 64u;
+    out->hidden     = M * st->d_model * F;
+    out->q_out      = M * q_out_max * F;
+    out->kv_out     = M * kv_out_max * F;
+    out->inter      = M * inter_max * F;
+    out->ple_out    = M * st->ple_out * F;
+    out->hidden_per = M * st->hidden_per_layer * F;
+    out->vocab      = M * st->vocab_size * F;
+    /* The all-ones head_dim vector stands in for a missing v_norm (gemma).
+     * It lives in the pool, not in its own allocation: the Vulkan fused
+     * attn_qkv_prep binds q/k/v and the norm gammas as offsets into ONE
+     * buffer and returns UNSUPPORTED if any of them sits elsewhere. */
+    out->ones             = head_dim_max * F;
+    out->pool_align_slack = 22u * 64u;
     out->pool_bytes       = out->hidden /*normed*/ + out->q_out /*q*/ + out->kv_out /*k*/ +
                             out->kv_out /*v*/ + out->q_out /*attn*/ +
                             out->hidden * 10 /*o, post_attn, h_post_attn, pre_ff,
@@ -40,5 +45,5 @@ void transformer_scratch_plan_build(const struct transformer_arch_state *st,
                                                proj_ple, h_a, h_b*/
                       + out->inter * 2 /*gate, up*/ + out->hidden_per /*gate_ple*/ +
                       out->ple_out * 2 /*ple_lookup, per_layer_input*/ + out->vocab /*logits*/ +
-                      out->pool_align_slack;
+                      out->ones /*ones_headdim_max*/ + out->pool_align_slack;
 }

@@ -20,6 +20,7 @@ struct transformer_scratch_plan {
     size_t ple_out;
     size_t hidden_per;
     size_t vocab;
+    size_t ones;
     size_t pool_align_slack;
     size_t pool_bytes;
 };
