@@ -309,9 +309,18 @@ $(BUILD_DIR)/%.o: %.c
 # stb headers throw many warnings under -Wall -Wextra -Wpedantic that we
 # can't fix in a vendored file. Only this TU; consumers including the
 # headers (without the IMPLEMENTATION macro) compile clean.
+#
+# -fno-sanitize=object-size for the same reason: stb_image_resize2.h:6270
+# picks a scanline function-pointer table with a ternary and indexes it,
+# which UBSan reads as a load past the end of the chosen array. Vendored
+# code we do not police, and under MODE=asan CI runs halt_on_error=1, so
+# the check made the resize path — the normal path for every real image —
+# untestable. Narrow on purpose: alignment, overflow and bounds checks
+# stay on for stb. No-op in non-sanitizer modes.
 $(STB_OBJ): third_party/stb/stb_impl.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS_MODE) $(CFLAGS_TARGET) -Ithird_party/stb -w -MMD -MP -c $< -o $@
+	$(CC) $(CFLAGS_MODE) $(CFLAGS_TARGET) -Ithird_party/stb -w \
+	    -fno-sanitize=object-size -MMD -MP -c $< -o $@
 
 # Static library
 $(LIB_FILE): $(LIB_OBJS)
