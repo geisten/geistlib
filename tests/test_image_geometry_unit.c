@@ -66,25 +66,12 @@ int main(void) {
     CHECK(plan.grid_h == plan.resized_h / 16 && plan.grid_w == plan.resized_w / 16);
     CHECK(plan.soft_tokens > 0 && plan.soft_tokens <= 280);
 
-    /* Preprocess at the planner's own fixed point (672x960 plans to
-     * itself), so `src` aliases the input and stbir_resize is not called.
-     *
-     * Deliberate: stb_image_resize2.h trips UBSan's object-size check on
-     * its scanline function-pointer table (stb_image_resize2.h:6270), and
-     * vendored third-party UB is not this test's subject — silencing it
-     * would mean turning UBSan off for stb project-wide. The cost is that
-     * the checked product inside preprocess's resize branch keeps no
-     * direct coverage here; it is three lines of ckd_mul over planner
-     * output whose inputs image_pipeline_plan has already bounded. */
-    struct image_plan idplan;
-    CHECK(image_pipeline_plan(plan.resized_h, plan.resized_w, 280, &idplan));
-    CHECK(idplan.resized_h == plan.resized_h && idplan.resized_w == plan.resized_w);
-    if (g_fail) {
-        return GEIST_TEST_FAIL;
-    }
-
-    const size_t IH  = idplan.in_h;
-    const size_t IW  = idplan.in_w;
+    /* Preprocess the ordinary 224x320 image, i.e. through the real
+     * RESIZE branch — the path every actual image takes. (stb's UBSan
+     * object-size trip on its scanline dispatch table is silenced on the
+     * vendored TU in mk/common.mk, not worked around here.) */
+    const size_t IH  = plan.in_h;
+    const size_t IW  = plan.in_w;
     uint8_t     *rgb = heap_alloc_array_aligned(uint8_t, IH * IW * 3);
     CHECK(rgb != nullptr);
     if (rgb == nullptr) {
@@ -95,14 +82,14 @@ int main(void) {
     }
 
     const size_t patch_px  = 16u * 16u * 3u;
-    const size_t n_patches = idplan.grid_h * idplan.grid_w;
+    const size_t n_patches = plan.grid_h * plan.grid_w;
     float       *patches   = heap_alloc_array_aligned(float, n_patches *patch_px);
     CHECK(patches != nullptr);
     if (patches == nullptr) {
         safe_free((void **) &rgb);
         return GEIST_TEST_FAIL;
     }
-    CHECK(image_pipeline_preprocess(rgb, &idplan, patches));
+    CHECK(image_pipeline_preprocess(rgb, &plan, patches));
     /* Every patch value is a rescaled byte, so the whole output must land
      * in [0, 1] — a cheap way to notice a stride or bounds mistake in the
      * patchify walk. */
