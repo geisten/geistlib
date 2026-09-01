@@ -20,7 +20,8 @@ Every environment in [`release.yml`](../.github/workflows/release.yml)
 here. On top of the matrix, dedicated legs gate every PR: TSan multi-session
 (x86_64), the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on
 lavapipe, and the Metal GPU step inside the macOS leg — each described in its
-section below.
+section below. Vulkan on a physical GPU (`vulkan-gpu`) runs on a self-hosted
+runner and gates branch PRs only, not fork PRs.
 
 ## Caveats and deliberate gaps
 
@@ -128,10 +129,23 @@ loader/device) fails the job. `vulkaninfo --summary` is logged per run.
 Tolerances live in the parity test: 1e-3 relative (f32 paths), 2e-2 for the
 f16 coopmat path where exposed. Minimum Vulkan: 1.2.
 
-Physical-GPU validation (model load, prefill, decode) is self-hosted —
-runner contract: labels `[self-hosted, linux, x64, geist-vulkan]`, working
-loader + ICD for the physical device; there the same three tests plus a
-model e2e run, and a missing device is a failure, not a skip.
+Physical-GPU validation is self-hosted: the `vulkan-gpu` job runs the same
+three tests on a desktop with a discrete GPU — runner contract: labels
+`[self-hosted, linux, x64, geist-vulkan]`, working loader + ICD for the
+physical device, toolchain installed on the host (the job has no apt step).
+A missing device is a failure, not a skip, same as the lavapipe leg. Fork
+PRs are excluded by a `head.repo.full_name` guard — the runner is not
+sandboxed and this repo is public — so a fork gets no hardware tier.
+Setup and operational notes: `docs/CI_SELF_HOSTED.md`.
+
+On top of the three, this tier runs the model e2e the emulated tiers cannot
+afford: `test_known_answer_e2e` (five cloze prompts, floor 4/5) and
+`test_prefill_determinism_int`, against a GGUF kept on the runner host and
+named by the repo variable `GEIST_GGUF_PATH`. That gate is the reason it
+exists — the three kernel tests passed green on the device while the model
+path was returning nothing at all (a scratch buffer outside the pool made
+Vulkan's fused `attn_qkv_prep` decline, and prefill turned that into a hard
+failure). Kernel parity does not imply a working forward pass.
 
 ### Diagnostics are kept as artifacts
 
@@ -141,6 +155,7 @@ pass or fail:
 | job | artifact | holds |
 | :-- | :-- | :-- |
 | `vulkan-lavapipe` | `vulkan-lavapipe-diagnostics` | `vulkaninfo --summary`, mesa/loader package versions, per-test output |
+| `vulkan-gpu` | `vulkan-gpu-diagnostics` | `vulkaninfo --summary`, `nvidia-smi`, per-test output |
 | `avx512-sde` | `avx512-sde-diagnostics` | host `lscpu`, per-test output under SDE |
 
 The reason is specific to emulated tiers: lavapipe is a moving target — a Mesa
