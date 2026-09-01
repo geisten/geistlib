@@ -57,11 +57,14 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
 
-    /* Prefix and query are arbitrary but plausible token ids. Use ids
-     * inside the Gemma 4 vocab to avoid OOB indices in lm_head. */
+    /* Prefix and query are arbitrary but plausible token ids. The test
+     * only asserts A == B, so any in-vocab ids do — keep them small so
+     * they stay inside the narrowest vocabulary we load (BitNet 2B-4T
+     * has 128 256 entries, Gemma 4 has 262 144). Ids past the vocab
+     * index the embed table out of bounds. */
     const geist_token_t prefix_ids[] = {2, 105, 106, 107}; /* <bos>+specials */
     const size_t        prefix_n     = sizeof(prefix_ids) / sizeof(prefix_ids[0]);
-    const geist_token_t query_ids[]  = {1408, 236743, 244549};
+    const geist_token_t query_ids[]  = {1408, 2367, 4549};
     const size_t        query_n      = sizeof(query_ids) / sizeof(query_ids[0]);
 
     s = geist_session_pin_prefix(sess, prefix_n, prefix_ids);
@@ -147,6 +150,21 @@ int main(void) {
         fails++;
     } else {
         printf("overflow pin rejected: %s — %s\n",
+               geist_status_to_string(s),
+               geist_session_errmsg(sess));
+    }
+
+    /* Out-of-vocabulary ids must be rejected, not indexed. An id past
+     * vocab_size used to read the embed table out of bounds and segfault
+     * (caught with the Gemma-4-sized ids this test once hardcoded, run
+     * against a 128k-vocab BitNet model). */
+    const geist_token_t bad_ids[] = {2, 1 << 30, -1};
+    s = geist_session_prefill_tokens(sess, sizeof(bad_ids) / sizeof(bad_ids[0]), bad_ids);
+    if (s == GEIST_OK) {
+        fprintf(stderr, "MISMATCH: prefill_tokens accepted an out-of-vocabulary token id\n");
+        fails++;
+    } else {
+        printf("out-of-vocab prefill rejected: %s — %s\n",
                geist_status_to_string(s),
                geist_session_errmsg(sess));
     }

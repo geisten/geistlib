@@ -188,6 +188,10 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
     if (room != GEIST_OK) {
         return room;
     }
+    const enum geist_status vocab_ok = transformer_check_token_ids(sess, n, ids);
+    if (vocab_ok != GEIST_OK) {
+        return vocab_ok;
+    }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
 
@@ -351,6 +355,10 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     enum geist_status room = transformer_check_kv_room(sess, k);
     if (room != GEIST_OK) {
         return room;
+    }
+    const enum geist_status vocab_ok = transformer_check_token_ids(sess, k, ids);
+    if (vocab_ok != GEIST_OK) {
+        return vocab_ok;
     }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
