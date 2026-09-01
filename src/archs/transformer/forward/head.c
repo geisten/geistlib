@@ -77,13 +77,17 @@ static struct transformer_forward_profile g_head_profile = {
     /* Copy chosen row of scratch_h_b into scratch_h_a (reuse as a clean
      * [1, HIDDEN] buffer for the output head). */
     {
-        const size_t      bytes = st->d_model * sizeof(float);
-        enum geist_status cs    = GEIST_E_UNSUPPORTED;
-        if (v->buffer_copy != nullptr) {
-            /* device copy keeps batched GPU backends from flushing */
-            cs = v->buffer_copy(sess->scratch_h_a, 0, sess->scratch_h_b, row_idx * bytes, bytes);
-        }
-        if (cs != GEIST_OK) {
+        const size_t bytes = st->d_model * sizeof(float);
+        /* Bound once (#352): the device copy keeps batched GPU backends from
+         * flushing, and a failure of it is a device error — it used to fall
+         * through to the host memcpy, hiding that. */
+        if (st->model_fusions.backend_buffer_copy) {
+            const enum geist_status cs =
+                    v->buffer_copy(sess->scratch_h_a, 0, sess->scratch_h_b, row_idx * bytes, bytes);
+            if (cs != GEIST_OK) {
+                return cs;
+            }
+        } else {
             const uint8_t *src = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
             uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_h_a);
             memcpy(dst, src + row_idx * bytes, bytes);

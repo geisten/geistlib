@@ -213,6 +213,7 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         const struct geist_backend_primitives *prims = be->desc->prims;
         st->model_fusions.prim_scale_f32             = prims->scale_f32 != nullptr;
         st->model_fusions.prim_silu                  = prims->silu != nullptr;
+        st->model_fusions.backend_buffer_copy        = be->desc->vtbl->buffer_copy != nullptr;
 
         /* relu_squared has no bound alternative: it cannot be composed from
          * the other prims (there is no relu, and no max), and the two call
