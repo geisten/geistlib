@@ -398,10 +398,9 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
      *
      * P1.2.c (refactor v2): all 21 scratch buffers backed by a single
      * heap_alloc_aligned'd pool. One allocation per state instead of
-     * 21 separate ones; each buffer is a GEIST_MEMORY_ALIASED slice. */
+     * 22 separate ones; each buffer is a GEIST_MEMORY_ALIASED slice. */
     struct transformer_scratch_plan scratch_plan;
     transformer_scratch_plan_build(st, sess->m_max, &scratch_plan);
-    const size_t F            = sizeof(float);
     const size_t head_dim_max = 512;
     sess->scratch_pool_bytes  = scratch_plan.pool_bytes;
     /* Route the pool through the backend so GPU backends hand out memory
@@ -535,7 +534,12 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     /* All-ones buffer of length head_dim_max — used as the weight for the V
      * rmsnorm step (lm.c passes NULL meaning all-ones; the vtable rmsnorm
      * needs a real weight tensor). We slice this down to the layer's actual
-     * head_dim per call by setting the tensor view's shape[0]. */
+     * head_dim per call by setting the tensor view's shape[0].
+     *
+     * Pool-resident, not its own allocation: Vulkan's fused attn_qkv_prep
+     * binds q/k/v and the norm weights as offsets into ONE buffer and bails
+     * out with UNSUPPORTED when any of them lives elsewhere — which the
+     * plan-time probe does not catch, so prefill failed outright on GPU. */
     /* P1.2.b (refactor v2): per-forward scratch arena. Sized for the
      * current set of arena consumers (attention scores buffer); will
      * grow as P1.2.c migrates more scratch sites into the arena.
@@ -558,7 +562,7 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     }
     frame_arena_init(&sess->scratch_arena, sess->scratch_arena_base, sess->scratch_arena_bytes);
 
-    s = alloc_scratch(be, head_dim_max * F, &sess->scratch_ones_headdim_max);
+    s = alloc_pool_buffer(sess, scratch_plan.ones, &sess->scratch_ones_headdim_max);
     if (s != GEIST_OK) {
         return s;
     }

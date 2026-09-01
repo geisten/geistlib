@@ -96,11 +96,24 @@ static inline void *arch_sess(const struct geist_session_full *sf) {
 static enum geist_status
 session_op_failed(struct geist_session_full *sf, enum geist_status s, const char *what) {
     sf->err_code = s;
+    /* The backend's message belongs to THIS failure only if its sticky code
+     * still matches. Optional probes (a missing untied output.weight at
+     * load) leave a stale message behind, and reporting it verbatim points
+     * every debugger at the wrong tensor. */
+    const bool fresh = geist_backend_errcode(sf->backend) == s;
     snprintf(sf->err_msg,
              sizeof(sf->err_msg),
-             "%s failed: %s",
+             "%s failed (status %d)%s%s",
              what,
+             (int) s,
+             fresh ? ": " : " [backend set no message; stale: ",
              geist_backend_errmsg(sf->backend));
+    if (!fresh) {
+        const size_t n = strlen(sf->err_msg);
+        if (n + 2 <= sizeof(sf->err_msg)) {
+            snprintf(sf->err_msg + n, sizeof(sf->err_msg) - n, "]");
+        }
+    }
     return s;
 }
 
