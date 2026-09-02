@@ -142,7 +142,7 @@ static const int8_t *ws_quantize_act(struct geist_backend *be,
         return nullptr;
     }
     for (size_t i = 0; i < m; i++) {
-        ws->act_scale[i] = quantize_x_int8_sym(x + i * n_in, n_in, ws->act_xq + i * n_in);
+        ws->act_scale[i] = quantize_x_int8_sym(n_in, x + i * n_in, ws->act_xq + i * n_in);
     }
     *out_scales = ws->act_scale;
     return ws->act_xq;
@@ -177,7 +177,7 @@ static const int8_t *ws_quantize_act_q4k(struct geist_backend *be,
     const size_t blocks = n_in / 32u;
     for (size_t i = 0; i < m; i++) {
         ws->act_scale[i] = quantize_x_for_q4k(
-                x + i * n_in, n_in, ws->act_xq + i * n_in, ws->act_sum32 + i * blocks);
+                n_in, x + i * n_in, ws->act_xq + i * n_in, ws->act_sum32 + i * blocks);
     }
     *out_scales = ws->act_scale;
     *out_sum32  = ws->act_sum32;
@@ -493,7 +493,7 @@ cpu_neon_qk_mN_quantize_x(struct cpu_neon_workspace *ws, const float *x, size_t 
 #pragma omp for schedule(static) nowait
         for (size_t i = 0; i < m; i++) {
             ws->qk_mN_sc[i] = quantize_x_for_q4k(
-                    x + i * n_in, n_in, ws->qk_mN_xq + i * n_in, ws->qk_mN_sum32 + i * (n_in / 32));
+                    n_in, x + i * n_in, ws->qk_mN_xq + i * n_in, ws->qk_mN_sum32 + i * (n_in / 32));
         }
         return;
     }
@@ -501,7 +501,7 @@ cpu_neon_qk_mN_quantize_x(struct cpu_neon_workspace *ws, const float *x, size_t 
 #endif
     for (size_t i = 0; i < m; i++) {
         ws->qk_mN_sc[i] = quantize_x_for_q4k(
-                x + i * n_in, n_in, ws->qk_mN_xq + i * n_in, ws->qk_mN_sum32 + i * (n_in / 32));
+                n_in, x + i * n_in, ws->qk_mN_xq + i * n_in, ws->qk_mN_sum32 + i * (n_in / 32));
     }
 }
 
@@ -514,8 +514,8 @@ static void cpu_neon_qk_mN_quantize_x_blocks(struct cpu_neon_workspace *ws,
     if (omp_in_parallel()) {
 #pragma omp for schedule(static) nowait
         for (size_t i = 0; i < m; i++) {
-            quantize_x_for_q4k_blocks(x + i * n_in,
-                                      n_in,
+            quantize_x_for_q4k_blocks(n_in,
+                                      x + i * n_in,
                                       ws->qk_mN_xq + i * n_in,
                                       ws->qk_mN_sum32 + i * (n_in / 32),
                                       ws->qk_mN_sc + i * n_blocks);
@@ -525,8 +525,8 @@ static void cpu_neon_qk_mN_quantize_x_blocks(struct cpu_neon_workspace *ws,
 #pragma omp parallel for schedule(static) if (m >= 4)
 #endif
     for (size_t i = 0; i < m; i++) {
-        quantize_x_for_q4k_blocks(x + i * n_in,
-                                  n_in,
+        quantize_x_for_q4k_blocks(n_in,
+                                  x + i * n_in,
                                   ws->qk_mN_xq + i * n_in,
                                   ws->qk_mN_sum32 + i * (n_in / 32),
                                   ws->qk_mN_sc + i * n_blocks);
@@ -735,7 +735,7 @@ static void cpu_neon_w_q6k_mN(size_t                     m,
     const bool qp6 = qprof_on();
     uint64_t   t6  = qp6 ? qprof_now_ns() : 0;
     for (size_t i = 0; i < m; i++) {
-        ws->qk_mN_sc[i] = quantize_x_int8_sym(x + i * n_in, n_in, ws->qk_mN_xq + i * n_in);
+        ws->qk_mN_sc[i] = quantize_x_int8_sym(n_in, x + i * n_in, ws->qk_mN_xq + i * n_in);
     }
     if (qp6) {
         atomic_fetch_add_explicit(&g_qprof_quant_ns, qprof_now_ns() - t6, memory_order_relaxed);

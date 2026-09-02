@@ -190,7 +190,7 @@ void linear_q3k_decode_w3a8_pre(
 void linear_q3k_decode_w3a8(
         const float *x, const void *w_q3k, size_t n_in, size_t n_out, float *y) {
     int8_t *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    float   scale_x = quantize_x_int8_sym(x, n_in, x_q8);
+    float   scale_x = quantize_x_int8_sym(n_in, x, x_q8);
     linear_q3k_decode_w3a8_pre(x_q8, scale_x, w_q3k, n_in, n_out, y);
     safe_free((void **) &x_q8);
 }
@@ -318,7 +318,7 @@ void linear_q3k_w3a8_prefill(
     int8_t *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
     float  *scale_x = heap_alloc_array_aligned(float, m);
     for (size_t i = 0; i < m; i++) {
-        scale_x[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+        scale_x[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
     }
     linear_q3k_w3a8_prefill_pre(x_q8, scale_x, m, w_q3k, n_in, n_out, y);
     safe_free((void **) &x_q8);

@@ -449,9 +449,9 @@ static void clamp_fp32(size_t n, float *x, float lo, float hi) {
 }
 
 bool vision_encoder_run_tower(const struct VisionEncoder *v,
+                              size_t                      n_patches,
                               const float                *patches_in,
                               const int32_t              *positions,
-                              size_t                      n_patches,
                               float                      *hidden_out) {
     if (v == nullptr || patches_in == nullptr || positions == nullptr || hidden_out == nullptr ||
         n_patches == 0) {
@@ -750,7 +750,7 @@ static size_t run_image_internal(const struct VisionEncoder *v,
     if (!image_pipeline_preprocess(rgb, &plan, patches))
         goto fail;
     image_pipeline_position_ids(&plan, positions);
-    if (!vision_encoder_run_tower(v, patches, positions, n_patches, tower)) {
+    if (!vision_encoder_run_tower(v, n_patches, patches, positions, tower)) {
         goto fail;
     }
     avgpool2d_k3_fp32(tower, pooled, plan.grid_h, plan.grid_w, VTH);

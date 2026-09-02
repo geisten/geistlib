@@ -95,7 +95,7 @@ void linear_q5k_decode_w5a8(
         const float *x, const void *w_q5k, size_t n_in, size_t n_out, float *y) {
     int8_t  *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
     int32_t *sum32   = heap_alloc_array_aligned(int32_t, (n_in / 32));
-    float    scale_x = quantize_x_for_q4k(x, n_in, x_q8, sum32);
+    float    scale_x = quantize_x_for_q4k(n_in, x, x_q8, sum32);
     linear_q5k_decode_w5a8_pre(x_q8, scale_x, sum32, w_q5k, n_in, n_out, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &sum32);
@@ -209,7 +209,7 @@ void linear_q5k_w5a8_prefill(
     float   *scale_x = heap_alloc_array_aligned(float, m);
     for (size_t i = 0; i < m; i++) {
         scale_x[i] =
-                quantize_x_for_q4k(x + i * n_in, n_in, x_q8 + i * n_in, sum32 + i * (n_in / 32));
+                quantize_x_for_q4k(n_in, x + i * n_in, x_q8 + i * n_in, sum32 + i * (n_in / 32));
     }
     linear_q5k_w5a8_prefill_pre(x_q8, scale_x, sum32, m, w_q5k, n_in, n_out, y);
     safe_free((void **) &x_q8);

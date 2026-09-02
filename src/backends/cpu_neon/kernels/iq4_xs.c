@@ -85,7 +85,7 @@ void linear_iq4xs_decode_w4a8_pre(const int8_t *x_q8,
 void linear_iq4xs_decode_w4a8(
         const float *x, const void *w_iq4xs, size_t n_in, size_t n_out, float *y) {
     int8_t     *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    const float scale_x = quantize_x_int8_sym(x, n_in, x_q8);
+    const float scale_x = quantize_x_int8_sym(n_in, x, x_q8);
     linear_iq4xs_decode_w4a8_pre(x_q8, scale_x, w_iq4xs, n_in, n_out, y);
     safe_free((void **) &x_q8);
 }
@@ -177,7 +177,7 @@ void linear_iq4xs_w4a8_prefill(
         return;
     }
     for (size_t i = 0; i < m; i++)
-        scales[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+        scales[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
     linear_iq4xs_w4a8_prefill_pre(x_q8, scales, m, w_iq4xs, n_in, n_out, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &scales);
@@ -227,7 +227,7 @@ void linear_iq4nl_decode_w4a8_pre(const int8_t *x_q8,
 void linear_iq4nl_decode_w4a8(
         const float *x, const void *w_iq4nl, size_t n_in, size_t n_out, float *y) {
     int8_t     *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    const float scale_x = quantize_x_int8_sym(x, n_in, x_q8);
+    const float scale_x = quantize_x_int8_sym(n_in, x, x_q8);
     linear_iq4nl_decode_w4a8_pre(x_q8, scale_x, w_iq4nl, n_in, n_out, y);
     safe_free((void **) &x_q8);
 }

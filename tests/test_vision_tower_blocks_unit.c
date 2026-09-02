@@ -185,7 +185,7 @@ int main(int argc, char **argv) {
 
     float *hidden_out = malloc(N_PATCHES_SYN * VTH * sizeof(float));
     fprintf(stdout, "running tower forward (n=%d, %d layers)...\n", N_PATCHES_SYN, 16);
-    bool ok = vision_encoder_run_tower(enc, patches, positions, N_PATCHES_SYN, hidden_out);
+    bool ok = vision_encoder_run_tower(enc, N_PATCHES_SYN, patches, positions, hidden_out);
     vision_encoder_destroy(enc);
     free(patches);
     free(positions);
