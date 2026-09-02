@@ -59,7 +59,58 @@ def engine_metadata(label: str, kind: str, binary: Path) -> dict:
         "binary": str(binary),
         "binary_sha256": sha256_file(binary),
         "commit": commit,
-        "linked_libraries": command_output(["otool", "-L", str(binary)]).splitlines(),
+        "linked_libraries": command_output(
+            ["otool", "-L", str(binary)] if platform.system() == "Darwin"
+            else ["ldd", str(binary)]).splitlines(),
+    }
+
+
+def system_metadata() -> dict:
+    """Host facts a reader needs to judge a number, per platform.
+
+    macOS answers through sysctl/sw_vers, Linux through /proc and lscpu. The
+    keys stay identical so two hosts' artifacts remain diffable; a value the
+    platform cannot answer stays "unavailable" rather than being faked from a
+    neighbouring one."""
+    if platform.system() == "Darwin":
+        return {
+            "cpu": command_output(["sysctl", "-n", "machdep.cpu.brand_string"]),
+            "logical_cores": os.cpu_count(),
+            "performance_cores": command_output(["sysctl", "-n", "hw.perflevel0.physicalcpu"]),
+            "memory_bytes": command_output(["sysctl", "-n", "hw.memsize"]),
+            "os": f"{platform.system()} {platform.release()}",
+            "product": command_output(["sw_vers"]),
+            "compiler": command_output(["clang", "--version"]).splitlines()[0],
+        }
+    # LC_ALL=C: lscpu localizes its field names, and a German host would
+    # otherwise record "unavailable" for its own CPU.
+    lscpu = command_output(["env", "LC_ALL=C", "lscpu"])
+    def lscpu_field(name: str) -> str:
+        for line in lscpu.splitlines():
+            key, _, value = line.partition(":")
+            if key.strip() == name:
+                return value.strip()
+        return "unavailable"
+    try:
+        mem_kb = next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines()
+                      if line.startswith("MemTotal:"))
+        memory_bytes = str(int(mem_kb) * 1024)
+    except (OSError, StopIteration, ValueError):
+        memory_bytes = "unavailable"
+    sockets = lscpu_field("Socket(s)")
+    per_socket = lscpu_field("Core(s) per socket")
+    try:
+        physical = str(int(sockets) * int(per_socket))
+    except ValueError:
+        physical = "unavailable"
+    return {
+        "cpu": lscpu_field("Model name"),
+        "logical_cores": os.cpu_count(),
+        "performance_cores": physical,
+        "memory_bytes": memory_bytes,
+        "os": f"{platform.system()} {platform.release()}",
+        "product": command_output(["sh", "-c", ". /etc/os-release && echo \"$PRETTY_NAME\""]),
+        "compiler": command_output(["cc", "--version"]).splitlines()[0],
     }
 
 
@@ -69,8 +120,11 @@ def machine_state() -> dict:
     return {
         "load_1m": load,
         "load_per_core": load / cores,
-        "thermal_status": command_output(["pmset", "-g", "therm"]).splitlines(),
-        "power_source": command_output(["pmset", "-g", "batt"]).splitlines(),
+        "thermal_status": (command_output(["pmset", "-g", "therm"]).splitlines()
+                           if platform.system() == "Darwin"
+                           else command_output(["sensors"]).splitlines()),
+        "power_source": (command_output(["pmset", "-g", "batt"]).splitlines()
+                         if platform.system() == "Darwin" else ["mains (desktop)"]),
         "temperature_c": None,
         "temperature_note": "unavailable to an unprivileged process",
     }
@@ -138,8 +192,9 @@ def run_geist(engine: dict, model: Path, workload: dict) -> dict:
         "GEIST_TEXT_ONLY": "1",
     })
     rows, stderr, elapsed = run_command(command, env)
-    if not any(line.strip() == "[bench] backend: cpu_neon" for line in stderr):
-        raise RuntimeError("geist did not select the cpu_neon backend")
+    expected = workload["expect_backend"]
+    if not any(line.strip() == f"[bench] backend: {expected}" for line in stderr):
+        raise RuntimeError(f"geist did not select the {expected} backend")
     if [row.get("seq_len") for row in rows] != workload["seq_lens"]:
         raise RuntimeError("geist emitted an unexpected sequence sweep")
     normalized = []
@@ -259,6 +314,8 @@ def summarize(runs: list[dict], engines: list[dict], workload: dict) -> dict:
 
 
 def render_report(metadata: dict, summary: dict) -> str:
+    workload = metadata["protocol"]["workload"]
+    profile = metadata["protocol"]["host_profiles"][metadata["host_profile"]]
     lines = [
         "# Current CPU head-to-head: geist vs llama.cpp",
         "",
@@ -267,8 +324,17 @@ def render_report(metadata: dict, summary: dict) -> str:
         f"geist `{metadata['engines'][0]['commit'][:12]}`; "
         f"llama.cpp `{metadata['engines'][1]['commit'][:12]}`.",
         "",
-        "Four alternating A/B cycles, three raw samples per cell and cycle; median ± MAD. "
-        "CPU-only, same model bytes, prompt/depth shapes and thread counts. Model loading is excluded.",
+        f"Host profile `{metadata['host_profile']}`: "
+        f"{profile['prefill_threads']}-thread prefill, {profile['decode_threads']}-thread decode, "
+        f"geist on `{profile['expect_backend']}`, identical counts for both engines.",
+        "",
+        f"{workload['cycles']} alternating A/B cycles, {workload['repeats']} raw samples per cell "
+        f"and cycle; median ± MAD. CPU-only, same model bytes, prompt/depth shapes and thread "
+        f"counts. Model loading is excluded.",
+        "",
+        f"Host: {metadata['system']['cpu']} "
+        f"({metadata['system']['performance_cores']} physical cores), "
+        f"{metadata['system']['os']}.",
         "",
         "| Seq/depth | geist pp tok/s | llama.cpp pp tok/s | geist vs llama | geist tg tok/s | llama.cpp tg tok/s | geist vs llama |",
         "| --: | --: | --: | --: | --: | --: | --: |",
@@ -310,7 +376,8 @@ def load_resume(path: Path, current: dict, engines: list[dict]) -> tuple[dict, l
     if any(record.get("kind") not in {"metadata", "run", "resume"} for record in records):
         raise ValueError("resume artifact contains an unknown record kind")
     saved = {key: value for key, value in records[0].items() if key != "kind"}
-    for field in ("schema", "protocol", "protocol_sha256", "runner", "model", "engines", "system"):
+    for field in ("schema", "protocol", "protocol_sha256", "runner", "model", "engines",
+                  "system", "host_profile"):
         if saved.get(field) != current.get(field):
             raise ValueError(f"resume {field} does not match this invocation")
     runs = [record for record in records[1:] if record.get("kind") == "run"]
@@ -330,6 +397,9 @@ def main() -> int:
     parser.add_argument("--llama", required=True, type=Path)
     parser.add_argument("--gguf", required=True, type=Path)
     parser.add_argument("--out-dir", type=Path, default=Path.home() / "bench-geistlib" / "head-to-head")
+    parser.add_argument("--host-profile", required=True,
+                        help="key in the protocol's host_profiles: fixes the thread policy "
+                             "and the geist backend this host is expected to select")
     parser.add_argument("--resume", type=Path,
                         help="continue an exact, validated .jsonl.partial schedule prefix")
     args = parser.parse_args()
@@ -338,6 +408,8 @@ def main() -> int:
         parser.error("--geist, --llama and --gguf must name existing files")
     geist_path, llama_path, model = paths
     protocol = json.loads(PROTOCOL_PATH.read_text())
+    if args.host_profile not in protocol["host_profiles"]:
+        parser.error(f"--host-profile must be one of: {', '.join(sorted(protocol['host_profiles']))}")
     model_sha = sha256_file(model)
     if model_sha != protocol["model"]["sha256"]:
         parser.error(f"model SHA-256 mismatch: {model_sha}")
@@ -355,17 +427,15 @@ def main() -> int:
         },
         "model": {"file": model.name, "path": str(model), "sha256": model_sha},
         "engines": engines,
-        "system": {
-            "cpu": command_output(["sysctl", "-n", "machdep.cpu.brand_string"]),
-            "logical_cores": os.cpu_count(),
-            "performance_cores": command_output(["sysctl", "-n", "hw.perflevel0.physicalcpu"]),
-            "memory_bytes": command_output(["sysctl", "-n", "hw.memsize"]),
-            "os": f"{platform.system()} {platform.release()}",
-            "product": command_output(["sw_vers"]),
-            "compiler": command_output(["clang", "--version"]).splitlines()[0],
-        },
+        "system": system_metadata(),
     }
-    workload = protocol["workload"]
+    # The workload is frozen across hosts; the profile contributes only the
+    # thread policy, applied identically to both engines, and the backend name
+    # geist must report. A host comparing itself against another host compares
+    # two different thread policies — that is why the profile key is recorded.
+    profile = protocol["host_profiles"][args.host_profile]
+    workload = {**protocol["workload"], **profile, "host_profile": args.host_profile}
+    metadata["host_profile"] = args.host_profile
     gate = protocol["host_gate"]
     schedule = build_schedule(engines, workload["cycles"])
     if args.resume is not None:

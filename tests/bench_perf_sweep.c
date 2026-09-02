@@ -32,7 +32,8 @@
  *   --emit-jsonl               accepted alias; output is JSONL by default.
  *
  * Output: one JSON object per line on stdout, e.g.
- *   {"seq_len":256,"decode_n":64,"prefill_ms":1234.5,"decode_ms":890.1,
+ *   {"samples":{"prefill_ms":[...],"decode_ms":[...]},
+ *    "seq_len":256,"decode_n":64,"prefill_ms":1234.5,"decode_ms":890.1,
  *    "total_ms":2124.6,"prefill_tps":207.4,"decode_tps":71.9,
  *    "total_tps":150.6,"rss_mb":4321.2,"threads":4}
  *
@@ -302,6 +303,26 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        /* Ordered samples first: the qsort below destroys the draw order, and
+         * a cross-engine protocol that aggregates medians has to re-derive its
+         * own statistic from every sample, not from a summary this binary
+         * chose. tools/bench_cross_engine.py rejects a row without them. */
+        printf("{\"samples\":{\"prefill_ms\":[");
+        for (int r = 0; r < measured; r++) {
+            if (r > 0) {
+                putchar(',');
+            }
+            printf("%.2f", prefill_ms[r]);
+        }
+        printf("],\"decode_ms\":[");
+        for (int r = 0; r < measured; r++) {
+            if (r > 0) {
+                putchar(',');
+            }
+            printf("%.2f", decode_ms[r]);
+        }
+        printf("]},");
+
         /* Core metric is the MEAN over the measured repeats; sort only to pull
          * best (fastest) / worst (slowest) for the spread. */
         const double t_prefill = mean_of(prefill_ms, measured);
@@ -323,7 +344,7 @@ int main(int argc, char **argv) {
         const double total_tps_best  = (double) (n_p + decode_n) * 1000.0 / total_best;
         const double total_tps_worst = (double) (n_p + decode_n) * 1000.0 / total_worst;
 
-        printf("{\"seq_len\":%d,\"decode_n\":%d,"
+        printf("\"seq_len\":%d,\"decode_n\":%d,"
                "\"prefill_ms\":%.2f,\"decode_ms\":%.2f,\"total_ms\":%.2f,"
                "\"prefill_tps\":%.3f,\"decode_tps\":%.3f,\"total_tps\":%.3f,"
                "\"prefill_ms_best\":%.2f,\"prefill_ms_worst\":%.2f,"
