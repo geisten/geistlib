@@ -1,0 +1,27 @@
+name: setup-gd-runner
+# One-shot: configure a second runner process on this machine, serving
+# geisten/geist-diktat. The branch (and this file) is deleted afterwards.
+on: workflow_dispatch
+jobs:
+  setup:
+    runs-on: [self-hosted, amd-desktop]
+    steps:
+      - name: install + start geist-diktat runner
+        run: |
+          set -e
+          DIR="$HOME/actions-runner-geist-diktat"
+          mkdir -p "$DIR" && cd "$DIR"
+          if [ ! -f config.sh ]; then
+            VER=$(curl -s https://api.github.com/repos/actions/runner/releases/latest | grep -oP '"tag_name": "v\K[^"]+')
+            curl -fsSL -o r.tar.gz "https://github.com/actions/runner/releases/download/v$VER/actions-runner-linux-x64-$VER.tar.gz"
+            tar xzf r.tar.gz && rm r.tar.gz
+          fi
+          [ -f .runner ] || ./config.sh --url https://github.com/geisten/geist-diktat \
+            --token "${{ secrets.GD_RUNNER_TOKEN }}" \
+            --name geisten_amd_nvidea-gd --labels amd-desktop --unattended
+          # user-scoped systemd unit: no sudo, survives reboots with linger
+          systemd-run --user --unit=gd-runner --same-dir "$DIR/run.sh" 2>/dev/null \
+            || { RUNNER_TRACKING_ID="" setsid nohup "$DIR/run.sh" > "$DIR/run.log" 2>&1 & }
+          loginctl enable-linger "$USER" 2>/dev/null || echo "NOTE: linger not enabled (reboot needs manual restart)"
+          sleep 8
+          echo "--- runner process:"; pgrep -af "actions-runner-geist-diktat" | head -3 || true
