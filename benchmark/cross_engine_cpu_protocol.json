@@ -5,10 +5,13 @@
     "sha256": "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8"
   },
   "workload": {
-    "seq_lens": [128, 256, 512, 1024],
+    "seq_lens": [
+      128,
+      256,
+      512,
+      1024
+    ],
     "decode_n": 64,
-    "prefill_threads": 8,
-    "decode_threads": 7,
     "affinity": "thread-count-only; operating-system scheduled for both engines",
     "thread_polling": "active",
     "repeats": 3,
@@ -18,7 +21,22 @@
     "backend": "cpu-only",
     "kv_cache": "f16",
     "model_load_included": false,
-    "warmup": "one discarded engine-native warmup before each measured test"
+    "warmup": "one discarded engine-native warmup before each measured test",
+    "thread_policy": "per host_profile; identical for both engines within a run"
+  },
+  "host_profiles": {
+    "apple_m1max": {
+      "prefill_threads": 8,
+      "decode_threads": 7,
+      "expect_backend": "cpu_neon",
+      "note": "8 performance cores; decode leaves one core to the OS"
+    },
+    "amd_9950x": {
+      "prefill_threads": 16,
+      "decode_threads": 15,
+      "expect_backend": "cpu_x86",
+      "note": "16 physical cores, SMT siblings excluded; same core-minus-one rule as apple_m1max. Rule-based, not tuned per engine — a matched thread count is the fairness claim, not an optimum."
+    }
   },
   "host_gate": {
     "max_load_per_core": 0.2,

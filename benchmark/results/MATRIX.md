@@ -11,7 +11,7 @@ Coverage work is tracked in [#364](https://github.com/geisten/geistlib/issues/36
 
 | Model / quantization | Apple CPU | Pi 5 CPU | AMD AVX-512 CPU | Apple Metal | NVIDIA Vulkan |
 | :-- | :--: | :--: | :--: | :--: | :--: |
-| Gemma 4 E2B-it Q4_K_M | measuring | not measured | not measured | not measured | not measured |
+| Gemma 4 E2B-it Q4_K_M | not measured | not measured | [pp +18% / tg +15%](CROSS-ENGINE-AMD9950X.md) | not measured | not measured |
 | Gemma 4 E4B-it Q4_K_M | not measured | does not fit 4 GB reference host | not measured | not measured | not measured |
 | Llama 3.2 3B Q4_K_M | not measured | not measured | not measured | not measured | not measured |
 | BitNet b1.58 2B-4T I2_S | not measured | not measured | not measured | not measured | not measured |
@@ -20,6 +20,10 @@ Coverage work is tracked in [#364](https://github.com/geisten/geistlib/issues/36
 | Qwen3.5 0.8B Q8_0 | not measured | not measured | not measured | not measured | not measured |
 | Qwen3.5 4B Q4_0 | not measured | not measured | not measured | not measured | not measured |
 | Qwen3.8 27B Q4_0 | not measured | does not fit reference host | not measured | not measured | not measured |
+
+A filled cell states the geist-vs-llama.cpp ratio at pp512 and tg64 at depth
+512 and links the full sweep. Ratios are comparable within a column; absolute
+tokens/s across columns describe hardware, not engine efficiency.
 
 “Not measured” means “no result under the current common protocol”, not “the
 engine or model is unsupported”. The result documents beside this file contain
@@ -37,7 +41,8 @@ The current CPU head-to-head is defined by
 - geist and llama.cpp commits plus binary hashes recorded;
 - CPU-only execution verified from llama.cpp's JSON output;
 - pp128/256/512/1024 and tg64 at matching context depths;
-- matched 8-thread prefill and 7-thread decode profile on the M1 Max;
+- one thread profile per host from `host_profiles`, identical for both engines
+  within a run (M1 Max 8/7, 9950X 16/15);
 - four alternating A/B cycles with three ordered samples per cell and cycle;
 - quiet-host gate and cooldown before every engine run;
 - median throughput and median absolute deviation, never best-of;
