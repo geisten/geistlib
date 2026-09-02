@@ -52,6 +52,12 @@ The current CPU head-to-head is defined by
 - model loading excluded and one discarded engine-native warmup;
 - quality parity established separately before a speedup is promoted.
 
+A cell is a statement about a thread profile, not about the engines in
+general: on the 9950X geist's prefill lead runs from −4.6% at 4 threads to
++13.8% at 16 ([THREAD-SWEEP-AMD9950X.md](THREAD-SWEEP-AMD9950X.md), which is
+also why that profile's 16/15 is now measured rather than assumed). Decode is
+the stable one — geist leads across the whole 4-to-32 range.
+
 Thread counts are part of a system profile, not a universal constant. A Pi 5
 campaign, for example, must declare its own fixed 4/3-thread profile while
 keeping the workload, pairing and aggregation contract unchanged. Engine ratios
