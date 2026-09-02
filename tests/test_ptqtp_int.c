@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
 
     /* Quantize x once. */
     int8_t *x_q8    = (int8_t *) malloc(t->n_in);
-    float   scale_x = quantize_x_int8_sym(x, t->n_in, x_q8);
+    float   scale_x = quantize_x_int8_sym(t->n_in, x, x_q8);
     fprintf(stderr, "scale_x=%.6f\n", scale_x);
 
     /* Fast kernel: full output. */

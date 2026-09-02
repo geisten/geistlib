@@ -15,7 +15,7 @@ is open to help. The mission in full is in the
 | **Fast per platform** | The fastest path on *each* target, not a lowest common denominator | ✅ ARM64 NEON · macOS Accelerate/AMX · x86-64 AVX-512/VNNI |
 | **One-file install** | Engine + model in one dependency-free binary | ✅ `geist_model_load_from_memory` aliases weights zero-copy out of a binary's read-only data |
 | **GPU where it helps** | Optional accelerators, never a requirement | 🚧 Metal wins on Qwen3.8-27B Q4_0; Gemma prefill remains ~36 % behind · Vulkan decode at ~86 %, prefill open |
-| **Production hardening** | Memory-safe loaders, deterministic execution and allocation-free hot paths in modern C23 | 🚧 Review backlog #325–#336; performance and quality are merge gates |
+| **Production hardening** | Memory-safe loaders, deterministic execution and allocation-free hot paths in modern C23 | 🚧 Core review findings #325–#336 are complete except the bounded C23 migration in #328; performance and quality remain merge gates |
 | **Models that adapt** | Dynamic specialization, learning, self-organization | 🔬 research |
 
 <sub>✅ shipped · 🚧 in progress · 🔬 exploring</sub>
@@ -41,11 +41,13 @@ parent rather than hidden inside a large rewrite.
 
 | Priority | Workstream | Issues | Done when |
 | :-- | :-- | :-- | :-- |
-| **P0** | Untrusted model data and size safety | [#325](https://github.com/geisten/geistlib/issues/325), [#330](https://github.com/geisten/geistlib/issues/330), [#332](https://github.com/geisten/geistlib/issues/332), [#334](https://github.com/geisten/geistlib/issues/334) | Resolvers and readers use checked extents/arithmetic; malformed inputs fail cleanly under ASan/UBSan/fuzzing |
-| **P0** | Inference correctness | [#326](https://github.com/geisten/geistlib/issues/326), [#329](https://github.com/geisten/geistlib/issues/329) | No successful forward returns stale/uninitialized output; valid-model logits retain their existing parity tolerances |
-| **P1** | Lifecycle and concurrency | [#333](https://github.com/geisten/geistlib/issues/333), [#335](https://github.com/geisten/geistlib/issues/335) | Audio failure paths are leak-free and concurrent sessions are TSan-clean without hot-path synchronization regressions |
-| **P1** | Allocation-free token hot paths | [#331](https://github.com/geisten/geistlib/issues/331), [#336](https://github.com/geisten/geistlib/issues/336) | Sampling and selected linear kernels allocate zero heap memory per token and preserve exact sampling/kernel semantics |
-| **Cross-cutting** | Reproducible Mac baselines and C23 contracts | [#327](https://github.com/geisten/geistlib/issues/327), [#328](https://github.com/geisten/geistlib/issues/328) | Documentation matches the driver; APIs are migrated in bounded, benchmarked batches with an explicit ABI plan |
+| **Done** | Review hardening: size safety, correctness, lifecycle, concurrency and allocation-free hot paths | [#325](https://github.com/geisten/geistlib/issues/325), [#326](https://github.com/geisten/geistlib/issues/326), [#327](https://github.com/geisten/geistlib/issues/327), [#329](https://github.com/geisten/geistlib/issues/329), [#330](https://github.com/geisten/geistlib/issues/330), [#331](https://github.com/geisten/geistlib/issues/331), [#332](https://github.com/geisten/geistlib/issues/332), [#333](https://github.com/geisten/geistlib/issues/333), [#334](https://github.com/geisten/geistlib/issues/334), [#335](https://github.com/geisten/geistlib/issues/335), [#336](https://github.com/geisten/geistlib/issues/336) | ✅ The reviewed invariants are covered by release, sanitizer and performance gates |
+| **P1** | Complete the bounded C23 array-contract migration | [#328](https://github.com/geisten/geistlib/issues/328) | The remaining hot `linear_*` family is migrated independently with exact-output, optimized-assembly and parent/patch benchmark evidence |
+| **P1** | Metal throughput for 4B-class models | [#322](https://github.com/geisten/geistlib/issues/322) | The small-shape GEMM path closes the measured prefill gap without decode, quality or memory regressions |
+| **P1** | Metal model residency | [#357](https://github.com/geisten/geistlib/issues/357) | Device upload no longer keeps an unnecessary second model-sized mapping resident, with loader and inference parity retained |
+| **P1** | Optimization-independent PTQTP parity gate | [#376](https://github.com/geisten/geistlib/issues/376) | GEMM/GEMV parity has a proved invariant and passes release plus ASan/UBSan without weakening quality coverage |
+| **Cross-cutting** | Same-protocol performance matrix | [#364](https://github.com/geisten/geistlib/issues/364) | Current models and systems publish reproducible results with pinned revisions, model hashes, settings and raw samples |
+| **P2** | BitNet x86 decode follow-ups | [#212](https://github.com/geisten/geistlib/issues/212) | A measured threading, placement, LM-head or kernel change improves decode without harming prefill or correctness |
 
 ### Definition of done
 

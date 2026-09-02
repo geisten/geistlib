@@ -144,7 +144,7 @@ int main(int argc, char **argv) {
     }
     for (size_t i = 0; i < m_test; i++) {
         scale_x[i] =
-                quantize_x_for_q4k(xm + i * n_in, n_in, xm_q8 + i * n_in, sum32 + i * (n_in / 32));
+                quantize_x_for_q4k(n_in, xm + i * n_in, xm_q8 + i * n_in, sum32 + i * (n_in / 32));
     }
     linear_q4k_w4a8_prefill_predecoded(xm_q8, scale_x, sum32, m_test, packed, n_in, n_out, y_pd);
     linear_q4k_w4a8_prefill_predecoded_mtile4(
@@ -339,8 +339,8 @@ int main(int argc, char **argv) {
     }
 
     for (size_t i = 0; i < m_test; i++) {
-        quantize_x_for_q4k_blocks(xm + i * n_in,
-                                  n_in,
+        quantize_x_for_q4k_blocks(n_in,
+                                  xm + i * n_in,
                                   xm_q8 + i * n_in,
                                   sum32 + i * (n_in / 32),
                                   scale_blocks + i * (n_in / Q4_K_BLOCK_ELEMS));
