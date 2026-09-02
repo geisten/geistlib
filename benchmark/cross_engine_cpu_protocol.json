@@ -35,7 +35,7 @@
       "prefill_threads": 16,
       "decode_threads": 15,
       "expect_backend": "cpu_x86",
-      "note": "16 physical cores, SMT siblings excluded; same core-minus-one rule as apple_m1max. Rule-based, not tuned per engine — a matched thread count is the fairness claim, not an optimum."
+      "note": "16 physical cores, SMT siblings excluded. Measured, not assumed: benchmark/results/THREAD-SWEEP-AMD9950X.md sweeps 4-32 threads and finds the joint optimum at 16 for both engines, with llama.cpp prefill collapsing ~6x under SMT. Decode uses 15 by the core-minus-one rule; that specific value sits on the 12-16 plateau but was not measured on its own."
     }
   },
   "host_gate": {
