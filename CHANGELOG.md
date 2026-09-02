@@ -78,6 +78,20 @@ minor release.
   contract, as on the ARM side, where the equivalent change measured neutral
   except where allocations sat inside a parallel region.
 
+  **Update (2026-09-01), measured on the AMD 9950X reference host:** paired
+  A/B against the immediate parent commit, two alternating rounds each,
+  mean-of-5 per round, quiesced host (`bench_perf_sweep --seq-lens 128
+  --decode-n 128 --repeats 5 --threads 16`). BitNet 2B-4T (I2_S, the
+  `kernel_i2s_avx512_vnni.c` GEMM this batch touched most): prefill pp128
+  1077.4 → **1112.4 (+3.3 %)**, decode tg128 122.5 → 123.2 (+0.5 %, noise).
+  Gemma 4 E2B-it Q4_K_M (the `linear_q4k`/`linear_q6k`/`linear_f32q` paths):
+  prefill 506.8 → 504.5 (−0.5 %), decode 49.3 → 49.3 (parity) — both within
+  the ±1.5 % noise band established in
+  [`benchmark/results/X86.md`](benchmark/results/X86.md). No regression on
+  either model; the I2S prefill GEMM gets a small, plausible win from
+  dropping its per-call `malloc`/`free` pair, matching the ARM-side finding
+  that this contract change is neutral-to-positive, never negative.
+
 ### Added
 - **`GEIST_LOG_KERNELS=1`** (#327): the cpu_neon resolver counts its own
   decisions per catalog row and prints them at backend destroy. "Which kernels
