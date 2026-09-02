@@ -1,0 +1,41 @@
+name: native-avx512
+
+# Real-hardware counterpart to the ci.yml avx512-sde leg (#184): the same
+# dispatch-proof + kernel suite, natively on the org's AVX-512 box (the
+# runner contract the sde job's comment specifies: [self-hosted,
+# geist-avx512]). SDE emulates Sapphire Rapids deterministically per PR;
+# this leg proves the shipped fast path on silicon that actually exists —
+# nightly and on demand, not per PR (one box, shared with other jobs).
+
+on:
+  schedule:
+    - cron: "40 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  native:
+    runs-on: [self-hosted, geist-avx512]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (shipped x86_64 configuration)
+        run: make TARGET=linux CC=gcc-14 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: Dispatcher proof — VNNI tier must actually be selected
+        env:
+          GEIST_EXPECT_ISA: avx512_vnni
+        run: bin/linux/release/tests/test_x86_isa_dispatch_unit
+      - name: Audio W8A8 binding proof — VNNI kernel selected + parity
+        env:
+          GEIST_EXPECT_AUDIO_KERNEL: avx512vnni
+        run: bin/linux/release/tests/test_audio_linear_parity_unit
+      - name: AVX-512 kernel tests (native, scalar-parity built in)
+        run: |
+          set -eo pipefail
+          for t in test_x86_isa_dispatch_unit test_q4k_to_w4a8_unit \
+                   test_q4k_to_q4kx8_unit test_q4kx8_gemm_unit \
+                   test_q6k_gemv_unit test_q8w_gemv_unit test_f32q_unit \
+                   test_i2s_gemv_unit test_gelu_x86_unit \
+                   test_x86_kernel_no_alloc_unit; do
+            echo "=== $t (native) ==="
+            "bin/linux/release/tests/$t"
+          done
