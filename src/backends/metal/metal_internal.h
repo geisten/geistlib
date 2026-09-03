@@ -420,10 +420,15 @@ struct metal_state {
 };
 
 struct geist_buffer {
-    struct metal_state    *owner;
-    void                  *buffer;
-    void                  *mapped;
-    size_t                 bytes;
+    struct metal_state *owner;
+    void               *buffer;
+    void               *mapped;
+    size_t              bytes;
+    /* Where this buffer's bytes start inside `buffer`. Non-zero only for a
+     * zero-copy alias of the loader's mmap (#357): the MTLBuffer wraps the
+     * enclosing page range, the weight begins base_off bytes into it. Every
+     * bind and blit adds it; `mapped` already has it applied. */
+    size_t                 base_off;
     enum geist_buffer_role role;
     unsigned int           memory_flags;
     bool                   host_visible;
