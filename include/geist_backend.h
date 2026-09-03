@@ -611,6 +611,12 @@ struct geist_backend_caps {
      * mode). Unified-memory GPUs (metal) leave this false. */
     bool weights_need_backend_arena;
 
+    /* Bumped by the backend whenever kernel performance character
+     * changes enough to invalidate measured calibrations without any
+     * tunable being renamed (the "faster kernel, same knob" case).
+     * Feeds the opaque calibration key. */
+    uint32_t calibration_generation;
+
     /* deltanet_mix() sub-chunks long sequences internally (the O(C²)
      * chunk recipe runs at its own optimal granularity regardless of
      * the caller's m). Consumer: state_create skips the DN m_max cap,
@@ -642,6 +648,29 @@ struct geist_backend_caps {
 /* Backend Descriptor                                                      */
 /* ====================================================================== */
 
+/* ====================================================================== */
+/* Calibration — measured per-machine tuning (EXPERIMENTAL)                */
+/* ====================================================================== */
+
+/* One measurable tuning knob a backend exposes to the calibration
+ * driver. `name` doubles as the blob line key and matches the knob's
+ * GEIST_* env override (documented per backend). `measure` runs the
+ * backend-specific A/B or sweep for THIS machine and writes the best
+ * value; budget_ns is a target, not a deadline. The driver owns
+ * everything around it (repeats, variance notes, serialization). */
+enum geist_tunable_kind {
+    GEIST_TUNABLE_BOOL, /* value 0 / 1 */
+    GEIST_TUNABLE_SIZE, /* positive size-class value */
+};
+
+struct geist_tunable {
+    const char             *name;
+    enum geist_tunable_kind kind;
+    enum geist_status (*measure)(struct geist_backend *be,
+                                 uint64_t              budget_ns,
+                                 int64_t              *out_value);
+};
+
 /* Each backend exports one of these as a `const` extern. The engine's
  * registry array points at descriptors of compiled-in backends. */
 struct geist_backend_descriptor {
@@ -656,6 +685,10 @@ struct geist_backend_descriptor {
 
     /* Fused fast paths. nullptr = backend has no fusions at all. */
     const struct geist_backend_fused *fused;
+
+    /* Measurable tuning knobs for geist_backend_calibrate(). nullptr =
+     * backend has no calibrated tunables (seeds + env only). */
+    const struct geist_tunable *(*tunables)(size_t *out_count);
 
     /* Explicit capability bits (by value; zero-init = none). */
     struct geist_backend_caps caps;
@@ -688,7 +721,63 @@ struct geist_backend {
     enum geist_status err_code;
     char              err_msg[512];
     pthread_mutex_t   err_mu;
+
+    /* Applied calibration values (EXPERIMENTAL). Written only by
+     * geist_backend_apply_calibration before the first resolve_weight;
+     * `locked` is set by the weight-load path and freezes the store.
+     * Backends consult it via geist_calibration_lookup when building
+     * their kernel policy. */
+    struct geist_calibration_state {
+        bool   locked;
+        size_t n_values;
+        struct geist_calibration_value {
+            char    name[48];
+            int64_t value;
+        } values[32];
+    } calibration;
 };
+
+/* ====================================================================== */
+/* Calibration API (EXPERIMENTAL)                                          */
+/* ====================================================================== */
+
+/* Measures all tunables of the backend and serializes the result into a
+ * portable UTF-8 text blob owned by the caller. budget_ns is a target
+ * budget, not a hard deadline. If buf is nullptr or buf_size is
+ * insufficient, *required_size receives the needed size (including the
+ * terminating NUL) and the call returns GEIST_E_INVALID_ARG without
+ * measuring. The library performs no persistence — consumers decide
+ * whether and where the blob is cached (key it via
+ * geist_backend_calibration_key). @stability EXPERIMENTAL */
+enum geist_status geist_backend_calibrate(struct geist_backend *be,
+                                          uint64_t              budget_ns,
+                                          char                 *buf,
+                                          size_t                buf_size,
+                                          size_t               *required_size);
+
+/* Applies a caller-supplied calibration blob. Accepted only if the
+ * blob's key exactly matches this backend's current execution
+ * environment (otherwise GEIST_E_STALE_CALIBRATION) and only before the
+ * first weight resolve (otherwise GEIST_E_INVALID_STATE). Atomic: on
+ * any validation error the backend is unchanged. Effective precedence
+ * per tunable: env override ?? calibration ?? built-in seed.
+ * @stability EXPERIMENTAL */
+enum geist_status geist_backend_apply_calibration(struct geist_backend *be,
+                                                  const char           *blob,
+                                                  size_t                blob_size);
+
+/* Writes the opaque calibration key for this backend's execution
+ * environment (same required_size contract as calibrate). The key's
+ * contents are implementation-defined; consumers may use it verbatim as
+ * a cache-lookup key. @stability EXPERIMENTAL */
+enum geist_status geist_backend_calibration_key(const struct geist_backend *be,
+                                                char                       *buf,
+                                                size_t                      buf_size,
+                                                size_t                     *required_size);
+
+/* Backend-side helper: the applied calibration value for `name`, or
+ * false when none was applied (use the seed). */
+bool geist_calibration_lookup(const struct geist_backend *be, const char *name, int64_t *out);
 
 /* The fused table, or a shared all-null table when the backend has none —
  * lets callers null-check slots without null-checking the table. */

@@ -12,6 +12,8 @@
 
 #include "kernel_catalog.h"
 
+#include <geist_backend.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -27,7 +29,29 @@ static bool cpu_neon_env_bool(const char *name, bool fallback) {
     return env[0] == '1';
 }
 
+/* Calibration overlay: applied blob values slot BETWEEN seeds and env
+ * (effective = env ?? calibration ?? seed). Names match the tunables
+ * exported by calibrate.c. */
+static void policy_overlay_calibration(struct cpu_neon_kernel_policy *p,
+                                       const struct geist_backend    *be) {
+    if (be == nullptr) {
+        return;
+    }
+    int64_t v = 0;
+    if (geist_calibration_lookup(be, "q5k_native_mn", &v)) {
+        p->q5k_native_mn = v != 0;
+    }
+    if (geist_calibration_lookup(be, "qk_sgemm_threshold", &v)) {
+        p->qk_sgemm_threshold = (size_t) v;
+    }
+}
+
 struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_hw_probe *hw) {
+    return cpu_neon_kernel_policy_effective(hw, nullptr);
+}
+
+struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geist_hw_probe *hw,
+                                                               const struct geist_backend  *be) {
 
     const bool has_accelerate = hw != nullptr && hw->has_accelerate;
 #if defined(GEIST_TARGET_PI5)
@@ -72,6 +96,8 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
             .tq2_0_native_mn = !has_accelerate,
             .tq2_0_tl1_m1    = false,
     };
+
+    policy_overlay_calibration(&p, be);
 
     p.q5k_native_mn     = cpu_neon_env_bool("GEIST_Q5K_NATIVE_MN", p.q5k_native_mn);
     p.q4k_predecode     = cpu_neon_env_bool("GEIST_Q4K_PREDECODE", p.q4k_predecode);

@@ -105,6 +105,9 @@ struct cpu_neon_kernel_policy {
 };
 
 struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_hw_probe *hw);
+/* Seeds -> applied-calibration overlay -> env. be nullable (= no overlay). */
+struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geist_hw_probe *hw,
+                                                               const struct geist_backend  *be);
 
 bool cpu_neon_should_install_tl1(const struct cpu_neon_kernel_policy *policy,
                                  size_t                               n_in,
