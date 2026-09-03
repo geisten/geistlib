@@ -23,8 +23,12 @@ minor release.
   the RESOLVER-INSTALLED paths on throwaway backend instances — a
   first raw-kernel draft confidently mis-calibrated the threshold
   until a real-model referee falsified it; the fidelity contract is
-  now documented in the sonde file. The `geist-calibrate` example
-  tool and the CI both-branches parity matrix follow.
+  now documented in the sonde file. `examples/geist_calibrate` is the
+  reference consumer (quiet-machine gate, key-named file persistence,
+  stale handling), and `test_calibration_paths_unit` pins BOTH kernel
+  branches behind every calibrated knob numerically equivalent on
+  every CI µarch — calibration can only ever pick between paths CI
+  has proven interchangeable.
 
 ### Fixed
 - **Probe-and-bind, batch 3 — `buffer_copy` stops swallowing device errors**
