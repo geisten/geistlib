@@ -194,7 +194,7 @@ static void cpu_neon_w_q3k_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    linear_q3k_decode_w3a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
+    linear_q3k_decode_w3a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
 }
 
 static void cpu_neon_w_q4k_m1(const float               *x,
@@ -205,7 +205,7 @@ static void cpu_neon_w_q4k_m1(const float               *x,
     /* The raw SDOT decode GEMV beats the predecoded-block path here: the latter
      * re-quantizes + allocates per call and its m=1 form is a GEMM kernel, not a
      * tuned GEMV (measured ~21 vs ~33 tg128 on M1 Max). Keep raw. */
-    linear_q4k_decode_w4a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    linear_q4k_decode_w4a8((size_t) w->n_in, (size_t) w->n_out, x, w->raw, y);
 }
 
 static void cpu_neon_w_q4k_pair_m1(const float               *x,
@@ -219,7 +219,7 @@ static void cpu_neon_w_q4k_pair_m1(const float               *x,
         return;
     }
     linear_q4k_decode_w4a8_pair(
-            x, w0->raw, w1->raw, (size_t) w0->n_in, (size_t) w0->n_out, (size_t) w1->n_out, y0, y1);
+            (size_t) w0->n_in, (size_t) w0->n_out, (size_t) w1->n_out, x, w0->raw, w1->raw, y0, y1);
 }
 
 static void cpu_neon_w_q6k_m1(const float               *x,
@@ -228,10 +228,10 @@ static void cpu_neon_w_q6k_m1(const float               *x,
                               float                     *y) {
     (void) be;
     if (w->backend_layout == GEIST_W_LAYOUT_Q6_K_X8_GEMV && w->aux_fp32 != nullptr) {
-        linear_q6k_decode_w6a8_x8(x, w->aux_fp32, (size_t) w->n_in, (size_t) w->n_out, y);
+        linear_q6k_decode_w6a8_x8((size_t) w->n_in, (size_t) w->n_out, x, w->aux_fp32, y);
         return;
     }
-    linear_q6k_decode_w6a8(x, w->raw, (size_t) w->n_in, (size_t) w->n_out, y);
+    linear_q6k_decode_w6a8((size_t) w->n_in, (size_t) w->n_out, x, w->raw, y);
 }
 
 static void cpu_neon_w_q8_0_m1(const float               *x,
@@ -244,7 +244,7 @@ static void cpu_neon_w_q8_0_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    linear_q8_0_decode_w8a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
+    linear_q8_0_decode_w8a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
 }
 
 static void cpu_neon_w_q4_0_m1(const float               *x,
@@ -259,7 +259,7 @@ static void cpu_neon_w_q4_0_m1(const float               *x,
         if (xq == nullptr) {
             return;
         }
-        linear_q4_0_decode_w4a8_x8_pre(xq, sc[0], s32, w->aux_fp32, n_in, n_out, y);
+        linear_q4_0_decode_w4a8_x8_pre(n_in, n_out, sc[0], xq, s32, w->aux_fp32, y);
         return;
     }
     float        *sc = nullptr;
@@ -267,7 +267,7 @@ static void cpu_neon_w_q4_0_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    linear_q4_0_decode_w4a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
+    linear_q4_0_decode_w4a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
 }
 
 static void cpu_neon_w_q4_1_m1(const float               *x,
@@ -281,7 +281,7 @@ static void cpu_neon_w_q4_1_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    linear_q4_1_decode_w4a8_pre(xq, sc[0], s32, w->raw, n_in, n_out, y);
+    linear_q4_1_decode_w4a8_pre(n_in, n_out, sc[0], xq, s32, w->raw, y);
 }
 
 static void cpu_neon_w_q4_0_mN(size_t                     m,
@@ -301,7 +301,7 @@ static void cpu_neon_w_q4_0_mN(size_t                     m,
         if (xq == nullptr) {
             return;
         }
-        linear_q4_0_w4a8_prefill_x8_pre(xq, sc, s32, m, w->aux_fp32, n_in, n_out, y);
+        linear_q4_0_w4a8_prefill_x8_pre(m, n_in, n_out, xq, sc, s32, w->aux_fp32, y);
         return;
     }
     float        *sc = nullptr;
@@ -309,7 +309,7 @@ static void cpu_neon_w_q4_0_mN(size_t                     m,
     if (xq == nullptr) {
         return;
     }
-    linear_q4_0_w4a8_prefill_pre(xq, sc, m, w->raw, n_in, n_out, y);
+    linear_q4_0_w4a8_prefill_pre(m, n_in, n_out, xq, sc, w->raw, y);
 }
 
 static void cpu_neon_w_q4_1_mN(size_t                     m,
@@ -324,7 +324,7 @@ static void cpu_neon_w_q4_1_mN(size_t                     m,
     if (xq == nullptr) {
         return;
     }
-    linear_q4_1_w4a8_prefill_pre(xq, sc, s32, m, w->raw, n_in, n_out, y);
+    linear_q4_1_w4a8_prefill_pre(m, n_in, n_out, xq, sc, s32, w->raw, y);
 }
 
 static void cpu_neon_w_iq2s_m1(const float               *x,
@@ -337,7 +337,7 @@ static void cpu_neon_w_iq2s_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    linear_iq2s_decode_w2a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
+    linear_iq2s_decode_w2a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
 }
 
 static void cpu_neon_w_iq3s_m1(const float               *x,
@@ -350,7 +350,7 @@ static void cpu_neon_w_iq3s_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    linear_iq3s_decode_w3a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
+    linear_iq3s_decode_w3a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
 }
 
 static void cpu_neon_w_iq4xs_m1(const float               *x,
@@ -363,7 +363,7 @@ static void cpu_neon_w_iq4xs_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    linear_iq4xs_decode_w4a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
+    linear_iq4xs_decode_w4a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
 }
 
 static void cpu_neon_w_iq4xs_mN(size_t                     m,
@@ -377,7 +377,7 @@ static void cpu_neon_w_iq4xs_mN(size_t                     m,
     if (xq == nullptr) {
         return;
     }
-    linear_iq4xs_w4a8_prefill_pre(xq, sc, m, w->raw, n_in, n_out, y);
+    linear_iq4xs_w4a8_prefill_pre(m, n_in, n_out, xq, sc, w->raw, y);
 }
 
 static void cpu_neon_w_iq4nl_m1(const float               *x,
@@ -390,7 +390,7 @@ static void cpu_neon_w_iq4nl_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    linear_iq4nl_decode_w4a8_pre(xq, sc[0], w->raw, n_in, n_out, y);
+    linear_iq4nl_decode_w4a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
 }
 
 /* F32 dense (P1.1.e): cblas-backed SGEMV / SGEMM. Row-major weight is
@@ -449,7 +449,7 @@ static void cpu_neon_w_q3k_mN(size_t                     m,
     if (xq == nullptr) {
         return;
     }
-    linear_q3k_w3a8_prefill_pre(xq, sc, m, w->raw, n_in, n_out, y);
+    linear_q3k_w3a8_prefill_pre(m, n_in, n_out, xq, sc, w->raw, y);
 }
 
 static bool cpu_neon_qk_mN_workspace_prepare(struct cpu_neon_workspace *ws, size_t m, size_t n_in) {
@@ -568,40 +568,40 @@ static void cpu_neon_q4k_run_prequantized(const struct cpu_neon_state     *st,
              * per inner iter). Falls back to mtile4_ntile4_packed when
              * m<8 internally. */
             linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(
-                    ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, m, w->aux_fp32, n_in, n_out, y);
+                    m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
         } else if (use_block_scales) {
             linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(
-                    ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, m, w->aux_fp32, n_in, n_out, y);
+                    m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
         } else if (st->policy.q4k_mtile_prefill) {
             if (st->policy.q4k_ntile_prefill) {
-                linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(ws->qk_mN_xq,
-                                                                 ws->qk_mN_sc,
-                                                                 ws->qk_mN_sum32,
-                                                                 m,
-                                                                 w->aux_fp32,
+                linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(m,
                                                                  n_in,
                                                                  n_out,
+                                                                 ws->qk_mN_xq,
+                                                                 ws->qk_mN_sc,
+                                                                 ws->qk_mN_sum32,
+                                                                 w->aux_fp32,
                                                                  y);
             } else {
                 /* mtile8 is bit-identical to mtile4 and falls back to
                  * mtile4 for m<8; small win on Mac, larger expected
                  * on Pi5 where per-loop overhead is more visible. */
-                linear_q4k_w4a8_prefill_predecoded_mtile8(ws->qk_mN_xq,
-                                                          ws->qk_mN_sc,
-                                                          ws->qk_mN_sum32,
-                                                          m,
-                                                          w->aux_fp32,
+                linear_q4k_w4a8_prefill_predecoded_mtile8(m,
                                                           n_in,
                                                           n_out,
+                                                          ws->qk_mN_xq,
+                                                          ws->qk_mN_sc,
+                                                          ws->qk_mN_sum32,
+                                                          w->aux_fp32,
                                                           y);
             }
         } else {
             linear_q4k_w4a8_prefill_predecoded(
-                    ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, m, w->aux_fp32, n_in, n_out, y);
+                    m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
         }
     } else {
         linear_q4k_w4a8_prefill_pre(
-                ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, m, w->raw, n_in, n_out, y);
+                m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->raw, y);
     }
 }
 
@@ -696,14 +696,14 @@ static void cpu_neon_w_q4k_pair_mN(size_t                     m,
 
     if (!use_block_scales && q4k_weight_ntile4(w0) && q4k_weight_ntile4(w1) &&
         w0->n_out == w1->n_out) {
-        linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(ws->qk_mN_xq,
-                                                                     ws->qk_mN_sc,
-                                                                     ws->qk_mN_sum32,
-                                                                     m,
-                                                                     w0->aux_fp32,
-                                                                     w1->aux_fp32,
+        linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(m,
                                                                      n_in,
                                                                      (size_t) w0->n_out,
+                                                                     ws->qk_mN_xq,
+                                                                     ws->qk_mN_sc,
+                                                                     ws->qk_mN_sum32,
+                                                                     w0->aux_fp32,
+                                                                     w1->aux_fp32,
                                                                      y0,
                                                                      y1);
     } else {
@@ -743,13 +743,13 @@ static void cpu_neon_w_q6k_mN(size_t                     m,
     }
     if (q6k_weight_ntile4_stream(w)) {
         linear_q6k_w6a8_prefill_predecoded_ntile4_stream(
-                ws->qk_mN_xq, ws->qk_mN_sc, m, w->aux_fp32, n_in, (size_t) w->n_out, y);
+                m, n_in, (size_t) w->n_out, ws->qk_mN_xq, ws->qk_mN_sc, w->aux_fp32, y);
     } else if (q6k_weight_ntile4(w)) {
         linear_q6k_w6a8_prefill_predecoded_ntile4(
-                ws->qk_mN_xq, ws->qk_mN_sc, m, w->aux_fp32, n_in, (size_t) w->n_out, y);
+                m, n_in, (size_t) w->n_out, ws->qk_mN_xq, ws->qk_mN_sc, w->aux_fp32, y);
     } else {
         linear_q6k_w6a8_prefill_pre(
-                ws->qk_mN_xq, ws->qk_mN_sc, m, w->raw, n_in, (size_t) w->n_out, y);
+                m, n_in, (size_t) w->n_out, ws->qk_mN_xq, ws->qk_mN_sc, w->raw, y);
     }
     if (qp6) {
         atomic_fetch_add_explicit(&g_qprof_mm_ns, qprof_now_ns() - t6, memory_order_relaxed);
@@ -767,7 +767,7 @@ static void cpu_neon_w_iq2s_mN(size_t                     m,
     if (xq == nullptr) {
         return;
     }
-    linear_iq2s_w2a8_prefill_pre(xq, sc, m, w->raw, n_in, n_out, y);
+    linear_iq2s_w2a8_prefill_pre(m, n_in, n_out, xq, sc, w->raw, y);
 }
 
 static void cpu_neon_w_iq3s_mN(size_t                     m,
@@ -781,7 +781,7 @@ static void cpu_neon_w_iq3s_mN(size_t                     m,
     if (xq == nullptr) {
         return;
     }
-    linear_iq3s_w3a8_prefill_pre(xq, sc, m, w->raw, n_in, n_out, y);
+    linear_iq3s_w3a8_prefill_pre(m, n_in, n_out, xq, sc, w->raw, y);
 }
 
 /* P2.b: native Q5_K W5A8 NEON kernels. M=1 always wins over the
@@ -799,7 +799,7 @@ static void cpu_neon_w_q5k_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    linear_q5k_decode_w5a8_pre(xq, sc[0], s32, w->raw, n_in, n_out, y);
+    linear_q5k_decode_w5a8_pre(n_in, n_out, sc[0], xq, s32, w->raw, y);
 }
 static void cpu_neon_w_q5k_mN(size_t                     m,
                               const float               *x,
@@ -813,7 +813,7 @@ static void cpu_neon_w_q5k_mN(size_t                     m,
     if (xq == nullptr) {
         return;
     }
-    linear_q5k_w5a8_prefill_pre(xq, sc, s32, m, w->raw, n_in, n_out, y);
+    linear_q5k_w5a8_prefill_pre(m, n_in, n_out, xq, sc, s32, w->raw, y);
 }
 
 /* P2.d: native Q8_0 W8A8 prefill kernel (M>1). M=1 already native
@@ -831,7 +831,7 @@ static void cpu_neon_w_q8_0_mN(size_t                     m,
     if (xq == nullptr) {
         return;
     }
-    linear_q8_0_w8a8_prefill_pre(xq, sc, m, w->raw, n_in, n_out, y);
+    linear_q8_0_w8a8_prefill_pre(m, n_in, n_out, xq, sc, w->raw, y);
 }
 
 /* P2: dequant-and-cblas trampolines (Q5_K / F16 / BF16 / Q8_0 M>1).

@@ -171,21 +171,21 @@ static size_t ffn_tile_blocks(void) {
         const uint8_t *up_tile   = (const uint8_t *) up->raw +
                                    b0 * Q6_K_BLOCK_ELEMS * blocks_per_gate_row * Q4_K_BLOCK_BYTES;
 
-        linear_q4k_w4a8_prefill_pre(ws->qk_mN_xq,
+        linear_q4k_w4a8_prefill_pre(m,
+                                    d_model,
+                                    tile_n,
+                                    ws->qk_mN_xq,
                                     ws->qk_mN_sc,
                                     ws->qk_mN_sum32,
-                                    m,
                                     gate_tile,
+                                    ws->ffn_gate);
+        linear_q4k_w4a8_prefill_pre(m,
                                     d_model,
                                     tile_n,
-                                    ws->ffn_gate);
-        linear_q4k_w4a8_prefill_pre(ws->qk_mN_xq,
+                                    ws->qk_mN_xq,
                                     ws->qk_mN_sc,
                                     ws->qk_mN_sum32,
-                                    m,
                                     up_tile,
-                                    d_model,
-                                    tile_n,
                                     ws->ffn_up);
 
         for (size_t i = 0; i < tile_elems; i++) {
@@ -205,7 +205,7 @@ static size_t ffn_tile_blocks(void) {
         }
 
         linear_q6k_w6a8_prefill_pre_accum_blocks(
-                ws->ffn_mid_q8, ws->ffn_mid_sc, m, down->raw, inter, d_model, b0, nb, y);
+                m, inter, d_model, b0, nb, ws->ffn_mid_q8, ws->ffn_mid_sc, down->raw, y);
     }
     return GEIST_OK;
 }

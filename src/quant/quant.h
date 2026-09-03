@@ -107,33 +107,39 @@ void             dequant_iq4_xs_row(size_t n_elems, const void *blocks, float ou
 
 /* W4A8 NEON decode GEMVs for the IQ4 LUT formats (one vqtbl1q per 16
  * nibbles). IQ4_NL prefill stays on the dequant+SGEMM trampoline. */
-void linear_iq4xs_decode_w4a8(
-        const float *x, const void *w_iq4xs, size_t n_in, size_t n_out, float *y);
-void linear_iq4xs_decode_w4a8_pre(const int8_t *x_q8,
-                                  float         scale_x,
-                                  const void   *w_iq4xs,
-                                  size_t        n_in,
-                                  size_t        n_out,
-                                  float        *y);
-void linear_iq4nl_decode_w4a8(
-        const float *x, const void *w_iq4nl, size_t n_in, size_t n_out, float *y);
-void linear_iq4nl_decode_w4a8_pre(const int8_t *x_q8,
-                                  float         scale_x,
-                                  const void   *w_iq4nl,
-                                  size_t        n_in,
-                                  size_t        n_out,
-                                  float        *y);
+void linear_iq4xs_decode_w4a8(size_t      n_in,
+                              size_t      n_out,
+                              const float x[static n_in],
+                              const void *w_iq4xs,
+                              float       y[static n_out]);
+void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
+                                  size_t       n_out,
+                                  float        scale_x,
+                                  const int8_t x_q8[static n_in],
+                                  const void  *w_iq4xs,
+                                  float        y[static n_out]);
+void linear_iq4nl_decode_w4a8(size_t      n_in,
+                              size_t      n_out,
+                              const float x[static n_in],
+                              const void *w_iq4nl,
+                              float       y[static n_out]);
+void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
+                                  size_t       n_out,
+                                  float        scale_x,
+                                  const int8_t x_q8[static n_in],
+                                  const void  *w_iq4nl,
+                                  float        y[static n_out]);
 /* IQ4_XS int8 mN prefill (#321): 4-token register tile over the LUT
  * decode; per (row, token) bit-identical to the m1 GEMV. */
-void linear_iq4xs_w4a8_prefill_pre(const int8_t *x_q8,
-                                   const float  *scale_x,
-                                   size_t        m,
-                                   const void   *w_iq4xs,
+void linear_iq4xs_w4a8_prefill_pre(size_t        m,
                                    size_t        n_in,
                                    size_t        n_out,
+                                   const int8_t *x_q8,
+                                   const float   scale_x[static m],
+                                   const void   *w_iq4xs,
                                    float        *y);
 void linear_iq4xs_w4a8_prefill(
-        const float *x, size_t m, const void *w_iq4xs, size_t n_in, size_t n_out, float *y);
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_iq4xs, float *y);
 
 /* TQ2_0 super-block: 256 elements, 66 bytes, 2.0625 bpw.
  *   qs[64]: 256 trits packed 4-per-byte (encoding: 0/1/2 mapped to -1/0/+1)
@@ -273,19 +279,33 @@ constexpr size_t GEIST_QUANT_M_CAP = 128;
  * vmlaq_n_s32; the (d/8 * scale_x) float multiply happens once per
  * super-block (256 elems). Replaces the FP32 dequant + sgemm slow path
  * (~1.7 GB/s) with int8 NEON dots (~5-7 GB/s target on Pi 5). */
-void linear_iq2s_decode_w2a8(
-        const float *x, const void *w_iq2s, size_t n_in, size_t n_out, float *y);
-void linear_iq2s_decode_w2a8_pre(
-        const int8_t *x_q8, float scale_x, const void *w_iq2s, size_t n_in, size_t n_out, float *y);
+void linear_iq2s_decode_w2a8(size_t      n_in,
+                             size_t      n_out,
+                             const float x[static n_in],
+                             const void *w_iq2s,
+                             float       y[static n_out]);
+void linear_iq2s_decode_w2a8_pre(size_t       n_in,
+                                 size_t       n_out,
+                                 float        scale_x,
+                                 const int8_t x_q8[static n_in],
+                                 const void  *w_iq2s,
+                                 float        y[static n_out]);
 
 /* W3A8 fast path for IQ3_S. Mirrors IQ2_S design: 32 int8 weights per
  * sub-block built from the 512-entry codebook + sign byte. Per-sub-block
  * int scale (2*s+1) folds via vmlaq_n_s32; d * scale_x float multiply
  * once per super-block. */
-void linear_iq3s_decode_w3a8(
-        const float *x, const void *w_iq3s, size_t n_in, size_t n_out, float *y);
-void linear_iq3s_decode_w3a8_pre(
-        const int8_t *x_q8, float scale_x, const void *w_iq3s, size_t n_in, size_t n_out, float *y);
+void linear_iq3s_decode_w3a8(size_t      n_in,
+                             size_t      n_out,
+                             const float x[static n_in],
+                             const void *w_iq3s,
+                             float       y[static n_out]);
+void linear_iq3s_decode_w3a8_pre(size_t       n_in,
+                                 size_t       n_out,
+                                 float        scale_x,
+                                 const int8_t x_q8[static n_in],
+                                 const void  *w_iq3s,
+                                 float        y[static n_out]);
 
 /* W2A8 prefill (m>1) variant for IQ2_S. Mirrors W4A8 / W6A8 prefill
  * design: read each super-block once per output row, reconstruct the
@@ -297,26 +317,26 @@ void linear_iq3s_decode_w3a8_pre(
  * Replaces the FP32 dequant + sgemm fallback for M>1 IQ2_S — Pi 5
  * primary win (no AMX). x is row-major (m, n_in); y row-major (m, n_out). */
 void linear_iq2s_w2a8_prefill(
-        const float *x, const void *w_iq2s, size_t m, size_t n_in, size_t n_out, float *y);
-void linear_iq2s_w2a8_prefill_pre(const int8_t *x_q8,
-                                  const float  *scale_x,
-                                  size_t        m,
-                                  const void   *w_iq2s,
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_iq2s, float *y);
+void linear_iq2s_w2a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
+                                  const int8_t *x_q8,
+                                  const float   scale_x[static m],
+                                  const void   *w_iq2s,
                                   float        *y);
 
 /* W3A8 prefill (m>1) variant for IQ3_S. Same shape as IQ2_S prefill
  * but uses iq3s codebook (512-entry, 4 elements per grid entry) and
  * the IQ3_S sub-block organisation (4 outer × 2 halves). */
 void linear_iq3s_w3a8_prefill(
-        const float *x, const void *w_iq3s, size_t m, size_t n_in, size_t n_out, float *y);
-void linear_iq3s_w3a8_prefill_pre(const int8_t *x_q8,
-                                  const float  *scale_x,
-                                  size_t        m,
-                                  const void   *w_iq3s,
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_iq3s, float *y);
+void linear_iq3s_w3a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
+                                  const int8_t *x_q8,
+                                  const float   scale_x[static m],
+                                  const void   *w_iq3s,
                                   float        *y);
 
 /* GGUF tensor-aware dequant dispatch (gguf_dequant_to_fp32 /
@@ -331,10 +351,18 @@ void linear_iq3s_w3a8_prefill_pre(const int8_t *x_q8,
  * W is in GGUF Q4_K layout: n_out rows of (n_in/256) super-blocks each.
  * n_in must be a multiple of Q4_K_BLOCK_ELEMS (256).
  */
-void linear_q4k_decode_fp32(const float *x, const void *w_q4k, size_t n_in, size_t n_out, float *y);
+void linear_q4k_decode_fp32(size_t      n_in,
+                            size_t      n_out,
+                            const float x[static n_in],
+                            const void *w_q4k,
+                            float       y[static n_out]);
 
 /* Same for Q6_K weights. */
-void linear_q6k_decode_fp32(const float *x, const void *w_q6k, size_t n_in, size_t n_out, float *y);
+void linear_q6k_decode_fp32(size_t      n_in,
+                            size_t      n_out,
+                            const float x[static n_in],
+                            const void *w_q6k,
+                            float       y[static n_out]);
 
 /* W4A8 path: quantize input vector to INT8 (symmetric, per-row scale)
  * once, then dot with Q4_K weights using NEON vdotq_s32 for ~4× FMA
@@ -349,66 +377,85 @@ float quantize_x_int8_sym(size_t n, const float x[static n], int8_t x_q8[static 
 /* Q4_0/Q4_1 W8A8 (#281 perf): int8-dot kernels for the 32-element
  * traditional quants; replaces the dequant trampoline for the qwen35
  * Q4_0 exports. Q4_1's min-offset folds via per-block activation sums. */
-void linear_q4_0_decode_w4a8(const float *x, const void *w_q4, size_t n_in, size_t n_out, float *y);
-void linear_q4_0_decode_w4a8_pre(
-        const int8_t *x_q8, float scale_x, const void *w_q4, size_t n_in, size_t n_out, float *y);
-void linear_q4_1_decode_w4a8(const float *x, const void *w_q4, size_t n_in, size_t n_out, float *y);
-void linear_q4_1_decode_w4a8_pre(const int8_t  *x_q8,
-                                 float          scale_x,
-                                 const int32_t *bsum,
-                                 const void    *w_q4,
-                                 size_t         n_in,
-                                 size_t         n_out,
-                                 float         *y);
+void   linear_q4_0_decode_w4a8(size_t      n_in,
+                               size_t      n_out,
+                               const float x[static n_in],
+                               const void *w_q4,
+                               float       y[static n_out]);
+void   linear_q4_0_decode_w4a8_pre(size_t       n_in,
+                                   size_t       n_out,
+                                   float        scale_x,
+                                   const int8_t x_q8[static n_in],
+                                   const void  *w_q4,
+                                   float        y[static n_out]);
+void   linear_q4_1_decode_w4a8(size_t      n_in,
+                               size_t      n_out,
+                               const float x[static n_in],
+                               const void *w_q4,
+                               float       y[static n_out]);
+void   linear_q4_1_decode_w4a8_pre(size_t         n_in,
+                                   size_t         n_out,
+                                   float          scale_x,
+                                   const int8_t   x_q8[static n_in],
+                                   const int32_t *bsum,
+                                   const void    *w_q4,
+                                   float          y[static n_out]);
 size_t q4_0_x8_gemv_size_bytes(size_t n_in, size_t n_out);
 int    q4_0_x8_gemv_pack(const void *w_q4, size_t n_in, size_t n_out, void *dst);
-void   linear_q4_0_decode_w4a8_x8(
-        const float *x, const void *packed, size_t n_in, size_t n_out, float *y);
-void linear_q4_0_decode_w4a8_x8_pre(const int8_t  *x_q8,
-                                    float          scale_x,
-                                    const int32_t *bsum,
-                                    const void    *packed,
-                                    size_t         n_in,
-                                    size_t         n_out,
-                                    float         *y);
+void   linear_q4_0_decode_w4a8_x8(size_t      n_in,
+                                  size_t      n_out,
+                                  const float x[static n_in],
+                                  const void *packed,
+                                  float       y[static n_out]);
+void   linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
+                                      size_t         n_out,
+                                      float          scale_x,
+                                      const int8_t   x_q8[static n_in],
+                                      const int32_t *bsum,
+                                      const void    *packed,
+                                      float          y[static n_out]);
 
-void linear_q4_0_w4a8_prefill_x8_pre(const int8_t  *x_q8,
-                                     const float   *scale_x,
-                                     const int32_t *bsums,
-                                     size_t         m,
-                                     const void    *packed,
+void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
                                      size_t         n_in,
                                      size_t         n_out,
+                                     const int8_t  *x_q8,
+                                     const float    scale_x[static m],
+                                     const int32_t *bsums,
+                                     const void    *packed,
                                      float         *y);
 void linear_q4_0_w4a8_prefill_x8(
-        const float *x, size_t m, const void *packed, size_t n_in, size_t n_out, float *y);
-void linear_q4_0_w4a8_prefill_pre(const int8_t *x_q8,
-                                  const float  *scale_x,
-                                  size_t        m,
-                                  const void   *w_q4,
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *packed, float *y);
+void linear_q4_0_w4a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
+                                  const int8_t *x_q8,
+                                  const float   scale_x[static m],
+                                  const void   *w_q4,
                                   float        *y);
 void linear_q4_0_w4a8_prefill(
-        const float *x, size_t m, const void *w_q4, size_t n_in, size_t n_out, float *y);
-void linear_q4_1_w4a8_prefill_pre(const int8_t  *x_q8,
-                                  const float   *scale_x,
-                                  const int32_t *bsums,
-                                  size_t         m,
-                                  const void    *w_q4,
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4, float *y);
+void linear_q4_1_w4a8_prefill_pre(size_t         m,
                                   size_t         n_in,
                                   size_t         n_out,
+                                  const int8_t  *x_q8,
+                                  const float    scale_x[static m],
+                                  const int32_t *bsums,
+                                  const void    *w_q4,
                                   float         *y);
 void linear_q4_1_w4a8_prefill(
-        const float *x, size_t m, const void *w_q4, size_t n_in, size_t n_out, float *y);
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4, float *y);
 
-void linear_q4k_decode_w4a8(const float *x, const void *w_q4k, size_t n_in, size_t n_out, float *y);
-void linear_q4k_decode_w4a8_pair(const float *x,
-                                 const void  *w0_q4k,
-                                 const void  *w1_q4k,
-                                 size_t       n_in,
+void linear_q4k_decode_w4a8(size_t      n_in,
+                            size_t      n_out,
+                            const float x[static n_in],
+                            const void *w_q4k,
+                            float       y[static n_out]);
+void linear_q4k_decode_w4a8_pair(size_t       n_in,
                                  size_t       n_out0,
                                  size_t       n_out1,
+                                 const float *x,
+                                 const void  *w0_q4k,
+                                 const void  *w1_q4k,
                                  float       *y0,
                                  float       *y1);
 
@@ -416,109 +463,116 @@ void linear_q4k_decode_w4a8_pair(const float *x,
  * eliminates the slow gguf_dequant_to_fp32 + cblas_sgemm path for prefill
  * on Pi 5 / non-AMX targets. x is row-major (m, n_in); y row-major (m, n_out). */
 void linear_q4k_w4a8_prefill(
-        const float *x, const void *w_q4k, size_t m, size_t n_in, size_t n_out, float *y);
-void   linear_q4k_w4a8_prefill_pre(const int8_t  *x_q8,
-                                   const float   *scale_x,
-                                   const int32_t *sum32,
-                                   size_t         m,
-                                   const void    *w_q4k,
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4k, float *y);
+void   linear_q4k_w4a8_prefill_pre(size_t         m,
                                    size_t         n_in,
                                    size_t         n_out,
+                                   const int8_t  *x_q8,
+                                   const float    scale_x[static m],
+                                   const int32_t *sum32,
+                                   const void    *w_q4k,
                                    float         *y);
 size_t q4k_predecode_size_bytes(size_t n_in, size_t n_out);
 int    q4k_predecode_pack(const void *w_q4k, size_t n_in, size_t n_out, void *dst);
 size_t q4k_predecode_ntile4_size_bytes(size_t n_in, size_t n_out);
 int    q4k_predecode_ntile4_pack(const void *w_q4k, size_t n_in, size_t n_out, void *dst);
-void   linear_q4k_decode_w4a8_predecoded(
-        const float *x, const void *packed, size_t n_in, size_t n_out, float *y);
-void linear_q4k_w4a8_prefill_predecoded(const int8_t  *x_q8,
-                                        const float   *scale_x,
-                                        const int32_t *sum32,
-                                        size_t         m,
-                                        const void    *packed,
-                                        size_t         n_in,
-                                        size_t         n_out,
-                                        float         *y);
-void linear_q4k_w4a8_prefill_predecoded_mtile4(const int8_t  *x_q8,
-                                               const float   *scale_x,
-                                               const int32_t *sum32,
-                                               size_t         m,
-                                               const void    *packed,
-                                               size_t         n_in,
-                                               size_t         n_out,
-                                               float         *y);
-void linear_q4k_w4a8_prefill_predecoded_mtile8(const int8_t  *x_q8,
-                                               const float   *scale_x,
-                                               const int32_t *sum32,
-                                               size_t         m,
-                                               const void    *packed,
-                                               size_t         n_in,
-                                               size_t         n_out,
-                                               float         *y);
-void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(const int8_t  *x_q8,
-                                                      const float   *scale_x,
-                                                      const int32_t *sum32,
-                                                      size_t         m,
-                                                      const void    *packed,
-                                                      size_t         n_in,
-                                                      size_t         n_out,
-                                                      float         *y);
-void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(const int8_t  *x_q8,
-                                                             const float   *scale_x,
-                                                             const int32_t *sum32,
-                                                             size_t         m,
-                                                             const void    *packed,
-                                                             size_t         n_in,
-                                                             size_t         n_out,
-                                                             float         *y);
-void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(const int8_t  *x_q8,
-                                                             const float   *scale_x,
-                                                             const int32_t *sum32,
-                                                             size_t         m,
-                                                             const void    *packed,
-                                                             size_t         n_in,
-                                                             size_t         n_out,
-                                                             float         *y);
-void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(const int8_t  *x_q8,
-                                                                  const float   *scale_x,
-                                                                  const int32_t *sum32,
-                                                                  size_t         m,
-                                                                  const void    *packed0,
-                                                                  const void    *packed1,
-                                                                  size_t         n_in,
-                                                                  size_t         n_out,
-                                                                  float         *y0,
-                                                                  float         *y1);
-void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(const int8_t  *x_q8,
-                                                      const float   *scale_blocks,
-                                                      const int32_t *sum32,
-                                                      size_t         m,
-                                                      const void    *packed,
-                                                      size_t         n_in,
-                                                      size_t         n_out,
-                                                      float         *y);
+void   linear_q4k_decode_w4a8_predecoded(size_t      n_in,
+                                         size_t      n_out,
+                                         const float x[static n_in],
+                                         const void *packed,
+                                         float       y[static n_out]);
+void   linear_q4k_w4a8_prefill_predecoded(size_t         m,
+                                          size_t         n_in,
+                                          size_t         n_out,
+                                          const int8_t  *x_q8,
+                                          const float    scale_x[static m],
+                                          const int32_t *sum32,
+                                          const void    *packed,
+                                          float         *y);
+void   linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
+                                                 size_t         n_in,
+                                                 size_t         n_out,
+                                                 const int8_t  *x_q8,
+                                                 const float    scale_x[static m],
+                                                 const int32_t *sum32,
+                                                 const void    *packed,
+                                                 float         *y);
+void   linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
+                                                 size_t         n_in,
+                                                 size_t         n_out,
+                                                 const int8_t  *x_q8,
+                                                 const float    scale_x[static m],
+                                                 const int32_t *sum32,
+                                                 const void    *packed,
+                                                 float         *y);
+void   linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
+                                                        size_t         n_in,
+                                                        size_t         n_out,
+                                                        const int8_t  *x_q8,
+                                                        const float    scale_x[static m],
+                                                        const int32_t *sum32,
+                                                        const void    *packed,
+                                                        float         *y);
+void   linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
+                                                               size_t         n_in,
+                                                               size_t         n_out,
+                                                               const int8_t  *x_q8,
+                                                               const float    scale_x[static m],
+                                                               const int32_t *sum32,
+                                                               const void    *packed,
+                                                               float         *y);
+void   linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
+                                                               size_t         n_in,
+                                                               size_t         n_out,
+                                                               const int8_t  *x_q8,
+                                                               const float    scale_x[static m],
+                                                               const int32_t *sum32,
+                                                               const void    *packed,
+                                                               float         *y);
+void   linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t         m,
+                                                                    size_t         n_in,
+                                                                    size_t         n_out,
+                                                                    const int8_t  *x_q8,
+                                                                    const float    scale_x[static m],
+                                                                    const int32_t *sum32,
+                                                                    const void    *packed0,
+                                                                    const void    *packed1,
+                                                                    float         *y0,
+                                                                    float         *y1);
+void   linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
+                                                        size_t         n_in,
+                                                        size_t         n_out,
+                                                        const int8_t  *x_q8,
+                                                        const float   *scale_blocks,
+                                                        const int32_t *sum32,
+                                                        const void    *packed,
+                                                        float         *y);
 
 /* P2.b: native W5A8 kernels for Q5_K. Same activation-quant shape as
  * Q4_K (reuse quantize_x_for_q4k). The decode (M=1) and prefill (M>1)
  * kernels both use NEON vdotq_s32 on per-row reconstructed 5-bit
  * values; replaces the dequant-and-cblas trampoline path. */
-void linear_q5k_decode_w5a8(const float *x, const void *w_q5k, size_t n_in, size_t n_out, float *y);
-void linear_q5k_decode_w5a8_pre(const int8_t  *x_q8,
+void linear_q5k_decode_w5a8(size_t      n_in,
+                            size_t      n_out,
+                            const float x[static n_in],
+                            const void *w_q5k,
+                            float       y[static n_out]);
+void linear_q5k_decode_w5a8_pre(size_t         n_in,
+                                size_t         n_out,
                                 float          scale_x,
+                                const int8_t   x_q8[static n_in],
                                 const int32_t *sum32,
                                 const void    *w_q5k,
-                                size_t         n_in,
-                                size_t         n_out,
-                                float         *y);
+                                float          y[static n_out]);
 void linear_q5k_w5a8_prefill(
-        const float *x, const void *w_q5k, size_t m, size_t n_in, size_t n_out, float *y);
-void linear_q5k_w5a8_prefill_pre(const int8_t  *x_q8,
-                                 const float   *scale_x,
-                                 const int32_t *sum32,
-                                 size_t         m,
-                                 const void    *w_q5k,
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q5k, float *y);
+void linear_q5k_w5a8_prefill_pre(size_t         m,
                                  size_t         n_in,
                                  size_t         n_out,
+                                 const int8_t  *x_q8,
+                                 const float    scale_x[static m],
+                                 const int32_t *sum32,
+                                 const void    *w_q5k,
                                  float         *y);
 
 /* Pre-quantized W4A8 path: caller owns x_q8[n_in] and sum32[n_in/32], having
@@ -529,13 +583,13 @@ void linear_q5k_w5a8_prefill_pre(const int8_t  *x_q8,
 float quantize_x_for_q4k(size_t n, const float x[static n], int8_t x_q8[static n], int32_t *sum32);
 void  quantize_x_for_q4k_blocks(
         size_t n, const float *x, int8_t *x_q8, int32_t *sum32, float *scale_blocks);
-void linear_q4k_decode_w4a8_pre(const int8_t  *x_q8,
+void linear_q4k_decode_w4a8_pre(size_t         n_in,
+                                size_t         n_out,
                                 float          scale_x,
+                                const int8_t   x_q8[static n_in],
                                 const int32_t *sum32,
                                 const void    *w_q4k,
-                                size_t         n_in,
-                                size_t         n_out,
-                                float         *y);
+                                float          y[static n_out]);
 
 /* W6A8 fast path for Q6_K. Reconstructs 6-bit quants (4-bit ql + 2-bit qh
  * → unsigned 6-bit, then minus 32 → int8 in [-32, 31]) one 16-element
@@ -546,15 +600,30 @@ void linear_q4k_decode_w4a8_pre(const int8_t  *x_q8,
  * On Pi 5: replaces the FP32-input reference (1.7 GB/s) with int8 NEON
  * dots (~10 GB/s target). x_q8 must be pre-quantized via quantize_x_int8_sym;
  * no per-block sum32 needed (Q6_K has no min-offset like Q4_K). */
-void linear_q6k_decode_w6a8(const float *x, const void *w_q6k, size_t n_in, size_t n_out, float *y);
-void linear_q6k_decode_w6a8_pre(
-        const int8_t *x_q8, float scale_x, const void *w_q6k, size_t n_in, size_t n_out, float *y);
+void   linear_q6k_decode_w6a8(size_t      n_in,
+                              size_t      n_out,
+                              const float x[static n_in],
+                              const void *w_q6k,
+                              float       y[static n_out]);
+void   linear_q6k_decode_w6a8_pre(size_t       n_in,
+                                  size_t       n_out,
+                                  float        scale_x,
+                                  const int8_t x_q8[static n_in],
+                                  const void  *w_q6k,
+                                  float        y[static n_out]);
 size_t q6k_x8_gemv_size_bytes(size_t n_in, size_t n_out);
 int    q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst);
-void   linear_q6k_decode_w6a8_x8(
-        const float *x, const void *packed, size_t n_in, size_t n_out, float *y);
-void linear_q6k_decode_w6a8_x8_pre(
-        const int8_t *x_q8, float scale_x, const void *packed, size_t n_in, size_t n_out, float *y);
+void   linear_q6k_decode_w6a8_x8(size_t      n_in,
+                                 size_t      n_out,
+                                 const float x[static n_in],
+                                 const void *packed,
+                                 float       y[static n_out]);
+void   linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
+                                     size_t       n_out,
+                                     float        scale_x,
+                                     const int8_t x_q8[static n_in],
+                                     const void  *packed,
+                                     float        y[static n_out]);
 
 /* W6A8 prefill (m>1) variant for Q6_K. Mirrors the W3A8 / W4A8 prefill
  * design: read each super-block once per output row, extract 4 reconstructed
@@ -564,62 +633,70 @@ void linear_q6k_decode_w6a8_x8_pre(
  * M>1 path that targets a Q6_K weight (e.g. lm_head with K-wide verify).
  * x is row-major (m, n_in); y row-major (m, n_out). */
 void linear_q6k_w6a8_prefill(
-        const float *x, const void *w_q6k, size_t m, size_t n_in, size_t n_out, float *y);
-void   linear_q6k_w6a8_prefill_pre(const int8_t *x_q8,
-                                   const float  *scale_x,
-                                   size_t        m,
-                                   const void   *w_q6k,
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q6k, float *y);
+void   linear_q6k_w6a8_prefill_pre(size_t        m,
                                    size_t        n_in,
                                    size_t        n_out,
+                                   const int8_t *x_q8,
+                                   const float   scale_x[static m],
+                                   const void   *w_q6k,
                                    float        *y);
-void   linear_q6k_w6a8_prefill_pre_accum_blocks(const int8_t *x_q8,
-                                                const float  *scale_x,
-                                                size_t        m,
-                                                const void   *w_q6k,
+void   linear_q6k_w6a8_prefill_pre_accum_blocks(size_t        m,
                                                 size_t        n_in_total,
                                                 size_t        n_out,
                                                 size_t        block_start,
                                                 size_t        n_blocks,
+                                                const int8_t *x_q8,
+                                                const float  *scale_x,
+                                                const void   *w_q6k,
                                                 float        *y);
 size_t q6k_predecode_ntile4_size_bytes(size_t n_in, size_t n_out);
 int    q6k_predecode_ntile4_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst);
 size_t q6k_predecode_ntile4_stream_size_bytes(size_t n_in, size_t n_out);
 int    q6k_predecode_ntile4_stream_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst);
-void   linear_q6k_w6a8_prefill_predecoded_ntile4(const int8_t *x_q8,
-                                                 const float  *scale_x,
-                                                 size_t        m,
-                                                 const void   *packed,
+void   linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
                                                  size_t        n_in,
                                                  size_t        n_out,
+                                                 const int8_t *x_q8,
+                                                 const float   scale_x[static m],
+                                                 const void   *packed,
                                                  float        *y);
-void   linear_q6k_w6a8_prefill_predecoded_ntile4_stream(const int8_t *x_q8,
-                                                        const float  *scale_x,
-                                                        size_t        m,
-                                                        const void   *packed,
+void   linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                                                         size_t        n_in,
                                                         size_t        n_out,
+                                                        const int8_t *x_q8,
+                                                        const float   scale_x[static m],
+                                                        const void   *packed,
                                                         float        *y);
 
 /* W3A8 fast path for Q3_K. Reconstructs 3-bit signed quants (low 2 bits from
  * qs + high bit from hmask → q ∈ [-4, 3]) and dots against pre-quantized
  * x_q8 via vdotq_s32. Per-sub-group int8 scale and per-super-block fp16 d
  * folded scalarly after each dot. No min-offset (unlike Q4_K/Q5_K). */
-void linear_q3k_decode_w3a8(const float *x, const void *w_q3k, size_t n_in, size_t n_out, float *y);
-void linear_q3k_decode_w3a8_pre(
-        const int8_t *x_q8, float scale_x, const void *w_q3k, size_t n_in, size_t n_out, float *y);
+void linear_q3k_decode_w3a8(size_t      n_in,
+                            size_t      n_out,
+                            const float x[static n_in],
+                            const void *w_q3k,
+                            float       y[static n_out]);
+void linear_q3k_decode_w3a8_pre(size_t       n_in,
+                                size_t       n_out,
+                                float        scale_x,
+                                const int8_t x_q8[static n_in],
+                                const void  *w_q3k,
+                                float        y[static n_out]);
 
 /* W3A8 prefill (m>1) variant. Reads weights once per output row and dots
  * against M activation rows — bandwidth amortization for prefill, replacing
  * the slow gguf_dequant_to_fp32 + cblas_sgemm fallback. x is row-major
  * (m, n_in); y is row-major (m, n_out). */
 void linear_q3k_w3a8_prefill(
-        const float *x, const void *w_q3k, size_t m, size_t n_in, size_t n_out, float *y);
-void linear_q3k_w3a8_prefill_pre(const int8_t *x_q8,
-                                 const float  *scale_x,
-                                 size_t        m,
-                                 const void   *w_q3k,
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q3k, float *y);
+void linear_q3k_w3a8_prefill_pre(size_t        m,
                                  size_t        n_in,
                                  size_t        n_out,
+                                 const int8_t *x_q8,
+                                 const float   scale_x[static m],
+                                 const void   *w_q3k,
                                  float        *y);
 
 /* PTQTP kernels live in their own module — see ptqtp_kernel.h.
@@ -638,23 +715,31 @@ void linear_q3k_w3a8_prefill_pre(const int8_t *x_q8,
  *                                    matmuls share one quantization of x).
  *
  * NEON: uses vdotq_s32 (int8x16 · int8x16 → int32x4). */
-void linear_q8_0_decode_w8a8(const float *x, const void *w_q8, size_t n_in, size_t n_out, float *y);
+void linear_q8_0_decode_w8a8(size_t      n_in,
+                             size_t      n_out,
+                             const float x[static n_in],
+                             const void *w_q8,
+                             float       y[static n_out]);
 
 /* P2.d: W8A8 prefill (m>1) for Q8_0. Replaces the dequant-and-cblas
  * trampoline for SmolLM2 / Llama-family Q8_0 prefill on platforms
  * where the native NEON kernel beats the SGEMM (Pi 5). On Mac the
  * resolver may still prefer the trampoline (Apple AMX). */
 void linear_q8_0_w8a8_prefill(
-        const float *x, const void *w_q8, size_t m, size_t n_in, size_t n_out, float *y);
-void linear_q8_0_w8a8_prefill_pre(const int8_t *x_q8,
-                                  const float  *scale_x,
-                                  size_t        m,
-                                  const void   *w_q8,
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q8, float *y);
+void linear_q8_0_w8a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
+                                  const int8_t *x_q8,
+                                  const float   scale_x[static m],
+                                  const void   *w_q8,
                                   float        *y);
 
-void linear_q8_0_decode_w8a8_pre(
-        const int8_t *x_q8, float scale_x, const void *w_q8, size_t n_in, size_t n_out, float *y);
+void linear_q8_0_decode_w8a8_pre(size_t       n_in,
+                                 size_t       n_out,
+                                 float        scale_x,
+                                 const int8_t x_q8[static n_in],
+                                 const void  *w_q8,
+                                 float        y[static n_out]);
 
 #endif

@@ -26,12 +26,12 @@
 static const int8_t kvalues_iq4nl_k[16] = {
         -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
-void linear_iq4xs_decode_w4a8_pre(const int8_t *x_q8,
-                                  float         scale_x,
-                                  const void   *w_iq4xs,
-                                  size_t        n_in,
-                                  size_t        n_out,
-                                  float        *y) {
+void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
+                                  size_t       n_out,
+                                  float        scale_x,
+                                  const int8_t x_q8[static n_in],
+                                  const void  *w_iq4xs,
+                                  float        y[static n_out]) {
 #if defined(__ARM_NEON)
     const struct block_iq4_xs_t *w                = (const struct block_iq4_xs_t *) w_iq4xs;
     const size_t                 n_blocks_per_row = n_in / IQ4_XS_BLOCK_ELEMS;
@@ -82,11 +82,14 @@ void linear_iq4xs_decode_w4a8_pre(const int8_t *x_q8,
 #endif
 }
 
-void linear_iq4xs_decode_w4a8(
-        const float *x, const void *w_iq4xs, size_t n_in, size_t n_out, float *y) {
+void linear_iq4xs_decode_w4a8(size_t      n_in,
+                              size_t      n_out,
+                              const float x[static n_in],
+                              const void *w_iq4xs,
+                              float       y[static n_out]) {
     int8_t     *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
     const float scale_x = quantize_x_int8_sym(n_in, x, x_q8);
-    linear_iq4xs_decode_w4a8_pre(x_q8, scale_x, w_iq4xs, n_in, n_out, y);
+    linear_iq4xs_decode_w4a8_pre(n_in, n_out, scale_x, x_q8, w_iq4xs, y);
     safe_free((void **) &x_q8);
 }
 
@@ -101,12 +104,12 @@ void linear_iq4xs_decode_w4a8(
  * (pinned by test_iq4_dequant_unit). No repack, no extra RSS; the
  * 8-row interleaved lane-SDOT variant stays a documented follow-up if
  * this plateau is not enough. */
-void linear_iq4xs_w4a8_prefill_pre(const int8_t *x_q8,
-                                   const float  *scale_x,
-                                   size_t        m,
-                                   const void   *w_iq4xs,
+void linear_iq4xs_w4a8_prefill_pre(size_t        m,
                                    size_t        n_in,
                                    size_t        n_out,
+                                   const int8_t *x_q8,
+                                   const float   scale_x[static m],
+                                   const void   *w_iq4xs,
                                    float        *y) {
 #if defined(__ARM_NEON)
     if (m == 0)
@@ -168,7 +171,7 @@ void linear_iq4xs_w4a8_prefill_pre(const int8_t *x_q8,
 }
 
 void linear_iq4xs_w4a8_prefill(
-        const float *x, size_t m, const void *w_iq4xs, size_t n_in, size_t n_out, float *y) {
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_iq4xs, float *y) {
     int8_t *x_q8   = heap_alloc_array_aligned(int8_t, m *n_in);
     float  *scales = heap_alloc_array_aligned(float, m);
     if (x_q8 == nullptr || scales == nullptr) {
@@ -178,17 +181,17 @@ void linear_iq4xs_w4a8_prefill(
     }
     for (size_t i = 0; i < m; i++)
         scales[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
-    linear_iq4xs_w4a8_prefill_pre(x_q8, scales, m, w_iq4xs, n_in, n_out, y);
+    linear_iq4xs_w4a8_prefill_pre(m, n_in, n_out, x_q8, scales, w_iq4xs, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &scales);
 }
 
-void linear_iq4nl_decode_w4a8_pre(const int8_t *x_q8,
-                                  float         scale_x,
-                                  const void   *w_iq4nl,
-                                  size_t        n_in,
-                                  size_t        n_out,
-                                  float        *y) {
+void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
+                                  size_t       n_out,
+                                  float        scale_x,
+                                  const int8_t x_q8[static n_in],
+                                  const void  *w_iq4nl,
+                                  float        y[static n_out]) {
 #if defined(__ARM_NEON)
     const struct block_iq4_nl_t *w                = (const struct block_iq4_nl_t *) w_iq4nl;
     const size_t                 n_blocks_per_row = n_in / IQ4_NL_BLOCK_ELEMS;
@@ -224,10 +227,13 @@ void linear_iq4nl_decode_w4a8_pre(const int8_t *x_q8,
 #endif
 }
 
-void linear_iq4nl_decode_w4a8(
-        const float *x, const void *w_iq4nl, size_t n_in, size_t n_out, float *y) {
+void linear_iq4nl_decode_w4a8(size_t      n_in,
+                              size_t      n_out,
+                              const float x[static n_in],
+                              const void *w_iq4nl,
+                              float       y[static n_out]) {
     int8_t     *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
     const float scale_x = quantize_x_int8_sym(n_in, x, x_q8);
-    linear_iq4nl_decode_w4a8_pre(x_q8, scale_x, w_iq4nl, n_in, n_out, y);
+    linear_iq4nl_decode_w4a8_pre(n_in, n_out, scale_x, x_q8, w_iq4nl, y);
     safe_free((void **) &x_q8);
 }
