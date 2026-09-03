@@ -15,13 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int  g_fail = 0;
-static void check(bool ok, const char *what) {
-    if (!ok) {
-        fprintf(stderr, "FAIL: %s\n", what);
-        g_fail = 1;
-    }
-}
+static int g_fail = 0;
+#define check(ok, what) (g_fail |= geist_expect((ok), (what)))
 
 enum { N_IN = 1024, N_OUT = 128, M = 33 }; /* odd m: tile tails included */
 

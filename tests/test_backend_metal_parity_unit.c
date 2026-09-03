@@ -33,13 +33,7 @@
 #include <string.h>
 
 static int g_fail = 0;
-
-static void check(bool cond, const char *what) {
-    if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", what);
-        g_fail++;
-    }
-}
+#define check(ok, what) (g_fail |= geist_expect((ok), (what)))
 
 static double max_abs(const float *a, const float *b, size_t n) {
     double out = 0.0;
