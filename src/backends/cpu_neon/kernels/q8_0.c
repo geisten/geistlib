@@ -15,8 +15,12 @@
 #include <arm_neon.h>
 #endif
 
-void linear_q8_0_decode_w8a8_pre(
-        const int8_t *x_q8, float scale_x, const void *w_q8, size_t n_in, size_t n_out, float *y) {
+void linear_q8_0_decode_w8a8_pre(size_t       n_in,
+                                 size_t       n_out,
+                                 float        scale_x,
+                                 const int8_t x_q8[static n_in],
+                                 const void  *w_q8,
+                                 float        y[static n_out]) {
     const struct block_q8_0_t *w          = (const struct block_q8_0_t *) w_q8;
     const size_t               nb_per_row = n_in / Q8_0_BLOCK_ELEMS;
 
@@ -47,20 +51,23 @@ void linear_q8_0_decode_w8a8_pre(
     }
 }
 
-void linear_q8_0_decode_w8a8(
-        const float *x, const void *w_q8, size_t n_in, size_t n_out, float *y) {
+void linear_q8_0_decode_w8a8(size_t      n_in,
+                             size_t      n_out,
+                             const float x[static n_in],
+                             const void *w_q8,
+                             float       y[static n_out]) {
     int8_t *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
     float   scale_x = quantize_x_int8_sym(n_in, x, x_q8);
-    linear_q8_0_decode_w8a8_pre(x_q8, scale_x, w_q8, n_in, n_out, y);
+    linear_q8_0_decode_w8a8_pre(n_in, n_out, scale_x, x_q8, w_q8, y);
     safe_free((void **) &x_q8);
 }
 
-void linear_q8_0_w8a8_prefill_pre(const int8_t *x_q8,
-                                  const float  *scale_x,
-                                  size_t        m,
-                                  const void   *w_q8,
+void linear_q8_0_w8a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
+                                  const int8_t *x_q8,
+                                  const float   scale_x[static m],
+                                  const void   *w_q8,
                                   float        *y) {
 #if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
@@ -110,13 +117,13 @@ void linear_q8_0_w8a8_prefill_pre(const int8_t *x_q8,
 }
 
 void linear_q8_0_w8a8_prefill(
-        const float *x, const void *w_q8, size_t m, size_t n_in, size_t n_out, float *y) {
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q8, float *y) {
     int8_t *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
     float  *scale_x = heap_alloc_array_aligned(float, m);
     for (size_t i = 0; i < m; i++) {
         scale_x[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
     }
-    linear_q8_0_w8a8_prefill_pre(x_q8, scale_x, m, w_q8, n_in, n_out, y);
+    linear_q8_0_w8a8_prefill_pre(m, n_in, n_out, x_q8, scale_x, w_q8, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &scale_x);
 }

@@ -67,7 +67,7 @@ int main(int argc, char **argv) {
                     (int) nout);
 
         float *yfast = (float *) calloc(M * nout, sizeof(float));
-        linear_q3k_w3a8_prefill(xx, t->data, M, nin, nout, yfast);
+        linear_q3k_w3a8_prefill(M, nin, nout, xx, t->data, yfast);
 
         double sse = 0, refsq = 0, fastsq = 0, dotrf = 0;
         for (size_t i = 0; i < M * nout; i++) {

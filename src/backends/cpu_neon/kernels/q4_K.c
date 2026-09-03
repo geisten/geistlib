@@ -417,13 +417,13 @@ static void q4k_pp_row(size_t n, void *vctx) {
     q4k_decode_one_row(n, (const struct q4k_decode_ctx *) vctx);
 }
 
-void linear_q4k_decode_w4a8_pre(const int8_t  *x_q8,
+void linear_q4k_decode_w4a8_pre(size_t         n_in,
+                                size_t         n_out,
                                 float          scale_x,
+                                const int8_t   x_q8[static n_in],
                                 const int32_t *sum32,
                                 const void    *w_q4k,
-                                size_t         n_in,
-                                size_t         n_out,
-                                float         *y) {
+                                float          y[static n_out]) {
     const struct q4k_decode_ctx ctx = {
             .w                = (const struct block_q4_K_t *) w_q4k,
             .x_q8             = x_q8,
@@ -477,8 +477,11 @@ static void q4k_pp_pair_row(size_t n, void *vctx) {
         q4k_decode_one_row(n, c->c1);
 }
 
-void linear_q4k_decode_w4a8(
-        const float *x, const void *w_q4k, size_t n_in, size_t n_out, float *y) {
+void linear_q4k_decode_w4a8(size_t      n_in,
+                            size_t      n_out,
+                            const float x[static n_in],
+                            const void *w_q4k,
+                            float       y[static n_out]) {
     /* G2: per-thread quantize cache. In Gemma 4 / Llama, q/k/v_proj share
      * the same post-attn-norm input x, and gate/up_proj share the post-ffn-
      * norm input x. Caching x_q8 + sum32 + scale across the 3 (or 2) calls
@@ -534,15 +537,15 @@ void linear_q4k_decode_w4a8(
         tl_last_scale_x = scale_x;
     }
 
-    linear_q4k_decode_w4a8_pre(tl_x_q8, scale_x, tl_sum32, w_q4k, n_in, n_out, y);
+    linear_q4k_decode_w4a8_pre(n_in, n_out, scale_x, tl_x_q8, tl_sum32, w_q4k, y);
 }
 
-void linear_q4k_decode_w4a8_pair(const float *x,
-                                 const void  *w0_q4k,
-                                 const void  *w1_q4k,
-                                 size_t       n_in,
+void linear_q4k_decode_w4a8_pair(size_t       n_in,
                                  size_t       n_out0,
                                  size_t       n_out1,
+                                 const float *x,
+                                 const void  *w0_q4k,
+                                 const void  *w1_q4k,
                                  float       *y0,
                                  float       *y1) {
     if (x == nullptr || w0_q4k == nullptr || w1_q4k == nullptr || y0 == nullptr || y1 == nullptr ||
@@ -656,13 +659,13 @@ static inline void q4k_unpack_scales_mins(const uint8_t *s, uint8_t scales[8], u
 }
 #endif
 
-void linear_q4k_w4a8_prefill_pre(const int8_t  *x_q8,
-                                 const float   *scale_x,
-                                 const int32_t *sum32,
-                                 size_t         m,
-                                 const void    *w_q4k,
+void linear_q4k_w4a8_prefill_pre(size_t         m,
                                  size_t         n_in,
                                  size_t         n_out,
+                                 const int8_t  *x_q8,
+                                 const float    scale_x[static m],
+                                 const int32_t *sum32,
+                                 const void    *w_q4k,
                                  float         *y) {
 #if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
@@ -853,13 +856,13 @@ void linear_q4k_w4a8_prefill_pre(const int8_t  *x_q8,
 #endif
 }
 
-void linear_q4k_w4a8_prefill_predecoded(const int8_t  *x_q8,
-                                        const float   *scale_x,
-                                        const int32_t *sum32,
-                                        size_t         m,
-                                        const void    *packed,
+void linear_q4k_w4a8_prefill_predecoded(size_t         m,
                                         size_t         n_in,
                                         size_t         n_out,
+                                        const int8_t  *x_q8,
+                                        const float    scale_x[static m],
+                                        const int32_t *sum32,
+                                        const void    *packed,
                                         float         *y) {
 #if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
@@ -932,13 +935,13 @@ void linear_q4k_w4a8_prefill_predecoded(const int8_t  *x_q8,
 #endif
 }
 
-void linear_q4k_w4a8_prefill_predecoded_mtile4(const int8_t  *x_q8,
-                                               const float   *scale_x,
-                                               const int32_t *sum32,
-                                               size_t         m,
-                                               const void    *packed,
+void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
                                                size_t         n_in,
                                                size_t         n_out,
+                                               const int8_t  *x_q8,
+                                               const float    scale_x[static m],
+                                               const int32_t *sum32,
+                                               const void    *packed,
                                                float         *y) {
 #if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
@@ -946,7 +949,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(const int8_t  *x_q8,
     if (!q4k_predecode_valid(packed, n_in, n_out))
         return;
     if (m < 4) {
-        linear_q4k_w4a8_prefill_predecoded(x_q8, scale_x, sum32, m, packed, n_in, n_out, y);
+        linear_q4k_w4a8_prefill_predecoded(m, n_in, n_out, x_q8, scale_x, sum32, packed, y);
         return;
     }
 
@@ -1063,13 +1066,13 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(const int8_t  *x_q8,
 /* mtile8 = mtile4 with the inner M-tile widened to 8 rows. Same buffer
  * contracts (x_q8/scale_x/sum32/packed/y), no new workspace. Falls back
  * to mtile4 when m < 8. */
-void linear_q4k_w4a8_prefill_predecoded_mtile8(const int8_t  *x_q8,
-                                               const float   *scale_x,
-                                               const int32_t *sum32,
-                                               size_t         m,
-                                               const void    *packed,
+void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
                                                size_t         n_in,
                                                size_t         n_out,
+                                               const int8_t  *x_q8,
+                                               const float    scale_x[static m],
+                                               const int32_t *sum32,
+                                               const void    *packed,
                                                float         *y) {
 #if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
@@ -1077,7 +1080,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(const int8_t  *x_q8,
     if (!q4k_predecode_valid(packed, n_in, n_out))
         return;
     if (m < 8) {
-        linear_q4k_w4a8_prefill_predecoded_mtile4(x_q8, scale_x, sum32, m, packed, n_in, n_out, y);
+        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, scale_x, sum32, packed, y);
         return;
     }
 
@@ -1258,13 +1261,13 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(const int8_t  *x_q8,
 #endif
 }
 
-void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(const int8_t  *x_q8,
-                                                      const float   *scale_x,
-                                                      const int32_t *sum32,
-                                                      size_t         m,
-                                                      const void    *packed,
+void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
                                                       size_t         n_in,
                                                       size_t         n_out,
+                                                      const int8_t  *x_q8,
+                                                      const float    scale_x[static m],
+                                                      const int32_t *sum32,
+                                                      const void    *packed,
                                                       float         *y) {
 #if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
@@ -1272,7 +1275,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(const int8_t  *x_q8,
     if (!q4k_predecode_valid(packed, n_in, n_out))
         return;
     if (m < 4 || n_out < 4) {
-        linear_q4k_w4a8_prefill_predecoded_mtile4(x_q8, scale_x, sum32, m, packed, n_in, n_out, y);
+        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, scale_x, sum32, packed, y);
         return;
     }
 
@@ -1382,7 +1385,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(const int8_t  *x_q8,
     }
 
     if (n_tile_end < n_out || (m & (size_t) 3) != 0) {
-        linear_q4k_w4a8_prefill_predecoded_mtile4(x_q8, scale_x, sum32, m, packed, n_in, n_out, y);
+        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, scale_x, sum32, packed, y);
     }
 #else
     (void) x_q8;
@@ -1397,13 +1400,13 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(const int8_t  *x_q8,
 #endif
 }
 
-void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(const int8_t  *x_q8,
-                                                             const float   *scale_x,
-                                                             const int32_t *sum32,
-                                                             size_t         m,
-                                                             const void    *packed,
+void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                                                              size_t         n_in,
                                                              size_t         n_out,
+                                                             const int8_t  *x_q8,
+                                                             const float    scale_x[static m],
+                                                             const int32_t *sum32,
+                                                             const void    *packed,
                                                              float         *y) {
 #if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
@@ -1561,13 +1564,13 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(const int8_t  *x_q8
  * prefill gap vs llama.cpp's `ggml_gemm_q4_K_8x8_q8_K` to the extent
  * achievable without i8mm (M1 has no MATMUL_INT8). Falls back to
  * mtile4_ntile4_packed for m < 8. */
-void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(const int8_t  *x_q8,
-                                                             const float   *scale_x,
-                                                             const int32_t *sum32,
-                                                             size_t         m,
-                                                             const void    *packed,
+void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                                                              size_t         n_in,
                                                              size_t         n_out,
+                                                             const int8_t  *x_q8,
+                                                             const float    scale_x[static m],
+                                                             const int32_t *sum32,
+                                                             const void    *packed,
                                                              float         *y) {
 #if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
@@ -1576,7 +1579,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(const int8_t  *x_q8
         return;
     if (m < 8) {
         linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
-                x_q8, scale_x, sum32, m, packed, n_in, n_out, y);
+                m, n_in, n_out, x_q8, scale_x, sum32, packed, y);
         return;
     }
     const struct q4k_predecode_block *w                = q4k_predecode_ntile4_blocks(packed);
@@ -1852,14 +1855,14 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(const int8_t  *x_q8
 #endif
 }
 
-void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(const int8_t  *x_q8,
-                                                                  const float   *scale_x,
-                                                                  const int32_t *sum32,
-                                                                  size_t         m,
-                                                                  const void    *packed0,
-                                                                  const void    *packed1,
+void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t         m,
                                                                   size_t         n_in,
                                                                   size_t         n_out,
+                                                                  const int8_t  *x_q8,
+                                                                  const float    scale_x[static m],
+                                                                  const int32_t *sum32,
+                                                                  const void    *packed0,
+                                                                  const void    *packed1,
                                                                   float         *y0,
                                                                   float         *y1) {
 #if defined(__ARM_NEON)
@@ -2021,13 +2024,13 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(const int8_t  
 #endif
 }
 
-void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(const int8_t  *x_q8,
-                                                      const float   *scale_blocks,
-                                                      const int32_t *sum32,
-                                                      size_t         m,
-                                                      const void    *packed,
+void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
                                                       size_t         n_in,
                                                       size_t         n_out,
+                                                      const int8_t  *x_q8,
+                                                      const float   *scale_blocks,
+                                                      const int32_t *sum32,
+                                                      const void    *packed,
                                                       float         *y) {
 #if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
@@ -2146,7 +2149,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(const int8_t  *x_q8,
 }
 
 void linear_q4k_w4a8_prefill(
-        const float *x, const void *w_q4k, size_t m, size_t n_in, size_t n_out, float *y) {
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4k, float *y) {
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     int8_t  *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
@@ -2162,14 +2165,17 @@ void linear_q4k_w4a8_prefill(
         scale_x[i] =
                 quantize_x_for_q4k(n_in, x + i * n_in, x_q8 + i * n_in, sum32 + i * (n_in / 32));
     }
-    linear_q4k_w4a8_prefill_pre(x_q8, scale_x, sum32, m, w_q4k, n_in, n_out, y);
+    linear_q4k_w4a8_prefill_pre(m, n_in, n_out, x_q8, scale_x, sum32, w_q4k, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &sum32);
     safe_free((void **) &scale_x);
 }
 
-void linear_q4k_decode_w4a8_predecoded(
-        const float *x, const void *packed, size_t n_in, size_t n_out, float *y) {
+void linear_q4k_decode_w4a8_predecoded(size_t      n_in,
+                                       size_t      n_out,
+                                       const float x[static n_in],
+                                       const void *packed,
+                                       float       y[static n_out]) {
     if (!q4k_predecode_valid(packed, n_in, n_out))
         return;
     int8_t  *x_q8  = heap_alloc_array_aligned(int8_t, n_in);
@@ -2180,13 +2186,16 @@ void linear_q4k_decode_w4a8_predecoded(
         return;
     }
     const float scale_x = quantize_x_for_q4k(n_in, x, x_q8, sum32);
-    linear_q4k_w4a8_prefill_predecoded(x_q8, &scale_x, sum32, 1, packed, n_in, n_out, y);
+    linear_q4k_w4a8_prefill_predecoded(1, n_in, n_out, x_q8, &scale_x, sum32, packed, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &sum32);
 }
 
-void linear_q4k_decode_fp32(
-        const float *x, const void *w_q4k, size_t n_in, size_t n_out, float *y) {
+void linear_q4k_decode_fp32(size_t      n_in,
+                            size_t      n_out,
+                            const float x[static n_in],
+                            const void *w_q4k,
+                            float       y[static n_out]) {
     const struct block_q4_K_t *w                = (const struct block_q4_K_t *) w_q4k;
     const size_t               n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
 
