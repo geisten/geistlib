@@ -7,6 +7,8 @@
  * without it the iq4 decoders and the cpu_scalar resolve path for the two
  * dtypes only execute under the UD model fixture.
  */
+#include "test_helpers.h"
+
 #include <geist_backend.h>
 #include <geist_types.h>
 
@@ -16,13 +18,8 @@
 #include <stdio.h>
 #include <string.h>
 
-static int  g_fail = 0;
-static void check(bool ok, const char *what) {
-    if (!ok) {
-        fprintf(stderr, "FAIL: %s\n", what);
-        g_fail++;
-    }
-}
+static int g_fail = 0;
+#define check(ok, what) (g_fail |= geist_expect((ok), (what)))
 
 /* The fixed non-linear table both formats index into (ggml kvalues_iq4nl). */
 static const float KV[16] = {
