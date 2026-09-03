@@ -42,20 +42,20 @@ static inline float32x4_t vexpq_f32_softmax(float32x4_t x) {
 
 /* Conv2d (chw, weight oc,ic,kh,kw, ph/pw zero-pad). Standard full-output
  * variant: computes all h_out × w_out positions. */
-void conv2d_fp32(const float *in,
-                 const float *w,
-                 float       *out,
-                 int          c_in,
-                 int          c_out,
-                 int          h_in,
-                 int          w_in,
-                 int          kh,
-                 int          kw,
-                 int          sh,
-                 int          sw,
-                 int          ph,
-                 int          pw) {
-    conv2d_fp32_from(in, w, out, c_in, c_out, h_in, w_in, kh, kw, sh, sw, ph, pw, 0);
+void conv2d_fp32(int c_in,
+                 int c_out,
+                 int h_in,
+                 int w_in,
+                 int kh,
+                 int kw,
+                 int sh,
+                 int sw,
+                 int ph,
+                 int pw,
+                 const float in[static c_in * h_in * w_in],
+                 const float w[static c_out * c_in * kh * kw],
+                 float      *out) {
+    conv2d_fp32_from(c_in, c_out, h_in, w_in, kh, kw, sh, sw, ph, pw, 0, in, w, out);
 }
 
 /* Incremental variant: only writes outputs at oh >= start_h. Caller must
@@ -66,20 +66,20 @@ void conv2d_fp32(const float *in,
  * incremental subsample bit-equivalent to the full re-run for positions
  * already computed - extending h_in only adds new output positions; old
  * outputs are stable. See docs/audio-chunk-streaming/plan.md Phase 3. */
-void conv2d_fp32_from(const float *in,
-                      const float *w,
-                      float       *out,
-                      int          c_in,
-                      int          c_out,
-                      int          h_in,
-                      int          w_in,
-                      int          kh,
-                      int          kw,
-                      int          sh,
-                      int          sw,
-                      int          ph,
-                      int          pw,
-                      int          start_h) {
+void conv2d_fp32_from(int c_in,
+                      int c_out,
+                      int h_in,
+                      int w_in,
+                      int kh,
+                      int kw,
+                      int sh,
+                      int sw,
+                      int ph,
+                      int pw,
+                      int start_h,
+                      const float in[static c_in * h_in * w_in],
+                      const float w[static c_out * c_in * kh * kw],
+                      float      *out) {
     const int    h_out     = (h_in + 2 * ph - kh) / sh + 1;
     const int    w_out     = (w_in + 2 * pw - kw) / sw + 1;
     const size_t in_plane  = (size_t) h_in * w_in;
@@ -116,8 +116,12 @@ void conv2d_fp32_from(const float *in,
     }
 }
 
-void layernorm_fp32_ws(
-        const float *x, const float *gamma, size_t batch, size_t d, float eps, float *y) {
+void layernorm_fp32_ws(size_t      batch,
+                       size_t      d,
+                       float       eps,
+                       const float x[static batch * d],
+                       const float gamma[static d],
+                       float       y[static batch * d]) {
     const float inv_d = 1.0f / (float) d;
     for (size_t b = 0; b < batch; b++) {
         const float *xb = x + b * d;
@@ -156,7 +160,7 @@ void clamp_fp32(size_t n, float x[static n], float lo, float hi) {
     }
 }
 
-void glu_fp32(const float *x, size_t batch, size_t d, float *y) {
+void glu_fp32(size_t batch, size_t d, const float x[static batch * 2 * d], float *y) {
     /* x is (batch, 2*d), y is (batch, d).
      * y[b, i] = x[b, i] * sigmoid(x[b, d + i]). */
     for (size_t b = 0; b < batch; b++) {
@@ -169,8 +173,12 @@ void glu_fp32(const float *x, size_t batch, size_t d, float *y) {
     }
 }
 
-void depthwise_conv1d_causal_fp32(
-        const float *in, const float *w, float *out, int channels, int t_in, int kernel) {
+void depthwise_conv1d_causal_fp32(int         channels,
+                                  int         t_in,
+                                  int         kernel,
+                                  const float in[static channels * t_in],
+                                  const float w[static channels * kernel],
+                                  float       out[static channels * t_in]) {
     const int left_pad = kernel - 1;
     for (int c = 0; c < channels; c++) {
         const float *in_c  = in + (size_t) c * t_in;
