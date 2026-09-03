@@ -55,10 +55,14 @@ static uint32_t cal_fnv1a(const struct geist_tunable *t, size_t n) {
 }
 
 /* Builds the key into buf; returns needed size incl. NUL (snprintf
- * convention + 1). buf may be nullptr/short — always safe. */
+ * convention + 1), or 0 when the machine has no identity source — a key
+ * would collide across machines. buf may be nullptr/short — always safe. */
 static size_t cal_key_build(const struct geist_backend *be, char *buf, size_t buf_size) {
     struct geist_hw_probe hw;
     geist_hw_probe_fill(&hw);
+    if (hw.uarch[0] == '\0') {
+        return 0;
+    }
     size_t                      n_tun = 0;
     const struct geist_tunable *tun =
             be->desc->tunables != nullptr ? be->desc->tunables(&n_tun) : nullptr;
@@ -83,16 +87,11 @@ enum geist_status geist_backend_calibration_key(const struct geist_backend *be,
     if (be == nullptr || be->desc == nullptr || required_size == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    {
-        struct geist_hw_probe hw;
-        geist_hw_probe_fill(&hw);
-        if (hw.uarch[0] == '\0') {
-            /* No identity source — a key would collide across machines. */
-            return GEIST_E_UNSUPPORTED;
-        }
-    }
     const size_t need = cal_key_build(be, buf, buf != nullptr ? buf_size : 0u);
     *required_size    = need;
+    if (need == 0) {
+        return GEIST_E_UNSUPPORTED;
+    }
     if (buf == nullptr || buf_size < need) {
         return GEIST_E_INVALID_ARG;
     }

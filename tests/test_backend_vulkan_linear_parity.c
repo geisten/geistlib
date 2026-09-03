@@ -27,13 +27,7 @@
 #include <string.h>
 
 static int g_fail = 0;
-
-static void check(bool cond, const char *what) {
-    if (!cond) {
-        fprintf(stderr, "FAIL: %s\n", what);
-        g_fail++;
-    }
-}
+#define check(ok, what) (g_fail |= geist_expect((ok), (what)))
 
 enum { Q4K_BB = 144, Q6K_BB = 210, BLOCK = 256 };
 
