@@ -35,9 +35,9 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
                                 : m_tile8_active ? st->q4k_matmul_m8_pipeline
                                 : n_tile4        ? st->q4k_n4_pipeline
                                                  : st->q4k_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     if (m_tile_sg) {
         metal_msg_send_set_threadgroup_memory(st, enc, m_tile_sg_fast ? 6144u : 8192u, 0u);
@@ -95,9 +95,9 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
                                 : m_tile8_active ? st->q6k_matmul_m8_pipeline
                                 : n_tile4        ? st->q6k_n4_pipeline
                                                  : st->q6k_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
 
     /* The q6k sg kernels are 128-thread / 4-simdgroup with a 32-output x
@@ -188,9 +188,9 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                 : m_tile_sg_fast ? mm_fast
                                 : m_tile_sg      ? mm
                                                  : base);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     if (m_tile_sg) {
         metal_msg_send_set_threadgroup_memory(st, enc, m_tile_sg_fast ? 6144u : 8192u, 0u);
@@ -237,9 +237,9 @@ static void metal_encode_rmsnorm_rows(struct metal_state             *st,
                                 enc,
                                 st->use_rmsnorm_simd ? st->rmsnorm_rows_simd_pipeline
                                                      : st->rmsnorm_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     const struct metal_size groups = {
             .width  = params->rows,
@@ -267,10 +267,10 @@ static void metal_encode_rmsnorm_add_rows(struct metal_state                  *s
                                 enc,
                                 st->use_rmsnorm_simd ? st->rmsnorm_add_rows_simd_pipeline
                                                      : st->rmsnorm_add_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, res->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, 0, 2);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 3);
+    metal_msg_send_set_buffer(st, enc, res->buffer->buffer, res->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 4);
     const struct metal_size groups = {
             .width  = params->rows,
@@ -293,9 +293,9 @@ static void metal_encode_add_rows(struct metal_state                    *st,
                                   const struct geist_tensor             *y,
                                   const struct metal_binary_rows_params *params) {
     metal_msg_send_set_pipeline(st, enc, st->add_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, a->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, b->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, a->buffer->buffer, a->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, b->buffer->buffer, b->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     const struct metal_size groups = {
             .width  = (params->rows * params->cols + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
@@ -318,9 +318,9 @@ static void metal_encode_mul_rows(struct metal_state                    *st,
                                   const struct geist_tensor             *y,
                                   const struct metal_binary_rows_params *params) {
     metal_msg_send_set_pipeline(st, enc, st->mul_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, a->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, b->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, a->buffer->buffer, a->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, b->buffer->buffer, b->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     const struct metal_size groups = {
             .width  = (params->rows * params->cols + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
@@ -344,9 +344,9 @@ static void metal_encode_gelu_mul_rows(struct metal_state                    *st
                                        const struct metal_binary_rows_params *params) {
 
     metal_msg_send_set_pipeline(st, enc, st->gelu_mul_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, a->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, b->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, a->buffer->buffer, a->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, b->buffer->buffer, b->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     const struct metal_size groups = {
             .width  = (params->rows * params->cols + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
@@ -370,9 +370,9 @@ static void metal_encode_silu_mul_rows(struct metal_state                    *st
                                        const struct metal_binary_rows_params *params) {
 
     metal_msg_send_set_pipeline(st, enc, st->silu_mul_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, a->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, b->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, a->buffer->buffer, a->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, b->buffer->buffer, b->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     const struct metal_size groups = {
             .width  = (params->rows * params->cols + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
@@ -394,8 +394,8 @@ static void metal_encode_scale_rows(struct metal_state                   *st,
                                     const struct geist_tensor            *y,
                                     const struct metal_scale_rows_params *params) {
     metal_msg_send_set_pipeline(st, enc, st->scale_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 1);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 2);
     const struct metal_size groups = {
             .width  = (params->rows * params->cols + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
@@ -418,9 +418,9 @@ static void metal_encode_qgate_split(struct metal_state              *st,
                                      const struct geist_tensor       *gate,
                                      const struct metal_qgate_params *params) {
     metal_msg_send_set_pipeline(st, enc, st->qgate_split_pipeline);
-    metal_msg_send_set_buffer(st, enc, joint->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, gate->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, joint->buffer->buffer, joint->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, gate->buffer->buffer, gate->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     const size_t            total  = (size_t) params->rows * params->heads * params->head_dim;
     const struct metal_size groups = {(total + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS, 1, 1};
@@ -436,9 +436,9 @@ static void metal_encode_sigmoid_mul(struct metal_state                    *st,
                                      const struct geist_tensor             *y,
                                      const struct metal_binary_rows_params *params) {
     metal_msg_send_set_pipeline(st, enc, st->sigmoid_mul_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, gate->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, gate->buffer->buffer, gate->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     const size_t            total  = (size_t) params->rows * params->cols;
     const struct metal_size groups = {(total + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS, 1, 1};
@@ -453,8 +453,8 @@ static void metal_encode_gelu_rows(struct metal_state                   *st,
                                    const struct geist_tensor            *y,
                                    const struct metal_scale_rows_params *params) {
     metal_msg_send_set_pipeline(st, enc, st->gelu_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 1);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 2);
     const struct metal_size groups = {
             .width  = (params->rows * params->cols + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
@@ -476,8 +476,8 @@ static void metal_encode_silu_rows(struct metal_state                   *st,
                                    const struct geist_tensor            *y,
                                    const struct metal_scale_rows_params *params) {
     metal_msg_send_set_pipeline(st, enc, st->silu_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 1);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 2);
     const struct metal_size groups = {
             .width  = (params->rows * params->cols + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
@@ -496,8 +496,9 @@ static void metal_encode_embed_lookup_scaled(struct metal_state              *st
                                              const struct metal_embed_params *params) {
 
     metal_msg_send_set_pipeline(st, enc, st->embed_lookup_scaled_pipeline);
-    metal_msg_send_set_buffer(st, enc, embed_table->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(
+            st, enc, embed_table->buffer->buffer, embed_table->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 1);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 2);
     const struct metal_size groups = {
             .width  = (params->n + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
@@ -521,9 +522,9 @@ static void metal_encode_rope_rows(struct metal_state             *st,
                                    const struct metal_rope_params *params) {
 
     metal_msg_send_set_pipeline(st, enc, st->rope_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, cos->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, sin->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     const size_t            half   = (size_t) params->head_dim / 2u;
     const size_t            total  = (size_t) params->rows * (size_t) params->heads * half;
@@ -552,10 +553,10 @@ static void metal_encode_attention_rows(struct metal_state                  *st,
     void *pipeline = k_cache->dtype == GEIST_DTYPE_F16 ? st->attention_rows_f16_pipeline
                                                        : st->attention_rows_pipeline;
     metal_msg_send_set_pipeline(st, enc, pipeline);
-    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, k_cache->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, v_cache->buffer->buffer, 0, 2);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 3);
+    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, k_cache->buffer->buffer, k_cache->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, v_cache->buffer->buffer, v_cache->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 4);
     const struct metal_size groups = {
             .width  = params->rows,
@@ -594,9 +595,9 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
                                 use_mm   ? st->f32_matmul_mm_pipeline
                                 : use_sg ? st->f32_matmul_sg_pipeline
                                          : st->f32_matmul_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 2);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     if (use_mm) {
         /* sa 64x32 f32 + sb 32x32 f32 */
@@ -1596,8 +1597,9 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         return GEIST_E_BACKEND;
     }
     metal_msg_send_set_pipeline(st, enc, st->embed_lookup_scaled_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, embed_table->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(
+            st, enc, embed_table->buffer->buffer, embed_table->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 1);
     metal_msg_send_set_bytes(st, enc, &params, sizeof params, 2);
     metal_msg_send_set_bytes(st, enc, ids_u32, n_rows * sizeof(uint32_t), 3);
     const struct metal_size groups = {
@@ -2284,10 +2286,12 @@ metal_embedding_lookup(struct geist_backend      *be,
     }
     if (!kv_native_f16) {
         metal_msg_send_set_pipeline(st, enc, st->kv_append_rows_f16_pipeline);
-        metal_msg_send_set_buffer(st, enc, k->buffer->buffer, 0, 0);
-        metal_msg_send_set_buffer(st, enc, value->buffer->buffer, 0, 1);
-        metal_msg_send_set_buffer(st, enc, st->attn_kf16_buffer->buffer, 0, 2);
-        metal_msg_send_set_buffer(st, enc, st->attn_vf16_buffer->buffer, 0, 3);
+        metal_msg_send_set_buffer(st, enc, k->buffer->buffer, k->buffer->base_off, 0);
+        metal_msg_send_set_buffer(st, enc, value->buffer->buffer, value->buffer->base_off, 1);
+        metal_msg_send_set_buffer(
+                st, enc, st->attn_kf16_buffer->buffer, st->attn_kf16_buffer->base_off, 2);
+        metal_msg_send_set_buffer(
+                st, enc, st->attn_vf16_buffer->buffer, st->attn_vf16_buffer->base_off, 3);
         metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 4);
         const struct metal_size cgroups  = {(elems + 255u) / 256u, 1, 1};
         const struct metal_size cthreads = {256, 1, 1};
@@ -2302,10 +2306,10 @@ metal_embedding_lookup(struct geist_backend      *be,
                                 enc,
                                 sg8 ? st->attention_flash_sg8_f16_pipeline
                                     : st->attention_flash_sg_f16_pipeline);
-    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, kf16, 0, 1);
     metal_msg_send_set_buffer(st, enc, vf16, 0, 2);
-    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, 0, 3);
+    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
     const struct metal_size fgroups  = {q_rows / 8u, q_heads, 1};
     const struct metal_size fthreads = {sg8 ? 256u : 128u, 1, 1};
@@ -2437,10 +2441,12 @@ metal_embedding_lookup(struct geist_backend      *be,
     const struct metal_size threads256 = {256, 1, 1};
     if (!kv_native_f16) {
         metal_msg_send_set_pipeline(st, enc, st->kv_append_rows_f16_pipeline);
-        metal_msg_send_set_buffer(st, enc, k->buffer->buffer, 0, 0);
-        metal_msg_send_set_buffer(st, enc, value->buffer->buffer, 0, 1);
-        metal_msg_send_set_buffer(st, enc, st->attn_kf16_buffer->buffer, 0, 2);
-        metal_msg_send_set_buffer(st, enc, st->attn_vf16_buffer->buffer, 0, 3);
+        metal_msg_send_set_buffer(st, enc, k->buffer->buffer, k->buffer->base_off, 0);
+        metal_msg_send_set_buffer(st, enc, value->buffer->buffer, value->buffer->base_off, 1);
+        metal_msg_send_set_buffer(
+                st, enc, st->attn_kf16_buffer->buffer, st->attn_kf16_buffer->base_off, 2);
+        metal_msg_send_set_buffer(
+                st, enc, st->attn_vf16_buffer->buffer, st->attn_vf16_buffer->base_off, 3);
         metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 4);
         const struct metal_size cgroups = {(elems + 255u) / 256u, 1, 1};
         metal_msg_send_dispatch(st, enc, cgroups, threads256);
@@ -2452,10 +2458,14 @@ metal_embedding_lookup(struct geist_backend      *be,
                                 enc,
                                 head_dim > 256u ? st->attention_dec512_f16_pipeline
                                                 : st->attention_dec_f16_pipeline);
-    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, kf16, 0, 1);
     metal_msg_send_set_buffer(st, enc, vf16, 0, 2);
-    metal_msg_send_set_buffer(st, enc, st->attn_dec_partials_buffer->buffer, 0, 3);
+    metal_msg_send_set_buffer(st,
+                              enc,
+                              st->attn_dec_partials_buffer->buffer,
+                              st->attn_dec_partials_buffer->base_off,
+                              3);
     metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
     metal_msg_send_set_bytes(st, enc, &nsplit, sizeof(nsplit), 5);
     const struct metal_size dgroups = {nsplit, q_heads, 1};
@@ -2464,8 +2474,12 @@ metal_embedding_lookup(struct geist_backend      *be,
 
     const uint32_t cb[4] = {(uint32_t) q_heads, (uint32_t) head_dim, nsplit, (uint32_t) out_off};
     metal_msg_send_set_pipeline(st, enc, st->attention_dec_combine_pipeline);
-    metal_msg_send_set_buffer(st, enc, st->attn_dec_partials_buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, 0, 1);
+    metal_msg_send_set_buffer(st,
+                              enc,
+                              st->attn_dec_partials_buffer->buffer,
+                              st->attn_dec_partials_buffer->base_off,
+                              0);
+    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 1);
     metal_msg_send_set_bytes(st, enc, cb, sizeof(cb), 2);
     const struct metal_size ggroups = {1, q_heads, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS, ggroups);
@@ -2564,11 +2578,11 @@ metal_embedding_lookup(struct geist_backend      *be,
         }
     }
     metal_msg_send_set_pipeline(st, enc, st->q4k_pair_n4_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, t_w0->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, t_w1->buffer->buffer, 0, 2);
-    metal_msg_send_set_buffer(st, enc, y0->buffer->buffer, 0, 3);
-    metal_msg_send_set_buffer(st, enc, y1->buffer->buffer, 0, 4);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, t_w0->buffer->buffer, t_w0->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, t_w1->buffer->buffer, t_w1->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, y0->buffer->buffer, y0->buffer->base_off, 3);
+    metal_msg_send_set_buffer(st, enc, y1->buffer->buffer, y1->buffer->base_off, 4);
     metal_msg_send_set_bytes(st, enc, &params, sizeof(params), 5);
     const struct metal_size groups  = {(uint32_t) ((a_out + 3u) / 4u), (uint32_t) rows, 1};
     const struct metal_size threads = {METAL_Q4K_N4_THREADS, 1, 1};
@@ -2653,11 +2667,11 @@ metal_embedding_lookup(struct geist_backend      *be,
         }
     }
     metal_msg_send_set_pipeline(st, enc, st->q4k_gate_up_n4_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, gate_w->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, up_w->buffer->buffer, 0, 2);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 3);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, 0, 4);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, gate_w->buffer->buffer, gate_w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, up_w->buffer->buffer, up_w->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 3);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 4);
     metal_msg_send_set_bytes(st, enc, &params, sizeof(params), 5);
     const struct metal_size groups  = {(uint32_t) ((g_out + 3u) / 4u), (uint32_t) rows, 1};
     const struct metal_size threads = {METAL_Q4K_N4_THREADS, 1, 1};
@@ -2819,10 +2833,10 @@ metal_embedding_lookup(struct geist_backend      *be,
     }
     const struct metal_size threads256 = {256, 1, 1};
     metal_msg_send_set_pipeline(st, enc, st->q_norm_rope_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, q_norm_w->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, 0, 2);
-    metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, 0, 3);
+    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, q_norm_w->buffer->buffer, q_norm_w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, cos->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, sin->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &nr, sizeof(nr), 4);
     const struct metal_size qgroups = {(uint32_t) rows, (uint32_t) q_heads, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q_NORM_ROPE, qgroups);
@@ -2830,14 +2844,14 @@ metal_embedding_lookup(struct geist_backend      *be,
 
     if (has_kv) {
         metal_msg_send_set_pipeline(st, enc, kv_pipeline);
-        metal_msg_send_set_buffer(st, enc, k->buffer->buffer, 0, 0);
-        metal_msg_send_set_buffer(st, enc, v->buffer->buffer, 0, 1);
-        metal_msg_send_set_buffer(st, enc, k_norm_w->buffer->buffer, 0, 2);
-        metal_msg_send_set_buffer(st, enc, v_norm_w->buffer->buffer, 0, 3);
-        metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, 0, 4);
-        metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, 0, 5);
-        metal_msg_send_set_buffer(st, enc, k_cache->buffer->buffer, 0, 6);
-        metal_msg_send_set_buffer(st, enc, v_cache->buffer->buffer, 0, 7);
+        metal_msg_send_set_buffer(st, enc, k->buffer->buffer, k->buffer->base_off, 0);
+        metal_msg_send_set_buffer(st, enc, v->buffer->buffer, v->buffer->base_off, 1);
+        metal_msg_send_set_buffer(st, enc, k_norm_w->buffer->buffer, k_norm_w->buffer->base_off, 2);
+        metal_msg_send_set_buffer(st, enc, v_norm_w->buffer->buffer, v_norm_w->buffer->base_off, 3);
+        metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, cos->buffer->base_off, 4);
+        metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, sin->buffer->base_off, 5);
+        metal_msg_send_set_buffer(st, enc, k_cache->buffer->buffer, k_cache->buffer->base_off, 6);
+        metal_msg_send_set_buffer(st, enc, v_cache->buffer->buffer, v_cache->buffer->base_off, 7);
         metal_msg_send_set_bytes(st, enc, &kp, sizeof(kp), 8);
         metal_msg_send_set_bytes(st, enc, &vp, sizeof(vp), 9);
         const struct metal_size kvgroups = {(uint32_t) rows, (uint32_t) kv_heads, 1};
@@ -2948,10 +2962,11 @@ metal_embedding_lookup(struct geist_backend      *be,
     }
     const struct metal_size threads256 = {256, 1, 1};
     metal_msg_send_set_pipeline(st, enc, st->f32_ple_gate_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, gate_w->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, ple_in->buffer->buffer, 0, 2);
-    metal_msg_send_set_buffer(st, enc, gate_scratch->buffer->buffer, 0, 3);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, gate_w->buffer->buffer, gate_w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, ple_in->buffer->buffer, ple_in->buffer->base_off, 2);
+    metal_msg_send_set_buffer(
+            st, enc, gate_scratch->buffer->buffer, gate_scratch->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &gp, sizeof(gp), 4);
     const struct metal_size ggroups = {(uint32_t) hpl, (uint32_t) rows, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_F32_PLE_GATE, ggroups);
@@ -3034,7 +3049,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         }
     }
     metal_msg_send_set_pipeline(st, enc, st->argmax_pipeline);
-    metal_msg_send_set_buffer(st, enc, logits->buffer->buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, logits->buffer->buffer, logits->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, st->argmax_result_buffer, 0, 1);
     metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 2);
     const struct metal_size groups  = {1, 1, 1};
@@ -3125,10 +3140,10 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         }
     }
     metal_msg_send_set_pipeline(st, enc, st->kv_append_rows_f16_pipeline);
-    metal_msg_send_set_buffer(st, enc, k_src->buffer->buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, v_src->buffer->buffer, 0, 1);
-    metal_msg_send_set_buffer(st, enc, k_cache->buffer->buffer, 0, 2);
-    metal_msg_send_set_buffer(st, enc, v_cache->buffer->buffer, 0, 3);
+    metal_msg_send_set_buffer(st, enc, k_src->buffer->buffer, k_src->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, v_src->buffer->buffer, v_src->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, k_cache->buffer->buffer, k_cache->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, v_cache->buffer->buffer, v_cache->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 4);
     const struct metal_size groups  = {(elems + 255u) / 256u, 1, 1};
     const struct metal_size threads = {256, 1, 1};
@@ -3751,7 +3766,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         }
     }
     for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
-        metal_msg_send_set_buffer(st, enc, all[i]->buffer->buffer, 0, i);
+        metal_msg_send_set_buffer(st, enc, all[i]->buffer->buffer, all[i]->buffer->base_off, i);
     }
     if (chunked) {
         const uint32_t          cd     = (uint32_t) conv_dim;
