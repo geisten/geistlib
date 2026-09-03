@@ -80,7 +80,7 @@ int main(int argc, char **argv) {
     float *y_b = (float *) malloc(n_out * sizeof(float));
     t0         = now_us();
     for (int it = 0; it < n_iter; it++) {
-        linear_q4k_decode_fp32(x, t->data, n_in, n_out, y_b);
+        linear_q4k_decode_fp32(n_in, n_out, x, t->data, y_b);
     }
     double t_b = (now_us() - t0) / n_iter;
     fprintf(stderr, "Method B (Q4_K decode FP32): %.2f ms/call\n", t_b / 1000.0);
@@ -90,7 +90,7 @@ int main(int argc, char **argv) {
     float *y_c = (float *) malloc(n_out * sizeof(float));
     t0         = now_us();
     for (int it = 0; it < n_iter; it++) {
-        linear_q4k_decode_w4a8(x, t->data, n_in, n_out, y_c);
+        linear_q4k_decode_w4a8(n_in, n_out, x, t->data, y_c);
     }
     double t_c = (now_us() - t0) / n_iter;
     fprintf(stderr, "Method C (Q4_K W4A8 i8dot):  %.2f ms/call\n", t_c / 1000.0);
@@ -113,7 +113,7 @@ int main(int argc, char **argv) {
     float *y_d = (float *) malloc(n_out * sizeof(float));
     t0         = now_us();
     for (int it = 0; it < n_iter; it++) {
-        linear_q4k_decode_w4a8_predecoded(x, packed, n_in, n_out, y_d);
+        linear_q4k_decode_w4a8_predecoded(n_in, n_out, x, packed, y_d);
     }
     double t_d = (now_us() - t0) / n_iter;
     fprintf(stderr, "Method D (Q4_K predecoded W4A8): %.2f ms/call\n", t_d / 1000.0);
@@ -146,16 +146,16 @@ int main(int argc, char **argv) {
         scale_x[i] =
                 quantize_x_for_q4k(n_in, xm + i * n_in, xm_q8 + i * n_in, sum32 + i * (n_in / 32));
     }
-    linear_q4k_w4a8_prefill_predecoded(xm_q8, scale_x, sum32, m_test, packed, n_in, n_out, y_pd);
+    linear_q4k_w4a8_prefill_predecoded(m_test, n_in, n_out, xm_q8, scale_x, sum32, packed, y_pd);
     linear_q4k_w4a8_prefill_predecoded_mtile4(
-            xm_q8, scale_x, sum32, m_test, packed, n_in, n_out, y_mt);
+            m_test, n_in, n_out, xm_q8, scale_x, sum32, packed, y_mt);
     float *y_mt8 = (float *) malloc(m_test * n_out * sizeof(float));
     if (!y_mt8) {
         fprintf(stderr, "alloc failed for y_mt8\n");
         return 1;
     }
     linear_q4k_w4a8_prefill_predecoded_mtile8(
-            xm_q8, scale_x, sum32, m_test, packed, n_in, n_out, y_mt8);
+            m_test, n_in, n_out, xm_q8, scale_x, sum32, packed, y_mt8);
     double max_mtile8 = 0.0;
     for (size_t i = 0; i < m_test * n_out; i++) {
         const double d = fabs((double) y_mt[i] - (double) y_mt8[i]);
@@ -169,9 +169,9 @@ int main(int argc, char **argv) {
     }
     free(y_mt8);
     linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(
-            xm_q8, scale_x, sum32, m_test, packed, n_in, n_out, y_nt);
+            m_test, n_in, n_out, xm_q8, scale_x, sum32, packed, y_nt);
     linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
-            xm_q8, scale_x, sum32, m_test, packed_nt, n_in, n_out, y_np);
+            m_test, n_in, n_out, xm_q8, scale_x, sum32, packed_nt, y_np);
     /* mtile8_ntile4: same packed format, wider M-tile */
     float *y_np8 = (float *) malloc(m_test * n_out * sizeof(float));
     if (!y_np8) {
@@ -179,7 +179,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(
-            xm_q8, scale_x, sum32, m_test, packed_nt, n_in, n_out, y_np8);
+            m_test, n_in, n_out, xm_q8, scale_x, sum32, packed_nt, y_np8);
     double max_np8 = 0.0;
     for (size_t i = 0; i < m_test * n_out; i++) {
         const double d = fabs((double) y_np[i] - (double) y_np8[i]);
@@ -240,18 +240,18 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "Q4_K pair ntile4 predecode pack failed\n");
                     return 1;
                 }
-                linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(xm_q8,
-                                                                             scale_x,
-                                                                             sum32,
-                                                                             m_test,
-                                                                             packed_nt,
-                                                                             packed_up,
+                linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(m_test,
                                                                              n_in,
                                                                              n_out,
+                                                                             xm_q8,
+                                                                             scale_x,
+                                                                             sum32,
+                                                                             packed_nt,
+                                                                             packed_up,
                                                                              y_pair0,
                                                                              y_pair1);
                 linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
-                        xm_q8, scale_x, sum32, m_test, packed_up, n_in, n_out, y_up_single);
+                        m_test, n_in, n_out, xm_q8, scale_x, sum32, packed_up, y_up_single);
                 double max_pair0 = 0.0;
                 double max_pair1 = 0.0;
                 for (size_t i = 0; i < m_test * n_out; i++) {
@@ -344,10 +344,10 @@ int main(int argc, char **argv) {
                                   xm_q8 + i * n_in,
                                   sum32 + i * (n_in / 32),
                                   scale_blocks + i * (n_in / Q4_K_BLOCK_ELEMS));
-        linear_q4k_decode_fp32(xm + i * n_in, t->data, n_in, n_out, y_ref_m + i * n_out);
+        linear_q4k_decode_fp32(n_in, n_out, xm + i * n_in, t->data, y_ref_m + i * n_out);
     }
     linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(
-            xm_q8, scale_blocks, sum32, m_test, packed, n_in, n_out, y_bq);
+            m_test, n_in, n_out, xm_q8, scale_blocks, sum32, packed, y_bq);
     double max_bq     = 0.0;
     double sum_ref2   = 0.0;
     double sum_bq2    = 0.0;

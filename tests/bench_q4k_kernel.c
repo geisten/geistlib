@@ -83,11 +83,11 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
 #define CALL_KERNEL()                                                                  \
     do {                                                                               \
         if (t->dtype == GGUF_TYPE_Q4_K)                                                \
-            linear_q4k_decode_w4a8_pre(x_q8, scale_x, sum32, t->data, n_in, n_out, y); \
+            linear_q4k_decode_w4a8_pre(n_in, n_out, scale_x, x_q8, sum32, t->data, y); \
         else if (t->dtype == GGUF_TYPE_Q4_0)                                           \
-            linear_q4_0_decode_w4a8(x, t->data, n_in, n_out, y);                       \
+            linear_q4_0_decode_w4a8(n_in, n_out, x, t->data, y);                       \
         else                                                                           \
-            linear_q6k_decode_fp32(x, t->data, n_in, n_out, y);                        \
+            linear_q6k_decode_fp32(n_in, n_out, x, t->data, y);                        \
     } while (0)
 
     /* Calibrate iter count so the run takes ≥ 200ms. */
@@ -107,8 +107,8 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
         x8p              = x8b > 0 ? aligned_alloc(64, x8b) : NULL;
         if (x8p != NULL && q4_0_x8_gemv_pack(t->data, n_in, n_out, x8p) == 0) {
             float *y_ref = (float *) aligned_alloc(64, n_out * sizeof(float));
-            linear_q4_0_decode_w4a8(x, t->data, n_in, n_out, y_ref);
-            linear_q4_0_decode_w4a8_x8(x, x8p, n_in, n_out, y);
+            linear_q4_0_decode_w4a8(n_in, n_out, x, t->data, y_ref);
+            linear_q4_0_decode_w4a8_x8(n_in, n_out, x, x8p, y);
             double md = 0, sc = 1e-6;
             for (size_t i = 0; i < n_out; i++) {
                 const double d = fabs((double) y[i] - (double) y_ref[i]);
@@ -121,7 +121,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             free(y_ref);
             const double tx0 = now_ms();
             for (int it = 0; it < n_iter; it++)
-                linear_q4_0_decode_w4a8_x8(x, x8p, n_in, n_out, y);
+                linear_q4_0_decode_w4a8_x8(n_in, n_out, x, x8p, y);
             const double xdt = (now_ms() - tx0) / n_iter;
             /* mN parity: int8 GEMM on x8 vs the row-major prefill kernel */
             {
@@ -132,8 +132,8 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                 if (xm && ym && ymr) {
                     for (size_t i = 0; i < MP * n_in; i++)
                         xm[i] = ((float) (i % 977)) * 0.021f - 9.7f;
-                    linear_q4_0_w4a8_prefill(xm, MP, t->data, n_in, n_out, ymr);
-                    linear_q4_0_w4a8_prefill_x8(xm, MP, x8p, n_in, n_out, ym);
+                    linear_q4_0_w4a8_prefill(MP, n_in, n_out, xm, t->data, ymr);
+                    linear_q4_0_w4a8_prefill_x8(MP, n_in, n_out, xm, x8p, ym);
                     double md = 0, sc = 1e-6;
                     for (size_t i = 0; i < MP * n_out; i++) {
                         const double d = fabs((double) ym[i] - (double) ymr[i]);
@@ -228,7 +228,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             }
             const double tw4 = now_ms();
             linear_q4k_w4a8_prefill_predecoded_mtile4(
-                    xm_q8, xm_sx, xm_sum, M_BENCH, packed, n_in, n_out, ym4);
+                    M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed, ym4);
             const double s4  = now_ms() - tw4;
             int          it4 = (int) (200.0 / (s4 + 0.001)) + 3;
             if (it4 > 2000)
@@ -238,12 +238,12 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             const double t04 = now_ms();
             for (int it = 0; it < it4; it++)
                 linear_q4k_w4a8_prefill_predecoded_mtile4(
-                        xm_q8, xm_sx, xm_sum, M_BENCH, packed, n_in, n_out, ym4);
+                        M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed, ym4);
             const double dt4 = (now_ms() - t04) / it4;
 
             const double tw8 = now_ms();
             linear_q4k_w4a8_prefill_predecoded_mtile8(
-                    xm_q8, xm_sx, xm_sum, M_BENCH, packed, n_in, n_out, ym8);
+                    M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed, ym8);
             const double s8  = now_ms() - tw8;
             int          it8 = (int) (200.0 / (s8 + 0.001)) + 3;
             if (it8 > 2000)
@@ -253,7 +253,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             const double t08 = now_ms();
             for (int it = 0; it < it8; it++)
                 linear_q4k_w4a8_prefill_predecoded_mtile8(
-                        xm_q8, xm_sx, xm_sum, M_BENCH, packed, n_in, n_out, ym8);
+                        M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed, ym8);
             const double dt8 = (now_ms() - t08) / it8;
             (void) (dt4 / dt8); /* legacy speedup (mt4 → mt8) — see new columns below */
 
@@ -367,7 +367,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             if (pack_nt_rc == 0) {
                 const double tw44n = now_ms();
                 linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
-                        xm_q8, xm_sx, xm_sum, M_BENCH, packed_nt, n_in, n_out, ymn84);
+                        M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed_nt, ymn84);
                 const double s44n  = now_ms() - tw44n;
                 int          it44n = (int) (200.0 / (s44n + 0.001)) + 3;
                 if (it44n > 2000)
@@ -377,7 +377,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                 const double t044n = now_ms();
                 for (int it = 0; it < it44n; it++)
                     linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
-                            xm_q8, xm_sx, xm_sum, M_BENCH, packed_nt, n_in, n_out, ymn84);
+                            M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed_nt, ymn84);
                 dt44n = (now_ms() - t044n) / it44n;
             }
             /* mtile8_ntile4_packed on the ntile4 packed format. */
@@ -385,7 +385,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             if (pack_nt_rc == 0) {
                 const double tw84 = now_ms();
                 linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(
-                        xm_q8, xm_sx, xm_sum, M_BENCH, packed_nt, n_in, n_out, ymn84);
+                        M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed_nt, ymn84);
                 const double s84  = now_ms() - tw84;
                 int          it84 = (int) (200.0 / (s84 + 0.001)) + 3;
                 if (it84 > 2000)
@@ -395,7 +395,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                 const double t084 = now_ms();
                 for (int it = 0; it < it84; it++)
                     linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(
-                            xm_q8, xm_sx, xm_sum, M_BENCH, packed_nt, n_in, n_out, ymn84);
+                            M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed_nt, ymn84);
                 dt84 = (now_ms() - t084) / it84;
             }
             const double speedup84       = (dt84 > 0) ? dt44n / dt84 : 0.0;
@@ -433,7 +433,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
 
         /* W6A8: needs symmetric int8 quantization of x (no sum32 needed). */
         const float scale_x6 = quantize_x_int8_sym(n_in, x, x_q8);
-        linear_q6k_decode_w6a8_pre(x_q8, scale_x6, t->data, n_in, n_out, y);
+        linear_q6k_decode_w6a8_pre(n_in, n_out, scale_x6, x_q8, t->data, y);
 
         /* Cosine similarity vs reference. */
         double dot = 0, na = 0, nb = 0;
@@ -446,7 +446,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
 
         /* Bench W6A8 hot loop. */
         const double tw = now_ms();
-        linear_q6k_decode_w6a8_pre(x_q8, scale_x6, t->data, n_in, n_out, y);
+        linear_q6k_decode_w6a8_pre(n_in, n_out, scale_x6, x_q8, t->data, y);
         const double single_ms3 = now_ms() - tw;
         int          n_iter3    = (int) (200.0 / (single_ms3 + 0.001)) + 5;
         if (n_iter3 > 5000)
@@ -455,7 +455,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             n_iter3 = 3;
         const double t03 = now_ms();
         for (int it = 0; it < n_iter3; it++)
-            linear_q6k_decode_w6a8_pre(x_q8, scale_x6, t->data, n_in, n_out, y);
+            linear_q6k_decode_w6a8_pre(n_in, n_out, scale_x6, x_q8, t->data, y);
         const double dt_ms3 = (now_ms() - t03) / n_iter3;
         const double gbps3  = (double) bytes_per_call / (dt_ms3 * 1e6);
         printf("  %-32s [Q6_K W6A8] (same shape)         %7.1f MB  %7.2f ms  %5.2f GB/s  (%d it)  "
