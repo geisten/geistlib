@@ -501,7 +501,7 @@ static void lconv_run_streaming(struct audio_stream_state *state,
 
     float *doubled = heap_alloc_array_aligned(float, (size_t) n * 2 * AUDIO_HIDDEN);
     clip_linear_apply(&lc->linear_start, h, n, AUDIO_HIDDEN, 2 * AUDIO_HIDDEN, doubled);
-    glu_fp32(doubled, n, AUDIO_HIDDEN, h);
+    glu_fp32(n, AUDIO_HIDDEN, doubled, h);
     safe_free((void **) &doubled);
 
     /* Snapshot post-GLU h — both as conv input (with prepended history) and
@@ -535,7 +535,7 @@ static void lconv_run_streaming(struct audio_stream_state *state,
 
     float *conv_out = heap_alloc_array_aligned(float, AUDIO_HIDDEN *ext_T);
     depthwise_conv1d_causal_fp32(
-            ext_ct, lc->depthwise, conv_out, AUDIO_HIDDEN, (int) ext_T, CONV_KERNEL);
+            AUDIO_HIDDEN, (int) ext_T, CONV_KERNEL, ext_ct, lc->depthwise, conv_out);
     safe_free((void **) &ext_ct);
 
     /* Transpose back, taking only the n outputs corresponding to the new
