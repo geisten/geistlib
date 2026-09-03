@@ -69,6 +69,24 @@ static inline void *metal_msg_send_id_ptr_size_uint(struct metal_state *st,
     return send.fn(receiver, sel, ptr, len, opts);
 }
 
+/* newBufferWithBytesNoCopy:length:options:deallocator: — wraps page-aligned,
+ * page-multiple host memory as an MTLBuffer without copying it. A nil
+ * deallocator leaves ownership of the pages with the caller. */
+static inline void *metal_msg_send_id_ptr_size_uint_ptr(struct metal_state *st,
+                                                        void               *receiver,
+                                                        const char         *selector,
+                                                        void               *ptr,
+                                                        size_t              len,
+                                                        unsigned long       opts,
+                                                        void               *deallocator) {
+    void *sel = metal_sel_register_name(st, selector);
+    union {
+        void *raw;
+        void *(*fn)(void *, void *, void *, size_t, unsigned long, void *);
+    } send = {.raw = st->objc_msgSend};
+    return send.fn(receiver, sel, ptr, len, opts, deallocator);
+}
+
 static inline void *metal_msg_send_id_cstr(struct metal_state *st,
                                            void               *receiver,
                                            const char         *selector,
