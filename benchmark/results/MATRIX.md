@@ -11,7 +11,7 @@ Coverage work is tracked in [#364](https://github.com/geisten/geistlib/issues/36
 
 | Model / quantization | Apple CPU | Pi 5 CPU | AMD AVX-512 CPU | Apple Metal | NVIDIA Vulkan |
 | :-- | :--: | :--: | :--: | :--: | :--: |
-| Gemma 4 E2B-it Q4_K_M | not measured | [pp ~-13% / tg ~+11%](CROSS-ENGINE-PI5.md) | [pp ~16% / tg ~15%](CROSS-ENGINE-AMD9950X.md) | not measured | not measured |
+| Gemma 4 E2B-it Q4_K_M | [pp ~−47% / tg ~−28%](CROSS-ENGINE-APPLE-M1MAX.md) | [pp ~-13% / tg ~+11%](CROSS-ENGINE-PI5.md) | [pp ~16% / tg ~15%](CROSS-ENGINE-AMD9950X.md) | not measured | not measured |
 | Gemma 4 E4B-it Q4_K_M | not measured | does not fit 4 GB reference host | not measured | not measured | not measured |
 | Llama 3.2 3B Q4_K_M | not measured | not measured | not measured | not measured | not measured |
 | BitNet b1.58 2B-4T I2_S | not measured | not measured | not measured | not measured | not measured |
@@ -57,6 +57,10 @@ general: on the 9950X geist's prefill lead runs from −4.6% at 4 threads to
 +13.8% at 16 ([THREAD-SWEEP-AMD9950X.md](THREAD-SWEEP-AMD9950X.md), which is
 also why that profile's 16/15 is now measured rather than assumed). Decode is
 the stable one — geist leads across the whole 4-to-32 range.
+On the M1 Max the same protocol reverses the ranking: llama.cpp's Accelerate
+path leads at every shape ([CROSS-ENGINE-APPLE-M1MAX.md](CROSS-ENGINE-APPLE-M1MAX.md)).
+The matrix records that as it stands; a column is not a verdict on the engine,
+and a cell measured is worth more than a cell argued about.
 
 Thread counts are part of a system profile, not a universal constant. A Pi 5
 campaign, for example, must declare its own fixed 4/3-thread profile while
