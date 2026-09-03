@@ -196,9 +196,9 @@ int main(void) {
                         xs[t * N_IN + i] = (float) (((i + 3 * t) % 19) - 9) * 0.3f;
                     }
                 }
-                linear_iq4xs_w4a8_prefill(xs, M_TOK, wblob, N_IN, N_OUT, ym);
+                linear_iq4xs_w4a8_prefill(M_TOK, N_IN, N_OUT, xs, wblob, ym);
                 for (int t = 0; t < M_TOK; t++) {
-                    linear_iq4xs_decode_w4a8(xs + t * N_IN, wblob, N_IN, N_OUT, y1);
+                    linear_iq4xs_decode_w4a8(N_IN, N_OUT, xs + t * N_IN, wblob, y1);
                     check(memcmp(ym + t * N_OUT, y1, sizeof y1) == 0,
                           "neon IQ4_XS mN prefill bit-equal to m1 per token");
                 }

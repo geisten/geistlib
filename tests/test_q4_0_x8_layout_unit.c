@@ -92,8 +92,8 @@ int main(void) {
 
     float decode_ref[N_OUT];
     float decode_v2[N_OUT];
-    linear_q4_0_decode_w4a8(x, raw, N_IN, N_OUT, decode_ref);
-    linear_q4_0_decode_w4a8_x8(x, packed, N_IN, N_OUT, decode_v2);
+    linear_q4_0_decode_w4a8(N_IN, N_OUT, x, raw, decode_ref);
+    linear_q4_0_decode_w4a8_x8(N_IN, N_OUT, x, packed, decode_v2);
     fails += expect_same_f32(decode_v2, decode_ref, N_OUT, "v2 decode parity");
 
     static const size_t m_cases[] = {1, 3, 4, 5};
@@ -101,8 +101,8 @@ int main(void) {
         const size_t m = m_cases[mi];
         float        prefill_ref[5 * N_OUT];
         float        prefill_v2[5 * N_OUT];
-        linear_q4_0_w4a8_prefill(x, m, raw, N_IN, N_OUT, prefill_ref);
-        linear_q4_0_w4a8_prefill_x8(x, m, packed, N_IN, N_OUT, prefill_v2);
+        linear_q4_0_w4a8_prefill(m, N_IN, N_OUT, x, raw, prefill_ref);
+        linear_q4_0_w4a8_prefill_x8(m, N_IN, N_OUT, x, packed, prefill_v2);
         fails += expect_same_f32(prefill_v2, prefill_ref, m * N_OUT, "v2 prefill parity");
     }
 
@@ -114,7 +114,7 @@ int main(void) {
         memcpy(old_layout, &old_magic, sizeof(old_magic));
         for (size_t i = 0; i < N_OUT; i++)
             decode_v2[i] = 1234.0f + (float) i;
-        linear_q4_0_decode_w4a8_x8(x, old_layout, N_IN, N_OUT, decode_v2);
+        linear_q4_0_decode_w4a8_x8(N_IN, N_OUT, x, old_layout, decode_v2);
         for (size_t i = 0; i < N_OUT; i++)
             fails += geist_expect(decode_v2[i] == 1234.0f + (float) i, "v1 layout is rejected");
         free(old_layout);

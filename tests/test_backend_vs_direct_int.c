@@ -93,7 +93,7 @@ int main(void) {
         gguf_close(ctx);
         return GEIST_TEST_ERROR;
     }
-    linear_q4k_decode_w4a8(x_in, t->data, n_in, n_out, y_direct);
+    linear_q4k_decode_w4a8(n_in, n_out, x_in, t->data, y_direct);
 
     /* ---- Vtable path: cpu_neon backend->vtbl->linear ---- */
     struct geist_backend *be = nullptr;

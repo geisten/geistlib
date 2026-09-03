@@ -19,13 +19,13 @@
 #include <arm_neon.h>
 #endif
 
-void linear_q5k_decode_w5a8_pre(const int8_t  *x_q8,
+void linear_q5k_decode_w5a8_pre(size_t         n_in,
+                                size_t         n_out,
                                 float          scale_x,
+                                const int8_t   x_q8[static n_in],
                                 const int32_t *sum32,
                                 const void    *w_q5k,
-                                size_t         n_in,
-                                size_t         n_out,
-                                float         *y) {
+                                float          y[static n_out]) {
     const struct block_q5_K_t *w                = (const struct block_q5_K_t *) w_q5k;
     const size_t               n_blocks_per_row = n_in / Q5_K_BLOCK_ELEMS;
 
@@ -91,23 +91,26 @@ void linear_q5k_decode_w5a8_pre(const int8_t  *x_q8,
     }
 }
 
-void linear_q5k_decode_w5a8(
-        const float *x, const void *w_q5k, size_t n_in, size_t n_out, float *y) {
+void linear_q5k_decode_w5a8(size_t      n_in,
+                            size_t      n_out,
+                            const float x[static n_in],
+                            const void *w_q5k,
+                            float       y[static n_out]) {
     int8_t  *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
     int32_t *sum32   = heap_alloc_array_aligned(int32_t, (n_in / 32));
     float    scale_x = quantize_x_for_q4k(n_in, x, x_q8, sum32);
-    linear_q5k_decode_w5a8_pre(x_q8, scale_x, sum32, w_q5k, n_in, n_out, y);
+    linear_q5k_decode_w5a8_pre(n_in, n_out, scale_x, x_q8, sum32, w_q5k, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &sum32);
 }
 
-void linear_q5k_w5a8_prefill_pre(const int8_t  *x_q8,
-                                 const float   *scale_x,
-                                 const int32_t *sum32,
-                                 size_t         m,
-                                 const void    *w_q5k,
+void linear_q5k_w5a8_prefill_pre(size_t         m,
                                  size_t         n_in,
                                  size_t         n_out,
+                                 const int8_t  *x_q8,
+                                 const float    scale_x[static m],
+                                 const int32_t *sum32,
+                                 const void    *w_q5k,
                                  float         *y) {
 #if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
@@ -203,7 +206,7 @@ void linear_q5k_w5a8_prefill_pre(const int8_t  *x_q8,
 }
 
 void linear_q5k_w5a8_prefill(
-        const float *x, const void *w_q5k, size_t m, size_t n_in, size_t n_out, float *y) {
+        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q5k, float *y) {
     int8_t  *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
     int32_t *sum32   = heap_alloc_array_aligned(int32_t, m *(n_in / 32));
     float   *scale_x = heap_alloc_array_aligned(float, m);
@@ -211,7 +214,7 @@ void linear_q5k_w5a8_prefill(
         scale_x[i] =
                 quantize_x_for_q4k(n_in, x + i * n_in, x_q8 + i * n_in, sum32 + i * (n_in / 32));
     }
-    linear_q5k_w5a8_prefill_pre(x_q8, scale_x, sum32, m, w_q5k, n_in, n_out, y);
+    linear_q5k_w5a8_prefill_pre(m, n_in, n_out, x_q8, scale_x, sum32, w_q5k, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &sum32);
     safe_free((void **) &scale_x);

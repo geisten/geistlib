@@ -68,7 +68,7 @@ static float cosine_similarity(const float *a, const float *b, size_t n) {
 
 static int verify_kernel(const struct gguf_tensor_t *t,
                          const char                 *label,
-                         void (*kernel)(const float *, const void *, size_t, size_t, float *),
+                         void (*kernel)(size_t, size_t, const float *, const void *, float *),
                          void (*dequant_row)(size_t, const void *, float *),
                          size_t block_bytes,
                          size_t block_elems) {
@@ -112,7 +112,7 @@ static int verify_kernel(const struct gguf_tensor_t *t,
 
     /* Kernel under test. */
     float *y_fast = malloc(n_out * sizeof(float));
-    kernel(x, t->data, n_in, n_out, y_fast);
+    kernel(n_in, n_out, x, t->data, y_fast);
 
     const float cos          = cosine_similarity(y_ref, y_fast, n_out);
     float       max_abs_diff = 0.0f;
@@ -236,7 +236,7 @@ int main(void) {
                         y_ref,
                         (int) n_out);
             free(w_fp32);
-            linear_iq2s_w2a8_prefill(x, iq2s->data, m, n_in, n_out, y_fast);
+            linear_iq2s_w2a8_prefill(m, n_in, n_out, x, iq2s->data, y_fast);
             float min_cos = 1.0f;
             for (size_t i = 0; i < m; i++) {
                 const float c = cosine_similarity(y_ref + i * n_out, y_fast + i * n_out, n_out);
@@ -284,7 +284,7 @@ int main(void) {
                         y_ref,
                         (int) n_out);
             free(w_fp32);
-            linear_iq3s_w3a8_prefill(x, iq3s->data, m, n_in, n_out, y_fast);
+            linear_iq3s_w3a8_prefill(m, n_in, n_out, x, iq3s->data, y_fast);
             float min_cos = 1.0f;
             for (size_t i = 0; i < m; i++) {
                 const float c = cosine_similarity(y_ref + i * n_out, y_fast + i * n_out, n_out);
