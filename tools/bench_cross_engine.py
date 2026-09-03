@@ -130,7 +130,35 @@ def machine_state() -> dict:
     }
 
 
+def read_millic(sensor: str):
+    try:
+        with open(sensor) as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def wait_for_temp(gate: dict) -> None:
+    """Block until the host is cool (#364 pi5 cell): passively cooled
+    boards throttle mid-measurement otherwise. Inactive on hosts without
+    the sensor path."""
+    tg = gate.get("temp_gate")
+    if not tg:
+        return
+    millic = read_millic(tg["sensor"])
+    if millic is None:
+        return
+    deadline = time.monotonic() + gate["timeout_seconds"]
+    while millic is not None and millic > tg["max_millic"]:
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"thermal gate: still {millic} millic after timeout")
+        print(f"  waiting for cool host: {millic/1000:.1f}C", flush=True)
+        time.sleep(30)
+        millic = read_millic(tg["sensor"])
+
+
 def wait_for_quiet(gate: dict) -> dict:
+    wait_for_temp(gate)
     deadline = time.monotonic() + gate["timeout_seconds"]
     quiet_since: float | None = None
     last_report = float("-inf")
