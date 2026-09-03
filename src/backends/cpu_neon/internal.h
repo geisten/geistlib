@@ -160,12 +160,15 @@ struct cpu_neon_ws_node {
     struct cpu_neon_ws_node *_Atomic next;
 };
 
+const struct geist_tunable *cpu_neon_tunables(size_t *out_count);
+
 struct cpu_neon_state {
     struct geist_hw_probe         hw;
     struct cpu_neon_kernel_policy policy;
-    uint64_t                      ws_generation; /* unique per state instance;
-                                                  * guards the TLS cache against
-                                                  * a recycled state address */
+    bool                          policy_calibrated; /* calibration folded in */
+    uint64_t                      ws_generation;     /* unique per state instance;
+                                                      * guards the TLS cache against
+                                                      * a recycled state address */
     struct cpu_neon_ws_node *_Atomic ws_head;
 };
 

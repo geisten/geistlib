@@ -10,6 +10,7 @@ BACKEND_SOURCES += \
     src/backends/cpu_neon/backend.c \
     src/backends/cpu_neon/elementwise.c \
     src/backends/cpu_neon/kernel_catalog.c \
+    src/backends/cpu_neon/calibrate.c \
     src/backends/cpu_neon/kernels/iq2_s.c \
     src/backends/cpu_neon/kernels/iq3_s.c \
     src/backends/cpu_neon/kernels/iq4_xs.c \

@@ -142,7 +142,8 @@ load_layer_proj(struct transformer_arch_state    *st,
         };
         v->buffer_unmap(buf);
         if (v->resolve_weight != nullptr) {
-            enum geist_status rs = v->resolve_weight(be, out_weight);
+            be->calibration.locked = true; /* kernel binding begins — calibration frozen */
+            enum geist_status rs   = v->resolve_weight(be, out_weight);
             if (rs != GEIST_OK && rs != GEIST_E_UNSUPPORTED) {
                 /* Real failure — propagate. Unsupported is fine; caller
                  * checks linear_m1 nullness and falls back. */
@@ -631,7 +632,8 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
             v->buffer_unmap(buf);
         }
         if (v->resolve_weight != nullptr) {
-            enum geist_status rs = v->resolve_weight(be, &st->embed_table_w);
+            be->calibration.locked = true;
+            enum geist_status rs   = v->resolve_weight(be, &st->embed_table_w);
             if (rs != GEIST_OK && rs != GEIST_E_UNSUPPORTED) {
                 return rs;
             }
@@ -773,7 +775,8 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
         };
         v->buffer_unmap(buf);
         if (v->resolve_weight != nullptr) {
-            enum geist_status rs = v->resolve_weight(be, &st->model_proj_w);
+            be->calibration.locked = true;
+            enum geist_status rs   = v->resolve_weight(be, &st->model_proj_w);
             if (rs != GEIST_OK && rs != GEIST_E_UNSUPPORTED) {
                 return rs;
             }
