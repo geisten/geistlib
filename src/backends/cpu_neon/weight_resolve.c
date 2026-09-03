@@ -1734,7 +1734,16 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    const struct cpu_neon_state        *bst      = (const struct cpu_neon_state *) be->state;
+    struct cpu_neon_state *bst = (struct cpu_neon_state *) be->state;
+    /* Fold an applied calibration into the policy exactly once, at the
+     * first kernel binding (the apply window just closed — the engine
+     * set be->calibration.locked before calling us). */
+    if (!bst->policy_calibrated) {
+        if (be->calibration.n_values > 0) {
+            bst->policy = cpu_neon_kernel_policy_effective(&bst->hw, be);
+        }
+        bst->policy_calibrated = true;
+    }
     const struct cpu_neon_kernel_policy policy   = bst->policy;
     const cpu_neon_isa_mask             host_isa = host_isa_mask(&policy);
 
