@@ -52,3 +52,6 @@ audio_test_data/smoke.wav
 /examples/embed_smoke
 /examples/agent_contract_smoke
 /examples/geist_calibrate
+
+# Local symlink to the audio bench assets; never a tracked path (dangling in CI).
+/audio_bench
