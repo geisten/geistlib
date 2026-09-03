@@ -260,7 +260,7 @@ void lconv_run(const struct LConv *lc, float *h, size_t n) {
     clip_linear_apply(&lc->linear_start, h, n, AUDIO_HIDDEN, 2 * AUDIO_HIDDEN, doubled);
 
     /* GLU: (n, 2048) → (n, 1024) */
-    glu_fp32(doubled, n, AUDIO_HIDDEN, h);
+    glu_fp32(n, AUDIO_HIDDEN, doubled, h);
     safe_free((void **) &doubled);
 
     /* Depthwise conv1d: input is (n, 1024). HF transposes (B, T, C) → (B, C, T),
@@ -271,7 +271,7 @@ void lconv_run(const struct LConv *lc, float *h, size_t n) {
             hct[(size_t) c * n + t] = h[(size_t) t * AUDIO_HIDDEN + c];
 
     float *conv_out = heap_alloc_array_aligned(float, hsize);
-    depthwise_conv1d_causal_fp32(hct, lc->depthwise, conv_out, AUDIO_HIDDEN, (int) n, CONV_KERNEL);
+    depthwise_conv1d_causal_fp32(AUDIO_HIDDEN, (int) n, CONV_KERNEL, hct, lc->depthwise, conv_out);
     safe_free((void **) &hct);
 
     /* Transpose back (C, T) → (T, C) */
@@ -447,7 +447,7 @@ static void subsample_layer_from(const float *w_conv,
         return;
 
     /* 1: conv → (c_out, h_out, w_out), only oh >= start_h written. */
-    conv2d_fp32_from(in, w_conv, out, c_in, c_out, h_in, w_in, kh, kw, sh, sw, ph, pw, start_h);
+    conv2d_fp32_from(c_in, c_out, h_in, w_in, kh, kw, sh, sw, ph, pw, start_h, in, w_conv, out);
 
     /* 2+3: LayerNorm over channel axis (c_out), per (h_out * w_out) "pixel".
      * Buffer is (c_out, h_out, w_out) — channels outer. LN normalises along
@@ -465,7 +465,7 @@ static void subsample_layer_from(const float *w_conv,
             }
         }
     }
-    layernorm_fp32_ws(tmp, w_norm, n_pix_new, c_out, LN_EPS, tmp);
+    layernorm_fp32_ws(n_pix_new, c_out, LN_EPS, tmp, w_norm, tmp);
     /* HWC → CHW(new slice) */
     for (int h = 0; h < new_h; h++) {
         for (int wpos = 0; wpos < w_out; wpos++) {
