@@ -134,9 +134,10 @@ Throughput from the profiling run is intentionally not used as a baseline.
 target — passive wait adds large per-matmul thread-pool wake-up overhead. The
 backend sets it itself at create time (`setenv` with `overwrite=0`, so an
 explicit policy still wins); the command lines above state it because the
-recorded rows should say what they ran under. Thread *placement* is handled
-automatically: geist pins prefill to the performance cores and decode to
-P-cores−1 (see the comparison below).
+recorded rows should say what they ran under. Thread *counts* are handled
+automatically: geist sizes the prefill pool to the performance-core count and
+the decode pool to P-cores−1 (see the comparison below). This is a thread-count
+policy, not CPU-ID affinity; macOS still schedules the workers.
 
 **Which kernels a number actually measures.** `GEIST_LOG_KERNELS=1` makes the
 cpu_neon resolver count its decisions and print them per catalog row at
@@ -205,8 +206,9 @@ attribute, and a June best-of number is not a baseline anyone can re-derive.
 ## Comparison vs llama.cpp (Apple M1 Max, CPU, measured June 2026)
 
 Same machine, same `gemma4-e2b-Q4_K_M.gguf`, both CPU-only. llama.cpp build
-`d05fe1d` run with `-ngl 0` (BLAS/Accelerate, no GPU offload). geist auto-pins to
-the 8 performance cores; llama at `-t 8`. Full prefill sweep 128 → 1024 tokens,
+`d05fe1d` run with `-ngl 0` (BLAS/Accelerate, no GPU offload). geist uses an
+8-thread prefill pool; llama runs at `-t 8`. Neither engine is given explicit
+CPU-ID affinity. Full prefill sweep 128 → 1024 tokens,
 **best-of** (peak uncontended throughput — see the methodology note below):
 
 This is a frozen historical cross-engine campaign, not output from the current
@@ -214,7 +216,7 @@ This is a frozen historical cross-engine campaign, not output from the current
 documented so the numbers are not silently reinterpreted; new revision A/B
 decisions use the interleaved median/MAD protocol.
 
-| seq_len | llama.cpp `-ngl 0`, t=8 | geist (P-core pinned) | winner |
+| seq_len | llama.cpp `-ngl 0`, t=8 | geist (8-thread pool) | winner |
 | ---: | :---: | :---: | :--- |
 |  128 | 141 | **164** | **geist 1.16×** |
 |  256 | 147 | **161** | **geist 1.10×** |
@@ -288,7 +290,7 @@ already the bandwidth-optimal format for CPU decode.**
 Reproduce:
 
 ```sh
-# geist (auto-pins prefill→P-cores, decode→P-cores−1):
+# geist (auto-sizes prefill→P-core count, decode→P-core count−1):
 OMP_WAIT_POLICY=active \
   bin/$(mk/detect-target.sh)/release/tests/bench_perf_sweep \
     --gguf model.gguf --seq-lens 512 --decode-n 128 --warmup 64 --repeats 10 --emit-jsonl
@@ -296,12 +298,13 @@ OMP_WAIT_POLICY=active \
 llama-bench -m model.gguf -ngl 0 -t 8 -p 512 -n 128
 ```
 
-**Key finding — thread placement dominates on heterogeneous cores.** On Apple
+**Key finding — thread-pool size dominates on heterogeneous cores.** On Apple
 Silicon the efficiency ("E") cores stall a static OpenMP partition: defaulting
-to `omp_get_num_procs()` (all 10 cores) gave pp512 ≈ 91 t/s, while pinning to
-the 8 performance cores gives ≈ 143. geist now reads `hw.perflevel0.physicalcpu`
-and pins prefill to the P-cores and decode to P-cores−1 (decode fires ~210 tiny
-matmuls/token and contends when every core is saturated). Override with
+to `omp_get_num_procs()` (all 10 cores) gave pp512 ≈ 91 t/s, while limiting the
+pool to 8 threads gives ≈ 143. geist now reads `hw.perflevel0.physicalcpu` and
+uses that count for prefill and one fewer thread for decode (decode fires ~210
+tiny matmuls/token and contends when every core is saturated). This does not set
+CPU affinity. Override the counts with
 `GEIST_PREFILL_THREADS` / `GEIST_DECODE_THREADS`.
 
 To reproduce a head-to-head on *your* hardware with the llama.cpp commit

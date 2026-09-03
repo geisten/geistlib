@@ -34,7 +34,8 @@
  * Output: one JSON object per line on stdout, e.g.
  *   {"seq_len":256,"decode_n":64,"prefill_ms":1234.5,"decode_ms":890.1,
  *    "total_ms":2124.6,"prefill_tps":207.4,"decode_tps":71.9,
- *    "total_tps":150.6,"rss_mb":4321.2,"threads":4}
+ *    "total_tps":150.6,"rss_mb":4321.2,"threads":4,
+ *    "samples":{"prefill_ms":[...],"decode_ms":[...],"total_ms":[...]}}
  *
  * Bench-only; not a correctness test. Exits 77 (SKIP) if no GGUF found.
  */
