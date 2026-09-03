@@ -443,6 +443,23 @@ struct transformer_arch_state {
     struct geist_weight embed_table_w;   /* P1.1.d lm_head kernels */
     struct geist_weight model_proj_w;    /* P1.1.e F32 dense kernels */
 
+    /* ---- ZO-tuning gains (GEIST_TUNE builds only; nullptr otherwise). -- *
+     * One f32 per linear weight, all 1.0f at load. The linear dispatcher
+     * multiplies each weight's output by its slot; a caller reaches the
+     * array through geist_model_gains and writes it directly. The weight
+     * bytes themselves are never touched, so a "fine-tune" is n_gains
+     * floats on top of the unmodified GGUF and swapping one for another
+     * is a memcpy.
+     *
+     * Slot order — the on-disk contract for any sidecar a caller writes:
+     *   layer l (0..n_layers-1) occupies slots 9*l + 0..8, in the order
+     *     q, k, v, o, gate, up, down, per_layer_gate, per_layer_proj
+     *   then 9*n_layers + 0 = embed_table (lm_head), +1 = model_proj.
+     * n_gains = 9 * n_layers + 2. Unresolved weights keep their slot so
+     * the layout depends on n_layers alone. */
+    float *gains;
+    size_t n_gains;
+
     /* Speculative output head (GEIST_SPEC_HEAD=1): for a large tied F16
      * lm_head, a stride-subsampled i8 "sketch" of the embedding table lets
      * decode rough-rank the whole vocab cheaply, pick top-K, then compute

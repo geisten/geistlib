@@ -93,7 +93,7 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
     free(w_fp32);
 
     /* Kernel under test. */
-    linear_q6k_w6a8_prefill(x, t->data, m, n_in, n_out, y_fast);
+    linear_q6k_w6a8_prefill(m, n_in, n_out, x, t->data, y_fast);
 
     /* Per-row cosine sim. Each row is one of the M activations. */
     int   fails   = 0;
@@ -117,7 +117,7 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
             fails++;
         } else {
             memset(y_fast, 0, n_out * sizeof(float));
-            linear_q6k_decode_w6a8_x8(x, x8, n_in, n_out, y_fast);
+            linear_q6k_decode_w6a8_x8(n_in, n_out, x, x8, y_fast);
             const float cos = cosine_sim(y_ref, y_fast, n_out);
             if (cos < 0.999f) {
                 fprintf(stderr, "  x8 gemv cos=%.6f < 0.999\n", cos);
@@ -145,7 +145,7 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
             }
             memset(y_fast, 0, m * n_out * sizeof(float));
             linear_q6k_w6a8_prefill_predecoded_ntile4(
-                    x_q8, scale_x, m, packed, n_in, n_out, y_fast);
+                    m, n_in, n_out, x_q8, scale_x, packed, y_fast);
             float min_cos_packed = 1.0f;
             for (size_t i = 0; i < m; i++) {
                 const float cos = cosine_sim(y_ref + i * n_out, y_fast + i * n_out, n_out);
@@ -180,7 +180,7 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
             }
             memset(y_fast, 0, m * n_out * sizeof(float));
             linear_q6k_w6a8_prefill_predecoded_ntile4_stream(
-                    x_q8, scale_x, m, stream, n_in, n_out, y_fast);
+                    m, n_in, n_out, x_q8, scale_x, stream, y_fast);
             float min_cos_packed = 1.0f;
             for (size_t i = 0; i < m; i++) {
                 const float cos = cosine_sim(y_ref + i * n_out, y_fast + i * n_out, n_out);

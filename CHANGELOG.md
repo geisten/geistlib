@@ -8,6 +8,28 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+- **Per-machine calibration, PR 1 of 3** (`@stability EXPERIMENTAL`):
+  measured tuning instead of two hard-coded reference points. New API
+  `geist_backend_calibrate` / `_apply_calibration` / `_calibration_key`
+  — the library measures and validates; consumers own persistence
+  entirely (no filesystem access in the library). Backends export
+  tunables via a descriptor slot; the driver adds median-of-three
+  noise defense, an opaque key (µarch fingerprint from MIDR/sysctl ×
+  tunable-set hash × per-backend generation), atomic apply, and
+  `GEIST_E_STALE_CALIBRATION`. Precedence per knob: env override ??
+  calibration ?? seed. cpu_neon ships five sondes
+  (`q5k/q8_0/q4_01/iq4xs_native_mn`, `qk_sgemm_threshold`) that time
+  the RESOLVER-INSTALLED paths on throwaway backend instances — a
+  first raw-kernel draft confidently mis-calibrated the threshold
+  until a real-model referee falsified it; the fidelity contract is
+  now documented in the sonde file. `examples/geist_calibrate` is the
+  reference consumer (quiet-machine gate, key-named file persistence,
+  stale handling), and `test_calibration_paths_unit` pins BOTH kernel
+  branches behind every calibrated knob numerically equivalent on
+  every CI µarch — calibration can only ever pick between paths CI
+  has proven interchangeable.
+
 ### Fixed
 - **Probe-and-bind, batch 3 — `buffer_copy` stops swallowing device errors**
   (#352): the five per-token/per-layer sites (`step.c` ×3, `head.c`,
