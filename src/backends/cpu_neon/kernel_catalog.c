@@ -44,6 +44,15 @@ static void policy_overlay_calibration(struct cpu_neon_kernel_policy *p,
     if (geist_calibration_lookup(be, "qk_sgemm_threshold", &v)) {
         p->qk_sgemm_threshold = (size_t) v;
     }
+    if (geist_calibration_lookup(be, "q8_0_native_mn", &v)) {
+        p->q8_0_native_mn = v != 0;
+    }
+    if (geist_calibration_lookup(be, "q4_01_native_mn", &v)) {
+        p->q4_01_native_mn = v != 0;
+    }
+    if (geist_calibration_lookup(be, "iq4xs_native_mn", &v)) {
+        p->iq4xs_native_mn = v != 0;
+    }
 }
 
 struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_hw_probe *hw) {

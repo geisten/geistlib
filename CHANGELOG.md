@@ -18,9 +18,13 @@ minor release.
   noise defense, an opaque key (µarch fingerprint from MIDR/sysctl ×
   tunable-set hash × per-backend generation), atomic apply, and
   `GEIST_E_STALE_CALIBRATION`. Precedence per knob: env override ??
-  calibration ?? seed. cpu_neon ships two exemplar sondes
-  (`q5k_native_mn`, `qk_sgemm_threshold`); the remaining sondes and
-  the `geist-calibrate` example tool follow.
+  calibration ?? seed. cpu_neon ships five sondes
+  (`q5k/q8_0/q4_01/iq4xs_native_mn`, `qk_sgemm_threshold`) that time
+  the RESOLVER-INSTALLED paths on throwaway backend instances — a
+  first raw-kernel draft confidently mis-calibrated the threshold
+  until a real-model referee falsified it; the fidelity contract is
+  now documented in the sonde file. The `geist-calibrate` example
+  tool and the CI both-branches parity matrix follow.
 
 ### Fixed
 - **Probe-and-bind, batch 3 — `buffer_copy` stops swallowing device errors**
