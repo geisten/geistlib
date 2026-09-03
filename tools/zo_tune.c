@@ -236,17 +236,18 @@ load_jsonl(struct geist_session *s, struct geist_model *m, const char *path, siz
         return nullptr;
     }
 
-    char *line  = malloc(LINE_CAP);
-    char *field = malloc(FIELD_CAP);
-    if (line == nullptr || field == nullptr) {
+    char          *line  = malloc(LINE_CAP);
+    char          *field = malloc(FIELD_CAP);
+    geist_token_t *tok   = malloc(TOKEN_CAP * sizeof *tok);
+    if (line == nullptr || field == nullptr || tok == nullptr) {
         free(line);
         free(field);
+        free(tok);
         fclose(f);
         return nullptr;
     }
 
     const geist_token_t bos = geist_model_bos_token(m);
-    geist_token_t      *tok = malloc(TOKEN_CAP * sizeof *tok);
 
     struct example *ex = nullptr;
     size_t          n = 0, cap = 0;
@@ -496,10 +497,10 @@ static size_t common_prefix_len(const struct example *ex, size_t n) {
  * example scored with a full prefill against the same example scored on top
  * of the pinned prefix.
  *
- * The check is not paranoia. geist_session_pin_prefix returns GEIST_OK even
- * when the arch's pin_prefix failed underneath (session.c discards that
- * status), so an unnoticed failure would mean training on truncated
- * contexts behind a loss curve that still looks plausible.
+ * The check is not paranoia. geist_session_pin_prefix propagates a failed
+ * arch pin (since 7f568e8), but a pin that SUCCEEDS while subtly changing
+ * the score would mean training on wrong context behind a loss curve that
+ * still looks plausible — the delta below is the only witness for that.
  *
  * Returns the usable pin length, or 0 to prefill in full. */
 static size_t pin_shared_prefix(struct geist_session *s, const struct example *ex, size_t n) {
@@ -531,6 +532,18 @@ static size_t pin_shared_prefix(struct geist_session *s, const struct example *e
     }
     fprintf(stderr, "pin: %zu-token prefix verified (loss delta %.4f nats)\n", lcp, delta);
     return lcp;
+}
+
+/* Refresh the cached prefix. On failure the arch leaves the session
+ * UNPINNED (prefix_length = 0) — keep scoring against pin_len > 0 there and
+ * every later NLL is measured against missing context. Fall back to
+ * unpinned scoring instead: slower, still correct. */
+static size_t repin(struct geist_session *s, size_t pin_len, const geist_token_t *ctx) {
+    if (pin_len == 0 || geist_session_pin_prefix(s, pin_len, ctx) == GEIST_OK) {
+        return pin_len;
+    }
+    fprintf(stderr, "zo_tune: re-pin failed (%s) — continuing unpinned\n", geist_session_errmsg(s));
+    return 0;
 }
 
 /* ---- The ZO step ------------------------------------------------------- */
@@ -830,7 +843,7 @@ int main(int argc, char **argv) {
     /* Pin whatever context the examples share. Runs after --init so the
      * equality check that validates the pin sees the gains the run will
      * actually use. */
-    const size_t pin_len = no_pin ? 0 : pin_shared_prefix(sess, ex, n_ex);
+    size_t pin_len = no_pin ? 0 : pin_shared_prefix(sess, ex, n_ex);
 
     fprintf(stderr,
             "zo_tune: %zu gains, %zu train + %ld holdout examples, "
@@ -868,7 +881,7 @@ int main(int argc, char **argv) {
          * Safe here and only here: between steps g == base, so the prefix
          * is recomputed at the current parameters rather than at a probe. */
         if (pin_len > 0 && t > 0 && t % REPIN_EVERY_STEPS == 0) {
-            (void) geist_session_pin_prefix(sess, pin_len, ex[0].ctx);
+            pin_len = repin(sess, pin_len, ex[0].ctx);
         }
         for (size_t b = 0; b < c.batch; b++) {
             idx[b] = (size_t) (xs64(&rng) % n_train);
@@ -888,18 +901,14 @@ int main(int argc, char **argv) {
             /* Evaluate the current vector, not a perturbed one — zo_step
              * leaves g == base on exit. Re-pin first so the reported number
              * is not measured against a prefix cached at older gains. */
-            if (pin_len > 0) {
-                (void) geist_session_pin_prefix(sess, pin_len, ex[0].ctx);
-            }
+            pin_len        = repin(sess, pin_len, ex[0].ctx);
             const double h = nll_range(sess, ex, n_train, n_ex, pin_len);
             fprintf(stderr, "step %zu  holdout %.4f\n", t, h);
         }
     }
 
     if (holdout > 0) {
-        if (pin_len > 0) {
-            (void) geist_session_pin_prefix(sess, pin_len, ex[0].ctx);
-        }
+        pin_len         = repin(sess, pin_len, ex[0].ctx);
         const double h1 = nll_range(sess, ex, n_train, n_ex, pin_len);
         fprintf(stderr, "step %zu  holdout %.4f (final)\n", steps, h1);
     }
