@@ -9,6 +9,7 @@ This repository documents the application-neutral Geist engine:
 - `MODELS.md`: supported models — Gemma (vision/audio), Llama, Qwen and ternary BitNet
 - `BACKENDS.md`: CPU backends and the experimental Metal/Vulkan GPU paths
 - `ARCHITECTURE.md`: engine layers and runtime architecture
+- `TUNING.md`: forward-only (zeroth-order) fine-tuning — no backward pass, gains as a sidecar
 - `DEPLOY.md`: building the library and consuming the packaged SDK
 - `CI_COVERAGE.md`: what each CI job actually verifies
 - `API_CONTRACT.md`: what the stability tags promise across a release boundary
