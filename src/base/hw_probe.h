@@ -57,6 +57,14 @@ struct geist_hw_probe {
     size_t n_l3_domains;   /* 0 unknown, 1 = single L3, N = AMD multi-CCD / Intel
                             * P/E cluster. Used by Phase-1a CCD-aware threading
                             * (see docs/LINUX_X86_SPEC.md). */
+
+    /* Normalized µarch identity of THIS machine: core-type fingerprint
+     * plus topology, e.g. "arm64:41.d0b*4" (Pi 5, 4x Cortex-A76) or
+     * "apple:Apple-M1-Max:8P+2E". big.LITTLE shows up as a '+'-joined
+     * multiset. Consumed by the calibration key — treat as opaque
+     * outside the probe; the format may grow more factors. Empty when
+     * no identity source exists (calibration then refuses to key). */
+    char uarch[96];
 };
 
 void geist_hw_probe_fill(struct geist_hw_probe *out);

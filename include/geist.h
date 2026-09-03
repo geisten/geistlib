@@ -64,6 +64,11 @@ enum geist_status {
     /* Lifecycle */
     GEIST_E_INVALID_STATE,   /* op called in wrong order */
     GEIST_E_TOO_MANY_TOKENS, /* hit max_seq_len */
+
+    /* -- calibration (EXPERIMENTAL) -- */
+    GEIST_E_STALE_CALIBRATION, /* blob valid but keyed to another
+                                * machine / kernel generation — normal
+                                * signal to recalibrate, not a bug */
 };
 
 /* @stability STABLE since 0.1.0

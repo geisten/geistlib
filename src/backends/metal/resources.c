@@ -6,6 +6,9 @@
  */
 #include "metal_internal.h"
 
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+
 /* Intra-module forward decl (definition order preserved from the split). */
 static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
                                            enum geist_dtype           dtype,
@@ -242,14 +245,61 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
     return metal_new_buffer(be, bytes, role, memory_flags, host_visible, out);
 }
 
+/* #357: is [p, p+n) inside one file-backed VM region, and what is the
+ * enclosing page range? A weight aliased straight out of the loader's mmap
+ * needs no copy — unified memory lets the GPU read the file pages in place.
+ * The mmap is page-granular but the tensor inside it is only 32-byte
+ * aligned, so the wrapper covers whole pages and the caller keeps the
+ * in-page offset. Neighbouring wrappers overlap on a boundary page; that is
+ * fine for read-only file pages (llama.cpp's Metal backend does the same).
+ * A heap pointer — load-from-memory, an arena slice — fails the region
+ * check and takes the copy path, the only one safe for memory whose extent
+ * the backend does not know. */
+static bool
+metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t *len_out) {
+    const uintptr_t page = (uintptr_t) vm_page_size;
+    const uintptr_t lo   = (uintptr_t) p & ~(page - 1u);
+    if (n > UINTPTR_MAX - (uintptr_t) p - page) {
+        return false;
+    }
+    const uintptr_t hi = ((uintptr_t) p + n + page - 1u) & ~(page - 1u);
+
+    mach_vm_address_t              addr  = lo;
+    mach_vm_size_t                 size  = 0;
+    vm_region_extended_info_data_t info  = {0};
+    mach_msg_type_number_t         count = VM_REGION_EXTENDED_INFO_COUNT;
+    mach_port_t                    obj   = MACH_PORT_NULL;
+    if (mach_vm_region(mach_task_self(),
+                       &addr,
+                       &size,
+                       VM_REGION_EXTENDED_INFO,
+                       (vm_region_info_t) &info,
+                       &count,
+                       &obj) != KERN_SUCCESS) {
+        return false;
+    }
+    if (obj != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), obj);
+    }
+    /* mach_vm_region returns the first region at or after `addr`: a start
+     * past `lo` means `lo` itself is unmapped. */
+    if (addr > lo || size < hi - addr || !info.external_pager) {
+        return false;
+    }
+    *base_out = (uint8_t *) lo;
+    *len_out  = (size_t) (hi - lo);
+    return true;
+}
+
 /* Alias a host-resident region (mmap'd weight or an arena sub-range) as a
- * device buffer. main's memory model hands the backend arbitrary host
- * sub-pointers (64-byte aligned), which Metal's newBufferWithBytesNoCopy
- * cannot wrap (it needs page alignment). Correctness-first: copy the bytes
- * into a SHARED MTLBuffer (unified memory, host+GPU coherent). Weights are
- * read-only; arena scratch is always accessed via this handle, so a per-
- * buffer copy stays coherent. ponytail: zero-copy via a per-arena MTLBuffer
- * + offset is the Stage-6 memory optimization (saves the weight duplication). */
+ * device buffer. A region that lives in a file-backed mapping is wrapped in
+ * place (newBufferWithBytesNoCopy over its page range, base_off pointing at
+ * the bytes) — the model is then resident once, as file pages, instead of
+ * once as file pages and once more as device copies (#357). Anything else
+ * arrives as an arbitrary 64-byte-aligned sub-pointer that NoCopy cannot
+ * wrap, and is copied into a SHARED MTLBuffer (unified memory, host+GPU
+ * coherent). Weights are read-only; arena scratch is always accessed via
+ * this handle, so a per-buffer copy stays coherent. */
 [[nodiscard]] enum geist_status metal_buffer_create_aliased(struct geist_backend  *be,
                                                             void                  *host_ptr,
                                                             size_t                 n_bytes,
@@ -273,12 +323,30 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
         geist_backend_set_error(be, GEIST_E_OOM, "metal: failed to allocate buffer handle");
         return GEIST_E_OOM;
     }
-    void *mtl_buffer = metal_msg_send_id_ptr_size_uint(st,
-                                                       st->device,
-                                                       "newBufferWithBytes:length:options:",
-                                                       host_ptr,
-                                                       n_bytes,
-                                                       METAL_RESOURCE_STORAGE_MODE_SHARED);
+    uint8_t *base       = nullptr;
+    size_t   base_len   = 0;
+    size_t   base_off   = 0;
+    void    *mtl_buffer = nullptr;
+    if (metal_host_range_file_backed(host_ptr, n_bytes, &base, &base_len)) {
+        mtl_buffer = metal_msg_send_id_ptr_size_uint_ptr(
+                st,
+                st->device,
+                "newBufferWithBytesNoCopy:length:options:deallocator:",
+                base,
+                base_len,
+                METAL_RESOURCE_STORAGE_MODE_SHARED,
+                nullptr);
+        base_off = (size_t) ((const uint8_t *) host_ptr - base);
+    }
+    if (mtl_buffer == nullptr) {
+        base_off   = 0;
+        mtl_buffer = metal_msg_send_id_ptr_size_uint(st,
+                                                     st->device,
+                                                     "newBufferWithBytes:length:options:",
+                                                     host_ptr,
+                                                     n_bytes,
+                                                     METAL_RESOURCE_STORAGE_MODE_SHARED);
+    }
     if (mtl_buffer == nullptr) {
         geist_backend_free(be, buf);
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal: failed to alias %zu bytes", n_bytes);
@@ -294,8 +362,9 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
     *buf = (struct geist_buffer) {
             .owner        = st,
             .buffer       = mtl_buffer,
-            .mapped       = mapped,
+            .mapped       = (uint8_t *) mapped + base_off,
             .bytes        = n_bytes,
+            .base_off     = base_off,
             .role         = role,
             .memory_flags = GEIST_MEMORY_HOST_VISIBLE | GEIST_MEMORY_MAPPED | GEIST_MEMORY_ALIASED,
             .host_visible = true,
@@ -335,15 +404,21 @@ void metal_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
         if (s != GEIST_OK) {
             return s;
         }
-        s = metal_submit_copy(st, src->buffer, src_offset, tmp->buffer, 0, n_bytes);
+        s = metal_submit_copy(st, src->buffer, src->base_off + src_offset, tmp->buffer, 0, n_bytes);
         if (s == GEIST_OK) {
-            s = metal_submit_copy(st, tmp->buffer, 0, dst->buffer, dst_offset, n_bytes);
+            s = metal_submit_copy(
+                    st, tmp->buffer, 0, dst->buffer, dst->base_off + dst_offset, n_bytes);
         }
         metal_buffer_destroy_internal(st->backend, tmp);
         return s;
     }
 
-    return metal_submit_copy(st, src->buffer, src_offset, dst->buffer, dst_offset, n_bytes);
+    return metal_submit_copy(st,
+                             src->buffer,
+                             src->base_off + src_offset,
+                             dst->buffer,
+                             dst->base_off + dst_offset,
+                             n_bytes);
 }
 
 [[nodiscard]] enum geist_status
@@ -370,7 +445,7 @@ metal_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src
         return s;
     }
     memcpy(staging->mapped, src, n_bytes);
-    s = metal_submit_copy(st, staging->buffer, 0, buf->buffer, 0, n_bytes);
+    s = metal_submit_copy(st, staging->buffer, 0, buf->buffer, buf->base_off, n_bytes);
     metal_buffer_destroy_internal(st->backend, staging);
     return s;
 }
@@ -398,7 +473,7 @@ metal_buffer_download(size_t n_bytes, uint8_t *dst, const struct geist_buffer *b
     if (s != GEIST_OK) {
         return s;
     }
-    s = metal_submit_copy(st, buf->buffer, 0, staging->buffer, 0, n_bytes);
+    s = metal_submit_copy(st, buf->buffer, buf->base_off, staging->buffer, 0, n_bytes);
     if (s == GEIST_OK) {
         memcpy(dst, staging->mapped, n_bytes);
     }

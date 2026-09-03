@@ -579,6 +579,22 @@ unsigned geist_model_modalities(const struct geist_model *m) {
     return mask;
 }
 
+enum geist_status geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n) {
+    if (m == nullptr || out_gains == nullptr || out_n == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out_gains = nullptr;
+    *out_n     = 0;
+    /* Optional op: an arch without a gain path (mamba2) leaves it null.
+     * That is "tuning unavailable", the same answer the transformer gives
+     * for a build without GEIST_TUNE — not a failure of the model. */
+    const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;
+    if (ops == nullptr || ops->gains == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    return ops->gains(m->text_decoder.arch_meta, out_gains, out_n);
+}
+
 /* Special-token accessors — read the ids the tokenizer parsed from the GGUF
  * metadata (or tokenizer.bin). Both tokenizer paths default unset ids to -1,
  * which is GEIST_TOKEN_NONE. */
