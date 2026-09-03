@@ -27,6 +27,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(_OPENMP)
@@ -252,6 +253,105 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
         }
         out->physical_cores = n_physical;
         out->n_l3_domains   = n_l3;
+    }
+#endif
+
+    /* ----- µarch identity (calibration key input) -------------------
+     *
+     * A normalized fingerprint of the core TYPES on this machine, not
+     * just their count: two boards with identical ISA bits but
+     * different cores (A55 vs A76) must never share a calibration.
+     * Sources, best first:
+     *   Linux/aarch64  MIDR_EL1 per cpu via /sys (implementer + part),
+     *                  aggregated as an ordered multiset "41.d0b*4"
+     *   macOS/arm64    machdep.cpu.brand_string + perflevel topology
+     *   elsewhere      cpu-family class + core count (coarse but
+     *                  honest; refine when that backend grows sondes)
+     * The string is opaque to consumers — only the calibration key
+     * builder reads it, and its format may grow more factors. */
+#if defined(__linux__) && defined(__aarch64__)
+    if (out->logical_cores > 0 && out->logical_cores <= 256) {
+        struct {
+            unsigned long id;
+            size_t        count;
+        } parts[8];
+        size_t n_parts = 0;
+        for (size_t cpu = 0; cpu < out->logical_cores; cpu++) {
+            char path[128];
+            char buf[32];
+            snprintf(path,
+                     sizeof(path),
+                     "/sys/devices/system/cpu/cpu%zu/regs/identification/midr_el1",
+                     cpu);
+            FILE *f = fopen(path, "r");
+            if (f == nullptr) {
+                continue;
+            }
+            unsigned long midr = 0;
+            if (fgets(buf, sizeof(buf), f) != nullptr) {
+                midr = strtoul(buf, nullptr, 0);
+            }
+            fclose(f);
+            if (midr == 0) {
+                continue;
+            }
+            /* implementer [31:24] + part number [15:4]. */
+            const unsigned long id   = ((midr >> 24) & 0xffu) << 12 | ((midr >> 4) & 0xfffu);
+            bool                seen = false;
+            for (size_t i = 0; i < n_parts; i++) {
+                if (parts[i].id == id) {
+                    parts[i].count++;
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen && n_parts < sizeof(parts) / sizeof(parts[0])) {
+                parts[n_parts].id    = id;
+                parts[n_parts].count = 1;
+                n_parts++;
+            }
+        }
+        size_t off = (size_t) snprintf(out->uarch, sizeof(out->uarch), "arm64");
+        for (size_t i = 0; i < n_parts && off < sizeof(out->uarch); i++) {
+            off += (size_t) snprintf(out->uarch + off,
+                                     sizeof(out->uarch) - off,
+                                     ":%02lx.%03lx*%zu",
+                                     parts[i].id >> 12,
+                                     parts[i].id & 0xfffu,
+                                     parts[i].count);
+        }
+        if (n_parts == 0) {
+            out->uarch[0] = '\0'; /* no MIDR source — stay honest */
+        }
+    }
+#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+    {
+        char   brand[48] = {0};
+        size_t blen      = sizeof(brand) - 1u;
+        if (sysctlbyname("machdep.cpu.brand_string", brand, &blen, nullptr, 0) != 0) {
+            brand[0] = '\0';
+        }
+        for (char *p = brand; *p != '\0'; p++) {
+            if (*p == ' ') {
+                *p = '-';
+            }
+        }
+        int    p_cores = 0, e_cores = 0;
+        size_t ilen = sizeof(p_cores);
+        (void) sysctlbyname("hw.perflevel0.physicalcpu", &p_cores, &ilen, nullptr, 0);
+        ilen = sizeof(e_cores);
+        (void) sysctlbyname("hw.perflevel1.physicalcpu", &e_cores, &ilen, nullptr, 0);
+        if (brand[0] != '\0') {
+            snprintf(out->uarch, sizeof(out->uarch), "apple:%s:%dP+%dE", brand, p_cores, e_cores);
+        }
+    }
+#else
+    if (out->cpu != GEIST_HW_CPU_UNKNOWN) {
+        snprintf(out->uarch,
+                 sizeof(out->uarch),
+                 "%s:generic*%zu",
+                 out->cpu == GEIST_HW_CPU_X86_64_GENERIC ? "x86_64" : "arm64",
+                 out->logical_cores);
     }
 #endif
 }

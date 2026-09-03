@@ -43,6 +43,8 @@ const char *geist_status_to_string(enum geist_status s) {
         return "GEIST_E_INVALID_STATE";
     case GEIST_E_TOO_MANY_TOKENS:
         return "GEIST_E_TOO_MANY_TOKENS";
+    case GEIST_E_STALE_CALIBRATION:
+        return "GEIST_E_STALE_CALIBRATION";
     }
     return "GEIST_E_UNKNOWN";
 }

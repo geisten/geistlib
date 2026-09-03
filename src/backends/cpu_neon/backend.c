@@ -383,14 +383,18 @@ static const struct geist_backend_fused cpu_neon_fused = {
 };
 
 const struct geist_backend_descriptor geist_backend_cpu_neon = {
-        .name  = "cpu_neon",
-        .vtbl  = &cpu_neon_vtbl,
-        .prims = &cpu_neon_prims,
-        .fused = &cpu_neon_fused,
+        .name     = "cpu_neon",
+        .vtbl     = &cpu_neon_vtbl,
+        .prims    = &cpu_neon_prims,
+        .fused    = &cpu_neon_fused,
+        .tunables = cpu_neon_tunables,
         .caps =
                 {
                         .manages_host_threads = true,
-                        .max_m                = GEIST_QUANT_M_CAP,
+                        /* bump when kernel perf character changes without
+                         * a tunable rename (the #318 case) */
+                        .calibration_generation = 1,
+                        .max_m                  = GEIST_QUANT_M_CAP,
 #if defined(__APPLE__)
                         /* Unified memory + Accelerate: FP32 KV wins. */
                         .preferred_kv_mode = GEIST_KV_FP32,

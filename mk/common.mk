@@ -132,6 +132,7 @@ LIB_SOURCES := \
     src/base/heap.c \
     src/base/error.c \
     src/base/hw_probe.c \
+    src/base/calibration.c \
     src/engine/allocator.c \
     src/engine/backend.c \
     src/engine/backend_registry.c \
