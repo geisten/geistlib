@@ -294,8 +294,8 @@ static inline void q4k_subpair_dots(const uint8_t *q,
 #endif
 }
 
-float quantize_x_for_q4k(const float *x, size_t n, int8_t *x_q8, int32_t *sum32) {
-    float        scale    = quantize_x_int8_sym(x, n, x_q8);
+float quantize_x_for_q4k(size_t n, const float x[static n], int8_t x_q8[static n], int32_t *sum32) {
+    float        scale    = quantize_x_int8_sym(n, x, x_q8);
     const size_t n_chunks = n / 32;
     for (size_t s = 0; s < n_chunks; s++) {
 #if defined(__ARM_NEON)
@@ -313,7 +313,7 @@ float quantize_x_for_q4k(const float *x, size_t n, int8_t *x_q8, int32_t *sum32)
 }
 
 void quantize_x_for_q4k_blocks(
-        const float *x, size_t n, int8_t *x_q8, int32_t *sum32, float *scale_blocks) {
+        size_t n, const float *x, int8_t *x_q8, int32_t *sum32, float *scale_blocks) {
     if (x == nullptr || x_q8 == nullptr || sum32 == nullptr || scale_blocks == nullptr)
         return;
     if (n % Q4_K_BLOCK_ELEMS != 0)
@@ -321,7 +321,7 @@ void quantize_x_for_q4k_blocks(
     const size_t n_blocks = n / Q4_K_BLOCK_ELEMS;
     for (size_t b = 0; b < n_blocks; b++) {
         const size_t elem_off = b * Q4_K_BLOCK_ELEMS;
-        scale_blocks[b] = quantize_x_int8_sym(x + elem_off, Q4_K_BLOCK_ELEMS, x_q8 + elem_off);
+        scale_blocks[b] = quantize_x_int8_sym(Q4_K_BLOCK_ELEMS, x + elem_off, x_q8 + elem_off);
         for (size_t s = 0; s < Q4_K_BLOCK_ELEMS / 32; s++) {
 #if defined(__ARM_NEON)
             const int8_t *p  = x_q8 + elem_off + s * 32;
@@ -527,7 +527,7 @@ void linear_q4k_decode_w4a8(
         /* Cache hit — reuse pre-quantized data. */
         scale_x = tl_last_scale_x;
     } else {
-        scale_x         = quantize_x_for_q4k(x, n_in, tl_x_q8, tl_sum32);
+        scale_x         = quantize_x_for_q4k(n_in, x, tl_x_q8, tl_sum32);
         tl_last_x       = x;
         tl_last_n_in    = n_in;
         tl_last_sig     = sig;
@@ -566,7 +566,7 @@ void linear_q4k_decode_w4a8_pair(const float *x,
         tl_cap_n_in = n_in;
     }
 
-    const float                 scale_x = quantize_x_for_q4k(x, n_in, tl_x_q8, tl_sum32);
+    const float                 scale_x = quantize_x_for_q4k(n_in, x, tl_x_q8, tl_sum32);
     const struct q4k_decode_ctx c0      = {
             .w                = (const struct block_q4_K_t *) w0_q4k,
             .x_q8             = tl_x_q8,
@@ -2160,7 +2160,7 @@ void linear_q4k_w4a8_prefill(
     }
     for (size_t i = 0; i < m; i++) {
         scale_x[i] =
-                quantize_x_for_q4k(x + i * n_in, n_in, x_q8 + i * n_in, sum32 + i * (n_in / 32));
+                quantize_x_for_q4k(n_in, x + i * n_in, x_q8 + i * n_in, sum32 + i * (n_in / 32));
     }
     linear_q4k_w4a8_prefill_pre(x_q8, scale_x, sum32, m, w_q4k, n_in, n_out, y);
     safe_free((void **) &x_q8);
@@ -2179,7 +2179,7 @@ void linear_q4k_decode_w4a8_predecoded(
         safe_free((void **) &sum32);
         return;
     }
-    const float scale_x = quantize_x_for_q4k(x, n_in, x_q8, sum32);
+    const float scale_x = quantize_x_for_q4k(n_in, x, x_q8, sum32);
     linear_q4k_w4a8_prefill_predecoded(x_q8, &scale_x, sum32, 1, packed, n_in, n_out, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &sum32);

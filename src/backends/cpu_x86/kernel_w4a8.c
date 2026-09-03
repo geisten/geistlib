@@ -187,7 +187,7 @@ w4a8_quantize_acts_row(size_t      n_in,
                        const float x[static n_in],
                        int8_t      acts_out[static n_in],
                        int32_t     sum_a_per_block_out[static n_in / W4A8_BLOCK_ELEMS]) {
-    const float scale_x = quantize_x_int8_sym(x, n_in, acts_out);
+    const float scale_x = quantize_x_int8_sym(n_in, x, acts_out);
 
     /* Single pass over the freshly-written int8 buffer (hot in L1) to
      * compute per-block sums. The block stride matches W4A8's 32-element

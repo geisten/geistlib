@@ -61,7 +61,7 @@ static void bench_one(const struct ptqtp_ctx *ctx,
     float *x = (float *) aligned_alloc(64, n_in * sizeof(float));
     for (size_t i = 0; i < n_in; i++)
         x[i] = ((float) i * 0.0137f) - 7.3f;
-    float scale_x = quantize_x_int8_sym(x, n_in, x_q8);
+    float scale_x = quantize_x_int8_sym(n_in, x, x_q8);
     free(x);
 
 #define CALL_KERNEL()                                                                           \

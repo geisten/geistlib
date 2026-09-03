@@ -78,7 +78,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
         x[i] = ((float) i * 0.0137f) - 7.3f;
     float scale_x = 0.0f;
     if (t->dtype == GGUF_TYPE_Q4_K)
-        scale_x = quantize_x_for_q4k(x, n_in, x_q8, sum32);
+        scale_x = quantize_x_for_q4k(n_in, x, x_q8, sum32);
 
 #define CALL_KERNEL()                                                                  \
     do {                                                                               \
@@ -224,7 +224,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                 for (size_t i = 0; i < n_in; i++) {
                     x[i] = ((float) ((r * 13 + i) % 4096) * 0.0019f) - 3.9f;
                 }
-                xm_sx[r] = quantize_x_for_q4k(x, n_in, xm_q8 + r * n_in, xm_sum + r * n_chunks);
+                xm_sx[r] = quantize_x_for_q4k(n_in, x, xm_q8 + r * n_in, xm_sum + r * n_chunks);
             }
             const double tw4 = now_ms();
             linear_q4k_w4a8_prefill_predecoded_mtile4(
@@ -432,7 +432,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
         memcpy(y_ref, y, n_out * sizeof(float));
 
         /* W6A8: needs symmetric int8 quantization of x (no sum32 needed). */
-        const float scale_x6 = quantize_x_int8_sym(x, n_in, x_q8);
+        const float scale_x6 = quantize_x_int8_sym(n_in, x, x_q8);
         linear_q6k_decode_w6a8_pre(x_q8, scale_x6, t->data, n_in, n_out, y);
 
         /* Cosine similarity vs reference. */

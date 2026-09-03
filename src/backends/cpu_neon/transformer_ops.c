@@ -144,8 +144,8 @@ static size_t ffn_tile_blocks(void) {
 #pragma omp parallel for schedule(static) if (m >= 4)
 #endif
     for (size_t i = 0; i < m; i++) {
-        ws->qk_mN_sc[i] = quantize_x_for_q4k(x + i * d_model,
-                                             d_model,
+        ws->qk_mN_sc[i] = quantize_x_for_q4k(d_model,
+                                             x + i * d_model,
                                              ws->qk_mN_xq + i * d_model,
                                              ws->qk_mN_sum32 + i * (d_model / 32));
     }
@@ -201,7 +201,7 @@ static size_t ffn_tile_blocks(void) {
 
         for (size_t i = 0; i < m; i++) {
             ws->ffn_mid_sc[i] = quantize_x_int8_sym(
-                    ws->ffn_mid + i * tile_n, tile_n, ws->ffn_mid_q8 + i * tile_n);
+                    tile_n, ws->ffn_mid + i * tile_n, ws->ffn_mid_q8 + i * tile_n);
         }
 
         linear_q6k_w6a8_prefill_pre_accum_blocks(
