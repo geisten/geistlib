@@ -41,6 +41,71 @@ static inline void apply_gain(size_t seq, const struct geist_weight *w, float *y
 #define apply_gain(seq, w, y) ((void) 0)
 #endif
 
+#if defined(GEIST_PROFILE_WEIGHT_PATHS)
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+static _Atomic uint64_t g_weight_path_m1[GEIST_DTYPE_CUSTOM + 1];
+static _Atomic uint64_t g_weight_path_mN[GEIST_DTYPE_CUSTOM + 1];
+static pthread_once_t   g_weight_path_once = PTHREAD_ONCE_INIT;
+
+static const char *weight_path_dtype_name(enum geist_dtype dtype) {
+    static const char *const names[GEIST_DTYPE_CUSTOM + 1] = {
+            [GEIST_DTYPE_F32] = "f32",         [GEIST_DTYPE_F16] = "f16",
+            [GEIST_DTYPE_BF16] = "bf16",       [GEIST_DTYPE_I8] = "i8",
+            [GEIST_DTYPE_U8] = "u8",           [GEIST_DTYPE_Q4_0] = "q4_0",
+            [GEIST_DTYPE_Q4_1] = "q4_1",       [GEIST_DTYPE_Q8_0] = "q8_0",
+            [GEIST_DTYPE_Q3_K] = "q3_K",       [GEIST_DTYPE_Q4_K] = "q4_K",
+            [GEIST_DTYPE_Q5_K] = "q5_K",       [GEIST_DTYPE_Q6_K] = "q6_K",
+            [GEIST_DTYPE_IQ2_S] = "iq2_s",     [GEIST_DTYPE_IQ3_S] = "iq3_s",
+            [GEIST_DTYPE_TQ1_0] = "tq1_0",     [GEIST_DTYPE_TQ2_0] = "tq2_0",
+            [GEIST_DTYPE_I2_S] = "i2_s",       [GEIST_DTYPE_IQ4_NL] = "iq4_nl",
+            [GEIST_DTYPE_IQ4_XS] = "iq4_xs",   [GEIST_DTYPE_BINARY] = "binary",
+            [GEIST_DTYPE_TERNARY] = "ternary", [GEIST_DTYPE_CUSTOM] = "custom",
+    };
+    return names[dtype] != nullptr ? names[dtype] : "unknown";
+}
+
+static void weight_path_report(void) {
+    fputs("[weight-paths] {", stderr);
+    for (enum geist_dtype dtype = GEIST_DTYPE_F32; dtype <= GEIST_DTYPE_CUSTOM; dtype++) {
+        const char *separator = dtype == GEIST_DTYPE_F32 ? "" : ",";
+        fprintf(stderr,
+                "%s\"%s\":{\"m1\":%llu,\"mN\":%llu}",
+                separator,
+                weight_path_dtype_name(dtype),
+                (unsigned long long) atomic_load_explicit(&g_weight_path_m1[dtype],
+                                                          memory_order_relaxed),
+                (unsigned long long) atomic_load_explicit(&g_weight_path_mN[dtype],
+                                                          memory_order_relaxed));
+    }
+    fputs("}\n", stderr);
+}
+
+static void weight_path_init(void) {
+    (void) atexit(weight_path_report);
+}
+
+static void weight_path_record(const struct geist_weight *w, bool multi_row) {
+    if (w == nullptr || w->dtype < GEIST_DTYPE_F32 || w->dtype > GEIST_DTYPE_CUSTOM) {
+        return;
+    }
+    (void) pthread_once(&g_weight_path_once, weight_path_init);
+    _Atomic uint64_t *counter =
+            multi_row ? &g_weight_path_mN[w->dtype] : &g_weight_path_m1[w->dtype];
+    (void) atomic_fetch_add_explicit(counter, 1, memory_order_relaxed);
+}
+
+#else
+static inline void weight_path_record(const struct geist_weight *w, bool multi_row) {
+    (void) w;
+    (void) multi_row;
+}
+#endif
+
 enum geist_status linear_w_or_legacy(struct geist_backend            *be,
                                      const struct geist_backend_vtbl *v,
                                      struct geist_buffer             *x_buf,
@@ -84,8 +149,10 @@ enum geist_status linear_w_or_legacy(struct geist_backend            *be,
      * Engine guarantees `be->state` is valid for the lifetime of this
      * call — see the resolver fail-fast check at cpu_neon_resolve_weight. */
     if (seq == 1) {
+        weight_path_record(w, false);
         w->linear_m1(xp, w, be, yp);
     } else {
+        weight_path_record(w, true);
         w->linear_mN(seq, xp, w, be, yp);
     }
     apply_gain(seq, w, yp);
@@ -167,16 +234,24 @@ enum geist_status linear_w_pair_or_legacy(struct geist_backend            *be,
     if (seq == 1) {
         if (w0->linear_pair_m1 != nullptr && w0->linear_pair_m1 == w1->linear_pair_m1 &&
             w0->n_in == w1->n_in) {
+            weight_path_record(w0, false);
+            weight_path_record(w1, false);
             w0->linear_pair_m1(xp, w0, w1, be, y0p, y1p);
         } else {
+            weight_path_record(w0, false);
+            weight_path_record(w1, false);
             w0->linear_m1(xp, w0, be, y0p);
             w1->linear_m1(xp, w1, be, y1p);
         }
     } else {
         if (w0->linear_pair_mN != nullptr && w0->linear_pair_mN == w1->linear_pair_mN &&
             w0->n_in == w1->n_in) {
+            weight_path_record(w0, true);
+            weight_path_record(w1, true);
             w0->linear_pair_mN(seq, xp, w0, w1, be, y0p, y1p);
         } else {
+            weight_path_record(w0, true);
+            weight_path_record(w1, true);
             w0->linear_mN(seq, xp, w0, be, y0p);
             w1->linear_mN(seq, xp, w1, be, y1p);
         }
@@ -266,17 +341,28 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
     if (seq == 1) {
         if (w0->linear_pair_m1 != nullptr && w0->linear_pair_m1 == w1->linear_pair_m1 &&
             w0->n_in == w1->n_in) {
+            weight_path_record(w0, false);
+            weight_path_record(w1, false);
             w0->linear_pair_m1(xp, w0, w1, be, y0p, y1p);
         } else {
+            weight_path_record(w0, false);
+            weight_path_record(w1, false);
             w0->linear_m1(xp, w0, be, y0p);
             w1->linear_m1(xp, w1, be, y1p);
         }
+        weight_path_record(w2, false);
         w2->linear_m1(xp, w2, be, y2p);
     } else if (w1->linear_pair_mN != nullptr && w1->linear_pair_mN == w2->linear_pair_mN &&
                w1->n_in == w2->n_in) {
+        weight_path_record(w0, true);
+        weight_path_record(w1, true);
+        weight_path_record(w2, true);
         w0->linear_mN(seq, xp, w0, be, y0p);
         w1->linear_pair_mN(seq, xp, w1, w2, be, y1p, y2p);
     } else {
+        weight_path_record(w0, true);
+        weight_path_record(w1, true);
+        weight_path_record(w2, true);
         w0->linear_mN(seq, xp, w0, be, y0p);
         w1->linear_mN(seq, xp, w1, be, y1p);
         w2->linear_mN(seq, xp, w2, be, y2p);

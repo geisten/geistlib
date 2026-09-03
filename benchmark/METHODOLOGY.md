@@ -8,16 +8,30 @@ Apple M1 Max comparison + auto-recorded results and
 
 ```sh
 make fetch-model                         # Gemma 4 E2B-it Q4_K_M, ~3.1 GB
-OMP_WAIT_POLICY=active make bench-small   # best-of-2, records to benchmark/results/APPLE.md
-OMP_WAIT_POLICY=active make bench-detailed # best-of-5
+OMP_WAIT_POLICY=active make bench-small    # pp128/tg32, warmup 8, mean of 3
+OMP_WAIT_POLICY=active make bench-detailed # pp512/tg64, warmup 64, mean of 10
 BENCH_THREADS=6 OMP_WAIT_POLICY=active make bench-detailed  # pin thread count
 ```
 
 These run `bench_perf_sweep` (warm-up, then N measured repeats) via
 `tools/bench_quality_perf.py`, which records a tagged row per
 (model, host, os, target/mode, threads), keeping the best decode run. The row
-carries mean throughput, the run-to-run spread, and a derived TTFT; the raw
-JSONL record is written next to it.
+carries mean throughput, the run-to-run spread, and a derived TTFT. The exact
+constants come from `benchmark/apple_cpu_protocol.json`; both this document and
+the driver refer to that source. The timestamped raw JSONL retains every ordered
+sample plus full commit/model/binary hashes, compiler, linked libraries,
+environment and diagnostics.
+
+For a performance-relevant revision, do not compare two back-to-back summary
+rows. `tools/bench_mac_ab.py` rotates variant order across three cycles, waits
+for the load/cooldown gate before every run, evaluates sequences
+128/256/512/1024 and reports median plus median absolute deviation. See
+[`results/APPLE.md`](results/APPLE.md#methodology) for the exact command and
+guard band. It records the `pmset` thermal/power state before and after each
+measurement, and marks interrupted artifacts as partial.
+An interrupted campaign can be continued with `--resume` only when its model,
+protocol, environment, baseline, binary hashes and rotated run prefix still
+match exactly.
 
 Raw timing probes for individual subsystems:
 
@@ -167,7 +181,7 @@ python3 benchmark/chart_headline.py     # -> assets/headline_benchmarks.svg
 `headline_results.json` is curated input, not raw output: each row names its
 baseline engine and pinned version, and sub-parity rows are kept on purpose.
 
-## Methodology — and why the two machines use different aggregation
+## Historical cross-engine aggregation
 
 Both machines run the **same model and quantization**, both engines CPU-only, each
 at its best thread count, after a **discarded warm-up run** (the runtime pages
@@ -181,13 +195,19 @@ cold-start). llama.cpp build `d05fe1d`.
   limit in under a minute, so benchmarking one engine right after the other
   throttles the second (this is exactly what understated llama's pp128 to 22 t/s
   in an earlier revision — cool, it is ~37).
-- **Apple M1 Max — `best of 10`.** A developer workstation that *cannot* be
+- **Apple M1 Max historical llama.cpp comparison — `best of 10`.** A developer workstation that *cannot* be
   quiesced while in use (WindowServer, browser, IDE all contend for the P-cores).
   On a contended box the **mean** is dominated by interference spikes (±20 %
   run-to-run), so we report the **best** of 10 repeats — the least-interrupted run,
   which approximates the uncontended ceiling and is stable across independent
   campaigns. Both engines use best-of here, so the comparison stays
   apples-to-apples.
+
+That paragraph describes the frozen June cross-engine table only. Current
+`small`/`detailed` rows retain and report the mean of their ordered repeats;
+revision comparisons use three quiet-gated, order-rotated cycles and report
+median plus median absolute deviation. Aggregation is never selected after
+looking at the result.
 
 **Always measure on a quiesced box.** On the 4-core Pi a single stray process
 eating one core inverts the 4-thread numbers. Reproduce with `bench_perf_sweep`

@@ -36,25 +36,34 @@ Environment:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+APPLE_PROTOCOL_PATH = ROOT / "benchmark" / "apple_cpu_protocol.json"
+
 PERF_SUITES = {"small", "detailed"}
 QUALITY_SUITES = {"quality-small", "quality-detailed", "compare-ref"}
 
-# Workload per perf suite: (seq_len, decode_n, warmup, repeats). `small` is a
-# quick check, `detailed` spends more repeats to shrink the spread. The sweep
-# discards the warm-up run, so weights are resident and the OMP pool is up
-# before the first measured repeat.
+# Machine-readable source of truth shared with APPLE.md and the interleaved A/B
+# runner. Changing it is a protocol migration and must update recorded baselines.
+_APPLE_PROTOCOL = json.loads(APPLE_PROTOCOL_PATH.read_text())
 SWEEP_WORKLOAD = {
-    "small":    {"seq_len": 128, "decode_n": 32, "warmup": 8,  "repeats": 3},
-    "detailed": {"seq_len": 512, "decode_n": 64, "warmup": 64, "repeats": 10},
+    name: {
+        "seq_len": config["seq_lens"][0],
+        "decode_n": config["decode_n"],
+        "warmup": config["warmup"],
+        "repeats": config["repeats"],
+    }
+    for name, config in _APPLE_PROTOCOL["suites"].items()
 }
 
 def host_id() -> str:
@@ -74,8 +83,8 @@ def resolve_gguf() -> str | None:
 
 
 def run_sweep(bin_dir: Path, gguf: str, threads: str | None,
-              workload: dict[str, int]) -> dict:
-    """Run bench_perf_sweep once and return its JSONL record.
+              workload: dict[str, int]) -> tuple[dict, str]:
+    """Run bench_perf_sweep once and return its JSONL record plus diagnostics.
 
     The sweep already performs warm-up, repeats and mean/best/worst
     aggregation, and states them in the record (`agg`, `repeats`, `warmup`).
@@ -110,11 +119,56 @@ def run_sweep(bin_dir: Path, gguf: str, threads: str | None,
         line = line.strip()
         if line.startswith("{"):
             try:
-                return json.loads(line)
+                return json.loads(line), proc.stderr
             except json.JSONDecodeError:
                 break
     sys.stderr.write(out)
     sys.exit("bench: bench_perf_sweep produced no JSONL record")
+
+
+def hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def command_output(command: list[str]) -> str:
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    if proc.returncode != 0:
+        return "unavailable"
+    return proc.stdout.strip() or "unavailable"
+
+
+def benchmark_metadata(exe: Path, gguf: Path, workload: dict[str, int],
+                       threads: str | None, diagnostics: str) -> dict:
+    compiler = shlex.split(os.environ.get("CC", "clang"))
+    linker_probe = ["otool", "-L", str(exe)] if sys.platform == "darwin" else ["ldd", str(exe)]
+    return {
+        "schema": "geist.benchmark.raw.v1",
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "geist_commit": command_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
+        "model_path": str(gguf.resolve()),
+        "model_sha256": hash_file(gguf),
+        "binary_path": str(exe.resolve()),
+        "binary_sha256": hash_file(exe),
+        "compiler": command_output(compiler + ["--version"]).splitlines()[0],
+        "linked_libraries": command_output(linker_probe).splitlines(),
+        "host": host_id(),
+        "os": os_id(),
+        "protocol": {**workload, "aggregation": "mean"},
+        "environment": {
+            key: os.environ.get(key, "")
+            for key in ("OMP_NUM_THREADS", "OMP_WAIT_POLICY", "KMP_BLOCKTIME",
+                        "GEIST_PREFILL_THREADS", "GEIST_DECODE_THREADS")
+        },
+        "threads": threads or "default",
+        "diagnostics": diagnostics.splitlines(),
+    }
 
 
 def spread_pct(rec: dict) -> float:
@@ -156,24 +210,31 @@ def perf_suite(args: argparse.Namespace) -> None:
     print(f"  workload: seq_len={workload['seq_len']} decode_n={workload['decode_n']} "
           f"warmup={workload['warmup']} repeats={workload['repeats']}")
 
-    rec = run_sweep(Path(args.bin_dir), gguf, threads, workload)
+    bin_dir = Path(args.bin_dir)
+    exe = bin_dir / "bench_perf_sweep"
+    rec, diagnostics = run_sweep(bin_dir, gguf, threads, workload)
     spread = spread_pct(rec)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     # Keep the raw record next to the table row — the table is a summary, the
     # JSONL is the evidence (rss, per-phase best/worst, protocol fields).
-    raw = out_dir / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}_{args.target}_{args.suite}.jsonl"
-    raw.write_text(json.dumps(rec) + "\n")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    raw = out_dir / f"{timestamp}_{args.target}_{args.suite}.jsonl"
+    metadata = benchmark_metadata(exe, Path(gguf), workload, threads, diagnostics)
+    raw.write_text(json.dumps({"metadata": metadata, "measurement": rec}, sort_keys=True) + "\n")
 
     row = {
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "suite": args.suite,
         "model": Path(gguf).name,
         "host": host_id(),
         "os": os_id(),
         "target": args.target,
         "mode": args.mode,
         "threads": threads or "default",
+        "commit": metadata["geist_commit"][:12],
+        "model_sha": metadata["model_sha256"][:12],
         "prefill": f"{rec['prefill_tps']:.1f}",
         "decode": f"{rec['decode_tps']:.1f}",
         "ttft": f"{ttft_ms(rec):.0f}",
@@ -218,11 +279,13 @@ def _split_at_marker(text: str) -> tuple[str, str | None]:
 # Column layout of the auto-recorded table — one source of truth for both the
 # header and every positional access below (no magic indices elsewhere).
 COLUMNS = ["Date", "Model", "Host", "OS", "Target/Mode", "Threads",
-           "Prefill tok/s", "Decode tok/s", "Spread", "TTFT ms"]
+           "Prefill tok/s", "Decode tok/s", "Spread", "TTFT ms", "Commit", "Model SHA256",
+           "Suite"]
 (COL_DATE, COL_MODEL, COL_HOST, COL_OS, COL_TARGET_MODE,
- COL_THREADS, COL_PREFILL, COL_DECODE, COL_SPREAD, COL_TTFT) = range(len(COLUMNS))
+ COL_THREADS, COL_PREFILL, COL_DECODE, COL_SPREAD, COL_TTFT,
+ COL_COMMIT, COL_MODEL_SHA, COL_SUITE) = range(len(COLUMNS))
 # Columns identifying a unique config (date + tok/s excluded).
-KEY_COLS = (COL_MODEL, COL_HOST, COL_OS, COL_TARGET_MODE, COL_THREADS)
+KEY_COLS = (COL_MODEL, COL_HOST, COL_OS, COL_TARGET_MODE, COL_THREADS, COL_SUITE)
 
 TABLE_HEADER = (
     "| " + " | ".join(COLUMNS) + " |\n"
@@ -239,7 +302,8 @@ def update_benchmark_md(path: Path, row: dict) -> None:
     """Insert/replace this run's row, keeping the best decode tok/s per key."""
     new_cells = [row["date"], row["model"], row["host"], row["os"],
                  f"{row['target']}/{row['mode']}", row["threads"],
-                 row["prefill"], row["decode"], row["spread"], row["ttft"]]
+                 row["prefill"], row["decode"], row["spread"], row["ttft"],
+                 row["commit"], row["model_sha"], row["suite"]]
 
     existing: dict[tuple, list[str]] = {}
     preamble = ""
@@ -274,7 +338,7 @@ def update_benchmark_md(path: Path, row: dict) -> None:
     if not preamble:
         preamble = ("# geist Benchmarks (auto-recorded)\n\n"
                     "Rows below are appended by `make bench-small` / `bench-detailed`. "
-                    "Each (model, host, os, target/mode, threads) key keeps its best "
+                    "Each (model, host, os, target/mode, threads, suite) key keeps its best "
                     "decode run. See [../METHODOLOGY.md](../METHODOLOGY.md) for methodology.\n\n")
 
     rows = sorted(existing.values(),
