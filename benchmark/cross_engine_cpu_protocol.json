@@ -36,12 +36,23 @@
       "decode_threads": 15,
       "expect_backend": "cpu_x86",
       "note": "16 physical cores, SMT siblings excluded. Measured, not assumed: benchmark/results/THREAD-SWEEP-AMD9950X.md sweeps 4-32 threads and finds the joint optimum at 16 for both engines, with llama.cpp prefill collapsing ~6x under SMT. Decode uses 15 by the core-minus-one rule; that specific value sits on the 12-16 plateau but was not measured on its own."
+    },
+    "pi5": {
+      "prefill_threads": 4,
+      "decode_threads": 3,
+      "expect_backend": "cpu_neon",
+      "note": "4x Cortex-A76, 4 GB reference board; decode leaves one core to the OS (same rule as apple_m1max). Thermals: active-cooling assumption; runner host gate handles load/settle."
     }
   },
   "host_gate": {
     "max_load_per_core": 0.2,
     "settle_seconds": 30,
     "cooldown_seconds": 60,
-    "timeout_seconds": 14400
+    "timeout_seconds": 14400,
+    "temp_gate": {
+      "sensor": "/sys/class/thermal/thermal_zone0/temp",
+      "max_millic": 62000,
+      "note": "passively cooled hosts (pi5) throttle at ~80C; measurements start below 62C so a full phase stays under throttle. Hosts without the sensor path skip this gate."
+    }
   }
 }
