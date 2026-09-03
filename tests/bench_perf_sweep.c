@@ -32,10 +32,10 @@
  *   --emit-jsonl               accepted alias; output is JSONL by default.
  *
  * Output: one JSON object per line on stdout, e.g.
- *   {"samples":{"prefill_ms":[...],"decode_ms":[...]},
- *    "seq_len":256,"decode_n":64,"prefill_ms":1234.5,"decode_ms":890.1,
+ *   {"seq_len":256,"decode_n":64,"prefill_ms":1234.5,"decode_ms":890.1,
  *    "total_ms":2124.6,"prefill_tps":207.4,"decode_tps":71.9,
- *    "total_tps":150.6,"rss_mb":4321.2,"threads":4}
+ *    "total_tps":150.6,"rss_mb":4321.2,"threads":4,
+ *    "samples":{"prefill_ms":[...],"decode_ms":[...],"total_ms":[...]}}
  *
  * Bench-only; not a correctness test. Exits 77 (SKIP) if no GGUF found.
  */
@@ -47,6 +47,9 @@
 #include <geist_util.h>
 #include <geist_backend.h>
 
+#include <limits.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,40 +86,66 @@ static double monotonic_ms(void) {
     return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
 }
 
-static void parse_csv_ints(const char *csv, int *out, int max, int *n_out) {
-    int         n = 0;
+[[nodiscard]] static size_t
+parse_csv_ints(size_t out_cap, int out[static out_cap], const char *csv) {
+    size_t      n = 0;
     const char *p = csv;
-    while (*p && n < max) {
+    while (*p && n < out_cap) {
         char *end;
         long  v = strtol(p, &end, 10);
-        if (end == p)
+        if (end == p || v <= 0 || v > INT_MAX)
             break;
         out[n++] = (int) v;
         p        = end;
         if (*p == ',')
             p++;
     }
-    *n_out = n;
+    return n;
 }
 
-static int cmp_double(const void *a, const void *b) {
-    const double da = *(const double *) a;
-    const double db = *(const double *) b;
-    return (da > db) - (da < db);
+[[nodiscard]] static bool parse_nonnegative_int(const char *text, int *out) {
+    char *end = nullptr;
+    long  v   = strtol(text, &end, 10);
+    if (end == text || *end != '\0' || v < 0 || v > INT_MAX) {
+        return false;
+    }
+    *out = (int) v;
+    return true;
 }
 
-static double mean_of(const double *v, int n) {
-    if (n <= 0)
+[[nodiscard]] static double mean_of(size_t n, const double v[static n]) {
+    if (n == 0)
         return 0.0;
     double sum = 0.0;
-    for (int i = 0; i < n; i++)
+    for (size_t i = 0; i < n; i++)
         sum += v[i];
     return sum / (double) n;
 }
 
+static void extrema_of(size_t n, const double v[static n], double *min_out, double *max_out) {
+    double min_v = v[0];
+    double max_v = v[0];
+    for (size_t i = 1; i < n; i++) {
+        if (v[i] < min_v)
+            min_v = v[i];
+        if (v[i] > max_v)
+            max_v = v[i];
+    }
+    *min_out = min_v;
+    *max_out = max_v;
+}
+
+static void print_json_samples(size_t n, const double samples[static n]) {
+    putchar('[');
+    for (size_t i = 0; i < n; i++) {
+        printf(i == 0 ? "%.3f" : ",%.3f", samples[i]);
+    }
+    putchar(']');
+}
+
 int main(int argc, char **argv) {
     int         seq_lens[16];
-    int         n_seq_lens  = 0;
+    size_t      n_seq_lens  = 0;
     int         decode_n    = 64;
     int         warmup      = 64;
     int         repeats     = 10;
@@ -128,23 +157,29 @@ int main(int argc, char **argv) {
     const char *gguf_arg    = nullptr;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--seq-lens") == 0 && i + 1 < argc) {
-            parse_csv_ints(argv[++i], seq_lens, 16, &n_seq_lens);
+            n_seq_lens = parse_csv_ints(16, seq_lens, argv[++i]);
         } else if (strcmp(argv[i], "--decode-n") == 0 && i + 1 < argc) {
-            decode_n = atoi(argv[++i]);
+            if (!parse_nonnegative_int(argv[++i], &decode_n))
+                return GEIST_TEST_ERROR;
         } else if (strcmp(argv[i], "--warmup") == 0 && i + 1 < argc) {
-            warmup = atoi(argv[++i]);
+            if (!parse_nonnegative_int(argv[++i], &warmup))
+                return GEIST_TEST_ERROR;
         } else if (strcmp(argv[i], "--repeats") == 0 && i + 1 < argc) {
-            repeats = atoi(argv[++i]);
+            if (!parse_nonnegative_int(argv[++i], &repeats))
+                return GEIST_TEST_ERROR;
         } else if (strcmp(argv[i], "--m-max") == 0 && i + 1 < argc) {
-            m_max = atoi(argv[++i]);
+            if (!parse_nonnegative_int(argv[++i], &m_max))
+                return GEIST_TEST_ERROR;
         } else if (strcmp(argv[i], "--temperature") == 0 && i + 1 < argc) {
             temperature = (float) atof(argv[++i]);
         } else if (strcmp(argv[i], "--top-k") == 0 && i + 1 < argc) {
             top_k = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--vocab") == 0 && i + 1 < argc) {
-            vocab_cap = atoi(argv[++i]);
+            if (!parse_nonnegative_int(argv[++i], &vocab_cap) || vocab_cap < 2)
+                return GEIST_TEST_ERROR;
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
-            threads = atoi(argv[++i]);
+            if (!parse_nonnegative_int(argv[++i], &threads))
+                return GEIST_TEST_ERROR;
         } else if (strcmp(argv[i], "--gguf") == 0 && i + 1 < argc) {
             gguf_arg = argv[++i];
         } else if (strcmp(argv[i], "--emit-jsonl") == 0) {
@@ -201,13 +236,33 @@ int main(int argc, char **argv) {
 
     /* Find the maximum seq_len in the sweep so we size the session right. */
     int max_seq = 0;
-    for (int i = 0; i < n_seq_lens; i++) {
+    for (size_t i = 0; i < n_seq_lens; i++) {
         if (seq_lens[i] > max_seq)
             max_seq = seq_lens[i];
     }
-    const int                 session_seq = max_seq + decode_n + warmup + 32;
-    struct geist_session_opts opts        = {
-            .max_seq_len = (size_t) session_seq,
+    size_t session_seq = (size_t) max_seq;
+    if ((size_t) decode_n > SIZE_MAX - session_seq) {
+        fprintf(stderr, "requested session length overflows size_t\n");
+        geist_model_destroy(model);
+        geist_backend_destroy(be);
+        return GEIST_TEST_ERROR;
+    }
+    session_seq += (size_t) decode_n;
+    if ((size_t) warmup > SIZE_MAX - session_seq || 32 > SIZE_MAX - session_seq - (size_t) warmup) {
+        fprintf(stderr, "requested session length overflows size_t\n");
+        geist_model_destroy(model);
+        geist_backend_destroy(be);
+        return GEIST_TEST_ERROR;
+    }
+    session_seq += (size_t) warmup + 32;
+    if (session_seq > INT_MAX) {
+        fprintf(stderr, "requested session length is too large\n");
+        geist_model_destroy(model);
+        geist_backend_destroy(be);
+        return GEIST_TEST_ERROR;
+    }
+    struct geist_session_opts opts = {
+            .max_seq_len = session_seq,
             .temperature = temperature,
             .top_k       = top_k,
             .random_seed = 20260830u, /* fixed: same token stream every run */
@@ -224,7 +279,21 @@ int main(int argc, char **argv) {
 
     /* Pre-generate token buffer for the largest prefill. Pseudo-random in
      * [1, vocab_cap) — avoid token 0 (often <pad> / <unk>). */
+    if ((size_t) max_seq > SIZE_MAX / sizeof(geist_token_t)) {
+        fprintf(stderr, "token buffer size overflow\n");
+        geist_session_destroy(sess);
+        geist_model_destroy(model);
+        geist_backend_destroy(be);
+        return GEIST_TEST_ERROR;
+    }
     geist_token_t *ids = (geist_token_t *) malloc((size_t) max_seq * sizeof(*ids));
+    if (ids == nullptr) {
+        fprintf(stderr, "token buffer allocation failed\n");
+        geist_session_destroy(sess);
+        geist_model_destroy(model);
+        geist_backend_destroy(be);
+        return GEIST_TEST_ERROR;
+    }
     for (int i = 0; i < max_seq; i++) {
         ids[i] = 1 + (geist_token_t) ((i * 2654435761u) % (unsigned) (vocab_cap - 1));
     }
@@ -250,20 +319,27 @@ int main(int argc, char **argv) {
             "(with best/worst)\n",
             repeats);
 
-    for (int idx = 0; idx < n_seq_lens; idx++) {
-        const int n_p            = seq_lens[idx];
-        double   *prefill_ms     = (double *) malloc((size_t) repeats * sizeof(*prefill_ms));
-        double   *decode_ms      = (double *) malloc((size_t) repeats * sizeof(*decode_ms));
+    bool failed = false;
+    for (size_t idx = 0; idx < n_seq_lens; idx++) {
+        const int n_p = seq_lens[idx];
+        if ((size_t) repeats > SIZE_MAX / sizeof(double)) {
+            fprintf(stderr, "sample buffer size overflow\n");
+            failed = true;
+            break;
+        }
+        double *prefill_ms       = (double *) malloc((size_t) repeats * sizeof(*prefill_ms));
+        double *decode_ms        = (double *) malloc((size_t) repeats * sizeof(*decode_ms));
         double *total_ms_repeats = (double *) malloc((size_t) repeats * sizeof(*total_ms_repeats));
         if (prefill_ms == nullptr || decode_ms == nullptr || total_ms_repeats == nullptr) {
             free(prefill_ms);
             free(decode_ms);
             free(total_ms_repeats);
             fprintf(stderr, "alloc failed for repeats=%d\n", repeats);
+            failed = true;
             break;
         }
 
-        int measured = 0;
+        size_t measured = 0;
         for (int r = 0; r < repeats; r++) {
             s = geist_session_reset(sess);
             if (s != GEIST_OK) {
@@ -286,9 +362,20 @@ int main(int argc, char **argv) {
             const double  t1  = monotonic_ms();
             geist_token_t out = 0;
             for (int j = 0; j < decode_n; j++) {
-                (void) geist_session_decode_step(sess, &out);
+                s = geist_session_decode_step(sess, &out);
+                if (s != GEIST_OK) {
+                    fprintf(stderr,
+                            "decode failed at seq_len=%d repeat=%d step=%d (status %d)\n",
+                            n_p,
+                            r,
+                            j,
+                            (int) s);
+                    break;
+                }
             }
             const double t_decode = monotonic_ms() - t1;
+            if (s != GEIST_OK)
+                continue;
 
             prefill_ms[measured]       = t_prefill;
             decode_ms[measured]        = t_decode;
@@ -300,59 +387,42 @@ int main(int argc, char **argv) {
             free(prefill_ms);
             free(decode_ms);
             free(total_ms_repeats);
+            failed = true;
             continue;
         }
 
-        /* Ordered samples first: the qsort below destroys the draw order, and
-         * a cross-engine protocol that aggregates medians has to re-derive its
-         * own statistic from every sample, not from a summary this binary
-         * chose. tools/bench_cross_engine.py rejects a row without them. */
-        printf("{\"samples\":{\"prefill_ms\":[");
-        for (int r = 0; r < measured; r++) {
-            if (r > 0) {
-                putchar(',');
-            }
-            printf("%.2f", prefill_ms[r]);
-        }
-        printf("],\"decode_ms\":[");
-        for (int r = 0; r < measured; r++) {
-            if (r > 0) {
-                putchar(',');
-            }
-            printf("%.2f", decode_ms[r]);
-        }
-        printf("]},");
+        /* Core metric is the MEAN over the measured repeats. Preserve sample
+         * order in JSONL; interleaved A/B tooling needs the raw chronology,
+         * not only aggregates or sorted values. */
+        const double t_prefill = mean_of(measured, prefill_ms);
+        const double t_decode  = mean_of(measured, decode_ms);
 
-        /* Core metric is the MEAN over the measured repeats; sort only to pull
-         * best (fastest) / worst (slowest) for the spread. */
-        const double t_prefill = mean_of(prefill_ms, measured);
-        const double t_decode  = mean_of(decode_ms, measured);
-        qsort(prefill_ms, (size_t) measured, sizeof(*prefill_ms), cmp_double);
-        qsort(decode_ms, (size_t) measured, sizeof(*decode_ms), cmp_double);
-        qsort(total_ms_repeats, (size_t) measured, sizeof(*total_ms_repeats), cmp_double);
-
-        const double pre_tps         = (double) n_p * 1000.0 / t_prefill;
-        const double dec_tps         = (double) decode_n * 1000.0 / t_decode;
-        const double total_ms        = t_prefill + t_decode;
-        const double total_tps       = (double) (n_p + decode_n) * 1000.0 / total_ms;
-        const double pre_best        = prefill_ms[0];
-        const double pre_worst       = prefill_ms[measured - 1];
-        const double dec_best        = decode_ms[0];
-        const double dec_worst       = decode_ms[measured - 1];
-        const double total_best      = total_ms_repeats[0];
-        const double total_worst     = total_ms_repeats[measured - 1];
+        const double pre_tps   = (double) n_p * 1000.0 / t_prefill;
+        const double dec_tps   = decode_n > 0 ? (double) decode_n * 1000.0 / t_decode : 0.0;
+        const double total_ms  = t_prefill + t_decode;
+        const double total_tps = (double) (n_p + decode_n) * 1000.0 / total_ms;
+        double       pre_best;
+        double       pre_worst;
+        double       dec_best;
+        double       dec_worst;
+        double       total_best;
+        double       total_worst;
+        extrema_of(measured, prefill_ms, &pre_best, &pre_worst);
+        extrema_of(measured, decode_ms, &dec_best, &dec_worst);
+        extrema_of(measured, total_ms_repeats, &total_best, &total_worst);
         const double total_tps_best  = (double) (n_p + decode_n) * 1000.0 / total_best;
         const double total_tps_worst = (double) (n_p + decode_n) * 1000.0 / total_worst;
 
-        printf("\"seq_len\":%d,\"decode_n\":%d,"
+        printf("{\"seq_len\":%d,\"decode_n\":%d,"
                "\"prefill_ms\":%.2f,\"decode_ms\":%.2f,\"total_ms\":%.2f,"
                "\"prefill_tps\":%.3f,\"decode_tps\":%.3f,\"total_tps\":%.3f,"
                "\"prefill_ms_best\":%.2f,\"prefill_ms_worst\":%.2f,"
                "\"decode_ms_best\":%.2f,\"decode_ms_worst\":%.2f,"
                "\"total_ms_best\":%.2f,\"total_ms_worst\":%.2f,"
                "\"total_tps_best\":%.3f,\"total_tps_worst\":%.3f,"
-               "\"agg\":\"mean\",\"repeats\":%d,\"warmup\":%d,"
-               "\"rss_mb\":%.2f,\"threads\":%d}\n",
+               "\"agg\":\"mean\",\"repeats\":%zu,\"repeats_requested\":%d,"
+               "\"warmup\":%d,\"rss_mb\":%.2f,\"threads\":%d,\"samples\":{"
+               "\"prefill_ms\":",
                n_p,
                decode_n,
                t_prefill,
@@ -370,9 +440,16 @@ int main(int argc, char **argv) {
                total_tps_best,
                total_tps_worst,
                measured,
+               repeats,
                warmup_n,
                process_rss_mb(),
                threads);
+        print_json_samples(measured, prefill_ms);
+        printf(",\"decode_ms\":");
+        print_json_samples(measured, decode_ms);
+        printf(",\"total_ms\":");
+        print_json_samples(measured, total_ms_repeats);
+        printf("}}\n");
         fflush(stdout);
         free(prefill_ms);
         free(decode_ms);
@@ -383,5 +460,5 @@ int main(int argc, char **argv) {
     geist_session_destroy(sess);
     geist_model_destroy(model);
     geist_backend_destroy(be);
-    return GEIST_TEST_PASS;
+    return failed ? GEIST_TEST_ERROR : GEIST_TEST_PASS;
 }

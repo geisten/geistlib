@@ -14,10 +14,10 @@ runs.
 
 ## Methodology
 
-Perf is measured by the `bench_perf_sweep` binary (built by `make bench`),
-driven through `tools/bench_quality_perf.py`. The sweep owns the protocol —
-warm-up, repeats, and the mean/best/worst aggregation — and emits it as JSONL,
-so every recorded row carries its own provenance:
+Perf is measured by `bench_perf_sweep`, driven through
+`tools/bench_quality_perf.py`. The machine-readable source of truth is
+[`benchmark/apple_cpu_protocol.json`](../apple_cpu_protocol.json); the driver
+loads that file rather than duplicating these constants:
 
 - **Model:** Gemma 4 E2B-it, Q4_K_M (`make fetch-model`).
 - **Workload** — the two suites in `SWEEP_WORKLOAD`
@@ -35,6 +35,20 @@ so every recorded row carries its own provenance:
   headline `*_tps`, and carries `*_best` / `*_worst` in the same record. The
   recorded table below is the mean; the comparison tables further down quote
   the **best**, for the reason in the methodology note.
+
+| suite | prefill sequence | decode | discarded warm-up | measured repeats | aggregation |
+| :-- | --: | --: | --: | --: | :-- |
+| `small` | 128 | 32 | 8 | 3 | mean |
+| `detailed` | 512 | 64 | 64 | 10 | mean |
+
+The model is Gemma 4 E2B-it Q4_K_M (`make fetch-model`), SHA-256
+`740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8`.
+The discarded warm-up pages weights resident and starts the OpenMP pool.
+`bench_perf_sweep` retains every measured sample in execution order, then adds
+mean/best/worst summaries. The wrapper writes a timestamped raw JSONL envelope
+with the full geist commit, model and binary SHA-256, compiler, linked libraries,
+host/OS, thread controls, exact protocol and diagnostics. Runs on the same day
+therefore no longer overwrite one another.
 
 ```sh
 make fetch-model                         # one-time, ~3.1 GB
@@ -61,6 +75,60 @@ measured 2026-08-31 on this M1 Max, three back-to-back runs of one binary at
 Below the P-core count the desktop's own load lands on the cores geist is not
 using *and* on the ones it is, so the spread grows faster than the mean falls.
 A number quoted without its thread count is not comparable to anything.
+
+For code-revision comparisons, use the stricter interleaved protocol:
+
+```sh
+python3 tools/bench_mac_ab.py \
+  --gguf gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
+  --variant parent=/path/to/parent/bench_perf_sweep \
+  --variant candidate=/path/to/candidate/bench_perf_sweep
+```
+
+It runs three order-rotated cycles over sequences 128/256/512/1024, with a
+64-token warm-up, 64 decode tokens and three ordered samples per cycle. Before
+every run it requires 30 continuously quiet seconds below load 0.2/core, then a
+60-second cooldown. Results use the median and median absolute deviation over
+all nine samples; a repeatable regression beyond 5% fails the command. Raw
+JSONL and the Markdown report are written outside the checkout under
+`~/bench-geistlib/apple-ab/`. Every run records `pmset` thermal warnings and
+power source both immediately before and after measurement. Package temperature
+is recorded as unavailable when macOS does not expose it without privilege.
+Interrupted runs retain a `.jsonl.partial` suffix and cannot be mistaken for a
+complete baseline. Resume a long campaign without discarding already accepted
+runs by repeating the identical model and `--variant` arguments and adding
+`--resume /path/to/run.jsonl.partial`; the runner rejects a changed binary hash,
+model, protocol, environment, baseline or non-prefix run order.
+
+To prove which resolved CPU weight paths actually execute, build the opt-in
+profile (the release build compiles the counters out completely):
+
+```sh
+make MODE=perf EXTRA_CFLAGS=-DGEIST_PROFILE_WEIGHT_PATHS \
+  BACKENDS="cpu_neon cpu_scalar" bin/mac-omp/perf/tests/bench_perf_sweep
+bin/mac-omp/perf/tests/bench_perf_sweep --gguf model.gguf \
+  --seq-lens 128 --decode-n 8 --warmup 8 --repeats 1
+```
+
+The once-per-process `[weight-paths]` JSON reports M=1 and M>1 calls for every
+dtype, including explicit zeroes. The scheduled
+[`apple-perf.yml`](../../.github/workflows/apple-perf.yml) job runs the detailed
+suite weekly on Apple hardware, uploads raw provenance and enforces conservative
+60 prefill / 10 decode tok/s floors. Those are cliff guards for scalar fallback,
+`-O0` or lost parallelism; the interleaved local run remains the arbiter for
+single-digit drift.
+
+### Q4_0 regression attribution
+
+An opt-in path-profile run of the pinned Gemma model at pp128/tg8 on commit
+`02cb4fc` counted `q4_K` m1=2186/mN=543, `q6_K` m1=288/mN=72 and F32
+m1=852/mN=213. Every Q4_0 counter was exactly zero. The recent Q4_0 x8 changes
+therefore cannot directly affect this model's linear kernels; only a shared
+runtime/workspace change or host interference could explain a measured delta.
+The profiler is compiled out of release builds: the release `linear.o` before
+and after instrumentation was byte-identical (SHA-256
+`3395ffabdb746e1ab33d58619963a59c6a35b811c0c2b5e447d4acab73a3152c`).
+Throughput from the profiling run is intentionally not used as a baseline.
 
 `OMP_WAIT_POLICY=active` (or `KMP_BLOCKTIME=infinite`) matters on the `mac-omp`
 target — passive wait adds large per-matmul thread-pool wake-up overhead. The
@@ -142,6 +210,11 @@ Same machine, same `gemma4-e2b-Q4_K_M.gguf`, both CPU-only. llama.cpp build
 8-thread prefill pool; llama runs at `-t 8`. Neither engine is given explicit
 CPU-ID affinity. Full prefill sweep 128 → 1024 tokens,
 **best-of** (peak uncontended throughput — see the methodology note below):
+
+This is a frozen historical cross-engine campaign, not output from the current
+`small`/`detailed` suites above. Its explicit best-of-10 aggregation remains
+documented so the numbers are not silently reinterpreted; new revision A/B
+decisions use the interleaved median/MAD protocol.
 
 | seq_len | llama.cpp `-ngl 0`, t=8 | geist (8-thread pool) | winner |
 | ---: | :---: | :---: | :--- |
@@ -294,9 +367,9 @@ the HF tokenizer and datasets and is not part of the hermetic `make` flow.
 
 <!-- BENCH:AUTO -->
 
-| Date | Model | Host | OS | Target/Mode | Threads | Prefill tok/s | Decode tok/s |
-| :--- | :--- | :--- | :--- | :--- | :---: | :---: | :---: |
-| 2026-06-10 | gemma4-e2b-Q4_K_M.gguf | MBP-Germar.local/arm64 | Darwin 25.5.0 | mac-omp/release | default | 77.2 | 10.2 |
+| Date | Model | Host | OS | Target/Mode | Threads | Prefill tok/s | Decode tok/s | Spread | TTFT ms | Commit | Model SHA256 | Suite |
+| :--- | :--- | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 2026-06-10 | gemma4-e2b-Q4_K_M.gguf | MBP-Germar.local/arm64 | Darwin 25.5.0 | mac-omp/release | default | 77.2 | 10.2 | — | — | — | — | — |
 
 ---
 
