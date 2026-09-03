@@ -221,7 +221,7 @@ float *gguf_dequant_to_fp32(const struct gguf_tensor_t *t) {
     return out;
 }
 
-float quantize_x_int8_sym(const float *x, size_t n, int8_t *x_q8) {
+float quantize_x_int8_sym(size_t n, const float x[static n], int8_t x_q8[static n]) {
 #if defined(__ARM_NEON)
     float32x4_t amax_v = vdupq_n_f32(0.0f);
     size_t      i      = 0;

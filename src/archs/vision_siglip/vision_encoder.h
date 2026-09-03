@@ -83,9 +83,9 @@ size_t vision_encoder_run_video(const struct VisionEncoder *,
  * (raw fp32 row-major, same layout as the HF parity dump). Used by the
  * P3 unit test to bisect parity failures. */
 bool vision_encoder_run_tower(const struct VisionEncoder *,
+                              size_t         n_patches,
                               const float   *patches_in,
                               const int32_t *positions,
-                              size_t         n_patches,
                               float         *hidden_out);
 
 #endif

@@ -86,7 +86,7 @@ void linear_q4_0_decode_w4a8_pre(
 void linear_q4_0_decode_w4a8(
         const float *x, const void *w_q4, size_t n_in, size_t n_out, float *y) {
     int8_t *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    float   scale_x = quantize_x_int8_sym(x, n_in, x_q8);
+    float   scale_x = quantize_x_int8_sym(n_in, x, x_q8);
     linear_q4_0_decode_w4a8_pre(x_q8, scale_x, w_q4, n_in, n_out, y);
     safe_free((void **) &x_q8);
 }
@@ -122,7 +122,7 @@ void linear_q4_1_decode_w4a8(
     const size_t nb      = n_in / Q4_1_BLOCK_ELEMS;
     int8_t      *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
     int32_t     *bsum    = heap_alloc_array_aligned(int32_t, nb);
-    float        scale_x = quantize_x_int8_sym(x, n_in, x_q8);
+    float        scale_x = quantize_x_int8_sym(n_in, x, x_q8);
     for (size_t b = 0; b < nb; b++) {
         int32_t s = 0;
         for (size_t j = 0; j < Q4_1_BLOCK_ELEMS; j++)
@@ -299,7 +299,7 @@ void linear_q4_0_decode_w4a8_x8(
         safe_free((void **) &bsum);
         return;
     }
-    const float scale_x = quantize_x_int8_sym(x, n_in, x_q8);
+    const float scale_x = quantize_x_int8_sym(n_in, x, x_q8);
     for (size_t b = 0; b < nb; b++) {
         int32_t s = 0;
         for (size_t j = 0; j < Q4_0_BLOCK_ELEMS; j++)
@@ -449,7 +449,7 @@ void linear_q4_0_w4a8_prefill_x8(
         return;
     }
     for (size_t i = 0; i < m; i++) {
-        scales[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+        scales[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
         for (size_t b = 0; b < nb; b++) {
             int32_t acc = 0;
             for (size_t j = 0; j < Q4_0_BLOCK_ELEMS; j++)
@@ -503,7 +503,7 @@ void linear_q4_0_w4a8_prefill(
         return;
     }
     for (size_t i = 0; i < m; i++)
-        scales[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+        scales[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
     linear_q4_0_w4a8_prefill_pre(x_q8, scales, m, w_q4, n_in, n_out, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &scales);
@@ -554,7 +554,7 @@ void linear_q4_1_w4a8_prefill(
         return;
     }
     for (size_t i = 0; i < m; i++) {
-        scales[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+        scales[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
         for (size_t b = 0; b < nb; b++) {
             int32_t s = 0;
             for (size_t j = 0; j < Q4_1_BLOCK_ELEMS; j++)

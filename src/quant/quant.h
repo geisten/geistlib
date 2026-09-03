@@ -344,7 +344,7 @@ void linear_q6k_decode_fp32(const float *x, const void *w_q6k, size_t n_in, size
  *   x_q8: int8_t[n_in]   — quantized input
  * Returns: scale_x = max|x[i]| / 127 (one float).
  */
-float quantize_x_int8_sym(const float *x, size_t n, int8_t *x_q8);
+float quantize_x_int8_sym(size_t n, const float x[static n], int8_t x_q8[static n]);
 
 /* Q4_0/Q4_1 W8A8 (#281 perf): int8-dot kernels for the 32-element
  * traditional quants; replaces the dequant trampoline for the qwen35
@@ -526,9 +526,9 @@ void linear_q5k_w5a8_prefill_pre(const int8_t  *x_q8,
  * x across multiple matmul targets (q/k/v from attn_norm out, gate/up from
  * pre_ffn_norm out). n_in must be a multiple of 32.
  */
-float quantize_x_for_q4k(const float *x, size_t n, int8_t *x_q8, int32_t *sum32);
+float quantize_x_for_q4k(size_t n, const float x[static n], int8_t x_q8[static n], int32_t *sum32);
 void  quantize_x_for_q4k_blocks(
-        const float *x, size_t n, int8_t *x_q8, int32_t *sum32, float *scale_blocks);
+        size_t n, const float *x, int8_t *x_q8, int32_t *sum32, float *scale_blocks);
 void linear_q4k_decode_w4a8_pre(const int8_t  *x_q8,
                                 float          scale_x,
                                 const int32_t *sum32,

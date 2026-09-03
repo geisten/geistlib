@@ -1402,7 +1402,7 @@ void linear_q6k_w6a8_prefill(
         return;
     }
     for (size_t i = 0; i < m; i++) {
-        scale_x[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+        scale_x[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
     }
     linear_q6k_w6a8_prefill_pre(x_q8, scale_x, m, w_q6k, n_in, n_out, y);
     safe_free((void **) &x_q8);
@@ -1422,7 +1422,7 @@ void linear_q6k_decode_w6a8(
         }
         tl_cap_n_in = n_in;
     }
-    float scale_x = quantize_x_int8_sym(x, n_in, tl_x_q8);
+    float scale_x = quantize_x_int8_sym(n_in, x, tl_x_q8);
     linear_q6k_decode_w6a8_pre(tl_x_q8, scale_x, w_q6k, n_in, n_out, y);
 }
 
@@ -1439,7 +1439,7 @@ void linear_q6k_decode_w6a8_x8(
         }
         tl_cap_n_in = n_in;
     }
-    float scale_x = quantize_x_int8_sym(x, n_in, tl_x_q8);
+    float scale_x = quantize_x_int8_sym(n_in, x, tl_x_q8);
     linear_q6k_decode_w6a8_x8_pre(tl_x_q8, scale_x, packed, n_in, n_out, y);
 }
 

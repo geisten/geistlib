@@ -141,7 +141,7 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
             fails++;
         } else {
             for (size_t i = 0; i < m; i++) {
-                scale_x[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+                scale_x[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
             }
             memset(y_fast, 0, m * n_out * sizeof(float));
             linear_q6k_w6a8_prefill_predecoded_ntile4(
@@ -176,7 +176,7 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
             fails++;
         } else {
             for (size_t i = 0; i < m; i++) {
-                scale_x[i] = quantize_x_int8_sym(x + i * n_in, n_in, x_q8 + i * n_in);
+                scale_x[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
             }
             memset(y_fast, 0, m * n_out * sizeof(float));
             linear_q6k_w6a8_prefill_predecoded_ntile4_stream(
