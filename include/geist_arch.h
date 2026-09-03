@@ -74,6 +74,14 @@ struct geist_arch_ops_decoder {
     /* state_destroy: tear down arch_state. nullptr is a no-op. */
     void (*state_destroy)(void *arch_state);
 
+    /* Optional: mutable view of the model's ZO-tuning gains — one f32 per
+     * linear weight, all 1.0f at load, multiplied into that weight's
+     * output. Model-level, so it takes arch_state, not a session; a write
+     * is seen by every session on the model. nullptr, or
+     * GEIST_E_UNSUPPORTED, when this build or backend has no gain path,
+     * which callers must treat as "tuning unavailable", not an error. */
+    enum geist_status (*gains)(void *arch_state, float **out, size_t *n);
+
     /* Optional: push session opts into the session. Engine calls this
      * from geist_session_create so per-session sampler config (temperature,
      * top_p, top_k, random_seed) reaches the decode hot path. nullptr

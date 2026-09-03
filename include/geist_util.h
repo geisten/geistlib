@@ -210,6 +210,42 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
  * backend lands. Do not free it and do not hold it across a decode. */
 const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits);
 
+/* @stability EXPERIMENTAL — forward-only (zeroth-order) fine-tuning.
+ *
+ * Mutable view of the model's tuning gains: one f32 per linear weight, all
+ * 1.0f after load, each multiplied into that weight's output. The weight
+ * bytes are never touched — for a ternary model the trits stay frozen and
+ * only these continuous scalars move, which is what makes a gradient-free
+ * optimizer (MeZO/QZO-style) tractable: the search dimension is `*n`, not
+ * the parameter count.
+ *
+ * A tuned model is therefore the unmodified GGUF plus `*n` floats. Writing
+ * the array takes effect on the next forward pass, so swapping one tuning
+ * profile for another at runtime is a memcpy — no reload, no requantize.
+ * The array is MODEL-level: a write is seen by every session on `m`, and
+ * concurrent sessions must not race it (tune, then serve).
+ *
+ * Returns GEIST_E_UNSUPPORTED — which callers must treat as "tuning
+ * unavailable", not an error — when geist was built without GEIST_TUNE, or
+ * when the backend runs the fused tensor linear path that bypasses the
+ * gain apply. On success the pointer is owned by the model and stays valid
+ * until geist_model_destroy.
+ *
+ * Slot order is a pure function of the layer count, so a sidecar written
+ * by one process is readable by another on the same model:
+ *   layer l -> slots 9*l + 0..8 = q, k, v, o, gate, up, down,
+ *              per_layer_gate, per_layer_proj
+ *   then 9*n_layers + 0 = lm_head, +1 = model_proj.
+ *
+ *   float *g; size_t n;
+ *   if (geist_model_gains(m, &g, &n) == GEIST_OK) {
+ *       FILE *f = fopen(path, "rb");
+ *       if (f) { (void) fread(g, sizeof *g, n, f); fclose(f); }
+ *   }
+ */
+[[nodiscard]] enum geist_status
+geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
+
 /* @stability EXPERIMENTAL — speculative-decode API.
  *
  * One speculative-decode step: drafts up to k_max candidate tokens via an

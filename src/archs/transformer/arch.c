@@ -56,6 +56,36 @@ static void op_state_destroy(void *arch_state) {
     transformer_state_destroy(arch_state);
 }
 
+/* Mutable view of the ZO-tuning gains. Fail-closed on two counts:
+ *   - built without GEIST_TUNE  → st->gains is null, nothing to hand out;
+ *   - backend runs the fused tensor path (GPU) → that path returns before
+ *     the dispatcher applies gains, so handing out a writable array would
+ *     silently produce ungained output. Refuse instead. */
+static enum geist_status op_gains(void *arch_state, float **out, size_t *n) {
+    struct transformer_arch_state *st = arch_state;
+    if (st == nullptr || out == nullptr || n == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out = nullptr;
+    *n   = 0;
+    if (st->gains == nullptr) {
+        geist_backend_set_error(
+                st->backend, GEIST_E_UNSUPPORTED, "gains: build geist with -DGEIST_TUNE");
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (geist_backend_fused_tbl(st->backend)->linear_t != nullptr) {
+        geist_backend_set_error(st->backend,
+                                GEIST_E_UNSUPPORTED,
+                                "gains: backend '%s' uses the fused tensor "
+                                "linear path, which bypasses the gain apply",
+                                geist_backend_name(st->backend));
+        return GEIST_E_UNSUPPORTED;
+    }
+    *out = st->gains;
+    *n   = st->n_gains;
+    return GEIST_OK;
+}
+
 static void op_state_reset(void *session) {
     if (session != nullptr) {
         transformer_session_reset(session);
@@ -234,6 +264,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .state_create             = op_state_create,
         .state_create_from_memory = op_state_create_from_memory,
         .state_destroy            = op_state_destroy,
+        .gains                    = op_gains,
         .state_reset              = op_state_reset,
         .set_session_opts         = op_set_session_opts,
         .prefill                  = op_prefill,
