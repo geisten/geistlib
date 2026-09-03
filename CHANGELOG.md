@@ -9,6 +9,12 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Per-tensor gains for forward-only fine-tuning** (`@stability
+  EXPERIMENTAL`, `GEIST_TUNE` builds): `geist_model_gains` exposes the
+  model-owned gains array; `struct geist_weight` gains a `gain_slot`
+  pointer (present unconditionally for layout agreement, used only under
+  `GEIST_TUNE`); arch descriptors gain a `gains` vtable slot.
+  `tools/zo_tune` is the MeZO/QZO reference trainer (see `docs/TUNING.md`).
 - **Per-machine calibration, PR 1 of 3** (`@stability EXPERIMENTAL`):
   measured tuning instead of two hard-coded reference points. New API
   `geist_backend_calibrate` / `_apply_calibration` / `_calibration_key`

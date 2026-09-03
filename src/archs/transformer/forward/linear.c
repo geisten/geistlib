@@ -24,7 +24,7 @@
  * Without GEIST_TUNE this compiles away entirely and the dispatchers are
  * byte-for-byte what they were. */
 #ifdef GEIST_TUNE
-static inline void apply_gain(float *y, const struct geist_weight *w, size_t seq) {
+static inline void apply_gain(size_t seq, const struct geist_weight *w, float *y) {
     if (w->gain_slot == nullptr) {
         return;
     }
@@ -38,7 +38,7 @@ static inline void apply_gain(float *y, const struct geist_weight *w, size_t seq
     }
 }
 #else
-#define apply_gain(y, w, seq) ((void) 0)
+#define apply_gain(seq, w, y) ((void) 0)
 #endif
 
 enum geist_status linear_w_or_legacy(struct geist_backend            *be,
@@ -88,7 +88,7 @@ enum geist_status linear_w_or_legacy(struct geist_backend            *be,
     } else {
         w->linear_mN(seq, xp, w, be, yp);
     }
-    apply_gain(yp, w, seq);
+    apply_gain(seq, w, yp);
     v->buffer_unmap(x_buf);
     v->buffer_unmap(y_buf);
     return GEIST_OK;
@@ -181,8 +181,8 @@ enum geist_status linear_w_pair_or_legacy(struct geist_backend            *be,
             w1->linear_mN(seq, xp, w1, be, y1p);
         }
     }
-    apply_gain(y0p, w0, seq);
-    apply_gain(y1p, w1, seq);
+    apply_gain(seq, w0, y0p);
+    apply_gain(seq, w1, y1p);
     v->buffer_unmap(x_buf);
     v->buffer_unmap(y0_buf);
     v->buffer_unmap(y1_buf);
@@ -281,9 +281,9 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
         w1->linear_mN(seq, xp, w1, be, y1p);
         w2->linear_mN(seq, xp, w2, be, y2p);
     }
-    apply_gain(y0p, w0, seq);
-    apply_gain(y1p, w1, seq);
-    apply_gain(y2p, w2, seq);
+    apply_gain(seq, w0, y0p);
+    apply_gain(seq, w1, y1p);
+    apply_gain(seq, w2, y2p);
 
     v->buffer_unmap(x_buf);
     v->buffer_unmap(y0_buf);

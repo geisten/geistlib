@@ -216,10 +216,10 @@ fresh process, --init g2.bin    0.4562
 
 ### The verification gate
 
-`geist_session_pin_prefix` returns `GEIST_OK` even when the architecture's
-`pin_prefix` failed underneath — `session.c` discards that status. An
-unnoticed failure would mean training on truncated contexts behind a loss
-curve that still looks reasonable.
+`geist_session_pin_prefix` propagates a failed architecture pin (since
+7f568e8), but a pin that *succeeds* while subtly changing the score would
+mean training on wrong contexts behind a loss curve that still looks
+reasonable.
 
 So the pin is not trusted, it is **checked**: one example is scored with a
 full prefill, then scored again on top of the pinned prefix. The two must

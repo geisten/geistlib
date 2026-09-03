@@ -632,6 +632,14 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
     if (st->spec_state != 1 || sess->spec_x_i8 == nullptr) {
         return false;
     }
+    /* A tuned lm_head gain (GEIST_TUNE) scales the dense head's logits; the
+     * spec head computes raw dots against the tied embedding and would bypass
+     * it. Argmax survives any positive uniform scale, but the trained gain is
+     * unconstrained — decline and take the dense head rather than diverge
+     * silently at gain <= 0. One load + compare per decoded token. */
+    if (st->embed_table_w.gain_slot != nullptr && *st->embed_table_w.gain_slot != 1.0f) {
+        return false;
+    }
     /* Greedy only. Extending this to top-k sampling was tried and MEASURED
      * OUT (#102 Phase 1): exact sampling needs the true top-k rows inside the
      * candidate set, and the stride-4 sketch's rank noise beyond rank 1 is
