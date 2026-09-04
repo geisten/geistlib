@@ -11,8 +11,11 @@ passes.
    maintainer approval for deployments to it.
 2. Protect `main` with pull requests and required CI. Disable force pushes and
    do not grant an ordinary maintainer bypass for that rule.
-3. Add a tag ruleset for `v*`: block updates and deletions. Permit creation by
-   the GitHub Actions release workflow only.
+3. Add a tag ruleset for `v*` that blocks updates and deletions without a
+   bypass. Create release tags only through the release workflow. GitHub does
+   not allow a personal repository to select the built-in GitHub Actions app
+   as the sole creation bypass, so the workflow guard and postcondition enforce
+   the creation policy while the ruleset makes published tags immutable.
 4. Enable immutable releases after the first run of the new workflow has been
    verified.
 
