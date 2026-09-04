@@ -221,19 +221,45 @@ Sequenced so each phase is independently mergeable under AGENT.md §6 (bounded
 batches, disassembly and benchmark gate) and so the 0.6B — the cheaper, more
 valuable target — lands before any Gemma3 work starts.
 
-### Phase 0 — Get the weights and a reference vector (no engine changes)
+### Phase 0 — Converter and reference vectors (no engine changes) — **converter done**
 
-- Port Microsoft's conversion to `tools/convert_bitnet_embedding.py`, reusing
-  the I2_S packing geistlib already reads: 128 values per block into 32 bytes,
-  `-1→0, 0→1, +1→2`, two bits per value packed
-  `(c0<<6)|(c1<<4)|(c2<<2)|c3`, float32 scale appended after the packed data,
-  `scale = 1/mean(|w|)`. Embeddings and all 1-D norms stay F16; `output.weight`
-  is skipped. Must write `key_length`/`value_length` — the default
-  `hidden/heads` derivation is **wrong for both models**.
-- Capture reference embeddings from upstream's `llama-embedding` for a fixed
-  prompt set, checked into `tests/data/`, as the parity oracle for Phase 3.
-- **Done when:** an I2_S GGUF exists locally and `gguf_reader` opens it and
-  enumerates the `*_norm_in` tensors.
+Shipped: `tools/convert_bitnet_embedding.py` (safetensors → GGUF, `--outtype
+i2_s|f16`), covered by `tests/test_bitnet_embedding_convert_py.py` in the
+hermetic `make test-py` suite. It needs **numpy and the standard library only**
+— no llama.cpp branch, no torch, no transformers, unlike upstream's script.
+Tensors are streamed one at a time out of an mmapped checkpoint, so peak memory
+tracks the largest tensor rather than the model.
+
+Three things the implementation settled that the upstream guide did not:
+
+- **The I2_S packing is strided, not consecutive.** Upstream's prose ("each
+  byte stores 4 values: `(c0<<6)|(c1<<4)|(c2<<2)|c3`") does not say *which*
+  four. Element `b*256 + h*128 + g*32 + bb` lives in byte `b*64 + h*32 + bb`
+  at shift `6-2g` — the four values sharing a byte are 32 apart, not adjacent.
+  Written naively the file loads and produces silent garbage. The converter's
+  output is verified **byte-identical** against `pack_i2_s` from
+  `tests/test_i2_s_parity.c:30`, frozen as a golden vector in the test.
+- **The trailing f32 scale is a multiplier, not its reciprocal.** geistlib
+  dequants as `trit * scale` (`cpu_scalar/weight_resolve.c:109`), so the value
+  written is `mean(|w|)`. Upstream's "`scale = 1/mean(|w|)`" describes its
+  quantisation step, not the stored number.
+- **`key_length`/`value_length` must be written explicitly** — the default
+  `hidden/heads` derivation is wrong for both models, as upstream notes.
+
+Verified end to end: a synthetic Qwen3-shaped checkpoint converts, and
+geistlib's own `gguf_reader` opens the result, reports `arch=qwen3`, resolves
+every metadata key the `qwen3` populator reads, passes the extent check on all
+38 tensors (I2_S `nbytes` = `n_in*n_out/4 + 4`, so the reader's tail-byte
+accounting agrees with the writer's), and finds the `*_norm_in` tensors.
+
+**Still open in this phase**, and it needs a machine with the real weights:
+capture reference embeddings from upstream's `llama-embedding` for a fixed
+prompt set into `tests/data/` as the Phase 2 parity oracle. Hugging Face is not
+reachable from CI, so this is a local step. Until it is done, the converter is
+verified for *format*, not for *numerical agreement with Microsoft's own
+converter* — the scale convention in particular is inferred from geistlib's
+working b1.58 path, not from a byte-diff against a Microsoft-produced
+embedding GGUF.
 
 ### Phase 1 — Per-projection input RMSNorm (the 0.6B path)
 
@@ -279,17 +305,29 @@ valuable target — lands before any Gemma3 work starts.
   samples, per the `#364` protocol.
 - **Done when:** results are reproducible and the perf gate has a baseline.
 
-### Phase 4 — `gemma3` family and the 270M (optional, decide after Phase 3)
+### Phase 4 — `gemma3` family and the 270M (optional, and now harder)
 
 - New populator + `REGISTRY` and `geist_arch_transformer_gguf_names` entries
   (the `static_assert` mirrors them).
 - `query_pre_attn_scalar`, `sqrt(hidden)` embed scale, post-attn/post-FFW norms,
   `head_dim = 256`, GELU.
-- **Worth a cost/benefit check first:** the 270M scores 1.2 MTEB points below
-  the 0.6B, gets a smaller speedup (1.32–1.74× vs 1.42–2.28×), and its F16
-  embedding table alone is ~336 MB — so on a 4 GB Pi it is not dramatically
-  cheaper than the 0.6B while being meaningfully worse. Phase 4 may be the
-  right thing to *not* do.
+- **New blocker found while building the converter: the 270M's tensors do not
+  fit geistlib's I2_S blocking.** geistlib walks whole 256-element blocks
+  (`I2S_BLOCK_ELEMS = 256`, and `cpu_scalar/weight_resolve.c:109` loops
+  `b < n_in/256`), but Gemma3-270M's hidden size is **640**, and `640 % 256 =
+  128`. Five of the seven projections per layer take a 640-wide input —
+  q, k, v, gate and up — so only `o_proj` (in 1024) and `down_proj` (in 2048)
+  are representable. bitnet.cpp is unaffected because it blocks at 128
+  elements / 32 bytes, and `640 % 128 = 0`. Supporting the 270M therefore
+  means giving geistlib a 128-granular I2_S path — a kernel change on ARM and
+  x86 both, not just an architecture populator. The converter refuses these
+  tensors loudly rather than emitting a file that would be misread.
+- **Cost/benefit, now clearer:** the 270M scores 1.2 MTEB points below the
+  0.6B, gets a smaller speedup (1.32–1.74× vs 1.42–2.28×), its F16 embedding
+  table alone is ~336 MB, and it now also needs kernel work that the 0.6B does
+  not. The 0.6B by contrast is fully representable — all seven projections take
+  1024-, 2048- or 3072-wide inputs, every one a multiple of 256. Phase 4 looks
+  more like the right thing to *not* do than it did before Phase 0.
 
 ### Phase 5 — Documentation
 
@@ -304,7 +342,7 @@ valuable target — lands before any Gemma3 work starts.
 
 | Phase | Size | Main risk |
 | :-- | :-- | :-- |
-| 0 Converter | S | Packing/metadata mismatch — caught immediately by the loader |
+| 0 Converter | S | ✅ done for the 0.6B; residual risk is the scale convention, unverified against a Microsoft-produced embedding GGUF |
 | 1 Projection norms | **L** | Fusion regressions in `exec_plan.c`; the hot path is the thing this repo guards hardest |
 | 2 Pooling + API | M | API shape is a public commitment; get it reviewed before it ships |
 | 3 Gates | M | MTEB tooling is Python-side; keep it in `tools/`, out of the engine |
