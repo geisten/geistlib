@@ -30,7 +30,7 @@
       "prefill_threads": 4,
       "decode_threads": 4,
       "expect_backend": "metal",
-      "expect_llama_backend": "Metal",
+      "expect_llama_backend": "MTL",
       "note": "M1 Max 32-core GPU, unified memory. Same host as apple_m1max in the CPU protocol; the GPU cell and the CPU cell describe the same machine under two backends. Thread counts are dispatch-side only."
     }
   },

@@ -65,13 +65,15 @@ class CrossEngineBenchmarkTest(unittest.TestCase):
 
     def test_llama_guard_gpu_mode_requires_full_offload(self) -> None:
         engine = {"commit": "2d8d612e4c68d380"}
+        # Field values mirror a real llama-bench Metal row at the pinned
+        # commit: the backend token is "MTL", not "Metal".
         workload = {"repeats": 3, "backend": "gpu", "gpu_offload_layers": 99,
-                    "expect_llama_backend": "Metal"}
+                    "expect_llama_backend": "MTL"}
         valid = {
             "build_commit": "2d8d612e4",
             "n_gpu_layers": 99,
             "gpu_info": "Apple M1 Max",
-            "backends": "BLAS,Metal",
+            "backends": "MTL,BLAS",
             "no_kv_offload": False,
             "n_threads": 4,
             "poll": 100,
