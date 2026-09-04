@@ -1,0 +1,48 @@
+{
+  "schema": "geist.benchmark.cross-engine-gpu.v1",
+  "model": {
+    "file": "gemma4-e2b-Q4_K_M.gguf",
+    "sha256": "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8"
+  },
+  "workload": {
+    "seq_lens": [
+      128,
+      256,
+      512,
+      1024
+    ],
+    "decode_n": 64,
+    "affinity": "thread-count-only; operating-system scheduled for both engines",
+    "thread_polling": "active",
+    "repeats": 3,
+    "cycles": 4,
+    "aggregation": "median",
+    "dispersion": "median_absolute_deviation",
+    "backend": "gpu",
+    "gpu_offload_layers": 99,
+    "kv_cache": "f16, resident on the GPU for both engines",
+    "model_load_included": false,
+    "warmup": "one discarded engine-native warmup before each measured test",
+    "thread_policy": "per host_profile; identical for both engines within a run. On a fully offloaded run CPU threads only drive dispatch and sampling; they are fixed anyway so a cell states its whole configuration."
+  },
+  "host_profiles": {
+    "apple_m1max_metal": {
+      "prefill_threads": 4,
+      "decode_threads": 4,
+      "expect_backend": "metal",
+      "expect_llama_backend": "Metal",
+      "note": "M1 Max 32-core GPU, unified memory. Same host as apple_m1max in the CPU protocol; the GPU cell and the CPU cell describe the same machine under two backends. Thread counts are dispatch-side only."
+    }
+  },
+  "host_gate": {
+    "max_load_per_core": 0.2,
+    "settle_seconds": 30,
+    "cooldown_seconds": 60,
+    "timeout_seconds": 14400,
+    "temp_gate": {
+      "sensor": "/sys/class/thermal/thermal_zone0/temp",
+      "max_millic": 62000,
+      "note": "same gate as the CPU protocol: GPU campaigns on passively cooled hosts throttle too. Hosts without the sensor path skip this gate."
+    }
+  }
+}
