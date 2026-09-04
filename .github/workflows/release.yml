@@ -74,18 +74,19 @@ jobs:
             exit 1
           }
 
-          # A rerun may resume an existing draft for this exact SHA. A published
-          # release or a tag pointing elsewhere is never overwritten.
+          # A rerun may resume an existing draft for this exact SHA. GitHub does
+          # not create the tag ref for a draft until it is published, so validate
+          # the draft target here and verify the tag after publication below.
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
             test "$draft" = true || {
               echo "::error::$tag is already published"
               exit 1
             }
-            git fetch -q origin "refs/tags/$tag:refs/tags/$tag"
-            tag_sha=$(git rev-list -n 1 "$tag")
-            test "$tag_sha" = "$sha" || {
-              echo "::error::$tag points to $tag_sha, expected $sha"
+            draft_target=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+              --json targetCommitish --jq .targetCommitish)
+            test "$draft_target" = "$sha" || {
+              echo "::error::$tag draft targets $draft_target, expected $sha"
               exit 1
             }
           elif git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
@@ -367,7 +368,11 @@ jobs:
             --json assets --jq '.assets[].name' | sort > /tmp/uploaded-assets
           diff -u /tmp/expected-assets /tmp/uploaded-assets
 
+          draft_target=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json targetCommitish --jq .targetCommitish)
+          test "$draft_target" = "$RELEASE_SHA"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
           git fetch -q origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$RELEASE_SHA"
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
           sh scripts/check-published-release.sh
