@@ -9,7 +9,6 @@ changing it is a baseline migration, not a command-line convenience.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import platform
@@ -24,23 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL_PATH = ROOT / "benchmark" / "apple_cpu_protocol.json"
 ERROR = 99
 
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def command_output(command: list[str], timeout: int = 15) -> str:
-    try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
-    except (OSError, subprocess.SubprocessError):
-        return "unavailable"
-    if proc.returncode != 0:
-        return "unavailable"
-    return proc.stdout.strip() or "unavailable"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bench_cross_engine import command_output, sha256_file  # noqa: E402
 
 
 def parse_variants(values: list[str]) -> list[dict]:

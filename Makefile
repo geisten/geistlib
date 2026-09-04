@@ -81,6 +81,8 @@ TEST_BIN_DIR := $(BIN_DIR)/tests
 # Run artifacts live OUTSIDE the repo so the working tree stays clean; override
 # with `make bench-small BENCH_OUT_DIR=...` to put them elsewhere.
 BENCH_OUT_DIR ?= $(HOME)/bench-geistlib/quality_perf
+# Overrides for the bench-* quality/perf suites; passed through via BENCH_PY
+# below (apple-perf.yml sets BENCH_GGUF in CI).
 BENCH_GGUF ?=
 BENCH_THREADS ?=
 BENCH_REF_GGUF ?=
@@ -169,16 +171,39 @@ test-all: $(MODEL_PREREQ) test-unit test-int test-py test-e2e
 fetch-model: $(MODEL_PATH)
 	@echo "Reference model ready: $(MODEL_PATH)"
 
-$(MODEL_PATH):
-	@command -v curl >/dev/null 2>&1 || { echo "fetch-model: curl not found in PATH" >&2; exit 1; }
-	@mkdir -p $(MODEL_DIR)
-	@echo "Downloading $(MODEL_FILE) (~3.1 GB) from:"
-	@echo "  $(MODEL_URL)"
+# Shared download recipe for the model-file rules below: curl into $@.part and
+# rename on success, so an interrupted transfer never leaves a truncated file
+# at the final path (-C - resumes the .part next run). Honors HF_TOKEN for
+# gated mirrors. $(1) = human-readable size, $(2) = URL.
+define fetch_gguf
+	@command -v curl >/dev/null 2>&1 || { echo "$@: curl not found in PATH" >&2; exit 1; }
+	@mkdir -p $(@D)
+	@echo "Downloading $(@F) ($(1)) from:"
+	@echo "  $(2)"
 	@curl -fL --retry 3 --retry-delay 2 -C - \
 	  $(if $(HF_TOKEN),-H "Authorization: Bearer $(HF_TOKEN)",) \
-	  -o "$@.part" "$(MODEL_URL)"
+	  -o "$@.part" "$(2)"
 	@mv "$@.part" "$@"
-	@echo "Saved to $@"
+endef
+
+# SHA-256 pin check for the fetch-* targets: prints both hashes on mismatch so
+# a truncated download, a corrupted CI cache and a silently changed upstream
+# all fail loudly BEFORE a test runs. Changing a model means changing its pin,
+# which also rotates any CI cache key derived from it. $(1) = file, $(2) = pin.
+define verify_sha256
+	@hash=$$( (command -v sha256sum >/dev/null && sha256sum "$(1)" || shasum -a 256 "$(1)") | cut -d' ' -f1 ); \
+	if [ "$$hash" != "$(2)" ]; then \
+	  echo "$@: SHA-256 mismatch for $(1)" >&2; \
+	  echo "  expected $(2)" >&2; \
+	  echo "  actual   $$hash" >&2; \
+	  echo "  (truncated/corrupt download or cache -> delete the file and re-run;" >&2; \
+	  echo "   persists -> upstream content changed, re-pin deliberately)" >&2; \
+	  exit 1; \
+	fi
+endef
+
+$(MODEL_PATH):
+	$(call fetch_gguf,~3.1 GB,$(MODEL_URL))
 
 # Benches are timing tools, not tests — separate target. Each bench prints
 # its own metrics; runner just reports run/skip/fail status.
@@ -200,12 +225,7 @@ BENCH_MODEL_PATH := $(BENCH_MODEL_DIR)/$(BENCH_MODEL_FILE)
 BENCH_MODEL_URL  ?= https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf
 
 $(BENCH_MODEL_PATH):
-	@command -v curl >/dev/null 2>&1 || { echo "fetch-bench-model: curl not found" >&2; exit 1; }
-	@mkdir -p $(BENCH_MODEL_DIR)
-	@echo "Downloading $(BENCH_MODEL_FILE) (~1.1 GB) from:"
-	@echo "  $(BENCH_MODEL_URL)"
-	@curl -fL --retry 3 --retry-delay 2 -C - -o "$@.part" "$(BENCH_MODEL_URL)"
-	@mv "$@.part" "$@"
+	$(call fetch_gguf,~1.1 GB,$(BENCH_MODEL_URL))
 
 fetch-bench-model: $(BENCH_MODEL_PATH)
 	@echo "Benchmark model ready: $(BENCH_MODEL_PATH)"
@@ -220,14 +240,7 @@ E4B_MODEL_PATH := $(E4B_MODEL_DIR)/$(E4B_MODEL_FILE)
 E4B_MODEL_URL  ?= https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf
 
 $(E4B_MODEL_PATH):
-	@command -v curl >/dev/null 2>&1 || { echo "fetch-e4b-model: curl not found" >&2; exit 1; }
-	@mkdir -p $(E4B_MODEL_DIR)
-	@echo "Downloading $(E4B_MODEL_FILE) (~4.6 GB) from:"
-	@echo "  $(E4B_MODEL_URL)"
-	@curl -fL --retry 3 --retry-delay 2 -C - \
-	  $(if $(HF_TOKEN),-H "Authorization: Bearer $(HF_TOKEN)",) \
-	  -o "$@.part" "$(E4B_MODEL_URL)"
-	@mv "$@.part" "$@"
+	$(call fetch_gguf,~4.6 GB,$(E4B_MODEL_URL))
 
 fetch-e4b-model: $(E4B_MODEL_PATH)
 	@echo "E4B model ready: $(E4B_MODEL_PATH)"
@@ -249,12 +262,7 @@ LLAMA_MODEL_URL  ?= https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-G
 LLAMA_MODEL_SHA256 := 48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201
 
 $(LLAMA_MODEL_PATH):
-	@command -v curl >/dev/null 2>&1 || { echo "fetch-llama-model: curl not found" >&2; exit 1; }
-	@mkdir -p $(LLAMA_MODEL_DIR)
-	@echo "Downloading $(LLAMA_MODEL_FILE) (~369 MB) from:"
-	@echo "  $(LLAMA_MODEL_URL)"
-	@curl -fL --retry 3 --retry-delay 2 -C - -o "$@.part" "$(LLAMA_MODEL_URL)"
-	@mv "$@.part" "$@"
+	$(call fetch_gguf,~369 MB,$(LLAMA_MODEL_URL))
 
 # Qwen3 reference model (#275). Small third family (609 MB): proves the
 # qwen3 populator (metadata head_dim 128 ≠ d_model/n_heads, per-head
@@ -268,21 +276,10 @@ QWEN3_MODEL_URL  ?= https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwe
 QWEN3_MODEL_SHA256 := 9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031
 
 $(QWEN3_MODEL_PATH):
-	@command -v curl >/dev/null 2>&1 || { echo "fetch-qwen3-model: curl not found" >&2; exit 1; }
-	@mkdir -p $(QWEN3_MODEL_DIR)
-	@echo "Downloading $(QWEN3_MODEL_FILE) (~609 MB) from:"
-	@echo "  $(QWEN3_MODEL_URL)"
-	@curl -fL --retry 3 --retry-delay 2 -C - -o "$@.part" "$(QWEN3_MODEL_URL)"
-	@mv "$@.part" "$@"
+	$(call fetch_gguf,~609 MB,$(QWEN3_MODEL_URL))
 
 fetch-qwen3-model: $(QWEN3_MODEL_PATH)
-	@hash=$$( (command -v sha256sum >/dev/null && sha256sum "$(QWEN3_MODEL_PATH)" || shasum -a 256 "$(QWEN3_MODEL_PATH)") | cut -d' ' -f1 ); \
-	if [ "$$hash" != "$(QWEN3_MODEL_SHA256)" ]; then \
-	  echo "fetch-qwen3-model: SHA-256 mismatch for $(QWEN3_MODEL_PATH)" >&2; \
-	  echo "  expected $(QWEN3_MODEL_SHA256)" >&2; \
-	  echo "  actual   $$hash" >&2; \
-	  exit 1; \
-	fi
+	$(call verify_sha256,$(QWEN3_MODEL_PATH),$(QWEN3_MODEL_SHA256))
 	@echo "Qwen3 reference model ready (SHA-256 verified): $(QWEN3_MODEL_PATH)"
 
 # Qwen3.5 hybrid reference model (#281). 0.8B Q8_0 (~780 MB): proves the
@@ -296,33 +293,14 @@ QWEN35_MODEL_URL  ?= https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/ma
 QWEN35_MODEL_SHA256 := 0ad885ffd4bb022fc4f0d33a3308fa108ef8613159d3b3a67e23abca056b7a6c
 
 $(QWEN35_MODEL_PATH):
-	@command -v curl >/dev/null 2>&1 || { echo "fetch-qwen35-model: curl not found" >&2; exit 1; }
-	@mkdir -p $(QWEN35_MODEL_DIR)
-	@echo "Downloading $(QWEN35_MODEL_FILE) (~780 MB) from:"
-	@echo "  $(QWEN35_MODEL_URL)"
-	@curl -fL --retry 3 --retry-delay 2 -C - -o "$@.part" "$(QWEN35_MODEL_URL)"
-	@mv "$@.part" "$@"
+	$(call fetch_gguf,~780 MB,$(QWEN35_MODEL_URL))
 
 fetch-qwen35-model: $(QWEN35_MODEL_PATH)
-	@hash=$$( (command -v sha256sum >/dev/null && sha256sum "$(QWEN35_MODEL_PATH)" || shasum -a 256 "$(QWEN35_MODEL_PATH)") | cut -d' ' -f1 ); \
-	if [ "$$hash" != "$(QWEN35_MODEL_SHA256)" ]; then \
-	  echo "fetch-qwen35-model: SHA-256 mismatch for $(QWEN35_MODEL_PATH)" >&2; \
-	  echo "  expected $(QWEN35_MODEL_SHA256)" >&2; \
-	  echo "  actual   $$hash" >&2; \
-	  exit 1; \
-	fi
+	$(call verify_sha256,$(QWEN35_MODEL_PATH),$(QWEN35_MODEL_SHA256))
 	@echo "Qwen3.5 reference model ready (SHA-256 verified): $(QWEN35_MODEL_PATH)"
 
 fetch-llama-model: $(LLAMA_MODEL_PATH)
-	@hash=$$( (command -v sha256sum >/dev/null && sha256sum "$(LLAMA_MODEL_PATH)" || shasum -a 256 "$(LLAMA_MODEL_PATH)") | cut -d' ' -f1 ); \
-	if [ "$$hash" != "$(LLAMA_MODEL_SHA256)" ]; then \
-	  echo "fetch-llama-model: SHA-256 mismatch for $(LLAMA_MODEL_PATH)" >&2; \
-	  echo "  expected $(LLAMA_MODEL_SHA256)" >&2; \
-	  echo "  actual   $$hash" >&2; \
-	  echo "  (truncated/corrupt download or cache -> delete the file and re-run;" >&2; \
-	  echo "   persists -> upstream content changed, re-pin deliberately)" >&2; \
-	  exit 1; \
-	fi
+	$(call verify_sha256,$(LLAMA_MODEL_PATH),$(LLAMA_MODEL_SHA256))
 	@echo "Llama reference model ready (SHA-256 verified): $(LLAMA_MODEL_PATH)"
 
 # Gemma 4 audio tower (~590 MB), extracted from the public checkpoint via

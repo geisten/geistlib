@@ -63,6 +63,30 @@ class CrossEngineBenchmarkTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             BENCH.validate_llama_row({**valid, "build_commit": "deadbeef"}, engine, workload, 8)
 
+    def test_llama_guard_gpu_mode_requires_full_offload(self) -> None:
+        engine = {"commit": "2d8d612e4c68d380"}
+        # Field values mirror a real llama-bench Metal row at the pinned
+        # commit: the backend token is "MTL", not "Metal".
+        workload = {"repeats": 3, "backend": "gpu", "gpu_offload_layers": 99,
+                    "expect_llama_backend": "MTL"}
+        valid = {
+            "build_commit": "2d8d612e4",
+            "n_gpu_layers": 99,
+            "gpu_info": "Apple M1 Max",
+            "backends": "MTL,BLAS",
+            "no_kv_offload": False,
+            "n_threads": 4,
+            "poll": 100,
+            "cpu_strict": False,
+            "cpu_mask": "0x0",
+            "samples_ts": [1.0, 2.0, 3.0],
+        }
+        BENCH.validate_llama_row(valid, engine, workload, 4)
+        for broken in ({"n_gpu_layers": 0}, {"gpu_info": ""},
+                       {"backends": "BLAS"}, {"no_kv_offload": True}):
+            with self.assertRaises(RuntimeError):
+                BENCH.validate_llama_row({**valid, **broken}, engine, workload, 4)
+
     def test_resume_requires_an_exact_schedule_prefix(self) -> None:
         engines = [{"label": "geist"}, {"label": "llama.cpp"}]
         current = {

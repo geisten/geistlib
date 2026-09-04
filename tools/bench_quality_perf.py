@@ -36,7 +36,6 @@ Environment:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import platform
@@ -48,6 +47,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bench_cross_engine import command_output  # noqa: E402
+from bench_cross_engine import sha256_file as hash_file  # noqa: E402
 APPLE_PROTOCOL_PATH = ROOT / "benchmark" / "apple_cpu_protocol.json"
 
 PERF_SUITES = {"small", "detailed"}
@@ -124,24 +126,6 @@ def run_sweep(bin_dir: Path, gguf: str, threads: str | None,
                 break
     sys.stderr.write(out)
     sys.exit("bench: bench_perf_sweep produced no JSONL record")
-
-
-def hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def command_output(command: list[str]) -> str:
-    try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.SubprocessError):
-        return "unavailable"
-    if proc.returncode != 0:
-        return "unavailable"
-    return proc.stdout.strip() or "unavailable"
 
 
 def benchmark_metadata(exe: Path, gguf: Path, workload: dict[str, int],
