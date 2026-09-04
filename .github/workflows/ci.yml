@@ -13,11 +13,24 @@ concurrency:
 
 jobs:
   version-consistency:
-    name: version strings agree (geist.h == README)
+    name: source version consistent; README follows latest release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: sh -n scripts/check-version.sh scripts/check-release.sh scripts/check-published-release.sh
       - run: sh scripts/check-version.sh
+      - name: Full release gate when the source version changes
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --quiet "$BASE_SHA" -- include/geist.h; then
+            echo "source version unchanged — release gate not applicable"
+          else
+            sh scripts/check-release.sh --pre-tag
+          fi
 
   api-contract:
     name: API contract documented and STABLE (docs/API_CONTRACT.md)

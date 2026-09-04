@@ -1,15 +1,15 @@
 #!/bin/sh
 # check-version.sh — fail if the version drifts across the docs.
 #
-# Single source of truth: include/geist.h GEIST_VERSION_STRING (what
-# `geist --version` prints). The README carries the same version in three spots
-# (badge, Status line, citation) and CITATION.cff in a fourth; they must all
-# agree. The comment used to say three and the code checked four — which is the
-# harmless version of the drift this script exists to prevent. Run in CI on
-# every PR, and locally before a release.
+# Single source of truth for the source candidate: include/geist.h
+# GEIST_VERSION_STRING (what `geist --version` prints). CITATION.cff mirrors it
+# and must agree. The README intentionally obtains the latest *published*
+# version from GitHub instead of copying this candidate version: source state
+# and publication state are different facts. Run in CI on every PR, and locally
+# before a release.
 #
 # ponytail: a guard, not a generator — it does not edit anything, it just
-# makes drift a build failure. Bump include/geist.h and the README together.
+# makes drift a build failure. Bump include/geist.h and CITATION.cff together.
 set -eu
 
 hdr=$(sed -n 's/.*GEIST_VERSION_STRING "\([0-9][0-9.]*\)".*/\1/p' include/geist.h | head -1)
@@ -23,18 +23,16 @@ check() {  # $1=label  $2=found
   fi
 }
 
-badge=$(sed -n 's/.*status-experimental%20(v\([0-9][0-9.]*\)).*/\1/p' README.md | head -1)
-body=$(sed -n 's/.*`geistlib` is \*\*v\([0-9][0-9.]*\).*/\1/p' README.md | head -1)
-cite=$(sed -n 's/.*version = {\([0-9][0-9.]*\)}.*/\1/p' README.md | head -1)
-
-check "README status badge" "$badge"
-check "README Status line"  "$body"
-check "README citation"     "$cite"
-
-# CITATION.cff feeds the repository's "Cite this repository" button. It was not
-# checked here, and drifted two releases behind unnoticed.
+# CITATION.cff feeds the repository's "Cite this repository" button.
 cff=$(sed -n 's/^version: "\([0-9][0-9.]*\)".*/\1/p' CITATION.cff | head -1)
 check "CITATION.cff version" "$cff"
+
+# The README describes a moving development branch. A literal current version
+# there recreates the source-vs-published drift this split is designed to avoid.
+if grep -qE 'status-experimental%20\(v[0-9]|`geistlib` is \*\*v[0-9]|version = \{[0-9]' README.md; then
+  echo "  MISMATCH: README hard-codes a release version; link releases/latest instead"
+  fail=1
+fi
 
 # The numeric components are a second source of the same fact, and
 # geist_version_components() is what a consumer version-gates on. In 0.7.0
@@ -46,7 +44,7 @@ pat=$(sed -n 's/.*GEIST_VERSION_PATCH \([0-9][0-9]*\).*/\1/p' include/geist.h | 
 check "GEIST_VERSION_MAJOR/MINOR/PATCH" "$maj.$min.$pat"
 
 if [ "$fail" -eq 0 ]; then
-  echo "version OK: $hdr  (geist.h string == components == README == CITATION.cff)"
+  echo "version OK: $hdr  (geist.h string == components == CITATION.cff; README is dynamic)"
 else
   echo "→ source of truth is include/geist.h GEIST_VERSION_STRING ($hdr);"
   echo "  update the mismatching spots above to match."

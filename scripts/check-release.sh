@@ -72,14 +72,61 @@ if [ "$unreleased" -gt 0 ]; then
     note "CHANGELOG.md still has $unreleased line(s) under [Unreleased] — move them into [$version] or they ship undocumented"
 fi
 
-# ---- 4. the tag is free (only when about to create it) --------------------
+# The first released-looking section must be the candidate. Older source-only
+# milestones deliberately have unlinked headings, because no tag/release exists
+# for them. This prevents a version bump at the bottom of a still-unreleased
+# changelog from passing.
+first_release=$(sed -n 's/^## \[\([0-9][^]]*\)\].*/\1/p' CHANGELOG.md | head -1)
+if [ "$first_release" != "$version" ]; then
+    note "FIRST CHANGELOG RELEASE: '$first_release', expected '$version'"
+fi
+
+# Every linked heading needs a reference definition. In particular, this catches
+# the old state where [0.10.7] existed but [Unreleased] still compared from
+# v0.10.6 and no [0.10.7] link was defined.
+for heading in $(sed -n 's/^## \[\([^]]*\)\].*/\1/p' CHANGELOG.md); do
+    if ! grep -qF "[$heading]:" CHANGELOG.md; then
+        note "CHANGELOG LINK MISSING: [$heading] has no reference definition"
+    fi
+done
+
+# ---- 4. the published base and candidate link agree -----------------------
+# Tags are publication history, not source milestones. Fetch them before a
+# release check, then require the newest published tag to be in this commit's
+# ancestry and use it as the candidate comparison base.
+previous_tag=
+if [ "$pre_tag" = "1" ]; then
+    git fetch -q --tags origin 2>/dev/null || true
+fi
+for tag in $(git tag --list 'v[0-9]*' --sort=-version:refname); do
+    if [ "$tag" != "v$version" ]; then
+        previous_tag=$tag
+        break
+    fi
+done
+if [ -z "$previous_tag" ]; then
+    note "no previous release tag is available"
+else
+    if ! git merge-base --is-ancestor "$previous_tag^{}" HEAD; then
+        note "PUBLISHED HISTORY DISCONNECTED: $previous_tag is not an ancestor of HEAD"
+    fi
+
+    previous=${previous_tag#v}
+    if [ "$(vnum "$version")" -le "$(vnum "$previous")" ]; then
+        note "candidate $version must be newer than published $previous"
+    fi
+    expected_unreleased="[Unreleased]: https://github.com/geisten/geistlib/compare/v$version...HEAD"
+    expected_candidate="[$version]: https://github.com/geisten/geistlib/compare/v$previous...v$version"
+    grep -qFx "$expected_unreleased" CHANGELOG.md \
+        || note "CHANGELOG [Unreleased] link must be: $expected_unreleased"
+    grep -qFx "$expected_candidate" CHANGELOG.md \
+        || note "CHANGELOG [$version] link must be: $expected_candidate"
+fi
+
+# ---- 5. the tag is free (only when about to create it) --------------------
 if [ "$pre_tag" = "1" ]; then
     if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
         note "tag v$version already exists"
-    fi
-    git fetch -q --tags origin 2>/dev/null || true
-    if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
-        note "tag v$version exists on origin"
     fi
     if [ -n "$(git status --porcelain)" ]; then
         note "working tree is dirty; a tag would not describe what was tested"

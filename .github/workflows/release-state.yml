@@ -1,0 +1,27 @@
+name: Published release state
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: latest release matches main and is complete
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Verify public release state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/check-published-release.sh
