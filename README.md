@@ -43,7 +43,8 @@ prebuilt one-file binaries ship for Linux arm64 **and** x86_64 (swap the
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-orange.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#build-from-source)
-[![Status](https://img.shields.io/badge/status-experimental%20(v0.10.7)-yellow.svg)](#status)
+[![Latest release](https://img.shields.io/github/v/release/geisten/geistlib?display_name=tag&sort=semver&label=latest%20release)](https://github.com/geisten/geistlib/releases/latest)
+[![Status](https://img.shields.io/badge/status-experimental-yellow.svg)](#status)
 [![Discussions](https://img.shields.io/badge/Discussions-ask%20%26%20share-5865F2.svg)](https://github.com/geisten/geistlib/discussions)
 [![Good first issues](https://img.shields.io/github/issues/geisten/geistlib/good%20first%20issue?label=good%20first%20issue&color=7057ff)](https://github.com/geisten/geistlib/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
@@ -167,8 +168,10 @@ llama.cpp Metal on an M1 Max: [`docs/BACKENDS.md`](docs/BACKENDS.md).
 
 ## Status
 
-`geistlib` is **v0.10.7 — experimental**. The `STABLE` core (load → session →
-decode → tokenize) is the part to build on; `EXPERIMENTAL`-tagged surfaces
+`main` is the **experimental development branch**. For binaries and a citable,
+immutable version, use the [latest published release](https://github.com/geisten/geistlib/releases/latest).
+The `STABLE` core (load → session → decode → tokenize) is the part to build on;
+`EXPERIMENTAL`-tagged surfaces
 (KV-cache modes, speculative decode, multimodal attach, GPU backends) may
 change between minor versions. It runs Gemma 4 (text + vision + audio) end to
 end on the CPU backends and has a broad C test suite (`make test`).
@@ -231,18 +234,11 @@ The complete map is in [`docs/README.md`](docs/README.md).
 
 ## Citation
 
-Using geistlib in research? A "Cite this repository" button is on the repo
-sidebar (from [`CITATION.cff`](CITATION.cff)), or use:
-
-```bibtex
-@software{schlegel_geistlib_2026,
-  author  = {Schlegel, Germar},
-  title   = {geistlib: a dependency-free inference engine for small LLMs},
-  year    = {2026},
-  version = {0.10.7},
-  url     = {https://github.com/geisten/geistlib}
-}
-```
+Using geistlib in research? Open the exact version you used on the
+[release page](https://github.com/geisten/geistlib/releases/latest), then use
+GitHub's "Cite this repository" action. Each release carries its matching
+[`CITATION.cff`](CITATION.cff); `main` deliberately does not hard-code the
+published release number.
 
 ## License
 

@@ -8,6 +8,21 @@ minor release.
 
 ## [Unreleased]
 
+## [0.10.8] — 2026-09-04
+
+First published release after 0.10.1. It includes the changes that were staged
+in source as 0.10.2 through 0.10.7 but never published as Git tags or GitHub
+Releases, plus the work subsequently accumulated under `[Unreleased]`.
+
+### Release integrity
+- Reconnected the published `v0.10.1` lineage to `main` without changing its
+  tree, deleting commits, or rewriting either history. Releases now run as one
+  manually approved transaction from the exact `main` SHA: validate the
+  candidate, build every platform, create and verify a draft, publish the tag
+  and GitHub Release, then verify the public latest-release state. CI rejects
+  incomplete version bumps, the README derives its displayed version from the
+  latest GitHub Release, and a scheduled check detects future drift.
+
 ### Added
 - **Per-tensor gains for forward-only fine-tuning** (`@stability
   EXPERIMENTAL`, `GEIST_TUNE` builds): `geist_model_gains` exposes the
@@ -193,7 +208,7 @@ minor release.
   at 626 → 734 t/s; the 27B UD re-baselines at 94 pp (was 91.6 —
   protocol noise; `GEIST_M_MAX` 64/256 is a wash at 27B shapes).
 
-## [0.10.7] — 2026-08-30
+## 0.10.7 source milestone — 2026-08-30 (not independently published)
 
 ### Fixed
 - **Allocation-free linear-kernel contract, batch 2** (#336): the rest of the
@@ -231,7 +246,7 @@ minor release.
   whose M>1 path is rebound to the dequant trampoline is held to the same
   standard.
 
-## [0.10.6] — 2026-08-30
+## 0.10.6 source milestone — 2026-08-30 (not independently published)
 
 ### Fixed
 - **Allocation-free linear-kernel contract, batch 1** (#336): `geist_weight.h`
@@ -260,7 +275,7 @@ minor release.
   Batch 1 of several, per the ticket. Still allocating per call: IQ2_S,
   IQ3_S, IQ4_XS, Q4_0/Q4_1, Q5_K's M>1 path, and the x86 side.
 
-## [0.10.5] — 2026-08-30
+## 0.10.5 source milestone — 2026-08-30 (not independently published)
 
 ### Changed
 - **C23 length-first migration, batch 3** (#328): twenty helpers across the
@@ -287,7 +302,7 @@ minor release.
   them the `linear_*` GEMV/GEMM family in `quant.h` — deliberately
   deferred, see #328.
 
-## [0.10.4] — 2026-08-30
+## 0.10.4 source milestone — 2026-08-30 (not independently published)
 
 ### Added
 - **`AGENT.md`** — the coding rules the source already cited. Twenty
@@ -337,7 +352,7 @@ minor release.
   instead of re-spelling the signature inline, which had silently drifted
   from `geist_weight.h`.
 
-## [0.10.3] — 2026-08-30
+## 0.10.3 source milestone — 2026-08-30 (not independently published)
 
 ### Changed
 - **C23 API style, documented and first batch migrated** (#328): the
@@ -364,7 +379,7 @@ minor release.
 - **`NULL` retired from live code**: 81 occurrences across 7 files become
   `nullptr`. The 25 that remain are prose in comments.
 
-## [0.10.2] — 2026-08-30
+## 0.10.2 source milestone — 2026-08-30 (not independently published)
 
 Bug-fix release: the eight open correctness and hardening tickets against
 the GGUF reader, the weight resolvers, the transformer forward path, the
@@ -430,7 +445,7 @@ audio streaming lifecycle, and the shared profiler.
   backend cap `dn_subchunk`. The remaining 4B gap to llama.cpp Metal
   is GEMM-chain tuning (~500 ms of the wall), tracked in #322.
 
-## [0.10.1] — 2026-08-30
+## [0.10.1] — 2026-08-29
 
 ### Added
 - **IQ4_XS int8 mN prefill tile kernel** (#321): replaces the
@@ -1357,12 +1372,20 @@ First public release.
   reproducible perf benchmark harness (`make bench-small`).
 - `examples/simple_generate` demonstrating the stable text-generation core.
 
-[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.6...HEAD
-[0.10.6]: https://github.com/geisten/geistlib/compare/v0.10.5...v0.10.6
-[0.10.5]: https://github.com/geisten/geistlib/compare/v0.10.4...v0.10.5
-[0.10.4]: https://github.com/geisten/geistlib/compare/v0.10.3...v0.10.4
-[0.10.3]: https://github.com/geisten/geistlib/compare/v0.10.2...v0.10.3
-[0.10.2]: https://github.com/geisten/geistlib/compare/v0.10.1...v0.10.2
+[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.8...HEAD
+[0.10.8]: https://github.com/geisten/geistlib/compare/v0.10.1...v0.10.8
+[0.10.1]: https://github.com/geisten/geistlib/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/geisten/geistlib/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/geisten/geistlib/compare/v0.8.2...v0.9.0
+[0.8.2]: https://github.com/geisten/geistlib/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/geisten/geistlib/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/geisten/geistlib/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/geisten/geistlib/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/geisten/geistlib/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/geisten/geistlib/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/geisten/geistlib/compare/v0.3.3...v0.4.0
+[0.3.3]: https://github.com/geisten/geistlib/compare/v0.3.2...v0.3.3
+[0.3.1]: https://github.com/geisten/geistlib/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/geisten/geistlib/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/geisten/geistlib/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/geisten/geistlib/compare/v0.1.3...v0.2.0

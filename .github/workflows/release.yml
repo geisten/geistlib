@@ -2,18 +2,31 @@ name: Release
 
 # Build the per-platform libgeist SDK (ROADMAP.md, "Distribution").
 # Ships macos-arm64, linux-arm64 and linux-x86_64 (AVX-512) — all dependency-free
-# static/self-contained builds. Windows still waits. Runs on a version tag, or
-# manually for a dry run (artifacts upload either way; a tag also attaches them
-# to the Release).
+# static/self-contained builds. Windows still waits. A maintainer starts this
+# workflow once from main; it validates and pins that exact SHA, builds every
+# artifact, prepares a draft, verifies it, then publishes the tag and release.
+# There is no separate `git tag` / `git push` step to forget.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
+      version:
+        description: 'Version to publish, without the v prefix (for example 0.10.8). Must match include/geist.h.'
+        required: true
+        type: string
+      ref:
+        description: 'Source ref. Releases must resolve to the current main tip.'
+        required: true
+        default: main
+        type: string
       embed_model_url:
         description: 'GGUF URL to bake into the single-file `geist-<platform>-embedded` artifact (<~1.5 GB). Empty = the default below (BitNet b1.58 2B-4T).'
         required: false
         default: ''
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write   # attach assets to the GitHub Release on a tag
@@ -23,34 +36,77 @@ permissions:
 # binary with a model baked in — are built by whoever links this engine.
 
 jobs:
-  # Refuse to publish a release whose binary would print a different version than
-  # the tag, or that is internally inconsistent. Source of truth: include/geist.h.
-  #
-  # Only the tag comparison lives here — it is the one fact a workflow knows and
-  # a script cannot. Everything else is scripts/check-release.sh, so `make
-  # release-check` before tagging and this gate ask the same question. Two
-  # copies of "what a release must satisfy" is where the drift starts.
   version-guard:
-    name: tag == geist.h version, release is self-consistent
+    name: pin main SHA and validate release candidate
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    outputs:
+      sha: ${{ steps.candidate.outputs.sha }}
+      tag: ${{ steps.candidate.outputs.tag }}
+      version: ${{ steps.candidate.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - name: Assert the tag matches GEIST_VERSION_STRING
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Resolve and validate the candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
+          set -eu
+          git fetch -q --tags origin main
+          sha=$(git rev-parse HEAD)
+          main_sha=$(git rev-parse origin/main)
+          test "$sha" = "$main_sha" || {
+            echo "::error::release ref resolves to $sha, but current main is $main_sha"
+            exit 1
+          }
           hdr=$(sed -n 's/.*GEIST_VERSION_STRING "\([0-9][0-9.]*\)".*/\1/p' include/geist.h | head -1)
-          tag="${GITHUB_REF_NAME#v}"
-          echo "geist.h=$hdr  tag=$tag"
-          test "$hdr" = "$tag" || { echo "::error::include/geist.h version $hdr != tag $tag — bump include/geist.h"; exit 1; }
-      # No --pre-tag: the tag exists by now, so its absence is not the question.
+          test "$hdr" = "$REQUESTED_VERSION" || {
+            echo "::error::requested $REQUESTED_VERSION, but include/geist.h says $hdr"
+            exit 1
+          }
+          tag="v$hdr"
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+          git merge-base --is-ancestor "$latest^{}" HEAD || {
+            echo "::error::published release $latest is not an ancestor of $sha"
+            exit 1
+          }
+
+          # A rerun may resume an existing draft for this exact SHA. A published
+          # release or a tag pointing elsewhere is never overwritten.
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+            test "$draft" = true || {
+              echo "::error::$tag is already published"
+              exit 1
+            }
+            git fetch -q origin "refs/tags/$tag:refs/tags/$tag"
+            tag_sha=$(git rev-list -n 1 "$tag")
+            test "$tag_sha" = "$sha" || {
+              echo "::error::$tag points to $tag_sha, expected $sha"
+              exit 1
+            }
+          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::$tag exists without a resumable draft release"
+            exit 1
+          fi
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$hdr" >> "$GITHUB_OUTPUT"
       - name: Release self-consistency
         run: sh scripts/check-release.sh
 
   linux-arm64:
     name: linux-arm64 (musl-static, dependency-free)
+    needs: version-guard
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version-guard.outputs.sha }}
       # Build fully static against **musl** (not glibc): the result has literally
       # no libc dependency, is more portable than a glibc -static binary (no NSS /
       # glibc-version quirks), and is much smaller. Alpine 3.21 ships gcc 14
@@ -132,9 +188,12 @@ jobs:
 
   linux-x86_64:
     name: linux-x86_64 (musl-static, AVX-512, dependency-free)
+    needs: version-guard
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version-guard.outputs.sha }}
       # Same musl-static recipe as arm64, on x86_64. BACKENDS="cpu_x86 cpu_scalar"
       # turns on the native AVX-512/VNNI backend (x86_64 still defaults to
       # cpu_scalar). Baseline is x86-64-v3 (Haswell / Zen+: AVX2+FMA) with the
@@ -206,9 +265,12 @@ jobs:
 
   macos-arm64:
     name: macos-arm64 (Accelerate/AMX)
+    needs: version-guard
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version-guard.outputs.sha }}
       - name: Install libomp
         run: brew install libomp
       # GEIST_STATIC_OMP=1 -> mk/target-mac-omp.mk links the static libomp.a
@@ -246,26 +308,66 @@ jobs:
           path: libgeist-macos-arm64.tar.gz
 
   release:
-    name: attach artifacts to the Release
+    name: verify draft and publish release
     needs: [version-guard, linux-arm64, linux-x86_64, macos-arm64]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    environment: release
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version-guard.outputs.sha }}
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: dist
-      - name: Publish to the GitHub Release
+      - name: Create, verify and publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        # `gh release upload` needs the Release to already exist; a pushed tag
-        # alone is not a Release. Create it from the tag (auto-generated notes)
-        # if absent, then attach the per-platform tarballs. Idempotent.
+          RELEASE_SHA: ${{ needs.version-guard.outputs.sha }}
+          RELEASE_TAG: ${{ needs.version-guard.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.version-guard.outputs.version }}
         run: |
+          set -eu
           find dist \( -name '*.tar.gz' -o -name 'geist-*' \) -type f -exec sha256sum {} \; | \
             sed 's#  dist/[^/]*/#  #' | sort -k2 > SHA256SUMS
           chmod +x dist/*/geist-* || true
-          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
-            || gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
-                 --title "geist ${GITHUB_REF_NAME}" --generate-notes --verify-tag
-          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS dist/*/*.tar.gz dist/*/geist-* \
-            --repo "${GITHUB_REPOSITORY}" --clobber
+
+          printf '%s\n' \
+            SHA256SUMS \
+            geist-bitnet-linux-arm64 \
+            geist-bitnet-linux-x86_64 \
+            geist-linux-arm64 \
+            geist-linux-x86_64 \
+            libgeist-linux-arm64.tar.gz \
+            libgeist-linux-x86_64.tar.gz \
+            libgeist-macos-arm64.tar.gz | sort > /tmp/expected-assets
+          find dist \( -name '*.tar.gz' -o -name 'geist-*' \) -type f \
+            -exec basename {} \; | sort > /tmp/built-assets
+          { printf '%s\n' SHA256SUMS; cat /tmp/built-assets; } | sort > /tmp/all-built-assets
+          diff -u /tmp/expected-assets /tmp/all-built-assets
+
+          awk -v version="$RELEASE_VERSION" '
+            $0 ~ "^## \\[" version "\\] — " { found=1; next }
+            found && /^## \[[0-9]/ { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          test -s /tmp/release-notes.md
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" SHA256SUMS dist/*/*.tar.gz dist/*/geist-* \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" SHA256SUMS dist/*/*.tar.gz dist/*/geist-* \
+              --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --draft \
+              --title "geist $RELEASE_TAG" --notes-file /tmp/release-notes.md
+          fi
+
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' | sort > /tmp/uploaded-assets
+          diff -u /tmp/expected-assets /tmp/uploaded-assets
+
+          git fetch -q origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$RELEASE_SHA"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          sh scripts/check-published-release.sh
