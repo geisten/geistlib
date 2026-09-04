@@ -164,6 +164,10 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     ctx->compute_kv = P != nullptr ? P->compute_kv : !L->is_kv_shared;
     ctx->apply_bitnet_input_quant = plan_apply_sub_ln;
     ctx->apply_sub_ln             = plan_apply_sub_ln && st->runtime_flags.bitnet_sub_ln_enabled;
+    /* Needs the scratch slice as well as the flag: a session built before
+     * the family was known would have no proj_in buffer to normalise into. */
+    ctx->apply_projection_input_norms =
+            st->config.has_projection_input_norms && sess->scratch_proj_in != nullptr;
     ctx->apply_gemma_attn_norms =
             P != nullptr ? P->apply_gemma_attn_norms : st->config.has_gemma_attn_norms;
     ctx->apply_qk_norms   = P != nullptr ? P->apply_qk_norms : st->config.has_qk_norms;
@@ -266,40 +270,41 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
      * are invalid for the separately loaded trailing block. */
     struct transformer_layer_forward_ctx ctx;
     transformer_layer_ctx_init(&ctx, sess, 0, q_position, seq, false, h_in_buf, nullptr, h_out_buf);
-    ctx.L                        = layer;
-    ctx.P                        = nullptr;
-    ctx.layer_idx                = layer->layer_idx;
-    ctx.kv_src                   = -1;
-    ctx.compute_kv               = true;
-    ctx.apply_bitnet_input_quant = false;
-    ctx.apply_sub_ln             = false;
-    ctx.apply_gemma_attn_norms   = false;
-    ctx.apply_qk_norms           = true;
-    ctx.rope_interleaved         = sess->model->config.rope_interleaved;
-    ctx.apply_ple                = false;
-    ctx.run_ple                  = false;
-    ctx.kv_int8_enabled          = false;
-    ctx.kv_kivi_enabled          = false;
-    ctx.kv_f16_enabled           = false;
-    ctx.ffn_activation           = GEIST_FFN_SWIGLU;
-    ctx.hd                       = layer->head_dim;
-    ctx.q_out                    = layer->q_out;
-    ctx.kv_out                   = layer->kv_out;
-    ctx.inter                    = layer->intermediate;
-    ctx.k_cache_buf              = sess->mtp_k_cache;
-    ctx.v_cache_buf              = sess->mtp_v_cache;
-    ctx.k_cache_q8_buf           = nullptr;
-    ctx.v_cache_q8_buf           = nullptr;
-    ctx.k_cache_scale_buf        = nullptr;
-    ctx.v_cache_scale_buf        = nullptr;
-    ctx.k_kivi_q_buf             = nullptr;
-    ctx.v_kivi_q_buf             = nullptr;
-    ctx.k_kivi_scales_buf        = nullptr;
-    ctx.k_kivi_zeros_buf         = nullptr;
-    ctx.v_kivi_scales_buf        = nullptr;
-    ctx.v_kivi_zeros_buf         = nullptr;
-    ctx.k_residual_buf           = nullptr;
-    ctx.v_residual_buf           = nullptr;
+    ctx.L                            = layer;
+    ctx.P                            = nullptr;
+    ctx.layer_idx                    = layer->layer_idx;
+    ctx.kv_src                       = -1;
+    ctx.compute_kv                   = true;
+    ctx.apply_bitnet_input_quant     = false;
+    ctx.apply_sub_ln                 = false;
+    ctx.apply_projection_input_norms = false;
+    ctx.apply_gemma_attn_norms       = false;
+    ctx.apply_qk_norms               = true;
+    ctx.rope_interleaved             = sess->model->config.rope_interleaved;
+    ctx.apply_ple                    = false;
+    ctx.run_ple                      = false;
+    ctx.kv_int8_enabled              = false;
+    ctx.kv_kivi_enabled              = false;
+    ctx.kv_f16_enabled               = false;
+    ctx.ffn_activation               = GEIST_FFN_SWIGLU;
+    ctx.hd                           = layer->head_dim;
+    ctx.q_out                        = layer->q_out;
+    ctx.kv_out                       = layer->kv_out;
+    ctx.inter                        = layer->intermediate;
+    ctx.k_cache_buf                  = sess->mtp_k_cache;
+    ctx.v_cache_buf                  = sess->mtp_v_cache;
+    ctx.k_cache_q8_buf               = nullptr;
+    ctx.v_cache_q8_buf               = nullptr;
+    ctx.k_cache_scale_buf            = nullptr;
+    ctx.v_cache_scale_buf            = nullptr;
+    ctx.k_kivi_q_buf                 = nullptr;
+    ctx.v_kivi_q_buf                 = nullptr;
+    ctx.k_kivi_scales_buf            = nullptr;
+    ctx.k_kivi_zeros_buf             = nullptr;
+    ctx.v_kivi_scales_buf            = nullptr;
+    ctx.v_kivi_zeros_buf             = nullptr;
+    ctx.k_residual_buf               = nullptr;
+    ctx.v_residual_buf               = nullptr;
 
     frame_arena_reset(&sess->scratch_arena);
     enum geist_status s = transformer_layer_run_attention_block(&ctx);

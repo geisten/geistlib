@@ -21,6 +21,7 @@ struct transformer_scratch_plan {
     size_t hidden_per;
     size_t vocab;
     size_t ones;
+    size_t proj_in; /* 0 unless the family has per-projection input norms */
     size_t pool_align_slack;
     size_t pool_bytes;
 };

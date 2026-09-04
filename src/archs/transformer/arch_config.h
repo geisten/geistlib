@@ -146,6 +146,25 @@ struct geist_arch_config {
     bool                           has_sub_ln;
     enum geist_ffn_activation_kind ffn_activation;
 
+    /* ---- BitNet embedding models (July 2026): an RMSNorm on the INPUT of
+     * every BitLinear projection, seven per layer — the pattern upstream
+     * calls "per-projection norms" and that no standard architecture has
+     * (docs/BITNET_EMBEDDINGS_PLAN.md).
+     *
+     * Two of the seven already have a home: the norm before o_proj is
+     * shaped [q_out] and the one before down_proj is [intermediate],
+     * which is exactly where has_sub_ln's attn_sub_norm / ffn_sub_norm
+     * sit. Those two load into the existing fields and the existing
+     * forward code applies them, so this flag adds only the five that
+     * precede q, k, v, gate and up — all shaped [d_model].
+     *
+     * The five are the reason the flag also has a cost: q/k/v share one
+     * normalised input today (and so do gate/up), which is what lets the
+     * fused triple-QKV and gate_up kernels run. Per-projection norms give
+     * each its own input, so those fusions are disabled while this is
+     * set — see exec_plan.c. */
+    bool has_projection_input_norms;
+
     /* RoPE pair convention.
      *   false: NEOX-style split pairs (i, i + head_dim/2). Gemma 3/4,
      *          BitNet 2B-4T, every arch where llama.cpp's

@@ -112,11 +112,22 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         return s;
     }
 
-    if (ctx->apply_bitnet_input_quant) {
+    /* With per-projection norms the shared buffer is not what any matmul
+     * reads — each projection re-normalises it into scratch_proj_in and
+     * the quant happens there instead (norm_projection_input). */
+    if (ctx->apply_bitnet_input_quant && !ctx->apply_projection_input_norms) {
         t0 = profile ? transformer_profile_now_ns() : 0;
         apply_bitnet_input_quant_inplace(v, sess->scratch_normed, ctx->seq, st->d_model);
         transformer_profile_add(&g_attn_profile, ATTN_PROFILE_NORM, t0);
     }
+
+    /* Per-projection input norms: q, k and v each read their own
+     * normalisation of t_normed_2d out of this one scratch view, written
+     * immediately before the matmul that consumes it. */
+    const bool          proj_norms = ctx->apply_projection_input_norms;
+    struct geist_tensor t_proj_in_2d =
+            proj_norms ? view_2d(sess->scratch_proj_in, ctx->SEQ, st->d_model)
+                       : (struct geist_tensor) {0};
 
     struct geist_tensor t_q_2d = view_2d(sess->scratch_q, ctx->SEQ, (int64_t) ctx->q_out);
     t0                         = profile ? transformer_profile_now_ns() : 0;
@@ -202,6 +213,45 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
             }
         }
         transformer_profile_add(&g_attn_profile, ATTN_PROFILE_QKV, t0);
+    } else if (ctx->compute_kv && proj_norms) {
+        /* q, k and v no longer share an input, so the fused triple call
+         * cannot express this. Three sequential projections, each reading
+         * its own normalisation out of scratch_proj_in. */
+        struct geist_tensor t_k_2d = view_2d(sess->scratch_k, ctx->SEQ, (int64_t) ctx->kv_out);
+        struct geist_tensor t_v_2d = view_2d(sess->scratch_v, ctx->SEQ, (int64_t) ctx->kv_out);
+
+        const struct {
+            const struct geist_tensor *norm_w_src;
+            struct geist_buffer       *out_buf;
+            const struct geist_weight *w;
+            const struct geist_tensor *proj;
+            struct geist_tensor       *out_view;
+        } steps[] = {
+                {&L->q_norm_in, sess->scratch_q, &L->q_proj_w, &L->q_proj, &t_q_2d},
+                {&L->k_norm_in, sess->scratch_k, &L->k_proj_w, &L->k_proj, &t_k_2d},
+                {&L->v_norm_in, sess->scratch_v, &L->v_proj_w, &L->v_proj, &t_v_2d},
+        };
+        for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+            struct geist_tensor w_view = view_1d(steps[i].norm_w_src->buffer, st->d_model);
+            s                          = norm_projection_input(
+                    (size_t) st->d_model, &w_view, &t_normed_2d, &t_proj_in_2d, ctx);
+            if (s != GEIST_OK) {
+                return s;
+            }
+            s = linear_w_or_legacy(be,
+                                   v,
+                                   sess->scratch_proj_in,
+                                   steps[i].out_buf,
+                                   steps[i].w,
+                                   ctx->seq,
+                                   &t_proj_in_2d,
+                                   steps[i].proj,
+                                   steps[i].out_view);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        }
+        transformer_profile_add(&g_attn_profile, ATTN_PROFILE_QKV, t0);
     } else if (ctx->compute_kv) {
         struct geist_tensor t_k_2d = view_2d(sess->scratch_k, ctx->SEQ, (int64_t) ctx->kv_out);
         struct geist_tensor t_v_2d = view_2d(sess->scratch_v, ctx->SEQ, (int64_t) ctx->kv_out);
@@ -227,13 +277,27 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
             return s;
         }
     } else {
+        /* KV-shared layer: only q is projected here, but it still reads
+         * through its own input norm when the family has them. */
+        struct geist_buffer       *q_src_buf  = sess->scratch_normed;
+        const struct geist_tensor *q_src_view = &t_normed_2d;
+        if (proj_norms) {
+            struct geist_tensor w_view = view_1d(L->q_norm_in.buffer, st->d_model);
+            s                          = norm_projection_input(
+                    (size_t) st->d_model, &w_view, &t_normed_2d, &t_proj_in_2d, ctx);
+            if (s != GEIST_OK) {
+                return s;
+            }
+            q_src_buf  = sess->scratch_proj_in;
+            q_src_view = &t_proj_in_2d;
+        }
         s = linear_w_or_legacy(be,
                                v,
-                               sess->scratch_normed,
+                               q_src_buf,
                                sess->scratch_q,
                                &L->q_proj_w,
                                ctx->seq,
-                               &t_normed_2d,
+                               q_src_view,
                                &L->q_proj,
                                &t_q_2d);
         transformer_profile_add(&g_attn_profile, ATTN_PROFILE_QKV, t0);

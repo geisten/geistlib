@@ -290,6 +290,21 @@ static void populate_qwen3(struct gguf_ctx *gguf, struct transformer_arch_state 
     }
     if (gguf_get_meta_f32(gguf, "qwen3.attention.layer_norm_rms_epsilon", &f))
         st->config.rms_eps = f;
+
+    /* BitNet embedding models (July 2026) ship a Qwen3 backbone with an
+     * RMSNorm on every projection's input. They are otherwise a plain
+     * qwen3 GGUF, so the family is selected as usual and only this key
+     * distinguishes them; a stock Qwen3 GGUF has no such key and takes
+     * the normal path (docs/BITNET_EMBEDDINGS_PLAN.md).
+     *
+     * Written by tools/convert_bitnet_embedding.py. Keyed on the tensors
+     * as well: metadata alone must not promise norms the file lacks. */
+    bool proj_norms = false;
+    if (gguf_get_meta_bool(gguf, "bitnet.embedding.projection_input_norms", &proj_norms) &&
+        proj_norms && gguf_get_tensor(gguf, "blk.0.attn_q_norm_in.weight") != nullptr) {
+        st->config.has_projection_input_norms = true;
+    }
+
     st->hidden_per_layer = 0;
     st->ple_out          = 0;
 }

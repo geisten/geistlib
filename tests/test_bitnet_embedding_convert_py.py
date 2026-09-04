@@ -114,6 +114,35 @@ def test_name_mapping() -> None:
     )
 
 
+def test_norm_in_names_match_the_loader() -> None:
+    """The seven per-projection norms must land on the names the loader reads.
+
+    src/archs/transformer/weight_load/layer_wiring.c looks these up by
+    literal name. A rename on either side would not fail loudly — the
+    tensor would simply never be found — so pin the contract here.
+    Two of them (attn_output_norm_in, ffn_down_norm_in) are loaded into
+    the existing attn_sub_norm / ffn_sub_norm slots.
+    """
+    expected = {
+        "self_attn.q_proj.norm.weight": "blk.5.attn_q_norm_in.weight",
+        "self_attn.k_proj.norm.weight": "blk.5.attn_k_norm_in.weight",
+        "self_attn.v_proj.norm.weight": "blk.5.attn_v_norm_in.weight",
+        "self_attn.o_proj.norm.weight": "blk.5.attn_output_norm_in.weight",
+        "mlp.gate_proj.norm.weight": "blk.5.ffn_gate_norm_in.weight",
+        "mlp.up_proj.norm.weight": "blk.5.ffn_up_norm_in.weight",
+        "mlp.down_proj.norm.weight": "blk.5.ffn_down_norm_in.weight",
+    }
+    got = {
+        suffix: map_tensor_name(f"model.layers.5.{suffix}", LAYER_MAP_QWEN3)
+        for suffix in expected
+    }
+    check(
+        "all seven per-projection norms map to the loader's names",
+        got == expected,
+        str({k: v for k, v in got.items() if v != expected[k]}),
+    )
+
+
 def test_f16_overflow_is_loud() -> None:
     # 1e38 is finite in float32 and well past float16's 65504, so the guard
     # is what has to catch it. (1e39 would already be inf as a float32 and
@@ -201,6 +230,7 @@ def main() -> int:
         test_scale_is_a_multiplier,
         test_rejects_unrepresentable_width,
         test_name_mapping,
+        test_norm_in_names_match_the_loader,
         test_f16_overflow_is_loud,
         test_end_to_end,
     ):

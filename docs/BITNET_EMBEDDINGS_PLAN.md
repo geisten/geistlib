@@ -1,9 +1,16 @@
 # BitNet embedding models (July 2026) — analysis and implementation plan
 
-Status: **proposal**. Nothing here is implemented yet. This document records
-what Microsoft released in July 2026, which of it is reproducible, and what
-geistlib would have to grow to run it. Sources are pinned inline so the claims
-can be re-checked against upstream.
+Status: **phases 0 and 1 implemented; the models do not run yet.** This
+document records what Microsoft released in July 2026, which of it is
+reproducible, and what geistlib has to grow to run it. Sources are pinned
+inline so the claims can be re-checked against upstream.
+
+Where things stand: the converter (phase 0) and the per-projection input norms
+(phase 1) are in the tree and tested. What is missing before anything can
+actually produce an embedding is phase 2 — the pooling path and the API — and,
+underneath that, a numerical oracle: **no part of this has been run against
+real BitNet embedding weights**, which are reachable from neither CI nor the
+development container. The tests pin structure and bookkeeping, not values.
 
 Upstream sources read for this analysis:
 
@@ -71,9 +78,15 @@ That is **7 extra norm tensors per layer**, named `blk.{i}.*_norm_in.weight` in
 the GGUF mapping (`attn_q_norm_in`, `attn_k_norm_in`, `attn_v_norm_in`,
 `attn_output_norm_in`, `ffn_gate_norm_in`, `ffn_up_norm_in`,
 `ffn_down_norm_in`). Upstream states plainly that this pattern exists in
-neither standard Qwen3/Gemma3 nor standard BitNet — BitNet b1.58's SubLN sits
-at *different* positions (after attention, after gate*up). geistlib has SubLN
-at those b1.58 positions, not these.
+neither standard Qwen3/Gemma3 nor standard BitNet.
+
+**Two of the seven are less new than that makes them sound.** BitNet b1.58's
+SubLN is a norm on o_proj's input (`[q_out]`) and on down_proj's input
+(`[intermediate]`) — which is exactly what `o_proj.norm` and `down_proj.norm`
+are here, same shape, same position. geistlib already carries those two as
+`attn_sub_norm` / `ffn_sub_norm` and already applies them in the forward path.
+The genuinely new ones are the **five** that precede q, k, v, gate and up, all
+`[d_model]`. Phase 1 below is sized accordingly.
 
 ---
 
@@ -177,15 +190,18 @@ its QK-norms and its tokenizer all land on existing, exercised code paths.
 
 ### What is genuinely missing
 
-**A. Per-projection input RMSNorm (7 tensors/layer).** The core engine work.
-geistlib's `attn_sub_norm` / `ffn_sub_norm` are two tensors at the wrong
-positions; these models need a norm on the *input* of each of q/k/v/o/gate/up/
-down. Touches `struct transformer_layer` (`arch_state.h`), the loader
-(`weight_load/layer_wiring.c`), and both forward paths (`forward/layer_attn.c`,
-`forward/layer_ffn.c`). It also interacts with the fusion planner: `exec_plan.c`
-already disables GEGLU tile fusion and the fused scaled-GELU path when a
-sub-norm is present (`exec_plan.c:111,135,142`) — seven more norms will gate
-more fusions, and the cost of that has to be measured, not assumed.
+**A. Per-projection input RMSNorm — five new tensors per layer.** The core
+engine work, and the subject of Phase 1. The norms before o_proj and down_proj
+land in geistlib's existing `attn_sub_norm` / `ffn_sub_norm` slots; the five
+before q, k, v, gate and up are new. Touches the layer struct
+(`arch_state.h`), the loader (`weight_load/layer_wiring.c`), and both forward
+paths (`forward/layer_attn.c`, `forward/layer_ffn.c`).
+
+The real cost is not the norms themselves but what they cost the fusions:
+q/k/v share one normalised input today, and so do gate/up, which is precisely
+what the fused triple-QKV and gate_up kernels are built on. Per-projection
+norms give each projection its own input, so those paths cannot express the
+computation at all.
 
 **B. A `gemma3` architecture family** (for the 270M only). `gemma3` is not in
 `REGISTRY` or `geist_arch_transformer_gguf_names` (`arch_family.c:637-666`);
@@ -261,18 +277,44 @@ converter* — the scale convention in particular is inferred from geistlib's
 working b1.58 path, not from a byte-diff against a Microsoft-produced
 embedding GGUF.
 
-### Phase 1 — Per-projection input RMSNorm (the 0.6B path)
+### Phase 1 — Per-projection input RMSNorm (the 0.6B path) — **implemented, not yet numerically verified**
 
-- Extend `struct transformer_layer` with the seven `*_norm_in` tensors; load
-  them in `weight_load/layer_wiring.c` behind a config flag
-  (`has_projection_input_norms`) so no existing family pays for them.
-- Apply them in `forward/layer_attn.c` and `forward/layer_ffn.c` on each
-  projection's input, before activation quantization.
-- Re-check `exec_plan.c` fusion gating and record what each newly-disabled
-  fusion costs.
-- **Done when:** per-layer hidden states match the reference within the
-  existing logit tolerance, on both NEON and x86, and `make MODE=asan test`
-  is clean.
+Shipped:
+
+- `config.has_projection_input_norms`, set from
+  `bitnet.embedding.projection_input_norms` and confirmed against the tensors
+  themselves — metadata alone must not promise norms the file lacks
+  (`arch_family.c`, `populate_qwen3`).
+- Five new layer tensors (`q_norm_in`, `k_norm_in`, `v_norm_in`,
+  `gate_norm_in`, `up_norm_in`); the o_proj and down_proj norms load into the
+  existing `attn_sub_norm` / `ffn_sub_norm` slots under their own GGUF names.
+- One extra scratch slice, `scratch_proj_in` — sized 0 for every family
+  without the norms, so nothing else pays for it.
+- Forward: each of q/k/v/gate/up re-normalises the shared attn_norm/ffn_norm
+  output into that slice immediately before its matmul. The BitNet activation
+  fake-quant moves with it: what the matmul reads is what has to be quantised,
+  so it applies to the per-projection vector, not the shared one.
+- Fusion gating: the fused triple-QKV path and all three gate_up fusions are
+  disabled while the flag is set, because they assume a shared input.
+
+**Verified:** builds under `-Werror` with gcc-14; `make test-unit` 37 passed /
+0 failed with no regressions; `make MODE=asan test-unit` clean; `make
+format-check` clean under the pinned clang-format 22; a new
+`tests/test_projection_input_norms_unit.c` pins the scratch conditionality and
+pool accounting, and the converter-side test pins the seven GGUF names the
+loader looks up.
+
+**Not verified, and this is the honest gap:** no numerical check against the
+real model. Every test here pins structure and bookkeeping, not values — the
+forward path has never run on real BitNet embedding weights, because they are
+not reachable from CI or this environment. The Phase 0 reference vectors are
+the missing oracle, and until they exist Phase 1 should be read as "wired up
+and self-consistent", not "correct".
+
+- **Still to do:** per-layer hidden states matching the reference within the
+  existing logit tolerance, on both NEON and x86; and the measurement of what
+  the disabled fusions actually cost, which the plan has treated as a
+  hypothesis from the start.
 
 ### Phase 2 — Pooling and the embedding API
 
@@ -343,7 +385,7 @@ embedding GGUF.
 | Phase | Size | Main risk |
 | :-- | :-- | :-- |
 | 0 Converter | S | ✅ done for the 0.6B; residual risk is the scale convention, unverified against a Microsoft-produced embedding GGUF |
-| 1 Projection norms | **L** | Fusion regressions in `exec_plan.c`; the hot path is the thing this repo guards hardest |
+| 1 Projection norms | **M** | ✅ implemented; smaller than feared (five new tensors, not seven) but numerically unverified, and the disabled fusions are still unmeasured |
 | 2 Pooling + API | M | API shape is a public commitment; get it reviewed before it ships |
 | 3 Gates | M | MTEB tooling is Python-side; keep it in `tools/`, out of the engine |
 | 4 gemma3 | M | Gemma3 ≠ Gemma4 in ways not yet mapped; may not be worth it |
