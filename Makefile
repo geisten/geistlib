@@ -23,7 +23,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run agent-contract-smoke release-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
+.PHONY: all lib bin run agent-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -59,6 +59,11 @@ bin: $(BIN_TARGETS)
 # at the moment of tagging. See scripts/check-release.sh.
 release-check:
 	@sh scripts/check-release.sh --pre-tag
+
+# Networked postcondition: what /releases/latest serves agrees with main and
+# carries the complete asset set. CI runs this daily and after publication.
+release-state-check:
+	@sh scripts/check-published-release.sh
 
 AGENT_CONTRACT_SMOKE := $(BIN_DIR)/examples/agent_contract_smoke
 agent-contract-smoke: $(AGENT_CONTRACT_SMOKE)
@@ -427,7 +432,8 @@ help:
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
 	"" \
-	"Release: make release-check                  version sites, API contract, changelog" \
+	"Release: make release-check                  candidate metadata and published ancestry" \
+	"         make release-state-check            GitHub latest tag, ancestry and assets" \
 	"" \
 	"Targets: mac, mac-omp (Accelerate), pi5 (OpenBLAS+OpenMP), linux" \
 	"  cross-compile:   make TARGET=pi5 CC=aarch64-linux-gnu-gcc-14" \
