@@ -16,8 +16,9 @@ passes.
    not allow a personal repository to select the built-in GitHub Actions app
    as the sole creation bypass, so the workflow guard and postcondition enforce
    the creation policy while the ruleset makes published tags immutable.
-4. Enable immutable releases after the first run of the new workflow has been
-   verified.
+4. Enable immutable releases before publishing. The workflow deliberately
+   creates a draft, attaches and verifies every asset, and only then publishes
+   it; publication makes the tag and assets immutable.
 
 Repository settings are part of the release boundary. They cannot be enforced
 by files in this checkout, so review them whenever release ownership changes.
