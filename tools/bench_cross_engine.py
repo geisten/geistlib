@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Run a paired, CPU-only geist versus llama.cpp throughput benchmark.
+"""Run a paired geist versus llama.cpp throughput benchmark.
 
 The two engines use the same model bytes, workload shapes, thread counts,
-sample count, host gate, and aggregation. Each engine retains its native
-synthetic token stream; token identity is therefore not a parity claim.
-Correctness/quality remains a separate prerequisite for publishing a speedup.
+sample count, host gate, and aggregation. The protocol file decides the
+backend contract: `backend: "cpu-only"` verifies zero GPU offload,
+`backend: "gpu"` verifies full offload and records the exact device.
+Each engine retains its native synthetic token stream; token identity is
+therefore not a parity claim. Correctness/quality remains a separate
+prerequisite for publishing a speedup.
 """
 from __future__ import annotations
 
@@ -219,6 +222,10 @@ def run_geist(engine: dict, model: Path, workload: dict) -> dict:
         "GEIST_DECODE_THREADS": str(workload["decode_threads"]),
         "GEIST_TEXT_ONLY": "1",
     })
+    if workload.get("backend") == "gpu":
+        # "auto" prefers CPU backends; a GPU cell must name its backend and
+        # fail loudly (via the stderr check below) if it is not available.
+        env["GEIST_BENCH_BACKEND"] = workload["expect_backend"]
     rows, stderr, elapsed = run_command(command, env)
     expected = workload["expect_backend"]
     if not any(line.strip() == f"[bench] backend: {expected}" for line in stderr):
@@ -246,12 +253,21 @@ def run_geist(engine: dict, model: Path, workload: dict) -> dict:
 def validate_llama_row(row: dict, engine: dict, workload: dict, expected_threads: int) -> None:
     if not engine["commit"].startswith(row.get("build_commit", "missing")):
         raise RuntimeError("llama.cpp JSON commit does not match the pinned checkout")
-    if row.get("n_gpu_layers") != 0 or row.get("gpu_info"):
-        raise RuntimeError("llama.cpp did not run CPU-only")
-    if "Metal" in row.get("backends", ""):
-        raise RuntimeError("llama.cpp reported the Metal backend")
-    if row.get("no_kv_offload") is not True:
-        raise RuntimeError("llama.cpp did not keep the KV cache on the CPU")
+    if workload.get("backend") == "gpu":
+        if row.get("n_gpu_layers") != workload["gpu_offload_layers"] or not row.get("gpu_info"):
+            raise RuntimeError("llama.cpp did not run fully GPU-offloaded")
+        if workload["expect_llama_backend"] not in row.get("backends", ""):
+            raise RuntimeError(
+                f"llama.cpp did not report the {workload['expect_llama_backend']} backend")
+        if row.get("no_kv_offload") is not False:
+            raise RuntimeError("llama.cpp did not keep the KV cache on the GPU")
+    else:
+        if row.get("n_gpu_layers") != 0 or row.get("gpu_info"):
+            raise RuntimeError("llama.cpp did not run CPU-only")
+        if "Metal" in row.get("backends", ""):
+            raise RuntimeError("llama.cpp reported the Metal backend")
+        if row.get("no_kv_offload") is not True:
+            raise RuntimeError("llama.cpp did not keep the KV cache on the CPU")
     if row.get("n_threads") != expected_threads or row.get("poll") != 100:
         raise RuntimeError("llama.cpp did not apply the requested thread policy")
     if row.get("cpu_strict") or row.get("cpu_mask") != "0x0":
@@ -261,7 +277,9 @@ def validate_llama_row(row: dict, engine: dict, workload: dict, expected_threads
 
 
 def run_llama(engine: dict, model: Path, workload: dict, cycle: int) -> dict:
-    common = [engine["binary"], "-m", str(model), "-ngl", "0", "-nkvo", "1", "-r",
+    offload = (["-ngl", str(workload["gpu_offload_layers"])]
+               if workload.get("backend") == "gpu" else ["-ngl", "0", "-nkvo", "1"])
+    common = [engine["binary"], "-m", str(model), *offload, "-r",
               str(workload["repeats"]), "-o", "jsonl"]
     seq_lens = ",".join(map(str, workload["seq_lens"]))
     commands = {
@@ -341,11 +359,14 @@ def summarize(runs: list[dict], engines: list[dict], workload: dict) -> dict:
     return summary
 
 
-def render_report(metadata: dict, summary: dict) -> str:
+def render_report(metadata: dict, summary: dict, gpu_device: str | None = None) -> str:
     workload = metadata["protocol"]["workload"]
     profile = metadata["protocol"]["host_profiles"][metadata["host_profile"]]
+    gpu = workload.get("backend") == "gpu"
+    mode = (f"Full GPU offload on {gpu_device or 'an unidentified device'}"
+            if gpu else "CPU-only")
     lines = [
-        "# Current CPU head-to-head: geist vs llama.cpp",
+        f"# Current {'GPU' if gpu else 'CPU'} head-to-head: geist vs llama.cpp",
         "",
         f"Model: `{metadata['model']['file']}` (`{metadata['model']['sha256']}`)",
         "",
@@ -357,7 +378,7 @@ def render_report(metadata: dict, summary: dict) -> str:
         f"geist on `{profile['expect_backend']}`, identical counts for both engines.",
         "",
         f"{workload['cycles']} alternating A/B cycles, {workload['repeats']} raw samples per cell "
-        f"and cycle; median ± MAD. CPU-only, same model bytes, prompt/depth shapes and thread "
+        f"and cycle; median ± MAD. {mode}, same model bytes, prompt/depth shapes and thread "
         f"counts. Model loading is excluded.",
         "",
         f"Host: {metadata['system']['cpu']} "
@@ -425,6 +446,9 @@ def main() -> int:
     parser.add_argument("--llama", required=True, type=Path)
     parser.add_argument("--gguf", required=True, type=Path)
     parser.add_argument("--out-dir", type=Path, default=Path.home() / "bench-geistlib" / "head-to-head")
+    parser.add_argument("--protocol", type=Path, default=PROTOCOL_PATH,
+                        help="protocol JSON; its workload.backend field decides the "
+                             "cpu-only vs gpu contract (default: the CPU protocol)")
     parser.add_argument("--host-profile", required=True,
                         help="key in the protocol's host_profiles: fixes the thread policy "
                              "and the geist backend this host is expected to select")
@@ -435,7 +459,8 @@ def main() -> int:
     if any(not path.is_file() for path in paths):
         parser.error("--geist, --llama and --gguf must name existing files")
     geist_path, llama_path, model = paths
-    protocol = json.loads(PROTOCOL_PATH.read_text())
+    protocol_path = args.protocol.expanduser().resolve()
+    protocol = json.loads(protocol_path.read_text())
     if args.host_profile not in protocol["host_profiles"]:
         parser.error(f"--host-profile must be one of: {', '.join(sorted(protocol['host_profiles']))}")
     model_sha = sha256_file(model)
@@ -447,7 +472,7 @@ def main() -> int:
         "schema": "geist.benchmark.cross-engine-run.v1",
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "protocol": protocol,
-        "protocol_sha256": sha256_file(PROTOCOL_PATH),
+        "protocol_sha256": sha256_file(protocol_path),
         "runner": {
             "path": str(Path(__file__).resolve().relative_to(ROOT)),
             "sha256": sha256_file(Path(__file__).resolve()),
@@ -478,7 +503,8 @@ def main() -> int:
     else:
         args.out_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
-        partial = args.out_dir / f"{timestamp}_geist_llama_cpu.jsonl.partial"
+        mode_tag = "gpu" if workload.get("backend") == "gpu" else "cpu"
+        partial = args.out_dir / f"{timestamp}_geist_llama_{mode_tag}.jsonl.partial"
         runs = []
         open_mode = "w"
     completed = partial.with_suffix("")
@@ -511,7 +537,10 @@ def main() -> int:
         summary = summarize(runs, engines, workload)
         stream.write(json.dumps({"kind": "summary", "summary": summary}, sort_keys=True) + "\n")
     partial.replace(completed)
-    report = render_report(metadata, summary)
+    gpu_device = next(
+        (run["rows"][0]["native"]["prefill"]["gpu_info"]
+         for run in runs if run["engine"] == "llama.cpp"), None)
+    report = render_report(metadata, summary, gpu_device)
     report_path.write_text(report)
     print(report)
     print(f"raw: {completed}")

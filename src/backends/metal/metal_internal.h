@@ -15,8 +15,16 @@
 #include <geist_backend.h>
 #include "quant.h"
 #include "heap.h"
-#include "metal_legacy_ops.h"
 #include <math.h>
+
+/* Which GPU command sequence a capture/profile wait belongs to. Last
+ * survivor of metal_legacy_ops.h; the legacy op structs died in Stage 6. */
+enum geist_command_sequence_kind {
+    GEIST_COMMAND_SEQUENCE_DECODE_LAYER_LOOP,
+    GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP,
+    GEIST_COMMAND_SEQUENCE_PREFILL_TEXT,
+    GEIST_COMMAND_SEQUENCE_VERIFY_GREEDY,
+};
 
 #include <dlfcn.h>
 #include <errno.h>
