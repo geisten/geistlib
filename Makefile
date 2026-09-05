@@ -388,7 +388,7 @@ distclean:
 # third_party/ is vendored and intentionally excluded, as are the GENERATED
 # SPIR-V shader headers (*_spv.h, emitted by `make vulkan-shaders`) — machine
 # output is not subject to the style gate and reformatting it would churn.
-FORMAT_FILES := $(wildcard *.c *.h tests/*.c tests/*.h) \
+FORMAT_FILES := $(wildcard *.c *.h tests/*.c tests/*.h tools/*.c tools/*.h) \
                 $(shell find src \( -name '*.c' -o -name '*.h' \) ! -name '*_spv.h')
 
 format:

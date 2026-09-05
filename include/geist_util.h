@@ -194,6 +194,14 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
 
 /* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *
+ * BREAKING CHANGE, unreleased: the parameter order was `(s, n_logits)` up to
+ * and including 0.10.8 and is now out-size-first per AGENT.md §1. This is a
+ * source-incompatible change to a STABLE symbol inside 0.x, which the
+ * stability tag above otherwise rules out — taken deliberately by the
+ * maintainer while the user base is small enough to absorb it, rather than
+ * carrying the inconsistency to 1.0. A caller built against 0.10.8 will not
+ * compile; the fix is to swap the two arguments. See CHANGELOG.md.
+ *
  * Raw-logits accessor for evaluation, scoring, and constrained decoding.
  *
  * Returns a pointer to the next-position logits and writes the vocab size
@@ -208,7 +216,30 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
  * copy — an accelerator backend satisfies this contract by copying device
  * memory into session storage, so the signature does not change when such a
  * backend lands. Do not free it and do not hold it across a decode. */
-const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits);
+const float *geist_session_peek_logits(size_t *n_logits, struct geist_session *s);
+
+/* @stability EXPERIMENTAL — embedding models (BitNet embedding, July 2026).
+ *
+ * The pooled sentence embedding for everything prefilled into `s` so far:
+ * pooled per the model's own pooling metadata, passed through the final
+ * norm, and L2-normalised, so a dot product between two of these is their
+ * cosine similarity. Writes the dimension to `*n_dims`.
+ *
+ * Returns nullptr with *n_dims = 0 on a generative model — those have an LM
+ * head and no pooling — and before any prefill has produced a vector. An
+ * embedding model conversely emits no tokens: geist_session_decode_step
+ * returns GEIST_E_UNSUPPORTED on one.
+ *
+ *
+ * Ownership matches geist_session_peek_logits: the buffer belongs to the
+ * SESSION, stays valid until the next mutating call on it, and must not be
+ * freed. Copy it if you need it past the next prefill.
+ *
+ * The engine deliberately stops at the vector. Query instruction prefixes —
+ * which these models are trained with and lose quality without — embedding
+ * quantization for storage, and any index belong to the caller, per the
+ * engine/application split in docs/README.md. */
+const float *geist_session_peek_embedding(size_t *n_dims, struct geist_session *s);
 
 /* @stability EXPERIMENTAL — forward-only (zeroth-order) fine-tuning.
  *

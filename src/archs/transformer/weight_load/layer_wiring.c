@@ -362,8 +362,19 @@ load_layer_proj(struct transformer_arch_state    *st,
 
     /* BitNet SubLN: extra RMSNorm sitting between the attention output
      * and o_proj. Vector length is q_out (attn output is contracted
-     * along q_out, not d_model, before o_proj). */
-    if (st->config.has_sub_ln) {
+     * along q_out, not d_model, before o_proj).
+     *
+     * BitNet embedding models reach the same slot under a different
+     * tensor name: their per-projection norm on o_proj's input has
+     * exactly this shape and position, so it loads here and the existing
+     * forward code applies it unchanged. */
+    if (st->config.has_projection_input_norms) {
+        LP("attn_output_norm_in.weight");
+        s = load_layer_norm(st, gguf, L, path, L->q_out, &L->attn_sub_norm);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    } else if (st->config.has_sub_ln) {
         LP("attn_sub_norm.weight");
         s = load_layer_norm(st, gguf, L, path, L->q_out, &L->attn_sub_norm);
         if (s != GEIST_OK) {
@@ -371,6 +382,42 @@ load_layer_proj(struct transformer_arch_state    *st,
         }
     } else {
         L->attn_sub_norm = (struct geist_tensor) {0};
+    }
+
+    /* The five per-projection input norms that have no existing home:
+     * before q, k, v (attention) and gate, up (FFN), all [d_model]. */
+    if (st->config.has_projection_input_norms) {
+        LP("attn_q_norm_in.weight");
+        s = load_layer_norm(st, gguf, L, path, st->d_model, &L->q_norm_in);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        LP("attn_k_norm_in.weight");
+        s = load_layer_norm(st, gguf, L, path, st->d_model, &L->k_norm_in);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        LP("attn_v_norm_in.weight");
+        s = load_layer_norm(st, gguf, L, path, st->d_model, &L->v_norm_in);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        LP("ffn_gate_norm_in.weight");
+        s = load_layer_norm(st, gguf, L, path, st->d_model, &L->gate_norm_in);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        LP("ffn_up_norm_in.weight");
+        s = load_layer_norm(st, gguf, L, path, st->d_model, &L->up_norm_in);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    } else {
+        L->q_norm_in    = (struct geist_tensor) {0};
+        L->k_norm_in    = (struct geist_tensor) {0};
+        L->v_norm_in    = (struct geist_tensor) {0};
+        L->gate_norm_in = (struct geist_tensor) {0};
+        L->up_norm_in   = (struct geist_tensor) {0};
     }
 
     if (!L->is_kv_shared) {
@@ -425,8 +472,17 @@ load_layer_proj(struct transformer_arch_state    *st,
     }
 
     /* BitNet SubLN: extra RMSNorm between the FFN activation output and
-     * down_proj. Vector length is intermediate (FFN inner dim). */
-    if (st->config.has_sub_ln) {
+     * down_proj. Vector length is intermediate (FFN inner dim).
+     *
+     * As with attn_sub_norm above, the BitNet embedding models' norm on
+     * down_proj's input has the same shape and position and loads here. */
+    if (st->config.has_projection_input_norms) {
+        LP("ffn_down_norm_in.weight");
+        s = load_layer_norm(st, gguf, L, path, L->intermediate, &L->ffn_sub_norm);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    } else if (st->config.has_sub_ln) {
         LP("ffn_sub_norm.weight");
         s = load_layer_norm(st, gguf, L, path, L->intermediate, &L->ffn_sub_norm);
         if (s != GEIST_OK) {

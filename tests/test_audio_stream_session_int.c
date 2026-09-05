@@ -118,8 +118,8 @@ int main(void) {
 
     /* Equivalence: identical next-position logits. */
     size_t       na = 0, nb = 0;
-    const float *la = geist_session_peek_logits(sess_a, &na);
-    const float *lb = geist_session_peek_logits(sess_b, &nb);
+    const float *la = geist_session_peek_logits(&na, sess_a);
+    const float *lb = geist_session_peek_logits(&nb, sess_b);
     if (la == nullptr || lb == nullptr || na != nb || na == 0) {
         fprintf(stderr, "FAIL: logits unavailable or size mismatch (%zu vs %zu)\n", na, nb);
         fails++;
@@ -175,7 +175,7 @@ int main(void) {
     }
     {
         size_t       nc = 0;
-        const float *lc = geist_session_peek_logits(sess_c, &nc);
+        const float *lc = geist_session_peek_logits(&nc, sess_c);
         if (lc == nullptr || nc == 0) {
             fprintf(stderr, "FAIL: poll-variant logits unavailable\n");
             fails++;

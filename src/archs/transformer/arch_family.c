@@ -44,6 +44,7 @@ static void populate_gemma4(struct gguf_ctx *gguf, struct transformer_arch_state
     st->hidden_per_layer = 256;
 
     st->config.logit_softcap        = 30.0f;
+    st->config.has_embed_scale      = true;
     st->config.has_ple              = true;
     st->config.ple_input_scale      = 0.7071067811865476f;
     st->config.ple_model_proj_scale = 0.02551551815399144f;
@@ -290,12 +291,47 @@ static void populate_qwen3(struct gguf_ctx *gguf, struct transformer_arch_state 
     }
     if (gguf_get_meta_f32(gguf, "qwen3.attention.layer_norm_rms_epsilon", &f))
         st->config.rms_eps = f;
+
+    /* BitNet embedding models (July 2026) ship a Qwen3 backbone with an
+     * RMSNorm on every projection's input. They are otherwise a plain
+     * qwen3 GGUF, so the family is selected as usual and only this key
+     * distinguishes them; a stock Qwen3 GGUF has no such key and takes
+     * the normal path (docs/BITNET_EMBEDDINGS_PLAN.md).
+     *
+     * Written by tools/convert_bitnet_embedding.py. Keyed on the tensors
+     * as well: metadata alone must not promise norms the file lacks. */
+    bool proj_norms = false;
+    if (gguf_get_meta_bool(gguf, "bitnet.embedding.projection_input_norms", &proj_norms) &&
+        proj_norms && gguf_get_tensor(gguf, "blk.0.attn_q_norm_in.weight") != nullptr) {
+        st->config.has_projection_input_norms = true;
+    }
+
+    /* Pooling. Present only on embedding models; its absence is what makes
+     * a stock Qwen3 GGUF generative. An unrecognised value leaves
+     * pooling_unsupported set, which populate_layers refuses — better a
+     * clear load failure than a vector pooled the wrong way. */
+    {
+        size_t      plen = 0;
+        const char *pstr = gguf_get_meta_string(gguf, "bitnet.embedding.pooling", &plen);
+        if (!geist_pooling_select(plen, pstr, &st->config.pooling)) {
+            st->config.pooling             = GEIST_POOLING_NONE;
+            st->config.pooling_unsupported = true;
+        }
+    }
+
     st->hidden_per_layer = 0;
     st->ple_out          = 0;
 }
 
 static bool populate_layers_qwen3(struct transformer_arch_state *st) {
     struct gguf_ctx *g = (struct gguf_ctx *) st->gguf;
+
+    /* A pooling this build cannot perform is a load failure, not something
+     * to fall back from: every fallback here would return a vector that
+     * looks fine and means something else. */
+    if (st->config.pooling_unsupported) {
+        return false;
+    }
 
     /* head_dim from metadata — NOT d_model / n_heads (0.6B: key_length
      * 128 vs quotient 64). Missing key on a geometry where the quotient
@@ -317,6 +353,113 @@ static bool populate_layers_qwen3(struct transformer_arch_state *st) {
     for (size_t i = 0; i < st->n_layers; i++) {
         struct transformer_layer_weights *L = &st->layers[i];
         L->layer_idx                        = (int) i;
+        L->is_full                          = true;
+        L->is_kv_shared                     = false;
+        L->head_dim                         = head_dim;
+        L->q_out                            = st->n_q_heads * head_dim;
+        L->kv_out                           = st->n_kv_heads * head_dim;
+        L->intermediate                     = intermediate;
+        L->sliding_window                   = 0;
+        L->rope_theta                       = freq_base;
+        L->n_rotated_dims                   = (int) head_dim;
+    }
+    return true;
+}
+
+/* ---- gemma3 (BitNet-embedding-270M's backbone) -------------------------- */
+/*
+ * Gemma 3 text, as the BitNet embedding 270M ships it. Structurally it sits
+ * between llama and gemma4: it has Gemma's extra residual norms (post-attn,
+ * post-FFW) and QK-norms and the sqrt(d_model) embedding scale, but NO
+ * per-layer embeddings, no KV sharing and no sliding-window pattern.
+ *
+ * Two geometry notes, both of which the default derivations get wrong:
+ *   - head_dim is 256 while d_model/n_heads is 640/4 = 160, so key_length
+ *     must come from metadata (the same trap qwen3 documents).
+ *   - query_pre_attn_scalar is 256. The attention scale is 1/sqrt(head_dim)
+ *     and head_dim is also 256 here, so the two coincide for this model and
+ *     nothing extra is needed. A Gemma 3 variant where they DIFFER would
+ *     need the scalar plumbed into the attention scale — untested, and
+ *     deliberately not written on speculation.
+ *
+ * Scope: this populator is written for, and only exercised by, the BitNet
+ * embedding 270M. Whether a stock Google Gemma-3 GGUF loads through it is
+ * untested.
+ */
+static void populate_gemma3(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
+    st->config.has_gemma_attn_norms = true;
+    st->config.has_qk_norms         = true;
+    st->config.has_embed_scale      = true;
+    st->config.ffn_activation       = GEIST_FFN_GEGLU;
+
+    uint32_t u;
+    float    f;
+    if (gguf_get_meta_u32(gguf, "gemma3.block_count", &u))
+        st->n_layers = u;
+    if (gguf_get_meta_u32(gguf, "gemma3.embedding_length", &u))
+        st->d_model = u;
+    if (gguf_get_meta_u32(gguf, "gemma3.attention.head_count", &u))
+        st->n_q_heads = u;
+    if (gguf_get_meta_u32(gguf, "gemma3.attention.head_count_kv", &u))
+        st->n_kv_heads = u;
+    if (gguf_get_meta_u32(gguf, "gemma3.vocab_size", &u)) {
+        st->vocab_size = u;
+    } else {
+        uint32_t       elem_vt = 0;
+        uint64_t       count   = 0;
+        const uint8_t *payload = nullptr;
+        if (gguf_get_meta_array_info(gguf, "tokenizer.ggml.tokens", &elem_vt, &count, &payload)) {
+            st->vocab_size = (size_t) count;
+        }
+    }
+    if (gguf_get_meta_f32(gguf, "gemma3.attention.layer_norm_rms_epsilon", &f))
+        st->config.rms_eps = f;
+
+    bool proj_norms = false;
+    if (gguf_get_meta_bool(gguf, "bitnet.embedding.projection_input_norms", &proj_norms) &&
+        proj_norms && gguf_get_tensor(gguf, "blk.0.attn_q_norm_in.weight") != nullptr) {
+        st->config.has_projection_input_norms = true;
+    }
+    {
+        size_t      plen = 0;
+        const char *pstr = gguf_get_meta_string(gguf, "bitnet.embedding.pooling", &plen);
+        if (!geist_pooling_select(plen, pstr, &st->config.pooling)) {
+            st->config.pooling             = GEIST_POOLING_NONE;
+            st->config.pooling_unsupported = true;
+        }
+    }
+
+    st->hidden_per_layer = 0;
+    st->ple_out          = 0;
+}
+
+static bool populate_layers_gemma3(struct transformer_arch_state *st) {
+    struct gguf_ctx *g = (struct gguf_ctx *) st->gguf;
+
+    if (st->config.pooling_unsupported) {
+        return false;
+    }
+
+    uint32_t head_dim = 0, intermediate = 0;
+    float    freq_base = 10000.0f;
+    if (g != nullptr) {
+        gguf_get_meta_u32(g, "gemma3.attention.key_length", &head_dim);
+        gguf_get_meta_u32(g, "gemma3.feed_forward_length", &intermediate);
+        gguf_get_meta_f32(g, "gemma3.rope.freq_base", &freq_base);
+    }
+    /* Only as a last resort: for the 270M the quotient is 160 and the real
+     * head_dim is 256, so a GGUF without the key is the #258 failure mode. */
+    if (head_dim == 0 && st->n_q_heads > 0) {
+        head_dim = (uint32_t) (st->d_model / st->n_q_heads);
+    }
+    if (head_dim == 0 || intermediate == 0) {
+        return false;
+    }
+
+    for (size_t i = 0; i < st->n_layers; i++) {
+        struct transformer_layer_weights *L = &st->layers[i];
+        L->layer_idx                        = (int) i;
+        L->mixer                            = GEIST_MIXER_ATTN;
         L->is_full                          = true;
         L->is_kv_shared                     = false;
         L->head_dim                         = head_dim;
@@ -606,6 +749,12 @@ static const struct transformer_family FAMILY_LLAMA = {
         .populate_layers = populate_layers_llama,
 };
 
+static const struct transformer_family FAMILY_GEMMA3 = {
+        .name            = "gemma3",
+        .populate        = populate_gemma3,
+        .populate_layers = populate_layers_gemma3,
+};
+
 static const struct transformer_family FAMILY_QWEN3 = {
         .name            = "qwen3",
         .populate        = populate_qwen3,
@@ -636,6 +785,7 @@ static const struct transformer_family FAMILY_BITNET = {
 
 static const struct transformer_family *const REGISTRY[] = {
         &FAMILY_GEMMA4,
+        &FAMILY_GEMMA3,
         &FAMILY_LLAMA,
         &FAMILY_QWEN3,
         &FAMILY_QWEN35,
@@ -652,6 +802,7 @@ static const size_t REGISTRY_N = sizeof REGISTRY / sizeof REGISTRY[0];
  * transformer_family_select, never loads the wrong family). */
 const char *const geist_arch_transformer_gguf_names[] = {
         "gemma4",
+        "gemma3",
         "llama",
         "qwen3",
         "qwen35",

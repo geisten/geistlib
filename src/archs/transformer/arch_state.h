@@ -91,6 +91,17 @@ struct transformer_layer_weights {
      * skips the rmsnorm call in that case. */
     struct geist_tensor attn_sub_norm; /* [q_out] — SubLN before o_proj */
     struct geist_tensor ffn_sub_norm;  /* [intermediate] — SubLN before down_proj */
+    /* Per-projection input norms (BitNet embedding models, July 2026):
+     * an RMSNorm on the input of q/k/v/gate/up, all [d_model]. The other
+     * two of the seven — before o_proj and before down_proj — reuse
+     * attn_sub_norm / ffn_sub_norm above, which sit at exactly those
+     * positions. buffer == nullptr when the family has none; gated by
+     * config.has_projection_input_norms. */
+    struct geist_tensor q_norm_in;    /* [d_model] — before q_proj */
+    struct geist_tensor k_norm_in;    /* [d_model] — before k_proj */
+    struct geist_tensor v_norm_in;    /* [d_model] — before v_proj */
+    struct geist_tensor gate_norm_in; /* [d_model] — before gate_proj */
+    struct geist_tensor up_norm_in;   /* [d_model] — before up_proj */
 
     /* ---- Projection weights (Q-format or F32, BLOCK_QUANTIZED/DENSE). - */
     struct geist_tensor q_proj;         /* [q_out, HIDDEN] */
@@ -251,6 +262,13 @@ struct transformer_arch_session {
     /* ---- Scratch buffers (per-forward-pass workspace).
      * 21 buffers backed by the consolidated scratch pool (P1.2.c). */
     struct geist_buffer *scratch_normed;
+    /* Holds one projection's own normalised input when
+     * config.has_projection_input_norms is set: scratch_normed stays the
+     * shared attn_norm/ffn_norm output, and each of q/k/v/gate/up is
+     * normalised from it into here immediately before its matmul. One
+     * buffer suffices because each is consumed before the next is
+     * written. [m_max, d_model]. */
+    struct geist_buffer *scratch_proj_in;
     struct geist_buffer *scratch_q;
     struct geist_buffer *scratch_k;
     struct geist_buffer *scratch_v;
@@ -341,6 +359,11 @@ struct transformer_arch_session {
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;
+    /* Embedding models only: scratch_h_a holds the pooled, output-normed,
+     * L2-normalised [d_model] vector for the sequence prefilled so far.
+     * Mutually exclusive with logits_valid in practice — an embedding model
+     * never runs the LM head — and cleared by the same resets. */
+    bool embedding_valid;
     /* Whether scratch_logits already carries the Gemma final-logit softcap.
      * The greedy argmax path skips the softcap (monotonic → argmax
      * invariant), so peek_logits applies it lazily for value consumers

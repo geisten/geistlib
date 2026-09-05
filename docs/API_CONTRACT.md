@@ -31,6 +31,15 @@ Promoting to `STABLE` is a one-way door: it is a commitment, not a label. A
 symbol should only be promoted once a real consumer depends on it and its shape
 survives an accelerator/architecture change without a signature break.
 
+### Exceptions taken
+
+The table above is the rule. Where it has been broken, it is recorded here, so
+the promise is not quietly weaker than it reads.
+
+| Symbol | Release | What broke | Why |
+|---|---|---|---|
+| `geist_session_peek_logits` | unreleased (after 0.10.8) | Parameter order changed from `(s, n_logits)` to `(n_logits, s)`. Source-incompatible: callers must swap the arguments. | Aligns the accessor family on AGENT.md §1's out-size-first order rather than carrying the inconsistency past 1.0. Taken by the maintainer as a deliberate, accepted risk while the user base is small — **not** a precedent, and by the semver rule above it would otherwise have required a major bump. |
+
 ## The agent-runtime contract
 
 A tool-use loop — constrained ("masked") decoding, KV-prefix pinning, chat

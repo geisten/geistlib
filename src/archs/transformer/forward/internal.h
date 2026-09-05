@@ -72,7 +72,11 @@ struct transformer_layer_forward_ctx {
      * apply_ple alone while the PLE stage also required a non-null input,
      * and the combination in between wrote the FFN result to a scratch
      * buffer that nothing then copied out. */
-    bool                           run_ple;
+    bool run_ple;
+    /* BitNet embedding models: each of q/k/v/gate/up normalises the
+     * shared attn_norm/ffn_norm output through its OWN gamma before its
+     * matmul, so the fused triple-QKV and gate_up paths cannot run. */
+    bool                           apply_projection_input_norms;
     bool                           kv_int8_enabled;
     bool                           kv_kivi_enabled;
     bool                           kv_f16_enabled;
@@ -214,6 +218,35 @@ static inline void apply_bitnet_input_quant_inplace(const struct geist_backend_v
         }
     }
     v->buffer_unmap(buf);
+}
+
+/* Normalise one projection's input through its own gamma (BitNet
+ * embedding models' per-projection input norms).
+ *
+ * `src` is the shared attn_norm / ffn_norm output; `dst` must view the
+ * session's scratch_proj_in. One scratch buffer serves all five call
+ * sites because each projection consumes its normalised input before
+ * the next one is written.
+ *
+ * The BitNet activation fake-quant belongs HERE rather than on the
+ * shared buffer: what the matmul sees is this vector, so that is what
+ * has to be quantised.
+ */
+[[nodiscard]] static inline enum geist_status
+norm_projection_input(size_t                                n,
+                      const struct geist_tensor            *norm_w,
+                      const struct geist_tensor            *src,
+                      struct geist_tensor                  *dst,
+                      struct transformer_layer_forward_ctx *ctx) {
+
+    enum geist_status s = ctx->prims->rmsnorm(ctx->be, src, norm_w, ctx->eps, dst);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    if (ctx->apply_bitnet_input_quant) {
+        apply_bitnet_input_quant_inplace(ctx->v, ctx->sess->scratch_proj_in, ctx->seq, n);
+    }
+    return GEIST_OK;
 }
 
 /* ---- Cross-TU function declarations ----------------------------------- *

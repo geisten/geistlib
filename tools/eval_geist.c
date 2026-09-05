@@ -165,7 +165,7 @@ static int cmd_scorealt(struct geist_session *s, char *args) {
     free(ids);
 
     size_t       n_logits = 0;
-    const float *logits   = geist_session_peek_logits(s, &n_logits);
+    const float *logits   = geist_session_peek_logits(&n_logits, s);
     if (logits == nullptr || n_logits == 0) {
         free(alts);
         puts("ERR no logits");
@@ -226,7 +226,7 @@ static int cmd_score(struct geist_session *s, char *args) {
     double *per_tok  = (double *) malloc((size_t) n_cont * sizeof(*per_tok));
     for (long i = 0; i < n_cont; i++) {
         size_t       n_logits = 0;
-        const float *logits   = geist_session_peek_logits(s, &n_logits);
+        const float *logits   = geist_session_peek_logits(&n_logits, s);
         if (logits == nullptr) {
             free(cont);
             free(per_tok);

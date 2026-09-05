@@ -50,6 +50,51 @@ enum geist_ffn_activation_kind {
     GEIST_FFN_GATED_SQUARED_RELU,
 };
 
+/* How a model turns a sequence of hidden states into one vector.
+ *
+ *   NONE       — generative model: no pooling, the forward pass ends in the
+ *                LM head and the session emits tokens.
+ *   LAST_TOKEN — the last non-padding position's hidden state, L2-normalised.
+ *                What the BitNet embedding models (July 2026) use.
+ *   MEAN       — recognised so a mean-pooled GGUF is REFUSED with a clear
+ *                error rather than silently pooled the wrong way. Not
+ *                implemented; implement it here when such a model appears.
+ */
+enum geist_pooling_kind {
+    GEIST_POOLING_NONE = 0,
+    GEIST_POOLING_LAST_TOKEN,
+    GEIST_POOLING_MEAN,
+};
+
+/* Map a GGUF `*.pooling` string to a kind. `s`/`len` is the raw metadata
+ * value; pass s=nullptr when the key is absent, which yields NONE (a
+ * generative model).
+ *
+ * Returns false for a value this build does not understand, so the loader
+ * refuses the model instead of guessing a pooling that would produce
+ * plausible-looking but wrong vectors. Pure, so it is unit-testable. */
+static inline bool geist_pooling_select(size_t len, const char *s, enum geist_pooling_kind *out) {
+    if (s == nullptr || len == 0) {
+        *out = GEIST_POOLING_NONE;
+        return true;
+    }
+    if (len == sizeof("last_token") - 1 && memcmp(s, "last_token", len) == 0) {
+        *out = GEIST_POOLING_LAST_TOKEN;
+        return true;
+    }
+    if (len == sizeof("mean") - 1 && memcmp(s, "mean", len) == 0) {
+        *out = GEIST_POOLING_MEAN;
+        return true;
+    }
+    return false;
+}
+
+/* True iff this pooling kind makes the model an embedding model: no LM
+ * head, no tokens, a vector out. */
+static inline bool geist_pooling_is_embedding(enum geist_pooling_kind k) {
+    return k != GEIST_POOLING_NONE;
+}
+
 /* Pick the FFN activation. An explicit *.feed_forward_activation value (`act`,
  * `act_len`; pass act=nullptr when the GGUF has no such key) wins. Otherwise the
  * default is keyed on `general.architecture`: only "bitnet-b1.58" (Microsoft's
@@ -101,7 +146,17 @@ struct geist_arch_config {
     float rms_eps;       /* RMSNorm epsilon. Gemma 4: 1e-6f. */
     float logit_softcap; /* tanh(p/softcap)*softcap; 0 = disabled. */
 
-    /* ---- PLE (Per-Layer Embedding, Gemma 3/4 family only). When
+    /* ---- Embedding scale: multiply looked-up token embeddings by
+     * sqrt(d_model). The Gemma families do this; Llama/Qwen/BitNet do not.
+     *
+     * Split out from has_ple, which it used to ride on. That worked only
+     * as long as the sole family with the scale also had per-layer
+     * embeddings — Gemma 3 has the scale and NO PLE, so the two had to
+     * stop being the same question. Every existing family keeps its
+     * behaviour: gemma4 sets both, everyone else sets neither. */
+    bool has_embed_scale;
+
+    /* ---- PLE (Per-Layer Embedding, Gemma 4 family only). When
      * has_ple == false, the precompute path is skipped entirely. */
     bool  has_ple;
     float ple_input_scale;      /* multiplied onto (model_proj + lookup) */
@@ -145,6 +200,38 @@ struct geist_arch_config {
      *   projection but isn't what the official 2B-4T uses. */
     bool                           has_sub_ln;
     enum geist_ffn_activation_kind ffn_activation;
+
+    /* ---- BitNet embedding models (July 2026): an RMSNorm on the INPUT of
+     * every BitLinear projection, seven per layer — the pattern upstream
+     * calls "per-projection norms" and that no standard architecture has
+     * (docs/BITNET_EMBEDDINGS_PLAN.md).
+     *
+     * Two of the seven already have a home: the norm before o_proj is
+     * shaped [q_out] and the one before down_proj is [intermediate],
+     * which is exactly where has_sub_ln's attn_sub_norm / ffn_sub_norm
+     * sit. Those two load into the existing fields and the existing
+     * forward code applies them, so this flag adds only the five that
+     * precede q, k, v, gate and up — all shaped [d_model].
+     *
+     * The five are the reason the flag also has a cost: q/k/v share one
+     * normalised input today (and so do gate/up), which is what lets the
+     * fused triple-QKV and gate_up kernels run. Per-projection norms give
+     * each its own input, so those fusions are disabled while this is
+     * set — see exec_plan.c. */
+    bool has_projection_input_norms;
+
+    /* ---- Pooling. A model with a pooling kind other than NONE is an
+     * EMBEDDING model: it has no LM head, emits no tokens, and its forward
+     * pass ends at output_norm + pooling + L2 normalisation instead of a
+     * vocab projection.
+     *
+     * Read from the GGUF rather than hardcoded so a model with different
+     * pooling does not need a second API — an unimplemented kind is
+     * refused loudly at load, never silently treated as last-token. */
+    enum geist_pooling_kind pooling;
+    /* The GGUF named a pooling this build does not implement. Set instead
+     * of guessing; the layer populator turns it into a load failure. */
+    bool pooling_unsupported;
 
     /* RoPE pair convention.
      *   false: NEOX-style split pairs (i, i + head_dim/2). Gemma 3/4,

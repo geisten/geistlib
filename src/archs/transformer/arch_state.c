@@ -427,6 +427,16 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     if (s != GEIST_OK) {
         return s;
     }
+    /* Only families with per-projection input norms get this slice;
+     * scratch_plan.proj_in is 0 otherwise and the buffer stays null. */
+    if (scratch_plan.proj_in > 0) {
+        s = alloc_pool_buffer(sess, scratch_plan.proj_in, &sess->scratch_proj_in);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    } else {
+        sess->scratch_proj_in = nullptr;
+    }
     s = alloc_pool_buffer(sess, scratch_plan.q_out, &sess->scratch_q);
     if (s != GEIST_OK) {
         return s;

@@ -198,7 +198,7 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* sqrt(d_model) embedding scale is Gemma-3/4-specific; Llama / BitNet
      * don't scale. has_ple gates Gemma family identity. */
-    const float embed_scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
+    const float embed_scale = st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
 
     /* Chunk by the SESSION cap: every scratch buffer is sized with
      * sess->m_max (arch_state.c), and a session opt below the state's
@@ -300,10 +300,14 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
             transformer_kivi_drain_full(sess);
         }
 
-        /* 5. On the final chunk, compute logits for the last token so
-         *    ops->decode_step has a pending prediction. */
+        /* 5. On the final chunk, finish the pass. A generative model
+         *    computes logits for the last token so ops->decode_step has a
+         *    pending prediction; an embedding model pools instead — it has
+         *    no LM head to run and no next token to predict. */
         if (off + chunk == n) {
-            s = finalize_logits_last_row(sess, chunk);
+            s = geist_pooling_is_embedding(st->config.pooling)
+                        ? finalize_embedding_last_row(sess, chunk)
+                        : finalize_logits_last_row(sess, chunk);
             if (s != GEIST_OK) {
                 return s;
             }
@@ -362,7 +366,7 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    const float embed_scale             = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
+    const float embed_scale = st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
 
     /* 1. Embed all k tokens into scratch_h_a [k, HIDDEN]. */
     {
