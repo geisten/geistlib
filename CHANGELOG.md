@@ -21,11 +21,15 @@ minor release.
     `has_projection_input_norms`. The fused triple-QKV and gate_up paths are
     disabled for such models: those kernels assume q/k/v (and gate/up) share
     one normalised input, which per-projection norms break.
-  - `geist_session_peek_embedding` (`@stability EXPERIMENTAL`,
-    `<geist_util.h>`): the pooled, final-normed, L2-normalised sentence
-    embedding for what a session has prefilled, with the same borrow-a-
-    pointer ownership as `geist_session_peek_logits`. Returns nullptr on a
-    generative model. Conversely `geist_session_decode_step` now returns
+  - `geist_session_peek_embedding(size_t *n_dims, struct geist_session *s)`
+    (`@stability EXPERIMENTAL`, `<geist_util.h>`): the pooled, final-normed,
+    L2-normalised sentence embedding for what a session has prefilled, with
+    the same borrow-a-pointer ownership as `geist_session_peek_logits`.
+    Returns nullptr on a generative model. Its parameter order follows
+    AGENT.md §1 (out-size first, handle last) and so is the **reverse** of
+    `peek_logits`, which is STABLE and named in `docs/API_CONTRACT.md` and
+    therefore cannot be aligned before 1.0 — read the order, do not
+    pattern-match it from the sibling. Conversely `geist_session_decode_step` now returns
     `GEIST_E_UNSUPPORTED` on an embedding model — prefill ran, there is
     simply no token to emit. `struct geist_arch_ops_decoder` gains a
     matching optional `peek_embedding` slot.

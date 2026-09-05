@@ -68,9 +68,9 @@ int main(void) {
     /* The public accessor must be safe to call before anything exists, and
      * must always write *n_dims so a caller can trust it after a null. */
     size_t n = 12345;
-    check("peek_embedding(nullptr) is null and zeroes the dimension",
-          geist_session_peek_embedding(nullptr, &n) == nullptr && n == 0);
-    check("peek_embedding with no out-param is null",
+    check("a null session yields null and zeroes the dimension",
+          geist_session_peek_embedding(&n, nullptr) == nullptr && n == 0);
+    check("a null out-param yields null instead of writing through it",
           geist_session_peek_embedding(nullptr, nullptr) == nullptr);
 
     if (fails > 0) {

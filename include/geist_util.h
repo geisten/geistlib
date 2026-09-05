@@ -222,6 +222,16 @@ const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits
  * embedding model conversely emits no tokens: geist_session_decode_step
  * returns GEIST_E_UNSUPPORTED on one.
  *
+ * NOTE ON THE PARAMETER ORDER, because it differs from its sibling above
+ * and the difference is deliberate. AGENT.md §1 orders parameters
+ * out-size-first, handle-last, which is what this takes. Its sibling
+ * geist_session_peek_logits takes them the other way round and cannot be
+ * changed: it is STABLE since 0.6.0 and named in docs/API_CONTRACT.md, so
+ * moving it would break a published promise for a cosmetic gain. The two
+ * therefore disagree, permanently, until a 1.0 migration could align them.
+ * Read the argument order here rather than pattern-matching from
+ * peek_logits.
+ *
  * Ownership matches geist_session_peek_logits: the buffer belongs to the
  * SESSION, stays valid until the next mutating call on it, and must not be
  * freed. Copy it if you need it past the next prefill.
@@ -230,7 +240,7 @@ const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits
  * which these models are trained with and lose quality without — embedding
  * quantization for storage, and any index belong to the caller, per the
  * engine/application split in docs/README.md. */
-const float *geist_session_peek_embedding(struct geist_session *s, size_t *n_dims);
+const float *geist_session_peek_embedding(size_t *n_dims, struct geist_session *s);
 
 /* @stability EXPERIMENTAL — forward-only (zeroth-order) fine-tuning.
  *

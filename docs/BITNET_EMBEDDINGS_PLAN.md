@@ -326,13 +326,24 @@ and self-consistent", not "correct".
 
 Shipped:
 
-- `const float *geist_session_peek_embedding(struct geist_session *s, size_t *n_dims)`
+- `const float *geist_session_peek_embedding(size_t *n_dims, struct geist_session *s)`
   (`@stability EXPERIMENTAL`, `include/geist_util.h`). The sketch in this plan
-  proposed a status-returning `geist_session_embed`; the shipped shape instead
-  mirrors `geist_session_peek_logits` exactly — same borrow-a-pointer
-  ownership, same "nullptr plus a zeroed count" idiom. AGENT.md §1 says to
-  stay consistent within a family, and this is that family. A matching
-  optional `peek_embedding` slot was added to `struct geist_arch_ops_decoder`.
+  proposed a status-returning `geist_session_embed`; the shipped shape borrows
+  a pointer instead, with the same "nullptr plus a zeroed count" idiom as
+  `geist_session_peek_logits`.
+
+  **The parameter order follows AGENT.md §1 strictly** — out-size first,
+  handle last — and therefore differs from `peek_logits`, which takes them the
+  other way round. That sibling is `STABLE since 0.6.0` and named in
+  `docs/API_CONTRACT.md`, so it cannot move without breaking a published
+  promise for a cosmetic gain. The asymmetry is permanent until a 1.0
+  migration could align them, and is called out in the header so it reads as
+  a decision rather than an oversight.
+
+  The arch vtable slot (`struct geist_arch_ops_decoder::peek_embedding`)
+  keeps the session-first order it shares with `peek_logits`, so that struct
+  stays internally consistent; the engine thunk in `session.c` does the swap,
+  once.
 - `finalize_embedding_last_row` (`forward/head.c`): pools one row out of the
   post-layer hidden states, applies `output_norm`, L2-normalises. It shares
   its first two steps with `finalize_logits_one_row` for the same reason —
@@ -464,7 +475,7 @@ python3 tools/eval_embedding_fidelity.py --ref up.npy --got geist.gemb
 | :-- | :-- | :-- |
 | 0 Converter | S | ✅ done for the 0.6B; residual risk is the scale convention, unverified against a Microsoft-produced embedding GGUF |
 | 1 Projection norms | **M** | ✅ implemented; smaller than feared (five new tensors, not seven) but numerically unverified, and the disabled fusions are still unmeasured |
-| 2 Pooling + API | M | ✅ implemented as an `EXPERIMENTAL` mirror of `peek_logits`; the shape is still a public commitment and wants review |
+| 2 Pooling + API | M | ✅ implemented; `EXPERIMENTAL`, parameter order per AGENT.md §1 and deliberately unlike `peek_logits`, which is STABLE and cannot move |
 | 3 Gates | M | ✅ apparatus built and self-tested; **zero measurements taken** — it needs the weights, which this environment cannot fetch |
 | 4 gemma3 | M | Gemma3 ≠ Gemma4 in ways not yet mapped; may not be worth it |
 

@@ -180,7 +180,7 @@ int main(int argc, char **argv) {
             goto done;
         }
         size_t       n_dims = 0;
-        const float *emb    = geist_session_peek_embedding(session, &n_dims);
+        const float *emb    = geist_session_peek_embedding(&n_dims, session);
         if (emb == nullptr || n_dims == 0) {
             fprintf(stderr,
                     "no embedding at prompt %zu — is this an embedding model? (%s)\n",

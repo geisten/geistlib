@@ -468,7 +468,11 @@ const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits
     return ops->peek_logits(arch_sess(sf), n_logits);
 }
 
-const float *geist_session_peek_embedding(struct geist_session *s, size_t *n_dims) {
+/* Public order is out-size-first per AGENT.md §1; the arch vtable keeps the
+ * session-first order it shares with peek_logits, so this thunk swaps. The
+ * swap lives here, once, rather than making the vtable disagree with its
+ * own sibling — see the note in geist_util.h. */
+const float *geist_session_peek_embedding(size_t *n_dims, struct geist_session *s) {
     if (n_dims == nullptr)
         return nullptr;
     *n_dims = 0;
