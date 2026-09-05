@@ -154,6 +154,17 @@ test-py:
 	if [ $$status -ne 0 ]; then echo "test-py: FAIL"; exit $$status; fi; \
 	echo "test-py: PASS"
 
+# The BitNet embedding chain end to end on a synthetic model: converter ->
+# GGUF -> loader -> per-projection norms -> pooling -> peek_embedding. Kept out
+# of test-py (which is hermetic by contract) because it runs a built binary,
+# and out of test-int because it needs no reference GGUF — it builds its own.
+# Skips (77) when numpy or the tool is missing, so it is safe to run anywhere.
+test-embedding: bin
+	@python3 tests/scripts/embedding_e2e_smoke.py $(BIN_DIR)/tools/dump_geist_embedding; \
+	rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "test-embedding: SKIPPED"; exit 0; fi; \
+	exit $$rc
+
 # Dequant parity against gguf-py, the canonical reference implementation.
 # Kept out of test-py, which is hermetic by contract — this one needs a real
 # GGUF. Skips (77) when the model or the `gguf` package is missing, so it is

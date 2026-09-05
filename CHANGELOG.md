@@ -8,6 +8,54 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed
+- **BitNet embedding conversions were unloadable.** Two defects, both found by
+  running the chain end to end for the first time rather than by inspecting
+  its parts, and both fatal on any real checkpoint:
+  - `tools/convert_bitnet_embedding.py` wrote every 1-D norm as F16, following
+    upstream's tensor-type table. geistlib's loader requires F32 and refuses
+    the file outright (`src/archs/transformer/weight_load/layer_wiring.c:65`,
+    and `:866` for `output_norm`). Norms are now F32 in both `--outtype i2_s`
+    and `--outtype f16`; the embedding table stays F16 and projections are
+    unaffected.
+  - The per-layer owning-buffer list (`struct transformer_layer_weights::bufs`)
+    held 16 entries. A BitNet embedding layer loads 18 tensors — 11 ordinary
+    ones plus the seven per-projection input norms — so the load died on the
+    seventh norm with a message naming the tensor it happened to reach rather
+    than the cause. Capacity is now 24, and the count is pinned by a test.
+
+  - `scratch_proj_in`, the extra scratch slice the per-projection norms need,
+    was allocated in `allocate_runtime_session` but missing from the destroy
+    path's `infra[]` list, so its buffer handle leaked once per session. Only
+    reachable on a model that sets `has_projection_input_norms`, which is why
+    no existing ASan run saw it.
+
+  All three are regression-tested: `tests/test_bitnet_embedding_convert_py.py`
+  checks every 1-D tensor's dtype, `tests/test_projection_input_norms_unit.c`
+  pins the buffer capacity against the layer's tensor count, and
+  `make MODE=asan test-embedding` runs the chain under LeakSanitizer. Each was
+  confirmed to fail against the unfixed code.
+
+### Added
+- **`make test-embedding`** — the embedding chain executed rather than
+  inspected. `tests/scripts/embedding_e2e_smoke.py` builds a synthetic
+  checkpoint in the real tensor layout, converts it, loads the GGUF, prefills
+  and reads back the pooled vector, then asserts the structural invariants: the
+  vector is finite, L2-normalised, bit-identical across repeated runs of the
+  same prompt, different for different prompts, and demonstrably affected by
+  each of the seven per-projection input norms. Skips (77) without numpy or a
+  built `dump_geist_embedding`. Random weights, so it proves the chain *runs*,
+  not that it computes the right thing — that still needs the real checkpoint
+  and `tools/eval_embedding_fidelity.py`.
+
+  The norm check perturbs half of each norm vector rather than scaling all of
+  it: a uniform scale is cancelled exactly by the next RMSNorm downstream, so
+  it cannot tell an applied norm from an ignored one.
+
+  The target honours `MODE`, so `make MODE=asan test-embedding` runs the whole
+  chain under AddressSanitizer — which is how the `scratch_proj_in` leak above
+  surfaced.
+
 ### Changed (BREAKING)
 - **`geist_session_peek_logits` takes its arguments in the other order**:
   `(size_t *n_logits, struct geist_session *s)`, was `(s, n_logits)`. Code

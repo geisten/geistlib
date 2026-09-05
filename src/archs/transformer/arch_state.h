@@ -154,7 +154,15 @@ struct transformer_layer_weights {
      * The structs above carry .buffer pointers but the LIST OF buffers we
      * created is stored here so cleanup is unambiguous and order-stable.
      * NULL slots denote "not allocated" (e.g. k_proj_buf for kv_shared). */
-    struct geist_buffer *bufs[16];
+    /* Capacity is the worst-case tensor count for one layer, not a round
+     * number: 2 block norms + 2 QK norms + 4 attention projections + 3 FFN
+     * projections is 11, and a BitNet embedding layer adds seven
+     * per-projection input norms on top, for 18. Gemma's two extra residual
+     * norms and the DeltaNet tensor set both stay under that. The four spare
+     * slots exist so adding one tensor to a family does not silently turn
+     * into a load failure — layer_track_buf returns an error rather than
+     * overflowing, but the error is the point of failure, not a diagnosis. */
+    struct geist_buffer *bufs[24];
     size_t               n_bufs;
 };
 

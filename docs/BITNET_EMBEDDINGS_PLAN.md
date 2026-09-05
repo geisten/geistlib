@@ -1,15 +1,27 @@
 # BitNet embedding models (July 2026) — analysis and implementation plan
 
-Status: **phases 0-3 in the tree; nothing verified against real weights.** This
-document records what Microsoft released in July 2026, which of it is
-reproducible, and what geistlib has to grow to run it. Sources are pinned
-inline so the claims can be re-checked against upstream.
+Status: **phases 0-4a in the tree; the chain runs on a synthetic model; still
+nothing verified against real weights.** This document records what Microsoft
+released in July 2026, which of it is reproducible, and what geistlib has to
+grow to run it. Sources are pinned inline so the claims can be re-checked
+against upstream.
 
 Where things stand: the converter (phase 0), the per-projection input norms
-(phase 1), the pooling path plus embedding API (phase 2) and the measurement
-apparatus (phase 3) are in the tree and tested. The pipeline is complete end
-to end on paper — a converted GGUF loads, prefills, and yields a vector — and
-the gate that would prove it is built and self-tested.
+(phase 1), the pooling path plus embedding API (phase 2), the measurement
+apparatus (phase 3) and the gemma3 family (phase 4a) are in the tree and
+tested. The pipeline is complete end to end and now demonstrably executes:
+`make test-embedding` builds a synthetic checkpoint in the real tensor layout,
+converts it, loads the GGUF, prefills, and reads back a finite, unit-norm,
+deterministic, input-dependent vector — with each of the seven per-projection
+norms shown to reach the output.
+
+That run was worth having. Until it existed the pipeline was complete *on
+paper* only, and the first execution found two defects that made every real
+conversion unloadable: the converter wrote 1-D norms as F16 following
+upstream's tensor-type table, which geistlib's loader rejects outright
+(`layer_wiring.c:65`), and the per-layer owning-buffer list held 16 entries
+where a BitNet embedding layer needs 18. Neither was reachable by any test
+that stopped at the GGUF header or at scratch sizing.
 
 What is missing underneath all of it is a numerical oracle: **no part of this
 has been run against real BitNet embedding weights**, which are reachable from
