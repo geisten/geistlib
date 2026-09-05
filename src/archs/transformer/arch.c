@@ -165,6 +165,12 @@ static enum geist_status op_decode_step(void *session, geist_token_t *out) {
     if (sess == nullptr || out == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
+    if (sess->model != nullptr && geist_pooling_is_embedding(sess->model->config.pooling)) {
+        /* Distinct from the "prefill first" case below: prefill DID run,
+         * there is simply no token to emit. Saying so beats a state error
+         * that sends the caller looking for a missing prefill. */
+        return GEIST_E_UNSUPPORTED;
+    }
     if (!sess->logits_valid) {
         return GEIST_E_INVALID_STATE; /* nothing pending — prefill first */
     }
@@ -226,6 +232,29 @@ static const float *op_peek_logits(void *session, size_t *n_logits) {
     return (const float *) p;
 }
 
+/* Returns the pooled, L2-normalised sentence embedding and its dimension
+ * in *n_dims. nullptr (with *n_dims=0) on a generative model, or before a
+ * prefill has produced one. The pointer aliases session scratch and is
+ * valid until the next mutating call on the session — same contract as
+ * op_peek_logits. */
+static const float *op_peek_embedding(void *session, size_t *n_dims) {
+    struct transformer_arch_session *sess = session;
+    if (n_dims == nullptr) {
+        return nullptr;
+    }
+    *n_dims = 0;
+    if (sess == nullptr || !sess->embedding_valid || sess->scratch_h_a == nullptr) {
+        return nullptr;
+    }
+    struct transformer_arch_state *st = sess->model;
+    const float *p = (const float *) st->backend->desc->vtbl->buffer_map(sess->scratch_h_a);
+    if (p == nullptr) {
+        return nullptr;
+    }
+    *n_dims = (size_t) st->d_model;
+    return p;
+}
+
 static enum geist_status op_verify_forward(void               *session,
                                            size_t              k,
                                            const geist_token_t ids[static k],
@@ -273,6 +302,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .prefill_audio            = op_prefill_audio,
         .prefill_image            = op_prefill_image,
         .peek_logits              = op_peek_logits,
+        .peek_embedding           = op_peek_embedding,
         .hidden_dim               = op_hidden_dim,
         .peek_next_token          = op_peek_next_token,
         .draft_tokens             = op_draft_tokens,

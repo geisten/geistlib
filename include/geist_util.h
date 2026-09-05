@@ -210,6 +210,28 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
  * backend lands. Do not free it and do not hold it across a decode. */
 const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits);
 
+/* @stability EXPERIMENTAL — embedding models (BitNet embedding, July 2026).
+ *
+ * The pooled sentence embedding for everything prefilled into `s` so far:
+ * pooled per the model's own pooling metadata, passed through the final
+ * norm, and L2-normalised, so a dot product between two of these is their
+ * cosine similarity. Writes the dimension to `*n_dims`.
+ *
+ * Returns nullptr with *n_dims = 0 on a generative model — those have an LM
+ * head and no pooling — and before any prefill has produced a vector. An
+ * embedding model conversely emits no tokens: geist_session_decode_step
+ * returns GEIST_E_UNSUPPORTED on one.
+ *
+ * Ownership matches geist_session_peek_logits: the buffer belongs to the
+ * SESSION, stays valid until the next mutating call on it, and must not be
+ * freed. Copy it if you need it past the next prefill.
+ *
+ * The engine deliberately stops at the vector. Query instruction prefixes —
+ * which these models are trained with and lose quality without — embedding
+ * quantization for storage, and any index belong to the caller, per the
+ * engine/application split in docs/README.md. */
+const float *geist_session_peek_embedding(struct geist_session *s, size_t *n_dims);
+
 /* @stability EXPERIMENTAL — forward-only (zeroth-order) fine-tuning.
  *
  * Mutable view of the model's tuning gains: one f32 per linear weight, all

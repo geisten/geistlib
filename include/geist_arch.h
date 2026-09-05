@@ -125,6 +125,13 @@ struct geist_arch_ops_decoder {
      * session-owned scratch buffer. */
     const float *(*peek_logits)(void *session, size_t *n_logits);
 
+    /* Optional: pointer to the session's pooled sentence embedding, for
+     * models that have pooling instead of an LM head. Writes the embedding
+     * dimension to `*n_dims` on success; returns nullptr (and sets
+     * *n_dims=0) on a generative model or before a prefill has produced
+     * one. Same ownership and lifetime contract as peek_logits. */
+    const float *(*peek_embedding)(void *session, size_t *n_dims);
+
     /* Optional: residual-stream width (d_model) of the loaded model.
      * The engine refuses a modality tower whose soft-token width doesn't
      * match (e.g. an E2B 1536-dim tower next to an E4B 2560-dim GGUF —

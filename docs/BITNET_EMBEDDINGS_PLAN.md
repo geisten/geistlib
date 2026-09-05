@@ -1,16 +1,21 @@
 # BitNet embedding models (July 2026) — analysis and implementation plan
 
-Status: **phases 0 and 1 implemented; the models do not run yet.** This
+Status: **phases 0, 1 and 2 implemented; unverified against real weights.** This
 document records what Microsoft released in July 2026, which of it is
 reproducible, and what geistlib has to grow to run it. Sources are pinned
 inline so the claims can be re-checked against upstream.
 
-Where things stand: the converter (phase 0) and the per-projection input norms
-(phase 1) are in the tree and tested. What is missing before anything can
-actually produce an embedding is phase 2 — the pooling path and the API — and,
-underneath that, a numerical oracle: **no part of this has been run against
-real BitNet embedding weights**, which are reachable from neither CI nor the
-development container. The tests pin structure and bookkeeping, not values.
+Where things stand: the converter (phase 0), the per-projection input norms
+(phase 1) and the pooling path plus embedding API (phase 2) are in the tree
+and tested. The pipeline is complete end to end on paper — a converted GGUF
+loads, prefills, and yields a vector.
+
+What is missing underneath all of it is a numerical oracle: **no part of this
+has been run against real BitNet embedding weights**, which are reachable from
+neither CI nor the development container. Every test pins structure,
+bookkeeping and refusal behaviour — none pins a value. Until the phase 0
+reference vectors exist, treat the whole chain as "wired up and
+self-consistent", not "correct".
 
 Upstream sources read for this analysis:
 
@@ -316,23 +321,53 @@ and self-consistent", not "correct".
   the disabled fusions actually cost, which the plan has treated as a
   hypothesis from the start.
 
-### Phase 2 — Pooling and the embedding API
+### Phase 2 — Pooling and the embedding API — **implemented, not yet numerically verified**
 
-- New `EXPERIMENTAL` surface in `include/geist_util.h` — shape to be settled in
-  review, sketch:
-  `enum geist_status geist_session_embed(struct geist_session *s, size_t *out_dim, const float **out_vec);`
-  following the existing borrow-a-pointer convention of
-  `geist_session_peek_logits`, and AGENT.md §1 parameter order.
-- Last-token pooling + L2 normalization; skip the LM head entirely rather than
-  falling back to the tied table.
-- Read the pooling type from the GGUF metadata the converter writes
-  (sentence-transformers `modules.json` convention) instead of hardcoding it,
-  so a mean-pooling model later doesn't need a second API.
-- Document the boundary: geistlib returns a vector. Instruction prefixes on the
-  query side — which upstream's FAQ says are **required** or quality degrades —
-  are the caller's business, per the engine/application split in `ROADMAP.md`.
-- **Done when:** cosine similarity against the upstream reference vectors is
-  ≥ 0.999 on the fixed prompt set.
+Shipped:
+
+- `const float *geist_session_peek_embedding(struct geist_session *s, size_t *n_dims)`
+  (`@stability EXPERIMENTAL`, `include/geist_util.h`). The sketch in this plan
+  proposed a status-returning `geist_session_embed`; the shipped shape instead
+  mirrors `geist_session_peek_logits` exactly — same borrow-a-pointer
+  ownership, same "nullptr plus a zeroed count" idiom. AGENT.md §1 says to
+  stay consistent within a family, and this is that family. A matching
+  optional `peek_embedding` slot was added to `struct geist_arch_ops_decoder`.
+- `finalize_embedding_last_row` (`forward/head.c`): pools one row out of the
+  post-layer hidden states, applies `output_norm`, L2-normalises. It shares
+  its first two steps with `finalize_logits_one_row` for the same reason —
+  `scratch_h_a` is the staging row every backend can read back — and replaces
+  only the vocab projection. **The LM head never runs**: these GGUFs have no
+  `output.weight`, and the tied fallback would cost a 151,936-wide matmul
+  whose result is discarded.
+- Pooling kind read from GGUF metadata (`geist_pooling_select`, pure and
+  unit-tested), not hardcoded. `mean` is *recognised* but unimplemented, and a
+  model declaring it is refused at load — as is any unknown value. Pooling the
+  wrong way produces a vector that looks entirely plausible and means
+  something else, which nothing downstream would catch.
+- `geist_session_decode_step` returns `GEIST_E_UNSUPPORTED` on an embedding
+  model, rather than the misleading `INVALID_STATE` ("prefill first") it would
+  otherwise give after a prefill that did run.
+- The L2 sum accumulates in `double`. At d_model ≈ 1024 that is the one place
+  a float accumulator would visibly move the cosine similarities this vector
+  exists to produce.
+
+The engine/application boundary holds: geistlib returns a vector and stops.
+Query instruction prefixes — which upstream's FAQ says are **required** or
+quality degrades — embedding quantization for storage, and any index belong to
+whoever links the library. That is stated in the header.
+
+**Verified:** `-Werror` build under gcc-14; `make test-unit` 38 passed /
+0 failed with no regressions; `scripts/check-api-contract.sh` clean;
+`tests/test_pooling_select_unit.c` pins that an absent key means *generative*
+(every existing model depends on this) and that an unrecognised value is
+refused rather than guessed.
+
+**Not verified:** the vector's values. As with phase 1, nothing here has run
+on real weights.
+
+- **Still to do:** cosine similarity ≥ 0.999 against the upstream reference
+  vectors on the fixed prompt set — the phase 0 oracle, which needs a machine
+  that can fetch the model.
 
 ### Phase 3 — Quality and performance gates
 
@@ -386,7 +421,7 @@ and self-consistent", not "correct".
 | :-- | :-- | :-- |
 | 0 Converter | S | ✅ done for the 0.6B; residual risk is the scale convention, unverified against a Microsoft-produced embedding GGUF |
 | 1 Projection norms | **M** | ✅ implemented; smaller than feared (five new tensors, not seven) but numerically unverified, and the disabled fusions are still unmeasured |
-| 2 Pooling + API | M | API shape is a public commitment; get it reviewed before it ships |
+| 2 Pooling + API | M | ✅ implemented as an `EXPERIMENTAL` mirror of `peek_logits`; the shape is still a public commitment and wants review |
 | 3 Gates | M | MTEB tooling is Python-side; keep it in `tools/`, out of the engine |
 | 4 gemma3 | M | Gemma3 ≠ Gemma4 in ways not yet mapped; may not be worth it |
 

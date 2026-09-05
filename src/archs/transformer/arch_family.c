@@ -305,12 +305,32 @@ static void populate_qwen3(struct gguf_ctx *gguf, struct transformer_arch_state 
         st->config.has_projection_input_norms = true;
     }
 
+    /* Pooling. Present only on embedding models; its absence is what makes
+     * a stock Qwen3 GGUF generative. An unrecognised value leaves
+     * pooling_unsupported set, which populate_layers refuses — better a
+     * clear load failure than a vector pooled the wrong way. */
+    {
+        size_t      plen = 0;
+        const char *pstr = gguf_get_meta_string(gguf, "bitnet.embedding.pooling", &plen);
+        if (!geist_pooling_select(plen, pstr, &st->config.pooling)) {
+            st->config.pooling             = GEIST_POOLING_NONE;
+            st->config.pooling_unsupported = true;
+        }
+    }
+
     st->hidden_per_layer = 0;
     st->ple_out          = 0;
 }
 
 static bool populate_layers_qwen3(struct transformer_arch_state *st) {
     struct gguf_ctx *g = (struct gguf_ctx *) st->gguf;
+
+    /* A pooling this build cannot perform is a load failure, not something
+     * to fall back from: every fallback here would return a vector that
+     * looks fine and means something else. */
+    if (st->config.pooling_unsupported) {
+        return false;
+    }
 
     /* head_dim from metadata — NOT d_model / n_heads (0.6B: key_length
      * 128 vs quotient 64). Missing key on a geometry where the quotient

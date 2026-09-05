@@ -300,10 +300,14 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
             transformer_kivi_drain_full(sess);
         }
 
-        /* 5. On the final chunk, compute logits for the last token so
-         *    ops->decode_step has a pending prediction. */
+        /* 5. On the final chunk, finish the pass. A generative model
+         *    computes logits for the last token so ops->decode_step has a
+         *    pending prediction; an embedding model pools instead — it has
+         *    no LM head to run and no next token to predict. */
         if (off + chunk == n) {
-            s = finalize_logits_last_row(sess, chunk);
+            s = geist_pooling_is_embedding(st->config.pooling)
+                        ? finalize_embedding_last_row(sess, chunk)
+                        : finalize_logits_last_row(sess, chunk);
             if (s != GEIST_OK) {
                 return s;
             }

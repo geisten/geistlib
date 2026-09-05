@@ -359,6 +359,11 @@ struct transformer_arch_session {
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;
+    /* Embedding models only: scratch_h_a holds the pooled, output-normed,
+     * L2-normalised [d_model] vector for the sequence prefilled so far.
+     * Mutually exclusive with logits_valid in practice — an embedding model
+     * never runs the LM head — and cleared by the same resets. */
+    bool embedding_valid;
     /* Whether scratch_logits already carries the Gemma final-logit softcap.
      * The greedy argmax path skips the softcap (monotonic → argmax
      * invariant), so peek_logits applies it lazily for value consumers

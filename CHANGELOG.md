@@ -8,6 +8,30 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+- **BitNet embedding models (July 2026)**, in three parts. Nothing here has
+  yet run against real weights — see `docs/BITNET_EMBEDDINGS_PLAN.md` for
+  what is and is not verified.
+  - `tools/convert_bitnet_embedding.py` converts the safetensors checkpoints
+    to GGUF with I2_S ternary packing. numpy and the standard library only —
+    no pinned llama.cpp branch and no torch, unlike Microsoft's converter.
+    The I2_S packing is verified byte-identical against `pack_i2_s` from
+    `tests/test_i2_s_parity.c`.
+  - Per-projection input RMSNorm in the transformer arch, behind
+    `has_projection_input_norms`. The fused triple-QKV and gate_up paths are
+    disabled for such models: those kernels assume q/k/v (and gate/up) share
+    one normalised input, which per-projection norms break.
+  - `geist_session_peek_embedding` (`@stability EXPERIMENTAL`,
+    `<geist_util.h>`): the pooled, final-normed, L2-normalised sentence
+    embedding for what a session has prefilled, with the same borrow-a-
+    pointer ownership as `geist_session_peek_logits`. Returns nullptr on a
+    generative model. Conversely `geist_session_decode_step` now returns
+    `GEIST_E_UNSUPPORTED` on an embedding model — prefill ran, there is
+    simply no token to emit. `struct geist_arch_ops_decoder` gains a
+    matching optional `peek_embedding` slot.
+  - Models declaring a pooling this build does not implement are **refused
+    at load** rather than pooled a plausible-looking wrong way.
+
 ## [0.10.8] — 2026-09-04
 
 First published release after 0.10.1. It includes the changes that were staged

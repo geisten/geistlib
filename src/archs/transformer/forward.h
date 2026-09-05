@@ -129,6 +129,12 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
 [[nodiscard]] enum geist_status finalize_logits_last_row(struct transformer_arch_session *sess,
                                                          size_t                           seq);
 
+/* Embedding models' terminal step: pool + output_norm + L2 normalise into
+ * the session's staging row, instead of running the LM head. `seq` is the
+ * row count of the final prefill chunk. Sets sess->embedding_valid. */
+[[nodiscard]] enum geist_status finalize_embedding_last_row(struct transformer_arch_session *sess,
+                                                            size_t                           seq);
+
 /* Dequant ONE row of an arbitrary-dtype tensor into a host fp32 row.
  * Used by the PLE single + batched paths and by the embedding lookup. */
 [[nodiscard]] enum geist_status

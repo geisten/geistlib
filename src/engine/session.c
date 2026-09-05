@@ -468,6 +468,19 @@ const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits
     return ops->peek_logits(arch_sess(sf), n_logits);
 }
 
+const float *geist_session_peek_embedding(struct geist_session *s, size_t *n_dims) {
+    if (n_dims == nullptr)
+        return nullptr;
+    *n_dims = 0;
+    if (s == nullptr)
+        return nullptr;
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    if (ops == nullptr || ops->peek_embedding == nullptr)
+        return nullptr;
+    return ops->peek_embedding(arch_sess(sf), n_dims);
+}
+
 /* N-gram drafter: find the longest suffix of `history + [seed]` (up to
  * `max_suffix`) that occurs earlier in `history`, and copy the up-to-
  * (k_max-1) tokens that followed it into `out + 1`. `out[0] = seed`
