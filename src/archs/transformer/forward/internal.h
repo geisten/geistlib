@@ -60,6 +60,7 @@ struct transformer_layer_forward_ctx {
     bool compute_kv;
     bool apply_bitnet_input_quant;
     bool apply_sub_ln;
+    bool apply_bitlinear_subln;
     bool apply_gemma_attn_norms;
     bool apply_qk_norms;
     bool rope_interleaved;
@@ -417,6 +418,25 @@ void   transformer_dn_head_chunk(float       *S,
                                                           struct geist_tensor             *t_y0,
                                                           struct geist_tensor             *t_y1,
                                                           struct geist_tensor             *t_y2);
+
+/* forward/layer.c — the BitLinear front for has_bitlinear_subln:
+ *
+ *   y = quant8(rmsnorm(x_buf, gamma)) @ W^T
+ *
+ * matching microsoft/BitNet docs/bitnet-embeddings-i2s-guide.md §3.1. The
+ * normed row is staged in sess->scratch_subln, so `x_buf` is left intact for
+ * the sibling projections that share it — q, k and v all read the same
+ * attn-normed hidden, gate and up the same ffn-normed one.
+ *
+ * `n_in` is x_buf's row width; the output width lives in t_y. */
+[[nodiscard]] enum geist_status bitlinear_project(struct transformer_layer_forward_ctx *ctx,
+                                                  size_t                                n_in,
+                                                  struct geist_buffer                  *x_buf,
+                                                  const struct geist_tensor            *gamma,
+                                                  const struct geist_weight            *w,
+                                                  const struct geist_tensor            *w_legacy,
+                                                  struct geist_buffer                  *y_buf,
+                                                  struct geist_tensor                  *t_y);
 
 /* finalize_logits_* and dequant_one_row are declared in ../forward.h —
  * the public arch-internal header. Don't re-declare here. */

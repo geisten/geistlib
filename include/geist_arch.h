@@ -178,6 +178,22 @@ struct geist_arch_ops_decoder {
                                       geist_token_t  seed,
                                       geist_token_t *out_tokens,
                                       size_t        *n_out);
+
+    /* Optional: pooled sentence embedding over `n` tokens, written to
+     * `out` as n_dim floats. Appended to preserve the pre-existing decoder
+     * ABI, like draft_tokens above.
+     *
+     * The architecture picks the pooling from its own metadata and runs the
+     * full stack WITHOUT the lm_head. It RESETS the session's recurrent
+     * state — embedding is a whole-text operation, not an append, and the
+     * KV rows it needs are its own. nullptr, or GEIST_E_UNSUPPORTED for a
+     * pooling this build does not implement; the engine passes both
+     * through as "embedding unavailable", not as a broken model. */
+    enum geist_status (*embed)(void               *session,
+                               size_t              n_dim,
+                               size_t              n,
+                               const geist_token_t ids[static n],
+                               float               out[static n_dim]);
 };
 
 /* ====================================================================== */

@@ -210,6 +210,44 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
  * backend lands. Do not free it and do not hold it across a decode. */
 const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits);
 
+/* ====================================================================== */
+/* Embeddings                                                              */
+/* ====================================================================== */
+
+/* @stability EXPERIMENTAL — pooled sentence embedding.
+ *
+ * Runs the full stack over `n` tokens and pools the per-position hidden
+ * states into one L2-normalized vector of `n_dim` floats. The lm_head is
+ * never projected. `n_dim` must equal geist_model_embed_dim(); anything
+ * else is GEIST_E_INVALID_ARG rather than a truncated answer.
+ *
+ * POOLING comes from the model, not from you: the GGUF's
+ * `{arch}.pooling_type` key, mean if it is absent. Only mean and last-token
+ * are implemented; another value returns GEIST_E_UNSUPPORTED.
+ *
+ * TOKENS are taken exactly as given — this is the geist_session_prefill_tokens
+ * convention, not set_prompt's. geist_session_tokenize does not add special
+ * tokens, and embedding models are usually trained with them, so a caller
+ * that wants the model's own convention prepends geist_model_bos_token and
+ * appends geist_model_eos_token itself. Getting that wrong does not fail; it
+ * quietly returns a slightly different vector.
+ *
+ * STATE: embedding is a whole-text operation, not an append. The call resets
+ * the session's conversational state on the way in and on the way out — do
+ * not interleave it with a generation loop on the same session.
+ *
+ * Returns GEIST_E_UNSUPPORTED when the architecture has no embed path. */
+[[nodiscard]] enum geist_status geist_session_embed(struct geist_session *s,
+                                                    size_t                n_dim,
+                                                    size_t                n,
+                                                    const geist_token_t   ids[static n],
+                                                    float                 out[static n_dim]);
+
+/* @stability EXPERIMENTAL — the residual width (d_model) of the loaded
+ * model, which is the length geist_session_embed writes. 0 when the
+ * architecture does not report it. */
+[[nodiscard]] size_t geist_model_embed_dim(const struct geist_model *m);
+
 /* @stability EXPERIMENTAL — forward-only (zeroth-order) fine-tuning.
  *
  * Mutable view of the model's tuning gains: one f32 per linear weight, all

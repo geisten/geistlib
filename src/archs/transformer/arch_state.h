@@ -91,6 +91,15 @@ struct transformer_layer_weights {
      * skips the rmsnorm call in that case. */
     struct geist_tensor attn_sub_norm; /* [q_out] — SubLN before o_proj */
     struct geist_tensor ffn_sub_norm;  /* [intermediate] — SubLN before down_proj */
+    /* Per-projection SubLN (has_bitlinear_subln). The o_proj and down_proj
+     * gammas reuse attn_sub_norm / ffn_sub_norm above — same position, only
+     * a different tensor name — so only these five are extra. All [HIDDEN]:
+     * each normalizes the stage's shared hidden with its own gamma. */
+    struct geist_tensor q_norm_in;    /* [HIDDEN] — before q_proj */
+    struct geist_tensor k_norm_in;    /* [HIDDEN] — before k_proj */
+    struct geist_tensor v_norm_in;    /* [HIDDEN] — before v_proj */
+    struct geist_tensor gate_norm_in; /* [HIDDEN] — before gate_proj */
+    struct geist_tensor up_norm_in;   /* [HIDDEN] — before up_proj */
 
     /* ---- Projection weights (Q-format or F32, BLOCK_QUANTIZED/DENSE). - */
     struct geist_tensor q_proj;         /* [q_out, HIDDEN] */
@@ -142,8 +151,13 @@ struct transformer_layer_weights {
     /* ---- Owning buffer handles (so destroy can free them). ------------ *
      * The structs above carry .buffer pointers but the LIST OF buffers we
      * created is stored here so cleanup is unambiguous and order-stable.
-     * NULL slots denote "not allocated" (e.g. k_proj_buf for kv_shared). */
-    struct geist_buffer *bufs[16];
+     * NULL slots denote "not allocated" (e.g. k_proj_buf for kv_shared).
+     *
+     * 24, not 16: the BitNet-embedding layout (has_bitlinear_subln) loads
+     * 20 tensors per block — 7 projections plus 13 norms, five of them the
+     * per-projection gammas — and overflowing this list is a hard load
+     * failure, not a leak. */
+    struct geist_buffer *bufs[24];
     size_t               n_bufs;
 };
 
@@ -251,6 +265,15 @@ struct transformer_arch_session {
     /* ---- Scratch buffers (per-forward-pass workspace).
      * 21 buffers backed by the consolidated scratch pool (P1.2.c). */
     struct geist_buffer *scratch_normed;
+    /* has_bitlinear_subln: one projection's normed+quantized input. Used
+     * strictly within a single bitlinear_project call, so q, k, v, gate and
+     * up take turns in it rather than owning five buffers. */
+    struct geist_buffer *scratch_subln;
+    /* [d_model] pooling accumulator for geist_session_embed. Prefill runs in
+     * chunks of m_max and each chunk overwrites scratch_h_b, so the sum has
+     * to survive outside it. Allocated with the session (AGENT.md §3: no
+     * heap in a per-call path), 2.5 KB at the widest geometry in tree. */
+    float               *embed_acc;
     struct geist_buffer *scratch_q;
     struct geist_buffer *scratch_k;
     struct geist_buffer *scratch_v;
@@ -635,6 +658,15 @@ transformer_advance_audio_token(struct transformer_arch_session *sess, const flo
  * ops->decode_step to return.
  *
  * Returns GEIST_OK on success. n==0 is a no-op. */
+/* Pooled sentence embedding over `n` tokens (geist_session_embed's arch
+ * half). Pooling comes from the GGUF's `{arch}.pooling_type`; the result is
+ * L2-normalized. Resets the session's recurrent state. */
+[[nodiscard]] enum geist_status transformer_embed(struct transformer_arch_session *sess,
+                                                  size_t                           n_dim,
+                                                  size_t                           n,
+                                                  const geist_token_t              ids[static n],
+                                                  float out[static n_dim]);
+
 [[nodiscard]] enum geist_status transformer_prefill_text_batch(
         struct transformer_arch_session *sess, size_t n, const geist_token_t *ids);
 

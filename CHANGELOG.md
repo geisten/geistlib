@@ -8,6 +8,36 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+- **BitNet-embedding per-projection SubLN** (`has_bitlinear_subln`) — the
+  microsoft/bitnet-embedding-0.6b checkpoint puts an RMSNorm plus the A8
+  activation quantization inside *every* BitLinear, seven per block, where
+  BitNet b1.58's `has_sub_ln` has two. Additive and orthogonal: b1.58 2B-4T
+  is untouched. Detected from the tensor table, not metadata — the GGUF
+  declares its `qwen3` backbone and is otherwise indistinguishable from a
+  stock checkpoint. (Its 270M sibling is a Gemma 3 backbone, which geist
+  does not implement; the arch gate refuses it.)
+- **`geist_session_embed` / `geist_model_embed_dim`** (`@stability
+  EXPERIMENTAL`, `<geist_util.h>`) — pooled, L2-normalized sentence
+  embeddings; the full stack without the lm_head. Pooling comes from the
+  GGUF's `{arch}.pooling_type` (mean when absent; mean and last-token
+  implemented, `GEIST_POOLING=mean|last` overrides for A/B work). That key
+  is load-bearing: bitnet-embedding-0.6b's card says last-token pooling and
+  its GGUF says mean, and only mean reproduces the card's own published
+  embedding (RMSE 8.5e-4 against 0.24). Tokens are taken as given, the
+  `geist_session_prefill_tokens` convention — a caller wanting the model's
+  own BOS/EOS adds them. The call resets the session's conversational state
+  on entry and exit.
+- Norm weights may now be F16 in the GGUF; they are converted to F32 at load
+  (`load_norm_to_f32_buffer`). Every kernel reads gammas as F32, and the
+  BitNet-embedding checkpoint is the first in tree to store them narrower.
+
+### Fixed
+- The per-layer weight-buffer list held 16 entries; the BitNet-embedding
+  layout loads 20 tensors per block and overflowed it into a hard load
+  failure. Raised to 24.
+
+
 ## [0.10.8] — 2026-09-04
 
 First published release after 0.10.1. It includes the changes that were staged

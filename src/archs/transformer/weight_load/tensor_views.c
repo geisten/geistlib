@@ -18,6 +18,7 @@
 #include "internal.h"
 
 #include "gguf_reader.h"
+#include "gguf_dequant.h"
 #include "heap.h"
 
 #include <geist.h>
@@ -45,6 +46,73 @@
     total += 64ULL * 1024 * 1024;
     *out_bytes = total;
     return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status load_norm_to_f32_buffer(struct transformer_arch_state *st,
+                                                        struct gguf_ctx               *gguf,
+                                                        const char                    *name,
+                                                        size_t                expected_elems,
+                                                        struct geist_buffer **out_buf) {
+    struct geist_backend *be = st->backend;
+    *out_buf                 = nullptr;
+
+    const struct gguf_tensor_t *t   = nullptr;
+    struct geist_buffer        *buf = nullptr;
+    enum geist_status           s = load_tensor_to_buffer(st, gguf, name, expected_elems, &t, &buf);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    if (t->dtype == GGUF_TYPE_F32) {
+        *out_buf = buf;
+        return GEIST_OK;
+    }
+    /* Not F32 in the file. Every kernel that consumes a norm gamma reads
+     * F32, so convert once here rather than teaching rmsnorm a dtype —
+     * the microsoft/bitnet-embedding GGUFs store every gamma as F16, the
+     * first models in tree to do so. The staged buffer is dropped: its
+     * bytes are the file's F16, not the F32 we need. */
+    be->desc->vtbl->buffer_destroy(be, buf);
+    buf = nullptr;
+
+    float *fp32 = gguf_dequant_to_fp32(t);
+    if (fp32 == nullptr) {
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: '%s' is %s and dequant to F32 failed",
+                                name,
+                                gguf_dtype_name(t->dtype));
+        return GEIST_E_FORMAT;
+    }
+    const size_t bytes = expected_elems * sizeof(float);
+    if (st->weight_arena != nullptr) {
+        void *arena_ptr = arena_alloc(st, bytes, 64);
+        if (arena_ptr == nullptr) {
+            void *p = fp32;
+            safe_free(&p);
+            geist_backend_set_error(
+                    be, GEIST_E_OOM, "transformer: weight arena exhausted at '%s' fp32", name);
+            return GEIST_E_OOM;
+        }
+        memcpy(arena_ptr, fp32, bytes);
+        void *p = fp32;
+        safe_free(&p);
+        return be->desc->vtbl->buffer_create_aliased(
+                be, arena_ptr, bytes, GEIST_BUFFER_WEIGHT, out_buf);
+    }
+    /* mmap-alias mode has no arena: the F32 form is not a slice of the
+     * file, so the backend owns this one outright. */
+    s = be->desc->vtbl->buffer_create(be, bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_AUTO, &buf);
+    if (s == GEIST_OK) {
+        s = be->desc->vtbl->buffer_upload(buf, bytes, (const uint8_t *) fp32);
+        if (s != GEIST_OK) {
+            be->desc->vtbl->buffer_destroy(be, buf);
+            buf = nullptr;
+        }
+    }
+    void *p = fp32;
+    safe_free(&p);
+    *out_buf = buf;
+    return s;
 }
 
 [[nodiscard]] enum geist_status load_tensor_to_buffer(struct transformer_arch_state *st,

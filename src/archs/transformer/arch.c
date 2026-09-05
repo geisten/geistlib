@@ -194,6 +194,17 @@ static geist_token_t op_peek_next_token(void *session) {
  * size in *n_logits. nullptr (with *n_logits=0) if no logits are pending.
  * CPU-only: pointer aliases the backend buffer and is valid until the
  * next mutating call on the session. */
+static enum geist_status op_embed(void               *session,
+                                  size_t              n_dim,
+                                  size_t              n,
+                                  const geist_token_t ids[static n],
+                                  float               out[static n_dim]) {
+    if (session == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return transformer_embed(session, n_dim, n, ids, out);
+}
+
 static const float *op_peek_logits(void *session, size_t *n_logits) {
     struct transformer_arch_session *sess = session;
     if (n_logits == nullptr)
@@ -272,6 +283,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .pin_prefix               = op_pin_prefix,
         .prefill_audio            = op_prefill_audio,
         .prefill_image            = op_prefill_image,
+        .embed                    = op_embed,
         .peek_logits              = op_peek_logits,
         .hidden_dim               = op_hidden_dim,
         .peek_next_token          = op_peek_next_token,

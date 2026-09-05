@@ -174,6 +174,116 @@ static enum geist_status deltanet_txn_restore(struct transformer_arch_session *s
 
 /* ---- Batched text prefill -------------------------------------------- */
 
+/* One prefill chunk: embed `n` token rows, run the layer stack over them,
+ * and advance the recurrent state by `n`. Leaves the post-layer residual
+ * for all n rows in sess->scratch_h_b — everything a prefill does except
+ * the output head, which is exactly the part geist_session_embed skips.
+ *
+ * `n` must be <= sess->m_max: every scratch buffer is sized from it. The
+ * two callers chunk by that cap; the caller also owns the KV-room and
+ * token-id validation, which are whole-request checks, not per-chunk ones. */
+[[nodiscard]] static enum geist_status transformer_forward_chunk(
+        struct transformer_arch_session *sess, size_t n, const geist_token_t ids[static n]) {
+    struct transformer_arch_state    *st    = sess->model;
+    struct geist_backend             *be    = st->backend;
+    const struct geist_backend_vtbl  *v     = be->desc->vtbl;
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+
+    /* sqrt(d_model) embedding scale is Gemma-3/4-specific; Llama / BitNet
+     * don't scale. has_ple gates Gemma family identity. */
+    const float embed_scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
+
+    /* 1. Embed all chunk tokens into scratch_h_a [n, HIDDEN]. Device path
+     * first: per-row fused lookup+scale dispatches keep batched GPU backends
+     * from flushing the pipeline through a mapped host pointer (and skip the
+     * host dequant loop). */
+    bool embed_on_device = st->model_fusions.embed_lookup_scaled;
+    bool embed_batched   = false;
+    if (embed_on_device && fused->embedding_lookup_scaled_rows != nullptr) {
+        /* #322: one dispatch for the whole chunk instead of one tiny
+         * dispatch per token. Non-OK (row cap, unsupported dtype) falls
+         * through to the per-token loop below. */
+        struct geist_tensor t_rows = {
+                .buffer = sess->scratch_h_a,
+                .offset = 0,
+                .dtype  = GEIST_DTYPE_F32,
+                .layout = GEIST_LAYOUT_DENSE,
+                .ndim   = 2,
+                .shape  = {(int64_t) n, (int64_t) st->d_model, 0, 0, 0, 0, 0, 0},
+                .stride = {(int64_t) st->d_model, 1, 0, 0, 0, 0, 0, 0},
+        };
+        embed_batched = fused->embedding_lookup_scaled_rows(
+                                be, n, &st->embed_table, ids, embed_scale, &t_rows) == GEIST_OK;
+    }
+    if (embed_on_device && !embed_batched) {
+        for (size_t t = 0; t < n; t++) {
+            struct geist_tensor t_row = {
+                    .buffer = sess->scratch_h_a,
+                    .offset = t * st->d_model * sizeof(float),
+                    .dtype  = GEIST_DTYPE_F32,
+                    .layout = GEIST_LAYOUT_DENSE,
+                    .ndim   = 1,
+                    .shape  = {(int64_t) st->d_model, 0, 0, 0, 0, 0, 0, 0},
+                    .stride = {1, 0, 0, 0, 0, 0, 0, 0},
+            };
+            const enum geist_status es = fused->embedding_lookup_scaled(
+                    be, &st->embed_table, ids[t], embed_scale, &t_row);
+            if (es != GEIST_OK) {
+                return es; /* bound at plan build — failure is a real error */
+            }
+        }
+    }
+    if (!embed_on_device) {
+        float *h_dst = (float *) v->buffer_map(sess->scratch_h_a);
+        for (size_t t = 0; t < n; t++) {
+            enum geist_status s =
+                    dequant_one_row(be, &st->embed_table, (size_t) ids[t], h_dst + t * st->d_model);
+            if (s != GEIST_OK) {
+                v->buffer_unmap(sess->scratch_h_a);
+                return s;
+            }
+        }
+        if (embed_scale != 1.0f) {
+            const size_t n_floats = n * st->d_model;
+            for (size_t i = 0; i < n_floats; i++) {
+                h_dst[i] *= embed_scale;
+            }
+        }
+        v->buffer_unmap(sess->scratch_h_a);
+    }
+
+    /* 2. Batched PLE precompute. P1.5.b: skipped for non-PLE families. */
+    enum geist_status    s       = GEIST_OK;
+    struct geist_buffer *ple_buf = nullptr;
+    if (st->config.has_ple) {
+        s = compute_per_layer_inputs_batch(
+                sess, n, ids, sess->scratch_h_a, sess->scratch_per_layer_input);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        ple_buf = sess->scratch_per_layer_input;
+    }
+
+    /* 3. Layer loop seq=n. */
+    const size_t q_pos = sess->kv_len;
+    s = transformer_run_all_layers(sess, q_pos, n, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    s = transformer_mtp_sync_target(sess, n, ids, sess->scratch_h_b);
+    if (s != GEIST_OK) {
+        return s;
+    }
+
+    /* 4. Advance kv_len by n. */
+    sess->kv_len += n;
+    if (sess->kv_kivi_enabled) {
+        sess->kivi_residual_count += n;
+        transformer_kivi_drain_full(sess);
+    }
+    return GEIST_OK;
+}
+
 static enum geist_status prefill_text_batch_inner(struct transformer_arch_session *sess,
                                                   size_t                           n,
                                                   const geist_token_t             *ids) {
@@ -192,13 +302,6 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
     if (vocab_ok != GEIST_OK) {
         return vocab_ok;
     }
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-
-    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
-    /* sqrt(d_model) embedding scale is Gemma-3/4-specific; Llama / BitNet
-     * don't scale. has_ple gates Gemma family identity. */
-    const float embed_scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
 
     /* Chunk by the SESSION cap: every scratch buffer is sized with
      * sess->m_max (arch_state.c), and a session opt below the state's
@@ -209,105 +312,149 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
     for (size_t off = 0; off < n; off += sess->m_max) {
         const size_t chunk = (n - off > sess->m_max) ? sess->m_max : (n - off);
 
-        /* 1. Embed all chunk tokens into scratch_h_a [chunk, HIDDEN].
-         * Device path first: per-row fused lookup+scale dispatches keep
-         * batched GPU backends from flushing the pipeline through a
-         * mapped host pointer (and skip the host dequant loop). */
-        bool embed_on_device = st->model_fusions.embed_lookup_scaled;
-        bool embed_batched   = false;
-        if (embed_on_device && fused->embedding_lookup_scaled_rows != nullptr) {
-            /* #322: one dispatch for the whole chunk instead of one tiny
-             * dispatch per token. Non-OK (row cap, unsupported dtype)
-             * falls through to the per-token loop below. */
-            struct geist_tensor t_rows = {
-                    .buffer = sess->scratch_h_a,
-                    .offset = 0,
-                    .dtype  = GEIST_DTYPE_F32,
-                    .layout = GEIST_LAYOUT_DENSE,
-                    .ndim   = 2,
-                    .shape  = {(int64_t) chunk, (int64_t) st->d_model, 0, 0, 0, 0, 0, 0},
-                    .stride = {(int64_t) st->d_model, 1, 0, 0, 0, 0, 0, 0},
-            };
-            embed_batched = fused->embedding_lookup_scaled_rows(
-                                    be, chunk, &st->embed_table, ids + off, embed_scale, &t_rows) ==
-                            GEIST_OK;
-        }
-        if (embed_on_device && !embed_batched) {
-            for (size_t t = 0; t < chunk; t++) {
-                struct geist_tensor t_row = {
-                        .buffer = sess->scratch_h_a,
-                        .offset = t * st->d_model * sizeof(float),
-                        .dtype  = GEIST_DTYPE_F32,
-                        .layout = GEIST_LAYOUT_DENSE,
-                        .ndim   = 1,
-                        .shape  = {(int64_t) st->d_model, 0, 0, 0, 0, 0, 0, 0},
-                        .stride = {1, 0, 0, 0, 0, 0, 0, 0},
-                };
-                const enum geist_status es = fused->embedding_lookup_scaled(
-                        be, &st->embed_table, ids[off + t], embed_scale, &t_row);
-                if (es != GEIST_OK) {
-                    return es; /* bound at plan build — failure is a real error */
-                }
-            }
-        }
-        if (!embed_on_device) {
-            float *h_dst = (float *) v->buffer_map(sess->scratch_h_a);
-            for (size_t t = 0; t < chunk; t++) {
-                enum geist_status s = dequant_one_row(
-                        be, &st->embed_table, (size_t) ids[off + t], h_dst + t * st->d_model);
-                if (s != GEIST_OK) {
-                    v->buffer_unmap(sess->scratch_h_a);
-                    return s;
-                }
-            }
-            if (embed_scale != 1.0f) {
-                const size_t n_floats = chunk * st->d_model;
-                for (size_t i = 0; i < n_floats; i++) {
-                    h_dst[i] *= embed_scale;
-                }
-            }
-            v->buffer_unmap(sess->scratch_h_a);
-        }
-
-        /* 2. Batched PLE precompute. P1.5.b: skipped for non-PLE families. */
-        enum geist_status    s       = GEIST_OK;
-        struct geist_buffer *ple_buf = nullptr;
-        if (st->config.has_ple) {
-            s = compute_per_layer_inputs_batch(
-                    sess, chunk, ids + off, sess->scratch_h_a, sess->scratch_per_layer_input);
-            if (s != GEIST_OK) {
-                return s;
-            }
-            ple_buf = sess->scratch_per_layer_input;
-        }
-
-        /* 3. Layer loop seq=chunk. */
-        const size_t q_pos = sess->kv_len;
-        s                  = transformer_run_all_layers(
-                sess, q_pos, chunk, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
-        if (s != GEIST_OK) {
-            return s;
-        }
-        s = transformer_mtp_sync_target(sess, chunk, ids + off, sess->scratch_h_b);
+        enum geist_status s = transformer_forward_chunk(sess, chunk, ids + off);
         if (s != GEIST_OK) {
             return s;
         }
 
-        /* 4. Advance kv_len by chunk. */
-        sess->kv_len += chunk;
-        if (sess->kv_kivi_enabled) {
-            sess->kivi_residual_count += chunk;
-            transformer_kivi_drain_full(sess);
-        }
-
-        /* 5. On the final chunk, compute logits for the last token so
-         *    ops->decode_step has a pending prediction. */
+        /* On the final chunk, compute logits for the last token so
+         * ops->decode_step has a pending prediction. */
         if (off + chunk == n) {
             s = finalize_logits_last_row(sess, chunk);
             if (s != GEIST_OK) {
                 return s;
             }
         }
+    }
+    return GEIST_OK;
+}
+
+/* Pooled sentence embedding: the full stack, no lm_head.
+ *
+ * Pooling is whatever the GGUF's `{arch}.pooling_type` said (arch_config.h
+ * documents why the file is trusted over the model cards). MEAN sums every
+ * position's post-output_norm hidden; LAST keeps only the final one. The
+ * result is L2-normalized, which every consumer wants and no consumer can
+ * add back correctly if it is skipped — cosine on an unnormalized vector is
+ * not the model's similarity.
+ *
+ * The norm has to be applied PER ROW BEFORE the sum: HF exposes
+ * last_hidden_state after the final norm, and rmsnorm is not linear, so
+ * norm-then-mean and mean-then-norm are different vectors.
+ *
+ * Resets the session on entry and on exit. Prefill needs the KV rows, so
+ * they get written either way; leaving a half-filled cache behind for the
+ * next caller to trip over is the part worth avoiding.
+ */
+enum geist_status transformer_embed(struct transformer_arch_session *sess,
+                                    size_t                           n_dim,
+                                    size_t                           n,
+                                    const geist_token_t              ids[static n],
+                                    float                            out[static n_dim]) {
+    struct transformer_arch_state *st = sess->model;
+    /* `ids` and `out` are [static] — the contract says non-null, and gcc's
+     * -Wnonnull-compare rejects checking it here (AGENT.md §1). The engine
+     * entry point validates the handle before dispatching. */
+    if (st == nullptr || n == 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (n_dim != st->d_model) {
+        geist_backend_set_error(st->backend,
+                                GEIST_E_INVALID_ARG,
+                                "transformer_embed: n_dim %zu != d_model %zu",
+                                n_dim,
+                                st->d_model);
+        return GEIST_E_INVALID_ARG;
+    }
+    const enum geist_pooling pooling = st->config.pooling;
+    if (pooling != GEIST_POOL_MEAN && pooling != GEIST_POOL_LAST) {
+        geist_backend_set_error(st->backend,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer_embed: pooling_type %d not implemented "
+                                "(only MEAN and LAST)",
+                                (int) pooling);
+        return GEIST_E_UNSUPPORTED;
+    }
+
+    struct geist_backend            *be = st->backend;
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+
+    transformer_session_reset(sess);
+    enum geist_status rc = transformer_check_kv_room(sess, n);
+    if (rc == GEIST_OK) {
+        rc = transformer_check_token_ids(sess, n, ids);
+    }
+    if (rc != GEIST_OK) {
+        return rc;
+    }
+
+    float *acc = sess->embed_acc;
+    memset(acc, 0, st->d_model * sizeof(float));
+
+    const int region_tok =
+            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
+
+    for (size_t off = 0; off < n; off += sess->m_max) {
+        const size_t chunk = (n - off > sess->m_max) ? sess->m_max : (n - off);
+
+        rc = transformer_forward_chunk(sess, chunk, ids + off);
+        if (rc != GEIST_OK) {
+            break;
+        }
+        /* output_norm over the chunk's rows, into scratch_h_a so h_b stays
+         * intact. Same shape as finalize_logits_batch's front — rmsnorm
+         * batches over the leading dim. */
+        rc = transformer_norm_rows(sess, chunk);
+        if (rc != GEIST_OK) {
+            break;
+        }
+        const float *rows = (const float *) v->buffer_map(sess->scratch_h_a);
+        if (rows == nullptr) {
+            rc = GEIST_E_BACKEND;
+            break;
+        }
+        if (pooling == GEIST_POOL_MEAN) {
+            for (size_t t = 0; t < chunk; t++) {
+                const float *row = rows + t * st->d_model;
+                for (size_t j = 0; j < st->d_model; j++) {
+                    acc[j] += row[j];
+                }
+            }
+        } else if (off + chunk == n) {
+            memcpy(acc, rows + (chunk - 1) * st->d_model, st->d_model * sizeof(float));
+        }
+        v->buffer_unmap(sess->scratch_h_a);
+    }
+
+    if (v->parallel_region_end) {
+        v->parallel_region_end(be, region_tok);
+    }
+    transformer_session_reset(sess);
+    if (rc != GEIST_OK) {
+        return rc;
+    }
+
+    if (pooling == GEIST_POOL_MEAN) {
+        const float inv_n = 1.0f / (float) n;
+        for (size_t j = 0; j < st->d_model; j++) {
+            acc[j] *= inv_n;
+        }
+    }
+    /* L2 normalize. A zero vector cannot happen after a real forward, but
+     * dividing by it would hand back NaNs instead of failing, so guard the
+     * one path that could (AGENT.md §5: outputs defined on every return). */
+    double ss = 0.0;
+    for (size_t j = 0; j < st->d_model; j++) {
+        ss += (double) acc[j] * (double) acc[j];
+    }
+    if (!(ss > 0.0)) {
+        geist_backend_set_error(
+                be, GEIST_E_BACKEND, "transformer_embed: pooled vector has zero norm");
+        return GEIST_E_BACKEND;
+    }
+    const float inv = (float) (1.0 / sqrt(ss));
+    for (size_t j = 0; j < st->d_model; j++) {
+        out[j] = acc[j] * inv;
     }
     return GEIST_OK;
 }

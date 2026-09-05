@@ -4,8 +4,8 @@
  *
  * Layer: ARCHITECTURE.
  *
- * Registry: gemma4, llama, bitnet-b1.58, bitnet — a static array iterated
- * linearly; no hash table needed at this size.
+ * Registry: gemma4, llama, qwen3, qwen35, bitnet-b1.58, bitnet — a static
+ * array iterated linearly; no hash table needed at this size.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -16,6 +16,24 @@
 
 #include <stddef.h>
 #include <string.h>
+
+/* ---- BitNet-embedding SubLN detector ---------------------------------- */
+/*
+ * microsoft/bitnet-embedding-0.6b ships as a plain "qwen3" GGUF — the
+ * BitLinear layout is nowhere in the metadata, only in the tensor table
+ * (microsoft/BitNet's converter adds seven *_norm_in weights per block and
+ * changes no key). So the family probes for the first one rather than
+ * trusting an arch string a stock Qwen3 GGUF carries too. Probing block 0 is
+ * enough: the converter writes all layers or none, and a partial set fails
+ * loudly in the weight loader anyway.
+ *
+ * The sibling checkpoint (bitnet-embedding-270m) is a Gemma 3 backbone and
+ * is NOT supported: geist has no gemma3 family, so the arch gate refuses it
+ * before this ever runs.
+ */
+static bool has_bitlinear_subln_tensors(struct gguf_ctx *gguf) {
+    return gguf != nullptr && gguf_get_tensor(gguf, "blk.0.attn_q_norm_in.weight") != nullptr;
+}
 
 /* ---- Gemma 4 (current default) ---------------------------------------- */
 
@@ -263,8 +281,9 @@ static bool populate_layers_llama(struct transformer_arch_state *st) {
 static void populate_qwen3(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
     /* Neutral config + the two qwen3 specifics: per-head QK-norm and
      * SwiGLU. NEOX RoPE (no pre-permute) is the neutral default. */
-    st->config.has_qk_norms   = true;
-    st->config.ffn_activation = GEIST_FFN_SWIGLU;
+    st->config.has_qk_norms        = true;
+    st->config.ffn_activation      = GEIST_FFN_SWIGLU;
+    st->config.has_bitlinear_subln = has_bitlinear_subln_tensors(gguf);
 
     uint32_t u;
     float    f;

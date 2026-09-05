@@ -455,6 +455,29 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
     return GEIST_OK;
 }
 
+enum geist_status geist_session_embed(struct geist_session *s,
+                                      size_t                n_dim,
+                                      size_t                n,
+                                      const geist_token_t   ids[static n],
+                                      float                 out[static n_dim]) {
+    /* `ids` and `out` are declared [static] — the contract guarantees
+     * non-null, and GCC -Wnonnull-compare rejects an explicit check.
+     * Same shape as geist_session_prefill_tokens above. */
+    if (s == nullptr || n == 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    if (ops == nullptr || ops->embed == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const enum geist_status es = ops->embed(arch_sess(sf), n_dim, n, ids, out);
+    if (es != GEIST_OK) {
+        return session_op_failed(sf, es, "embed");
+    }
+    return GEIST_OK;
+}
+
 const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits) {
     if (n_logits == nullptr)
         return nullptr;

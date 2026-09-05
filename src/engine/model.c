@@ -595,6 +595,17 @@ enum geist_status geist_model_gains(struct geist_model *m, float **out_gains, si
     return ops->gains(m->text_decoder.arch_meta, out_gains, out_n);
 }
 
+size_t geist_model_embed_dim(const struct geist_model *m) {
+    if (m == nullptr) {
+        return 0;
+    }
+    const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;
+    if (ops == nullptr || ops->hidden_dim == nullptr || m->text_decoder.arch_meta == nullptr) {
+        return 0;
+    }
+    return ops->hidden_dim(m->text_decoder.arch_meta);
+}
+
 /* Special-token accessors — read the ids the tokenizer parsed from the GGUF
  * metadata (or tokenizer.bin). Both tokenizer paths default unset ids to -1,
  * which is GEIST_TOKEN_NONE. */

@@ -98,6 +98,14 @@ static inline void *arena_alloc(struct transformer_arch_state *st, size_t bytes,
  *
  * weight_load/tensor_views.c — GGUF tensor → backend buffer staging.
  */
+/* Stage a norm vector (rmsnorm gamma) as an F32 backend buffer, converting
+ * when the GGUF stores it narrower. Kernels read gammas as F32 only. */
+[[nodiscard]] enum geist_status load_norm_to_f32_buffer(struct transformer_arch_state *st,
+                                                        struct gguf_ctx               *gguf,
+                                                        const char                    *name,
+                                                        size_t                expected_elems,
+                                                        struct geist_buffer **out_buf);
+
 [[nodiscard]] enum geist_status load_tensor_to_buffer(struct transformer_arch_state *st,
                                                       struct gguf_ctx               *gguf,
                                                       const char                    *name,

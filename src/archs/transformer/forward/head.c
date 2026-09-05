@@ -219,6 +219,40 @@ transformer_head_dense_recompute(struct transformer_arch_session *sess) {
     return s;
 }
 
+/* The output head's front half, on its own: copy `k` residual rows out of
+ * scratch_h_b, apply output_norm to all of them, leave the result in
+ * scratch_h_a. That is HF's `last_hidden_state` — what a pooled embedding
+ * sums — and it is everything finalize_logits_batch does before the lm_head.
+ * Split out so geist_session_embed can stop there instead of projecting
+ * through a vocab it has no use for. */
+[[nodiscard]] enum geist_status transformer_norm_rows(struct transformer_arch_session *sess,
+                                                      size_t                           k) {
+    struct transformer_arch_state         *st    = sess->model;
+    struct geist_backend                  *be    = st->backend;
+    const struct geist_backend_vtbl       *v     = be->desc->vtbl;
+    const struct geist_backend_primitives *prims = be->desc->prims;
+
+    const size_t   bytes = k * st->d_model * sizeof(float);
+    const uint8_t *src   = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
+    uint8_t       *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
+    if (src == nullptr || dst == nullptr) {
+        if (src != nullptr) {
+            v->buffer_unmap(sess->scratch_h_b);
+        }
+        if (dst != nullptr) {
+            v->buffer_unmap(sess->scratch_h_a);
+        }
+        return GEIST_E_BACKEND;
+    }
+    memcpy(dst, src, bytes);
+    v->buffer_unmap(sess->scratch_h_b);
+    v->buffer_unmap(sess->scratch_h_a);
+
+    struct geist_tensor t_h_2d       = view_2d(sess->scratch_h_a, (int64_t) k, st->d_model);
+    struct geist_tensor t_w_out_norm = view_1d(st->output_norm.buffer, st->d_model);
+    return prims->rmsnorm(be, &t_h_2d, &t_w_out_norm, st->config.rms_eps, &t_h_2d);
+}
+
 /* Batched variant of finalize_logits_one_row for verify_forward: runs
  * the lm_head linear ONCE over all k rows of scratch_h_b, then does
  * per-row softcap + argmax/sampler. Lights up the M>1 NEON IQ-format

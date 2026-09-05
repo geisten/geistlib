@@ -37,9 +37,9 @@ void transformer_scratch_plan_build(const struct transformer_arch_state *st,
      * attn_qkv_prep binds q/k/v and the norm gammas as offsets into ONE
      * buffer and returns UNSUPPORTED if any of them sits elsewhere. */
     out->ones             = head_dim_max * F;
-    out->pool_align_slack = 22u * 64u;
-    out->pool_bytes       = out->hidden /*normed*/ + out->q_out /*q*/ + out->kv_out /*k*/ +
-                            out->kv_out /*v*/ + out->q_out /*attn*/ +
+    out->pool_align_slack = 23u * 64u;
+    out->pool_bytes       = out->hidden /*normed*/ + out->hidden /*subln*/ + out->q_out /*q*/ +
+                            out->kv_out /*k*/ + out->kv_out /*v*/ + out->q_out /*attn*/ +
                             out->hidden * 10 /*o, post_attn, h_post_attn, pre_ff,
                                                ffn_out, post_ff, h_post_ff,
                                                proj_ple, h_a, h_b*/

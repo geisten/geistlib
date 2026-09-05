@@ -427,6 +427,10 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     if (s != GEIST_OK) {
         return s;
     }
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_subln);
+    if (s != GEIST_OK) {
+        return s;
+    }
     s = alloc_pool_buffer(sess, scratch_plan.q_out, &sess->scratch_q);
     if (s != GEIST_OK) {
         return s;
@@ -880,6 +884,31 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
     st->config.family = fam->name;
     fam->populate(gguf, st);
+    /* `{arch}.pooling_type` is family-independent — one read here beats the
+     * same three lines in every populator. Absent on a generative GGUF,
+     * where it is meaningless; MEAN is the neutral default the embed path
+     * documents. */
+    st->config.pooling = GEIST_POOL_MEAN;
+    {
+        char     key[96];
+        uint32_t pooling_u = 0;
+        snprintf(key, sizeof key, "%s.pooling_type", fam->name);
+        if (gguf_get_meta_u32(gguf, key, &pooling_u) && pooling_u <= (uint32_t) GEIST_POOL_RANK) {
+            st->config.pooling = (enum geist_pooling) pooling_u;
+        }
+        /* GEIST_POOLING=mean|last overrides the key. This exists because the
+         * two shipped embedding checkpoints disagree with themselves — the
+         * GGUF says MEAN, the model card says last-token — and settling that
+         * belongs in a measurement, not an argument. */
+        const char *pool_env = getenv("GEIST_POOLING");
+        if (pool_env != nullptr) {
+            if (strcmp(pool_env, "mean") == 0) {
+                st->config.pooling = GEIST_POOL_MEAN;
+            } else if (strcmp(pool_env, "last") == 0) {
+                st->config.pooling = GEIST_POOL_LAST;
+            }
+        }
+    }
     if (st->n_layers == 0) {
         geist_backend_set_error(be,
                                 GEIST_E_FORMAT,
@@ -1298,6 +1327,16 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         return nullptr;
     }
     memset(sess, 0, sizeof(*sess));
+    sess->embed_acc = heap_alloc_array_aligned(float, state->d_model);
+    if (sess->embed_acc == nullptr) {
+        void *p = sess;
+        safe_free(&p);
+        geist_backend_set_error(be,
+                                GEIST_E_OOM,
+                                "transformer_session_alloc: embed accumulator (%zu floats) failed",
+                                state->d_model);
+        return nullptr;
+    }
     sess->model       = state;
     sess->mtp_enabled = state->n_mtp_layers > 0 && env_flag_enabled("GEIST_MTP", false);
     sess->m_max       = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
@@ -1479,6 +1518,10 @@ void transformer_session_free(struct transformer_arch_state   *state,
     }
     struct geist_backend *be = (state != nullptr) ? state->backend : nullptr;
 
+    void *acc = sess->embed_acc;
+    safe_free(&acc);
+    sess->embed_acc = nullptr;
+
     /* Gated-DeltaNet state + qwen35 gate scratch (#281). */
     if (state != nullptr && be != nullptr && sess->dn_conv_state != nullptr) {
         for (size_t li = 0; li < state->n_layers; li++) {
@@ -1576,27 +1619,17 @@ void transformer_session_free(struct transformer_arch_state   *state,
          * metadata; the underlying scratch_pool_base bytes are freed
          * once below. */
         struct geist_buffer *infra[] = {
-                sess->scratch_normed,
-                sess->scratch_q,
-                sess->scratch_k,
-                sess->scratch_v,
-                sess->scratch_attn,
-                sess->scratch_o,
-                sess->scratch_post_attn,
-                sess->scratch_h_post_attn,
-                sess->scratch_pre_ff,
-                sess->scratch_gate,
-                sess->scratch_up,
-                sess->scratch_ffn_out,
-                sess->scratch_post_ff,
-                sess->scratch_h_post_ff,
-                sess->scratch_gate_ple,
-                sess->scratch_proj_ple,
-                sess->scratch_ones_headdim_max,
-                sess->scratch_ple_lookup,
-                sess->scratch_h_a,
-                sess->scratch_h_b,
-                sess->scratch_per_layer_input,
+                sess->scratch_normed,      sess->scratch_subln,
+                sess->scratch_q,           sess->scratch_k,
+                sess->scratch_v,           sess->scratch_attn,
+                sess->scratch_o,           sess->scratch_post_attn,
+                sess->scratch_h_post_attn, sess->scratch_pre_ff,
+                sess->scratch_gate,        sess->scratch_up,
+                sess->scratch_ffn_out,     sess->scratch_post_ff,
+                sess->scratch_h_post_ff,   sess->scratch_gate_ple,
+                sess->scratch_proj_ple,    sess->scratch_ones_headdim_max,
+                sess->scratch_ple_lookup,  sess->scratch_h_a,
+                sess->scratch_h_b,         sess->scratch_per_layer_input,
                 sess->scratch_logits,
         };
         for (size_t i = 0; i < sizeof infra / sizeof infra[0]; i++) {

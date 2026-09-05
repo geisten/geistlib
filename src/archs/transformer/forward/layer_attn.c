@@ -120,7 +120,51 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
 
     struct geist_tensor t_q_2d = view_2d(sess->scratch_q, ctx->SEQ, (int64_t) ctx->q_out);
     t0                         = profile ? transformer_profile_now_ns() : 0;
-    if (st->config.has_attn_output_gate) {
+    if (ctx->apply_bitlinear_subln) {
+        /* ponytail: three separate GEMMs where the other families use
+         * linear_w_triple_or_legacy. q, k and v each normalize the shared
+         * attn-normed hidden with their OWN gamma, so there is no common
+         * input row for the triple kernel to amortize over. Batch the three
+         * rmsnorms into one call if this family ever matters for decode
+         * throughput — the projections themselves cannot merge. */
+        s = bitlinear_project(ctx,
+                              st->d_model,
+                              sess->scratch_normed,
+                              &L->q_norm_in,
+                              &L->q_proj_w,
+                              &L->q_proj,
+                              sess->scratch_q,
+                              &t_q_2d);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        if (ctx->compute_kv) {
+            struct geist_tensor t_k_2d = view_2d(sess->scratch_k, ctx->SEQ, (int64_t) ctx->kv_out);
+            struct geist_tensor t_v_2d = view_2d(sess->scratch_v, ctx->SEQ, (int64_t) ctx->kv_out);
+            s                          = bitlinear_project(ctx,
+                                                           st->d_model,
+                                                           sess->scratch_normed,
+                                                           &L->k_norm_in,
+                                                           &L->k_proj_w,
+                                                           &L->k_proj,
+                                                           sess->scratch_k,
+                                                           &t_k_2d);
+            if (s == GEIST_OK) {
+                s = bitlinear_project(ctx,
+                                      st->d_model,
+                                      sess->scratch_normed,
+                                      &L->v_norm_in,
+                                      &L->v_proj_w,
+                                      &L->v_proj,
+                                      sess->scratch_v,
+                                      &t_v_2d);
+            }
+            if (s != GEIST_OK) {
+                return s;
+            }
+        }
+        transformer_profile_add(&g_attn_profile, ATTN_PROFILE_QKV, t0);
+    } else if (st->config.has_attn_output_gate) {
         /* qwen35 (#281): q_proj jointly emits [query(hd) | gate(hd)] per
          * head (2x q_out rows). Project into qgate_joint, then split
          * host-side: query halves -> scratch_q (head-major, the layout
@@ -451,7 +495,10 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     }
 
     struct geist_tensor t_attn_2d = view_2d(sess->scratch_attn, ctx->SEQ, (int64_t) ctx->q_out);
-    if (ctx->apply_sub_ln && L->attn_sub_norm.buffer != nullptr) {
+    /* attn_sub_norm carries o_proj's gamma under BOTH layouts — the two-norm
+     * BitNet one and the per-projection one, which put it at the same place
+     * and differ only in the tensor's name (attn_output_norm_in). */
+    if ((ctx->apply_sub_ln || ctx->apply_bitlinear_subln) && L->attn_sub_norm.buffer != nullptr) {
         struct geist_tensor t_attn_sub_w = view_1d(L->attn_sub_norm.buffer, (int64_t) ctx->q_out);
         s = prims->rmsnorm(be, &t_attn_2d, &t_attn_sub_w, ctx->eps, &t_attn_2d);
         if (s != GEIST_OK) {

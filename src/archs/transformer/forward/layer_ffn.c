@@ -90,8 +90,11 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         }
     }
 
-    const bool          has_ffn_sub_norm = ctx->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr;
-    struct geist_tensor t_ffn_out_2d     = view_2d(sess->scratch_ffn_out, ctx->SEQ, st->d_model);
+    /* ffn_sub_norm carries down_proj's gamma under both layouts — same
+     * position, different tensor name (ffn_down_norm_in). */
+    const bool has_ffn_sub_norm =
+            (ctx->apply_sub_ln || ctx->apply_bitlinear_subln) && L->ffn_sub_norm.buffer != nullptr;
+    struct geist_tensor t_ffn_out_2d = view_2d(sess->scratch_ffn_out, ctx->SEQ, st->d_model);
     if (ctx->seq > 1 && P != nullptr && P->fuse_ffn_geglu_tile_mN) {
         const float *xp = (const float *) v->buffer_map(sess->scratch_pre_ff);
         float       *yp = (float *) v->buffer_map(sess->scratch_ffn_out);
@@ -129,15 +132,23 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
 
     if (ctx->ffn_activation == GEIST_FFN_SQUARED_RELU) {
         t0 = profile ? transformer_profile_now_ns() : 0;
-        s  = linear_w_or_legacy(be,
-                                v,
-                                sess->scratch_pre_ff,
-                                sess->scratch_up,
-                                &L->up_proj_w,
-                                ctx->seq,
-                                &t_pre_ff_2d,
-                                &L->up_proj,
-                                &t_up_2d);
+        s  = ctx->apply_bitlinear_subln ? bitlinear_project(ctx,
+                                                            st->d_model,
+                                                            sess->scratch_pre_ff,
+                                                            &L->up_norm_in,
+                                                            &L->up_proj_w,
+                                                            &L->up_proj,
+                                                            sess->scratch_up,
+                                                            &t_up_2d)
+                                        : linear_w_or_legacy(be,
+                                                             v,
+                                                             sess->scratch_pre_ff,
+                                                             sess->scratch_up,
+                                                             &L->up_proj_w,
+                                                             ctx->seq,
+                                                             &t_pre_ff_2d,
+                                                             &L->up_proj,
+                                                             &t_up_2d);
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
         if (s != GEIST_OK) {
             return s;
@@ -172,19 +183,42 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             goto ffn_mid_done;
         }
         t0 = profile ? transformer_profile_now_ns() : 0;
-        s  = linear_w_pair_or_legacy(be,
-                                     v,
-                                     sess->scratch_pre_ff,
-                                     sess->scratch_gate,
-                                     sess->scratch_up,
-                                     &L->gate_proj_w,
-                                     &L->up_proj_w,
-                                     ctx->seq,
-                                     &t_pre_ff_2d,
-                                     &L->gate_proj,
-                                     &L->up_proj,
-                                     &t_gate_2d,
-                                     &t_up_2d);
+        if (ctx->apply_bitlinear_subln) {
+            /* gate and up hold different gammas over the same ffn-normed
+             * hidden, so the pair kernel has no shared row to reuse. */
+            s = bitlinear_project(ctx,
+                                  st->d_model,
+                                  sess->scratch_pre_ff,
+                                  &L->gate_norm_in,
+                                  &L->gate_proj_w,
+                                  &L->gate_proj,
+                                  sess->scratch_gate,
+                                  &t_gate_2d);
+            if (s == GEIST_OK) {
+                s = bitlinear_project(ctx,
+                                      st->d_model,
+                                      sess->scratch_pre_ff,
+                                      &L->up_norm_in,
+                                      &L->up_proj_w,
+                                      &L->up_proj,
+                                      sess->scratch_up,
+                                      &t_up_2d);
+            }
+        } else {
+            s = linear_w_pair_or_legacy(be,
+                                        v,
+                                        sess->scratch_pre_ff,
+                                        sess->scratch_gate,
+                                        sess->scratch_up,
+                                        &L->gate_proj_w,
+                                        &L->up_proj_w,
+                                        ctx->seq,
+                                        &t_pre_ff_2d,
+                                        &L->gate_proj,
+                                        &L->up_proj,
+                                        &t_gate_2d,
+                                        &t_up_2d);
+        }
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
         if (s != GEIST_OK) {
             return s;

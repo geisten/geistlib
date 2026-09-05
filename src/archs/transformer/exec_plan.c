@@ -94,6 +94,7 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         P->apply_gemma_attn_norms = st->config.has_gemma_attn_norms;
         P->apply_qk_norms         = st->config.has_qk_norms;
         P->apply_sub_ln           = st->config.has_sub_ln;
+        P->apply_bitlinear_subln  = st->config.has_bitlinear_subln;
         P->apply_ple              = st->config.has_ple;
         P->rope_interleaved       = st->config.rope_interleaved;
         P->ffn_activation         = st->config.ffn_activation;
@@ -108,9 +109,15 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
                                             ? be->desc->caps.max_m
                                             : st->m_max;
         const bool   geglu        = st->config.ffn_activation == GEIST_FFN_GEGLU;
-        const bool   has_sub_norm = P->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr &&
-                                    st->runtime_flags.bitnet_sub_ln_enabled;
-        const struct geist_fusion_query base = {
+        const bool   has_sub_norm = (P->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr &&
+                                     st->runtime_flags.bitnet_sub_ln_enabled) ||
+                                    P->apply_bitlinear_subln;
+        /* Every FFN-front fusion folds the pre-FFN rmsnorm into the gate/up
+         * matmul and feeds both projections the SAME row. has_bitlinear_subln
+         * gives gate and up their own gamma, so there is no shared row to
+         * fold — the fusions are not slower here, they are wrong. */
+        const bool                      bl_subln = P->apply_bitlinear_subln;
+        const struct geist_fusion_query base     = {
                 .d_model = st->d_model,
                 .inter   = L->intermediate,
                 .gate_w  = &L->gate_proj_w,
@@ -119,15 +126,17 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         };
         struct geist_fusion_query q;
 
-        q                           = base;
-        q.op                        = GEIST_FUSED_FFN_NORM_GATE_UP;
-        q.m                         = 1;
-        P->fuse_ffn_norm_gate_up_m1 = geglu && L->down_awq_inv_scale == nullptr && probe(be, q);
+        q    = base;
+        q.op = GEIST_FUSED_FFN_NORM_GATE_UP;
+        q.m  = 1;
+        P->fuse_ffn_norm_gate_up_m1 =
+                geglu && !bl_subln && L->down_awq_inv_scale == nullptr && probe(be, q);
 
-        q                      = base;
-        q.op                   = GEIST_FUSED_FFN_GATE_UP;
-        q.m                    = 1;
-        P->fuse_ffn_gate_up_m1 = geglu && L->down_awq_inv_scale == nullptr && probe(be, q);
+        q    = base;
+        q.op = GEIST_FUSED_FFN_GATE_UP;
+        q.m  = 1;
+        P->fuse_ffn_gate_up_m1 =
+                geglu && !bl_subln && L->down_awq_inv_scale == nullptr && probe(be, q);
 
         q                         = base;
         q.op                      = GEIST_FUSED_FFN_GEGLU_Q4Q6_MN;

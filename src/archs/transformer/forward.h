@@ -126,6 +126,11 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
 
 /* After a batched prefill of `seq` rows, materialize logits for the
  * LAST row only (the one a subsequent decode_step will consume). */
+/* Output-head front half: scratch_h_b's first `k` rows, output_norm'd, into
+ * scratch_h_a. The lm_head is NOT applied — see head.c. */
+[[nodiscard]] enum geist_status transformer_norm_rows(struct transformer_arch_session *sess,
+                                                      size_t                           k);
+
 [[nodiscard]] enum geist_status finalize_logits_last_row(struct transformer_arch_session *sess,
                                                          size_t                           seq);
 

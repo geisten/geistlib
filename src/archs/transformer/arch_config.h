@@ -88,6 +88,17 @@ geist_ffn_activation_select(size_t arch_len, size_t act_len, const char *arch, c
  * model, and transformer_exec_plan_build refuses at load rather than
  * calling a null pointer per layer (#352). Pure, so the list of kinds that
  * need it is testable without a backend. */
+/* Mirrors gguf-py's PoolingType so `{arch}.pooling_type` maps across
+ * unchanged. NONE/CLS/RANK are listed for that correspondence; only MEAN and
+ * LAST are implemented — the others return GEIST_E_UNSUPPORTED from embed. */
+enum geist_pooling {
+    GEIST_POOL_NONE = 0,
+    GEIST_POOL_MEAN = 1,
+    GEIST_POOL_CLS  = 2,
+    GEIST_POOL_LAST = 3,
+    GEIST_POOL_RANK = 4,
+};
+
 [[nodiscard]] static inline bool geist_ffn_needs_relu_squared(enum geist_ffn_activation_kind act) {
     return act == GEIST_FFN_SQUARED_RELU || act == GEIST_FFN_GATED_SQUARED_RELU;
 }
@@ -145,6 +156,37 @@ struct geist_arch_config {
      *   projection but isn't what the official 2B-4T uses. */
     bool                           has_sub_ln;
     enum geist_ffn_activation_kind ffn_activation;
+
+    /* ---- BitNet-embedding SubLN (microsoft/bitnet-embedding-{270m,0.6b}).
+     * Those models put an RMSNorm plus the A8 activation quantization
+     * inside EVERY BitLinear, not just the two positions has_sub_ln
+     * covers:
+     *
+     *   x -> RMSNorm(x, norm.weight) -> activation_quant(8 bit) -> matmul
+     *
+     * for q, k, v, o, gate, up and down (microsoft/BitNet
+     * docs/bitnet-embeddings-i2s-guide.md §3.1). Two of the seven sit
+     * exactly where has_sub_ln already puts them — o_proj's input and
+     * down_proj's input — so those reuse L->attn_sub_norm / L->ffn_sub_norm
+     * and only the tensor NAMES differ (*_norm_in vs *_sub_norm). The other
+     * five are L->{q,k,v,gate,up}_norm_in.
+     *
+     * Additive and orthogonal to has_sub_ln: BitNet b1.58 2B-4T keeps its
+     * two-norm layout untouched. A family sets one or the other, never
+     * both — the two disagree about where the activation quant belongs. */
+    bool has_bitlinear_subln;
+
+    /* ---- How geist_session_embed pools the per-position hidden states.
+     * Read from the GGUF's `{arch}.pooling_type` key (arch_state.c), whose
+     * values are gguf-py's PoolingType — hence the numbering, which must not
+     * drift from it. Absent key = MEAN.
+     *
+     * Worth knowing before trusting either: microsoft/bitnet-embedding-270m
+     * and -0.6b both write 1 (MEAN) while their model cards say last-token.
+     * The card's own reproducible llama-embedding invocation passes no
+     * --pooling override, so what the vendor published as reference output
+     * is what the key says. The file wins; the prose is not reproducible. */
+    enum geist_pooling pooling;
 
     /* RoPE pair convention.
      *   false: NEOX-style split pairs (i, i + head_dim/2). Gemma 3/4,

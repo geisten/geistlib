@@ -37,6 +37,7 @@ struct transformer_layer_exec_plan {
     bool                           apply_gemma_attn_norms;
     bool                           apply_qk_norms;
     bool                           apply_sub_ln;
+    bool                           apply_bitlinear_subln;
     bool                           apply_ple;
     bool                           rope_interleaved;
     enum geist_ffn_activation_kind ffn_activation;

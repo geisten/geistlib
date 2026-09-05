@@ -162,7 +162,13 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
                                                                     : st->config.kv_sliding_src)
                                                       : layer_idx);
     ctx->compute_kv = P != nullptr ? P->compute_kv : !L->is_kv_shared;
-    ctx->apply_bitnet_input_quant = plan_apply_sub_ln;
+    ctx->apply_bitlinear_subln =
+            P != nullptr ? P->apply_bitlinear_subln : st->config.has_bitlinear_subln;
+    /* The shared pre-quant of scratch_normed belongs to the two-norm BitNet
+     * layout only. Under has_bitlinear_subln each projection quantizes its
+     * OWN normed input inside bitlinear_project, and quantizing twice — once
+     * before the norm, once after — is not the reference order. */
+    ctx->apply_bitnet_input_quant = plan_apply_sub_ln && !ctx->apply_bitlinear_subln;
     ctx->apply_sub_ln             = plan_apply_sub_ln && st->runtime_flags.bitnet_sub_ln_enabled;
     ctx->apply_gemma_attn_norms =
             P != nullptr ? P->apply_gemma_attn_norms : st->config.has_gemma_attn_norms;
@@ -182,6 +188,33 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     ctx->SEQ              = (int64_t) seq;
     ctx->kv_len_now       = q_position + seq;
     transformer_layer_bind_kv_buffers(ctx);
+}
+
+enum geist_status bitlinear_project(struct transformer_layer_forward_ctx *ctx,
+                                    size_t                                n_in,
+                                    struct geist_buffer                  *x_buf,
+                                    const struct geist_tensor            *gamma,
+                                    const struct geist_weight            *w,
+                                    const struct geist_tensor            *w_legacy,
+                                    struct geist_buffer                  *y_buf,
+                                    struct geist_tensor                  *t_y) {
+    struct transformer_arch_session *sess = ctx->sess;
+    if (gamma->buffer == nullptr) {
+        /* The loader refuses a model missing any of the seven gammas, so
+         * reaching here means the flag was set for a family that has none. */
+        return GEIST_E_INVALID_STATE;
+    }
+    struct geist_tensor t_x     = view_2d(x_buf, ctx->SEQ, (int64_t) n_in);
+    struct geist_tensor t_xn    = view_2d(sess->scratch_subln, ctx->SEQ, (int64_t) n_in);
+    struct geist_tensor t_gamma = view_1d(gamma->buffer, (int64_t) n_in);
+
+    enum geist_status s = ctx->prims->rmsnorm(ctx->be, &t_x, &t_gamma, ctx->eps, &t_xn);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    apply_bitnet_input_quant_inplace(ctx->v, sess->scratch_subln, ctx->seq, n_in);
+    return linear_w_or_legacy(
+            ctx->be, ctx->v, sess->scratch_subln, y_buf, w, ctx->seq, &t_xn, w_legacy, t_y);
 }
 
 enum geist_status transformer_forward_one_layer(struct transformer_arch_session *sess,
