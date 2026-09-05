@@ -125,7 +125,7 @@ jobs:
       # so nothing else here would notice a file the loader cannot read.
       - name: Embedding chain end-to-end (synthetic model)
         if: matrix.target == 'linux'
-        run: make test-embedding
+        run: make test-embedding TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
 
       # Contract enforcement, link half: an out-of-tree agent runtime links
       # these symbols across a release boundary, so a changed signature or a
