@@ -346,6 +346,104 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
  * takes row seq-1. No LM head runs, which is the point: these GGUFs have no
  * output.weight, and projecting through the tied embedding table would cost
  * a 151936-wide matmul whose result is discarded. */
+/* The output head's front half on `k` rows: copy them out of scratch_h_b,
+ * apply output_norm to all of them, leave the result in scratch_h_a. That is
+ * HF's `last_hidden_state` -- what a mean-pooled embedding sums -- and it is
+ * everything finalize_logits_batch does before the lm_head. */
+[[nodiscard]] enum geist_status transformer_norm_rows(struct transformer_arch_session *sess,
+                                                      size_t                           k) {
+    struct transformer_arch_state         *st    = sess->model;
+    struct geist_backend                  *be    = st->backend;
+    const struct geist_backend_vtbl       *v     = be->desc->vtbl;
+    const struct geist_backend_primitives *prims = be->desc->prims;
+
+    const size_t   bytes = k * (size_t) st->d_model * sizeof(float);
+    const uint8_t *src   = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
+    uint8_t       *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
+    if (src == nullptr || dst == nullptr) {
+        if (src != nullptr) {
+            v->buffer_unmap(sess->scratch_h_b);
+        }
+        if (dst != nullptr) {
+            v->buffer_unmap(sess->scratch_h_a);
+        }
+        return GEIST_E_BACKEND;
+    }
+    memcpy(dst, src, bytes);
+    v->buffer_unmap(sess->scratch_h_b);
+    v->buffer_unmap(sess->scratch_h_a);
+
+    struct geist_tensor t_h_2d       = view_2d(sess->scratch_h_a, (int64_t) k, st->d_model);
+    struct geist_tensor t_w_out_norm = view_1d(st->output_norm.buffer, st->d_model);
+    return prims->rmsnorm(be, &t_h_2d, &t_w_out_norm, st->config.rms_eps, &t_h_2d);
+}
+
+/* One chunk's contribution to a mean-pooled embedding. The norm has to be
+ * applied PER ROW BEFORE the sum: rmsnorm is not linear, so norm-then-mean
+ * and mean-then-norm are different vectors, and HF exposes
+ * last_hidden_state after the final norm. */
+[[nodiscard]] enum geist_status
+transformer_embedding_accumulate(struct transformer_arch_session *sess, size_t k, bool first) {
+    struct transformer_arch_state   *st = sess->model;
+    const struct geist_backend_vtbl *v  = st->backend->desc->vtbl;
+    const size_t                     n  = (size_t) st->d_model;
+
+    const enum geist_status s = transformer_norm_rows(sess, k);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    const float *rows = (const float *) v->buffer_map(sess->scratch_h_a);
+    if (rows == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    if (first) {
+        memset(sess->embedding_acc, 0, n * sizeof(float));
+    }
+    for (size_t t = 0; t < k; t++) {
+        const float *row = rows + t * n;
+        for (size_t j = 0; j < n; j++) {
+            sess->embedding_acc[j] += row[j];
+        }
+    }
+    v->buffer_unmap(sess->scratch_h_a);
+    return GEIST_OK;
+}
+
+/* Divide the accumulated sum by the token count, L2-normalise, and land it
+ * in scratch_h_a where peek_embedding reads it. */
+[[nodiscard]] enum geist_status finalize_embedding_mean(struct transformer_arch_session *sess,
+                                                        size_t                           n_tokens) {
+    struct transformer_arch_state   *st = sess->model;
+    const struct geist_backend_vtbl *v  = st->backend->desc->vtbl;
+    const size_t                     n  = (size_t) st->d_model;
+
+    sess->embedding_valid = false;
+    if (n_tokens == 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    float *p = (float *) v->buffer_map(sess->scratch_h_a);
+    if (p == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    const float inv_n = 1.0f / (float) n_tokens;
+    double      sumsq = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        p[i] = sess->embedding_acc[i] * inv_n;
+        sumsq += (double) p[i] * (double) p[i];
+    }
+    /* Same contract as the last-token path: a zero vector has no direction,
+     * so it is left recognisably zero rather than divided by an epsilon. */
+    if (sumsq > 0.0) {
+        const float inv = (float) (1.0 / sqrt(sumsq));
+        for (size_t i = 0; i < n; i++) {
+            p[i] *= inv;
+        }
+    }
+    v->buffer_unmap(sess->scratch_h_a);
+    sess->embedding_valid = true;
+    return GEIST_OK;
+}
+
 [[nodiscard]] enum geist_status finalize_embedding_last_row(struct transformer_arch_session *sess,
                                                             size_t                           seq) {
     struct transformer_arch_state *st = sess->model;
@@ -353,9 +451,7 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
         return GEIST_E_INVALID_ARG;
     }
     if (st->config.pooling != GEIST_POOLING_LAST_TOKEN) {
-        /* MEAN is recognised by the config parser but has no implementation;
-         * refusing here beats pooling the wrong way. */
-        return GEIST_E_UNSUPPORTED;
+        return GEIST_E_UNSUPPORTED; /* mean goes through finalize_embedding_mean */
     }
 
     struct geist_backend                  *be    = st->backend;

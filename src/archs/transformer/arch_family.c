@@ -15,6 +15,7 @@
 #include "gguf_reader.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ---- Gemma 4 (current default) ---------------------------------------- */
@@ -244,6 +245,65 @@ static bool populate_layers_llama(struct transformer_arch_state *st) {
     return true;
 }
 
+/* ---- BitNet embedding metadata ----------------------------------------- */
+/*
+ * The two facts that turn a stock qwen3 / gemma3 GGUF into an embedding
+ * model: an RMSNorm on every projection's input, and a pooling. Both
+ * populators read them, and there are two spellings in the wild.
+ *
+ *   tools/convert_bitnet_embedding.py writes
+ *       bitnet.embedding.projection_input_norms  (bool)
+ *       bitnet.embedding.pooling                 ("mean" | "last_token")
+ *
+ *   Microsoft's own published GGUFs (bitnet-embeddings-*-i2_s.gguf on the
+ *   Hugging Face model pages) write NEITHER. They carry the per-projection
+ *   norms as tensors only, and the pooling as gguf-py's standard numeric
+ *   `{arch}.pooling_type`.
+ *
+ * Reading only our converter's keys meant a user had to re-convert from
+ * ~1.2 GB of safetensors to reach a model that ships as a ready-made GGUF.
+ * Both spellings are read here; neither weakens the guarantee that the file
+ * has to actually contain what the metadata promises.
+ */
+static void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
+                                           const char                    *arch,
+                                           struct transformer_arch_state *st) {
+    /* Projection-input norms. The TENSOR is the evidence — metadata must
+     * not promise norms the file lacks, which is why the key alone was
+     * never enough and is why the key is now not required at all. An
+     * explicit `false` still wins, so a converter can opt out. */
+    const bool have_norm_tensors = gguf_get_tensor(gguf, "blk.0.attn_q_norm_in.weight") != nullptr;
+    bool       proj_norms        = true;
+    (void) gguf_get_meta_bool(gguf, "bitnet.embedding.projection_input_norms", &proj_norms);
+    st->config.has_projection_input_norms = have_norm_tensors && proj_norms;
+
+    /* Pooling. Its absence is what makes a stock GGUF generative, so a
+     * missing key in BOTH spellings means NONE, not a failure. A key that
+     * is present but names a pooling this build cannot perform leaves
+     * pooling_unsupported set, which populate_layers refuses — better a
+     * clear load failure than a vector pooled the wrong way. */
+    size_t      plen = 0;
+    const char *pstr = gguf_get_meta_string(gguf, "bitnet.embedding.pooling", &plen);
+    if (pstr != nullptr) {
+        if (!geist_pooling_select(plen, pstr, &st->config.pooling)) {
+            st->config.pooling             = GEIST_POOLING_NONE;
+            st->config.pooling_unsupported = true;
+        }
+        return;
+    }
+    char key[96];
+    snprintf(key, sizeof key, "%s.pooling_type", arch);
+    uint32_t pooling_type = 0;
+    if (!gguf_get_meta_u32(gguf, key, &pooling_type)) {
+        st->config.pooling = GEIST_POOLING_NONE; /* a generative model */
+        return;
+    }
+    if (!geist_pooling_from_gguf_type(pooling_type, &st->config.pooling)) {
+        st->config.pooling             = GEIST_POOLING_NONE;
+        st->config.pooling_unsupported = true;
+    }
+}
+
 /* ---- Qwen3 (#275) ------------------------------------------------------ */
 /*
  * Llama-style uniform stack (GQA, SwiGLU, full attention, no KV sharing,
@@ -292,32 +352,7 @@ static void populate_qwen3(struct gguf_ctx *gguf, struct transformer_arch_state 
     if (gguf_get_meta_f32(gguf, "qwen3.attention.layer_norm_rms_epsilon", &f))
         st->config.rms_eps = f;
 
-    /* BitNet embedding models (July 2026) ship a Qwen3 backbone with an
-     * RMSNorm on every projection's input. They are otherwise a plain
-     * qwen3 GGUF, so the family is selected as usual and only this key
-     * distinguishes them; a stock Qwen3 GGUF has no such key and takes
-     * the normal path (docs/BITNET_EMBEDDINGS_PLAN.md).
-     *
-     * Written by tools/convert_bitnet_embedding.py. Keyed on the tensors
-     * as well: metadata alone must not promise norms the file lacks. */
-    bool proj_norms = false;
-    if (gguf_get_meta_bool(gguf, "bitnet.embedding.projection_input_norms", &proj_norms) &&
-        proj_norms && gguf_get_tensor(gguf, "blk.0.attn_q_norm_in.weight") != nullptr) {
-        st->config.has_projection_input_norms = true;
-    }
-
-    /* Pooling. Present only on embedding models; its absence is what makes
-     * a stock Qwen3 GGUF generative. An unrecognised value leaves
-     * pooling_unsupported set, which populate_layers refuses — better a
-     * clear load failure than a vector pooled the wrong way. */
-    {
-        size_t      plen = 0;
-        const char *pstr = gguf_get_meta_string(gguf, "bitnet.embedding.pooling", &plen);
-        if (!geist_pooling_select(plen, pstr, &st->config.pooling)) {
-            st->config.pooling             = GEIST_POOLING_NONE;
-            st->config.pooling_unsupported = true;
-        }
-    }
+    populate_bitnet_embedding_meta(gguf, "qwen3", st);
 
     st->hidden_per_layer = 0;
     st->ple_out          = 0;
@@ -415,19 +450,7 @@ static void populate_gemma3(struct gguf_ctx *gguf, struct transformer_arch_state
     if (gguf_get_meta_f32(gguf, "gemma3.attention.layer_norm_rms_epsilon", &f))
         st->config.rms_eps = f;
 
-    bool proj_norms = false;
-    if (gguf_get_meta_bool(gguf, "bitnet.embedding.projection_input_norms", &proj_norms) &&
-        proj_norms && gguf_get_tensor(gguf, "blk.0.attn_q_norm_in.weight") != nullptr) {
-        st->config.has_projection_input_norms = true;
-    }
-    {
-        size_t      plen = 0;
-        const char *pstr = gguf_get_meta_string(gguf, "bitnet.embedding.pooling", &plen);
-        if (!geist_pooling_select(plen, pstr, &st->config.pooling)) {
-            st->config.pooling             = GEIST_POOLING_NONE;
-            st->config.pooling_unsupported = true;
-        }
-    }
+    populate_bitnet_embedding_meta(gguf, "gemma3", st);
 
     st->hidden_per_layer = 0;
     st->ple_out          = 0;

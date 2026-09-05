@@ -55,21 +55,11 @@ static int global_track_buf(struct transformer_arch_state *st, struct geist_buff
                                                        size_t               expected_elems,
                                                        struct geist_tensor *out_view) {
 
-    struct geist_backend       *be  = st->backend;
-    const struct gguf_tensor_t *t   = nullptr;
-    struct geist_buffer        *buf = nullptr;
-    enum geist_status           s = load_tensor_to_buffer(st, gguf, name, expected_elems, &t, &buf);
+    struct geist_backend *be  = st->backend;
+    struct geist_buffer  *buf = nullptr;
+    enum geist_status     s   = load_norm_to_f32_buffer(st, gguf, name, expected_elems, &buf);
     if (s != GEIST_OK) {
         return s;
-    }
-    if (t->dtype != GGUF_TYPE_F32) {
-        be->desc->vtbl->buffer_destroy(be, buf);
-        geist_backend_set_error(be,
-                                GEIST_E_FORMAT,
-                                "transformer: '%s' expected F32, got %s",
-                                name,
-                                gguf_dtype_name(t->dtype));
-        return GEIST_E_FORMAT;
     }
     *out_view = make_view_1d(buf, GEIST_DTYPE_F32, GEIST_LAYOUT_DENSE, (int64_t) expected_elems);
     if (layer_track_buf(L, buf) != 0) {
@@ -859,14 +849,9 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
 
 load_output_norm:
     /* output_norm: [HIDDEN], F32. */
-    s = load_tensor_to_buffer(st, gguf, "output_norm.weight", (size_t) st->d_model, &t, &buf);
+    s = load_norm_to_f32_buffer(st, gguf, "output_norm.weight", (size_t) st->d_model, &buf);
     if (s != GEIST_OK) {
         return s;
-    }
-    if (t->dtype != GGUF_TYPE_F32) {
-        be->desc->vtbl->buffer_destroy(be, buf);
-        geist_backend_set_error(be, GEIST_E_FORMAT, "transformer: output_norm must be F32");
-        return GEIST_E_FORMAT;
     }
     st->output_norm = make_view_1d(buf, GEIST_DTYPE_F32, GEIST_LAYOUT_DENSE, (int64_t) st->d_model);
     if (global_track_buf(st, buf) != 0) {
