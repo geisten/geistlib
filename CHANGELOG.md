@@ -40,10 +40,9 @@ minor release.
     L2-normalised sentence embedding for what a session has prefilled, with
     the same borrow-a-pointer ownership as `geist_session_peek_logits`.
     Returns nullptr on a generative model. Its parameter order follows
-    AGENT.md §1 (out-size first, handle last) and so is the **reverse** of
-    `peek_logits`, which is STABLE and named in `docs/API_CONTRACT.md` and
-    therefore cannot be aligned before 1.0 — read the order, do not
-    pattern-match it from the sibling. Conversely `geist_session_decode_step` now returns
+    AGENT.md §1 (out-size first, handle last), and `peek_logits` was moved to
+    match it — see the breaking change above — so the two accessors now read
+    the same way round. `geist_session_decode_step` in turn returns
     `GEIST_E_UNSUPPORTED` on an embedding model — prefill ran, there is
     simply no token to emit. `struct geist_arch_ops_decoder` gains a
     matching optional `peek_embedding` slot.
