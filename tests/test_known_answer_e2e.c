@@ -45,7 +45,7 @@ static int pick(struct geist_session *s, const struct cloze *c) {
         return -1;
     }
     size_t       n_logits = 0;
-    const float *logits   = geist_session_peek_logits(s, &n_logits);
+    const float *logits   = geist_session_peek_logits(&n_logits, s);
     if (logits == nullptr || n_logits == 0) {
         return -1;
     }

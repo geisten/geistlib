@@ -71,8 +71,8 @@ static enum geist_status (*const c_pin_prefix)(struct geist_session *, size_t,
                                                const geist_token_t *) = geist_session_pin_prefix;
 /* The grammar mask: without logit access there is no constrained decoding, and
  * a model that was never tool-trained cannot be made to emit a valid call. */
-static const float *(*const c_peek_logits)(struct geist_session *,
-                                           size_t *) = geist_session_peek_logits;
+static const float *(*const c_peek_logits)(size_t *,
+                                           struct geist_session *) = geist_session_peek_logits;
 
 static const struct {
     const char *name;

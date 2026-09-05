@@ -200,7 +200,7 @@ static geist_token_t op_peek_next_token(void *session) {
  * size in *n_logits. nullptr (with *n_logits=0) if no logits are pending.
  * CPU-only: pointer aliases the backend buffer and is valid until the
  * next mutating call on the session. */
-static const float *op_peek_logits(void *session, size_t *n_logits) {
+static const float *op_peek_logits(size_t *n_logits, void *session) {
     struct transformer_arch_session *sess = session;
     if (n_logits == nullptr)
         return nullptr;
@@ -237,7 +237,7 @@ static const float *op_peek_logits(void *session, size_t *n_logits) {
  * prefill has produced one. The pointer aliases session scratch and is
  * valid until the next mutating call on the session — same contract as
  * op_peek_logits. */
-static const float *op_peek_embedding(void *session, size_t *n_dims) {
+static const float *op_peek_embedding(size_t *n_dims, void *session) {
     struct transformer_arch_session *sess = session;
     if (n_dims == nullptr) {
         return nullptr;

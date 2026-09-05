@@ -333,17 +333,11 @@ Shipped:
   `geist_session_peek_logits`.
 
   **The parameter order follows AGENT.md §1 strictly** — out-size first,
-  handle last — and therefore differs from `peek_logits`, which takes them the
-  other way round. That sibling is `STABLE since 0.6.0` and named in
-  `docs/API_CONTRACT.md`, so it cannot move without breaking a published
-  promise for a cosmetic gain. The asymmetry is permanent until a 1.0
-  migration could align them, and is called out in the header so it reads as
-  a decision rather than an oversight.
-
-  The arch vtable slot (`struct geist_arch_ops_decoder::peek_embedding`)
-  keeps the session-first order it shares with `peek_logits`, so that struct
-  stays internally consistent; the engine thunk in `session.c` does the swap,
-  once.
+  handle last. `peek_logits` was subsequently moved to match, as a deliberate
+  breaking change to a `STABLE` symbol inside 0.x; see the exception recorded
+  in `docs/API_CONTRACT.md` and the notice in `CHANGELOG.md`. The whole
+  accessor family, public functions and arch vtable slots alike, now takes
+  the out-size first.
 - `finalize_embedding_last_row` (`forward/head.c`): pools one row out of the
   post-layer hidden states, applies `output_norm`, L2-normalises. It shares
   its first two steps with `finalize_logits_one_row` for the same reason —
@@ -525,7 +519,7 @@ path is wanted for its own sake, not to reach this model.
 | :-- | :-- | :-- |
 | 0 Converter | S | ✅ done for the 0.6B; residual risk is the scale convention, unverified against a Microsoft-produced embedding GGUF |
 | 1 Projection norms | **M** | ✅ implemented; smaller than feared (five new tensors, not seven) but numerically unverified, and the disabled fusions are still unmeasured |
-| 2 Pooling + API | M | ✅ implemented; `EXPERIMENTAL`, parameter order per AGENT.md §1 and deliberately unlike `peek_logits`, which is STABLE and cannot move |
+| 2 Pooling + API | M | ✅ implemented; `EXPERIMENTAL`, parameter order per AGENT.md §1 — `peek_logits` was moved to match, a recorded breaking change |
 | 3 Gates | M | ✅ apparatus built and self-tested; **zero measurements taken** — it needs the weights, which this environment cannot fetch |
 | 4a gemma3 family | S | ✅ implemented; scoped to the 270M's geometry, stock Gemma-3 GGUFs untested |
 | 4b 128-granular I2_S | **L** | not done — three backends' hot kernels, and AGENT.md §6 needs a benchmark this environment cannot produce |

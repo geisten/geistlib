@@ -99,7 +99,7 @@ int main(int argc, char **argv) {
     }
 
     size_t       n_logits = 0;
-    const float *logits   = geist_session_peek_logits(session, &n_logits);
+    const float *logits   = geist_session_peek_logits(&n_logits, session);
     if (logits == nullptr || n_logits == 0) {
         fprintf(stderr, "no logits: %s\n", geist_session_errmsg(session));
         goto out;

@@ -85,7 +85,7 @@ static int run_path(struct geist_session *sess,
     if (geist_session_prefill_tokens(sess, n - n1, ids + n1) != GEIST_OK)
         return -1;
     size_t       nl = 0;
-    const float *lg = geist_session_peek_logits(sess, &nl);
+    const float *lg = geist_session_peek_logits(&nl, sess);
     if (lg == nullptr || nl == 0)
         return -1;
     memcpy(logits_out, lg, nl * sizeof(float));

@@ -194,6 +194,14 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
 
 /* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *
+ * BREAKING CHANGE, unreleased: the parameter order was `(s, n_logits)` up to
+ * and including 0.10.8 and is now out-size-first per AGENT.md §1. This is a
+ * source-incompatible change to a STABLE symbol inside 0.x, which the
+ * stability tag above otherwise rules out — taken deliberately by the
+ * maintainer while the user base is small enough to absorb it, rather than
+ * carrying the inconsistency to 1.0. A caller built against 0.10.8 will not
+ * compile; the fix is to swap the two arguments. See CHANGELOG.md.
+ *
  * Raw-logits accessor for evaluation, scoring, and constrained decoding.
  *
  * Returns a pointer to the next-position logits and writes the vocab size
@@ -208,7 +216,7 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
  * copy — an accelerator backend satisfies this contract by copying device
  * memory into session storage, so the signature does not change when such a
  * backend lands. Do not free it and do not hold it across a decode. */
-const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits);
+const float *geist_session_peek_logits(size_t *n_logits, struct geist_session *s);
 
 /* @stability EXPERIMENTAL — embedding models (BitNet embedding, July 2026).
  *
@@ -222,15 +230,6 @@ const float *geist_session_peek_logits(struct geist_session *s, size_t *n_logits
  * embedding model conversely emits no tokens: geist_session_decode_step
  * returns GEIST_E_UNSUPPORTED on one.
  *
- * NOTE ON THE PARAMETER ORDER, because it differs from its sibling above
- * and the difference is deliberate. AGENT.md §1 orders parameters
- * out-size-first, handle-last, which is what this takes. Its sibling
- * geist_session_peek_logits takes them the other way round and cannot be
- * changed: it is STABLE since 0.6.0 and named in docs/API_CONTRACT.md, so
- * moving it would break a published promise for a cosmetic gain. The two
- * therefore disagree, permanently, until a 1.0 migration could align them.
- * Read the argument order here rather than pattern-matching from
- * peek_logits.
  *
  * Ownership matches geist_session_peek_logits: the buffer belongs to the
  * SESSION, stays valid until the next mutating call on it, and must not be

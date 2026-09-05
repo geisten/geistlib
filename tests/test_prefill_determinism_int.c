@@ -93,7 +93,7 @@ int main(void) {
             break;
         }
         size_t       n_logits = 0;
-        const float *logits   = geist_session_peek_logits(sess, &n_logits);
+        const float *logits   = geist_session_peek_logits(&n_logits, sess);
         if (logits == nullptr || n_logits == 0) {
             fprintf(stderr, "peek_logits returned nothing (rep %d)\n", rep);
             result = GEIST_TEST_FAIL;

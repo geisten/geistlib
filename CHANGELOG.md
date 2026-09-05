@@ -8,6 +8,20 @@ minor release.
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+- **`geist_session_peek_logits` takes its arguments in the other order**:
+  `(size_t *n_logits, struct geist_session *s)`, was `(s, n_logits)`. Code
+  built against 0.10.8 or earlier will not compile; swap the two arguments.
+  The matching `struct geist_arch_ops_decoder::peek_logits` vtable slot moved
+  with it, so out-of-tree architectures must swap too.
+
+  This is a source-incompatible change to a `STABLE` symbol inside 0.x, which
+  `docs/API_CONTRACT.md` otherwise reserves for a major bump. It is taken
+  deliberately: the accessor family now follows AGENT.md §1's out-size-first
+  order consistently, rather than carrying a split convention past 1.0, and
+  the user base is currently small enough to absorb it. Recorded as an
+  explicit exception in `docs/API_CONTRACT.md` rather than left implicit.
+
 ### Added
 - **BitNet embedding models (July 2026)**, in three parts. Nothing here has
   yet run against real weights — see `docs/BITNET_EMBEDDINGS_PLAN.md` for
