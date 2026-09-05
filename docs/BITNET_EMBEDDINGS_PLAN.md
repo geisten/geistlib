@@ -1,14 +1,15 @@
 # BitNet embedding models (July 2026) — analysis and implementation plan
 
-Status: **phases 0, 1 and 2 implemented; unverified against real weights.** This
+Status: **phases 0-3 in the tree; nothing verified against real weights.** This
 document records what Microsoft released in July 2026, which of it is
 reproducible, and what geistlib has to grow to run it. Sources are pinned
 inline so the claims can be re-checked against upstream.
 
 Where things stand: the converter (phase 0), the per-projection input norms
-(phase 1) and the pooling path plus embedding API (phase 2) are in the tree
-and tested. The pipeline is complete end to end on paper — a converted GGUF
-loads, prefills, and yields a vector.
+(phase 1), the pooling path plus embedding API (phase 2) and the measurement
+apparatus (phase 3) are in the tree and tested. The pipeline is complete end
+to end on paper — a converted GGUF loads, prefills, and yields a vector — and
+the gate that would prove it is built and self-tested.
 
 What is missing underneath all of it is a numerical oracle: **no part of this
 has been run against real BitNet embedding weights**, which are reachable from
@@ -369,18 +370,60 @@ on real weights.
   vectors on the fixed prompt set — the phase 0 oracle, which needs a machine
   that can fetch the model.
 
-### Phase 3 — Quality and performance gates
+### Phase 3 — Quality and performance gates — **machinery built; no numbers produced**
 
-- Reproduce the 8-task conversion-fidelity subset (BornholmBitextMining,
-  FinancialPhrasebank, KorHateSpeechML, KorSarcasm, PoemSentiment, SICK-R,
-  STS17, STSBenchmark) and gate on the F16-vs-I2_S delta, which upstream puts
-  at 0.0032 for the 0.6B.
-- Prefill throughput at pp128…pp4096 under `benchmark/METHODOLOGY.md`, on x86
-  (comparable to upstream's Xeon numbers) and on the Pi 5 (**no upstream
-  baseline exists — this is a first**).
-- Record to `benchmark/results/` with pinned revisions, model hashes and raw
-  samples, per the `#364` protocol.
-- **Done when:** results are reproducible and the perf gate has a baseline.
+Phase 3's deliverable is numbers, and numbers need the weights. What is in
+the tree is the apparatus that produces them; running it needs a machine that
+can fetch the model, which is neither CI nor the development container. **No
+measurement in this repository has been taken.** Nothing below should be read
+as a result.
+
+Shipped:
+
+- `tools/dump_geist_embedding.c` — the first real consumer of
+  `geist_session_peek_embedding`. Takes a model and a prompts file (one per
+  line; all prompts share one model load, since reloading ~700 MB per prompt
+  would dominate the measurement) and writes a self-describing `.gemb`.
+- `tools/eval_embedding_fidelity.py` — the cosine-similarity gate, floor
+  0.999. Serves both jobs with one mechanism: parity against upstream's
+  `llama-embedding`, and F16-vs-I2_S conversion fidelity. Has `--selftest`,
+  following `benchmark/perf_gate.py`, so the gate is covered where data is
+  not.
+- `benchmark/embedding_protocol.json` — the pinned protocol: pp128…pp4096,
+  3 repeats, median with MAD, per-host thread counts, and `decode_n: 0`
+  (an embedding model emits no tokens, so decode throughput is not a defined
+  quantity). Upstream's Xeon figures are recorded inside it as *orientation*
+  and explicitly not as a baseline any host profile is compared against.
+- `tests/test_embedding_fidelity_py.py` — pins the gate's behaviour and the
+  `.gemb` header as a cross-language contract between the C writer and the
+  Python reader, which nothing else would catch.
+
+Two things the protocol file makes explicit because they are easy to get
+wrong when writing the results up:
+
+- **On ARM there is nothing to divide by.** Upstream marks I2_S unsupported
+  on ARM for both models, so a Pi 5 or Apple number is a *first*, not a
+  speedup. Reporting a ratio there would require inventing a denominator.
+- **Upstream's F16 baseline is the teacher, not the student at F16.** Their
+  1.42×–2.28× is BitNet-student vs multilingual-e5-teacher. A geistlib
+  F16-vs-I2_S ratio measures something else and must not be compared to it.
+
+**How to actually run it** (needs the 0.6B locally):
+
+```sh
+python3 tools/convert_bitnet_embedding.py /path/to/bitnet-embedding-0.6b \
+    --outtype i2_s --outfile bitnet-embedding-0.6b-i2_s.gguf
+make bin
+./bin/<platform>/release/tools/dump_geist_embedding \
+    bitnet-embedding-0.6b-i2_s.gguf prompts.txt geist.gemb
+# upstream side, same prompts, same order -> up.npy
+python3 tools/eval_embedding_fidelity.py --ref up.npy --got geist.gemb
+```
+
+- **Done when:** the parity gate passes at ≥ 0.999 — which is also what
+  retroactively verifies phases 1 and 2 — and a throughput row exists under
+  `benchmark/results/` with pinned revision, model hash and raw samples per
+  the [#364](https://github.com/geisten/geistlib/issues/364) protocol.
 
 ### Phase 4 — `gemma3` family and the 270M (optional, and now harder)
 
@@ -422,7 +465,7 @@ on real weights.
 | 0 Converter | S | ✅ done for the 0.6B; residual risk is the scale convention, unverified against a Microsoft-produced embedding GGUF |
 | 1 Projection norms | **M** | ✅ implemented; smaller than feared (five new tensors, not seven) but numerically unverified, and the disabled fusions are still unmeasured |
 | 2 Pooling + API | M | ✅ implemented as an `EXPERIMENTAL` mirror of `peek_logits`; the shape is still a public commitment and wants review |
-| 3 Gates | M | MTEB tooling is Python-side; keep it in `tools/`, out of the engine |
+| 3 Gates | M | ✅ apparatus built and self-tested; **zero measurements taken** — it needs the weights, which this environment cannot fetch |
 | 4 gemma3 | M | Gemma3 ≠ Gemma4 in ways not yet mapped; may not be worth it |
 
 The dominant risk is Phase 1: seven norms per layer sit directly in the hot

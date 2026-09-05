@@ -31,6 +31,13 @@ minor release.
     matching optional `peek_embedding` slot.
   - Models declaring a pooling this build does not implement are **refused
     at load** rather than pooled a plausible-looking wrong way.
+  - Measurement apparatus, but **no measurements**:
+    `tools/dump_geist_embedding` writes a set of prompts' embeddings to a
+    self-describing `.gemb`; `tools/eval_embedding_fidelity.py` gates cosine
+    similarity against a reference at a 0.999 floor and carries a
+    `--selftest`; `benchmark/embedding_protocol.json` pins the protocol
+    (pp128…pp4096, median of 3, `decode_n: 0` — these models emit no
+    tokens). Running any of it needs the weights, which CI cannot fetch.
 
 ## [0.10.8] — 2026-09-04
 

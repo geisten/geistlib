@@ -1,0 +1,66 @@
+{
+  "schema": "geist.benchmark.embedding.v1",
+  "status": "UNMEASURED — this file pins the protocol; no run has produced numbers yet.",
+  "purpose": "Prefill throughput and conversion fidelity for BitNet embedding models (July 2026). See docs/BITNET_EMBEDDINGS_PLAN.md phase 3.",
+  "models": {
+    "bitnet-embedding-0.6b-i2_s": {
+      "file": "bitnet-embedding-0.6b-i2_s.gguf",
+      "sha256": "UNPINNED — no canonical GGUF exists upstream; produced locally by tools/convert_bitnet_embedding.py. Pin the hash of YOUR conversion before recording any row.",
+      "arch": "qwen3",
+      "note": "Fully representable in geistlib's I2_S: every projection input is 1024, 2048 or 3072 wide, all multiples of the 256-element block."
+    },
+    "bitnet-embedding-0.6b-f16": {
+      "file": "multilingual-e5-0.6b-f16.gguf",
+      "sha256": "UNPINNED — see above.",
+      "arch": "qwen3",
+      "note": "The F16 baseline is upstream's TEACHER (multilingual-e5), not an F16 conversion of the BitNet student. Upstream benchmarks it this way; a speedup quoted against it is student-vs-teacher, not the same weights at two precisions."
+    }
+  },
+  "workload": {
+    "seq_lens": [128, 256, 512, 1024, 2048, 4096],
+    "decode_n": 0,
+    "decode_note": "Zero deliberately. Embedding models emit no tokens — geist_session_decode_step returns GEIST_E_UNSUPPORTED on one — so decode throughput is not a defined quantity here.",
+    "repeats": 3,
+    "aggregation": "median",
+    "dispersion": "median_absolute_deviation",
+    "backend": "cpu-only",
+    "model_load_included": false,
+    "warmup": "one discarded warmup before each measured sequence length"
+  },
+  "host_profiles": {
+    "pi5": {
+      "prefill_threads": 4,
+      "expect_backend": "cpu_neon",
+      "note": "The interesting host. Upstream's Supported Models table marks I2_S as UNSUPPORTED on ARM for both embedding models, so bitnet.cpp has no counterpart here — this establishes a first number rather than beating one. Do not report a speedup for this profile; there is nothing to divide by."
+    },
+    "amd_9950x": {
+      "prefill_threads": 16,
+      "expect_backend": "cpu_x86",
+      "note": "Thread count follows benchmark/results/THREAD-SWEEP-AMD9950X.md. The only profile where a bitnet.cpp comparison is possible at all."
+    },
+    "apple_m1max": {
+      "prefill_threads": 8,
+      "expect_backend": "cpu_neon",
+      "note": "Same ARM caveat as the Pi 5: no upstream counterpart."
+    }
+  },
+  "upstream_reference": {
+    "source": "microsoft/BitNet docs/bitnet-embeddings-i2s-guide.md",
+    "host": "Intel Xeon Platinum 8573C, 8 threads, clang, GGML_NATIVE=ON, no OpenMP",
+    "caveat": "Different silicon, different thread count, different compiler. These are recorded for orientation and are NOT a baseline any host profile above should be compared against directly.",
+    "prefill_tps_0.6b": {
+      "pp128": {"f16": 382.15, "i2_s": 870.90},
+      "pp256": {"f16": 373.95, "i2_s": 827.75},
+      "pp512": {"f16": 371.86, "i2_s": 716.27},
+      "pp1024": {"f16": 341.55, "i2_s": 620.58},
+      "pp2048": {"f16": 298.21, "i2_s": 481.14},
+      "pp4096": {"f16": 236.76, "i2_s": 336.32}
+    }
+  },
+  "quality_gate": {
+    "tool": "tools/eval_embedding_fidelity.py",
+    "min_cosine": 0.999,
+    "parity_target": "geistlib vs bitnet.cpp llama-embedding on the same prompts and the same I2_S GGUF. This is the oracle phases 1 and 2 lack; until it passes, the forward path is unverified.",
+    "conversion_target": "F16 GGUF vs I2_S GGUF from the same checkpoint. Upstream reports a 0.0032 average MTEB delta on the 0.6B, so a cosine floor of 0.999 between the vectors themselves is the stricter statement."
+  }
+}
