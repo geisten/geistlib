@@ -35,6 +35,14 @@ minor release.
     matching optional `peek_embedding` slot.
   - Models declaring a pooling this build does not implement are **refused
     at load** rather than pooled a plausible-looking wrong way.
+  - `gemma3` architecture family — the 270M's backbone, and accepted on its
+    own merits. `config.has_embed_scale` is split out of `has_ple`: the
+    `sqrt(d_model)` embedding scale used to ride on the per-layer-embedding
+    flag, which only worked while one family had both. gemma4 is unchanged.
+    Scoped to the BitNet embedding 270M's geometry; stock Google Gemma-3
+    GGUFs are untested. The 270M still cannot use **ternary** weights —
+    geistlib blocks I2_S at 256 elements and its hidden size is 640 — so it
+    converts with `--outtype f16` until a 128-granular I2_S path exists.
   - Measurement apparatus, but **no measurements**:
     `tools/dump_geist_embedding` writes a set of prompts' embeddings to a
     self-describing `.gemb`; `tools/eval_embedding_fidelity.py` gates cosine

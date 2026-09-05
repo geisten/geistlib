@@ -436,29 +436,79 @@ python3 tools/eval_embedding_fidelity.py --ref up.npy --got geist.gemb
   `benchmark/results/` with pinned revision, model hash and raw samples per
   the [#364](https://github.com/geisten/geistlib/issues/364) protocol.
 
-### Phase 4 — `gemma3` family and the 270M (optional, and now harder)
+### Phase 4a — the `gemma3` family — **implemented**
 
-- New populator + `REGISTRY` and `geist_arch_transformer_gguf_names` entries
-  (the `static_assert` mirrors them).
-- `query_pre_attn_scalar`, `sqrt(hidden)` embed scale, post-attn/post-FFW norms,
-  `head_dim = 256`, GELU.
-- **New blocker found while building the converter: the 270M's tensors do not
-  fit geistlib's I2_S blocking.** geistlib walks whole 256-element blocks
-  (`I2S_BLOCK_ELEMS = 256`, and `cpu_scalar/weight_resolve.c:109` loops
-  `b < n_in/256`), but Gemma3-270M's hidden size is **640**, and `640 % 256 =
-  128`. Five of the seven projections per layer take a 640-wide input —
-  q, k, v, gate and up — so only `o_proj` (in 1024) and `down_proj` (in 2048)
-  are representable. bitnet.cpp is unaffected because it blocks at 128
-  elements / 32 bytes, and `640 % 128 = 0`. Supporting the 270M therefore
-  means giving geistlib a 128-granular I2_S path — a kernel change on ARM and
-  x86 both, not just an architecture populator. The converter refuses these
-  tensors loudly rather than emitting a file that would be misread.
-- **Cost/benefit, now clearer:** the 270M scores 1.2 MTEB points below the
-  0.6B, gets a smaller speedup (1.32–1.74× vs 1.42–2.28×), its F16 embedding
-  table alone is ~336 MB, and it now also needs kernel work that the 0.6B does
-  not. The 0.6B by contrast is fully representable — all seven projections take
-  1024-, 2048- or 3072-wide inputs, every one a multiple of 256. Phase 4 looks
-  more like the right thing to *not* do than it did before Phase 0.
+Shipped, and useful on its own: geistlib now accepts `general.architecture =
+gemma3`.
+
+- `populate_gemma3` / `populate_layers_gemma3` plus `REGISTRY` and
+  `geist_arch_transformer_gguf_names` entries. Structurally Gemma 3 sits
+  between llama and gemma4 — Gemma's extra residual norms and QK-norms and the
+  `sqrt(d_model)` embedding scale, but no per-layer embeddings, no KV sharing
+  and no sliding-window pattern.
+- `config.has_embed_scale`, split out from `has_ple`. The `sqrt(d_model)`
+  embedding scale used to ride on the per-layer-embedding flag, which worked
+  only while the one family with the scale also had PLE. Gemma 3 has the scale
+  and no PLE, so the two had to stop being the same question. gemma4 sets both
+  and is unchanged.
+- `head_dim` comes from `gemma3.attention.key_length`, not `d_model/n_heads`:
+  for the 270M those are 256 and 160, the same trap `qwen3` already documents.
+- `query_pre_attn_scalar` is **not** plumbed into the attention scale. For this
+  model it is 256 and so is `head_dim`, so `1/sqrt(head_dim)` is already the
+  right number; a Gemma 3 variant where the two differ would need it, and that
+  path is deliberately not written on speculation.
+
+Scope, stated plainly: this populator is written for and exercised by the
+BitNet embedding 270M. Whether a stock Google Gemma-3 GGUF loads through it is
+untested.
+
+`tests/test_gemma3_family_unit.c` pins that the name is accepted, that no
+previously registered family fell out of the list while editing it — the
+`static_assert` in `arch_family.c` only compares list *lengths* — and that the
+embed scale can now exist without PLE.
+
+### Phase 4b — 128-granular I2_S for the 270M — **not done, and possibly not worth doing**
+
+With 4a the 270M loads and runs **as F16**. What it cannot do is use ternary
+weights, and that is the entire reason to want it.
+
+geistlib walks whole 256-element I2_S blocks (`I2S_BLOCK_ELEMS = 256`;
+`cpu_scalar/weight_resolve.c:109` loops `b < n_in/256`), but Gemma3-270M's
+hidden size is **640** and `640 % 256 = 128`. Five of the seven projections per
+layer take a 640-wide input — q, k, v, gate, up — so only `o_proj` (1024) and
+`down_proj` (2048) are representable. bitnet.cpp is unaffected: it blocks at
+128 elements / 32 bytes, and `640 % 128 = 0`.
+
+The good news is that the on-disk format is already 128-granular. Every
+decoder and kernel in the tree has the shape
+
+```c
+for (b = 0; b < n_in / 256; b++)          /* block */
+    for (h = 0; h < 2; h++)               /* <- this is the 128-element unit */
+        for (bb = 0; bb < 32; bb++) ...
+```
+
+so the inner `h` loop *is* a 128-element half-block. Nothing on disk changes;
+the byte layout is identical. What changes is the loop bound and the block
+constants, in: `quant.h`, the `gguf_reader` dtype row, the scalar decoder, the
+NEON SDOT kernels and the x86 scalar + AVX-512/VNNI kernels. The size formula
+is unaffected either way (128 elems → 32 bytes and 256 → 64 are both `n/4`), so
+no existing model's bytes move — the divisibility check merely loosens.
+
+**Why it is still not done here.** It is a change to the hottest code in the
+repository across three backends, and AGENT.md §6 requires a disassembly diff
+and a parent/patch benchmark on identical hardware before such a change lands.
+Neither is possible in this environment: there is no model to run and
+cloud-container timings are worthless under `benchmark/METHODOLOGY.md`. Writing
+it unmeasured would be exactly the "speculative push" the contributing rules
+warn against.
+
+**And the cost/benefit has not improved.** The 270M scores 1.2 MTEB points
+below the 0.6B, gets a smaller speedup (1.32–1.74× vs 1.42–2.28×), its F16
+token-embedding table alone is ~336 MB — so on a 4 GB Pi it is not meaningfully
+cheaper than the 0.6B — and it alone needs this kernel work. The 0.6B is fully
+representable today. If 4b is done, it should be because a 128-granular I2_S
+path is wanted for its own sake, not to reach this model.
 
 ### Phase 5 — Documentation
 
@@ -477,7 +527,8 @@ python3 tools/eval_embedding_fidelity.py --ref up.npy --got geist.gemb
 | 1 Projection norms | **M** | ✅ implemented; smaller than feared (five new tensors, not seven) but numerically unverified, and the disabled fusions are still unmeasured |
 | 2 Pooling + API | M | ✅ implemented; `EXPERIMENTAL`, parameter order per AGENT.md §1 and deliberately unlike `peek_logits`, which is STABLE and cannot move |
 | 3 Gates | M | ✅ apparatus built and self-tested; **zero measurements taken** — it needs the weights, which this environment cannot fetch |
-| 4 gemma3 | M | Gemma3 ≠ Gemma4 in ways not yet mapped; may not be worth it |
+| 4a gemma3 family | S | ✅ implemented; scoped to the 270M's geometry, stock Gemma-3 GGUFs untested |
+| 4b 128-granular I2_S | **L** | not done — three backends' hot kernels, and AGENT.md §6 needs a benchmark this environment cannot produce |
 
 The dominant risk is Phase 1: seven norms per layer sit directly in the hot
 path, and the fusion planner currently *disables* optimizations when a sub-norm

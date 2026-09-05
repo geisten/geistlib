@@ -140,7 +140,11 @@ def quantize_i2s(w_f32: np.ndarray) -> tuple[np.ndarray, float]:
             f"I2_S needs in-features divisible by {I2S_BLOCK_ELEMS}, got {n_in}. "
             "geistlib's decoder walks whole 256-element blocks "
             "(src/backends/cpu_scalar/weight_resolve.c:109), so a remainder "
-            "would be silently dropped."
+            "would be silently dropped.\n"
+            "This is what blocks BitNet-embedding-270M: its hidden size is 640 "
+            "and 640 % 256 = 128. Until geistlib grows a 128-granular I2_S "
+            "path, convert that model with --outtype f16 — it loads and runs, "
+            "it just does not get the ternary win."
         )
 
     scale = float(np.abs(w_f32).mean())

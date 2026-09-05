@@ -198,7 +198,7 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* sqrt(d_model) embedding scale is Gemma-3/4-specific; Llama / BitNet
      * don't scale. has_ple gates Gemma family identity. */
-    const float embed_scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
+    const float embed_scale = st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
 
     /* Chunk by the SESSION cap: every scratch buffer is sized with
      * sess->m_max (arch_state.c), and a session opt below the state's
@@ -366,7 +366,7 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     }
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    const float embed_scale             = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
+    const float embed_scale = st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
 
     /* 1. Embed all k tokens into scratch_h_a [k, HIDDEN]. */
     {

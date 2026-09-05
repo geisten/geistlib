@@ -146,7 +146,17 @@ struct geist_arch_config {
     float rms_eps;       /* RMSNorm epsilon. Gemma 4: 1e-6f. */
     float logit_softcap; /* tanh(p/softcap)*softcap; 0 = disabled. */
 
-    /* ---- PLE (Per-Layer Embedding, Gemma 3/4 family only). When
+    /* ---- Embedding scale: multiply looked-up token embeddings by
+     * sqrt(d_model). The Gemma families do this; Llama/Qwen/BitNet do not.
+     *
+     * Split out from has_ple, which it used to ride on. That worked only
+     * as long as the sole family with the scale also had per-layer
+     * embeddings — Gemma 3 has the scale and NO PLE, so the two had to
+     * stop being the same question. Every existing family keeps its
+     * behaviour: gemma4 sets both, everyone else sets neither. */
+    bool has_embed_scale;
+
+    /* ---- PLE (Per-Layer Embedding, Gemma 4 family only). When
      * has_ple == false, the precompute path is skipped entirely. */
     bool  has_ple;
     float ple_input_scale;      /* multiplied onto (model_proj + lookup) */
