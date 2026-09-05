@@ -1587,6 +1587,10 @@ void transformer_session_free(struct transformer_arch_state   *state,
          * once below. */
         struct geist_buffer *infra[] = {
                 sess->scratch_normed,
+                /* Null for every family without per-projection input norms;
+                 * the loop below skips nulls. Listed next to scratch_normed
+                 * because that is where it is allocated. */
+                sess->scratch_proj_in,
                 sess->scratch_q,
                 sess->scratch_k,
                 sess->scratch_v,
