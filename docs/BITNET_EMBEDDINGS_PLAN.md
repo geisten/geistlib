@@ -1,34 +1,42 @@
 # BitNet embedding models (July 2026) — analysis and implementation plan
 
-Status: **phases 0-4a in the tree; the chain runs on a synthetic model; still
-nothing verified against real weights.** This document records what Microsoft
-released in July 2026, which of it is reproducible, and what geistlib has to
-grow to run it. Sources are pinned inline so the claims can be re-checked
-against upstream.
+Status: **phases 0-4a shipped in 0.11.0; the forward path reproduces the
+vendor's published embedding to RMSE 8.5e-4; throughput is still unmeasured.**
+This document records what Microsoft released in July 2026, which of it is
+reproducible, and what geistlib had to grow to run it. Sources are pinned
+inline so the claims can be re-checked against upstream.
 
 Where things stand: the converter (phase 0), the per-projection input norms
 (phase 1), the pooling path plus embedding API (phase 2), the measurement
-apparatus (phase 3) and the gemma3 family (phase 4a) are in the tree and
-tested. The pipeline is complete end to end and now demonstrably executes:
-`make test-embedding` builds a synthetic checkpoint in the real tensor layout,
-converts it, loads the GGUF, prefills, and reads back a finite, unit-norm,
-deterministic, input-dependent vector — with each of the seven per-projection
-norms shown to reach the output.
+apparatus (phase 3) and the gemma3 family (phase 4a) are in the tree. geist
+reads the checkpoints both ways Microsoft ships them — the safetensors
+through the in-tree converter, and the ready-made GGUFs on the model pages.
 
-That run was worth having. Until it existed the pipeline was complete *on
-paper* only, and the first execution found two defects that made every real
-conversion unloadable: the converter wrote 1-D norms as F16 following
-upstream's tensor-type table, which geistlib's loader rejects outright
-(`layer_wiring.c:65`), and the per-layer owning-buffer list held 16 entries
-where a BitNet embedding layer needs 18. Neither was reachable by any test
-that stopped at the GGUF header or at scratch sizing.
+The oracle this document spent most of its life waiting for now exists, and
+it is not the one it planned for. Upstream's `llama-embedding` cannot run
+these checkpoints at all: its `main` does not build for I2_S, and patched to
+build it ignores the `*_norm_in` tensors and emits NaN. The ground truth is
+instead the embedding the model cards themselves print, which geist
+reproduces to **RMSE 8.5e-4** (`tests/test_published_embedding_e2e.c`, which
+skips without `GEIST_EMBED_GGUF_PATH`).
 
-What is missing underneath all of it is a numerical oracle: **no part of this
-has been run against real BitNet embedding weights**, which are reachable from
-neither CI nor the development container. Every test pins structure,
-bookkeeping and refusal behaviour — none pins a value. Until the phase 0
-reference vectors exist, treat the whole chain as "wired up and
-self-consistent", not "correct".
+Getting there cost four defects, none of which any structural test could
+see. Three came from executing the chain end to end for the first time on a
+synthetic model: 1-D norms written F16 where the loader demands F32, a
+per-layer buffer list too short for a BitNet-embedding block, and a leaked
+scratch slice. The fourth came from the real files and was the expensive
+one — **the pooling was wrong**. These models are mean-pooled; geist produced
+last-token vectors, and so did the converter, so the pipeline was
+self-consistently wrong and the fidelity gate could not see it: it compared
+two conversions of the same checkpoint, both pooled the same wrong way, and
+the error cancelled. Only an external vector exposed it. The model cards say
+"last-token" in prose; the file's `pooling_type`, the vendor's own command,
+and the numbers all say mean.
+
+What is still missing is a **throughput** number.
+`benchmark/embedding_protocol.json` stays at `UNMEASURED`: per
+`benchmark/METHODOLOGY.md` that needs a quiesced host, and neither CI nor a
+cloud container is one. Correctness has a number; speed does not.
 
 Upstream sources read for this analysis:
 
@@ -58,8 +66,14 @@ biggest thing this plan has to add.
 
 Both are trained natively at W1.58A8 (ternary weights `{-1, 0, +1}` via absmean
 quantization, 8-bit per-token absmax activations) — **not** post-training
-quantized. Both use last-token (EOS) pooling followed by L2 normalization, and
-both drop the LM head entirely (`output.weight` is skipped at conversion).
+quantized. Both drop the LM head entirely (`output.weight` is skipped at
+conversion), and both pool by **mean** followed by L2 normalization — their
+model cards say "last-token (EOS) pooling" in prose, but the published GGUFs
+carry `{arch}.pooling_type = 1` (MEAN), the cards' own reproducible
+`llama-embedding` invocation passes no `--pooling` and so takes that key, and
+only mean reproduces the vector the cards print (RMSE 8.5e-4, against 0.24
+for last-token). This document followed the prose until the numbers settled
+it; see the pooling defect above.
 
 | | `BitNet-embedding-0.6B` | `BitNet-embedding-270M` |
 | :-- | :-- | :-- |
