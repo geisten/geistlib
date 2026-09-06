@@ -251,10 +251,51 @@ int main(void) {
                               "semantic, not merely well-formed");
     }
 
+    /* ---- chunk invariance ---------------------------------------------- *
+     * Mean pooling is the one finish that spans prefill chunks: every
+     * position contributes and the next chunk overwrites the rows this one
+     * produced, so the sum lives in a session-owned accumulator. Get that
+     * wrong and short prompts still look perfect while anything past one
+     * chunk silently averages the wrong rows -- which is why this uses a
+     * text long enough to force many chunks at m_max=1 and one at the
+     * default.
+     *
+     * Not bit-equality: a different chunk shape changes the GEMM's M
+     * dimension and therefore its accumulation order, and geist's prefill
+     * is already not chunk-invariant for quantized weights. Cosine is the
+     * honest tolerance -- a broken accumulator misses by far more. */
+    {
+        static const char LONG_TEXT[] =
+                "Retrieval augmented generation stitches a language model to a document "
+                "store. The store is queried with an embedding of the user's question, the "
+                "nearest passages are pasted into the prompt, and the model answers from "
+                "them. Most of the engineering is in the store, not the model.";
+
+        struct geist_session           *chunked = nullptr;
+        const struct geist_session_opts one_row = {.max_seq_len = 512, .m_max = 1};
+        if (geist_session_create(m, be, &one_row, &chunked) != GEIST_OK) {
+            fprintf(stderr, "m_max=1 session failed: %s\n", geist_backend_errmsg(be));
+            goto teardown_fail;
+        }
+        const bool ok_whole   = embed(sess, m, LONG_TEXT, dim, a);
+        const bool ok_chunked = embed(chunked, m, LONG_TEXT, dim, b);
+        geist_session_destroy(chunked);
+
+        fails += geist_expect(ok_whole && ok_chunked, "the long text embeds at both chunk sizes");
+        if (ok_whole && ok_chunked) {
+            const double cos = cosine(dim, a, b);
+            printf("  default m_max vs m_max=1: cos=%.9f\n", cos);
+            fails += geist_expect(cos > 0.99,
+                                  "chunking does not change the pooled vector — the mean "
+                                  "accumulator spans chunks correctly");
+        }
+    }
+
     /* ---- determinism and unit length ----------------------------------- */
     {
-        fails += geist_expect(embed(sess, m, "query: What is BitNet?", dim, b),
-                              "the reference prompt embeds again");
+        fails += geist_expect(embed(sess, m, "query: What is BitNet?", dim, a) &&
+                                      embed(sess, m, "query: What is BitNet?", dim, b),
+                              "the reference prompt embeds twice");
         fails += geist_expect(memcmp(a, b, dim * sizeof(float)) == 0,
                               "the same tokens give a bit-identical vector");
         fails += geist_expect(fabs(cosine(dim, b, b) - 1.0) < 1e-4, "the result is L2-normalized");
