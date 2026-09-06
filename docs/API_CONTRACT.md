@@ -38,7 +38,7 @@ the promise is not quietly weaker than it reads.
 
 | Symbol | Release | What broke | Why |
 |---|---|---|---|
-| `geist_session_peek_logits` | unreleased (after 0.10.8) | Parameter order changed from `(s, n_logits)` to `(n_logits, s)`. Source-incompatible: callers must swap the arguments. | Aligns the accessor family on AGENT.md §1's out-size-first order rather than carrying the inconsistency past 1.0. Taken by the maintainer as a deliberate, accepted risk while the user base is small — **not** a precedent, and by the semver rule above it would otherwise have required a major bump. |
+| `geist_session_peek_logits` | 0.11.0 | Parameter order changed from `(s, n_logits)` to `(n_logits, s)`. Source-incompatible: callers must swap the arguments. | Aligns the accessor family on AGENT.md §1's out-size-first order rather than carrying the inconsistency past 1.0. Taken by the maintainer as a deliberate, accepted risk while the user base is small — **not** a precedent, and by the semver rule above it would otherwise have required a major bump. |
 
 ## The agent-runtime contract
 
