@@ -321,8 +321,13 @@ def plan_tensor(
 ) -> OutTensor:
     """Decide a tensor's output dtype and how to produce its bytes.
 
-    2-D projection weights go to I2_S in ternary mode; embeddings and all
-    1-D norms stay F16, matching the upstream tensor-type table.
+    2-D projection weights go to I2_S in ternary mode and the embedding
+    table stays F16. Every 1-D norm is written F32 because geistlib's
+    loader requires it: load_norm_1d in
+    src/archs/transformer/weight_load/layer_wiring.c:65 rejects anything
+    else outright, as do the output_norm and per_layer_proj_norm paths at
+    :848 and :866. Upstream's tensor-type table lists these as F16; a file
+    that follows it loads nowhere in this engine.
     """
     shape = st.shape
     dims = tuple(reversed(shape))  # GGUF stores fastest-varying first
@@ -337,8 +342,13 @@ def plan_tensor(
 
         return OutTensor(gguf_name, dims, GGML_I2_S, nbytes, emit_i2s)
 
-    nbytes = int(np.prod(shape)) * 2
-    return OutTensor(gguf_name, dims, GGML_F16, nbytes, lambda: to_f16(load()).tobytes())
+    n_elems = int(np.prod(shape))
+    if len(shape) == 1:
+        return OutTensor(gguf_name, dims, GGML_F32, n_elems * 4,
+                         lambda: np.ascontiguousarray(load(), dtype=np.float32).tobytes())
+
+    return OutTensor(gguf_name, dims, GGML_F16, n_elems * 2,
+                     lambda: to_f16(load()).tobytes())
 
 
 def build_metadata(cfg: dict, arch: str, tok: dict, n_tensors: int) -> list[bytes]:
