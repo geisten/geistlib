@@ -32,6 +32,13 @@
       "expect_backend": "metal",
       "expect_llama_backend": "MTL",
       "note": "M1 Max 32-core GPU, unified memory. Same host as apple_m1max in the CPU protocol; the GPU cell and the CPU cell describe the same machine under two backends. Thread counts are dispatch-side only."
+    },
+    "nvidia_2080ti_vulkan": {
+      "prefill_threads": 4,
+      "decode_threads": 4,
+      "expect_backend": "vulkan",
+      "expect_llama_backend": "Vulkan",
+      "note": "RTX 2080 Ti 11 GB (Turing) in the 9950X box; same host as amd_9950x in the CPU protocol, different backend column. The host also enumerates a Raphael iGPU — runs must set GGML_VK_VISIBLE_DEVICES=0 so llama.cpp binds the discrete device; geist's vk_pick_device prefers discrete on its own. Thread counts are dispatch-side only, matching apple_m1max_metal."
     }
   },
   "host_gate": {
