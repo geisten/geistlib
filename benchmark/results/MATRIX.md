@@ -11,7 +11,7 @@ Coverage work is tracked in [#364](https://github.com/geisten/geistlib/issues/36
 
 | Model / quantization | Apple CPU | Pi 5 CPU | AMD AVX-512 CPU | Apple Metal | NVIDIA Vulkan |
 | :-- | :--: | :--: | :--: | :--: | :--: |
-| Gemma 4 E2B-it Q4_K_M | [pp ~−47% / tg ~−28%](CROSS-ENGINE-APPLE-M1MAX.md) | [pp ~-13% / tg ~+11%](CROSS-ENGINE-PI5.md) | [pp ~16% / tg ~15%](CROSS-ENGINE-AMD9950X.md) | [pp ~−36% / tg ~−18%](CROSS-ENGINE-APPLE-M1MAX-METAL.md) | not measured |
+| Gemma 4 E2B-it Q4_K_M | [pp ~−47% / tg ~−28%](CROSS-ENGINE-APPLE-M1MAX.md) | [pp ~-13% / tg ~+11%](CROSS-ENGINE-PI5.md) | [pp ~16% / tg ~15%](CROSS-ENGINE-AMD9950X.md) | [pp ~−36% / tg ~−18%](CROSS-ENGINE-APPLE-M1MAX-METAL.md) | [pp ~−71% / tg ~−10%](CROSS-ENGINE-NVIDIA2080TI-VULKAN.md) |
 | Gemma 4 E4B-it Q4_K_M | not measured | does not fit 4 GB reference host | not measured | not measured | not measured |
 | Llama 3.2 3B Q4_K_M | not measured | not measured | not measured | not measured | not measured |
 | BitNet b1.58 2B-4T I2_S | not measured | not measured | not measured | not measured | not measured |
