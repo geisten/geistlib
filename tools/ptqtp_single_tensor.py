@@ -37,54 +37,6 @@ def relative_mse(a: np.ndarray, b: np.ndarray) -> float:
     return err / max(norm, 1e-30)
 
 
-def ridge_solve_2x2(S: np.ndarray, w: np.ndarray, lam: float) -> tuple[np.ndarray, float]:
-    """Solve (S^T·S + λI)·α = S^T·w for α ∈ R^2.
-    S: [g, 2], w: [g]. Returns (α [2], cond_estimate).
-    """
-    A = S.T @ S + lam * np.eye(2, dtype=S.dtype)  # [2, 2]
-    b = S.T @ w  # [2]
-    # 2x2 closed-form inverse
-    det = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
-    if abs(det) < 1e-30:
-        return np.zeros(2, dtype=S.dtype), float("inf")
-    inv = np.array([[A[1, 1], -A[0, 1]],
-                    [-A[1, 0], A[0, 0]]], dtype=S.dtype) / det
-    alpha = inv @ b
-    cond = float(np.linalg.norm(A) * np.linalg.norm(inv))
-    return alpha, cond
-
-
-def exhaustive_ternary_pair(w: float, alpha1: float, alpha2: float) -> tuple[int, int]:
-    """For weight w, find (c1, c2) ∈ {-1,0,+1}² minimizing (w - α1·c1 - α2·c2)²."""
-    best_err = float("inf")
-    best = (0, 0)
-    for c1 in (-1, 0, 1):
-        for c2 in (-1, 0, 1):
-            err = (w - alpha1 * c1 - alpha2 * c2) ** 2
-            if err < best_err:
-                best_err = err
-                best = (c1, c2)
-    return best
-
-
-def exhaustive_ternary_pair_vectorized(W: np.ndarray, alpha: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Vectorized: for each W element, find (c1, c2) ∈ {-1,0,+1}² minimizing residual.
-    W: [n, g] (row × group elements), alpha: [n, 2] (per-row scales for this group).
-    Returns (T1, T2): each [n, g] in {-1,0,+1}.
-    """
-    n, g = W.shape
-    # All 9 candidate pairs
-    cands = np.array([(c1, c2) for c1 in (-1, 0, 1) for c2 in (-1, 0, 1)], dtype=np.float32)  # [9, 2]
-    # Predicted: alpha[n,2] @ cands.T = [n, 9]
-    pred = alpha @ cands.T  # [n, 9]
-    # Errors: W[n, g] vs pred[n, 9] expanded → [n, g, 9]
-    err_sq = (W[:, :, None] - pred[:, None, :]) ** 2  # [n, g, 9]
-    best_idx = np.argmin(err_sq, axis=-1)  # [n, g]
-    T1 = cands[best_idx, 0].astype(np.int8)
-    T2 = cands[best_idx, 1].astype(np.int8)
-    return T1, T2
-
-
 def ptqtp_quantize(W: np.ndarray, group_size: int = 128, max_iter: int = 50,
                    tol: float = 1e-4, lam_init: float = 1e-6, lam_max: float = 1.0,
                    verbose: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -182,30 +134,6 @@ def ptqtp_quantize(W: np.ndarray, group_size: int = 128, max_iter: int = 50,
     T1 = T1_g.reshape(n_out, n_in).astype(np.int8)
     T2 = T2_g.reshape(n_out, n_in).astype(np.int8)
     return T1, T2, alpha
-
-
-def ptqtp_quantize_per_row_scale(W: np.ndarray, n_planes: int, group_size: int = 128,
-                                   max_iter: int = 50, tol: float = 1e-4,
-                                   verbose: bool = True):
-    """PTQTP with per-output-row scale (Strategy 2 from quality strategies).
-
-    Decompose:    w[i,j] ≈ s[i] · (α₁[i,g]·t₁[i,j] + ... + α_K[i,g]·t_K[i,j])
-    where s[i] is one fp16 scale per output row, factoring out the per-row
-    dynamic range so per-group alpha's can represent within-row variation
-    more accurately.
-
-    Returns (Ts, alpha, row_scale) where:
-      Ts[k]: int8 [n_out, n_in] in {-1, 0, +1}
-      alpha: float32 [n_out, n_groups, K]
-      row_scale: float32 [n_out]
-    """
-    n_out, _ = W.shape
-    # Per-row scale = max(|w|) per row. Normalize by it. Avoid div-by-zero.
-    row_scale = np.maximum(np.abs(W).max(axis=1), 1e-8).astype(np.float32)
-    W_normalized = W / row_scale[:, None]
-    Ts, alpha = ptqtp_quantize_n(W_normalized, n_planes, group_size,
-                                  max_iter, tol, verbose=verbose)
-    return Ts, alpha, row_scale
 
 
 def ptqtp_quantize_n(W: np.ndarray, n_planes: int, group_size: int = 128,

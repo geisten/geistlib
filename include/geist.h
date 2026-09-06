@@ -32,8 +32,8 @@ extern "C" {
 
 #define GEIST_VERSION_MAJOR 0
 #define GEIST_VERSION_MINOR 10
-#define GEIST_VERSION_PATCH 7
-#define GEIST_VERSION_STRING "0.10.7"
+#define GEIST_VERSION_PATCH 8
+#define GEIST_VERSION_STRING "0.10.8"
 
 /* @stability STABLE since 0.1.0 */
 const char *geist_version_string(void);

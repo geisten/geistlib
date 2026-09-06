@@ -427,6 +427,16 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     if (s != GEIST_OK) {
         return s;
     }
+    /* Only families with per-projection input norms get this slice;
+     * scratch_plan.proj_in is 0 otherwise and the buffer stays null. */
+    if (scratch_plan.proj_in > 0) {
+        s = alloc_pool_buffer(sess, scratch_plan.proj_in, &sess->scratch_proj_in);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    } else {
+        sess->scratch_proj_in = nullptr;
+    }
     s = alloc_pool_buffer(sess, scratch_plan.q_out, &sess->scratch_q);
     if (s != GEIST_OK) {
         return s;
@@ -1298,6 +1308,19 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         return nullptr;
     }
     memset(sess, 0, sizeof(*sess));
+    /* Mean pooling sums across prefill chunks, so the accumulator outlives
+     * the scratch the chunks reuse. Allocated once with the session -- 4 KB
+     * at the widest geometry in tree. */
+    sess->embedding_acc = heap_alloc_array_aligned(float, state->d_model);
+    if (sess->embedding_acc == nullptr) {
+        void *p = sess;
+        safe_free(&p);
+        geist_backend_set_error(be,
+                                GEIST_E_OOM,
+                                "transformer_session_alloc: embedding accumulator (%zu floats)",
+                                (size_t) state->d_model);
+        return nullptr;
+    }
     sess->model       = state;
     sess->mtp_enabled = state->n_mtp_layers > 0 && env_flag_enabled("GEIST_MTP", false);
     sess->m_max       = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
@@ -1479,6 +1502,10 @@ void transformer_session_free(struct transformer_arch_state   *state,
     }
     struct geist_backend *be = (state != nullptr) ? state->backend : nullptr;
 
+    void *acc = sess->embedding_acc;
+    safe_free(&acc);
+    sess->embedding_acc = nullptr;
+
     /* Gated-DeltaNet state + qwen35 gate scratch (#281). */
     if (state != nullptr && be != nullptr && sess->dn_conv_state != nullptr) {
         for (size_t li = 0; li < state->n_layers; li++) {
@@ -1577,6 +1604,10 @@ void transformer_session_free(struct transformer_arch_state   *state,
          * once below. */
         struct geist_buffer *infra[] = {
                 sess->scratch_normed,
+                /* Null for every family without per-projection input norms;
+                 * the loop below skips nulls. Listed next to scratch_normed
+                 * because that is where it is allocated. */
+                sess->scratch_proj_in,
                 sess->scratch_q,
                 sess->scratch_k,
                 sess->scratch_v,

@@ -3856,11 +3856,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
     return GEIST_OK;
 }
 
-/* main-contract vtbl. The old fine-grained GPU ops (command_sequence_*,
- * ffn_geglu_block, ple_block, attention_block, greedy_head, matmul_q4k)
- * are not part of main's contract; their impls remain in this file as
- * internal/dead code (behind metal_legacy_ops.h) pending the Stage-6
- * cleanup, but are not exposed here. */
+/* main-contract vtbl. */
 static const struct geist_backend_vtbl metal_vtbl = {
         .create                = metal_create,
         .destroy               = metal_destroy,

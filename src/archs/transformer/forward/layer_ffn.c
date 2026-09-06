@@ -172,19 +172,57 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             goto ffn_mid_done;
         }
         t0 = profile ? transformer_profile_now_ns() : 0;
-        s  = linear_w_pair_or_legacy(be,
-                                     v,
-                                     sess->scratch_pre_ff,
-                                     sess->scratch_gate,
-                                     sess->scratch_up,
-                                     &L->gate_proj_w,
-                                     &L->up_proj_w,
-                                     ctx->seq,
-                                     &t_pre_ff_2d,
-                                     &L->gate_proj,
-                                     &L->up_proj,
-                                     &t_gate_2d,
-                                     &t_up_2d);
+        if (ctx->apply_projection_input_norms) {
+            /* gate and up read different inputs here, so the pair call
+             * cannot express it — one projection at a time, each behind
+             * its own input norm. */
+            struct geist_tensor t_proj_in_2d =
+                    view_2d(sess->scratch_proj_in, ctx->SEQ, st->d_model);
+            struct geist_tensor w_gate = view_1d(L->gate_norm_in.buffer, st->d_model);
+            s                          = norm_projection_input(
+                    (size_t) st->d_model, &w_gate, &t_pre_ff_2d, &t_proj_in_2d, ctx);
+            if (s == GEIST_OK) {
+                s = linear_w_or_legacy(be,
+                                       v,
+                                       sess->scratch_proj_in,
+                                       sess->scratch_gate,
+                                       &L->gate_proj_w,
+                                       ctx->seq,
+                                       &t_proj_in_2d,
+                                       &L->gate_proj,
+                                       &t_gate_2d);
+            }
+            if (s == GEIST_OK) {
+                struct geist_tensor w_up = view_1d(L->up_norm_in.buffer, st->d_model);
+                s                        = norm_projection_input(
+                        (size_t) st->d_model, &w_up, &t_pre_ff_2d, &t_proj_in_2d, ctx);
+            }
+            if (s == GEIST_OK) {
+                s = linear_w_or_legacy(be,
+                                       v,
+                                       sess->scratch_proj_in,
+                                       sess->scratch_up,
+                                       &L->up_proj_w,
+                                       ctx->seq,
+                                       &t_proj_in_2d,
+                                       &L->up_proj,
+                                       &t_up_2d);
+            }
+        } else {
+            s = linear_w_pair_or_legacy(be,
+                                        v,
+                                        sess->scratch_pre_ff,
+                                        sess->scratch_gate,
+                                        sess->scratch_up,
+                                        &L->gate_proj_w,
+                                        &L->up_proj_w,
+                                        ctx->seq,
+                                        &t_pre_ff_2d,
+                                        &L->gate_proj,
+                                        &L->up_proj,
+                                        &t_gate_2d,
+                                        &t_up_2d);
+        }
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
         if (s != GEIST_OK) {
             return s;

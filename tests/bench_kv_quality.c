@@ -189,8 +189,8 @@ static bool score_mode(struct geist_session *ref,
     size_t       correct = 0;
     for (size_t i = 1; i < n_ids; i++) {
         size_t       nr = 0, nm = 0;
-        const float *lr = geist_session_peek_logits(ref, &nr);
-        const float *lm = geist_session_peek_logits(mode, &nm);
+        const float *lr = geist_session_peek_logits(&nr, ref);
+        const float *lm = geist_session_peek_logits(&nm, mode);
         if (lr == nullptr || lm == nullptr || nr != nm || nr == 0)
             return false;
         const double kl = kl_div(lr, lm, nr);

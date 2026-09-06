@@ -12,6 +12,7 @@ This repository documents the application-neutral Geist engine:
 - `TUNING.md`: forward-only (zeroth-order) fine-tuning — no backward pass, gains as a sidecar
 - `DEPLOY.md`: building the library and consuming the packaged SDK
 - `CI_COVERAGE.md`: what each CI job actually verifies
+- `RELEASING.md`: the guarded release transaction and recovery procedure
 - `API_CONTRACT.md`: what the stability tags promise across a release boundary
 - `../benchmark/`: methodology and results
 

@@ -1,7 +1,7 @@
 # Models
 
-A GGUF must use one of the registered architectures (`gemma4`, `llama`,
-`qwen3`, `qwen35`, `bitnet-b1.58` or `bitnet`) and dtypes supported by the
+A GGUF must use one of the registered architectures (`gemma4`, `gemma3`,
+`llama`, `qwen3`, `qwen35`, `bitnet-b1.58` or `bitnet`) and dtypes supported by the
 selected backend. The table lists the model families exercised by tests and
 benchmarks. Text weights are one-download-and-go; Gemma vision/audio additionally
 need their matching tower weights.

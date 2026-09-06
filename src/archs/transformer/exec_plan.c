@@ -93,10 +93,13 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         P->compute_kv = !L->is_kv_shared;
         P->apply_gemma_attn_norms = st->config.has_gemma_attn_norms;
         P->apply_qk_norms         = st->config.has_qk_norms;
-        P->apply_sub_ln           = st->config.has_sub_ln;
-        P->apply_ple              = st->config.has_ple;
-        P->rope_interleaved       = st->config.rope_interleaved;
-        P->ffn_activation         = st->config.ffn_activation;
+        /* Per-projection input norms subsume SubLN: two of the seven are
+         * the SubLN slots, loaded into the same fields, so the same
+         * forward code applies them. */
+        P->apply_sub_ln     = st->config.has_sub_ln || st->config.has_projection_input_norms;
+        P->apply_ple        = st->config.has_ple;
+        P->rope_interleaved = st->config.rope_interleaved;
+        P->ffn_activation   = st->config.ffn_activation;
 
         /* ---- FFN-front fusion binding (see exec_plan.h). Prefill is
          * probed at the largest m any session may use, so the answer
@@ -110,7 +113,12 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         const bool   geglu        = st->config.ffn_activation == GEIST_FFN_GEGLU;
         const bool   has_sub_norm = P->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr &&
                                     st->runtime_flags.bitnet_sub_ln_enabled;
-        const struct geist_fusion_query base = {
+        /* gate and up read the SAME normalised input in every other
+         * family, which is what every gate_up fusion is built on. Per-
+         * projection norms give each its own input, so those fusions
+         * cannot express the computation and must stay off. */
+        const bool                      shared_ffn_input = !st->config.has_projection_input_norms;
+        const struct geist_fusion_query base             = {
                 .d_model = st->d_model,
                 .inter   = L->intermediate,
                 .gate_w  = &L->gate_proj_w,
@@ -119,20 +127,22 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         };
         struct geist_fusion_query q;
 
-        q                           = base;
-        q.op                        = GEIST_FUSED_FFN_NORM_GATE_UP;
-        q.m                         = 1;
-        P->fuse_ffn_norm_gate_up_m1 = geglu && L->down_awq_inv_scale == nullptr && probe(be, q);
+        q    = base;
+        q.op = GEIST_FUSED_FFN_NORM_GATE_UP;
+        q.m  = 1;
+        P->fuse_ffn_norm_gate_up_m1 =
+                geglu && shared_ffn_input && L->down_awq_inv_scale == nullptr && probe(be, q);
 
-        q                      = base;
-        q.op                   = GEIST_FUSED_FFN_GATE_UP;
-        q.m                    = 1;
-        P->fuse_ffn_gate_up_m1 = geglu && L->down_awq_inv_scale == nullptr && probe(be, q);
+        q    = base;
+        q.op = GEIST_FUSED_FFN_GATE_UP;
+        q.m  = 1;
+        P->fuse_ffn_gate_up_m1 =
+                geglu && shared_ffn_input && L->down_awq_inv_scale == nullptr && probe(be, q);
 
         q                         = base;
         q.op                      = GEIST_FUSED_FFN_GEGLU_Q4Q6_MN;
         q.m                       = m_cap;
-        P->fuse_ffn_geglu_tile_mN = geglu && !has_sub_norm &&
+        P->fuse_ffn_geglu_tile_mN = geglu && shared_ffn_input && !has_sub_norm &&
                                     !st->runtime_flags.dump_act_sparsity &&
                                     ffn_tile_fusion_enabled() && probe(be, q);
 

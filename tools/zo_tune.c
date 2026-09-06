@@ -384,7 +384,7 @@ static double nll_one(struct geist_session *s, const struct example *e, size_t p
     double acc = 0.0;
     for (size_t k = 0; k < e->n_tgt; k++) {
         size_t       nv = 0;
-        const float *lg = geist_session_peek_logits(s, &nv);
+        const float *lg = geist_session_peek_logits(&nv, s);
         if (lg == nullptr || nv == 0 || (size_t) e->tgt[k] >= nv) {
             return NAN;
         }

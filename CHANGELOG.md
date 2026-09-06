@@ -8,6 +8,157 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed
+- **Embedding models pooled the wrong way.** `bitnet-embedding-*` are
+  mean-pooled: their GGUFs carry gguf-py's `{arch}.pooling_type = 1`, which
+  upstream's converter auto-detects from the checkpoint's
+  `1_Pooling/config.json`, and only mean reproduces the embedding the model
+  cards themselves print (RMSE 8.5e-4 against 0.24 for last-token). The
+  cards say "last-token pooling" in prose; the file and the numbers disagree
+  with the prose. `GEIST_POOLING_MEAN` was parsed but unimplemented and
+  refused at prefill, and `tools/convert_bitnet_embedding.py` hardcoded
+  `last_token`, so the pipeline produced last-token vectors end to end. Mean
+  pooling is implemented (it spans prefill chunks, so it accumulates per
+  chunk into a session-owned buffer and finalizes once), and the converter
+  reads the pooling from the checkpoint instead of hardcoding it.
+- **Upstream's published GGUFs now load.** `bitnet-embeddings-*-i2_s.gguf`
+  on the Hugging Face model pages differ from our converter's output in
+  three ways, each of which was fatal: norm gammas are F16 (converted at
+  load now, `load_norm_to_f32_buffer`), a block carries 20 tensors where the
+  per-layer buffer list held 16 (raised to 24), and the embedding metadata
+  is spelled as `{arch}.pooling_type` rather than `bitnet.embedding.*` (both
+  spellings are read; the per-projection norms are keyed on the tensors,
+  which is the evidence, with the metadata able to opt out). Reaching a
+  model that ships as a 428 MB ready-made GGUF no longer means re-converting
+  from ~1.2 GB of safetensors. Accepting F16 gammas at load is what makes
+  upstream's files readable; our own converter writes them F32 (see the entry
+  below), so the two changes are independent — either alone leaves one of the
+  two file shapes unloadable.
+- `geist_session_tokenize` returns content tokens by design, and nothing
+  reported what the model expects around them. New `geist_model_add_bos` /
+  `geist_model_add_eos` (`@stability EXPERIMENTAL`) expose the tokenizer's
+  own `add_bos_token` / `add_eos_token`. It matters for pooled vectors:
+  these checkpoints set `add_eos_token`, and pooling over a sequence one
+  token short of upstream's moves the embedding by RMSE 1.8e-2 — twenty
+  times the quantization noise. `tools/dump_geist_embedding` now wraps
+  accordingly, so the parity oracle compares like with like.
+- **BitNet embedding conversions were unloadable.** Two defects, both found by
+  running the chain end to end for the first time rather than by inspecting
+  its parts, and both fatal on any real checkpoint:
+  - `tools/convert_bitnet_embedding.py` wrote every 1-D norm as F16, following
+    upstream's tensor-type table. geistlib's loader requires F32 and refuses
+    the file outright (`src/archs/transformer/weight_load/layer_wiring.c:65`,
+    and `:866` for `output_norm`). Norms are now F32 in both `--outtype i2_s`
+    and `--outtype f16`; the embedding table stays F16 and projections are
+    unaffected.
+  - The per-layer owning-buffer list (`struct transformer_layer_weights::bufs`)
+    held 16 entries. A BitNet embedding layer loads 18 tensors — 11 ordinary
+    ones plus the seven per-projection input norms — so the load died on the
+    seventh norm with a message naming the tensor it happened to reach rather
+    than the cause. Capacity is now 24, and the count is pinned by a test.
+
+  - `scratch_proj_in`, the extra scratch slice the per-projection norms need,
+    was allocated in `allocate_runtime_session` but missing from the destroy
+    path's `infra[]` list, so its buffer handle leaked once per session. Only
+    reachable on a model that sets `has_projection_input_norms`, which is why
+    no existing ASan run saw it.
+
+  All three are regression-tested: `tests/test_bitnet_embedding_convert_py.py`
+  checks every 1-D tensor's dtype, `tests/test_projection_input_norms_unit.c`
+  pins the buffer capacity against the layer's tensor count, and
+  `make MODE=asan test-embedding` runs the chain under LeakSanitizer. Each was
+  confirmed to fail against the unfixed code.
+
+### Added
+- **`make test-embedding`** — the embedding chain executed rather than
+  inspected. `tests/scripts/embedding_e2e_smoke.py` builds a synthetic
+  checkpoint in the real tensor layout, converts it, loads the GGUF, prefills
+  and reads back the pooled vector, then asserts the structural invariants: the
+  vector is finite, L2-normalised, bit-identical across repeated runs of the
+  same prompt, different for different prompts, and demonstrably affected by
+  each of the seven per-projection input norms. Skips (77) without numpy or a
+  built `dump_geist_embedding`. Random weights, so it proves the chain *runs*,
+  not that it computes the right thing — that still needs the real checkpoint
+  and `tools/eval_embedding_fidelity.py`.
+
+  The norm check perturbs half of each norm vector rather than scaling all of
+  it: a uniform scale is cancelled exactly by the next RMSNorm downstream, so
+  it cannot tell an applied norm from an ignored one.
+
+  The target honours `MODE`, so `make MODE=asan test-embedding` runs the whole
+  chain under AddressSanitizer — which is how the `scratch_proj_in` leak above
+  surfaced.
+### Changed (BREAKING)
+- **`geist_session_peek_logits` takes its arguments in the other order**:
+  `(size_t *n_logits, struct geist_session *s)`, was `(s, n_logits)`. Code
+  built against 0.10.8 or earlier will not compile; swap the two arguments.
+  The matching `struct geist_arch_ops_decoder::peek_logits` vtable slot moved
+  with it, so out-of-tree architectures must swap too.
+
+  This is a source-incompatible change to a `STABLE` symbol inside 0.x, which
+  `docs/API_CONTRACT.md` otherwise reserves for a major bump. It is taken
+  deliberately: the accessor family now follows AGENT.md §1's out-size-first
+  order consistently, rather than carrying a split convention past 1.0, and
+  the user base is currently small enough to absorb it. Recorded as an
+  explicit exception in `docs/API_CONTRACT.md` rather than left implicit.
+
+### Added
+- **BitNet embedding models (July 2026)**, in three parts. Nothing here has
+  yet run against real weights — see `docs/BITNET_EMBEDDINGS_PLAN.md` for
+  what is and is not verified.
+  - `tools/convert_bitnet_embedding.py` converts the safetensors checkpoints
+    to GGUF with I2_S ternary packing. numpy and the standard library only —
+    no pinned llama.cpp branch and no torch, unlike Microsoft's converter.
+    The I2_S packing is verified byte-identical against `pack_i2_s` from
+    `tests/test_i2_s_parity.c`.
+  - Per-projection input RMSNorm in the transformer arch, behind
+    `has_projection_input_norms`. The fused triple-QKV and gate_up paths are
+    disabled for such models: those kernels assume q/k/v (and gate/up) share
+    one normalised input, which per-projection norms break.
+  - `geist_session_peek_embedding(size_t *n_dims, struct geist_session *s)`
+    (`@stability EXPERIMENTAL`, `<geist_util.h>`): the pooled, final-normed,
+    L2-normalised sentence embedding for what a session has prefilled, with
+    the same borrow-a-pointer ownership as `geist_session_peek_logits`.
+    Returns nullptr on a generative model. Its parameter order follows
+    AGENT.md §1 (out-size first, handle last), and `peek_logits` was moved to
+    match it — see the breaking change above — so the two accessors now read
+    the same way round. `geist_session_decode_step` in turn returns
+    `GEIST_E_UNSUPPORTED` on an embedding model — prefill ran, there is
+    simply no token to emit. `struct geist_arch_ops_decoder` gains a
+    matching optional `peek_embedding` slot.
+  - Models declaring a pooling this build does not implement are **refused
+    at load** rather than pooled a plausible-looking wrong way.
+  - `gemma3` architecture family — the 270M's backbone, and accepted on its
+    own merits. `config.has_embed_scale` is split out of `has_ple`: the
+    `sqrt(d_model)` embedding scale used to ride on the per-layer-embedding
+    flag, which only worked while one family had both. gemma4 is unchanged.
+    Scoped to the BitNet embedding 270M's geometry; stock Google Gemma-3
+    GGUFs are untested. The 270M still cannot use **ternary** weights —
+    geistlib blocks I2_S at 256 elements and its hidden size is 640 — so it
+    converts with `--outtype f16` until a 128-granular I2_S path exists.
+  - Measurement apparatus, but **no measurements**:
+    `tools/dump_geist_embedding` writes a set of prompts' embeddings to a
+    self-describing `.gemb`; `tools/eval_embedding_fidelity.py` gates cosine
+    similarity against a reference at a 0.999 floor and carries a
+    `--selftest`; `benchmark/embedding_protocol.json` pins the protocol
+    (pp128…pp4096, median of 3, `decode_n: 0` — these models emit no
+    tokens). Running any of it needs the weights, which CI cannot fetch.
+
+## [0.10.8] — 2026-09-04
+
+First published release after 0.10.1. It includes the changes that were staged
+in source as 0.10.2 through 0.10.7 but never published as Git tags or GitHub
+Releases, plus the work subsequently accumulated under `[Unreleased]`.
+
+### Release integrity
+- Reconnected the published `v0.10.1` lineage to `main` without changing its
+  tree, deleting commits, or rewriting either history. Releases now run as one
+  manually approved transaction from the exact `main` SHA: validate the
+  candidate, build every platform, create and verify a draft, publish the tag
+  and GitHub Release, then verify the public latest-release state. CI rejects
+  incomplete version bumps, the README derives its displayed version from the
+  latest GitHub Release, and a scheduled check detects future drift.
+
 ### Added
 - **Per-tensor gains for forward-only fine-tuning** (`@stability
   EXPERIMENTAL`, `GEIST_TUNE` builds): `geist_model_gains` exposes the
@@ -193,7 +344,7 @@ minor release.
   at 626 → 734 t/s; the 27B UD re-baselines at 94 pp (was 91.6 —
   protocol noise; `GEIST_M_MAX` 64/256 is a wash at 27B shapes).
 
-## [0.10.7] — 2026-08-30
+## 0.10.7 source milestone — 2026-08-30 (not independently published)
 
 ### Fixed
 - **Allocation-free linear-kernel contract, batch 2** (#336): the rest of the
@@ -231,7 +382,7 @@ minor release.
   whose M>1 path is rebound to the dequant trampoline is held to the same
   standard.
 
-## [0.10.6] — 2026-08-30
+## 0.10.6 source milestone — 2026-08-30 (not independently published)
 
 ### Fixed
 - **Allocation-free linear-kernel contract, batch 1** (#336): `geist_weight.h`
@@ -260,7 +411,7 @@ minor release.
   Batch 1 of several, per the ticket. Still allocating per call: IQ2_S,
   IQ3_S, IQ4_XS, Q4_0/Q4_1, Q5_K's M>1 path, and the x86 side.
 
-## [0.10.5] — 2026-08-30
+## 0.10.5 source milestone — 2026-08-30 (not independently published)
 
 ### Changed
 - **C23 length-first migration, batch 3** (#328): twenty helpers across the
@@ -287,7 +438,7 @@ minor release.
   them the `linear_*` GEMV/GEMM family in `quant.h` — deliberately
   deferred, see #328.
 
-## [0.10.4] — 2026-08-30
+## 0.10.4 source milestone — 2026-08-30 (not independently published)
 
 ### Added
 - **`AGENT.md`** — the coding rules the source already cited. Twenty
@@ -337,7 +488,7 @@ minor release.
   instead of re-spelling the signature inline, which had silently drifted
   from `geist_weight.h`.
 
-## [0.10.3] — 2026-08-30
+## 0.10.3 source milestone — 2026-08-30 (not independently published)
 
 ### Changed
 - **C23 API style, documented and first batch migrated** (#328): the
@@ -364,7 +515,7 @@ minor release.
 - **`NULL` retired from live code**: 81 occurrences across 7 files become
   `nullptr`. The 25 that remain are prose in comments.
 
-## [0.10.2] — 2026-08-30
+## 0.10.2 source milestone — 2026-08-30 (not independently published)
 
 Bug-fix release: the eight open correctness and hardening tickets against
 the GGUF reader, the weight resolvers, the transformer forward path, the
@@ -430,7 +581,7 @@ audio streaming lifecycle, and the shared profiler.
   backend cap `dn_subchunk`. The remaining 4B gap to llama.cpp Metal
   is GEMM-chain tuning (~500 ms of the wall), tracked in #322.
 
-## [0.10.1] — 2026-08-30
+## [0.10.1] — 2026-08-29
 
 ### Added
 - **IQ4_XS int8 mN prefill tile kernel** (#321): replaces the
@@ -1357,12 +1508,20 @@ First public release.
   reproducible perf benchmark harness (`make bench-small`).
 - `examples/simple_generate` demonstrating the stable text-generation core.
 
-[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.6...HEAD
-[0.10.6]: https://github.com/geisten/geistlib/compare/v0.10.5...v0.10.6
-[0.10.5]: https://github.com/geisten/geistlib/compare/v0.10.4...v0.10.5
-[0.10.4]: https://github.com/geisten/geistlib/compare/v0.10.3...v0.10.4
-[0.10.3]: https://github.com/geisten/geistlib/compare/v0.10.2...v0.10.3
-[0.10.2]: https://github.com/geisten/geistlib/compare/v0.10.1...v0.10.2
+[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.8...HEAD
+[0.10.8]: https://github.com/geisten/geistlib/compare/v0.10.1...v0.10.8
+[0.10.1]: https://github.com/geisten/geistlib/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/geisten/geistlib/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/geisten/geistlib/compare/v0.8.2...v0.9.0
+[0.8.2]: https://github.com/geisten/geistlib/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/geisten/geistlib/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/geisten/geistlib/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/geisten/geistlib/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/geisten/geistlib/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/geisten/geistlib/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/geisten/geistlib/compare/v0.3.3...v0.4.0
+[0.3.3]: https://github.com/geisten/geistlib/compare/v0.3.2...v0.3.3
+[0.3.1]: https://github.com/geisten/geistlib/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/geisten/geistlib/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/geisten/geistlib/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/geisten/geistlib/compare/v0.1.3...v0.2.0

@@ -45,7 +45,7 @@ static float *probe_logits(struct geist_session *s, size_t *n_out) {
         return nullptr;
     }
     size_t       n  = 0;
-    const float *lg = geist_session_peek_logits(s, &n);
+    const float *lg = geist_session_peek_logits(&n, s);
     if (lg == nullptr || n == 0) {
         return nullptr;
     }
