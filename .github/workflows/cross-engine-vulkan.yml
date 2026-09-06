@@ -43,10 +43,20 @@ jobs:
             [ -d "$DIR/.git" ] || git clone https://github.com/ggml-org/llama.cpp "$DIR"
             git -C "$DIR" fetch origin "$LLAMA_PIN"
             git -C "$DIR" checkout "$LLAMA_PIN"
-            # SPIRV headers live in ~/.local on this box (benchmark/results/VULKAN.md)
+            # ggml-vulkan #includes spirv/unified1/spirv.hpp directly, so the
+            # headers must be on the compiler's include path, not just
+            # CMAKE_PREFIX_PATH. Use the box's ~/.local copy
+            # (benchmark/results/VULKAN.md) or fetch a pinned clone.
+            SPIRV_INC="$HOME/.local/include"
+            if [ ! -f "$SPIRV_INC/spirv/unified1/spirv.hpp" ]; then
+              [ -d "$DIR/spirv-headers/.git" ] || git clone --depth 1 \
+                https://github.com/KhronosGroup/SPIRV-Headers "$DIR/spirv-headers"
+              SPIRV_INC="$DIR/spirv-headers/include"
+            fi
             cmake -S "$DIR" -B "$DIR/build-vulkan" -DGGML_VULKAN=ON \
               -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF \
-              -DCMAKE_PREFIX_PATH="$HOME/.local"
+              -DCMAKE_PREFIX_PATH="$HOME/.local" \
+              -DCMAKE_CXX_FLAGS="-I$SPIRV_INC"
             cmake --build "$DIR/build-vulkan" --target llama-bench -j
           fi
           git -C "$DIR" rev-parse HEAD
