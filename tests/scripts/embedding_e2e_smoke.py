@@ -4,8 +4,8 @@
 Everything from phases 0-2 is exercised in one pass on a synthetic model:
 
     safetensors -> convert_bitnet_embedding.py -> GGUF -> geistlib loader
-    -> per-projection input norms -> last-token pooling -> peek_embedding
-    -> dump_geist_embedding -> .gemb
+    -> per-projection input norms -> the model's declared pooling
+    -> peek_embedding -> dump_geist_embedding -> .gemb
 
 There are no real weights here and no reference vectors, so this proves
 nothing about numerical correctness -- that is what
@@ -17,14 +17,16 @@ That gap was not theoretical. The first time this ran it found two defects
 that made every real conversion unloadable:
 
   1. The converter wrote 1-D norms as F16, following upstream's tensor-type
-     table. geistlib's loader requires F32 and refuses the file outright
-     (layer_wiring.c:65).
-  2. The per-layer owning-buffer list held 16 entries. A BitNet embedding
-     layer needs 18 -- 11 ordinary tensors plus the 7 per-projection input
-     norms -- so the load died on the seventh norm.
+     table, and the loader required F32 and refused the file outright.
+  2. The per-layer owning-buffer list held 16 entries, and a BitNet
+     embedding layer needs more, so the load died partway through the norms.
 
-Both now have narrow regression tests of their own. This stays as the broad
-one: it catches the next thing that only shows up when the parts run together.
+Neither is fixed the way it was first patched: the loader now CONVERTS a
+narrow gamma at load (load_norm_to_f32_buffer), because upstream's own
+published GGUFs store every norm as F16 and re-converting from safetensors
+to reach them was not a reasonable ask; and the buffer list is sized 24.
+Both have narrow regression tests of their own. This stays as the broad one:
+it catches the next thing that only shows up when the parts run together.
 
 The weights are random ternary values, so the embeddings are meaningless.
 Only structural invariants are asserted -- finite, unit-norm, deterministic,
