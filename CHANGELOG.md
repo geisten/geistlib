@@ -9,6 +9,39 @@ minor release.
 ## [Unreleased]
 
 ### Fixed
+- **Embedding models pooled the wrong way.** `bitnet-embedding-*` are
+  mean-pooled: their GGUFs carry gguf-py's `{arch}.pooling_type = 1`, which
+  upstream's converter auto-detects from the checkpoint's
+  `1_Pooling/config.json`, and only mean reproduces the embedding the model
+  cards themselves print (RMSE 8.5e-4 against 0.24 for last-token). The
+  cards say "last-token pooling" in prose; the file and the numbers disagree
+  with the prose. `GEIST_POOLING_MEAN` was parsed but unimplemented and
+  refused at prefill, and `tools/convert_bitnet_embedding.py` hardcoded
+  `last_token`, so the pipeline produced last-token vectors end to end. Mean
+  pooling is implemented (it spans prefill chunks, so it accumulates per
+  chunk into a session-owned buffer and finalizes once), and the converter
+  reads the pooling from the checkpoint instead of hardcoding it.
+- **Upstream's published GGUFs now load.** `bitnet-embeddings-*-i2_s.gguf`
+  on the Hugging Face model pages differ from our converter's output in
+  three ways, each of which was fatal: norm gammas are F16 (converted at
+  load now, `load_norm_to_f32_buffer`), a block carries 20 tensors where the
+  per-layer buffer list held 16 (raised to 24), and the embedding metadata
+  is spelled as `{arch}.pooling_type` rather than `bitnet.embedding.*` (both
+  spellings are read; the per-projection norms are keyed on the tensors,
+  which is the evidence, with the metadata able to opt out). Reaching a
+  model that ships as a 428 MB ready-made GGUF no longer means re-converting
+  from ~1.2 GB of safetensors. Accepting F16 gammas at load is what makes
+  upstream's files readable; our own converter writes them F32 (see the entry
+  below), so the two changes are independent — either alone leaves one of the
+  two file shapes unloadable.
+- `geist_session_tokenize` returns content tokens by design, and nothing
+  reported what the model expects around them. New `geist_model_add_bos` /
+  `geist_model_add_eos` (`@stability EXPERIMENTAL`) expose the tokenizer's
+  own `add_bos_token` / `add_eos_token`. It matters for pooled vectors:
+  these checkpoints set `add_eos_token`, and pooling over a sequence one
+  token short of upstream's moves the embedding by RMSE 1.8e-2 — twenty
+  times the quantization noise. `tools/dump_geist_embedding` now wraps
+  accordingly, so the parity oracle compares like with like.
 - **BitNet embedding conversions were unloadable.** Two defects, both found by
   running the chain end to end for the first time rather than by inspecting
   its parts, and both fatal on any real checkpoint:
@@ -55,7 +88,6 @@ minor release.
   The target honours `MODE`, so `make MODE=asan test-embedding` runs the whole
   chain under AddressSanitizer — which is how the `scratch_proj_in` leak above
   surfaced.
-
 ### Changed (BREAKING)
 - **`geist_session_peek_logits` takes its arguments in the other order**:
   `(size_t *n_logits, struct geist_session *s)`, was `(s, n_logits)`. Code

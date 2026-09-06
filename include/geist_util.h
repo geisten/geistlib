@@ -40,6 +40,20 @@ extern "C" {
 geist_token_t geist_model_eos_token(const struct geist_model *m);
 geist_token_t geist_model_bos_token(const struct geist_model *m);
 
+/* @stability EXPERIMENTAL — the tokenizer's own add_bos_token /
+ * add_eos_token metadata.
+ *
+ * geist_session_tokenize returns CONTENT tokens only, by design: the caller
+ * decides what to wrap them in. These two say what the model was trained to
+ * expect around them, so a caller can follow the model's convention instead
+ * of guessing it. It matters most for embedding models, where the pooled
+ * vector is taken over exactly the sequence you pass — an embedding pooled
+ * over a sequence one token short of the model's convention is a different
+ * vector, not a rounding difference. Both false when no tokenizer is
+ * loaded. */
+bool geist_model_add_bos(const struct geist_model *m);
+bool geist_model_add_eos(const struct geist_model *m);
+
 /* @stability STABLE since 0.2.0 — look up the token id for an exact vocab
  * entry, e.g. "<end_of_turn>". Returns GEIST_TOKEN_NONE if the model has no
  * tokenizer or `text` is not a single vocab token. Lets a chat app discover

@@ -32,6 +32,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 /* FFN activation kind. Constexpr-able (single enum byte), consumed by
@@ -87,6 +88,32 @@ static inline bool geist_pooling_select(size_t len, const char *s, enum geist_po
         return true;
     }
     return false;
+}
+
+/* Map gguf-py's numeric PoolingType to a kind. That is the `{arch}.pooling_type`
+ * key upstream's own published GGUFs carry, where ours writes the
+ * `bitnet.embedding.pooling` string — a file converted by anyone but
+ * tools/convert_bitnet_embedding.py has only this one.
+ *
+ * Values are gguf-py/gguf/constants.py: NONE=0, MEAN=1, CLS=2, LAST=3, RANK=4.
+ * CLS and RANK are not implemented, so they are refused here exactly as an
+ * unrecognised string is — a pooling this build cannot perform must fail the
+ * load, not be approximated. Pure, so it is unit-testable. */
+static inline bool geist_pooling_from_gguf_type(uint32_t t, enum geist_pooling_kind *out) {
+    switch (t) {
+    case 0u:
+        *out = GEIST_POOLING_NONE;
+        return true;
+    case 1u:
+        *out = GEIST_POOLING_MEAN;
+        return true;
+    case 3u:
+        *out = GEIST_POOLING_LAST_TOKEN;
+        return true;
+    default:
+        *out = GEIST_POOLING_NONE;
+        return false;
+    }
 }
 
 /* True iff this pooling kind makes the model an embedding model: no LM
