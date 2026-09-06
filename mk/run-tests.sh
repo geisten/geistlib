@@ -20,6 +20,12 @@
 #   1 if any test failed
 #   2 if the bin_dir does not exist or contains no tests
 #
+# Output of a PASSING test used to be captured and dropped, which threw away
+# the only thing several suites exist to report — the measured numbers they
+# print (cosine, WER, tokens/s, a retrieval count). A pass now shows its LAST
+# line beside the verdict, which is where those tests put their summary, and
+# GEIST_TEST_VERBOSE=1 shows every line of every test.
+#
 # POSIX sh, no bash. The build dropped its bash dependency (mk/detect-target.sh
 # is #!/bin/sh); this script was the last thing forcing it, so on an image
 # without bash — Alpine's build-base does not pull one in — the suite died with
@@ -119,14 +125,27 @@ for bin in "$@"; do
     out=$("$bin" 2>&1)
     rc=$?
 
+    if [ "${GEIST_TEST_VERBOSE:-0}" = "1" ] && [ -n "$out" ]; then
+        printf '\n--- %s ---\n' "$name"
+        echo "$out" | sed 's/^/  /'
+    fi
+
     case $rc in
         0)
             PASS=$((PASS + 1))
-            printf "  ${C_GREEN}PASS${C_RESET}  %s\n" "$name"
+            # A passing test's summary is its last line, by convention across
+            # this suite. Showing it keeps the table one-line-per-test while
+            # the numbers stay visible; GEIST_TEST_VERBOSE=1 shows the rest.
+            summary=$(echo "$out" | grep -v '^[[:space:]]*$' | tail -1)
+            if [ -n "$summary" ]; then
+                printf "  ${C_GREEN}PASS${C_RESET}  %s ${C_GREY}(%s)${C_RESET}\n" "$name" "$summary"
+            else
+                printf "  ${C_GREEN}PASS${C_RESET}  %s\n" "$name"
+            fi
             ;;
         77)
             SKIP=$((SKIP + 1))
-            reason=$(echo "$out" | head -1)
+            reason=$(echo "$out" | grep -v '^[[:space:]]*$' | head -1)
             printf "  ${C_YELLOW}SKIP${C_RESET}  %s ${C_GREY}(%s)${C_RESET}\n" "$name" "$reason"
             ;;
         99)
