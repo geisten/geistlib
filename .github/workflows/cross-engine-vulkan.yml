@@ -68,11 +68,24 @@ jobs:
           GEIST_GGUF_PATH: ${{ vars.GEIST_GGUF_PATH }}
         run: |
           set -eo pipefail
-          test -f "$GEIST_GGUF_PATH" || { echo "GEIST_GGUF_PATH unset or missing"; exit 1; }
+          # The runner refuses any model whose SHA-256 differs from the
+          # protocol's, so pick the candidate by that hash: the repo variable
+          # first (it points at the CI fixture, not necessarily the campaign
+          # model), then the box path the AMD campaign measured from.
+          WANT=$(python3 -c "import json; print(json.load(open('benchmark/cross_engine_gpu_protocol.json'))['model']['sha256'])")
+          MODEL=""
+          for cand in "$GEIST_GGUF_PATH" \
+                      "$HOME/workplace/geistlib/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf"; do
+            if [ -f "$cand" ] && [ "$(sha256sum "$cand" | cut -d' ' -f1)" = "$WANT" ]; then
+              MODEL="$cand"; break
+            fi
+          done
+          [ -n "$MODEL" ] || { echo "no candidate matches the protocol model SHA $WANT"; exit 1; }
+          echo "campaign model: $MODEL"
           python3 tools/bench_cross_engine.py \
             --geist bin/linux/release/tests/bench_perf_sweep \
             --llama "$HOME/llama.cpp-cross-engine/build-vulkan/bin/llama-bench" \
-            --gguf "$GEIST_GGUF_PATH" \
+            --gguf "$MODEL" \
             --protocol benchmark/cross_engine_gpu_protocol.json \
             --host-profile nvidia_2080ti_vulkan \
             --out-dir bench-out
