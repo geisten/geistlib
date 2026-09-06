@@ -252,6 +252,30 @@ def kv_bool(key: str, v: bool) -> bytes:
     return _kv(key, VT_BOOL, struct.pack("<B", 1 if v else 0))
 
 
+def pooling_of(model_dir: Path) -> str:
+    """Read the pooling from the checkpoint, not from the model card.
+
+    sentence-transformers records it in `1_Pooling/config.json`, and that is
+    what upstream's own converter reads to fill gguf-py's numeric
+    `{arch}.pooling_type`. The bitnet-embedding cards say "last-token
+    pooling" in prose while their published GGUFs say mean, and only mean
+    reproduces the embedding those same cards print -- so the checkpoint
+    wins over the prose, and hardcoding either is how this got it wrong.
+    """
+    cfg = model_dir / "1_Pooling" / "config.json"
+    if cfg.is_file():
+        p = json.loads(cfg.read_text())
+        if p.get("pooling_mode_lasttoken"):
+            return "last_token"
+        if p.get("pooling_mode_mean_tokens", True):
+            return "mean"
+        raise SystemExit(f"{cfg}: no pooling mode this converter can express")
+    # No sentence-transformers block: fall back to what the released
+    # checkpoints use, and say so rather than guessing silently.
+    print(f"warning: {cfg} missing; assuming mean pooling", file=sys.stderr)
+    return "mean"
+
+
 def kv_str(key: str, v: str) -> bytes:
     b = v.encode()
     return _kv(key, VT_STRING, struct.pack("<Q", len(b)) + b)
@@ -351,7 +375,9 @@ def plan_tensor(
                      lambda: to_f16(load()).tobytes())
 
 
-def build_metadata(cfg: dict, arch: str, tok: dict, n_tensors: int) -> list[bytes]:
+def build_metadata(
+    cfg: dict, arch: str, tok: dict, n_tensors: int, model_dir: Path
+) -> list[bytes]:
     """GGUF metadata, using the keys geistlib's populators actually read."""
     n_heads = cfg["num_attention_heads"]
     n_kv = cfg["num_key_value_heads"]
@@ -375,7 +401,7 @@ def build_metadata(cfg: dict, arch: str, tok: dict, n_tensors: int) -> list[byte
         kv_f32(f"{arch}.rope.freq_base", cfg.get("rope_theta", 10000.0)),
         kv_u32(f"{arch}.vocab_size", cfg["vocab_size"]),
         kv_bool("bitnet.embedding.projection_input_norms", True),
-        kv_str("bitnet.embedding.pooling", "last_token"),
+        kv_str("bitnet.embedding.pooling", pooling_of(model_dir)),
     ]
     if arch == "gemma3":
         meta.append(kv_u32("gemma3.attention.query_pre_attn_scalar",
@@ -448,7 +474,7 @@ def convert(model_dir: Path, outfile: Path, outtype: str) -> None:
     if not planned:
         raise SystemExit("no tensors mapped -- is this a BitNet embedding checkpoint?")
 
-    meta = build_metadata(cfg, arch, tok, len(planned))
+    meta = build_metadata(cfg, arch, tok, len(planned), model_dir)
     write_gguf(outfile, meta, planned)
     for fh, mm in open_files:
         mm.close()

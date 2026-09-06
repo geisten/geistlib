@@ -340,6 +340,9 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
      * the qwen35 recurrent stack into repetition loops (#281). */
     {
         bool b;
+        if (gguf_get_meta_bool(ctx, "tokenizer.ggml.add_eos_token", &b)) {
+            tok->add_eos = b;
+        }
         if (gguf_get_meta_bool(ctx, "tokenizer.ggml.add_bos_token", &b)) {
             tok->add_bos = b;
         } else {

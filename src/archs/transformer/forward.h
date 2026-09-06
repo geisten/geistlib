@@ -132,6 +132,18 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
 /* Embedding models' terminal step: pool + output_norm + L2 normalise into
  * the session's staging row, instead of running the LM head. `seq` is the
  * row count of the final prefill chunk. Sets sess->embedding_valid. */
+/* Output-head front half: scratch_h_b's first `k` rows, output_norm'd, into
+ * scratch_h_a. The lm_head is NOT applied -- see head.c. */
+[[nodiscard]] enum geist_status transformer_norm_rows(struct transformer_arch_session *sess,
+                                                      size_t                           k);
+
+/* Mean pooling, which unlike last-token spans chunks: accumulate every
+ * chunk, then finalize once with the total token count. */
+[[nodiscard]] enum geist_status
+transformer_embedding_accumulate(struct transformer_arch_session *sess, size_t k, bool first);
+[[nodiscard]] enum geist_status finalize_embedding_mean(struct transformer_arch_session *sess,
+                                                        size_t                           n_tokens);
+
 [[nodiscard]] enum geist_status finalize_embedding_last_row(struct transformer_arch_session *sess,
                                                             size_t                           seq);
 

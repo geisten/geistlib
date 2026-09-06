@@ -63,6 +63,30 @@ int main(void) {
     check("LAST_TOKEN is an embedding model", geist_pooling_is_embedding(GEIST_POOLING_LAST_TOKEN));
     check("MEAN is an embedding model", geist_pooling_is_embedding(GEIST_POOLING_MEAN));
 
+    puts("=== gguf-py numeric pooling_type ===");
+
+    /* The other spelling. Upstream's published GGUFs carry gguf-py's
+     * numeric {arch}.pooling_type where our converter writes a string, and
+     * a file converted by anyone but tools/convert_bitnet_embedding.py has
+     * only this one. Values are gguf-py/gguf/constants.py PoolingType. */
+    {
+        enum geist_pooling_kind k = GEIST_POOLING_LAST_TOKEN;
+        check("0 (NONE) is a generative model",
+              geist_pooling_from_gguf_type(0u, &k) && k == GEIST_POOLING_NONE);
+        check("1 (MEAN) maps to mean",
+              geist_pooling_from_gguf_type(1u, &k) && k == GEIST_POOLING_MEAN);
+        check("3 (LAST) maps to last-token",
+              geist_pooling_from_gguf_type(3u, &k) && k == GEIST_POOLING_LAST_TOKEN);
+
+        /* CLS and RANK exist upstream and are not implemented here, so they
+         * are refused exactly as an unrecognised string is -- and refusal
+         * must still leave the out-param defined. */
+        check("2 (CLS) is refused, not approximated",
+              !geist_pooling_from_gguf_type(2u, &k) && k == GEIST_POOLING_NONE);
+        check("4 (RANK) is refused", !geist_pooling_from_gguf_type(4u, &k));
+        check("an out-of-range value is refused", !geist_pooling_from_gguf_type(99u, &k));
+    }
+
     puts("=== embedding API edges ===");
 
     /* The public accessor must be safe to call before anything exists, and

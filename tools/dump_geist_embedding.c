@@ -159,6 +159,9 @@ int main(int argc, char **argv) {
         goto done;
     }
 
+    const geist_token_t eos     = geist_model_eos_token(model);
+    const bool          add_eos = geist_model_add_eos(model);
+
     size_t dim = 0;
     for (size_t i = 0; i < n_prompts; i++) {
         if (geist_session_reset(session) != GEIST_OK) {
@@ -174,6 +177,14 @@ int main(int argc, char **argv) {
                     i,
                     geist_session_errmsg(session));
             goto done;
+        }
+        /* Wrap the content tokens the way the model's own tokenizer
+         * metadata says it was trained -- upstream's llama-embedding adds
+         * specials, and a pooled vector over a sequence one token short is
+         * a different vector. geist_session_tokenize deliberately returns
+         * content only, so the wrapping is ours to do. */
+        if (add_eos && eos != GEIST_TOKEN_NONE && n_ids < MAX_PROMPT_TOKENS) {
+            ids[n_ids++] = eos;
         }
         if (geist_session_prefill_tokens(session, n_ids, ids) != GEIST_OK) {
             fprintf(stderr, "prefill failed at prompt %zu: %s\n", i, geist_session_errmsg(session));

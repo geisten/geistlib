@@ -76,7 +76,13 @@ struct gguf_tokenizer {
      * Qwen-family GGUFs carry a bos_id but set this false — blindly
      * prepending desynced the qwen35 recurrent state (#281). Absent
      * key falls back to "prepend iff bos_id set" (prior behavior). */
-    bool    add_bos;
+    bool add_bos;
+
+    /* tokenizer.ggml.add_eos_token: whether the model expects eos APPENDED.
+     * No generative GGUF in tree sets it; the BitNet embedding checkpoints
+     * do, and pooling over a sequence that is one token short of upstream's
+     * shifts the vector. Absent = false. */
+    bool    add_eos;
     int32_t eos_id;
     int32_t unk_id;
 
