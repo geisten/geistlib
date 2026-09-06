@@ -645,11 +645,10 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
         }
     }
 
-cleanup:
-    {
-        void *p = pad_ids;
-        safe_free(&p);
-    }
+cleanup: {
+    void *p = pad_ids;
+    safe_free(&p);
+}
     return rc;
 }
 
