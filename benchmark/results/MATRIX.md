@@ -11,7 +11,7 @@ Coverage work is tracked in [#364](https://github.com/geisten/geistlib/issues/36
 
 | Model / quantization | Apple CPU | Pi 5 CPU | AMD AVX-512 CPU | Apple Metal | NVIDIA Vulkan |
 | :-- | :--: | :--: | :--: | :--: | :--: |
-| Gemma 4 E2B-it Q4_K_M | [pp ~−47% / tg ~−28%](CROSS-ENGINE-APPLE-M1MAX.md) | [pp ~-13% / tg ~+11%](CROSS-ENGINE-PI5.md) | [pp ~16% / tg ~15%](CROSS-ENGINE-AMD9950X.md) | not measured | not measured |
+| Gemma 4 E2B-it Q4_K_M | [pp ~−47% / tg ~−28%](CROSS-ENGINE-APPLE-M1MAX.md) | [pp ~-13% / tg ~+11%](CROSS-ENGINE-PI5.md) | [pp ~16% / tg ~15%](CROSS-ENGINE-AMD9950X.md) | [pp ~−36% / tg ~−18%](CROSS-ENGINE-APPLE-M1MAX-METAL.md) | [pp ~−71% / tg ~−10%](CROSS-ENGINE-NVIDIA2080TI-VULKAN.md) |
 | Gemma 4 E4B-it Q4_K_M | not measured | does not fit 4 GB reference host | not measured | not measured | not measured |
 | Llama 3.2 3B Q4_K_M | not measured | not measured | not measured | not measured | not measured |
 | BitNet b1.58 2B-4T I2_S | not measured | not measured | not measured | not measured | not measured |
@@ -36,13 +36,17 @@ evidence, not cells in this matrix.
 
 ## Frozen comparison contract
 
-The current CPU head-to-head is defined by
-[`cross_engine_cpu_protocol.json`](../cross_engine_cpu_protocol.json) and run by
+The current head-to-head is defined by
+[`cross_engine_cpu_protocol.json`](../cross_engine_cpu_protocol.json) for CPU
+columns and [`cross_engine_gpu_protocol.json`](../cross_engine_gpu_protocol.json)
+for GPU columns — same shapes, pairing and aggregation; only the backend
+contract differs — and run by
 [`bench_cross_engine.py`](../../tools/bench_cross_engine.py):
 
 - byte-identical model, verified by SHA-256;
 - geist and llama.cpp commits plus binary hashes recorded;
-- CPU-only execution verified from llama.cpp's JSON output;
+- CPU-only execution verified from llama.cpp's JSON output; GPU cells instead
+  verify full offload and record the exact device and backend;
 - pp128/256/512/1024 and tg64 at matching context depths;
 - one thread profile per host from `host_profiles`, identical for both engines
   within a run (M1 Max 8/7, 9950X 16/15);

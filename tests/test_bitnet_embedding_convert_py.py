@@ -27,6 +27,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from convert_bitnet_embedding import (  # noqa: E402
+    GGML_F16,
+    GGML_F32,
+    GGML_I2_S,
     I2S_BLOCK_ELEMS,
     convert,
     map_tensor_name,
@@ -204,6 +207,94 @@ def write_mini_checkpoint(root: Path) -> None:
     (root / "model.safetensors").write_bytes(struct.pack("<Q", len(hj)) + hj + b"".join(blobs))
 
 
+def read_tensor_infos(path: Path) -> dict[str, tuple[int, int]]:
+    """Parse a GGUF's tensor-info table: {name: (n_dims, ggml_type)}.
+
+    Only enough of the container to reach the table — the KV section is
+    walked by type so the tensor infos can be found.
+    """
+    blob = path.read_bytes()
+    off = 24
+    _, _, n_tensors, n_kv = struct.unpack("<IIQQ", blob[:24])
+
+    def read_str(o: int) -> tuple[str, int]:
+        (ln,) = struct.unpack_from("<Q", blob, o)
+        return blob[o + 8 : o + 8 + ln].decode(), o + 8 + ln
+
+    # Scalar payload widths by GGUF metadata value type.
+    width = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+    def skip_value(o: int, vt: int) -> int:
+        if vt == 8:  # string
+            (ln,) = struct.unpack_from("<Q", blob, o)
+            return o + 8 + ln
+        if vt == 9:  # array
+            elem_vt, count = struct.unpack_from("<IQ", blob, o)
+            o += 12
+            for _ in range(count):
+                o = skip_value(o, elem_vt)
+            return o
+        return o + width[vt]
+
+    for _ in range(n_kv):
+        _, off = read_str(off)
+        (vt,) = struct.unpack_from("<I", blob, off)
+        off = skip_value(off + 4, vt)
+
+    infos: dict[str, tuple[int, int]] = {}
+    for _ in range(n_tensors):
+        name, off = read_str(off)
+        (n_dims,) = struct.unpack_from("<I", blob, off)
+        off += 4 + 8 * n_dims
+        (ggml_type,) = struct.unpack_from("<I", blob, off)
+        off += 4 + 8  # type + offset
+        infos[name] = (n_dims, ggml_type)
+    return infos
+
+
+def test_norms_are_f32() -> None:
+    """Every 1-D norm must be F32, because geistlib's loader accepts nothing else.
+
+    load_norm_1d (src/archs/transformer/weight_load/layer_wiring.c:65) and the
+    output_norm path (:866) both reject a non-F32 norm outright, so a converter
+    that follows upstream's F16 tensor-type table produces a file this engine
+    refuses to load. That failure is invisible until a real checkpoint is on
+    disk, which is exactly why it is pinned here.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_mini_checkpoint(root)
+        out = root / "mini-i2_s.gguf"
+        convert(root, out, "i2_s")
+        infos = read_tensor_infos(out)
+
+        # Every 1-D tensor in these models is a norm. 2 layers x (7 projection
+        # input norms + attn_norm + ffn_norm + q_norm + k_norm) + output_norm.
+        norms = {n: t for n, (d, t) in infos.items() if d == 1}
+        check("the mini model has all 23 norms", len(norms) == 23, str(len(norms)))
+        bad = {n: t for n, t in norms.items() if t != GGML_F32}
+        check("every 1-D norm is F32", not bad, str(bad))
+        check("output_norm is F32", infos.get("output_norm.weight") == (1, GGML_F32),
+              str(infos.get("output_norm.weight")))
+        check("token_embd stays F16", infos.get("token_embd.weight") == (2, GGML_F16),
+              str(infos.get("token_embd.weight")))
+        n_i2s = sum(t == GGML_I2_S for _, t in infos.values())
+        check("projections are still I2_S", n_i2s == 14, str(n_i2s))
+
+    # f16 mode (the 270M's path) must keep the norms F32 too -- only the
+    # projections change dtype.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_mini_checkpoint(root)
+        out = root / "mini-f16.gguf"
+        convert(root, out, "f16")
+        infos = read_tensor_infos(out)
+        bad = {n: t for n, (d, t) in infos.items() if d == 1 and t != GGML_F32}
+        check("norms stay F32 in --outtype f16 too", not bad, str(bad))
+        check("no I2_S tensors in f16 mode",
+              not any(t == GGML_I2_S for _, t in infos.values()))
+
+
 def test_end_to_end() -> None:
     """Convert a synthetic checkpoint and re-read the GGUF header we wrote."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -232,6 +323,7 @@ def main() -> int:
         test_name_mapping,
         test_norm_in_names_match_the_loader,
         test_f16_overflow_is_loud,
+        test_norms_are_f32,
         test_end_to_end,
     ):
         fn()

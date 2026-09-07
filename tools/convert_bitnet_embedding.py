@@ -252,6 +252,30 @@ def kv_bool(key: str, v: bool) -> bytes:
     return _kv(key, VT_BOOL, struct.pack("<B", 1 if v else 0))
 
 
+def pooling_of(model_dir: Path) -> str:
+    """Read the pooling from the checkpoint, not from the model card.
+
+    sentence-transformers records it in `1_Pooling/config.json`, and that is
+    what upstream's own converter reads to fill gguf-py's numeric
+    `{arch}.pooling_type`. The bitnet-embedding cards say "last-token
+    pooling" in prose while their published GGUFs say mean, and only mean
+    reproduces the embedding those same cards print -- so the checkpoint
+    wins over the prose, and hardcoding either is how this got it wrong.
+    """
+    cfg = model_dir / "1_Pooling" / "config.json"
+    if cfg.is_file():
+        p = json.loads(cfg.read_text())
+        if p.get("pooling_mode_lasttoken"):
+            return "last_token"
+        if p.get("pooling_mode_mean_tokens", True):
+            return "mean"
+        raise SystemExit(f"{cfg}: no pooling mode this converter can express")
+    # No sentence-transformers block: fall back to what the released
+    # checkpoints use, and say so rather than guessing silently.
+    print(f"warning: {cfg} missing; assuming mean pooling", file=sys.stderr)
+    return "mean"
+
+
 def kv_str(key: str, v: str) -> bytes:
     b = v.encode()
     return _kv(key, VT_STRING, struct.pack("<Q", len(b)) + b)
@@ -321,8 +345,13 @@ def plan_tensor(
 ) -> OutTensor:
     """Decide a tensor's output dtype and how to produce its bytes.
 
-    2-D projection weights go to I2_S in ternary mode; embeddings and all
-    1-D norms stay F16, matching the upstream tensor-type table.
+    2-D projection weights go to I2_S in ternary mode and the embedding
+    table stays F16. Every 1-D norm is written F32 because geistlib's
+    loader requires it: load_norm_1d in
+    src/archs/transformer/weight_load/layer_wiring.c:65 rejects anything
+    else outright, as do the output_norm and per_layer_proj_norm paths at
+    :848 and :866. Upstream's tensor-type table lists these as F16; a file
+    that follows it loads nowhere in this engine.
     """
     shape = st.shape
     dims = tuple(reversed(shape))  # GGUF stores fastest-varying first
@@ -337,11 +366,18 @@ def plan_tensor(
 
         return OutTensor(gguf_name, dims, GGML_I2_S, nbytes, emit_i2s)
 
-    nbytes = int(np.prod(shape)) * 2
-    return OutTensor(gguf_name, dims, GGML_F16, nbytes, lambda: to_f16(load()).tobytes())
+    n_elems = int(np.prod(shape))
+    if len(shape) == 1:
+        return OutTensor(gguf_name, dims, GGML_F32, n_elems * 4,
+                         lambda: np.ascontiguousarray(load(), dtype=np.float32).tobytes())
+
+    return OutTensor(gguf_name, dims, GGML_F16, n_elems * 2,
+                     lambda: to_f16(load()).tobytes())
 
 
-def build_metadata(cfg: dict, arch: str, tok: dict, n_tensors: int) -> list[bytes]:
+def build_metadata(
+    cfg: dict, arch: str, tok: dict, n_tensors: int, model_dir: Path
+) -> list[bytes]:
     """GGUF metadata, using the keys geistlib's populators actually read."""
     n_heads = cfg["num_attention_heads"]
     n_kv = cfg["num_key_value_heads"]
@@ -365,7 +401,7 @@ def build_metadata(cfg: dict, arch: str, tok: dict, n_tensors: int) -> list[byte
         kv_f32(f"{arch}.rope.freq_base", cfg.get("rope_theta", 10000.0)),
         kv_u32(f"{arch}.vocab_size", cfg["vocab_size"]),
         kv_bool("bitnet.embedding.projection_input_norms", True),
-        kv_str("bitnet.embedding.pooling", "last_token"),
+        kv_str("bitnet.embedding.pooling", pooling_of(model_dir)),
     ]
     if arch == "gemma3":
         meta.append(kv_u32("gemma3.attention.query_pre_attn_scalar",
@@ -438,7 +474,7 @@ def convert(model_dir: Path, outfile: Path, outtype: str) -> None:
     if not planned:
         raise SystemExit("no tensors mapped -- is this a BitNet embedding checkpoint?")
 
-    meta = build_metadata(cfg, arch, tok, len(planned))
+    meta = build_metadata(cfg, arch, tok, len(planned), model_dir)
     write_gguf(outfile, meta, planned)
     for fh, mm in open_files:
         mm.close()

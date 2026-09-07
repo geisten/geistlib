@@ -8,6 +8,33 @@ minor release.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-09-06
+
+Ternary BitNet embedding models. Microsoft's July 2026 releases —
+`BitNet-embedding-0.6B` (Qwen3 backbone) and `BitNet-embedding-270M` (Gemma3)
+— are embedding models, not generative LLMs: natively trained at W1.58A8,
+mean-pooled, with no LM head. This release is the converter, the
+per-projection input norms they need, the pooling path, the embedding
+accessor, `gemma3`, and the measurement apparatus.
+
+geist reads the checkpoints as Microsoft ships them: both the safetensors,
+via the in-tree converter, and the ready-made GGUFs on the model pages. On
+the published 0.6B it reproduces the vendor's own printed embedding to
+**RMSE 8.5e-4**. That is the only external ground truth available —
+upstream's `llama-embedding` cannot run these checkpoints at all.
+
+What that number does not cover is speed. `benchmark/embedding_protocol.json`
+stays at `UNMEASURED`: a throughput figure needs a quiesced host, and none
+was available. Nothing in this release claims one.
+
+Two things are worth reading before upgrading. The pooling in these models is
+**mean**, not last-token as their model cards say in prose, and geist was
+wrong about it for the whole of this release's development — the file, the
+vendor's own command, and the numbers all say mean. And
+`geist_session_peek_logits` takes its arguments in the other order now, a
+deliberate exception to the `STABLE` promise recorded in
+`docs/API_CONTRACT.md`.
+
 ### Changed (BREAKING)
 - **`geist_session_peek_logits` takes its arguments in the other order**:
   `(size_t *n_logits, struct geist_session *s)`, was `(s, n_logits)`. Code
@@ -23,9 +50,10 @@ minor release.
   explicit exception in `docs/API_CONTRACT.md` rather than left implicit.
 
 ### Added
-- **BitNet embedding models (July 2026)**, in three parts. Nothing here has
-  yet run against real weights — see `docs/BITNET_EMBEDDINGS_PLAN.md` for
-  what is and is not verified.
+- **BitNet embedding models (July 2026)**, in three parts. What is and is
+  not verified is set out in `docs/BITNET_EMBEDDINGS_PLAN.md`; the short
+  version is that the forward path now reproduces the vendor's own published
+  embedding to RMSE 8.5e-4, and that no throughput number has been taken.
   - `tools/convert_bitnet_embedding.py` converts the safetensors checkpoints
     to GGUF with I2_S ternary packing. numpy and the standard library only —
     no pinned llama.cpp branch and no torch, unlike Microsoft's converter.
@@ -56,13 +84,97 @@ minor release.
     GGUFs are untested. The 270M still cannot use **ternary** weights —
     geistlib blocks I2_S at 256 elements and its hidden size is 640 — so it
     converts with `--outtype f16` until a 128-granular I2_S path exists.
-  - Measurement apparatus, but **no measurements**:
-    `tools/dump_geist_embedding` writes a set of prompts' embeddings to a
-    self-describing `.gemb`; `tools/eval_embedding_fidelity.py` gates cosine
-    similarity against a reference at a 0.999 floor and carries a
-    `--selftest`; `benchmark/embedding_protocol.json` pins the protocol
+  - Measurement apparatus. `tools/dump_geist_embedding` writes a set of
+    prompts' embeddings to a self-describing `.gemb`;
+    `tools/eval_embedding_fidelity.py` gates cosine similarity against a
+    reference at a 0.999 floor and carries a `--selftest`;
+    `benchmark/embedding_protocol.json` pins the throughput protocol
     (pp128…pp4096, median of 3, `decode_n: 0` — these models emit no
-    tokens). Running any of it needs the weights, which CI cannot fetch.
+    tokens). **Correctness now has a number and speed does not**: the
+    published-GGUF test reaches RMSE 8.5e-4 against the vendor's vector,
+    while `embedding_protocol.json` stays at `UNMEASURED` — a throughput
+    figure needs a quiesced host, which neither CI nor a container is.
+
+
+- **`make test-embedding`** — the embedding chain executed rather than
+  inspected. `tests/scripts/embedding_e2e_smoke.py` builds a synthetic
+  checkpoint in the real tensor layout, converts it, loads the GGUF, prefills
+  and reads back the pooled vector, then asserts the structural invariants: the
+  vector is finite, L2-normalised, bit-identical across repeated runs of the
+  same prompt, different for different prompts, and demonstrably affected by
+  each of the seven per-projection input norms. Skips (77) without numpy or a
+  built `dump_geist_embedding`. Random weights, so it proves the chain *runs*,
+  not that it computes the right thing — that still needs the real checkpoint
+  and `tools/eval_embedding_fidelity.py`.
+
+  The norm check perturbs half of each norm vector rather than scaling all of
+  it: a uniform scale is cancelled exactly by the next RMSNorm downstream, so
+  it cannot tell an applied norm from an ignored one.
+
+  The target honours `MODE`, so `make MODE=asan test-embedding` runs the whole
+  chain under AddressSanitizer — which is how the `scratch_proj_in` leak above
+  surfaced.
+
+### Fixed
+- **Embedding models pooled the wrong way.** `bitnet-embedding-*` are
+  mean-pooled: their GGUFs carry gguf-py's `{arch}.pooling_type = 1`, which
+  upstream's converter auto-detects from the checkpoint's
+  `1_Pooling/config.json`, and only mean reproduces the embedding the model
+  cards themselves print (RMSE 8.5e-4 against 0.24 for last-token). The
+  cards say "last-token pooling" in prose; the file and the numbers disagree
+  with the prose. `GEIST_POOLING_MEAN` was parsed but unimplemented and
+  refused at prefill, and `tools/convert_bitnet_embedding.py` hardcoded
+  `last_token`, so the pipeline produced last-token vectors end to end. Mean
+  pooling is implemented (it spans prefill chunks, so it accumulates per
+  chunk into a session-owned buffer and finalizes once), and the converter
+  reads the pooling from the checkpoint instead of hardcoding it.
+- **Upstream's published GGUFs now load.** `bitnet-embeddings-*-i2_s.gguf`
+  on the Hugging Face model pages differ from our converter's output in
+  three ways, each of which was fatal: norm gammas are F16 (converted at
+  load now, `load_norm_to_f32_buffer`), a block carries 20 tensors where the
+  per-layer buffer list held 16 (raised to 24), and the embedding metadata
+  is spelled as `{arch}.pooling_type` rather than `bitnet.embedding.*` (both
+  spellings are read; the per-projection norms are keyed on the tensors,
+  which is the evidence, with the metadata able to opt out). Reaching a
+  model that ships as a 428 MB ready-made GGUF no longer means re-converting
+  from ~1.2 GB of safetensors. Accepting F16 gammas at load is what makes
+  upstream's files readable; our own converter writes them F32 (see the entry
+  below), so the two changes are independent — either alone leaves one of the
+  two file shapes unloadable.
+- `geist_session_tokenize` returns content tokens by design, and nothing
+  reported what the model expects around them. New `geist_model_add_bos` /
+  `geist_model_add_eos` (`@stability EXPERIMENTAL`) expose the tokenizer's
+  own `add_bos_token` / `add_eos_token`. It matters for pooled vectors:
+  these checkpoints set `add_eos_token`, and pooling over a sequence one
+  token short of upstream's moves the embedding by RMSE 1.8e-2 — twenty
+  times the quantization noise. `tools/dump_geist_embedding` now wraps
+  accordingly, so the parity oracle compares like with like.
+- **BitNet embedding conversions were unloadable.** Two defects, both found by
+  running the chain end to end for the first time rather than by inspecting
+  its parts, and both fatal on any real checkpoint:
+  - `tools/convert_bitnet_embedding.py` wrote every 1-D norm as F16, following
+    upstream's tensor-type table. geistlib's loader requires F32 and refuses
+    the file outright (`src/archs/transformer/weight_load/layer_wiring.c:65`,
+    and `:866` for `output_norm`). Norms are now F32 in both `--outtype i2_s`
+    and `--outtype f16`; the embedding table stays F16 and projections are
+    unaffected.
+  - The per-layer owning-buffer list (`struct transformer_layer_weights::bufs`)
+    held 16 entries. A BitNet embedding layer loads 18 tensors — 11 ordinary
+    ones plus the seven per-projection input norms — so the load died on the
+    seventh norm with a message naming the tensor it happened to reach rather
+    than the cause. Capacity is now 24, and the count is pinned by a test.
+
+  - `scratch_proj_in`, the extra scratch slice the per-projection norms need,
+    was allocated in `allocate_runtime_session` but missing from the destroy
+    path's `infra[]` list, so its buffer handle leaked once per session. Only
+    reachable on a model that sets `has_projection_input_norms`, which is why
+    no existing ASan run saw it.
+
+  All three are regression-tested: `tests/test_bitnet_embedding_convert_py.py`
+  checks every 1-D tensor's dtype, `tests/test_projection_input_norms_unit.c`
+  pins the buffer capacity against the layer's tensor count, and
+  `make MODE=asan test-embedding` runs the chain under LeakSanitizer. Each was
+  confirmed to fail against the unfixed code.
 
 ## [0.10.8] — 2026-09-04
 
@@ -1428,7 +1540,8 @@ First public release.
   reproducible perf benchmark harness (`make bench-small`).
 - `examples/simple_generate` demonstrating the stable text-generation core.
 
-[Unreleased]: https://github.com/geisten/geistlib/compare/v0.10.8...HEAD
+[Unreleased]: https://github.com/geisten/geistlib/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/geisten/geistlib/compare/v0.10.8...v0.11.0
 [0.10.8]: https://github.com/geisten/geistlib/compare/v0.10.1...v0.10.8
 [0.10.1]: https://github.com/geisten/geistlib/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/geisten/geistlib/compare/v0.9.0...v0.10.0

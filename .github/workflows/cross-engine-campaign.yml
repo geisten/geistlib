@@ -1,0 +1,145 @@
+name: cross-engine-campaign
+
+# One cell of the #364 model × system matrix, on the org's 2080 Ti / 9950X
+# box: run the frozen protocol (CPU or GPU variant) for one model key and
+# upload the raw JSONL + report as artifacts. On demand only — a campaign
+# holds the box behind the quiet-host gate for however long it takes.
+# Publishing stays manual: a human (or agent) reviews the artifact and
+# commits it with the MATRIX.md cell, the same path every other cell took.
+
+on:
+  workflow_dispatch:
+    inputs:
+      protocol:
+        description: "protocol variant"
+        type: choice
+        options: [gpu, cpu]
+        default: gpu
+      host_profile:
+        description: "host_profiles key (nvidia_2080ti_vulkan for gpu, amd_9950x for cpu)"
+        type: string
+        default: nvidia_2080ti_vulkan
+      model:
+        description: "models key from the protocol"
+        type: string
+        default: gemma4-e2b-q4km
+      model_url:
+        description: "optional download URL when no local candidate matches the SHA"
+        type: string
+        default: ""
+
+jobs:
+  campaign:
+    name: Cross-engine campaign (${{ inputs.protocol }}, ${{ inputs.model }})
+    # Same self-hosted guard as ci.yml's vulkan leg: never for fork PRs.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, x64, geist-vulkan]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse to measure a software device
+        if: inputs.protocol == 'gpu'
+        run: |
+          vulkaninfo --summary 2>&1 | tee vulkan-env.txt
+          grep -q PHYSICAL_DEVICE_TYPE_DISCRETE_GPU vulkan-env.txt || {
+            echo "no discrete GPU enumerated — a campaign on llvmpipe is not a cell"
+            exit 1
+          }
+      - name: Build geist
+        # CPU cells ship without a GPU library linked (their provenance says
+        # so); GPU cells add the vulkan backend.
+        run: |
+          if [ "${{ inputs.protocol }}" = "gpu" ]; then
+            BACKENDS="vulkan cpu_x86 cpu_scalar"
+          else
+            BACKENDS="cpu_x86 cpu_scalar"
+          fi
+          make TARGET=linux BACKENDS="$BACKENDS" GEMM_PROVIDER=native bin
+      - name: Ensure pinned llama.cpp build
+        # Dedicated persistent checkout outside the workspace (survives
+        # checkout's git clean); rebuilt only when the pin moves. The cpu
+        # build must not link a GPU backend or the runner's CPU-only
+        # validation rejects it.
+        env:
+          LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
+          VARIANT: ${{ inputs.protocol }}
+        run: |
+          set -e
+          DIR="$HOME/llama.cpp-cross-engine"
+          BUILD="$DIR/build-$([ "$VARIANT" = gpu ] && echo vulkan || echo cpu)"
+          if [ ! -x "$BUILD/bin/llama-bench" ] \
+             || [ "$(git -C "$DIR" rev-parse HEAD)" != "$LLAMA_PIN" ]; then
+            [ -d "$DIR/.git" ] || git clone https://github.com/ggml-org/llama.cpp "$DIR"
+            git -C "$DIR" fetch origin "$LLAMA_PIN"
+            git -C "$DIR" checkout "$LLAMA_PIN"
+            if [ "$VARIANT" = gpu ]; then
+              # ggml-vulkan #includes spirv/unified1/spirv.hpp directly, so
+              # the headers must be on the compiler's include path.
+              SPIRV_INC="$HOME/.local/include"
+              if [ ! -f "$SPIRV_INC/spirv/unified1/spirv.hpp" ]; then
+                [ -d "$DIR/spirv-headers/.git" ] || git clone --depth 1 \
+                  https://github.com/KhronosGroup/SPIRV-Headers "$DIR/spirv-headers"
+                SPIRV_INC="$DIR/spirv-headers/include"
+              fi
+              cmake -S "$DIR" -B "$BUILD" -DGGML_VULKAN=ON \
+                -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF \
+                -DCMAKE_PREFIX_PATH="$HOME/.local" \
+                -DCMAKE_CXX_FLAGS="-I$SPIRV_INC"
+            else
+              cmake -S "$DIR" -B "$BUILD" -DGGML_VULKAN=OFF -DGGML_NATIVE=ON \
+                -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF
+            fi
+            cmake --build "$BUILD" --target llama-bench -j
+          fi
+          git -C "$DIR" rev-parse HEAD
+      - name: Resolve the campaign model by protocol SHA
+        env:
+          GEIST_GGUF_PATH: ${{ vars.GEIST_GGUF_PATH }}
+          MODEL_KEY: ${{ inputs.model }}
+          MODEL_URL: ${{ inputs.model_url }}
+          PROTOCOL_JSON: benchmark/cross_engine_${{ inputs.protocol }}_protocol.json
+        run: |
+          set -eo pipefail
+          WANT=$(python3 -c "import json,os; print(json.load(open(os.environ['PROTOCOL_JSON']))['models'][os.environ['MODEL_KEY']]['sha256'])")
+          FILE=$(python3 -c "import json,os; print(json.load(open(os.environ['PROTOCOL_JSON']))['models'][os.environ['MODEL_KEY']]['file'])")
+          MODEL=""
+          for cand in "$HOME/workplace/geistlib/gguf_artifacts/$FILE" \
+                      "$HOME/gguf-campaign/$FILE" \
+                      "$GEIST_GGUF_PATH"; do
+            if [ -f "$cand" ] && [ "$(sha256sum "$cand" | cut -d' ' -f1)" = "$WANT" ]; then
+              MODEL="$cand"; break
+            fi
+          done
+          if [ -z "$MODEL" ] && [ -n "$MODEL_URL" ]; then
+            mkdir -p "$HOME/gguf-campaign"
+            curl -sL -o "$HOME/gguf-campaign/$FILE" "$MODEL_URL"
+            [ "$(sha256sum "$HOME/gguf-campaign/$FILE" | cut -d' ' -f1)" = "$WANT" ] \
+              && MODEL="$HOME/gguf-campaign/$FILE" \
+              || { echo "downloaded file does not match protocol SHA $WANT"; exit 1; }
+          fi
+          [ -n "$MODEL" ] || { echo "no candidate matches the protocol SHA $WANT and no model_url given"; exit 1; }
+          echo "campaign model: $MODEL"
+          echo "MODEL_PATH=$MODEL" >> "$GITHUB_ENV"
+      - name: Run the campaign (frozen protocol, quiet-host gate)
+        env:
+          # The box also enumerates the Raphael iGPU; pin llama.cpp to the
+          # discrete device. Irrelevant but harmless for cpu campaigns.
+          GGML_VK_VISIBLE_DEVICES: "0"
+        run: |
+          set -eo pipefail
+          BUILD=$([ "${{ inputs.protocol }}" = gpu ] && echo build-vulkan || echo build-cpu)
+          python3 tools/bench_cross_engine.py \
+            --geist bin/linux/release/tests/bench_perf_sweep \
+            --llama "$HOME/llama.cpp-cross-engine/$BUILD/bin/llama-bench" \
+            --gguf "$MODEL_PATH" \
+            --protocol "benchmark/cross_engine_${{ inputs.protocol }}_protocol.json" \
+            --host-profile "${{ inputs.host_profile }}" \
+            --model "${{ inputs.model }}" \
+            --out-dir bench-out
+      - name: Upload raw artifact + report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-engine-${{ inputs.protocol }}-${{ inputs.model }}
+          path: bench-out/
+          if-no-files-found: error

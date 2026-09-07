@@ -154,7 +154,10 @@ struct transformer_layer_weights {
      * The structs above carry .buffer pointers but the LIST OF buffers we
      * created is stored here so cleanup is unambiguous and order-stable.
      * NULL slots denote "not allocated" (e.g. k_proj_buf for kv_shared). */
-    struct geist_buffer *bufs[16];
+    /* 24, not 16: a BitNet-embedding block loads 20 tensors -- 7 projections
+     * plus 13 norms, five of them the per-projection gammas -- and
+     * overflowing this list is a hard load failure, not a leak. */
+    struct geist_buffer *bufs[24];
     size_t               n_bufs;
 };
 
@@ -364,6 +367,11 @@ struct transformer_arch_session {
      * Mutually exclusive with logits_valid in practice — an embedding model
      * never runs the LM head — and cleared by the same resets. */
     bool embedding_valid;
+    /* [d_model] running sum for GEIST_POOLING_MEAN. Prefill runs in chunks
+     * of m_max and every chunk overwrites scratch_h_b, so the sum over
+     * positions has to live outside it. Allocated with the session
+     * (AGENT.md §3: no heap in a per-call path). */
+    float *embedding_acc;
     /* Whether scratch_logits already carries the Gemma final-logit softcap.
      * The greedy argmax path skips the softcap (monotonic → argmax
      * invariant), so peek_logits applies it lazily for value consumers

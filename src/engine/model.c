@@ -633,6 +633,27 @@ geist_token_t geist_model_bos_token(const struct geist_model *m) {
     return GEIST_TOKEN_NONE;
 }
 
+bool geist_model_add_bos(const struct geist_model *m) {
+    const struct model_engine_state *eng = model_engine(m);
+    /* The SentencePiece path has no such metadata; it prepends BOS
+     * unconditionally, which is what reporting true says. */
+    if (eng == nullptr) {
+        return false;
+    }
+    if (eng->gguf_tok != nullptr) {
+        return eng->gguf_tok->add_bos;
+    }
+    return eng->sp_tok != nullptr;
+}
+
+bool geist_model_add_eos(const struct geist_model *m) {
+    const struct model_engine_state *eng = model_engine(m);
+    if (eng == nullptr || eng->gguf_tok == nullptr) {
+        return false;
+    }
+    return eng->gguf_tok->add_eos;
+}
+
 geist_token_t geist_model_token_by_text(const struct geist_model *m, const char *text) {
     const struct model_engine_state *eng = model_engine(m);
     if (eng == nullptr || text == nullptr) {
