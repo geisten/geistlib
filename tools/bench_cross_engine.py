@@ -452,6 +452,9 @@ def main() -> int:
     parser.add_argument("--host-profile", required=True,
                         help="key in the protocol's host_profiles: fixes the thread policy "
                              "and the geist backend this host is expected to select")
+    parser.add_argument("--model",
+                        help="key in the protocol's models map (required for v2 protocols); "
+                             "binds the campaign to that entry's SHA-256")
     parser.add_argument("--resume", type=Path,
                         help="continue an exact, validated .jsonl.partial schedule prefix")
     args = parser.parse_args()
@@ -463,8 +466,15 @@ def main() -> int:
     protocol = json.loads(protocol_path.read_text())
     if args.host_profile not in protocol["host_profiles"]:
         parser.error(f"--host-profile must be one of: {', '.join(sorted(protocol['host_profiles']))}")
+    if "models" in protocol:
+        if args.model not in protocol["models"]:
+            parser.error(f"--model must be one of: {', '.join(sorted(protocol['models']))}")
+        expected_model = protocol["models"][args.model]
+    else:
+        # v1 protocols carry exactly one model and no key.
+        expected_model = protocol["model"]
     model_sha = sha256_file(model)
-    if model_sha != protocol["model"]["sha256"]:
+    if model_sha != expected_model["sha256"]:
         parser.error(f"model SHA-256 mismatch: {model_sha}")
     engines = [engine_metadata("geist", "geist", geist_path),
                engine_metadata("llama.cpp", "llama", llama_path)]
@@ -478,7 +488,8 @@ def main() -> int:
             "sha256": sha256_file(Path(__file__).resolve()),
             "commit": command_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
         },
-        "model": {"file": model.name, "path": str(model), "sha256": model_sha},
+        "model": {"file": model.name, "path": str(model), "sha256": model_sha,
+                  **({"key": args.model} if "models" in protocol else {})},
         "engines": engines,
         "system": system_metadata(),
     }
@@ -504,7 +515,8 @@ def main() -> int:
         args.out_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
         mode_tag = "gpu" if workload.get("backend") == "gpu" else "cpu"
-        partial = args.out_dir / f"{timestamp}_geist_llama_{mode_tag}.jsonl.partial"
+        key_tag = f"_{args.model}" if "models" in protocol else ""
+        partial = args.out_dir / f"{timestamp}_geist_llama_{mode_tag}{key_tag}.jsonl.partial"
         runs = []
         open_mode = "w"
     completed = partial.with_suffix("")
