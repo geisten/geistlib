@@ -1,8 +1,38 @@
 {
-  "schema": "geist.benchmark.cross-engine-gpu.v1",
-  "model": {
-    "file": "gemma4-e2b-Q4_K_M.gguf",
-    "sha256": "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8"
+  "schema": "geist.benchmark.cross-engine-gpu.v2",
+  "models": {
+    "gemma4-e2b-q4km": {
+      "file": "gemma4-e2b-Q4_K_M.gguf",
+      "sha256": "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8"
+    },
+    "gemma4-e4b-q4km": {
+      "file": "gemma4-e4b-Q4_K_M.gguf",
+      "sha256": "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87"
+    },
+    "llama32-3b-q4km": {
+      "file": "llama-3.2-3b-Q4_K_M.gguf",
+      "sha256": "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff"
+    },
+    "bitnet-large-tq2": {
+      "file": "bitnet_b1_58-large-TQ2_0.gguf",
+      "sha256": "281aafb18a9f4a3124c10a1d8683e2296f0cfe8a2944da0a5667d17488a951bb"
+    },
+    "qwen3-0.6b-q8": {
+      "file": "qwen3-0.6b-q8_0.gguf",
+      "sha256": "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031"
+    },
+    "qwen35-0.8b-q8": {
+      "file": "qwen3.5-0.8b-q8_0.gguf",
+      "sha256": "0ad885ffd4bb022fc4f0d33a3308fa108ef8613159d3b3a67e23abca056b7a6c"
+    },
+    "qwen35-4b-q4": {
+      "file": "qwen3.5-4b-q4_0.gguf",
+      "sha256": "298fcb5fe7a77ccc79745ae24751560c5ac56874caff4bb39b1f2055bd72b8bb"
+    },
+    "qwen38-27b-q4": {
+      "file": "qwen3.8-27b-q4_0.gguf",
+      "sha256": "ede16c7b36e578ca87a8c70e011e4b4633a32c831c0ce76d0f474582384e671d"
+    }
   },
   "workload": {
     "seq_lens": [
@@ -38,7 +68,7 @@
       "decode_threads": 4,
       "expect_backend": "vulkan",
       "expect_llama_backend": "Vulkan",
-      "note": "RTX 2080 Ti 11 GB (Turing) in the 9950X box; same host as amd_9950x in the CPU protocol, different backend column. The host also enumerates a Raphael iGPU — runs must set GGML_VK_VISIBLE_DEVICES=0 so llama.cpp binds the discrete device; geist's vk_pick_device prefers discrete on its own. Thread counts are dispatch-side only, matching apple_m1max_metal."
+      "note": "RTX 2080 Ti 11 GB (Turing) in the 9950X box; same host as amd_9950x in the CPU protocol, different backend column. The host also enumerates a Raphael iGPU \u2014 runs must set GGML_VK_VISIBLE_DEVICES=0 so llama.cpp binds the discrete device; geist's vk_pick_device prefers discrete on its own. Thread counts are dispatch-side only, matching apple_m1max_metal."
     }
   },
   "host_gate": {
