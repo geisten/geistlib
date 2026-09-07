@@ -38,6 +38,15 @@ What is still missing is a **throughput** number.
 `benchmark/METHODOLOGY.md` that needs a quiesced host, and neither CI nor a
 cloud container is one. Correctness has a number; speed does not.
 
+`benchmark/embedding_bench_pi5.sh` is what closes that when a Pi 5 is at hand.
+It reads the protocol rather than restating it, gates on board temperature
+*before every sequence length* — a long prefill trips this board's soft temp
+limit in under a minute, so a gate only at t=0 would measure the cooling system
+from pp1024 up — and refuses to write its numbers back if `vcgencmd` reports
+that throttling happened. A pinned protocol carrying throttled numbers is worse
+than one that still says `UNMEASURED`: the first invites comparison, the second
+says plainly there is nothing to compare.
+
 Upstream sources read for this analysis:
 
 - `microsoft/BitNet` `README.md` (News section, Model Releases, Supported

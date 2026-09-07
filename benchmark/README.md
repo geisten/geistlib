@@ -103,5 +103,6 @@ recorded row states its own spread for exactly that reason.
 | `total_tps.py` | cross-engine end-to-end measurement (geist vs llama.cpp), thermally quiesced on a Pi |
 | `compare_ternary_pi5.sh` | three-engine ternary head-to-head: geist vs llama.cpp vs bitnet.cpp, one protocol |
 | `compare_metal.sh` | cool-state Metal A/B against llama.cpp |
+| `embedding_bench_pi5.sh` | runs `embedding_protocol.json` on a Pi 5 and writes the numbers back — prefill only, refuses to record a thermally tainted run |
 | `chart_headline.py` | renders `headline_results.json` into the README scoreboard SVG |
 | `headline_results.json` | curated headline numbers — each row names its baseline engine and pinned version; sub-parity rows are kept on purpose |
