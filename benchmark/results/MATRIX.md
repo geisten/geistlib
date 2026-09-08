@@ -12,14 +12,14 @@ Coverage work is tracked in [#364](https://github.com/geisten/geistlib/issues/36
 | Model / quantization | Apple CPU | Pi 5 CPU | AMD AVX-512 CPU | Apple Metal | NVIDIA Vulkan |
 | :-- | :--: | :--: | :--: | :--: | :--: |
 | Gemma 4 E2B-it Q4_K_M | [pp ~−47% / tg ~−28%](CROSS-ENGINE-APPLE-M1MAX.md) | [pp ~-13% / tg ~+11%](CROSS-ENGINE-PI5.md) | [pp ~16% / tg ~15%](CROSS-ENGINE-AMD9950X.md) | [pp ~−36% / tg ~−18%](CROSS-ENGINE-APPLE-M1MAX-METAL.md) | [pp ~−71% / tg ~−10%](CROSS-ENGINE-NVIDIA2080TI-VULKAN.md) |
-| Gemma 4 E4B-it Q4_K_M | not measured | does not fit 4 GB reference host | not measured | not measured | not measured |
-| Llama 3.2 3B Q4_K_M | not measured | not measured | not measured | not measured | not measured |
-| BitNet b1.58 2B-4T I2_S | not measured | not measured | not measured | not measured | not measured |
-| BitNet b1.58-large TQ2_0 | not measured | not measured | not measured | not measured | not measured |
-| Qwen3 0.6B Q8_0 | not measured | not measured | not measured | not measured | not measured |
-| Qwen3.5 0.8B Q8_0 | not measured | not measured | not measured | not measured | not measured |
-| Qwen3.5 4B Q4_0 | not measured | not measured | not measured | not measured | not measured |
-| Qwen3.8 27B Q4_0 | not measured | does not fit reference host | not measured | not measured | not measured |
+| Gemma 4 E4B-it Q4_K_M | not measured | does not fit 4 GB reference host | [pp ~−5% / tg ~+11%](CROSS-ENGINE-AMD9950X-ROWS.md) | not measured | geist fails at depth 1024 ([#409](https://github.com/geisten/geistlib/issues/409)) |
+| Llama 3.2 3B Q4_K_M | not measured | not measured | [pp ~−17% / tg ~+1%](CROSS-ENGINE-AMD9950X-ROWS.md) | not measured | [pp ~−99% / tg ~−99%](CROSS-ENGINE-NVIDIA2080TI-VULKAN-ROWS.md) ([#410](https://github.com/geisten/geistlib/issues/410)) |
+| BitNet b1.58 2B-4T I2_S | reference engine has no I2_S type | reference engine has no I2_S type | reference engine has no I2_S type | reference engine has no I2_S type | reference engine has no I2_S type |
+| BitNet b1.58-large TQ2_0 | not measured | not measured | [pp ~−99% / tg ~−95%](CROSS-ENGINE-AMD9950X-ROWS.md) ([#410](https://github.com/geisten/geistlib/issues/410)) | not measured | geist fails at depth 1024 ([#409](https://github.com/geisten/geistlib/issues/409)) |
+| Qwen3 0.6B Q8_0 | not measured | not measured | [pp ~−99% / tg ~−89%](CROSS-ENGINE-AMD9950X-ROWS.md) ([#410](https://github.com/geisten/geistlib/issues/410)) | not measured | geist hang ([#409](https://github.com/geisten/geistlib/issues/409)) |
+| Qwen3.5 0.8B Q8_0 † | not measured | not measured | [pp ~−98% / tg ~−87%](CROSS-ENGINE-AMD9950X-ROWS.md) ([#410](https://github.com/geisten/geistlib/issues/410)) | not measured | geist vulkan lacks the arch ([#409](https://github.com/geisten/geistlib/issues/409)) |
+| Qwen3.5 4B Q4_0 † | not measured | not measured | [pp ~−99% / tg ~−93%](CROSS-ENGINE-AMD9950X-ROWS.md) ([#410](https://github.com/geisten/geistlib/issues/410)) | not measured | geist vulkan lacks the arch ([#409](https://github.com/geisten/geistlib/issues/409)) |
+| Qwen3.8 27B Q4_0 † | not measured | does not fit reference host | measurement in progress | not measured | does not fit 11 GB device |
 
 A filled cell states the geist-vs-llama.cpp ratio at pp512 and tg64 at depth
 512, rounded, and links the full sweep. Rounded on purpose: two runs of the
@@ -27,6 +27,10 @@ identical protocol on the same host drift by more than the within-run MAD, so a
 cell quoted to a decimal would claim a precision the protocol does not deliver
 (see the reproducibility section in the linked report). Ratios are comparable within a column; absolute
 tokens/s across columns describe hardware, not engine efficiency.
+
+† Qwen3.5/3.8 rows are shape-parity only: DeltaNet state depends on token
+identity and the engines use their native synthetic streams (see the token
+note below).
 
 “Not measured” means “no result under the current common protocol”, not “the
 engine or model is unsupported”. The result documents beside this file contain
