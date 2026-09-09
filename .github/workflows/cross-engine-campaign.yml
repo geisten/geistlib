@@ -34,7 +34,7 @@ jobs:
     # Same self-hosted guard as ci.yml's vulkan leg: never for fork PRs.
     if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, x64, geist-vulkan]
-    timeout-minutes: 1200
+    timeout-minutes: 2400
     steps:
       - uses: actions/checkout@v4
       - name: Refuse to measure a software device
