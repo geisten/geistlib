@@ -11,6 +11,7 @@ the test suite**, not just built.
 | Environment | Build | Unit | Int + e2e (real model) | musl-static | ASan/UBSan | CI job |
 | :-- | :--: | :--: | :--: | :--: | :--: | :-- |
 | **macOS arm64** (Accelerate/AMX) | ✅ | ✅ | ⚪ skip¹ | — | — | `build-test` |
+| **macOS x86_64** (cpu_x86 AVX2, Accelerate) | ✅ | ✅ | ⚪ skip¹ | — | — | `build-test` |
 | **Linux arm64** (cpu_neon, glibc) | ✅ | ✅ | ✅ | ✅ | ✅ | `build-test`, `build-test-musl`, `asan` |
 | **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅³ | ✅ | ⚪² | `build-test-x86_64`, `build-test-musl-x86_64` |
 | **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar` |
@@ -19,7 +20,7 @@ Every environment in [`release.yml`](../.github/workflows/release.yml)
 (macos-arm64, linux-arm64, linux-x86_64) now has build **and** test coverage
 here. On top of the matrix, dedicated legs gate every PR: TSan multi-session
 (x86_64), the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on
-lavapipe, and the Metal GPU step inside the macOS leg — each described in its
+lavapipe, and the Metal GPU step inside the macOS arm64 leg — each described in its
 section below. Vulkan on a physical GPU (`vulkan-gpu`) runs on a self-hosted
 runner and gates branch PRs only, not fork PRs.
 
