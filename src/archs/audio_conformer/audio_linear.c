@@ -208,7 +208,51 @@ static inline int32_t hsum_epi32(__m256i v) {
  * dot against the signed weights, and correct with the weight-row sum:
  *   Σ (q+128)·w = Σ q·w + 128·Σw   ⇒   isum = dot − (Σw << 7).
  * Σw costs one dpbusd against ones per 32 weights, computed while the row
- * is hot in cache — no second pass over the weight matrix. */
+ * is hot in cache — no second pass over the weight matrix.
+ *
+ * One output row n, written to y[i * out_dim + n] for every i < m. Kept out
+ * of the OpenMP loop below on purpose: clang outlines a `parallel for` body
+ * into a new function that does not inherit AUDIO_VNNI_TARGET, and VPDPBUSD
+ * in that body aborts code generation ("Cannot select: X86ISD::VPDPBUSD").
+ * The outlined body only calls this function, which carries the target. */
+AUDIO_VNNI_TARGET
+static void w8a8_avx512vnni_row(size_t         m,
+                                size_t         in_dim,
+                                size_t         out_dim,
+                                size_t         n,
+                                float          wscale,
+                                float          scale_x,
+                                const int8_t   wrow[static in_dim],
+                                const uint8_t *x_u8,
+                                float         *y) {
+    const __m256i ones  = _mm256_set1_epi8(1);
+    __m256i       acc_w = _mm256_setzero_si256();
+    size_t        k     = 0;
+    for (; k + 32 <= in_dim; k += 32) {
+        acc_w = _mm256_dpbusd_epi32(acc_w, ones, _mm256_loadu_si256((const __m256i *) (wrow + k)));
+    }
+    int32_t row_sum = hsum_epi32(acc_w);
+    for (; k < in_dim; k++)
+        row_sum += (int32_t) wrow[k];
+
+    for (size_t i = 0; i < m; i++) {
+        const uint8_t *xrow = x_u8 + i * in_dim;
+        __m256i        acc  = _mm256_setzero_si256();
+        size_t         kk   = 0;
+        for (; kk + 32 <= in_dim; kk += 32) {
+            acc = _mm256_dpbusd_epi32(acc,
+                                      _mm256_loadu_si256((const __m256i *) (xrow + kk)),
+                                      _mm256_loadu_si256((const __m256i *) (wrow + kk)));
+        }
+        int32_t isum = hsum_epi32(acc);
+        for (; kk < in_dim; kk++)
+            isum += ((int32_t) xrow[kk]) * (int32_t) wrow[kk];
+        isum -= row_sum * 128; /* undo the +128 shift (row_sum may be
+                                * negative — a shift would be UB) */
+        y[i * out_dim + n] = wscale * scale_x * (float) isum;
+    }
+}
+
 AUDIO_VNNI_TARGET
 static void w8a8_avx512vnni(const int8_t *w_q8,
                             const float  *w_scales,
@@ -228,40 +272,12 @@ static void w8a8_avx512vnni(const int8_t *w_q8,
         x_u8[i] = (uint8_t) ((int32_t) q + 128);
     }
 
-    const __m256i ones = _mm256_set1_epi8(1);
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
     for (size_t n = 0; n < out_dim; n++) {
-        const int8_t *wrow   = w_q8 + n * in_dim;
-        const float   wscale = w_scales[n];
-
-        __m256i acc_w = _mm256_setzero_si256();
-        size_t  k     = 0;
-        for (; k + 32 <= in_dim; k += 32) {
-            acc_w = _mm256_dpbusd_epi32(
-                    acc_w, ones, _mm256_loadu_si256((const __m256i *) (wrow + k)));
-        }
-        int32_t row_sum = hsum_epi32(acc_w);
-        for (; k < in_dim; k++)
-            row_sum += (int32_t) wrow[k];
-
-        for (size_t i = 0; i < m; i++) {
-            const uint8_t *xrow = x_u8 + i * in_dim;
-            __m256i        acc  = _mm256_setzero_si256();
-            size_t         kk   = 0;
-            for (; kk + 32 <= in_dim; kk += 32) {
-                acc = _mm256_dpbusd_epi32(acc,
-                                          _mm256_loadu_si256((const __m256i *) (xrow + kk)),
-                                          _mm256_loadu_si256((const __m256i *) (wrow + kk)));
-            }
-            int32_t isum = hsum_epi32(acc);
-            for (; kk < in_dim; kk++)
-                isum += ((int32_t) xrow[kk]) * (int32_t) wrow[kk];
-            isum -= row_sum * 128; /* undo the +128 shift (row_sum may be
-                                    * negative — a shift would be UB) */
-            y[i * out_dim + n] = wscale * scale_x * (float) isum;
-        }
+        w8a8_avx512vnni_row(
+                m, in_dim, out_dim, n, w_scales[n], scale_x, w_q8 + n * in_dim, x_u8, y);
     }
     safe_free((void **) &x_u8);
 }
