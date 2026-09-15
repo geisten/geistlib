@@ -30,20 +30,33 @@ static uint32_t prng(uint32_t *s) {
 }
 
 static int scenario(size_t N, size_t K) {
-    uint32_t  s  = 0x51A0u;
-    uint16_t *Wf = malloc(N * K * sizeof(uint16_t));
-    float    *Wr = malloc(N * K * sizeof(float));
+    uint32_t  s      = 0x51A0u;
+    int       fail   = 1;
+    uint16_t *Wf     = malloc(N * K * sizeof(uint16_t));
+    float    *Wr     = malloc(N * K * sizeof(float));
+    float    *x      = malloc(K * sizeof(float));
+    float    *ref    = malloc(N * sizeof(float));
+    int8_t   *wq     = malloc(N * K);
+    float    *scales = malloc(N * sizeof(float));
+    float    *yq     = malloc(N * sizeof(float));
+    /* Checked before first use. Unchecked, the null path of each malloc
+     * reaches the kernels' array parameters, and gcc at -O1 (MODE=asan)
+     * rejects it: -Wstringop-overflow / -Wstringop-overread "region of
+     * size 0". -O3 happens not to diagnose it; the defect is the same. */
+    if (Wf == nullptr || Wr == nullptr || x == nullptr || ref == nullptr || wq == nullptr ||
+        scales == nullptr || yq == nullptr) {
+        fprintf(stderr, "  [N=%zu K=%zu] allocation failed\n", N, K);
+        goto out;
+    }
     for (size_t i = 0; i < N * K; i++) {
         const float v = 2.0f * ((prng(&s) & 0xFFFFu) / 65536.0f) - 1.0f;
         Wf[i]         = f32_to_f16(v);
         Wr[i]         = fp16_to_fp32(Wf[i]); /* the value the kernels actually see */
     }
-    float *x = malloc(K * sizeof(float));
     for (size_t k = 0; k < K; k++) {
         x[k] = 2.0f * ((prng(&s) & 0xFFFFu) / 65536.0f) - 1.0f;
     }
 
-    float *ref = malloc(N * sizeof(float));
     for (size_t r = 0; r < N; r++) {
         double acc = 0.0;
         for (size_t k = 0; k < K; k++) {
@@ -52,10 +65,7 @@ static int scenario(size_t N, size_t K) {
         ref[r] = (float) acc;
     }
 
-    int8_t *wq     = malloc(N * K);
-    float  *scales = malloc(N * sizeof(float));
     f16_to_q8w(N, K, Wf, wq, scales);
-    float *yq = malloc(N * sizeof(float));
     q8w_gemv_m1(N, K, x, wq, scales, yq);
 
     double dot = 0.0, na = 0.0, nb = 0.0;
@@ -64,10 +74,11 @@ static int scenario(size_t N, size_t K) {
         na += (double) yq[r] * (double) yq[r];
         nb += (double) ref[r] * (double) ref[r];
     }
-    const double cos  = dot / (sqrt(na) * sqrt(nb) + 1e-30);
-    const int    fail = cos < 0.999;
+    const double cos = dot / (sqrt(na) * sqrt(nb) + 1e-30);
+    fail             = cos < 0.999;
     printf("  [N=%zu K=%zu] cos(q8w,f32)=%.6f%s\n", N, K, cos, fail ? "  FAIL" : "");
 
+out:
     free(Wf);
     free(Wr);
     free(x);
