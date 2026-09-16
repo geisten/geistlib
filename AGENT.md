@@ -103,6 +103,29 @@ Measured on this project's toolchains, so you can calibrate:
 So the real payoff is that the signature documents itself and the family
 stays uniform. That is enough; do not oversell it in a commit message.
 
+### In public headers, write `GEIST_AT_LEAST(len)`
+
+`T arr[static len]` is C syntax. C++ cannot parse it, and `extern "C"` does
+not help — it changes linkage, not the grammar. Headers under `include/`
+therefore spell the same contract
+
+```c
+void geist_session_pin_prefix(struct geist_session *s, size_t n,
+                              const geist_token_t ids[GEIST_AT_LEAST(n)]);
+```
+
+which expands to `static n` in C and to nothing in C++ (`ids[]` — the same
+parameter type; both decay to `geist_token_t *`). The rules above are
+unchanged: the macro is where you would have written `static`, so "when it
+is a lie" still decides whether it appears at all.
+
+Code under `src/` keeps the plain `[static len]` form. Nothing includes it
+from C++, and the extra indirection would buy nothing there.
+
+`make check-headers` compiles every header in `include/` on its own, once as
+C23 and once as C++17 with `-pedantic-errors`. It runs in `make test` and in
+CI's `build-test` leg.
+
 ---
 
 ## 2. Types and null

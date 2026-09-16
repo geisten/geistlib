@@ -104,11 +104,11 @@ struct geist_backend_vtbl {
     /* Copy host bytes into the buffer. Caller-provided source array. */
     enum geist_status (*buffer_upload)(struct geist_buffer *buf,
                                        size_t               n_bytes,
-                                       const uint8_t        src[static n_bytes]);
+                                       const uint8_t        src[GEIST_AT_LEAST(n_bytes)]);
 
     /* Copy buffer contents back to host. Caller-provided destination. */
     enum geist_status (*buffer_download)(size_t                     n_bytes,
-                                         uint8_t                    dst[static n_bytes],
+                                         uint8_t                    dst[GEIST_AT_LEAST(n_bytes)],
                                          const struct geist_buffer *buf);
 
     /* CPU shortcut: returns a host pointer that aliases the buffer.
@@ -382,16 +382,16 @@ struct geist_backend_fused {
      * Backends may return GEIST_E_UNSUPPORTED when dtype/shape/layout do
      * not match their fused kernel. The caller then falls back to
      * decomposed ops. */
-    enum geist_status (*ffn_geglu_q4q6_mN)(struct geist_backend      *be,
-                                           size_t                     m,
-                                           size_t                     d_model,
-                                           size_t                     inter,
-                                           const float                x[static m * d_model],
+    enum geist_status (*ffn_geglu_q4q6_mN)(struct geist_backend *be,
+                                           size_t                m,
+                                           size_t                d_model,
+                                           size_t                inter,
+                                           const float           x[GEIST_AT_LEAST(m * d_model)],
                                            const struct geist_weight *gate,
                                            const struct geist_weight *up,
                                            const struct geist_weight *down,
                                            const float               *down_scale, /* nullable */
-                                           float                      y[static m * d_model]);
+                                           float y[GEIST_AT_LEAST(m * d_model)]);
 
     /* Tensor-based linear for batched-submit (GPU) backends. The engine
      * passes the x/weight/y views it already builds alongside the
@@ -438,12 +438,13 @@ struct geist_backend_fused {
      * n_rows calls of embedding_lookup_scaled (the arch falls back to
      * that loop on nullptr or non-OK). Consumer: the prefill chunk
      * loop, which otherwise pays one tiny dispatch per token. */
-    enum geist_status (*embedding_lookup_scaled_rows)(struct geist_backend      *be,
-                                                      size_t                     n_rows,
-                                                      const struct geist_tensor *embed_table,
-                                                      const geist_token_t        ids[static n_rows],
-                                                      float                      scale,
-                                                      struct geist_tensor       *out);
+    enum geist_status (*embedding_lookup_scaled_rows)(
+            struct geist_backend      *be,
+            size_t                     n_rows,
+            const struct geist_tensor *embed_table,
+            const geist_token_t        ids[GEIST_AT_LEAST(n_rows)],
+            float                      scale,
+            struct geist_tensor       *out);
 
     /* Fused f32→f16 KV-cache append: convert k_src/v_src (F32 DENSE
      * [seq, kv_heads, head_dim]) and store them at row q_position of the

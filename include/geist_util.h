@@ -74,11 +74,12 @@ geist_token_t geist_model_token_by_text(const struct geist_model *m, const char 
  * IDs to `out_ids` and the actual count to `*n_out`. Returns
  * GEIST_E_NOT_FOUND if no tokenizer is loaded, GEIST_E_INVALID_ARG on
  * overflow. */
-[[nodiscard]] enum geist_status geist_session_tokenize(struct geist_session *s,
-                                                       const char           *text,
-                                                       size_t                out_capacity,
-                                                       geist_token_t out_ids[static out_capacity],
-                                                       size_t       *n_out);
+[[nodiscard]] enum geist_status
+geist_session_tokenize(struct geist_session *s,
+                       const char           *text,
+                       size_t                out_capacity,
+                       geist_token_t         out_ids[GEIST_AT_LEAST(out_capacity)],
+                       size_t               *n_out);
 
 /* @stability STABLE since 0.1.0 — bypass tokenization: caller supplies
  * token IDs directly. Useful for testing and for integrations that
@@ -88,8 +89,8 @@ geist_token_t geist_model_token_by_text(const struct geist_model *m, const char 
  * Appends `n` tokens to the KV cache. After return the next call to
  * geist_session_decode_step yields the prediction for the position
  * following ids[n-1]. */
-[[nodiscard]] enum geist_status
-geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_token_t ids[static n]);
+[[nodiscard]] enum geist_status geist_session_prefill_tokens(
+        struct geist_session *s, size_t n, const geist_token_t ids[GEIST_AT_LEAST(n)]);
 
 /* ====================================================================== */
 /* Multimodal soft-token attach                                            */
@@ -126,8 +127,8 @@ unsigned geist_model_modalities(const struct geist_model *m);
  * otherwise). */
 enum geist_status geist_session_attach_audio(struct geist_session *s,
                                              size_t                n_samples,
-                                             const int16_t         pcm_samples[static n_samples],
-                                             int                   sample_rate);
+                                             const int16_t pcm_samples[GEIST_AT_LEAST(n_samples)],
+                                             int           sample_rate);
 
 /* @stability EXPERIMENTAL — streaming audio turn (#256): push PCM while
  * the user is still speaking; the encoder overlaps its work with the
@@ -147,7 +148,7 @@ enum geist_status geist_session_attach_audio(struct geist_session *s,
  * GEIST_E_INVALID_STATE if a turn is already open. */
 enum geist_status geist_session_audio_begin(struct geist_session *s);
 enum geist_status
-geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[static n]);
+geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[GEIST_AT_LEAST(n)]);
 /* Optional, from the session thread between pushes: inject the soft
  * tokens that are ready NOW into the LM, so end() has less left to do.
  * Cheap no-op when nothing is ready. Never required for correctness. */
@@ -167,7 +168,7 @@ enum geist_status geist_session_audio_end(struct geist_session *s);
 enum geist_status geist_session_attach_image(struct geist_session *s,
                                              size_t                height,
                                              size_t                width,
-                                             const uint8_t         rgb[static height * width * 3]);
+                                             const uint8_t rgb[GEIST_AT_LEAST(height * width * 3)]);
 
 /* @stability EXPERIMENTAL — vision-tower soft-token injection for video.
  *
@@ -186,7 +187,7 @@ geist_session_attach_video(struct geist_session *s,
                            size_t                n_frames,
                            size_t                height,
                            size_t                width,
-                           const uint8_t         frames[static n_frames * height * width * 3]);
+                           const uint8_t frames[GEIST_AT_LEAST(n_frames * height * width * 3)]);
 
 /* ====================================================================== */
 /* Advanced decode: KV-prefix pinning, raw logits, speculative             */
@@ -203,8 +204,9 @@ geist_session_attach_video(struct geist_session *s,
  *
  * Returns GEIST_E_UNSUPPORTED if the active architecture does not
  * implement prefix pinning. */
-enum geist_status
-geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t ids[static n]);
+enum geist_status geist_session_pin_prefix(struct geist_session *s,
+                                           size_t                n,
+                                           const geist_token_t   ids[GEIST_AT_LEAST(n)]);
 
 /* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *
@@ -328,9 +330,9 @@ geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
 geist_session_decode_speculative(struct geist_session *s,
                                  size_t                k_max,
                                  size_t                history_n,
-                                 const geist_token_t   history[static history_n],
+                                 const geist_token_t   history[GEIST_AT_LEAST(history_n)],
                                  size_t                out_capacity,
-                                 geist_token_t         out_tokens[static out_capacity],
+                                 geist_token_t         out_tokens[GEIST_AT_LEAST(out_capacity)],
                                  size_t               *n_out);
 
 /* ====================================================================== */

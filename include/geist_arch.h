@@ -96,7 +96,9 @@ struct geist_arch_ops_decoder {
     /* prefill: append `n` tokens to the session's recurrent state.
      * Status is the control flow (KV-window overflow, OOM, backend
      * failure); the backend error slot only carries detail text. */
-    enum geist_status (*prefill)(void *session, size_t n, const geist_token_t ids[static n]);
+    enum geist_status (*prefill)(void               *session,
+                                 size_t              n,
+                                 const geist_token_t ids[GEIST_AT_LEAST(n)]);
 
     /* decode_step: one autoregressive step. Writes the emitted token to
      * *out on GEIST_OK only — no in-band sentinel values. */
@@ -105,7 +107,9 @@ struct geist_arch_ops_decoder {
     /* Optional: pin prefix into the session's KV cache so reset()
      * restores to it instead of clearing. nullptr if architecture
      * doesn't support it. */
-    enum geist_status (*pin_prefix)(void *session, size_t n, const geist_token_t ids[static n]);
+    enum geist_status (*pin_prefix)(void               *session,
+                                    size_t              n,
+                                    const geist_token_t ids[GEIST_AT_LEAST(n)]);
 
     /* Optional: append audio soft-tokens (1536-dim per token for Gemma 4)
      * to the recurrent state. nullptr if no audio path. */
@@ -155,8 +159,8 @@ struct geist_arch_ops_decoder {
     geist_token_t (*peek_next_token)(void *session);
     enum geist_status (*verify_forward)(void               *session,
                                         size_t              k,
-                                        const geist_token_t ids[static k],
-                                        geist_token_t       out_tokens[static k]);
+                                        const geist_token_t ids[GEIST_AT_LEAST(k)],
+                                        geist_token_t       out_tokens[GEIST_AT_LEAST(k)]);
     enum geist_status (*kv_truncate)(void *session, size_t new_len);
     size_t (*kv_len)(const void *session);
 
