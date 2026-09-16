@@ -127,6 +127,13 @@ jobs:
         if: matrix.target == 'linux'
         run: make test-embedding TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
 
+      # Contract enforcement, include half: every public header compiles on its
+      # own as C23 and as C++17. A C++ consumer is not exotic (bindings, game
+      # engines, Qt front-ends), and `extern "C"` alone does not make
+      # `T arr[static n]` parse — see GEIST_AT_LEAST in include/geist.h.
+      - name: Public headers compile as C and C++
+        run: make check-headers TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
       # Contract enforcement, link half: an out-of-tree agent runtime links
       # these symbols across a release boundary, so a changed signature or a
       # removed symbol must fail here rather than in the consumer's build.
