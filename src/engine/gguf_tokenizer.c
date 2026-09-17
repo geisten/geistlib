@@ -761,7 +761,10 @@ static int find_best_merge(const struct gguf_tokenizer *tok,
 }
 
 /* Apply one BPE step on a pre-tokenized chunk's byte buffer, emitting
- * vocab IDs into out (returns count). Internal helper for encode.
+ * vocab IDs into out. Returns the count, or SIZE_MAX when scratch
+ * allocation fails — a caller that adds the return value blindly would
+ * otherwise turn dropped tokens into a silently shorter encoding.
+ * Internal helper for encode.
  * When byte_fallback is set (SPM), a symbol missing from the vocab is
  * emitted as one "<0xXX>" token per byte (spm_byte_id), then unk_id;
  * otherwise (gpt2) a missing symbol emits a single unk_id. */
@@ -778,7 +781,7 @@ static size_t bpe_chunk_to_ids(const struct gguf_tokenizer *tok,
      * buf_len since each codepoint takes >= 1 byte. */
     struct bpe_sym *syms = heap_alloc_array_aligned(struct bpe_sym, buf_len);
     if (syms == nullptr)
-        return 0;
+        return SIZE_MAX; /* Allocation failure, never an empty chunk. */
     int    n_syms = 0;
     size_t k      = 0;
     while (k < buf_len) {
@@ -1046,7 +1049,7 @@ static size_t unigram_chunk_to_ids(const struct gguf_tokenizer *tok,
         return 0;
     struct bpe_sym *syms = heap_alloc_array_aligned(struct bpe_sym, buf_len);
     if (syms == nullptr)
-        return 0;
+        return SIZE_MAX; /* Allocation failure, never an empty chunk. */
     int    n_syms = 0;
     size_t k      = 0;
     while (k < buf_len) { /* one symbol per UTF-8 codepoint */
@@ -1148,25 +1151,28 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
     bool   first_chunk = true;
 
 /* Normalize text[chunk_start, end) into buf and BPE-encode it. */
-#define SPM_FLUSH(end)                                                                \
-    do {                                                                              \
-        size_t w_ = 0;                                                                \
-        if (first_chunk && tok->add_space_prefix) {                                   \
-            memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                             \
-            w_ += SPM_MARKER_LEN;                                                     \
-        }                                                                             \
-        for (size_t r_ = chunk_start; r_ < (end); r_++) {                             \
-            if (text[r_] == ' ') {                                                    \
-                memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                         \
-                w_ += SPM_MARKER_LEN;                                                 \
-            } else {                                                                  \
-                buf[w_++] = text[r_];                                                 \
-            }                                                                         \
-        }                                                                             \
-        first_chunk = false;                                                          \
-        if (w_ > 0 && *n_out < cap) {                                                 \
-            *n_out += spm_chunk_to_ids(tok, buf, w_, out_ids + *n_out, cap - *n_out); \
-        }                                                                             \
+#define SPM_FLUSH(end)                                                                         \
+    do {                                                                                       \
+        size_t w_ = 0;                                                                         \
+        if (first_chunk && tok->add_space_prefix) {                                            \
+            memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                                      \
+            w_ += SPM_MARKER_LEN;                                                              \
+        }                                                                                      \
+        for (size_t r_ = chunk_start; r_ < (end); r_++) {                                      \
+            if (text[r_] == ' ') {                                                             \
+                memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                                  \
+                w_ += SPM_MARKER_LEN;                                                          \
+            } else {                                                                           \
+                buf[w_++] = text[r_];                                                          \
+            }                                                                                  \
+        }                                                                                      \
+        first_chunk = false;                                                                   \
+        if (w_ > 0 && *n_out < cap) {                                                          \
+            size_t produced_ = spm_chunk_to_ids(tok, buf, w_, out_ids + *n_out, cap - *n_out); \
+            if (produced_ == SIZE_MAX)                                                         \
+                goto fail;                                                                     \
+            *n_out += produced_;                                                               \
+        }                                                                                      \
     } while (0)
 
     while (i < tlen) {
@@ -1198,6 +1204,12 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
     void *p = buf;
     safe_free(&p);
     return true;
+
+fail:
+    p = buf;
+    safe_free(&p);
+    *n_out = 0;
+    return false;
 }
 
 [[nodiscard]] bool gguf_tokenizer_encode(const struct gguf_tokenizer *tok,
@@ -1270,8 +1282,11 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
                 uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
                 cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
             }
-            *n_out += bpe_chunk_to_ids(
+            size_t produced = bpe_chunk_to_ids(
                     tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
+            if (produced == SIZE_MAX)
+                goto fail;
+            *n_out += produced;
             i = end;
             if (*n_out >= cap)
                 break;
@@ -1305,8 +1320,11 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
                     uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
                     cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
                 }
-                *n_out += bpe_chunk_to_ids(
+                size_t produced = bpe_chunk_to_ids(
                         tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
+                if (produced == SIZE_MAX)
+                    goto fail;
+                *n_out += produced;
                 if (*n_out >= cap)
                     break;
                 continue; /* outer loop matches the special at i */
@@ -1326,6 +1344,8 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
                 }
                 size_t produced = bpe_chunk_to_ids(
                         tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
+                if (produced == SIZE_MAX)
+                    goto fail;
                 *n_out += produced;
             }
             break;
@@ -1355,6 +1375,8 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
         }
         size_t produced =
                 bpe_chunk_to_ids(tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
+        if (produced == SIZE_MAX)
+            goto fail;
         *n_out += produced;
         if (*n_out >= cap)
             break;
@@ -1364,4 +1386,10 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
     void *p = chunk_buf;
     safe_free(&p);
     return true;
+
+fail:
+    p = chunk_buf;
+    safe_free(&p);
+    *n_out = 0;
+    return false;
 }
