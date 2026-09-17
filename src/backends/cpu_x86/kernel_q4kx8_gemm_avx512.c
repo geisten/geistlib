@@ -26,6 +26,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_q4kx8_gemm.h"
+#include "kernel_w4a8.h" /* w4a8_dispatcher_tier — GEIST_FORCE_ISA clamp */
 
 #include <immintrin.h>
 #include <stddef.h>
@@ -396,4 +397,51 @@ void q4kx8_gemv_m1(
         const __m256 acc_row = q4kx8_gemv_one_row_tile(n_super, &W[nt * n_super], a, &acc_min);
         _mm256_storeu_ps(y + nt * 8, _mm256_sub_ps(acc_row, acc_min));
     }
+}
+
+/* ---- Public entry ----
+ *
+ * Checks the ISA once, then dispatches: the AVX-512 16x16 panel
+ * (q4kx8_gemm16x16_avx512_bulk, kernel_q4kx8_gemm_avx512_full.c) for
+ * M, N >= 16 with both multiples of 16, otherwise the AVX2 GEMV above,
+ * which is correct for any M (multiple of 4) and any N (multiple of 8).
+ *
+ * The check lives here and not beside the panel it guards. That TU is built
+ * with -mavx512* (mk/backend-cpu_x86.mk), so the compiler may put EVEX in a
+ * prologue, ahead of any test in the function body: under MODE=asan gcc-14
+ * poisons the frame with EVEX-encoded vpbroadcastd/vmovdqu8, and a CPU
+ * without AVX-512 then dies with SIGILL on entry — before a guard placed
+ * there could decide anything. This TU carries no -mavx512*, so the check
+ * itself runs on plain x86-64-v3 code.
+ *
+ * The dispatcher-tier check additionally honors GEIST_FORCE_ISA=avx2/scalar,
+ * so the non-AVX512 path is exercisable on AVX-512 hosts (CI portability
+ * gate). Both reads are once-initialised globals — negligible cost.
+ *
+ * In Gemma 4: n_out is always a multiple of 256, so the N tail never fires
+ * for body matrices. For Gemma 4 prefill at seq_len=128/256/512, m is also
+ * a multiple of 16 (it equals the chunk size). The tail handler is mainly
+ * defensive for smaller batches and the output projection.
+ */
+void q4kx8_gemm_avx512(size_t                     M,
+                       size_t                     N,
+                       size_t                     K,
+                       const struct block_q8_Kx4 *X,
+                       const struct block_q4_Kx8 *W,
+                       float                      Y[static M * N]) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    if (w4a8_dispatcher_tier() < W4A8_ISA_AVX512 || !__builtin_cpu_supports("avx512f") ||
+        !__builtin_cpu_supports("avx512bw") || !__builtin_cpu_supports("avx512dq") ||
+        !__builtin_cpu_supports("avx512vl")) {
+        q4kx8_gemv_avx2_fallback(M, N, K, X, W, Y);
+        return;
+    }
+#endif
+    if (M < 16 || N < 16 || (M % 16) != 0 || (N % 16) != 0) {
+        /* No 16x16 panel — let the AVX2 GEMV handle everything. */
+        q4kx8_gemv_avx2_fallback(M, N, K, X, W, Y);
+        return;
+    }
+
+    q4kx8_gemm16x16_avx512_bulk(M, N, K, X, W, Y);
 }

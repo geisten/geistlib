@@ -8,6 +8,16 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+
+- **The public headers are includable from C++.** `include/` writes its
+  `[static len]` array-parameter contracts as `GEIST_AT_LEAST(len)`, which
+  expands to `static len` in C and to nothing in C++; `extern "C"` alone could
+  not make them parse, so `<geist_util.h>`, `<geist_arch.h>` and
+  `<geist_backend.h>` were unusable from a C++ translation unit. No C-visible
+  change — same parameter types, same diagnostics — and `make check-headers`
+  now compiles every public header standalone as C23 and as C++17 on every PR.
+
 ## [0.11.0] — 2026-09-06
 
 Ternary BitNet embedding models. Microsoft's July 2026 releases —

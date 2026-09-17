@@ -16,15 +16,14 @@
  * weight bytes across 256 output cells — the cells-per-VPMADDUBSW × tile-
  * amortisation product that closes the IPC gap vs llama.cpp.
  *
- * Public entry: q4kx8_gemm_avx512(). For (M, N) with M >= 16 && N >= 16
- * and both divisible by 16, the bulk runs through this kernel; otherwise
- * we fall through to the existing AVX2 GEMV path
- * (q4kx8_gemv_avx2_fallback in kernel_q4kx8_gemm_avx512.c).
+ * Entry point: q4kx8_gemm16x16_avx512_bulk(), for (M, N) with M >= 16 &&
+ * N >= 16 and both divisible by 16. The ISA check, the shape check and the
+ * AVX2 tail live in kernel_q4kx8_gemm_avx512.c (built without -mavx512*),
+ * because everything in this TU may be EVEX — see the comment on the bulk.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_q4kx8_gemm.h"
-#include "kernel_w4a8.h" /* w4a8_dispatcher_tier — GEIST_FORCE_ISA clamp */
 
 #include <immintrin.h>
 #include <stddef.h>
@@ -34,15 +33,6 @@
 #if defined(_OPENMP)
 #include <omp.h>
 #endif
-
-/* AVX2 GEMV from kernel_q4kx8_gemm_avx512.c — used to handle the tail and
- * M < 16 / N < 16 cases that the 16x16 panel cannot cover. */
-void q4kx8_gemv_avx2_fallback(size_t                     M,
-                              size_t                     N,
-                              size_t                     K,
-                              const struct block_q8_Kx4 *X,
-                              const struct block_q4_Kx8 *W,
-                              float                      Y[static M * N]);
 
 #define AVX512_TARGET "avx2,avx,f16c,fma,avx512f,avx512bw,avx512dq,avx512vl"
 
@@ -785,47 +775,28 @@ q4kx8_gemm16x16_tile_avx512(size_t                     nb,
     }
 }
 
-/* ---- Public entry ----
+/* ---- AVX-512 bulk ----
  *
- * Dispatch: handle the M=16-aligned, N=16-aligned bulk through the AVX-512
- * 16x16 panel. Remaining tail rows (M % 16) and tail cells (N % 16) go to
- * the AVX2 GEMV path which is correct for any M (multiple of 4) and any N
- * (multiple of 8).
+ * Runs the M=16-aligned, N=16-aligned bulk through the 16x16 panel. The
+ * caller has already established that the CPU has AVX-512F/BW/DQ/VL and
+ * that the shape fits the panel.
  *
- * In Gemma 4: n_out is always a multiple of 256, so the N tail never fires
- * for body matrices. For Gemma 4 prefill at seq_len=128/256/512, m is also
- * a multiple of 16 (it equals the chunk size). The tail handler is mainly
- * defensive for smaller batches and the output projection.
+ * Enter only after that check. This whole TU is compiled with -mavx512*
+ * (mk/backend-cpu_x86.mk), so the compiler may place EVEX anywhere in it —
+ * including a prologue, ahead of anything the function body could test.
+ * Under MODE=asan gcc-14 does exactly that: the shadow poisoning of the
+ * frame is EVEX-encoded, so a guard *inside* this TU dies with SIGILL on a
+ * CPU without AVX-512 before it can decide anything. Guard, shape dispatch
+ * and the AVX2 tail therefore live in kernel_q4kx8_gemm_avx512.c, which is
+ * built without -mavx512*; q4kx8_gemm_avx512() there is the public entry.
  */
-void q4kx8_gemm_avx512(size_t                     M,
-                       size_t                     N,
-                       size_t                     K,
-                       const struct block_q8_Kx4 *X,
-                       const struct block_q4_Kx8 *W,
-                       float                      Y[static M * N]) {
-#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
-    /* The 16x16 tile path below is AVX-512 (target(avx512f,bw,dq,vl)) and has no
-     * runtime guard of its own. The engine's kernel catalog is meant to gate it
-     * by the CPU probe, but the prefill path (M>=16) reaches here directly — so
-     * guard here too: on an x86-64-v3 CPU without AVX-512 (a supported release
-     * target) run the AVX2 GEMV for the whole GEMM instead of a SIGILL.
-     * The dispatcher-tier check additionally honors GEIST_FORCE_ISA=avx2/scalar,
-     * so the non-AVX512 path is exercisable on AVX-512 hosts (CI portability
-     * gate). Both reads are once-initialised globals — negligible cost. */
-    if (w4a8_dispatcher_tier() < W4A8_ISA_AVX512 || !__builtin_cpu_supports("avx512f") ||
-        !__builtin_cpu_supports("avx512bw") || !__builtin_cpu_supports("avx512dq") ||
-        !__builtin_cpu_supports("avx512vl")) {
-        q4kx8_gemv_avx2_fallback(M, N, K, X, W, Y);
-        return;
-    }
-#endif
+void q4kx8_gemm16x16_avx512_bulk(size_t                     M,
+                                 size_t                     N,
+                                 size_t                     K,
+                                 const struct block_q8_Kx4 *X,
+                                 const struct block_q4_Kx8 *W,
+                                 float                      Y[static M * N]) {
     const size_t n_super_k = K / 256;
-
-    if (M < 16 || N < 16 || (M % 16) != 0 || (N % 16) != 0) {
-        /* No 16x16 panel — let the AVX2 GEMV handle everything. */
-        q4kx8_gemv_avx2_fallback(M, N, K, X, W, Y);
-        return;
-    }
 
     const size_t M16 = M / 16;
     const size_t N16 = N / 16;

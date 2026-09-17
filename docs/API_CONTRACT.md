@@ -111,3 +111,16 @@ Pin a minimum version and check it at compile time:
 
 The SDK artifact (`libgeist-<platform>.tar.gz`) ships `include/` and the static
 archive; both contract headers are part of it.
+
+## Including the headers from C++
+
+Every header in `include/` is includable from a C++ translation unit as well
+as a C one. The `extern "C"` guards are only half of that: C's
+`T arr[static n]` array-parameter form is not C++ grammar, so the headers
+spell that contract `T arr[GEIST_AT_LEAST(n)]`, which expands to `static n`
+in C and to nothing in C++ (AGENT.md §1). The parameter type is identical
+either way — this is a spelling, not an API change, and consumers need no
+`#ifdef`.
+
+`make check-headers` compiles each public header standalone as C23 and as
+C++17 with `-pedantic-errors`, per PR, so this cannot quietly regress.

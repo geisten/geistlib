@@ -132,7 +132,30 @@ GGUF_ENV = if [ -z "$$GEIST_GGUF_PATH" ] && [ -f "$(MODEL_PATH)" ]; then \
 # `make test` chains unit + int + py — daily-iteration default. The model is
 # listed FIRST so the on-demand download (if any) happens up front, before the
 # unit tests run, rather than mid-run between unit and int suites.
-test: $(MODEL_PREREQ) test-unit test-int test-py
+test: $(MODEL_PREREQ) check-headers test-unit test-int test-py
+
+# Every public header must compile on its own, as C23 and as C++17. geist is a
+# C library; its consumers are not all C programs, and `extern "C"` is only
+# half of what that takes — `T arr[static n]` is not C++ grammar, which is why
+# include/ writes it GEIST_AT_LEAST(n) (AGENT.md §1). One translation unit per
+# header, so a missing include inside one cannot hide behind another's.
+# geist-memory runs the same check on its two headers; keep the two in step.
+PUBLIC_HEADERS := $(wildcard include/*.h)
+CXX ?= g++
+
+.PHONY: check-headers
+check-headers:
+	@mkdir -p $(BUILD_DIR)/headers
+	@for h in $(PUBLIC_HEADERS); do \
+		b=$$(basename $$h); \
+		printf '#include <%s>\nint main(void) { return 0; }\n' "$$b" \
+			| $(CC) -std=c23 $(WARNINGS_BASE) -Iinclude -x c - \
+			  -o $(BUILD_DIR)/headers/$$b.c || exit 1; \
+		printf '#include <%s>\nint main() { return 0; }\n' "$$b" \
+			| $(CXX) -std=c++17 -Wall -Wextra -pedantic-errors -Iinclude -x c++ - \
+			  -o $(BUILD_DIR)/headers/$$b.cxx || exit 1; \
+	done
+	@echo "check-headers: $(words $(PUBLIC_HEADERS)) public headers compile as C23 and as C++17"
 
 test-unit: bin
 	@$(GGUF_ENV) mk/run-tests.sh $(TEST_BIN_DIR) "_unit"
@@ -206,6 +229,8 @@ endef
 # a truncated download, a corrupted CI cache and a silently changed upstream
 # all fail loudly BEFORE a test runs. Changing a model means changing its pin,
 # which also rotates any CI cache key derived from it. $(1) = file, $(2) = pin.
+# The URLs name a Hugging Face commit, never `main`: a branch moves, and the
+# pin would only report that after the download. Re-pin URL and hash together.
 define verify_sha256
 	@hash=$$( (command -v sha256sum >/dev/null && sha256sum "$(1)" || shasum -a 256 "$(1)") | cut -d' ' -f1 ); \
 	if [ "$$hash" != "$(2)" ]; then \
@@ -238,13 +263,16 @@ bench-smoke: bin
 BENCH_MODEL_DIR  ?= gguf_artifacts
 BENCH_MODEL_FILE ?= bitnet-2b4t-i2_s.gguf
 BENCH_MODEL_PATH := $(BENCH_MODEL_DIR)/$(BENCH_MODEL_FILE)
-BENCH_MODEL_URL  ?= https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf
+BENCH_MODEL_URL  ?= https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/a1f2f1c765812aa8af3f6eda4a313707064bba15/ggml-model-i2_s.gguf
+# Upstream LFS oid at that revision, verified 2026-09-15.
+BENCH_MODEL_SHA256 := 4221b252fdd5fd25e15847adfeb5ee88886506ba50b8a34548374492884c2162
 
 $(BENCH_MODEL_PATH):
 	$(call fetch_gguf,~1.1 GB,$(BENCH_MODEL_URL))
 
 fetch-bench-model: $(BENCH_MODEL_PATH)
-	@echo "Benchmark model ready: $(BENCH_MODEL_PATH)"
+	$(call verify_sha256,$(BENCH_MODEL_PATH),$(BENCH_MODEL_SHA256))
+	@echo "Benchmark model ready (SHA-256 verified): $(BENCH_MODEL_PATH)"
 
 # Gemma 4 E4B variant (4.6 GB) — the second gemma4 geometry (42 layers,
 # d_model 2560, 5+1 sliding pattern). Exists so the metadata-driven family
@@ -269,7 +297,7 @@ fetch-e4b-model: $(E4B_MODEL_PATH)
 LLAMA_MODEL_DIR  ?= gguf_artifacts
 LLAMA_MODEL_FILE ?= smollm2-360m-instruct-q8_0.gguf
 LLAMA_MODEL_PATH := $(LLAMA_MODEL_DIR)/$(LLAMA_MODEL_FILE)
-LLAMA_MODEL_URL  ?= https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf
+LLAMA_MODEL_URL  ?= https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/593b5a2e04c8f3e4ee880263f93e0bd2901ad47f/smollm2-360m-instruct-q8_0.gguf
 # Pinned content hash (= the upstream LFS oid, Apache-2.0 model). Verified on
 # every fetch-llama-model run, so a truncated download, a corrupted CI cache
 # and a silently changed upstream all fail loudly BEFORE a test runs — and
@@ -287,8 +315,8 @@ $(LLAMA_MODEL_PATH):
 QWEN3_MODEL_DIR  ?= gguf_artifacts
 QWEN3_MODEL_FILE ?= qwen3-0.6b-q8_0.gguf
 QWEN3_MODEL_PATH := $(QWEN3_MODEL_DIR)/$(QWEN3_MODEL_FILE)
-QWEN3_MODEL_URL  ?= https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf
-# Upstream LFS oid, verified 2026-08-19.
+QWEN3_MODEL_URL  ?= https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/23749fefcc72300e3a2ad315e1317431b06b590a/Qwen3-0.6B-Q8_0.gguf
+# Upstream LFS oid, verified 2026-08-19; revision-pinned 2026-09-15.
 QWEN3_MODEL_SHA256 := 9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031
 
 $(QWEN3_MODEL_PATH):
@@ -304,8 +332,8 @@ fetch-qwen3-model: $(QWEN3_MODEL_PATH)
 QWEN35_MODEL_DIR  ?= gguf_artifacts
 QWEN35_MODEL_FILE ?= qwen3.5-0.8b-q8_0.gguf
 QWEN35_MODEL_PATH := $(QWEN35_MODEL_DIR)/$(QWEN35_MODEL_FILE)
-QWEN35_MODEL_URL  ?= https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q8_0.gguf
-# Upstream LFS oid, verified 2026-08-23.
+QWEN35_MODEL_URL  ?= https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-Q8_0.gguf
+# Upstream LFS oid, verified 2026-08-23; revision-pinned 2026-09-15.
 QWEN35_MODEL_SHA256 := 0ad885ffd4bb022fc4f0d33a3308fa108ef8613159d3b3a67e23abca056b7a6c
 
 $(QWEN35_MODEL_PATH):
@@ -334,7 +362,7 @@ $(AUDIO_TOWER_PATH):
 fetch-audio-tower: $(AUDIO_TOWER_PATH)
 	@echo "Audio tower ready (SHA-256 verified on fetch): $(AUDIO_TOWER_PATH)"
 
-bench: bin $(BENCH_MODEL_PATH)
+bench: bin fetch-bench-model
 	@python3 tools/bench_reproduce.py --gguf "$(BENCH_MODEL_PATH)" \
 	  --target "$(TARGET)" --mode "$(MODE)" $(BENCH_ARGS)
 
@@ -434,7 +462,7 @@ help:
 	"" \
 	"Bench (timing/quality tools, not pass/fail):" \
 	"  make bench                                  reproducible cross-engine benchmark" \
-	"  make fetch-bench-model                      download the BitNet GGUF bench needs" \
+	"  make fetch-bench-model                      download the BitNet GGUF bench needs (~1.1 GB, SHA-pinned)" \
 	"  make bench-smoke | bench-mm                 raw probes | multimodal encoders" \
 	"  make bench-small | bench-detailed           record perf to benchmark/results/APPLE.md" \
 	"  make bench-quality-small|-detailed          MMLU acc -> benchmark/results/APPLE.md" \

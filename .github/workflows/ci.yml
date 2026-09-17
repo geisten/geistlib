@@ -25,10 +25,19 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # The trigger is the VERSION, not the file it lives in. `git diff
+        # include/geist.h` was a proxy for that, and it fires on any edit to the
+        # header — which then demands an empty [Unreleased] and so forbids the
+        # CHANGELOG note AGENT.md §6 requires for exactly those changes. Compare
+        # the version strings instead; the gate itself is unchanged.
         run: |
-          if git diff --quiet "$BASE_SHA" -- include/geist.h; then
-            echo "source version unchanged — release gate not applicable"
+          base_version=$(git show "$BASE_SHA":include/geist.h \
+            | sed -n 's/^#define GEIST_VERSION_STRING "\(.*\)"/\1/p')
+          head_version=$(sed -n 's/^#define GEIST_VERSION_STRING "\(.*\)"/\1/p' include/geist.h)
+          if [ "$base_version" = "$head_version" ]; then
+            echo "source version unchanged ($head_version) — release gate not applicable"
           else
+            echo "source version $base_version -> $head_version — running the release gate"
             sh scripts/check-release.sh --pre-tag
           fi
 
@@ -138,6 +147,13 @@ jobs:
       - name: Embedding chain end-to-end (synthetic model)
         if: matrix.target == 'linux'
         run: make test-embedding TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
+
+      # Contract enforcement, include half: every public header compiles on its
+      # own as C23 and as C++17. A C++ consumer is not exotic (bindings, game
+      # engines, Qt front-ends), and `extern "C"` alone does not make
+      # `T arr[static n]` parse — see GEIST_AT_LEAST in include/geist.h.
+      - name: Public headers compile as C and C++
+        run: make check-headers TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
       # Contract enforcement, link half: an out-of-tree agent runtime links
       # these symbols across a release boundary, so a changed signature or a
@@ -933,6 +949,12 @@ jobs:
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
+      # test-unit runs first under GEIST_STRICT_FIXTURES and has no model
+      # prerequisite, so a cache miss (eviction: the repo sits near the 10 GB
+      # cache limit) failed test_gguf_reader_unit / test_gguf_spm_tokenizer_unit
+      # instead of downloading. No-op on a cache hit.
+      - name: Fetch reference model
+        run: make fetch-model
       # The audio engine paths (attach + the #256 streaming turn) only
       # execute with the tower present — without it their session.c lines
       # count as uncovered and the src/engine floor fires. Same pinned
