@@ -1151,29 +1151,28 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
     bool   first_chunk = true;
 
 /* Normalize text[chunk_start, end) into buf and BPE-encode it. */
-#define SPM_FLUSH(end)                                                                \
-    do {                                                                              \
-        size_t w_ = 0;                                                                \
-        if (first_chunk && tok->add_space_prefix) {                                   \
-            memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                             \
-            w_ += SPM_MARKER_LEN;                                                     \
-        }                                                                             \
-        for (size_t r_ = chunk_start; r_ < (end); r_++) {                             \
-            if (text[r_] == ' ') {                                                    \
-                memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                         \
-                w_ += SPM_MARKER_LEN;                                                 \
-            } else {                                                                  \
-                buf[w_++] = text[r_];                                                 \
-            }                                                                         \
-        }                                                                             \
-        first_chunk = false;                                                          \
-        if (w_ > 0 && *n_out < cap) {                                                 \
-            size_t produced_ = spm_chunk_to_ids(tok, buf, w_, out_ids + *n_out,        \
-                                                cap - *n_out);                         \
-            if (produced_ == SIZE_MAX)                                                \
-                goto fail;                                                            \
-            *n_out += produced_;                                                      \
-        }                                                                             \
+#define SPM_FLUSH(end)                                                                         \
+    do {                                                                                       \
+        size_t w_ = 0;                                                                         \
+        if (first_chunk && tok->add_space_prefix) {                                            \
+            memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                                      \
+            w_ += SPM_MARKER_LEN;                                                              \
+        }                                                                                      \
+        for (size_t r_ = chunk_start; r_ < (end); r_++) {                                      \
+            if (text[r_] == ' ') {                                                             \
+                memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                                  \
+                w_ += SPM_MARKER_LEN;                                                          \
+            } else {                                                                           \
+                buf[w_++] = text[r_];                                                          \
+            }                                                                                  \
+        }                                                                                      \
+        first_chunk = false;                                                                   \
+        if (w_ > 0 && *n_out < cap) {                                                          \
+            size_t produced_ = spm_chunk_to_ids(tok, buf, w_, out_ids + *n_out, cap - *n_out); \
+            if (produced_ == SIZE_MAX)                                                         \
+                goto fail;                                                                     \
+            *n_out += produced_;                                                               \
+        }                                                                                      \
     } while (0)
 
     while (i < tlen) {
