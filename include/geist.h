@@ -179,6 +179,25 @@ struct geist_model;
 enum geist_status
 geist_model_load(const char *path, struct geist_backend *be, struct geist_model **out);
 
+/* Declared before use: geist_session_opts is defined further down in this
+ * header, and a struct first named inside a parameter list belongs to that
+ * list's scope — a different type from the one defined below. */
+struct geist_session_opts;
+
+/* @stability EXPERIMENTAL
+ * Like geist_model_load, but the load-time options also size the buffers the
+ * model owns — RoPE tables and the default session's scratch. geist_model_load
+ * passes nullptr here, which keeps the architecture's own defaults: for a
+ * 4096-token default that is resident memory no caller can reach when its
+ * sessions are created with a smaller max_seq_len. A consumer that knows its
+ * bound (an embedder pinned to its model's context, say) passes it once at
+ * load and again at session_create. Only `max_seq_len` is read at load time;
+ * the sampler fields apply per session. */
+enum geist_status geist_model_load_with_opts(const char                      *path,
+                                             struct geist_backend            *be,
+                                             const struct geist_session_opts *opts,
+                                             struct geist_model             **out);
+
 /* @stability STABLE since 0.2.1
  * Load a GGUF that is already in memory — e.g. embedded in the executable, so
  * the engine *and* the model ship as a single binary. The bytes are aliased
