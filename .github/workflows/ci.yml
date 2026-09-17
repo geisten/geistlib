@@ -921,6 +921,12 @@ jobs:
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
+      # test-unit runs first under GEIST_STRICT_FIXTURES and has no model
+      # prerequisite, so a cache miss (eviction: the repo sits near the 10 GB
+      # cache limit) failed test_gguf_reader_unit / test_gguf_spm_tokenizer_unit
+      # instead of downloading. No-op on a cache hit.
+      - name: Fetch reference model
+        run: make fetch-model
       # The audio engine paths (attach + the #256 streaming turn) only
       # execute with the tower present — without it their session.c lines
       # count as uncovered and the src/engine floor fires. Same pinned
