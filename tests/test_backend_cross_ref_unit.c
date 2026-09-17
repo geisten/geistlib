@@ -160,9 +160,17 @@ int main(void) {
     float *y_neon   = aligned_alloc(64, M * N * sizeof(float));
     float *y_direct = aligned_alloc(64, M * N * sizeof(float));
 
+    /* Every exit goes through `done`. The SKIP-partial return on hosts
+     * without cpu_neon (every x86 build) used to leak all five buffers,
+     * which LeakSanitizer reports as a 17 MiB failure. */
+    int                   rc        = GEIST_TEST_PASS;
+    struct geist_backend *be_scalar = nullptr;
+    struct geist_backend *be_neon   = nullptr;
+
     if (!xdata || !wdata || !y_scalar || !y_neon || !y_direct) {
         fprintf(stderr, "alloc failed\n");
-        return GEIST_TEST_ERROR;
+        rc = GEIST_TEST_ERROR;
+        goto done;
     }
 
     fill_random_f32(xdata, M * K, 0xCAFEBABE);
@@ -209,11 +217,11 @@ int main(void) {
     }
 
     /* ---- cpu_scalar via vtable ---- */
-    struct geist_backend *be_scalar = nullptr;
     s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be_scalar);
     if (s != GEIST_OK) {
         fprintf(stderr, "cpu_scalar create failed: %s\n", geist_last_create_error());
-        return GEIST_TEST_ERROR;
+        rc = GEIST_TEST_ERROR;
+        goto done;
     }
     double scalar_ms = 0;
     s                = run_via_backend(be_scalar, M, K, N, xdata, wdata, y_scalar, &scalar_ms);
@@ -222,13 +230,14 @@ int main(void) {
                 "scalar run: %s — %s\n",
                 geist_status_to_string(s),
                 geist_backend_errmsg(be_scalar));
-        return GEIST_TEST_FAIL;
+        rc = GEIST_TEST_FAIL;
+        goto done;
     }
     geist_backend_destroy(be_scalar);
+    be_scalar = nullptr;
 
     /* ---- cpu_neon via vtable (skip if not linked) ---- */
-    struct geist_backend *be_neon = nullptr;
-    s                             = geist_backend_create("cpu_neon", nullptr, nullptr, &be_neon);
+    s = geist_backend_create("cpu_neon", nullptr, nullptr, &be_neon);
     if (s == GEIST_E_NOT_FOUND) {
         printf("SKIP partial: cpu_neon not compiled in; only cpu_scalar measured\n");
         printf("  cpu_scalar (M=%zu K=%zu N=%zu): %.3f ms = %.2f GFLOP/s\n",
@@ -237,10 +246,11 @@ int main(void) {
                N,
                scalar_ms,
                mflops / scalar_ms);
-        return GEIST_TEST_PASS;
+        goto done; /* rc stays GEIST_TEST_PASS */
     } else if (s != GEIST_OK) {
         fprintf(stderr, "cpu_neon create failed: %s\n", geist_last_create_error());
-        return GEIST_TEST_ERROR;
+        rc = GEIST_TEST_ERROR;
+        goto done;
     }
 
     double neon_ms = 0;
@@ -250,9 +260,11 @@ int main(void) {
                 "neon run: %s — %s\n",
                 geist_status_to_string(s),
                 geist_backend_errmsg(be_neon));
-        return GEIST_TEST_FAIL;
+        rc = GEIST_TEST_FAIL;
+        goto done;
     }
     geist_backend_destroy(be_neon);
+    be_neon = nullptr;
 
     /* ---- Cross-reference: scalar ≈ neon ---- */
     ptrdiff_t bad = geist_fp32_close_array(y_scalar, y_neon, M * N, 1e-4f, 1e-3f);
@@ -288,15 +300,23 @@ int main(void) {
            (neon_ms - best_direct) / best_direct * 100.0);
     printf("  scalar speedup      : %.1fx slower than direct\n", scalar_ms / best_direct);
 
+    if (fails == 0) {
+        printf("PASS: scalar/neon/direct all agree within tolerance\n");
+    } else {
+        rc = GEIST_TEST_FAIL;
+    }
+
+done:
+    if (be_neon != nullptr) {
+        geist_backend_destroy(be_neon);
+    }
+    if (be_scalar != nullptr) {
+        geist_backend_destroy(be_scalar);
+    }
     free(xdata);
     free(wdata);
     free(y_scalar);
     free(y_neon);
     free(y_direct);
-
-    if (fails == 0) {
-        printf("PASS: scalar/neon/direct all agree within tolerance\n");
-        return GEIST_TEST_PASS;
-    }
-    return GEIST_TEST_FAIL;
+    return rc;
 }

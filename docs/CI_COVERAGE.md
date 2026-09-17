@@ -13,7 +13,7 @@ the test suite**, not just built.
 | **macOS arm64** (Accelerate/AMX) | ✅ | ✅ | ⚪ skip¹ | — | — | `build-test` |
 | **macOS x86_64** (cpu_x86 AVX2, Accelerate) | ✅ | ✅ | ⚪ skip¹ | — | — | `build-test` |
 | **Linux arm64** (cpu_neon, glibc) | ✅ | ✅ | ✅ | ✅ | ✅ | `build-test`, `build-test-musl`, `asan` |
-| **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅³ | ✅ | ⚪² | `build-test-x86_64`, `build-test-musl-x86_64` |
+| **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅³ | ✅ | ✅² | `build-test-x86_64`, `build-test-musl-x86_64`, `asan-x86_64` |
 | **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar` |
 
 Every environment in [`release.yml`](../.github/workflows/release.yml)
@@ -32,9 +32,11 @@ runner and gates branch PRs only, not fork PRs.
    macOS runners are the slowest/costliest and the model download dominates.
    Revisit if a macOS-specific product-path bug ever appears. macOS still runs
    the full unit suite.
-2. **x86_64 ASan/UBSan — not yet.** The sanitizer job runs on arm64; it catches
-   memory/UB bugs in the shared C engine + kernels regardless of SIMD path. An
-   x86-specific ASan leg is a reasonable follow-up if an x86-only UB is suspected.
+2. **x86_64 ASan/UBSan — enforced (`asan-x86_64`).** Model-free unit suite with
+   the release binary's backends and GEMM, UBSan halting, leak detection on.
+   Before this leg the cpu_x86 tests were never sanitizer-built, and three had
+   broken there unseen: a build error only at -O1, a NaN comparison that
+   -ffast-math folds at -O1, and a leak on the no-cpu_neon exit path.
 3. **x86_64 int/e2e — required (#96 resolved).** This leg once caught a
    real shipping bug: AVX-512 kernels in the forward path without a runtime CPU
    guard, SIGILLing on AVX-512-less x86-64-v3 runners. The kernels are guarded
