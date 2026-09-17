@@ -132,7 +132,30 @@ GGUF_ENV = if [ -z "$$GEIST_GGUF_PATH" ] && [ -f "$(MODEL_PATH)" ]; then \
 # `make test` chains unit + int + py — daily-iteration default. The model is
 # listed FIRST so the on-demand download (if any) happens up front, before the
 # unit tests run, rather than mid-run between unit and int suites.
-test: $(MODEL_PREREQ) test-unit test-int test-py
+test: $(MODEL_PREREQ) check-headers test-unit test-int test-py
+
+# Every public header must compile on its own, as C23 and as C++17. geist is a
+# C library; its consumers are not all C programs, and `extern "C"` is only
+# half of what that takes — `T arr[static n]` is not C++ grammar, which is why
+# include/ writes it GEIST_AT_LEAST(n) (AGENT.md §1). One translation unit per
+# header, so a missing include inside one cannot hide behind another's.
+# geist-memory runs the same check on its two headers; keep the two in step.
+PUBLIC_HEADERS := $(wildcard include/*.h)
+CXX ?= g++
+
+.PHONY: check-headers
+check-headers:
+	@mkdir -p $(BUILD_DIR)/headers
+	@for h in $(PUBLIC_HEADERS); do \
+		b=$$(basename $$h); \
+		printf '#include <%s>\nint main(void) { return 0; }\n' "$$b" \
+			| $(CC) -std=c23 $(WARNINGS_BASE) -Iinclude -x c - \
+			  -o $(BUILD_DIR)/headers/$$b.c || exit 1; \
+		printf '#include <%s>\nint main() { return 0; }\n' "$$b" \
+			| $(CXX) -std=c++17 -Wall -Wextra -pedantic-errors -Iinclude -x c++ - \
+			  -o $(BUILD_DIR)/headers/$$b.cxx || exit 1; \
+	done
+	@echo "check-headers: $(words $(PUBLIC_HEADERS)) public headers compile as C23 and as C++17"
 
 test-unit: bin
 	@$(GGUF_ENV) mk/run-tests.sh $(TEST_BIN_DIR) "_unit"

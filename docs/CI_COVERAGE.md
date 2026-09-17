@@ -19,8 +19,9 @@ Every environment in [`release.yml`](../.github/workflows/release.yml)
 (macos-arm64, linux-arm64, linux-x86_64) now has build **and** test coverage
 here. On top of the matrix, dedicated legs gate every PR: TSan multi-session
 (x86_64), the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on
-lavapipe, and the Metal GPU step inside the macOS leg — each described in its
-section below. Vulkan on a physical GPU (`vulkan-gpu`) runs on a self-hosted
+lavapipe, the Metal GPU step inside the macOS leg, and `check-headers` — every
+public header compiled standalone as C23 and as C++17, inside `build-test` —
+each described in its section below. Vulkan on a physical GPU (`vulkan-gpu`) runs on a self-hosted
 runner and gates branch PRs only, not fork PRs.
 
 ## Caveats and deliberate gaps
