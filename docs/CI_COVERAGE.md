@@ -76,9 +76,9 @@ explicitly either way).
 | Fixture | Family it proves | Source (pinned) | Mandatory where |
 | :-- | :-- | :-- | :-- |
 | `gemma4-e2b-Q4_K_M.gguf` (~3.1 GB) | gemma (primary reference) | `unsloth/gemma-4-E2B-it-GGUF` | Linux arm64 + x86_64 int/e2e |
-| `smollm2-360m-instruct-q8_0.gguf` (~369 MB) | llama populator + GPT-2-BPE tokenizer mode | `HuggingFaceTB/SmolLM2-360M-Instruct-GGUF`, SHA-256-pinned in the Makefile (`LLAMA_MODEL_SHA256`), Apache-2.0 | Linux arm64 + x86_64 int/e2e |
-| `qwen3-0.6b-q8_0.gguf` (~609 MB) | qwen3 geometry, per-head Q/K norm and tokenizer mode | `Qwen/Qwen3-0.6B-GGUF`, SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
-| `qwen3.5-0.8b-q8_0.gguf` (~780 MB) | qwen35 hybrid DeltaNet/attention family | `unsloth/Qwen3.5-0.8B-GGUF`, SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
+| `smollm2-360m-instruct-q8_0.gguf` (~369 MB) | llama populator + GPT-2-BPE tokenizer mode | `HuggingFaceTB/SmolLM2-360M-Instruct-GGUF`, revision- and SHA-256-pinned in the Makefile (`LLAMA_MODEL_SHA256`), Apache-2.0 | Linux arm64 + x86_64 int/e2e |
+| `qwen3-0.6b-q8_0.gguf` (~609 MB) | qwen3 geometry, per-head Q/K norm and tokenizer mode | `Qwen/Qwen3-0.6B-GGUF`, revision- and SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
+| `qwen3.5-0.8b-q8_0.gguf` (~780 MB) | qwen35 hybrid DeltaNet/attention family | `unsloth/Qwen3.5-0.8B-GGUF`, revision- and SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
 
 The llama tests (`test_llama_load_int`, `test_llama_e2e_int`) are **executed,
 not merely built**: both Linux int/e2e legs fetch the model

@@ -39,16 +39,26 @@ void q4kx8_gemm_scalar(size_t                     M,
                        const struct block_q4_Kx8 *W,
                        float                      Y[static M * N]);
 
-/* AVX-512 GEMV-style implementation (Phase 3 Step 3 scaffold). Iterates
- * m-rows externally, computes 8 cells per output tile via the Q4_Kx8
- * layout. Correctness verified against the scalar reference; lane-
- * parallel VPMADDUBSW inner is the next optimization (Step 3b). */
+/* Public entry (kernel_q4kx8_gemm_avx512.c, built without -mavx512*).
+ * Checks the CPU once, then either runs the AVX-512 16x16 bulk below or
+ * the AVX2 GEMV for the whole GEMM. Safe to call on any x86-64-v3 host. */
 void q4kx8_gemm_avx512(size_t                     M,
                        size_t                     N,
                        size_t                     K,
                        const struct block_q8_Kx4 *X,
                        const struct block_q4_Kx8 *W,
                        float                      Y[static M * N]);
+
+/* AVX-512 16x16 panel bulk (kernel_q4kx8_gemm_avx512_full.c, built with
+ * -mavx512*). Requires AVX-512F/BW/DQ/VL, M >= 16, N >= 16, both multiples
+ * of 16. Call it only through q4kx8_gemm_avx512(): its TU may carry EVEX in
+ * a prologue, so entering it unchecked is a SIGILL, not a wrong result. */
+void q4kx8_gemm16x16_avx512_bulk(size_t                     M,
+                                 size_t                     N,
+                                 size_t                     K,
+                                 const struct block_q8_Kx4 *X,
+                                 const struct block_q4_Kx8 *W,
+                                 float                      Y[static M * N]);
 
 /* Decode (M=1) GEMV over the compact Q4_Kx8 layout. x is the fp32 activation
  * row (length K); y is the fp32 output (length N). N % 8 == 0, K % 256 == 0.
