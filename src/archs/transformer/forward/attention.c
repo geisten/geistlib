@@ -286,7 +286,11 @@ void attention_int8_via_buffers(size_t        n_q,
                 const int8_t *k       = k_q8 + (s * n_kv_heads + kv_h) * head_dim;
                 const float   ks      = k_scale[s * n_kv_heads + kv_h];
                 int32_t       int_dot = 0;
-#if defined(__ARM_NEON)
+/* vdotq_s32 is FEAT_DotProd, not baseline NEON: __ARM_NEON is set on every
+ * armv8-a, so guarding the dot-product path on it faults on cores without
+ * dotprod (Cortex-A53/A72, generic armv8-a builds). The scalar #else below
+ * is the fallback that was always meant to run there. */
+#if defined(__ARM_FEATURE_DOTPROD)
                 int32x4_t acc = vdupq_n_s32(0);
                 size_t    i   = 0;
                 for (; i + 16 <= head_dim; i += 16) {
@@ -400,7 +404,11 @@ void attention_int4_via_buffers(size_t         n_q,
                 int4_unpack_row(head_dim, k_q4 + (s * n_kv_heads + kv_h) * packed, k);
                 const float ks      = k_scale[s * n_kv_heads + kv_h];
                 int32_t     int_dot = 0;
-#if defined(__ARM_NEON)
+/* vdotq_s32 is FEAT_DotProd, not baseline NEON: __ARM_NEON is set on every
+ * armv8-a, so guarding the dot-product path on it faults on cores without
+ * dotprod (Cortex-A53/A72, generic armv8-a builds). The scalar #else below
+ * is the fallback that was always meant to run there. */
+#if defined(__ARM_FEATURE_DOTPROD)
                 int32x4_t acc = vdupq_n_s32(0);
                 size_t    i   = 0;
                 for (; i + 16 <= head_dim; i += 16) {
