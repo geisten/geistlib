@@ -285,10 +285,13 @@ void ptqtp_gemm_2plane_fp32alpha(size_t         M,
 
 /* ---------------- Bit-expansion LUT (256 → 8 bytes) ----------------
  * BIT_EXPAND_LUT[b][i] = (b >> i) & 1 for i ∈ [0, 8).
- * Used by the 5-bit packed kernel to expand the high-bit stream.
+ * Used by the 5-bit packed kernel's NEON path to expand the high-bit stream;
+ * the scalar path does not read it, so it only exists where NEON does (clang
+ * rejects an unused internal table under -Werror).
  * 256 × 8 = 2048 bytes — comfortably fits in L1 (4 cache lines per entry
  * is misleading; the lookup pattern is byte-stream sequential so each
  * accessed entry brings its 8-byte payload in one read). */
+#if defined(__ARM_NEON) || defined(__NEON__)
 alignas(16) static const uint8_t BIT_EXPAND_LUT[256][8] = {
 #define B0(b)                                                                          \
     ((uint8_t) ((b) & 1)), ((uint8_t) (((b) >> 1) & 1)), ((uint8_t) (((b) >> 2) & 1)), \
@@ -309,6 +312,7 @@ alignas(16) static const uint8_t BIT_EXPAND_LUT[256][8] = {
 };
 
 static_assert(sizeof(BIT_EXPAND_LUT) == 2048, "BIT_EXPAND_LUT must be 2 KiB");
+#endif /* __ARM_NEON || __NEON__ */
 
 void ptqtp_gemv_3plane_packed5_fp32alpha(size_t         n_in,
                                          size_t         n_out,

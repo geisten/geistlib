@@ -33,7 +33,15 @@
 
 CC ?= clang
 
+# Apple silicon: NEON pair. Intel Mac: x86 pair, same baseline as
+# target-mac.mk / target-linux.mk.
+ifeq ($(shell uname -m),x86_64)
+BACKENDS ?= cpu_x86 cpu_scalar
+MAC_ARCH_CFLAGS := -march=x86-64-v3 -mtune=generic
+else
 BACKENDS ?= cpu_neon cpu_scalar
+MAC_ARCH_CFLAGS :=
+endif
 
 # Dense fp32 GEMM via Accelerate's cblas (linked below for vDSP anyway).
 # GEMM_PROVIDER=native opts out to the dependency-free path.
@@ -50,7 +58,8 @@ LIBOMP_PREFIX ?= /opt/homebrew/opt/libomp
 CFLAGS_TARGET  := -DHAVE_ACCELERATE=1 \
                   -Xpreprocessor -fopenmp \
                   -isystem $(LIBOMP_PREFIX)/include \
-                  -ffast-math -fno-finite-math-only
+                  -ffast-math -fno-finite-math-only \
+                  $(MAC_ARCH_CFLAGS)
 
 # Default links libomp dynamically (the dev workflow). GEIST_STATIC_OMP=1 links
 # the static libomp.a instead, so a release binary depends only on system

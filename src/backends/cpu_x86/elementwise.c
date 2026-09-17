@@ -64,7 +64,11 @@ cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 gelu_tanh: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-#pragma omp parallel for simd schedule(static)
+    /* firstprivate: with the pointers shared, clang cannot perform the
+     * requested simd vectorization of the outlined loop and -Werror stops
+     * the build ("loop not vectorized: ... requested transformation");
+     * private copies let it vectorize. gcc privatizes them either way. */
+#pragma omp parallel for simd schedule(static) firstprivate(xp, yp)
     for (size_t i = 0; i < nx; i++) {
         yp[i] = gelu1(xp[i]);
     }
@@ -83,7 +87,7 @@ cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 gelu_tanh_mul: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-#pragma omp parallel for simd schedule(static)
+#pragma omp parallel for simd schedule(static) firstprivate(xp, zp, yp) /* see gelu_tanh */
     for (size_t i = 0; i < nx; i++) {
         yp[i] = gelu1(xp[i]) * zp[i];
     }

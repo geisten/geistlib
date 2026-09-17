@@ -15,10 +15,19 @@ $(warning building plain mac target without OpenMP — install libomp via Homebr
 # Compiler
 CC ?= clang
 
+# Apple silicon builds the NEON pair. An Intel Mac builds the x86 pair with
+# the ISA baseline of target-linux.mk: the cpu_x86 intrinsics need AVX2/F16C
+# at compile time; AVX-512 kernels are dispatched at runtime.
+ifeq ($(shell uname -m),x86_64)
+BACKENDS ?= cpu_x86 cpu_scalar
+MAC_ARCH_CFLAGS := -march=x86-64-v3 -mtune=generic
+else
 BACKENDS ?= cpu_neon cpu_scalar
+MAC_ARCH_CFLAGS :=
+endif
 
-# Apple-clang already targets the host CPU optimally with -O3.
-# No -march needed on macOS.
+# On Apple silicon, Apple-clang already targets the host CPU optimally with
+# -O3; no -march needed there.
 #
 # `-ffast-math -fno-finite-math-only`: enables fp reassociation +
 # vectorizer-friendly assumptions while keeping `-INFINITY` semantics
@@ -29,7 +38,7 @@ BACKENDS ?= cpu_neon cpu_scalar
 #   mac-omp t=6 active: 48.3 → 60.9 tps (+26%, closes gap to
 #     bitnet.cpp from 1.36× to 1.07×)
 # Greedy decode bit-identical on test prompts.
-CFLAGS_TARGET  := -DHAVE_ACCELERATE=1 -ffast-math -fno-finite-math-only
+CFLAGS_TARGET  := -DHAVE_ACCELERATE=1 -ffast-math -fno-finite-math-only $(MAC_ARCH_CFLAGS)
 
 # Accelerate framework provides BLAS + vDSP (FFT).
 LDFLAGS_TARGET := -framework Accelerate

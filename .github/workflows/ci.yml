@@ -75,6 +75,15 @@ jobs:
             target: mac-omp
             cc: clang
             bflags: BACKENDS="metal cpu_neon cpu_scalar"
+            apple_silicon: true
+          # Intel Mac: target-mac*.mk picks the x86 pair from `uname -m`.
+          # The Metal probe/parity gate and the Apple perf floors below are
+          # sized for Apple silicon, so they run only where apple_silicon is set.
+          - name: macOS x86_64
+            runner: macos-15-intel
+            target: mac-omp
+            cc: clang
+            bflags: ""
           - name: Linux arm64
             runner: ubuntu-24.04-arm
             target: linux
@@ -95,7 +104,10 @@ jobs:
 
       - name: Install deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install libomp ccache
+        run: |
+          brew install libomp ccache
+          # libomp lives under /opt/homebrew on Apple silicon, /usr/local on Intel.
+          echo "LIBOMP_PREFIX=$(brew --prefix libomp)" >> "$GITHUB_ENV"
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
@@ -118,7 +130,7 @@ jobs:
       # round-trip (probe) and Q4_K/Q6_K/F32 linear parity vs cpu_scalar
       # (m=1 and m=8) all run on the real device.
       - name: Metal device probe + linear parity (GPU, mandatory)
-        if: runner.os == 'macOS'
+        if: matrix.apple_silicon
         run: |
           ./bin/${{ matrix.target }}/release/tests/test_backend_metal_probe
           ./bin/${{ matrix.target }}/release/tests/test_backend_metal_parity_unit
@@ -253,7 +265,7 @@ jobs:
       # multiples, not percentages. Raise them only with a sample count that
       # justifies it.
       - name: Perf regression gate (Apple, Q8_0)
-        if: runner.os == 'macOS'
+        if: matrix.apple_silicon
         run: |
           bin/${{ matrix.target }}/release/tests/bench_perf_sweep \
             --gguf gguf_artifacts/qwen3.5-0.8b-q8_0.gguf \
