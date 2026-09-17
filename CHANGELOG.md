@@ -8,6 +8,16 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+
+- **`geist_model_load_with_opts`** (`@stability EXPERIMENTAL`, `<geist.h>`):
+  load a model with explicit session bounds, so the buffers the model owns —
+  RoPE tables, the default session's scratch — are sized for what the caller
+  will actually use. `geist_model_load` is now a one-line wrapper that passes
+  `nullptr` and keeps today's behaviour exactly. Additive: no existing caller
+  changes, and the architecture vtable already carried the `opts` parameter
+  (`state_create`), which the engine had been passing `nullptr` for.
+
 ### Changed
 
 - **The public headers are includable from C++.** `include/` writes its

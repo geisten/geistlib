@@ -170,6 +170,16 @@ static char *find_tokenizer_path(const char *gguf_path) {
 
 [[nodiscard]] enum geist_status
 geist_model_load(const char *path, struct geist_backend *be, struct geist_model **out) {
+    return geist_model_load_with_opts(path, be, nullptr, out);
+}
+
+/* The create-time error messages below keep naming geist_model_load: it is the
+ * entry point every existing caller uses, and the failures they report are the
+ * same ones. */
+[[nodiscard]] enum geist_status geist_model_load_with_opts(const char                      *path,
+                                                           struct geist_backend            *be,
+                                                           const struct geist_session_opts *opts,
+                                                           struct geist_model             **out) {
     if (out == nullptr) {
         geist_error_set_create_time(GEIST_E_INVALID_ARG, "geist_model_load", "out is null");
         return GEIST_E_INVALID_ARG;
@@ -247,7 +257,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
      * If it named the cause in the create-time slot, keep that message —
      * the guess below is only right when nothing below said anything. */
     geist_error_clear_create_time();
-    void *arch_state = desc->decoder_ops->state_create(be, path, nullptr);
+    void *arch_state = desc->decoder_ops->state_create(be, path, opts);
     if (arch_state == nullptr) {
         model_load_undo(sp_tok, gguf_tok, arch_copy);
         if (!geist_have_create_error()) {
