@@ -106,7 +106,11 @@ MODEL_FILE    ?= gemma4-e2b-Q4_K_M.gguf
 MODEL_PATH    := $(MODEL_DIR)/$(MODEL_FILE)
 MODEL_HF_REPO ?= unsloth/gemma-4-E2B-it-GGUF
 MODEL_HF_FILE ?= gemma-4-E2B-it-Q4_K_M.gguf
-MODEL_URL     ?= https://huggingface.co/$(MODEL_HF_REPO)/resolve/main/$(MODEL_HF_FILE)
+# A revision, not `main`: this fixture decides what seven test targets assert, so it may not
+# change under us. Upstream LFS oid at that revision, verified 2026-09-19 (3106738272 bytes).
+MODEL_HF_REV  ?= 0314792d7f1f7e229411f620751375812bb9faf2
+MODEL_URL     ?= https://huggingface.co/$(MODEL_HF_REPO)/resolve/$(MODEL_HF_REV)/$(MODEL_HF_FILE)
+MODEL_SHA256  := 740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8
 
 # `make test` / test-int / test-e2e auto-fetch the model when it is missing,
 # then point GEIST_GGUF_PATH at it so the model-gated suites actually run
@@ -208,7 +212,8 @@ test-all: $(MODEL_PREREQ) test-unit test-int test-py test-e2e
 # (curl -C - resumes the .part on the next run). Override source via MODEL_URL;
 # pass HF_TOKEN=... for gated mirrors.
 fetch-model: $(MODEL_PATH)
-	@echo "Reference model ready: $(MODEL_PATH)"
+	$(call verify_sha256,$(MODEL_PATH),$(MODEL_SHA256))
+	@echo "Reference model ready (SHA-256 verified): $(MODEL_PATH)"
 
 # Shared download recipe for the model-file rules below: curl into $@.part and
 # rename on success, so an interrupted transfer never leaves a truncated file
@@ -243,8 +248,11 @@ define verify_sha256
 	fi
 endef
 
+# Verified here, not only in fetch-model: AUTO_FETCH_MODEL=1 makes `make test` depend on this
+# file directly, so the pin has to hold on that path as well.
 $(MODEL_PATH):
 	$(call fetch_gguf,~3.1 GB,$(MODEL_URL))
+	$(call verify_sha256,$@,$(MODEL_SHA256))
 
 # Benches are timing tools, not tests — separate target. Each bench prints
 # its own metrics; runner just reports run/skip/fail status.
@@ -281,13 +289,16 @@ fetch-bench-model: $(BENCH_MODEL_PATH)
 E4B_MODEL_DIR  ?= gguf_artifacts
 E4B_MODEL_FILE ?= gemma4-e4b-Q4_K_M.gguf
 E4B_MODEL_PATH := $(E4B_MODEL_DIR)/$(E4B_MODEL_FILE)
-E4B_MODEL_URL  ?= https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf
+E4B_MODEL_URL  ?= https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/bfc15c382204943c3a8fff0c750b94ae2364d7a3/gemma-4-E4B-it-Q4_K_M.gguf
+# Upstream LFS oid at that revision, verified 2026-09-19 (4977171584 bytes).
+E4B_MODEL_SHA256 := 85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87
 
 $(E4B_MODEL_PATH):
 	$(call fetch_gguf,~4.6 GB,$(E4B_MODEL_URL))
 
 fetch-e4b-model: $(E4B_MODEL_PATH)
-	@echo "E4B model ready: $(E4B_MODEL_PATH)"
+	$(call verify_sha256,$(E4B_MODEL_PATH),$(E4B_MODEL_SHA256))
+	@echo "E4B model ready (SHA-256 verified): $(E4B_MODEL_PATH)"
 
 # Llama-family reference model. Small on purpose (369 MB): it exists to prove
 # the engine reads a SECOND architecture family and tokenizer mode, not to
@@ -453,12 +464,12 @@ help:
 	"Test:" \
 	"  make test                  unit + int + py  (auto-fetches model; AUTO_FETCH_MODEL=0 to skip)" \
 	"  make test-unit|test-int|test-e2e|test-all   [FILTER=substr]" \
-	"  make fetch-model [HF_TOKEN=..]              download reference GGUF (~3.1 GB)" \
+	"  make fetch-model [HF_TOKEN=..]              download reference GGUF (~3.1 GB, SHA-pinned)" \
 	"  make fetch-llama-model                      download SmolLM2 fixture (~369 MB, SHA-pinned)" \
 	"  make fetch-qwen3-model                      download Qwen3-0.6B fixture (~609 MB, SHA-pinned)" \
 	"  make fetch-qwen35-model                     download Qwen3.5-0.8B hybrid fixture (~780 MB, SHA-pinned)" \
 	"  make fetch-audio-tower                      extract Gemma 4 audio tower (~590 MB, SHA-pinned)" \
-	"  make fetch-e4b-model [HF_TOKEN=..]          download Gemma 4 E4B GGUF (~4.6 GB)" \
+	"  make fetch-e4b-model [HF_TOKEN=..]          download Gemma 4 E4B GGUF (~4.6 GB, SHA-pinned)" \
 	"" \
 	"Bench (timing/quality tools, not pass/fail):" \
 	"  make bench                                  reproducible cross-engine benchmark" \
