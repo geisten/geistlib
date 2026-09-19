@@ -451,6 +451,31 @@ jobs:
           make TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native
           make test-unit TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
 
+  # clang on x86_64. Every other x86_64 leg uses gcc, and the macOS clang legs
+  # build a different configuration, so a clang-only x86 failure ships unseen:
+  # at v0.10.8 this exact configuration aborted in instruction selection
+  # ("Cannot select: X86ISD::VPDPBUSD") under clang-19 *and* clang-21, because
+  # clang outlines an OpenMP `parallel for` body into a function that does not
+  # inherit the kernel's target attribute. #415 fixed that by keeping the
+  # intrinsics in a separately attributed function; this leg keeps it fixed.
+  # Build + unit tests suffice — the failure is a compile abort, not a wrong
+  # result. libomp-19-dev is required: clang brings its own OpenMP runtime and
+  # omp.h, and without it the build stops at `#include <omp.h>` instead.
+  build-test-x86_64-clang:
+    name: build + unit tests (Linux x86_64, clang)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-19 libomp-19-dev
+      - name: Build + unit tests (release backends, clang)
+        run: |
+          make TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
+          make test-unit TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
+
   # Audio harness smoke (#234). The Pi 5 audio baseline is produced by
   # bench_audio_encode and test_audio_latency_e2e; everywhere else in CI those
   # binaries SKIP for missing fixtures, so the harness could rot unnoticed.
