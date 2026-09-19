@@ -550,6 +550,47 @@ jobs:
           GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
         run: ./bin/linux/release/tests/test_audio_stream_session_int
 
+  # x86_64 counterpart to audio-smoke. The W8A8 parity test ran on NEON only,
+  # so the AVX-512/VNNI audio path had no gate at all, and geistkit's model
+  # profile hit the first failure there the moment it supplied the tower.
+  # Only the tower is needed, not Gemma: the encoder runs without an LLM.
+  audio-parity-x86_64:
+    name: audio W8A8 parity (Linux x86_64, AVX-512 VNNI)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v4
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-audio-parity-x86_64-${{ github.run_id }}
+          restore-keys: |
+            ccache-audio-parity-x86_64-
+            ccache-build-test-x86_64-
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache
+      - name: Build
+        run: make TARGET=linux CC="ccache gcc-14" bin
+      # Same cache key as audio-smoke on purpose: one 614 MB entry serves both
+      # legs instead of two, which the repo's 10 GB cache budget notices.
+      - name: Cache audio tower
+        uses: actions/cache@v4
+        with:
+          path: audio_bench/audio_tower.safetensors
+          key: geist-audio-tower-d6c45a6c2762
+      - name: Fetch audio tower (Range-extracted, SHA-pinned)
+        run: make fetch-audio-tower
+      # The tower is present, so a skip (exit 77) fails the step — a silent
+      # skip is exactly how this platform went unmeasured until now.
+      - name: Attn/LConv W8A8 parity vs shipping precision (a skip is a failure)
+        run: ./bin/linux/release/tests/test_audio_attn_w8a8_parity_int
+
   # TARGET=pi5 is the primary deployment target yet no CI leg built it — the
   # 0.8.0 _GNU_SOURCE fix landed in target-linux.mk only, and TARGET=pi5
   # broke unseen until a build on the physical board caught it (#244). The
