@@ -124,6 +124,15 @@ jobs:
       - name: Unit tests
         run: make test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
 
+      # Sanitizers on macOS, both arches: the `asan`/`asan-x86_64` legs are
+      # Linux+gcc only, so clang-specific breakage at -O1 reached main unseen —
+      # an `omp simd` request the sanitizer instrumentation cannot satisfy is a
+      # -Wpass-failed error under -Werror, and it never shows at -O3. Model-free
+      # suite, same backends as the release build above.
+      - name: ASan + UBSan unit tests (macOS)
+        if: runner.os == 'macOS'
+        run: make MODE=asan test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
+
       # Mandatory GPU gate (#181): on macos-15 a Metal device is expected,
       # so a SKIP (exit 77) from either binary fails the step — a skipped
       # gate must not read as a green one. Registration, lifecycle, buffer
