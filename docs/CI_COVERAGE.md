@@ -15,6 +15,7 @@ the test suite**, not just built.
 | **Linux arm64** (cpu_neon, glibc) | ✅ | ✅ | ✅ | ✅ | ✅ | `build-test`, `build-test-musl`, `asan` |
 | **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅³ | ✅ | ✅² | `build-test-x86_64`, `build-test-musl-x86_64`, `asan-x86_64` |
 | **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar` |
+| **Linux x86_64** (cpu_x86, clang) | ✅ | ✅ | — | — | — | `build-test-x86_64-clang`⁵ |
 
 Every environment in [`release.yml`](../.github/workflows/release.yml)
 (macos-arm64, linux-arm64, linux-x86_64) now has build **and** test coverage
@@ -52,6 +53,14 @@ runner and gates branch PRs only, not fork PRs.
    appears at -O3. That failed the whole macOS x86_64 sanitizer build while
    every Linux leg stayed green. Model-free unit suite, same backends as the
    release build on that leg.
+5. **x86_64 clang — enforced (`build-test-x86_64-clang`).** Every other x86_64
+   leg compiles with gcc, so a clang-only x86 break had no gate: at v0.10.8 the
+   release backend configuration aborted in instruction selection ("Cannot
+   select: X86ISD::VPDPBUSD") under clang-19 and clang-21 alike, because clang
+   outlines an OpenMP `parallel for` body into a function that does not inherit
+   the kernel's `target` attribute. #415 removed the cause; this leg keeps it
+   from returning. Build plus the model-free unit suite — the failure mode is a
+   compile abort.
 
 ### AVX-512 is exercised *opportunistically*, not guaranteed
 
