@@ -34,7 +34,14 @@ else ifeq ($(MODE),debug)
     CFLAGS_MODE  := -O0 -g3 -DDEBUG
     LDFLAGS_MODE :=
 else ifeq ($(MODE),asan)
-    CFLAGS_MODE  := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
+    # -Wno-pass-failed: the sanitizer instrumentation blocks the vectorization
+    # that `#pragma omp (parallel for) simd` asks for, and clang reports that as
+    # -Wpass-failed=transform-warning — an error under -Werror. It fires at -O1
+    # with the sanitizers on, never at -O3, so only this mode is affected, and
+    # "did not vectorize" is not a defect in a build that exists to find memory
+    # errors. gcc has no such option and ignores the -Wno- form, so this stays
+    # portable across both CI compilers.
+    CFLAGS_MODE  := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wno-pass-failed
     LDFLAGS_MODE := -fsanitize=address,undefined
 else ifeq ($(MODE),tsan)
     # -Wno-unused-function: OMP-only kernel helpers go unused without -fopenmp.

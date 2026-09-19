@@ -10,8 +10,8 @@ the test suite**, not just built.
 
 | Environment | Build | Unit | Int + e2e (real model) | musl-static | ASan/UBSan | CI job |
 | :-- | :--: | :--: | :--: | :--: | :--: | :-- |
-| **macOS arm64** (Accelerate/AMX) | ✅ | ✅ | ⚪ skip¹ | — | — | `build-test` |
-| **macOS x86_64** (cpu_x86 AVX2, Accelerate) | ✅ | ✅ | ⚪ skip¹ | — | — | `build-test` |
+| **macOS arm64** (Accelerate/AMX) | ✅ | ✅ | ⚪ skip¹ | — | ✅⁴ | `build-test` |
+| **macOS x86_64** (cpu_x86 AVX2, Accelerate) | ✅ | ✅ | ⚪ skip¹ | — | ✅⁴ | `build-test` |
 | **Linux arm64** (cpu_neon, glibc) | ✅ | ✅ | ✅ | ✅ | ✅ | `build-test`, `build-test-musl`, `asan` |
 | **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅³ | ✅ | ✅² | `build-test-x86_64`, `build-test-musl-x86_64`, `asan-x86_64` |
 | **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar` |
@@ -20,7 +20,8 @@ Every environment in [`release.yml`](../.github/workflows/release.yml)
 (macos-arm64, linux-arm64, linux-x86_64) now has build **and** test coverage
 here. On top of the matrix, dedicated legs gate every PR: TSan multi-session
 (x86_64), the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on
-lavapipe, the Metal GPU step inside the macOS arm64 leg, and `check-headers` — every
+lavapipe, the Metal GPU step inside the macOS arm64 leg, the macOS ASan/UBSan
+unit suite on both Mac arches, and `check-headers` — every
 public header compiled standalone as C23 and as C++17, inside `build-test` —
 each described in its section below. Vulkan on a physical GPU (`vulkan-gpu`) runs on a self-hosted
 runner and gates branch PRs only, not fork PRs.
@@ -44,6 +45,13 @@ runner and gates branch PRs only, not fork PRs.
    `GEIST_FORCE_ISA=avx2` pass exercises the non-AVX512 dispatch even on
    runners that do have AVX-512 — so the portability regression class stays
    caught.
+4. **macOS ASan/UBSan — enforced (`build-test`, both arches).** The `asan` and
+   `asan-x86_64` legs are Linux+gcc only, so clang-specific breakage at -O1 had
+   no gate: an `omp simd` request the sanitizer instrumentation cannot satisfy
+   is a `-Wpass-failed=transform-warning` error under `-Werror`, and it never
+   appears at -O3. That failed the whole macOS x86_64 sanitizer build while
+   every Linux leg stayed green. Model-free unit suite, same backends as the
+   release build on that leg.
 
 ### AVX-512 is exercised *opportunistically*, not guaranteed
 
