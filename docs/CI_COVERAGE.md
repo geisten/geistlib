@@ -99,6 +99,7 @@ explicitly either way).
 | `smollm2-360m-instruct-q8_0.gguf` (~369 MB) | llama populator + GPT-2-BPE tokenizer mode | `HuggingFaceTB/SmolLM2-360M-Instruct-GGUF`, revision- and SHA-256-pinned in the Makefile (`LLAMA_MODEL_SHA256`), Apache-2.0 | Linux arm64 + x86_64 int/e2e |
 | `qwen3-0.6b-q8_0.gguf` (~609 MB) | qwen3 geometry, per-head Q/K norm and tokenizer mode | `Qwen/Qwen3-0.6B-GGUF`, revision- and SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
 | `qwen3.5-0.8b-q8_0.gguf` (~780 MB) | qwen35 hybrid DeltaNet/attention family | `unsloth/Qwen3.5-0.8B-GGUF`, revision- and SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
+| `audio_tower.safetensors` (~614 MB) | Conformer audio encoder, W8A8 attention and LConv | Range-extracted and SHA-256-pinned (`make fetch-audio-tower`) | `audio-smoke` (arm64, NEON) + `audio-parity-x86_64` (AVX-512/VNNI) |
 
 The llama tests (`test_llama_load_int`, `test_llama_e2e_int`) are **executed,
 not merely built**: both Linux int/e2e legs fetch the model
