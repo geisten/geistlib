@@ -461,6 +461,9 @@ jobs:
   # Build + unit tests suffice — the failure is a compile abort, not a wrong
   # result. libomp-19-dev is required: clang brings its own OpenMP runtime and
   # omp.h, and without it the build stops at `#include <omp.h>` instead.
+  # libclang-rt-19-dev likewise: -fsanitize=fuzzer needs the sanitizer runtime,
+  # and libclang-common-19-dev only *recommends* it — which --no-install-
+  # recommends then skips.
   build-test-x86_64-clang:
     name: build + unit tests (Linux x86_64, clang)
     runs-on: ubuntu-24.04
@@ -470,11 +473,19 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-19 libomp-19-dev
+          sudo apt-get install -y --no-install-recommends clang-19 libomp-19-dev libclang-rt-19-dev
       - name: Build + unit tests (release backends, clang)
         run: |
           make TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
           make test-unit TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
+
+      # Coverage-guided fuzzing needs clang, so it rides along here (the same
+      # split geist-memory uses). MODE=fuzz rebuilds the library with
+      # -fsanitize=fuzzer-no-link into its own tree, which is why this cannot
+      # reuse the objects above. 30 s per target reaches ~7 M executions;
+      # the corpus is seeded by the harness itself, no fixture, no network.
+      - name: Fuzz harnesses (libFuzzer, 30 s per target)
+        run: make fuzz-libfuzzer TARGET=linux CC=clang-19 FUZZ_CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native FUZZ_SECONDS=30
 
   # Audio harness smoke (#234). The Pi 5 audio baseline is produced by
   # bench_audio_encode and test_audio_latency_e2e; everywhere else in CI those
@@ -939,6 +950,16 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           ASAN_OPTIONS: detect_leaks=1
         run: make MODE=asan test-unit TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
+
+      # Deterministic fuzz gate, in this job because the sanitizer tree it needs
+      # is already built by the step above: 3000 runs per target cost under a
+      # second. Fixed seed, so a failure reproduces from the log without a
+      # crash artifact. The coverage-guided run lives in the clang job.
+      - name: Fuzz harnesses (deterministic, ASan/UBSan)
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1
+        run: make MODE=asan fuzz TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
 
   # The concurrent-session contract (#183): distinct sessions of one model may
   # run from different threads. MODE=tsan proved it on cpu_neon (and caught the

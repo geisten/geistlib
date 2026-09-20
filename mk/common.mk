@@ -26,6 +26,12 @@ BIN_DIR   := bin/$(TARGET)/$(MODE)
 #           pragmas compile to serial loops, which is exactly right — the
 #           races under test are cross-session, not intra-kernel.
 # perf    : -O3 + symbols for perf record / sampling profilers
+# fuzz    : asan + libFuzzer coverage instrumentation for `make fuzz-libfuzzer`.
+#           Its own mode, not asan plus EXTRA_CFLAGS, so the objects land in
+#           their own build dir: this build system has no flag hash, and an
+#           asan tree built without -fsanitize=fuzzer-no-link would be reused
+#           as-is, leaving the fuzzer running blind over an uninstrumented
+#           library (observed: cov: 22 after 24 M execs).
 
 ifeq      ($(MODE),release)
     CFLAGS_MODE  := -O3 -DNDEBUG
@@ -52,6 +58,9 @@ else ifeq ($(MODE),tsan)
     # Strip OpenMP from the target flags (see mode table above).
     CFLAGS_TARGET  := $(filter-out -Xpreprocessor -fopenmp,$(CFLAGS_TARGET))
     LDFLAGS_TARGET := $(filter-out -lomp,$(LDFLAGS_TARGET))
+else ifeq ($(MODE),fuzz)
+    CFLAGS_MODE  := -O1 -g -fsanitize=address,undefined,fuzzer-no-link -fno-omit-frame-pointer -Wno-pass-failed
+    LDFLAGS_MODE := -fsanitize=address,undefined
 else ifeq ($(MODE),perf)
     CFLAGS_MODE  := -O3 -g -fno-omit-frame-pointer
     LDFLAGS_MODE :=
@@ -63,7 +72,7 @@ else ifeq ($(MODE),cov)
     CFLAGS_MODE  := -O1 -g --coverage -fno-omit-frame-pointer
     LDFLAGS_MODE := --coverage
 else
-    $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, perf, cov)
+    $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, fuzz, perf, cov)
 endif
 
 # ---- Base CFLAGS ---------------------------------------------------------
@@ -287,7 +296,17 @@ ifeq ($(filter cpu_x86,$(BACKENDS)),)
     TEST_SOURCES := $(filter-out $(X86_KERNEL_TESTS),$(TEST_SOURCES))
 endif
 
-BIN_SOURCES  := $(TEST_SOURCES) $(DEMO_SOURCES)
+# Fuzz harnesses. Deliberately not tests/test_*.c: mk/run-tests.sh globs that
+# prefix, and a fuzzer is not a pass/fail test. They still build like any other
+# binary so `make bin` keeps them compiling.
+FUZZ_SOURCES := $(wildcard tests/fuzz_*.c)
+
+BIN_SOURCES  := $(TEST_SOURCES) $(DEMO_SOURCES) $(FUZZ_SOURCES)
+
+# The harnesses are libFuzzer entry points first; GEIST_FUZZ_STANDALONE adds the
+# deterministic driver, which is what makes them linkable (and runnable) without
+# -fsanitize=fuzzer, i.e. in every gcc job.
+$(BUILD_DIR)/tests/fuzz_%.o: CFLAGS += -DGEIST_FUZZ_STANDALONE
 
 # ---- Derived paths -------------------------------------------------------
 

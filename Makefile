@@ -23,7 +23,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin run agent-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
+.PHONY: all lib bin fuzz fuzz-libfuzzer fuzz-libfuzzer-run run agent-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -160,6 +160,58 @@ check-headers:
 			  -o $(BUILD_DIR)/headers/$$b.cxx || exit 1; \
 	done
 	@echo "check-headers: $(words $(PUBLIC_HEADERS)) public headers compile as C23 and as C++17"
+
+# ---- Fuzzing ------------------------------------------------------------
+#
+# Two targets on purpose, the split geist-memory already uses:
+#
+#   make fuzz            deterministic PRNG driver, builds with whatever CC the
+#                        job has. Runs in every Linux gcc job, so the harnesses
+#                        cannot rot unnoticed, and a failure reproduces from a
+#                        fixed seed.
+#   make fuzz-libfuzzer  coverage-guided, needs clang. This is the one that
+#                        finds new shapes; the gate keeps it short and a
+#                        maintainer raises FUZZ_SECONDS to hunt.
+#
+# Targets are ordered by attack surface: GGUF first (a whole file an attacker
+# writes, read through mmap, metadata explicitly untrusted — gguf_reader.c:153),
+# then the tokenizer (vocab, scores and merges out of that same file, then an
+# encoder over caller text). Neither needs a model or the network: the input IS
+# the format.
+FUZZ_RUNS    ?= 3000
+FUZZ_SECONDS ?= 30
+FUZZ_CC      ?= clang
+FUZZ_TARGETS := gguf tokenizer
+FUZZ_BINS    := $(addprefix $(TEST_BIN_DIR)/fuzz_,$(FUZZ_TARGETS))
+
+fuzz: $(FUZZ_BINS)
+	@for t in $(FUZZ_TARGETS); do \
+		echo "== fuzz_$$t ($(FUZZ_RUNS) runs)"; \
+		$(TEST_BIN_DIR)/fuzz_$$t $(FUZZ_RUNS) || exit 1; \
+	done
+
+# Instrumenting the harness alone would fuzz blind: the branches worth reaching
+# are in gguf_reader.c and gguf_tokenizer.c, so the whole library is rebuilt
+# with coverage under MODE=fuzz (asan + -fsanitize=fuzzer-no-link, see the mode
+# table in mk/common.mk). The re-entry through $(MAKE) is what makes
+# $(LIB_FILE) and $(TEST_BIN_DIR) expand to that mode's paths.
+fuzz-libfuzzer:
+	$(MAKE) MODE=fuzz CC=$(FUZZ_CC) fuzz-libfuzzer-run
+
+# -fsanitize=fuzzer supplies main, so GEIST_FUZZ_STANDALONE must stay off for
+# this TU. The corpus seed comes from the harness itself — the format knowledge
+# lives next to the parser it feeds, not in a checked-in blob.
+fuzz-libfuzzer-run: $(LIB_FILE) $(FUZZ_BINS)
+	@mkdir -p $(BUILD_DIR)/fuzz
+	@for t in $(FUZZ_TARGETS); do \
+		mkdir -p $(BUILD_DIR)/fuzz/corpus-$$t; \
+		$(TEST_BIN_DIR)/fuzz_$$t --seed > $(BUILD_DIR)/fuzz/corpus-$$t/seed; \
+		$(CC) $(CFLAGS) -fsanitize=fuzzer tests/fuzz_$$t.c $(LIB_FILE) $(LDLIBS) \
+		    -o $(BUILD_DIR)/fuzz/fuzz-$$t || exit 1; \
+		echo "== fuzz_$$t (libFuzzer, $(FUZZ_SECONDS)s)"; \
+		$(BUILD_DIR)/fuzz/fuzz-$$t $(BUILD_DIR)/fuzz/corpus-$$t \
+		    -max_total_time=$(FUZZ_SECONDS) -max_len=65536 -rss_limit_mb=2048 || exit 1; \
+	done
 
 test-unit: bin
 	@$(GGUF_ENV) mk/run-tests.sh $(TEST_BIN_DIR) "_unit"
