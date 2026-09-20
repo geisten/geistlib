@@ -217,6 +217,49 @@ the overall figure and per-subsystem table published to the job summary.
   `make test-py`) proves the gate fires on regression, empty scope, unset
   baseline and floor violation — and passes when on-baseline.
 
+## Fuzzing (parsers)
+
+Two harnesses in `tests/`, ordered by attack surface — both need neither a
+model nor the network, because the input *is* the format:
+
+- `fuzz_gguf.c` → `gguf_open_memory` plus every accessor on the result
+  (tensor list, dtype names, metadata getters, one index past the end) and it
+  reads each tensor's payload bytes, so a length that escapes the mapping is a
+  read ASan reports rather than a value nobody looks at. GGUF is first because
+  the whole file comes from outside and the parser says so itself
+  (`src/io/gguf_reader.c:153`).
+- `fuzz_tokenizer.c` → `gguf_tokenizer_load_copy` out of the same file, then
+  encode/decode/`id_for_text`. The GGUF is closed and freed right after the
+  load: copy mode promises independence from the mapping, so a surviving
+  pointer becomes a use-after-free instead of a silent success. Vocab, scores,
+  `token_type` and merges are all attacker-controlled arrays.
+
+Both are entry points for libFuzzer *and* carry a deterministic PRNG driver
+behind `GEIST_FUZZ_STANDALONE`, which is what lets them run in a gcc job:
+
+| Target | Job | Cost |
+| :-- | :-- | :-- |
+| `make MODE=asan fuzz` (3000 runs/harness, fixed seed) | `asan-x86_64` | < 1 s, reuses that job's sanitizer tree |
+| `make fuzz-libfuzzer FUZZ_SECONDS=30` (coverage-guided) | `build-test-x86_64-clang` | ~1 min run, ~7 M execs per target |
+
+`MODE=fuzz` (asan + ubsan + `-fsanitize=fuzzer-no-link`) exists so the library
+itself is instrumented in its own build tree. Do not fake it with
+`MODE=asan EXTRA_CFLAGS=-fsanitize=fuzzer-no-link`: there is no flag hash in
+this build system, an existing asan tree is reused as-is, and the fuzzer then
+runs blind — `cov: 22` after 24 M executions, which is how this was noticed.
+
+The corpus is written by the harness (`--seed`), not checked in: the format
+knowledge belongs next to the parser it feeds. Nothing is persisted between
+runs, which is also the argument against a **nightly long run for now** — each
+run would restart from the same seed, and a 10-minute run from scratch explores
+little past what 30 s at ~230 k exec/s already reaches. Worth adding the moment
+the corpus is cached (`actions/cache`, one entry per target); then the long run
+starts where the last one stopped and the extra minutes buy new shapes.
+
+First finding, fixed in the same change: an unbounded metadata/tensor count in
+the 24-byte GGUF header turned into a 1.5 PB allocation request
+(`gguf_reader.c`, now bounded by the bytes that are actually left).
+
 ## Non-goals
 
 - **Windows** — no supported toolchain, CI leg or release artifact exists; it is
