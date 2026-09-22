@@ -102,6 +102,12 @@ struct cpu_neon_workspace {
     size_t   act_scale_cap;
     int32_t *act_sum32;
     size_t   act_sum32_cap;
+    /* PQ2_0 x8 prefill: m x n_in activations permuted into the codes'
+     * element order, and this thread's dequantized fp32 weight tile. */
+    float *pq2_xp;
+    size_t pq2_xp_cap;
+    float *pq2_tile;
+    size_t pq2_tile_cap;
 };
 
 /* Grow-on-demand helpers for the workspace buffers. Return false on OOM,
@@ -210,10 +216,12 @@ void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
 constexpr size_t PQ2_0_X8_BLOCK_BYTES = 8 * 34;
 size_t           pq2_0_x8_size_bytes(size_t n_in, size_t n_out);
 int              pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst);
-void             cpu_neon_w_pq2_0_x8_m1(const float               *x,
-                                        const struct geist_weight *w,
-                                        struct geist_backend      *be,
-                                        float                     *y);
+void             cpu_neon_w_pq2_0_x8_mN(
+        size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
+void cpu_neon_w_pq2_0_x8_m1(const float               *x,
+                            const struct geist_weight *w,
+                            struct geist_backend      *be,
+                            float                     *y);
 
 /* I2_S (BitNet b1.58 official): ternary W1.58 × A8, int8-SDOT. Same compute
  * as tq2_0/q8a but the in-byte 2-bit field order is reversed and a single

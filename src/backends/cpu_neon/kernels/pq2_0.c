@@ -28,6 +28,7 @@
 #include "../internal.h"
 #include "../parallel.h"
 #include "checked.h"
+#include "geist_gemm.h"
 #include "heap.h"
 
 #include "quant.h"
@@ -342,6 +343,144 @@ void cpu_neon_w_pq2_0_x8_m1(const float               *x,
             .blocks_per_row = n_in / PQ2_0_BLOCK_ELEMS,
     };
     pq2_0_parallel_for(n_out / 8, pq2_0_x8_tile_body, &ctx);
+}
+
+/* ---- x8 prefill: dequant straight from the x8 copy + SGEMM ---------------
+ *
+ * The generic trampoline dequantizes 32-row tiles of the row-major source
+ * with the scalar reference decoder, which also keeps the 7 GB mmap warm
+ * next to the x8 copy. Here the tile comes out of the x8 layout with NEON,
+ * in the codes' element order (xq order above: position 16l + m of a
+ * 64-element chunk is element 4m + l), and x is permuted into the same
+ * order once per call — a dot product does not care about the order of
+ * its terms as long as both sides agree. */
+
+/* xp[t][b*128 + c*64 + 16l + m] = x[t][b*128 + c*64 + 4m + l]. */
+static void pq2_0_permute_x(size_t m, size_t n_in, const float *x, float *xp) {
+    for (size_t t = 0; t < m; t++) {
+        const float *xr = x + t * n_in;
+        float       *pr = xp + t * n_in;
+        for (size_t base = 0; base < n_in; base += 64) {
+            for (size_t q = 0; q < 4; q++) {
+                const float32x4x4_t v = vld4q_f32(xr + base + 16 * q);
+                vst1q_f32(pr + base + 0 + 4 * q, v.val[0]);
+                vst1q_f32(pr + base + 16 + 4 * q, v.val[1]);
+                vst1q_f32(pr + base + 32 + 4 * q, v.val[2]);
+                vst1q_f32(pr + base + 48 + 4 * q, v.val[3]);
+            }
+        }
+    }
+}
+
+/* 16 codes (one shift level of a row's 16 bytes) -> 16 floats (code-1)*d. */
+static inline void pq2_0_expand16(uint8x16_t codes, float d, float *out) {
+    const int8x16_t v  = vsubq_s8(vreinterpretq_s8_u8(codes), vdupq_n_s8(1));
+    const int16x8_t lo = vmovl_s8(vget_low_s8(v));
+    const int16x8_t hi = vmovl_s8(vget_high_s8(v));
+    vst1q_f32(out + 0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo))), d));
+    vst1q_f32(out + 4, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo))), d));
+    vst1q_f32(out + 8, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi))), d));
+    vst1q_f32(out + 12, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi))), d));
+}
+
+/* Rows [tile8*8, tile8*8 + 8) of the x8 copy -> tile rows, fp32, permuted
+ * element order, row stride n_in. */
+static void pq2_0_x8_dequant8(const uint8_t *W, size_t nb, size_t n_in, size_t tile8, float *out) {
+    const uint8x16_t mask = vdupq_n_u8(3);
+    for (size_t b = 0; b < nb; b++) {
+        const uint8_t *blk = W + (tile8 * nb + b) * PQ2_0_X8_BLOCK_BYTES;
+        float          d[8];
+        vst1q_f32(d, vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16((const uint16_t *) blk))));
+        vst1q_f32(d + 4, vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16((const uint16_t *) blk + 4))));
+        const uint8_t *qs = blk + 16;
+        for (size_t g = 0; g < 2; g++) {
+            for (size_t c = 0; c < 2; c++) {
+                /* V_j = [row0 bytes 4j..4j+3 | row1 | row2 | row3]; a 4x4
+                 * u32 transpose turns them into R_i = row i bytes 0..15. */
+                const uint32x4_t v0 = vreinterpretq_u32_u8(vld1q_u8(qs + c * 128 + g * 64 + 0));
+                const uint32x4_t v1 = vreinterpretq_u32_u8(vld1q_u8(qs + c * 128 + g * 64 + 16));
+                const uint32x4_t v2 = vreinterpretq_u32_u8(vld1q_u8(qs + c * 128 + g * 64 + 32));
+                const uint32x4_t v3 = vreinterpretq_u32_u8(vld1q_u8(qs + c * 128 + g * 64 + 48));
+                const uint32x4_t t0 = vtrn1q_u32(v0, v1), t1 = vtrn2q_u32(v0, v1);
+                const uint32x4_t t2 = vtrn1q_u32(v2, v3), t3 = vtrn2q_u32(v2, v3);
+                const uint8x16_t R[4] = {
+                        vreinterpretq_u8_u64(
+                                vtrn1q_u64(vreinterpretq_u64_u32(t0), vreinterpretq_u64_u32(t2))),
+                        vreinterpretq_u8_u64(
+                                vtrn1q_u64(vreinterpretq_u64_u32(t1), vreinterpretq_u64_u32(t3))),
+                        vreinterpretq_u8_u64(
+                                vtrn2q_u64(vreinterpretq_u64_u32(t0), vreinterpretq_u64_u32(t2))),
+                        vreinterpretq_u8_u64(
+                                vtrn2q_u64(vreinterpretq_u64_u32(t1), vreinterpretq_u64_u32(t3))),
+                };
+                for (size_t i = 0; i < 4; i++) {
+                    const size_t r   = g * 4 + i;
+                    float       *dst = out + r * n_in + b * PQ2_0_BLOCK_ELEMS + c * 64;
+                    pq2_0_expand16(vandq_u8(R[i], mask), d[r], dst + 0);
+                    pq2_0_expand16(vandq_u8(vshrq_n_u8(R[i], 2), mask), d[r], dst + 16);
+                    pq2_0_expand16(vandq_u8(vshrq_n_u8(R[i], 4), mask), d[r], dst + 32);
+                    pq2_0_expand16(vshrq_n_u8(R[i], 6), d[r], dst + 48);
+                }
+            }
+        }
+    }
+}
+
+/* Rows per dequant tile and per SGEMM call. Each thread dequantizes its
+ * own tile and runs its own SGEMM, so dequant overlaps the AMX work of the
+ * others. Measured on the 27B FFN matrix (M1 Max, 8 threads), GFLOP/s at
+ * m = 64 / 128 / 256: T=32 642/878/1090, T=64 901/903/907, T=128
+ * 901/1002/1134, T=256 920/1058/1090; the generic trampoline 628/765/676.
+ * Dequantizing a shared panel for one big SGEMM lost at small m
+ * (358/574/695 with 8192-row panels). */
+constexpr size_t PQ2_0_X8_TILE_ROWS = 128;
+
+void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
+                            const float               *x,
+                            const struct geist_weight *w,
+                            struct geist_backend      *be,
+                            float                     *y) {
+    struct cpu_neon_state     *st    = (struct cpu_neon_state *) be->state;
+    struct cpu_neon_workspace *ws    = cpu_neon_ws(st);
+    const size_t               n_in  = (size_t) w->n_in;
+    const size_t               n_out = (size_t) w->n_out;
+    const size_t               nb    = n_in / PQ2_0_BLOCK_ELEMS;
+    const uint8_t             *W     = (const uint8_t *) w->aux_fp32;
+    if (m == 0 || W == nullptr || ws == nullptr ||
+        !cpu_neon_grow_f32(&ws->pq2_xp, &ws->pq2_xp_cap, m * n_in)) {
+        return;
+    }
+    pq2_0_permute_x(m, n_in, x, ws->pq2_xp);
+    const float *xp      = ws->pq2_xp;
+    const size_t T       = PQ2_0_X8_TILE_ROWS;
+    const size_t n_tiles = (n_out + T - 1) / T;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 1)
+#endif
+    for (size_t ti = 0; ti < n_tiles; ti++) {
+        struct cpu_neon_workspace *tws = cpu_neon_ws(st);
+        if (tws == nullptr || !cpu_neon_grow_f32(&tws->pq2_tile, &tws->pq2_tile_cap, T * n_in)) {
+            continue;
+        }
+        const size_t r0 = ti * T;
+        const size_t tr = n_out - r0 < T ? n_out - r0 : T;
+        for (size_t k = 0; k < tr / 8; k++) {
+            pq2_0_x8_dequant8(W, nb, n_in, r0 / 8 + k, tws->pq2_tile + k * 8 * n_in);
+        }
+        geist_sgemm(GEIST_OP_N,
+                    GEIST_OP_T,
+                    (int) m,
+                    (int) tr,
+                    (int) n_in,
+                    1.0f,
+                    xp,
+                    (int) n_in,
+                    tws->pq2_tile,
+                    (int) n_in,
+                    0.0f,
+                    y + r0,
+                    (int) n_out);
+    }
 }
 
 #endif /* __ARM_NEON && __ARM_FEATURE_DOTPROD */

@@ -51,8 +51,11 @@ enum geist_status geist_hadamard_rows(size_t       rows,
         return GEIST_E_INVALID_ARG;
     }
 
-    /* ponytail: one thread, ~2 % of a 27B decode token on M1; split rows
-     * across the backend pool if prefill profiles show it. */
+    /* Rows are independent: split them across OpenMP threads for prefill
+     * (decode is one row and stays on the caller). */
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static) if (rows > 1)
+#endif
     for (size_t r = 0; r < rows; r++) {
         const float *xr = x + r * width;
         float       *yr = y + r * width;

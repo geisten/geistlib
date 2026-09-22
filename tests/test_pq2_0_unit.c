@@ -16,7 +16,8 @@
  *      Matching the A8 model and not the fp32 one is also what shows the
  *      SDOT path, not the trampoline, was installed.
  *   4. Both SDOT layouts: n_out 40 installs the x8 interleaved repack
- *      (GEIST_W_LAYOUT_PQ2_0_X8_GEMV), n_out 37 cannot and keeps the row
+ *      (GEIST_W_LAYOUT_PQ2_0_X8_GEMV) — n_out 264 spans two full prefill
+ *      tiles plus a remainder — n_out 37 cannot and keeps the row
  *      kernel, and GEIST_PQ2_0_X8_GEMV=0 keeps the row kernel for both —
  *      every one of them held to the same W2A8 model.
  *
@@ -191,12 +192,12 @@ static int check_backend(const char *name, bool x8_policy) {
     const bool   neon      = strcmp(name, "cpu_neon") == 0;
     int          fails     = 0;
     const size_t n_ins[]   = {128, 5120, 17408};
-    const size_t n_outs[]  = {37, 40};
+    const size_t n_outs[]  = {37, 40, 264};
     const size_t m         = 3;
     char         what[160] = {0};
-    for (size_t kk = 0; kk < 2 * sizeof n_ins / sizeof n_ins[0]; kk++) {
-        const size_t k     = kk / 2;
-        const size_t n_out = n_outs[kk % 2];
+    for (size_t kk = 0; kk < 3 * sizeof n_ins / sizeof n_ins[0]; kk++) {
+        const size_t k     = kk / 3;
+        const size_t n_out = n_outs[kk % 3];
         const size_t n_in  = n_ins[k];
         size_t       bytes = 0;
         uint8_t     *W     = make_tensor(n_out, n_in, &bytes);

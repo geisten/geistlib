@@ -396,6 +396,8 @@ const struct geist_backend_descriptor geist_backend_cpu_neon = {
                          * a tunable rename (the #318 case) */
                         .calibration_generation = 1,
                         .max_m                  = GEIST_QUANT_M_CAP,
+                        /* host DeltaNet sub-chunks (layer_deltanet.c) */
+                        .dn_subchunk = true,
 #if defined(__APPLE__)
                         /* Unified memory + Accelerate: FP32 KV wins. */
                         .preferred_kv_mode = GEIST_KV_FP32,

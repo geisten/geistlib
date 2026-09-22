@@ -363,6 +363,10 @@ void transformer_dn_head_chunk(float       *S,
  * whole-batch passes into a heap y buffer, then dn_head_chunk per
  * v-head (OMP). Returns false if scratch allocation fails; the caller
  * falls back to the sequential token loop. */
+/* Largest delta-rule chunk the host path runs at once; see
+ * dn_run_prefill_chunked. Matches the metal sub-chunk (#340). */
+constexpr size_t DN_SUBCHUNK = 64;
+
 static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, mapped */
                                    float       *zg,  /* [seq, vald] gate in / mix out */
                                    const float *bb,
@@ -388,7 +392,13 @@ static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, m
     const size_t y_f       = seq * convd;
     const size_t bg_f      = seq * n_vh;
     const size_t old_f     = hist_rows * convd;
-    const size_t ws_f      = transformer_dn_chunk_ws_floats(seq, d_k, d_v) + seq * d_v;
+    /* The delta rule runs in sub-chunks of at most DN_SUBCHUNK tokens, S
+     * threaded through: its O(C^2) terms then cost the same whatever m the
+     * caller batches, so the surrounding GEMMs may take larger m
+     * (caps.dn_subchunk). Boundaries sit at multiples of DN_SUBCHUNK, the
+     * positions the old m_max = 64 outer chunking produced. */
+    const size_t sub_c = seq < DN_SUBCHUNK ? seq : DN_SUBCHUNK;
+    const size_t ws_f  = transformer_dn_chunk_ws_floats(sub_c, d_k, d_v) + seq * d_v;
 #if defined(_OPENMP)
     const size_t nthr = (size_t) omp_get_max_threads();
 #else
@@ -458,21 +468,25 @@ static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, m
 #endif
         float       *o  = ws + ws_f - seq * d_v;
         const size_t hk = hv % n_kh; /* tiled v-head order, see decode path */
-        transformer_dn_head_chunk(S + hv * d_k * d_v,
-                                  y + hk * d_k,
-                                  convd,
-                                  y + keyd + hk * d_k,
-                                  convd,
-                                  y + 2 * keyd + hv * d_v,
-                                  convd,
-                                  betas + hv,
-                                  gs + hv,
-                                  n_vh,
-                                  seq,
-                                  d_k,
-                                  d_v,
-                                  o,
-                                  ws);
+        for (size_t off = 0; off < seq; off += DN_SUBCHUNK) {
+            const size_t c  = seq - off < DN_SUBCHUNK ? seq - off : DN_SUBCHUNK;
+            const float *yr = y + off * convd;
+            transformer_dn_head_chunk(S + hv * d_k * d_v,
+                                      yr + hk * d_k,
+                                      convd,
+                                      yr + keyd + hk * d_k,
+                                      convd,
+                                      yr + 2 * keyd + hv * d_v,
+                                      convd,
+                                      betas + off * n_vh + hv,
+                                      gs + off * n_vh + hv,
+                                      n_vh,
+                                      c,
+                                      d_k,
+                                      d_v,
+                                      o + off * d_v,
+                                      ws);
+        }
         for (size_t t = 0; t < seq; t++) {
             float *o_t = o + t * d_v;
             float *z_t = zg + t * vald + hv * d_v;

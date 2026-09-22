@@ -1633,6 +1633,7 @@ install_pq2_0_x8_gemv_if_eligible(struct geist_weight                 *w,
     w->backend_layout    = GEIST_W_LAYOUT_PQ2_0_X8_GEMV;
     w->backend_alignment = 64;
     w->linear_m1         = cpu_neon_w_pq2_0_x8_m1;
+    w->linear_mN         = cpu_neon_w_pq2_0_x8_mN;
 #else
     (void) w;
     (void) policy;
