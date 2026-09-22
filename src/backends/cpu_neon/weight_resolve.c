@@ -880,6 +880,8 @@ static size_t blk_bytes_for(enum geist_dtype dt) {
         return Q8_0_BLOCK_BYTES;
     case GEIST_DTYPE_TQ2_0:
         return TQ2_0_BLOCK_BYTES;
+    case GEIST_DTYPE_PQ2_0:
+        return PQ2_0_BLOCK_BYTES;
     case GEIST_DTYPE_IQ4_NL:
         return IQ4_NL_BLOCK_BYTES;
     case GEIST_DTYPE_IQ4_XS:
@@ -904,6 +906,8 @@ static size_t blk_elems_for(enum geist_dtype dt) {
         return Q8_0_BLOCK_ELEMS;
     case GEIST_DTYPE_TQ2_0:
         return TQ2_0_BLOCK_ELEMS;
+    case GEIST_DTYPE_PQ2_0:
+        return PQ2_0_BLOCK_ELEMS;
     case GEIST_DTYPE_IQ4_NL:
         return IQ4_NL_BLOCK_ELEMS;
     case GEIST_DTYPE_IQ4_XS:
@@ -928,6 +932,8 @@ static dequant_row_fn dequant_row_fn_for(enum geist_dtype dt) {
         return dequant_q8_0_row;
     case GEIST_DTYPE_TQ2_0:
         return dequant_tq2_0_row;
+    case GEIST_DTYPE_PQ2_0:
+        return dequant_pq2_0_row;
     case GEIST_DTYPE_IQ4_NL:
         return dequant_iq4_nl_row;
     case GEIST_DTYPE_IQ4_XS:
@@ -1345,6 +1351,23 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          cpu_neon_w_tq2_0_m1,
          cpu_neon_w_dequant_trampoline_mN,
          "tq2_0/fp32"},
+
+/* PQ2_0: PrismML ternary (Ternary-Bonsai). Decode through the SDOT
+ * W2A8 GEMV; prefill on the dequant+SGEMM trampoline until a native
+ * int8 GEMM earns its place. Hosts without dotprod take the trampoline
+ * for both. */
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+        {GEIST_DTYPE_PQ2_0,
+         CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
+         cpu_neon_w_pq2_0_q8a_m1,
+         cpu_neon_w_dequant_trampoline_mN,
+         "pq2_0/q8a-m1"},
+#endif
+        {GEIST_DTYPE_PQ2_0,
+         CPU_NEON_ISA_NEON,
+         cpu_neon_w_dequant_trampoline_m1,
+         cpu_neon_w_dequant_trampoline_mN,
+         "pq2_0/trampoline"},
 
 /* I2_S: BitNet b1.58 official ternary (Microsoft 2B-4T). Dotprod-only —
  * the SDOT i2_s kernels assume ARMv8.2; no fp32 fallback row yet (every

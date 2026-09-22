@@ -153,6 +153,13 @@ bool gguf_dequant_row_to_fp32(const struct gguf_tensor_t *t,
         dequant_tq2_0_row(row_elems, base, out);
         return true;
     }
+    case GGUF_TYPE_PQ2_0: {
+        const size_t   blocks_per_row = row_elems / PQ2_0_BLOCK_ELEMS;
+        const uint8_t *base =
+                (const uint8_t *) t->data + row_idx * blocks_per_row * PQ2_0_BLOCK_BYTES;
+        dequant_pq2_0_row(row_elems, base, out);
+        return true;
+    }
     default:
         return false;
     }
@@ -213,6 +220,9 @@ float *gguf_dequant_to_fp32(const struct gguf_tensor_t *t) {
         break;
     case GGUF_TYPE_TQ2_0:
         dequant_tq2_0_row(elems, t->data, out);
+        break;
+    case GGUF_TYPE_PQ2_0:
+        dequant_pq2_0_row(elems, t->data, out);
         break;
     default:
         safe_free((void **) &out);

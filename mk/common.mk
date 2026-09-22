@@ -206,6 +206,7 @@ LIB_SOURCES := \
     src/formats/gguf/iq2_s.c \
     src/formats/gguf/iq3_s.c \
     src/formats/gguf/tq2_0.c \
+    src/formats/gguf/pq2_0.c \
     src/backends/common/geist_gemm.c \
     src/backends/common/gemma4_kernels.c \
     src/backends/common/kivi.c \

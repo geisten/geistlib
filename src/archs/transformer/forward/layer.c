@@ -386,6 +386,9 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
     case GEIST_DTYPE_IQ3_S:
         dequant_iq3_s_row(n_in, raw + row_idx * n_in / IQ3_S_BLOCK_ELEMS * IQ3_S_BLOCK_BYTES, dst);
         break;
+    case GEIST_DTYPE_PQ2_0:
+        dequant_pq2_0_row(n_in, raw + row_idx * n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES, dst);
+        break;
     case GEIST_DTYPE_I2_S: {
         /* BitNet i2_s: 256-elem/64-byte ternary blocks, reversed in-byte field
          * order vs TQ2_0, ONE f32 per-TENSOR scale at the tail (offset

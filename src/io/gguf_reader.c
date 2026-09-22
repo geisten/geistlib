@@ -113,6 +113,7 @@ static const struct dtype_row_t DTYPE_ROWS[] = {
          * it from raw + n_in*n_out/4. (Confirmed against bitnet.cpp quantize_i2_s:
          * one scale_ptr[0] per tensor, not per row.) */
         {GGUF_TYPE_I2_S, I2_S_BLOCK_BYTES, I2_S_BLOCK_ELEMS, sizeof(float), "I2_S"},
+        {GGUF_TYPE_PQ2_0, 34, 128, 0, "PQ2_0"}, /* fp16 d + 32 bytes of 2-bit codes */
 };
 static const size_t DTYPE_ROWS_N = sizeof(DTYPE_ROWS) / sizeof(DTYPE_ROWS[0]);
 

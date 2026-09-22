@@ -197,6 +197,14 @@ void cpu_neon_w_tq2_0_m1(const float               *x,
                          struct geist_backend      *be,
                          float                     *y);
 
+/* PQ2_0 (PrismML ternary, Ternary-Bonsai): int8-SDOT decode GEMV,
+ * kernels/pq2_0.c. Dotprod hosts only; the resolver falls back to the
+ * dequant trampoline elsewhere and for M>1. */
+void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
+                             const struct geist_weight *w,
+                             struct geist_backend      *be,
+                             float                     *y);
+
 /* I2_S (BitNet b1.58 official): ternary W1.58 × A8, int8-SDOT. Same compute
  * as tq2_0/q8a but the in-byte 2-bit field order is reversed and a single
  * per-tensor scale (at raw + n_in*n_out/4) is applied per row. Dotprod only. */
