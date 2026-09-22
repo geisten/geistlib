@@ -51,3 +51,12 @@ void transformer_rotation_release(struct transformer_arch_state *st);
                                                    bool                                 inverse,
                                                    struct geist_buffer                 *x,
                                                    struct geist_buffer                 *y);
+
+/* The common case: forward, in place, no grouped-value permutation. */
+[[nodiscard]] static inline enum geist_status
+transformer_rotate_rows(const struct transformer_arch_state *st,
+                        size_t                               rows,
+                        size_t                               width,
+                        struct geist_buffer                 *x) {
+    return transformer_rotate(st, rows, width, false, false, x, x);
+}

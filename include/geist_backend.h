@@ -368,7 +368,9 @@ struct geist_hadamard_args {
 /* Every slot here is an OPTIMIZATION: the arch must be able to produce the
  * same result from core + primitives. nullptr = always decomposed; a
  * non-null slot may still return GEIST_E_UNSUPPORTED for geometries its
- * kernel doesn't cover, and the caller falls back.
+ * kernel doesn't cover, and the caller falls back. The one exception is
+ * hadamard_rotate (see its comment): a model that needs it refuses to load
+ * where it is null, rather than running a host round-trip per call.
  *
  * Probe-and-bind: call sites migrate from per-call negotiation to
  * consulting `supported` once at plan-build time (the FFN front is

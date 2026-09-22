@@ -111,17 +111,8 @@ static bool pq2_0_prep(struct cpu_neon_workspace *ws,
         memset(y, 0, n_out * sizeof *y);
         return false;
     }
-    if (ws->m1_xq_cap < n_in) {
-        safe_free((void **) &ws->m1_xq);
-        ws->m1_xq     = heap_alloc_array_aligned(int8_t, n_in);
-        ws->m1_xq_cap = ws->m1_xq != nullptr ? n_in : 0;
-    }
-    if (ws->m1_bsum_cap < nb) {
-        safe_free((void **) &ws->m1_bsum);
-        ws->m1_bsum     = heap_alloc_array_aligned(int32_t, nb);
-        ws->m1_bsum_cap = ws->m1_bsum != nullptr ? nb : 0;
-    }
-    if (ws->m1_xq == nullptr || ws->m1_bsum == nullptr) {
+    if (!cpu_neon_grow_i8(&ws->m1_xq, &ws->m1_xq_cap, n_in) ||
+        !cpu_neon_grow_i32(&ws->m1_bsum, &ws->m1_bsum_cap, nb)) {
         memset(y, 0, n_out * sizeof *y);
         return false;
     }

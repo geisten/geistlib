@@ -92,13 +92,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         /* prism.hadamard: gate/up read the normed input rotated. The
          * fused fronts above are GEGLU-only, and rotation is qwen35-only
          * (SwiGLU), so they never see a rotated model. */
-        s = transformer_rotate(st,
-                               ctx->seq,
-                               st->d_model,
-                               false,
-                               false,
-                               sess->scratch_pre_ff,
-                               sess->scratch_pre_ff);
+        s = transformer_rotate_rows(st, ctx->seq, st->d_model, sess->scratch_pre_ff);
         if (s != GEIST_OK) {
             return s;
         }
@@ -314,7 +308,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
 
     /* prism.hadamard: down reads its input rotated (AWQ is refused on
      * rotated models, so no inv-scale follows the transform). */
-    s = transformer_rotate(st, ctx->seq, ctx->inter, false, false, mid_buf, mid_buf);
+    s = transformer_rotate_rows(st, ctx->seq, ctx->inter, mid_buf);
     if (s != GEIST_OK) {
         return s;
     }

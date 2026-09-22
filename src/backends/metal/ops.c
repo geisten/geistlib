@@ -218,9 +218,8 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     }
     /* q40/q80 n4 kernels run 4 rows per simdgroup (8 per threadgroup);
      * q41/q5k still run 2 (4 per threadgroup). */
-    /* PQ2_0's n4 kernel takes its simdgroup count from the dispatch
-     * (GEIST_PQ2_N4_TG threads, 4 rows each); the others hardcode two
-     * simdgroups per threadgroup. */
+    /* PQ2_0's n4/n8 kernels read their simdgroup count from
+     * threads_per_threadgroup; the others hardcode two per threadgroup. */
     const uint32_t          n4_tile = pq2_n8 ? 16u
                                       : (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0 ||
                                          dtype == GEIST_DTYPE_IQ4_NL || dtype == GEIST_DTYPE_PQ2_0)
@@ -3533,7 +3532,7 @@ metal_pq2sb_view(struct metal_state *st, const struct geist_weight *w, struct ge
 }
 
 /* PQ2_0 [n_out][nb x 34-byte block] -> [n_out][nb/8 x 272-byte superblock]
- * (metal_qsg_pq2sb_source). Off unless GEIST_PQ2_SB=1: measured on
+ * (metal_qsg_pq2sb_source). Off unless GEIST_METAL_PQ2_SB=1: measured on
  * Bonsai-27B/M1 Max it buys 4 % decode at 32 ctx (19.4 -> 20.2 t/s), 1.5 %
  * at 512, nothing on prefill — and costs 13 GB of RSS, 7.2 for the copy
  * (the source mmap is read-only, so the repack cannot be in place) and 7.2
@@ -3541,13 +3540,11 @@ metal_pq2sb_view(struct metal_state *st, const struct geist_weight *w, struct ge
  * memory is free. */
 [[nodiscard]] static enum geist_status metal_pq2sb_repack(struct geist_backend *be,
                                                           struct geist_weight  *w) {
-    const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
-    const char  *env = getenv("GEIST_PQ2_SB");
-    if ((n_in % (METAL_PQ2_BLOCK_ELEMS * METAL_PQ2SB_BLOCKS)) != 0 || env == nullptr ||
-        strcmp(env, "1") != 0) {
+    const size_t        n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    struct metal_state *st = be->state;
+    if (!st->use_pq2_sb || (n_in % (METAL_PQ2_BLOCK_ELEMS * METAL_PQ2SB_BLOCKS)) != 0) {
         return GEIST_OK;
     }
-    struct metal_state  *st  = be->state;
     const size_t         nb  = n_in / METAL_PQ2_BLOCK_ELEMS;
     const size_t         rb  = nb * METAL_PQ2_BLOCK_BYTES; /* == nb/8 * 272 */
     struct geist_buffer *buf = nullptr;
@@ -4059,7 +4056,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
             metal_msg_send_dispatch(st, enc, g_tv, t256);
         }
     } else if (args->seq == 1 && st->dn_dec_v_pipeline != nullptr && 4u * args->head_v <= 1024u &&
-               !metal_env_enabled("GEIST_DN_SERIAL_DECODE")) {
+               st->use_dn_dec) {
         /* Decode: q/k prep per k-head, then the state update spread over
          * v-heads x 4 row groups (dn_dec_v). */
         metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);

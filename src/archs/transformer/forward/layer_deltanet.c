@@ -571,8 +571,7 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     if (s != GEIST_OK)
         return s;
 
-    s = transformer_rotate(
-            st, seq, st->d_model, false, false, sess->scratch_normed, sess->scratch_normed);
+    s = transformer_rotate_rows(st, seq, st->d_model, sess->scratch_normed);
     if (s != GEIST_OK)
         return s;
     struct geist_tensor t_qkv = view_2d(sess->dn_scratch_qkv, ctx->SEQ, (int64_t) convd);

@@ -670,8 +670,12 @@ void metal_destroy(struct geist_backend *be) {
      * GEIST_METAL_Q4K_MM_SG=0 to disable. */
     const char *q4k_mm_sg    = getenv("GEIST_METAL_Q4K_MM_SG");
     st->use_q4k_mm_sg        = q4k_mm_sg == nullptr || strcmp(q4k_mm_sg, "0") != 0;
-    const char *pq2_n8       = getenv("GEIST_PQ2_N8");
+    const char *pq2_n8       = getenv("GEIST_METAL_PQ2_N8");
     st->use_pq2_n8           = pq2_n8 == nullptr || strcmp(pq2_n8, "0") != 0;
+    const char *pq2_sb       = getenv("GEIST_METAL_PQ2_SB");
+    st->use_pq2_sb           = pq2_sb != nullptr && strcmp(pq2_sb, "1") == 0;
+    const char *dn_serial    = getenv("GEIST_METAL_DN_SERIAL_DECODE");
+    st->use_dn_dec           = dn_serial == nullptr || strcmp(dn_serial, "1") != 0;
     const char *rmsnorm_simd = getenv("GEIST_METAL_RMSNORM_SIMD");
     st->use_rmsnorm_simd     = rmsnorm_simd == nullptr || strcmp(rmsnorm_simd, "0") != 0;
     const char *q6k_n4       = getenv("GEIST_METAL_Q6K_N4");

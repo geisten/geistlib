@@ -109,7 +109,7 @@ static struct transformer_forward_profile g_head_profile = {
     /* prism.hadamard: the lm_head reads the normed hidden rotated, in
      * place — the spec head and the dense recompute below read the same
      * rotated row, which is what their (folded) weights expect. */
-    s = transformer_rotate(st, 1, st->d_model, false, false, sess->scratch_h_a, sess->scratch_h_a);
+    s = transformer_rotate_rows(st, 1, st->d_model, sess->scratch_h_a);
     if (s != GEIST_OK) {
         return s;
     }
@@ -260,7 +260,7 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
     if (s != GEIST_OK) {
         return s;
     }
-    s = transformer_rotate(st, k, st->d_model, false, false, sess->scratch_h_a, sess->scratch_h_a);
+    s = transformer_rotate_rows(st, k, st->d_model, sess->scratch_h_a);
     if (s != GEIST_OK) {
         return s;
     }

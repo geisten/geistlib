@@ -2,8 +2,10 @@
  * hadamard.h — blockwise Walsh-Hadamard activation transform for models
  * stored in a rotated weight basis (prism.hadamard GGUF keys).
  *
- * Layer: BACKEND (shared host implementation behind fused->hadamard_rotate
- * on cpu_scalar, cpu_neon and cpu_x86). The math is spelled out on
+ * Layer: BACKEND (shared host implementation behind fused->hadamard_rotate;
+ * cpu_scalar and cpu_neon install it, and cpu_x86 inherits cpu_scalar's
+ * fused table; the per-backend glue stays per backend because struct
+ * geist_buffer is backend-private). The math is spelled out on
  * struct geist_hadamard_args in geist_backend.h; this file implements it
  * on host rows.
  */

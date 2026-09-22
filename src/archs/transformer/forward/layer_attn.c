@@ -123,8 +123,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     }
 
     /* prism.hadamard: q/k/v read the normed input rotated (rotation.h). */
-    s = transformer_rotate(
-            st, ctx->seq, st->d_model, false, false, sess->scratch_normed, sess->scratch_normed);
+    s = transformer_rotate_rows(st, ctx->seq, st->d_model, sess->scratch_normed);
     if (s != GEIST_OK) {
         return s;
     }
@@ -532,8 +531,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     }
     transformer_profile_add(&g_attn_profile, ATTN_PROFILE_POST_CORE, t0);
 
-    s = transformer_rotate(
-            st, ctx->seq, ctx->q_out, false, false, sess->scratch_attn, sess->scratch_attn);
+    s = transformer_rotate_rows(st, ctx->seq, ctx->q_out, sess->scratch_attn);
     if (s != GEIST_OK) {
         return s;
     }

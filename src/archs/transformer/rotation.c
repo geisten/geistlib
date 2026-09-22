@@ -7,85 +7,50 @@
 #include "rotation.h"
 
 #include "checked.h"
+#include "forward/internal.h"
 #include "gguf_reader.h"
 #include "heap.h"
 
 #include <geist_backend.h>
 
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
-/* Folded-weight kinds the qwen35 forward pass rotates the input of. */
-enum rot_kind {
-    ROT_ATTN_QKV,
-    ROT_ATTN_GATE,
-    ROT_SSM_OUT,
-    ROT_ATTN_Q,
-    ROT_ATTN_K,
-    ROT_ATTN_V,
-    ROT_ATTN_OUTPUT,
-    ROT_FFN_GATE,
-    ROT_FFN_UP,
-    ROT_FFN_DOWN,
-    ROT_KIND_COUNT,
+/* Folded-weight kinds the qwen35 forward pass rotates the input of: the
+ * GGUF name suffix, the mixer whose layers carry it (MIXER_ANY = every
+ * layer), and the weight whose n_in is the rotated width. One row per
+ * kind, so a new kind is one line rather than an enum plus two switches.
+ * The rows must stay in step with the transformer_rotate() call sites in
+ * forward/ — that pairing is what check_weight_names enforces. */
+#define MIXER_ANY ((enum transformer_mixer_kind) - 1)
+
+static const struct {
+    const char                 *name;
+    enum transformer_mixer_kind mixer;
+    size_t                      w_off; /* into struct transformer_layer_weights */
+} ROT_KINDS[] = {
+        {"attn_qkv", GEIST_MIXER_DELTANET, offsetof(struct transformer_layer_weights, dn_qkv_w)},
+        {"attn_gate", GEIST_MIXER_DELTANET, offsetof(struct transformer_layer_weights, dn_z_w)},
+        {"ssm_out", GEIST_MIXER_DELTANET, offsetof(struct transformer_layer_weights, dn_out_w)},
+        {"attn_q", GEIST_MIXER_ATTN, offsetof(struct transformer_layer_weights, q_proj_w)},
+        {"attn_k", GEIST_MIXER_ATTN, offsetof(struct transformer_layer_weights, k_proj_w)},
+        {"attn_v", GEIST_MIXER_ATTN, offsetof(struct transformer_layer_weights, v_proj_w)},
+        {"attn_output", GEIST_MIXER_ATTN, offsetof(struct transformer_layer_weights, o_proj_w)},
+        {"ffn_gate", MIXER_ANY, offsetof(struct transformer_layer_weights, gate_proj_w)},
+        {"ffn_up", MIXER_ANY, offsetof(struct transformer_layer_weights, up_proj_w)},
+        {"ffn_down", MIXER_ANY, offsetof(struct transformer_layer_weights, down_proj_w)},
 };
 
-static const char *const ROT_KIND_NAMES[ROT_KIND_COUNT] = {
-        [ROT_ATTN_QKV]    = "attn_qkv",
-        [ROT_ATTN_GATE]   = "attn_gate",
-        [ROT_SSM_OUT]     = "ssm_out",
-        [ROT_ATTN_Q]      = "attn_q",
-        [ROT_ATTN_K]      = "attn_k",
-        [ROT_ATTN_V]      = "attn_v",
-        [ROT_ATTN_OUTPUT] = "attn_output",
-        [ROT_FFN_GATE]    = "ffn_gate",
-        [ROT_FFN_UP]      = "ffn_up",
-        [ROT_FFN_DOWN]    = "ffn_down",
-};
+enum { ROT_KIND_COUNT = (int) (sizeof ROT_KINDS / sizeof ROT_KINDS[0]) };
 
-static bool kind_on_layer(enum rot_kind k, enum transformer_mixer_kind mixer) {
-    switch (k) {
-    case ROT_ATTN_QKV:
-    case ROT_ATTN_GATE:
-    case ROT_SSM_OUT:
-        return mixer == GEIST_MIXER_DELTANET;
-    case ROT_ATTN_Q:
-    case ROT_ATTN_K:
-    case ROT_ATTN_V:
-    case ROT_ATTN_OUTPUT:
-        return mixer == GEIST_MIXER_ATTN;
-    default:
-        return true;
-    }
+static bool kind_on_layer(size_t k, enum transformer_mixer_kind mixer) {
+    return ROT_KINDS[k].mixer == MIXER_ANY || ROT_KINDS[k].mixer == mixer;
 }
 
 /* The weight a kind names, for its input width. */
-static const struct geist_weight *kind_weight(const struct transformer_layer_weights *L,
-                                              enum rot_kind                           k) {
-    switch (k) {
-    case ROT_ATTN_QKV:
-        return &L->dn_qkv_w;
-    case ROT_ATTN_GATE:
-        return &L->dn_z_w;
-    case ROT_SSM_OUT:
-        return &L->dn_out_w;
-    case ROT_ATTN_Q:
-        return &L->q_proj_w;
-    case ROT_ATTN_K:
-        return &L->k_proj_w;
-    case ROT_ATTN_V:
-        return &L->v_proj_w;
-    case ROT_ATTN_OUTPUT:
-        return &L->o_proj_w;
-    case ROT_FFN_GATE:
-        return &L->gate_proj_w;
-    case ROT_FFN_UP:
-        return &L->up_proj_w;
-    case ROT_FFN_DOWN:
-        return &L->down_proj_w;
-    default:
-        return nullptr;
-    }
+static const struct geist_weight *kind_weight(const struct transformer_layer_weights *L, size_t k) {
+    return (const struct geist_weight *) ((const char *) L + ROT_KINDS[k].w_off);
 }
 
 [[nodiscard]] static enum geist_status fail(struct transformer_arch_state *st,
@@ -129,7 +94,7 @@ static bool str_next(struct str_iter *it, const char **s, size_t *len) {
 }
 
 /* "blk.<i>.<kind>.weight" -> (i, kind); false on anything else. */
-static bool parse_layer_name(const char *s, size_t len, size_t *layer, enum rot_kind *kind) {
+static bool parse_layer_name(const char *s, size_t len, size_t *layer, size_t *kind) {
     static const char pre[] = "blk.";
     static const char suf[] = ".weight";
     if (len <= sizeof pre - 1 + sizeof suf - 1 || memcmp(s, pre, sizeof pre - 1) != 0 ||
@@ -147,11 +112,11 @@ static bool parse_layer_name(const char *s, size_t len, size_t *layer, enum rot_
     }
     i++;
     const size_t kind_len = len - (sizeof suf - 1) - i;
-    for (size_t k = 0; k < ROT_KIND_COUNT; k++) {
-        if (strlen(ROT_KIND_NAMES[k]) == kind_len &&
-            memcmp(s + i, ROT_KIND_NAMES[k], kind_len) == 0) {
+    for (size_t k = 0; k < (size_t) ROT_KIND_COUNT; k++) {
+        if (strlen(ROT_KINDS[k].name) == kind_len &&
+            memcmp(s + i, ROT_KINDS[k].name, kind_len) == 0) {
             *layer = idx;
-            *kind  = (enum rot_kind) k;
+            *kind  = k;
             return true;
         }
     }
@@ -188,9 +153,9 @@ static bool is_name(const char *s, size_t len, const char *want) {
     const char       *name        = nullptr;
     size_t            len         = 0;
     while (s == GEIST_OK && str_next(&it, &name, &len)) {
-        size_t        layer = 0;
-        enum rot_kind kind  = ROT_KIND_COUNT;
-        bool         *slot  = nullptr;
+        size_t layer = 0;
+        size_t kind  = (size_t) ROT_KIND_COUNT;
+        bool  *slot  = nullptr;
         if (is_name(name, len, "output.weight")) {
             slot = seen_output;
         } else if (parse_layer_name(name, len, &layer, &kind) && layer < st->n_layers &&
@@ -206,10 +171,9 @@ static bool is_name(const char *s, size_t len, const char *want) {
         }
     }
     for (size_t l = 0; s == GEIST_OK && l < st->n_layers; l++) {
-        for (size_t k = 0; k < ROT_KIND_COUNT; k++) {
-            if (kind_on_layer((enum rot_kind) k, st->layers[l].mixer) &&
-                !seen[l * ROT_KIND_COUNT + k]) {
-                s = fail(st, GEIST_E_FORMAT, "layer only partially rotated", ROT_KIND_NAMES[k]);
+        for (size_t k = 0; k < (size_t) ROT_KIND_COUNT; k++) {
+            if (kind_on_layer(k, st->layers[l].mixer) && !seen[l * ROT_KIND_COUNT + k]) {
+                s = fail(st, GEIST_E_FORMAT, "layer only partially rotated", ROT_KINDS[k].name);
                 break;
             }
         }
@@ -394,10 +358,9 @@ enum geist_status transformer_rotation_load(struct transformer_arch_state *st) {
     }
     for (size_t l = 0; s == GEIST_OK && l < st->n_layers; l++) {
         const struct transformer_layer_weights *L = &st->layers[l];
-        for (size_t k = 0; s == GEIST_OK && k < ROT_KIND_COUNT; k++) {
-            if (kind_on_layer((enum rot_kind) k, L->mixer)) {
-                s = check_width(
-                        st, (size_t) kind_weight(L, (enum rot_kind) k)->n_in, explicit_signs);
+        for (size_t k = 0; s == GEIST_OK && k < (size_t) ROT_KIND_COUNT; k++) {
+            if (kind_on_layer(k, L->mixer)) {
+                s = check_width(st, (size_t) kind_weight(L, k)->n_in, explicit_signs);
             }
         }
         if (s == GEIST_OK && grouped && L->mixer == GEIST_MIXER_DELTANET) {
@@ -434,25 +397,10 @@ enum geist_status transformer_rotate(const struct transformer_arch_state *st,
     if (!st->rotation.active || rows == 0) {
         return GEIST_OK;
     }
-    struct geist_buffer      *sb = signs_for(st, width);
-    const struct geist_tensor tx = {
-            .buffer = x,
-            .dtype  = GEIST_DTYPE_F32,
-            .layout = GEIST_LAYOUT_DENSE,
-            .ndim   = 2,
-            .shape  = {(int64_t) rows, (int64_t) width},
-            .stride = {(int64_t) width, 1},
-    };
-    struct geist_tensor ty       = tx;
-    ty.buffer                    = y;
-    const struct geist_tensor ts = {
-            .buffer = sb,
-            .dtype  = GEIST_DTYPE_F32,
-            .layout = GEIST_LAYOUT_DENSE,
-            .ndim   = 1,
-            .shape  = {(int64_t) width},
-            .stride = {1},
-    };
+    struct geist_buffer             *sb   = signs_for(st, width);
+    const struct geist_tensor        tx   = view_2d(x, (int64_t) rows, (int64_t) width);
+    struct geist_tensor              ty   = view_2d(y, (int64_t) rows, (int64_t) width);
+    const struct geist_tensor        ts   = view_1d(sb, (int64_t) width);
     const bool                       perm = grouped_v && st->rotation.gdn_v_grouped;
     const struct geist_hadamard_args args = {
             .x        = &tx,

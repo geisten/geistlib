@@ -207,9 +207,15 @@ struct metal_state {
     void  *pq2_mm_pipeline;
     void  *pq2_mm_fast_function;
     void  *pq2_mm_fast_pipeline;
-    /* matvec_pq2_n8: 8 rows per simdgroup instead of 4. GEIST_PQ2_N8=0
-     * pins the 4-row kernel for A/B. */
-    bool  use_pq2_n8;
+    /* matvec_pq2_n8: 8 rows per simdgroup instead of 4.
+     * GEIST_METAL_PQ2_N8=0 pins the 4-row kernel for A/B. */
+    bool use_pq2_n8;
+    /* PQ2_0 superblock repack + its three kernels, off unless
+     * GEIST_METAL_PQ2_SB=1 (see metal_pq2sb_repack for the trade). */
+    bool use_pq2_sb;
+    /* Parallel single-token DeltaNet; GEIST_METAL_DN_SERIAL_DECODE=1 takes
+     * the serial path. Cached here: the decode path asks per layer. */
+    bool  use_dn_dec;
     void *pq2_n8_function;
     void *pq2_n8_pipeline;
     void *pq2sb_n4_function;
@@ -495,8 +501,8 @@ enum {
     METAL_IQ4XS_BLOCK_BYTES             = 136u,
     METAL_Q3K_BLOCK_BYTES               = 110u,
     METAL_IQ3S_BLOCK_BYTES              = 110u,
-    METAL_PQ2_BLOCK_ELEMS               = 128u,
-    METAL_PQ2_BLOCK_BYTES               = 34u,
+    METAL_PQ2_BLOCK_ELEMS               = (unsigned) PQ2_0_BLOCK_ELEMS,
+    METAL_PQ2_BLOCK_BYTES               = (unsigned) PQ2_0_BLOCK_BYTES,
     METAL_PQ2SB_BLOCKS                  = 8u,
     METAL_PQ2SB_BYTES                   = 272u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
