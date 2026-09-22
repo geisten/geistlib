@@ -135,7 +135,8 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                         const struct geist_tensor     *y,
                                         const struct metal_q4k_params *params,
                                         enum geist_dtype               dtype) {
-    void *n4 = dtype == GEIST_DTYPE_Q4_0     ? st->q40_n4_pipeline
+    void *n4 = dtype == GEIST_DTYPE_PQ2_0    ? st->pq2_n4_pipeline
+               : dtype == GEIST_DTYPE_Q4_0   ? st->q40_n4_pipeline
                : dtype == GEIST_DTYPE_Q8_0   ? st->q80_n4_pipeline
                : dtype == GEIST_DTYPE_Q4_1   ? st->q41_n4_pipeline
                : dtype == GEIST_DTYPE_IQ4_NL ? st->iq4nl_n4_pipeline
@@ -143,7 +144,8 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_n4_pipeline
                : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_n4_pipeline
                                              : st->q5k_n4_pipeline;
-    void *mm = dtype == GEIST_DTYPE_Q4_0     ? st->q40_mm_pipeline
+    void *mm = dtype == GEIST_DTYPE_PQ2_0    ? st->pq2_mm_pipeline
+               : dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_pipeline
                : dtype == GEIST_DTYPE_Q8_0   ? st->q80_mm_pipeline
                : dtype == GEIST_DTYPE_Q4_1   ? st->q41_mm_pipeline
                : dtype == GEIST_DTYPE_IQ4_NL ? st->iq4nl_mm_pipeline
@@ -155,14 +157,16 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
      * instances — n4 for rows==1, the bounded simdgroup GEMM for every
      * rows>=2 shape. */
     const bool iq4 = dtype == GEIST_DTYPE_IQ4_NL || dtype == GEIST_DTYPE_IQ4_XS ||
-                     dtype == GEIST_DTYPE_Q3_K || dtype == GEIST_DTYPE_IQ3_S;
+                     dtype == GEIST_DTYPE_Q3_K || dtype == GEIST_DTYPE_IQ3_S ||
+                     dtype == GEIST_DTYPE_PQ2_0;
     /* rows==1 → simdgroup GEMV (llama mul_mv structure); rows>=8 → 64x32
      * simdgroup GEMM (bounds-checked, arbitrary rows/n_out); the naive
      * kernels remain the fallback for tiny shapes and the two kill-switch
      * envs (reused from the q4k levers). */
     const bool n_tile4 =
             params->rows == 1u && params->n_out >= 4u && (st->use_q4k_n4 || iq4) && n4 != nullptr;
-    void      *mm_fast = dtype == GEIST_DTYPE_Q4_0     ? st->q40_mm_fast_pipeline
+    void      *mm_fast = dtype == GEIST_DTYPE_PQ2_0    ? st->pq2_mm_fast_pipeline
+                         : dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_fast_pipeline
                          : dtype == GEIST_DTYPE_Q8_0   ? st->q80_mm_fast_pipeline
                          : dtype == GEIST_DTYPE_Q4_1   ? st->q41_mm_fast_pipeline
                          : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_mm_fast_pipeline
@@ -197,11 +201,11 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     }
     /* q40/q80 n4 kernels run 4 rows per simdgroup (8 per threadgroup);
      * q41/q5k still run 2 (4 per threadgroup). */
-    const uint32_t n4_tile =
-            (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL)
-                    ? 8u
-                    : 4u;
-    const struct metal_size groups = {
+    const uint32_t          n4_tile = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0 ||
+                                       dtype == GEIST_DTYPE_IQ4_NL || dtype == GEIST_DTYPE_PQ2_0)
+                                              ? 8u
+                                              : 4u;
+    const struct metal_size groups  = {
             .width  = n_tile4     ? (params->n_out + n4_tile - 1u) / n4_tile
                       : m_tile_sg ? (params->rows + 31u) / 32u
                                   : params->n_out,
@@ -1079,6 +1083,95 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
     return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
 }
 
+struct metal_hadamard_params {
+    uint32_t width, block, hd, nk, rep, inv, sgn, xo, xs, yo, ys, so;
+};
+
+static void metal_encode_hadamard(struct metal_state                 *st,
+                                  void                               *enc,
+                                  const struct geist_hadamard_args   *a,
+                                  const struct metal_hadamard_params *p,
+                                  size_t                              rows) {
+    metal_msg_send_set_pipeline(st, enc, st->hadamard_pipeline);
+    metal_msg_send_set_buffer(st, enc, a->x->buffer->buffer, a->x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, a->y->buffer->buffer, a->y->buffer->base_off, 1);
+    /* No signs: bind x again as a dummy; p->sgn == 0 keeps it unread. */
+    const struct geist_tensor *sg = a->signs != nullptr ? a->signs : a->x;
+    metal_msg_send_set_buffer(st, enc, sg->buffer->buffer, sg->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, p, sizeof(*p), 3);
+    metal_msg_send_set_threadgroup_memory(st, enc, p->block * sizeof(float), 0u);
+    const struct metal_size groups  = {p->width / p->block, rows, 1};
+    const struct metal_size threads = {p->block < 256u ? p->block : 256u, 1, 1};
+    metal_msg_send_dispatch(st, enc, groups, threads);
+}
+
+/* fused->hadamard_rotate. Same contract as the CPU slot (hadamard.h). */
+[[nodiscard]] static enum geist_status metal_hadamard_rotate(struct geist_backend             *be,
+                                                             const struct geist_hadamard_args *a) {
+    if (be == nullptr || be->state == nullptr || a == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t rows = 0, cols = 0, xo = 0, xs = 0, yr = 0, yc = 0, yo = 0, ys = 0;
+    size_t sr = 0, sc = 0, so = 0, ss = 0;
+    if (!metal_tensor_is_f32_rows(a->x, &rows, &cols, &xo, &xs) ||
+        !metal_tensor_is_f32_rows(a->y, &yr, &yc, &yo, &ys) || yr != rows || yc != cols ||
+        (a->signs != nullptr &&
+         (!metal_tensor_is_f32_rows(a->signs, &sr, &sc, &so, &ss) || sr != 1 || sc != cols))) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const bool perm = a->perm_rep > 1;
+    /* Threadgroup memory holds one block; 4096 floats is 16 KB. */
+    if (a->block == 0 || (a->block & (a->block - 1)) != 0 || a->block > 4096 ||
+        cols % a->block != 0 ||
+        (perm && (a->inverse || a->perm_hd * a->perm_nk * a->perm_rep != cols ||
+                  a->x->buffer == a->y->buffer))) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (rows > UINT32_MAX || cols > UINT32_MAX || xo > UINT32_MAX || xs > UINT32_MAX ||
+        yo > UINT32_MAX || ys > UINT32_MAX || so > UINT32_MAX || a->x->buffer->owner != be->state ||
+        a->y->buffer->owner != be->state ||
+        (a->signs != nullptr && a->signs->buffer->owner != be->state)) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (rows == 0) {
+        return GEIST_OK;
+    }
+    enum geist_status s = metal_ensure_hadamard_pipeline(be);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct metal_state                *st = be->state;
+    const struct metal_hadamard_params p  = {
+            .width = (uint32_t) cols,
+            .block = (uint32_t) a->block,
+            .hd    = (uint32_t) (perm ? a->perm_hd : 0),
+            .nk    = (uint32_t) (perm ? a->perm_nk : 0),
+            .rep   = (uint32_t) (perm ? a->perm_rep : 0),
+            .inv   = a->inverse ? 1u : 0u,
+            .sgn   = a->signs != nullptr ? 1u : 0u,
+            .xo    = (uint32_t) xo,
+            .xs    = (uint32_t) xs,
+            .yo    = (uint32_t) yo,
+            .ys    = (uint32_t) ys,
+            .so    = (uint32_t) so,
+    };
+    if (st->sequence_active) {
+        metal_encode_hadamard(st, metal_sequence_encoder(st), a, &p, rows);
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
+    if (enc == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    metal_encode_hadamard(st, enc, a, &p, rows);
+    metal_msg_send_void0(st, enc, "endEncoding");
+    metal_msg_send_void0(st, cmd, "commit");
+    metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
+}
+
 [[nodiscard]] static enum geist_status metal_sigmoid_mul(struct geist_backend      *be,
                                                          const struct geist_tensor *x,
                                                          const struct geist_tensor *gate,
@@ -1369,6 +1462,18 @@ metal_embed_table_geometry(struct geist_backend      *be,
             return GEIST_E_INVALID_ARG;
         }
         row_bytes = blocks_per_row * block_bytes;
+    } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
+               embed_table->dtype == GEIST_DTYPE_PQ2_0) {
+        /* embed_lookup_scaled dispatches on the raw enum value. */
+        static_assert(GEIST_DTYPE_PQ2_0 == 19, "metal_embed_source hardcodes PQ2_0 as 19");
+        if ((d_model % METAL_PQ2_BLOCK_ELEMS) != 0) {
+            return GEIST_E_INVALID_ARG;
+        }
+        blocks_per_row = d_model / METAL_PQ2_BLOCK_ELEMS;
+        if (blocks_per_row > SIZE_MAX / METAL_PQ2_BLOCK_BYTES) {
+            return GEIST_E_INVALID_ARG;
+        }
+        row_bytes = blocks_per_row * METAL_PQ2_BLOCK_BYTES;
     } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
                embed_table->dtype == GEIST_DTYPE_Q4_K) {
         if ((d_model % METAL_Q4K_BLOCK_ELEMS) != 0) {
@@ -1673,19 +1778,15 @@ metal_embedding_lookup(struct geist_backend      *be,
     }
     struct metal_state           *st     = be->state;
     const struct metal_q4k_params params = {
-            .n_in  = (uint32_t) n_in,
-            .n_out = (uint32_t) n_out,
-            .rows  = (uint32_t) rows,
-            .blocks_per_row =
-                    (uint32_t) (n_in / ((dtype == GEIST_DTYPE_IQ4_XS || dtype == GEIST_DTYPE_Q3_K ||
-                                         dtype == GEIST_DTYPE_IQ3_S)
-                                                ? METAL_IQ4XS_BLOCK_ELEMS
-                                                : METAL_Q40_Q80_BLOCK_ELEMS)),
-            .x_offset      = (uint32_t) x_offset,
-            .w_byte_offset = (uint32_t) w_offset,
-            .y_offset      = (uint32_t) y_offset,
-            .x_row_stride  = (uint32_t) x_row_stride,
-            .y_row_stride  = (uint32_t) y_row_stride,
+            .n_in           = (uint32_t) n_in,
+            .n_out          = (uint32_t) n_out,
+            .rows           = (uint32_t) rows,
+            .blocks_per_row = (uint32_t) (n_in / metal_quant_block_elems(dtype)),
+            .x_offset       = (uint32_t) x_offset,
+            .w_byte_offset  = (uint32_t) w_offset,
+            .y_offset       = (uint32_t) y_offset,
+            .x_row_stride   = (uint32_t) x_row_stride,
+            .y_row_stride   = (uint32_t) y_row_stride,
     };
     if (st->sequence_active) {
         metal_encode_q40_q80_linear(st, metal_sequence_encoder(st), x, w, y, &params, dtype);
@@ -3473,6 +3574,7 @@ static void metal_linear_mN(size_t                     m,
     case GEIST_DTYPE_IQ4_XS:
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_PQ2_0:
         s = metal_q40_q80_linear(be, &tx, &tw, &ty, (enum geist_dtype) w->dtype, true);
         break;
     case GEIST_DTYPE_Q4_K:
@@ -3559,6 +3661,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
         case GEIST_DTYPE_IQ4_XS:
         case GEIST_DTYPE_Q3_K:
         case GEIST_DTYPE_IQ3_S:
+        case GEIST_DTYPE_PQ2_0:
             return metal_q40_q80_linear(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
         case GEIST_DTYPE_Q4_K:
             return metal_matvec_q4k(be, &x1, t_w, &y1);
@@ -3580,6 +3683,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_IQ4_XS:
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_PQ2_0:
         return metal_q40_q80_linear(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
     case GEIST_DTYPE_Q4_K:
         return metal_matmul_q4k(be, x, t_w, y);
@@ -3617,6 +3721,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_IQ4_XS:
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_F32:
         w->linear_m1 = metal_linear_m1;
         w->linear_mN = metal_linear_mN;
@@ -3962,6 +4067,7 @@ static const struct geist_backend_fused metal_fused = {
         .deltanet_mix                 = metal_deltanet_mix,
         .attn_qgate_split             = metal_attn_qgate_split,
         .sigmoid_mul                  = metal_sigmoid_mul,
+        .hadamard_rotate              = metal_hadamard_rotate,
 };
 
 const struct geist_backend_descriptor geist_backend_metal = {

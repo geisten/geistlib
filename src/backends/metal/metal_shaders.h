@@ -589,6 +589,49 @@ static const char metal_qsg_n4_iq4xs_source[] =
         "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
         "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
 
+/* PQ2_0 (PrismML ternary, Ternary-Bonsai): 128-element blocks of
+ * [half d][32 bytes of 2-bit codes], element j at byte j/4 bits 2*(j%4),
+ * value (code - 1) * d. dqpq2 serves the shared GEMM template (QK_NL 8:
+ * eight 16-element chunks per block). The decode GEMV follows q40_n4 (4
+ * rows per simdgroup): a thread owns a 32-element quarter of a block, read
+ * as four ushorts of eight codes each. As in q40_n4 the activations are
+ * pre-scaled by 4^-t so a masked code (q & 3<<2t) needs no shift, and the
+ * -1 bias folds into sumy. */
+static const char metal_qsg_pq2_source[] =
+        "struct bpq2{half d;uchar qs[32];};\n"
+        "static inline void dqpq2(device const bpq2*xb,short il,thread half4x4&r){"
+        "half d=xb->d;device const uchar*q=xb->qs+4*il;"
+        "FOR_UNROLL(short i=0;i<16;i++){"
+        "r[i/4][i%4]=d*half(short((q[i/4]>>(2*(i%4)))&3)-1);}}\n"
+        "kernel void matvec_pq2_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*4u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>7u,ix=uint(ti)>>2u,il=uint(ti)&3u;"
+        "uint nr=min(p.no-fr,4u);"
+        "device const float*yb=x+p.xo+b*p.xs+ix*128u+il*32u;"
+        "float sf[4]={0.0f,0.0f,0.0f,0.0f};"
+        "for(uint ib=ix;ib<nb;ib+=8u){"
+        "float yl[32];float sumy=0.0f;"
+        "FOR_UNROLL(uint i=0u;i<32u;i++){float a=yb[i];sumy+=a;"
+        "yl[i]=a*(1.0f/float(1u<<(2u*(i&7u))));}"
+        "for(uint rr=0u;rr<nr;rr++){"
+        "uint bo=p.wo+((fr+rr)*p.bpr+ib)*34u;"
+        "device const ushort*qs=(device const ushort*)(w+bo+2u+il*8u);"
+        "float acc=0.0f;"
+        "FOR_UNROLL(uint k=0u;k<4u;k++){uint q=uint(qs[k]);"
+        "FOR_UNROLL(uint t=0u;t<8u;t++){acc+=yl[8u*k+t]*float(q&(3u<<(2u*t)));}}"
+        "float d=float(*((device const half*)(w+bo)));"
+        "sf[rr]+=d*(acc-sumy);}"
+        "yb+=1024u;}"
+        "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
+        "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
+static const char metal_qsg_mm_pq2_source[] =
+        GEIST_METAL_MM_SG_KERNEL("pq2", "bpq2", "dqpq2", "8");
+static const char metal_qsg_mm_pq2_fast_source[] =
+        GEIST_METAL_MM_SG_FAST_KERNEL("pq2", "bpq2", "dqpq2", "8");
+
 static const char metal_qsg_mm_iq4nl_source[] =
         GEIST_METAL_MM_SG_KERNEL("iq4nl", "biq4nl", "dqiq4nl", "2");
 static const char metal_qsg_mm_iq4xs_source[] =
@@ -1099,6 +1142,35 @@ static const char metal_q6k_m16_source[] =
         "threadgroup);}if(lid==0u){for(uint m=0u;m<16u;m++){uint "
         "b=bb+m;if(b<p.rows)y[p.yo+b*p.ys+row]=part[m][0];}}}\n";
 
+/* fused->hadamard_rotate (see struct geist_hadamard_args): one
+ * threadgroup per (block, row) stages the block in threadgroup memory —
+ * gathered through the grouped-value permutation and sign-multiplied on
+ * the forward pass — runs the log2(block) butterfly passes, and writes
+ * the orthonormal result, sign-multiplied on the inverse pass. A block is
+ * read completely before any of it is written, so y may alias x whenever
+ * there is no permutation. */
+static const char metal_hadamard_source[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct H{uint width,block,hd,nk,rep,inv,sgn,xo,xs,yo,ys,so;};\n"
+        "kernel void hadamard_rows(device const float*x[[buffer(0)]],device "
+        "float*y[[buffer(1)]],device const float*s[[buffer(2)]],constant H&p[[buffer(3)]],"
+        "threadgroup float*sh[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],uint "
+        "ti[[thread_index_in_threadgroup]],uint3 ntg[[threads_per_threadgroup]]){"
+        "uint row=tg.y,base=tg.x*p.block,nt=ntg.x;"
+        "device const float*xr=x+p.xo+row*p.xs;device float*yr=y+p.yo+row*p.ys;"
+        "for(uint j=ti;j<p.block;j+=nt){uint g=base+j,src=g;"
+        "if(p.rep>1u){uint d=g%p.hd,q=g/p.hd,r=q%p.rep,k=q/p.rep;src=d+p.hd*(k+p.nk*r);}"
+        "float v=xr[src];if(p.sgn!=0u&&p.inv==0u)v*=s[p.so+g];sh[j]=v;}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint len=1u;len<p.block;len<<=1u){"
+        "for(uint i=ti;i<p.block/2u;i+=nt){uint j=(i/len)*2u*len+(i%len);"
+        "float a=sh[j],b=sh[j+len];sh[j]=a+b;sh[j+len]=a-b;}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);}"
+        "float sc=rsqrt(float(p.block));"
+        "for(uint j=ti;j<p.block;j+=nt){float v=sh[j]*sc;"
+        "if(p.sgn!=0u&&p.inv!=0u)v*=s[p.so+base+j];yr[base+j]=v;}}\n";
+
 static const char metal_elem_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -1295,13 +1367,17 @@ static const char metal_embed_source[] =
         "if(st==1u){qu=(ql1&15u)|(((qh>>2u)&3u)<<4u);si=is+2u;}else "
         "if(st==2u){qu=(ql0>>4u)|(((qh>>4u)&3u)<<4u);si=is+4u;}else{qu=(ql1>>4u)|(((qh>>6u)&3u)<<"
         "4u);si=is+6u;}return h(w,bo+208u)*float(i8(w,scb+si))*float(int(qu)-32);}\n"
+        "static inline float pq2(device const uchar*w,constant E&p,uint row,uint k){uint "
+        "br=k>>7u,j=k&127u,bo=p.wbo+(row*p.bpr+br)*34u;uint "
+        "c=(uint(w[bo+2u+(j>>2u)])>>(2u*(j&3u)))&3u;return h(w,bo)*float(int(c)-1);}\n"
         "kernel void embed_lookup_scaled(device const uchar*w[[buffer(0)]],device "
         "float*y[[buffer(1)]],constant E&p[[buffer(2)]],uint "
         "gid[[thread_position_in_grid]]){if(gid>=p.n)return;float "
         "v=p.dtype==0u?f32(w,p.wbo+(p.token*p.n+gid)*4u):(p.dtype==1u?h(w,p.wbo+(p.token*p.n+gid)*"
         "2u):(p.dtype==2u?bf(w,p.wbo+(p.token*p.n+gid)*2u):(p.dtype==5u?q40(w,p,p.token,gid):(p."
         "dtype==7u?q80(w,p,p.token,gid):(p.dtype==9u?q4(w,p,p.token,gid):(p.dtype==10u?q5(w,p,p."
-        "token,gid):q6(w,p,p.token,gid)))))));y[p.yo+gid]=v*p.scale;}\n";
+        "token,gid):(p.dtype==19u?pq2(w,p,p.token,gid):q6(w,p,p.token,gid))))))));"
+        "y[p.yo+gid]=v*p.scale;}\n";
 
 /* Batched variant (#322 step 3): ids arrive via a small constant buffer,
  * p.token carries the row count, one dispatch embeds the whole prefill
@@ -1315,7 +1391,8 @@ static const char metal_embed_rows_source[] =
         "v=p.dtype==0u?f32(w,p.wbo+(row*p.n+gid.x)*4u):(p.dtype==1u?h(w,p.wbo+(row*p.n+gid.x)*"
         "2u):(p.dtype==2u?bf(w,p.wbo+(row*p.n+gid.x)*2u):(p.dtype==5u?q40(w,p,row,gid.x):(p."
         "dtype==7u?q80(w,p,row,gid.x):(p.dtype==9u?q4(w,p,row,gid.x):(p.dtype==10u?q5(w,p,row,"
-        "gid.x):q6(w,p,row,gid.x)))))));y[p.yo+gid.y*p.n+gid.x]=v*p.scale;}\n";
+        "gid.x):(p.dtype==19u?pq2(w,p,row,gid.x):q6(w,p,row,gid.x))))))));"
+        "y[p.yo+gid.y*p.n+gid.x]=v*p.scale;}\n";
 
 static const char metal_f32_source[] =
         "#include <metal_stdlib>\n"

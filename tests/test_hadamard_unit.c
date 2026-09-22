@@ -19,7 +19,9 @@
  *   5. fold equivalence: W x == rotate(W) rotate(x), the identity that
  *      makes a folded checkpoint compute the original function;
  *   6. inverse: inverse(forward(x)) == x, the embedding-lookup path;
- *   7. backends agree bit for bit.
+ *   7. the CPU backends agree bit for bit.
+ *
+ * Metal joins as a third fixture when compiled in (BACKENDS=metal ...).
  *
  * Deterministic, no model needed.
  */
@@ -495,8 +497,8 @@ static int check_inverse(const struct fixture *f) {
 }
 
 int main(void) {
-    const char    *names[] = {"cpu_scalar", "cpu_neon"};
-    struct fixture fx[2]   = {0};
+    const char    *names[] = {"cpu_scalar", "cpu_neon", "metal"};
+    struct fixture fx[3]   = {0};
     size_t         n_fx    = 0;
     int            fails   = 0;
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
@@ -526,8 +528,10 @@ int main(void) {
         printf("%s: done\n", fx[i].name);
     }
 
-    /* 7. Backends agree bit for bit on the full 27B ssm_out transform. */
-    if (n_fx == 2) {
+    /* 7. The CPU backends agree bit for bit on the full 27B ssm_out
+     * transform (one shared host implementation; metal normalizes with
+     * rsqrt and is held to the tolerance checks above instead). */
+    if (n_fx >= 2 && strcmp(fx[0].name, "cpu_scalar") == 0 && strcmp(fx[1].name, "cpu_neon") == 0) {
         const size_t width = 6144, rows = 33;
         float       *x  = xmalloc(rows * width * sizeof(float));
         float       *s  = xmalloc(width * sizeof(float));

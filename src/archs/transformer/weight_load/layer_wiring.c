@@ -141,6 +141,51 @@ load_layer_proj(struct transformer_arch_state    *st,
             }
             /* On UNSUPPORTED, linear_m1 / linear_mN stay null — that's
              * the "use legacy" signal. */
+            if (rs == GEIST_E_UNSUPPORTED &&
+                (dm.dtype == GEIST_DTYPE_F16 || dm.dtype == GEIST_DTYPE_BF16)) {
+                /* A backend without a half-precision dense linear (metal)
+                 * gets the tensor widened to F32 once, the same way norm
+                 * gammas are. Ternary-Bonsai keeps its small DeltaNet
+                 * alpha/beta projections in BF16.
+                 * ponytail: the half-precision copy stays tracked (a few
+                 * MB on a 27B); untrack it if that ever matters. */
+                struct geist_buffer *buf32 = nullptr;
+                s = load_norm_to_f32_buffer(st, gguf, name, n_out * n_in, &buf32);
+                if (s != GEIST_OK) {
+                    return s;
+                }
+                if (layer_track_buf(L, buf32) != 0) {
+                    be->desc->vtbl->buffer_destroy(be, buf32);
+                    geist_backend_set_error(be,
+                                            GEIST_E_INTERNAL,
+                                            "transformer: layer buffer list overflow on '%s'",
+                                            name);
+                    return GEIST_E_INTERNAL;
+                }
+                *out_view    = make_view_2d(buf32,
+                                            GEIST_DTYPE_F32,
+                                            GEIST_LAYOUT_DENSE,
+                                            (int64_t) n_out,
+                                            (int64_t) n_in);
+                void *host32 = v->buffer_map(buf32);
+                if (host32 == nullptr) {
+                    geist_backend_set_error(
+                            be, GEIST_E_BACKEND, "transformer: buffer_map(%s) returned null", name);
+                    return GEIST_E_BACKEND;
+                }
+                *out_weight = (struct geist_weight) {
+                        .raw        = (const uint8_t *) host32 + out_view->offset,
+                        .raw_nbytes = n_out * n_in * sizeof(float),
+                        .n_in       = (int32_t) n_in,
+                        .n_out      = (int32_t) n_out,
+                        .dtype      = (uint16_t) GEIST_DTYPE_F32,
+                };
+                v->buffer_unmap(buf32);
+                rs = v->resolve_weight(be, out_weight);
+                if (rs != GEIST_OK && rs != GEIST_E_UNSUPPORTED) {
+                    return rs;
+                }
+            }
         }
     }
     return GEIST_OK;

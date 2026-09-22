@@ -194,6 +194,12 @@ struct metal_state {
     void  *q41_mm_fast_pipeline;
     void  *q5k_mm_fast_function;
     void  *q5k_mm_fast_pipeline;
+    void  *pq2_n4_function;
+    void  *pq2_n4_pipeline;
+    void  *pq2_mm_function;
+    void  *pq2_mm_pipeline;
+    void  *pq2_mm_fast_function;
+    void  *pq2_mm_fast_pipeline;
     void  *iq4nl_n4_function;
     void  *iq4nl_n4_pipeline;
     void  *iq4nl_mm_function;
@@ -238,6 +244,9 @@ struct metal_state {
     void  *q4k_pair_n4_pipeline;
     void  *embed_library;
     void  *argmax_library;
+    void  *hadamard_library;
+    void  *hadamard_function;
+    void  *hadamard_pipeline;
     void  *q4k_gate_up_function;
     void  *q4k_gate_up_pipeline;
     void  *q4k_gate_up_n4_function;
@@ -464,6 +473,8 @@ enum {
     METAL_IQ4XS_BLOCK_BYTES             = 136u,
     METAL_Q3K_BLOCK_BYTES               = 110u,
     METAL_IQ3S_BLOCK_BYTES              = 110u,
+    METAL_PQ2_BLOCK_ELEMS               = 128u,
+    METAL_PQ2_BLOCK_BYTES               = 34u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,
@@ -471,6 +482,20 @@ enum {
     METAL_ELEM_THREADS                  = 256u,
     METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
 };
+
+/* Elements per block of the formats metal_q40_q80_linear serves. */
+static inline size_t metal_quant_block_elems(enum geist_dtype dtype) {
+    switch (dtype) {
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ3_S:
+        return METAL_IQ4XS_BLOCK_ELEMS;
+    case GEIST_DTYPE_PQ2_0:
+        return METAL_PQ2_BLOCK_ELEMS;
+    default:
+        return METAL_Q40_Q80_BLOCK_ELEMS;
+    }
+}
 
 struct metal_size {
     size_t width;
@@ -870,6 +895,7 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
 [[nodiscard]] enum geist_status metal_ensure_attention_pipeline(struct geist_backend *be);
 
 [[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be);
+[[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be);
 
 [[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);
 

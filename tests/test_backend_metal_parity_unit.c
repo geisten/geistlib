@@ -55,6 +55,7 @@ enum {
     IQ4XS_BB = 136,
     Q3K_BB   = 110,
     IQ3S_BB  = 110,
+    PQ2_BB   = 34,
     Q6K_BB   = 210,
     K_BLOCK  = 256
 };
@@ -69,9 +70,10 @@ static uint8_t  rng_u8(void) {
 static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
     const bool   small = dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 ||
                          dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL;
-    const size_t block = small ? 32u : K_BLOCK;
+    const size_t block = small ? 32u : dtype == GEIST_DTYPE_PQ2_0 ? 128u : K_BLOCK;
     const size_t bpr   = n_in / block;
-    const size_t bb    = dtype == GEIST_DTYPE_Q4_0     ? Q40_BB
+    const size_t bb    = dtype == GEIST_DTYPE_PQ2_0    ? PQ2_BB
+                         : dtype == GEIST_DTYPE_Q4_0   ? Q40_BB
                          : dtype == GEIST_DTYPE_Q4_1   ? Q41_BB
                          : dtype == GEIST_DTYPE_Q8_0   ? Q80_BB
                          : dtype == GEIST_DTYPE_IQ4_NL ? IQ4NL_BB
@@ -87,7 +89,10 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
             for (size_t i = 0; i < bb; i++) {
                 blk[i] = rng_u8();
             }
-            if (dtype == GEIST_DTYPE_Q3_K) {
+            if (dtype == GEIST_DTYPE_PQ2_0) {
+                blk[0] = 0x00; /* d = fp16(1.0); codes stay random, 3 = +2 included */
+                blk[1] = 0x3C;
+            } else if (dtype == GEIST_DTYPE_Q3_K) {
                 blk[108] = 0x00; /* d = fp16(1.0), trailing field */
                 blk[109] = 0x3C;
             } else if (dtype == GEIST_DTYPE_IQ3_S) {
@@ -179,8 +184,10 @@ static void run_case(struct geist_backend *mt,
         const size_t block = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 ||
                               dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL)
                                      ? 32u
-                                     : K_BLOCK;
-        const size_t bb    = dtype == GEIST_DTYPE_Q4_0     ? Q40_BB
+                             : dtype == GEIST_DTYPE_PQ2_0 ? 128u
+                                                          : K_BLOCK;
+        const size_t bb    = dtype == GEIST_DTYPE_PQ2_0    ? PQ2_BB
+                             : dtype == GEIST_DTYPE_Q4_0   ? Q40_BB
                              : dtype == GEIST_DTYPE_Q4_1   ? Q41_BB
                              : dtype == GEIST_DTYPE_Q8_0   ? Q80_BB
                              : dtype == GEIST_DTYPE_IQ4_NL ? IQ4NL_BB
@@ -313,8 +320,11 @@ static void run_silu_case(struct geist_backend *mt) {
 
 static void run_embedding_case(struct geist_backend *mt, int dtype, const char *name) {
     const size_t vocab = 5, dim = 256, token = 3;
-    const size_t block = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0) ? 32u : K_BLOCK;
-    const size_t bb    = dtype == GEIST_DTYPE_Q4_0   ? Q40_BB
+    const size_t block = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0) ? 32u
+                         : dtype == GEIST_DTYPE_PQ2_0                             ? 128u
+                                                                                  : K_BLOCK;
+    const size_t bb    = dtype == GEIST_DTYPE_PQ2_0  ? PQ2_BB
+                         : dtype == GEIST_DTYPE_Q4_0 ? Q40_BB
                          : dtype == GEIST_DTYPE_Q8_0 ? Q80_BB
                          : dtype == GEIST_DTYPE_Q4_K ? Q4K_BB
                          : dtype == GEIST_DTYPE_Q5_K ? Q5K_BB
@@ -337,6 +347,8 @@ static void run_embedding_case(struct geist_backend *mt, int dtype, const char *
         dequant_q4_0_row(dim, row, expected);
     } else if (dtype == GEIST_DTYPE_Q8_0) {
         dequant_q8_0_row(dim, row, expected);
+    } else if (dtype == GEIST_DTYPE_PQ2_0) {
+        dequant_pq2_0_row(dim, row, expected);
     } else if (dtype == GEIST_DTYPE_Q4_K) {
         dequant_q4_K_row(dim, row, expected);
     } else if (dtype == GEIST_DTYPE_Q5_K) {
@@ -484,6 +496,12 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_IQ3_S, "IQ3_S", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ3_S, "IQ3_S", 512, 383, 4);
     run_case(mt, ref, GEIST_DTYPE_IQ3_S, "IQ3_S", 512, 383, 33);
+    /* PQ2_0 (ternary Bonsai): n4 GEMV at m=1, the bounded GEMM for m>=2,
+     * the interior _fast GEMM for full 32x64 tiles. */
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, 32);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 1);
@@ -491,6 +509,7 @@ int main(void) {
     run_silu_case(mt);
     run_embedding_case(mt, GEIST_DTYPE_Q4_0, "Q4_0");
     run_embedding_case(mt, GEIST_DTYPE_Q8_0, "Q8_0");
+    run_embedding_case(mt, GEIST_DTYPE_PQ2_0, "PQ2_0");
     run_qwen35_attention_ops(mt);
 
     geist_backend_destroy(mt);

@@ -218,10 +218,11 @@
         st->q80_mm_pipeline != nullptr && st->q41_n4_pipeline != nullptr &&
         st->q41_mm_pipeline != nullptr && st->q5k_n4_pipeline != nullptr &&
         st->q5k_mm_pipeline != nullptr && st->iq4nl_mm_pipeline != nullptr &&
-        st->iq4xs_mm_pipeline != nullptr && st->q3k_mm_pipeline != nullptr &&
-        st->iq3s_mm_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
-        st->q4k_matmul_m8_pipeline != nullptr && st->q4k_matmul_m16_pipeline != nullptr &&
-        st->q4k_matmul_m16_n2_pipeline != nullptr &&
+        st->pq2_n4_pipeline != nullptr && st->pq2_mm_pipeline != nullptr &&
+        st->pq2_mm_fast_pipeline != nullptr && st->iq4xs_mm_pipeline != nullptr &&
+        st->q3k_mm_pipeline != nullptr && st->iq3s_mm_pipeline != nullptr &&
+        st->q4k_n4_pipeline != nullptr && st->q4k_matmul_m8_pipeline != nullptr &&
+        st->q4k_matmul_m16_pipeline != nullptr && st->q4k_matmul_m16_n2_pipeline != nullptr &&
         (!st->use_q4k_mm_sg || st->q4k_mm_sg_pipeline != nullptr) && st->q6k_pipeline != nullptr &&
         st->q6k_n4_pipeline != nullptr && st->q6k_matmul_m8_pipeline != nullptr &&
         st->q6k_matmul_m16_pipeline != nullptr && st->rmsnorm_rows_pipeline != nullptr &&
@@ -279,7 +280,9 @@
                 metal_qsg_n4_iq3s_source,     metal_qsg_mm_q3k_source,
                 metal_qsg_mm_iq3s_source,     metal_qsg_mm_q40_fast_source,
                 metal_qsg_mm_q80_fast_source, metal_qsg_mm_q41_fast_source,
-                metal_qsg_mm_q5k_fast_source, metal_qsg_mm_iq4xs_fast_source};
+                metal_qsg_mm_q5k_fast_source, metal_qsg_mm_iq4xs_fast_source,
+                metal_qsg_pq2_source,         metal_qsg_mm_pq2_source,
+                metal_qsg_mm_pq2_fast_source};
         size_t total = 0;
         for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
             total += strlen(parts[i]);
@@ -798,6 +801,30 @@
                                         "matmul_q5k_mm_sg",
                                         &st->q5k_mm_function,
                                         &st->q5k_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_pq2_n4",
+                                        &st->pq2_n4_function,
+                                        &st->pq2_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_pq2_mm_sg",
+                                        &st->pq2_mm_function,
+                                        &st->pq2_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_pq2_mm_sg_fast",
+                                        &st->pq2_mm_fast_function,
+                                        &st->pq2_mm_fast_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,
@@ -1634,6 +1661,43 @@
                                         &st->attention_dec512_f16_pipeline);
     }
     return s;
+}
+
+[[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be) {
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st = be->state;
+    if (st->hadamard_pipeline != nullptr) {
+        return GEIST_OK;
+    }
+    void *ns_string = metal_objc_get_class(st, "NSString");
+    void *source    = ns_string != nullptr
+                              ? metal_msg_send_id_cstr(
+                                        st, ns_string, "stringWithUTF8String:", metal_hadamard_source)
+                              : nullptr;
+    if (source == nullptr) {
+        geist_backend_set_error(be, GEIST_E_BACKEND, "metal: hadamard shader source failed");
+        return GEIST_E_BACKEND;
+    }
+    void *err            = nullptr;
+    st->hadamard_library = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
+    if (st->hadamard_library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: hadamard shader compile failed%s%s",
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    return metal_create_named_pipeline(be,
+                                       st->hadamard_library,
+                                       ns_string,
+                                       "hadamard_rows",
+                                       &st->hadamard_function,
+                                       &st->hadamard_pipeline);
 }
 
 [[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be) {
