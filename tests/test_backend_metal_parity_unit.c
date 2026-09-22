@@ -509,6 +509,10 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 4);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, 32);
+    /* n_out >= 6144 at m = 1 takes matvec_pq2_n8 (8 rows per simdgroup):
+     * 6150 leaves a partial 16-row tile, 6144 an exact one. */
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2n8", 512, 6150, 1);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2n8", 512, 6144, 1);
     /* n_in % 1024 == 0 and GEIST_PQ2_SB=1 (set in main): resolve_weight
      * repacks to 272-byte superblocks (matvec_pq2sb_n4,
      * matmul_pq2sb_mm_sg[_fast]). */

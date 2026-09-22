@@ -136,16 +136,25 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                         const struct metal_q4k_params *params,
                                         enum geist_dtype               dtype,
                                         bool                           pq2_sb) {
-    void *n4 = pq2_sb                        ? st->pq2sb_n4_pipeline
-               : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_n4_pipeline
-               : dtype == GEIST_DTYPE_Q4_0   ? st->q40_n4_pipeline
-               : dtype == GEIST_DTYPE_Q8_0   ? st->q80_n4_pipeline
-               : dtype == GEIST_DTYPE_Q4_1   ? st->q41_n4_pipeline
-               : dtype == GEIST_DTYPE_IQ4_NL ? st->iq4nl_n4_pipeline
-               : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_n4_pipeline
-               : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_n4_pipeline
-               : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_n4_pipeline
-                                             : st->q5k_n4_pipeline;
+    /* PQ2_0 decode GEMV: 8 rows per simdgroup halve the activation traffic
+     * (a thread reads 128 bytes of x per iteration against R*8 bytes of
+     * weights), but halve the threadgroup count too. Measured on 27B
+     * shapes, that pays from ~6k output rows up (ffn gate/up 0.138 ->
+     * 0.121 ms, lm_head 1.68 -> 1.35); below it the smaller grid loses
+     * (attn kv, 1024 rows: 0.030 -> 0.044). */
+    const bool pq2_n8 = dtype == GEIST_DTYPE_PQ2_0 && !pq2_sb && st->use_pq2_n8 &&
+                        params->n_out >= 6144u && st->pq2_n8_pipeline != nullptr;
+    void      *n4     = pq2_sb                        ? st->pq2sb_n4_pipeline
+                        : pq2_n8                      ? st->pq2_n8_pipeline
+                        : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_n4_pipeline
+                        : dtype == GEIST_DTYPE_Q4_0   ? st->q40_n4_pipeline
+                        : dtype == GEIST_DTYPE_Q8_0   ? st->q80_n4_pipeline
+                        : dtype == GEIST_DTYPE_Q4_1   ? st->q41_n4_pipeline
+                        : dtype == GEIST_DTYPE_IQ4_NL ? st->iq4nl_n4_pipeline
+                        : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_n4_pipeline
+                        : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_n4_pipeline
+                        : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_n4_pipeline
+                                                      : st->q5k_n4_pipeline;
     void *mm = pq2_sb                        ? st->pq2sb_mm_pipeline
                : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_mm_pipeline
                : dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_pipeline
@@ -209,8 +218,12 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     }
     /* q40/q80 n4 kernels run 4 rows per simdgroup (8 per threadgroup);
      * q41/q5k still run 2 (4 per threadgroup). */
-    const uint32_t          n4_tile = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0 ||
-                                       dtype == GEIST_DTYPE_IQ4_NL || dtype == GEIST_DTYPE_PQ2_0)
+    /* PQ2_0's n4 kernel takes its simdgroup count from the dispatch
+     * (GEIST_PQ2_N4_TG threads, 4 rows each); the others hardcode two
+     * simdgroups per threadgroup. */
+    const uint32_t          n4_tile = pq2_n8 ? 16u
+                                      : (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0 ||
+                                         dtype == GEIST_DTYPE_IQ4_NL || dtype == GEIST_DTYPE_PQ2_0)
                                               ? 8u
                                               : 4u;
     const struct metal_size groups  = {

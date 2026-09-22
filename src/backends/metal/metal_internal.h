@@ -207,6 +207,11 @@ struct metal_state {
     void  *pq2_mm_pipeline;
     void  *pq2_mm_fast_function;
     void  *pq2_mm_fast_pipeline;
+    /* matvec_pq2_n8: 8 rows per simdgroup instead of 4. GEIST_PQ2_N8=0
+     * pins the 4-row kernel for A/B. */
+    bool   use_pq2_n8;
+    void  *pq2_n8_function;
+    void  *pq2_n8_pipeline;
     void  *pq2sb_n4_function;
     void  *pq2sb_n4_pipeline;
     void  *pq2sb_mm_function;

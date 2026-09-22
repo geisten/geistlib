@@ -235,6 +235,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->q5k_mm_fast_function, "release");
         metal_msg_send_void0(st, st->pq2_n4_pipeline, "release");
         metal_msg_send_void0(st, st->pq2_n4_function, "release");
+        metal_msg_send_void0(st, st->pq2_n8_pipeline, "release");
+        metal_msg_send_void0(st, st->pq2_n8_function, "release");
         metal_msg_send_void0(st, st->pq2_mm_pipeline, "release");
         metal_msg_send_void0(st, st->pq2_mm_function, "release");
         metal_msg_send_void0(st, st->pq2_mm_fast_pipeline, "release");
@@ -346,6 +348,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->q5k_mm_fast_function                  = nullptr;
     st->pq2_n4_pipeline                       = nullptr;
     st->pq2_n4_function                       = nullptr;
+    st->pq2_n8_pipeline                       = nullptr;
+    st->pq2_n8_function                       = nullptr;
     st->pq2_mm_pipeline                       = nullptr;
     st->pq2_mm_function                       = nullptr;
     st->pq2_mm_fast_pipeline                  = nullptr;
@@ -666,6 +670,8 @@ void metal_destroy(struct geist_backend *be) {
      * GEIST_METAL_Q4K_MM_SG=0 to disable. */
     const char *q4k_mm_sg    = getenv("GEIST_METAL_Q4K_MM_SG");
     st->use_q4k_mm_sg        = q4k_mm_sg == nullptr || strcmp(q4k_mm_sg, "0") != 0;
+    const char *pq2_n8       = getenv("GEIST_PQ2_N8");
+    st->use_pq2_n8           = pq2_n8 == nullptr || strcmp(pq2_n8, "0") != 0;
     const char *rmsnorm_simd = getenv("GEIST_METAL_RMSNORM_SIMD");
     st->use_rmsnorm_simd     = rmsnorm_simd == nullptr || strcmp(rmsnorm_simd, "0") != 0;
     const char *q6k_n4       = getenv("GEIST_METAL_Q6K_N4");

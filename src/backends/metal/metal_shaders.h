@@ -605,40 +605,51 @@ static const char metal_qsg_n4_iq4xs_source[] =
  * (Measured and dropped: 8 rows per simdgroup, x staged in threadgroup
  * memory, half activations (over tolerance), a float4 table (threadgroup
  * bandwidth: 60 ms), half the bytes through the ALU instead of the table.) */
-static const char metal_qsg_pq2_source[] =
+static const char metal_qsg_pq2_dq_source[] =
         "struct bpq2{half d;uchar qs[32];};\n"
         "static inline void dqpq2(device const bpq2*xb,short il,thread half4x4&r){"
         "half d=xb->d;device const uchar*q=xb->qs+4*il;"
         "FOR_UNROLL(short i=0;i<16;i++){"
-        "r[i/4][i%4]=d*half(short((q[i/4]>>(2*(i%4)))&3)-1);}}\n"
-        "kernel void matvec_pq2_n4(device const float*x[[buffer(0)]],device const "
-        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],"
-        "threadgroup float*shm[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],"
-        "ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]],"
-        "ushort tid[[thread_index_in_threadgroup]]){"
-        "threadgroup half4*lut=(threadgroup half4*)shm;"
-        "for(uint j=tid;j<256u;j+=64u){lut[j]=half4(half(j&3u),half((j>>2u)&3u),"
-        "half((j>>4u)&3u),half(j>>6u));}"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);"
-        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*4u;if(fr>=p.no||b>=p.rows)return;"
-        "uint nb=p.ni>>7u,ix=uint(ti)>>2u,il=uint(ti)&3u;"
-        "uint nr=min(p.no-fr,4u);"
-        "device const float4*yb=(device const float4*)(x+p.xo+b*p.xs)+ix*32u+il*8u;"
-        "float sf[4]={0.0f,0.0f,0.0f,0.0f};"
-        "for(uint ib=ix;ib<nb;ib+=8u){"
-        "float4 yl[8];float sumy=0.0f;"
-        "FOR_UNROLL(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i].x+yl[i].y+yl[i].z+yl[i].w;}"
-        "FOR_UNROLL(uint rr=0u;rr<4u;rr++){"
-        "uint bo=p.wo+((fr+min(rr,nr-1u))*p.bpr+ib)*34u;"
-        "device const ushort*qs=(device const ushort*)(w+bo+2u+il*8u);"
-        "float a0=0.0f,a1=0.0f;"
-        "FOR_UNROLL(uint i=0u;i<4u;i++){uint q=uint(qs[i]);"
-        "a0+=dot(yl[2u*i],float4(lut[q&255u]));a1+=dot(yl[2u*i+1u],float4(lut[q>>8u]));}"
-        "float d=float(*((device const half*)(w+bo)));"
-        "sf[rr]+=d*(a0+a1-sumy);}"
-        "yb+=256u;}"
-        "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
-        "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
+        "r[i/4][i%4]=d*half(short((q[i/4]>>(2*(i%4)))&3)-1);}}\n";
+
+/* R rows per simdgroup. R trades registers for activation traffic: a
+ * thread loads 128 bytes of x per iteration and R*8 bytes of weights, so
+ * x traffic is 15/R times the weight traffic — at R=4 the kernel moved
+ * ~90 MB of (cached) x for 24 MB of weights. */
+#define GEIST_METAL_PQ2_N_KERNEL(R)                                                       \
+    "kernel void matvec_pq2_n" R "(device const float*x[[buffer(0)]],device const "       \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],"         \
+    "threadgroup float*shm[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],"   \
+    "uint3 nt3[[threads_per_threadgroup]],"                                               \
+    "ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]," \
+    "ushort tid[[thread_index_in_threadgroup]]){"                                         \
+    "uint nsg=nt3.x>>5u;"                                                                 \
+    "threadgroup half4*lut=(threadgroup half4*)shm;"                                      \
+    "for(uint j=tid;j<256u;j+=nt3.x){lut[j]=half4(half(j&3u),half((j>>2u)&3u),"           \
+    "half((j>>4u)&3u),half(j>>6u));}"                                                     \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                    \
+    "uint b=tg.y,fr=(tg.x*nsg+uint(sg))*" R "u;if(fr>=p.no||b>=p.rows)return;"            \
+    "uint nb=p.ni>>7u,ix=uint(ti)>>2u,il=uint(ti)&3u;"                                    \
+    "uint nr=min(p.no-fr," R "u);"                                                        \
+    "device const float4*yb=(device const float4*)(x+p.xo+b*p.xs)+ix*32u+il*8u;"          \
+    "float sf[" R "];FOR_UNROLL(uint i=0u;i<" R "u;i++)sf[i]=0.0f;"                       \
+    "for(uint ib=ix;ib<nb;ib+=8u){"                                                       \
+    "float4 yl[8];float sumy=0.0f;"                                                       \
+    "FOR_UNROLL(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i].x+yl[i].y+yl[i].z+yl[i].w;}"  \
+    "FOR_UNROLL(uint rr=0u;rr<" R "u;rr++){"                                              \
+    "uint bo=p.wo+((fr+min(rr,nr-1u))*p.bpr+ib)*34u;"                                     \
+    "device const ushort*qs=(device const ushort*)(w+bo+2u+il*8u);"                       \
+    "float a0=0.0f,a1=0.0f;"                                                              \
+    "FOR_UNROLL(uint i=0u;i<4u;i++){uint q=uint(qs[i]);"                                  \
+    "a0+=dot(yl[2u*i],float4(lut[q&255u]));a1+=dot(yl[2u*i+1u],float4(lut[q>>8u]));}"     \
+    "float d=float(*((device const half*)(w+bo)));"                                       \
+    "sf[rr]+=d*(a0+a1-sumy);}"                                                            \
+    "yb+=256u;}"                                                                          \
+    "FOR_UNROLL(uint rr=0u;rr<" R "u;rr++){float a=simd_sum(sf[rr]);"                     \
+    "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n"
+
+static const char metal_qsg_pq2_source[]    = GEIST_METAL_PQ2_N_KERNEL("4");
+static const char metal_qsg_pq2_n8_source[] = GEIST_METAL_PQ2_N_KERNEL("8");
 
 /* PQ2_0 superblock layout (GEIST_W_LAYOUT_PQ2_0_SB): resolve_weight
  * regroups each row's blocks by 8 into [8 x half d][8 x 32 code bytes] =
