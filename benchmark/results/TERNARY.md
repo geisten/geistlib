@@ -300,9 +300,14 @@ dequant pass — no ternary advantage there yet.
   serial code; the rest is SGEMM plus waits where 8 threads share the two
   P-cluster AMX units. The host DeltaNet now sub-chunks, so `GEIST_M_MAX=128`
   costs it nothing; the default stays 64 until a quiet cross-model A/B.
-- Metal decode, 50.5 ms per token at 32-token context (subtractive profile,
+- Metal decode, ~49 ms per token at 32-token context (subtractive profile,
   `GEIST_METAL_PROFILE=1` + `GEIST_SKIP_*`): PQ2_0 GEMVs ~38 ms, DeltaNet
-  ~3, Hadamard ~3, RMS norm ~2.5, the F32 alpha/beta GEMVs ~1.4. A
+  ~3, Hadamard 0.8, RMS norm 0.47. The norm and the F32 alpha/beta GEMVs
+  together cost 3.9 ms until both kernels were widened from 256 to 1024
+  threads with a simd_sum reduction (decode 19.29 -> 19.96 t/s at 8 ctx,
+  16.55 -> 16.87 at 512, prefill unchanged): one row per threadgroup is
+  all the parallelism a decode step has, so they were latency-bound on an
+  otherwise idle GPU. A
   dependent dispatch costs ~3 us, so the ~1300 per token are not the
   floor. The GEMV sits within ~10 % of a read-only probe of its own access
   pattern (40 ms; 27 ms without the activation loads).
@@ -318,8 +323,10 @@ dequant pass — no ternary advantage there yet.
 
 ### Next levers
 
-- Metal decode: merging the F32 alpha/beta GEMVs (~1.4 ms/token) and fusing
-  the norm with the Hadamard (~1-2 ms), together about 5 %.
+- Metal decode: the PQ2_0 GEMV is now 38 of the 49 ms and within ~10 % of a
+  read-only probe of its access pattern, so the next real step is a
+  different decode shape (batching rows, or fewer bytes per weight), not
+  another GEMV variant.
 - CPU: a quiet A/B of `m_max` 128 as the Mac default; an fp16-AMX (BNNS)
   spike for the prefill GEMM.
 - `PTQ1_0` (1.75 bpw): slower to unpack than `PQ2_0` on Apple silicon per
