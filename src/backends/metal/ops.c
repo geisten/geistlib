@@ -155,16 +155,16 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                         : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_n4_pipeline
                         : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_n4_pipeline
                                                       : st->q5k_n4_pipeline;
-    void *mm = pq2_sb                        ? st->pq2sb_mm_pipeline
-               : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_mm_pipeline
-               : dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_pipeline
-               : dtype == GEIST_DTYPE_Q8_0   ? st->q80_mm_pipeline
-               : dtype == GEIST_DTYPE_Q4_1   ? st->q41_mm_pipeline
-               : dtype == GEIST_DTYPE_IQ4_NL ? st->iq4nl_mm_pipeline
-               : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_mm_pipeline
-               : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_mm_pipeline
-               : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_mm_pipeline
-                                             : st->q5k_mm_pipeline;
+    void      *mm     = pq2_sb                        ? st->pq2sb_mm_pipeline
+                        : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_mm_pipeline
+                        : dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_pipeline
+                        : dtype == GEIST_DTYPE_Q8_0   ? st->q80_mm_pipeline
+                        : dtype == GEIST_DTYPE_Q4_1   ? st->q41_mm_pipeline
+                        : dtype == GEIST_DTYPE_IQ4_NL ? st->iq4nl_mm_pipeline
+                        : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_mm_pipeline
+                        : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_mm_pipeline
+                        : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_mm_pipeline
+                                                      : st->q5k_mm_pipeline;
     /* IQ4/Q3_K/IQ3_S: no naive fallback kernels and no fast GEMM
      * instances — n4 for rows==1, the bounded simdgroup GEMM for every
      * rows>=2 shape. */
@@ -1136,7 +1136,7 @@ static void metal_encode_hadamard(struct metal_state                 *st,
     metal_msg_send_set_buffer(st, enc, sg->buffer->buffer, sg->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, p, sizeof(*p), 3);
     metal_msg_send_set_threadgroup_memory(st, enc, p->block * sizeof(float), 0u);
-    const struct metal_size groups  = {p->width / p->block, rows, 1};
+    const struct metal_size groups = {p->width / p->block, rows, 1};
     /* One thread per element pair and stage: 1024 threads measured 10.6 us
      * per decode row vs 14 us at 256 (the butterflies are barrier-bound). A
      * barrier-free simdgroup variant (32 registers per lane, shuffles for

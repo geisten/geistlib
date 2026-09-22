@@ -698,8 +698,7 @@ static const char metal_qsg_mm_pq2sb_source[] =
 static const char metal_qsg_mm_pq2sb_fast_source[] =
         GEIST_METAL_MM_SG_FAST_KERNEL("pq2sb", "bpq2s", "dqpq2s", "64");
 
-static const char metal_qsg_mm_pq2_source[] =
-        GEIST_METAL_MM_SG_KERNEL("pq2", "bpq2", "dqpq2", "8");
+static const char metal_qsg_mm_pq2_source[] = GEIST_METAL_MM_SG_KERNEL("pq2", "bpq2", "dqpq2", "8");
 static const char metal_qsg_mm_pq2_fast_source[] =
         GEIST_METAL_MM_SG_FAST_KERNEL("pq2", "bpq2", "dqpq2", "8");
 

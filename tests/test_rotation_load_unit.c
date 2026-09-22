@@ -340,7 +340,7 @@ int main(void) {
     s.n_names     = N_BASE + 1;
     model_free(expect("kind on the wrong mixer", &s, GEIST_E_FORMAT, nullptr));
     s.n_names = N_BASE;
-    names[0] = "blk.2.attn_qkv.weight";
+    names[0]  = "blk.2.attn_qkv.weight";
     model_free(expect("layer out of range", &s, GEIST_E_FORMAT, nullptr));
     names[0] = "blk.x.attn_qkv.weight";
     model_free(expect("malformed layer index", &s, GEIST_E_FORMAT, nullptr));

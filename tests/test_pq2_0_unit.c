@@ -189,7 +189,10 @@ static int check_backend(const char *name, bool x8_policy) {
         printf("%s: not compiled in, skipped\n", name);
         return 0;
     }
-    const bool   neon      = strcmp(name, "cpu_neon") == 0;
+    const bool neon = strcmp(name, "cpu_neon") == 0;
+    /* x8_policy states what the NEON resolver should install; the other
+     * legs have no x8 layout to check. */
+    (void) x8_policy;
     int          fails     = 0;
     const size_t n_ins[]   = {128, 5120, 17408};
     const size_t n_outs[]  = {37, 40, 264};
