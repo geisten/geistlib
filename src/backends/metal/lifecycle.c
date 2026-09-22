@@ -37,6 +37,10 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->argmax_pipeline, "release");
         metal_msg_send_void0(st, st->argmax_function, "release");
         metal_msg_send_void0(st, st->deltanet_mix_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_dec_qk_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_dec_qk_function, "release");
+        metal_msg_send_void0(st, st->dn_dec_v_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_dec_v_function, "release");
         metal_msg_send_void0(st, st->deltanet_mix_function, "release");
         metal_msg_send_void0(st, st->dn_cst_copy_pipeline, "release");
         metal_msg_send_void0(st, st->dn_cst_copy_function, "release");
@@ -431,6 +435,10 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->silu_mul_rows_pipeline                = nullptr;
     st->silu_mul_rows_function                = nullptr;
     st->deltanet_mix_pipeline                 = nullptr;
+    st->dn_dec_qk_pipeline                    = nullptr;
+    st->dn_dec_qk_function                    = nullptr;
+    st->dn_dec_v_pipeline                     = nullptr;
+    st->dn_dec_v_function                     = nullptr;
     st->deltanet_mix_function                 = nullptr;
     st->qgate_split_pipeline                  = nullptr;
     st->qgate_split_function                  = nullptr;

@@ -98,6 +98,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_DN_WIDE,  /* amat/vnew/out/supd/gate */
     METAL_PROFILE_DISPATCH_QGATE_SPLIT,
     METAL_PROFILE_DISPATCH_SIGMOID_MUL,
+    METAL_PROFILE_DISPATCH_HADAMARD,
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -278,6 +279,10 @@ struct metal_state {
     void  *silu_mul_rows_pipeline;
     void  *deltanet_mix_function;
     void  *deltanet_mix_pipeline;
+    void  *dn_dec_qk_function;
+    void  *dn_dec_qk_pipeline;
+    void  *dn_dec_v_function;
+    void  *dn_dec_v_pipeline;
     void  *dn_cst_copy_function;
     void  *dn_cst_copy_pipeline;
     void  *dn_conv_prep_function;

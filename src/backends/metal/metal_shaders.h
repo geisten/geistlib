@@ -2320,6 +2320,75 @@ static const char metal_deltanet_source[] =
         "float inv=rsqrt(red[0]/float(p.dv)+p.eps);z[p.zo+t*vd+h*p.dv+j]="
         "out*inv*nw[p.no+j]*silu1(gate);}threadgroup_barrier(mem_flags::mem_threadgroup);}}}\n";
 
+/* Single-token (decode) DeltaNet, split so the state update spreads over
+ * the GPU instead of 16 serial threadgroups. dn_dec_qk: one threadgroup per
+ * k-head runs the q/k conv + silu, rolls their conv state and L2-normalizes
+ * q (scaled) and k in place — the first half of deltanet_mix at seq 1.
+ * dn_dec_v: one threadgroup per v-head, dv columns x 4 row groups
+ * (ceil(dk/4) rows each, the last one short); conv +
+ * silu of v, then S is read once for mem, updated and read for out with the
+ * dk rows split four ways and the partial sums reduced in threadgroup
+ * memory, then the gated RMS norm. Same math as deltanet_mix. */
+static const char metal_dn_decode_source[] =
+        "kernel void dn_dec_qk(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
+        "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
+        "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
+        "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
+        "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],constant P&p[[buffer(10)]],"
+        "uint hk[[threadgroup_position_in_grid]],uint j[[thread_index_in_threadgroup]]){"
+        "threadgroup float red[256];uint keyd=p.nkh*p.dk,vd=p.nvh*p.dv,cd=2u*keyd+vd;"
+        "if(hk>=p.nkh)return;float qs=rsqrt(float(p.dk));uint qb=p.qo,kb=qb+keyd;"
+        "float qr=0.0f,kr=0.0f,qc=0.0f,kc=0.0f;"
+        "if(j<p.dk){uint cq=hk*p.dk+j,ck=keyd+cq;qr=qkv[qb+cq];kr=qkv[qb+ck];"
+        "for(uint r=0;r<p.K;r++){float qx=r+1u<p.K?cs[p.cso+r*cd+cq]:qr;"
+        "float kx=r+1u<p.K?cs[p.cso+r*cd+ck]:kr;qc+=cw[p.cwo+cq*p.K+r]*qx;"
+        "kc+=cw[p.cwo+ck*p.K+r]*kx;}for(uint r=0;r+2u<p.K;r++){"
+        "cs[p.cso+r*cd+cq]=cs[p.cso+(r+1u)*cd+cq];cs[p.cso+r*cd+ck]=cs[p.cso+(r+1u)*cd+ck];}"
+        "if(p.K>=2u){cs[p.cso+(p.K-2u)*cd+cq]=qr;cs[p.cso+(p.K-2u)*cd+ck]=kr;}"
+        "qc=silu1(qc);kc=silu1(kc);}"
+        "red[j]=j<p.dk?qc*qc:0.0f;threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint s=128u;s>0u;s>>=1u){if(j<s)red[j]+=red[j+s];"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);}float qi=rsqrt(red[0]+p.eps);"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "red[j]=j<p.dk?kc*kc:0.0f;threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint s=128u;s>0u;s>>=1u){if(j<s)red[j]+=red[j+s];"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);}float ki=rsqrt(red[0]+p.eps);"
+        "if(j<p.dk){qkv[qb+hk*p.dk+j]=qc*qi*qs;qkv[kb+hk*p.dk+j]=kc*ki;}}\n"
+        "kernel void dn_dec_v(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
+        "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
+        "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
+        "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
+        "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],constant P&p[[buffer(10)]],"
+        "uint h[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){"
+        "threadgroup float tq[256];threadgroup float tk[256];threadgroup float vv[256];"
+        "threadgroup float part[1024];"
+        "uint keyd=p.nkh*p.dk,vd=p.nvh*p.dv,cd=2u*keyd+vd;if(h>=p.nvh)return;"
+        "uint hk=h%p.nkh,j=lid%p.dv,g=lid/p.dv,nt=4u*p.dv;uint qb=p.qo,kb=qb+keyd;"
+        "for(uint i=lid;i<p.dk;i+=nt){tq[i]=qkv[qb+hk*p.dk+i];tk[i]=qkv[kb+hk*p.dk+i];}"
+        "if(g==0u){uint cv=2u*keyd+h*p.dv+j;float vr=qkv[qb+cv],vc=0.0f;"
+        "for(uint r=0;r<p.K;r++){float vx=r+1u<p.K?cs[p.cso+r*cd+cv]:vr;"
+        "vc+=cw[p.cwo+cv*p.K+r]*vx;}for(uint r=0;r+2u<p.K;r++)"
+        "cs[p.cso+r*cd+cv]=cs[p.cso+(r+1u)*cd+cv];"
+        "if(p.K>=2u)cs[p.cso+(p.K-2u)*cd+cv]=vr;vc=silu1(vc);qkv[qb+cv]=vc;vv[j]=vc;}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "float be=1.0f/(1.0f+exp(-beta[p.bo+h]));"
+        "float sp=log(1.0f+exp(alpha[p.ao+h]+dt[p.dto+h]));float decay=exp(aw[p.awo+h]*sp);"
+        "uint rq=(p.dk+3u)/4u,i0=g*rq,i1=min(i0+rq,p.dk),sb=p.so+h*p.dk*p.dv;float mp=0.0f;"
+        "for(uint i=i0;i<i1;i++)mp+=S[sb+i*p.dv+j]*tk[i];"
+        "part[g*p.dv+j]=mp;threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "float mem=(part[j]+part[p.dv+j]+part[2u*p.dv+j]+part[3u*p.dv+j])*decay;"
+        "float d=(vv[j]-mem)*be;float op=0.0f;"
+        "for(uint i=i0;i<i1;i++){uint si=sb+i*p.dv+j;float sv=S[si]*decay+tk[i]*d;"
+        "S[si]=sv;op+=sv*tq[i];}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);part[g*p.dv+j]=op;"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "float out=part[j]+part[p.dv+j]+part[2u*p.dv+j]+part[3u*p.dv+j];"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "if(g==0u)part[j]=out*out;threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "if(g==0u){float ss=0.0f;for(uint c=0u;c<p.dv;c++)ss+=part[c];"
+        "float inv=rsqrt(ss/float(p.dv)+p.eps);float gate=z[p.zo+h*p.dv+j];"
+        "z[p.zo+h*p.dv+j]=out*inv*nw[p.no+j]*silu1(gate);}}\n";
+
 /* Chunked DeltaNet prefill (metal port of transformer_dn_head_chunk /
  * dn_run_prefill_chunked): token-parallel conv+gating and q/k norms into
  * a device scratch buffer, then one threadgroup per v-head runs the whole

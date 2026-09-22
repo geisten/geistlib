@@ -1106,6 +1106,7 @@ static void metal_encode_hadamard(struct metal_state                 *st,
     metal_msg_send_set_threadgroup_memory(st, enc, p->block * sizeof(float), 0u);
     const struct metal_size groups  = {p->width / p->block, rows, 1};
     const struct metal_size threads = {p->block < 256u ? p->block : 256u, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_HADAMARD, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
@@ -3940,6 +3941,21 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_WIDE, g_tv);
             metal_msg_send_dispatch(st, enc, g_tv, t256);
         }
+    } else if (args->seq == 1 && st->dn_dec_v_pipeline != nullptr && 4u * args->head_v <= 1024u &&
+               !metal_env_enabled("GEIST_DN_SERIAL_DECODE")) {
+        /* Decode: q/k prep per k-head, then the state update spread over
+         * v-heads x 4 row groups (dn_dec_v). */
+        metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
+        metal_msg_send_set_pipeline(st, enc, st->dn_dec_qk_pipeline);
+        const struct metal_size gk = {args->n_k_heads, 1, 1};
+        const struct metal_size tk = {256, 1, 1};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gk);
+        metal_msg_send_dispatch(st, enc, gk, tk);
+        metal_msg_send_set_pipeline(st, enc, st->dn_dec_v_pipeline);
+        const struct metal_size gv = {args->n_v_heads, 1, 1};
+        const struct metal_size tv = {4u * (uint32_t) args->head_v, 1, 1};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
+        metal_msg_send_dispatch(st, enc, gv, tv);
     } else {
         metal_msg_send_set_pipeline(st, enc, st->deltanet_mix_pipeline);
         metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);

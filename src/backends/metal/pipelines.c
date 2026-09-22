@@ -61,6 +61,7 @@
     void *source = nullptr;
     if (ns_string != nullptr) {
         const char *const parts[] = {metal_deltanet_source,
+                                     metal_dn_decode_source,
                                      metal_dn_chunk_prep_source,
                                      metal_dn_chunk_ws_source,
                                      metal_dn_chunk_wide_source,
@@ -104,6 +105,22 @@
                                                       "deltanet_mix",
                                                       &st->deltanet_mix_function,
                                                       &st->deltanet_mix_pipeline);
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_dec_qk",
+                                        &st->dn_dec_qk_function,
+                                        &st->dn_dec_qk_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->deltanet_library,
+                                        ns_string,
+                                        "dn_dec_v",
+                                        &st->dn_dec_v_function,
+                                        &st->dn_dec_v_pipeline);
+    }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,
                                         st->deltanet_library,
