@@ -127,12 +127,6 @@ struct metal_state {
     struct metal_buf_reg_entry *buf_reg;
     size_t                      buf_reg_count;
     size_t                      buf_reg_cap;
-    /* PQ2_0 superblock repacks made by resolve_weight (GEIST_W_LAYOUT_PQ2_0_SB).
-     * ponytail: they live until backend destroy; a model reload on the same
-     * backend keeps the old ones — add a weight-release hook if that shows up. */
-    struct geist_buffer **pq2sb_bufs;
-    size_t                pq2sb_count;
-    size_t                pq2sb_cap;
     /* MTLBuffers referenced by ops encoded on the open (unflushed) batch;
      * a host map/upload/download of a referenced buffer forces a flush.
      * Open-addressed pointer set; overflow degrades to always-flush. */
@@ -210,20 +204,17 @@ struct metal_state {
     /* matvec_pq2_n8: 8 rows per simdgroup instead of 4.
      * GEIST_METAL_PQ2_N8=0 pins the 4-row kernel for A/B. */
     bool use_pq2_n8;
-    /* PQ2_0 superblock repack + its three kernels, off unless
-     * GEIST_METAL_PQ2_SB=1 (see metal_pq2sb_repack for the trade). */
-    bool use_pq2_sb;
+    /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
+     * measurements, then a calibration blob, then the env. */
+    struct metal_tuning {
+        uint32_t pq2_n8_min_n_out;
+        uint32_t wide_rows_min_cols;
+    } tuning;
     /* Parallel single-token DeltaNet; GEIST_METAL_DN_SERIAL_DECODE=1 takes
      * the serial path. Cached here: the decode path asks per layer. */
     bool  use_dn_dec;
     void *pq2_n8_function;
     void *pq2_n8_pipeline;
-    void *pq2sb_n4_function;
-    void *pq2sb_n4_pipeline;
-    void *pq2sb_mm_function;
-    void *pq2sb_mm_pipeline;
-    void *pq2sb_mm_fast_function;
-    void *pq2sb_mm_fast_pipeline;
     void *iq4nl_n4_function;
     void *iq4nl_n4_pipeline;
     void *iq4nl_mm_function;
@@ -503,8 +494,6 @@ enum {
     METAL_IQ3S_BLOCK_BYTES              = 110u,
     METAL_PQ2_BLOCK_ELEMS               = (unsigned) PQ2_0_BLOCK_ELEMS,
     METAL_PQ2_BLOCK_BYTES               = (unsigned) PQ2_0_BLOCK_BYTES,
-    METAL_PQ2SB_BLOCKS                  = 8u,
-    METAL_PQ2SB_BYTES                   = 272u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,
@@ -841,6 +830,11 @@ struct geist_buffer *metal_buf_reg_find(struct metal_state *st, const void *p, s
                                                  struct geist_buffer  **out);
 
 void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer *buf);
+
+/* tuning.c: resolve the device crossovers (seed -> calibration -> env)
+ * and the tunable table the calibration driver measures. */
+void                        metal_tuning_init(struct geist_backend *be, struct metal_state *st);
+const struct geist_tunable *metal_tunables(size_t *out_count);
 
 [[nodiscard]] enum geist_status metal_buffer_create(struct geist_backend  *be,
                                                     size_t                 bytes,

@@ -662,7 +662,11 @@ struct geist_backend_caps {
     /* deltanet_mix() sub-chunks long sequences internally (the O(C²)
      * chunk recipe runs at its own optimal granularity regardless of
      * the caller's m). Consumer: state_create skips the DN m_max cap,
-     * so the surrounding GEMMs keep their occupancy-friendly batch. */
+     * so the surrounding GEMMs keep their occupancy-friendly batch.
+     * Set by metal (its kernel sub-chunks) and by the three CPU backends
+     * (they run the host path, which does). Vulkan runs the same host
+     * path but has not been measured, so it still takes the cap — the
+     * bit is opt-in after measuring, not a description of the code. */
     bool dn_subchunk;
 
     /* Preferred prefill batch size (m_max) measured for this backend;

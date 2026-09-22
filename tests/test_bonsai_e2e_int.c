@@ -18,8 +18,6 @@
  * test SKIPs without the fixture (GEIST_BONSAI_GGUF_PATH or
  * gguf_artifacts/) or without cpu_neon, strict-fixture mode included.
  */
-#define _POSIX_C_SOURCE 200809L /* setenv */
-
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -168,8 +166,6 @@ int main(void) {
     GEIST_SKIP_IF(path == nullptr,
                   "Ternary-Bonsai-2-27B-PQ2_0.gguf not found (GEIST_BONSAI_GGUF_PATH)");
     const int neon = run_backend(path, "cpu_neon");
-    /* Metal's opt-in PQ2_0 superblock layout, against the same goldens. */
-    setenv("GEIST_METAL_PQ2_SB", "1", 1);
     GEIST_SKIP_IF(neon < 0, "cpu_neon backend not compiled in");
     const int metal = run_backend(path, "metal"); /* -1: not compiled in */
     const int fails = neon + (metal > 0 ? metal : 0);

@@ -116,28 +116,42 @@ static bool pq2_0_prep(struct cpu_neon_workspace *ws,
         memset(y, 0, n_out * sizeof *y);
         return false;
     }
-    float max_abs = 1e-5f;
-    for (size_t i = 0; i < n_in; i++) {
-        const float a = x[i] < 0.0f ? -x[i] : x[i];
-        if (a > max_abs)
-            max_abs = a;
+    /* n_in is a whole number of 128-element blocks (checked above), so
+     * both loops run whole vectors. The quant loop is the permute at
+     * pq2_0_permute_x with an int8 convert bolted on: vld4q's four lanes
+     * are the four l values, and each of them lands as 4 contiguous
+     * bytes at 16*l + 4*q. Rounding is the scalar +-0.5-then-truncate,
+     * expressed as vcvtq (truncating), so the result is bit-identical. */
+    float32x4_t mx = vdupq_n_f32(1e-5f);
+    for (size_t i = 0; i < n_in; i += 4) {
+        mx = vmaxq_f32(mx, vabsq_f32(vld1q_f32(x + i)));
     }
-    const float act_scale = 127.0f / max_abs;
+    const float       max_abs   = vmaxvq_f32(mx);
+    const float       act_scale = 127.0f / max_abs;
+    const float32x4_t vscale    = vdupq_n_f32(act_scale);
+    const float32x4_t vhalf     = vdupq_n_f32(0.5f);
+    const int32x4_t   vmin      = vdupq_n_s32(-128);
+    const int32x4_t   vmax      = vdupq_n_s32(127);
     for (size_t b = 0; b < nb; b++) {
-        int32_t s = 0;
+        int32x4_t acc = vdupq_n_s32(0);
         for (size_t c = 0; c < 2; c++) {
             const size_t base = b * PQ2_0_BLOCK_ELEMS + c * 64;
-            for (size_t m = 0; m < 16; m++) {
+            for (size_t q = 0; q < 4; q++) {
+                const float32x4x4_t v = vld4q_f32(x + base + 16 * q);
                 for (size_t l = 0; l < 4; l++) {
-                    const float q                = x[base + 4 * m + l] * act_scale;
-                    int32_t     qi               = (int32_t) (q < 0.0f ? q - 0.5f : q + 0.5f);
-                    qi                           = qi > 127 ? 127 : (qi < -128 ? -128 : qi);
-                    ws->m1_xq[base + 16 * l + m] = (int8_t) qi;
-                    s += qi;
+                    const float32x4_t qf  = vmulq_f32(v.val[l], vscale);
+                    const float32x4_t adj = vbslq_f32(vcltzq_f32(qf), vnegq_f32(vhalf), vhalf);
+                    const int32x4_t   qi =
+                            vminq_s32(vmaxq_s32(vcvtq_s32_f32(vaddq_f32(qf, adj)), vmin), vmax);
+                    acc                   = vaddq_s32(acc, qi);
+                    const int8x8_t packed = vqmovn_s16(vcombine_s16(vqmovn_s32(qi), vdup_n_s16(0)));
+                    vst1_lane_s32((int32_t *) (void *) (ws->m1_xq + base + 16 * l + 4 * q),
+                                  vreinterpret_s32_s8(packed),
+                                  0);
                 }
             }
         }
-        ws->m1_bsum[b] = s;
+        ws->m1_bsum[b] = vaddvq_s32(acc);
     }
     *inv_act_scale = max_abs / 127.0f;
     return true;
@@ -234,7 +248,13 @@ int pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
     const uint8_t *s  = (const uint8_t *) src;
     uint8_t       *d  = (uint8_t *) dst;
     const size_t   nb = n_in / PQ2_0_BLOCK_ELEMS;
-    for (size_t tile = 0; tile < n_out / 8; tile++) {
+    /* Load-time repack of the whole tensor (7 GB on a 27B), so it runs
+     * over the threads and moves 4 bytes at a time: for a fixed (r, c)
+     * the destination index is contiguous in m within each group of 4,
+     * and so is the source. */
+    const size_t n_tiles = n_out / 8;
+#pragma omp parallel for schedule(static) if (n_tiles > 1)
+    for (size_t tile = 0; tile < n_tiles; tile++) {
         for (size_t b = 0; b < nb; b++) {
             uint8_t *ob = d + (tile * nb + b) * PQ2_0_X8_BLOCK_BYTES;
             for (size_t r = 0; r < 8; r++) {
@@ -242,8 +262,8 @@ int pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
                 ob[2 * r]         = sb[0];
                 ob[2 * r + 1]     = sb[1];
                 for (size_t c = 0; c < 2; c++) {
-                    for (size_t m = 0; m < 16; m++) {
-                        ob[16 + pq2_0_x8_idx(r, c, m)] = sb[2 + c * 16 + m];
+                    for (size_t g = 0; g < 4; g++) {
+                        memcpy(ob + 16 + pq2_0_x8_idx(r, c, 4 * g), sb + 2 + c * 16 + 4 * g, 4);
                     }
                 }
             }

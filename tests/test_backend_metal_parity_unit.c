@@ -20,8 +20,6 @@
  * SKIPs (exit 0) when the metal backend is not built in or no device is
  * present (Linux legs, GPU-less macs).
  */
-#define _POSIX_C_SOURCE 200809L /* setenv */
-
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -453,8 +451,6 @@ static void run_qwen35_attention_ops(struct geist_backend *mt) {
 }
 
 int main(void) {
-    /* The superblock PQ2_0 layout is opt-in; the cases below need it on. */
-    setenv("GEIST_METAL_PQ2_SB", "1", 1);
     struct geist_backend *mt = nullptr;
     enum geist_status     ms = geist_backend_create("metal", nullptr, nullptr, &mt);
     if (ms == GEIST_E_UNSUPPORTED || ms == GEIST_E_NOT_FOUND) {
@@ -519,13 +515,6 @@ int main(void) {
      * 6150 leaves a partial 16-row tile, 6144 an exact one. */
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2n8", 512, 6150, 1);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2n8", 512, 6144, 1);
-    /* n_in % 1024 == 0 and GEIST_METAL_PQ2_SB=1 (set in main): resolve_weight
-     * repacks to 272-byte superblocks (matvec_pq2sb_n4,
-     * matmul_pq2sb_mm_sg[_fast]). */
-    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2sb", 2048, 383, 1);
-    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2sb", 2048, 383, 4);
-    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2sb", 2048, 383, 33);
-    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2sb", 1024, 384, 32);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 1);

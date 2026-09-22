@@ -128,82 +128,124 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
+/* The pipelines and grid geometry for one quant dtype. One row per
+ * format, so a new format is one case instead of an arm in each of the
+ * five selection chains this replaced. */
+struct metal_quant_pipes {
+    void    *n4;        /* decode GEMV (rows == 1) */
+    void    *mm;        /* bounded 64x32 simdgroup GEMM */
+    void    *mm_fast;   /* interior variant, nullable */
+    void    *base;      /* naive single-row kernel, nullable */
+    void    *m8;        /* naive 8-row kernel, nullable */
+    uint32_t n4_tile;   /* output rows one n4 threadgroup covers */
+    bool     gemm_only; /* no naive kernels: n4 for rows==1, GEMM above */
+};
+
+static struct metal_quant_pipes
+metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint32_t n_out) {
+    switch (dtype) {
+    case GEIST_DTYPE_PQ2_0: {
+        /* 8 rows per simdgroup halve the activation traffic (a thread
+         * reads 128 bytes of x per iteration against R*8 bytes of
+         * weights) but halve the threadgroup count too, so it pays only
+         * from tuning.pq2_n8_min_n_out output rows up. Measured on 27B
+         * shapes at the M1 Max seed of 6144: ffn gate/up 0.138 -> 0.121
+         * ms, lm_head 1.68 -> 1.35, while attn kv (1024 rows) would go
+         * 0.030 -> 0.044. */
+        const bool n8 = st->use_pq2_n8 && n_out >= st->tuning.pq2_n8_min_n_out &&
+                        st->pq2_n8_pipeline != nullptr;
+        return (struct metal_quant_pipes) {.n4 = n8 ? st->pq2_n8_pipeline : st->pq2_n4_pipeline,
+                                           .mm = st->pq2_mm_pipeline,
+                                           .mm_fast   = st->pq2_mm_fast_pipeline,
+                                           .n4_tile   = n8 ? 16u : 8u,
+                                           .gemm_only = true};
+    }
+    case GEIST_DTYPE_Q4_0:
+        return (struct metal_quant_pipes) {.n4      = st->q40_n4_pipeline,
+                                           .mm      = st->q40_mm_pipeline,
+                                           .mm_fast = st->q40_mm_fast_pipeline,
+                                           .base    = st->q40_pipeline,
+                                           .m8      = st->q40_m8_pipeline,
+                                           .n4_tile = 8u};
+    case GEIST_DTYPE_Q8_0:
+        return (struct metal_quant_pipes) {.n4      = st->q80_n4_pipeline,
+                                           .mm      = st->q80_mm_pipeline,
+                                           .mm_fast = st->q80_mm_fast_pipeline,
+                                           .base    = st->q80_pipeline,
+                                           .m8      = st->q80_m8_pipeline,
+                                           .n4_tile = 8u};
+    case GEIST_DTYPE_Q4_1:
+        return (struct metal_quant_pipes) {.n4      = st->q41_n4_pipeline,
+                                           .mm      = st->q41_mm_pipeline,
+                                           .mm_fast = st->q41_mm_fast_pipeline,
+                                           .base    = st->q41_pipeline,
+                                           .m8      = st->q41_m8_pipeline,
+                                           .n4_tile = 4u};
+    case GEIST_DTYPE_IQ4_NL:
+        return (struct metal_quant_pipes) {.n4        = st->iq4nl_n4_pipeline,
+                                           .mm        = st->iq4nl_mm_pipeline,
+                                           .n4_tile   = 8u,
+                                           .gemm_only = true};
+    case GEIST_DTYPE_IQ4_XS:
+        return (struct metal_quant_pipes) {.n4        = st->iq4xs_n4_pipeline,
+                                           .mm        = st->iq4xs_mm_pipeline,
+                                           .mm_fast   = st->iq4xs_mm_fast_pipeline,
+                                           .n4_tile   = 4u,
+                                           .gemm_only = true};
+    case GEIST_DTYPE_Q3_K:
+        return (struct metal_quant_pipes) {.n4        = st->q3k_n4_pipeline,
+                                           .mm        = st->q3k_mm_pipeline,
+                                           .n4_tile   = 4u,
+                                           .gemm_only = true};
+    case GEIST_DTYPE_IQ3_S:
+        return (struct metal_quant_pipes) {.n4        = st->iq3s_n4_pipeline,
+                                           .mm        = st->iq3s_mm_pipeline,
+                                           .n4_tile   = 4u,
+                                           .gemm_only = true};
+    default: /* Q5_K */
+        return (struct metal_quant_pipes) {.n4      = st->q5k_n4_pipeline,
+                                           .mm      = st->q5k_mm_pipeline,
+                                           .mm_fast = st->q5k_mm_fast_pipeline,
+                                           .base    = st->q5k_pipeline,
+                                           .m8      = st->q5k_m8_pipeline,
+                                           .n4_tile = 4u};
+    }
+}
+
 static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                         void                          *enc,
                                         const struct geist_tensor     *x,
                                         const struct geist_tensor     *w,
                                         const struct geist_tensor     *y,
                                         const struct metal_q4k_params *params,
-                                        enum geist_dtype               dtype,
-                                        bool                           pq2_sb) {
-    /* PQ2_0 decode GEMV: 8 rows per simdgroup halve the activation traffic
-     * (a thread reads 128 bytes of x per iteration against R*8 bytes of
-     * weights), but halve the threadgroup count too. Measured on 27B
-     * shapes, that pays from ~6k output rows up (ffn gate/up 0.138 ->
-     * 0.121 ms, lm_head 1.68 -> 1.35); below it the smaller grid loses
-     * (attn kv, 1024 rows: 0.030 -> 0.044). */
-    const bool pq2_n8 = dtype == GEIST_DTYPE_PQ2_0 && !pq2_sb && st->use_pq2_n8 &&
-                        params->n_out >= 6144u && st->pq2_n8_pipeline != nullptr;
-    void      *n4     = pq2_sb                        ? st->pq2sb_n4_pipeline
-                        : pq2_n8                      ? st->pq2_n8_pipeline
-                        : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_n4_pipeline
-                        : dtype == GEIST_DTYPE_Q4_0   ? st->q40_n4_pipeline
-                        : dtype == GEIST_DTYPE_Q8_0   ? st->q80_n4_pipeline
-                        : dtype == GEIST_DTYPE_Q4_1   ? st->q41_n4_pipeline
-                        : dtype == GEIST_DTYPE_IQ4_NL ? st->iq4nl_n4_pipeline
-                        : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_n4_pipeline
-                        : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_n4_pipeline
-                        : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_n4_pipeline
-                                                      : st->q5k_n4_pipeline;
-    void      *mm     = pq2_sb                        ? st->pq2sb_mm_pipeline
-                        : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_mm_pipeline
-                        : dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_pipeline
-                        : dtype == GEIST_DTYPE_Q8_0   ? st->q80_mm_pipeline
-                        : dtype == GEIST_DTYPE_Q4_1   ? st->q41_mm_pipeline
-                        : dtype == GEIST_DTYPE_IQ4_NL ? st->iq4nl_mm_pipeline
-                        : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_mm_pipeline
-                        : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_mm_pipeline
-                        : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_mm_pipeline
-                                                      : st->q5k_mm_pipeline;
-    /* IQ4/Q3_K/IQ3_S: no naive fallback kernels and no fast GEMM
-     * instances — n4 for rows==1, the bounded simdgroup GEMM for every
-     * rows>=2 shape. */
-    const bool iq4 = dtype == GEIST_DTYPE_IQ4_NL || dtype == GEIST_DTYPE_IQ4_XS ||
-                     dtype == GEIST_DTYPE_Q3_K || dtype == GEIST_DTYPE_IQ3_S ||
-                     dtype == GEIST_DTYPE_PQ2_0;
-    /* rows==1 → simdgroup GEMV (llama mul_mv structure); rows>=8 → 64x32
+                                        enum geist_dtype               dtype) {
+    const struct metal_quant_pipes p = metal_quant_pipes_for(st, dtype, params->n_out);
+    /* rows==1 -> simdgroup GEMV (llama mul_mv structure); rows>=8 -> 64x32
      * simdgroup GEMM (bounds-checked, arbitrary rows/n_out); the naive
      * kernels remain the fallback for tiny shapes and the two kill-switch
-     * envs (reused from the q4k levers). */
-    const bool n_tile4 =
-            params->rows == 1u && params->n_out >= 4u && (st->use_q4k_n4 || iq4) && n4 != nullptr;
-    void      *mm_fast = pq2_sb                        ? st->pq2sb_mm_fast_pipeline
-                         : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_mm_fast_pipeline
-                         : dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_fast_pipeline
-                         : dtype == GEIST_DTYPE_Q8_0   ? st->q80_mm_fast_pipeline
-                         : dtype == GEIST_DTYPE_Q4_1   ? st->q41_mm_fast_pipeline
-                         : dtype == GEIST_DTYPE_IQ4_XS ? st->iq4xs_mm_fast_pipeline
-                         : iq4                         ? nullptr
-                                                       : st->q5k_mm_fast_pipeline;
+     * envs (reused from the q4k levers). gemm_only formats have no naive
+     * kernels, so their GEMM takes every rows>=2 shape. */
+    const bool n_tile4 = params->rows == 1u && params->n_out >= 4u &&
+                         (st->use_q4k_n4 || p.gemm_only) && p.n4 != nullptr;
     const bool m_tile_sg =
-            (iq4 ? params->rows >= 2u
-                 : (params->rows >= 8u && params->n_out >= 64u && st->use_q4k_mm_sg)) &&
-            mm != nullptr;
+            (p.gemm_only ? params->rows >= 2u
+                         : (params->rows >= 8u && params->n_out >= 64u && st->use_q4k_mm_sg)) &&
+            p.mm != nullptr;
     /* interior fast variant: no bounds checks, vectorized activation
      * staging (needs full tiles, n_in%32 and 8-float-aligned x rows). */
-    const bool m_tile_sg_fast = m_tile_sg && mm_fast != nullptr && (params->rows % 32u) == 0u &&
+    const bool m_tile_sg_fast = m_tile_sg && p.mm_fast != nullptr && (params->rows % 32u) == 0u &&
                                 (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
                                 (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u;
     const bool tiled          = !n_tile4 && !m_tile_sg && params->rows >= 8u;
-    void *base = dtype == GEIST_DTYPE_Q4_0   ? (tiled ? st->q40_m8_pipeline : st->q40_pipeline)
-                 : dtype == GEIST_DTYPE_Q8_0 ? (tiled ? st->q80_m8_pipeline : st->q80_pipeline)
-                 : dtype == GEIST_DTYPE_Q4_1 ? (tiled ? st->q41_m8_pipeline : st->q41_pipeline)
-                                             : (tiled ? st->q5k_m8_pipeline : st->q5k_pipeline);
+    /* Only reachable for shapes no GEMV/GEMM takes (n_out < 4 at rows==1);
+     * a gemm_only format has no naive kernel and falls back to Q5_K's, as
+     * it did before this table. */
+    void *base = tiled ? p.m8 : p.base;
     metal_msg_send_set_pipeline(st,
                                 enc,
-                                n_tile4          ? n4
-                                : m_tile_sg_fast ? mm_fast
-                                : m_tile_sg      ? mm
+                                n_tile4          ? p.n4
+                                : m_tile_sg_fast ? p.mm_fast
+                                : m_tile_sg      ? p.mm
                                                  : base);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
@@ -213,20 +255,11 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
         metal_msg_send_set_threadgroup_memory(st, enc, m_tile_sg_fast ? 6144u : 8192u, 0u);
     }
     if (n_tile4 && dtype == GEIST_DTYPE_PQ2_0) {
-        /* matvec_pq2_n4's 256-entry half4 code table */
+        /* matvec_pq2_n{4,8}'s 256-entry half4 code table */
         metal_msg_send_set_threadgroup_memory(st, enc, 256u * 8u, 0u);
     }
-    /* q40/q80 n4 kernels run 4 rows per simdgroup (8 per threadgroup);
-     * q41/q5k still run 2 (4 per threadgroup). */
-    /* PQ2_0's n4/n8 kernels read their simdgroup count from
-     * threads_per_threadgroup; the others hardcode two per threadgroup. */
-    const uint32_t          n4_tile = pq2_n8 ? 16u
-                                      : (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0 ||
-                                         dtype == GEIST_DTYPE_IQ4_NL || dtype == GEIST_DTYPE_PQ2_0)
-                                              ? 8u
-                                              : 4u;
-    const struct metal_size groups  = {
-            .width  = n_tile4     ? (params->n_out + n4_tile - 1u) / n4_tile
+    const struct metal_size groups = {
+            .width  = n_tile4     ? (params->n_out + p.n4_tile - 1u) / p.n4_tile
                       : m_tile_sg ? (params->rows + 31u) / 32u
                                   : params->n_out,
             .height = n_tile4     ? params->rows
@@ -257,7 +290,9 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
  * kernels take their stride from threads_per_threadgroup; the plain ones
  * hardcode 256. */
 static uint32_t metal_rows_threads(const struct metal_state *st, uint32_t rows, uint32_t cols) {
-    return st->use_rmsnorm_simd && rows == 1u && cols >= 1024u ? 1024u : METAL_ELEM_THREADS;
+    return st->use_rmsnorm_simd && rows == 1u && cols >= st->tuning.wide_rows_min_cols
+                   ? 1024u
+                   : METAL_ELEM_THREADS;
 }
 
 static void metal_encode_rmsnorm_rows(struct metal_state             *st,
@@ -650,9 +685,10 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
             /* rows == 1 (decode): n_out threadgroups is all the parallelism
              * there is, so widen them; multi-row shapes take the sg/mm
              * kernels anyway. */
-            .width  = use_sg                                          ? 32u
-                      : (params->rows == 1u && params->n_in >= 1024u) ? 1024u
-                                                                      : METAL_ELEM_THREADS,
+            .width  = use_sg ? 32u
+                      : (params->rows == 1u && params->n_in >= st->tuning.wide_rows_min_cols)
+                              ? 1024u
+                              : METAL_ELEM_THREADS,
             .height = use_mm ? 4u : 1,
             .depth  = 1,
     };
@@ -1773,8 +1809,7 @@ metal_embedding_lookup(struct geist_backend      *be,
                                                             const struct geist_tensor *w,
                                                             struct geist_tensor       *y,
                                                             enum geist_dtype           dtype,
-                                                            bool                       matrix,
-                                                            bool                       pq2_sb) {
+                                                            bool                       matrix) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -1822,8 +1857,7 @@ metal_embedding_lookup(struct geist_backend      *be,
             .n_in           = (uint32_t) n_in,
             .n_out          = (uint32_t) n_out,
             .rows           = (uint32_t) rows,
-            .blocks_per_row = (uint32_t) (n_in / (metal_quant_block_elems(dtype) *
-                                                  (pq2_sb ? METAL_PQ2SB_BLOCKS : 1u))),
+            .blocks_per_row = (uint32_t) (n_in / metal_quant_block_elems(dtype)),
             .x_offset       = (uint32_t) x_offset,
             .w_byte_offset  = (uint32_t) w_offset,
             .y_offset       = (uint32_t) y_offset,
@@ -1831,8 +1865,7 @@ metal_embedding_lookup(struct geist_backend      *be,
             .y_row_stride   = (uint32_t) y_row_stride,
     };
     if (st->sequence_active) {
-        metal_encode_q40_q80_linear(
-                st, metal_sequence_encoder(st), x, w, y, &params, dtype, pq2_sb);
+        metal_encode_q40_q80_linear(st, metal_sequence_encoder(st), x, w, y, &params, dtype);
         st->sequence_has_work = true;
         return GEIST_OK;
     }
@@ -1841,7 +1874,7 @@ metal_embedding_lookup(struct geist_backend      *be,
     if (cmd == nullptr || enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_encode_q40_q80_linear(st, enc, x, w, y, &params, dtype, pq2_sb);
+    metal_encode_q40_q80_linear(st, enc, x, w, y, &params, dtype);
     metal_msg_send_void0(st, enc, "endEncoding");
     metal_msg_send_void0(st, cmd, "commit");
     metal_msg_send_void0(st, cmd, "waitUntilCompleted");
@@ -2082,7 +2115,7 @@ metal_embedding_lookup(struct geist_backend      *be,
     };
     if (st->sequence_active) {
         metal_encode_q40_q80_linear(
-                st, metal_sequence_encoder(st), x, w, y, &params, GEIST_DTYPE_Q5_K, false);
+                st, metal_sequence_encoder(st), x, w, y, &params, GEIST_DTYPE_Q5_K);
         st->sequence_has_work = true;
         return GEIST_OK;
     }
@@ -2091,7 +2124,7 @@ metal_embedding_lookup(struct geist_backend      *be,
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_encode_q40_q80_linear(st, enc, x, w, y, &params, GEIST_DTYPE_Q5_K, false);
+    metal_encode_q40_q80_linear(st, enc, x, w, y, &params, GEIST_DTYPE_Q5_K);
     metal_msg_send_void0(st, enc, "endEncoding");
     metal_msg_send_void0(st, cmd, "commit");
     metal_msg_send_void0(st, cmd, "waitUntilCompleted");
@@ -3515,72 +3548,6 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     return GEIST_OK;
 }
 
-/* Point *t at w's superblock repack when resolve_weight made one. On false
- * *t is untouched and the source layout serves. */
-static bool
-metal_pq2sb_view(struct metal_state *st, const struct geist_weight *w, struct geist_tensor *t) {
-    size_t               off = 0;
-    struct geist_buffer *b   = w->backend_layout == GEIST_W_LAYOUT_PQ2_0_SB
-                                       ? metal_buf_reg_find(st, w->aux_fp32, &off)
-                                       : nullptr;
-    if (b == nullptr) {
-        return false;
-    }
-    t->buffer = b;
-    t->offset = off;
-    return true;
-}
-
-/* PQ2_0 [n_out][nb x 34-byte block] -> [n_out][nb/8 x 272-byte superblock]
- * (metal_qsg_pq2sb_source). Off unless GEIST_METAL_PQ2_SB=1: measured on
- * Bonsai-27B/M1 Max it buys 4 % decode at 32 ctx (19.4 -> 20.2 t/s), 1.5 %
- * at 512, nothing on prefill — and costs 13 GB of RSS, 7.2 for the copy
- * (the source mmap is read-only, so the repack cannot be in place) and 7.2
- * more for the file pages the repack reads in. Worth it only where the
- * memory is free. */
-[[nodiscard]] static enum geist_status metal_pq2sb_repack(struct geist_backend *be,
-                                                          struct geist_weight  *w) {
-    const size_t        n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
-    struct metal_state *st = be->state;
-    if (!st->use_pq2_sb || (n_in % (METAL_PQ2_BLOCK_ELEMS * METAL_PQ2SB_BLOCKS)) != 0) {
-        return GEIST_OK;
-    }
-    const size_t         nb  = n_in / METAL_PQ2_BLOCK_ELEMS;
-    const size_t         rb  = nb * METAL_PQ2_BLOCK_BYTES; /* == nb/8 * 272 */
-    struct geist_buffer *buf = nullptr;
-    if (st->pq2sb_count == st->pq2sb_cap) {
-        const size_t ncap  = st->pq2sb_cap != 0 ? st->pq2sb_cap * 2 : 64;
-        void        *grown = realloc(st->pq2sb_bufs, ncap * sizeof(*st->pq2sb_bufs));
-        if (grown == nullptr) {
-            return GEIST_E_OOM;
-        }
-        st->pq2sb_bufs = grown;
-        st->pq2sb_cap  = ncap;
-    }
-    enum geist_status s = metal_new_buffer(be, n_out * rb, GEIST_BUFFER_WEIGHT, 0, true, &buf);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    const uint8_t *src = w->raw;
-    uint8_t       *dst = buf->mapped;
-    for (size_t r = 0; r < n_out; r++) {
-        for (size_t sb = 0; sb < nb / METAL_PQ2SB_BLOCKS; sb++) {
-            uint8_t *o = dst + r * rb + sb * METAL_PQ2SB_BYTES;
-            for (size_t k = 0; k < METAL_PQ2SB_BLOCKS; k++) {
-                const uint8_t *blk =
-                        src + r * rb + (sb * METAL_PQ2SB_BLOCKS + k) * METAL_PQ2_BLOCK_BYTES;
-                memcpy(o + 2u * k, blk, 2u);
-                memcpy(o + 2u * METAL_PQ2SB_BLOCKS + 32u * k, blk + 2u, 32u);
-            }
-        }
-    }
-    st->pq2sb_bufs[st->pq2sb_count++] = buf;
-    w->aux_fp32                       = (const float *) (const void *) dst;
-    w->flags |= GEIST_W_AUX_BACKEND_REPACK;
-    w->backend_layout = GEIST_W_LAYOUT_PQ2_0_SB;
-    return GEIST_OK;
-}
-
 static void metal_linear_mN(size_t                     m,
                             const float               *x,
                             const struct geist_weight *w,
@@ -3684,8 +3651,7 @@ static void metal_linear_mN(size_t                     m,
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
-        s = metal_q40_q80_linear(
-                be, &tx, &tw, &ty, (enum geist_dtype) w->dtype, true, metal_pq2sb_view(st, w, &tw));
+        s = metal_q40_q80_linear(be, &tx, &tw, &ty, (enum geist_dtype) w->dtype, true);
         break;
     case GEIST_DTYPE_Q4_K:
         s = metal_matmul_q4k(be, &tx, &tw, &ty);
@@ -3743,8 +3709,6 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     if (w == nullptr || t_w == nullptr || x == nullptr || y == nullptr) {
         return GEIST_E_UNSUPPORTED;
     }
-    struct geist_tensor tw1    = *t_w;
-    const bool          pq2_sb = metal_pq2sb_view(be->state, w, &tw1);
     /* m == 1 (decode) routes to the matvec ops — the GEMM tile kernels are
      * an order of magnitude slower for a single row than the llama-style
      * mul_mv kernels. The engine passes [1, n] 2D views; rebuild them 1D. */
@@ -3774,8 +3738,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
         case GEIST_DTYPE_Q3_K:
         case GEIST_DTYPE_IQ3_S:
         case GEIST_DTYPE_PQ2_0:
-            return metal_q40_q80_linear(
-                    be, &x1, &tw1, &y1, (enum geist_dtype) w->dtype, false, pq2_sb);
+            return metal_q40_q80_linear(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
         case GEIST_DTYPE_Q4_K:
             return metal_matvec_q4k(be, &x1, t_w, &y1);
         case GEIST_DTYPE_Q5_K:
@@ -3797,7 +3760,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
-        return metal_q40_q80_linear(be, x, &tw1, y, (enum geist_dtype) w->dtype, true, pq2_sb);
+        return metal_q40_q80_linear(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
     case GEIST_DTYPE_Q4_K:
         return metal_matmul_q4k(be, x, t_w, y);
     case GEIST_DTYPE_Q5_K:
@@ -3836,12 +3799,6 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_F32:
-        if (w->dtype == GEIST_DTYPE_PQ2_0 && w->aux_fp32 == nullptr) {
-            const enum geist_status s = metal_pq2sb_repack(be, w);
-            if (s != GEIST_OK) {
-                return s;
-            }
-        }
         w->linear_m1 = metal_linear_m1;
         w->linear_mN = metal_linear_mN;
         return GEIST_OK;
@@ -4205,14 +4162,15 @@ static const struct geist_backend_fused metal_fused = {
 };
 
 const struct geist_backend_descriptor geist_backend_metal = {
-        .name  = "metal",
-        .vtbl  = &metal_vtbl,
-        .prims = &metal_prims,
-        .fused = &metal_fused,
-        .caps  = {.kv_f16_attention = true,
-                  .batched_submit   = true,
-                  /* deltanet_mix encodes 64-token sub-chunks internally
-                   * (#322), so DN models keep preferred_m_max. */
+        .name     = "metal",
+        .vtbl     = &metal_vtbl,
+        .prims    = &metal_prims,
+        .fused    = &metal_fused,
+        .tunables = metal_tunables,
+        .caps     = {.kv_f16_attention = true,
+                     .batched_submit   = true,
+                     /* deltanet_mix encodes 64-token sub-chunks internally
+                      * (#322), so DN models keep preferred_m_max. */
                  .dn_subchunk = true,
                  /* 256 since the simdgroup GEMM work. The original
                   * 2026-08-27 A/B was void — pre-#312, m_max requests

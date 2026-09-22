@@ -12,6 +12,7 @@ BACKEND_SOURCES += \
     src/backends/metal/pipelines.c \
     src/backends/metal/sequence.c \
     src/backends/metal/ops.c \
-    src/backends/metal/profiling.c
+    src/backends/metal/profiling.c \
+    src/backends/metal/tuning.c
 
 LDLIBS += -ldl

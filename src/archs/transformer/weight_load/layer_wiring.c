@@ -141,14 +141,19 @@ load_layer_proj(struct transformer_arch_state    *st,
             }
             /* On UNSUPPORTED, linear_m1 / linear_mN stay null — that's
              * the "use legacy" signal. */
+            /* A backend without a half-precision dense linear (metal) gets
+             * a SMALL tensor widened to F32 once, the same way norm gammas
+             * are: Ternary-Bonsai keeps its DeltaNet alpha/beta projections
+             * (48 x 5120, 1 MB widened) in BF16. Widening doubles the
+             * resident bytes, so a model's main matrices stay out of it —
+             * past the cap the resolver's refusal stands and the caller
+             * falls back to the legacy path, as it did before this existed.
+             * ponytail: the half-precision copy stays tracked (a few MB on
+             * a 27B); untrack it if that ever matters. */
+            constexpr size_t widen_max_elems = 4u << 20; /* 16 MB as F32 */
             if (rs == GEIST_E_UNSUPPORTED &&
-                (dm.dtype == GEIST_DTYPE_F16 || dm.dtype == GEIST_DTYPE_BF16)) {
-                /* A backend without a half-precision dense linear (metal)
-                 * gets the tensor widened to F32 once, the same way norm
-                 * gammas are. Ternary-Bonsai keeps its small DeltaNet
-                 * alpha/beta projections in BF16.
-                 * ponytail: the half-precision copy stays tracked (a few
-                 * MB on a 27B); untrack it if that ever matters. */
+                (dm.dtype == GEIST_DTYPE_F16 || dm.dtype == GEIST_DTYPE_BF16) &&
+                n_out * n_in <= widen_max_elems) {
                 struct geist_buffer *buf32 = nullptr;
                 s = load_norm_to_f32_buffer(st, gguf, name, n_out * n_in, &buf32);
                 if (s != GEIST_OK) {

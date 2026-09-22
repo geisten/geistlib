@@ -311,15 +311,23 @@ dequant pass — no ternary advantage there yet.
   dependent dispatch costs ~3 us, so the ~1300 per token are not the
   floor. The GEMV sits within ~10 % of a read-only probe of its own access
   pattern (40 ms; 27 ms without the activation loads).
-- An aligned device layout was built and measured (`GEIST_PQ2_SB=1`, off by
-  default): resolve_weight regroups each row's blocks by 8 into
-  [8 x half d][8 x 32 codes] = 272 bytes, so codes land on 8-byte instead of
-  2-byte boundaries and the GEMM template reads it as one 1024-element block.
-  It buys 4 % decode at 32 ctx (19.4 -> 20.2 t/s), 1.5 % at 512 (16.8 ->
-  17.1), nothing on prefill — and costs 13 GB of RSS (2.5 -> 15.5): 7.2 for
-  the repacked copy, since the source mmap is read-only, and 7.2 more for the
-  file pages the repack reads in. Not worth it by default; the GEMV was
-  closer to the bandwidth limit than the alignment suggested.
+- An aligned device layout was built, measured and then deleted: regrouping
+  each row's blocks by 8 into [8 x half d][8 x 32 codes] = 272 bytes put the
+  codes on 8-byte instead of 2-byte boundaries and bought 4 % decode at 32
+  ctx (19.4 -> 20.2 t/s), 1.5 % at 512, nothing on prefill — for 13 GB of
+  RSS (2.5 -> 15.5), because the source mmap is read-only so the repack
+  cannot be in place and reading it makes the file pages resident. The GEMV
+  was closer to the bandwidth limit than the alignment suggested. Kept here
+  as the record; the three kernels and the second layout are gone.
+- The decode GEMV is latency-bound, not bandwidth-bound: the same 27B shapes
+  run at 172 GB/s in PQ2_0 but 329 in Q8_0, and 4x the weight bytes only
+  doubles the time. A thread reads 128 bytes of x per iteration against
+  R*8 bytes of weights, so activations move 15/R times the weight bytes —
+  90 MB of (cached) x against 24 MB of weights per ffn gate/up call at
+  R = 4. Hence matvec_pq2_n8 (R = 8) for wide projections, and hence a
+  smaller weight format would buy little: all 26.87 G weights are strictly
+  ternary (the +2 code never occurs), so 5 trits per byte would cut 18 % of
+  the weight bytes but only ~6 % of the traffic.
 
 ### Next levers
 
@@ -327,7 +335,9 @@ dequant pass — no ternary advantage there yet.
   read-only probe of its access pattern, so the next real step is a
   different decode shape (batching rows, or fewer bytes per weight), not
   another GEMV variant.
-- CPU: a quiet A/B of `m_max` 128 as the Mac default; an fp16-AMX (BNNS)
+- CPU: the PQ2_0 activation prep and x8 repack are now NEON + threaded
+  (decode 6.5 -> 7.4 t/s, load 2.3 s faster on the 27B). Next: a quiet A/B
+  of `m_max` 128 as the Mac default; an fp16-AMX (BNNS)
   spike for the prefill GEMM.
 - `PTQ1_0` (1.75 bpw): slower to unpack than `PQ2_0` on Apple silicon per
   PrismML; not planned.
