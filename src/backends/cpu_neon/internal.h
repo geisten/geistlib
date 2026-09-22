@@ -204,6 +204,16 @@ void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
                              const struct geist_weight *w,
                              struct geist_backend      *be,
                              float                     *y);
+/* x8 interleaved variant on a heap repack (aux_fp32, backend_layout
+ * GEIST_W_LAYOUT_PQ2_0_X8_GEMV); installed by the resolver when
+ * n_out % 8 == 0 and the pq2_0_x8_gemv policy is on. */
+constexpr size_t PQ2_0_X8_BLOCK_BYTES = 8 * 34;
+size_t           pq2_0_x8_size_bytes(size_t n_in, size_t n_out);
+int              pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst);
+void             cpu_neon_w_pq2_0_x8_m1(const float               *x,
+                                        const struct geist_weight *w,
+                                        struct geist_backend      *be,
+                                        float                     *y);
 
 /* I2_S (BitNet b1.58 official): ternary W1.58 × A8, int8-SDOT. Same compute
  * as tq2_0/q8a but the in-byte 2-bit field order is reversed and a single

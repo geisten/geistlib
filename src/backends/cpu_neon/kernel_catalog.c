@@ -99,6 +99,7 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
              * 9.1->16.5 t/s; decode flat). GEIST_Q4_0_X8_GEMV=0 trades
              * the speed back when RAM is tighter than time. */
             .q4_0_x8_gemv    = has_accelerate || (hw != nullptr && hw->has_dotprod),
+            .pq2_0_x8_gemv   = hw != nullptr && hw->has_dotprod,
             .q8_0_native_mn  = !has_accelerate,
             .q4_01_native_mn = !has_accelerate,
             .iq4xs_native_mn = !has_accelerate,
@@ -121,6 +122,7 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
     p.q6k_sgemm_prefill = cpu_neon_env_bool("GEIST_Q6K_SGEMM_PREFILL", p.q6k_sgemm_prefill);
     p.q6k_x8_gemv       = cpu_neon_env_bool("GEIST_Q6K_X8_GEMV", p.q6k_x8_gemv);
     p.q4_0_x8_gemv      = cpu_neon_env_bool("GEIST_Q4_0_X8_GEMV", p.q4_0_x8_gemv);
+    p.pq2_0_x8_gemv     = cpu_neon_env_bool("GEIST_PQ2_0_X8_GEMV", p.pq2_0_x8_gemv);
     const char *thresh  = getenv("GEIST_QK_SGEMM_THRESHOLD");
     if (thresh != nullptr && *thresh != '\0') {
         char               *end = nullptr;

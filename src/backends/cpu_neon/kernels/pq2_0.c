@@ -27,6 +27,7 @@
 
 #include "../internal.h"
 #include "../parallel.h"
+#include "checked.h"
 #include "heap.h"
 
 #include "quant.h"
@@ -93,19 +94,36 @@ static void pq2_0_m1_row_body(size_t r, void *vctx) {
     c->y[r] = sum * c->inv_act_scale;
 }
 
-void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
-                             const struct geist_weight *w,
-                             struct geist_backend      *be,
-                             float                     *y) {
-    struct cpu_neon_workspace *ws             = cpu_neon_ws((struct cpu_neon_state *) be->state);
-    const size_t               n_in           = (size_t) w->n_in;
-    const size_t               n_out          = (size_t) w->n_out;
-    const size_t               blocks_per_row = n_in / PQ2_0_BLOCK_ELEMS;
+/* Per-call activation prep shared by both kernels: absmax int8 quant in
+ * the kernel element order (see file comment) plus the per-block sums
+ * that fold the code bias out. Rounding matches tq2_0.c. Thread-local
+ * workspace, grown on demand; false (y zeroed) on OOM or a width that
+ * is not a whole number of blocks. */
+static bool pq2_0_prep(struct cpu_neon_workspace *ws,
+                       size_t                     n_in,
+                       size_t                     n_out,
+                       const float               *x,
+                       float                     *y,
+                       float                     *inv_act_scale) {
+    const size_t nb = n_in / PQ2_0_BLOCK_ELEMS;
     if (n_in % PQ2_0_BLOCK_ELEMS != 0) {
         memset(y, 0, n_out * sizeof *y);
-        return;
+        return false;
     }
-
+    if (ws->m1_xq_cap < n_in) {
+        safe_free((void **) &ws->m1_xq);
+        ws->m1_xq     = heap_alloc_array_aligned(int8_t, n_in);
+        ws->m1_xq_cap = ws->m1_xq != nullptr ? n_in : 0;
+    }
+    if (ws->m1_bsum_cap < nb) {
+        safe_free((void **) &ws->m1_bsum);
+        ws->m1_bsum     = heap_alloc_array_aligned(int32_t, nb);
+        ws->m1_bsum_cap = ws->m1_bsum != nullptr ? nb : 0;
+    }
+    if (ws->m1_xq == nullptr || ws->m1_bsum == nullptr) {
+        memset(y, 0, n_out * sizeof *y);
+        return false;
+    }
     float max_abs = 1e-5f;
     for (size_t i = 0; i < n_in; i++) {
         const float a = x[i] < 0.0f ? -x[i] : x[i];
@@ -113,82 +131,217 @@ void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
             max_abs = a;
     }
     const float act_scale = 127.0f / max_abs;
-
-    if (ws->m1_xq_cap < n_in) {
-        safe_free((void **) &ws->m1_xq);
-        ws->m1_xq = heap_alloc_array_aligned(int8_t, n_in);
-        if (ws->m1_xq == nullptr) {
-            ws->m1_xq_cap = 0;
-            memset(y, 0, n_out * sizeof *y);
-            return;
-        }
-        ws->m1_xq_cap = n_in;
-    }
-    if (ws->m1_bsum_cap < blocks_per_row) {
-        safe_free((void **) &ws->m1_bsum);
-        ws->m1_bsum = heap_alloc_array_aligned(int32_t, blocks_per_row);
-        if (ws->m1_bsum == nullptr) {
-            ws->m1_bsum_cap = 0;
-            memset(y, 0, n_out * sizeof *y);
-            return;
-        }
-        ws->m1_bsum_cap = blocks_per_row;
-    }
-
-    /* Quantize in the kernel's element order (see file comment); the
-     * block sum does not depend on order. Rounding matches tq2_0.c. */
-    int8_t  *xq   = ws->m1_xq;
-    int32_t *bsum = ws->m1_bsum;
-    for (size_t b = 0; b < blocks_per_row; b++) {
+    for (size_t b = 0; b < nb; b++) {
         int32_t s = 0;
         for (size_t c = 0; c < 2; c++) {
             const size_t base = b * PQ2_0_BLOCK_ELEMS + c * 64;
             for (size_t m = 0; m < 16; m++) {
                 for (size_t l = 0; l < 4; l++) {
-                    const float q         = x[base + 4 * m + l] * act_scale;
-                    int32_t     qi        = (int32_t) (q < 0.0f ? q - 0.5f : q + 0.5f);
-                    qi                    = qi > 127 ? 127 : (qi < -128 ? -128 : qi);
-                    xq[base + 16 * l + m] = (int8_t) qi;
+                    const float q                = x[base + 4 * m + l] * act_scale;
+                    int32_t     qi               = (int32_t) (q < 0.0f ? q - 0.5f : q + 0.5f);
+                    qi                           = qi > 127 ? 127 : (qi < -128 ? -128 : qi);
+                    ws->m1_xq[base + 16 * l + m] = (int8_t) qi;
                     s += qi;
                 }
             }
         }
-        bsum[b] = s;
+        ws->m1_bsum[b] = s;
     }
+    *inv_act_scale = max_abs / 127.0f;
+    return true;
+}
 
-    struct pq2_0_m1_ctx ctx = {
-            .W              = (const uint8_t *) w->raw,
-            .xq             = xq,
-            .bsum           = bsum,
-            .y              = y,
-            .inv_act_scale  = max_abs / 127.0f,
-            .row_bytes      = blocks_per_row * PQ2_0_BLOCK_BYTES,
-            .blocks_per_row = blocks_per_row,
-    };
-
-    /* Dispatch exactly as cpu_neon_w_tq2_0_q8a_m1. */
+/* Dispatch exactly as cpu_neon_w_tq2_0_q8a_m1. */
+static void pq2_0_parallel_for(size_t n, void (*body)(size_t, void *), void *ctx) {
     static _Atomic int pp_enabled = -1;
     if (pp_enabled < 0) {
         const char *e = getenv("GEIST_PP");
         pp_enabled    = (e && e[0] == '1') ? 1 : 0;
     }
     if (pp_enabled) {
-        geist_pp_parallel_for(n_out, pq2_0_m1_row_body, &ctx);
+        geist_pp_parallel_for(n, body, ctx);
     }
 #ifdef _OPENMP
     else if (omp_in_parallel()) {
 #pragma omp for schedule(static) nowait
-        for (size_t r = 0; r < n_out; r++)
-            pq2_0_m1_row_body(r, &ctx);
+        for (size_t i = 0; i < n; i++)
+            body(i, ctx);
     }
 #endif
     else {
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-        for (size_t r = 0; r < n_out; r++)
-            pq2_0_m1_row_body(r, &ctx);
+        for (size_t i = 0; i < n; i++)
+            body(i, ctx);
     }
+}
+
+void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
+                             const struct geist_weight *w,
+                             struct geist_backend      *be,
+                             float                     *y) {
+    struct cpu_neon_workspace *ws    = cpu_neon_ws((struct cpu_neon_state *) be->state);
+    const size_t               n_in  = (size_t) w->n_in;
+    const size_t               n_out = (size_t) w->n_out;
+    float                      inv   = 0.0f;
+    if (!pq2_0_prep(ws, n_in, n_out, x, y, &inv)) {
+        return;
+    }
+    struct pq2_0_m1_ctx ctx = {
+            .W              = (const uint8_t *) w->raw,
+            .xq             = ws->m1_xq,
+            .bsum           = ws->m1_bsum,
+            .y              = y,
+            .inv_act_scale  = inv,
+            .row_bytes      = n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES,
+            .blocks_per_row = n_in / PQ2_0_BLOCK_ELEMS,
+    };
+    pq2_0_parallel_for(n_out, pq2_0_m1_row_body, &ctx);
+}
+
+/* ---- x8: eight rows interleaved (decode) ---------------------------------
+ *
+ * The row kernel streams one 1.4-17 KB row per output and reaches ~55 GB/s
+ * on the 27B; Q4_0's x8 layout (#291) shows what one sequential stream
+ * serving eight rows buys. Block = 8 rows x 128 elements, 272 bytes:
+ *
+ *   [8 x fp16 d][256 bytes of codes]
+ *
+ * with the codes of row r, 64-element chunk c, source byte m (elements
+ * 4m..4m+3 of the chunk) at
+ *
+ *   qs[c*128 + (r/4)*64 + (m/4)*16 + (r%4)*4 + (m%4)]
+ *
+ * i.e. every 16-byte vector holds 4 bytes of each of 4 rows. Against the
+ * reordered activation (xq[c*64 + 16l + m] = element 4m + l), shift level
+ * l of that vector is the lane-SDOT operand for activation vector l, lane
+ * m/4: one weight load feeds four vdotq_laneq_s32, and the accumulator
+ * lanes are four output rows, so no horizontal add is left. */
+
+static inline size_t pq2_0_x8_idx(size_t r, size_t c, size_t m) {
+    return c * 128 + (r / 4) * 64 + (m / 4) * 16 + (r % 4) * 4 + (m % 4);
+}
+
+size_t pq2_0_x8_size_bytes(size_t n_in, size_t n_out) {
+    if (n_in == 0 || n_out == 0 || n_in % PQ2_0_BLOCK_ELEMS != 0 || n_out % 8 != 0) {
+        return 0;
+    }
+    size_t bytes = 0;
+    if (ckd_mul(&bytes, n_out / 8, n_in / PQ2_0_BLOCK_ELEMS) ||
+        ckd_mul(&bytes, bytes, PQ2_0_X8_BLOCK_BYTES)) {
+        return 0;
+    }
+    return bytes;
+}
+
+int pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
+    if (pq2_0_x8_size_bytes(n_in, n_out) == 0 || src == nullptr || dst == nullptr) {
+        return -1;
+    }
+    const uint8_t *s  = (const uint8_t *) src;
+    uint8_t       *d  = (uint8_t *) dst;
+    const size_t   nb = n_in / PQ2_0_BLOCK_ELEMS;
+    for (size_t tile = 0; tile < n_out / 8; tile++) {
+        for (size_t b = 0; b < nb; b++) {
+            uint8_t *ob = d + (tile * nb + b) * PQ2_0_X8_BLOCK_BYTES;
+            for (size_t r = 0; r < 8; r++) {
+                const uint8_t *sb = s + ((tile * 8 + r) * nb + b) * PQ2_0_BLOCK_BYTES;
+                ob[2 * r]         = sb[0];
+                ob[2 * r + 1]     = sb[1];
+                for (size_t c = 0; c < 2; c++) {
+                    for (size_t m = 0; m < 16; m++) {
+                        ob[16 + pq2_0_x8_idx(r, c, m)] = sb[2 + c * 16 + m];
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+struct pq2_0_x8_ctx {
+    const uint8_t *W;
+    const int8_t  *xq;
+    const int32_t *bsum;
+    float         *y;
+    float          inv_act_scale;
+    size_t         blocks_per_row;
+};
+
+static void pq2_0_x8_tile_body(size_t tile, void *vctx) {
+    const struct pq2_0_x8_ctx *c    = (const struct pq2_0_x8_ctx *) vctx;
+    const uint8_t             *row  = c->W + tile * c->blocks_per_row * PQ2_0_X8_BLOCK_BYTES;
+    const uint8x16_t           mask = vdupq_n_u8(3);
+    float32x4_t                acc0 = vdupq_n_f32(0.0f);
+    float32x4_t                acc1 = vdupq_n_f32(0.0f);
+    for (size_t b = 0; b < c->blocks_per_row; b++) {
+        const uint8_t *blk = row + b * PQ2_0_X8_BLOCK_BYTES;
+        __builtin_prefetch(blk + 2 * PQ2_0_X8_BLOCK_BYTES, 0, 0);
+        const float16x8_t dh = vreinterpretq_f16_u16(vld1q_u16((const uint16_t *) blk));
+        const float32x4_t d0 = vcvt_f32_f16(vget_low_f16(dh));
+        const float32x4_t d1 = vcvt_f32_f16(vget_high_f16(dh));
+        const uint8_t    *qs = blk + 16;
+        const int8_t     *xb = c->xq + b * PQ2_0_BLOCK_ELEMS;
+        int32x4_t         a0 = vdupq_n_s32(0);
+        int32x4_t         a1 = vdupq_n_s32(0);
+        for (size_t ch = 0; ch < 2; ch++) {
+            const int8x16_t x0 = vld1q_s8(xb + ch * 64 + 0);
+            const int8x16_t x1 = vld1q_s8(xb + ch * 64 + 16);
+            const int8x16_t x2 = vld1q_s8(xb + ch * 64 + 32);
+            const int8x16_t x3 = vld1q_s8(xb + ch * 64 + 48);
+/* lane index must be a literal: unrolled per lane j */
+#define PQ2_X8_LANE(j)                                                                 \
+    do {                                                                               \
+        const uint8x16_t w0_ = vld1q_u8(qs + ch * 128 + (j) * 16);                     \
+        const uint8x16_t w1_ = vld1q_u8(qs + ch * 128 + 64 + (j) * 16);                \
+        a0 = vdotq_laneq_s32(a0, vreinterpretq_s8_u8(vandq_u8(w0_, mask)), x0, (j));   \
+        a1 = vdotq_laneq_s32(a1, vreinterpretq_s8_u8(vandq_u8(w1_, mask)), x0, (j));   \
+        a0 = vdotq_laneq_s32(                                                          \
+                a0, vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(w0_, 2), mask)), x1, (j)); \
+        a1 = vdotq_laneq_s32(                                                          \
+                a1, vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(w1_, 2), mask)), x1, (j)); \
+        a0 = vdotq_laneq_s32(                                                          \
+                a0, vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(w0_, 4), mask)), x2, (j)); \
+        a1 = vdotq_laneq_s32(                                                          \
+                a1, vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(w1_, 4), mask)), x2, (j)); \
+        a0 = vdotq_laneq_s32(a0, vreinterpretq_s8_u8(vshrq_n_u8(w0_, 6)), x3, (j));    \
+        a1 = vdotq_laneq_s32(a1, vreinterpretq_s8_u8(vshrq_n_u8(w1_, 6)), x3, (j));    \
+    } while (0)
+            PQ2_X8_LANE(0);
+            PQ2_X8_LANE(1);
+            PQ2_X8_LANE(2);
+            PQ2_X8_LANE(3);
+#undef PQ2_X8_LANE
+        }
+        const float32x4_t bias = vdupq_n_f32((float) c->bsum[b]);
+        acc0                   = vfmaq_f32(acc0, d0, vsubq_f32(vcvtq_f32_s32(a0), bias));
+        acc1                   = vfmaq_f32(acc1, d1, vsubq_f32(vcvtq_f32_s32(a1), bias));
+    }
+    vst1q_f32(c->y + tile * 8 + 0, vmulq_n_f32(acc0, c->inv_act_scale));
+    vst1q_f32(c->y + tile * 8 + 4, vmulq_n_f32(acc1, c->inv_act_scale));
+}
+
+void cpu_neon_w_pq2_0_x8_m1(const float               *x,
+                            const struct geist_weight *w,
+                            struct geist_backend      *be,
+                            float                     *y) {
+    struct cpu_neon_workspace *ws    = cpu_neon_ws((struct cpu_neon_state *) be->state);
+    const size_t               n_in  = (size_t) w->n_in;
+    const size_t               n_out = (size_t) w->n_out;
+    float                      inv   = 0.0f;
+    if (w->aux_fp32 == nullptr || !pq2_0_prep(ws, n_in, n_out, x, y, &inv)) {
+        return;
+    }
+    struct pq2_0_x8_ctx ctx = {
+            .W              = (const uint8_t *) w->aux_fp32,
+            .xq             = ws->m1_xq,
+            .bsum           = ws->m1_bsum,
+            .y              = y,
+            .inv_act_scale  = inv,
+            .blocks_per_row = n_in / PQ2_0_BLOCK_ELEMS,
+    };
+    pq2_0_parallel_for(n_out / 8, pq2_0_x8_tile_body, &ctx);
 }
 
 #endif /* __ARM_NEON && __ARM_FEATURE_DOTPROD */

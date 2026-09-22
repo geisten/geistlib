@@ -15,14 +15,20 @@
  *      dots) — tight — and against fp32 within the A8 quantization error.
  *      Matching the A8 model and not the fp32 one is also what shows the
  *      SDOT path, not the trampoline, was installed.
+ *   4. Both SDOT layouts: n_out 40 installs the x8 interleaved repack
+ *      (GEIST_W_LAYOUT_PQ2_0_X8_GEMV), n_out 37 cannot and keeps the row
+ *      kernel, and GEIST_PQ2_0_X8_GEMV=0 keeps the row kernel for both —
+ *      every one of them held to the same W2A8 model.
  *
  * Deterministic, no model needed.
  */
+#define _POSIX_C_SOURCE 200809L /* setenv */
 #include "test_helpers.h"
 
 #include <geist_backend.h>
 #include <geist_types.h>
 
+#include "heap.h"
 #include "quant.h"
 
 #include <math.h>
@@ -176,7 +182,7 @@ static double rel_err(size_t n, const float *a, const float *b) {
     return d / fmax(m, 1e-30);
 }
 
-static int check_backend(const char *name) {
+static int check_backend(const char *name, bool x8_policy) {
     struct geist_backend *be = nullptr;
     if (geist_backend_create(name, nullptr, nullptr, &be) != GEIST_OK) {
         printf("%s: not compiled in, skipped\n", name);
@@ -185,10 +191,12 @@ static int check_backend(const char *name) {
     const bool   neon      = strcmp(name, "cpu_neon") == 0;
     int          fails     = 0;
     const size_t n_ins[]   = {128, 5120, 17408};
-    const size_t n_out     = 37;
+    const size_t n_outs[]  = {37, 40};
     const size_t m         = 3;
     char         what[160] = {0};
-    for (size_t k = 0; k < sizeof n_ins / sizeof n_ins[0]; k++) {
+    for (size_t kk = 0; kk < 2 * sizeof n_ins / sizeof n_ins[0]; kk++) {
+        const size_t k     = kk / 2;
+        const size_t n_out = n_outs[kk % 2];
         const size_t n_in  = n_ins[k];
         size_t       bytes = 0;
         uint8_t     *W     = make_tensor(n_out, n_in, &bytes);
@@ -208,6 +216,20 @@ static int check_backend(const char *name) {
                                  .dtype      = GEIST_DTYPE_PQ2_0};
         snprintf(what, sizeof what, "%s n_in=%zu: resolve", name, n_in);
         fails += geist_expect(be->desc->vtbl->resolve_weight(be, &w) == GEIST_OK, what);
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+        if (neon) {
+            const bool want_x8 = x8_policy && n_out % 8 == 0;
+            snprintf(what,
+                     sizeof what,
+                     "%s n_in=%zu n_out=%zu: x8 layout %s",
+                     name,
+                     n_in,
+                     n_out,
+                     want_x8 ? "installed" : "not installed");
+            fails += geist_expect((w.backend_layout == GEIST_W_LAYOUT_PQ2_0_X8_GEMV) == want_x8,
+                                  what);
+        }
+#endif
         if (w.linear_m1 == nullptr || w.linear_mN == nullptr) {
             fails += geist_expect(false, "kernels installed");
             free(W);
@@ -244,6 +266,10 @@ static int check_backend(const char *name) {
             snprintf(what, sizeof what, "%s n_in=%zu: mN row %zu == fp32", name, n_in, t);
             fails += geist_expect(rel_err(n_out, y + t * n_out, yf) < 1e-4, what);
         }
+        if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
+            void *aux = (void *) w.aux_fp32;
+            safe_free(&aux);
+        }
         free(W);
         free(x);
         free(y);
@@ -258,8 +284,11 @@ static int check_backend(const char *name) {
 int main(void) {
     int fails = 0;
     fails += check_layout();
-    fails += check_backend("cpu_scalar");
-    fails += check_backend("cpu_neon");
+    fails += check_backend("cpu_scalar", false);
+    fails += check_backend("cpu_neon", true);
+    /* The policy is read at backend create: a fresh backend sees it. */
+    setenv("GEIST_PQ2_0_X8_GEMV", "0", 1);
+    fails += check_backend("cpu_neon", false);
     if (fails == 0) {
         printf("PASS test_pq2_0_unit\n");
     }

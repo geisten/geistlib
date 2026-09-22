@@ -1605,6 +1605,41 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
     return GEIST_OK;
 }
 
+/* PQ2_0 x8 interleaved decode GEMV over-installer; see kernels/pq2_0.c.
+ * Any refusal (policy off, shape, OOM) keeps the table's row kernel. */
+static enum geist_status
+install_pq2_0_x8_gemv_if_eligible(struct geist_weight                 *w,
+                                  const struct cpu_neon_kernel_policy *policy) {
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+    if (!policy->pq2_0_x8_gemv || w->linear_m1 != cpu_neon_w_pq2_0_q8a_m1 || w->n_in <= 0 ||
+        w->n_out <= 0) {
+        return GEIST_OK;
+    }
+    const size_t bytes = pq2_0_x8_size_bytes((size_t) w->n_in, (size_t) w->n_out);
+    if (bytes == 0 || bytes > (size_t) INT32_MAX) {
+        return GEIST_OK;
+    }
+    void *buf = heap_alloc_aligned(bytes, 64);
+    if (buf == nullptr) {
+        return GEIST_OK;
+    }
+    if (pq2_0_x8_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf) != 0) {
+        safe_free(&buf);
+        return GEIST_OK;
+    }
+    w->aux_fp32 = (const float *) buf;
+    w->aux_n    = (int32_t) bytes;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->backend_layout    = GEIST_W_LAYOUT_PQ2_0_X8_GEMV;
+    w->backend_alignment = 64;
+    w->linear_m1         = cpu_neon_w_pq2_0_x8_m1;
+#else
+    (void) w;
+    (void) policy;
+#endif
+    return GEIST_OK;
+}
+
 /* Apply per-dtype policy overrides after the table match. These are
  * platform-tuning decisions (native NEON vs Accelerate/OpenBLAS dequant
  * trampoline for M>1), not ISA-capability decisions. Q5_K + Q8_0 +
@@ -1663,6 +1698,9 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
                 w->linear_mN = cpu_neon_w_q4_0_mN;
             }
         }
+        return;
+    case GEIST_DTYPE_PQ2_0:
+        (void) install_pq2_0_x8_gemv_if_eligible(w, policy);
         return;
     case GEIST_DTYPE_TQ2_0:
         /* Native q8a_mN vs trampoline (only meaningful when the q8a

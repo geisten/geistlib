@@ -96,6 +96,11 @@ struct cpu_neon_kernel_policy {
      * sum to ~1x the model's Q4_0 bytes on heap; the mmap'd source goes
      * cold after warmup. Env: GEIST_Q4_0_X8_GEMV. */
     bool q4_0_x8_gemv;
+    /* Same for PQ2_0 (ternary Bonsai): heap x8 copy of every eligible
+     * tensor. The mmap'd source stays warm while prefill runs on the
+     * dequant trampoline, so RSS reads up to 2x the PQ2_0 bytes during
+     * prefill. Default on with SDOT. Env: GEIST_PQ2_0_X8_GEMV. */
+    bool pq2_0_x8_gemv;
     bool q6k_ntile4_stream_prefill;
     bool q8_0_native_mn;
     bool q4_01_native_mn;
