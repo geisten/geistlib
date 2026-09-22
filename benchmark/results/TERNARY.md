@@ -245,9 +245,10 @@ the A8 kernels are still fine here. Reference engine: PrismML-Eng/llama.cpp
 | geist CPU, first cut (row GEMV, dequant trampoline) | 8.8 | 6.2 | 8.0 GB |
 | geist CPU, x8 GEMV + x8 prefill, m_max 64 | ~11 | 9.8 | 14.4 GB |
 | geist CPU, same, `GEIST_M_MAX=128` | 14.5 | 9.9 | 14.7 GB |
-| **geist metal** | **78–82** | **11.2–11.5** (13.0 at 32 ctx) | 2.5 GB |
+| geist metal, first cut | 78–82 | 11.2–11.5 (13.0 at 32 ctx) | 2.5 GB |
+| **geist metal, table GEMV + parallel DeltaNet decode** | **84–111** | **15.5–17.5** (**19.3–19.5** at 32 ctx) | 2.5 GB |
 | PrismML fork, CPU (`-ngl 0`) | 22.4 | 0.45 | |
-| PrismML fork, metal (`-ngl 99`) | 81.8 ± 14.6 | 13.7 (from empty ctx) | |
+| PrismML fork, metal (`-ngl 99`), same window as the row above | 110.7 ± 1.7 | 16.65 ± 0.3 (from empty ctx) | |
 
 geist: `bench_perf_sweep --seq-lens 512 --decode-n 64 --warmup 1 --repeats 2-3`
 (decode is measured after the 512-token prompt); fork: `llama-bench -p 512
@@ -299,13 +300,18 @@ dequant pass — no ternary advantage there yet.
   serial code; the rest is SGEMM plus waits where 8 threads share the two
   P-cluster AMX units. The host DeltaNet now sub-chunks, so `GEIST_M_MAX=128`
   costs it nothing; the default stays 64 until a quiet cross-model A/B.
-- Metal decode tracks qwen3.8-27B Q4_0 on metal (11.6) at half the weight
-  bytes: the PQ2_0 GEMV is not the limit, the existing decode chain is
-  (attention over the context, DeltaNet, per-dispatch latency — #322).
+- Metal decode, 50.5 ms per token at 32-token context (subtractive profile,
+  `GEIST_METAL_PROFILE=1` + `GEIST_SKIP_*`): PQ2_0 GEMVs ~38 ms, DeltaNet
+  ~3, Hadamard ~3, RMS norm ~2.5, the F32 alpha/beta GEMVs ~1.4. A
+  dependent dispatch costs ~3 us, so the ~1300 per token are not the
+  floor. The GEMV sits within ~10 % of a read-only probe of its own access
+  pattern (40 ms; 27 ms without the activation loads): the next step is a
+  16-byte-aligned device layout, which costs a second copy of the weights
+  (the prefill GEMM template reads the source blocks).
 
 ### Next levers
 
-- Metal decode: the #322 dispatch-floor work, shared with every qwen35 model.
+- Metal decode: an aligned PQ2_0 GEMV layout (+~10 %, +7 GB resident).
 - CPU: a quiet A/B of `m_max` 128 as the Mac default; an fp16-AMX (BNNS)
   spike for the prefill GEMM.
 - `PTQ1_0` (1.75 bpw): slower to unpack than `PQ2_0` on Apple silicon per
