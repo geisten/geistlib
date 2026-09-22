@@ -229,6 +229,69 @@ kernel change.** Compare against the previous build of the same backend, which
 is what the perf work here does. See
 [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) for the general rule.
 
+## Ternary-Bonsai-2-27B on the M1 Max CPU (2026-09-22)
+
+PrismML's ternary Qwen3.8-27B, `Ternary-Bonsai-2-27B-PQ2_0.gguf` (7.21 GB,
+sha256 `3907dc16…2ec1`): `PQ2_0` projections, embeddings and head, weights
+folded into a blockwise Walsh-Hadamard basis (`prism.hadamard.*`). Unlike
+BitNet it was not trained with int8 activations — see *Correctness* for why
+the A8 kernels are still fine here. Reference engine: PrismML-Eng/llama.cpp
+`01ae597`, the only other runtime that reads the format.
+
+### Throughput, pp512 / tg64, 8 threads
+
+| | prefill t/s | decode t/s | RSS |
+| :-- | --: | --: | --: |
+| geist, PQ2_0 row kernel (`GEIST_PQ2_0_X8_GEMV=0`) | 8.8 | 6.2 | 8.0 GB |
+| geist, PQ2_0 x8 (default) | *pending quiet re-run* | *pending* | 14.3 GB |
+| PrismML fork, CPU (`-ngl 0`) | 22.4 | 0.45 | |
+
+geist rows: `bench_perf_sweep --seq-lens 512 --decode-n 64 --warmup 1
+--repeats 3`, mean, best/worst spread ≤ 2.3 %; fork: `llama-bench -p 512 -n 64 -r 3`. Both
+behind a load < 3 gate on a machine shared with other agents. The fork has no
+ARM decode kernel for `PQ2_0` (0.45 ± 0.38 t/s is its generic path); its
+prefill is ahead because it feeds Accelerate straight from a dequantized copy.
+
+Kernel view, one 27B FFN matrix (17408 × 5120), 8 distinct copies so the
+working set is DRAM, not the 48 MB SLC:
+
+| format | bytes | decode m=1 | effective | prefill m=64 |
+| :-- | --: | --: | --: | --: |
+| F32 | 356 MB | 12.6 ms | 28 GB/s | 15.2 ms |
+| F16 | 178 MB | 2.33 ms | 77 GB/s | 12.1 ms |
+| PQ2_0 row | 24 MB | 0.56 ms | 42 GB/s | 18.2 ms |
+| **PQ2_0 x8** | 24 MB | **0.21 ms** | **110 GB/s** | 16.8 ms |
+
+Decode is byte-bound, so ternary pays off there: 11× F16 and 60× the F32
+path on the same matrix. Prefill is compute-bound, F16/F32 run on AMX through
+Accelerate SGEMM, and `PQ2_0` currently goes through the same SGEMM after a
+dequant pass — no ternary advantage there yet.
+
+### Correctness
+
+- Against the fork (`llama-eval-callback`, prompt "Hello"): the
+  inverse-rotated embedding row matches to every printed digit, every layer-0
+  intermediate through `ssm_out` and the FFN agrees to < 1 %, final hidden
+  within 2 %. Signs, the grouped-value permutation and their order are the
+  fork's.
+- Chat prompt (`test_bonsai_e2e_int`): prompt ids, next-token top 5 and the
+  first 24 greedy tokens equal the fork's on CPU and on Metal. The top logit
+  sits ~0.9 below the fork's (25.49 vs 26.37 — fork CPU and Metal agree with
+  each other), which is where the two drift apart after token 24.
+- A8 vs A32: geist with the `PQ2_0` GEMVs forced onto the fp32 trampoline
+  produces the same 64 greedy tokens and the same top-5 as the per-row int8
+  kernels (top logit Δ 0.002); `cpu_scalar` agrees with the A32 build to four
+  digits. The Hadamard rotation is what makes per-row absmax int8 safe on a
+  model trained with full-precision activations.
+
+### Next levers
+
+- Native int8 prefill GEMM on the x8 layout (the #295 recipe for Q4_0).
+- Metal: a `PQ2_0` GEMV/GEMM and `hadamard_rotate` kernel; until then the
+  loader refuses the model on GPU backends.
+- `PTQ1_0` (1.75 bpw): slower to unpack than `PQ2_0` on Apple silicon per
+  PrismML; not planned.
+
 ## Measurement protocol
 
 Use `benchmark/compare_ternary_pi5.sh` — runs geist (SDOT + TL1), llama.cpp, and

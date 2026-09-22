@@ -18,6 +18,21 @@ minor release.
   changes, and the architecture vtable already carried the `opts` parameter
   (`state_create`), which the engine had been passing `nullptr` for.
 
+- **Ternary-Bonsai-2-27B on the CPU** (PrismML's ternary Qwen3.8-27B,
+  `PQ2_0` + `prism.hadamard.*`). New dtype `GEIST_DTYPE_PQ2_0` (appended after
+  `IQ4_XS`; ggml type 142 of PrismML-Eng/llama.cpp) with an SDOT W2A8 decode
+  GEMV on `cpu_neon`, x8-interleaved by default (`GEIST_PQ2_0_X8_GEMV=0`
+  keeps the row kernel and ~6 GB of RSS); prefill runs on the dequant+SGEMM
+  trampoline. New optional backend slot `fused->hadamard_rotate`
+  (`@stability EXPERIMENTAL`, `<geist_backend.h>`) for the blockwise
+  Walsh-Hadamard activation transform the folded weights need; `cpu_scalar`,
+  `cpu_neon` and `cpu_x86` implement it. A GGUF whose `prism.hadamard` keys
+  the qwen35 forward cannot honour exactly is refused at load
+  (`GEIST_E_FORMAT` / `GEIST_E_UNSUPPORTED`) rather than run with wrong math —
+  today that includes every GPU backend. Output matches the PrismML fork's
+  (prompt ids, next-token top 5, first 24 greedy tokens on the pinned chat
+  prompt); numbers in `benchmark/results/TERNARY.md`.
+
 ### Changed
 
 - **The public headers are includable from C++.** `include/` writes its
