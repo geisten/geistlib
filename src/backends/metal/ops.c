@@ -1105,7 +1105,11 @@ static void metal_encode_hadamard(struct metal_state                 *st,
     metal_msg_send_set_bytes(st, enc, p, sizeof(*p), 3);
     metal_msg_send_set_threadgroup_memory(st, enc, p->block * sizeof(float), 0u);
     const struct metal_size groups  = {p->width / p->block, rows, 1};
-    const struct metal_size threads = {p->block < 256u ? p->block : 256u, 1, 1};
+    /* One thread per element pair and stage: 1024 threads measured 10.6 us
+     * per decode row vs 14 us at 256 (the butterflies are barrier-bound). A
+     * barrier-free simdgroup variant (32 registers per lane, shuffles for
+     * the low strides) measured ~50 us and was dropped. */
+    const struct metal_size threads = {p->block < 1024u ? p->block : 1024u, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_HADAMARD, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
