@@ -5,6 +5,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../rotation.h"
 #include "gemma4_kernels.h"
 #include <geist_types.h>
 #include "profile.h"
@@ -119,6 +120,13 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         t0 = profile ? transformer_profile_now_ns() : 0;
         apply_bitnet_input_quant_inplace(v, sess->scratch_normed, ctx->seq, st->d_model);
         transformer_profile_add(&g_attn_profile, ATTN_PROFILE_NORM, t0);
+    }
+
+    /* prism.hadamard: q/k/v read the normed input rotated (rotation.h). */
+    s = transformer_rotate(
+            st, ctx->seq, st->d_model, false, false, sess->scratch_normed, sess->scratch_normed);
+    if (s != GEIST_OK) {
+        return s;
     }
 
     /* Per-projection input norms: q, k and v each read their own
@@ -524,6 +532,11 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     }
     transformer_profile_add(&g_attn_profile, ATTN_PROFILE_POST_CORE, t0);
 
+    s = transformer_rotate(
+            st, ctx->seq, ctx->q_out, false, false, sess->scratch_attn, sess->scratch_attn);
+    if (s != GEIST_OK) {
+        return s;
+    }
     struct geist_tensor t_o_2d = view_2d(sess->scratch_o, ctx->SEQ, st->d_model);
     t0                         = profile ? transformer_profile_now_ns() : 0;
     s                          = linear_w_or_legacy(be,

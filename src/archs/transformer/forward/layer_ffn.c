@@ -4,6 +4,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../rotation.h"
 #include <geist_types.h>
 #include "profile.h"
 
@@ -85,6 +86,19 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         t0 = profile ? transformer_profile_now_ns() : 0;
         s  = prims->rmsnorm(be, &t_h_post_attn_2d, &t_w_ffn_norm, ctx->eps, &t_pre_ff_2d);
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_NORM, t0);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        /* prism.hadamard: gate/up read the normed input rotated. The
+         * fused fronts above are GEGLU-only, and rotation is qwen35-only
+         * (SwiGLU), so they never see a rotated model. */
+        s = transformer_rotate(st,
+                               ctx->seq,
+                               st->d_model,
+                               false,
+                               false,
+                               sess->scratch_pre_ff,
+                               sess->scratch_pre_ff);
         if (s != GEIST_OK) {
             return s;
         }
@@ -296,6 +310,13 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         if (s != GEIST_OK) {
             return s;
         }
+    }
+
+    /* prism.hadamard: down reads its input rotated (AWQ is refused on
+     * rotated models, so no inv-scale follows the transform). */
+    s = transformer_rotate(st, ctx->seq, ctx->inter, false, false, mid_buf, mid_buf);
+    if (s != GEIST_OK) {
+        return s;
     }
 
     if (st->runtime_flags.dump_act_sparsity) {

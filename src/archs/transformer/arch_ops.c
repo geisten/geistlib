@@ -23,6 +23,7 @@
 
 #include "arch_state.h"
 #include "arch_ops.h"
+#include "rotation.h"
 #include "forward.h"
 
 #include "gemma4_kernels.h"
@@ -269,8 +270,17 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
             v->buffer_unmap(sess->scratch_h_a);
         }
 
+        /* prism.hadamard: token_embd stores rotated rows. */
+        enum geist_status s = GEIST_OK;
+        if (st->rotation.embed_inverse) {
+            s = transformer_rotate(
+                    st, chunk, st->d_model, false, true, sess->scratch_h_a, sess->scratch_h_a);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        }
+
         /* 2. Batched PLE precompute. P1.5.b: skipped for non-PLE families. */
-        enum geist_status    s       = GEIST_OK;
         struct geist_buffer *ple_buf = nullptr;
         if (st->config.has_ple) {
             s = compute_per_layer_inputs_batch(
@@ -402,8 +412,16 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
         v->buffer_unmap(sess->scratch_h_a);
     }
 
+    enum geist_status s = GEIST_OK;
+    if (st->rotation.embed_inverse) {
+        s = transformer_rotate(
+                st, k, st->d_model, false, true, sess->scratch_h_a, sess->scratch_h_a);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+
     /* 2. PLE precompute. P1.5.b: skipped for non-PLE families. */
-    enum geist_status    s       = GEIST_OK;
     struct geist_buffer *ple_buf = nullptr;
     if (st->config.has_ple) {
         s = compute_per_layer_inputs_batch(

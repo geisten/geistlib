@@ -34,6 +34,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../rotation.h"
 #include "../arch_state.h"
 
 #include "geist_gemm.h"
@@ -524,31 +525,10 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     if (s != GEIST_OK)
         return s;
 
-    /* 2. Projections through the backend linear kernels. */
-    struct geist_tensor t_qkv = view_2d(sess->dn_scratch_qkv, ctx->SEQ, (int64_t) convd);
-    s                         = linear_w_or_legacy(be,
-                                                   v,
-                                                   sess->scratch_normed,
-                                                   sess->dn_scratch_qkv,
-                                                   &L->dn_qkv_w,
-                                                   seq,
-                                                   &t_x_2d,
-                                                   &L->dn_qkv,
-                                                   &t_qkv);
-    if (s != GEIST_OK)
-        return s;
-    struct geist_tensor t_z = view_2d(sess->dn_scratch_z, ctx->SEQ, (int64_t) vald);
-    s                       = linear_w_or_legacy(be,
-                                                 v,
-                                                 sess->scratch_normed,
-                                                 sess->dn_scratch_z,
-                                                 &L->dn_z_w,
-                                                 seq,
-                                                 &t_x_2d,
-                                                 &L->dn_z,
-                                                 &t_z);
-    if (s != GEIST_OK)
-        return s;
+    /* 2. Projections through the backend linear kernels. beta and alpha
+     * run first: on a prism.hadamard model they are the one pair that
+     * reads the normed input unrotated, and qkv / z read it rotated in
+     * place (rotation.h). */
     /* beta and alpha each in their own scratch — the resolved CPU
      * kernels write at buffer_map(y_buf) start, so a shared buffer with
      * offset views would alias. */
@@ -577,6 +557,34 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     if (s != GEIST_OK)
         return s;
 
+    s = transformer_rotate(
+            st, seq, st->d_model, false, false, sess->scratch_normed, sess->scratch_normed);
+    if (s != GEIST_OK)
+        return s;
+    struct geist_tensor t_qkv = view_2d(sess->dn_scratch_qkv, ctx->SEQ, (int64_t) convd);
+    s                         = linear_w_or_legacy(be,
+                                                   v,
+                                                   sess->scratch_normed,
+                                                   sess->dn_scratch_qkv,
+                                                   &L->dn_qkv_w,
+                                                   seq,
+                                                   &t_x_2d,
+                                                   &L->dn_qkv,
+                                                   &t_qkv);
+    if (s != GEIST_OK)
+        return s;
+    struct geist_tensor t_z = view_2d(sess->dn_scratch_z, ctx->SEQ, (int64_t) vald);
+    s                       = linear_w_or_legacy(be,
+                                                 v,
+                                                 sess->scratch_normed,
+                                                 sess->dn_scratch_z,
+                                                 &L->dn_z_w,
+                                                 seq,
+                                                 &t_x_2d,
+                                                 &L->dn_z,
+                                                 &t_z);
+    if (s != GEIST_OK)
+        return s;
     /* 3..7: a batched-submit backend may keep the complete stateful mixer
      * on-device. Unsupported is side-effect free by contract, so the host
      * oracle below remains the universal fallback. */
@@ -790,17 +798,20 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     /* 7. out projection [seq, vald] -> [seq, d_model] into scratch_o,
      * then plain residual add into h_out (h_post_attn slot, so the FFN
      * block reads the same place as after an attention block). */
-    struct geist_tensor t_mix  = view_2d(sess->dn_scratch_z, ctx->SEQ, (int64_t) vald);
+    /* A rotated ssm_out reads H(S P mix): permuted, so out of place, into
+     * the qkv scratch the mixer has finished with. */
+    struct geist_buffer *mix_buf = sess->dn_scratch_z;
+    if (st->rotation.active) {
+        s = transformer_rotate(
+                st, seq, vald, true, false, sess->dn_scratch_z, sess->dn_scratch_qkv);
+        if (s != GEIST_OK)
+            return s;
+        mix_buf = sess->dn_scratch_qkv;
+    }
+    struct geist_tensor t_mix  = view_2d(mix_buf, ctx->SEQ, (int64_t) vald);
     struct geist_tensor t_o_2d = view_2d(sess->scratch_o, ctx->SEQ, st->d_model);
-    s                          = linear_w_or_legacy(be,
-                                                    v,
-                                                    sess->dn_scratch_z,
-                                                    sess->scratch_o,
-                                                    &L->dn_out_w,
-                                                    seq,
-                                                    &t_mix,
-                                                    &L->dn_out,
-                                                    &t_o_2d);
+    s                          = linear_w_or_legacy(
+            be, v, mix_buf, sess->scratch_o, &L->dn_out_w, seq, &t_mix, &L->dn_out, &t_o_2d);
     if (s != GEIST_OK)
         return s;
     struct geist_tensor t_h_post = view_2d(sess->scratch_h_post_attn, ctx->SEQ, st->d_model);

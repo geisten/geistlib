@@ -16,6 +16,7 @@
 #include "internal.h"
 #include "profile.h"
 #include "../arch_state.h"
+#include "../rotation.h"
 #include "../forward.h"
 
 #include "quant.h"
@@ -102,6 +103,13 @@ static struct transformer_forward_profile g_head_profile = {
     t0                               = profile ? transformer_profile_now_ns() : 0;
     s = prims->rmsnorm(be, &t_h_1d, &t_w_out_norm, st->config.rms_eps, &t_h_1d);
     transformer_profile_add(&g_head_profile, HEAD_PROFILE_NORM, t0);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    /* prism.hadamard: the lm_head reads the normed hidden rotated, in
+     * place — the spec head and the dense recompute below read the same
+     * rotated row, which is what their (folded) weights expect. */
+    s = transformer_rotate(st, 1, st->d_model, false, false, sess->scratch_h_a, sess->scratch_h_a);
     if (s != GEIST_OK) {
         return s;
     }
@@ -249,6 +257,10 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
     struct geist_tensor t_h_2d       = view_2d(sess->scratch_h_a, (int64_t) k, st->d_model);
     struct geist_tensor t_w_out_norm = view_1d(st->output_norm.buffer, st->d_model);
     s = prims->rmsnorm(be, &t_h_2d, &t_w_out_norm, st->config.rms_eps, &t_h_2d);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    s = transformer_rotate(st, k, st->d_model, false, false, sess->scratch_h_a, sess->scratch_h_a);
     if (s != GEIST_OK) {
         return s;
     }

@@ -22,6 +22,7 @@
 #include "forward.h"
 #include "scratch_plan.h"
 #include "weight_load.h"
+#include "rotation.h"
 
 #include "gguf_reader.h"
 #include "gemma4_kernels.h"
@@ -1046,6 +1047,14 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         }
     }
 
+    /* prism.hadamard: validate the folded-weight set against the rotated
+     * call sites before any session or plan exists. */
+    s = transformer_rotation_load(st);
+    if (s != GEIST_OK) {
+        transformer_state_destroy(st);
+        return s;
+    }
+
     s = allocate_runtime_rope(st);
     if (s != GEIST_OK) {
         transformer_state_destroy(st);
@@ -1088,6 +1097,13 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
      * inv-scales for o/down inputs. Runs after weights are mapped but
      * before any forward pass. */
     if (opts != nullptr) {
+        if (st->rotation.active && opts->awq_scales_path != nullptr) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: AWQ on a rotated (prism.hadamard) model");
+            transformer_state_destroy(st);
+            return GEIST_E_UNSUPPORTED;
+        }
         s = apply_awq_to_state(st, opts->awq_scales_path);
         if (s != GEIST_OK) {
             transformer_state_destroy(st);
@@ -1206,6 +1222,7 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         }
         release_weight_aux(&st->embed_table_w);
         release_weight_aux(&st->model_proj_w);
+        transformer_rotation_release(st);
         safe_free((void **) &st->spec_sketch);
         safe_free((void **) &st->spec_row_scale);
         safe_free((void **) &st->spec_dims);

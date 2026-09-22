@@ -63,7 +63,7 @@ static void put_gstr(struct buf *o, const char *s) {
 }
 
 /* GGUF metadata value types (mirrors the reader's private enum). */
-enum { VT_U32 = 4, VT_F32 = 6, VT_BOOL = 7, VT_STRING = 8, VT_ARRAY = 9 };
+enum { VT_U32 = 4, VT_I32 = 5, VT_F32 = 6, VT_BOOL = 7, VT_STRING = 8, VT_ARRAY = 9 };
 
 #define GGUF_MAGIC 0x46554747u
 
@@ -75,7 +75,7 @@ static void seed_gguf(struct buf *o) {
     put_u32(o, GGUF_MAGIC);
     put_u32(o, 3); /* version */
     put_u64(o, 1); /* n_tensors */
-    put_u64(o, 5); /* n_meta */
+    put_u64(o, 7); /* n_meta */
 
     put_gstr(o, "general.alignment");
     put_u32(o, VT_U32);
@@ -96,6 +96,20 @@ static void seed_gguf(struct buf *o) {
     put_u32(o, 1);
     put_u32(o, 2);
     put_u32(o, 3);
+    /* The prism.hadamard shapes (transformer/rotation.c): a string array,
+     * walked by trusting the reader's extent check, and an I32 array. */
+    put_gstr(o, "prism.hadamard.weight_names");
+    put_u32(o, VT_ARRAY);
+    put_u32(o, VT_STRING);
+    put_u64(o, 2);
+    put_gstr(o, "blk.0.attn_qkv.weight");
+    put_gstr(o, "output.weight");
+    put_gstr(o, "prism.hadamard.sign_values");
+    put_u32(o, VT_ARRAY);
+    put_u32(o, VT_I32);
+    put_u64(o, 2);
+    put_u32(o, 1);
+    put_u32(o, (uint32_t) -1);
 
     put_gstr(o, "w");
     put_u32(o, 1);  /* n_dims */
@@ -174,6 +188,22 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     uint64_t       count   = 0;
     const uint8_t *payload = nullptr;
     (void) gguf_get_meta_array_info(ctx, "fuzz.arr", &elem_vt, &count, &payload);
+    /* rotation.c walks an accepted string array as (u64 len, bytes) pairs
+     * with no bound of its own; touch every byte the same way, so a reader
+     * that accepts a truncated array fails here under ASan. */
+    if (gguf_get_meta_array_info(ctx, "prism.hadamard.weight_names", &elem_vt, &count, &payload) &&
+        elem_vt == 8) {
+        uint8_t acc = 0;
+        for (uint64_t i = 0; i < count; i++) {
+            uint64_t len = 0;
+            memcpy(&len, payload, sizeof len);
+            payload += sizeof len;
+            for (uint64_t k = 0; k < len; k++)
+                acc = (uint8_t) (acc ^ payload[k]);
+            payload += len;
+        }
+        sink = (uint8_t) (sink ^ acc);
+    }
     /* Keys the input is unlikely to carry: the miss path is a bounds path too. */
     (void) gguf_get_meta_string(ctx, "tokenizer.ggml.model", &slen);
 
