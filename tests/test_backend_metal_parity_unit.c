@@ -20,6 +20,8 @@
  * SKIPs (exit 0) when the metal backend is not built in or no device is
  * present (Linux legs, GPU-less macs).
  */
+#define _POSIX_C_SOURCE 200809L /* setenv */
+
 #include "test_helpers.h"
 
 #include <geist.h>

@@ -17,6 +17,8 @@
  * 27B: needs ~8 GB and a minute per backend. SKIPs cleanly without the
  * fixture (GEIST_BONSAI_GGUF_PATH or gguf_artifacts/) or without cpu_neon.
  */
+#define _POSIX_C_SOURCE 200809L /* setenv */
+
 #include "test_helpers.h"
 
 #include <geist.h>
