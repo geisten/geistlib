@@ -90,8 +90,11 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
                 blk[i] = rng_u8();
             }
             if (dtype == GEIST_DTYPE_PQ2_0) {
-                blk[0] = 0x00; /* d = fp16(1.0); codes stay random, 3 = +2 included */
-                blk[1] = 0x3C;
+                /* d in {0.5, 1, 2, 4} per block (exact in half), so a kernel
+                 * reading the wrong block's scale shows; codes stay random,
+                 * 3 = +2 included. */
+                blk[0] = 0x00;
+                blk[1] = (uint8_t) (0x38u + 4u * (rng_u8() & 3u));
             } else if (dtype == GEIST_DTYPE_Q3_K) {
                 blk[108] = 0x00; /* d = fp16(1.0), trailing field */
                 blk[109] = 0x3C;
@@ -442,6 +445,8 @@ static void run_qwen35_attention_ops(struct geist_backend *mt) {
 }
 
 int main(void) {
+    /* The superblock PQ2_0 layout is opt-in; the cases below need it on. */
+    setenv("GEIST_PQ2_SB", "1", 1);
     struct geist_backend *mt = nullptr;
     enum geist_status     ms = geist_backend_create("metal", nullptr, nullptr, &mt);
     if (ms == GEIST_E_UNSUPPORTED || ms == GEIST_E_NOT_FOUND) {
@@ -502,6 +507,13 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 4);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, 32);
+    /* n_in % 1024 == 0 and GEIST_PQ2_SB=1 (set in main): resolve_weight
+     * repacks to 272-byte superblocks (matvec_pq2sb_n4,
+     * matmul_pq2sb_mm_sg[_fast]). */
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2sb", 2048, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2sb", 2048, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2sb", 2048, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2sb", 1024, 384, 32);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 1);

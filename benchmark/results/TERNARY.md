@@ -305,13 +305,21 @@ dequant pass — no ternary advantage there yet.
   ~3, Hadamard ~3, RMS norm ~2.5, the F32 alpha/beta GEMVs ~1.4. A
   dependent dispatch costs ~3 us, so the ~1300 per token are not the
   floor. The GEMV sits within ~10 % of a read-only probe of its own access
-  pattern (40 ms; 27 ms without the activation loads): the next step is a
-  16-byte-aligned device layout, which costs a second copy of the weights
-  (the prefill GEMM template reads the source blocks).
+  pattern (40 ms; 27 ms without the activation loads).
+- An aligned device layout was built and measured (`GEIST_PQ2_SB=1`, off by
+  default): resolve_weight regroups each row's blocks by 8 into
+  [8 x half d][8 x 32 codes] = 272 bytes, so codes land on 8-byte instead of
+  2-byte boundaries and the GEMM template reads it as one 1024-element block.
+  It buys 4 % decode at 32 ctx (19.4 -> 20.2 t/s), 1.5 % at 512 (16.8 ->
+  17.1), nothing on prefill — and costs 13 GB of RSS (2.5 -> 15.5): 7.2 for
+  the repacked copy, since the source mmap is read-only, and 7.2 more for the
+  file pages the repack reads in. Not worth it by default; the GEMV was
+  closer to the bandwidth limit than the alignment suggested.
 
 ### Next levers
 
-- Metal decode: an aligned PQ2_0 GEMV layout (+~10 %, +7 GB resident).
+- Metal decode: merging the F32 alpha/beta GEMVs (~1.4 ms/token) and fusing
+  the norm with the Hadamard (~1-2 ms), together about 5 %.
 - CPU: a quiet A/B of `m_max` 128 as the Mac default; an fp16-AMX (BNNS)
   spike for the prefill GEMM.
 - `PTQ1_0` (1.75 bpw): slower to unpack than `PQ2_0` on Apple silicon per

@@ -134,8 +134,10 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                         const struct geist_tensor     *w,
                                         const struct geist_tensor     *y,
                                         const struct metal_q4k_params *params,
-                                        enum geist_dtype               dtype) {
-    void *n4 = dtype == GEIST_DTYPE_PQ2_0    ? st->pq2_n4_pipeline
+                                        enum geist_dtype               dtype,
+                                        bool                           pq2_sb) {
+    void *n4 = pq2_sb                        ? st->pq2sb_n4_pipeline
+               : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_n4_pipeline
                : dtype == GEIST_DTYPE_Q4_0   ? st->q40_n4_pipeline
                : dtype == GEIST_DTYPE_Q8_0   ? st->q80_n4_pipeline
                : dtype == GEIST_DTYPE_Q4_1   ? st->q41_n4_pipeline
@@ -144,7 +146,8 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                : dtype == GEIST_DTYPE_Q3_K   ? st->q3k_n4_pipeline
                : dtype == GEIST_DTYPE_IQ3_S  ? st->iq3s_n4_pipeline
                                              : st->q5k_n4_pipeline;
-    void *mm = dtype == GEIST_DTYPE_PQ2_0    ? st->pq2_mm_pipeline
+    void *mm = pq2_sb                        ? st->pq2sb_mm_pipeline
+               : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_mm_pipeline
                : dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_pipeline
                : dtype == GEIST_DTYPE_Q8_0   ? st->q80_mm_pipeline
                : dtype == GEIST_DTYPE_Q4_1   ? st->q41_mm_pipeline
@@ -165,7 +168,8 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
      * envs (reused from the q4k levers). */
     const bool n_tile4 =
             params->rows == 1u && params->n_out >= 4u && (st->use_q4k_n4 || iq4) && n4 != nullptr;
-    void      *mm_fast = dtype == GEIST_DTYPE_PQ2_0    ? st->pq2_mm_fast_pipeline
+    void      *mm_fast = pq2_sb                        ? st->pq2sb_mm_fast_pipeline
+                         : dtype == GEIST_DTYPE_PQ2_0  ? st->pq2_mm_fast_pipeline
                          : dtype == GEIST_DTYPE_Q4_0   ? st->q40_mm_fast_pipeline
                          : dtype == GEIST_DTYPE_Q8_0   ? st->q80_mm_fast_pipeline
                          : dtype == GEIST_DTYPE_Q4_1   ? st->q41_mm_fast_pipeline
@@ -1742,7 +1746,8 @@ metal_embedding_lookup(struct geist_backend      *be,
                                                             const struct geist_tensor *w,
                                                             struct geist_tensor       *y,
                                                             enum geist_dtype           dtype,
-                                                            bool                       matrix) {
+                                                            bool                       matrix,
+                                                            bool                       pq2_sb) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -1790,7 +1795,8 @@ metal_embedding_lookup(struct geist_backend      *be,
             .n_in           = (uint32_t) n_in,
             .n_out          = (uint32_t) n_out,
             .rows           = (uint32_t) rows,
-            .blocks_per_row = (uint32_t) (n_in / metal_quant_block_elems(dtype)),
+            .blocks_per_row = (uint32_t) (n_in / (metal_quant_block_elems(dtype) *
+                                                  (pq2_sb ? METAL_PQ2SB_BLOCKS : 1u))),
             .x_offset       = (uint32_t) x_offset,
             .w_byte_offset  = (uint32_t) w_offset,
             .y_offset       = (uint32_t) y_offset,
@@ -1798,7 +1804,8 @@ metal_embedding_lookup(struct geist_backend      *be,
             .y_row_stride   = (uint32_t) y_row_stride,
     };
     if (st->sequence_active) {
-        metal_encode_q40_q80_linear(st, metal_sequence_encoder(st), x, w, y, &params, dtype);
+        metal_encode_q40_q80_linear(
+                st, metal_sequence_encoder(st), x, w, y, &params, dtype, pq2_sb);
         st->sequence_has_work = true;
         return GEIST_OK;
     }
@@ -1807,7 +1814,7 @@ metal_embedding_lookup(struct geist_backend      *be,
     if (cmd == nullptr || enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_encode_q40_q80_linear(st, enc, x, w, y, &params, dtype);
+    metal_encode_q40_q80_linear(st, enc, x, w, y, &params, dtype, pq2_sb);
     metal_msg_send_void0(st, enc, "endEncoding");
     metal_msg_send_void0(st, cmd, "commit");
     metal_msg_send_void0(st, cmd, "waitUntilCompleted");
@@ -2048,7 +2055,7 @@ metal_embedding_lookup(struct geist_backend      *be,
     };
     if (st->sequence_active) {
         metal_encode_q40_q80_linear(
-                st, metal_sequence_encoder(st), x, w, y, &params, GEIST_DTYPE_Q5_K);
+                st, metal_sequence_encoder(st), x, w, y, &params, GEIST_DTYPE_Q5_K, false);
         st->sequence_has_work = true;
         return GEIST_OK;
     }
@@ -2057,7 +2064,7 @@ metal_embedding_lookup(struct geist_backend      *be,
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_encode_q40_q80_linear(st, enc, x, w, y, &params, GEIST_DTYPE_Q5_K);
+    metal_encode_q40_q80_linear(st, enc, x, w, y, &params, GEIST_DTYPE_Q5_K, false);
     metal_msg_send_void0(st, enc, "endEncoding");
     metal_msg_send_void0(st, cmd, "commit");
     metal_msg_send_void0(st, cmd, "waitUntilCompleted");
@@ -3481,6 +3488,74 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     return GEIST_OK;
 }
 
+/* Point *t at w's superblock repack when resolve_weight made one. On false
+ * *t is untouched and the source layout serves. */
+static bool
+metal_pq2sb_view(struct metal_state *st, const struct geist_weight *w, struct geist_tensor *t) {
+    size_t               off = 0;
+    struct geist_buffer *b   = w->backend_layout == GEIST_W_LAYOUT_PQ2_0_SB
+                                       ? metal_buf_reg_find(st, w->aux_fp32, &off)
+                                       : nullptr;
+    if (b == nullptr) {
+        return false;
+    }
+    t->buffer = b;
+    t->offset = off;
+    return true;
+}
+
+/* PQ2_0 [n_out][nb x 34-byte block] -> [n_out][nb/8 x 272-byte superblock]
+ * (metal_qsg_pq2sb_source). Off unless GEIST_PQ2_SB=1: measured on
+ * Bonsai-27B/M1 Max it buys 4 % decode at 32 ctx (19.4 -> 20.2 t/s), 1.5 %
+ * at 512, nothing on prefill — and costs 13 GB of RSS, 7.2 for the copy
+ * (the source mmap is read-only, so the repack cannot be in place) and 7.2
+ * more for the file pages the repack reads in. Worth it only where the
+ * memory is free. */
+[[nodiscard]] static enum geist_status metal_pq2sb_repack(struct geist_backend *be,
+                                                          struct geist_weight  *w) {
+    const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    const char  *env = getenv("GEIST_PQ2_SB");
+    if ((n_in % (METAL_PQ2_BLOCK_ELEMS * METAL_PQ2SB_BLOCKS)) != 0 || env == nullptr ||
+        strcmp(env, "1") != 0) {
+        return GEIST_OK;
+    }
+    struct metal_state  *st  = be->state;
+    const size_t         nb  = n_in / METAL_PQ2_BLOCK_ELEMS;
+    const size_t         rb  = nb * METAL_PQ2_BLOCK_BYTES; /* == nb/8 * 272 */
+    struct geist_buffer *buf = nullptr;
+    if (st->pq2sb_count == st->pq2sb_cap) {
+        const size_t ncap  = st->pq2sb_cap != 0 ? st->pq2sb_cap * 2 : 64;
+        void        *grown = realloc(st->pq2sb_bufs, ncap * sizeof(*st->pq2sb_bufs));
+        if (grown == nullptr) {
+            return GEIST_E_OOM;
+        }
+        st->pq2sb_bufs = grown;
+        st->pq2sb_cap  = ncap;
+    }
+    enum geist_status s = metal_new_buffer(be, n_out * rb, GEIST_BUFFER_WEIGHT, 0, true, &buf);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    const uint8_t *src = w->raw;
+    uint8_t       *dst = buf->mapped;
+    for (size_t r = 0; r < n_out; r++) {
+        for (size_t sb = 0; sb < nb / METAL_PQ2SB_BLOCKS; sb++) {
+            uint8_t *o = dst + r * rb + sb * METAL_PQ2SB_BYTES;
+            for (size_t k = 0; k < METAL_PQ2SB_BLOCKS; k++) {
+                const uint8_t *blk =
+                        src + r * rb + (sb * METAL_PQ2SB_BLOCKS + k) * METAL_PQ2_BLOCK_BYTES;
+                memcpy(o + 2u * k, blk, 2u);
+                memcpy(o + 2u * METAL_PQ2SB_BLOCKS + 32u * k, blk + 2u, 32u);
+            }
+        }
+    }
+    st->pq2sb_bufs[st->pq2sb_count++] = buf;
+    w->aux_fp32                       = (const float *) (const void *) dst;
+    w->flags |= GEIST_W_AUX_BACKEND_REPACK;
+    w->backend_layout = GEIST_W_LAYOUT_PQ2_0_SB;
+    return GEIST_OK;
+}
+
 static void metal_linear_mN(size_t                     m,
                             const float               *x,
                             const struct geist_weight *w,
@@ -3584,7 +3659,8 @@ static void metal_linear_mN(size_t                     m,
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
-        s = metal_q40_q80_linear(be, &tx, &tw, &ty, (enum geist_dtype) w->dtype, true);
+        s = metal_q40_q80_linear(
+                be, &tx, &tw, &ty, (enum geist_dtype) w->dtype, true, metal_pq2sb_view(st, w, &tw));
         break;
     case GEIST_DTYPE_Q4_K:
         s = metal_matmul_q4k(be, &tx, &tw, &ty);
@@ -3642,6 +3718,8 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     if (w == nullptr || t_w == nullptr || x == nullptr || y == nullptr) {
         return GEIST_E_UNSUPPORTED;
     }
+    struct geist_tensor tw1    = *t_w;
+    const bool          pq2_sb = metal_pq2sb_view(be->state, w, &tw1);
     /* m == 1 (decode) routes to the matvec ops — the GEMM tile kernels are
      * an order of magnitude slower for a single row than the llama-style
      * mul_mv kernels. The engine passes [1, n] 2D views; rebuild them 1D. */
@@ -3671,7 +3749,8 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
         case GEIST_DTYPE_Q3_K:
         case GEIST_DTYPE_IQ3_S:
         case GEIST_DTYPE_PQ2_0:
-            return metal_q40_q80_linear(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
+            return metal_q40_q80_linear(
+                    be, &x1, &tw1, &y1, (enum geist_dtype) w->dtype, false, pq2_sb);
         case GEIST_DTYPE_Q4_K:
             return metal_matvec_q4k(be, &x1, t_w, &y1);
         case GEIST_DTYPE_Q5_K:
@@ -3693,7 +3772,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
-        return metal_q40_q80_linear(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
+        return metal_q40_q80_linear(be, x, &tw1, y, (enum geist_dtype) w->dtype, true, pq2_sb);
     case GEIST_DTYPE_Q4_K:
         return metal_matmul_q4k(be, x, t_w, y);
     case GEIST_DTYPE_Q5_K:
@@ -3709,8 +3788,8 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
 
 [[nodiscard]] static enum geist_status metal_resolve_weight(struct geist_backend *be,
                                                             struct geist_weight  *w) {
-    (void) be;
-    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
+    if (be == nullptr || be->state == nullptr || w == nullptr || w->raw == nullptr ||
+        w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
     }
     /* The kernels installed below index `raw` by shape, so a source shorter
@@ -3732,6 +3811,12 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_F32:
+        if (w->dtype == GEIST_DTYPE_PQ2_0 && w->aux_fp32 == nullptr) {
+            const enum geist_status s = metal_pq2sb_repack(be, w);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        }
         w->linear_m1 = metal_linear_m1;
         w->linear_mN = metal_linear_mN;
         return GEIST_OK;

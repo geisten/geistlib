@@ -640,6 +640,53 @@ static const char metal_qsg_pq2_source[] =
         "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
         "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
 
+/* PQ2_0 superblock layout (GEIST_W_LAYOUT_PQ2_0_SB): resolve_weight
+ * regroups each row's blocks by 8 into [8 x half d][8 x 32 code bytes] =
+ * 272 bytes, the same size as the eight source blocks, so the codes sit on
+ * 8-byte boundaries instead of 2-byte ones. The GEMV thread with block lane
+ * ix always reads sub-block ix of consecutive superblocks, so one iteration
+ * of the 32 lanes covers one contiguous 272-byte superblock per row. The
+ * GEMM template reads it as a 1024-element block (QK_NL 64). Needs
+ * n_in % 1024 == 0; every rotated Bonsai input is (Hadamard block 1024). */
+static const char metal_qsg_pq2sb_source[] =
+        "struct bpq2s{half d[8];uchar qs[256];};\n"
+        "static inline void dqpq2s(device const bpq2s*xb,short il,thread half4x4&r){"
+        "half d=xb->d[il>>3];uint u=*((device const uint*)(xb->qs+4*il));"
+        "FOR_UNROLL(short i=0;i<16;i++){r[i/4][i%4]=d*half(short((u>>(2*i))&3u)-1);}}\n"
+        "kernel void matvec_pq2sb_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],"
+        "threadgroup float*shm[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],"
+        "ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]],"
+        "ushort tid[[thread_index_in_threadgroup]]){"
+        "threadgroup half4*lut=(threadgroup half4*)shm;"
+        "for(uint j=tid;j<256u;j+=64u){lut[j]=half4(half(j&3u),half((j>>2u)&3u),"
+        "half((j>>4u)&3u),half(j>>6u));}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*4u;if(fr>=p.no||b>=p.rows)return;"
+        "uint ns=p.ni>>10u,ix=uint(ti)>>2u,il=uint(ti)&3u;"
+        "uint nr=min(p.no-fr,4u);"
+        "device const float4*yb=(device const float4*)(x+p.xo+b*p.xs)+ix*32u+il*8u;"
+        "float sf[4]={0.0f,0.0f,0.0f,0.0f};"
+        "for(uint is=0u;is<ns;is++){"
+        "float4 yl[8];float sumy=0.0f;"
+        "FOR_UNROLL(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i].x+yl[i].y+yl[i].z+yl[i].w;}"
+        "FOR_UNROLL(uint rr=0u;rr<4u;rr++){"
+        "uint so=p.wo+((fr+min(rr,nr-1u))*p.bpr+is)*272u;"
+        "uint2 q=*((device const uint2*)(w+so+16u+ix*32u+il*8u));"
+        "float a=0.0f;"
+        "FOR_UNROLL(uint k=0u;k<4u;k++){"
+        "a+=dot(yl[k],float4(lut[(q.x>>(8u*k))&255u]))+dot(yl[4u+k],float4(lut[(q.y>>(8u*k))&255u])"
+        ");}"
+        "float d=float(*((device const half*)(w+so+ix*2u)));"
+        "sf[rr]+=d*(a-sumy);}"
+        "yb+=256u;}"
+        "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
+        "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
+static const char metal_qsg_mm_pq2sb_source[] =
+        GEIST_METAL_MM_SG_KERNEL("pq2sb", "bpq2s", "dqpq2s", "64");
+static const char metal_qsg_mm_pq2sb_fast_source[] =
+        GEIST_METAL_MM_SG_FAST_KERNEL("pq2sb", "bpq2s", "dqpq2s", "64");
+
 static const char metal_qsg_mm_pq2_source[] =
         GEIST_METAL_MM_SG_KERNEL("pq2", "bpq2", "dqpq2", "8");
 static const char metal_qsg_mm_pq2_fast_source[] =

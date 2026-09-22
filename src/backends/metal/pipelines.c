@@ -236,10 +236,12 @@
         st->q41_mm_pipeline != nullptr && st->q5k_n4_pipeline != nullptr &&
         st->q5k_mm_pipeline != nullptr && st->iq4nl_mm_pipeline != nullptr &&
         st->pq2_n4_pipeline != nullptr && st->pq2_mm_pipeline != nullptr &&
-        st->pq2_mm_fast_pipeline != nullptr && st->iq4xs_mm_pipeline != nullptr &&
-        st->q3k_mm_pipeline != nullptr && st->iq3s_mm_pipeline != nullptr &&
-        st->q4k_n4_pipeline != nullptr && st->q4k_matmul_m8_pipeline != nullptr &&
-        st->q4k_matmul_m16_pipeline != nullptr && st->q4k_matmul_m16_n2_pipeline != nullptr &&
+        st->pq2_mm_fast_pipeline != nullptr && st->pq2sb_n4_pipeline != nullptr &&
+        st->pq2sb_mm_pipeline != nullptr && st->pq2sb_mm_fast_pipeline != nullptr &&
+        st->iq4xs_mm_pipeline != nullptr && st->q3k_mm_pipeline != nullptr &&
+        st->iq3s_mm_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
+        st->q4k_matmul_m8_pipeline != nullptr && st->q4k_matmul_m16_pipeline != nullptr &&
+        st->q4k_matmul_m16_n2_pipeline != nullptr &&
         (!st->use_q4k_mm_sg || st->q4k_mm_sg_pipeline != nullptr) && st->q6k_pipeline != nullptr &&
         st->q6k_n4_pipeline != nullptr && st->q6k_matmul_m8_pipeline != nullptr &&
         st->q6k_matmul_m16_pipeline != nullptr && st->rmsnorm_rows_pipeline != nullptr &&
@@ -299,7 +301,8 @@
                 metal_qsg_mm_q80_fast_source, metal_qsg_mm_q41_fast_source,
                 metal_qsg_mm_q5k_fast_source, metal_qsg_mm_iq4xs_fast_source,
                 metal_qsg_pq2_source,         metal_qsg_mm_pq2_source,
-                metal_qsg_mm_pq2_fast_source};
+                metal_qsg_mm_pq2_fast_source, metal_qsg_pq2sb_source,
+                metal_qsg_mm_pq2sb_source,    metal_qsg_mm_pq2sb_fast_source};
         size_t total = 0;
         for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
             total += strlen(parts[i]);
@@ -842,6 +845,30 @@
                                         "matmul_pq2_mm_sg_fast",
                                         &st->pq2_mm_fast_function,
                                         &st->pq2_mm_fast_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_pq2sb_n4",
+                                        &st->pq2sb_n4_function,
+                                        &st->pq2sb_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_pq2sb_mm_sg",
+                                        &st->pq2sb_mm_function,
+                                        &st->pq2sb_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_pq2sb_mm_sg_fast",
+                                        &st->pq2sb_mm_fast_function,
+                                        &st->pq2sb_mm_fast_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,

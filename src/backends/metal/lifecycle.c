@@ -11,6 +11,13 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         return;
     }
     metal_profile_print_summary(st);
+    for (size_t i = 0; i < st->pq2sb_count; i++) {
+        metal_buffer_destroy_internal(be, st->pq2sb_bufs[i]);
+    }
+    free(st->pq2sb_bufs);
+    st->pq2sb_bufs  = nullptr;
+    st->pq2sb_count = 0;
+    st->pq2sb_cap   = 0;
     free(st->buf_reg);
     st->buf_reg       = nullptr;
     st->buf_reg_count = 0;
@@ -232,6 +239,12 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->pq2_mm_function, "release");
         metal_msg_send_void0(st, st->pq2_mm_fast_pipeline, "release");
         metal_msg_send_void0(st, st->pq2_mm_fast_function, "release");
+        metal_msg_send_void0(st, st->pq2sb_n4_pipeline, "release");
+        metal_msg_send_void0(st, st->pq2sb_n4_function, "release");
+        metal_msg_send_void0(st, st->pq2sb_mm_pipeline, "release");
+        metal_msg_send_void0(st, st->pq2sb_mm_function, "release");
+        metal_msg_send_void0(st, st->pq2sb_mm_fast_pipeline, "release");
+        metal_msg_send_void0(st, st->pq2sb_mm_fast_function, "release");
         metal_msg_send_void0(st, st->iq4nl_n4_pipeline, "release");
         metal_msg_send_void0(st, st->iq4nl_n4_function, "release");
         metal_msg_send_void0(st, st->iq4nl_mm_pipeline, "release");
@@ -337,6 +350,12 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->pq2_mm_function                       = nullptr;
     st->pq2_mm_fast_pipeline                  = nullptr;
     st->pq2_mm_fast_function                  = nullptr;
+    st->pq2sb_n4_pipeline                     = nullptr;
+    st->pq2sb_n4_function                     = nullptr;
+    st->pq2sb_mm_pipeline                     = nullptr;
+    st->pq2sb_mm_function                     = nullptr;
+    st->pq2sb_mm_fast_pipeline                = nullptr;
+    st->pq2sb_mm_fast_function                = nullptr;
     st->iq4nl_n4_pipeline                     = nullptr;
     st->iq4nl_n4_function                     = nullptr;
     st->iq4nl_mm_pipeline                     = nullptr;

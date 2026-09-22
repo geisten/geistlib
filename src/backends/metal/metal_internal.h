@@ -127,6 +127,12 @@ struct metal_state {
     struct metal_buf_reg_entry *buf_reg;
     size_t                      buf_reg_count;
     size_t                      buf_reg_cap;
+    /* PQ2_0 superblock repacks made by resolve_weight (GEIST_W_LAYOUT_PQ2_0_SB).
+     * ponytail: they live until backend destroy; a model reload on the same
+     * backend keeps the old ones — add a weight-release hook if that shows up. */
+    struct geist_buffer **pq2sb_bufs;
+    size_t                pq2sb_count;
+    size_t                pq2sb_cap;
     /* MTLBuffers referenced by ops encoded on the open (unflushed) batch;
      * a host map/upload/download of a referenced buffer forces a flush.
      * Open-addressed pointer set; overflow degrades to always-flush. */
@@ -201,6 +207,12 @@ struct metal_state {
     void  *pq2_mm_pipeline;
     void  *pq2_mm_fast_function;
     void  *pq2_mm_fast_pipeline;
+    void  *pq2sb_n4_function;
+    void  *pq2sb_n4_pipeline;
+    void  *pq2sb_mm_function;
+    void  *pq2sb_mm_pipeline;
+    void  *pq2sb_mm_fast_function;
+    void  *pq2sb_mm_fast_pipeline;
     void  *iq4nl_n4_function;
     void  *iq4nl_n4_pipeline;
     void  *iq4nl_mm_function;
@@ -480,6 +492,8 @@ enum {
     METAL_IQ3S_BLOCK_BYTES              = 110u,
     METAL_PQ2_BLOCK_ELEMS               = 128u,
     METAL_PQ2_BLOCK_BYTES               = 34u,
+    METAL_PQ2SB_BLOCKS                  = 8u,
+    METAL_PQ2SB_BYTES                   = 272u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,
