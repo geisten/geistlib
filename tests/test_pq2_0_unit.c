@@ -112,6 +112,9 @@ static void ref_fp32(size_t n_out, size_t n_in, const uint8_t *W, const float *x
     free(row);
 }
 
+/* The two references below restate what the SDOT kernels do, so they only
+ * exist on the legs that have them. */
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
 /* The NEON kernel's arithmetic, restated: absmax int8 activation with
  * round-half-away, integer (code - 1) dot per block, float accumulation
  * over blocks in order. */
@@ -172,6 +175,7 @@ static bool within_a8_bound(size_t         n_out,
     free(row);
     return ok;
 }
+#endif
 
 /* max |a - b| over max |b|. */
 static double rel_err(size_t n, const float *a, const float *b) {
