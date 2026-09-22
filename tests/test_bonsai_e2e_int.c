@@ -14,8 +14,9 @@
  * Runs on cpu_neon and, when compiled in, on metal (PQ2_0 kernels and
  * fused->hadamard_rotate on the GPU) against the same goldens.
  *
- * 27B: needs ~8 GB and a minute per backend. SKIPs cleanly without the
- * fixture (GEIST_BONSAI_GGUF_PATH or gguf_artifacts/) or without cpu_neon.
+ * 27B: needs ~8 GB and a minute per backend, so no CI leg fetches it: the
+ * test SKIPs without the fixture (GEIST_BONSAI_GGUF_PATH or
+ * gguf_artifacts/) or without cpu_neon, strict-fixture mode included.
  */
 #define _POSIX_C_SOURCE 200809L /* setenv */
 
@@ -162,9 +163,10 @@ static int run_backend(const char *path, const char *backend) {
 
 int main(void) {
     const char *path = resolve_path();
-    if (path == nullptr) {
-        GEIST_SKIP_FIXTURE("Ternary-Bonsai-2-27B-PQ2_0.gguf not found (GEIST_BONSAI_GGUF_PATH)");
-    }
+    /* A plain skip, not GEIST_SKIP_FIXTURE: CI fetches the small GGUFs that
+     * strict-fixture mode guards, never this 7.2 GB one. */
+    GEIST_SKIP_IF(path == nullptr,
+                  "Ternary-Bonsai-2-27B-PQ2_0.gguf not found (GEIST_BONSAI_GGUF_PATH)");
     const int neon = run_backend(path, "cpu_neon");
     /* Metal's opt-in PQ2_0 superblock layout, against the same goldens. */
     setenv("GEIST_PQ2_SB", "1", 1);
