@@ -229,7 +229,7 @@ kernel change.** Compare against the previous build of the same backend, which
 is what the perf work here does. See
 [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) for the general rule.
 
-## Ternary-Bonsai-2-27B on the M1 Max CPU (2026-09-22)
+## Ternary-Bonsai-2-27B on the M1 Max (2026-09-22)
 
 PrismML's ternary Qwen3.8-27B, `Ternary-Bonsai-2-27B-PQ2_0.gguf` (7.21 GB,
 sha256 `3907dc16…2ec1`): `PQ2_0` projections, embeddings and head, weights
@@ -238,19 +238,25 @@ BitNet it was not trained with int8 activations — see *Correctness* for why
 the A8 kernels are still fine here. Reference engine: PrismML-Eng/llama.cpp
 `01ae597`, the only other runtime that reads the format.
 
-### Throughput, pp512 / tg64, 8 threads
+### Throughput, pp512 / tg64
 
 | | prefill t/s | decode t/s | RSS |
 | :-- | --: | --: | --: |
-| geist, PQ2_0 row kernel (`GEIST_PQ2_0_X8_GEMV=0`) | 8.8 | 6.2 | 8.0 GB |
-| geist, PQ2_0 x8 (default) | *pending quiet re-run* | *pending* | 14.3 GB |
+| geist CPU, first cut (row GEMV, dequant trampoline) | 8.8 | 6.2 | 8.0 GB |
+| geist CPU, x8 GEMV + x8 prefill, m_max 64 | ~11 | 9.8 | 14.4 GB |
+| geist CPU, same, `GEIST_M_MAX=128` | 14.5 | 9.9 | 14.7 GB |
+| **geist metal** | **78–82** | **11.2–11.5** (13.0 at 32 ctx) | 2.5 GB |
 | PrismML fork, CPU (`-ngl 0`) | 22.4 | 0.45 | |
+| PrismML fork, metal (`-ngl 99`) | 81.8 ± 14.6 | 13.7 (from empty ctx) | |
 
-geist rows: `bench_perf_sweep --seq-lens 512 --decode-n 64 --warmup 1
---repeats 3`, mean, best/worst spread ≤ 2.3 %; fork: `llama-bench -p 512 -n 64 -r 3`. Both
-behind a load < 3 gate on a machine shared with other agents. The fork has no
-ARM decode kernel for `PQ2_0` (0.45 ± 0.38 t/s is its generic path); its
-prefill is ahead because it feeds Accelerate straight from a dequantized copy.
+geist: `bench_perf_sweep --seq-lens 512 --decode-n 64 --warmup 1 --repeats 2-3`
+(decode is measured after the 512-token prompt); fork: `llama-bench -p 512
+-n 64`, whose tg64 starts from an empty context, so compare it with geist's
+32-context figure. The first row ran behind a load < 3 gate; the rest shared
+the Mac with other agents' jobs (load 5-8 for the metal rows, up to 30 for
+the CPU x8 rows — read those as relative). The fork has no ARM decode kernel
+for `PQ2_0` (0.45 ± 0.38 t/s is its generic path), and its CPU prefill likely
+leans on llama.cpp's GPU op offload for large batches.
 
 Kernel view, one 27B FFN matrix (17408 × 5120), 8 distinct copies so the
 working set is DRAM, not the 48 MB SLC:
@@ -284,11 +290,24 @@ dequant pass — no ternary advantage there yet.
   digits. The Hadamard rotation is what makes per-row absmax int8 safe on a
   model trained with full-precision activations.
 
+### Where the time goes
+
+- CPU prefill is AMX SGEMM: the x8 prefill path dequantizes 128-row tiles
+  from the x8 copy with NEON and SGEMMs each per thread (901 / 1002 / 1134
+  GFLOP/s at m = 64 / 128 / 256 on the FFN matrix, the trampoline did
+  628 / 765 / 676). A `sample(1)` profile leaves ~2k of ~50k samples in
+  serial code; the rest is SGEMM plus waits where 8 threads share the two
+  P-cluster AMX units. The host DeltaNet now sub-chunks, so `GEIST_M_MAX=128`
+  costs it nothing; the default stays 64 until a quiet cross-model A/B.
+- Metal decode tracks qwen3.8-27B Q4_0 on metal (11.6) at half the weight
+  bytes: the PQ2_0 GEMV is not the limit, the existing decode chain is
+  (attention over the context, DeltaNet, per-dispatch latency — #322).
+
 ### Next levers
 
-- Native int8 prefill GEMM on the x8 layout (the #295 recipe for Q4_0).
-- Metal: a `PQ2_0` GEMV/GEMM and `hadamard_rotate` kernel; until then the
-  loader refuses the model on GPU backends.
+- Metal decode: the #322 dispatch-floor work, shared with every qwen35 model.
+- CPU: a quiet A/B of `m_max` 128 as the Mac default; an fp16-AMX (BNNS)
+  spike for the prefill GEMM.
 - `PTQ1_0` (1.75 bpw): slower to unpack than `PQ2_0` on Apple silicon per
   PrismML; not planned.
 
