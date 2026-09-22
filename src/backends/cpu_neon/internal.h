@@ -264,6 +264,9 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
                                                       struct geist_tensor       *y);
 [[nodiscard]] enum geist_status
 cpu_neon_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y);
+struct geist_hadamard_args;
+[[nodiscard]] enum geist_status cpu_neon_hadamard_rotate(struct geist_backend             *be,
+                                                         const struct geist_hadamard_args *args);
 [[nodiscard]] enum geist_status cpu_neon_rmsnorm(struct geist_backend      *be,
                                                  const struct geist_tensor *x,
                                                  const struct geist_tensor *w,
