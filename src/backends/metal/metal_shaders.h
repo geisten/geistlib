@@ -597,9 +597,14 @@ static const char metal_qsg_n4_iq4xs_source[] =
  * byte of codes is four weights, so per-weight mask + convert + FMA made it
  * ALU-latency bound (57-60 ms per 27B token). A 256-entry half4 table in
  * threadgroup memory maps each code byte to its four codes, so a byte is
- * one lookup and one float4 dot: 50-52 ms. The -1 bias folds into sumy.
- * (Measured and dropped: 8 rows per simdgroup 70 ms, x staged in
- * threadgroup memory 88 ms, half activations 52 ms and over tolerance.) */
+ * one lookup and one float4 dot: 50-52 ms; unrolling the four rows (the
+ * tail clamps its row index, stores stay guarded) lets their loads
+ * overlap: 44-46 ms. The -1 bias folds into sumy. A read-only probe of
+ * the same access pattern takes 40 ms (27 ms without the x loads), so
+ * what is left is the 2-byte-aligned block layout, not the arithmetic.
+ * (Measured and dropped: 8 rows per simdgroup, x staged in threadgroup
+ * memory, half activations (over tolerance), a float4 table (threadgroup
+ * bandwidth: 60 ms), half the bytes through the ALU instead of the table.) */
 static const char metal_qsg_pq2_source[] =
         "struct bpq2{half d;uchar qs[32];};\n"
         "static inline void dqpq2(device const bpq2*xb,short il,thread half4x4&r){"
@@ -623,8 +628,8 @@ static const char metal_qsg_pq2_source[] =
         "for(uint ib=ix;ib<nb;ib+=8u){"
         "float4 yl[8];float sumy=0.0f;"
         "FOR_UNROLL(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i].x+yl[i].y+yl[i].z+yl[i].w;}"
-        "for(uint rr=0u;rr<nr;rr++){"
-        "uint bo=p.wo+((fr+rr)*p.bpr+ib)*34u;"
+        "FOR_UNROLL(uint rr=0u;rr<4u;rr++){"
+        "uint bo=p.wo+((fr+min(rr,nr-1u))*p.bpr+ib)*34u;"
         "device const ushort*qs=(device const ushort*)(w+bo+2u+il*8u);"
         "float a0=0.0f,a1=0.0f;"
         "FOR_UNROLL(uint i=0u;i<4u;i++){uint q=uint(qs[i]);"
