@@ -593,10 +593,13 @@ static const char metal_qsg_n4_iq4xs_source[] =
  * [half d][32 bytes of 2-bit codes], element j at byte j/4 bits 2*(j%4),
  * value (code - 1) * d. dqpq2 serves the shared GEMM template (QK_NL 8:
  * eight 16-element chunks per block). The decode GEMV follows q40_n4 (4
- * rows per simdgroup): a thread owns a 32-element quarter of a block, read
- * as four ushorts of eight codes each. As in q40_n4 the activations are
- * pre-scaled by 4^-t so a masked code (q & 3<<2t) needs no shift, and the
- * -1 bias folds into sumy. */
+ * rows per simdgroup, a thread owning a 32-element quarter block), but a
+ * byte of codes is four weights, so per-weight mask + convert + FMA made it
+ * ALU-latency bound (57-60 ms per 27B token). A 256-entry half4 table in
+ * threadgroup memory maps each code byte to its four codes, so a byte is
+ * one lookup and one float4 dot: 50-52 ms. The -1 bias folds into sumy.
+ * (Measured and dropped: 8 rows per simdgroup 70 ms, x staged in
+ * threadgroup memory 88 ms, half activations 52 ms and over tolerance.) */
 static const char metal_qsg_pq2_source[] =
         "struct bpq2{half d;uchar qs[32];};\n"
         "static inline void dqpq2(device const bpq2*xb,short il,thread half4x4&r){"
@@ -604,29 +607,34 @@ static const char metal_qsg_pq2_source[] =
         "FOR_UNROLL(short i=0;i<16;i++){"
         "r[i/4][i%4]=d*half(short((q[i/4]>>(2*(i%4)))&3)-1);}}\n"
         "kernel void matvec_pq2_n4(device const float*x[[buffer(0)]],device const "
-        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
-        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
-        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],"
+        "threadgroup float*shm[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],"
+        "ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]],"
+        "ushort tid[[thread_index_in_threadgroup]]){"
+        "threadgroup half4*lut=(threadgroup half4*)shm;"
+        "for(uint j=tid;j<256u;j+=64u){lut[j]=half4(half(j&3u),half((j>>2u)&3u),"
+        "half((j>>4u)&3u),half(j>>6u));}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "uint b=tg.y,fr=(tg.x*2u+uint(sg))*4u;if(fr>=p.no||b>=p.rows)return;"
         "uint nb=p.ni>>7u,ix=uint(ti)>>2u,il=uint(ti)&3u;"
         "uint nr=min(p.no-fr,4u);"
-        "device const float*yb=x+p.xo+b*p.xs+ix*128u+il*32u;"
+        "device const float4*yb=(device const float4*)(x+p.xo+b*p.xs)+ix*32u+il*8u;"
         "float sf[4]={0.0f,0.0f,0.0f,0.0f};"
         "for(uint ib=ix;ib<nb;ib+=8u){"
-        "float yl[32];float sumy=0.0f;"
-        "FOR_UNROLL(uint i=0u;i<32u;i++){float a=yb[i];sumy+=a;"
-        "yl[i]=a*(1.0f/float(1u<<(2u*(i&7u))));}"
+        "float4 yl[8];float sumy=0.0f;"
+        "FOR_UNROLL(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i].x+yl[i].y+yl[i].z+yl[i].w;}"
         "for(uint rr=0u;rr<nr;rr++){"
         "uint bo=p.wo+((fr+rr)*p.bpr+ib)*34u;"
         "device const ushort*qs=(device const ushort*)(w+bo+2u+il*8u);"
-        "float acc=0.0f;"
-        "FOR_UNROLL(uint k=0u;k<4u;k++){uint q=uint(qs[k]);"
-        "FOR_UNROLL(uint t=0u;t<8u;t++){acc+=yl[8u*k+t]*float(q&(3u<<(2u*t)));}}"
+        "float a0=0.0f,a1=0.0f;"
+        "FOR_UNROLL(uint i=0u;i<4u;i++){uint q=uint(qs[i]);"
+        "a0+=dot(yl[2u*i],float4(lut[q&255u]));a1+=dot(yl[2u*i+1u],float4(lut[q>>8u]));}"
         "float d=float(*((device const half*)(w+bo)));"
-        "sf[rr]+=d*(acc-sumy);}"
-        "yb+=1024u;}"
+        "sf[rr]+=d*(a0+a1-sumy);}"
+        "yb+=256u;}"
         "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
         "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
+
 static const char metal_qsg_mm_pq2_source[] =
         GEIST_METAL_MM_SG_KERNEL("pq2", "bpq2", "dqpq2", "8");
 static const char metal_qsg_mm_pq2_fast_source[] =

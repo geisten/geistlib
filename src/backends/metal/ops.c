@@ -199,6 +199,10 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     if (m_tile_sg) {
         metal_msg_send_set_threadgroup_memory(st, enc, m_tile_sg_fast ? 6144u : 8192u, 0u);
     }
+    if (n_tile4 && dtype == GEIST_DTYPE_PQ2_0) {
+        /* matvec_pq2_n4's 256-entry half4 code table */
+        metal_msg_send_set_threadgroup_memory(st, enc, 256u * 8u, 0u);
+    }
     /* q40/q80 n4 kernels run 4 rows per simdgroup (8 per threadgroup);
      * q41/q5k still run 2 (4 per threadgroup). */
     const uint32_t          n4_tile = (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q8_0 ||
