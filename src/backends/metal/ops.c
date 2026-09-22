@@ -238,6 +238,16 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
+/* One row per threadgroup: at decode (rows == 1) that leaves the whole GPU
+ * running a single threadgroup, so a long row wants every thread it can
+ * get — 5120 columns went from 256 threads to 1024. Prefill already fills
+ * the machine with rows, so it keeps the 256 it was tuned at. The simd
+ * kernels take their stride from threads_per_threadgroup; the plain ones
+ * hardcode 256. */
+static uint32_t metal_rows_threads(const struct metal_state *st, uint32_t rows, uint32_t cols) {
+    return st->use_rmsnorm_simd && rows == 1u && cols >= 1024u ? 1024u : METAL_ELEM_THREADS;
+}
+
 static void metal_encode_rmsnorm_rows(struct metal_state             *st,
                                       void                           *enc,
                                       const struct geist_tensor      *x,
@@ -259,7 +269,7 @@ static void metal_encode_rmsnorm_rows(struct metal_state             *st,
             .depth  = 1,
     };
     const struct metal_size threads = {
-            .width  = METAL_ELEM_THREADS,
+            .width  = metal_rows_threads(st, params->rows, params->cols),
             .height = 1,
             .depth  = 1,
     };
@@ -290,7 +300,7 @@ static void metal_encode_rmsnorm_add_rows(struct metal_state                  *s
             .depth  = 1,
     };
     const struct metal_size threads = {
-            .width  = METAL_ELEM_THREADS,
+            .width  = metal_rows_threads(st, params->rows, params->cols),
             .height = 1,
             .depth  = 1,
     };
@@ -625,7 +635,12 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
             .depth  = 1,
     };
     const struct metal_size threads = {
-            .width  = use_sg ? 32u : METAL_ELEM_THREADS,
+            /* rows == 1 (decode): n_out threadgroups is all the parallelism
+             * there is, so widen them; multi-row shapes take the sg/mm
+             * kernels anyway. */
+            .width  = use_sg                                          ? 32u
+                      : (params->rows == 1u && params->n_in >= 1024u) ? 1024u
+                                                                      : METAL_ELEM_THREADS,
             .height = use_mm ? 4u : 1,
             .depth  = 1,
     };
