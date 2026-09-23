@@ -247,7 +247,7 @@ the A8 kernels are still fine here. Reference engine: PrismML-Eng/llama.cpp
 | geist CPU, same, `GEIST_M_MAX=128` | 14.5 | 9.9 | 14.7 GB |
 | geist metal, first cut | 78–82 | 11.2–11.5 (13.0 at 32 ctx) | 2.5 GB |
 | **geist metal, table GEMV + parallel DeltaNet decode** | **84–111** | **15.5–17.5** (**19.3–19.5** at 32 ctx) | 2.5 GB |
-| PrismML fork, CPU (`-ngl 0`) | 22.4 | 0.45 | |
+| PrismML fork, CPU (`-ngl 0`) | 22.4 (see the CPU note below) | 0.45 | |
 | PrismML fork, metal (`-ngl 99`), same window as the row above | 110.7 ± 1.7 | 16.65 ± 0.3 (from empty ctx) | |
 
 geist: `bench_perf_sweep --seq-lens 512 --decode-n 64 --warmup 1 --repeats 2-3`
@@ -329,12 +329,43 @@ dequant pass — no ternary advantage there yet.
   ternary (the +2 code never occurs), so 5 trits per byte would cut 18 % of
   the weight bytes but only ~6 % of the traffic.
 
+### CPU prefill against the fork
+
+Re-measured head to head at pp256, one window, load < 3 at the start, same
+GGUF: **fork 17.35 t/s, geist 13.6** (`GEIST_M_MAX=128`; 11.4 at 64, 11.8
+at 256, 11.2 at 512). The pp512 rows above compared each tool at its own
+default and overstate the gap — treat 27 % as the number to beat, not 55 %.
+
+The gap is not the GEMM. Our tiled prefill runs the 27B FFN matrix at
+1002-1134 GFLOP/s (m = 128-256), which would be ~18-21 t/s if the matmuls
+were everything; end to end we get 734 GFLOP/s, so ~30 % goes elsewhere.
+
+What the fork does on CPU, read from its source at 01ae597: PQ2_0 declares
+`vec_dot_type = Q8_K` and ARM has no NEON `ggml_vec_dot_pq2_0_q8_K`, so
+the scalar generic runs; its tiled PQ2 GEMMs (`tinyBLAS_PQ2_AVX`,
+`tinyBLAS_PQ2K_AVX`) and the 4x8 repack GEMM are AVX2/VNNI only. Prefill
+therefore goes through the BLAS backend: dequantize the whole weight
+matrix to F32 in parallel, then one `cblas_sgemm` (batch >= 32). The
+rotation is a matmul tagged `GGML_HINT_SRC0_IS_HADAMARD` that each backend
+intercepts with an FWHT; BLAS declines those nodes.
+
+That structure measured *worse* here, twice (see kernels/pq2_0.c): per
+-thread tiles let one thread's dequant overlap another's AMX work, a panel
+serializes the phases. So the fork's lead comes from somewhere other than
+the matmul strategy. `sample` on a prefill run points at threading: ~35 k
+samples parked in worker threads and ~11.6 k in OpenMP waits against
+~30 k in BLAS itself — we call Accelerate from eight OpenMP threads and it
+brings its own pool, while llama.cpp calls it once from one thread.
+
 ### Next levers
 
 - Metal decode: the PQ2_0 GEMV is now 38 of the 49 ms and within ~10 % of a
   read-only probe of its access pattern, so the next real step is a
   different decode shape (batching rows, or fewer bytes per weight), not
   another GEMV variant.
+- CPU prefill: stop oversubscribing Accelerate (the eight per-thread sgemm
+  calls each spin up its pool); the 27 % against the fork is thread
+  scheduling, not kernels. Then the DeltaNet share, ~25 % of prefill.
 - CPU: the PQ2_0 activation prep and x8 repack are now NEON + threaded
   (decode 6.5 -> 7.4 t/s, load 2.3 s faster on the 27B). Next: a quiet A/B
   of `m_max` 128 as the Mac default; an fp16-AMX (BNNS)
