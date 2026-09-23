@@ -149,6 +149,14 @@ constexpr size_t TQ2_0_BLOCK_ELEMS = 256;
 constexpr size_t TQ2_0_BLOCK_BYTES = 66;
 void             dequant_tq2_0_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
+/* PQ2_0 block (PrismML, Ternary-Bonsai): 128 elements, 34 bytes, 2.125 bpw.
+ *   d: fp16 scale (FIRST, unlike TQ2_0);
+ *   qs[32]: 2-bit codes, element j at byte j/4, bits 2*(j%4).
+ * Value = (code - 1) * d: codes 0/1/2 are -1/0/+1, code 3 is +2. */
+constexpr size_t PQ2_0_BLOCK_ELEMS = 128;
+constexpr size_t PQ2_0_BLOCK_BYTES = 34;
+void             dequant_pq2_0_row(size_t n_elems, const void *blocks, float out[static n_elems]);
+
 /* I2_S super-block (Microsoft bitnet.cpp's BitNet b1.58 format): 256
  * elements, 64 bytes, 2.0 bpw, four 2-bit trit fields per byte. Unlike
  * TQ2_0 there is NO per-block scale — a SINGLE f32 per-TENSOR scale sits
@@ -235,6 +243,9 @@ quant_raw_bytes(const enum geist_dtype dt, const size_t n_elems, size_t *out) {
         break;
     case GEIST_DTYPE_TQ2_0:
         blk_elems = TQ2_0_BLOCK_ELEMS, blk_bytes = TQ2_0_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_PQ2_0:
+        blk_elems = PQ2_0_BLOCK_ELEMS, blk_bytes = PQ2_0_BLOCK_BYTES;
         break;
     case GEIST_DTYPE_I2_S:
         /* Plus the single f32 per-tensor scale at the tail. */

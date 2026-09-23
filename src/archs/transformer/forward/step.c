@@ -21,6 +21,7 @@
 
 #include "internal.h"
 #include "../arch_state.h"
+#include "../rotation.h"
 #include "../forward.h"
 
 #include "quant.h"
@@ -240,10 +241,13 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
         const float             scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
         const enum geist_status es =
                 fused->embedding_lookup_scaled(be, &st->embed_table, token_id, scale, &t_out);
-        if (es == GEIST_OK) {
-            return GEIST_OK;
+        if (es != GEIST_OK) {
+            return es;
         }
-        return es;
+        /* prism.hadamard: token_embd stores rotated rows. */
+        return st->rotation.embed_inverse
+                       ? transformer_rotate(st, 1, st->d_model, false, true, out_h_buf, out_h_buf)
+                       : GEIST_OK;
     }
 
     float            *dst = (float *) v->buffer_map(out_h_buf);
@@ -259,7 +263,9 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
         }
     }
     v->buffer_unmap(out_h_buf);
-    return GEIST_OK;
+    return st->rotation.embed_inverse
+                   ? transformer_rotate(st, 1, st->d_model, false, true, out_h_buf, out_h_buf)
+                   : GEIST_OK;
 }
 
 /* Post-seed step: with scratch_h_a already populated with the residual-

@@ -61,6 +61,7 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_DN_WIDE]              = "dispatch.dn.wide",
         [METAL_PROFILE_DISPATCH_QGATE_SPLIT]          = "dispatch.qgate_split",
         [METAL_PROFILE_DISPATCH_SIGMOID_MUL]          = "dispatch.sigmoid_mul",
+        [METAL_PROFILE_DISPATCH_HADAMARD]             = "dispatch.hadamard",
 };
 
 #include "metal_shaders.h"
@@ -183,6 +184,8 @@ static bool metal_skip_stage(enum metal_profile_stage s) {
         return metal_env_enabled("GEIST_SKIP_ELEM");
     case METAL_PROFILE_DISPATCH_COPY_U32:
         return metal_env_enabled("GEIST_SKIP_COPY");
+    case METAL_PROFILE_DISPATCH_HADAMARD:
+        return metal_env_enabled("GEIST_SKIP_HADAMARD");
     case METAL_PROFILE_DISPATCH_DELTANET_PREFILL:
     case METAL_PROFILE_DISPATCH_DELTANET_DECODE:
         return metal_env_enabled("GEIST_SKIP_DELTANET");

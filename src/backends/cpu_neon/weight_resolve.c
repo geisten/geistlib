@@ -880,6 +880,8 @@ static size_t blk_bytes_for(enum geist_dtype dt) {
         return Q8_0_BLOCK_BYTES;
     case GEIST_DTYPE_TQ2_0:
         return TQ2_0_BLOCK_BYTES;
+    case GEIST_DTYPE_PQ2_0:
+        return PQ2_0_BLOCK_BYTES;
     case GEIST_DTYPE_IQ4_NL:
         return IQ4_NL_BLOCK_BYTES;
     case GEIST_DTYPE_IQ4_XS:
@@ -904,6 +906,8 @@ static size_t blk_elems_for(enum geist_dtype dt) {
         return Q8_0_BLOCK_ELEMS;
     case GEIST_DTYPE_TQ2_0:
         return TQ2_0_BLOCK_ELEMS;
+    case GEIST_DTYPE_PQ2_0:
+        return PQ2_0_BLOCK_ELEMS;
     case GEIST_DTYPE_IQ4_NL:
         return IQ4_NL_BLOCK_ELEMS;
     case GEIST_DTYPE_IQ4_XS:
@@ -928,6 +932,8 @@ static dequant_row_fn dequant_row_fn_for(enum geist_dtype dt) {
         return dequant_q8_0_row;
     case GEIST_DTYPE_TQ2_0:
         return dequant_tq2_0_row;
+    case GEIST_DTYPE_PQ2_0:
+        return dequant_pq2_0_row;
     case GEIST_DTYPE_IQ4_NL:
         return dequant_iq4_nl_row;
     case GEIST_DTYPE_IQ4_XS:
@@ -1346,6 +1352,23 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          cpu_neon_w_dequant_trampoline_mN,
          "tq2_0/fp32"},
 
+/* PQ2_0: PrismML ternary (Ternary-Bonsai). Decode through the SDOT
+ * W2A8 GEMV; prefill on the dequant+SGEMM trampoline until a native
+ * int8 GEMM earns its place. Hosts without dotprod take the trampoline
+ * for both. */
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+        {GEIST_DTYPE_PQ2_0,
+         CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
+         cpu_neon_w_pq2_0_q8a_m1,
+         cpu_neon_w_dequant_trampoline_mN,
+         "pq2_0/q8a-m1"},
+#endif
+        {GEIST_DTYPE_PQ2_0,
+         CPU_NEON_ISA_NEON,
+         cpu_neon_w_dequant_trampoline_m1,
+         cpu_neon_w_dequant_trampoline_mN,
+         "pq2_0/trampoline"},
+
 /* I2_S: BitNet b1.58 official ternary (Microsoft 2B-4T). Dotprod-only —
  * the SDOT i2_s kernels assume ARMv8.2; no fp32 fallback row yet (every
  * geist ARM target enables +dotprod). */
@@ -1582,6 +1605,40 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
     return GEIST_OK;
 }
 
+/* PQ2_0 x8 interleaved decode GEMV over-installer; see kernels/pq2_0.c.
+ * Any refusal (policy off, shape, OOM) keeps the table's row kernel. */
+static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight                 *w,
+                                              const struct cpu_neon_kernel_policy *policy) {
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+    if (!policy->pq2_0_x8_gemv || w->linear_m1 != cpu_neon_w_pq2_0_q8a_m1 || w->n_in <= 0 ||
+        w->n_out <= 0) {
+        return;
+    }
+    const size_t bytes = pq2_0_x8_size_bytes((size_t) w->n_in, (size_t) w->n_out);
+    if (bytes == 0 || bytes > (size_t) INT32_MAX) {
+        return;
+    }
+    void *buf = heap_alloc_aligned(bytes, 64);
+    if (buf == nullptr) {
+        return;
+    }
+    if (pq2_0_x8_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf) != 0) {
+        safe_free(&buf);
+        return;
+    }
+    w->aux_fp32 = (const float *) buf;
+    w->aux_n    = (int32_t) bytes;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->backend_layout    = GEIST_W_LAYOUT_PQ2_0_X8_GEMV;
+    w->backend_alignment = 64;
+    w->linear_m1         = cpu_neon_w_pq2_0_x8_m1;
+    w->linear_mN         = cpu_neon_w_pq2_0_x8_mN;
+#else
+    (void) w;
+    (void) policy;
+#endif
+}
+
 /* Apply per-dtype policy overrides after the table match. These are
  * platform-tuning decisions (native NEON vs Accelerate/OpenBLAS dequant
  * trampoline for M>1), not ISA-capability decisions. Q5_K + Q8_0 +
@@ -1640,6 +1697,9 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
                 w->linear_mN = cpu_neon_w_q4_0_mN;
             }
         }
+        return;
+    case GEIST_DTYPE_PQ2_0:
+        install_pq2_0_x8_gemv_if_eligible(w, policy);
         return;
     case GEIST_DTYPE_TQ2_0:
         /* Native q8a_mN vs trampoline (only meaningful when the q8a

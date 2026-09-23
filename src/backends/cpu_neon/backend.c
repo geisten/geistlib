@@ -380,6 +380,7 @@ static const struct geist_backend_fused cpu_neon_fused = {
         .gelu_tanh_mul        = cpu_neon_gelu_tanh_mul,
         .gelu_tanh_mul_scaled = cpu_neon_gelu_tanh_mul_scaled,
         .ffn_geglu_q4q6_mN    = cpu_neon_ffn_geglu_q4q6_mN,
+        .hadamard_rotate      = cpu_neon_hadamard_rotate,
 };
 
 const struct geist_backend_descriptor geist_backend_cpu_neon = {
@@ -395,6 +396,8 @@ const struct geist_backend_descriptor geist_backend_cpu_neon = {
                          * a tunable rename (the #318 case) */
                         .calibration_generation = 1,
                         .max_m                  = GEIST_QUANT_M_CAP,
+                        /* host DeltaNet sub-chunks (layer_deltanet.c) */
+                        .dn_subchunk = true,
 #if defined(__APPLE__)
                         /* Unified memory + Accelerate: FP32 KV wins. */
                         .preferred_kv_mode = GEIST_KV_FP32,

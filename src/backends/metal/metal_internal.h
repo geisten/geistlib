@@ -98,6 +98,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_DN_WIDE,  /* amat/vnew/out/supd/gate */
     METAL_PROFILE_DISPATCH_QGATE_SPLIT,
     METAL_PROFILE_DISPATCH_SIGMOID_MUL,
+    METAL_PROFILE_DISPATCH_HADAMARD,
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -194,105 +195,132 @@ struct metal_state {
     void  *q41_mm_fast_pipeline;
     void  *q5k_mm_fast_function;
     void  *q5k_mm_fast_pipeline;
-    void  *iq4nl_n4_function;
-    void  *iq4nl_n4_pipeline;
-    void  *iq4nl_mm_function;
-    void  *iq4nl_mm_pipeline;
-    void  *iq4xs_n4_function;
-    void  *iq4xs_n4_pipeline;
-    void  *iq4xs_mm_function;
-    void  *iq4xs_mm_pipeline;
-    void  *q3k_n4_function;
-    void  *q3k_n4_pipeline;
-    void  *q3k_mm_function;
-    void  *q3k_mm_pipeline;
-    void  *iq3s_n4_function;
-    void  *iq3s_n4_pipeline;
-    void  *iq3s_mm_function;
-    void  *iq3s_mm_pipeline;
-    void  *iq4xs_mm_fast_function;
-    void  *iq4xs_mm_fast_pipeline;
-    void  *q4k_n4_function;
-    void  *q4k_n4_pipeline;
-    void  *q4k_matmul_m8_function;
-    void  *q4k_matmul_m8_pipeline;
-    void  *q4k_m16_library;
-    void  *q4k_matmul_m16_function;
-    void  *q4k_matmul_m16_pipeline;
-    void  *q4k_m16_n2_library;
-    void  *q4k_matmul_m16_n2_function;
-    void  *q4k_matmul_m16_n2_pipeline;
-    void  *q4k_mm_sg_library;
-    void  *q4k_mm_sg_function;
-    void  *q4k_mm_sg_pipeline;
-    void  *q4k_mm_sg_fast_library;
-    void  *q4k_mm_sg_fast_function;
-    void  *q4k_mm_sg_fast_pipeline;
-    void  *q4k_qk_library;
-    void  *q4k_qk_function;
-    void  *q4k_qk_pipeline;
-    void  *q4k_gate_up_library;
-    void  *q4k_gate_up_n4_library;
-    void  *q4k_pair_n4_library;
-    void  *q4k_pair_n4_function;
-    void  *q4k_pair_n4_pipeline;
-    void  *embed_library;
-    void  *argmax_library;
-    void  *q4k_gate_up_function;
-    void  *q4k_gate_up_pipeline;
-    void  *q4k_gate_up_n4_function;
-    void  *q4k_gate_up_n4_pipeline;
-    void  *q6k_function;
-    void  *q6k_pipeline;
-    void  *q6k_n4_function;
-    void  *q6k_n4_pipeline;
-    void  *q6k_matmul_m8_function;
-    void  *q6k_matmul_m8_pipeline;
-    void  *q6k_mm_sg_library;
-    void  *q6k_matmul_sg_function;
-    void  *q6k_matmul_sg_pipeline;
-    void  *q6k_mm_sg_fast_library;
-    void  *q6k_matmul_sg_fast_function;
-    void  *q6k_matmul_sg_fast_pipeline;
-    void  *q6k_m16_library;
-    void  *q6k_matmul_m16_function;
-    void  *q6k_matmul_m16_pipeline;
-    void  *rmsnorm_rows_function;
-    void  *rmsnorm_rows_pipeline;
-    void  *rmsnorm_rows_simd_function;
-    void  *rmsnorm_rows_simd_pipeline;
-    void  *gelu_rows_function;
-    void  *gelu_rows_pipeline;
-    void  *silu_rows_function;
-    void  *silu_rows_pipeline;
-    void  *silu_mul_rows_function;
-    void  *silu_mul_rows_pipeline;
-    void  *deltanet_mix_function;
-    void  *deltanet_mix_pipeline;
-    void  *dn_cst_copy_function;
-    void  *dn_cst_copy_pipeline;
-    void  *dn_conv_prep_function;
-    void  *dn_conv_prep_pipeline;
-    void  *dn_qk_norm_function;
-    void  *dn_qk_norm_pipeline;
-    void  *dn_state_roll_function;
-    void  *dn_state_roll_pipeline;
-    void  *dn_chunk_stage_function;
-    void  *dn_chunk_stage_pipeline;
-    void  *dn_chunk_subst_function;
-    void  *dn_chunk_subst_pipeline;
-    void  *dn_chunk_amat_function;
-    void  *dn_chunk_amat_pipeline;
-    void  *dn_chunk_vnew1_function;
-    void  *dn_chunk_vnew1_pipeline;
-    void  *dn_chunk_vnew2_function;
-    void  *dn_chunk_vnew2_pipeline;
-    void  *dn_chunk_out_function;
-    void  *dn_chunk_out_pipeline;
-    void  *dn_chunk_supd_function;
-    void  *dn_chunk_supd_pipeline;
-    void  *dn_chunk_gate_function;
-    void  *dn_chunk_gate_pipeline;
+    void  *pq2_n4_function;
+    void  *pq2_n4_pipeline;
+    void  *pq2_mm_function;
+    void  *pq2_mm_pipeline;
+    void  *pq2_mm_fast_function;
+    void  *pq2_mm_fast_pipeline;
+    /* matvec_pq2_n8: 8 rows per simdgroup instead of 4.
+     * GEIST_METAL_PQ2_N8=0 pins the 4-row kernel for A/B. */
+    bool use_pq2_n8;
+    /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
+     * measurements, then a calibration blob, then the env. */
+    struct metal_tuning {
+        uint32_t pq2_n8_min_n_out;
+        uint32_t wide_rows_min_cols;
+    } tuning;
+    /* Parallel single-token DeltaNet; GEIST_METAL_DN_SERIAL_DECODE=1 takes
+     * the serial path. Cached here: the decode path asks per layer. */
+    bool  use_dn_dec;
+    void *pq2_n8_function;
+    void *pq2_n8_pipeline;
+    void *iq4nl_n4_function;
+    void *iq4nl_n4_pipeline;
+    void *iq4nl_mm_function;
+    void *iq4nl_mm_pipeline;
+    void *iq4xs_n4_function;
+    void *iq4xs_n4_pipeline;
+    void *iq4xs_mm_function;
+    void *iq4xs_mm_pipeline;
+    void *q3k_n4_function;
+    void *q3k_n4_pipeline;
+    void *q3k_mm_function;
+    void *q3k_mm_pipeline;
+    void *iq3s_n4_function;
+    void *iq3s_n4_pipeline;
+    void *iq3s_mm_function;
+    void *iq3s_mm_pipeline;
+    void *iq4xs_mm_fast_function;
+    void *iq4xs_mm_fast_pipeline;
+    void *q4k_n4_function;
+    void *q4k_n4_pipeline;
+    void *q4k_matmul_m8_function;
+    void *q4k_matmul_m8_pipeline;
+    void *q4k_m16_library;
+    void *q4k_matmul_m16_function;
+    void *q4k_matmul_m16_pipeline;
+    void *q4k_m16_n2_library;
+    void *q4k_matmul_m16_n2_function;
+    void *q4k_matmul_m16_n2_pipeline;
+    void *q4k_mm_sg_library;
+    void *q4k_mm_sg_function;
+    void *q4k_mm_sg_pipeline;
+    void *q4k_mm_sg_fast_library;
+    void *q4k_mm_sg_fast_function;
+    void *q4k_mm_sg_fast_pipeline;
+    void *q4k_qk_library;
+    void *q4k_qk_function;
+    void *q4k_qk_pipeline;
+    void *q4k_gate_up_library;
+    void *q4k_gate_up_n4_library;
+    void *q4k_pair_n4_library;
+    void *q4k_pair_n4_function;
+    void *q4k_pair_n4_pipeline;
+    void *embed_library;
+    void *argmax_library;
+    void *hadamard_library;
+    void *hadamard_function;
+    void *hadamard_pipeline;
+    void *q4k_gate_up_function;
+    void *q4k_gate_up_pipeline;
+    void *q4k_gate_up_n4_function;
+    void *q4k_gate_up_n4_pipeline;
+    void *q6k_function;
+    void *q6k_pipeline;
+    void *q6k_n4_function;
+    void *q6k_n4_pipeline;
+    void *q6k_matmul_m8_function;
+    void *q6k_matmul_m8_pipeline;
+    void *q6k_mm_sg_library;
+    void *q6k_matmul_sg_function;
+    void *q6k_matmul_sg_pipeline;
+    void *q6k_mm_sg_fast_library;
+    void *q6k_matmul_sg_fast_function;
+    void *q6k_matmul_sg_fast_pipeline;
+    void *q6k_m16_library;
+    void *q6k_matmul_m16_function;
+    void *q6k_matmul_m16_pipeline;
+    void *rmsnorm_rows_function;
+    void *rmsnorm_rows_pipeline;
+    void *rmsnorm_rows_simd_function;
+    void *rmsnorm_rows_simd_pipeline;
+    void *gelu_rows_function;
+    void *gelu_rows_pipeline;
+    void *silu_rows_function;
+    void *silu_rows_pipeline;
+    void *silu_mul_rows_function;
+    void *silu_mul_rows_pipeline;
+    void *deltanet_mix_function;
+    void *deltanet_mix_pipeline;
+    void *dn_dec_qk_function;
+    void *dn_dec_qk_pipeline;
+    void *dn_dec_v_function;
+    void *dn_dec_v_pipeline;
+    void *dn_cst_copy_function;
+    void *dn_cst_copy_pipeline;
+    void *dn_conv_prep_function;
+    void *dn_conv_prep_pipeline;
+    void *dn_qk_norm_function;
+    void *dn_qk_norm_pipeline;
+    void *dn_state_roll_function;
+    void *dn_state_roll_pipeline;
+    void *dn_chunk_stage_function;
+    void *dn_chunk_stage_pipeline;
+    void *dn_chunk_subst_function;
+    void *dn_chunk_subst_pipeline;
+    void *dn_chunk_amat_function;
+    void *dn_chunk_amat_pipeline;
+    void *dn_chunk_vnew1_function;
+    void *dn_chunk_vnew1_pipeline;
+    void *dn_chunk_vnew2_function;
+    void *dn_chunk_vnew2_pipeline;
+    void *dn_chunk_out_function;
+    void *dn_chunk_out_pipeline;
+    void *dn_chunk_supd_function;
+    void *dn_chunk_supd_pipeline;
+    void *dn_chunk_gate_function;
+    void *dn_chunk_gate_pipeline;
     /* Grow-only private MTLBuffer scratch for the chunked DeltaNet
      * prefill (raw handle, argmax_result_buffer pattern). */
     void    *dn_scratch;
@@ -464,6 +492,8 @@ enum {
     METAL_IQ4XS_BLOCK_BYTES             = 136u,
     METAL_Q3K_BLOCK_BYTES               = 110u,
     METAL_IQ3S_BLOCK_BYTES              = 110u,
+    METAL_PQ2_BLOCK_ELEMS               = (unsigned) PQ2_0_BLOCK_ELEMS,
+    METAL_PQ2_BLOCK_BYTES               = (unsigned) PQ2_0_BLOCK_BYTES,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,
@@ -471,6 +501,20 @@ enum {
     METAL_ELEM_THREADS                  = 256u,
     METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
 };
+
+/* Elements per block of the formats metal_q40_q80_linear serves. */
+static inline size_t metal_quant_block_elems(enum geist_dtype dtype) {
+    switch (dtype) {
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ3_S:
+        return METAL_IQ4XS_BLOCK_ELEMS;
+    case GEIST_DTYPE_PQ2_0:
+        return METAL_PQ2_BLOCK_ELEMS;
+    default:
+        return METAL_Q40_Q80_BLOCK_ELEMS;
+    }
+}
 
 struct metal_size {
     size_t width;
@@ -787,6 +831,11 @@ struct geist_buffer *metal_buf_reg_find(struct metal_state *st, const void *p, s
 
 void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer *buf);
 
+/* tuning.c: resolve the device crossovers (seed -> calibration -> env)
+ * and the tunable table the calibration driver measures. */
+void                        metal_tuning_init(struct geist_backend *be, struct metal_state *st);
+const struct geist_tunable *metal_tunables(size_t *out_count);
+
 [[nodiscard]] enum geist_status metal_buffer_create(struct geist_backend  *be,
                                                     size_t                 bytes,
                                                     enum geist_buffer_role role,
@@ -870,6 +919,7 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
 [[nodiscard]] enum geist_status metal_ensure_attention_pipeline(struct geist_backend *be);
 
 [[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be);
+[[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be);
 
 [[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);
 

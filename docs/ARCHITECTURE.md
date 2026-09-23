@@ -182,7 +182,9 @@ vtable exposes typed operations (`rmsnorm`, `add`, `mul`, activations, RoPE,
 embedding lookup and attention), while each resolved weight carries its bound
 `linear_m1`/`linear_mN` function pointers. Optional fast paths are identified by
 `enum geist_fused_op` and selected while the execution plan is built; every
-fusion has a decomposed equivalent. Qwen35's Gated-DeltaNet mixer has a dedicated
+fusion has a decomposed equivalent except `hadamard_rotate`, whose decomposition
+would be a host round-trip per call, so a rotated model refuses to load on a
+backend that leaves it null. Qwen35's Gated-DeltaNet mixer has a dedicated
 optional backend hook and a portable architecture-layer implementation rather
 than placeholder SSM enum values.
 

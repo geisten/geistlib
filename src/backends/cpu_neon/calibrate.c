@@ -92,6 +92,7 @@ static enum geist_status cal_time_resolved(const uint8_t   *panel,
     bst->policy.q4k_predecode = false;
     bst->policy.q6k_x8_gemv   = false;
     bst->policy.q4_0_x8_gemv  = false;
+    bst->policy.pq2_0_x8_gemv = false;
     bst->policy_calibrated    = true;
 
     struct geist_weight w = {

@@ -106,6 +106,9 @@ static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *r
     case GEIST_DTYPE_TQ2_0:
         dequant_tq2_0_row(n_in, base + j * n_in / TQ2_0_BLOCK_ELEMS * TQ2_0_BLOCK_BYTES, row);
         return true;
+    case GEIST_DTYPE_PQ2_0:
+        dequant_pq2_0_row(n_in, base + j * n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES, row);
+        return true;
     case GEIST_DTYPE_I2_S: {
         /* BitNet b1.58 official: 256-elem/64-byte ternary blocks, four 2-bit
          * fields per byte in REVERSE order (element 32*g+bb at shift 6-2g),
@@ -260,6 +263,7 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
     case GEIST_DTYPE_IQ4_NL:
     case GEIST_DTYPE_IQ4_XS:
     case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_I2_S:
     case GEIST_DTYPE_F16:
     case GEIST_DTYPE_BF16:

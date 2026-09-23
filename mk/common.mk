@@ -164,6 +164,7 @@ LIB_SOURCES := \
     src/archs/transformer/arch_family.c \
     src/archs/transformer/exec_plan.c \
     src/archs/transformer/scratch_plan.c \
+    src/archs/transformer/rotation.c \
     src/archs/transformer/forward/attention.c \
     src/archs/transformer/forward/kv_store.c \
     src/archs/transformer/forward/layer.c \
@@ -206,10 +207,12 @@ LIB_SOURCES := \
     src/formats/gguf/iq2_s.c \
     src/formats/gguf/iq3_s.c \
     src/formats/gguf/tq2_0.c \
+    src/formats/gguf/pq2_0.c \
     src/backends/common/geist_gemm.c \
     src/backends/common/gemma4_kernels.c \
     src/backends/common/kivi.c \
     src/backends/common/fwht.c \
+    src/backends/common/hadamard.c \
     src/formats/ptqtp/gguf_ptqtp.c \
     src/formats/ptqtp/ptqtp_kernel.c \
     src/formats/ptqtp/ptqtp_awq.c \

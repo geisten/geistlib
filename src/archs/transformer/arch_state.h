@@ -474,6 +474,23 @@ struct transformer_arch_state {
     struct geist_weight embed_table_w;   /* P1.1.d lm_head kernels */
     struct geist_weight model_proj_w;    /* P1.1.e F32 dense kernels */
 
+    /* Activation-side Walsh-Hadamard transform for checkpoints stored in a
+     * rotated basis (prism.hadamard.* keys). Loaded and validated by
+     * transformer_rotation_load (rotation.c); inactive for every other
+     * model. signs[i] is an F32 [width] backend buffer, nullptr in
+     * sign_mode "identity". */
+    struct transformer_rotation {
+        bool   active;
+        bool   embed_inverse; /* token_embd stores rotated rows */
+        bool   gdn_v_grouped; /* ssm_out expects grouped value heads */
+        size_t block;
+        size_t n_signs;
+        struct {
+            size_t               width;
+            struct geist_buffer *buf;
+        } signs[8];
+    } rotation;
+
     /* ---- ZO-tuning gains (GEIST_TUNE builds only; nullptr otherwise). -- *
      * One f32 per linear weight, all 1.0f at load. The linear dispatcher
      * multiplies each weight's output by its slot; a caller reaches the

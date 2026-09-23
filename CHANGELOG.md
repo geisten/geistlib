@@ -18,6 +18,28 @@ minor release.
   changes, and the architecture vtable already carried the `opts` parameter
   (`state_create`), which the engine had been passing `nullptr` for.
 
+- **Ternary-Bonsai-2-27B on CPU and metal** (PrismML's ternary
+  Qwen3.8-27B, `PQ2_0` + `prism.hadamard.*`). New dtype `GEIST_DTYPE_PQ2_0`
+  (appended after `IQ4_XS`; ggml type 142 of PrismML-Eng/llama.cpp). On
+  `cpu_neon`: SDOT W2A8 decode GEMV and an NEON-dequant + SGEMM prefill, both
+  on an x8-interleaved copy (`GEIST_PQ2_0_X8_GEMV=0` keeps the row kernel and
+  ~6 GB of RSS). On `metal`: a PQ2_0 GEMV, the simdgroup GEMM and the
+  embedding lookup. New optional backend slot `fused->hadamard_rotate`
+  (`@stability EXPERIMENTAL`, `<geist_backend.h>`) for the blockwise
+  Walsh-Hadamard activation transform the folded weights need, implemented
+  by `cpu_scalar`, `cpu_neon`, `cpu_x86` and `metal`. A GGUF whose
+  `prism.hadamard` keys the qwen35 forward cannot honour exactly is refused
+  at load (`GEIST_E_FORMAT` / `GEIST_E_UNSUPPORTED`) rather than run with
+  wrong math. Output matches the PrismML fork's (prompt ids, next-token top
+  5, first 24 greedy tokens on the pinned chat prompt); numbers in
+  `benchmark/results/TERNARY.md`.
+- **Host DeltaNet sub-chunks** the delta rule at 64 tokens, and CPU backends
+  declare `caps.dn_subchunk`: `GEIST_M_MAX=128` no longer pays O(C²) in
+  DeltaNet on qwen35 models (logits byte-equal to before at m_max 64 and
+  128). The default stays 64.
+- **Dense F16/BF16 projections a backend cannot resolve** are widened to F32
+  at load (metal has no half-precision dense linear).
+
 ### Changed
 
 - **The public headers are includable from C++.** `include/` writes its
