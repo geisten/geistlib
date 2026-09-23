@@ -1,8 +1,7 @@
 /*
  * src/backends/cpu_neon/kernels/q4_K.c — Q4_K W4A8 NEON kernels.
  *
- * Layer: BACKEND (cpu_neon). Extracted from src/formats/gguf/q4_K.c
- * during the kernels-out-of-formats split.
+ * Layer: BACKEND (cpu_neon).
  *
  * Owns the M=1 decode + M>1 prefill paths for Q4_K weights, plus the
  * activation-quant helper (`quantize_x_for_q4k`) shared between them.
@@ -709,9 +708,8 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
         static _Thread_local size_t  pack_cap = 0;
         const size_t                 need     = m * n_in;
         if (need > pack_cap) {
-            /* Route through heap.h (AGENT.md): the buffer is fully repopulated
-             * by the packing loop below before any read, so dropping the old
-             * contents on grow is safe. */
+            /* The packing loop fully repopulates the buffer before any read,
+             * so dropping the old contents on grow is safe. */
             safe_free((void **) &pack_tl);
             pack_tl  = heap_alloc_array_aligned(int8_t, need);
             pack_cap = (pack_tl != nullptr) ? need : 0;

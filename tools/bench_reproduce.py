@@ -94,8 +94,8 @@ ENERGY_PROBES = {
 
 # Weight bytes actually read per decode token for the default model. Derived in
 # benchmark/results/TERNARY.md from the GGUF tensor table, not measured here.
-# ponytail: one model only. Other models report no throughput rather than a
-# number nobody can check — extend by doing the accounting, not by guessing.
+# Only the model below has an accounted byte count. Other models report no
+# throughput rather than using an unverified estimate.
 PER_TOKEN_BYTES = {"bitnet-2b4t-i2_s.gguf": 582.0 * 1024 * 1024}
 
 

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # take_bitnet.sh — record the bitnet.cpp half of assets/versus-bitnetcpp.gif.
-# Reconstruction of the /tmp take script from PR #214 (issue #218).
 # Baseline is microsoft/BitNet @ 404980e built with clang (see README.md:
 # current main mis-decodes canonical i2_s on ARM, gcc-12 ICEs their build).
 set -euo pipefail

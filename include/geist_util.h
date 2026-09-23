@@ -211,9 +211,10 @@ enum geist_status geist_session_pin_prefix(struct geist_session *s,
 /* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *
  * BREAKING CHANGE in 0.11.0: the parameter order was `(s, n_logits)` up to
- * and including 0.10.8 and is now out-size-first per AGENT.md §1. This is a
- * source-incompatible change to a STABLE symbol inside 0.x, which the
- * stability tag above otherwise rules out — taken deliberately by the
+ * and including 0.10.8 and is now out-size-first for consistency with the
+ * other borrowed-output accessors. This is a source-incompatible change to a
+ * STABLE symbol inside 0.x, which the stability tag above otherwise rules
+ * out — taken deliberately by the
  * maintainer while the user base is small enough to absorb it, rather than
  * carrying the inconsistency to 1.0. A caller built against 0.10.8 will not
  * compile; the fix is to swap the two arguments. See CHANGELOG.md.

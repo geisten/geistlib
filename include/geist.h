@@ -30,8 +30,8 @@ extern "C" {
 /* Array-parameter contracts                                               */
 /* ====================================================================== */
 
-/* `T arr[GEIST_AT_LEAST(n)]` — "non-null, and at least n elements", the
- * contract AGENT.md §1 describes. Expands to C's `static n` array-parameter
+/* `T arr[GEIST_AT_LEAST(n)]` — "non-null, and at least n elements".
+ * Expands to C's `static n` array-parameter
  * form; C++ has no such syntax and `extern "C"` does not help, since it
  * changes linkage and not the grammar. A C++ consumer therefore sees plain
  * `T arr[]` — the same parameter type, both decay to `T *` — instead of a

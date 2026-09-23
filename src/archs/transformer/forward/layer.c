@@ -4,7 +4,6 @@
  * Layer: ARCHITECTURE.
  *
  * Per-layer forward orchestration and per-layer-input precompute.
- * Extracted from forward.c during R4 of the C23/AGENT.md cleanup.
  * Contains:
  *
  *   transformer_forward_one_layer       — one full transformer block

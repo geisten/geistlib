@@ -1,7 +1,7 @@
 /*
  * test_heap_unit — heap.h allocator safety contract.
  *
- * heap.c is the project-wide allocation interface (AGENT.md). These cases
+ * heap.c is the project-wide allocation interface. These cases
  * lock down the safety guarantees that the engine and the GGUF loaders rely
  * on, in particular the ones added to stop silent integer-overflow
  * under-allocation:

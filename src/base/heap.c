@@ -36,7 +36,6 @@ static bool size_is_pow2(const size_t x) {
  * ship POSIX but not C11 aligned_alloc; its memory also frees with free(),
  * so safe_free() stays valid. Windows/MSVC has neither and needs the
  * _aligned_malloc/_aligned_free pair (an incompatible free path), so it is
- * out of scope here (AGENT.md: portability behind clear boundaries) and
  * rejected at compile time rather than mis-freed at runtime.
  *
  * Preconditions (enforced by every caller): `alignment` is a power of two
@@ -67,9 +66,8 @@ void *heap_alloc_aligned(const size_t size, size_t alignment) {
     if (alignment == 0u) {
         alignment = OPTIMAL_ALIGNMENT;
     }
-    /* Validate the alignment is a power of two before using it as a mask or
-     * passing it to aligned_alloc (UB otherwise). AGENT.md: express
-     * invariants through explicit validation, not assertions. */
+    /* Validate the alignment before using it as a mask or passing it to
+     * aligned_alloc; a non-power-of-two alignment would be undefined. */
     if (!size_is_pow2(alignment)) {
         return nullptr;
     }

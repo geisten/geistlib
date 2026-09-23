@@ -3,8 +3,6 @@
  * family (single-row, batched, last-row).
  *
  * Layer: ARCHITECTURE.
- *
- * Extracted from forward.c during R4 of the C23/AGENT.md cleanup.
  * The three finalize_* routines share the same shape: take the
  * residual stream at the post-layer point, optionally apply the embed
  * scale, project through the lm_head linear, and write logits into the

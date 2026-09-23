@@ -6,7 +6,7 @@
  * gguf_reader.c:153 means. The tokenizer then builds a hash table sized from
  * that vocab count, splits every merge entry on its first space, and runs an
  * encoder over caller text — length arithmetic on untrusted data at every step,
- * which is AGENT.md §3 and §4 territory.
+ * which is exactly where overflow and bounds bugs live.
  *
  * The input is one GGUF. Its tail doubles as the text to encode, so a single
  * mutation surface reaches both the loader and the encoder. Decode runs on the

@@ -884,9 +884,7 @@ static bool is_ascii_space(unsigned char b) {
  * \p{L}/\p{N} are approximated: exact for ASCII; non-ASCII codepoints
  * count as letters unless they fall in the whitespace set or the common
  * punctuation/symbol blocks below. Wrong only for exotic scripts' digits
- * and rare symbol blocks — the parity test pins the cases that matter.
- * ponytail: category-table approximation; swap in a real UCD table if a
- * parity case ever fails. */
+ * and rare symbol blocks; the parity test pins the supported cases. */
 static uint32_t q2_cp_at(const char *text, size_t tlen, size_t i, size_t *adv) {
     uint32_t cp = utf8_decode_one(text + i, tlen - i, adv);
     if (*adv == 0) { /* malformed byte — treat as 1-byte symbol */

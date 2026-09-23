@@ -139,9 +139,8 @@ void w8a8_gemm(size_t        n_tokens,
                               out);
         return;
     }
-    /* Scalar fallback: per (token, row) dot via the dispatched scalar kernel.
-     * ponytail: no tiling — only reached on non-VNNI x86, where the cpu_x86
-     * backend is already a slow path; not worth a second blocked kernel. */
+    /* Scalar fallback: one dispatched dot product per token and row. This path
+     * is intentionally untiled because it runs only on x86 without VNNI. */
     const size_t bytes_per_row  = n_blocks_per_row * W8A8_BLOCK_ELEMS;
     const size_t scales_per_row = n_blocks_per_row;
 #if defined(_OPENMP)

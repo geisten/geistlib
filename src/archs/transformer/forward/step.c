@@ -5,7 +5,6 @@
  *
  * Layer: ARCHITECTURE.
  *
- * Extracted from forward.c during R4 of the C23/AGENT.md cleanup.
  * Contains:
  *
  *   transformer_kivi_drain_full   — group-drain residual KV across layers

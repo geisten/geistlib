@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # take_writer.sh — record assets/demo-writing.gif: a draft email piped
 # through batch mode (`-` reads prompts from stdin), continuation streams
-# out, nothing leaves the machine. Reconstruction from PR #214 (issue #218).
+# out, nothing leaves the machine.
 set -euo pipefail
 cd "$(dirname "$0")"
 

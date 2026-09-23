@@ -1,8 +1,7 @@
 /*
  * src/formats/gguf/common.c — generic dispatchers + shared INT8 vector quant.
  *
- * Layer: BACKEND. Extracted from gguf_quant.c during the per-quant
- * format split.
+ * Layer: BACKEND.
  */
 #include "quant_blocks.h"
 #include "heap.h"

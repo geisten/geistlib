@@ -824,9 +824,8 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
         static _Thread_local size_t  q6kpack_cap = 0;
         const size_t                 need        = m * n_in;
         if (need > q6kpack_cap) {
-            /* Route through heap.h (AGENT.md): the buffer is fully repopulated
-             * by the packing loop below before any read, so dropping the old
-             * contents on grow is safe. */
+            /* The packing loop fully repopulates the buffer before any read,
+             * so dropping the old contents on grow is safe. */
             safe_free((void **) &q6kpack_tl);
             q6kpack_tl  = heap_alloc_array_aligned(int8_t, need);
             q6kpack_cap = (q6kpack_tl != nullptr) ? need : 0;

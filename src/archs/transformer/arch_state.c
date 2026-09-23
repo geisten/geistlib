@@ -558,10 +558,9 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
      *   scores  : max_seq_len floats = 16 KB on default config
      *   slack   : a few KB for alignment + future small allocs
      *
-     * Round to 64 KB so the cap is comfortable for P1.2.c growth.
-     * ponytail: fixed 64 KB caps the KIVI scores path at max_seq_len
-     * 16384; frame_arena_alloc fails cleanly past that — size this
-     * from max_seq_len if KIVI needs longer windows. */
+     * Round to 64 KB. This caps the KIVI scores path at max_seq_len 16384;
+     * frame_arena_alloc fails cleanly for longer windows; size this from
+     * max_seq_len if KIVI needs them. */
     sess->scratch_arena_bytes = 64u * 1024u;
     sess->scratch_arena_base  = heap_alloc_aligned(sess->scratch_arena_bytes, 64);
     if (sess->scratch_arena_base == nullptr) {
@@ -742,10 +741,9 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
  * .gains. Without GEIST_TUNE this is a no-op and st->gains stays null, so
  * the dispatcher's gain path is not merely skipped but absent.
  *
- * ponytail: per-tensor, not per-block. The TQ2_0 block scales sit f16 at a
- * 66-byte stride inside the weight bytes and the q8a repack copies them
- * out again; reaching them means a backend-layout-aware accessor. Add that
- * only once per-tensor gains measurably run out of capacity. */
+ * Gains are per-tensor, not per-block. The TQ2_0 block scales sit f16 at a
+ * 66-byte stride inside the weight bytes and the q8a repack copies them out
+ * again, so reaching them needs a backend-layout-aware accessor. */
 [[nodiscard]] static enum geist_status gains_wire(struct transformer_arch_state *st) {
 #ifndef GEIST_TUNE
     (void) st;
@@ -1457,9 +1455,9 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     /* Issue #70: the rotation silently no-ops on a head_dim the FWHT can't
      * handle (non-power-of-two, or > 512) — packing/quant still run, so you
      * get the unrotated (worse) cache with no signal. Warn once so a
-     * misconfiguration reads as deliberate, not a silent quality loss.
-     * ponytail: one-time stderr; route via geist_log_callback_t once the arch
-     * layer is wired to it. */
+     * misconfiguration reads as deliberate, not a silent quality loss. The
+     * architecture layer has no log callback, so this warning goes to stderr
+     * once per session. */
     if (sess->kv_rot_enabled) {
         for (size_t li = 0; li < state->n_layers; li++) {
             const size_t hd = state->layers[li].head_dim;

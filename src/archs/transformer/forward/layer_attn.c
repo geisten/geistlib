@@ -52,8 +52,8 @@ static struct transformer_forward_profile g_attn_profile = {
  * far uses head_dim ≤ 256 (Gemma 4 = 256); we leave generous head-room
  * but enforce the bound explicitly because the helper would otherwise
  * silently smash the caller's stack on a future arch with larger heads.
- * If a real arch ever needs more, lift to a caller-provided workspace —
- * AGENT.md hot-path rule disallows runtime heap allocations here. */
+ * Architectures that need more must provide workspace; this hot path cannot
+ * allocate from the heap. */
 enum { PERMUTE_ROPE_MAX_HEAD_DIM = 1024 };
 
 static enum geist_status permute_interleaved_rope_inplace(const struct geist_backend_vtbl *v,

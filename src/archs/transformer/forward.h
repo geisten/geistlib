@@ -42,8 +42,7 @@ transformer_check_kv_room(struct transformer_arch_session *sess, size_t n_new) {
 /* Bounds guard: token ids arrive from callers (prefill_tokens,
  * pin_prefix) and from draft models with their own vocabulary. An id
  * outside [0, vocab_size) indexes the embed table out of bounds — a
- * wild read, not a garbage token. Check before the pointer moves
- * (AGENT.md §4). */
+ * wild read, not a garbage token. Check before the pointer moves. */
 [[nodiscard]] static inline enum geist_status transformer_check_token_ids(
         struct transformer_arch_session *sess, size_t n, const geist_token_t ids[static n]) {
     const size_t vocab = sess->model->vocab_size;

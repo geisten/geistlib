@@ -14,8 +14,8 @@
 # Both are the same failure: a release is several files agreeing, and agreement
 # is not something to verify by memory at the moment you type `git tag`.
 #
-# ponytail: a guard, not a generator. It edits nothing; it makes a wrong
-# release a failed command. Run it via `make release-check`.
+# This is a read-only guard: an inconsistent release fails the command. Run it
+# via `make release-check`.
 #
 # Usage:
 #   sh scripts/check-release.sh              # validate the tree

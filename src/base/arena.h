@@ -6,7 +6,7 @@
  * buffers (attention scores, dequant rows, logits row, etc.); reset to
  * zero at the start of each forward pass.
  *
- * Hot-path contract (AGENT.md):
+ * Hot-path contract:
  *   - frame_arena_alloc is a pointer bump + bounds check.
  *   - frame_arena_reset is a single store.
  *   - No heap call. No syscall. No global state.
@@ -56,8 +56,7 @@ static inline void frame_arena_reset(struct frame_arena *a) {
 
 /* Returns a pointer to `bytes` of arena memory aligned to `align`
  * (rounded up to 16 if smaller). Returns nullptr if the arena is
- * exhausted — caller MUST check; AGENT.md "outputs well-defined on
- * failure". */
+ * exhausted; callers must check the result. */
 [[nodiscard]] static inline void *
 frame_arena_alloc(struct frame_arena *a, size_t bytes, size_t align) {
     if (align < 16)

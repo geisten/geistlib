@@ -94,10 +94,9 @@ static void w8x8_pointers(const uint8_t  *blob,
     const size_t weights_total   = n_out * weights_bytes_per_row(n_in);
     const size_t scales_total    = n_out * blocks_per_row(n_in) * sizeof(float);
     const size_t row_major_bytes = weights_total + 2 * scales_total;
-    /* Append a lane-parallel W8x8 copy (same size) when prefill can use it.
-     * ponytail: ~2× memory for Q6_K tensors, matching the Q4_K dual-blob
-     * (linear_q4k.c). Drop the row-major copy and serve m1 from W8x8 too if
-     * footprint matters. */
+    /* Append a lane-parallel W8x8 copy when prefill can use it. Keeping both
+     * layouts roughly doubles Q6_K weight memory, matching the Q4_K dual-blob
+     * layout in linear_q4k.c; the row-major copy serves m=1 decode. */
     const bool   build_w8x8 = q6k_use_w8x8(n_out);
     const size_t blob_bytes = build_w8x8 ? 2 * row_major_bytes : row_major_bytes;
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # take_geist.sh — record the geist half of assets/versus-bitnetcpp.gif.
-# Reconstruction of the /tmp take script from PR #214 (issue #218); the
-# method is documented in tools/demos/README.md and docs/DEMOS.md.
+# The method is documented in tools/demos/README.md and docs/DEMOS.md.
 set -euo pipefail
 cd "$(dirname "$0")"
 
