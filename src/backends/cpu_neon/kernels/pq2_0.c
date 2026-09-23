@@ -443,7 +443,12 @@ static void pq2_0_x8_dequant8(const uint8_t *W, size_t nb, size_t n_in, size_t t
  * m = 64 / 128 / 256: T=32 642/878/1090, T=64 901/903/907, T=128
  * 901/1002/1134, T=256 920/1058/1090; the generic trampoline 628/765/676.
  * Dequantizing a shared panel for one big SGEMM lost at small m
- * (358/574/695 with 8192-row panels). */
+ * (358/574/695 with 8192-row panels). Re-measured end to end on the 27B
+ * with the panel dequant PARALLEL (the earlier note's was serial, so it
+ * did not answer the question): 2048-row panels 12.46/12.46 t/s pp256 and
+ * 8192-row 11.88/13.77 against 13.51/13.65 for these tiles. Per-thread
+ * tiles win because each thread's dequant overlaps the others' AMX work;
+ * a panel serializes the two phases. */
 constexpr size_t PQ2_0_X8_TILE_ROWS = 128;
 
 void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
