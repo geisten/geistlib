@@ -26,6 +26,10 @@
  *     (\n/\t/\\ escaped). Stops at max_new or an end-of-turn / EOS marker.
  *     Used by the MMLU (TOK/SCOREALT) and tool-calling/JSON (GEN) benchmarks.
  *
+ *   BOS -> "OK <add_bos:0|1> <bos_id>"
+ *     The model's own BOS policy from its GGUF metadata. TOK does not
+ *     prepend it, so a harness asks and decides.
+ *
  *   RESET -> "OK"   (clears KV cache)
  *   QUIT  -> exit
  *
@@ -440,7 +444,14 @@ int main(int argc, char **argv) {
             cmd_tok(sess, args);
         else if (strcmp(cmd, "GEN") == 0)
             cmd_gen(sess, args);
-        else if (strcmp(cmd, "RESET") == 0) {
+        else if (strcmp(cmd, "BOS") == 0) {
+            /* The model's own BOS policy, so a harness does not have to
+             * hardcode one family's id. TOK does not prepend it. */
+            printf("OK %d %d\n",
+                   geist_model_add_bos(model) ? 1 : 0,
+                   (int) geist_model_bos_token(model));
+            fflush(stdout);
+        } else if (strcmp(cmd, "RESET") == 0) {
             (void) geist_session_reset(sess);
             puts("OK");
             fflush(stdout);

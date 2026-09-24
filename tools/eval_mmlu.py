@@ -106,6 +106,12 @@ class Repl:
         parts = self._cmd("TOK " + esc)
         return [int(x) for x in parts[1:]]
 
+    def bos(self) -> int:
+        """The model's own BOS id, or -1 when its metadata says not to add one.
+        TOK does not prepend it, so the caller decides."""
+        add, bos_id = self._cmd("BOS")
+        return int(bos_id) if int(add) and int(bos_id) >= 0 else -1
+
     def scorealt(self, prompt_ids: list[int], alt_ids: list[int]) -> list[float]:
         cmd = (f"SCOREALT {len(prompt_ids)} {' '.join(map(str, prompt_ids))} "
                f"{len(alt_ids)} {' '.join(map(str, alt_ids))}")
@@ -183,10 +189,14 @@ def main() -> None:
     ap.add_argument("--selftest", action="store_true", help="run the embedded sample only")
     ap.add_argument("--limit", type=int, default=0, help="cap number of questions (0 = all)")
     ap.add_argument("--shots", type=int, default=5, help="few-shot exemplars (MMLU default 5)")
-    ap.add_argument("--bos", type=int, default=2,
-                    help="BOS token id to prepend (Gemma/Llama = 2; -1 to disable). "
-                         "Gemma is trained with <bos>; without it the model goes "
-                         "out-of-distribution and predicts a newline after 'Answer:'.")
+    ap.add_argument("--bos", type=int, default=-2,
+                    help="BOS token id to prepend. Default -2 asks the model "
+                         "(GGUF add_bos_token / bos_token_id via the REPL's BOS "
+                         "command): Gemma says yes and gets its <bos>, a model "
+                         "whose metadata says no gets none. -1 forces none, any "
+                         "other value forces that id. Hardcoding one family's id "
+                         "here fed Ternary-Bonsai an unrelated token 2 and cost it "
+                         "MMLU points.")
     ap.add_argument("--shuffle", action="store_true",
                     help="deterministically shuffle before --limit (the MMLU test "
                          "split is subject-ordered, so an unshuffled --limit hits one subject)")
@@ -216,13 +226,18 @@ def main() -> None:
                          "this scorer assumes single-token answer letters.")
             letter_ids.append(ids[0])
 
+        bos_id = repl.bos() if args.bos == -2 else args.bos
+        if args.verbose:
+            print(f"BOS: {'none' if bos_id < 0 else bos_id}"
+                  f"{' (from the model)' if args.bos == -2 else ' (forced)'}")
+
         n_correct = 0
         per_subj = defaultdict(lambda: [0, 0])  # subject -> [correct, total]
         for i, (subject, question, choices, gold) in enumerate(rows):
             shots = pick_shots(shots_by_subject, subject, args.shots)
             prompt_ids = repl.tok(build_prompt(subject, question, choices, shots))
-            if args.bos >= 0:
-                prompt_ids = [args.bos] + prompt_ids
+            if bos_id >= 0:
+                prompt_ids = [bos_id] + prompt_ids
             lps = repl.scorealt(prompt_ids, letter_ids)
             pred = max(range(4), key=lambda k: lps[k])
             ok = (pred == gold)
