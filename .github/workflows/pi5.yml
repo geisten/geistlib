@@ -10,6 +10,11 @@ name: pi5
 
 on:
   workflow_dispatch:
+    inputs:
+      reset_baseline:
+        description: "accept this run as the new last-green without comparing (after a deliberate slowdown)"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 3 * * *"
 
@@ -50,13 +55,27 @@ jobs:
       # the recorded bitnet.cpp baselines, report printed and kept as an
       # artifact. bench-smoke is deliberately NOT used: it runs every
       # bench_* binary, including the audio/video ones that need fixtures.
+      # Output goes to the job's temp dir, not ~/bench-geistlib: the board's
+      # own 01:00 cron writes there under the same date-based file name, so
+      # "the newest raw.json" would not reliably be this run.
       - name: make bench (BitNet 2B, frozen protocol)
-        run: OMP_NUM_THREADS=4 ~/bin/with-pi-lock make TARGET=pi5 bench AUTO_FETCH_MODEL=0
+        run: OMP_NUM_THREADS=4 ~/bin/with-pi-lock make TARGET=pi5 bench AUTO_FETCH_MODEL=0 BENCH_ARGS="--out-dir $RUNNER_TEMP/bench"
+      # The regression signal. last-green.json is the raw JSON of the last run
+      # this step passed; it lives in the runner's home, outside the workspace
+      # checkout cleans. The thresholds (3 % decode, 5 % prefill) sit above
+      # the board's measured night-to-night noise on an unchanged commit —
+      # benchmark/bench_compare.py has the numbers. A deliberate slowdown
+      # leaves this red until someone re-runs with reset_baseline.
+      - name: regression vs the last green run
+        if: ${{ !inputs.reset_baseline }}
+        run: python3 benchmark/bench_compare.py "$RUNNER_TEMP"/bench/*_raw.json --baseline ~/bench-geistlib/last-green.json
+      - name: promote this run to last green
+        run: cp "$RUNNER_TEMP"/bench/*_raw.json ~/bench-geistlib/last-green.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: pi5-bench-${{ github.run_id }}
-          path: ~/bench-geistlib/
+          path: ${{ runner.temp }}/bench/
           if-no-files-found: ignore
       - name: thermal state after the run
         if: always()
