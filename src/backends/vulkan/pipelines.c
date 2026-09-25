@@ -153,6 +153,14 @@
             [VK_PIPE_FFN_NORM_GU]   = {ffn_norm_gate_up_q4k_spv, sizeof(ffn_norm_gate_up_q4k_spv)},
             [VK_PIPE_DN_CONV]       = {deltanet_conv_f32_spv, sizeof(deltanet_conv_f32_spv)},
             [VK_PIPE_DN_DELTA]      = {deltanet_delta_f32_spv, sizeof(deltanet_delta_f32_spv)},
+            [VK_PIPE_MATVEC_Q4_0]   = {matvec_q4_0_spv, sizeof(matvec_q4_0_spv)},
+            [VK_PIPE_MATMUL_Q4_0]   = {matmul_q4_0_spv, sizeof(matmul_q4_0_spv)},
+            [VK_PIPE_MATVEC_Q4_1]   = {matvec_q4_1_spv, sizeof(matvec_q4_1_spv)},
+            [VK_PIPE_MATMUL_Q4_1]   = {matmul_q4_1_spv, sizeof(matmul_q4_1_spv)},
+            [VK_PIPE_MATVEC_Q8_0]   = {matvec_q8_0_spv, sizeof(matvec_q8_0_spv)},
+            [VK_PIPE_MATMUL_Q8_0]   = {matmul_q8_0_spv, sizeof(matmul_q8_0_spv)},
+            [VK_PIPE_MATVEC_Q5K]    = {matvec_q5k_spv, sizeof(matvec_q5k_spv)},
+            [VK_PIPE_MATMUL_Q5K]    = {matmul_q5k_spv, sizeof(matmul_q5k_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
         if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM || i == VK_PIPE_MM_Q4K_CM32) &&

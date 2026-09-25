@@ -55,6 +55,14 @@
 #include "shaders/ffn_norm_gate_up_q4k_spv.h"
 #include "shaders/ple_gate_f32_spv.h"
 #include "shaders/matvec_q4k_spv.h"
+#include "shaders/matvec_q4_0_spv.h"
+#include "shaders/matmul_q4_0_spv.h"
+#include "shaders/matvec_q4_1_spv.h"
+#include "shaders/matmul_q4_1_spv.h"
+#include "shaders/matvec_q8_0_spv.h"
+#include "shaders/matmul_q8_0_spv.h"
+#include "shaders/matvec_q5k_spv.h"
+#include "shaders/matmul_q5k_spv.h"
 #include "shaders/matvec_q6k_spv.h"
 #include "shaders/mul_f32_spv.h"
 #include "shaders/rmsnorm_add_f32_spv.h"
@@ -164,6 +172,14 @@ enum vk_pipe {
     VK_PIPE_FFN_NORM_GU, /* ffn_gate_up with the pre-FFN rmsnorm folded in */
     VK_PIPE_DN_CONV,     /* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
     VK_PIPE_DN_DELTA,    /* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
+    VK_PIPE_MATVEC_Q4_0,
+    VK_PIPE_MATMUL_Q4_0,
+    VK_PIPE_MATVEC_Q4_1,
+    VK_PIPE_MATMUL_Q4_1,
+    VK_PIPE_MATVEC_Q8_0,
+    VK_PIPE_MATMUL_Q8_0,
+    VK_PIPE_MATVEC_Q5K,
+    VK_PIPE_MATMUL_Q5K,
     VK_PIPE_COUNT,
 };
 
@@ -350,7 +366,9 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_ATTENTION_F16] = 4, [VK_PIPE_QKV_PREP_F16] = 6, [VK_PIPE_KV_APPEND_F16] = 4,
         [VK_PIPE_ATTN_PART_F16] = 4, [VK_PIPE_ATTN_COMB] = 2,    [VK_PIPE_MM_Q4K_CM32] = 3,
         [VK_PIPE_PLE_GATE] = 4,      [VK_PIPE_FFN_NORM_GU] = 5,  [VK_PIPE_DN_CONV] = 3,
-        [VK_PIPE_DN_DELTA] = 8,
+        [VK_PIPE_DN_DELTA] = 8,      [VK_PIPE_MATVEC_Q4_0] = 3,  [VK_PIPE_MATMUL_Q4_0] = 3,
+        [VK_PIPE_MATVEC_Q4_1] = 3,   [VK_PIPE_MATMUL_Q4_1] = 3,  [VK_PIPE_MATVEC_Q8_0] = 3,
+        [VK_PIPE_MATMUL_Q8_0] = 3,   [VK_PIPE_MATVEC_Q5K] = 3,   [VK_PIPE_MATMUL_Q5K] = 3,
 };
 
 struct geist_buffer {

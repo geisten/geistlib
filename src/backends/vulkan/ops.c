@@ -6,6 +6,45 @@
  */
 #include "vk_internal.h"
 
+#include "checked.h"
+
+/* Quant formats with GPU kernels: elements per block and the (matvec,
+ * matmul) pipeline pair. The block size sets `blocks_per_row` in the push
+ * block and the shape constraint the resolver enforces (n_in % block == 0). */
+struct vk_qinfo {
+    uint32_t     block_elems;
+    enum vk_pipe mv, mm;
+};
+
+[[nodiscard]] static bool vk_qinfo_for(enum geist_dtype dt, struct vk_qinfo *out) {
+    switch (dt) {
+    case GEIST_DTYPE_Q4_K:
+        *out = (struct vk_qinfo) {256, VK_PIPE_MATVEC_Q4K, VK_PIPE_MATMUL_Q4K};
+        return true;
+    case GEIST_DTYPE_Q6_K:
+        *out = (struct vk_qinfo) {256, VK_PIPE_MATVEC_Q6K, VK_PIPE_MATMUL_Q6K};
+        return true;
+    case GEIST_DTYPE_Q5_K:
+        *out = (struct vk_qinfo) {256, VK_PIPE_MATVEC_Q5K, VK_PIPE_MATMUL_Q5K};
+        return true;
+    case GEIST_DTYPE_Q4_0:
+        *out = (struct vk_qinfo) {32, VK_PIPE_MATVEC_Q4_0, VK_PIPE_MATMUL_Q4_0};
+        return true;
+    case GEIST_DTYPE_Q4_1:
+        *out = (struct vk_qinfo) {32, VK_PIPE_MATVEC_Q4_1, VK_PIPE_MATMUL_Q4_1};
+        return true;
+    case GEIST_DTYPE_Q8_0:
+        *out = (struct vk_qinfo) {32, VK_PIPE_MATVEC_Q8_0, VK_PIPE_MATMUL_Q8_0};
+        return true;
+    case GEIST_DTYPE_F32:
+        /* not block-quantized; blocks_per_row is unused by the f32 kernels */
+        *out = (struct vk_qinfo) {256, VK_PIPE_MATVEC_F32, VK_PIPE_MATMUL_F32};
+        return true;
+    default:
+        return false;
+    }
+}
+
 [[nodiscard]] static enum geist_status vk_dispatch_linear(struct geist_backend *be,
                                                           enum vk_pipe          pipe,
                                                           struct geist_buffer  *wbuf,
@@ -13,7 +52,8 @@
                                                           float                *y,
                                                           size_t                m,
                                                           size_t                n_in,
-                                                          size_t                n_out) {
+                                                          size_t                n_out,
+                                                          size_t                blocks_per_row) {
     struct vk_state *st = be->state;
     vk_seq_flush(st); /* host x/y round-trip — must not interleave with a batch */
     /* x_stage: the GPU reads it hot (GEMM B tiles), the host only writes —
@@ -36,7 +76,7 @@
     };
     const struct vk_push push = {.n_in           = (uint32_t) n_in,
                                  .n_out          = (uint32_t) n_out,
-                                 .blocks_per_row = (uint32_t) (n_in / 256),
+                                 .blocks_per_row = (uint32_t) blocks_per_row,
                                  .rows           = (uint32_t) m,
                                  .x_stride       = (uint32_t) n_in,
                                  .y_stride       = (uint32_t) n_out};
@@ -66,6 +106,8 @@ static void vk_linear_run(const float               *x,
     struct vk_state     *st   = be->state;
     struct geist_buffer *wbuf = vk_weight_lookup(st, w->raw);
     const size_t         n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    struct vk_qinfo      qi = {.block_elems = 256};
+    (void) vk_qinfo_for((enum geist_dtype) w->dtype, &qi);
     if (m > 1 && st->subgroup_size != 32u) {
         /* The register-tiled GEMM shaders hard-assume 32-lane subgroups;
          * on e.g. lavapipe (8 lanes) they compute garbage — the lavapipe
@@ -77,9 +119,15 @@ static void vk_linear_run(const float               *x,
         }
         return;
     }
-    if (wbuf == nullptr ||
-        vk_dispatch_linear(be, m == 1 ? matvec_pipe : matmul_pipe, wbuf, x, y, m, n_in, n_out) !=
-                GEIST_OK) {
+    if (wbuf == nullptr || vk_dispatch_linear(be,
+                                              m == 1 ? matvec_pipe : matmul_pipe,
+                                              wbuf,
+                                              x,
+                                              y,
+                                              m,
+                                              n_in,
+                                              n_out,
+                                              n_in / qi.block_elems) != GEIST_OK) {
         fprintf(stderr,
                 "geist vulkan: linear dispatch failed (%s) — zeroing output\n",
                 geist_backend_errmsg(be));
@@ -126,6 +174,26 @@ static void vk_w_f32_mN(size_t                     m,
     vk_linear_run(x, w, m, be, y, VK_PIPE_MATVEC_F32, VK_PIPE_MATMUL_F32);
 }
 
+/* Host-pointer kernels for the block-quantized formats added after Q4_K/Q6_K:
+ * one m1/mN pair per dtype, all routed through vk_linear_run. */
+#define VK_DEFINE_QUANT_KERNELS(name, MV, MM)                                                   \
+    static void vk_w_##name##_m1(                                                               \
+            const float *x, const struct geist_weight *w, struct geist_backend *be, float *y) { \
+        vk_linear_run(x, w, 1, be, y, MV, MM);                                                  \
+    }                                                                                           \
+    static void vk_w_##name##_mN(size_t                     m,                                  \
+                                 const float               *x,                                  \
+                                 const struct geist_weight *w,                                  \
+                                 struct geist_backend      *be,                                 \
+                                 float                     *y) {                                \
+        vk_linear_run(x, w, m, be, y, MV, MM);                                                  \
+    }
+
+VK_DEFINE_QUANT_KERNELS(q4_0, VK_PIPE_MATVEC_Q4_0, VK_PIPE_MATMUL_Q4_0)
+VK_DEFINE_QUANT_KERNELS(q4_1, VK_PIPE_MATVEC_Q4_1, VK_PIPE_MATMUL_Q4_1)
+VK_DEFINE_QUANT_KERNELS(q8_0, VK_PIPE_MATVEC_Q8_0, VK_PIPE_MATMUL_Q8_0)
+VK_DEFINE_QUANT_KERNELS(q5k, VK_PIPE_MATVEC_Q5K, VK_PIPE_MATMUL_Q5K)
+
 /* ---- CPU fallback for dtypes without a GPU kernel yet (F16/BF16/...) ----
  * Row-dequant + naive dot, following cpu_scalar_w_quant_*; keeps model
  * loading alive for mixed-dtype GGUFs until those dtypes get shaders. */
@@ -159,6 +227,12 @@ static bool vk_dequant_row(const struct geist_weight *w, size_t j, float *row) {
         return true;
     case GEIST_DTYPE_Q8_0:
         dequant_q8_0_row(n_in, base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row);
+        return true;
+    case GEIST_DTYPE_Q4_0:
+        dequant_q4_0_row(n_in, base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row);
+        return true;
+    case GEIST_DTYPE_Q4_1:
+        dequant_q4_1_row(n_in, base + j * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, row);
         return true;
     default:
         return false;
@@ -207,17 +281,113 @@ vk_w_cpu_m1(const float *x, const struct geist_weight *w, struct geist_backend *
  * every field sits 4-byte aligned and the kernels use word loads. */
 enum { VK_Q6K_GPU_BLOCK = 216 };
 
+/* Q4_0 / Q8_0 GPU copies are struct-of-arrays: every block's quant bytes back
+ * to back, then one f16 scale per block (padded to a whole word). That is the
+ * same 18 / 34 bytes per block as the file layout — the 2-byte scale would
+ * otherwise leave every block 2-byte aligned, which word loads cannot use —
+ * and it makes each lane's quant load contiguous. See mv_legacy.glsl. */
+[[nodiscard]] static bool vk_soa_bytes(size_t n_blocks, size_t qbytes, size_t *out) {
+    size_t q, sc;
+    if (ckd_mul(&q, n_blocks, qbytes) || ckd_mul(&sc, n_blocks, (size_t) 2) ||
+        geist_ckd_round_up_pow2(sc, 4, &sc) || ckd_add(out, q, sc)) {
+        return true;
+    }
+    return false;
+}
+
+/* Bytes of the VRAM copy, or 0 on overflow / an unsupported dtype. */
 [[nodiscard]] static size_t vk_weight_bytes(const struct geist_weight *w) {
     const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    size_t       blocks, bytes                  = 0;
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_K:
-        return n_out * (n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES;
+        return ckd_mul(&blocks, n_out, n_in / Q4_K_BLOCK_ELEMS) ||
+                               ckd_mul(&bytes, blocks, (size_t) Q4_K_BLOCK_BYTES)
+                       ? 0
+                       : bytes;
+    case GEIST_DTYPE_Q5_K:
+        return ckd_mul(&blocks, n_out, n_in / Q5_K_BLOCK_ELEMS) ||
+                               ckd_mul(&bytes, blocks, (size_t) Q5_K_BLOCK_BYTES)
+                       ? 0
+                       : bytes;
     case GEIST_DTYPE_Q6_K:
-        return n_out * (n_in / Q6_K_BLOCK_ELEMS) * VK_Q6K_GPU_BLOCK;
+        return ckd_mul(&blocks, n_out, n_in / Q6_K_BLOCK_ELEMS) ||
+                               ckd_mul(&bytes, blocks, (size_t) VK_Q6K_GPU_BLOCK)
+                       ? 0
+                       : bytes;
+    case GEIST_DTYPE_Q4_1:
+        return ckd_mul(&blocks, n_out, n_in / Q4_1_BLOCK_ELEMS) ||
+                               ckd_mul(&bytes, blocks, (size_t) Q4_1_BLOCK_BYTES)
+                       ? 0
+                       : bytes;
+    case GEIST_DTYPE_Q4_0:
+        return ckd_mul(&blocks, n_out, n_in / Q4_0_BLOCK_ELEMS) ||
+                               vk_soa_bytes(blocks, Q4_0_BLOCK_BYTES - 2, &bytes)
+                       ? 0
+                       : bytes;
+    case GEIST_DTYPE_Q8_0:
+        return ckd_mul(&blocks, n_out, n_in / Q8_0_BLOCK_ELEMS) ||
+                               vk_soa_bytes(blocks, Q8_0_BLOCK_BYTES - 2, &bytes)
+                       ? 0
+                       : bytes;
     case GEIST_DTYPE_F32:
-        return n_out * n_in * sizeof(float);
+        return ckd_mul(&blocks, n_out, n_in) || ckd_mul(&bytes, blocks, sizeof(float)) ? 0 : bytes;
     default:
         return 0;
+    }
+}
+
+/* Source layout -> GPU layout for the dtypes that are not uploaded verbatim.
+ * Returns a heap block of `bytes` bytes (caller frees), or nullptr when the
+ * dtype uploads as-is; `*failed` is set when a repack was needed but the
+ * allocation failed. */
+[[nodiscard]] static uint8_t *
+vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
+    const size_t   n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    const uint8_t *src = (const uint8_t *) w->raw;
+    *failed            = false;
+    switch ((enum geist_dtype) w->dtype) {
+    case GEIST_DTYPE_Q6_K: {
+        /* 210 -> 216-byte blocks so every field is 4-byte aligned */
+        uint8_t *packed = heap_alloc_aligned(bytes, 64);
+        if (packed == nullptr) {
+            *failed = true;
+            return nullptr;
+        }
+        const size_t n_blocks = bytes / VK_Q6K_GPU_BLOCK;
+        for (size_t i = 0; i < n_blocks; ++i) {
+            memcpy(packed + i * VK_Q6K_GPU_BLOCK, src + i * Q6_K_BLOCK_BYTES, Q6_K_BLOCK_BYTES);
+            memset(packed + i * VK_Q6K_GPU_BLOCK + Q6_K_BLOCK_BYTES,
+                   0,
+                   VK_Q6K_GPU_BLOCK - Q6_K_BLOCK_BYTES);
+        }
+        return packed;
+    }
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q8_0: {
+        const bool   q4       = w->dtype == GEIST_DTYPE_Q4_0;
+        const size_t bb       = q4 ? Q4_0_BLOCK_BYTES : Q8_0_BLOCK_BYTES;
+        const size_t qbytes   = bb - 2;
+        const size_t n_blocks = n_out * (n_in / (q4 ? Q4_0_BLOCK_ELEMS : Q8_0_BLOCK_ELEMS));
+        uint8_t     *packed   = heap_alloc_aligned(bytes, 64);
+        if (packed == nullptr) {
+            *failed = true;
+            return nullptr;
+        }
+        uint8_t *qs = packed;
+        uint8_t *sc = packed + n_blocks * qbytes;
+        memset(sc + n_blocks * 2, 0, bytes - n_blocks * qbytes - n_blocks * 2); /* word pad */
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+        for (size_t i = 0; i < n_blocks; ++i) {
+            memcpy(qs + i * qbytes, src + i * bb + 2, qbytes);
+            memcpy(sc + i * 2, src + i * bb, 2);
+        }
+        return packed;
+    }
+    default:
+        return nullptr;
     }
 }
 
@@ -235,18 +405,42 @@ enum { VK_Q6K_GPU_BLOCK = 216 };
     }
     geist_kernel_linear_m1_fn m1;
     geist_kernel_linear_mN_fn mN;
-    switch ((enum geist_dtype) w->dtype) {
-    case GEIST_DTYPE_Q4_K:
-        if (w->n_in % 256 != 0) {
+    struct vk_qinfo           qi;
+    if (!vk_qinfo_for((enum geist_dtype) w->dtype, &qi)) {
+        switch ((enum geist_dtype) w->dtype) {
+        case GEIST_DTYPE_F16:
+        case GEIST_DTYPE_BF16:
+        case GEIST_DTYPE_Q3_K:
+            w->linear_m1 = vk_w_cpu_m1;
+            w->linear_mN = vk_w_cpu_mN;
+            return GEIST_OK;
+        default:
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "vulkan: no kernel for weight dtype %u (%dx%d)",
+                                    (unsigned) w->dtype,
+                                    (int) w->n_out,
+                                    (int) w->n_in);
             return GEIST_E_UNSUPPORTED;
         }
+    }
+    if (w->dtype != GEIST_DTYPE_F32 && (size_t) w->n_in % qi.block_elems != 0) {
+        /* Row length is not a whole number of blocks: the GPU kernels index
+         * by block. Formats with a CPU dequant row keep working through it. */
+        if (w->dtype == GEIST_DTYPE_Q8_0 || w->dtype == GEIST_DTYPE_Q5_K ||
+            w->dtype == GEIST_DTYPE_Q4_0 || w->dtype == GEIST_DTYPE_Q4_1) {
+            w->linear_m1 = vk_w_cpu_m1;
+            w->linear_mN = vk_w_cpu_mN;
+            return GEIST_OK;
+        }
+        return GEIST_E_UNSUPPORTED;
+    }
+    switch ((enum geist_dtype) w->dtype) {
+    case GEIST_DTYPE_Q4_K:
         m1 = vk_w_q4k_m1;
         mN = vk_w_q4k_mN;
         break;
     case GEIST_DTYPE_Q6_K:
-        if (w->n_in % 256 != 0) {
-            return GEIST_E_UNSUPPORTED;
-        }
         m1 = vk_w_q6k_m1;
         mN = vk_w_q6k_mN;
         break;
@@ -254,14 +448,22 @@ enum { VK_Q6K_GPU_BLOCK = 216 };
         m1 = vk_w_f32_m1;
         mN = vk_w_f32_mN;
         break;
-    case GEIST_DTYPE_F16:
-    case GEIST_DTYPE_BF16:
-    case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_Q5_K:
+        m1 = vk_w_q5k_m1;
+        mN = vk_w_q5k_mN;
+        break;
+    case GEIST_DTYPE_Q4_0:
+        m1 = vk_w_q4_0_m1;
+        mN = vk_w_q4_0_mN;
+        break;
+    case GEIST_DTYPE_Q4_1:
+        m1 = vk_w_q4_1_m1;
+        mN = vk_w_q4_1_mN;
+        break;
     case GEIST_DTYPE_Q8_0:
-        w->linear_m1 = vk_w_cpu_m1;
-        w->linear_mN = vk_w_cpu_mN;
-        return GEIST_OK;
+        m1 = vk_w_q8_0_m1;
+        mN = vk_w_q8_0_mN;
+        break;
     default:
         return GEIST_E_UNSUPPORTED;
     }
@@ -294,30 +496,25 @@ enum { VK_Q6K_GPU_BLOCK = 216 };
         slot  = &st->weights[st->n_weights++];
         *slot = (struct vk_weight_entry) {0};
     }
-    const size_t         bytes = vk_weight_bytes(w);
-    struct geist_buffer *gpu   = nullptr;
+    const size_t bytes = vk_weight_bytes(w);
+    if (bytes == 0) {
+        geist_backend_set_error(be, GEIST_E_FORMAT, "vulkan: weight size overflows");
+        return GEIST_E_FORMAT;
+    }
+    struct geist_buffer *gpu = nullptr;
     enum geist_status    s =
             vk_buffer_create(be, bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_DEVICE, &gpu);
-    if (s == GEIST_OK && w->dtype == GEIST_DTYPE_Q6_K) {
-        const size_t n_blocks = bytes / VK_Q6K_GPU_BLOCK;
-        uint8_t     *packed   = heap_alloc_aligned(bytes, 64);
-        if (packed == nullptr) {
+    if (s == GEIST_OK) {
+        bool     failed = false;
+        uint8_t *packed = vk_repack_weight(w, bytes, &failed);
+        if (failed) {
             s = GEIST_E_OOM;
-        } else {
-            const uint8_t *srcb = (const uint8_t *) w->raw;
-            for (size_t i = 0; i < n_blocks; ++i) {
-                memcpy(packed + i * VK_Q6K_GPU_BLOCK,
-                       srcb + i * Q6_K_BLOCK_BYTES,
-                       Q6_K_BLOCK_BYTES);
-                memset(packed + i * VK_Q6K_GPU_BLOCK + Q6_K_BLOCK_BYTES,
-                       0,
-                       VK_Q6K_GPU_BLOCK - Q6_K_BLOCK_BYTES);
-            }
+        } else if (packed != nullptr) {
             s = vk_buffer_upload(gpu, bytes, packed);
             safe_free((void **) &packed);
+        } else {
+            s = vk_buffer_upload(gpu, bytes, (const uint8_t *) w->raw);
         }
-    } else if (s == GEIST_OK) {
-        s = vk_buffer_upload(gpu, bytes, (const uint8_t *) w->raw);
     }
     if (s != GEIST_OK) {
         if (gpu != nullptr) {
@@ -344,26 +541,41 @@ static uint32_t vk_groups(size_t n) {
 /* Dispatch geometry of the linear pipes. matvec q4k/q6k: 8 rows per
  * workgroup. matmul_q4k: 4 output rows x 16 batch rows per workgroup. */
 uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
-    if (pipe == VK_PIPE_MATVEC_Q4K) {
-        return (n_out + 7u) / 8u; /* 2 warps x 4 rows per workgroup */
-    }
-    if (pipe == VK_PIPE_MATVEC_Q6K) {
-        return (n_out + 7u) / 8u;
-    }
-    if (pipe == VK_PIPE_MATMUL_Q4K) {
-        return (n_out + 7u) / 8u;
-    }
-    if (pipe == VK_PIPE_MATMUL_Q6K || pipe == VK_PIPE_MATMUL_F32) {
+    switch (pipe) {
+    case VK_PIPE_MATVEC_Q4K:
+    case VK_PIPE_MATVEC_Q6K:
+    case VK_PIPE_MATMUL_Q4K:
+    case VK_PIPE_MATVEC_Q4_0:
+    case VK_PIPE_MATVEC_Q4_1:
+    case VK_PIPE_MATVEC_Q8_0:
+    case VK_PIPE_MATVEC_Q5K:
+    case VK_PIPE_MATMUL_Q4_0:
+    case VK_PIPE_MATMUL_Q4_1:
+    case VK_PIPE_MATMUL_Q8_0:
+    case VK_PIPE_MATMUL_Q5K:
+        return (n_out + 7u) / 8u; /* 8 rows per workgroup */
+    case VK_PIPE_MATMUL_Q6K:
+    case VK_PIPE_MATMUL_F32:
         return (n_out + 3u) / 4u;
+    default:
+        return n_out;
     }
-    return n_out;
 }
 
 uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m) {
-    if (pipe == VK_PIPE_MATMUL_Q4K) {
-        return (m + 31u) / 32u;
+    switch (pipe) {
+    case VK_PIPE_MATMUL_Q4K:
+    case VK_PIPE_MATMUL_Q4_0:
+    case VK_PIPE_MATMUL_Q4_1:
+    case VK_PIPE_MATMUL_Q8_0:
+    case VK_PIPE_MATMUL_Q5K:
+        return (m + 31u) / 32u; /* 32 batch rows per workgroup */
+    case VK_PIPE_MATMUL_Q6K:
+    case VK_PIPE_MATMUL_F32:
+        return (m + 15u) / 16u;
+    default:
+        return m;
     }
-    return (pipe == VK_PIPE_MATMUL_Q6K || pipe == VK_PIPE_MATMUL_F32) ? (m + 15u) / 16u : m;
 }
 
 /* Reroute conforming quant GEMMs onto the tensor-core pipelines. */
@@ -1059,23 +1271,11 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
     if (!VK_OPS(be, 1u)) {
         return GEIST_E_UNSUPPORTED;
     }
-    enum vk_pipe mv, mm;
-    switch ((enum geist_dtype) w->dtype) {
-    case GEIST_DTYPE_Q4_K:
-        mv = VK_PIPE_MATVEC_Q4K;
-        mm = VK_PIPE_MATMUL_Q4K;
-        break;
-    case GEIST_DTYPE_Q6_K:
-        mv = VK_PIPE_MATVEC_Q6K;
-        mm = VK_PIPE_MATMUL_Q6K;
-        break;
-    case GEIST_DTYPE_F32:
-        mv = VK_PIPE_MATVEC_F32;
-        mm = VK_PIPE_MATMUL_F32;
-        break;
-    default:
+    struct vk_qinfo qi;
+    if (!vk_qinfo_for((enum geist_dtype) w->dtype, &qi)) {
         return GEIST_E_UNSUPPORTED;
     }
+    const enum vk_pipe     mv = qi.mv, mm = qi.mm;
     struct geist_buffer   *wbuf = vk_weight_lookup(st, w->raw);
     VkDescriptorBufferInfo bi[3];
     uint32_t               xo, yo;
@@ -1103,15 +1303,37 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
     const uint32_t       y_stride = t_y->ndim >= 2 ? (uint32_t) t_y->stride[t_y->ndim - 2] : n_out;
     const struct vk_push push     = {.n_in           = n_in,
                                      .n_out          = n_out,
-                                     .blocks_per_row = n_in / 256,
+                                     .blocks_per_row = n_in / qi.block_elems,
                                      .rows           = (uint32_t) m,
                                      .x_offset       = xo,
                                      .y_offset       = yo,
                                      .x_stride       = x_stride,
                                      .y_stride       = y_stride};
-    enum vk_pipe         lpipe    = m == 1 ? mv : mm;
-    uint32_t             gx       = vk_linear_gx(lpipe, n_out);
-    uint32_t             gy       = vk_linear_gy(lpipe, (uint32_t) m);
+    if (m > 1 && st->subgroup_size != 32u) {
+        /* The register-tiled GEMMs assume 32-lane subgroups (see
+         * vk_linear_run). Elsewhere run the size-agnostic matvec once per
+         * batch row: correct on any device, and those devices are a
+         * correctness tier here, not a benchmark. */
+        for (size_t r = 0; r < m; ++r) {
+            struct vk_push row             = push;
+            row.rows                       = 1;
+            row.x_offset                   = push.x_offset + (uint32_t) r * push.x_stride;
+            row.y_offset                   = push.y_offset + (uint32_t) r * push.y_stride;
+            const struct vk_access racc[3] = {
+                    vk_acc((uint64_t) row.x_offset * 4u, (uint64_t) n_in * 4u, false),
+                    vk_acc_all(false),
+                    vk_acc((uint64_t) row.y_offset * 4u, (uint64_t) n_out * 4u, true)};
+            const enum geist_status rs = vk_seq_dispatch_acc(
+                    be, mv, bi, racc, &row, sizeof(row), vk_linear_gx(mv, n_out), 1, 1);
+            if (rs != GEIST_OK) {
+                return rs;
+            }
+        }
+        return GEIST_OK;
+    }
+    enum vk_pipe lpipe = m == 1 ? mv : mm;
+    uint32_t     gx    = vk_linear_gx(lpipe, n_out);
+    uint32_t     gy    = vk_linear_gy(lpipe, (uint32_t) m);
     /* Tensor-core path for conforming GEMMs (shaders assume w_offset == 0,
      * which holds for all registry uploads). */
     if (m > 1) {
@@ -1182,6 +1404,15 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     case GEIST_DTYPE_BF16:
         dtype_code = 2;
         break;
+    case GEIST_DTYPE_Q4_0:
+        dtype_code = 3;
+        break;
+    case GEIST_DTYPE_Q4_1:
+        dtype_code = 4;
+        break;
+    case GEIST_DTYPE_Q8_0:
+        dtype_code = 5;
+        break;
     case GEIST_DTYPE_Q4_K:
         dtype_code = 8;
         break;
@@ -1206,9 +1437,10 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     if (wbuf != nullptr) {
         bi[0] = (VkDescriptorBufferInfo) {.buffer = wbuf->buf, .range = VK_WHOLE_SIZE};
     } else {
-        if (dtype_code == 10) {
-            /* Q6_K GPU copies are repacked to 216-byte blocks; the arena
-             * holds canonical 210-byte blocks the shader can't read. */
+        if (dtype_code == 10 || dtype_code == 3 || dtype_code == 5) {
+            /* Q6_K / Q4_0 / Q8_0 GPU copies are repacked (216-byte blocks,
+             * struct-of-arrays); the arena holds the canonical layout the
+             * shader can't read. */
             return GEIST_E_UNSUPPORTED;
         }
         struct geist_tensor bytes_view = *embed_table;
@@ -1228,6 +1460,11 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     }
     uint32_t bpr;
     switch (dtype_code) {
+    case 3:
+    case 4:
+    case 5:
+        bpr = (uint32_t) (d / 32);
+        break;
     case 8:
         bpr = (uint32_t) (d / 256);
         break;
@@ -1244,7 +1481,15 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     const struct {
         uint32_t n_in, token, dtype, bpr, w_byte, y;
         float    scale;
-    } push = {(uint32_t) d, (uint32_t) token_id, dtype_code, bpr, w_elem_off, yo, scale};
+        uint32_t n_rows;
+    } push                        = {(uint32_t) d,
+                                     (uint32_t) token_id,
+                                     dtype_code,
+                                     bpr,
+                                     w_elem_off,
+                                     yo,
+                                     scale,
+                                     (uint32_t) vocab};
     const struct vk_access acc[2] = {vk_acc_all(false), vk_acc_tensor(out, true)};
     return vk_seq_dispatch_acc(
             be, VK_PIPE_EMBED, bi, acc, &push, sizeof(push), vk_groups((size_t) d), 1, 1);
@@ -1766,6 +2011,9 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
         case GEIST_DTYPE_F32:
         case GEIST_DTYPE_F16:
         case GEIST_DTYPE_BF16:
+        case GEIST_DTYPE_Q4_0:
+        case GEIST_DTYPE_Q4_1:
+        case GEIST_DTYPE_Q8_0:
         case GEIST_DTYPE_Q4_K:
         case GEIST_DTYPE_Q5_K:
         case GEIST_DTYPE_Q6_K:
