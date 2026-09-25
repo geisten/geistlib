@@ -1603,6 +1603,102 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
             be, VK_PIPE_KV_APPEND_F16, bi, acc, push, sizeof(push), vk_groups(n), 1, 1);
 }
 
+/* Gated-DeltaNet mixer on the device: causal conv + silu, then the delta-rule
+ * recurrence with the gated per-head RMSNorm (layer_deltanet.c is the host
+ * oracle). Two dispatches per call; both recurrent-state tensors advance
+ * exactly once per input row. UNSUPPORTED (before anything was dispatched)
+ * lets the architecture take its host path — which cannot see VRAM-resident
+ * state, so the geometry limits below cover every published qwen35 variant. */
+[[nodiscard]] static enum geist_status vk_deltanet_mix(struct geist_backend                 *be,
+                                                       const struct geist_deltanet_mix_args *a) {
+    if (!VK_OPS(be, 256u) || a == nullptr || a->qkv == nullptr || a->z == nullptr ||
+        a->beta == nullptr || a->alpha == nullptr || a->conv_w == nullptr || a->ssm_a == nullptr ||
+        a->dt_bias == nullptr || a->norm_w == nullptr || a->conv_state == nullptr ||
+        a->delta_state == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t seq = a->seq, n_kh = a->n_k_heads, n_vh = a->n_v_heads;
+    const size_t dk = a->head_k, dv = a->head_v, K = a->conv_kernel;
+    if (seq == 0 || n_kh == 0 || n_vh % n_kh != 0 || dk == 0 || dk > 256 || dv == 0 || dv > 128 ||
+        K < 2 || K > 8) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t keyd  = n_kh * dk;
+    const size_t vald  = n_vh * dv;
+    const size_t convd = 2 * keyd + vald;
+    if (convd > UINT32_MAX / 4u || seq > UINT32_MAX / (convd + 1u)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* Row-major contiguous views only — the shaders index rows by convd/vald. */
+    if (vk_t_n(a->qkv) != seq * convd || vk_t_n(a->z) < seq * vald ||
+        vk_t_n(a->beta) < seq * n_vh || vk_t_n(a->alpha) < seq * n_vh ||
+        vk_t_n(a->conv_w) != convd * K || vk_t_n(a->ssm_a) != n_vh || vk_t_n(a->dt_bias) != n_vh ||
+        vk_t_n(a->norm_w) != dv || vk_t_n(a->conv_state) != (K - 1) * convd ||
+        vk_t_n(a->delta_state) != n_vh * dk * dv) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    VkDescriptorBufferInfo bqkv, bz, bb, ba, bw, bA, bdt, bnw, bcs, bs;
+    uint32_t               oqkv, oz, ob, oa, ow, oA, odt, onw, ocs, os;
+    if (!vk_tensor_gpu(a->qkv, &bqkv, &oqkv) || !vk_tensor_gpu(a->z, &bz, &oz) ||
+        !vk_tensor_gpu(a->beta, &bb, &ob) || !vk_tensor_gpu(a->alpha, &ba, &oa) ||
+        !vk_tensor_gpu(a->conv_w, &bw, &ow) || !vk_tensor_gpu(a->ssm_a, &bA, &oA) ||
+        !vk_tensor_gpu(a->dt_bias, &bdt, &odt) || !vk_tensor_gpu(a->norm_w, &bnw, &onw) ||
+        !vk_tensor_gpu(a->conv_state, &bcs, &ocs) || !vk_tensor_gpu(a->delta_state, &bs, &os)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    {
+        const VkDescriptorBufferInfo bi[3] = {bqkv, bw, bcs};
+        const uint32_t push[6] = {(uint32_t) seq, (uint32_t) convd, (uint32_t) K, oqkv, ow, ocs};
+        const struct vk_access  acc[3] = {vk_acc_tensor(a->qkv, true),
+                                          vk_acc_tensor(a->conv_w, false),
+                                          vk_acc_tensor(a->conv_state, true)};
+        const enum geist_status s      = vk_seq_dispatch_acc(be,
+                                                             VK_PIPE_DN_CONV,
+                                                             bi,
+                                                             acc,
+                                                             push,
+                                                             sizeof(push),
+                                                             (uint32_t) ((convd + 127u) / 128u),
+                                                             1,
+                                                             1);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    const VkDescriptorBufferInfo bi[8] = {bqkv, bz, bb, ba, bA, bdt, bnw, bs};
+    const struct {
+        uint32_t seq, n_kh, n_vh, dk, dv, keyd, convd;
+        uint32_t qkv_off, z_off, beta_off, alpha_off, a_off, dtb_off, nw_off, s_off;
+        float    eps, qscale;
+    } push                        = {(uint32_t) seq,
+                                     (uint32_t) n_kh,
+                                     (uint32_t) n_vh,
+                                     (uint32_t) dk,
+                                     (uint32_t) dv,
+                                     (uint32_t) keyd,
+                                     (uint32_t) convd,
+                                     oqkv,
+                                     oz,
+                                     ob,
+                                     oa,
+                                     oA,
+                                     odt,
+                                     onw,
+                                     os,
+                                     a->eps,
+                                     1.0f / sqrtf((float) dk)};
+    const struct vk_access acc[8] = {vk_acc_tensor(a->qkv, false),
+                                     vk_acc_tensor(a->z, true),
+                                     vk_acc_tensor(a->beta, false),
+                                     vk_acc_tensor(a->alpha, false),
+                                     vk_acc_tensor(a->ssm_a, false),
+                                     vk_acc_tensor(a->dt_bias, false),
+                                     vk_acc_tensor(a->norm_w, false),
+                                     vk_acc_tensor(a->delta_state, true)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_DN_DELTA, bi, acc, &push, sizeof(push), (uint32_t) n_vh, 1, 1);
+}
+
 /* ====================================================================== */
 /* Descriptor                                                              */
 /* ====================================================================== */
@@ -1720,6 +1816,7 @@ static const struct geist_backend_fused vk_fused = {
         .ple_block        = vk_ple_block,
         .attn_qkv_prep    = vk_attn_qkv_prep,
         .kv_append_f16    = vk_kv_append_f16,
+        .deltanet_mix     = vk_deltanet_mix,
 };
 
 const struct geist_backend_descriptor geist_backend_vulkan = {

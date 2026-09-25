@@ -736,6 +736,21 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
  * the next transaction. */
 void transformer_recurrent_txn_commit(struct transformer_arch_session *sess);
 
+/* Recurrent-state buffer access that survives device-only memory. A backend
+ * may answer buffer_map with nullptr for a KV_CACHE-role buffer (vulkan keeps
+ * them in VRAM); these fall back to buffer_upload / buffer_download instead
+ * of treating that as a failure. `bytes` must not exceed the buffer size. */
+[[nodiscard]] enum geist_status
+transformer_dn_state_zero(struct geist_backend *be, struct geist_buffer *buf, size_t bytes);
+[[nodiscard]] enum geist_status transformer_dn_state_read(struct geist_backend *be,
+                                                          struct geist_buffer  *buf,
+                                                          size_t                bytes,
+                                                          void                 *dst);
+[[nodiscard]] enum geist_status transformer_dn_state_write(struct geist_backend *be,
+                                                           struct geist_buffer  *buf,
+                                                           size_t                bytes,
+                                                           const void           *src);
+
 /* ---- Public functions (architecture-internal) -------------------------- */
 
 /* Build a transformer arch state from a GGUF file. All weight bytes land in

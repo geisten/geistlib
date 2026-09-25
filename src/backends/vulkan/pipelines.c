@@ -42,10 +42,10 @@
 }
 
 [[nodiscard]] enum geist_status vk_create_pipelines(struct geist_backend *be, struct vk_state *st) {
-    /* Set/pipeline layouts for 2, 3 and 4 storage-buffer bindings; every
-     * shader declares a push block within the shared 128-byte range. */
-    for (uint32_t n = 2; n <= 6; ++n) {
-        VkDescriptorSetLayoutBinding bindings[6];
+    /* Set/pipeline layouts for 2..VK_MAX_BINDINGS storage-buffer bindings;
+     * every shader declares a push block within the shared 128-byte range. */
+    for (uint32_t n = 2; n <= VK_MAX_BINDINGS; ++n) {
+        VkDescriptorSetLayoutBinding bindings[VK_MAX_BINDINGS];
         for (uint32_t i = 0; i < n; ++i) {
             bindings[i] = (VkDescriptorSetLayoutBinding) {
                     .binding         = i,
@@ -76,7 +76,7 @@
         }
     }
     VkDescriptorPoolSize       psize  = {.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                         .descriptorCount = VK_SEQ_MAX_SETS * 6};
+                                         .descriptorCount = VK_SEQ_MAX_SETS * VK_MAX_BINDINGS};
     VkDescriptorPoolCreateInfo dpinfo = {.sType   = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                          .maxSets = VK_SEQ_MAX_SETS,
                                          .poolSizeCount = 1,
@@ -86,7 +86,7 @@
         return GEIST_E_BACKEND;
     }
     VkDescriptorPoolSize       csize  = {.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                         .descriptorCount = VK_DSET_CACHE * 6};
+                                         .descriptorCount = VK_DSET_CACHE * VK_MAX_BINDINGS};
     VkDescriptorPoolCreateInfo dcinfo = {.sType   = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                          .maxSets = VK_DSET_CACHE,
                                          .poolSizeCount = 1,
@@ -151,6 +151,8 @@
             [VK_PIPE_MM_Q4K_CM32]   = {matmul_q4k_cm32_spv, sizeof(matmul_q4k_cm32_spv)},
             [VK_PIPE_PLE_GATE]      = {ple_gate_f32_spv, sizeof(ple_gate_f32_spv)},
             [VK_PIPE_FFN_NORM_GU]   = {ffn_norm_gate_up_q4k_spv, sizeof(ffn_norm_gate_up_q4k_spv)},
+            [VK_PIPE_DN_CONV]       = {deltanet_conv_f32_spv, sizeof(deltanet_conv_f32_spv)},
+            [VK_PIPE_DN_DELTA]      = {deltanet_delta_f32_spv, sizeof(deltanet_delta_f32_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
         if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM || i == VK_PIPE_MM_Q4K_CM32) &&

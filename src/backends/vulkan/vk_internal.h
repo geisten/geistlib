@@ -36,6 +36,8 @@
 #include "shaders/embed_lookup_scaled_spv.h"
 #include "shaders/ffn_gate_up_gelu_q4k_spv.h"
 #include "shaders/attention_f16_spv.h"
+#include "shaders/deltanet_conv_f32_spv.h"
+#include "shaders/deltanet_delta_f32_spv.h"
 #include "shaders/attn_comb_spv.h"
 #include "shaders/attn_part_f16_spv.h"
 #include "shaders/kv_append_f16_spv.h"
@@ -160,6 +162,8 @@ enum vk_pipe {
     VK_PIPE_MM_Q4K_CM32, /* small-n_out tensor-core tile */
     VK_PIPE_PLE_GATE,    /* fused PLE gate: gelu(x.gate_w) * ple_in */
     VK_PIPE_FFN_NORM_GU, /* ffn_gate_up with the pre-FFN rmsnorm folded in */
+    VK_PIPE_DN_CONV,     /* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
+    VK_PIPE_DN_DELTA,    /* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
     VK_PIPE_COUNT,
 };
 
@@ -209,6 +213,7 @@ struct vk_dset_entry {
 };
 
 enum {
+    VK_MAX_BINDINGS     = 8,    /* storage buffers per dispatch (deltanet_mix needs 8) */
     VK_SEQ_MAX_SETS     = 4096, /* descriptor sets per flush window */
     VK_SEQ_MAX_DISPATCH = 4000, /* rotate the sequence before pool runs dry */
     VK_PUSH_RANGE       = 128,  /* one push range covers every shader block */
@@ -243,7 +248,8 @@ struct vk_state {
     bool has_coopmat;  /* VK_KHR_cooperative_matrix */
 
     /* GEIST_VK_GPU_OPS bitmask (debug bisect): 1=linear_t 2=elementwise
-     * 4=rmsnorm 8=rope 16=attention 32=copy 64=embed 128=argmax.
+     * 4=rmsnorm 8=rope 16=attention 32=copy 64=embed 128=argmax
+     * 256=deltanet_mix.
      * Default: all on. */
     uint32_t gpu_ops;
 
@@ -304,8 +310,8 @@ struct vk_state {
     bool                  seq_open;
     uint32_t              seq_dispatches;
     VkDescriptorPool      seq_pool;
-    VkDescriptorSetLayout seq_dlayouts[5]; /* index = binding count - 2 (2..6) */
-    VkPipelineLayout      seq_playouts[5];
+    VkDescriptorSetLayout seq_dlayouts[7]; /* index = binding count - 2 (2..8) */
+    VkPipelineLayout      seq_playouts[7];
 
     /* Host-visible buffers created via buffer_create — containment lookup
      * so buffer_create_aliased can hand out GPU-bindable borrowed views
@@ -343,7 +349,8 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_QKV_PREP] = 6,      [VK_PIPE_MM_Q4K_CM] = 3,    [VK_PIPE_MM_Q6K_CM] = 3,
         [VK_PIPE_ATTENTION_F16] = 4, [VK_PIPE_QKV_PREP_F16] = 6, [VK_PIPE_KV_APPEND_F16] = 4,
         [VK_PIPE_ATTN_PART_F16] = 4, [VK_PIPE_ATTN_COMB] = 2,    [VK_PIPE_MM_Q4K_CM32] = 3,
-        [VK_PIPE_PLE_GATE] = 4,      [VK_PIPE_FFN_NORM_GU] = 5,
+        [VK_PIPE_PLE_GATE] = 4,      [VK_PIPE_FFN_NORM_GU] = 5,  [VK_PIPE_DN_CONV] = 3,
+        [VK_PIPE_DN_DELTA] = 8,
 };
 
 struct geist_buffer {
