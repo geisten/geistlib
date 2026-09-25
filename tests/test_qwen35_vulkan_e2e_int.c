@@ -8,7 +8,7 @@
  *   2. CPU equivalence: for a short prompt (prefill m = 5) and a long one
  *      (prefill m ~ 60, exercising the batched GEMMs, the token-sequential
  *      DeltaNet kernel and the causal conv over a multi-row window) the whole
- *      greedy continuation equals the CPU backend's. The KV cache is pinned to
+ *      greedy continuation equals the cpu_scalar oracle's. The KV cache is pinned to
  *      FP32 on both sides: the CPU backends default to an INT8-quantized cache
  *      (~1 % relative error in the attention output, which flips near-tied
  *      greedy choices) and Vulkan to F16, so the default configurations are
@@ -136,13 +136,15 @@ static int first_diff(const struct run *a, const struct run *b) {
 }
 
 static const char *cpu_backend(void) {
-    /* GEIST_E2E_REF picks the reference backend (cpu_scalar is the f32
-     * numerical oracle; the SIMD backends quantize activations to int8). */
+    /* GEIST_E2E_REF picks the reference backend. Default: cpu_scalar, the f32
+     * numerical oracle — the SIMD backends quantize activations to int8
+     * (cosine ~0.9999 against it on the 27B), which flips near-tied greedy
+     * choices on long prompts even though nothing is wrong. */
     const char *forced = getenv("GEIST_E2E_REF");
     if (forced != nullptr && forced[0] != '\0') {
         return forced;
     }
-    static const char *names[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
+    static const char *names[] = {"cpu_scalar", "cpu_x86", "cpu_neon"};
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
         struct geist_backend *be = nullptr;
         if (geist_backend_create(names[i], nullptr, nullptr, &be) == GEIST_OK) {

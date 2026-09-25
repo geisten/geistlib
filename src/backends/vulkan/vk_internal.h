@@ -67,11 +67,14 @@
 #include "shaders/matmul_q8_0_spv.h"
 #include "shaders/matvec_q5k_spv.h"
 #include "shaders/matmul_q5k_spv.h"
+#include "shaders/matvec_tq2_0_spv.h"
+#include "shaders/matmul_tq2_0_spv.h"
 #include "shaders/matvec_q6k_spv.h"
 #include "shaders/mul_f32_spv.h"
 #include "shaders/rmsnorm_add_f32_spv.h"
 #include "shaders/rmsnorm_f32_spv.h"
 #include "shaders/rope_f32_spv.h"
+#include "shaders/rope_interleaved_f32_spv.h"
 #include "shaders/scale_f32_spv.h"
 
 /* ====================================================================== */
@@ -159,6 +162,7 @@ enum vk_pipe {
     VK_PIPE_RMSNORM,
     VK_PIPE_RMSNORM_ADD,
     VK_PIPE_ROPE,
+    VK_PIPE_ROPE_IL,
     VK_PIPE_ATTENTION,
     VK_PIPE_ARGMAX,
     VK_PIPE_EMBED,
@@ -184,6 +188,8 @@ enum vk_pipe {
     VK_PIPE_MATMUL_Q8_0,
     VK_PIPE_MATVEC_Q5K,
     VK_PIPE_MATMUL_Q5K,
+    VK_PIPE_MATVEC_TQ2_0,
+    VK_PIPE_MATMUL_TQ2_0,
     VK_PIPE_SILU,        /* y = silu(x) */
     VK_PIPE_SILU_MUL,    /* y = silu(a) * b (SwiGLU epilogue) */
     VK_PIPE_SIGMOID_MUL, /* y = a * sigmoid(gate) (qwen35 attention gate) */
@@ -364,20 +370,21 @@ struct vk_state {
 
 /* binding count per pipeline (descriptor set layout selector) */
 static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
-        [VK_PIPE_MATVEC_Q4K] = 3,    [VK_PIPE_MATMUL_Q4K] = 3,   [VK_PIPE_MATVEC_Q6K] = 3,
-        [VK_PIPE_MATMUL_Q6K] = 3,    [VK_PIPE_MATVEC_F32] = 3,   [VK_PIPE_MATMUL_F32] = 3,
-        [VK_PIPE_ADD] = 3,           [VK_PIPE_MUL] = 3,          [VK_PIPE_GELU] = 2,
-        [VK_PIPE_GELU_MUL] = 3,      [VK_PIPE_SCALE] = 2,        [VK_PIPE_RMSNORM] = 3,
-        [VK_PIPE_RMSNORM_ADD] = 4,   [VK_PIPE_ROPE] = 3,         [VK_PIPE_ATTENTION] = 4,
-        [VK_PIPE_ARGMAX] = 2,        [VK_PIPE_EMBED] = 2,        [VK_PIPE_FFN_GATE_UP] = 4,
-        [VK_PIPE_QKV_PREP] = 6,      [VK_PIPE_MM_Q4K_CM] = 3,    [VK_PIPE_MM_Q6K_CM] = 3,
-        [VK_PIPE_ATTENTION_F16] = 4, [VK_PIPE_QKV_PREP_F16] = 6, [VK_PIPE_KV_APPEND_F16] = 4,
-        [VK_PIPE_ATTN_PART_F16] = 4, [VK_PIPE_ATTN_COMB] = 2,    [VK_PIPE_MM_Q4K_CM32] = 3,
-        [VK_PIPE_PLE_GATE] = 4,      [VK_PIPE_FFN_NORM_GU] = 5,  [VK_PIPE_DN_CONV] = 3,
-        [VK_PIPE_DN_DELTA] = 8,      [VK_PIPE_MATVEC_Q4_0] = 3,  [VK_PIPE_MATMUL_Q4_0] = 3,
-        [VK_PIPE_MATVEC_Q4_1] = 3,   [VK_PIPE_MATMUL_Q4_1] = 3,  [VK_PIPE_MATVEC_Q8_0] = 3,
-        [VK_PIPE_MATMUL_Q8_0] = 3,   [VK_PIPE_MATVEC_Q5K] = 3,   [VK_PIPE_MATMUL_Q5K] = 3,
-        [VK_PIPE_SILU] = 2,          [VK_PIPE_SILU_MUL] = 3,     [VK_PIPE_SIGMOID_MUL] = 3,
+        [VK_PIPE_MATVEC_Q4K] = 3,    [VK_PIPE_MATMUL_Q4K] = 3,    [VK_PIPE_MATVEC_Q6K] = 3,
+        [VK_PIPE_MATMUL_Q6K] = 3,    [VK_PIPE_MATVEC_F32] = 3,    [VK_PIPE_MATMUL_F32] = 3,
+        [VK_PIPE_ADD] = 3,           [VK_PIPE_MUL] = 3,           [VK_PIPE_GELU] = 2,
+        [VK_PIPE_GELU_MUL] = 3,      [VK_PIPE_SCALE] = 2,         [VK_PIPE_RMSNORM] = 3,
+        [VK_PIPE_RMSNORM_ADD] = 4,   [VK_PIPE_ROPE] = 3,          [VK_PIPE_ROPE_IL] = 3,
+        [VK_PIPE_ATTENTION] = 4,     [VK_PIPE_ARGMAX] = 2,        [VK_PIPE_EMBED] = 2,
+        [VK_PIPE_FFN_GATE_UP] = 4,   [VK_PIPE_QKV_PREP] = 6,      [VK_PIPE_MM_Q4K_CM] = 3,
+        [VK_PIPE_MM_Q6K_CM] = 3,     [VK_PIPE_ATTENTION_F16] = 4, [VK_PIPE_QKV_PREP_F16] = 6,
+        [VK_PIPE_KV_APPEND_F16] = 4, [VK_PIPE_ATTN_PART_F16] = 4, [VK_PIPE_ATTN_COMB] = 2,
+        [VK_PIPE_MM_Q4K_CM32] = 3,   [VK_PIPE_PLE_GATE] = 4,      [VK_PIPE_FFN_NORM_GU] = 5,
+        [VK_PIPE_DN_CONV] = 3,       [VK_PIPE_DN_DELTA] = 8,      [VK_PIPE_MATVEC_Q4_0] = 3,
+        [VK_PIPE_MATMUL_Q4_0] = 3,   [VK_PIPE_MATVEC_Q4_1] = 3,   [VK_PIPE_MATMUL_Q4_1] = 3,
+        [VK_PIPE_MATVEC_Q8_0] = 3,   [VK_PIPE_MATMUL_Q8_0] = 3,   [VK_PIPE_MATVEC_Q5K] = 3,
+        [VK_PIPE_MATMUL_Q5K] = 3,    [VK_PIPE_MATVEC_TQ2_0] = 3,  [VK_PIPE_MATMUL_TQ2_0] = 3,
+        [VK_PIPE_SILU] = 2,          [VK_PIPE_SILU_MUL] = 3,      [VK_PIPE_SIGMOID_MUL] = 3,
         [VK_PIPE_QGATE_SPLIT] = 3,
 };
 

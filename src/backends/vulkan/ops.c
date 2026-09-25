@@ -36,6 +36,9 @@ struct vk_qinfo {
     case GEIST_DTYPE_Q8_0:
         *out = (struct vk_qinfo) {32, VK_PIPE_MATVEC_Q8_0, VK_PIPE_MATMUL_Q8_0};
         return true;
+    case GEIST_DTYPE_TQ2_0:
+        *out = (struct vk_qinfo) {256, VK_PIPE_MATVEC_TQ2_0, VK_PIPE_MATMUL_TQ2_0};
+        return true;
     case GEIST_DTYPE_F32:
         /* not block-quantized; blocks_per_row is unused by the f32 kernels */
         *out = (struct vk_qinfo) {256, VK_PIPE_MATVEC_F32, VK_PIPE_MATMUL_F32};
@@ -193,6 +196,7 @@ VK_DEFINE_QUANT_KERNELS(q4_0, VK_PIPE_MATVEC_Q4_0, VK_PIPE_MATMUL_Q4_0)
 VK_DEFINE_QUANT_KERNELS(q4_1, VK_PIPE_MATVEC_Q4_1, VK_PIPE_MATMUL_Q4_1)
 VK_DEFINE_QUANT_KERNELS(q8_0, VK_PIPE_MATVEC_Q8_0, VK_PIPE_MATMUL_Q8_0)
 VK_DEFINE_QUANT_KERNELS(q5k, VK_PIPE_MATVEC_Q5K, VK_PIPE_MATMUL_Q5K)
+VK_DEFINE_QUANT_KERNELS(tq2_0, VK_PIPE_MATVEC_TQ2_0, VK_PIPE_MATMUL_TQ2_0)
 
 /* ---- CPU fallback for dtypes without a GPU kernel yet (F16/BF16/...) ----
  * Row-dequant + naive dot, following cpu_scalar_w_quant_*; keeps model
@@ -227,6 +231,9 @@ static bool vk_dequant_row(const struct geist_weight *w, size_t j, float *row) {
         return true;
     case GEIST_DTYPE_Q8_0:
         dequant_q8_0_row(n_in, base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row);
+        return true;
+    case GEIST_DTYPE_TQ2_0:
+        dequant_tq2_0_row(n_in, base + j * n_in / TQ2_0_BLOCK_ELEMS * TQ2_0_BLOCK_BYTES, row);
         return true;
     case GEIST_DTYPE_Q4_0:
         dequant_q4_0_row(n_in, base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row);
@@ -330,6 +337,11 @@ enum { VK_Q6K_GPU_BLOCK = 216 };
                                vk_soa_bytes(blocks, Q8_0_BLOCK_BYTES - 2, &bytes)
                        ? 0
                        : bytes;
+    case GEIST_DTYPE_TQ2_0:
+        return ckd_mul(&blocks, n_out, n_in / TQ2_0_BLOCK_ELEMS) ||
+                               vk_soa_bytes(blocks, TQ2_0_BLOCK_BYTES - 2, &bytes)
+                       ? 0
+                       : bytes;
     case GEIST_DTYPE_F32:
         return ckd_mul(&blocks, n_out, n_in) || ckd_mul(&bytes, blocks, sizeof(float)) ? 0 : bytes;
     default:
@@ -364,11 +376,19 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         return packed;
     }
     case GEIST_DTYPE_Q4_0:
-    case GEIST_DTYPE_Q8_0: {
+    case GEIST_DTYPE_Q8_0:
+    case GEIST_DTYPE_TQ2_0: {
+        /* file blocks: Q4_0/Q8_0 = f16 scale then quants; TQ2_0 = quants then
+         * f16 scale (ggml's block_tq2_0) */
+        const bool   tq       = w->dtype == GEIST_DTYPE_TQ2_0;
         const bool   q4       = w->dtype == GEIST_DTYPE_Q4_0;
-        const size_t bb       = q4 ? Q4_0_BLOCK_BYTES : Q8_0_BLOCK_BYTES;
+        const size_t bb       = tq ? TQ2_0_BLOCK_BYTES : q4 ? Q4_0_BLOCK_BYTES : Q8_0_BLOCK_BYTES;
         const size_t qbytes   = bb - 2;
-        const size_t n_blocks = n_out * (n_in / (q4 ? Q4_0_BLOCK_ELEMS : Q8_0_BLOCK_ELEMS));
+        const size_t qskip    = tq ? 0 : 2;
+        const size_t scoff    = tq ? qbytes : 0;
+        const size_t n_blocks = n_out * (n_in / (tq   ? TQ2_0_BLOCK_ELEMS
+                                                 : q4 ? Q4_0_BLOCK_ELEMS
+                                                      : Q8_0_BLOCK_ELEMS));
         uint8_t     *packed   = heap_alloc_aligned(bytes, 64);
         if (packed == nullptr) {
             *failed = true;
@@ -381,8 +401,8 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
 #pragma omp parallel for schedule(static)
 #endif
         for (size_t i = 0; i < n_blocks; ++i) {
-            memcpy(qs + i * qbytes, src + i * bb + 2, qbytes);
-            memcpy(sc + i * 2, src + i * bb, 2);
+            memcpy(qs + i * qbytes, src + i * bb + qskip, qbytes);
+            memcpy(sc + i * 2, src + i * bb + scoff, 2);
         }
         return packed;
     }
@@ -428,7 +448,8 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         /* Row length is not a whole number of blocks: the GPU kernels index
          * by block. Formats with a CPU dequant row keep working through it. */
         if (w->dtype == GEIST_DTYPE_Q8_0 || w->dtype == GEIST_DTYPE_Q5_K ||
-            w->dtype == GEIST_DTYPE_Q4_0 || w->dtype == GEIST_DTYPE_Q4_1) {
+            w->dtype == GEIST_DTYPE_Q4_0 || w->dtype == GEIST_DTYPE_Q4_1 ||
+            w->dtype == GEIST_DTYPE_TQ2_0) {
             w->linear_m1 = vk_w_cpu_m1;
             w->linear_mN = vk_w_cpu_mN;
             return GEIST_OK;
@@ -463,6 +484,10 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
     case GEIST_DTYPE_Q8_0:
         m1 = vk_w_q8_0_m1;
         mN = vk_w_q8_0_mN;
+        break;
+    case GEIST_DTYPE_TQ2_0:
+        m1 = vk_w_tq2_0_m1;
+        mN = vk_w_tq2_0_mN;
         break;
     default:
         return GEIST_E_UNSUPPORTED;
@@ -549,6 +574,8 @@ uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
     case VK_PIPE_MATVEC_Q4_1:
     case VK_PIPE_MATVEC_Q8_0:
     case VK_PIPE_MATVEC_Q5K:
+    case VK_PIPE_MATVEC_TQ2_0:
+    case VK_PIPE_MATMUL_TQ2_0:
     case VK_PIPE_MATMUL_Q4_0:
     case VK_PIPE_MATMUL_Q4_1:
     case VK_PIPE_MATMUL_Q8_0:
@@ -569,6 +596,7 @@ uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m) {
     case VK_PIPE_MATMUL_Q4_1:
     case VK_PIPE_MATMUL_Q8_0:
     case VK_PIPE_MATMUL_Q5K:
+    case VK_PIPE_MATMUL_TQ2_0:
         return (m + 31u) / 32u; /* 32 batch rows per workgroup */
     case VK_PIPE_MATMUL_Q6K:
     case VK_PIPE_MATMUL_F32:
@@ -1054,6 +1082,31 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
     return GEIST_OK;
 }
 
+/* Head sizes the interleaved-rope shader stages in shared memory. */
+enum { VK_ROPE_IL_MAX_HEAD_DIM = 256 };
+
+[[nodiscard]] static enum geist_status vk_rope_apply_interleaved(struct geist_backend      *be,
+                                                                 struct geist_tensor       *x,
+                                                                 const struct geist_tensor *cos,
+                                                                 const struct geist_tensor *sin) {
+    VkDescriptorBufferInfo bi[3];
+    uint32_t               off[3];
+    if (!VK_OPS(be, 8u) || x == nullptr || cos == nullptr || sin == nullptr || x->ndim != 3 ||
+        vk_t_n(x) == 0 || (size_t) cos->shape[cos->ndim - 1] != (size_t) x->shape[2] ||
+        (size_t) x->shape[2] > VK_ROPE_IL_MAX_HEAD_DIM || x->shape[2] % 2 != 0 ||
+        !vk_tensor_gpu(x, &bi[0], &off[0]) || !vk_tensor_gpu(cos, &bi[1], &off[1]) ||
+        !vk_tensor_gpu(sin, &bi[2], &off[2])) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t   seq     = (size_t) x->shape[0];
+    const size_t   heads   = (size_t) x->shape[1];
+    const uint32_t push[5] = {(uint32_t) heads, (uint32_t) x->shape[2], off[0], off[1], off[2]};
+    const struct vk_access acc[3] = {
+            vk_acc_tensor(x, true), vk_acc_tensor(cos, false), vk_acc_tensor(sin, false)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_ROPE_IL, bi, acc, push, sizeof(push), (uint32_t) (seq * heads), 1, 1);
+}
+
 [[nodiscard]] static enum geist_status vk_embedding_lookup(struct geist_backend      *be,
                                                            const struct geist_tensor *embed_table,
                                                            geist_token_t              token_id,
@@ -1526,7 +1579,19 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
             embed_table->buffer->host_alias != nullptr
                     ? (const uint8_t *) embed_table->buffer->host_alias + embed_table->offset
                     : nullptr;
-    struct geist_buffer   *wbuf = host != nullptr ? vk_weight_lookup(st, host) : nullptr;
+    struct geist_buffer *wbuf = host != nullptr ? vk_weight_lookup(st, host) : nullptr;
+    if (wbuf == nullptr && host != nullptr && embed_table->buffer->bytes > embed_table->offset) {
+        /* An untied table (separate output.weight) is never resolved by the
+         * arch layer: register it now, so the repacked dtypes can be read. */
+        struct geist_weight ew = {.raw        = host,
+                                  .raw_nbytes = embed_table->buffer->bytes - embed_table->offset,
+                                  .n_in       = (int32_t) d,
+                                  .n_out      = (int32_t) vocab,
+                                  .dtype      = (uint16_t) embed_table->dtype};
+        if (vk_resolve_weight(be, &ew) == GEIST_OK) {
+            wbuf = vk_weight_lookup(st, host);
+        }
+    }
     VkDescriptorBufferInfo bi[2];
     uint32_t               w_elem_off = 0;
     if (wbuf != nullptr) {
@@ -2073,6 +2138,8 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
         return VK_OPS(be, 1u);
     case GEIST_FUSED_SILU_MUL:
         return VK_OPS(be, 2u);
+    case GEIST_FUSED_ROPE_INTERLEAVED:
+        return VK_OPS(be, 8u) && q->head_dim % 2 == 0 && q->head_dim <= VK_ROPE_IL_MAX_HEAD_DIM;
     case GEIST_FUSED_FFN_GATE_UP:
     case GEIST_FUSED_FFN_NORM_GATE_UP: {
         if (!VK_OPS(be, 1u) || q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr ||
@@ -2156,15 +2223,16 @@ static const struct geist_backend_fused vk_fused = {
 #ifndef VK_NO_ARGMAX
         .argmax_f32 = vk_argmax_f32,
 #endif
-        .ffn_gate_up      = vk_ffn_gate_up,
-        .ffn_norm_gate_up = vk_ffn_norm_gate_up,
-        .ple_block        = vk_ple_block,
-        .attn_qkv_prep    = vk_attn_qkv_prep,
-        .kv_append_f16    = vk_kv_append_f16,
-        .deltanet_mix     = vk_deltanet_mix,
-        .attn_qgate_split = vk_attn_qgate_split,
-        .sigmoid_mul      = vk_sigmoid_mul,
-        .silu_mul         = vk_silu_mul,
+        .ffn_gate_up            = vk_ffn_gate_up,
+        .ffn_norm_gate_up       = vk_ffn_norm_gate_up,
+        .ple_block              = vk_ple_block,
+        .attn_qkv_prep          = vk_attn_qkv_prep,
+        .kv_append_f16          = vk_kv_append_f16,
+        .deltanet_mix           = vk_deltanet_mix,
+        .attn_qgate_split       = vk_attn_qgate_split,
+        .sigmoid_mul            = vk_sigmoid_mul,
+        .silu_mul               = vk_silu_mul,
+        .rope_apply_interleaved = vk_rope_apply_interleaved,
 };
 
 const struct geist_backend_descriptor geist_backend_vulkan = {
@@ -2175,6 +2243,7 @@ const struct geist_backend_descriptor geist_backend_vulkan = {
         .caps  = {.kv_f16_attention           = true,
                   .batched_submit             = true,
                   .weights_need_backend_arena = true,
+                  .weights_device_copy        = true,
                   .max_m                      = 512,
                   .preferred_kv_mode          = GEIST_KV_FP32},
 };

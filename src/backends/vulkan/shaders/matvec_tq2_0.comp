@@ -1,0 +1,76 @@
+#version 450
+
+/* TQ2_0 (ternary) matvec, one row per 32-lane "warp" derived from the thread
+ * id (any hardware subgroup size works), 8 rows per 256-thread workgroup.
+ *
+ * GPU layout (struct-of-arrays, see vk_repack_weight): all blocks' 64 quant
+ * bytes back to back (16 words per block), then one f16 scale per block.
+ *   value(e) = d * (((qs[g*32 + m] >> (2*l)) & 3) - 1),  e = g*128 + l*32 + m
+ * One lane covers 8 consecutive m of one (g, l): two quant words, two x vec4.
+ * 32 lanes = one 256-element block.
+ *
+ * Dispatch: gx = ceil(n_out / 8). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+shared float tmpsh[8][32];
+
+vec4 trits(uint q, uint sh) {
+    return vec4(float((q >> sh) & 3u) - 1.0,
+                float((q >> (sh + 8u)) & 3u) - 1.0,
+                float((q >> (sh + 16u)) & 3u) - 1.0,
+                float((q >> (sh + 24u)) & 3u) - 1.0);
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint wrp = tid >> 5u;
+    uint lane = tid & 31u;
+    uint row = gl_WorkGroupID.x * 8u + wrp;
+    uint g = lane >> 4u;
+    uint l = (lane >> 2u) & 3u;
+    uint m0 = (lane & 3u) * 8u;
+    uint sh = 2u * l;
+    uint nb = pc.blocks_per_row;
+    uint sc0 = pc.n_out * nb * 16u;
+
+    float acc = 0.0;
+    if (row < pc.n_out) {
+        uint xbase = pc.x_offset >> 2u;
+        for (uint b = 0u; b < nb; ++b) {
+            uint bi = row * nb + b;
+            uint qw = bi * 16u + g * 8u + (m0 >> 2u);
+            float d = unpackHalf2x16(w[sc0 + (bi >> 1u)] >> ((bi & 1u) * 16u)).x;
+            uint xi = xbase + ((b * 256u + g * 128u + l * 32u + m0) >> 2u);
+            acc += d * (dot(trits(w[qw], sh), x4[xi]) + dot(trits(w[qw + 1u], sh), x4[xi + 1u]));
+        }
+    }
+
+    tmpsh[wrp][lane] = acc;
+    barrier();
+    for (uint s = 16u; s > 0u; s >>= 1u) {
+        if (lane < s) {
+            tmpsh[wrp][lane] += tmpsh[wrp][lane + s];
+        }
+        barrier();
+    }
+    if (lane == 0u && row < pc.n_out) {
+        y[pc.y_offset + row] = tmpsh[wrp][0];
+    }
+}
