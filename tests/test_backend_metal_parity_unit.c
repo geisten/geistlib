@@ -515,6 +515,14 @@ int main(void) {
      * 6150 leaves a partial 16-row tile, 6144 an exact one. */
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2n8", 512, 6150, 1);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2n8", 512, 6144, 1);
+    /* n_out < 4 at m = 1 is the one shape the n4 GEMV refuses. The
+     * gemm_only formats have no naive kernel under it, so before the
+     * GEMM was widened to take it they dispatched a nil pipeline. */
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2tiny", 512, 3, 1);
+    run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XStiny", 512, 1, 1);
+    run_case(mt, ref, GEIST_DTYPE_Q3_K, "Q3Ktiny", 512, 2, 1);
+    run_case(mt, ref, GEIST_DTYPE_IQ4_NL, "IQ4NLtiny", 512, 3, 1);
+    run_case(mt, ref, GEIST_DTYPE_IQ3_S, "IQ3Stiny", 512, 2, 1);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 1);
