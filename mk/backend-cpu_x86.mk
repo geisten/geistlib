@@ -38,7 +38,12 @@ BACKEND_SOURCES += \
 # target-specific `+=` below is in effect for those .o targets.
 #
 # The variant TUs only run on hosts whose hw_probe + dispatcher have already
-# verified the matching cpuid feature bits — no SIGILL risk.
+# verified the matching cpuid feature bits — no SIGILL risk. That holds only
+# while the deciding code stays OUT of these TUs: -mavx512* lets the compiler
+# emit EVEX anywhere in them, prologues included (MODE=asan does it for the
+# shadow poisoning), so a guard placed inside would run after the first
+# illegal instruction, not before it. q4kx8 keeps its guard and shape
+# dispatch in kernel_q4kx8_gemm_avx512.c, which is not in this list.
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_w4a8_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_w8a8_avx512_vnni.o: CFLAGS_STRICT += \

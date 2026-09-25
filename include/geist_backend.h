@@ -104,11 +104,11 @@ struct geist_backend_vtbl {
     /* Copy host bytes into the buffer. Caller-provided source array. */
     enum geist_status (*buffer_upload)(struct geist_buffer *buf,
                                        size_t               n_bytes,
-                                       const uint8_t        src[static n_bytes]);
+                                       const uint8_t        src[GEIST_AT_LEAST(n_bytes)]);
 
     /* Copy buffer contents back to host. Caller-provided destination. */
     enum geist_status (*buffer_download)(size_t                     n_bytes,
-                                         uint8_t                    dst[static n_bytes],
+                                         uint8_t                    dst[GEIST_AT_LEAST(n_bytes)],
                                          const struct geist_buffer *buf);
 
     /* CPU shortcut: returns a host pointer that aliases the buffer.
@@ -334,10 +334,43 @@ struct geist_deltanet_mix_args {
     float                      eps;
 };
 
+/* Arguments for fused->hadamard_rotate. x and y are F32 DENSE
+ * [rows, width] views; signs is an F32 [width] vector of +/-1 or nullptr
+ * (all +1). Forward (inverse == false):
+ *
+ *     y = H_block( signs * P(x) )
+ *
+ * where P is the grouped-value permutation below and H_block the
+ * orthonormal Sylvester Walsh-Hadamard matrix applied independently to
+ * every contiguous run of `block` elements (block a power of two dividing
+ * width). Inverse (inverse == true, no permutation allowed):
+ *
+ *     y = signs * H_block(x)
+ *
+ * P is the identity when perm_rep <= 1. Otherwise width must equal
+ * perm_hd * perm_nk * perm_rep and P reorders a tiled [rep][nk][hd]
+ * feature layout into grouped [nk][rep][hd]:
+ *
+ *     P(x)[d + hd*(r + rep*k)] = x[d + hd*(k + nk*r)]
+ *
+ * y may alias x only when there is no permutation. */
+struct geist_hadamard_args {
+    const struct geist_tensor *x;
+    const struct geist_tensor *signs; /* nullable */
+    struct geist_tensor       *y;
+    size_t                     block;
+    size_t                     perm_hd;
+    size_t                     perm_nk;
+    size_t                     perm_rep;
+    bool                       inverse;
+};
+
 /* Every slot here is an OPTIMIZATION: the arch must be able to produce the
  * same result from core + primitives. nullptr = always decomposed; a
  * non-null slot may still return GEIST_E_UNSUPPORTED for geometries its
- * kernel doesn't cover, and the caller falls back.
+ * kernel doesn't cover, and the caller falls back. The one exception is
+ * hadamard_rotate (see its comment): a model that needs it refuses to load
+ * where it is null, rather than running a host round-trip per call.
  *
  * Probe-and-bind: call sites migrate from per-call negotiation to
  * consulting `supported` once at plan-build time (the FFN front is
@@ -382,16 +415,16 @@ struct geist_backend_fused {
      * Backends may return GEIST_E_UNSUPPORTED when dtype/shape/layout do
      * not match their fused kernel. The caller then falls back to
      * decomposed ops. */
-    enum geist_status (*ffn_geglu_q4q6_mN)(struct geist_backend      *be,
-                                           size_t                     m,
-                                           size_t                     d_model,
-                                           size_t                     inter,
-                                           const float                x[static m * d_model],
+    enum geist_status (*ffn_geglu_q4q6_mN)(struct geist_backend *be,
+                                           size_t                m,
+                                           size_t                d_model,
+                                           size_t                inter,
+                                           const float           x[GEIST_AT_LEAST(m * d_model)],
                                            const struct geist_weight *gate,
                                            const struct geist_weight *up,
                                            const struct geist_weight *down,
                                            const float               *down_scale, /* nullable */
-                                           float                      y[static m * d_model]);
+                                           float y[GEIST_AT_LEAST(m * d_model)]);
 
     /* Tensor-based linear for batched-submit (GPU) backends. The engine
      * passes the x/weight/y views it already builds alongside the
@@ -438,12 +471,13 @@ struct geist_backend_fused {
      * n_rows calls of embedding_lookup_scaled (the arch falls back to
      * that loop on nullptr or non-OK). Consumer: the prefill chunk
      * loop, which otherwise pays one tiny dispatch per token. */
-    enum geist_status (*embedding_lookup_scaled_rows)(struct geist_backend      *be,
-                                                      size_t                     n_rows,
-                                                      const struct geist_tensor *embed_table,
-                                                      const geist_token_t        ids[static n_rows],
-                                                      float                      scale,
-                                                      struct geist_tensor       *out);
+    enum geist_status (*embedding_lookup_scaled_rows)(
+            struct geist_backend      *be,
+            size_t                     n_rows,
+            const struct geist_tensor *embed_table,
+            const geist_token_t        ids[GEIST_AT_LEAST(n_rows)],
+            float                      scale,
+            struct geist_tensor       *out);
 
     /* Fused f32→f16 KV-cache append: convert k_src/v_src (F32 DENSE
      * [seq, kv_heads, head_dim]) and store them at row q_position of the
@@ -579,6 +613,14 @@ struct geist_backend_fused {
                                      const struct geist_tensor *x,
                                      const struct geist_tensor *gate,
                                      struct geist_tensor       *y);
+
+    /* Blockwise Walsh-Hadamard activation transform for models whose
+     * weights were stored in a rotated basis (prism.hadamard GGUF keys).
+     * See geist_hadamard_args. The one slot without a decomposed
+     * fallback: a model that needs it refuses to load on a backend that
+     * leaves it nullptr, instead of running a host round-trip per call. */
+    enum geist_status (*hadamard_rotate)(struct geist_backend             *be,
+                                         const struct geist_hadamard_args *args);
 };
 
 /* ====================================================================== */
@@ -620,7 +662,11 @@ struct geist_backend_caps {
     /* deltanet_mix() sub-chunks long sequences internally (the O(C²)
      * chunk recipe runs at its own optimal granularity regardless of
      * the caller's m). Consumer: state_create skips the DN m_max cap,
-     * so the surrounding GEMMs keep their occupancy-friendly batch. */
+     * so the surrounding GEMMs keep their occupancy-friendly batch.
+     * Set by metal (its kernel sub-chunks) and by the three CPU backends
+     * (they run the host path, which does). Vulkan runs the same host
+     * path but has not been measured, so it still takes the cap — the
+     * bit is opt-in after measuring, not a description of the code. */
     bool dn_subchunk;
 
     /* Preferred prefill batch size (m_max) measured for this backend;
@@ -666,9 +712,7 @@ enum geist_tunable_kind {
 struct geist_tunable {
     const char             *name;
     enum geist_tunable_kind kind;
-    enum geist_status (*measure)(struct geist_backend *be,
-                                 uint64_t              budget_ns,
-                                 int64_t              *out_value);
+    enum geist_status (*measure)(struct geist_backend *be, uint64_t budget_ns, int64_t *out_value);
 };
 
 /* Each backend exports one of these as a `const` extern. The engine's
@@ -762,9 +806,8 @@ enum geist_status geist_backend_calibrate(struct geist_backend *be,
  * any validation error the backend is unchanged. Effective precedence
  * per tunable: env override ?? calibration ?? built-in seed.
  * @stability EXPERIMENTAL */
-enum geist_status geist_backend_apply_calibration(struct geist_backend *be,
-                                                  const char           *blob,
-                                                  size_t                blob_size);
+enum geist_status
+geist_backend_apply_calibration(struct geist_backend *be, const char *blob, size_t blob_size);
 
 /* Writes the opaque calibration key for this backend's execution
  * environment (same required_size contract as calibrate). The key's

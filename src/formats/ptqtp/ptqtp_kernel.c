@@ -12,7 +12,7 @@
 
 #include <string.h>
 
-#if defined(__ARM_NEON) || defined(__NEON__)
+#if defined(__ARM_FEATURE_DOTPROD)
 #include <arm_neon.h>
 #endif
 
@@ -42,7 +42,7 @@ alignas(16) static const int8_t PTQTP_3P_T3_LUT[32] = {-1, 0,  1,  -1, 0,  1, -1
                                                        1,  -1, 0,  1,  -1, 0, 1,  -1, 0, 1,  -1,
                                                        0,  1,  -1, 0,  1,  0, 0,  0,  0, 0};
 
-#if defined(__ARM_NEON) || defined(__NEON__)
+#if defined(__ARM_FEATURE_DOTPROD)
 /* Reusable inner: NEON 2-plane decode of one group (group_size weights
  * out of [n_in, group_size]). Returns acc1, acc2 (int32, sum-across). */
 static inline void ptqtp_2plane_group_neon(const uint8_t *g_trits,
@@ -117,7 +117,7 @@ void ptqtp_gemv_2plane_fp32alpha(size_t         n_in,
 
         for (size_t g = 0; g < n_groups; g++) {
             int32_t acc1, acc2;
-#if defined(__ARM_NEON) || defined(__NEON__)
+#if defined(__ARM_FEATURE_DOTPROD)
             ptqtp_2plane_group_neon(row_trits + g * group_byte_size,
                                     x_q8 + g * group_size,
                                     group_byte_size,
@@ -172,7 +172,7 @@ void ptqtp_gemv_2plane_fp16alpha(size_t          n_in,
 
         for (size_t g = 0; g < n_groups; g++) {
             int32_t acc1, acc2;
-#if defined(__ARM_NEON) || defined(__NEON__)
+#if defined(__ARM_FEATURE_DOTPROD)
             ptqtp_2plane_group_neon(row_trits + g * group_byte_size,
                                     x_q8 + g * group_size,
                                     group_byte_size,
@@ -261,7 +261,7 @@ void ptqtp_gemm_2plane_fp32alpha(size_t         M,
             const float a2 = row_alpha[g * 2 + 1];
             for (size_t m = 0; m < M; m++) {
                 int32_t acc1, acc2;
-#if defined(__ARM_NEON) || defined(__NEON__)
+#if defined(__ARM_FEATURE_DOTPROD)
                 ptqtp_2plane_group_neon(row_trits + g * group_byte_size,
                                         x_q8 + m * n_in + g * group_size,
                                         group_byte_size,
@@ -285,10 +285,13 @@ void ptqtp_gemm_2plane_fp32alpha(size_t         M,
 
 /* ---------------- Bit-expansion LUT (256 → 8 bytes) ----------------
  * BIT_EXPAND_LUT[b][i] = (b >> i) & 1 for i ∈ [0, 8).
- * Used by the 5-bit packed kernel to expand the high-bit stream.
+ * Used by the 5-bit packed kernel's NEON path to expand the high-bit stream;
+ * the scalar path does not read it, so it only exists where NEON does (clang
+ * rejects an unused internal table under -Werror).
  * 256 × 8 = 2048 bytes — comfortably fits in L1 (4 cache lines per entry
  * is misleading; the lookup pattern is byte-stream sequential so each
  * accessed entry brings its 8-byte payload in one read). */
+#if defined(__ARM_FEATURE_DOTPROD)
 alignas(16) static const uint8_t BIT_EXPAND_LUT[256][8] = {
 #define B0(b)                                                                          \
     ((uint8_t) ((b) & 1)), ((uint8_t) (((b) >> 1) & 1)), ((uint8_t) (((b) >> 2) & 1)), \
@@ -309,6 +312,7 @@ alignas(16) static const uint8_t BIT_EXPAND_LUT[256][8] = {
 };
 
 static_assert(sizeof(BIT_EXPAND_LUT) == 2048, "BIT_EXPAND_LUT must be 2 KiB");
+#endif /* __ARM_FEATURE_DOTPROD */
 
 void ptqtp_gemv_3plane_packed5_fp32alpha(size_t         n_in,
                                          size_t         n_out,
@@ -343,7 +347,7 @@ void ptqtp_gemv_3plane_packed5_fp32alpha(size_t         n_in,
             const int8_t  *g_x    = x_q8 + g * group_size;
             int32_t        acc1, acc2, acc3;
 
-#if defined(__ARM_NEON) || defined(__NEON__)
+#if defined(__ARM_FEATURE_DOTPROD)
             int8x16x2_t t1_lut, t2_lut, t3_lut;
             t1_lut.val[0]    = vld1q_s8(PTQTP_3P_T1_LUT);
             t1_lut.val[1]    = vld1q_s8(PTQTP_3P_T1_LUT + 16);
@@ -441,7 +445,7 @@ void ptqtp_gemv_3plane_fp32alpha(size_t         n_in,
             const int8_t  *g_x     = x_q8 + g * group_size;
             int32_t        acc1, acc2, acc3;
 
-#if defined(__ARM_NEON) || defined(__NEON__)
+#if defined(__ARM_FEATURE_DOTPROD)
             int8x16x2_t t1_lut, t2_lut, t3_lut;
             t1_lut.val[0]    = vld1q_s8(PTQTP_3P_T1_LUT);
             t1_lut.val[1]    = vld1q_s8(PTQTP_3P_T1_LUT + 16);

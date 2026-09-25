@@ -47,6 +47,8 @@ struct dtype_map_entry map_gguf_dtype(gguf_dtype_t gd) {
         return (struct dtype_map_entry) {GEIST_DTYPE_TQ2_0, GEIST_LAYOUT_BLOCK_QUANTIZED, true};
     case GGUF_TYPE_I2_S:
         return (struct dtype_map_entry) {GEIST_DTYPE_I2_S, GEIST_LAYOUT_BLOCK_QUANTIZED, true};
+    case GGUF_TYPE_PQ2_0:
+        return (struct dtype_map_entry) {GEIST_DTYPE_PQ2_0, GEIST_LAYOUT_BLOCK_QUANTIZED, true};
     default:
         return (struct dtype_map_entry) {0, 0, false};
     }

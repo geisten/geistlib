@@ -245,7 +245,7 @@ static size_t ffn_tile_blocks(void) {
                 be, GEIST_E_INVALID_ARG, "cpu_neon rope_apply: cos/sin seq_len mismatch");
         return GEIST_E_INVALID_ARG;
     }
-    rope_apply(seq_len, n_heads, head_dim, xp, cosp, sinp);
+    rope_apply(seq_len, n_heads, head_dim, (size_t) cos->shape[cos->ndim - 1], xp, cosp, sinp);
     return GEIST_OK;
 }
 

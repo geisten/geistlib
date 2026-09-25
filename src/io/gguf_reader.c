@@ -28,6 +28,12 @@ enum {
     GGUF_VT_F64    = 12,
 };
 
+/* Smallest number of file bytes a metadata KV or a tensor info can occupy: a
+ * u64 length + a u32 type for the KV, a u64 name length + u32 n_dims for the
+ * tensor info. A strict lower bound by the format, so bounding the header's
+ * counts with it can never reject a well-formed file. */
+enum { GGUF_MIN_RECORD_BYTES = 12 };
+
 #define MAGIC_LE 0x46554747u /* "GGUF" little-endian */
 
 /* P1.4.d: metadata KV record. Each entry points into the mmap for both
@@ -107,6 +113,11 @@ static const struct dtype_row_t DTYPE_ROWS[] = {
          * it from raw + n_in*n_out/4. (Confirmed against bitnet.cpp quantize_i2_s:
          * one scale_ptr[0] per tensor, not per row.) */
         {GGUF_TYPE_I2_S, I2_S_BLOCK_BYTES, I2_S_BLOCK_ELEMS, sizeof(float), "I2_S"},
+        {GGUF_TYPE_PQ2_0,
+         PQ2_0_BLOCK_BYTES,
+         PQ2_0_BLOCK_ELEMS,
+         0,
+         "PQ2_0"}, /* fp16 d + 32 bytes of 2-bit codes */
 };
 static const size_t DTYPE_ROWS_N = sizeof(DTYPE_ROWS) / sizeof(DTYPE_ROWS[0]);
 
@@ -350,6 +361,18 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
     uint64_t mcount = read_u64(&c);
     if (!c.ok) {
         GGUF_FAIL("header truncated");
+    }
+    /* Bound both counts by what is left of the file before either becomes an
+     * allocation count. The header is 24 bytes and says nothing about the
+     * file's size, so a hostile GGUF can claim 2^48 entries: the ckd_mul in
+     * heap.h catches the overflow, but the product is still an allocation of
+     * terabytes asked for on behalf of bytes that do not exist. Under a
+     * sanitizer that request aborts the process instead of returning null, so
+     * a consumer's asan build died on a file it should merely have rejected.
+     * Subtraction, not p + n (§4). Found by fuzzing. */
+    if (mcount > (uint64_t) (c.end - c.p) / GGUF_MIN_RECORD_BYTES ||
+        tcount > (uint64_t) (c.end - c.p) / GGUF_MIN_RECORD_BYTES) {
+        GGUF_FAIL("header count exceeds file size");
     }
 
     struct gguf_ctx *ctx = heap_calloc_array_aligned(struct gguf_ctx, 1);

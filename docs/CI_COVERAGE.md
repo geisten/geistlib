@@ -10,17 +10,21 @@ the test suite**, not just built.
 
 | Environment | Build | Unit | Int + e2e (real model) | musl-static | ASan/UBSan | CI job |
 | :-- | :--: | :--: | :--: | :--: | :--: | :-- |
-| **macOS arm64** (Accelerate/AMX) | ✅ | ✅ | ⚪ skip¹ | — | — | `build-test` |
+| **macOS arm64** (Accelerate/AMX) | ✅ | ✅ | ⚪ skip¹ | — | ✅⁴ | `build-test` |
+| **macOS x86_64** (cpu_x86 AVX2, Accelerate) | ✅ | ✅ | ⚪ skip¹ | — | ✅⁴ | `build-test` |
 | **Linux arm64** (cpu_neon, glibc) | ✅ | ✅ | ✅ | ✅ | ✅ | `build-test`, `build-test-musl`, `asan` |
-| **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅³ | ✅ | ⚪² | `build-test-x86_64`, `build-test-musl-x86_64` |
+| **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅³ | ✅ | ✅² | `build-test-x86_64`, `build-test-musl-x86_64`, `asan-x86_64` |
 | **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar` |
+| **Linux x86_64** (cpu_x86, clang) | ✅ | ✅ | — | — | — | `build-test-x86_64-clang`⁵ |
 
 Every environment in [`release.yml`](../.github/workflows/release.yml)
 (macos-arm64, linux-arm64, linux-x86_64) now has build **and** test coverage
 here. On top of the matrix, dedicated legs gate every PR: TSan multi-session
 (x86_64), the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on
-lavapipe, and the Metal GPU step inside the macOS leg — each described in its
-section below. Vulkan on a physical GPU (`vulkan-gpu`) runs on a self-hosted
+lavapipe, the Metal GPU step inside the macOS arm64 leg, the macOS ASan/UBSan
+unit suite on both Mac arches, and `check-headers` — every
+public header compiled standalone as C23 and as C++17, inside `build-test` —
+each described in its section below. Vulkan on a physical GPU (`vulkan-gpu`) runs on a self-hosted
 runner and gates branch PRs only, not fork PRs.
 
 ## Caveats and deliberate gaps
@@ -30,9 +34,11 @@ runner and gates branch PRs only, not fork PRs.
    macOS runners are the slowest/costliest and the model download dominates.
    Revisit if a macOS-specific product-path bug ever appears. macOS still runs
    the full unit suite.
-2. **x86_64 ASan/UBSan — not yet.** The sanitizer job runs on arm64; it catches
-   memory/UB bugs in the shared C engine + kernels regardless of SIMD path. An
-   x86-specific ASan leg is a reasonable follow-up if an x86-only UB is suspected.
+2. **x86_64 ASan/UBSan — enforced (`asan-x86_64`).** Model-free unit suite with
+   the release binary's backends and GEMM, UBSan halting, leak detection on.
+   Before this leg the cpu_x86 tests were never sanitizer-built, and three had
+   broken there unseen: a build error only at -O1, a NaN comparison that
+   -ffast-math folds at -O1, and a leak on the no-cpu_neon exit path.
 3. **x86_64 int/e2e — required (#96 resolved).** This leg once caught a
    real shipping bug: AVX-512 kernels in the forward path without a runtime CPU
    guard, SIGILLing on AVX-512-less x86-64-v3 runners. The kernels are guarded
@@ -40,6 +46,21 @@ runner and gates branch PRs only, not fork PRs.
    `GEIST_FORCE_ISA=avx2` pass exercises the non-AVX512 dispatch even on
    runners that do have AVX-512 — so the portability regression class stays
    caught.
+4. **macOS ASan/UBSan — enforced (`build-test`, both arches).** The `asan` and
+   `asan-x86_64` legs are Linux+gcc only, so clang-specific breakage at -O1 had
+   no gate: an `omp simd` request the sanitizer instrumentation cannot satisfy
+   is a `-Wpass-failed=transform-warning` error under `-Werror`, and it never
+   appears at -O3. That failed the whole macOS x86_64 sanitizer build while
+   every Linux leg stayed green. Model-free unit suite, same backends as the
+   release build on that leg.
+5. **x86_64 clang — enforced (`build-test-x86_64-clang`).** Every other x86_64
+   leg compiles with gcc, so a clang-only x86 break had no gate: at v0.10.8 the
+   release backend configuration aborted in instruction selection ("Cannot
+   select: X86ISD::VPDPBUSD") under clang-19 and clang-21 alike, because clang
+   outlines an OpenMP `parallel for` body into a function that does not inherit
+   the kernel's `target` attribute. #415 removed the cause; this leg keeps it
+   from returning. Build plus the model-free unit suite — the failure mode is a
+   compile abort.
 
 ### AVX-512 is exercised *opportunistically*, not guaranteed
 
@@ -75,9 +96,10 @@ explicitly either way).
 | Fixture | Family it proves | Source (pinned) | Mandatory where |
 | :-- | :-- | :-- | :-- |
 | `gemma4-e2b-Q4_K_M.gguf` (~3.1 GB) | gemma (primary reference) | `unsloth/gemma-4-E2B-it-GGUF` | Linux arm64 + x86_64 int/e2e |
-| `smollm2-360m-instruct-q8_0.gguf` (~369 MB) | llama populator + GPT-2-BPE tokenizer mode | `HuggingFaceTB/SmolLM2-360M-Instruct-GGUF`, SHA-256-pinned in the Makefile (`LLAMA_MODEL_SHA256`), Apache-2.0 | Linux arm64 + x86_64 int/e2e |
-| `qwen3-0.6b-q8_0.gguf` (~609 MB) | qwen3 geometry, per-head Q/K norm and tokenizer mode | `Qwen/Qwen3-0.6B-GGUF`, SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
-| `qwen3.5-0.8b-q8_0.gguf` (~780 MB) | qwen35 hybrid DeltaNet/attention family | `unsloth/Qwen3.5-0.8B-GGUF`, SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
+| `smollm2-360m-instruct-q8_0.gguf` (~369 MB) | llama populator + GPT-2-BPE tokenizer mode | `HuggingFaceTB/SmolLM2-360M-Instruct-GGUF`, revision- and SHA-256-pinned in the Makefile (`LLAMA_MODEL_SHA256`), Apache-2.0 | Linux arm64 + x86_64 int/e2e |
+| `qwen3-0.6b-q8_0.gguf` (~609 MB) | qwen3 geometry, per-head Q/K norm and tokenizer mode | `Qwen/Qwen3-0.6B-GGUF`, revision- and SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
+| `qwen3.5-0.8b-q8_0.gguf` (~780 MB) | qwen35 hybrid DeltaNet/attention family | `unsloth/Qwen3.5-0.8B-GGUF`, revision- and SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
+| `audio_tower.safetensors` (~614 MB) | Conformer audio encoder, W8A8 attention and LConv | Range-extracted and SHA-256-pinned (`make fetch-audio-tower`) | `audio-smoke` (arm64, NEON) + `audio-parity-x86_64` (AVX-512/VNNI) |
 
 The llama tests (`test_llama_load_int`, `test_llama_e2e_int`) are **executed,
 not merely built**: both Linux int/e2e legs fetch the model
@@ -194,6 +216,49 @@ the overall figure and per-subsystem table published to the job summary.
 - **Self-test**: `tests/test_coverage_gate_py.py` (hermetic, runs in
   `make test-py`) proves the gate fires on regression, empty scope, unset
   baseline and floor violation — and passes when on-baseline.
+
+## Fuzzing (parsers)
+
+Two harnesses in `tests/`, ordered by attack surface — both need neither a
+model nor the network, because the input *is* the format:
+
+- `fuzz_gguf.c` → `gguf_open_memory` plus every accessor on the result
+  (tensor list, dtype names, metadata getters, one index past the end) and it
+  reads each tensor's payload bytes, so a length that escapes the mapping is a
+  read ASan reports rather than a value nobody looks at. GGUF is first because
+  the whole file comes from outside and the parser says so itself
+  (`src/io/gguf_reader.c:153`).
+- `fuzz_tokenizer.c` → `gguf_tokenizer_load_copy` out of the same file, then
+  encode/decode/`id_for_text`. The GGUF is closed and freed right after the
+  load: copy mode promises independence from the mapping, so a surviving
+  pointer becomes a use-after-free instead of a silent success. Vocab, scores,
+  `token_type` and merges are all attacker-controlled arrays.
+
+Both are entry points for libFuzzer *and* carry a deterministic PRNG driver
+behind `GEIST_FUZZ_STANDALONE`, which is what lets them run in a gcc job:
+
+| Target | Job | Cost |
+| :-- | :-- | :-- |
+| `make MODE=asan fuzz` (3000 runs/harness, fixed seed) | `asan-x86_64` | < 1 s, reuses that job's sanitizer tree |
+| `make fuzz-libfuzzer FUZZ_SECONDS=30` (coverage-guided) | `build-test-x86_64-clang` | ~1 min run, ~7 M execs per target |
+
+`MODE=fuzz` (asan + ubsan + `-fsanitize=fuzzer-no-link`) exists so the library
+itself is instrumented in its own build tree. Do not fake it with
+`MODE=asan EXTRA_CFLAGS=-fsanitize=fuzzer-no-link`: there is no flag hash in
+this build system, an existing asan tree is reused as-is, and the fuzzer then
+runs blind — `cov: 22` after 24 M executions, which is how this was noticed.
+
+The corpus is written by the harness (`--seed`), not checked in: the format
+knowledge belongs next to the parser it feeds. Nothing is persisted between
+runs, which is also the argument against a **nightly long run for now** — each
+run would restart from the same seed, and a 10-minute run from scratch explores
+little past what 30 s at ~230 k exec/s already reaches. Worth adding the moment
+the corpus is cached (`actions/cache`, one entry per target); then the long run
+starts where the last one stopped and the extra minutes buy new shapes.
+
+First finding, fixed in the same change: an unbounded metadata/tensor count in
+the 24-byte GGUF header turned into a 1.5 PB allocation request
+(`gguf_reader.c`, now bounded by the bytes that are actually left).
 
 ## Non-goals
 

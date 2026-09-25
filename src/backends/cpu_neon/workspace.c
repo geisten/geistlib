@@ -80,6 +80,10 @@ void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws) {
     }
     safe_free((void **) &ws->m1_xq);
     ws->m1_xq_cap = 0;
+    safe_free((void **) &ws->pq2_xp);
+    ws->pq2_xp_cap = 0;
+    safe_free((void **) &ws->pq2_tile);
+    ws->pq2_tile_cap = 0;
     safe_free((void **) &ws->m1_bsum);
     ws->m1_bsum_cap = 0;
     safe_free((void **) &ws->mN_xq);

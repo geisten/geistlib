@@ -8,6 +8,48 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+
+- **`geist_model_load_with_opts`** (`@stability EXPERIMENTAL`, `<geist.h>`):
+  load a model with explicit session bounds, so the buffers the model owns —
+  RoPE tables, the default session's scratch — are sized for what the caller
+  will actually use. `geist_model_load` is now a one-line wrapper that passes
+  `nullptr` and keeps today's behaviour exactly. Additive: no existing caller
+  changes, and the architecture vtable already carried the `opts` parameter
+  (`state_create`), which the engine had been passing `nullptr` for.
+
+- **Ternary-Bonsai-2-27B on CPU and metal** (PrismML's ternary
+  Qwen3.8-27B, `PQ2_0` + `prism.hadamard.*`). New dtype `GEIST_DTYPE_PQ2_0`
+  (appended after `IQ4_XS`; ggml type 142 of PrismML-Eng/llama.cpp). On
+  `cpu_neon`: SDOT W2A8 decode GEMV and an NEON-dequant + SGEMM prefill, both
+  on an x8-interleaved copy (`GEIST_PQ2_0_X8_GEMV=0` keeps the row kernel and
+  ~6 GB of RSS). On `metal`: a PQ2_0 GEMV, the simdgroup GEMM and the
+  embedding lookup. New optional backend slot `fused->hadamard_rotate`
+  (`@stability EXPERIMENTAL`, `<geist_backend.h>`) for the blockwise
+  Walsh-Hadamard activation transform the folded weights need, implemented
+  by `cpu_scalar`, `cpu_neon`, `cpu_x86` and `metal`. A GGUF whose
+  `prism.hadamard` keys the qwen35 forward cannot honour exactly is refused
+  at load (`GEIST_E_FORMAT` / `GEIST_E_UNSUPPORTED`) rather than run with
+  wrong math. Output matches the PrismML fork's (prompt ids, next-token top
+  5, first 24 greedy tokens on the pinned chat prompt); numbers in
+  `benchmark/results/TERNARY.md`.
+- **Host DeltaNet sub-chunks** the delta rule at 64 tokens, and CPU backends
+  declare `caps.dn_subchunk`: `GEIST_M_MAX=128` no longer pays O(C²) in
+  DeltaNet on qwen35 models (logits byte-equal to before at m_max 64 and
+  128). The default stays 64.
+- **Dense F16/BF16 projections a backend cannot resolve** are widened to F32
+  at load (metal has no half-precision dense linear).
+
+### Changed
+
+- **The public headers are includable from C++.** `include/` writes its
+  `[static len]` array-parameter contracts as `GEIST_AT_LEAST(len)`, which
+  expands to `static len` in C and to nothing in C++; `extern "C"` alone could
+  not make them parse, so `<geist_util.h>`, `<geist_arch.h>` and
+  `<geist_backend.h>` were unusable from a C++ translation unit. No C-visible
+  change — same parameter types, same diagnostics — and `make check-headers`
+  now compiles every public header standalone as C23 and as C++17 on every PR.
+
 ## [0.11.0] — 2026-09-06
 
 Ternary BitNet embedding models. Microsoft's July 2026 releases —
@@ -116,6 +158,41 @@ deliberate exception to the `STABLE` promise recorded in
   surfaced.
 
 ### Fixed
+- **The metal quant pipeline table dispatched a nil kernel.** Collapsing the
+  five per-format selection chains into `metal_quant_pipes_for` dropped the
+  Q5_K default that used to catch the formats with no naive kernel, so
+  `PQ2_0`, `IQ4_NL`, `IQ4_XS`, `Q3_K` and `IQ3_S` reached
+  `setComputePipelineState:nil` — a process abort — on the one shape neither
+  GEMV nor GEMM took (`rows == 1`, `n_out < 4`). Their bounds-checked GEMM
+  now takes every shape the GEMV refuses, and nothing is encoded when a
+  pipeline failed to build. `test_backend_metal_parity_unit` covers the five
+  tiny-`n_out` shapes; without the fix it segfaults.
+- **PQ2_0 never reached the metal embedding lookup.** The shader arm and
+  `metal_embed_table_geometry` were extended, but `metal_fused_supported`'s
+  dtype list was not, so `exec_plan`'s probe said no and every token fell
+  back to the host dequant.
+- **The metal crossovers ignored an applied calibration blob.** They were
+  resolved inside `metal_create`, which is strictly before
+  `geist_backend_apply_calibration` can run. They are now folded in at the
+  first `resolve_weight`, the way `cpu_neon` overlays its kernel policy, so
+  a calibrated M4/M5 no longer runs the M1 Max seed.
+- **The PQ2_0 kernels could hand the caller stale scratch.** The prefill
+  kernel returned without writing `y` when a workspace grow failed, and its
+  per-tile `continue` skipped the SGEMM that would have zeroed that tile's
+  rows; the decode kernels dereferenced a null per-thread workspace and
+  skipped the zeroing when `aux_fp32` was absent. All of them now zero `y`
+  on refusal, as the rest of `cpu_neon` does.
+- **The FFN activation-sparsity probe read post-Hadamard values** on rotated
+  models, reporting ~0 % sparsity for every layer. It now runs before the
+  rotation, on the gate output it is meant to measure.
+- **metal's `hadamard_rotate` validated less than the host path**: the
+  permutation geometry product was unchecked, `x`/`y` overlap was caught
+  only by buffer identity and only when permuting, and a `block` below 4
+  floats produced a `setThreadgroupMemoryLength` Metal rejects.
+- **The rotation weight-name parser could underflow**: a name with six
+  digits (`blk.123456.weight`) wrapped the kind length to `SIZE_MAX`,
+  harmless only because the length comparison short-circuited the `memcmp`.
+
 - **Embedding models pooled the wrong way.** `bitnet-embedding-*` are
   mean-pooled: their GGUFs carry gguf-py's `{arch}.pooling_type = 1`, which
   upstream's converter auto-detects from the checkpoint's

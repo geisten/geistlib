@@ -5,6 +5,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../rotation.h"
 #include "gemma4_kernels.h"
 #include <geist_types.h>
 #include "profile.h"
@@ -119,6 +120,12 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         t0 = profile ? transformer_profile_now_ns() : 0;
         apply_bitnet_input_quant_inplace(v, sess->scratch_normed, ctx->seq, st->d_model);
         transformer_profile_add(&g_attn_profile, ATTN_PROFILE_NORM, t0);
+    }
+
+    /* prism.hadamard: q/k/v read the normed input rotated (rotation.h). */
+    s = transformer_rotate_rows(st, ctx->seq, st->d_model, sess->scratch_normed);
+    if (s != GEIST_OK) {
+        return s;
     }
 
     /* Per-projection input norms: q, k and v each read their own
@@ -306,14 +313,16 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         }
     }
 
-    t0                                 = profile ? transformer_profile_now_ns() : 0;
-    struct geist_buffer *cos_buf       = L->is_full ? st->rope_cos_full : st->rope_cos_sliding;
-    struct geist_buffer *sin_buf       = L->is_full ? st->rope_sin_full : st->rope_sin_sliding;
-    const size_t         cos_row_bytes = ctx->hd * sizeof(float);
-    struct geist_tensor  t_cos =
-            view_2d_at(cos_buf, ctx->q_position * cos_row_bytes, ctx->SEQ, (int64_t) ctx->hd);
+    t0                           = profile ? transformer_profile_now_ns() : 0;
+    struct geist_buffer *cos_buf = L->is_full ? st->rope_cos_full : st->rope_cos_sliding;
+    struct geist_buffer *sin_buf = L->is_full ? st->rope_sin_full : st->rope_sin_sliding;
+    const size_t         n_rot =
+            rope_table_width(ctx->hd, (size_t) L->n_rotated_dims, st->config.rope_partial_block);
+    const size_t        cos_row_bytes = n_rot * sizeof(float);
+    struct geist_tensor t_cos =
+            view_2d_at(cos_buf, ctx->q_position * cos_row_bytes, ctx->SEQ, (int64_t) n_rot);
     struct geist_tensor t_sin =
-            view_2d_at(sin_buf, ctx->q_position * cos_row_bytes, ctx->SEQ, (int64_t) ctx->hd);
+            view_2d_at(sin_buf, ctx->q_position * cos_row_bytes, ctx->SEQ, (int64_t) n_rot);
     struct geist_tensor t_q_3d =
             view_3d(sess->scratch_q, ctx->SEQ, st->n_q_heads, (int64_t) ctx->hd);
 
@@ -524,6 +533,10 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
     }
     transformer_profile_add(&g_attn_profile, ATTN_PROFILE_POST_CORE, t0);
 
+    s = transformer_rotate_rows(st, ctx->seq, ctx->q_out, sess->scratch_attn);
+    if (s != GEIST_OK) {
+        return s;
+    }
     struct geist_tensor t_o_2d = view_2d(sess->scratch_o, ctx->SEQ, st->d_model);
     t0                         = profile ? transformer_profile_now_ns() : 0;
     s                          = linear_w_or_legacy(be,

@@ -229,6 +229,150 @@ kernel change.** Compare against the previous build of the same backend, which
 is what the perf work here does. See
 [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) for the general rule.
 
+## Ternary-Bonsai-2-27B on the M1 Max (2026-09-22)
+
+PrismML's ternary Qwen3.8-27B, `Ternary-Bonsai-2-27B-PQ2_0.gguf` (7.21 GB,
+sha256 `3907dc16…2ec1`): `PQ2_0` projections, embeddings and head, weights
+folded into a blockwise Walsh-Hadamard basis (`prism.hadamard.*`). Unlike
+BitNet it was not trained with int8 activations — see *Correctness* for why
+the A8 kernels are still fine here. Reference engine: PrismML-Eng/llama.cpp
+`01ae597`, the only other runtime that reads the format.
+
+### Throughput, pp512 / tg64
+
+| | prefill t/s | decode t/s | RSS |
+| :-- | --: | --: | --: |
+| geist CPU, first cut (row GEMV, dequant trampoline) | 8.8 | 6.2 | 8.0 GB |
+| geist CPU, x8 GEMV + x8 prefill, m_max 64 | ~11 | 9.8 | 14.4 GB |
+| geist CPU, same, `GEIST_M_MAX=128` | 14.5 | 9.9 | 14.7 GB |
+| geist metal, first cut | 78–82 | 11.2–11.5 (13.0 at 32 ctx) | 2.5 GB |
+| **geist metal, table GEMV + parallel DeltaNet decode** | **84–111** | **15.5–17.5** (**19.3–19.5** at 32 ctx) | 2.5 GB |
+| PrismML fork, CPU (`-ngl 0`) | 22.4 (see the CPU note below) | 0.45 | |
+| PrismML fork, metal (`-ngl 99`), same window as the row above | 110.7 ± 1.7 | 16.65 ± 0.3 (from empty ctx) | |
+
+geist: `bench_perf_sweep --seq-lens 512 --decode-n 64 --warmup 1 --repeats 2-3`
+(decode is measured after the 512-token prompt); fork: `llama-bench -p 512
+-n 64`, whose tg64 starts from an empty context, so compare it with geist's
+32-context figure. The first row ran behind a load < 3 gate; the rest shared
+the Mac with other agents' jobs (load 5-8 for the metal rows, up to 30 for
+the CPU x8 rows — read those as relative). The fork has no ARM decode kernel
+for `PQ2_0` (0.45 ± 0.38 t/s is its generic path), and its CPU prefill likely
+leans on llama.cpp's GPU op offload for large batches.
+
+Kernel view, one 27B FFN matrix (17408 × 5120), 8 distinct copies so the
+working set is DRAM, not the 48 MB SLC:
+
+| format | bytes | decode m=1 | effective | prefill m=64 |
+| :-- | --: | --: | --: | --: |
+| F32 | 356 MB | 12.6 ms | 28 GB/s | 15.2 ms |
+| F16 | 178 MB | 2.33 ms | 77 GB/s | 12.1 ms |
+| PQ2_0 row | 24 MB | 0.56 ms | 42 GB/s | 18.2 ms |
+| **PQ2_0 x8** | 24 MB | **0.21 ms** | **110 GB/s** | 16.8 ms |
+
+Decode is byte-bound, so ternary pays off there: 11× F16 and 60× the F32
+path on the same matrix. Prefill is compute-bound, F16/F32 run on AMX through
+Accelerate SGEMM, and `PQ2_0` currently goes through the same SGEMM after a
+dequant pass — no ternary advantage there yet.
+
+### Correctness
+
+- Against the fork (`llama-eval-callback`, prompt "Hello"): the
+  inverse-rotated embedding row matches to every printed digit, every layer-0
+  intermediate through `ssm_out` and the FFN agrees to < 1 %, final hidden
+  within 2 %. Signs, the grouped-value permutation and their order are the
+  fork's.
+- Chat prompt (`test_bonsai_e2e_int`): prompt ids, next-token top 5 and the
+  first 24 greedy tokens equal the fork's on CPU and on Metal. The top logit
+  sits ~0.9 below the fork's (25.49 vs 26.37 — fork CPU and Metal agree with
+  each other), which is where the two drift apart after token 24.
+- A8 vs A32: geist with the `PQ2_0` GEMVs forced onto the fp32 trampoline
+  produces the same 64 greedy tokens and the same top-5 as the per-row int8
+  kernels (top logit Δ 0.002); `cpu_scalar` agrees with the A32 build to four
+  digits. The Hadamard rotation is what makes per-row absmax int8 safe on a
+  model trained with full-precision activations.
+
+### Where the time goes
+
+- CPU prefill is AMX SGEMM: the x8 prefill path dequantizes 128-row tiles
+  from the x8 copy with NEON and SGEMMs each per thread (901 / 1002 / 1134
+  GFLOP/s at m = 64 / 128 / 256 on the FFN matrix, the trampoline did
+  628 / 765 / 676). A `sample(1)` profile leaves ~2k of ~50k samples in
+  serial code; the rest is SGEMM plus waits where 8 threads share the two
+  P-cluster AMX units. The host DeltaNet now sub-chunks, so `GEIST_M_MAX=128`
+  costs it nothing; the default stays 64 until a quiet cross-model A/B.
+- Metal decode, ~49 ms per token at 32-token context (subtractive profile,
+  `GEIST_METAL_PROFILE=1` + `GEIST_SKIP_*`): PQ2_0 GEMVs ~38 ms, DeltaNet
+  ~3, Hadamard 0.8, RMS norm 0.47. The norm and the F32 alpha/beta GEMVs
+  together cost 3.9 ms until both kernels were widened from 256 to 1024
+  threads with a simd_sum reduction (decode 19.29 -> 19.96 t/s at 8 ctx,
+  16.55 -> 16.87 at 512, prefill unchanged): one row per threadgroup is
+  all the parallelism a decode step has, so they were latency-bound on an
+  otherwise idle GPU. A
+  dependent dispatch costs ~3 us, so the ~1300 per token are not the
+  floor. The GEMV sits within ~10 % of a read-only probe of its own access
+  pattern (40 ms; 27 ms without the activation loads).
+- An aligned device layout was built, measured and then deleted: regrouping
+  each row's blocks by 8 into [8 x half d][8 x 32 codes] = 272 bytes put the
+  codes on 8-byte instead of 2-byte boundaries and bought 4 % decode at 32
+  ctx (19.4 -> 20.2 t/s), 1.5 % at 512, nothing on prefill — for 13 GB of
+  RSS (2.5 -> 15.5), because the source mmap is read-only so the repack
+  cannot be in place and reading it makes the file pages resident. The GEMV
+  was closer to the bandwidth limit than the alignment suggested. Kept here
+  as the record; the three kernels and the second layout are gone.
+- The decode GEMV is latency-bound, not bandwidth-bound: the same 27B shapes
+  run at 172 GB/s in PQ2_0 but 329 in Q8_0, and 4x the weight bytes only
+  doubles the time. A thread reads 128 bytes of x per iteration against
+  R*8 bytes of weights, so activations move 15/R times the weight bytes —
+  90 MB of (cached) x against 24 MB of weights per ffn gate/up call at
+  R = 4. Hence matvec_pq2_n8 (R = 8) for wide projections, and hence a
+  smaller weight format would buy little: all 26.87 G weights are strictly
+  ternary (the +2 code never occurs), so 5 trits per byte would cut 18 % of
+  the weight bytes but only ~6 % of the traffic.
+
+### CPU prefill against the fork
+
+Re-measured head to head at pp256, one window, load < 3 at the start, same
+GGUF: **fork 17.35 t/s, geist 13.6** (`GEIST_M_MAX=128`; 11.4 at 64, 11.8
+at 256, 11.2 at 512). The pp512 rows above compared each tool at its own
+default and overstate the gap — treat 27 % as the number to beat, not 55 %.
+
+The gap is not the GEMM. Our tiled prefill runs the 27B FFN matrix at
+1002-1134 GFLOP/s (m = 128-256), which would be ~18-21 t/s if the matmuls
+were everything; end to end we get 734 GFLOP/s, so ~30 % goes elsewhere.
+
+What the fork does on CPU, read from its source at 01ae597: PQ2_0 declares
+`vec_dot_type = Q8_K` and ARM has no NEON `ggml_vec_dot_pq2_0_q8_K`, so
+the scalar generic runs; its tiled PQ2 GEMMs (`tinyBLAS_PQ2_AVX`,
+`tinyBLAS_PQ2K_AVX`) and the 4x8 repack GEMM are AVX2/VNNI only. Prefill
+therefore goes through the BLAS backend: dequantize the whole weight
+matrix to F32 in parallel, then one `cblas_sgemm` (batch >= 32). The
+rotation is a matmul tagged `GGML_HINT_SRC0_IS_HADAMARD` that each backend
+intercepts with an FWHT; BLAS declines those nodes.
+
+That structure measured *worse* here, twice (see kernels/pq2_0.c): per
+-thread tiles let one thread's dequant overlap another's AMX work, a panel
+serializes the phases. So the fork's lead comes from somewhere other than
+the matmul strategy. `sample` on a prefill run points at threading: ~35 k
+samples parked in worker threads and ~11.6 k in OpenMP waits against
+~30 k in BLAS itself — we call Accelerate from eight OpenMP threads and it
+brings its own pool, while llama.cpp calls it once from one thread.
+
+### Next levers
+
+- Metal decode: the PQ2_0 GEMV is now 38 of the 49 ms and within ~10 % of a
+  read-only probe of its access pattern, so the next real step is a
+  different decode shape (batching rows, or fewer bytes per weight), not
+  another GEMV variant.
+- CPU prefill: stop oversubscribing Accelerate (the eight per-thread sgemm
+  calls each spin up its pool); the 27 % against the fork is thread
+  scheduling, not kernels. Then the DeltaNet share, ~25 % of prefill.
+- CPU: the PQ2_0 activation prep and x8 repack are now NEON + threaded
+  (decode 6.5 -> 7.4 t/s, load 2.3 s faster on the 27B). Next: a quiet A/B
+  of `m_max` 128 as the Mac default; an fp16-AMX (BNNS)
+  spike for the prefill GEMM.
+- `PTQ1_0` (1.75 bpw): slower to unpack than `PQ2_0` on Apple silicon per
+  PrismML; not planned.
+
 ## Measurement protocol
 
 Use `benchmark/compare_ternary_pi5.sh` — runs geist (SDOT + TL1), llama.cpp, and

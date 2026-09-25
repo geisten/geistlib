@@ -593,6 +593,7 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
 
     for (size_t i = 0; i < st->n_layers; i++) {
         struct transformer_layer_weights *L = &st->layers[i];
+        st->config.rope_partial_block       = true; /* ggml layout, see arch_config.h */
         const bool is_attn = rec != nullptr ? rec[i] == 0 : ((i + 1) % (size_t) interval == 0);
         L->layer_idx       = (int) i;
         L->mixer           = is_attn ? GEIST_MIXER_ATTN : GEIST_MIXER_DELTANET;

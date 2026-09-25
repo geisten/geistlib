@@ -53,8 +53,11 @@
 #include <sys/types.h>
 #endif
 
-/* Read a boolean sysctl on Apple; returns the value or `fallback` on failure. */
-#if defined(__APPLE__)
+/* Read a boolean sysctl on Apple silicon; returns the value or `fallback` on
+ * failure. Guarded exactly like its only callers (the Apple arm64 feature
+ * probe below): on an Intel Mac it is otherwise an unused static function,
+ * which -Werror turns into a build failure. */
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
 static bool sysctl_bool(const char *name, bool fallback) {
     int    value = 0;
     size_t len   = sizeof(value);

@@ -71,12 +71,18 @@ void rope_compute(size_t seq_len,
 
 /* Apply RoPE in-place. x has shape [seq_len, n_heads, head_dim].
  * cos/sin are [seq_len, head_dim]. */
+/* NEOX-style rotary over the FIRST n_rot dims of each head, pairing
+ * (i, i + n_rot/2) exactly as ggml does; dims at or above n_rot are left
+ * alone. n_rot == head_dim is the common case and the one every family
+ * except qwen35 uses; qwen35 rotates 64 of 256 (#432). The cos/sin rows
+ * are n_rot wide, so the table itself states the rotated width. */
 void rope_apply(size_t      seq_len,
                 size_t      n_heads,
                 size_t      head_dim,
+                size_t      n_rot,
                 float       x[static seq_len * n_heads * head_dim],
-                const float cos[static seq_len * head_dim],
-                const float sin[static seq_len * head_dim]);
+                const float cos[static seq_len * n_rot],
+                const float sin[static seq_len * n_rot]);
 
 /* Scaled dot-product attention with MQA broadcast and causal mask.
  *   q   shape [seq_len, n_q_heads,  head_dim]
@@ -119,7 +125,8 @@ void attention_mqa_causal_kv(size_t      n_q,
                              float       out[static n_q * n_q_heads * head_dim]);
 
 /* Rotary position embedding is defined on PAIRS of channels: element i is
- * rotated against element i + head_dim/2. An odd head_dim leaves the last
+ * rotated against element i + n_rot/2 within the rotated block. An odd
+ * rotated width leaves the last
  * channel with no partner, and every function in this family then quietly
  * skips it — rope_compute_at fills only 2*(head_dim/2) table entries and
  * leaves the last one as the allocator left it, and the interleaved-layout
@@ -138,14 +145,27 @@ void attention_mqa_causal_kv(size_t      n_q,
 /* Compute RoPE cos/sin tables starting from a position offset.
  * For decode: pos_offset = cache_length (so the new token gets the right pos).
  * Requires rope_head_dim_supported(head_dim); the caller checks. Writes
- * exactly n_positions * head_dim entries to each of cos_out and sin_out. */
+ * exactly n_positions * min(n_rotated_dims, head_dim) entries to each of
+ * cos_out and sin_out — a row covers the ROTATED dims only, which is what
+ * tells rope_apply how wide the rotation is. */
 void rope_compute_at(size_t pos_offset,
                      size_t n_positions,
                      size_t head_dim,
                      size_t n_rotated_dims,
+                     bool   partial_block,
                      float  theta,
                      float *cos_out,
                      float *sin_out);
+
+/* Row width of the tables rope_compute_at writes, which is also the width
+ * rope_apply rotates over. See the partial-rotary note in arch_config.h. */
+[[nodiscard]] static inline size_t
+rope_table_width(size_t head_dim, size_t n_rotated_dims, bool partial_block) {
+    if (!partial_block || n_rotated_dims == 0 || n_rotated_dims > head_dim) {
+        return head_dim;
+    }
+    return n_rotated_dims;
+}
 
 /* GELU-tanh activation in-place (or out-of-place if y != x):
  *   y[i] = 0.5 * x[i] * (1 + tanh(sqrt(2/π) * (x[i] + 0.044715 * x[i]³)))

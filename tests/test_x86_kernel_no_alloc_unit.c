@@ -141,15 +141,25 @@ static bool run_case(struct geist_backend *be, const struct dtype_case *c, float
 
     /* And the kernel actually ran: poison the output, call once more, and
      * require every element to have been written. Rules out "no allocation
-     * because nothing executed" — the failure mode a counter cannot see. */
+     * because nothing executed" — the failure mode a counter cannot see.
+     *
+     * Compared by bit pattern, not with `!=`. The blobs are not valid tensors:
+     * a Q6_K super-block scale can decode to an fp16 NaN (rows 6 and 38 here),
+     * so the kernel correctly writes NaN. This file builds with -ffast-math,
+     * and at -O0/-O1 gcc then evaluates `NaN != POISON` as false, reporting a
+     * written row as unwritten (MODE=asan failed, MODE=release passed). */
     constexpr float POISON = -7.5e30f;
+    uint32_t        poison_bits;
+    memcpy(&poison_bits, &POISON, sizeof poison_bits);
     for (size_t i = 0; i < N_OUT; i++) {
         y[i] = POISON;
     }
     w.linear_m1(x, &w, be, y);
     size_t written = 0;
     for (size_t i = 0; i < N_OUT; i++) {
-        written += (y[i] != POISON);
+        uint32_t bits;
+        memcpy(&bits, &y[i], sizeof bits);
+        written += (bits != poison_bits);
     }
     if (written != N_OUT) {
         fprintf(stderr, "FAIL: %s: kernel did not write its whole output row\n", c->name);

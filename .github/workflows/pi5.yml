@@ -1,0 +1,52 @@
+# Raspberry Pi 5 — the primary deployment target, on the real board. The
+# arm64 cloud runner only proves the pi5 flag set compiles; this runs it:
+# build, the model-free unit suite, the integration suite against the
+# reference models, and bench-smoke as a number in the log.
+#
+# The board is shared (other repos' runners, agents over SSH): every heavy
+# step goes through ~/bin/with-pi-lock, and nothing measures unless the
+# board is cool and idle. Manual, plus nightly — not per push.
+name: pi5
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi5
+  cancel-in-progress: false
+
+jobs:
+  board:
+    runs-on: [self-hosted, pi5]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: build (TARGET=pi5, cortex-a76 flag set)
+        run: ~/bin/with-pi-lock make TARGET=pi5 bin
+      - name: unit suite (model-free)
+        run: ~/bin/with-pi-lock make TARGET=pi5 test-unit AUTO_FETCH_MODEL=0
+      # Models land in gguf_artifacts/ of the runner's persistent work tree;
+      # every fetch is SHA-gated, so after the first run these are no-ops.
+      - name: reference models (SHA-gated)
+        run: make fetch-llama-model fetch-qwen35-model fetch-qwen3-model fetch-bench-model
+      - name: integration suite
+        run: ~/bin/with-pi-lock make TARGET=pi5 test-int AUTO_FETCH_MODEL=0
+      - name: board must be cool and idle before measuring
+        run: |
+          for i in $(seq 1 30); do
+            t=$(cat /sys/class/thermal/thermal_zone0/temp); l=$(cut -d' ' -f1 /proc/loadavg)
+            echo "temp=$t load=$l"
+            [ "$t" -lt 60000 ] && [ "${l%.*}" -lt 1 ] && exit 0
+            sleep 10
+          done
+          echo "board not cool/idle after 5 min; skipping the measurement" && exit 1
+      - name: bench-smoke (BitNet 2B, numbers in the log)
+        run: OMP_NUM_THREADS=4 ~/bin/with-pi-lock make TARGET=pi5 bench-smoke AUTO_FETCH_MODEL=0
+      - name: thermal state after the run
+        if: always()
+        run: echo "temp=$(cat /sys/class/thermal/thermal_zone0/temp) throttled=$(vcgencmd get_throttled 2>/dev/null || echo n/a)"

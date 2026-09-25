@@ -140,8 +140,8 @@ int main(int argc, char **argv) {
     float *cos_b = (float *) malloc(n_ids * HEAD_DIM * sizeof(float));
     float *sin_b = (float *) malloc(n_ids * HEAD_DIM * sizeof(float));
     rope_compute(n_ids, HEAD_DIM, HEAD_DIM, ROPE_THETA, cos_b, sin_b);
-    rope_apply(n_ids, Q_HEADS, HEAD_DIM, q, cos_b, sin_b);
-    rope_apply(n_ids, KV_HEADS, HEAD_DIM, k, cos_b, sin_b);
+    rope_apply(n_ids, Q_HEADS, HEAD_DIM, HEAD_DIM, q, cos_b, sin_b);
+    rope_apply(n_ids, KV_HEADS, HEAD_DIM, HEAD_DIM, k, cos_b, sin_b);
 
     float *attn_out = (float *) malloc(n_ids * Q_OUT * sizeof(float));
     attention_mqa_causal(n_ids, Q_HEADS, KV_HEADS, HEAD_DIM, SLIDING_WINDOW, q, k, v, attn_out);

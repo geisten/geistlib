@@ -25,10 +25,19 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # The trigger is the VERSION, not the file it lives in. `git diff
+        # include/geist.h` was a proxy for that, and it fires on any edit to the
+        # header — which then demands an empty [Unreleased] and so forbids the
+        # CHANGELOG note AGENT.md §6 requires for exactly those changes. Compare
+        # the version strings instead; the gate itself is unchanged.
         run: |
-          if git diff --quiet "$BASE_SHA" -- include/geist.h; then
-            echo "source version unchanged — release gate not applicable"
+          base_version=$(git show "$BASE_SHA":include/geist.h \
+            | sed -n 's/^#define GEIST_VERSION_STRING "\(.*\)"/\1/p')
+          head_version=$(sed -n 's/^#define GEIST_VERSION_STRING "\(.*\)"/\1/p' include/geist.h)
+          if [ "$base_version" = "$head_version" ]; then
+            echo "source version unchanged ($head_version) — release gate not applicable"
           else
+            echo "source version $base_version -> $head_version — running the release gate"
             sh scripts/check-release.sh --pre-tag
           fi
 
@@ -66,6 +75,15 @@ jobs:
             target: mac-omp
             cc: clang
             bflags: BACKENDS="metal cpu_neon cpu_scalar"
+            apple_silicon: true
+          # Intel Mac: target-mac*.mk picks the x86 pair from `uname -m`.
+          # The Metal probe/parity gate and the Apple perf floors below are
+          # sized for Apple silicon, so they run only where apple_silicon is set.
+          - name: macOS x86_64
+            runner: macos-15-intel
+            target: mac-omp
+            cc: clang
+            bflags: ""
           - name: Linux arm64
             runner: ubuntu-24.04-arm
             target: linux
@@ -86,7 +104,10 @@ jobs:
 
       - name: Install deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install libomp ccache
+        run: |
+          brew install libomp ccache
+          # libomp lives under /opt/homebrew on Apple silicon, /usr/local on Intel.
+          echo "LIBOMP_PREFIX=$(brew --prefix libomp)" >> "$GITHUB_ENV"
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
@@ -103,13 +124,22 @@ jobs:
       - name: Unit tests
         run: make test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
 
+      # Sanitizers on macOS, both arches: the `asan`/`asan-x86_64` legs are
+      # Linux+gcc only, so clang-specific breakage at -O1 reached main unseen —
+      # an `omp simd` request the sanitizer instrumentation cannot satisfy is a
+      # -Wpass-failed error under -Werror, and it never shows at -O3. Model-free
+      # suite, same backends as the release build above.
+      - name: ASan + UBSan unit tests (macOS)
+        if: runner.os == 'macOS'
+        run: make MODE=asan test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
+
       # Mandatory GPU gate (#181): on macos-15 a Metal device is expected,
       # so a SKIP (exit 77) from either binary fails the step — a skipped
       # gate must not read as a green one. Registration, lifecycle, buffer
       # round-trip (probe) and Q4_K/Q6_K/F32 linear parity vs cpu_scalar
       # (m=1 and m=8) all run on the real device.
       - name: Metal device probe + linear parity (GPU, mandatory)
-        if: runner.os == 'macOS'
+        if: matrix.apple_silicon
         run: |
           ./bin/${{ matrix.target }}/release/tests/test_backend_metal_probe
           ./bin/${{ matrix.target }}/release/tests/test_backend_metal_parity_unit
@@ -126,6 +156,13 @@ jobs:
       - name: Embedding chain end-to-end (synthetic model)
         if: matrix.target == 'linux'
         run: make test-embedding TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
+
+      # Contract enforcement, include half: every public header compiles on its
+      # own as C23 and as C++17. A C++ consumer is not exotic (bindings, game
+      # engines, Qt front-ends), and `extern "C"` alone does not make
+      # `T arr[static n]` parse — see GEIST_AT_LEAST in include/geist.h.
+      - name: Public headers compile as C and C++
+        run: make check-headers TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
       # Contract enforcement, link half: an out-of-tree agent runtime links
       # these symbols across a release boundary, so a changed signature or a
@@ -237,7 +274,7 @@ jobs:
       # multiples, not percentages. Raise them only with a sample count that
       # justifies it.
       - name: Perf regression gate (Apple, Q8_0)
-        if: runner.os == 'macOS'
+        if: matrix.apple_silicon
         run: |
           bin/${{ matrix.target }}/release/tests/bench_perf_sweep \
             --gguf gguf_artifacts/qwen3.5-0.8b-q8_0.gguf \
@@ -414,6 +451,42 @@ jobs:
           make TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native
           make test-unit TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
 
+  # clang on x86_64. Every other x86_64 leg uses gcc, and the macOS clang legs
+  # build a different configuration, so a clang-only x86 failure ships unseen:
+  # at v0.10.8 this exact configuration aborted in instruction selection
+  # ("Cannot select: X86ISD::VPDPBUSD") under clang-19 *and* clang-21, because
+  # clang outlines an OpenMP `parallel for` body into a function that does not
+  # inherit the kernel's target attribute. #415 fixed that by keeping the
+  # intrinsics in a separately attributed function; this leg keeps it fixed.
+  # Build + unit tests suffice — the failure is a compile abort, not a wrong
+  # result. libomp-19-dev is required: clang brings its own OpenMP runtime and
+  # omp.h, and without it the build stops at `#include <omp.h>` instead.
+  # libclang-rt-19-dev likewise: -fsanitize=fuzzer needs the sanitizer runtime,
+  # and libclang-common-19-dev only *recommends* it — which --no-install-
+  # recommends then skips.
+  build-test-x86_64-clang:
+    name: build + unit tests (Linux x86_64, clang)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-19 libomp-19-dev libclang-rt-19-dev
+      - name: Build + unit tests (release backends, clang)
+        run: |
+          make TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
+          make test-unit TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
+
+      # Coverage-guided fuzzing needs clang, so it rides along here (the same
+      # split geist-memory uses). MODE=fuzz rebuilds the library with
+      # -fsanitize=fuzzer-no-link into its own tree, which is why this cannot
+      # reuse the objects above. 30 s per target reaches ~7 M executions;
+      # the corpus is seeded by the harness itself, no fixture, no network.
+      - name: Fuzz harnesses (libFuzzer, 30 s per target)
+        run: make fuzz-libfuzzer TARGET=linux CC=clang-19 FUZZ_CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native FUZZ_SECONDS=30
+
   # Audio harness smoke (#234). The Pi 5 audio baseline is produced by
   # bench_audio_encode and test_audio_latency_e2e; everywhere else in CI those
   # binaries SKIP for missing fixtures, so the harness could rot unnoticed.
@@ -487,6 +560,47 @@ jobs:
         env:
           GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
         run: ./bin/linux/release/tests/test_audio_stream_session_int
+
+  # x86_64 counterpart to audio-smoke. The W8A8 parity test ran on NEON only,
+  # so the AVX-512/VNNI audio path had no gate at all, and geistkit's model
+  # profile hit the first failure there the moment it supplied the tower.
+  # Only the tower is needed, not Gemma: the encoder runs without an LLM.
+  audio-parity-x86_64:
+    name: audio W8A8 parity (Linux x86_64, AVX-512 VNNI)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v4
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-audio-parity-x86_64-${{ github.run_id }}
+          restore-keys: |
+            ccache-audio-parity-x86_64-
+            ccache-build-test-x86_64-
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache
+      - name: Build
+        run: make TARGET=linux CC="ccache gcc-14" bin
+      # Same cache key as audio-smoke on purpose: one 614 MB entry serves both
+      # legs instead of two, which the repo's 10 GB cache budget notices.
+      - name: Cache audio tower
+        uses: actions/cache@v4
+        with:
+          path: audio_bench/audio_tower.safetensors
+          key: geist-audio-tower-d6c45a6c2762
+      - name: Fetch audio tower (Range-extracted, SHA-pinned)
+        run: make fetch-audio-tower
+      # The tower is present, so a skip (exit 77) fails the step — a silent
+      # skip is exactly how this platform went unmeasured until now.
+      - name: Attn/LConv W8A8 parity vs shipping precision (a skip is a failure)
+        run: ./bin/linux/release/tests/test_audio_attn_w8a8_parity_int
 
   # TARGET=pi5 is the primary deployment target yet no CI leg built it — the
   # 0.8.0 _GNU_SOURCE fix landed in target-linux.mk only, and TARGET=pi5
@@ -806,6 +920,47 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1
         run: make MODE=asan test-embedding TARGET=linux CC="ccache gcc-14" AUTO_FETCH_MODEL=0
 
+  # The x86_64 leg of the same gate. The arm64 job above never compiles the
+  # cpu_x86 kernels or their tests, so their sanitizer build went unchecked and
+  # three unit tests broke there unseen: a -O1-only build error, a NaN
+  # comparison that -ffast-math folds at -O1, and a leak on the no-cpu_neon exit
+  # path. Same backends and GEMM as build-test-x86_64 (the release binary).
+  # Leak detection is ON: the x86_64 unit suite is leak-clean; keep it that way.
+  asan-x86_64:
+    name: ASan + UBSan (Linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@v4
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-asan-x86_64-${{ github.run_id }}
+          restore-keys: ccache-asan-x86_64-
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-14 ccache
+      - name: ASan/UBSan unit tests (leak detection on)
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1
+        run: make MODE=asan test-unit TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
+
+      # Deterministic fuzz gate, in this job because the sanitizer tree it needs
+      # is already built by the step above: 3000 runs per target cost under a
+      # second. Fixed seed, so a failure reproduces from the log without a
+      # crash artifact. The coverage-guided run lives in the clang job.
+      - name: Fuzz harnesses (deterministic, ASan/UBSan)
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1
+        run: make MODE=asan fuzz TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
+
   # The concurrent-session contract (#183): distinct sessions of one model may
   # run from different threads. MODE=tsan proved it on cpu_neon (and caught the
   # shared-workspace race there); this leg proves it on the x86 backend, whose
@@ -921,6 +1076,12 @@ jobs:
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
+      # test-unit runs first under GEIST_STRICT_FIXTURES and has no model
+      # prerequisite, so a cache miss (eviction: the repo sits near the 10 GB
+      # cache limit) failed test_gguf_reader_unit / test_gguf_spm_tokenizer_unit
+      # instead of downloading. No-op on a cache hit.
+      - name: Fetch reference model
+        run: make fetch-model
       # The audio engine paths (attach + the #256 streaming turn) only
       # execute with the tower present — without it their session.c lines
       # count as uncovered and the src/engine floor fires. Same pinned

@@ -233,6 +233,15 @@ static void test_gguf_malformed(void) {
     gguf_header(&o, 3, 0, 1);
     check_gguf_rejected(&o, "truncated metadata");
 
+    /* Absurd counts in the header: each entry needs at least 12 file bytes, so
+     * a count far beyond the file's size is a rejection, not an allocation.
+     * Found by fuzzing: unbounded, 2^48 KVs became a 1.5 PB heap_calloc that
+     * aborts an ASan build instead of failing the open. */
+    gguf_header(&o, 3, 0, UINT64_C(1) << 48);
+    check_gguf_rejected(&o, "metadata count beyond file size");
+    gguf_header(&o, 3, UINT64_C(1) << 48, 0);
+    check_gguf_rejected(&o, "tensor count beyond file size");
+
     /* metadata with an invalid value type */
     gguf_header(&o, 3, 0, 1);
     put_gstr(&o, "k");

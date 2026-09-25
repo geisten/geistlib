@@ -501,5 +501,7 @@ const struct geist_backend_descriptor geist_backend_cpu_x86 = {
         .vtbl  = &cpu_x86_vtbl,
         .prims = &cpu_x86_prims,
         .fused = &cpu_x86_fused,
-        .caps  = {.max_m = GEIST_QUANT_M_CAP, .preferred_kv_mode = GEIST_KV_INT8},
+        .caps  = {.max_m             = GEIST_QUANT_M_CAP,
+                  .preferred_kv_mode = GEIST_KV_INT8,
+                  .dn_subchunk       = true /* host DeltaNet sub-chunks */},
 };

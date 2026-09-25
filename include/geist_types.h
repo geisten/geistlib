@@ -73,6 +73,13 @@ enum geist_dtype {
     GEIST_DTYPE_IQ4_NL,
     GEIST_DTYPE_IQ4_XS,
 
+    /* PrismML PQ2_0 (ggml type 142, Ternary-Bonsai): 128-elem blocks of
+     * one fp16 scale followed by 32 bytes of 2-bit codes, element j at
+     * byte j/4, bits 2*(j%4); value (code - 1) * scale, so codes 0/1/2 are
+     * the trits -1/0/+1 (code 3 decodes to +2). 2.125 bpw. Appended after
+     * IQ4_XS for the same reason IQ4 was. layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
+    GEIST_DTYPE_PQ2_0,
+
     GEIST_DTYPE_BINARY,  /* 1-bit values; storage via layout */
     GEIST_DTYPE_TERNARY, /* {-1, 0, +1}; storage via layout */
 

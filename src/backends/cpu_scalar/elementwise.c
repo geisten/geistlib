@@ -15,6 +15,7 @@
 
 #include "internal.h"
 #include "tensor_view.h"
+#include "hadamard.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -269,4 +270,23 @@ cpu_scalar_silu(struct geist_backend *be, const struct geist_tensor *x, struct g
         }
     }
     return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status cpu_scalar_hadamard_rotate(struct geist_backend             *be,
+                                                           const struct geist_hadamard_args *args) {
+    if (args == nullptr) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar hadamard_rotate: null args");
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t            nx = 0, ns = 0, ny = 0;
+    const float      *xp = get_f32_dense_ptr(args->x, &nx);
+    const float      *sp = args->signs != nullptr ? get_f32_dense_ptr(args->signs, &ns) : nullptr;
+    float            *yp = get_f32_dense_ptr(args->y, &ny);
+    enum geist_status s  = (args->signs != nullptr && sp == nullptr)
+                                   ? GEIST_E_INVALID_ARG
+                                   : geist_hadamard_apply(args, nx, ns, ny, xp, sp, yp);
+    if (s != GEIST_OK) {
+        geist_backend_set_error(be, s, "cpu_scalar hadamard_rotate: bad inputs");
+    }
+    return s;
 }

@@ -54,17 +54,18 @@ static pthread_once_t   g_weight_path_once = PTHREAD_ONCE_INIT;
 
 static const char *weight_path_dtype_name(enum geist_dtype dtype) {
     static const char *const names[GEIST_DTYPE_CUSTOM + 1] = {
-            [GEIST_DTYPE_F32] = "f32",         [GEIST_DTYPE_F16] = "f16",
-            [GEIST_DTYPE_BF16] = "bf16",       [GEIST_DTYPE_I8] = "i8",
-            [GEIST_DTYPE_U8] = "u8",           [GEIST_DTYPE_Q4_0] = "q4_0",
-            [GEIST_DTYPE_Q4_1] = "q4_1",       [GEIST_DTYPE_Q8_0] = "q8_0",
-            [GEIST_DTYPE_Q3_K] = "q3_K",       [GEIST_DTYPE_Q4_K] = "q4_K",
-            [GEIST_DTYPE_Q5_K] = "q5_K",       [GEIST_DTYPE_Q6_K] = "q6_K",
-            [GEIST_DTYPE_IQ2_S] = "iq2_s",     [GEIST_DTYPE_IQ3_S] = "iq3_s",
-            [GEIST_DTYPE_TQ1_0] = "tq1_0",     [GEIST_DTYPE_TQ2_0] = "tq2_0",
-            [GEIST_DTYPE_I2_S] = "i2_s",       [GEIST_DTYPE_IQ4_NL] = "iq4_nl",
-            [GEIST_DTYPE_IQ4_XS] = "iq4_xs",   [GEIST_DTYPE_BINARY] = "binary",
-            [GEIST_DTYPE_TERNARY] = "ternary", [GEIST_DTYPE_CUSTOM] = "custom",
+            [GEIST_DTYPE_F32] = "f32",       [GEIST_DTYPE_F16] = "f16",
+            [GEIST_DTYPE_BF16] = "bf16",     [GEIST_DTYPE_I8] = "i8",
+            [GEIST_DTYPE_U8] = "u8",         [GEIST_DTYPE_Q4_0] = "q4_0",
+            [GEIST_DTYPE_Q4_1] = "q4_1",     [GEIST_DTYPE_Q8_0] = "q8_0",
+            [GEIST_DTYPE_Q3_K] = "q3_K",     [GEIST_DTYPE_Q4_K] = "q4_K",
+            [GEIST_DTYPE_Q5_K] = "q5_K",     [GEIST_DTYPE_Q6_K] = "q6_K",
+            [GEIST_DTYPE_IQ2_S] = "iq2_s",   [GEIST_DTYPE_IQ3_S] = "iq3_s",
+            [GEIST_DTYPE_TQ1_0] = "tq1_0",   [GEIST_DTYPE_TQ2_0] = "tq2_0",
+            [GEIST_DTYPE_I2_S] = "i2_s",     [GEIST_DTYPE_IQ4_NL] = "iq4_nl",
+            [GEIST_DTYPE_IQ4_XS] = "iq4_xs", [GEIST_DTYPE_PQ2_0] = "pq2_0",
+            [GEIST_DTYPE_BINARY] = "binary", [GEIST_DTYPE_TERNARY] = "ternary",
+            [GEIST_DTYPE_CUSTOM] = "custom",
     };
     return names[dtype] != nullptr ? names[dtype] : "unknown";
 }

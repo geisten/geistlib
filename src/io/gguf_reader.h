@@ -52,6 +52,9 @@ typedef enum {
      * scale at the tail (offset n_elems/4). geist reads it as ternary and
      * transcodes the trit field-order to its TQ2_0 SDOT kernel. */
     GGUF_TYPE_I2_S = 36,
+    /* PrismML-private (Ternary-Bonsai, PrismML-Eng/llama.cpp): Q2_0 codec at
+     * group 128 — fp16 scale + 32 bytes of sequential 2-bit codes. */
+    GGUF_TYPE_PQ2_0 = 142,
 } gguf_dtype_t;
 
 /* Metadata value-type codes (mirror of llama.cpp). Exposed so callers

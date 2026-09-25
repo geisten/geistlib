@@ -18,8 +18,8 @@ Usage:
     python3 tools/fetch_audio_tower.py \
         [-o audio_bench/audio_tower.safetensors] [--url URL] [--sha256 HEX]
 
-Default source is unsloth/gemma-4-E2B-it (public mirror, apache-2.0 model
-card). --sha256 verifies the *output* file, so a changed upstream fails
+Default source is unsloth/gemma-4-E2B-it at a pinned revision (public mirror,
+apache-2.0 model card). --sha256 verifies the *output* file, so a changed upstream fails
 loudly before a test consumes it (same idea as fetch-llama-model's pin).
 """
 from __future__ import annotations
@@ -32,8 +32,12 @@ import sys
 import urllib.request
 from pathlib import Path
 
+# A revision, not `main`: --sha256 already fails loudly when upstream content changes, but a
+# branch that moves turns a reproducible extraction into a coin flip. Verified 2026-09-19.
+E2B_REV = "d36bdd3855c82a6a1a23f7c459b749f5724ae75d"
 DEFAULT_URL = (
-    "https://huggingface.co/unsloth/gemma-4-E2B-it/resolve/main/model.safetensors"
+    "https://huggingface.co/unsloth/gemma-4-E2B-it/resolve/"
+    f"{E2B_REV}/model.safetensors"
 )
 PREFIXES = ("model.audio_tower.", "model.embed_audio.")
 CHUNK = 8 << 20  # 8 MiB read chunks

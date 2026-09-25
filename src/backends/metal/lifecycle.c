@@ -32,9 +32,15 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->dn_scratch, "release");
         metal_msg_send_void0(st, st->argmax_batch_pipeline, "release");
         metal_msg_send_void0(st, st->argmax_batch_function, "release");
+        metal_msg_send_void0(st, st->hadamard_pipeline, "release");
+        metal_msg_send_void0(st, st->hadamard_function, "release");
         metal_msg_send_void0(st, st->argmax_pipeline, "release");
         metal_msg_send_void0(st, st->argmax_function, "release");
         metal_msg_send_void0(st, st->deltanet_mix_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_dec_qk_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_dec_qk_function, "release");
+        metal_msg_send_void0(st, st->dn_dec_v_pipeline, "release");
+        metal_msg_send_void0(st, st->dn_dec_v_function, "release");
         metal_msg_send_void0(st, st->deltanet_mix_function, "release");
         metal_msg_send_void0(st, st->dn_cst_copy_pipeline, "release");
         metal_msg_send_void0(st, st->dn_cst_copy_function, "release");
@@ -220,6 +226,14 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->q41_mm_fast_function, "release");
         metal_msg_send_void0(st, st->q5k_mm_fast_pipeline, "release");
         metal_msg_send_void0(st, st->q5k_mm_fast_function, "release");
+        metal_msg_send_void0(st, st->pq2_n4_pipeline, "release");
+        metal_msg_send_void0(st, st->pq2_n4_function, "release");
+        metal_msg_send_void0(st, st->pq2_n8_pipeline, "release");
+        metal_msg_send_void0(st, st->pq2_n8_function, "release");
+        metal_msg_send_void0(st, st->pq2_mm_pipeline, "release");
+        metal_msg_send_void0(st, st->pq2_mm_function, "release");
+        metal_msg_send_void0(st, st->pq2_mm_fast_pipeline, "release");
+        metal_msg_send_void0(st, st->pq2_mm_fast_function, "release");
         metal_msg_send_void0(st, st->iq4nl_n4_pipeline, "release");
         metal_msg_send_void0(st, st->iq4nl_n4_function, "release");
         metal_msg_send_void0(st, st->iq4nl_mm_pipeline, "release");
@@ -250,6 +264,7 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->elem_simd_library, "release");
         metal_msg_send_void0(st, st->elem_library, "release");
         metal_msg_send_void0(st, st->embed_library, "release");
+        metal_msg_send_void0(st, st->hadamard_library, "release");
         metal_msg_send_void0(st, st->argmax_library, "release");
         metal_msg_send_void0(st, st->f32_library, "release");
         metal_msg_send_void0(st, st->q4k_qk_library, "release");
@@ -318,6 +333,14 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->q41_mm_fast_function                  = nullptr;
     st->q5k_mm_fast_pipeline                  = nullptr;
     st->q5k_mm_fast_function                  = nullptr;
+    st->pq2_n4_pipeline                       = nullptr;
+    st->pq2_n4_function                       = nullptr;
+    st->pq2_n8_pipeline                       = nullptr;
+    st->pq2_n8_function                       = nullptr;
+    st->pq2_mm_pipeline                       = nullptr;
+    st->pq2_mm_function                       = nullptr;
+    st->pq2_mm_fast_pipeline                  = nullptr;
+    st->pq2_mm_fast_function                  = nullptr;
     st->iq4nl_n4_pipeline                     = nullptr;
     st->iq4nl_n4_function                     = nullptr;
     st->iq4nl_mm_pipeline                     = nullptr;
@@ -416,6 +439,10 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->silu_mul_rows_pipeline                = nullptr;
     st->silu_mul_rows_function                = nullptr;
     st->deltanet_mix_pipeline                 = nullptr;
+    st->dn_dec_qk_pipeline                    = nullptr;
+    st->dn_dec_qk_function                    = nullptr;
+    st->dn_dec_v_pipeline                     = nullptr;
+    st->dn_dec_v_function                     = nullptr;
     st->deltanet_mix_function                 = nullptr;
     st->qgate_split_pipeline                  = nullptr;
     st->qgate_split_function                  = nullptr;
@@ -447,6 +474,9 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->f32_ple_gate_function                 = nullptr;
     st->f32_ple_proj_norm_pipeline            = nullptr;
     st->f32_ple_proj_norm_function            = nullptr;
+    st->hadamard_library                      = nullptr;
+    st->hadamard_function                     = nullptr;
+    st->hadamard_pipeline                     = nullptr;
     st->argmax_pipeline                       = nullptr;
     st->argmax_function                       = nullptr;
     st->argmax_batch_pipeline                 = nullptr;
@@ -621,10 +651,15 @@ void metal_destroy(struct geist_backend *be) {
      * GEIST_METAL_Q4K_MM_SG=0 to disable. */
     const char *q4k_mm_sg    = getenv("GEIST_METAL_Q4K_MM_SG");
     st->use_q4k_mm_sg        = q4k_mm_sg == nullptr || strcmp(q4k_mm_sg, "0") != 0;
+    const char *pq2_n8       = getenv("GEIST_METAL_PQ2_N8");
+    st->use_pq2_n8           = pq2_n8 == nullptr || strcmp(pq2_n8, "0") != 0;
+    const char *dn_serial    = getenv("GEIST_METAL_DN_SERIAL_DECODE");
+    st->use_dn_dec           = dn_serial == nullptr || strcmp(dn_serial, "1") != 0;
     const char *rmsnorm_simd = getenv("GEIST_METAL_RMSNORM_SIMD");
     st->use_rmsnorm_simd     = rmsnorm_simd == nullptr || strcmp(rmsnorm_simd, "0") != 0;
     const char *q6k_n4       = getenv("GEIST_METAL_Q6K_N4");
     st->use_q6k_n4           = q6k_n4 == nullptr || strcmp(q6k_n4, "0") != 0;
+    metal_tuning_init(be, st);
     /* Off by default: the plain-layout n4 kernel (llama mul_mv structure)
      * outruns the packed nt4 path and needs no load-time repack. */
     /* Command-buffer pipelining (llama n_cb-style): rotate every N

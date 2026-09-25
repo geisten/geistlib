@@ -22,6 +22,7 @@
 #include "forward.h"
 #include "scratch_plan.h"
 #include "weight_load.h"
+#include "rotation.h"
 
 #include "gguf_reader.h"
 #include "gemma4_kernels.h"
@@ -229,8 +230,13 @@ alloc_scratch(struct geist_backend *be, size_t bytes, struct geist_buffer **out)
     const size_t full_rot    = (size_t) st->layers[full_idx].n_rotated_dims;
     const float  sliding_th  = st->layers[sliding_idx].rope_theta;
     const float  full_th     = st->layers[full_idx].rope_theta;
-    const size_t n_sl_floats = st->max_seq_len * sliding_hd;
-    const size_t n_fl_floats = st->max_seq_len * full_hd;
+    /* The row width is the width the kernels rotate over; which one that
+     * is depends on the family's partial-rotary layout (arch_config.h). */
+    const bool   pblock      = st->config.rope_partial_block;
+    const size_t sl_width    = rope_table_width(sliding_hd, sliding_rot, pblock);
+    const size_t fl_width    = rope_table_width(full_hd, full_rot, pblock);
+    const size_t n_sl_floats = st->max_seq_len * sl_width;
+    const size_t n_fl_floats = st->max_seq_len * fl_width;
 
     float *cos_sl = heap_alloc_aligned(n_sl_floats * sizeof(float), 64);
     float *sin_sl = heap_alloc_aligned(n_sl_floats * sizeof(float), 64);
@@ -244,8 +250,9 @@ alloc_scratch(struct geist_backend *be, size_t bytes, struct geist_buffer **out)
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: RoPE table host alloc failed");
         return GEIST_E_OOM;
     }
-    rope_compute_at(0, st->max_seq_len, sliding_hd, sliding_rot, sliding_th, cos_sl, sin_sl);
-    rope_compute_at(0, st->max_seq_len, full_hd, full_rot, full_th, cos_fl, sin_fl);
+    rope_compute_at(
+            0, st->max_seq_len, sliding_hd, sliding_rot, pblock, sliding_th, cos_sl, sin_sl);
+    rope_compute_at(0, st->max_seq_len, full_hd, full_rot, pblock, full_th, cos_fl, sin_fl);
 
     enum geist_status s = upload_table(be, cos_sl, n_sl_floats, &st->rope_cos_sliding);
     if (s == GEIST_OK) {
@@ -1046,6 +1053,14 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         }
     }
 
+    /* prism.hadamard: validate the folded-weight set against the rotated
+     * call sites before any session or plan exists. */
+    s = transformer_rotation_load(st);
+    if (s != GEIST_OK) {
+        transformer_state_destroy(st);
+        return s;
+    }
+
     s = allocate_runtime_rope(st);
     if (s != GEIST_OK) {
         transformer_state_destroy(st);
@@ -1088,6 +1103,13 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
      * inv-scales for o/down inputs. Runs after weights are mapped but
      * before any forward pass. */
     if (opts != nullptr) {
+        if (st->rotation.active && opts->awq_scales_path != nullptr) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: AWQ on a rotated (prism.hadamard) model");
+            transformer_state_destroy(st);
+            return GEIST_E_UNSUPPORTED;
+        }
         s = apply_awq_to_state(st, opts->awq_scales_path);
         if (s != GEIST_OK) {
             transformer_state_destroy(st);
@@ -1206,6 +1228,7 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         }
         release_weight_aux(&st->embed_table_w);
         release_weight_aux(&st->model_proj_w);
+        transformer_rotation_release(st);
         safe_free((void **) &st->spec_sketch);
         safe_free((void **) &st->spec_row_scale);
         safe_free((void **) &st->spec_dims);
