@@ -208,6 +208,46 @@ static void test_qgate(size_t rows, size_t heads, size_t hd) {
     free(g_got);
 }
 
+/* prims->attention against the host reference attention_mqa_causal_kv, F32
+ * KV. Shapes mirror the transformer families that use the generic (non
+ * gemma) attention path. */
+static void test_attention(size_t      n_q,
+                           size_t      n_kv,
+                           size_t      q_off,
+                           size_t      qh,
+                           size_t      kvh,
+                           size_t      hd,
+                           size_t      sliding,
+                           const char *name) {
+    float *q = fill(n_q * qh * hd, 0.031f, 0.6f), *k = fill(n_kv * kvh * hd, 0.023f, 0.6f);
+    float *v   = fill(n_kv * kvh * hd, 0.017f, 1.0f);
+    float *ref = malloc(n_q * qh * hd * sizeof(float)),
+          *got = malloc(n_q * qh * hd * sizeof(float));
+    attention_mqa_causal_kv(n_q, n_kv, q_off, qh, kvh, hd, sliding, q, k, v, ref);
+    struct geist_buffer *bq = dev_buf(q, n_q * qh * hd), *bk = dev_buf(k, n_kv * kvh * hd),
+                        *bv = dev_buf(v, n_kv * kvh * hd), *bo = dev_buf(nullptr, n_q * qh * hd);
+    check(bq && bk && bv && bo, "attention buffers");
+    struct geist_tensor tq = view(bq, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
+    struct geist_tensor tk = view(bk, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
+    struct geist_tensor tv = view(bv, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
+    struct geist_tensor to = view(bo, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
+    check(g_be->desc->prims->attention(g_be, &tq, &tk, &tv, q_off, sliding, &to) == GEIST_OK,
+          "attention dispatch");
+    check(download(bo, got, n_q * qh * hd), "attention download");
+    const double e = max_abs(got, ref, n_q * qh * hd);
+    printf("  attention %-28s max_abs %.2e\n", name, e);
+    check(e < 1e-4, name);
+    g_be->desc->vtbl->buffer_destroy(g_be, bq);
+    g_be->desc->vtbl->buffer_destroy(g_be, bk);
+    g_be->desc->vtbl->buffer_destroy(g_be, bv);
+    g_be->desc->vtbl->buffer_destroy(g_be, bo);
+    free(q);
+    free(k);
+    free(v);
+    free(ref);
+    free(got);
+}
+
 int main(void) {
     enum geist_status s = geist_backend_create("vulkan", nullptr, nullptr, &g_be);
     if (s == GEIST_E_NOT_FOUND || s == GEIST_E_UNSUPPORTED) {
@@ -224,6 +264,11 @@ int main(void) {
     test_elementwise(1, 4096);
     test_qgate(5, 4, 64);
     test_qgate(1, 24, 256);
+    test_attention(22, 22, 0, 8, 2, 256, 0, "qwen35 prefill 22 (8/2x256)");
+    test_attention(1, 23, 22, 8, 2, 256, 0, "qwen35 decode kv=23");
+    test_attention(9, 40, 31, 8, 2, 256, 0, "chunked prefill q_off=31");
+    test_attention(16, 16, 0, 16, 16, 128, 0, "MHA 16x128");
+    test_attention(1, 300, 299, 8, 2, 256, 0, "decode kv=300 (flash path)");
     geist_backend_destroy(g_be);
     if (g_fail == 0) {
         printf("PASS: Vulkan qwen35 ops (partial rope, silu, silu_mul, sigmoid_mul, "
