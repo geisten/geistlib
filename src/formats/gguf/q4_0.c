@@ -1,8 +1,7 @@
 /*
  * src/formats/gguf/q4_0.c — Q4_0 dequant (read-only — no W*A8 hot path).
  *
- * Layer: BACKEND. Extracted from gguf_quant.c during the per-quant
- * format split.
+ * Layer: BACKEND.
  */
 #include "quant_blocks.h"
 #include "quant.h"

@@ -1,11 +1,10 @@
 /*
- * src/archs/transformer/arch_ops.c — P1.3.c: arch-ops entry points.
+ * src/archs/transformer/arch_ops.c — architecture operation entry points.
  *
  * Layer: ARCHITECTURE.
  *
- * Extracted from arch_state.c. Owns the public-internal entry
- * points that bridge the engine's geist_arch_ops_decoder vtable thunks
- * (in arch.c) to the forward primitives in forward.c:
+ * Bridges the engine's geist_arch_ops_decoder vtable thunks in arch.c to the
+ * transformer forward primitives:
  *
  *   - transformer_prefill_text_batch  : chunked batched prefill
  *   - transformer_prefill_audio_batch : audio soft-token prefill

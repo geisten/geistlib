@@ -2,8 +2,7 @@
  * src/formats/gguf/tq2_0.c — TQ2_0 dequant (BitNet ternary; W1.58A8 kernels live in
  * cpu_neon/weight_resolve.c).
  *
- * Layer: BACKEND. Extracted from gguf_quant.c during the per-quant
- * format split.
+ * Layer: BACKEND.
  */
 #include "quant_blocks.h"
 #include "quant.h"

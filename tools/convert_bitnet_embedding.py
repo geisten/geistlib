@@ -117,7 +117,7 @@ def to_f32(arr: np.ndarray, dtype: str) -> np.ndarray:
 
 
 def to_f16(arr_f32: np.ndarray) -> np.ndarray:
-    """Narrow to float16, refusing to lose a value silently (AGENT.md §5)."""
+    """Narrow to float16 and fail if a finite input overflows."""
     out = arr_f32.astype(np.float16)
     if not np.isfinite(out[np.isfinite(arr_f32)]).all():
         raise SystemExit("f16 conversion overflowed: value outside float16 range")

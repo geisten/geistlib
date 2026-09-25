@@ -3,8 +3,6 @@
  * dtype/layout dispatcher.
  *
  * Layer: ARCHITECTURE.
- *
- * Extracted from weight_load.c during R5 of the C23/AGENT.md cleanup.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 

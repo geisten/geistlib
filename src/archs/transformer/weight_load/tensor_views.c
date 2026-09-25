@@ -3,8 +3,6 @@
  * backend buffer staging and arena capacity computation.
  *
  * Layer: ARCHITECTURE.
- *
- * Extracted from weight_load.c during R5 of the C23/AGENT.md cleanup.
  * Contains:
  *
  *   compute_weight_arena_capacity — sum tensor bytes for arena sizing

@@ -3,8 +3,6 @@
  * global tensor wiring.
  *
  * Layer: ARCHITECTURE.
- *
- * Extracted from weight_load.c during R5 of the C23/AGENT.md cleanup.
  * Contains:
  *
  *   layer_track_buf  / global_track_buf — owning-buf list helpers
@@ -148,7 +146,7 @@ load_layer_proj(struct transformer_arch_state    *st,
              * resident bytes, so a model's main matrices stay out of it —
              * past the cap the resolver's refusal stands and the caller
              * falls back to the legacy path, as it did before this existed.
-             * ponytail: the half-precision copy stays tracked (a few MB on
+             * The half-precision copy stays tracked (a few MB on
              * a 27B); untrack it if that ever matters. */
             constexpr size_t widen_max_elems = 4u << 20; /* 16 MB as F32 */
             if (rs == GEIST_E_UNSUPPORTED &&

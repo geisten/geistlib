@@ -8,8 +8,8 @@
 # and publication state are different facts. Run in CI on every PR, and locally
 # before a release.
 #
-# ponytail: a guard, not a generator — it does not edit anything, it just
-# makes drift a build failure. Bump include/geist.h and CITATION.cff together.
+# This is a read-only guard: version drift is a build failure. Bump
+# include/geist.h and CITATION.cff together.
 set -eu
 
 hdr=$(sed -n 's/.*GEIST_VERSION_STRING "\([0-9][0-9.]*\)".*/\1/p' include/geist.h | head -1)

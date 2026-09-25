@@ -759,9 +759,7 @@ struct geist_backend {
      * by err_mu so concurrent sessions can't interleave garbage into the
      * message; reads (geist_backend_errmsg) return a pointer into the
      * slot and are last-writer-wins across sessions — read it after a
-     * failing call on your own session.
-     * ponytail: one shared slot; per-session error slots if concurrent
-     * error attribution ever matters. */
+     * failing call on your own session. */
     enum geist_status err_code;
     char              err_msg[512];
     pthread_mutex_t   err_mu;

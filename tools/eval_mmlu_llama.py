@@ -39,7 +39,7 @@ def score(url: str, prompt: str) -> list[float]:
         # is the real post-"Answer:" continuation, the bare one is far lower).
         if tok not in table or lp > table[tok]:
             table[tok] = lp
-    # ponytail: missing letter -> -inf (logprobs are negative; 0.0 would win).
+    # Missing choices receive -inf; logprobs are negative, so 0.0 would win.
     # With the "Answer:" prompt all 4 letters sit in the top-n_probs, so this
     # only bites pathological cases. Raise n_probs if a real letter is missed.
     return [table.get(L, -1e9) for L in E.LETTERS]

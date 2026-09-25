@@ -5,7 +5,7 @@
  * gguf_reader.c:153 says it plainly: model metadata is attacker-controlled.
  * The reader walks a header, a metadata table of variable-length strings and
  * arrays, and a tensor table, then hands out pointers into the mapping. Every
- * rule in AGENT.md §3 and §4 — ckd_mul before an allocation, bounds by
+ * rule — ckd_mul before an allocation, bounds by
  * subtraction before the pointer moves — is an invariant this harness tries to
  * break with bytes instead of with review.
  *

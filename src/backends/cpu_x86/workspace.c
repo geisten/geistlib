@@ -5,7 +5,7 @@
  * caught: one workspace per calling thread, all of them owned and freed
  * by the backend.
  *
- * Allocation flows through heap.h per AGENT.md memory rule.
+ * Allocation flows through heap.h.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 

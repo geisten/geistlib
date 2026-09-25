@@ -4,8 +4,6 @@
  * transformer_forward_one_layer.
  *
  * Layer: ARCHITECTURE (private to forward/).
- *
- * Extracted from forward.c during R4 of the C23/AGENT.md cleanup.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 

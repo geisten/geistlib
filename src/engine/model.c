@@ -324,9 +324,8 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
      * tokens). Never attach them to another family's residual stream — the
      * encoder search heuristics would otherwise pick up a tower from the
      * cwd for e.g. a BitNet load, and prefill would read n × d_model floats
-     * from an n × 1536 buffer (#240).
-     * ponytail: hardcoded family gate; move into the arch descriptor when a
-     * second multimodal family lands. */
+     * from an n × 1536 buffer (#240). Only Gemma 4 currently has compatible
+     * vision/audio tower shapes. */
     const bool towers_match = arch_copy != nullptr && strcmp(arch_copy, "gemma4") == 0;
 
     /* Best-effort load of the audio encoder. The Conformer needs a
@@ -342,8 +341,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
         audio_state = desc->audio_encoder_ops->state_create(be, aux_root);
         /* Same family ≠ same geometry: an E2B tower (1536-dim soft tokens)
          * next to an E4B GGUF (d_model 2560) would inject garbage into the
-         * residual stream. Drop the tower; the modality mask stays honest
-         * (#258, extends the #240 family gate). */
+         * residual stream. Drop the tower so the modality mask stays honest (#258). */
         if (audio_state != nullptr && d_model > 0 &&
             desc->audio_encoder_ops->soft_token_dim(audio_state) != d_model) {
             fprintf(stderr,
