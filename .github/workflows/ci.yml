@@ -231,7 +231,8 @@ jobs:
         env:
           GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/qwen3.5-0.8b-q8_0.gguf
         run: |
-          make test-int FILTER=qwen35 TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
+          # The runner directly: `make test-int` hard-codes its "_int" filter.
+          mk/run-tests.sh bin/${{ matrix.target }}/release/tests qwen35
           for t in test_prefill_determinism_int test_known_answer_e2e; do
             echo "=== $t ==="
             bin/${{ matrix.target }}/release/tests/$t
