@@ -223,7 +223,7 @@ static void forward_layer(const LayerW  *L,
     float *cos_b = (float *) xmalloc(seq * (size_t) hd * sizeof(float));
     float *sin_b = (float *) xmalloc(seq * (size_t) hd * sizeof(float));
     rope_compute(seq, hd, L->n_rotated_dims, L->rope_theta, cos_b, sin_b);
-    rope_apply(seq, N_Q_HEADS, hd, q, cos_b, sin_b);
+    rope_apply(seq, N_Q_HEADS, hd, (size_t) L->n_rotated_dims, q, cos_b, sin_b);
 
     /* K/V either computed (and possibly cached) or pulled from cache. */
     const float *k_use;
@@ -240,7 +240,7 @@ static void forward_layer(const LayerW  *L,
         linear_fp32(seq, HIDDEN, kv_out, normed, L->v_proj_w, nullptr, v_local);
         rmsnorm_fp32(seq * N_KV_HEADS, hd, k_local, L->k_norm_w, RMS_EPS, k_local);
         rmsnorm_fp32(seq * N_KV_HEADS, hd, v_local, nullptr, RMS_EPS, v_local);
-        rope_apply(seq, N_KV_HEADS, hd, k_local, cos_b, sin_b);
+        rope_apply(seq, N_KV_HEADS, hd, (size_t) L->n_rotated_dims, k_local, cos_b, sin_b);
         if (kv_store) {
             kv_store->head_dim = hd;
             kv_store->seq      = seq;

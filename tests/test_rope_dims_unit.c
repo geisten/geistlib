@@ -1,5 +1,6 @@
 /*
- * test_rope_dims_unit — the rotary head_dim contract (issue #329).
+ * test_rope_dims_unit — the rotary head_dim and rotated-width contracts
+ * (issues #329 and #432).
  *
  * Rotary position embedding rotates channel i against channel
  * i + head_dim/2. With an odd head_dim the last channel has no partner,
@@ -18,6 +19,7 @@
 
 #include "gemma4_kernels.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,9 +41,11 @@ static const float POISON = -7.5e30f;
  * the kernel left untouched. Zero is the only acceptable answer: a table
  * entry nobody wrote is read on every forward pass. */
 static size_t unwritten_after_compute(size_t n_positions, size_t head_dim, size_t n_rotated) {
-    const size_t n   = n_positions * head_dim;
-    float       *cos = malloc(n * sizeof(float));
-    float       *sin = malloc(n * sizeof(float));
+    /* A table row covers the ROTATED dims, not the whole head. */
+    const size_t n_rot = n_rotated < head_dim ? n_rotated : head_dim;
+    const size_t n     = n_positions * n_rot;
+    float       *cos   = malloc(n * sizeof(float));
+    float       *sin   = malloc(n * sizeof(float));
     if (cos == nullptr || sin == nullptr) {
         free(cos);
         free(sin);
@@ -52,7 +56,7 @@ static size_t unwritten_after_compute(size_t n_positions, size_t head_dim, size_
         cos[i] = POISON;
         sin[i] = POISON;
     }
-    rope_compute_at(0, n_positions, head_dim, n_rotated, 10000.0f, cos, sin);
+    rope_compute_at(0, n_positions, head_dim, n_rot, true, 10000.0f, cos, sin);
     size_t untouched = 0;
     for (size_t i = 0; i < n; i++) {
         untouched += (cos[i] == POISON) + (sin[i] == POISON);
@@ -82,11 +86,13 @@ int main(void) {
     static const size_t EVEN[] = {2, 4, 64, 128, 256, 512};
     for (size_t i = 0; i < sizeof(EVEN) / sizeof(EVEN[0]); i++) {
         const size_t hd = EVEN[i];
-        /* Full rotation, and Gemma 4's partial rotation (n_rotated < hd),
-         * which still has to fill the whole table — the un-rotated tail
-         * gets cos=1/sin=0 from a zero inverse frequency, not garbage. */
+        /* Full rotation, and a partial one (n_rotated < hd, as qwen35's
+         * 64 of 256): the table is as wide as the rotated block and every
+         * entry of it has to be written. An even rotated width is part of
+         * the contract, same as an even head_dim. */
+        const size_t part      = hd / 4 >= 2 ? (hd / 4) & ~(size_t) 1 : 2;
         const size_t left_full = unwritten_after_compute(4, hd, hd);
-        const size_t left_part = unwritten_after_compute(4, hd, hd / 4);
+        const size_t left_part = unwritten_after_compute(4, hd, part);
         if (left_full != 0 || left_part != 0) {
             fprintf(stderr,
                     "FAIL: head_dim=%zu left %zu (full) / %zu (partial) table entries "
@@ -112,6 +118,71 @@ int main(void) {
                 "per position over 4 positions), got %zu\n",
                 odd_left);
         g_fail = 1;
+    }
+
+    /* ---- partial rotary rotates the right pairs at the right rate ------
+     * The bug this pins (#432): pairing on head_dim/2 instead of n_rot/2
+     * rotated dims 0..31 against 128..159 for qwen35's 64-of-256 head, and
+     * the frequency exponent divided by head_dim instead of n_rot. Both
+     * collapse to the correct formula when n_rot == head_dim, which is why
+     * every other family stayed correct. The reference below is the
+     * definition, written out: pair (i, i + n_rot/2), angle
+     * pos * theta^(-2i/n_rot), dims at or above n_rot untouched. */
+    {
+        const size_t HD = 256, N_ROT = 64, SEQ = 3, HEADS = 2, POS0 = 5;
+        const float  THETA = 1.0e7f;
+        float       *x     = malloc(SEQ * HEADS * HD * sizeof(float));
+        float       *want  = malloc(SEQ * HEADS * HD * sizeof(float));
+        float       *cos_t = malloc(SEQ * N_ROT * sizeof(float));
+        float       *sin_t = malloc(SEQ * N_ROT * sizeof(float));
+        if (x == nullptr || want == nullptr || cos_t == nullptr || sin_t == nullptr) {
+            fprintf(stderr, "alloc failed\n");
+            exit(GEIST_TEST_ERROR);
+        }
+        for (size_t i = 0; i < SEQ * HEADS * HD; i++) {
+            x[i] = (float) ((int) (i % 37u) - 18) * 0.05f;
+        }
+        memcpy(want, x, SEQ * HEADS * HD * sizeof(float));
+        const size_t h = N_ROT / 2;
+        for (size_t s = 0; s < SEQ; s++) {
+            for (size_t head = 0; head < HEADS; head++) {
+                float *row = want + (s * HEADS + head) * HD;
+                for (size_t i = 0; i < h; i++) {
+                    const double freq  = pow((double) THETA, -(double) (2 * i) / (double) N_ROT);
+                    const double angle = (double) (POS0 + s) * freq;
+                    const float  a = row[i], b = row[i + h];
+                    row[i]     = (float) ((double) a * cos(angle) - (double) b * sin(angle));
+                    row[i + h] = (float) ((double) b * cos(angle) + (double) a * sin(angle));
+                }
+            }
+        }
+        rope_compute_at(POS0, SEQ, HD, N_ROT, true, THETA, cos_t, sin_t);
+        rope_apply(SEQ, HEADS, HD, N_ROT, x, cos_t, sin_t);
+        size_t bad = 0, touched_tail = 0;
+        for (size_t i = 0; i < SEQ * HEADS * HD; i++) {
+            const size_t d = i % HD;
+            if (fabsf(x[i] - want[i]) > 1e-5f) {
+                bad++;
+                if (d >= N_ROT) {
+                    touched_tail++;
+                }
+            }
+        }
+        if (bad != 0) {
+            fprintf(stderr,
+                    "FAIL: partial rotary (head_dim=%zu, n_rot=%zu): %zu of %zu values differ "
+                    "from the definition (%zu of them outside the rotated block)\n",
+                    HD,
+                    N_ROT,
+                    bad,
+                    SEQ * HEADS * HD,
+                    touched_tail);
+            g_fail = 1;
+        }
+        free(x);
+        free(want);
+        free(cos_t);
+        free(sin_t);
     }
 
     if (g_fail) {
