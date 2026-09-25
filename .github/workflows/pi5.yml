@@ -1,7 +1,7 @@
 # Raspberry Pi 5 — the primary deployment target, on the real board. The
 # arm64 cloud runner only proves the pi5 flag set compiles; this runs it:
 # build, the model-free unit suite, the integration suite against the
-# reference models, and bench-smoke as a number in the log.
+# reference models, and the frozen `make bench` protocol with its report.
 #
 # The board is shared (other repos' runners, agents over SSH): every heavy
 # step goes through ~/bin/with-pi-lock, and nothing measures unless the
@@ -45,8 +45,19 @@ jobs:
             sleep 10
           done
           echo "board not cool/idle after 5 min; skipping the measurement" && exit 1
-      - name: bench-smoke (BitNet 2B, numbers in the log)
-        run: OMP_NUM_THREADS=4 ~/bin/with-pi-lock make TARGET=pi5 bench-smoke AUTO_FETCH_MODEL=0
+      # The frozen protocol behind benchmark/results/PI5.md (tools/
+      # bench_reproduce.py): ~14 min on the board, decode and prefill against
+      # the recorded bitnet.cpp baselines, report printed and kept as an
+      # artifact. bench-smoke is deliberately NOT used: it runs every
+      # bench_* binary, including the audio/video ones that need fixtures.
+      - name: make bench (BitNet 2B, frozen protocol)
+        run: OMP_NUM_THREADS=4 ~/bin/with-pi-lock make TARGET=pi5 bench AUTO_FETCH_MODEL=0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pi5-bench-${{ github.run_id }}
+          path: ~/bench-geistlib/
+          if-no-files-found: ignore
       - name: thermal state after the run
         if: always()
         run: echo "temp=$(cat /sys/class/thermal/thermal_zone0/temp) throttled=$(vcgencmd get_throttled 2>/dev/null || echo n/a)"
