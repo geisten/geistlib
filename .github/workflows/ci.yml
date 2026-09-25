@@ -219,6 +219,24 @@ jobs:
         if: matrix.target == 'linux'
         run: make fetch-qwen3-model
 
+      # Integration on macOS (#441). Until now the Accelerate/AMX and Metal
+      # product paths ran no real forward per PR outside the perf sweep.
+      # qwen3.5 is the fixture this leg caches, so: its family suite (load,
+      # e2e, and the Metal e2e that skips everywhere else) plus the
+      # model-agnostic determinism and known-answer checks pointed at it.
+      # Not the whole int suite: with GEIST_GGUF_PATH at a qwen model six
+      # gemma-shaped tests fail on the fixture, not the code (#452).
+      - name: Integration tests on macOS (qwen3.5 fixture)
+        if: runner.os == 'macOS'
+        env:
+          GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/qwen3.5-0.8b-q8_0.gguf
+        run: |
+          make test-int FILTER=qwen35 TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
+          for t in test_prefill_determinism_int test_known_answer_e2e; do
+            echo "=== $t ==="
+            bin/${{ matrix.target }}/release/tests/$t
+          done
+
       # GEIST_STRICT_FIXTURES=gguf turns "GGUF model not found" from a skip
       # into a failure. Scoped to THIS step on purpose: it is the only one
       # where both models are guaranteed present (cached + fetched above).
