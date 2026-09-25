@@ -601,7 +601,9 @@ static void metal_encode_rope_rows(struct metal_state             *st,
     metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, cos->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, sin->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
-    const size_t            half   = (size_t) params->head_dim / 2u;
+    /* One thread per rotated pair: the table row is as wide as the rotated
+     * block, so half comes from the stride, not from head_dim (#432). */
+    const size_t            half   = (size_t) params->rope_row_stride / 2u;
     const size_t            total  = (size_t) params->rows * (size_t) params->heads * half;
     const struct metal_size groups = {
             .width  = (total + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
@@ -2353,15 +2355,17 @@ metal_embedding_lookup(struct geist_backend      *be,
                                 "metal rope_apply: tensors must be F32 DENSE x[seq,heads,dim]");
         return GEIST_E_UNSUPPORTED;
     }
+    /* A cos/sin row is as wide as the ROTATED block, which may be narrower
+     * than the head (qwen35 rotates 64 of 256 — #432). */
     if (head_dim == 0 || (head_dim % 2u) != 0 || cos_rows != rows || sin_rows != rows ||
-        cos_cols != head_dim || sin_cols != head_dim || cos_stride != head_dim ||
-        sin_stride != head_dim) {
+        cos_cols == 0 || (cos_cols % 2u) != 0 || cos_cols > head_dim || sin_cols != cos_cols ||
+        cos_stride != cos_cols || sin_stride != cos_cols) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "metal rope_apply: shape mismatch");
         return GEIST_E_INVALID_ARG;
     }
     if (rows > UINT32_MAX || heads > UINT32_MAX || head_dim > UINT32_MAX || x_offset > UINT32_MAX ||
         cos_offset > UINT32_MAX || sin_offset > UINT32_MAX || rows > UINT32_MAX / heads ||
-        rows * heads > UINT32_MAX / (head_dim / 2u) || x->buffer->owner != be->state ||
+        rows * heads > UINT32_MAX / (cos_cols / 2u) || x->buffer->owner != be->state ||
         cos->buffer->owner != be->state || sin->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }

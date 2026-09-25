@@ -159,9 +159,9 @@ static void reference_block(const float *x_in,
 
     /* RoPE: precompute cos/sin for seq_len=1 starting at position 0. */
     float cos[HEAD_DIM], sin_[HEAD_DIM];
-    rope_compute_at(0, 1, HEAD_DIM, HEAD_DIM, 10000.0f, cos, sin_);
-    rope_apply(1, N_Q_HEADS, HEAD_DIM, q_proj, cos, sin_);
-    rope_apply(1, N_KV_HEADS, HEAD_DIM, k_proj, cos, sin_);
+    rope_compute_at(0, 1, HEAD_DIM, HEAD_DIM, false, 10000.0f, cos, sin_);
+    rope_apply(1, N_Q_HEADS, HEAD_DIM, HEAD_DIM, q_proj, cos, sin_);
+    rope_apply(1, N_KV_HEADS, HEAD_DIM, HEAD_DIM, k_proj, cos, sin_);
 
     /* Attention with KV cache len=1 (single-token decode). */
     float attn_out[N_Q_HEADS * HEAD_DIM];
@@ -375,7 +375,7 @@ static int vtable_block_via_backend(const char  *backend_name,
 
     /* RoPE cos/sin tables — precomputed externally and uploaded. */
     float cos[HEAD_DIM], sin_[HEAD_DIM];
-    rope_compute_at(0, 1, HEAD_DIM, HEAD_DIM, 10000.0f, cos, sin_);
+    rope_compute_at(0, 1, HEAD_DIM, HEAD_DIM, false, 10000.0f, cos, sin_);
     struct geist_buffer *b_cos = alloc_and_upload(be, cos, HEAD_DIM);
     struct geist_buffer *b_sin = alloc_and_upload(be, sin_, HEAD_DIM);
 

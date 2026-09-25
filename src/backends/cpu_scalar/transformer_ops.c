@@ -53,7 +53,14 @@ static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar rope_apply: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    rope_apply((size_t) x->shape[0], (size_t) x->shape[1], (size_t) x->shape[2], xp, cosp, sinp);
+    /* The cos/sin row width is the rotated width (see rope_apply). */
+    rope_apply((size_t) x->shape[0],
+               (size_t) x->shape[1],
+               (size_t) x->shape[2],
+               (size_t) cos->shape[cos->ndim - 1],
+               xp,
+               cosp,
+               sinp);
     return GEIST_OK;
 }
 

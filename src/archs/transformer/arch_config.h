@@ -276,6 +276,24 @@ struct geist_arch_config {
      *          match. */
     bool rope_interleaved;
 
+    /* How a PARTIAL rotation (n_rotated_dims < head_dim) is laid out. The
+     * two shipped families disagree, and each matches its own reference:
+     *
+     *   false (Gemma 4): the cos/sin table is head_dim wide, frequencies
+     *     beyond the rotated quarter are zero, and the rotation pairs
+     *     channel i with i + head_dim/2. Validated against the reference
+     *     logit dumps in test_full_logits_gguf_int.
+     *
+     *   true (qwen35): ggml's layout — the table is n_rotated_dims wide,
+     *     pairs are (i, i + n_rotated_dims/2) inside that block, the
+     *     frequency exponent divides by n_rotated_dims, and channels at
+     *     or above it are left alone. Rotating qwen35 the Gemma way put
+     *     dims 0..31 against 128..159 four times too slowly and cost it
+     *     in-context recall (#432).
+     *
+     * With n_rotated_dims == head_dim both collapse to the same thing. */
+    bool rope_partial_block;
+
     /* ---- qwen35 hybrid family (#281) ---------------------------------- *
      *
      * has_attn_output_gate: the attention q_proj jointly produces
