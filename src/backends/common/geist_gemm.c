@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <stdatomic.h>
+#include <string.h>
 
 static _Atomic unsigned long long g_gemm_ns = 0, g_gemm_calls = 0;
 static _Atomic unsigned long long g_gemv_ns = 0, g_gemv_calls = 0;
@@ -111,6 +112,52 @@ static void geist_blas_pin_single_thread(void) {
     }
     done = 1;
     openblas_set_num_threads(1);
+}
+#elif defined(__APPLE__)
+/* Accelerate brings its own thread pool to every cblas call. Where geist
+ * has already spread a matmul over its OpenMP threads — the quantized
+ * prefill kernels dequantize a tile per thread and call sgemm on it —
+ * each of those calls asks for a pool of its own, and the machine ends up
+ * waiting on itself: on a 27B PQ2_0 prefill, `sample` counted ~35 k
+ * samples parked in worker threads and ~11.6 k in OpenMP waits against
+ * ~30 k inside BLAS.
+ *
+ * BLASSetThreading fixes that, but its setting is thread-local (see
+ * vecLib thread_api.h), so it has to be set on the calling thread, and
+ * only there: a lone caller — the small F32 projections that run outside
+ * any parallel region — should keep Accelerate's own threading. So the
+ * threading model is matched to the caller each time it changes.
+ *
+ * macOS 15+; resolved through dlsym so older systems keep the default,
+ * and GEIST_BLAS_THREAD_MATCH=0 turns the whole thing off. */
+#include <dlfcn.h>
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
+enum { GEIST_BLAS_MULTI_THREADED = 0, GEIST_BLAS_SINGLE_THREADED = 1 };
+
+static void geist_blas_pin_single_thread(void) {
+#if defined(_OPENMP)
+    static _Thread_local bool resolved                      = false;
+    static _Thread_local int (*set_threading)(unsigned int) = nullptr;
+    static _Thread_local int applied                        = -1;
+    if (!resolved) {
+        resolved        = true;
+        const char *off = getenv("GEIST_BLAS_THREAD_MATCH");
+        if (off == nullptr || strcmp(off, "0") != 0) {
+            set_threading = (int (*)(unsigned int)) dlsym(RTLD_DEFAULT, "BLASSetThreading");
+        }
+    }
+    if (set_threading == nullptr) {
+        return;
+    }
+    const int want = omp_in_parallel() ? GEIST_BLAS_SINGLE_THREADED : GEIST_BLAS_MULTI_THREADED;
+    if (applied != want) {
+        set_threading((unsigned int) want);
+        applied = want;
+    }
+#endif
 }
 #else
 static void geist_blas_pin_single_thread(void) {
