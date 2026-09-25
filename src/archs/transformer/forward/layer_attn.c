@@ -118,7 +118,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
      * the quant happens there instead (norm_projection_input). */
     if (ctx->apply_bitnet_input_quant && !ctx->apply_projection_input_norms) {
         t0 = profile ? transformer_profile_now_ns() : 0;
-        apply_bitnet_input_quant_inplace(v, sess->scratch_normed, ctx->seq, st->d_model);
+        bitnet_input_quant(ctx, sess->scratch_normed, st->d_model);
         transformer_profile_add(&g_attn_profile, ATTN_PROFILE_NORM, t0);
     }
 
