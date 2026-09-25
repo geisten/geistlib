@@ -3,10 +3,15 @@
  *
  * Layer: BACKEND (cpu_neon). See tl1.h for the algorithmic overview.
  *
- * This file ships the SCALAR REFERENCE (no NEON intrinsics) so the
- * layout, encoding, and accumulation can be unit-tested independently
- * of the SIMD lowering. A subsequent commit replaces the inner loops
- * with vqtbl1q_s8 + int16x8 accumulators.
+ * Two lowerings of the same kernel, selected by __ARM_NEON:
+ *   - the SIMD path, vqtbl1q_s8 LUT lookups into int16x8 accumulators;
+ *   - a scalar reference in the #else, kept so the layout, encoding and
+ *     accumulation stay readable and testable on non-ARM hosts.
+ *
+ * Correctness is gated from the outside rather than between these two:
+ * test_tl1_parity.c asserts this kernel is bit-identical to the
+ * independent TQ2_0 SDOT kernel (cpu_neon_w_tq2_0_q8a_m1) on whichever
+ * lowering the host compiles.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
