@@ -306,6 +306,19 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         }
     }
 
+    /* The sparsity probe counts the gate's zeros, so it has to read
+     * mid_buf before the rotation mixes each block. */
+    if (st->runtime_flags.dump_act_sparsity) {
+        if (!mid_already_down_scaled) {
+            t0 = profile ? transformer_profile_now_ns() : 0;
+            apply_per_channel_inv_scale_inplace(
+                    v, mid_buf, ctx->seq, ctx->inter, L->down_awq_inv_scale);
+            transformer_profile_add(&g_ffn_profile, FFN_PROFILE_DOWN_SCALE, t0);
+            mid_already_down_scaled = true;
+        }
+        transformer_probe_ffn_sparsity(v, true, ctx->layer_idx, mid_buf, ctx->seq * ctx->inter);
+    }
+
     /* prism.hadamard: down reads its input rotated (AWQ is refused on
      * rotated models, so no inv-scale follows the transform). */
     s = transformer_rotate_rows(st, ctx->seq, ctx->inter, mid_buf);
@@ -314,13 +327,6 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     }
 
     if (st->runtime_flags.dump_act_sparsity) {
-        if (!mid_already_down_scaled) {
-            t0 = profile ? transformer_profile_now_ns() : 0;
-            apply_per_channel_inv_scale_inplace(
-                    v, mid_buf, ctx->seq, ctx->inter, L->down_awq_inv_scale);
-            transformer_profile_add(&g_ffn_profile, FFN_PROFILE_DOWN_SCALE, t0);
-        }
-        transformer_probe_ffn_sparsity(v, true, ctx->layer_idx, mid_buf, ctx->seq * ctx->inter);
         t0 = profile ? transformer_profile_now_ns() : 0;
         s  = linear_w_or_legacy(be,
                                 v,

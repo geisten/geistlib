@@ -68,7 +68,22 @@ tuning_resolve(struct geist_backend *be, const char *tunable, const char *env, u
     return tuning_env_u32(env, seed);
 }
 
+/* At create time the calibration store is still empty -- a blob can only
+ * be applied to an already-created backend -- so this seeds the values
+ * and metal_tuning_resolve folds the blob in later, the way cpu_neon
+ * overlays its policy at the first weight resolve. */
 void metal_tuning_init(struct geist_backend *be, struct metal_state *st) {
+    (void) be;
+    st->tuning.pq2_n8_min_n_out   = SEED_PQ2_N8_MIN_N_OUT;
+    st->tuning.wide_rows_min_cols = SEED_WIDE_ROWS_MIN_COLS;
+    st->tuning.resolved           = false;
+}
+
+void metal_tuning_resolve(struct geist_backend *be, struct metal_state *st) {
+    if (st == nullptr || st->tuning.resolved) {
+        return;
+    }
+    st->tuning.resolved         = true;
     st->tuning.pq2_n8_min_n_out = tuning_resolve(
             be, "pq2_n8_min_n_out", "GEIST_METAL_PQ2_N8_MIN_N_OUT", SEED_PQ2_N8_MIN_N_OUT);
     st->tuning.wide_rows_min_cols = tuning_resolve(
@@ -109,6 +124,9 @@ static bool sonde_time_pq2_gemv(struct geist_backend *be, size_t n_out, double *
                                   : SONDE_MAX_COPIES;
     struct geist_buffer *bw[SONDE_MAX_COPIES] = {nullptr};
     struct geist_weight  w[SONDE_MAX_COPIES]  = {0};
+    if (copies == 0) {
+        return false;
+    }
     struct geist_buffer *bx = nullptr, *by = nullptr;
     bool ok = v->buffer_create(be, SONDE_N_IN * sizeof(float), GEIST_BUFFER_ACTIVATION, 0, &bx) ==
                       GEIST_OK &&
@@ -158,7 +176,7 @@ static bool sonde_time_pq2_gemv(struct geist_backend *be, size_t n_out, double *
     v->buffer_destroy(be, bx);
     v->buffer_destroy(be, by);
     *out_ns = best;
-    return ok && copies > 0 && best > 0.0;
+    return ok && best > 0.0;
 }
 
 /* The n_out from which 8 rows per simdgroup beat 4: the wider kernel
@@ -170,6 +188,7 @@ metal_measure_pq2_n8_min_n_out(struct geist_backend *be, uint64_t budget_ns, int
     if (st == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
+    metal_tuning_resolve(be, st);
     const uint32_t live     = st->tuning.pq2_n8_min_n_out;
     const uint64_t deadline = tuning_now_ns() + budget_ns;
     uint32_t       cross    = SEED_PQ2_N8_MIN_N_OUT;
