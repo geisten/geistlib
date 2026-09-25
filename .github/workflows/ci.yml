@@ -229,6 +229,8 @@ jobs:
         if: matrix.target == 'linux'
         env:
           GEIST_STRICT_FIXTURES: gguf
+          # Skips outside this list fail (#443): the suite may not shrink quietly.
+          GEIST_EXPECTED_SKIPS: .github/expected-skips.txt
         run: make test-int test-e2e TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
       # The README claims "any language FFIs in with no shim" — prove it on
@@ -423,6 +425,8 @@ jobs:
       - name: Integration + e2e tests (real models, fixtures mandatory)
         env:
           GEIST_STRICT_FIXTURES: gguf
+          # Skips outside this list fail (#443): the suite may not shrink quietly.
+          GEIST_EXPECTED_SKIPS: .github/expected-skips.txt
         run: make test-int test-e2e TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
       # Portability gate (#96): GEIST_FORCE_ISA=avx2 clamps the kernel
       # dispatcher to the x86-64-v3 baseline, so the non-AVX512 code paths

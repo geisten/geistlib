@@ -1,0 +1,46 @@
+# What the strict model legs (ci.yml "Integration + e2e tests, fixtures
+# mandatory", Linux arm64 and x86_64) are ALLOWED to skip. mk/run-tests.sh
+# fails any skip not listed here (GEIST_EXPECTED_SKIPS), so a fixture that
+# goes missing shows up as red instead of a quietly smaller suite. A test on
+# this list that no longer skips is fine — remove it when its fixture lands.
+# Taken from the 2026-09-25 green main run. One name per line.
+
+# audio tower / WAV fixtures — only the audio-smoke and coverage jobs fetch them
+test_audio_attach_int
+test_audio_attn_w8a8_parity_int
+test_audio_long_clip_int
+test_audio_stream_lifecycle_int
+test_audio_stream_live_parity_int
+test_audio_stream_session_int
+test_audio_stream_wav_int
+test_chat_audio_int
+test_audio_chat_e2e
+test_audio_latency_e2e
+
+# vision tower / image fixtures — not fetched in CI
+test_chat_image_int
+test_vision_attach_int
+test_video_attach_int
+test_vision_e2e_unit
+
+# retired bring-up ladder (tests/scripts/README.md): needs HF safetensors dumps
+test_full_logits_gguf_int
+test_full_logits_int
+test_layers0to14_int
+test_layers0to4_int
+test_step12to14_ple_int
+test_step5_attn_oproj_int
+test_step8to11_mlp_norms_int
+test_ptqtp_int
+
+# models / assets not in CI
+test_bonsai_e2e_int
+test_published_embedding_e2e
+test_qwen35_mtp_forward_int
+test_awq_int
+
+# build/backend not present on these legs
+test_qwen35_metal_e2e_int
+test_gains_int
+test_iq_kernel_int
+test_prefill_q3k_int
