@@ -107,7 +107,7 @@ static bool pq2_0_prep(struct cpu_neon_workspace *ws,
                        float                     *y,
                        float                     *inv_act_scale) {
     const size_t nb = n_in / PQ2_0_BLOCK_ELEMS;
-    if (n_in % PQ2_0_BLOCK_ELEMS != 0) {
+    if (ws == nullptr || n_in % PQ2_0_BLOCK_ELEMS != 0) {
         memset(y, 0, n_out * sizeof *y);
         return false;
     }
@@ -342,7 +342,8 @@ void cpu_neon_w_pq2_0_x8_m1(const float               *x,
     const size_t               n_in  = (size_t) w->n_in;
     const size_t               n_out = (size_t) w->n_out;
     float                      inv   = 0.0f;
-    if (w->aux_fp32 == nullptr || !pq2_0_prep(ws, n_in, n_out, x, y, &inv)) {
+    if (!pq2_0_prep(ws, n_in, n_out, x, y, &inv) || w->aux_fp32 == nullptr) {
+        memset(y, 0, n_out * sizeof *y);
         return;
     }
     struct pq2_0_x8_ctx ctx = {
@@ -368,6 +369,12 @@ void cpu_neon_w_pq2_0_x8_m1(const float               *x,
 
 /* xp[t][b*128 + c*64 + 16l + m] = x[t][b*128 + c*64 + 4m + l]. */
 static void pq2_0_permute_x(size_t m, size_t n_in, const float *x, float *xp) {
+    /* Rows are independent; at m = 128 this is ~22 MB in and 22 MB out
+     * per layer, so leaving it on the calling thread parked the other
+     * cores in front of the tile loop. */
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static) if (m > 1)
+#endif
     for (size_t t = 0; t < m; t++) {
         const float *xr = x + t * n_in;
         float       *pr = xp + t * n_in;
@@ -443,7 +450,12 @@ static void pq2_0_x8_dequant8(const uint8_t *W, size_t nb, size_t n_in, size_t t
  * m = 64 / 128 / 256: T=32 642/878/1090, T=64 901/903/907, T=128
  * 901/1002/1134, T=256 920/1058/1090; the generic trampoline 628/765/676.
  * Dequantizing a shared panel for one big SGEMM lost at small m
- * (358/574/695 with 8192-row panels). */
+ * (358/574/695 with 8192-row panels). Re-measured end to end on the 27B
+ * with the panel dequant PARALLEL (the earlier note's was serial, so it
+ * did not answer the question): 2048-row panels 12.46/12.46 t/s pp256 and
+ * 8192-row 11.88/13.77 against 13.51/13.65 for these tiles. Per-thread
+ * tiles win because each thread's dequant overlaps the others' AMX work;
+ * a panel serializes the two phases. */
 constexpr size_t PQ2_0_X8_TILE_ROWS = 128;
 
 void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
@@ -451,14 +463,19 @@ void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
                             const struct geist_weight *w,
                             struct geist_backend      *be,
                             float                     *y) {
-    struct cpu_neon_state     *st    = (struct cpu_neon_state *) be->state;
-    struct cpu_neon_workspace *ws    = cpu_neon_ws(st);
-    const size_t               n_in  = (size_t) w->n_in;
-    const size_t               n_out = (size_t) w->n_out;
-    const size_t               nb    = n_in / PQ2_0_BLOCK_ELEMS;
-    const uint8_t             *W     = (const uint8_t *) w->aux_fp32;
-    if (m == 0 || W == nullptr || ws == nullptr ||
-        !cpu_neon_grow_f32(&ws->pq2_xp, &ws->pq2_xp_cap, m * n_in)) {
+    struct cpu_neon_state     *st      = (struct cpu_neon_state *) be->state;
+    struct cpu_neon_workspace *ws      = cpu_neon_ws(st);
+    const size_t               n_in    = (size_t) w->n_in;
+    const size_t               n_out   = (size_t) w->n_out;
+    const size_t               nb      = n_in / PQ2_0_BLOCK_ELEMS;
+    const uint8_t             *W       = (const uint8_t *) w->aux_fp32;
+    size_t                     xp_need = 0;
+    if (m == 0 || W == nullptr || ws == nullptr || ckd_mul(&xp_need, m, n_in) ||
+        !cpu_neon_grow_f32(&ws->pq2_xp, &ws->pq2_xp_cap, xp_need)) {
+        /* Same refusal as the m1 kernels: zeroed y, never stale scratch. */
+        if (m != 0) {
+            memset(y, 0, m * n_out * sizeof *y);
+        }
         return;
     }
     pq2_0_permute_x(m, n_in, x, ws->pq2_xp);
@@ -470,11 +487,16 @@ void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
 #endif
     for (size_t ti = 0; ti < n_tiles; ti++) {
         struct cpu_neon_workspace *tws = cpu_neon_ws(st);
+        const size_t               r0  = ti * T;
+        const size_t               tr  = n_out - r0 < T ? n_out - r0 : T;
         if (tws == nullptr || !cpu_neon_grow_f32(&tws->pq2_tile, &tws->pq2_tile_cap, T * n_in)) {
+            /* geist_sgemm would have written these rows with beta = 0;
+             * zero them so the caller never reads the previous layer. */
+            for (size_t r = 0; r < m; r++) {
+                memset(y + r * n_out + r0, 0, tr * sizeof *y);
+            }
             continue;
         }
-        const size_t r0 = ti * T;
-        const size_t tr = n_out - r0 < T ? n_out - r0 : T;
         for (size_t k = 0; k < tr / 8; k++) {
             pq2_0_x8_dequant8(W, nb, n_in, r0 / 8 + k, tws->pq2_tile + k * 8 * n_in);
         }

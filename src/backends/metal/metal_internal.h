@@ -209,6 +209,9 @@ struct metal_state {
     struct metal_tuning {
         uint32_t pq2_n8_min_n_out;
         uint32_t wide_rows_min_cols;
+        /* Cleared once the calibration blob has been folded in; see
+         * metal_tuning_resolve. */
+        bool resolved;
     } tuning;
     /* Parallel single-token DeltaNet; GEIST_METAL_DN_SERIAL_DECODE=1 takes
      * the serial path. Cached here: the decode path asks per layer. */
@@ -830,6 +833,12 @@ struct geist_buffer *metal_buf_reg_find(struct metal_state *st, const void *p, s
                                                  struct geist_buffer  **out);
 
 void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer *buf);
+
+/* tuning.c: fold an applied calibration blob into the crossovers, once,
+ * at the first weight resolve -- the engine closes the apply window just
+ * before calling us, so this is the earliest point a blob is visible.
+ * A no-op on every call after the first. */
+void metal_tuning_resolve(struct geist_backend *be, struct metal_state *st);
 
 /* tuning.c: resolve the device crossovers (seed -> calibration -> env)
  * and the tunable table the calibration driver measures. */

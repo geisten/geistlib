@@ -6,6 +6,8 @@
  */
 #include "metal_internal.h"
 
+#include "checked.h"
+
 static void metal_encode_q4k_linear(struct metal_state            *st,
                                     void                          *enc,
                                     const struct geist_tensor     *x,
@@ -227,8 +229,12 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
      * kernels, so their GEMM takes every rows>=2 shape. */
     const bool n_tile4 = params->rows == 1u && params->n_out >= 4u &&
                          (st->use_q4k_n4 || p.gemm_only) && p.n4 != nullptr;
+    /* gemm_only: every shape the n4 GEMV does not take, including
+     * rows == 1 with n_out < 4. The GEMM is bounds-checked, so a tiny
+     * shape is slow, not wrong -- and there is no naive kernel below it
+     * to fall back to. */
     const bool m_tile_sg =
-            (p.gemm_only ? params->rows >= 2u
+            (p.gemm_only ? !n_tile4
                          : (params->rows >= 8u && params->n_out >= 64u && st->use_q4k_mm_sg)) &&
             p.mm != nullptr;
     /* interior fast variant: no bounds checks, vectorized activation
@@ -237,16 +243,16 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                 (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
                                 (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u;
     const bool tiled          = !n_tile4 && !m_tile_sg && params->rows >= 8u;
-    /* Only reachable for shapes no GEMV/GEMM takes (n_out < 4 at rows==1);
-     * a gemm_only format has no naive kernel and falls back to Q5_K's, as
-     * it did before this table. */
-    void *base = tiled ? p.m8 : p.base;
-    metal_msg_send_set_pipeline(st,
-                                enc,
-                                n_tile4          ? p.n4
-                                : m_tile_sg_fast ? p.mm_fast
-                                : m_tile_sg      ? p.mm
-                                                 : base);
+    /* The naive kernels, for the formats that have them. A gemm_only
+     * format has none, but m_tile_sg above takes every shape its GEMV
+     * does not, so base stays null only when a pipeline failed to
+     * build -- and then there is nothing to encode. */
+    void *const base = tiled ? p.m8 : p.base;
+    void *const pipe = n_tile4 ? p.n4 : m_tile_sg_fast ? p.mm_fast : m_tile_sg ? p.mm : base;
+    if (pipe == nullptr) {
+        return;
+    }
+    metal_msg_send_set_pipeline(st, enc, pipe);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
@@ -595,7 +601,9 @@ static void metal_encode_rope_rows(struct metal_state             *st,
     metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, cos->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, sin->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
-    const size_t            half   = (size_t) params->head_dim / 2u;
+    /* One thread per rotated pair: the table row is as wide as the rotated
+     * block, so half comes from the stride, not from head_dim (#432). */
+    const size_t            half   = (size_t) params->rope_row_stride / 2u;
     const size_t            total  = (size_t) params->rows * (size_t) params->heads * half;
     const struct metal_size groups = {
             .width  = (total + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
@@ -1196,11 +1204,19 @@ static void metal_encode_hadamard(struct metal_state                 *st,
         return GEIST_E_INVALID_ARG;
     }
     const bool perm = a->perm_rep > 1;
-    /* Threadgroup memory holds one block; 4096 floats is 16 KB. */
-    if (a->block == 0 || (a->block & (a->block - 1)) != 0 || a->block > 4096 ||
+    /* The permutation geometry is GGUF config, so the product is checked
+     * the way the CPU twin checks it (hadamard.c). */
+    size_t pcells = 0;
+    if (perm &&
+        (ckd_mul(&pcells, a->perm_hd, a->perm_nk) || ckd_mul(&pcells, pcells, a->perm_rep))) {
+        return GEIST_E_INVALID_ARG;
+    }
+    /* Threadgroup memory holds one block; 4096 floats is 16 KB, and
+     * setThreadgroupMemoryLength wants a multiple of 16 bytes, so four
+     * floats is the floor. */
+    if (a->block < 4 || (a->block & (a->block - 1)) != 0 || a->block > 4096 ||
         cols % a->block != 0 ||
-        (perm && (a->inverse || a->perm_hd * a->perm_nk * a->perm_rep != cols ||
-                  a->x->buffer == a->y->buffer))) {
+        (perm && (a->inverse || pcells != cols || a->x->buffer == a->y->buffer))) {
         return GEIST_E_INVALID_ARG;
     }
     if (rows > UINT32_MAX || cols > UINT32_MAX || xo > UINT32_MAX || xs > UINT32_MAX ||
@@ -1211,6 +1227,20 @@ static void metal_encode_hadamard(struct metal_state                 *st,
     }
     if (rows == 0) {
         return GEIST_OK;
+    }
+    /* Same aliasing contract as the host path (hadamard.c): y may alias x
+     * only exactly. A threadgroup stages a whole block before it writes,
+     * so a shifted y races against the blocks its neighbours have not
+     * read yet -- buffer identity alone does not catch that. */
+    if (a->x->buffer->buffer == a->y->buffer->buffer) {
+        const size_t xb   = a->x->buffer->base_off + xo * sizeof(float);
+        const size_t yb   = a->y->buffer->base_off + yo * sizeof(float);
+        const size_t xn   = ((rows - 1) * xs + cols) * sizeof(float);
+        const size_t yn   = ((rows - 1) * ys + cols) * sizeof(float);
+        const bool   same = xb == yb && xs == ys;
+        if (!same && xb < yb + yn && yb < xb + xn) {
+            return GEIST_E_INVALID_ARG;
+        }
     }
     enum geist_status s = metal_ensure_hadamard_pipeline(be);
     if (s != GEIST_OK) {
@@ -2325,15 +2355,17 @@ metal_embedding_lookup(struct geist_backend      *be,
                                 "metal rope_apply: tensors must be F32 DENSE x[seq,heads,dim]");
         return GEIST_E_UNSUPPORTED;
     }
+    /* A cos/sin row is as wide as the ROTATED block, which may be narrower
+     * than the head (qwen35 rotates 64 of 256 — #432). */
     if (head_dim == 0 || (head_dim % 2u) != 0 || cos_rows != rows || sin_rows != rows ||
-        cos_cols != head_dim || sin_cols != head_dim || cos_stride != head_dim ||
-        sin_stride != head_dim) {
+        cos_cols == 0 || (cos_cols % 2u) != 0 || cos_cols > head_dim || sin_cols != cos_cols ||
+        cos_stride != cos_cols || sin_stride != cos_cols) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "metal rope_apply: shape mismatch");
         return GEIST_E_INVALID_ARG;
     }
     if (rows > UINT32_MAX || heads > UINT32_MAX || head_dim > UINT32_MAX || x_offset > UINT32_MAX ||
         cos_offset > UINT32_MAX || sin_offset > UINT32_MAX || rows > UINT32_MAX / heads ||
-        rows * heads > UINT32_MAX / (head_dim / 2u) || x->buffer->owner != be->state ||
+        rows * heads > UINT32_MAX / (cos_cols / 2u) || x->buffer->owner != be->state ||
         cos->buffer->owner != be->state || sin->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
@@ -3786,6 +3818,9 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     if (!quant_weight_extent_ok(w)) {
         return GEIST_E_FORMAT;
     }
+    /* The apply window just closed; fold the blob into the crossovers
+     * before the first kernel choice reads them. */
+    metal_tuning_resolve(be, be->state);
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_0:
     case GEIST_DTYPE_Q4_1:
@@ -4119,6 +4154,7 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
         case GEIST_DTYPE_Q4_K:
         case GEIST_DTYPE_Q5_K:
         case GEIST_DTYPE_Q6_K:
+        case GEIST_DTYPE_PQ2_0:
             return true;
         default:
             return false;

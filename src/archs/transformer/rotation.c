@@ -111,6 +111,11 @@ static bool parse_layer_name(const char *s, size_t len, size_t *layer, size_t *k
         return false;
     }
     i++;
+    /* The digit loop can walk into the suffix ("blk.123456.weight"), so
+     * the remainder is not a length until it is known to be one. */
+    if (i + (sizeof suf - 1) > len) {
+        return false;
+    }
     const size_t kind_len = len - (sizeof suf - 1) - i;
     for (size_t k = 0; k < (size_t) ROT_KIND_COUNT; k++) {
         if (strlen(ROT_KINDS[k].name) == kind_len &&
@@ -143,11 +148,14 @@ static bool is_name(const char *s, size_t len, const char *want) {
     if (ckd_mul(&cells, st->n_layers, (size_t) ROT_KIND_COUNT)) {
         return fail(st, GEIST_E_FORMAT, "layer count overflows", nullptr);
     }
-    bool *seen = heap_calloc_aligned(cells + 1, sizeof(bool), alignof(bool));
+    if (ckd_add(&cells, cells, 1)) {
+        return fail(st, GEIST_E_FORMAT, "layer count overflows", nullptr);
+    }
+    bool *seen = heap_calloc_aligned(cells, sizeof(bool), alignof(bool));
     if (seen == nullptr) {
         return fail(st, GEIST_E_OOM, "out of memory", nullptr);
     }
-    bool             *seen_output = &seen[cells];
+    bool             *seen_output = &seen[cells - 1];
     enum geist_status s           = GEIST_OK;
     struct str_iter   it          = {.p = p, .left = n};
     const char       *name        = nullptr;

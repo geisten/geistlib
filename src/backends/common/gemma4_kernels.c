@@ -165,13 +165,18 @@ void rope_compute(size_t seq_len,
 void rope_apply(size_t       seq_len,
                 size_t       n_heads,
                 size_t       head_dim,
+                size_t       n_rot,
                 float       *x,
                 const float *cos,
                 const float *sin) {
-    size_t half = head_dim / 2;
+    /* Pair within the rotated block, not across the head: with n_rot 64 of
+     * head_dim 256 the partners are (0,32)..(31,63), and dims 64.. keep
+     * their values. Pairing on head_dim/2 instead rotated dims 0..31
+     * against 128..159 at the wrong frequencies (#432). */
+    size_t half = n_rot / 2;
     for (size_t s = 0; s < seq_len; s++) {
-        const float *cos_s = cos + s * head_dim;
-        const float *sin_s = sin + s * head_dim;
+        const float *cos_s = cos + s * n_rot;
+        const float *sin_s = sin + s * n_rot;
         for (size_t h = 0; h < n_heads; h++) {
             float *xh = x + (s * n_heads + h) * head_dim;
             /* rotate_half: out = x*cos + [-x_high, x_low]*sin
@@ -192,29 +197,38 @@ void rope_compute_at(size_t pos_offset,
                      size_t n_positions,
                      size_t head_dim,
                      size_t n_rotated_dims,
+                     bool   partial_block,
                      float  theta,
                      float *cos_out,
                      float *sin_out) {
-    size_t half     = head_dim / 2;
-    size_t n_active = n_rotated_dims / 2;
-    if (n_active > half)
-        n_active = half;
-    float *inv_freq = heap_alloc_array_aligned(float, half);
-    for (size_t i = 0; i < n_active; i++) {
-        inv_freq[i] = powf(theta, -((float) (2 * i) / (float) head_dim));
+    /* partial_block (ggml/qwen35): the row covers the rotated block, and
+     * the frequency exponent divides by that width. Otherwise (Gemma 4)
+     * the row covers the whole head and the dims past the rotated part
+     * get a zero frequency, i.e. cos=1/sin=0. arch_config.h has the why. */
+    const size_t width    = rope_table_width(head_dim, n_rotated_dims, partial_block);
+    const size_t half     = width / 2;
+    const size_t denom    = partial_block ? width : head_dim;
+    const size_t n_active = n_rotated_dims / 2 < half ? n_rotated_dims / 2 : half;
+    float       *inv_freq = heap_alloc_array_aligned(float, half > 0 ? half : 1);
+    if (inv_freq == nullptr) {
+        return;
     }
-    for (size_t i = n_active; i < half; i++)
+    for (size_t i = 0; i < n_active; i++) {
+        inv_freq[i] = powf(theta, -((float) (2 * i) / (float) denom));
+    }
+    for (size_t i = n_active; i < half; i++) {
         inv_freq[i] = 0.0f;
+    }
     for (size_t s = 0; s < n_positions; s++) {
         float pos = (float) (pos_offset + s);
         for (size_t i = 0; i < half; i++) {
-            float angle                      = pos * inv_freq[i];
-            float c                          = cosf(angle);
-            float si                         = sinf(angle);
-            cos_out[s * head_dim + i]        = c;
-            cos_out[s * head_dim + half + i] = c;
-            sin_out[s * head_dim + i]        = si;
-            sin_out[s * head_dim + half + i] = si;
+            float angle                   = pos * inv_freq[i];
+            float c                       = cosf(angle);
+            float si                      = sinf(angle);
+            cos_out[s * width + i]        = c;
+            cos_out[s * width + half + i] = c;
+            sin_out[s * width + i]        = si;
+            sin_out[s * width + half + i] = si;
         }
     }
     safe_free((void **) &inv_freq);

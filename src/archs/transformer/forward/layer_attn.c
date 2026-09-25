@@ -313,14 +313,16 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         }
     }
 
-    t0                                 = profile ? transformer_profile_now_ns() : 0;
-    struct geist_buffer *cos_buf       = L->is_full ? st->rope_cos_full : st->rope_cos_sliding;
-    struct geist_buffer *sin_buf       = L->is_full ? st->rope_sin_full : st->rope_sin_sliding;
-    const size_t         cos_row_bytes = ctx->hd * sizeof(float);
-    struct geist_tensor  t_cos =
-            view_2d_at(cos_buf, ctx->q_position * cos_row_bytes, ctx->SEQ, (int64_t) ctx->hd);
+    t0                           = profile ? transformer_profile_now_ns() : 0;
+    struct geist_buffer *cos_buf = L->is_full ? st->rope_cos_full : st->rope_cos_sliding;
+    struct geist_buffer *sin_buf = L->is_full ? st->rope_sin_full : st->rope_sin_sliding;
+    const size_t         n_rot =
+            rope_table_width(ctx->hd, (size_t) L->n_rotated_dims, st->config.rope_partial_block);
+    const size_t        cos_row_bytes = n_rot * sizeof(float);
+    struct geist_tensor t_cos =
+            view_2d_at(cos_buf, ctx->q_position * cos_row_bytes, ctx->SEQ, (int64_t) n_rot);
     struct geist_tensor t_sin =
-            view_2d_at(sin_buf, ctx->q_position * cos_row_bytes, ctx->SEQ, (int64_t) ctx->hd);
+            view_2d_at(sin_buf, ctx->q_position * cos_row_bytes, ctx->SEQ, (int64_t) n_rot);
     struct geist_tensor t_q_3d =
             view_3d(sess->scratch_q, ctx->SEQ, st->n_q_heads, (int64_t) ctx->hd);
 

@@ -203,8 +203,8 @@ static void forward_layer(const LayerW *L,
     float *cos_b = (float *) xmalloc(seq * (size_t) hd * sizeof(float));
     float *sin_b = (float *) xmalloc(seq * (size_t) hd * sizeof(float));
     rope_compute(seq, hd, L->n_rotated_dims, L->rope_theta, cos_b, sin_b);
-    rope_apply(seq, N_Q_HEADS, hd, q, cos_b, sin_b);
-    rope_apply(seq, N_KV_HEADS, hd, k, cos_b, sin_b);
+    rope_apply(seq, N_Q_HEADS, hd, (size_t) L->n_rotated_dims, q, cos_b, sin_b);
+    rope_apply(seq, N_KV_HEADS, hd, (size_t) L->n_rotated_dims, k, cos_b, sin_b);
 
     float *attn_out = (float *) xmalloc(seq * (size_t) q_out * sizeof(float));
     attention_mqa_causal(
