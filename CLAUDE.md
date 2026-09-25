@@ -1,5 +1,4 @@
-See [AGENT.md](AGENT.md) — the coding rules for this repository, and the file
-source comments cite by name. Read it before writing or changing a function.
+See [AGENT.md](AGENT.md) — the coding rules for this repository. Read it before writing or changing a function.
 
 Fastest orientation:
 

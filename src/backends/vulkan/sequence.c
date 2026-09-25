@@ -117,9 +117,9 @@ void vk_prof_stamp(struct vk_state *st, uint32_t slot) {
     st->ts_count++;
 }
 
-/* Execution barrier between dependent dispatches/copies in the batch. One
- * global memory barrier — coarse but correct on a single compute queue.
- * ponytail: per-buffer barriers if the profiler ever blames this. */
+/* Execution barrier between dependent dispatches/copies in the batch. Uses
+ * one global memory barrier, which is coarse but correct on a single compute
+ * queue. */
 static void vk_seq_barrier(struct vk_state *st) {
     st->n_dirty = 0;
     st->stat_barriers++;

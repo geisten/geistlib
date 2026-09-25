@@ -244,9 +244,8 @@ void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
 }
 
 /* One blocking staging round-trip. Direction: upload (src != nullptr) or
- * download (dst != nullptr). ponytail: allocates a fresh staging buffer per
- * call — fine for load-time weight uploads; a persistent ring lands with the
- * Phase-2/3 hot path if transfers ever show up in a profile. */
+ * download (dst != nullptr). Each call allocates a fresh staging buffer, so
+ * this is suitable for load-time transfers but not a transfer hot path. */
 [[nodiscard]] static enum geist_status
 vk_staged_copy(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src, uint8_t *dst) {
     struct vk_state      *st = buf->owner;

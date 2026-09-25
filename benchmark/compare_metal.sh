@@ -11,8 +11,8 @@
 #   SKIP_LLAMA=1  geist-only run (skip the llama-bench half)
 #   PP, TG        workload sizes (default 512 / 64, matches llama-bench -p/-n)
 #
-# ponytail: shell + grep, not a harness. The reference column is hard-coded
-# from docs/proposals/metal-beat-llamacpp-plan.md — update it there, not here.
+# This is a shell-level comparison, not a general benchmark harness. The
+# reference column comes from docs/proposals/metal-beat-llamacpp-plan.md.
 set -euo pipefail
 
 # Self-check the llama-bench field parse (the format is easy to mis-grep —

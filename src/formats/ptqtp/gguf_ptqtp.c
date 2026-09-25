@@ -313,8 +313,7 @@ struct ptqtp_ctx *ptqtp_open(const char *path, const char **err) {
      * corrupt/hostile) GGUF file. Every step — the per-tensor product, the
      * running sum, and the final byte-size multiply — is checked for size_t
      * overflow. A wrapped size would under-allocate and let the convert loop
-     * below overflow the heap (AGENT.md: correctness first, no silent
-     * truncation). */
+     * below overflow the heap. */
     size_t total_alpha_elems = 0;
     bool   size_overflow     = false;
     for (uint32_t i = 0; i < ctx->n_tensors; i++) {
@@ -343,8 +342,8 @@ struct ptqtp_ctx *ptqtp_open(const char *path, const char **err) {
         ptqtp_close(ctx);
         return nullptr;
     }
-    /* Route through heap.h (per AGENT.md) instead of a raw aligned_alloc; it
-     * applies its own overflow-checked rounding and >=64-byte alignment. */
+    /* heap.h provides overflow-checked rounding and at least 64-byte
+     * alignment. */
     ctx->alpha_fp32_arena = heap_alloc_array_aligned(float, total_alpha_elems);
     if (!ctx->alpha_fp32_arena) {
         if (err)

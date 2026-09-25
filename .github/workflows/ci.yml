@@ -878,7 +878,6 @@ jobs:
           path: ci-diagnostics/
           if-no-files-found: warn
 
-  # AGENT.md requires the code to be ASan/UBSan-friendly; nothing enforced it.
   # Build MODE=asan (-fsanitize=address,undefined) and run the model-free unit
   # suite — catches use-after-free / overflow / UB in the kernels + engine the
   # unit tests exercise. UBSAN_OPTIONS=halt_on_error makes UB a hard failure

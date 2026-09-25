@@ -370,7 +370,7 @@ struct transformer_arch_session {
     /* [d_model] running sum for GEIST_POOLING_MEAN. Prefill runs in chunks
      * of m_max and every chunk overwrites scratch_h_b, so the sum over
      * positions has to live outside it. Allocated with the session
-     * (AGENT.md §3: no heap in a per-call path). */
+     * (no heap allocation in a per-call path). */
     float *embedding_acc;
     /* Whether scratch_logits already carries the Gemma final-logit softcap.
      * The greedy argmax path skips the softcap (monotonic → argmax

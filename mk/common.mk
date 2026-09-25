@@ -82,8 +82,8 @@ WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 
 # Include paths:
 #   -Iinclude   public headers (geist.h, geist_backend.h, geist_weight.h)
-#   -Isrc/base  foundation layer — heap.h (project-wide allocation policy per
-#               AGENT.md), arena.h, error.h, hw_probe.h. Depends on nothing
+#   -Isrc/base  foundation layer — heap.h (project-wide allocation policy),
+#               arena.h, error.h, hw_probe.h. Depends on nothing
 #               internal; every other layer may include it by basename.
 #   -Isrc/quant quantization contract — quant.h (block layouts, dequant row
 #               codecs, quantized linear kernels) + iq_grids.h. Format-agnostic;

@@ -3,7 +3,7 @@
  *
  * The frame_arena is the engine's scratch allocator for the hot path
  * (per-forward attention scores, dequant rows, logits row). The
- * AGENT.md hot-path-allocation-free contract relies on this returning
+ * hot-path allocation-free contract relies on this returning
  * pointers without touching the heap.
  *
  * Cases covered:

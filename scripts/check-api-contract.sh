@@ -14,8 +14,7 @@
 # The complementary half — signatures and linkability — is
 # examples/agent_contract_smoke.c via `make agent-contract-smoke`.
 #
-# ponytail: a guard, not a generator. It does not edit anything; it makes drift
-# a build failure.
+# This is a read-only guard: it reports contract drift as a build failure.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

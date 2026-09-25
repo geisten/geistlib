@@ -1,10 +1,9 @@
 /*
  * src/backends/cpu_neon/kernels/tq2_0.c — TQ2_0 W1.58×A8 NEON kernels.
  *
- * Layer: BACKEND (cpu_neon). Extracted from weight_resolve.c to isolate
- * the ternary (BitNet b1.58 / TQ2_0) compute path from the shared weight
- * resolver and from the Q4_K/Q6_K (Gemma) kernels — so optimizing one
- * model's kernels cannot disturb the other.
+ * Layer: BACKEND (cpu_neon). Keeps the ternary (BitNet b1.58 / TQ2_0)
+ * compute path separate from the shared weight resolver and the Q4_K/Q6_K
+ * kernels.
  *
  * Owns the M=1 decode (q8a + fp32 fallback) and M>1 prefill paths for
  * TQ2_0 weights, plus the block-dot helpers and the per-row activation

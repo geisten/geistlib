@@ -52,8 +52,8 @@ def xr(r):
 def main():
     data = json.load(open(DATA))
     # Scoreboard shows ONE metric — decode t/s, the number you feel in chat — so
-    # every bar is directly comparable. prefill/total live in the README's full
-    # table. ponytail: one axis, not decode/prefill/total soup.
+    # every bar is directly comparable. Prefill and total results live in the
+    # README's full table rather than sharing this axis.
     rows = [r for r in data["rows"] if "decode" in r["metric"]]
     # group rows by system, sort rows within a group + groups by their best ratio
     groups = {}

@@ -1,6 +1,6 @@
 /*
  * src/engine/allocator.c — the default libc allocator, routed through the
- * project-wide heap.h interface (per AGENT.md).
+ * project-wide heap.h interface.
  *
  * Layer: ENGINE.
  */
@@ -23,10 +23,8 @@ static void *libc_alloc(void *ctx, size_t bytes, size_t alignment) {
 
 static void libc_free(void *ctx, void *ptr) {
     (void) ctx;
-    /* Route through heap.h's safe_free (the project's free interface, per
-     * AGENT.md); it already tolerates null. Note safe_free nulls only our
-     * local `ptr` copy — that has no effect on the caller's pointer, which
-     * is theirs to clear. We don't pretend otherwise here. */
+    /* safe_free tolerates null. It clears only the local `ptr` copy, not the
+     * caller's pointer. */
     safe_free(&ptr);
 }
 

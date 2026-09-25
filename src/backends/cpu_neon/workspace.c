@@ -9,8 +9,8 @@
  * keeps both properties: one workspace per calling thread (isolation),
  * all of them owned and freed by the backend (lifetime).
  *
- * Allocation flows through heap.h per AGENT.md memory rule. All grow
- * helpers preserve any existing pointer when no resize is needed,
+ * Allocation flows through heap.h. All grow helpers preserve any existing
+ * pointer when no resize is needed,
  * matching the legacy TLS grow-on-demand behavior bit-for-bit.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER

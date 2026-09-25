@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # take_offline.sh — record assets/demo-offline-box.gif: the whole shell runs
 # under `unshare -n` (a network namespace with NO network), the failing ping
-# is the in-frame proof. Reconstruction from PR #214 (issue #218).
+# is the in-frame proof.
 # Needs root for unshare -n; run with sudo.
 set -euo pipefail
 cd "$(dirname "$0")"
