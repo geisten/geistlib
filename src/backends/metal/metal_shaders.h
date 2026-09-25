@@ -1539,9 +1539,14 @@ static const char metal_q_norm_rope_source[] =
         "v=x[base+i];ss+=v*v;}part[lid]=ss;threadgroup_barrier(mem_flags::mem_threadgroup);for("
         "uint "
         "st=128u;st>0u;st>>=1u){if(lid<st){part[lid]+=part[lid+st];}threadgroup_barrier(mem_flags::"
-        "mem_threadgroup);}float inv=rsqrt(part[0]/float(p.head_dim)+p.eps);uint "
-        "hd2=p.head_dim/2u,ro=p.rope_row_offset+r;for(uint i=lid;i<hd2;i+=256u){float "
-        "x0=x[base+i]*inv*w[p.w_offset+i],x1=x[base+i+hd2]*inv*w[p.w_offset+i+hd2];float "
+        "mem_threadgroup);}float inv=rsqrt(part[0]/float(p.head_dim)+p.eps);"
+        /* Norm covers the whole head; rotation covers the rotated block
+           only, so the two are separate passes with a barrier between —
+           a thread's rotation partner is another thread's normed write. */
+        "for(uint i=lid;i<p.head_dim;i+=256u){x[base+i]=x[base+i]*inv*w[p.w_offset+i];}"
+        "threadgroup_barrier(mem_flags::mem_device);uint "
+        "hd2=p.rope_row_stride/2u,ro=p.rope_row_offset+r;for(uint i=lid;i<hd2;i+=256u){float "
+        "x0=x[base+i],x1=x[base+i+hd2];float "
         "co=c[p.cos_offset+ro*p.rope_row_stride+i],si=s[p.sin_offset+ro*p.rope_row_stride+i];x["
         "base+i]=x0*co-x1*si;x[base+i+hd2]=x0*si+x1*co;}\n"
         "}\n";
@@ -1699,7 +1704,7 @@ static const char metal_attn_source[] =
         "kernel void rope_rows(device float*x[[buffer(0)]],device const "
         "float*c[[buffer(1)]],device const float*s[[buffer(2)]],constant Rope&p[[buffer(3)]],uint "
         "gid[[thread_position_in_grid]]){\n"
-        " uint hd2=p.head_dim/2u,total=p.rows*p.heads*hd2;if(gid>=total){return;}uint "
+        " uint hd2=p.rope_row_stride/2u,total=p.rows*p.heads*hd2;if(gid>=total){return;}uint "
         "i=gid%hd2,h=(gid/hd2)%p.heads,r=gid/(hd2*p.heads);uint "
         "base=p.x_offset+r*p.x_row_stride+h*p.head_dim;uint ro=p.rope_row_offset+r;float "
         "x0=x[base+i],x1=x[base+i+hd2];float "

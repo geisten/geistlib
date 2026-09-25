@@ -199,11 +199,11 @@ static void reference_layer_forward(
     rmsnorm_fp32(N_Q_HEADS, head_dim, q, q_norm, RMS_EPS, q);
     float *cos_b = aligned_alloc(64, head_dim * sizeof(float));
     float *sin_b = aligned_alloc(64, head_dim * sizeof(float));
-    rope_compute_at(q_position, 1, head_dim, n_rotated_dims, rope_theta, cos_b, sin_b);
-    rope_apply(1, N_Q_HEADS, head_dim, q, cos_b, sin_b);
+    rope_compute_at(q_position, 1, head_dim, n_rotated_dims, false, rope_theta, cos_b, sin_b);
+    rope_apply(1, N_Q_HEADS, head_dim, n_rotated_dims, q, cos_b, sin_b);
     rmsnorm_fp32(N_KV_HEADS, head_dim, k, k_norm, RMS_EPS, k);
     rmsnorm_fp32(N_KV_HEADS, head_dim, vbu, nullptr, RMS_EPS, vbu);
-    rope_apply(1, N_KV_HEADS, head_dim, k, cos_b, sin_b);
+    rope_apply(1, N_KV_HEADS, head_dim, n_rotated_dims, k, cos_b, sin_b);
 
     /* 6-7. Build a fresh single-slot KV cache and run attention. */
     const size_t kv_len = q_position + 1;

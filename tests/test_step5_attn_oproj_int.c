@@ -121,8 +121,8 @@ int main(int argc, char **argv) {
     float *cos_buf = (float *) malloc(n_ids * HEAD_DIM * sizeof(float));
     float *sin_buf = (float *) malloc(n_ids * HEAD_DIM * sizeof(float));
     rope_compute(n_ids, HEAD_DIM, HEAD_DIM, ROPE_THETA, cos_buf, sin_buf);
-    rope_apply(n_ids, Q_HEADS, HEAD_DIM, q, cos_buf, sin_buf);
-    rope_apply(n_ids, KV_HEADS, HEAD_DIM, k, cos_buf, sin_buf);
+    rope_apply(n_ids, Q_HEADS, HEAD_DIM, HEAD_DIM, q, cos_buf, sin_buf);
+    rope_apply(n_ids, KV_HEADS, HEAD_DIM, HEAD_DIM, k, cos_buf, sin_buf);
 
     /* Attention with MQA broadcast and sliding-window-512 causal mask. */
     float *attn_out = (float *) malloc(n_ids * Q_OUT * sizeof(float));
