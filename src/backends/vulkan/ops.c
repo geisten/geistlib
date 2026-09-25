@@ -709,6 +709,15 @@ static bool vk_try_ew3(struct geist_backend      *be,
             case 1:
                 yrow[i] = arow[i] * brow[i];
                 break;
+            case 3: {
+                const float v = arow[i];
+                const float e = expf(-fabsf(v));
+                yrow[i]       = ((v >= 0.0f) ? v / (1.0f + e) : (v * e) / (1.0f + e)) * brow[i];
+                break;
+            }
+            case 4:
+                yrow[i] = arow[i] * (1.0f / (1.0f + expf(-brow[i])));
+                break;
             default: {
                 const float v = arow[i];
                 const float u = 0.7978845608028654f * (v + 0.044715f * v * v * v);
@@ -838,6 +847,21 @@ vk_relu_squared(struct geist_backend *be, const struct geist_tensor *x, struct g
 
 [[nodiscard]] static enum geist_status
 vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
+    {
+        const size_t           n = vk_t_n(x);
+        VkDescriptorBufferInfo bi[2];
+        uint32_t               off[2];
+        if (VK_OPS(be, 2u) && n != 0 && n == vk_t_n(y) && vk_tensor_gpu(x, &bi[0], &off[0]) &&
+            vk_tensor_gpu(y, &bi[1], &off[1])) {
+            const uint32_t         push[4] = {(uint32_t) n, off[0], off[1], 0};
+            const struct vk_access acc[2]  = {vk_acc_tensor(x, false), vk_acc_tensor(y, true)};
+            if (vk_seq_dispatch_acc(
+                        be, VK_PIPE_SILU, bi, acc, push, sizeof(push), vk_groups(n), 1, 1) ==
+                GEIST_OK) {
+                return GEIST_OK;
+            }
+        }
+    }
     size_t       nx = 0, ny = 0;
     const float *xp = vk_tensor_host(x, &nx);
     float       *yp = vk_tensor_host(y, &ny);
@@ -852,6 +876,68 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
         yp[i]         = (v >= 0.0f) ? v / (1.0f + e) : (v * e) / (1.0f + e);
     }
     return GEIST_OK;
+}
+
+[[nodiscard]] static enum geist_status vk_silu_mul(struct geist_backend      *be,
+                                                   const struct geist_tensor *x,
+                                                   const struct geist_tensor *z,
+                                                   struct geist_tensor       *y) {
+    if (vk_try_ew3(be, VK_PIPE_SILU_MUL, x, z, y)) {
+        return GEIST_OK;
+    }
+    return vk_ew3_cpu(be, 3, x, z, y, "silu_mul");
+}
+
+[[nodiscard]] static enum geist_status vk_sigmoid_mul(struct geist_backend      *be,
+                                                      const struct geist_tensor *x,
+                                                      const struct geist_tensor *gate,
+                                                      struct geist_tensor       *y) {
+    if (vk_try_ew3(be, VK_PIPE_SIGMOID_MUL, x, gate, y)) {
+        return GEIST_OK;
+    }
+    return vk_ew3_cpu(be, 4, x, gate, y, "sigmoid_mul");
+}
+
+/* qwen35's joint [query | gate] projection split on the device. UNSUPPORTED
+ * (nothing dispatched) leaves the architecture's mapped host gather. */
+[[nodiscard]] static enum geist_status vk_attn_qgate_split(struct geist_backend      *be,
+                                                           const struct geist_tensor *joint,
+                                                           size_t                     heads,
+                                                           size_t                     head_dim,
+                                                           struct geist_tensor       *q,
+                                                           struct geist_tensor       *gate) {
+    if (!VK_OPS(be, 2u) || joint == nullptr || q == nullptr || gate == nullptr || heads == 0 ||
+        head_dim == 0 || joint->ndim != 2 || q->ndim != 2 || gate->ndim != 2) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t rows = (size_t) joint->shape[0];
+    if (vk_t_n(joint) == 0 || (size_t) joint->shape[1] != 2 * heads * head_dim ||
+        (size_t) q->shape[0] != rows || (size_t) q->shape[1] != heads * head_dim ||
+        (size_t) gate->shape[0] != rows || (size_t) gate->shape[1] != heads * head_dim ||
+        vk_t_n(q) == 0 || vk_t_n(gate) == 0 || joint->stride[1] != 1 || q->stride[1] != 1 ||
+        gate->stride[1] != 1) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    VkDescriptorBufferInfo bi[3];
+    uint32_t               oj, oq, og;
+    if (!vk_tensor_gpu(joint, &bi[0], &oj) || !vk_tensor_gpu(q, &bi[1], &oq) ||
+        !vk_tensor_gpu(gate, &bi[2], &og)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t           n       = rows * heads * head_dim;
+    const uint32_t         push[9] = {(uint32_t) rows,
+                                      (uint32_t) heads,
+                                      (uint32_t) head_dim,
+                                      oj,
+                                      oq,
+                                      og,
+                                      (uint32_t) joint->stride[0],
+                                      (uint32_t) q->stride[0],
+                                      (uint32_t) gate->stride[0]};
+    const struct vk_access acc[3]  = {
+            vk_acc_tensor(joint, false), vk_acc_tensor(q, true), vk_acc_tensor(gate, true)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_QGATE_SPLIT, bi, acc, push, sizeof(push), vk_groups(n), 1, 1);
 }
 
 [[nodiscard]] static enum geist_status vk_rmsnorm(struct geist_backend      *be,
@@ -922,16 +1008,25 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
     {
         VkDescriptorBufferInfo bi[3];
         uint32_t               off[3];
+        /* cos/sin rows are `rot` wide: the rotated prefix of each head. */
+        const size_t rot =
+                cos != nullptr && cos->ndim >= 1 ? (size_t) cos->shape[cos->ndim - 1] : 0;
         if (VK_OPS(be, 8u) && x != nullptr && x->ndim == 3 && vk_t_n(x) != 0 && vk_t_n(cos) != 0 &&
-            vk_t_n(sin) != 0 && vk_tensor_gpu(x, &bi[0], &off[0]) &&
-            vk_tensor_gpu(cos, &bi[1], &off[1]) && vk_tensor_gpu(sin, &bi[2], &off[2])) {
-            const size_t   seq     = (size_t) x->shape[0];
-            const size_t   heads   = (size_t) x->shape[1];
-            const size_t   hd      = (size_t) x->shape[2];
-            const size_t   pairs   = seq * heads * hd / 2;
-            const uint32_t push[6] = {
-                    (uint32_t) pairs, (uint32_t) heads, (uint32_t) hd, off[0], off[1], off[2]};
-            const struct vk_access acc[3] = {
+            vk_t_n(sin) != 0 && rot != 0 && rot % 2 == 0 && rot <= (size_t) x->shape[2] &&
+            vk_tensor_gpu(x, &bi[0], &off[0]) && vk_tensor_gpu(cos, &bi[1], &off[1]) &&
+            vk_tensor_gpu(sin, &bi[2], &off[2])) {
+            const size_t           seq     = (size_t) x->shape[0];
+            const size_t           heads   = (size_t) x->shape[1];
+            const size_t           hd      = (size_t) x->shape[2];
+            const size_t           pairs   = seq * heads * (rot / 2);
+            const uint32_t         push[7] = {(uint32_t) pairs,
+                                              (uint32_t) heads,
+                                              (uint32_t) hd,
+                                              off[0],
+                                              off[1],
+                                              off[2],
+                                              (uint32_t) rot};
+            const struct vk_access acc[3]  = {
                     vk_acc_tensor(x, true), vk_acc_tensor(cos, false), vk_acc_tensor(sin, false)};
             if (vk_seq_dispatch_acc(
                         be, VK_PIPE_ROPE, bi, acc, push, sizeof(push), vk_groups(pairs), 1, 1) ==
@@ -1976,6 +2071,8 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     case GEIST_FUSED_GELU_TANH_MUL:
     case GEIST_FUSED_GELU_TANH_MUL_SCALED:
         return VK_OPS(be, 1u);
+    case GEIST_FUSED_SILU_MUL:
+        return VK_OPS(be, 2u);
     case GEIST_FUSED_FFN_GATE_UP:
     case GEIST_FUSED_FFN_NORM_GATE_UP: {
         if (!VK_OPS(be, 1u) || q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr ||
@@ -2065,6 +2162,9 @@ static const struct geist_backend_fused vk_fused = {
         .attn_qkv_prep    = vk_attn_qkv_prep,
         .kv_append_f16    = vk_kv_append_f16,
         .deltanet_mix     = vk_deltanet_mix,
+        .attn_qgate_split = vk_attn_qgate_split,
+        .sigmoid_mul      = vk_sigmoid_mul,
+        .silu_mul         = vk_silu_mul,
 };
 
 const struct geist_backend_descriptor geist_backend_vulkan = {

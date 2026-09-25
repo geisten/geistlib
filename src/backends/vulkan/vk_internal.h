@@ -55,6 +55,10 @@
 #include "shaders/ffn_norm_gate_up_q4k_spv.h"
 #include "shaders/ple_gate_f32_spv.h"
 #include "shaders/matvec_q4k_spv.h"
+#include "shaders/silu_f32_spv.h"
+#include "shaders/silu_mul_f32_spv.h"
+#include "shaders/sigmoid_mul_f32_spv.h"
+#include "shaders/qgate_split_f32_spv.h"
 #include "shaders/matvec_q4_0_spv.h"
 #include "shaders/matmul_q4_0_spv.h"
 #include "shaders/matvec_q4_1_spv.h"
@@ -180,6 +184,10 @@ enum vk_pipe {
     VK_PIPE_MATMUL_Q8_0,
     VK_PIPE_MATVEC_Q5K,
     VK_PIPE_MATMUL_Q5K,
+    VK_PIPE_SILU,        /* y = silu(x) */
+    VK_PIPE_SILU_MUL,    /* y = silu(a) * b (SwiGLU epilogue) */
+    VK_PIPE_SIGMOID_MUL, /* y = a * sigmoid(gate) (qwen35 attention gate) */
+    VK_PIPE_QGATE_SPLIT, /* [query | gate] per-head split (qwen35) */
     VK_PIPE_COUNT,
 };
 
@@ -369,6 +377,8 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_DN_DELTA] = 8,      [VK_PIPE_MATVEC_Q4_0] = 3,  [VK_PIPE_MATMUL_Q4_0] = 3,
         [VK_PIPE_MATVEC_Q4_1] = 3,   [VK_PIPE_MATMUL_Q4_1] = 3,  [VK_PIPE_MATVEC_Q8_0] = 3,
         [VK_PIPE_MATMUL_Q8_0] = 3,   [VK_PIPE_MATVEC_Q5K] = 3,   [VK_PIPE_MATMUL_Q5K] = 3,
+        [VK_PIPE_SILU] = 2,          [VK_PIPE_SILU_MUL] = 3,     [VK_PIPE_SIGMOID_MUL] = 3,
+        [VK_PIPE_QGATE_SPLIT] = 3,
 };
 
 struct geist_buffer {

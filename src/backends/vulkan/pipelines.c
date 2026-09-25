@@ -161,8 +161,18 @@
             [VK_PIPE_MATMUL_Q8_0]   = {matmul_q8_0_spv, sizeof(matmul_q8_0_spv)},
             [VK_PIPE_MATVEC_Q5K]    = {matvec_q5k_spv, sizeof(matvec_q5k_spv)},
             [VK_PIPE_MATMUL_Q5K]    = {matmul_q5k_spv, sizeof(matmul_q5k_spv)},
+            [VK_PIPE_SILU]          = {silu_f32_spv, sizeof(silu_f32_spv)},
+            [VK_PIPE_SILU_MUL]      = {silu_mul_f32_spv, sizeof(silu_mul_f32_spv)},
+            [VK_PIPE_SIGMOID_MUL]   = {sigmoid_mul_f32_spv, sizeof(sigmoid_mul_f32_spv)},
+            [VK_PIPE_QGATE_SPLIT]   = {qgate_split_f32_spv, sizeof(qgate_split_f32_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
+        if (blobs[i].code == nullptr || blobs[i].bytes == 0) {
+            /* a pipeline added to the enum without a blob-table entry */
+            geist_backend_set_error(
+                    be, GEIST_E_INTERNAL, "vulkan: pipeline %d has no SPIR-V blob", i);
+            return GEIST_E_INTERNAL;
+        }
         if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM || i == VK_PIPE_MM_Q4K_CM32) &&
             !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */

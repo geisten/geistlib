@@ -1,0 +1,31 @@
+#version 450
+
+/* y = silu(x) = x * sigmoid(x), overflow-safe form (same as the host silu).
+ * Dispatch: gx = ceil(n / 256). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X {
+    float x[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer Y {
+    float y[];
+};
+
+layout(push_constant) uniform Push {
+    uint n;
+    uint x_offset;
+    uint y_offset;
+    uint pad;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.n) {
+        return;
+    }
+    float v = x[pc.x_offset + i];
+    float e = exp(-abs(v));
+    y[pc.y_offset + i] = v >= 0.0 ? v / (1.0 + e) : (v * e) / (1.0 + e);
+}
