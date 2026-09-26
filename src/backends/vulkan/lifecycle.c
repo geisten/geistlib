@@ -480,6 +480,7 @@ void vk_destroy(struct geist_backend *be) {
                     [VK_PIPE_ATTN_PART_F16] = "attn_part_f16",
                     [VK_PIPE_ATTN_COMB]     = "attn_comb",
                     [VK_PIPE_MM_Q4K_CM32]   = "mm_q4k_cm32",
+                    [VK_PIPE_MM_PQ2_0_CM]   = "mm_pq2_0_cm",
                     [VK_PIPE_PLE_GATE]      = "ple_gate",
                     [VK_PIPE_FFN_NORM_GU]   = "ffn_norm_gu",
                     [VK_PIPE_DN_CONV]       = "dn_conv",

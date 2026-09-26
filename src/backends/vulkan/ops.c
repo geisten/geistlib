@@ -530,13 +530,14 @@ uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
     case VK_PIPE_MATVEC_Q5K:
     case VK_PIPE_MATVEC_TQ2_0:
     case VK_PIPE_MATMUL_TQ2_0:
-    case VK_PIPE_MATVEC_PQ2_0:
     case VK_PIPE_MATMUL_PQ2_0:
     case VK_PIPE_MATMUL_Q4_0:
     case VK_PIPE_MATMUL_Q4_1:
     case VK_PIPE_MATMUL_Q8_0:
     case VK_PIPE_MATMUL_Q5K:
         return (n_out + 7u) / 8u; /* 8 rows per workgroup */
+    case VK_PIPE_MATVEC_PQ2_0:
+        return (n_out + 31u) / 32u; /* 32 rows (lanes) x 8 k-slices (warps) */
     case VK_PIPE_MATMUL_Q6K:
     case VK_PIPE_MATMUL_F32:
         return (n_out + 3u) / 4u;
@@ -575,10 +576,14 @@ void vk_linear_cm_route(struct vk_state *st,
         cm = VK_PIPE_MM_Q4K_CM;
     } else if (*pipe == VK_PIPE_MATMUL_Q6K) {
         cm = VK_PIPE_MM_Q6K_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_PQ2_0) {
+        cm = VK_PIPE_MM_PQ2_0_CM;
     } else {
         return;
     }
-    if ((m & 15u) != 0 || n_out % 64u != 0 || st->pipes[cm] == VK_NULL_HANDLE) {
+    /* the PQ2_0 tile covers 128 weight rows, the k-quant tiles 64 */
+    const uint32_t tile_rows = cm == VK_PIPE_MM_PQ2_0_CM ? 128u : 64u;
+    if ((m & 15u) != 0 || n_out % tile_rows != 0 || st->pipes[cm] == VK_NULL_HANDLE) {
         return;
     }
     /* small n_out starves the SMs on the 64-row tile — use the 32x32 one
@@ -591,7 +596,7 @@ void vk_linear_cm_route(struct vk_state *st,
         return;
     }
     *pipe = cm;
-    *gx   = n_out / 64u;
+    *gx   = n_out / tile_rows;
     *gy   = (m + 63u) / 64u;
 }
 
