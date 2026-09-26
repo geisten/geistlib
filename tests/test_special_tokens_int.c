@@ -47,8 +47,14 @@ int main(void) {
         fprintf(stderr, "FAIL: no eos id\n");
         fail = 1;
     }
-    if (bos == GEIST_TOKEN_NONE) {
-        fprintf(stderr, "FAIL: no bos id\n");
+    /* Qwen GGUFs carry no BOS by design (the tokenizer adds none); only the
+     * families that prepend one must expose it. */
+    const char *arch = geist_model_arch(model);
+    const bool  has_bos =
+            arch != nullptr && (strcmp(arch, "gemma4") == 0 || strcmp(arch, "gemma3") == 0 ||
+                                strcmp(arch, "llama") == 0);
+    if (bos == GEIST_TOKEN_NONE && has_bos) {
+        fprintf(stderr, "FAIL: no bos id for %s\n", arch);
         fail = 1;
     }
 

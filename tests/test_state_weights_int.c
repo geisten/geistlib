@@ -110,6 +110,8 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
     printf("v2 state created on %s backend\n", geist_backend_name(be));
+    /* Byte-checks Gemma 4's exact tensor layout (PLE tables, post-norms). */
+    GEIST_REQUIRE_ARCH(st->config.family, "gemma4");
 
     /* Independent GGUF handle for the comparison (the state owns its own). */
     const char      *err = nullptr;

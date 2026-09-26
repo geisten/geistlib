@@ -737,6 +737,13 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
     if (n > 0 && ids == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
+    /* Gated-DeltaNet layers carry recurrent state that session_reset clears
+     * to the empty sequence (forward/step.c): a pinned prefix would keep its
+     * kv_len while the state behind it is gone, and the first decode after a
+     * reset would diverge. Refuse, as the reset path's comment promises. */
+    if (sess->dn_conv_state != nullptr || sess->dn_S != nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
     /* Truncate to empty so the prefill that follows starts from kv_len=0;
      * this matches lm.c::lm_pin_prefix and gives a clean snapshot point. */
     sess->kv_len             = 0;

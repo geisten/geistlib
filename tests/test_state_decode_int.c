@@ -62,6 +62,8 @@ int main(void) {
         geist_backend_destroy(be);
         return GEIST_TEST_FAIL;
     }
+    /* HELLO_TOKEN and the canonical [9259,9259,9259] are Gemma vocab ids. */
+    GEIST_REQUIRE_ARCH(st->config.family, "gemma4");
 
     /* Prefill: feed BOS then "Hello" as two decode_step calls. We don't
      * actually need the predicted tokens for prefill — only the final

@@ -27,23 +27,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The 11 per-layer weights for a Gemma 4 transformer block. */
-static const char *LAYER_TENSORS[] = {
-        "blk.0.attn_norm.weight",
-        "blk.0.attn_q.weight",
-        "blk.0.attn_k.weight",
-        "blk.0.attn_v.weight",
-        "blk.0.attn_q_norm.weight",
-        "blk.0.attn_k_norm.weight",
-        "blk.0.attn_output.weight",
-        "blk.0.ffn_norm.weight",
-        "blk.0.ffn_gate.weight",
-        "blk.0.ffn_up.weight",
-        "blk.0.ffn_down.weight",
-        nullptr,
-};
-
-/* Global (model-level) tensors. */
+/* The test checks the backend's upload/download round trip, not any one
+ * model's layout: it takes every tensor of blk.0 (whatever the family
+ * names them — attention, DeltaNet, FFN) plus the two globals every
+ * decoder has. A fixed Gemma name list failed on a qwen fixture (#452). */
 static const char *GLOBAL_TENSORS[] = {
         "token_embd.weight",
         "output_norm.weight",
@@ -135,12 +122,20 @@ int main(void) {
     size_t bytes_loaded = 0;
     int    n_per_layer  = 0;
     printf("loading blk.0 layer weights via %s buffer ops...\n", geist_backend_name(be));
-    for (size_t i = 0; LAYER_TENSORS[i] != nullptr; i++) {
-        if (load_and_verify(be, ctx, LAYER_TENSORS[i], &bytes_loaded) != 0) {
+    for (size_t i = 0; i < gguf_tensor_count(ctx); i++) {
+        const char *name = gguf_tensor_at(ctx, i)->name;
+        if (strncmp(name, "blk.0.", 6) != 0) {
+            continue;
+        }
+        if (load_and_verify(be, ctx, name, &bytes_loaded) != 0) {
             fails++;
         } else {
             n_per_layer++;
         }
+    }
+    if (n_per_layer == 0) {
+        fprintf(stderr, "no blk.0.* tensors in this GGUF\n");
+        fails++;
     }
 
     /* Global tensors. */
@@ -163,7 +158,6 @@ int main(void) {
                n_per_layer,
                n_global,
                (double) bytes_loaded / (1024 * 1024));
-        printf("  pattern works — Phase B-4e production-swap can scale this to 35 layers\n");
         return GEIST_TEST_PASS;
     }
     return GEIST_TEST_FAIL;
