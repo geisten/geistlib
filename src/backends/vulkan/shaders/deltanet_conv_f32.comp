@@ -1,0 +1,69 @@
+#version 450
+
+/* Gated-DeltaNet causal depthwise conv + SiLU (fused->deltanet_mix, stage 1).
+ *
+ *   y[t,c] = silu( sum_{j<K} w[c,j] * hist_j[c] )
+ *
+ * hist_j for j < K-1 is the persistent conv state (oldest first), hist_{K-1}
+ * is the current token's pre-conv value. After the last token the state holds
+ * the K-1 most recent PRE-conv vectors, exactly as the host oracle rolls it
+ * (layer_deltanet.c). One thread owns one channel and walks the tokens in
+ * order with its window in registers, so the in-place overwrite of qkv is
+ * safe: x[t,c] is read into the window before y[t,c] replaces it.
+ *
+ * Bindings: 0 qkv [seq, convd] in/out, 1 conv_w [convd, K], 2 conv_state
+ * [(K-1), convd] in/out. Dispatch: gx = ceil(convd / 128). Size-agnostic
+ * (no subgroup ops). */
+
+layout(local_size_x = 128) in;
+
+layout(set = 0, binding = 0) buffer QKV { float qkv[]; };
+layout(set = 0, binding = 1) readonly buffer W { float cw[]; };
+layout(set = 0, binding = 2) buffer ST { float cst[]; };
+
+layout(push_constant) uniform Push {
+    uint seq;
+    uint convd;
+    uint K;
+    uint qkv_off;
+    uint w_off;
+    uint st_off;
+} pc;
+
+float silu(float v) {
+    /* overflow-safe form, same as the host oracle */
+    float e = exp(-abs(v));
+    return v >= 0.0 ? v / (1.0 + e) : (v * e) / (1.0 + e);
+}
+
+void main() {
+    uint c = gl_GlobalInvocationID.x;
+    if (c >= pc.convd) {
+        return;
+    }
+    const uint KMAX = 8u;
+    uint hist = pc.K - 1u;
+    float win[KMAX];
+    for (uint j = 0u; j < hist; ++j) {
+        win[j] = cst[pc.st_off + j * pc.convd + c];
+    }
+    for (uint t = 0u; t < pc.seq; ++t) {
+        uint at = pc.qkv_off + t * pc.convd + c;
+        float xt = qkv[at];
+        float acc = 0.0;
+        for (uint j = 0u; j < hist; ++j) {
+            acc = fma(cw[pc.w_off + c * pc.K + j], win[j], acc);
+        }
+        acc = fma(cw[pc.w_off + c * pc.K + hist], xt, acc);
+        qkv[at] = silu(acc);
+        for (uint j = 0u; j + 1u < hist; ++j) {
+            win[j] = win[j + 1u];
+        }
+        if (hist > 0u) {
+            win[hist - 1u] = xt;
+        }
+    }
+    for (uint j = 0u; j < hist; ++j) {
+        cst[pc.st_off + j * pc.convd + c] = win[j];
+    }
+}

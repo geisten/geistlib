@@ -1,0 +1,108 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+/* Q5_K GEMM, register-tiled like matmul_q4k: one output row per hardware
+ * subgroup, 8 rows x 32 batch rows per 256-thread workgroup. Each lane
+ * dequantizes its 8 weights once per superblock and reuses them for the whole
+ * batch tile. Native 176-byte superblocks (d, dmin, 12 scale bytes, 32 qh,
+ * 128 qs); lane mapping and value formula as in matvec_q5k.comp.
+ * Assumes subgroup size 32. Dispatch: gx = ceil(n_out / 8),
+ * gy = ceil(rows / 32). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+void main() {
+    uint row = gl_WorkGroupID.x * gl_NumSubgroups + gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint t0 = gl_WorkGroupID.y * 32u;
+    if (t0 >= pc.rows) {
+        return;
+    }
+    uint tm = min(32u, pc.rows - t0);
+
+    float s[32];
+    for (uint t = 0u; t < 32u; ++t) {
+        s[t] = 0.0;
+    }
+
+    if (row < pc.n_out) {
+        uint sub = lane >> 2u;
+        uint idx8 = (lane & 3u) * 8u;
+        uint shift = (sub & 1u) * 4u;
+        uint row_word = (pc.w_offset >> 2u) + row * pc.blocks_per_row * 44u;
+
+        for (uint b = 0u; b < pc.blocks_per_row; ++b) {
+            uint blk = row_word + b * 44u;
+            uint h0 = w[blk];
+            uint h1 = w[blk + 1u];
+            uint h2 = w[blk + 2u];
+            uint h3 = w[blk + 3u];
+            vec2 dd = unpackHalf2x16(h0);
+            uint sc_u;
+            uint mn_u;
+            if (sub < 4u) {
+                sc_u = (h1 >> (8u * sub)) & 63u;
+                mn_u = (h2 >> (8u * sub)) & 63u;
+            } else {
+                uint j = sub - 4u;
+                uint q_j4 = (h3 >> (8u * j)) & 0xffu;
+                sc_u = (q_j4 & 15u) | ((((h1 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+                mn_u = (q_j4 >> 4u) | ((((h2 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+            }
+            uint qh0 = w[blk + 4u + (idx8 >> 2u)];
+            uint qh1 = w[blk + 5u + (idx8 >> 2u)];
+            uint qs = blk + 12u + (sub >> 1u) * 8u + (idx8 >> 2u);
+            uint q0 = w[qs];
+            uint q1 = w[qs + 1u];
+
+            float dsc = dd.x * float(sc_u);
+            float dmn = dd.y * float(mn_u);
+            vec4 wv0 = dsc * vec4(float(((q0 >> shift) & 15u) | (((qh0 >> sub) & 1u) << 4u)),
+                                  float(((q0 >> (8u + shift)) & 15u) | (((qh0 >> (8u + sub)) & 1u) << 4u)),
+                                  float(((q0 >> (16u + shift)) & 15u) | (((qh0 >> (16u + sub)) & 1u) << 4u)),
+                                  float(((q0 >> (24u + shift)) & 15u) | (((qh0 >> (24u + sub)) & 1u) << 4u))) -
+                       vec4(dmn);
+            vec4 wv1 = dsc * vec4(float(((q1 >> shift) & 15u) | (((qh1 >> sub) & 1u) << 4u)),
+                                  float(((q1 >> (8u + shift)) & 15u) | (((qh1 >> (8u + sub)) & 1u) << 4u)),
+                                  float(((q1 >> (16u + shift)) & 15u) | (((qh1 >> (16u + sub)) & 1u) << 4u)),
+                                  float(((q1 >> (24u + shift)) & 15u) | (((qh1 >> (24u + sub)) & 1u) << 4u))) -
+                       vec4(dmn);
+
+            uint e_base = pc.x_offset + b * 256u + sub * 32u + idx8;
+            for (uint t = 0u; t < 32u; ++t) {
+                if (t >= tm) {
+                    break;
+                }
+                uint xv = (e_base + (t0 + t) * pc.x_stride) >> 2u;
+                s[t] += dot(wv0, x4[xv]) + dot(wv1, x4[xv + 1u]);
+            }
+        }
+    }
+
+    for (uint t = 0u; t < 32u; ++t) {
+        if (t >= tm) {
+            break;
+        }
+        float r = subgroupAdd(s[t]);
+        if (subgroupElect() && row < pc.n_out) {
+            y[pc.y_offset + (t0 + t) * pc.y_stride + row] = r;
+        }
+    }
+}
