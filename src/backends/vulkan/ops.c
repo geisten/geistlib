@@ -530,13 +530,14 @@ uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
     case VK_PIPE_MATVEC_Q5K:
     case VK_PIPE_MATVEC_TQ2_0:
     case VK_PIPE_MATMUL_TQ2_0:
-    case VK_PIPE_MATVEC_PQ2_0:
     case VK_PIPE_MATMUL_PQ2_0:
     case VK_PIPE_MATMUL_Q4_0:
     case VK_PIPE_MATMUL_Q4_1:
     case VK_PIPE_MATMUL_Q8_0:
     case VK_PIPE_MATMUL_Q5K:
         return (n_out + 7u) / 8u; /* 8 rows per workgroup */
+    case VK_PIPE_MATVEC_PQ2_0:
+        return (n_out + 31u) / 32u; /* 32 rows (lanes) x 8 k-slices (warps) */
     case VK_PIPE_MATMUL_Q6K:
     case VK_PIPE_MATMUL_F32:
         return (n_out + 3u) / 4u;

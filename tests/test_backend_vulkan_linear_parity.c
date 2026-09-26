@@ -347,6 +347,9 @@ int main(void) {
      * exercises the odd tail, 384 a single-step row. */
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 1);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1);
+    /* rows longer than one 16-block step of the matvec warp (40 and 136 blocks) */
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 5120, 200, 1);
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 17408, 96, 1);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 384, 45, 8);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 37);
     run_case_t(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1, 1e-3);
