@@ -15,7 +15,7 @@
  * Requires n_out % 64 == 0, rows % 16 == 0, n_in % 128 == 0.
  * Dispatch: gx = n_out/64, gy = ceil(rows/64). */
 
-layout(local_size_x = 128) in;
+layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
@@ -33,53 +33,73 @@ layout(push_constant) uniform Push {
     uint y_stride;
 } pc;
 
-const uint BM = 64;
+const uint BM = 128;
 const uint BN = 64;
 const uint BK = 32;
-const uint ASTRIDE = BK + 8u;
-const uint BSTRIDE = BN + 8u;
+/* Both tiles are stored k-contiguous as packed f16 (uvec4 = 8 values), 4
+ * vectors of data + 1 of padding per 32-k row: 128-bit shared stores (a
+ * 32-bit store from 16-byte-aligned rows is a 4-way bank conflict) and B is
+ * loaded ColumnMajor. */
+const uint STRIDE4 = BK / 8u + 1u;
 
-shared float16_t Ash[2][BM * ASTRIDE];
-shared float16_t Bsh[2][BK * BSTRIDE];
+shared uvec4 Ash[2][BM * STRIDE4];
+shared uvec4 Bsh[2][BN * STRIDE4];
 
-void stage(uint buf, uint ks, uint lid, uint row0, uint tb0) {
+/* 8 ternary codes (16 bits) -> 8 packed f16 values (code - 1) * d, exact in
+ * f16 for -d, 0, d and 2d */
+uvec4 expand8(uint bits, float d) {
+    uvec4 r;
+    for (uint p = 0u; p < 4u; p++) {
+        uvec2 c = uvec2(bits >> (4u * p), bits >> (4u * p + 2u)) & 3u;
+        r[p] = packHalf2x16((vec2(c) - 1.0) * d);
+    }
+    return r;
+}
+
+/* Global -> registers for k-step ks (the loads stay in flight while the MMAs
+ * of the previous step run); regs -> shared afterwards (store_tiles). */
+struct Fetch {
+    uint qw;
+    float d;
+    vec4 x0;
+    vec4 x1;
+    bool bvalid;
+};
+
+Fetch fetch_tiles(uint ks, uint lid, uint row0, uint tb0) {
     uint k0 = ks * BK;
-    /* A: 64 rows x 32 k — thread -> (row = lid/2, half-k = lid&1) */
-    {
-        uint row = lid >> 1u;
-        uint hk = lid & 1u;
-        uint bi = (row0 + row) * pc.blocks_per_row + (k0 >> 7u);
-        uint qw = w[bi * 8u + ((k0 & 127u) >> 4u) + hk];
-        float d = unpackHalf2x16(w[pc.n_out * pc.blocks_per_row * 8u + (bi >> 1u)] >>
-                                 ((bi & 1u) * 16u)).x;
-        float16_t dh = float16_t(d);
-        float16_t lut[4] = float16_t[4](-dh, float16_t(0.0), dh, dh + dh); /* code 3 = +2 */
-        uint abase = row * ASTRIDE + hk * 16u;
-        for (uint i = 0; i < 16u; i++) {
-            Ash[buf][abase + i] = lut[(qw >> (2u * i)) & 3u];
-        }
+    Fetch f;
+    uint row = lid >> 1u;
+    uint hk = lid & 1u;
+    uint bi = (row0 + row) * pc.blocks_per_row + (k0 >> 7u);
+    f.qw = w[bi * 8u + ((k0 & 127u) >> 4u) + hk];
+    f.d = unpackHalf2x16(w[pc.n_out * pc.blocks_per_row * 8u + (bi >> 1u)] >>
+                         ((bi & 1u) * 16u)).x;
+    uint bt = lid >> 2u;
+    uint bq = lid & 3u;
+    uint t = tb0 + bt;
+    f.bvalid = t < pc.rows;
+    f.x0 = vec4(0.0);
+    f.x1 = vec4(0.0);
+    if (f.bvalid) {
+        uint xv = (pc.x_offset + t * pc.x_stride + k0 + bq * 8u) >> 2u;
+        f.x0 = x4[xv];
+        f.x1 = x4[xv + 1u];
     }
-    /* B: 32 k x 64 cols — thread -> (col = lid&63, half-k = lid>>6) */
-    {
-        uint col = lid & 63u;
-        uint hk = lid >> 6u;
-        uint t = tb0 + col;
-        if (t < pc.rows) {
-            uint xv = (pc.x_offset + t * pc.x_stride + k0 + hk * 16u) >> 2u;
-            for (uint u = 0; u < 4u; u++) {
-                vec4 xw = x4[xv + u];
-                uint kb = hk * 16u + u * 4u;
-                Bsh[buf][(kb + 0u) * BSTRIDE + col] = float16_t(xw.x);
-                Bsh[buf][(kb + 1u) * BSTRIDE + col] = float16_t(xw.y);
-                Bsh[buf][(kb + 2u) * BSTRIDE + col] = float16_t(xw.z);
-                Bsh[buf][(kb + 3u) * BSTRIDE + col] = float16_t(xw.w);
-            }
-        } else {
-            for (uint u = 0; u < 16u; u++) {
-                Bsh[buf][(hk * 16u + u) * BSTRIDE + col] = float16_t(0.0);
-            }
-        }
-    }
+    return f;
+}
+
+void store_tiles(uint buf, uint lid, Fetch f) {
+    uint row = lid >> 1u;
+    uint hk = lid & 1u;
+    uint abase = row * STRIDE4 + hk * 2u;
+    Ash[buf][abase] = expand8(f.qw & 0xffffu, f.d);
+    Ash[buf][abase + 1u] = expand8(f.qw >> 16u, f.d);
+    uint bt = lid >> 2u;
+    uint bq = lid & 3u;
+    Bsh[buf][bt * STRIDE4 + bq] =
+            uvec4(packHalf2x16(f.x0.xy), packHalf2x16(f.x0.zw), packHalf2x16(f.x1.xy),
+                  packHalf2x16(f.x1.zw));
 }
 
 void main() {
@@ -94,24 +114,29 @@ void main() {
     }
 
     uint ksteps = pc.n_in / BK;
-    stage(0u, 0u, lid, row0, tb0);
+    store_tiles(0u, lid, fetch_tiles(0u, lid, row0, tb0));
     barrier();
 
     for (uint ks = 0; ks < ksteps; ks++) {
         uint cur = ks & 1u;
-        if (ks + 1u < ksteps) {
-            stage(cur ^ 1u, ks + 1u, lid, row0, tb0);
+        Fetch nxt;
+        bool more = ks + 1u < ksteps;
+        if (more) {
+            nxt = fetch_tiles(ks + 1u, lid, row0, tb0); /* in flight during the MMAs */
         }
         for (uint kk = 0; kk < BK; kk += 16u) {
             coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
-            coopMatLoad(matA, Ash[cur], sg * 16u * ASTRIDE + kk, ASTRIDE,
+            coopMatLoad(matA, Ash[cur], sg * 16u * STRIDE4 + kk / 8u, STRIDE4,
                         gl_CooperativeMatrixLayoutRowMajor);
             for (uint j = 0; j < 4u; j++) {
                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matB;
-                coopMatLoad(matB, Bsh[cur], kk * BSTRIDE + j * 16u, BSTRIDE,
-                            gl_CooperativeMatrixLayoutRowMajor);
+                coopMatLoad(matB, Bsh[cur], j * 16u * STRIDE4 + kk / 8u, STRIDE4,
+                            gl_CooperativeMatrixLayoutColumnMajor);
                 acc[j] = coopMatMulAdd(matA, matB, acc[j]);
             }
+        }
+        if (more) {
+            store_tiles(cur ^ 1u, lid, nxt);
         }
         barrier();
     }

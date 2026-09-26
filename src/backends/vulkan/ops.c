@@ -580,7 +580,9 @@ void vk_linear_cm_route(struct vk_state *st,
     } else {
         return;
     }
-    if ((m & 15u) != 0 || n_out % 64u != 0 || st->pipes[cm] == VK_NULL_HANDLE) {
+    /* the PQ2_0 tile covers 128 weight rows, the k-quant tiles 64 */
+    const uint32_t tile_rows = cm == VK_PIPE_MM_PQ2_0_CM ? 128u : 64u;
+    if ((m & 15u) != 0 || n_out % tile_rows != 0 || st->pipes[cm] == VK_NULL_HANDLE) {
         return;
     }
     /* small n_out starves the SMs on the 64-row tile — use the 32x32 one
@@ -593,7 +595,7 @@ void vk_linear_cm_route(struct vk_state *st,
         return;
     }
     *pipe = cm;
-    *gx   = n_out / 64u;
+    *gx   = n_out / tile_rows;
     *gy   = (m + 63u) / 64u;
 }
 
