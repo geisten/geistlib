@@ -57,7 +57,10 @@ PQ2_0 kernels, the embedding lookup and the blockwise Walsh-Hadamard rotation
 It fits an 11 GiB card (RTX 2080 Ti: pp512 ≈ 38 t/s, tg ≈ 23 t/s — above the
 M1 Max's Metal decode). Prefill is compute-bound in the register-tiled GEMM
 (tensor cores are not used for PQ2_0 yet), and devices whose subgroup size is
-not 32 (RADV) fall back to per-row matvecs for prefill (#471, #467). Phase-by-phase lab log:
+not 32 (RADV) fall back to per-row matvecs for prefill (#471, #467). Against the
+PrismML llama.cpp fork on the same card: decode 78 % of its Vulkan build (52 % of
+CUDA), prefill 0.07× (the fork's GEMM uses `KHR_coopmat`) —
+`benchmark/results/TERNARY.md`. Phase-by-phase lab log:
 [`../benchmark/results/VULKAN.md`](../benchmark/results/VULKAN.md).
 
 ## GPU numbers at a glance

@@ -434,6 +434,34 @@ itself is an order of magnitude below what the iGPU's memory bandwidth allows
 weights are uploaded from it once and are not duplicated in host memory
 (`caps.weights_device_copy`).
 
+### Against the PrismML fork on the same card (RTX 2080 Ti, same GGUF)
+
+PrismML-Eng/llama.cpp `adfffbe` (`prism` branch), `llama-bench -ngl 99 -p 128,512
+-n 64 -r 2`, built once with CUDA (`sm_75`) and once with Vulkan; geist as above
+(`bench_perf_sweep`). Nothing else was running on the machine.
+
+| runtime | pp128 | pp512 | tg64 |
+| :-- | --: | --: | --: |
+| fork, CUDA | 577 ± 23 | 781 ± 1 | **44.4** |
+| fork, Vulkan (`KHR_coopmat`, no int-dot) | 524 ± 2 | 556 ± 0.2 | 29.7 |
+| **geist, Vulkan** | 39 | 38 | 23.1 |
+| geist / fork Vulkan | 0.07× | 0.07× | 0.78× |
+| geist / fork CUDA | 0.07× | 0.05× | 0.52× |
+
+- **Decode** is within reach: 78 % of the fork's Vulkan, 52 % of its CUDA. Neither
+  fork build uses integer dot products on this card (Vulkan reports
+  `int dot: 0`), so the difference is kernel efficiency, not the A32/A8 choice —
+  the candidates are a multi-row matvec (the fork's `mul_mat_vecq` reads several
+  output rows per workgroup) and `subgroupAdd` reductions.
+- **Prefill is 14× behind** the fork's Vulkan and 20× behind CUDA. The fork's
+  GEMM runs on the tensor cores (`KHR_coopmat`, ternary codes expanded to f16
+  in shared memory), which is where the 555 t/s ≈ 30 TFLOP/s effective comes
+  from — above the 13 TFLOP/s FP32 peak our register-tiled kernel can reach at
+  best (it measures ≈ 8). This is the single change that matters; geist already
+  has the machinery (`mm_q4k_cm` for Q4_K), PQ2_0 needs its own `_cm` variant.
+  Note the fork's own pp16 is 43.6 t/s: below the batch size where its GEMM
+  kicks in it behaves like our matvec loop.
+
 ### Where the time goes (2080 Ti, `GEIST_VK_PROFILE=1`, pp128 + 24 decode steps)
 
 | pipe | calls | total | per call |
