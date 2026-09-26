@@ -108,12 +108,18 @@ static void transformer_profile_add(enum transformer_profile_stage stage, uint64
  * output — sum, mean |x| and the first four values. Diagnostic only, for
  * bisecting a divergence against another runtime's per-op dump (#432). */
 static void transformer_layer_dump(const struct transformer_layer_forward_ctx *ctx) {
-    static int on = -1;
-    if (on < 0) {
+    /* Atomic: sessions on different threads all pass through here, and the
+     * first-call initialisation of a plain static is a data race under
+     * TSan (caught by test_multi_session_parallel_int). Every thread
+     * computes the same value, so a relaxed store is enough. */
+    static atomic_int on   = -1;
+    int               v_on = atomic_load_explicit(&on, memory_order_relaxed);
+    if (v_on < 0) {
         const char *e = getenv("GEIST_DUMP_LAYERS");
-        on            = e != nullptr && e[0] == '1' ? 1 : 0;
+        v_on          = e != nullptr && e[0] == '1' ? 1 : 0;
+        atomic_store_explicit(&on, v_on, memory_order_relaxed);
     }
-    if (on == 0 || ctx == nullptr || ctx->sess == nullptr) {
+    if (v_on == 0 || ctx == nullptr || ctx->sess == nullptr) {
         return;
     }
     const struct transformer_arch_state *st = ctx->sess->model;

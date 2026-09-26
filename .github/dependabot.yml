@@ -1,0 +1,8 @@
+# Actions are pinned by commit SHA (a floating tag is a supply-chain hole);
+# Dependabot moves the pins and keeps the "# vN" comment in step.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -210,6 +210,18 @@ void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
                              const struct geist_weight *w,
                              struct geist_backend      *be,
                              float                     *y);
+/* Pair forms for two projections over one x (FFN gate/up, attention
+ * q/k/v). They honour the workspace invariant above: the shared int8
+ * quantization of x happens once, and the m1 forms walk both output
+ * ranges as one so the thread dispatch is shared too. Installed only
+ * when both weights carry the same kernel; the dispatcher checks that
+ * and the matching n_in before calling. */
+void cpu_neon_w_pq2_0_q8a_pair_m1(const float               *x,
+                                  const struct geist_weight *w0,
+                                  const struct geist_weight *w1,
+                                  struct geist_backend      *be,
+                                  float                     *y0,
+                                  float                     *y1);
 /* x8 interleaved variant on a heap repack (aux_fp32, backend_layout
  * GEIST_W_LAYOUT_PQ2_0_X8_GEMV); installed by the resolver when
  * n_out % 8 == 0 and the pq2_0_x8_gemv policy is on. */
@@ -222,6 +234,19 @@ void cpu_neon_w_pq2_0_x8_m1(const float               *x,
                             const struct geist_weight *w,
                             struct geist_backend      *be,
                             float                     *y);
+void cpu_neon_w_pq2_0_x8_pair_m1(const float               *x,
+                                 const struct geist_weight *w0,
+                                 const struct geist_weight *w1,
+                                 struct geist_backend      *be,
+                                 float                     *y0,
+                                 float                     *y1);
+void cpu_neon_w_pq2_0_x8_pair_mN(size_t                     m,
+                                 const float               *x,
+                                 const struct geist_weight *w0,
+                                 const struct geist_weight *w1,
+                                 struct geist_backend      *be,
+                                 float                     *y0,
+                                 float                     *y1);
 
 /* I2_S (BitNet b1.58 official): ternary W1.58 × A8, int8-SDOT. Same compute
  * as tq2_0/q8a but the in-byte 2-bit field order is reversed and a single

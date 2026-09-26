@@ -190,6 +190,27 @@ deliberate exception to the `STABLE` promise recorded in
   chain under AddressSanitizer — which is how the `scratch_proj_in` leak above
   surfaced.
 
+- **PQ2_0 shares work between two projections over one x.** `cpu_neon` now
+  installs `linear_pair_m1` / `linear_pair_mN` for PQ2_0, so FFN gate/up and
+  attention q/k/v quantize the activation once (decode) or permute it once
+  (prefill) instead of twice, and the decode forms walk both output ranges
+  in one parallel region rather than two. Isolated-kernel A/B on Bonsai-27B
+  shapes: attention q/k +6 % (stable across four rounds), FFN gate/up
+  +1-4 %, prefill at m=128 +1-4 %. Bit-exact against the two separate calls
+  — the pair is a scheduling change, not a numerical one.
+
+- **The Hadamard rotation makes two fewer passes over each row.**
+  `fwht_orthonormal` folds its `1/sqrt(n)` into the last butterfly stage
+  instead of walking the block again for one multiply per element, and the
+  host `geist_hadamard_rows` folds the sign vector into the gather it
+  already performs (forward) or applies it per block while that block is
+  still in L1 (inverse). Isolated A/B on Bonsai-27B widths: decode forward
+  +7 % at width 5120 and +4 % at 17408, decode inverse +3 %, prefill at 128
+  rows +4-6 %, stable across three rounds. Output is bit-identical -- checked
+  against the previous implementation over every block size from 1 to 8192
+  and over 18 shape/sign combinations. The `fwht` half also serves the
+  INT8 KV-cache rotation in `forward/kv_store.c`.
+
 ### Fixed
 - **The metal quant pipeline table dispatched a nil kernel.** Collapsing the
   five per-format selection chains into `metal_quant_pipes_for` dropped the
