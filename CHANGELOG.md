@@ -172,6 +172,15 @@ deliberate exception to the `STABLE` promise recorded in
   chain under AddressSanitizer — which is how the `scratch_proj_in` leak above
   surfaced.
 
+- **PQ2_0 shares work between two projections over one x.** `cpu_neon` now
+  installs `linear_pair_m1` / `linear_pair_mN` for PQ2_0, so FFN gate/up and
+  attention q/k/v quantize the activation once (decode) or permute it once
+  (prefill) instead of twice, and the decode forms walk both output ranges
+  in one parallel region rather than two. Isolated-kernel A/B on Bonsai-27B
+  shapes: attention q/k +6 % (stable across four rounds), FFN gate/up
+  +1-4 %, prefill at m=128 +1-4 %. Bit-exact against the two separate calls
+  — the pair is a scheduling change, not a numerical one.
+
 ### Fixed
 - **The metal quant pipeline table dispatched a nil kernel.** Collapsing the
   five per-format selection chains into `metal_quant_pipes_for` dropped the
