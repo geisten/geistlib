@@ -552,12 +552,18 @@ struct transformer_arch_state {
     struct geist_buffer *rope_cos_full;
     struct geist_buffer *rope_sin_full;
 
-    /* The session state_create allocates, for direct-state callers that
-     * never mint their own (tests, single-session tools) — fetch it via
-     * transformer_default_session. A normal session that happens to be
-     * model-owned; there is no "active session" pointer — per-session
-     * ops receive their session explicitly. */
+    /* The model-owned session for direct-state callers that never mint their
+     * own (tests, single-session tools) — fetch it via
+     * transformer_default_session, which builds it on first use from the opts
+     * the state was created with. It is NOT allocated at state_create: every
+     * engine session has its own KV cache and scratch pool, and a second,
+     * unused pool (2 x 90 MiB at m_max 64, 2 x 180 MiB at 128 for the 27B)
+     * only pushes the real one out of a GPU's 256 MB BAR heap. A normal
+     * session that happens to be model-owned; there is no "active session"
+     * pointer — per-session ops receive their session explicitly. */
     struct transformer_arch_session *default_sess;
+    struct geist_session_opts        default_opts;     /* shallow copy of the state_create opts */
+    bool                             has_default_opts; /* false: state_create got nullptr */
 };
 
 /* ---- Forward-pass helpers (architecture-internal) --------------------- *
