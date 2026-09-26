@@ -1,8 +1,7 @@
 /*
  * src/backends/vulkan/ops.c — op implementations, resolver, probe, and the descriptor.
  *
- * Layer: BACKEND (vulkan). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
+ * Layer: BACKEND (vulkan).
  */
 #include "vk_internal.h"
 
@@ -699,6 +698,10 @@ enum vk_ew3_op { EW3_ADD, EW3_MUL, EW3_GELU_MUL, EW3_SILU_MUL, EW3_SIGMOID_MUL }
         const float *arow = ap + r * sa;
         const float *brow = bp + r * sb;
         float       *yrow = yp + r * sy;
+        if (op == EW3_GELU_MUL) {
+            gelu_tanh_mul_fp32(cc, arow, brow, yrow);
+            continue;
+        }
         for (size_t i = 0; i < cc; i++) {
             switch (op) {
             case EW3_ADD:
@@ -716,11 +719,8 @@ enum vk_ew3_op { EW3_ADD, EW3_MUL, EW3_GELU_MUL, EW3_SILU_MUL, EW3_SIGMOID_MUL }
             case EW3_SIGMOID_MUL:
                 yrow[i] = arow[i] * (1.0f / (1.0f + expf(-brow[i])));
                 break;
-            case EW3_GELU_MUL: {
-                const float v = arow[i];
-                const float u = 0.7978845608028654f * (v + 0.044715f * v * v * v);
-                yrow[i]       = (0.5f * v * (1.0f + tanhf(u))) * brow[i];
-            }
+            case EW3_GELU_MUL: /* handled per row above */
+                break;
             }
         }
     }
@@ -747,9 +747,25 @@ enum vk_ew3_op { EW3_ADD, EW3_MUL, EW3_GELU_MUL, EW3_SILU_MUL, EW3_SIGMOID_MUL }
     return vk_ew3_cpu(be, EW3_MUL, a, b, y, "mul");
 }
 
-static constexpr float VK_GELU_K0 = 0.7978845608028654f;
+/* Host fallback of the unary elementwise ops: `fn` is the shared reference
+ * kernel (gemma4_kernels.h) the CPU backends run. */
+[[nodiscard]] static enum geist_status vk_ew2_cpu(struct geist_backend *be,
+                                                  const char           *name,
+                                                  void (*fn)(size_t n, const float *x, float *y),
+                                                  const struct geist_tensor *x,
+                                                  struct geist_tensor       *y) {
+    size_t       nx = 0, ny = 0;
+    const float *xp = vk_tensor_host(x, &nx);
+    float       *yp = vk_tensor_host(y, &ny);
+    if (xp == nullptr || yp == nullptr || nx != ny) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan %s: bad inputs", name);
+        return GEIST_E_INVALID_ARG;
+    }
+    fn(nx, xp, yp);
+    return GEIST_OK;
+}
 
-/* sqrt(2/pi) */
+static constexpr float VK_GELU_K0 = 0.7978845608028654f; /* sqrt(2/pi) */
 static constexpr float VK_GELU_K1 = 0.044715f;
 
 [[nodiscard]] static enum geist_status
@@ -757,19 +773,7 @@ vk_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geis
     if (vk_try_ew2(be, VK_PIPE_GELU, x, y)) {
         return GEIST_OK;
     }
-    size_t       nx = 0, ny = 0;
-    const float *xp = vk_tensor_host(x, &nx);
-    float       *yp = vk_tensor_host(y, &ny);
-    if (xp == nullptr || yp == nullptr || nx != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan gelu_tanh: bad inputs");
-        return GEIST_E_INVALID_ARG;
-    }
-    for (size_t i = 0; i < nx; i++) {
-        const float v = xp[i];
-        const float u = VK_GELU_K0 * (v + VK_GELU_K1 * v * v * v);
-        yp[i]         = 0.5f * v * (1.0f + tanhf(u));
-    }
-    return GEIST_OK;
+    return vk_ew2_cpu(be, "gelu_tanh", gelu_tanh_fp32, x, y);
 }
 
 [[nodiscard]] static enum geist_status vk_gelu_tanh_mul(struct geist_backend      *be,
@@ -820,18 +824,7 @@ vk_relu_squared(struct geist_backend *be, const struct geist_tensor *x, struct g
     if (vk_try_ew2(be, VK_PIPE_RELU2, x, y)) {
         return GEIST_OK;
     }
-    size_t       nx = 0, ny = 0;
-    const float *xp = vk_tensor_host(x, &nx);
-    float       *yp = vk_tensor_host(y, &ny);
-    if (xp == nullptr || yp == nullptr || nx != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan relu_squared: bad inputs");
-        return GEIST_E_INVALID_ARG;
-    }
-    for (size_t i = 0; i < nx; i++) {
-        const float v = xp[i] > 0.0f ? xp[i] : 0.0f;
-        yp[i]         = v * v;
-    }
-    return GEIST_OK;
+    return vk_ew2_cpu(be, "relu_squared", relu_squared_fp32, x, y);
 }
 
 [[nodiscard]] static enum geist_status
@@ -839,20 +832,7 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
     if (vk_try_ew2(be, VK_PIPE_SILU, x, y)) {
         return GEIST_OK;
     }
-    size_t       nx = 0, ny = 0;
-    const float *xp = vk_tensor_host(x, &nx);
-    float       *yp = vk_tensor_host(y, &ny);
-    if (xp == nullptr || yp == nullptr || nx != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan silu: bad inputs");
-        return GEIST_E_INVALID_ARG;
-    }
-    for (size_t i = 0; i < nx; i++) {
-        /* Overflow-safe sigmoid form (see cpu_scalar_silu, #275). */
-        const float v = xp[i];
-        const float e = expf(-fabsf(v));
-        yp[i]         = (v >= 0.0f) ? v / (1.0f + e) : (v * e) / (1.0f + e);
-    }
-    return GEIST_OK;
+    return vk_ew2_cpu(be, "silu", silu_fp32_ooo, x, y);
 }
 
 [[nodiscard]] static enum geist_status vk_silu_mul(struct geist_backend      *be,
@@ -1653,8 +1633,6 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
              * shader can't read. */
             return GEIST_E_UNSUPPORTED;
         }
-        struct geist_tensor bytes_view = *embed_table;
-        bytes_view.dtype               = GEIST_DTYPE_F32; /* only for the offset calc */
         if (embed_table->buffer->buf == VK_NULL_HANDLE ||
             (embed_table->buffer->base_off + embed_table->offset) % 4 != 0) {
             return GEIST_E_UNSUPPORTED;
@@ -1662,35 +1640,17 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         bi[0]      = (VkDescriptorBufferInfo) {.buffer = embed_table->buffer->buf,
                                                .range  = VK_WHOLE_SIZE};
         w_elem_off = (uint32_t) (embed_table->buffer->base_off + embed_table->offset);
-        (void) bytes_view;
     }
     uint32_t yo;
     if (vk_t_n(out) != (size_t) d || !vk_tensor_gpu(out, &bi[1], &yo)) {
         return GEIST_E_UNSUPPORTED;
     }
-    uint32_t bpr;
-    switch (dtype_code) {
-    case 3:
-    case 4:
-    case 5:
-        bpr = (uint32_t) (d / 32);
-        break;
-    case 8:
-        bpr = (uint32_t) (d / 256);
-        break;
-    case 9:
-        bpr = (uint32_t) (d / 256);
-        break;
-    case 10:
-        bpr = (uint32_t) (d / 256);
-        break;
-    case 11:
-        bpr = (uint32_t) (d / 128);
-        break;
-    default:
-        bpr = 0;
-        break;
-    }
+    /* Blocks per row, from the same table the linears use (0 for the
+     * non-block dtypes: F32/F16/BF16). */
+    struct vk_qinfo qi;
+    const uint32_t  bpr = dtype_code >= 3 && vk_qinfo_for(embed_table->dtype, &qi)
+                                  ? (uint32_t) d / qi.block_elems
+                                  : 0;
     const struct {
         uint32_t n_in, token, dtype, bpr, w_byte, y;
         float    scale;
@@ -1727,14 +1687,8 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         up_w->shape[1] != gate_w->shape[1]) {
         return GEIST_E_UNSUPPORTED;
     }
-    const uint8_t *g_host = gate_w->buffer != nullptr && gate_w->buffer->host_alias != nullptr
-                                    ? (const uint8_t *) gate_w->buffer->host_alias + gate_w->offset
-                                    : nullptr;
-    const uint8_t *u_host = up_w->buffer != nullptr && up_w->buffer->host_alias != nullptr
-                                    ? (const uint8_t *) up_w->buffer->host_alias + up_w->offset
-                                    : nullptr;
-    struct geist_buffer   *gbuf = g_host != nullptr ? vk_weight_lookup(st, g_host) : nullptr;
-    struct geist_buffer   *ubuf = u_host != nullptr ? vk_weight_lookup(st, u_host) : nullptr;
+    struct geist_buffer   *gbuf = vk_weight_of(st, gate_w);
+    struct geist_buffer   *ubuf = vk_weight_of(st, up_w);
     VkDescriptorBufferInfo bi[4];
     uint32_t               xo, yo;
     if (gbuf == nullptr || ubuf == nullptr || vk_t_n(y) < n_out || !vk_tensor_gpu(y, &bi[3], &yo)) {
@@ -1790,14 +1744,8 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         up_w->shape[1] != gate_w->shape[1] || vk_t_n(norm_w) != n_in) {
         return GEIST_E_UNSUPPORTED;
     }
-    const uint8_t *g_host = gate_w->buffer != nullptr && gate_w->buffer->host_alias != nullptr
-                                    ? (const uint8_t *) gate_w->buffer->host_alias + gate_w->offset
-                                    : nullptr;
-    const uint8_t *u_host = up_w->buffer != nullptr && up_w->buffer->host_alias != nullptr
-                                    ? (const uint8_t *) up_w->buffer->host_alias + up_w->offset
-                                    : nullptr;
-    struct geist_buffer   *gbuf = g_host != nullptr ? vk_weight_lookup(st, g_host) : nullptr;
-    struct geist_buffer   *ubuf = u_host != nullptr ? vk_weight_lookup(st, u_host) : nullptr;
+    struct geist_buffer   *gbuf = vk_weight_of(st, gate_w);
+    struct geist_buffer   *ubuf = vk_weight_of(st, up_w);
     VkDescriptorBufferInfo bi[5];
     uint32_t               xo, nwo, yo;
     if (gbuf == nullptr || ubuf == nullptr || vk_t_n(y) < n_out || !vk_tensor_gpu(y, &bi[4], &yo) ||
@@ -1852,14 +1800,8 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         vk_t_n(gate_scratch) < hpl || vk_t_n(proj_scratch) < feat) {
         return GEIST_E_UNSUPPORTED;
     }
-    const uint8_t *g_host = gate_w->buffer != nullptr && gate_w->buffer->host_alias != nullptr
-                                    ? (const uint8_t *) gate_w->buffer->host_alias + gate_w->offset
-                                    : nullptr;
-    const uint8_t *p_host = proj_w->buffer != nullptr && proj_w->buffer->host_alias != nullptr
-                                    ? (const uint8_t *) proj_w->buffer->host_alias + proj_w->offset
-                                    : nullptr;
-    struct geist_buffer   *gwbuf = g_host != nullptr ? vk_weight_lookup(st, g_host) : nullptr;
-    struct geist_buffer   *pwbuf = p_host != nullptr ? vk_weight_lookup(st, p_host) : nullptr;
+    struct geist_buffer   *gwbuf = vk_weight_of(st, gate_w);
+    struct geist_buffer   *pwbuf = vk_weight_of(st, proj_w);
     VkDescriptorBufferInfo b_x, b_ple, b_gs, b_ps;
     uint32_t               xo, po, gso, pso;
     if (gwbuf == nullptr || pwbuf == nullptr || !vk_tensor_gpu(x, &b_x, &xo) ||
@@ -1941,7 +1883,6 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     }
     VkDescriptorBufferInfo bi[6];
     uint32_t               qo, ko = 0, vo = 0, qwo, kwo = 0, vwo = 0, co, so, kco = 0, vco = 0;
-    VkDescriptorBufferInfo tmp;
     if (!vk_tensor_gpu(q, &bi[0], &qo) || !vk_tensor_gpu(q_norm_w, &bi[1], &qwo) ||
         !vk_tensor_gpu(cos, &bi[2], &co) || !vk_tensor_gpu(sin, &bi[3], &so)) {
         return GEIST_E_UNSUPPORTED;
@@ -1968,7 +1909,6 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         bi[4] = bi[0]; /* unused bindings — anything valid */
         bi[5] = bi[0];
     }
-    (void) tmp;
     const struct {
         uint32_t seq, qh, kvh, hd, q_position, has_kv;
         uint32_t qo, ko, vo, qwo, kwo, vwo, co, so, kco, vco;
@@ -2171,10 +2111,8 @@ static const struct geist_backend_vtbl vk_vtbl = {
         .buffer_download       = vk_buffer_download,
         .buffer_map            = vk_buffer_map,
         .buffer_unmap          = vk_buffer_unmap,
-#ifndef VK_NO_COPY
-        .buffer_copy = vk_buffer_copy,
-#endif
-        .resolve_weight = vk_resolve_weight,
+        .buffer_copy           = vk_buffer_copy,
+        .resolve_weight        = vk_resolve_weight,
 };
 
 /* Probe pairing for the fused table below. Mirrors the entry checks of
@@ -2255,41 +2193,31 @@ static const struct geist_backend_primitives vk_prims = {
         .rope_apply       = vk_rope_apply,
         .embedding_lookup = vk_embedding_lookup,
         .attention        = vk_attention,
-#ifndef VK_NO_SCALE
-        .scale_f32 = vk_scale_f32,
-#endif
+        .scale_f32        = vk_scale_f32,
 };
 
 static const struct geist_backend_fused vk_fused = {
         .supported            = vk_fused_supported,
         .gelu_tanh_mul        = vk_gelu_tanh_mul,
         .gelu_tanh_mul_scaled = vk_gelu_tanh_mul_scaled,
-/* Phase 3: batched-submit paths — one flush per token (argmax). */
-#ifndef VK_NO_LINEAR_T
-        .linear_t      = vk_linear_t,
-        .linear_t_pair = vk_linear_t_pair,
-#endif
-#ifndef VK_NO_RMSADD
-        .rmsnorm_add = vk_rmsnorm_add,
-#endif
-#ifndef VK_NO_EMBED
+        /* Batched-submit paths: one flush per token (argmax). */
+        .linear_t                = vk_linear_t,
+        .linear_t_pair           = vk_linear_t_pair,
+        .rmsnorm_add             = vk_rmsnorm_add,
         .embedding_lookup_scaled = vk_embedding_lookup_scaled,
-#endif
-#ifndef VK_NO_ARGMAX
-        .argmax_f32 = vk_argmax_f32,
-#endif
-        .ffn_gate_up            = vk_ffn_gate_up,
-        .ffn_norm_gate_up       = vk_ffn_norm_gate_up,
-        .ple_block              = vk_ple_block,
-        .attn_qkv_prep          = vk_attn_qkv_prep,
-        .kv_append_f16          = vk_kv_append_f16,
-        .deltanet_mix           = vk_deltanet_mix,
-        .attn_qgate_split       = vk_attn_qgate_split,
-        .sigmoid_mul            = vk_sigmoid_mul,
-        .silu_mul               = vk_silu_mul,
-        .rope_apply_interleaved = vk_rope_apply_interleaved,
-        .bitnet_act_quant       = vk_bitnet_act_quant,
-        .hadamard_rotate        = vk_hadamard_rotate,
+        .argmax_f32              = vk_argmax_f32,
+        .ffn_gate_up             = vk_ffn_gate_up,
+        .ffn_norm_gate_up        = vk_ffn_norm_gate_up,
+        .ple_block               = vk_ple_block,
+        .attn_qkv_prep           = vk_attn_qkv_prep,
+        .kv_append_f16           = vk_kv_append_f16,
+        .deltanet_mix            = vk_deltanet_mix,
+        .attn_qgate_split        = vk_attn_qgate_split,
+        .sigmoid_mul             = vk_sigmoid_mul,
+        .silu_mul                = vk_silu_mul,
+        .rope_apply_interleaved  = vk_rope_apply_interleaved,
+        .bitnet_act_quant        = vk_bitnet_act_quant,
+        .hadamard_rotate         = vk_hadamard_rotate,
 };
 
 const struct geist_backend_descriptor geist_backend_vulkan = {
