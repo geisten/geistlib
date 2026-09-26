@@ -13,6 +13,7 @@
  * SKIPs (exit 77) when no Vulkan runtime/device is present. */
 #include "test_helpers.h"
 
+#include "hadamard.h"
 #include "quant.h"
 
 #include "gemma4_kernels.h"
@@ -238,6 +239,57 @@ static void test_embed_pq2_0(size_t vocab, size_t d, int32_t token) {
     free(got);
 }
 
+/* fused->hadamard_rotate on VRAM-only buffers against the host implementation
+ * (geist_hadamard_rows): same butterfly order and the same float scale, so the
+ * result must be bit-identical. */
+static void test_hadamard(size_t      rows,
+                          size_t      width,
+                          size_t      block,
+                          bool        signed_,
+                          bool        inverse,
+                          size_t      hd,
+                          size_t      nk,
+                          size_t      rep,
+                          bool        in_place,
+                          const char *name) {
+    const size_t n   = rows * width;
+    float       *x   = fill(n, 0.23f, 1.5f);
+    float       *sg  = malloc(width * sizeof(float));
+    float       *ref = malloc(n * sizeof(float));
+    float       *got = malloc(n * sizeof(float));
+    for (size_t i = 0; i < width; i++) {
+        sg[i] = ((i * 2654435761u) >> 13) & 1u ? -1.0f : 1.0f;
+    }
+    check(geist_hadamard_rows(
+                  rows, width, block, hd, nk, rep, inverse, x, signed_ ? sg : nullptr, ref) ==
+                  GEIST_OK,
+          "hadamard host reference");
+    struct geist_buffer *bx = dev_buf(x, n), *bs = signed_ ? dev_buf(sg, width) : nullptr,
+                        *by = in_place ? bx : dev_buf(nullptr, n);
+    check(bx && by && (!signed_ || bs), "hadamard buffers");
+    struct geist_tensor              tx   = view(bx, 2, (int64_t) rows, (int64_t) width, 0),
+                                     ty   = view(by, 2, (int64_t) rows, (int64_t) width, 0),
+                                     ts   = view(bs, 1, (int64_t) width, 0, 0);
+    const struct geist_hadamard_args args = {.x        = &tx,
+                                             .signs    = signed_ ? &ts : nullptr,
+                                             .y        = &ty,
+                                             .block    = block,
+                                             .perm_hd  = hd,
+                                             .perm_nk  = nk,
+                                             .perm_rep = rep,
+                                             .inverse  = inverse};
+    check(g_be->desc->fused->hadamard_rotate != nullptr, "hadamard entry");
+    check(g_be->desc->fused->hadamard_rotate(g_be, &args) == GEIST_OK, "hadamard dispatch");
+    check(download(by, got, n), "hadamard download");
+    const double e = max_abs(got, ref, n);
+    printf("  hadamard %-26s max_abs %.2e\n", name, e);
+    check(e == 0.0, name);
+    free(x);
+    free(sg);
+    free(ref);
+    free(got);
+}
+
 static void test_rope(size_t seq, size_t heads, size_t hd, size_t rot, const char *name) {
     float *x   = fill(seq * heads * hd, 0.21f, 1.0f);
     float *cs  = fill(seq * rot, 0.13f, 1.0f);
@@ -416,6 +468,12 @@ int main(void) {
     test_embed_pq2_0(37, 384, 0);
     test_embed_pq2_0(37, 384, 36);
     test_embed_pq2_0(64, 1024, 17);
+    test_hadamard(3, 5120, 1024, true, false, 0, 0, 0, false, "fwd 5120/1024 signs");
+    test_hadamard(3, 5120, 1024, true, true, 0, 0, 0, false, "inv 5120/1024 signs");
+    test_hadamard(2, 6144, 1024, true, false, 128, 16, 3, false, "fwd 6144 grouped-v perm");
+    test_hadamard(4, 17408, 1024, true, false, 0, 0, 0, true, "fwd 17408/1024 in place");
+    test_hadamard(5, 384, 128, false, false, 0, 0, 0, true, "fwd 384/128 no signs");
+    test_hadamard(2, 1536, 512, true, true, 0, 0, 0, false, "inv 1536/512 (inexact scale)");
     test_relu2(1000);
     test_relu2(4096 * 3);
     test_act_quant(5, 1536);
@@ -432,7 +490,8 @@ int main(void) {
     test_attention(1, 300, 299, 8, 2, 256, 0, "decode kv=300 (flash path)");
     geist_backend_destroy(g_be);
     if (g_fail == 0) {
-        printf("PASS: Vulkan qwen35 ops (partial and interleaved rope, PQ2_0 embed, relu2, "
+        printf("PASS: Vulkan qwen35 ops (partial and interleaved rope, hadamard, PQ2_0 embed, "
+               "relu2, "
                "act_quant, silu, "
                "silu_mul, "
                "sigmoid_mul, "

@@ -56,6 +56,7 @@
 #include "shaders/ple_gate_f32_spv.h"
 #include "shaders/matvec_q4k_spv.h"
 #include "shaders/silu_f32_spv.h"
+#include "shaders/hadamard_f32_spv.h"
 #include "shaders/relu2_f32_spv.h"
 #include "shaders/act_quant_i8_f32_spv.h"
 #include "shaders/silu_mul_f32_spv.h"
@@ -197,6 +198,7 @@ enum vk_pipe {
     VK_PIPE_MATVEC_PQ2_0,
     VK_PIPE_MATMUL_PQ2_0,
     VK_PIPE_SILU,        /* y = silu(x) */
+    VK_PIPE_HADAMARD,    /* blockwise orthonormal WHT of rows (prism.hadamard) */
     VK_PIPE_RELU2,       /* y = relu(x)^2 (BitNet FFN) */
     VK_PIPE_ACT_QUANT,   /* BitNet int8 absmax activation round trip, in place */
     VK_PIPE_SILU_MUL,    /* y = silu(a) * b (SwiGLU epilogue) */
@@ -393,8 +395,8 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_MATVEC_Q8_0] = 3,   [VK_PIPE_MATMUL_Q8_0] = 3,   [VK_PIPE_MATVEC_Q5K] = 3,
         [VK_PIPE_MATMUL_Q5K] = 3,    [VK_PIPE_MATVEC_TQ2_0] = 3,  [VK_PIPE_MATMUL_TQ2_0] = 3,
         [VK_PIPE_MATVEC_PQ2_0] = 3,  [VK_PIPE_MATMUL_PQ2_0] = 3,  [VK_PIPE_SILU] = 2,
-        [VK_PIPE_RELU2] = 2,         [VK_PIPE_ACT_QUANT] = 2,     [VK_PIPE_SILU_MUL] = 3,
-        [VK_PIPE_SIGMOID_MUL] = 3,   [VK_PIPE_QGATE_SPLIT] = 3,
+        [VK_PIPE_RELU2] = 2,         [VK_PIPE_HADAMARD] = 3,      [VK_PIPE_ACT_QUANT] = 2,
+        [VK_PIPE_SILU_MUL] = 3,      [VK_PIPE_SIGMOID_MUL] = 3,   [VK_PIPE_QGATE_SPLIT] = 3,
 };
 
 struct geist_buffer {

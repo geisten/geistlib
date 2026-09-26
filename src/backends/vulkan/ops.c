@@ -7,6 +7,7 @@
 #include "vk_internal.h"
 
 #include "checked.h"
+#include "hadamard.h" /* host fallback of hadamard_rotate */
 
 /* Quant formats with GPU kernels: elements per block and the (matvec,
  * matmul) pipeline pair. The block size sets `blocks_per_row` in the push
@@ -1051,6 +1052,81 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
     const struct vk_access acc[2]  = {vk_acc_tensor(x, true), vk_acc_tensor(x, true)};
     return vk_seq_dispatch_acc(
             be, VK_PIPE_ACT_QUANT, bi, acc, push, sizeof(push), (uint32_t) rows, 1, 1);
+}
+
+/* Largest Hadamard block the shader stages in shared memory. */
+enum { VK_HADAMARD_MAX_BLOCK = 1024 };
+
+/* fused->hadamard_rotate (Ternary-Bonsai's rotated weight basis). The op is not
+ * optional — a model that needs it refuses to load without it — so a geometry
+ * the shader does not cover (block > 1024, host-side tensors) runs the shared
+ * host implementation on mapped memory instead of failing. */
+[[nodiscard]] static enum geist_status vk_hadamard_rotate(struct geist_backend             *be,
+                                                          const struct geist_hadamard_args *args) {
+    if (args == nullptr || args->x == nullptr || args->y == nullptr || args->x->ndim != 2) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan hadamard_rotate: bad args");
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t rows = (size_t) args->x->shape[0], width = (size_t) args->x->shape[1];
+    const size_t block = args->block, rep = args->perm_rep;
+    const bool   permute = rep > 1;
+    size_t       pn      = 0;
+    const bool   geometry_ok =
+            block >= 2 && (block & (block - 1)) == 0 && width != 0 && width % block == 0 &&
+            (!permute || (!args->inverse && !ckd_mul(&pn, args->perm_hd, args->perm_nk) &&
+                          !ckd_mul(&pn, pn, rep) && pn == width && args->perm_hd != 0));
+    VkDescriptorBufferInfo bi[3];
+    uint32_t               off[3];
+    const bool             has_signs = args->signs != nullptr;
+    if (VK_OPS(be, 2u) && geometry_ok && block <= VK_HADAMARD_MAX_BLOCK && rows != 0 &&
+        vk_t_n(args->x) == rows * width && vk_t_n(args->y) == rows * width &&
+        vk_tensor_gpu(args->x, &bi[0], &off[0]) && vk_tensor_gpu(args->y, &bi[2], &off[2]) &&
+        (!has_signs ||
+         (vk_t_n(args->signs) == width && vk_tensor_gpu(args->signs, &bi[1], &off[1])))) {
+        if (!has_signs) {
+            bi[1]  = bi[0]; /* bound but never read (flags bit 1 clear) */
+            off[1] = 0;
+        }
+        const float scale    = 1.0f / sqrtf((float) block);
+        uint32_t    push[11] = {(uint32_t) width,
+                                (uint32_t) block,
+                                (uint32_t) (width / block),
+                                (uint32_t) args->perm_hd,
+                                (uint32_t) args->perm_nk,
+                                (uint32_t) rep,
+                                (args->inverse ? 1u : 0u) | (has_signs ? 2u : 0u),
+                                off[0],
+                                off[1],
+                                off[2],
+                                0};
+        memcpy(&push[10], &scale, sizeof scale);
+        const struct vk_access acc[3] = {vk_acc_tensor(args->x, false),
+                                         has_signs ? vk_acc_tensor(args->signs, false)
+                                                   : vk_acc_tensor(args->x, false),
+                                         vk_acc_tensor(args->y, true)};
+        if (vk_seq_dispatch_acc(be,
+                                VK_PIPE_HADAMARD,
+                                bi,
+                                acc,
+                                push,
+                                sizeof(push),
+                                (uint32_t) (rows * (width / block)),
+                                1,
+                                1) == GEIST_OK) {
+            return GEIST_OK;
+        }
+    }
+    size_t                  nx = 0, ns = 0, ny = 0;
+    const float            *xp = vk_tensor_host(args->x, &nx);
+    const float            *sp = has_signs ? vk_tensor_host(args->signs, &ns) : nullptr;
+    float                  *yp = vk_tensor_host(args->y, &ny);
+    const enum geist_status s  = xp == nullptr || yp == nullptr || (has_signs && sp == nullptr)
+                                         ? GEIST_E_INVALID_ARG
+                                         : geist_hadamard_apply(args, nx, ns, ny, xp, sp, yp);
+    if (s != GEIST_OK) {
+        geist_backend_set_error(be, s, "vulkan hadamard_rotate: bad inputs");
+    }
+    return s;
 }
 
 /* Head sizes the interleaved-rope shader stages in shared memory. */
@@ -2213,6 +2289,7 @@ static const struct geist_backend_fused vk_fused = {
         .silu_mul               = vk_silu_mul,
         .rope_apply_interleaved = vk_rope_apply_interleaved,
         .bitnet_act_quant       = vk_bitnet_act_quant,
+        .hadamard_rotate        = vk_hadamard_rotate,
 };
 
 const struct geist_backend_descriptor geist_backend_vulkan = {
