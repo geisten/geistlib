@@ -192,9 +192,6 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
     } else {
         /* mmap-alias: zero-copy; gguf mmap retained by caller. */
         raw_ptr = (void *) t->data;
-        if (st->weight_arena != nullptr) {
-            st->gguf_aliased = true;
-        }
     }
     s = v->buffer_create_aliased(be, raw_ptr, t->nbytes, GEIST_BUFFER_WEIGHT, &buf);
     if (s != GEIST_OK) {

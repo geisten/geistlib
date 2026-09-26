@@ -1,7 +1,7 @@
 /*
  * test_backend_vulkan_linear_parity — numerical parity gate for the Vulkan
  * linear path (Phase 2): resolve_weight + linear_m1/linear_mN for Q4_K,
- * Q5_K, Q6_K, Q4_0, Q4_1, Q8_0, TQ2_0 and F32 weights (plus fused->linear_t, the
+ * Q5_K, Q6_K, Q4_0, Q4_1, Q8_0, TQ2_0, PQ2_0 and F32 weights (plus fused->linear_t, the
  * device-resident path the engine actually runs), compared against the
  * cpu_scalar resolver on the SAME weight bytes. cpu_scalar dequantizes with an independent
  * implementation (src/formats/gguf), so agreement means the GLSL dequant
@@ -46,6 +46,7 @@ static const struct qfmt QF[] = {
         {GEIST_DTYPE_Q4_1, 32, 20, 4},
         {GEIST_DTYPE_Q8_0, 32, 34, 2},
         {GEIST_DTYPE_TQ2_0, 256, 66, -2}, /* d is the TRAILING f16 */
+        {GEIST_DTYPE_PQ2_0, 128, 34, 2},
 };
 
 static const struct qfmt *qfmt_of(int dtype) {
@@ -342,6 +343,14 @@ int main(void) {
     run_case(vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 131, 37);
     run_case_t(vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 131, 1, 1e-3);
     run_case_t(vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 512, 383, 37, 1e-3);
+    /* PQ2_0: 128-element blocks, two blocks per warp step — 1408 = 11 blocks
+     * exercises the odd tail, 384 a single-step row. */
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 1);
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1);
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 384, 45, 8);
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 37);
+    run_case_t(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1, 1e-3);
+    run_case_t(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 37, 1e-3);
     /* the existing dtypes through linear_t as well */
     run_case_t(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 1, 1e-3);
     run_case_t(vk, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1, 1e-3);

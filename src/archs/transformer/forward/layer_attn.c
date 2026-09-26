@@ -90,6 +90,29 @@ static enum geist_status permute_interleaved_rope_inplace(const struct geist_bac
     return GEIST_OK;
 }
 
+/* RoPE on one q or k projection. Interleaved (llama) rows are permuted to the
+ * half-split order first: on the device in one pass when the plan bound the
+ * fused op (fuse_il), else on the host. */
+static enum geist_status rope_rows(const struct transformer_layer_forward_ctx *ctx,
+                                   struct geist_buffer                        *buf,
+                                   struct geist_tensor                        *t_3d,
+                                   size_t                                      n_heads,
+                                   const struct geist_tensor                  *t_cos,
+                                   const struct geist_tensor                  *t_sin,
+                                   bool                                        fuse_il) {
+    if (fuse_il && ctx->fused->rope_apply_interleaved(ctx->be, t_3d, t_cos, t_sin) == GEIST_OK) {
+        return GEIST_OK;
+    }
+    if (ctx->rope_interleaved) {
+        const enum geist_status s =
+                permute_interleaved_rope_inplace(ctx->v, buf, ctx->seq, n_heads, ctx->hd);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    return ctx->prims->rope_apply(ctx->be, t_3d, t_cos, t_sin);
+}
+
 enum geist_status transformer_layer_run_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
     struct transformer_arch_state         *st    = ctx->st;
@@ -405,18 +428,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
                 return s;
             }
         }
-        if (ctx->rope_interleaved && fuse_il) {
-            s = fused->rope_apply_interleaved(be, &t_q_3d, &t_cos, &t_sin);
-        } else {
-            if (ctx->rope_interleaved) {
-                s = permute_interleaved_rope_inplace(
-                        v, sess->scratch_q, ctx->seq, st->n_q_heads, ctx->hd);
-                if (s != GEIST_OK) {
-                    return s;
-                }
-            }
-            s = prims->rope_apply(be, &t_q_3d, &t_cos, &t_sin);
-        }
+        s = rope_rows(ctx, sess->scratch_q, &t_q_3d, st->n_q_heads, &t_cos, &t_sin, fuse_il);
         if (s != GEIST_OK) {
             return s;
         }
@@ -464,18 +476,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
                 return s;
             }
         }
-        if (ctx->rope_interleaved && fuse_il) {
-            s = fused->rope_apply_interleaved(be, &t_k_3d, &t_cos, &t_sin);
-        } else {
-            if (ctx->rope_interleaved) {
-                s = permute_interleaved_rope_inplace(
-                        v, sess->scratch_k, ctx->seq, st->n_kv_heads, ctx->hd);
-                if (s != GEIST_OK) {
-                    return s;
-                }
-            }
-            s = prims->rope_apply(be, &t_k_3d, &t_cos, &t_sin);
-        }
+        s = rope_rows(ctx, sess->scratch_k, &t_k_3d, st->n_kv_heads, &t_cos, &t_sin, fuse_il);
         if (s != GEIST_OK) {
             return s;
         }
