@@ -206,6 +206,65 @@ void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
     pq2_0_parallel_for(n_out, pq2_0_m1_row_body, &ctx);
 }
 
+/* Two projections over one x (FFN gate/up, attention q/k/v): the int8
+ * quantization and the per-block sums depend only on x and n_in, so they
+ * are computed once and both row loops read them. The row space is walked
+ * as one range, so the thread dispatch is shared too -- the workspace
+ * invariant in internal.h asks for exactly this. */
+struct pq2_0_m1_pair_ctx {
+    struct pq2_0_m1_ctx a, b;
+    size_t              a_rows;
+};
+
+static void pq2_0_m1_pair_body(size_t i, void *vctx) {
+    struct pq2_0_m1_pair_ctx *p = (struct pq2_0_m1_pair_ctx *) vctx;
+    if (i < p->a_rows) {
+        pq2_0_m1_row_body(i, &p->a);
+    } else {
+        pq2_0_m1_row_body(i - p->a_rows, &p->b);
+    }
+}
+
+void cpu_neon_w_pq2_0_q8a_pair_m1(const float               *x,
+                                  const struct geist_weight *w0,
+                                  const struct geist_weight *w1,
+                                  struct geist_backend      *be,
+                                  float                     *y0,
+                                  float                     *y1) {
+    struct cpu_neon_workspace *ws  = cpu_neon_ws((struct cpu_neon_state *) be->state);
+    const size_t               nin = (size_t) w0->n_in;
+    const size_t               n0 = (size_t) w0->n_out, n1 = (size_t) w1->n_out;
+    float                      inv = 0.0f;
+    if ((size_t) w1->n_in != nin) {
+        return;
+    }
+    /* prep zeroes y0 on refusal; y1 is this function's to zero. */
+    if (!pq2_0_prep(ws, nin, n0, x, y0, &inv)) {
+        memset(y1, 0, n1 * sizeof *y1);
+        return;
+    }
+    const size_t             rb = nin / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES;
+    const size_t             bp = nin / PQ2_0_BLOCK_ELEMS;
+    struct pq2_0_m1_pair_ctx pc = {
+            .a      = {.W              = (const uint8_t *) w0->raw,
+                       .xq             = ws->m1_xq,
+                       .bsum           = ws->m1_bsum,
+                       .y              = y0,
+                       .inv_act_scale  = inv,
+                       .row_bytes      = rb,
+                       .blocks_per_row = bp},
+            .b      = {.W              = (const uint8_t *) w1->raw,
+                       .xq             = ws->m1_xq,
+                       .bsum           = ws->m1_bsum,
+                       .y              = y1,
+                       .inv_act_scale  = inv,
+                       .row_bytes      = rb,
+                       .blocks_per_row = bp},
+            .a_rows = n0,
+    };
+    pq2_0_parallel_for(n0 + n1, pq2_0_m1_pair_body, &pc);
+}
+
 /* ---- x8: eight rows interleaved (decode) ---------------------------------
  *
  * The row kernel streams one 1.4-17 KB row per output and reaches ~55 GB/s
@@ -357,6 +416,59 @@ void cpu_neon_w_pq2_0_x8_m1(const float               *x,
     pq2_0_parallel_for(n_out / 8, pq2_0_x8_tile_body, &ctx);
 }
 
+/* The x8 twin of cpu_neon_w_pq2_0_q8a_pair_m1. */
+struct pq2_0_x8_pair_ctx {
+    struct pq2_0_x8_ctx a, b;
+    size_t              a_tiles;
+};
+
+static void pq2_0_x8_pair_body(size_t i, void *vctx) {
+    struct pq2_0_x8_pair_ctx *p = (struct pq2_0_x8_pair_ctx *) vctx;
+    if (i < p->a_tiles) {
+        pq2_0_x8_tile_body(i, &p->a);
+    } else {
+        pq2_0_x8_tile_body(i - p->a_tiles, &p->b);
+    }
+}
+
+void cpu_neon_w_pq2_0_x8_pair_m1(const float               *x,
+                                 const struct geist_weight *w0,
+                                 const struct geist_weight *w1,
+                                 struct geist_backend      *be,
+                                 float                     *y0,
+                                 float                     *y1) {
+    struct cpu_neon_workspace *ws  = cpu_neon_ws((struct cpu_neon_state *) be->state);
+    const size_t               nin = (size_t) w0->n_in;
+    const size_t               n0 = (size_t) w0->n_out, n1 = (size_t) w1->n_out;
+    float                      inv = 0.0f;
+    if ((size_t) w1->n_in != nin) {
+        return;
+    }
+    if (!pq2_0_prep(ws, nin, n0, x, y0, &inv) || w0->aux_fp32 == nullptr ||
+        w1->aux_fp32 == nullptr) {
+        memset(y0, 0, n0 * sizeof *y0);
+        memset(y1, 0, n1 * sizeof *y1);
+        return;
+    }
+    const size_t             bp = nin / PQ2_0_BLOCK_ELEMS;
+    struct pq2_0_x8_pair_ctx pc = {
+            .a       = {.W              = (const uint8_t *) w0->aux_fp32,
+                        .xq             = ws->m1_xq,
+                        .bsum           = ws->m1_bsum,
+                        .y              = y0,
+                        .inv_act_scale  = inv,
+                        .blocks_per_row = bp},
+            .b       = {.W              = (const uint8_t *) w1->aux_fp32,
+                        .xq             = ws->m1_xq,
+                        .bsum           = ws->m1_bsum,
+                        .y              = y1,
+                        .inv_act_scale  = inv,
+                        .blocks_per_row = bp},
+            .a_tiles = n0 / 8,
+    };
+    pq2_0_parallel_for(n0 / 8 + n1 / 8, pq2_0_x8_pair_body, &pc);
+}
+
 /* ---- x8 prefill: dequant straight from the x8 copy + SGEMM ---------------
  *
  * The generic trampoline dequantizes 32-row tiles of the row-major source
@@ -458,28 +570,18 @@ static void pq2_0_x8_dequant8(const uint8_t *W, size_t nb, size_t n_in, size_t t
  * a panel serializes the two phases. */
 constexpr size_t PQ2_0_X8_TILE_ROWS = 128;
 
-void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
-                            const float               *x,
-                            const struct geist_weight *w,
-                            struct geist_backend      *be,
-                            float                     *y) {
-    struct cpu_neon_state     *st      = (struct cpu_neon_state *) be->state;
-    struct cpu_neon_workspace *ws      = cpu_neon_ws(st);
-    const size_t               n_in    = (size_t) w->n_in;
-    const size_t               n_out   = (size_t) w->n_out;
-    const size_t               nb      = n_in / PQ2_0_BLOCK_ELEMS;
-    const uint8_t             *W       = (const uint8_t *) w->aux_fp32;
-    size_t                     xp_need = 0;
-    if (m == 0 || W == nullptr || ws == nullptr || ckd_mul(&xp_need, m, n_in) ||
-        !cpu_neon_grow_f32(&ws->pq2_xp, &ws->pq2_xp_cap, xp_need)) {
-        /* Same refusal as the m1 kernels: zeroed y, never stale scratch. */
-        if (m != 0) {
-            memset(y, 0, m * n_out * sizeof *y);
-        }
-        return;
-    }
-    pq2_0_permute_x(m, n_in, x, ws->pq2_xp);
-    const float *xp      = ws->pq2_xp;
+/* The tile loop, against an x already permuted into kernel order. Split
+ * out so the pair path can permute once and run it twice: at m = 128 the
+ * permute moves ~22 MB in and 22 MB out per layer, and gate/up or q/k/v
+ * were each paying for it separately. */
+static void pq2_0_x8_gemm_permuted(struct cpu_neon_state *st,
+                                   size_t                 m,
+                                   size_t                 n_in,
+                                   size_t                 n_out,
+                                   const uint8_t         *W,
+                                   const float           *xp,
+                                   float                 *y) {
+    const size_t nb      = n_in / PQ2_0_BLOCK_ELEMS;
     const size_t T       = PQ2_0_X8_TILE_ROWS;
     const size_t n_tiles = (n_out + T - 1) / T;
 #if defined(_OPENMP)
@@ -514,6 +616,69 @@ void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
                     y + r0,
                     (int) n_out);
     }
+}
+
+/* Grows the shared permute buffer and fills it. Returns nullptr on
+ * refusal, having zeroed nothing -- the caller owns its own y's. */
+static const float *
+pq2_0_permuted_x(struct cpu_neon_workspace *ws, size_t m, size_t n_in, const float *x) {
+    size_t need = 0;
+    if (m == 0 || ws == nullptr || ckd_mul(&need, m, n_in) ||
+        !cpu_neon_grow_f32(&ws->pq2_xp, &ws->pq2_xp_cap, need)) {
+        return nullptr;
+    }
+    pq2_0_permute_x(m, n_in, x, ws->pq2_xp);
+    return ws->pq2_xp;
+}
+
+void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
+                            const float               *x,
+                            const struct geist_weight *w,
+                            struct geist_backend      *be,
+                            float                     *y) {
+    struct cpu_neon_state     *st    = (struct cpu_neon_state *) be->state;
+    struct cpu_neon_workspace *ws    = cpu_neon_ws(st);
+    const size_t               n_in  = (size_t) w->n_in;
+    const size_t               n_out = (size_t) w->n_out;
+    const uint8_t             *W     = (const uint8_t *) w->aux_fp32;
+    const float               *xp    = pq2_0_permuted_x(ws, m, n_in, x);
+    if (W == nullptr || xp == nullptr) {
+        /* Same refusal as the m1 kernels: zeroed y, never stale scratch. */
+        if (m != 0) {
+            memset(y, 0, m * n_out * sizeof *y);
+        }
+        return;
+    }
+    pq2_0_x8_gemm_permuted(st, m, n_in, n_out, W, xp, y);
+}
+
+/* Prefill twin of cpu_neon_w_pq2_0_x8_pair_m1: one permute, two GEMMs.
+ * The tile loops stay separate parallel regions -- at m = 128 the SGEMM
+ * work per region dwarfs the dispatch, and merging them would have both
+ * projections contend for the same per-thread dequant tile. */
+void cpu_neon_w_pq2_0_x8_pair_mN(size_t                     m,
+                                 const float               *x,
+                                 const struct geist_weight *w0,
+                                 const struct geist_weight *w1,
+                                 struct geist_backend      *be,
+                                 float                     *y0,
+                                 float                     *y1) {
+    struct cpu_neon_state     *st  = (struct cpu_neon_state *) be->state;
+    struct cpu_neon_workspace *ws  = cpu_neon_ws(st);
+    const size_t               nin = (size_t) w0->n_in;
+    const size_t               n0 = (size_t) w0->n_out, n1 = (size_t) w1->n_out;
+    const uint8_t             *W0 = (const uint8_t *) w0->aux_fp32;
+    const uint8_t             *W1 = (const uint8_t *) w1->aux_fp32;
+    const float *xp = (size_t) w1->n_in == nin ? pq2_0_permuted_x(ws, m, nin, x) : nullptr;
+    if (W0 == nullptr || W1 == nullptr || xp == nullptr) {
+        if (m != 0) {
+            memset(y0, 0, m * n0 * sizeof *y0);
+            memset(y1, 0, m * n1 * sizeof *y1);
+        }
+        return;
+    }
+    pq2_0_x8_gemm_permuted(st, m, nin, n0, W0, xp, y0);
+    pq2_0_x8_gemm_permuted(st, m, nin, n1, W1, xp, y1);
 }
 
 #endif /* __ARM_NEON && __ARM_FEATURE_DOTPROD */
