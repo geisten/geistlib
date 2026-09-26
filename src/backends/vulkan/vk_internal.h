@@ -29,59 +29,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Committed SPIR-V blobs — regenerate with `make vulkan-shaders`. */
-#include "shaders/add_f32_spv.h"
-#include "shaders/argmax_f32_spv.h"
-#include "shaders/attention_f32_spv.h"
-#include "shaders/embed_lookup_scaled_spv.h"
-#include "shaders/ffn_gate_up_gelu_q4k_spv.h"
-#include "shaders/attention_f16_spv.h"
-#include "shaders/deltanet_conv_f32_spv.h"
-#include "shaders/deltanet_delta_f32_spv.h"
-#include "shaders/attn_comb_spv.h"
-#include "shaders/attn_part_f16_spv.h"
-#include "shaders/kv_append_f16_spv.h"
-#include "shaders/matmul_q4k_cm32_spv.h"
-#include "shaders/matmul_q4k_cm_spv.h"
-#include "shaders/matmul_q6k_cm_spv.h"
-#include "shaders/qkv_prep_f16_spv.h"
-#include "shaders/qkv_prep_f32_spv.h"
-#include "shaders/gelu_tanh_f32_spv.h"
-#include "shaders/gelu_tanh_mul_f32_spv.h"
-#include "shaders/matmul_f32_spv.h"
-#include "shaders/matmul_q4k_spv.h"
-#include "shaders/matmul_q6k_spv.h"
-#include "shaders/matvec_f32_spv.h"
-#include "shaders/ffn_norm_gate_up_q4k_spv.h"
-#include "shaders/ple_gate_f32_spv.h"
-#include "shaders/matvec_q4k_spv.h"
-#include "shaders/silu_f32_spv.h"
-#include "shaders/hadamard_f32_spv.h"
-#include "shaders/relu2_f32_spv.h"
-#include "shaders/act_quant_i8_f32_spv.h"
-#include "shaders/silu_mul_f32_spv.h"
-#include "shaders/sigmoid_mul_f32_spv.h"
-#include "shaders/qgate_split_f32_spv.h"
-#include "shaders/matvec_q4_0_spv.h"
-#include "shaders/matmul_q4_0_spv.h"
-#include "shaders/matvec_q4_1_spv.h"
-#include "shaders/matmul_q4_1_spv.h"
-#include "shaders/matvec_q8_0_spv.h"
-#include "shaders/matmul_q8_0_spv.h"
-#include "shaders/matvec_q5k_spv.h"
-#include "shaders/matmul_q5k_spv.h"
-#include "shaders/matvec_tq2_0_spv.h"
-#include "shaders/matmul_tq2_0_spv.h"
-#include "shaders/matvec_pq2_0_spv.h"
-#include "shaders/matmul_pq2_0_spv.h"
-#include "shaders/matvec_q6k_spv.h"
-#include "shaders/mul_f32_spv.h"
-#include "shaders/rmsnorm_add_f32_spv.h"
-#include "shaders/rmsnorm_f32_spv.h"
-#include "shaders/rope_f32_spv.h"
-#include "shaders/rope_interleaved_f32_spv.h"
-#include "shaders/scale_f32_spv.h"
-
 /* ====================================================================== */
 /* Runtime loader                                                          */
 /* ====================================================================== */
@@ -309,12 +256,8 @@ struct vk_state {
     uint64_t    prof_ns[VK_PIPE_COUNT + 1];
     uint64_t    prof_calls[VK_PIPE_COUNT + 1];
 
-    /* Compute pipelines (Phase 2). */
-    VkDescriptorSetLayout dset_layout;
-    VkPipelineLayout      pipe_layout;
-    VkDescriptorPool      dset_pool;
-    VkDescriptorSet       dset;
-    VkPipeline            pipes[VK_PIPE_COUNT];
+    /* Compute pipelines (layouts: seq_dlayouts / seq_playouts). */
+    VkPipeline pipes[VK_PIPE_COUNT];
 
     /* Weight registry: host pointer → VRAM buffer, filled by resolve_weight.
      * Linear search — a model has a few hundred weights; the lookup is one
@@ -455,6 +398,7 @@ void vk_buffer_unmap(struct geist_buffer *buf);
 vk_stage_reserve(struct geist_backend *be, struct geist_buffer **slot, size_t bytes);
 
 struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host);
+struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor *t);
 
 struct vk_access vk_acc(uint64_t lo_bytes, uint64_t n_bytes, bool write);
 

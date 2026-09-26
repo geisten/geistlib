@@ -2,8 +2,7 @@
  * src/backends/vulkan/sequence.c — batched-submit command sequencing, hazards, dispatch, and
  * timing.
  *
- * Layer: BACKEND (vulkan). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
+ * Layer: BACKEND (vulkan).
  */
 #include "vk_internal.h"
 
