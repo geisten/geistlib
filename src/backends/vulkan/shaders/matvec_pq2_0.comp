@@ -1,0 +1,79 @@
+#version 450
+
+/* PQ2_0 (PrismML ternary, Ternary-Bonsai) matvec: 128-element blocks of an
+ * f16 scale d and 32 quant bytes, 4 elements per byte (element j = bits
+ * 2*(j%4) of byte j/4, value (code - 1) * d). One row per 32-lane "warp"
+ * derived from the thread id (any hardware subgroup size works), 8 rows per
+ * 256-thread workgroup.
+ *
+ * GPU layout (struct-of-arrays, see vk_repack_weight): every block's 32 quant
+ * bytes back to back (8 words per block), then one f16 scale per block. 16
+ * lanes cover one block (8 elements = 16 quant bits each: two x vec4), so a
+ * warp covers two blocks per step.
+ *
+ * Dispatch: gx = ceil(n_out / 8). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+shared float tmpsh[8][32];
+
+vec4 trits(uint bits, uint sh) {
+    return vec4(float((bits >> sh) & 3u) - 1.0,
+                float((bits >> (sh + 2u)) & 3u) - 1.0,
+                float((bits >> (sh + 4u)) & 3u) - 1.0,
+                float((bits >> (sh + 6u)) & 3u) - 1.0);
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint wrp = tid >> 5u;
+    uint lane = tid & 31u;
+    uint row = gl_WorkGroupID.x * 8u + wrp;
+    uint ib = lane >> 4u;
+    uint wq = lane & 15u;
+    uint nb = pc.blocks_per_row;
+    uint sc0 = pc.n_out * nb * 8u;
+
+    float acc = 0.0;
+    if (row < pc.n_out) {
+        uint xbase = pc.x_offset >> 2u;
+        for (uint b0 = 0u; b0 < nb; b0 += 2u) {
+            uint b = b0 + ib;
+            if (b < nb) {
+                uint bi = row * nb + b;
+                uint bits = (w[bi * 8u + (wq >> 1u)] >> ((wq & 1u) * 16u)) & 0xffffu;
+                float d = unpackHalf2x16(w[sc0 + (bi >> 1u)] >> ((bi & 1u) * 16u)).x;
+                uint xi = xbase + ((b * 128u + wq * 8u) >> 2u);
+                acc += d * (dot(trits(bits, 0u), x4[xi]) + dot(trits(bits, 8u), x4[xi + 1u]));
+            }
+        }
+    }
+
+    tmpsh[wrp][lane] = acc;
+    barrier();
+    for (uint s = 16u; s > 0u; s >>= 1u) {
+        if (lane < s) {
+            tmpsh[wrp][lane] += tmpsh[wrp][lane + s];
+        }
+        barrier();
+    }
+    if (lane == 0u && row < pc.n_out) {
+        y[pc.y_offset + row] = tmpsh[wrp][0];
+    }
+}

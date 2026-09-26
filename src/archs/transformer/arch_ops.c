@@ -40,27 +40,48 @@
 
 /* ---- Recurrent-state buffer access ----------------------------------- */
 
-enum geist_status
-transformer_dn_state_zero(struct geist_backend *be, struct geist_buffer *buf, size_t bytes) {
+/* One transfer: map + memcpy when the buffer is host-mappable, else the
+ * upload/download entry (device-local state, e.g. Vulkan). `host` is read
+ * (to_device) or written (!to_device). */
+static enum geist_status dn_state_xfer(struct geist_backend *be,
+                                       struct geist_buffer  *buf,
+                                       size_t                bytes,
+                                       void                 *host,
+                                       bool                  to_device) {
     const struct geist_backend_vtbl *v = be->desc->vtbl;
     void                            *p = v->buffer_map(buf);
     if (p != nullptr) {
-        memset(p, 0, bytes);
+        if (to_device) {
+            memcpy(p, host, bytes);
+        } else {
+            memcpy(host, p, bytes);
+        }
         v->buffer_unmap(buf);
         return GEIST_OK;
     }
-    if (v->buffer_upload == nullptr) {
+    if (to_device ? v->buffer_upload == nullptr : v->buffer_download == nullptr) {
         geist_backend_set_error(
                 be, GEIST_E_UNSUPPORTED, "transformer: recurrent state not mappable");
         return GEIST_E_UNSUPPORTED;
     }
-    uint8_t *zeros = heap_alloc_aligned(bytes, 64);
+    return to_device ? v->buffer_upload(buf, bytes, host) : v->buffer_download(bytes, host, buf);
+}
+
+enum geist_status
+transformer_dn_state_zero(struct geist_backend *be, struct geist_buffer *buf, size_t bytes) {
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    void                            *p = v->buffer_map(buf);
+    if (p != nullptr) { /* host-mappable: clear in place, no scratch block */
+        memset(p, 0, bytes);
+        v->buffer_unmap(buf);
+        return GEIST_OK;
+    }
+    uint8_t *zeros = heap_calloc_aligned(bytes, 1, 64);
     if (zeros == nullptr) {
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: recurrent state zero alloc failed");
         return GEIST_E_OOM;
     }
-    memset(zeros, 0, bytes);
-    const enum geist_status s = v->buffer_upload(buf, bytes, zeros);
+    const enum geist_status s = dn_state_xfer(be, buf, bytes, zeros, true);
     safe_free((void **) &zeros);
     return s;
 }
@@ -69,38 +90,14 @@ enum geist_status transformer_dn_state_read(struct geist_backend *be,
                                             struct geist_buffer  *buf,
                                             size_t                bytes,
                                             void                 *dst) {
-    const struct geist_backend_vtbl *v = be->desc->vtbl;
-    const void                      *p = v->buffer_map(buf);
-    if (p != nullptr) {
-        memcpy(dst, p, bytes);
-        v->buffer_unmap(buf);
-        return GEIST_OK;
-    }
-    if (v->buffer_download == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_UNSUPPORTED, "transformer: recurrent state not mappable");
-        return GEIST_E_UNSUPPORTED;
-    }
-    return v->buffer_download(bytes, dst, buf);
+    return dn_state_xfer(be, buf, bytes, dst, false);
 }
 
 enum geist_status transformer_dn_state_write(struct geist_backend *be,
                                              struct geist_buffer  *buf,
                                              size_t                bytes,
                                              const void           *src) {
-    const struct geist_backend_vtbl *v = be->desc->vtbl;
-    void                            *p = v->buffer_map(buf);
-    if (p != nullptr) {
-        memcpy(p, src, bytes);
-        v->buffer_unmap(buf);
-        return GEIST_OK;
-    }
-    if (v->buffer_upload == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_UNSUPPORTED, "transformer: recurrent state not mappable");
-        return GEIST_E_UNSUPPORTED;
-    }
-    return v->buffer_upload(buf, bytes, src);
+    return dn_state_xfer(be, buf, bytes, (void *) src, true);
 }
 
 /* ---- DeltaNet speculative-state transaction ------------------------- */

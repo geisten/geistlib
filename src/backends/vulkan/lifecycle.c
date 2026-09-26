@@ -153,7 +153,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         if (st->dset_cache_pool != VK_NULL_HANDLE) {
             st->fn.DestroyDescriptorPool(st->device, st->dset_cache_pool, nullptr);
         }
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < VK_MAX_BINDINGS - 1; ++i) {
             if (st->seq_playouts[i] != VK_NULL_HANDLE) {
                 st->fn.DestroyPipelineLayout(st->device, st->seq_playouts[i], nullptr);
             }

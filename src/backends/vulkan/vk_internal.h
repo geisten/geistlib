@@ -71,6 +71,8 @@
 #include "shaders/matmul_q5k_spv.h"
 #include "shaders/matvec_tq2_0_spv.h"
 #include "shaders/matmul_tq2_0_spv.h"
+#include "shaders/matvec_pq2_0_spv.h"
+#include "shaders/matmul_pq2_0_spv.h"
 #include "shaders/matvec_q6k_spv.h"
 #include "shaders/mul_f32_spv.h"
 #include "shaders/rmsnorm_add_f32_spv.h"
@@ -192,6 +194,8 @@ enum vk_pipe {
     VK_PIPE_MATMUL_Q5K,
     VK_PIPE_MATVEC_TQ2_0,
     VK_PIPE_MATMUL_TQ2_0,
+    VK_PIPE_MATVEC_PQ2_0,
+    VK_PIPE_MATMUL_PQ2_0,
     VK_PIPE_SILU,        /* y = silu(x) */
     VK_PIPE_RELU2,       /* y = relu(x)^2 (BitNet FFN) */
     VK_PIPE_ACT_QUANT,   /* BitNet int8 absmax activation round trip, in place */
@@ -344,8 +348,8 @@ struct vk_state {
     bool                  seq_open;
     uint32_t              seq_dispatches;
     VkDescriptorPool      seq_pool;
-    VkDescriptorSetLayout seq_dlayouts[7]; /* index = binding count - 2 (2..8) */
-    VkPipelineLayout      seq_playouts[7];
+    VkDescriptorSetLayout seq_dlayouts[VK_MAX_BINDINGS - 1]; /* index = binding count - 2 */
+    VkPipelineLayout      seq_playouts[VK_MAX_BINDINGS - 1];
 
     /* Host-visible buffers created via buffer_create — containment lookup
      * so buffer_create_aliased can hand out GPU-bindable borrowed views
@@ -388,8 +392,9 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_MATMUL_Q4_0] = 3,   [VK_PIPE_MATVEC_Q4_1] = 3,   [VK_PIPE_MATMUL_Q4_1] = 3,
         [VK_PIPE_MATVEC_Q8_0] = 3,   [VK_PIPE_MATMUL_Q8_0] = 3,   [VK_PIPE_MATVEC_Q5K] = 3,
         [VK_PIPE_MATMUL_Q5K] = 3,    [VK_PIPE_MATVEC_TQ2_0] = 3,  [VK_PIPE_MATMUL_TQ2_0] = 3,
-        [VK_PIPE_SILU] = 2,          [VK_PIPE_RELU2] = 2,         [VK_PIPE_ACT_QUANT] = 2,
-        [VK_PIPE_SILU_MUL] = 3,      [VK_PIPE_SIGMOID_MUL] = 3,   [VK_PIPE_QGATE_SPLIT] = 3,
+        [VK_PIPE_MATVEC_PQ2_0] = 3,  [VK_PIPE_MATMUL_PQ2_0] = 3,  [VK_PIPE_SILU] = 2,
+        [VK_PIPE_RELU2] = 2,         [VK_PIPE_ACT_QUANT] = 2,     [VK_PIPE_SILU_MUL] = 3,
+        [VK_PIPE_SIGMOID_MUL] = 3,   [VK_PIPE_QGATE_SPLIT] = 3,
 };
 
 struct geist_buffer {

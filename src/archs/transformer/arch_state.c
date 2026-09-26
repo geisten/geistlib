@@ -1112,7 +1112,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
      * drop the mmap. mmap-alias mode keeps it — kernels read weight
      * bytes directly from the mmap pages, so the GGUF must stay open
      * for state lifetime. (Closed in transformer_state_destroy.) */
-    if (!mmap_alias_mode && !st->gguf_aliased && st->gguf != nullptr) {
+    if (!mmap_alias_mode && !be->desc->caps.weights_device_copy && st->gguf != nullptr) {
         gguf_close((struct gguf_ctx *) st->gguf);
         st->gguf = nullptr;
     }
