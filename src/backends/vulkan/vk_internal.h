@@ -344,8 +344,8 @@ struct vk_state {
     bool                  seq_open;
     uint32_t              seq_dispatches;
     VkDescriptorPool      seq_pool;
-    VkDescriptorSetLayout seq_dlayouts[7]; /* index = binding count - 2 (2..8) */
-    VkPipelineLayout      seq_playouts[7];
+    VkDescriptorSetLayout seq_dlayouts[VK_MAX_BINDINGS - 1]; /* index = binding count - 2 */
+    VkPipelineLayout      seq_playouts[VK_MAX_BINDINGS - 1];
 
     /* Host-visible buffers created via buffer_create — containment lookup
      * so buffer_create_aliased can hand out GPU-bindable borrowed views

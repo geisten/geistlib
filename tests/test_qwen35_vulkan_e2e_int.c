@@ -33,7 +33,7 @@
 
 /* With an FP32 KV cache on both sides the backends agree to the last bit of
  * the logits, so the whole greedy continuation must match. */
-enum { N_GEN = 12, KMIN = N_GEN };
+enum { N_GEN = 12 };
 
 static const char *resolve_path(void) {
     const char *env = getenv("GEIST_QWEN35_GGUF_PATH");
@@ -197,12 +197,12 @@ int main(void) {
         }
         printf("prompt %zu\n  vulkan: \"%s\"\n  %-6s: \"%s\"\n", p, vk.text, cpu, ref.text);
         const int d = first_diff(&vk, &ref);
-        if (d < KMIN) {
+        if (d < N_GEN) {
             fprintf(stderr,
                     "FAIL: vulkan and %s diverge at token %d (need %d equal)\n",
                     cpu,
                     d,
-                    KMIN);
+                    N_GEN);
             fails++;
         } else {
             printf("  CPU equivalence: all %d tokens equal\n", N_GEN);
