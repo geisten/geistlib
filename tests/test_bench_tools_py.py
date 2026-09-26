@@ -20,6 +20,50 @@ def load_module(name: str, relative: str):
 
 quality = load_module("bench_quality_perf", "tools/bench_quality_perf.py")
 apple_ab = load_module("bench_mac_ab", "tools/bench_mac_ab.py")
+ratio_gate = load_module("perf_ratio_gate", "benchmark/perf_ratio_gate.py")
+
+
+class PerfRatioGateTest(unittest.TestCase):
+    def test_llama_bench_rows_and_ratio(self):
+        with tempfile.TemporaryDirectory() as d:
+            llama = Path(d) / "llama.json"
+            llama.write_text(json.dumps([
+                {"n_prompt": 512, "n_gen": 0, "avg_ts": 100.0},
+                {"n_prompt": 0, "n_gen": 64, "avg_ts": 20.0}]))
+            geist = Path(d) / "geist.jsonl"
+            geist.write_text('{"metadata": {}, "measurement": {"prefill_tps": 130.0, "decode_tps": 18.0}}\n')
+            md, rp, rd = ratio_gate.report(ratio_gate.geist_tps(geist), ratio_gate.llama_tps(llama))
+            self.assertAlmostEqual(rp, 1.3)
+            self.assertAlmostEqual(rd, 0.9)
+            self.assertIn("**1.30×**", md)
+
+
+bench_compare = load_module("bench_compare", "benchmark/bench_compare.py")
+
+
+def _run(commit: str, prefill: float, decode: float) -> dict:
+    return {"commit": commit, "model": "m.gguf",
+            "rows": [{"seq_len": 32, "prefill_tps": prefill, "decode_tps": decode},
+                     {"seq_len": 512, "prefill_tps": prefill, "decode_tps": decode}]}
+
+
+class BenchCompareTest(unittest.TestCase):
+    LIMITS = {"decode_tps": 3.0, "prefill_tps": 5.0}
+
+    def test_noise_passes_and_a_drop_past_the_limit_fails(self):
+        base = _run("aaa", 45.0, 15.0)
+        _, bad = bench_compare.compare(_run("bbb", 44.0, 14.7), base, self.LIMITS)
+        self.assertEqual(bad, [])
+        _, bad = bench_compare.compare(_run("bbb", 45.0, 14.4), base, self.LIMITS)
+        self.assertEqual(len(bad), 2)  # decode -4 % on both rows
+        self.assertIn("decode_tps", bad[0])
+        _, bad = bench_compare.compare(_run("bbb", 42.0, 15.0), base, self.LIMITS)
+        self.assertEqual(len(bad), 2)  # prefill -6.7 %
+
+    def test_faster_is_never_a_regression(self):
+        lines, bad = bench_compare.compare(_run("bbb", 60.0, 20.0), _run("aaa", 45.0, 15.0), self.LIMITS)
+        self.assertEqual(bad, [])
+        self.assertIn("+33.3 %", lines[2])
 
 
 class BenchmarkToolsTest(unittest.TestCase):

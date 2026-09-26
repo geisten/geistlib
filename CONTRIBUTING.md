@@ -68,10 +68,10 @@ cleanly (exit 77) when their preconditions aren't met. `*_unit` use
 > CI leg if you forget.
 
 **What CI enforces (not just unit tests).** Every PR is gated on: build + unit
-on macOS / Linux-glibc / Linux-musl; **integration + e2e against the real model**
-(forward pass, tokenizer, KV, agent/chat loops); a **perf** floor and a
-**tool-calling quality** floor; **ASan + UBSan**; and clang-format. Run the heavy
-ones locally before pushing:
+on macOS / Linux-glibc / Linux-musl; **integration + e2e against the real models**
+(forward pass, tokenizer, KV, chat loops) on Linux; a coarse **perf** cliff
+floor; the **agent-runtime link contract**; **ASan + UBSan**; and clang-format.
+Run the heavy ones locally before pushing:
 
 ```sh
 make test-int test-e2e            # real-model product path (needs the GGUF)
@@ -95,13 +95,6 @@ regenerate them on the relevant hardware.
 make format          # rewrite in place (clang-format 22, .clang-format at root)
 make format-check    # verify only (CI runs this as a hard gate)
 ```
-
-Both pick a **clang-format 22.x** themselves — `clang-format-22`, then
-Homebrew's `llvm@22`, then PATH's if it is 22 — and refuse with an install
-hint if they find none. Other majors disagree with the tree on code nobody
-touched (Ubuntu's apt ships 18, Homebrew's default llvm is 23), so running
-one reports drift that is not there. `make format-check CLANG_FORMAT=...`
-forces a specific binary.
 
 ## C API style
 

@@ -1,0 +1,52 @@
+# The scheduled workflows have no PR to be red on. The Apple perf guard was
+# red three Sundays in a row (2026-09-06/13/20) and nobody saw it: a cron
+# run's only consumer is whoever opens the Actions tab. This gives each one
+# an issue instead — opened on the first failure, commented on every
+# further one, closed when the workflow is green again (#438).
+name: nightly failures
+
+on:
+  workflow_run:
+    workflows:
+      - Apple performance guard
+      - E4B smoke
+      - gemma4 Metal smoke
+      - native-avx512
+      - pi5
+      - Published release state
+    types: [completed]
+
+permissions:
+  issues: write
+
+jobs:
+  issue:
+    # Cancelled and skipped runs say nothing about the code.
+    if: contains(fromJSON('["failure","success"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WF: ${{ github.event.workflow_run.name }}
+          URL: ${{ github.event.workflow_run.html_url }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          RESULT: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          title="nightly: $WF is red"
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+                -q ".[] | select(.title == \"$title\") | .number" | head -1)
+          line="[$WF run]($URL) — \`${SHA:0:7}\`, $(date -u +%F)"
+          case "$RESULT" in
+            failure)
+              if [ -n "$n" ]; then
+                gh issue comment "$n" --body "Still red: $line"
+              else
+                gh issue create --title "$title" --label bug --body "$(printf '%s\n\n%s\n' \
+                  "The scheduled workflow **$WF** failed. This issue is kept by nightly-failures.yml: every further failure comments here, the first green run closes it." \
+                  "First failure: $line")"
+              fi ;;
+            success)
+              [ -n "$n" ] && gh issue close "$n" --comment "Green again: $line" ;;
+          esac
