@@ -165,6 +165,8 @@
             [VK_PIPE_MATVEC_TQ2_0]  = {matvec_tq2_0_spv, sizeof(matvec_tq2_0_spv)},
             [VK_PIPE_MATMUL_TQ2_0]  = {matmul_tq2_0_spv, sizeof(matmul_tq2_0_spv)},
             [VK_PIPE_SILU]          = {silu_f32_spv, sizeof(silu_f32_spv)},
+            [VK_PIPE_RELU2]         = {relu2_f32_spv, sizeof(relu2_f32_spv)},
+            [VK_PIPE_ACT_QUANT]     = {act_quant_i8_f32_spv, sizeof(act_quant_i8_f32_spv)},
             [VK_PIPE_SILU_MUL]      = {silu_mul_f32_spv, sizeof(silu_mul_f32_spv)},
             [VK_PIPE_SIGMOID_MUL]   = {sigmoid_mul_f32_spv, sizeof(sigmoid_mul_f32_spv)},
             [VK_PIPE_QGATE_SPLIT]   = {qgate_split_f32_spv, sizeof(qgate_split_f32_spv)},

@@ -1,0 +1,30 @@
+#version 450
+
+/* y = relu(x)^2 (BitNet squared-ReLU FFN activation). In place is fine.
+ * Dispatch: gx = ceil(n / 256). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X {
+    float x[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer Y {
+    float y[];
+};
+
+layout(push_constant) uniform Push {
+    uint n;
+    uint x_offset;
+    uint y_offset;
+    uint pad;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.n) {
+        return;
+    }
+    float v = max(x[pc.x_offset + i], 0.0);
+    y[pc.y_offset + i] = v * v;
+}

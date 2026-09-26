@@ -125,6 +125,76 @@ static void test_rope_interleaved(size_t seq, size_t heads, size_t hd, const cha
     free(got);
 }
 
+/* relu(x)^2 on the device, in place (VRAM-only buffer: a host fallback fails). */
+static void test_relu2(size_t n) {
+    float *x   = fill(n, 0.37f, 3.0f);
+    float *ref = malloc(n * sizeof(float));
+    float *got = malloc(n * sizeof(float));
+    for (size_t i = 0; i < n; i++) {
+        const float v = x[i] > 0.0f ? x[i] : 0.0f;
+        ref[i]        = v * v;
+    }
+    struct geist_buffer *bx = dev_buf(x, n);
+    check(bx != nullptr, "relu2 buffer");
+    struct geist_tensor tx = view(bx, 1, (int64_t) n, 0, 0);
+    check(g_be->desc->prims->relu_squared(g_be, &tx, &tx) == GEIST_OK, "relu2 dispatch");
+    check(download(bx, got, n), "relu2 download");
+    const double e = max_abs(got, ref, n);
+    printf("  relu2 n=%-6zu max_abs %.2e\n", n, e);
+    check(e < 1e-6, "relu2");
+    free(x);
+    free(ref);
+    free(got);
+}
+
+/* BitNet activation fake-quant: the device rows against the host formula. The
+ * float ops differ in the last ulp between compilers, which can flip a value
+ * sitting exactly on a rounding boundary by one quantum — so the bound is one
+ * quantum (absmax/127) and flips must be rare. */
+static void test_act_quant(size_t rows, size_t n) {
+    float *x   = fill(rows * n, 0.29f, 2.0f);
+    float *ref = malloc(rows * n * sizeof(float));
+    float *got = malloc(rows * n * sizeof(float));
+    memcpy(ref, x, rows * n * sizeof(float));
+    double quantum = 0.0;
+    for (size_t t = 0; t < rows; t++) {
+        float *row = ref + t * n, mx = 1e-5f;
+        for (size_t j = 0; j < n; j++) {
+            mx = fabsf(row[j]) > mx ? fabsf(row[j]) : mx;
+        }
+        const float sc = 127.0f / mx, inv = 1.0f / sc;
+        quantum = mx / 127.0 > quantum ? mx / 127.0 : quantum;
+        for (size_t j = 0; j < n; j++) {
+            float q = row[j] * sc;
+            q       = q > 127.0f ? 127.0f : (q < -128.0f ? -128.0f : q);
+            int qi  = (int) (q < 0.0f ? q - 0.5f : q + 0.5f);
+            row[j]  = (float) qi * inv;
+        }
+    }
+    struct geist_buffer *bx = dev_buf(x, rows * n);
+    check(bx != nullptr, "act_quant buffer");
+    struct geist_tensor tx = view(bx, 2, (int64_t) rows, (int64_t) n, 0);
+    check(g_be->desc->fused->bitnet_act_quant != nullptr, "act_quant entry");
+    check(g_be->desc->fused->bitnet_act_quant(g_be, &tx) == GEIST_OK, "act_quant dispatch");
+    check(download(bx, got, rows * n), "act_quant download");
+    size_t flips = 0;
+    for (size_t i = 0; i < rows * n; i++) {
+        flips += got[i] != ref[i];
+    }
+    const double e = max_abs(got, ref, rows * n);
+    printf("  act_quant %zux%zu max_abs %.2e (quantum %.2e) flips %zu\n",
+           rows,
+           n,
+           e,
+           quantum,
+           flips);
+    check(e <= quantum * 1.01, "act_quant within one quantum");
+    check(flips * 200 <= rows * n, "act_quant flips rare");
+    free(x);
+    free(ref);
+    free(got);
+}
+
 static void test_rope(size_t seq, size_t heads, size_t hd, size_t rot, const char *name) {
     float *x   = fill(seq * heads * hd, 0.21f, 1.0f);
     float *cs  = fill(seq * rot, 0.13f, 1.0f);
@@ -300,6 +370,11 @@ int main(void) {
     test_rope_interleaved(5, 3, 128, "interleaved 128");
     test_rope_interleaved(3, 2, 256, "interleaved 256");
     test_rope_interleaved(4, 2, 64, "interleaved 64");
+    test_relu2(1000);
+    test_relu2(4096 * 3);
+    test_act_quant(5, 1536);
+    test_act_quant(1, 4096);
+    test_act_quant(9, 100);
     test_elementwise(7, 129);
     test_elementwise(1, 4096);
     test_qgate(5, 4, 64);
@@ -311,7 +386,8 @@ int main(void) {
     test_attention(1, 300, 299, 8, 2, 256, 0, "decode kv=300 (flash path)");
     geist_backend_destroy(g_be);
     if (g_fail == 0) {
-        printf("PASS: Vulkan qwen35 ops (partial and interleaved rope, silu, silu_mul, "
+        printf("PASS: Vulkan qwen35 ops (partial and interleaved rope, relu2, act_quant, silu, "
+               "silu_mul, "
                "sigmoid_mul, "
                "qgate_split)\n");
     }
