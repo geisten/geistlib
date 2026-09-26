@@ -15,6 +15,7 @@ jobs:
   version-consistency:
     name: source version consistent; README follows latest release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,6 +45,7 @@ jobs:
   api-contract:
     name: API contract documented and STABLE (docs/API_CONTRACT.md)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: sh scripts/check-api-contract.sh
@@ -340,6 +342,7 @@ jobs:
   build-test-musl:
     name: build + unit tests (Linux arm64, musl)
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Build + unit tests (musl in Alpine)
@@ -1022,33 +1025,15 @@ jobs:
   # runner family executes it), cpu_x86/metal/vulkan (cannot execute on
   # this runner), third_party and generated *_spv.h (not ours). The control
   # test tests/test_coverage_gate_py.py proves the gate actually fires.
-  changes:
-    name: change classification
-    runs-on: ubuntu-latest
-    outputs:
-      docs_only: ${{ steps.cls.outputs.docs_only }}
-    steps:
-      - name: Classify PR diff
-        id: cls
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          DOCS=false
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            FILES=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --paginate -q '.[].filename')
-            if [ -n "$FILES" ] && ! echo "$FILES" | grep -qvE '\.(md|txt)$'; then
-              DOCS=true
-            fi
-          fi
-          echo "docs_only=$DOCS" >> "$GITHUB_OUTPUT"
-          echo "docs_only=$DOCS"
-
   coverage:
     name: coverage ratchet (Linux arm64, unit + int)
-    needs: changes
-    # Docs-only PRs skip the 60-90 minute instrumented run — nothing a
-    # .md change does can move line coverage. Push builds always run.
-    if: needs.changes.outputs.docs_only != 'true'
+    # Not on pull_request: the instrumented run is 60-100 minutes, twice
+    # the next-slowest job, and its verdict rarely changes a review. It
+    # runs on every push to main (and on dispatch), so a coverage drop is
+    # still caught — one merge later instead of one PR earlier. This
+    # replaced a docs-only classifier job that only ever skipped the .md
+    # PRs; the 60-minute wait on every code PR was the actual cost.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04-arm
     # An instrumented -O1 build prefills the real model many times across
     # the int suite: 58 minutes measured. e2e re-drives the same engine
@@ -1149,6 +1134,7 @@ jobs:
     # target $(error)s on x86_64 (kernels are NEON-only) before clang-format
     # even runs. aarch64 detects cleanly.
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     # Hard gate: the tree is clang-format-clean (clang-format 22.1.x), enforced.
     steps:
       - uses: actions/checkout@v4
