@@ -204,6 +204,18 @@ struct metal_state {
     /* matvec_pq2_n8: 8 rows per simdgroup instead of 4.
      * GEIST_METAL_PQ2_N8=0 pins the 4-row kernel for A/B. */
     bool use_pq2_n8;
+    /* Threadgroup-limit diagnostics, GEIST_METAL_CHECK_TG=1. A pipeline's
+     * own maxTotalThreadsPerThreadgroup can sit below the architectural
+     * 1024 -- on an M1 Max the simdgroup GEMMs report 832/896 and the PQ2
+     * GEMVs 576/704 -- and nothing derives the dispatch width from it. No
+     * current dispatch exceeds its pipeline's limit, so this is a guard
+     * against a future retune, not a live fix, and it stays off the hot
+     * path: with the switch off, set_pipeline and dispatch pay one branch.
+     * Encoding is single-threaded per encoder, so the bound limit needs no
+     * synchronisation; a race could only mis-report, never mis-compute. */
+    bool          check_tg;
+    bool          tg_warned;
+    unsigned long bound_tg_max;
     /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
@@ -502,7 +514,14 @@ enum {
     METAL_Q4K_M_TILE                    = 8u,
     METAL_Q4K_M16_TILE                  = 16u,
     METAL_ELEM_THREADS                  = 256u,
-    METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
+    /* The widest threadgroup the backend dispatches (the decode rmsnorm,
+     * the F32 GEMV widening and hadamard_rows all go up to this). Every
+     * Apple GPU to date reports at least this much for these kernels, so
+     * nothing clamps to it -- metal_create_named_pipeline warns instead, so
+     * a device that reports less is visible rather than silently failing
+     * at the first dispatch. Add the clamp when this warning is seen. */
+    METAL_MAX_DISPATCH_THREADS         = 1024u,
+    METAL_QNORM_ATTENTION_MAX_HEAD_DIM = 512u,
 };
 
 /* Elements per block of the formats metal_q40_q80_linear serves. */

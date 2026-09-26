@@ -9,6 +9,17 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Threadgroup-limit diagnostics for the metal backend.**
+  `GEIST_METAL_LOG_TG_LIMIT=1` lists each pipeline's
+  `maxTotalThreadsPerThreadgroup`; `GEIST_METAL_CHECK_TG=1` checks every
+  dispatch's requested width against the pipeline bound at the time and warns
+  once. Nothing clamps: on an M1 Max five pipelines report below the
+  architectural 1024 (PQ2 GEMVs 576/704, `gate_up_q4k_n4` 640, simdgroup
+  GEMMs 832/896) and all of them are dispatched with at most 128 threads,
+  while every kernel that is dispatched at 1024 reports 1024. The check is
+  there so a retune cannot cross a limit silently, and it stays off the hot
+  path — with the switch off, dispatch pays one branch.
+
 
 - **Ternary-Bonsai-2-27B on Vulkan** (PQ2_0 + `prism.hadamard`; #472, #473). PQ2_0
   matvec/GEMM kernels (struct-of-arrays repack at upload, float activations like
