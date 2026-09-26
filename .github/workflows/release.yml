@@ -44,7 +44,7 @@ jobs:
       tag: ${{ steps.candidate.outputs.tag }}
       version: ${{ steps.candidate.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -105,7 +105,7 @@ jobs:
     needs: version-guard
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.version-guard.outputs.sha }}
       # Build fully static against **musl** (not glibc): the result has literally
@@ -175,11 +175,11 @@ jobs:
             OMP_WAIT_POLICY=active ./dist/geist-bitnet-linux-arm64 "The capital of France is" 8
           '
           tar -C dist -czf libgeist-linux-arm64.tar.gz libgeist-linux-arm64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: libgeist-linux-arm64
           path: libgeist-linux-arm64.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: geist-cli-linux-arm64
           path: |
@@ -192,7 +192,7 @@ jobs:
     needs: version-guard
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.version-guard.outputs.sha }}
       # Same musl-static recipe as arm64, on x86_64. BACKENDS="cpu_x86 cpu_scalar"
@@ -252,11 +252,11 @@ jobs:
             OMP_WAIT_POLICY=active ./dist/geist-bitnet-linux-x86_64 "The capital of France is" 8
           '
           tar -C dist -czf libgeist-linux-x86_64.tar.gz libgeist-linux-x86_64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: libgeist-linux-x86_64
           path: libgeist-linux-x86_64.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: geist-cli-linux-x86_64
           path: |
@@ -269,7 +269,7 @@ jobs:
     needs: version-guard
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.version-guard.outputs.sha }}
       - name: Install libomp
@@ -303,7 +303,7 @@ jobs:
           cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" $link -o /tmp/agent_smoke
           /tmp/agent_smoke
           tar -C dist -czf libgeist-macos-arm64.tar.gz libgeist-macos-arm64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: libgeist-macos-arm64
           path: libgeist-macos-arm64.tar.gz
@@ -314,11 +314,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.version-guard.outputs.sha }}
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
       - name: Create, verify and publish the release

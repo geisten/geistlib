@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - run: sh -n scripts/check-version.sh scripts/check-release.sh scripts/check-published-release.sh
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: sh scripts/check-api-contract.sh
       # #236: audio matmul kernels are bound at load time from the hw probe;
       # a compile-time ISA branch returning to the forward pass fails here.
@@ -93,12 +93,12 @@ jobs:
             bflags: ""
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Unique key each run so the warmed cache is always saved; restore-keys
       # falls back to the latest prior cache for this matrix leg.
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-${{ matrix.name }}-${{ github.run_id }}
@@ -178,7 +178,7 @@ jobs:
       # downloads once; asset-gated tests (vision/audio/safetensors refs) SKIP.
       - name: Cache reference model
         if: matrix.target == 'linux'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
@@ -191,7 +191,7 @@ jobs:
       # Makefile rotates the cache; fetch-llama-model verifies the full hash.
       - name: Cache Llama reference model
         if: matrix.target == 'linux'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/smollm2-360m-instruct-q8_0.gguf
           key: geist-model-smollm2-360m-q8-48ab3034d0dd
@@ -205,13 +205,13 @@ jobs:
       # qwen2 pretokenizer parity pins. 609 MB, own cache key.
       - name: Cache Qwen3 reference model
         if: matrix.target == 'linux'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/qwen3-0.6b-q8_0.gguf
           key: geist-model-qwen3-0.6b-q8-9465e63a22ad
 
       - name: Cache Qwen3.5 reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/qwen3.5-0.8b-q8_0.gguf
           key: geist-model-qwen35-0.8b-q8-0ad885ffd4bb
@@ -377,7 +377,7 @@ jobs:
             setup: apt-get update -qq && apt-get install -y -qq gcc-14 make
             build: make CC=gcc-14 lib
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ${{ matrix.build }} in a clean ${{ matrix.image }}
         run: |
           docker run --rm -v "$PWD:/src" -w /src ${{ matrix.image }} sh -c '
@@ -391,7 +391,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build + unit tests (musl in Alpine)
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
@@ -418,7 +418,7 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Report CPU features (was AVX-512 exercised on this runner?)
         run: |
           sed -n 's/^model name.*: //p' /proc/cpuinfo | head -1
@@ -428,7 +428,7 @@ jobs:
             echo "AVX-512: ABSENT -> runtime dispatch falls back to AVX2/scalar (no SIGILL); AVX-512 kernels built but not run here."
           fi
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-x86_64-${{ github.run_id }}
@@ -443,26 +443,26 @@ jobs:
       - name: Unit tests
         run: make test-unit TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
       - name: Cache reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
       # Same llama fixture + strictness as the arm64 leg: #180 requires the
       # llama tests to PASS on both Linux arches, and a skip must not count.
       - name: Cache Llama reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/smollm2-360m-instruct-q8_0.gguf
           key: geist-model-smollm2-360m-q8-48ab3034d0dd
       - name: Fetch Llama reference model
         run: make fetch-llama-model
       - name: Cache Qwen3 reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/qwen3-0.6b-q8_0.gguf
           key: geist-model-qwen3-0.6b-q8-9465e63a22ad
       - name: Cache Qwen3.5 reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/qwen3.5-0.8b-q8_0.gguf
           key: geist-model-qwen35-0.8b-q8-0ad885ffd4bb
@@ -493,7 +493,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install deps
         run: |
           sudo apt-get update
@@ -521,7 +521,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install deps
         run: |
           sudo apt-get update
@@ -557,9 +557,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-audio-smoke-${{ github.run_id }}
@@ -573,14 +573,14 @@ jobs:
       - name: Build
         run: make TARGET=linux CC="ccache gcc-14" bin
       - name: Cache reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
       - name: Fetch reference model
         run: make fetch-model
       - name: Cache audio tower
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: audio_bench/audio_tower.safetensors
           key: geist-audio-tower-d6c45a6c2762
@@ -625,9 +625,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-audio-parity-x86_64-${{ github.run_id }}
@@ -643,7 +643,7 @@ jobs:
       # Same cache key as audio-smoke on purpose: one 614 MB entry serves both
       # legs instead of two, which the repo's 10 GB cache budget notices.
       - name: Cache audio tower
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: audio_bench/audio_tower.safetensors
           key: geist-audio-tower-d6c45a6c2762
@@ -669,9 +669,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-pi5-${{ github.run_id }}
@@ -691,7 +691,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build + unit tests (musl in Alpine, cpu_x86 + scalar)
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
@@ -727,9 +727,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-sde-${{ github.run_id }}
@@ -777,7 +777,7 @@ jobs:
       # log that ages out. (#184)
       - name: Upload AVX-512 diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: avx512-sde-diagnostics
           path: ci-diagnostics/
@@ -802,9 +802,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-vulkan-${{ github.run_id }}
@@ -847,7 +847,7 @@ jobs:
           done
       - name: Upload Vulkan diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vulkan-lavapipe-diagnostics
           path: ci-diagnostics/
@@ -868,7 +868,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, geist-vulkan]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # No apt step: the runner is a fixed machine, its toolchain and Vulkan
       # loader are installed once by hand, not per job.
       - name: Report Vulkan environment
@@ -924,7 +924,7 @@ jobs:
           done
       - name: Upload Vulkan diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vulkan-gpu-diagnostics
           path: ci-diagnostics/
@@ -943,9 +943,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-asan-${{ github.run_id }}
@@ -985,9 +985,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-asan-x86_64-${{ github.run_id }}
@@ -1028,9 +1028,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-tsan-${{ github.run_id }}
@@ -1040,7 +1040,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-14 ccache
       - name: Cache reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
@@ -1093,9 +1093,9 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-cov-${{ github.run_id }}
@@ -1105,7 +1105,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache gcovr
       - name: Cache reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
@@ -1120,26 +1120,26 @@ jobs:
       # count as uncovered and the src/engine floor fires. Same pinned
       # cache the audio-smoke job uses.
       - name: Cache audio tower
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: audio_bench/audio_tower.safetensors
           key: geist-audio-tower-d6c45a6c2762
       - name: Fetch audio tower
         run: make fetch-audio-tower
       - name: Cache Llama reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/smollm2-360m-instruct-q8_0.gguf
           key: geist-model-smollm2-360m-q8-48ab3034d0dd
       - name: Fetch Llama reference model
         run: make fetch-llama-model
       - name: Cache Qwen3 reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/qwen3-0.6b-q8_0.gguf
           key: geist-model-qwen3-0.6b-q8-9465e63a22ad
       - name: Cache Qwen3.5 reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/qwen3.5-0.8b-q8_0.gguf
           key: geist-model-qwen35-0.8b-q8-0ad885ffd4bb
@@ -1172,7 +1172,7 @@ jobs:
             --baselines benchmark/coverage_baselines.json
       - name: Upload coverage artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-report
           path: coverage/
@@ -1186,7 +1186,7 @@ jobs:
     timeout-minutes: 10
     # Hard gate: the tree is clang-format-clean (clang-format 22.1.x), enforced.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Pin clang-format to the version the tree is formatted with — apt's
       # clang-format on ubuntu-24.04 is v18, which disagrees with the v22
       # formatting and would flag spurious drift. The pip package gives the
