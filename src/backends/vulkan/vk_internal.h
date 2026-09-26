@@ -128,6 +128,7 @@ enum vk_pipe {
     VK_PIPE_ATTN_PART_F16,
     VK_PIPE_ATTN_COMB,
     VK_PIPE_MM_Q4K_CM32, /* small-n_out tensor-core tile */
+    VK_PIPE_MM_PQ2_0_CM, /* PQ2_0 tensor-core GEMM (ternary codes -> f16) */
     VK_PIPE_PLE_GATE,    /* fused PLE gate: gelu(x.gate_w) * ple_in */
     VK_PIPE_FFN_NORM_GU, /* ffn_gate_up with the pre-FFN rmsnorm folded in */
     VK_PIPE_DN_CONV,     /* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
@@ -153,6 +154,13 @@ enum vk_pipe {
     VK_PIPE_QGATE_SPLIT, /* [query | gate] per-head split (qwen35) */
     VK_PIPE_COUNT,
 };
+
+/* Pipelines that exist only with VK_KHR_cooperative_matrix; without it they
+ * stay VK_NULL_HANDLE and vk_linear_cm_route keeps the register-tiled GEMM. */
+static inline bool vk_pipe_needs_coopmat(int pipe) {
+    return pipe == VK_PIPE_MM_Q4K_CM || pipe == VK_PIPE_MM_Q6K_CM || pipe == VK_PIPE_MM_Q4K_CM32 ||
+           pipe == VK_PIPE_MM_PQ2_0_CM;
+}
 
 struct vk_push {
     uint32_t n_in, n_out, blocks_per_row, rows;
@@ -234,11 +242,14 @@ struct vk_state {
     bool has_int8_dot; /* shaderIntegerDotProduct + 8-bit storage */
     bool has_coopmat;  /* VK_KHR_cooperative_matrix */
 
-    /* GEIST_VK_GPU_OPS bitmask (debug bisect): 1=linear_t 2=elementwise
-     * 4=rmsnorm 8=rope 16=attention 32=copy 64=embed 128=argmax
-     * 256=deltanet_mix.
-     * Default: all on. */
-    uint32_t gpu_ops;
+    /* Set when a sequence flush failed (submit / wait / end); the next host
+     * readback (argmax, download, host view) reports it as GEIST_E_BACKEND and
+     * clears it — see vk_seq_take_failure. */
+    bool seq_failed;
+
+    /* Row scratch of the host row-dequant linear (vk_w_cpu_mN). */
+    float *cpu_row;
+    size_t cpu_row_cap;
 
     /* GEIST_VK_VERBOSE stats. */
     uint64_t stat_flushes;
@@ -332,14 +343,15 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_FFN_GATE_UP] = 4,   [VK_PIPE_QKV_PREP] = 6,      [VK_PIPE_MM_Q4K_CM] = 3,
         [VK_PIPE_MM_Q6K_CM] = 3,     [VK_PIPE_ATTENTION_F16] = 4, [VK_PIPE_QKV_PREP_F16] = 6,
         [VK_PIPE_KV_APPEND_F16] = 4, [VK_PIPE_ATTN_PART_F16] = 4, [VK_PIPE_ATTN_COMB] = 2,
-        [VK_PIPE_MM_Q4K_CM32] = 3,   [VK_PIPE_PLE_GATE] = 4,      [VK_PIPE_FFN_NORM_GU] = 5,
-        [VK_PIPE_DN_CONV] = 3,       [VK_PIPE_DN_DELTA] = 8,      [VK_PIPE_MATVEC_Q4_0] = 3,
-        [VK_PIPE_MATMUL_Q4_0] = 3,   [VK_PIPE_MATVEC_Q4_1] = 3,   [VK_PIPE_MATMUL_Q4_1] = 3,
-        [VK_PIPE_MATVEC_Q8_0] = 3,   [VK_PIPE_MATMUL_Q8_0] = 3,   [VK_PIPE_MATVEC_Q5K] = 3,
-        [VK_PIPE_MATMUL_Q5K] = 3,    [VK_PIPE_MATVEC_TQ2_0] = 3,  [VK_PIPE_MATMUL_TQ2_0] = 3,
-        [VK_PIPE_MATVEC_PQ2_0] = 3,  [VK_PIPE_MATMUL_PQ2_0] = 3,  [VK_PIPE_SILU] = 2,
-        [VK_PIPE_RELU2] = 2,         [VK_PIPE_HADAMARD] = 3,      [VK_PIPE_ACT_QUANT] = 2,
-        [VK_PIPE_SILU_MUL] = 3,      [VK_PIPE_SIGMOID_MUL] = 3,   [VK_PIPE_QGATE_SPLIT] = 3,
+        [VK_PIPE_MM_Q4K_CM32] = 3,   [VK_PIPE_MM_PQ2_0_CM] = 3,   [VK_PIPE_PLE_GATE] = 4,
+        [VK_PIPE_FFN_NORM_GU] = 5,   [VK_PIPE_DN_CONV] = 3,       [VK_PIPE_DN_DELTA] = 8,
+        [VK_PIPE_MATVEC_Q4_0] = 3,   [VK_PIPE_MATMUL_Q4_0] = 3,   [VK_PIPE_MATVEC_Q4_1] = 3,
+        [VK_PIPE_MATMUL_Q4_1] = 3,   [VK_PIPE_MATVEC_Q8_0] = 3,   [VK_PIPE_MATMUL_Q8_0] = 3,
+        [VK_PIPE_MATVEC_Q5K] = 3,    [VK_PIPE_MATMUL_Q5K] = 3,    [VK_PIPE_MATVEC_TQ2_0] = 3,
+        [VK_PIPE_MATMUL_TQ2_0] = 3,  [VK_PIPE_MATVEC_PQ2_0] = 3,  [VK_PIPE_MATMUL_PQ2_0] = 3,
+        [VK_PIPE_SILU] = 2,          [VK_PIPE_RELU2] = 2,         [VK_PIPE_HADAMARD] = 3,
+        [VK_PIPE_ACT_QUANT] = 2,     [VK_PIPE_SILU_MUL] = 3,      [VK_PIPE_SIGMOID_MUL] = 3,
+        [VK_PIPE_QGATE_SPLIT] = 3,
 };
 
 struct geist_buffer {
@@ -356,8 +368,6 @@ struct geist_buffer {
     bool                   device_mem; /* memory type has DEVICE_LOCAL */
     bool                   borrowed;   /* buf/mem owned by a parent buffer */
 };
-/* Guard: ops require a live device + pipeline set (see lifecycle). */
-#define VK_OPS(be, bit) ((((struct vk_state *) (be)->state)->gpu_ops & (bit)) != 0)
 
 /* ---- Cross-module prototypes ------------------------------------------ */
 [[nodiscard]] enum geist_status vk_create(struct geist_backend            *be,
@@ -436,7 +446,8 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
 
 [[nodiscard]] enum geist_status vk_create_pipelines(struct geist_backend *be, struct vk_state *st);
 
-void vk_seq_flush(struct vk_state *st);
+void                            vk_seq_flush(struct vk_state *st);
+[[nodiscard]] enum geist_status vk_seq_take_failure(struct vk_state *st);
 
 [[nodiscard]] enum geist_status vk_seq_open_cmd(struct vk_state *st);
 

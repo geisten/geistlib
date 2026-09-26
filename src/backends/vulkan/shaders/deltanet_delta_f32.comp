@@ -11,10 +11,13 @@
  *   out  = rmsnorm(o, norm_w) * silu(z)                   (written over z)
  *
  * Every recurrence op is independent per value column j, so thread j owns
- * column j of S (d_k floats, streamed through L1/L2) and only the l2norms
- * and the final RMSNorm need workgroup reductions. S is [n_vh, d_k, d_v]
- * row-major, so threads read consecutive j — coalesced. Reductions use
- * shared memory only (no subgroup ops): correct on any subgroup size.
+ * column j of S and only the l2norms and the final RMSNorm need workgroup
+ * reductions. S is [n_vh, d_k, d_v] row-major, so threads read consecutive
+ * j — coalesced. With d_k == 128 (every published qwen35) the column lives in
+ * 128 registers for the whole dispatch: S is read once at the start and
+ * written once at the end instead of two loads and a store per row per
+ * token. Other d_k stream the column through L1/L2. Reductions use shared
+ * memory only (no subgroup ops): correct on any subgroup size.
  * Limits (host-checked): d_v <= 128, d_k <= 256. Threads j >= d_v idle but
  * still take part in every barrier.
  *
@@ -80,6 +83,52 @@ void reduce2(inout float a, inout float b, uint tid) {
     barrier();
 }
 
+/* q / k of one token's k-head into shared memory, l2-normalized (with the
+ * q scale). Ends with a barrier; the reductions reuse red_a/red_b. */
+void load_qk(uint row, uint hk, uint tid) {
+    float sq = 0.0;
+    float sk = 0.0;
+    for (uint i = tid; i < pc.dk; i += 128u) {
+        float qv = qkv[row + hk * pc.dk + i];
+        float kv = qkv[row + pc.keyd + hk * pc.dk + i];
+        qs[i] = qv;
+        ks[i] = kv;
+        sq += qv * qv;
+        sk += kv * kv;
+    }
+    reduce2(sq, sk, tid);
+    float inv_q = inversesqrt(sq + pc.eps) * pc.qscale;
+    float inv_k = inversesqrt(sk + pc.eps);
+    for (uint i = tid; i < pc.dk; i += 128u) {
+        qs[i] *= inv_q;
+        ks[i] *= inv_k;
+    }
+    barrier();
+}
+
+/* decay and beta of (token t, v-head hv) — identical in every thread */
+void gates(uint t, uint hv, out float beta, out float decay) {
+    float b = beta_in[pc.beta_off + t * pc.n_vh + hv];
+    float a = alpha_in[pc.alpha_off + t * pc.n_vh + hv] + dt_bias[pc.dtb_off + hv];
+    beta = 1.0 / (1.0 + exp(-b));
+    float sp = a > 30.0 ? a : log(1.0 + exp(a));
+    decay = exp(ssm_a[pc.a_off + hv] * sp);
+}
+
+/* per-head RMSNorm of o over d_v, then * silu(z), written over z */
+void epilogue(float o, uint t, uint hv, uint tid, bool col_ok) {
+    float ss = o * o;
+    float dummy = 0.0;
+    reduce2(ss, dummy, tid);
+    float inv = inversesqrt(ss / float(pc.dv) + pc.eps);
+    if (col_ok) {
+        uint zi = pc.z_off + t * pc.n_vh * pc.dv + hv * pc.dv + tid;
+        z[zi] = (o * inv * nw[pc.nw_off + tid]) * silu(z[zi]);
+    }
+    /* qs/ks are rewritten next token: make sure nobody still reads them */
+    barrier();
+}
+
 void main() {
     uint tid = gl_LocalInvocationID.x;
     uint hv = gl_WorkGroupID.x;
@@ -89,36 +138,45 @@ void main() {
     bool col_ok = tid < dv;
     uint sbase = pc.s_off + hv * dk * dv;
 
+    if (dk == 128u) {
+        float sr[128];
+        for (uint i = 0u; i < 128u; ++i) {
+            sr[i] = col_ok ? state[sbase + i * dv + tid] : 0.0;
+        }
+        for (uint t = 0u; t < pc.seq; ++t) {
+            uint row = pc.qkv_off + t * pc.convd;
+            load_qk(row, hk, tid);
+            float beta, decay;
+            gates(t, hv, beta, decay);
+            float o = 0.0;
+            if (col_ok) {
+                float vj = qkv[row + 2u * pc.keyd + hv * dv + tid];
+                float kvm = 0.0;
+                for (uint i = 0u; i < 128u; ++i) {
+                    sr[i] *= decay;
+                    kvm = fma(sr[i], ks[i], kvm);
+                }
+                float delta = (vj - kvm) * beta;
+                for (uint i = 0u; i < 128u; ++i) {
+                    sr[i] = fma(ks[i], delta, sr[i]);
+                    o = fma(sr[i], qs[i], o);
+                }
+            }
+            epilogue(o, t, hv, tid, col_ok);
+        }
+        if (col_ok) {
+            for (uint i = 0u; i < 128u; ++i) {
+                state[sbase + i * dv + tid] = sr[i];
+            }
+        }
+        return;
+    }
+
     for (uint t = 0u; t < pc.seq; ++t) {
         uint row = pc.qkv_off + t * pc.convd;
-
-        /* q / k of this token's k-head + their squared norms */
-        float sq = 0.0;
-        float sk = 0.0;
-        for (uint i = tid; i < dk; i += 128u) {
-            float qv = qkv[row + hk * dk + i];
-            float kv = qkv[row + pc.keyd + hk * dk + i];
-            qs[i] = qv;
-            ks[i] = kv;
-            sq += qv * qv;
-            sk += kv * kv;
-        }
-        reduce2(sq, sk, tid);
-        float inv_q = inversesqrt(sq + pc.eps) * pc.qscale;
-        float inv_k = inversesqrt(sk + pc.eps);
-        for (uint i = tid; i < dk; i += 128u) {
-            qs[i] *= inv_q;
-            ks[i] *= inv_k;
-        }
-        barrier();
-
-        /* gating scalars (identical in every thread) */
-        float b = beta_in[pc.beta_off + t * pc.n_vh + hv];
-        float a = alpha_in[pc.alpha_off + t * pc.n_vh + hv] + dt_bias[pc.dtb_off + hv];
-        float beta = 1.0 / (1.0 + exp(-b));
-        float sp = a > 30.0 ? a : log(1.0 + exp(a));
-        float decay = exp(ssm_a[pc.a_off + hv] * sp);
-
+        load_qk(row, hk, tid);
+        float beta, decay;
+        gates(t, hv, beta, decay);
         float o = 0.0;
         if (col_ok) {
             float vj = qkv[row + 2u * pc.keyd + hv * dv + tid];
@@ -133,17 +191,6 @@ void main() {
                 o = fma(sv, qs[i], o);
             }
         }
-
-        /* per-head RMSNorm over d_v, then * silu(z) */
-        float ss = o * o;
-        float dummy = 0.0;
-        reduce2(ss, dummy, tid);
-        float inv = inversesqrt(ss / float(dv) + pc.eps);
-        if (col_ok) {
-            uint zi = pc.z_off + t * pc.n_vh * dv + hv * dv + tid;
-            z[zi] = (o * inv * nw[pc.nw_off + tid]) * silu(z[zi]);
-        }
-        /* qs/ks are rewritten next token: make sure nobody still reads them */
-        barrier();
+        epilogue(o, t, hv, tid, col_ok);
     }
 }

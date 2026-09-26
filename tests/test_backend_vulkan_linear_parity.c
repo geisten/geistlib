@@ -347,6 +347,9 @@ int main(void) {
      * exercises the odd tail, 384 a single-step row. */
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 1);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1);
+    /* rows longer than one 16-block step of the matvec warp (40 and 136 blocks) */
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 5120, 200, 1);
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 17408, 96, 1);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 384, 45, 8);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 37);
     run_case_t(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1, 1e-3);
@@ -364,6 +367,11 @@ int main(void) {
     /* wide n_out routes to the 128-row register-tiled kernel */
     run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 16, 2e-2);
     run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 64, 2e-2);
+    /* PQ2_0 on the tensor cores: ternary values are exact in f16, only the
+     * activations are rounded (looser bound, prefill-only path). */
+    run_case_tol(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 256, 16, 2e-2);
+    run_case_tol(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 640, 128, 64, 2e-2);
+    run_case_tol(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 4096, 48, 2e-2);
 
     geist_backend_destroy(vk);
     geist_backend_destroy(ref);

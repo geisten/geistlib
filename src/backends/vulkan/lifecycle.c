@@ -128,6 +128,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             vk_buffer_destroy(be, st->weights[i].gpu);
         }
         geist_backend_free(be, st->weights);
+        geist_backend_free(be, st->cpu_row);
         if (st->x_stage != nullptr) {
             vk_buffer_destroy(be, st->x_stage);
         }
@@ -387,8 +388,6 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     *st                 = (struct vk_state) {0};
     st->backend         = be;
     st->profile_enabled = getenv("GEIST_VK_PROFILE") != nullptr;
-    const char *ops_env = getenv("GEIST_VK_GPU_OPS");
-    st->gpu_ops = ops_env != nullptr ? (uint32_t) strtoul(ops_env, nullptr, 0) : 0xffffffffu;
 
     enum geist_status s = vk_load_runtime(be, st);
     if (s != GEIST_OK) {
@@ -481,6 +480,7 @@ void vk_destroy(struct geist_backend *be) {
                     [VK_PIPE_ATTN_PART_F16] = "attn_part_f16",
                     [VK_PIPE_ATTN_COMB]     = "attn_comb",
                     [VK_PIPE_MM_Q4K_CM32]   = "mm_q4k_cm32",
+                    [VK_PIPE_MM_PQ2_0_CM]   = "mm_pq2_0_cm",
                     [VK_PIPE_PLE_GATE]      = "ple_gate",
                     [VK_PIPE_FFN_NORM_GU]   = "ffn_norm_gu",
                     [VK_PIPE_DN_CONV]       = "dn_conv",
