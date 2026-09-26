@@ -859,6 +859,21 @@ vk_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geis
 
 [[nodiscard]] static enum geist_status
 vk_relu_squared(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
+    {
+        const size_t           n = vk_t_n(x);
+        VkDescriptorBufferInfo bi[2];
+        uint32_t               off[2];
+        if (VK_OPS(be, 2u) && n != 0 && n == vk_t_n(y) && vk_tensor_gpu(x, &bi[0], &off[0]) &&
+            vk_tensor_gpu(y, &bi[1], &off[1])) {
+            const uint32_t         push[4] = {(uint32_t) n, off[0], off[1], 0};
+            const struct vk_access acc[2]  = {vk_acc_tensor(x, false), vk_acc_tensor(y, true)};
+            if (vk_seq_dispatch_acc(
+                        be, VK_PIPE_RELU2, bi, acc, push, sizeof(push), vk_groups(n), 1, 1) ==
+                GEIST_OK) {
+                return GEIST_OK;
+            }
+        }
+    }
     size_t       nx = 0, ny = 0;
     const float *xp = vk_tensor_host(x, &nx);
     float       *yp = vk_tensor_host(y, &ny);
@@ -1080,6 +1095,29 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
                cosp,
                sinp);
     return GEIST_OK;
+}
+
+/* BitNet activation fake-quant on the device rows (see act_quant_i8_f32.comp).
+ * x [rows, n] F32, in place. */
+[[nodiscard]] static enum geist_status vk_bitnet_act_quant(struct geist_backend *be,
+                                                           struct geist_tensor  *x) {
+    /* The pipeline layouts start at two bindings: the second one aliases the
+     * first and the shader never reads it. */
+    VkDescriptorBufferInfo bi[2];
+    uint32_t               off[1];
+    /* Rows matter here (one absmax per row), so the geometry is read from the
+     * shape: vk_t_geom folds a dense tensor into a single row. */
+    if (!VK_OPS(be, 2u) || x == nullptr || vk_t_n(x) == 0 || x->ndim != 2 || x->stride[1] != 1 ||
+        x->stride[0] < x->shape[1] || !vk_tensor_gpu(x, &bi[0], &off[0])) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t rows = (size_t) x->shape[0], cols = (size_t) x->shape[1],
+                 stride            = (size_t) x->stride[0];
+    bi[1]                          = bi[0];
+    const uint32_t         push[4] = {(uint32_t) cols, off[0], (uint32_t) stride, 0};
+    const struct vk_access acc[2]  = {vk_acc_tensor(x, true), vk_acc_tensor(x, true)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_ACT_QUANT, bi, acc, push, sizeof(push), (uint32_t) rows, 1, 1);
 }
 
 /* Head sizes the interleaved-rope shader stages in shared memory. */
@@ -2138,6 +2176,8 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
         return VK_OPS(be, 1u);
     case GEIST_FUSED_SILU_MUL:
         return VK_OPS(be, 2u);
+    case GEIST_FUSED_BITNET_ACT_QUANT:
+        return VK_OPS(be, 2u);
     case GEIST_FUSED_ROPE_INTERLEAVED:
         return VK_OPS(be, 8u) && q->head_dim % 2 == 0 && q->head_dim <= VK_ROPE_IL_MAX_HEAD_DIM;
     case GEIST_FUSED_FFN_GATE_UP:
@@ -2233,6 +2273,7 @@ static const struct geist_backend_fused vk_fused = {
         .sigmoid_mul            = vk_sigmoid_mul,
         .silu_mul               = vk_silu_mul,
         .rope_apply_interleaved = vk_rope_apply_interleaved,
+        .bitnet_act_quant       = vk_bitnet_act_quant,
 };
 
 const struct geist_backend_descriptor geist_backend_vulkan = {

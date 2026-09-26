@@ -220,6 +220,21 @@ static inline void apply_bitnet_input_quant_inplace(const struct geist_backend_v
     v->buffer_unmap(buf);
 }
 
+/* The same fake-quant through the plan: on the device when the backend bound
+ * the fused op (a device-resident row would otherwise cross to the host
+ * twice per layer), else the host loop above. */
+static inline void bitnet_input_quant(const struct transformer_layer_forward_ctx *ctx,
+                                      struct geist_buffer                        *buf,
+                                      size_t                                      n) {
+    if (ctx->P != nullptr && ctx->P->fuse_bitnet_act_quant) {
+        struct geist_tensor t = view_2d(buf, (int64_t) ctx->seq, (int64_t) n);
+        if (ctx->fused->bitnet_act_quant(ctx->be, &t) == GEIST_OK) {
+            return;
+        }
+    }
+    apply_bitnet_input_quant_inplace(ctx->v, buf, ctx->seq, n);
+}
+
 /* Normalise one projection's input through its own gamma (BitNet
  * embedding models' per-projection input norms).
  *
@@ -244,7 +259,7 @@ norm_projection_input(size_t                                n,
         return s;
     }
     if (ctx->apply_bitnet_input_quant) {
-        apply_bitnet_input_quant_inplace(ctx->v, ctx->sess->scratch_proj_in, ctx->seq, n);
+        bitnet_input_quant(ctx, ctx->sess->scratch_proj_in, n);
     }
     return GEIST_OK;
 }
