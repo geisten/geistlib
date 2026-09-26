@@ -1,3 +1,8 @@
+# Weekly Apple CPU guard. Gated on the RATIO to llama.cpp measured in the
+# same job on the same runner (#439): the absolute floor it used before
+# (60 tok/s prefill) saw 23.9, 14.4 and 38.0 from identical code on three
+# consecutive Sundays — a hosted macOS runner is whatever it is that day,
+# but it is the same thing for both engines within one job.
 name: Apple performance guard
 
 on:
@@ -13,15 +18,18 @@ jobs:
   apple-cpu-q4km:
     name: Apple CPU Q4_K regression guard
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
+    env:
+      # The same llama.cpp pin the cross-engine campaign uses.
+      LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install libomp
         run: brew install libomp
 
       - name: Cache reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
           key: geist-apple-perf-gemma4-e2b-q4km-740185b21d22
@@ -46,20 +54,57 @@ jobs:
       - name: Build CPU benchmark
         run: make -j3 TARGET=mac-omp CC=clang BACKENDS="cpu_neon cpu_scalar" bin/mac-omp/release/tests/bench_perf_sweep
 
-      - name: Detailed protocol and guard band
+      - name: Detailed protocol (geist)
         env:
           BENCH_GGUF: gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
           OMP_WAIT_POLICY: active
         run: |
-          python3 tools/bench_quality_perf.py \
+          echo "BENCH_THREADS=$(sysctl -n hw.ncpu)" >> "$GITHUB_ENV"
+          BENCH_THREADS=$(sysctl -n hw.ncpu) python3 tools/bench_quality_perf.py \
             --suite detailed --target mac-omp --mode release \
             --bin-dir bin/mac-omp/release/tests --out-dir bench-artifacts
-          python3 benchmark/perf_gate.py --min-prefill 60 --min-decode 10 \
-            < bench-artifacts/*_mac-omp_detailed.jsonl
+
+      # The reference engine, CPU + Accelerate like the geist build above
+      # (no Metal: this is the CPU guard). One static binary, cached by pin.
+      - name: Cache llama-bench
+        id: llama-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: llama.cpp/build/bin/llama-bench
+          key: llama-bench-macos-cpu-${{ env.LLAMA_PIN }}
+      - name: Build llama-bench (pinned)
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone -q https://github.com/ggml-org/llama.cpp llama.cpp
+          git -C llama.cpp checkout -q "$LLAMA_PIN"
+          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_METAL=OFF -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF >/dev/null
+          cmake --build llama.cpp/build --target llama-bench -j"$(sysctl -n hw.ncpu)" >/dev/null
+
+      # Same model, same shape (pp512 / tg64, 10 repeats), same thread count.
+      - name: Detailed protocol (llama.cpp)
+        run: |
+          llama.cpp/build/bin/llama-bench -m gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
+            -p 512 -n 64 -r 10 -t "$BENCH_THREADS" -o json > bench-artifacts/llama-bench.json
+          cat bench-artifacts/llama-bench.json
+
+      # Cliff floors on the ratio. The first run of this gate measured geist
+      # at 0.40x prefill / 0.50x decode of llama.cpp on this runner (26.4 vs
+      # 66.8 and 9.3 vs 18.8 tok/s, 3 threads) — nowhere near the M1 Max
+      # numbers in the README, and an open question (#456). The floors sit
+      # under what is measured today and above a scalar-fallback cliff; they
+      # are raised when #456 moves the ratio, not before. The numbers land in
+      # the step summary either way.
+      - name: Ratio gate
+        run: |
+          python3 benchmark/perf_ratio_gate.py \
+            --geist bench-artifacts/*_mac-omp_detailed.jsonl \
+            --llama bench-artifacts/llama-bench.json \
+            --min-prefill-ratio 0.25 --min-decode-ratio 0.3
 
       - name: Upload raw samples and provenance
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: apple-cpu-q4km-${{ github.sha }}
           path: bench-artifacts

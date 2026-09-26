@@ -36,7 +36,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, geist-vulkan]
     timeout-minutes: 2400
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Refuse to measure a software device
         if: inputs.protocol == 'gpu'
         run: |
@@ -138,7 +138,7 @@ jobs:
             --out-dir bench-out
       - name: Upload raw artifact + report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cross-engine-${{ inputs.protocol }}-${{ inputs.model }}
           path: bench-out/

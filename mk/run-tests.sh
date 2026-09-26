@@ -26,6 +26,13 @@
 # line beside the verdict, which is where those tests put their summary, and
 # GEIST_TEST_VERBOSE=1 shows every line of every test.
 #
+# With GITHUB_STEP_SUMMARY set, the verdict line and the skip table are also
+# appended there: a skip is silent green in the log, and on the model legs
+# roughly half the integration suite was skipping for fixtures nobody saw.
+# GEIST_EXPECTED_SKIPS=<file> (one test name per line, # comments) turns any
+# skip NOT on the list into a failure — the list is what a leg is allowed to
+# skip, so a fixture that goes missing fails instead of shrinking the suite.
+#
 # POSIX sh, no bash. The build dropped its bash dependency (mk/detect-target.sh
 # is #!/bin/sh); this script was the last thing forcing it, so on an image
 # without bash — Alpine's build-base does not pull one in — the suite died with
@@ -99,7 +106,13 @@ ERROR=0
 # failing test's output is multi-line, so a delimiter-joined variable would be
 # fragile.
 FAILED_LOG=$(mktemp) || exit 99
-trap 'rm -f "$FAILED_LOG"' EXIT HUP INT TERM
+SKIPPED_LOG=$(mktemp) || exit 99
+trap 'rm -f "$FAILED_LOG" "$SKIPPED_LOG"' EXIT HUP INT TERM
+
+if [ -n "${GEIST_EXPECTED_SKIPS:-}" ] && [ ! -r "$GEIST_EXPECTED_SKIPS" ]; then
+    echo "ERROR: GEIST_EXPECTED_SKIPS='$GEIST_EXPECTED_SKIPS' is not readable." >&2
+    exit 99
+fi
 
 # ANSI colors (optional — tee-friendly).
 if [ -t 1 ]; then
@@ -146,7 +159,17 @@ for bin in "$@"; do
         77)
             SKIP=$((SKIP + 1))
             reason=$(echo "$out" | grep -v '^[[:space:]]*$' | head -1)
-            printf "  ${C_YELLOW}SKIP${C_RESET}  %s ${C_GREY}(%s)${C_RESET}\n" "$name" "$reason"
+            printf '%s\t%s\n' "$name" "$reason" >>"$SKIPPED_LOG"
+            if [ -n "${GEIST_EXPECTED_SKIPS:-}" ] && ! grep -qx "$name" "$GEIST_EXPECTED_SKIPS"; then
+                SKIP=$((SKIP - 1))
+                FAIL=$((FAIL + 1))
+                { printf '\n--- %s ---\n' "$name"
+                  echo "  UNEXPECTED SKIP: not listed in $GEIST_EXPECTED_SKIPS"
+                  echo "$out" | sed 's/^/  /'; } >>"$FAILED_LOG"
+                printf "  ${C_RED}FAIL${C_RESET}  %s ${C_GREY}(unexpected skip: %s)${C_RESET}\n" "$name" "$reason"
+            else
+                printf "  ${C_YELLOW}SKIP${C_RESET}  %s ${C_GREY}(%s)${C_RESET}\n" "$name" "$reason"
+            fi
             ;;
         99)
             ERROR=$((ERROR + 1))
@@ -171,6 +194,20 @@ if [ -s "$FAILED_LOG" ]; then
     echo
     echo "=== Failure details ==="
     cat "$FAILED_LOG"
+fi
+
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+        echo "### tests \`${FILTER:-all}\` in \`$BIN_DIR\`: $PASS passed, $SKIP skipped, $FAIL failed, $ERROR error"
+        if [ -s "$SKIPPED_LOG" ]; then
+            echo
+            echo "| skipped | reason |"
+            echo "| :-- | :-- |"
+            # awk, not sed: BSD sed has no \t. Pipes escaped for the table.
+            awk -F'\t' '{ gsub(/\|/, "\\|"); print "| " $1 " | " $2 " |" }' "$SKIPPED_LOG"
+        fi
+        echo
+    } >>"$GITHUB_STEP_SUMMARY"
 fi
 
 if [ "$FAIL" -gt 0 ] || [ "$ERROR" -gt 0 ]; then
