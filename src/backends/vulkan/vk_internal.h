@@ -230,9 +230,10 @@ struct vk_state {
     uint32_t         queue_family;
 
     VkPhysicalDeviceMemoryProperties mem_props;
-    VkCommandPool                    cmd_pool;
-    VkCommandBuffer                  xfer_cmd;
-    VkFence                          xfer_fence;
+    size_t          bar_used; /* live host-visible + device-local bytes (the BAR window) */
+    VkCommandPool   cmd_pool;
+    VkCommandBuffer xfer_cmd;
+    VkFence         xfer_fence;
 
     char device_name[256];
 
@@ -372,6 +373,7 @@ struct geist_buffer {
     bool                   host_visible;
     bool                   device_mem; /* memory type has DEVICE_LOCAL */
     bool                   borrowed;   /* buf/mem owned by a parent buffer */
+    size_t bar_bytes; /* counted in vk_state.bar_used (host-visible + device-local) */
 };
 
 /* ---- Cross-module prototypes ------------------------------------------ */
@@ -414,6 +416,7 @@ vk_stage_reserve(struct geist_backend *be, struct geist_buffer **slot, size_t by
 
 struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host);
 struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor *t);
+size_t               vk_fast_host_bytes(struct geist_backend *be);
 
 struct vk_access vk_acc(uint64_t lo_bytes, uint64_t n_bytes, bool write);
 

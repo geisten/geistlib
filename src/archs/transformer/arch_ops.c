@@ -23,6 +23,7 @@
 #include "arch_state.h"
 #include "arch_ops.h"
 #include "rotation.h"
+#include "scratch_plan.h"
 #include "forward.h"
 
 #include "gemma4_kernels.h"
@@ -433,8 +434,9 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     if (st == nullptr || k == 0 || ids == nullptr || out_tokens == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    if (k > sess->m_max) {
-        /* Spec K should fit in one prefill chunk. Larger requires chunking. */
+    if (k > sess->m_max || k > TRANSFORMER_LOGITS_ROWS) {
+        /* Spec K must fit one prefill chunk and the logits scratch
+         * (TRANSFORMER_LOGITS_ROWS rows). Larger requires chunking. */
         return GEIST_E_INVALID_ARG;
     }
     enum geist_status room = transformer_check_kv_room(sess, k);

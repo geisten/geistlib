@@ -31,7 +31,7 @@ void transformer_scratch_plan_build(const struct transformer_arch_state *st,
     out->inter      = M * inter_max * F;
     out->ple_out    = M * st->ple_out * F;
     out->hidden_per = M * st->hidden_per_layer * F;
-    out->vocab      = M * st->vocab_size * F;
+    out->vocab = (M < TRANSFORMER_LOGITS_ROWS ? M : TRANSFORMER_LOGITS_ROWS) * st->vocab_size * F;
     /* The all-ones head_dim vector stands in for a missing v_norm (gemma).
      * It lives in the pool, not in its own allocation: the Vulkan fused
      * attn_qkv_prep binds q/k/v and the norm gammas as offsets into ONE

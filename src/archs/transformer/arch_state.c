@@ -538,11 +538,10 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     if (s != GEIST_OK) {
         return s;
     }
-    /* scratch_logits holds m_max × VOCAB floats so verify_forward can do
-     * ONE batched lm_head per call (the lm_head is the dominant cost on
-     * Pi 5; M>1 IQ kernels amortize the 262K-wide weight stream over
-     * k columns). At m_max=64 and VOCAB=262144 this is ~64 MB. Lives
-     * in the scratch pool. */
+    /* scratch_logits holds min(m_max, TRANSFORMER_LOGITS_ROWS) × VOCAB floats
+     * so verify_forward can do ONE batched lm_head per call (the lm_head is
+     * the dominant cost on Pi 5; M>1 IQ kernels amortize the 262K-wide weight
+     * stream over k columns). Lives in the scratch pool. */
     s = alloc_pool_buffer(sess, scratch_plan.vocab, &sess->scratch_logits);
     if (s != GEIST_OK) {
         return s;
@@ -1332,6 +1331,23 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
      * batches). 0 = uncapped. */
     const size_t m_cap =
             (be->desc != nullptr && be->desc->caps.max_m > 0) ? be->desc->caps.max_m : SIZE_MAX;
+    /* Default chunk only (opts / GEIST_M_MAX win): a pool that does not fit the
+     * backend's fast host-visible window lands in system memory and every
+     * activation op then runs over PCIe (Bonsai 27B at m 128 without resizable
+     * BAR: 3x slower prefill), so shrink to what fits, never below 64. */
+    if (opts == nullptr || opts->m_max == 0) {
+        if (!state->m_max_from_env && be->desc != nullptr &&
+            be->desc->vtbl->fast_host_bytes != nullptr) {
+            const size_t                    fast = be->desc->vtbl->fast_host_bytes(be);
+            struct transformer_scratch_plan fit;
+            transformer_scratch_plan_build(state, sess->m_max, &fit);
+            /* slack for the per-session slabs outside the pool (DeltaNet, q gate) */
+            while (sess->m_max > 64 && fit.pool_bytes + fit.pool_bytes / 4 > fast) {
+                sess->m_max = sess->m_max / 2 < 64 ? 64 : sess->m_max / 2;
+                transformer_scratch_plan_build(state, sess->m_max, &fit);
+            }
+        }
+    }
     if (sess->m_max == 0 || sess->m_max > m_cap) {
         geist_backend_set_error(
                 be,
