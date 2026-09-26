@@ -398,3 +398,141 @@ lm_head trick, the Cougar/bitnet.cpp head-to-head and the comparison against the
 2026 ternary-kernel literature — is a lab log, not reference material. It lives
 outside this repo (see the research write-ups).
 
+
+## Ternary-Bonsai-2-27B on Vulkan (2026-09-26)
+
+Same model as above (`Ternary-Bonsai-2-27B-PQ2_0.gguf`, 7.21 GB, sha256
+`3907dc16…`), `vulkan` backend: PQ2_0 matvec and tensor-core GEMM kernels
+(struct-of-arrays copy in VRAM, float activations), the PQ2_0 embedding lookup
+and `fused->hadamard_rotate` on the device. Everything a token needs stays on
+the GPU. RSS is the resident GGUF mapping; the weights are uploaded from it once
+and are not duplicated in host memory (`caps.weights_device_copy`).
+
+### Correctness
+
+- Fork goldens (`test_bonsai_e2e_int`, PrismML-Eng/llama.cpp `01ae597`): prompt
+  ids, next-token top 5 and the first 16 greedy tokens equal on the RTX 2080 Ti
+  and on the RADV iGPU.
+- Logits vs `cpu_scalar` (`GEIST_KV_INT8=0 GEIST_KV_F16=0`): the 19-token chat
+  prompt (batch not a multiple of 16, register-tiled GEMM) is bit-identical, cos
+  1.0000000, max |Δ| 0. A 64-token prompt (tensor-core GEMM active) gives cos
+  1.0000000, rms logit error **0.00125**, max |Δ| 0.0069 (logits ≈ 20), identical
+  top 5. The tensor-core GEMM accumulates in f16 and folds into f32 every 64 k
+  (the fork accumulates in f16 over the whole K); `GEIST_VK_PQ2_F32_ACC=1`
+  selects the f32-accumulate variant (rms error 0.00072, bit-equal to
+  `cpu_scalar` on the parity test's exact data) at about a quarter
+  lower GEMM throughput on this card. Activations are rounded to f16 in either case.
+
+### Throughput (RTX 2080 Ti, `bench_perf_sweep --decode-n 64`, default KV = F16)
+
+| configuration | pp128 | pp512 | tg64 |
+| :-- | --: | --: | --: |
+| geist Vulkan, default chunk (`GEIST_M_MAX` 64) | 412 | 395 | 36.5 |
+| geist Vulkan, `GEIST_M_MAX=128` | **545** | **517** | 36.3 |
+| fork, Vulkan (`KHR_coopmat`, `int dot: 0`) | 524 ± 2 | 556 ± 0.2 | 29.7 |
+| fork, CUDA (`sm_75`) | 577 ± 23 | 781 ± 1 | **44.4** |
+| *M1 Max, metal (table above)* | *84–111* | | *15.5–19.5* |
+| *PrismML fork, metal* | *110.7* | | *16.65* |
+
+Fork: PrismML-Eng/llama.cpp `adfffbe` (`prism` branch), `llama-bench -ngl 99
+-p 128,512 -n 64 -r 2`, one build with CUDA and one with Vulkan, nothing else
+running on the machine. With `GEIST_M_MAX=128` geist is 1.04× / 0.93× the fork's
+Vulkan prefill at pp128 / pp512 and 1.22× its decode; against CUDA 0.94× /
+0.66× / 0.82×. The default chunk stays 64 because a 128-row scratch pool does
+not fit a 256 MB BAR heap on other models (below, #488), so Bonsai on a card
+without resizable BAR sets `GEIST_M_MAX=128` (it is not capped for qwen35
+hybrids: `caps.dn_subchunk`).
+
+RADV iGPU (Ryzen 9 9950X, 2 CUs, 21 GiB heap): pp64 2.0, tg 1.0 t/s — the fork
+gets 7.2 (pp32) and 1.29 on the same device. See *RADV* below.
+
+### How the gap was closed (pp512 / tg on the RTX 2080 Ti)
+
+| step | pp512 | tg |
+| :-- | --: | --: |
+| register-tiled FP32 GEMM, one-lane-per-block matvec | 38 | 22 |
+| tensor-core GEMM (`coopmat`, ternary codes → f16 in shared memory) | 198 | 22 |
+| packed k-contiguous shared tiles, arithmetic dequant | 247 | 22 |
+| DeltaNet state column in registers (`d_k == 128`) | 316 | 22 |
+| 128 × 64 tile, next k-step's loads in flight over the MMAs | 388 | 22 |
+| matvec: one lane per row, activations broadcast from shared memory | 381 | **35.5** |
+| one scratch pool per model, `GEIST_M_MAX=128` (128 × 64 tile) | 447 | 35.5 |
+| 128 × 128 tile (f32 accumulation) | 470 | 35.5 |
+| f16 accumulation folded into f32 every 64 k | **517** | 36.3 |
+
+### Where the fork was ahead (side by side, pp512 = 388 t/s vs its 543)
+
+Per-op GPU time of one 512-token pass, fork from `GGML_VK_PERF_LOGGER=1`, geist
+from `GEIST_VK_PROFILE=1` (both timestamp queries), at the 388 t/s step:
+
+| | geist | fork |
+| :-- | --: | --: |
+| PQ2_0 GEMM | 1180 ms | 727 ms |
+| DeltaNet recurrence | 98 | 36 (+ 10 `L2_NORM`) |
+| attention | 64 | 11 (flash attention) |
+| Hadamard | 36 | 20 (three f32 `MUL_MAT`s on the tensor cores) |
+| conv, alpha/beta matmul | 23 + 52 | 8 + 37 |
+| total | 1508 | 942 |
+
+- **The GEMM was 80 % of the gap.** Same 17408 × 5120 shape: the fork 41.5 TFLOP/s
+  at n = 512, ours 22.6 at m = 64 — with a chunk of 64 tokens there are only 136
+  workgroups for 68 SMs. Ours at m = 512 measured 32.5, so the rest was the tile
+  configuration (fork: 128 × 128 with 64 × 64 per subgroup, `mul_mm.comp`
+  `l_warptile_mmq`) and, decisively, **f16 accumulation**: the fork's default
+  pipeline is `f16acc` (`coopmat_acc_f16_support && prec == GGML_PREC_DEFAULT`),
+  which runs at full rate on GeForce Turing while f32 accumulation runs at half
+  rate (≈ 54 vs ≈ 107 TFLOP/s peak). Folding the f16 accumulators into f32 every
+  64 k took our GEMM from 30 to 42 TFLOP/s at m = 128 (fork 41.5).
+- **Arrays of cooperative matrices indexed in a loop run 4× slower** (not kept in
+  registers; 4.2 vs 24.6 TFLOP/s): the accumulators and fragments are unrolled by
+  hand in `matmul_pq2_0_cm_body.glsl`. A 64 × 64 quadrant per subgroup with only
+  four subgroups was slower than 32 × 64 with eight (too few warps).
+- **The chunk size was blocked by the scratch pool**, not the GEMM: the model
+  allocated a second, unused default session next to the real one, and two
+  180 MiB pools no longer fit the 256 MB BAR heap (the second landed in host
+  memory: `silu_mul` 30 → 1461 µs per call). One pool per model fixed that
+  (141 → 446 t/s at `GEIST_M_MAX=128`); a device-local pool would remove the BAR
+  limit altogether (#488).
+- **Decode was activation traffic, not arithmetic.** An isolated experiment
+  gave a 505 GB/s pure weight-read roofline for the lane-per-block-half mapping
+  but ~155 GB/s once the activations were loaded, and removing the dequant
+  arithmetic entirely bought only 7 %. Every lane of a warp needs the same 128
+  activations, so a lane per row with the activations staged once per
+  workgroup in shared memory (read as broadcasts) reaches 262 GB/s on the
+  17408 × 5120 matrix (fork 232–256 GB/s on the same shapes); dequantization
+  avoids int → float converts (code bits become the top mantissa bits of 1.0,
+  `Σ(c−1)x = 4Σfx − 5Σx`).
+
+### Still behind
+
+- Attention in the prefill (64 ms vs 11: no tensor-core flash attention), the
+  DeltaNet recurrence (98 vs 46) and the elementwise ops (#475).
+- Against CUDA: 0.66× at pp512 and 0.82× at decode; the GEMM at m = 512 has
+  not been re-measured with the f16 accumulators.
+- The default chunk of 64 leaves ~25 % of pp128 / pp512 on the table on hardware
+  without resizable BAR (#488).
+
+### RADV (Ryzen 9 9950X iGPU: 2 CUs, DDR5)
+
+Correct but slow: pp 2.0, tg 1.0 t/s (fork 7.2 / 1.29). The matvec measures
+15 GB/s; a contiguous pure-read kernel measures 67 GB/s (the device's roofline),
+and the same access pattern without any dequantization 31 GB/s — the decode is
+about half ALU-bound (2 CUs execute ~3 instructions per weight at the rate of
+the whole weight stream) and half access pattern. Prefill is slow because the
+tiled GEMMs assume 32-lane subgroups and RADV's is 64, so every batch row runs
+as a separate matvec (#471); the fork asks for subgroup size 32 through
+`VK_EXT_subgroup_size_control`. An int8 (`dp4a`) matvec would cut the ALU work
+about 4× (#467).
+
+### Reproduce
+
+```sh
+# geist
+make BACKENDS="vulkan cpu_x86 cpu_scalar" bin
+GEIST_M_MAX=128 GEIST_VK_DEVICE=0 GEIST_BENCH_BACKEND=vulkan \
+  bin/linux/release/tests/bench_perf_sweep --gguf Ternary-Bonsai-2-27B-PQ2_0.gguf \
+  --seq-lens 128,512 --decode-n 64 --warmup 16 --repeats 2
+GEIST_VK_PROFILE=1 …            # per-pipe GPU time
+# fork (needs the SPIRV-Headers on the include path for the Vulkan build)
+GGML_VK_VISIBLE_DEVICES=0 GGML_VK_PERF_LOGGER=1 llama-bench -m …gguf -ngl 99 -p 512 -n 0
+```

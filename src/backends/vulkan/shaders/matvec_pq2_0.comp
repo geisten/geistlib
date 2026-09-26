@@ -2,21 +2,37 @@
 
 /* PQ2_0 (PrismML ternary, Ternary-Bonsai) matvec: 128-element blocks of an
  * f16 scale d and 32 quant bytes, 4 elements per byte (element j = bits
- * 2*(j%4) of byte j/4, value (code - 1) * d). One row per 32-lane "warp"
- * derived from the thread id (any hardware subgroup size works), 8 rows per
- * 256-thread workgroup.
+ * 2*(j%4) of byte j/4, value (code - 1) * d).
  *
  * GPU layout (struct-of-arrays, see vk_repack_weight): every block's 32 quant
- * bytes back to back (8 words per block), then one f16 scale per block. 16
- * lanes cover one block (8 elements = 16 quant bits each: two x vec4), so a
- * warp covers two blocks per step.
+ * bytes back to back (8 words per block, one 32-byte sector), then one f16
+ * scale per block.
  *
- * Dispatch: gx = ceil(n_out / 8). */
+ * One LANE per output row: a lane walks its row block by block, loading the
+ * block's 32 bytes as two 16-byte vectors (a whole sector, so no bandwidth is
+ * wasted although neighbouring lanes read rows 32 * blocks_per_row bytes
+ * apart). Every lane of the warp needs the same 128 activations at the same
+ * time — a broadcast — so activation traffic per weight byte is 1/32 of what a
+ * lane-per-block-half mapping reads (that mapping measured ~135 GB/s against a
+ * 505 GB/s pure weight-read roofline on the same access pattern: the
+ * activation loads were the wall, not the arithmetic).
+ *
+ * A workgroup is 32 rows x 8 k-slices (warp w takes blocks w, w + 8, ...): a
+ * short matrix (5120 rows) would otherwise put only 160 warps on the whole
+ * GPU. The 8 partial sums per row meet in shared memory (one barrier). The
+ * mapping uses the thread id only: any subgroup size works.
+ *
+ * Dequantization avoids int -> float converts (quarter rate on Turing): the
+ * two code bits are moved into the top mantissa bits (22, 21) of 1.0, so the
+ * float f = 1 + c/4 for code c in {0, 1, 2, 3}; then
+ *   sum (c - 1) x = 4 * sum f x - 5 * sum x.
+ *
+ * Dispatch: gx = ceil(n_out / 32). */
 
 layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
-layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 1) readonly buffer W { uvec4 w4[]; };
 layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
 
 layout(push_constant) uniform Push {
@@ -31,49 +47,64 @@ layout(push_constant) uniform Push {
     uint y_stride;
 } pc;
 
-shared float tmpsh[8][32];
-
-vec4 trits(uint bits, uint sh) {
-    return vec4(float((bits >> sh) & 3u) - 1.0,
-                float((bits >> (sh + 2u)) & 3u) - 1.0,
-                float((bits >> (sh + 4u)) & 3u) - 1.0,
-                float((bits >> (sh + 6u)) & 3u) - 1.0);
+/* code k of a 16-code word as the float 1 + c/4 (k is a compile-time constant
+ * after unrolling, so the branch and the & 31 guards fold away) */
+float mant(uint qw, uint k) {
+    uint m = k <= 10u ? (qw << ((21u - 2u * k) & 31u)) : (qw >> ((2u * k - 21u) & 31u));
+    return uintBitsToFloat(0x3F800000u | (m & 0x00600000u));
 }
 
+shared float red[8][32];
+/* one 32-block (4096-float) chunk of the activations, shared by the whole
+ * workgroup; every lane of a warp reads the same word: a shared-memory broadcast */
+shared vec4 xsh[1024];
+
 void main() {
-    uint tid = gl_LocalInvocationID.x;
-    uint wrp = tid >> 5u;
-    uint lane = tid & 31u;
-    uint row = gl_WorkGroupID.x * 8u + wrp;
-    uint ib = lane >> 4u;
-    uint wq = lane & 15u;
+    uint lane = gl_LocalInvocationID.x & 31u;
+    uint ks = gl_LocalInvocationID.x >> 5u;
+    uint row = gl_WorkGroupID.x * 32u + lane;
     uint nb = pc.blocks_per_row;
-    uint sc0 = pc.n_out * nb * 8u;
+    uint rrow = min(row, pc.n_out - 1u); /* tail lanes compute a valid row, store nothing */
+    uint sc0 = pc.n_out * nb * 8u;       /* word index of the scale region */
+    uint xbase = pc.x_offset >> 2u;
 
     float acc = 0.0;
-    if (row < pc.n_out) {
-        uint xbase = pc.x_offset >> 2u;
-        for (uint b0 = 0u; b0 < nb; b0 += 2u) {
-            uint b = b0 + ib;
-            if (b < nb) {
-                uint bi = row * nb + b;
-                uint bits = (w[bi * 8u + (wq >> 1u)] >> ((wq & 1u) * 16u)) & 0xffffu;
-                float d = unpackHalf2x16(w[sc0 + (bi >> 1u)] >> ((bi & 1u) * 16u)).x;
-                uint xi = xbase + ((b * 128u + wq * 8u) >> 2u);
-                acc += d * (dot(trits(bits, 0u), x4[xi]) + dot(trits(bits, 8u), x4[xi + 1u]));
-            }
-        }
-    }
-
-    tmpsh[wrp][lane] = acc;
-    barrier();
-    for (uint s = 16u; s > 0u; s >>= 1u) {
-        if (lane < s) {
-            tmpsh[wrp][lane] += tmpsh[wrp][lane + s];
+    uint nvec = nb * 32u; /* activation vec4s in the row */
+    for (uint c0 = 0u; c0 < nb; c0 += 32u) {
+        barrier(); /* the previous chunk is no longer read */
+        for (uint i = gl_LocalInvocationID.x; i < 1024u; i += 256u) {
+            uint v = c0 * 32u + i;
+            xsh[i] = v < nvec ? x4[xbase + v] : vec4(0.0);
         }
         barrier();
+        for (uint bl = ks; bl < 32u && c0 + bl < nb; bl += 8u) {
+            uint b = c0 + bl;
+            uint bi = rrow * nb + b;
+            uvec4 qa = w4[bi * 2u];
+            uvec4 qb = w4[bi * 2u + 1u];
+            uint sw = sc0 + (bi >> 1u);
+            float d = unpackHalf2x16(w4[sw >> 2u][sw & 3u] >> ((bi & 1u) * 16u)).x;
+            vec4 sv = vec4(0.0);
+            vec4 xs = vec4(0.0);
+            for (uint g = 0u; g < 32u; ++g) {
+                vec4 xv = xsh[bl * 32u + g];
+                uint qw = g < 16u ? qa[g >> 2u] : qb[(g - 16u) >> 2u];
+                uint k = (g & 3u) * 4u;
+                sv += vec4(mant(qw, k), mant(qw, k + 1u), mant(qw, k + 2u), mant(qw, k + 3u)) * xv;
+                xs += xv;
+            }
+            float sf = sv.x + sv.y + sv.z + sv.w;
+            float sx = xs.x + xs.y + xs.z + xs.w;
+            acc += d * fma(4.0, sf, -5.0 * sx);
+        }
     }
-    if (lane == 0u && row < pc.n_out) {
-        y[pc.y_offset + row] = tmpsh[wrp][0];
+    red[ks][lane] = acc;
+    barrier();
+    if (ks == 0u && row < pc.n_out) {
+        float t = 0.0;
+        for (uint i = 0u; i < 8u; ++i) {
+            t += red[i][lane];
+        }
+        y[pc.y_offset + row] = t;
     }
 }
