@@ -69,6 +69,14 @@ minor release.
   change — same parameter types, same diagnostics — and `make check-headers`
   now compiles every public header standalone as C23 and as C++17 on every PR.
 
+### Fixed
+
+- **Prefix pinning on gated-DeltaNet families refused** (#452): `pin_prefix`
+  returned OK on a qwen3.5 session while `session_reset` clears the recurrent
+  state and kept `kv_len` at the prefix, so the first decode after a reset
+  diverged from a fresh prefill. It now returns `GEIST_E_UNSUPPORTED`, which
+  the reset path's comment had promised all along.
+
 ## [0.11.0] — 2026-09-06
 
 Ternary BitNet embedding models. Microsoft's July 2026 releases —
