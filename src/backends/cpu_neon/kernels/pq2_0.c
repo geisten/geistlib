@@ -574,6 +574,86 @@ constexpr size_t PQ2_0_X8_TILE_ROWS = 128;
  * out so the pair path can permute once and run it twice: at m = 128 the
  * permute moves ~22 MB in and 22 MB out per layer, and gate/up or q/k/v
  * were each paying for it separately. */
+/* One sgemm over the whole tensor instead of one per 128-row tile.
+ *
+ * The tile form calls cblas_sgemm from inside an OMP region, and Accelerate
+ * will not thread a call made that way -- the note on
+ * cpu_neon_w_dequant_trampoline_mN records the same observation from the
+ * other side ("N = 32 rows stays single-threaded"). The answer taken there
+ * was to tile harder; the PrismML fork's is the opposite, and it is faster:
+ * dequantize the whole tensor with every thread, then make one call big
+ * enough that Accelerate threads it itself. Isolated, same FLOPs:
+ *
+ *   136 tiles of 128 columns from OMP    943 GFLOP/s
+ *   one call over 17408 columns         1407 GFLOP/s   (1.49x)
+ *   9 tiles of 2048 columns from OMP     910 GFLOP/s
+ *
+ * -- so it is the call being made from inside the region, not the tile size.
+ *
+ * The cost is the buffer: n_out * n_in floats, 356 MB at the 27B FFN width,
+ * against 8.9 MB per thread for tiles. It sits in the entering thread's
+ * workspace and is reused across layers. Off by default until the
+ * end-to-end number is in; GEIST_PQ2_0_WHOLE_SGEMM=1 turns it on. */
+static size_t pq2_0_sgemm_panel_rows(void) {
+    static _Atomic long rows = -1;
+    if (rows < 0) {
+        const char *e = getenv("GEIST_PQ2_0_SGEMM_PANEL");
+        long        v = 0;
+        if (e != nullptr) {
+            char *end = nullptr;
+            v         = strtol(e, &end, 10);
+            if (end == e || v < 8) {
+                v = 0;
+            }
+        }
+        rows = v;
+    }
+    return (size_t) rows;
+}
+
+static bool pq2_0_x8_gemm_panels(struct cpu_neon_workspace *ws,
+                                 size_t                     panel,
+                                 size_t                     m,
+                                 size_t                     n_in,
+                                 size_t                     n_out,
+                                 const uint8_t             *W,
+                                 const float               *xp,
+                                 float                     *y) {
+    const size_t nb   = n_in / PQ2_0_BLOCK_ELEMS;
+    size_t       need = 0;
+    if (panel > n_out) {
+        panel = n_out;
+    }
+    if (ckd_mul(&need, panel, n_in) || !cpu_neon_grow_f32(&ws->pq2_full, &ws->pq2_full_cap, need)) {
+        return false; /* caller falls back to the per-thread tile form */
+    }
+    float *buf = ws->pq2_full;
+    for (size_t r0 = 0; r0 < n_out; r0 += panel) {
+        const size_t pr = n_out - r0 < panel ? n_out - r0 : panel;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+        for (size_t k = 0; k < pr / 8; k++) {
+            pq2_0_x8_dequant8(W, nb, n_in, r0 / 8 + k, buf + k * 8 * n_in);
+        }
+        /* Outside the region: Accelerate gets the machine to itself. */
+        geist_sgemm(GEIST_OP_N,
+                    GEIST_OP_T,
+                    (int) m,
+                    (int) pr,
+                    (int) n_in,
+                    1.0f,
+                    xp,
+                    (int) n_in,
+                    buf,
+                    (int) n_in,
+                    0.0f,
+                    y + r0,
+                    (int) n_out);
+    }
+    return true;
+}
+
 static void pq2_0_x8_gemm_permuted(struct cpu_neon_state *st,
                                    size_t                 m,
                                    size_t                 n_in,
@@ -647,6 +727,10 @@ void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
         if (m != 0) {
             memset(y, 0, m * n_out * sizeof *y);
         }
+        return;
+    }
+    const size_t panel = pq2_0_sgemm_panel_rows();
+    if (panel != 0 && n_out % 8 == 0 && pq2_0_x8_gemm_panels(ws, panel, m, n_in, n_out, W, xp, y)) {
         return;
     }
     pq2_0_x8_gemm_permuted(st, m, n_in, n_out, W, xp, y);

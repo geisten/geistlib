@@ -108,6 +108,11 @@ struct cpu_neon_workspace {
     size_t pq2_xp_cap;
     float *pq2_tile;
     size_t pq2_tile_cap;
+    /* Whole-tensor dequant target for GEIST_PQ2_0_WHOLE_SGEMM=1: n_out *
+     * n_in floats (356 MB at the 27B FFN), so it lives on the thread that
+     * enters the kernel, not on every worker. */
+    float *pq2_full;
+    size_t pq2_full_cap;
 };
 
 /* Grow-on-demand helpers for the workspace buffers. Return false on OOM,
