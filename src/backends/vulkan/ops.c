@@ -39,6 +39,9 @@ struct vk_qinfo {
     case GEIST_DTYPE_TQ2_0:
         *out = (struct vk_qinfo) {256, VK_PIPE_MATVEC_TQ2_0, VK_PIPE_MATMUL_TQ2_0};
         return true;
+    case GEIST_DTYPE_PQ2_0:
+        *out = (struct vk_qinfo) {128, VK_PIPE_MATVEC_PQ2_0, VK_PIPE_MATMUL_PQ2_0};
+        return true;
     case GEIST_DTYPE_F32:
         /* not block-quantized; blocks_per_row is unused by the f32 kernels */
         *out = (struct vk_qinfo) {256, VK_PIPE_MATVEC_F32, VK_PIPE_MATMUL_F32};
@@ -183,6 +186,9 @@ static bool vk_dequant_row(const struct geist_weight *w, size_t j, float *row) {
     case GEIST_DTYPE_TQ2_0:
         dequant_tq2_0_row(n_in, base + j * n_in / TQ2_0_BLOCK_ELEMS * TQ2_0_BLOCK_BYTES, row);
         return true;
+    case GEIST_DTYPE_PQ2_0:
+        dequant_pq2_0_row(n_in, base + j * n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES, row);
+        return true;
     case GEIST_DTYPE_Q4_0:
         dequant_q4_0_row(n_in, base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row);
         return true;
@@ -290,6 +296,11 @@ enum { VK_Q6K_GPU_BLOCK = 216 };
                                vk_soa_bytes(blocks, TQ2_0_BLOCK_BYTES - 2, &bytes)
                        ? 0
                        : bytes;
+    case GEIST_DTYPE_PQ2_0:
+        return ckd_mul(&blocks, n_out, n_in / PQ2_0_BLOCK_ELEMS) ||
+                               vk_soa_bytes(blocks, PQ2_0_BLOCK_BYTES - 2, &bytes)
+                       ? 0
+                       : bytes;
     case GEIST_DTYPE_F32:
         return ckd_mul(&blocks, n_out, n_in) || ckd_mul(&bytes, blocks, sizeof(float)) ? 0 : bytes;
     default:
@@ -328,18 +339,30 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
     }
     case GEIST_DTYPE_Q4_0:
     case GEIST_DTYPE_Q8_0:
-    case GEIST_DTYPE_TQ2_0: {
-        /* file blocks: Q4_0/Q8_0 = f16 scale then quants; TQ2_0 = quants then
-         * f16 scale (ggml's block_tq2_0) */
-        const bool   tq       = w->dtype == GEIST_DTYPE_TQ2_0;
-        const bool   q4       = w->dtype == GEIST_DTYPE_Q4_0;
-        const size_t bb       = tq ? TQ2_0_BLOCK_BYTES : q4 ? Q4_0_BLOCK_BYTES : Q8_0_BLOCK_BYTES;
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_PQ2_0: {
+        /* file block: {elems, bytes, scale first?}. Q4_0 / Q8_0 / PQ2_0 = f16
+         * scale then quants; TQ2_0 = quants then f16 scale (ggml block_tq2_0). */
+        size_t elems, bb;
+        bool   scale_first = true;
+        switch ((enum geist_dtype) w->dtype) {
+        case GEIST_DTYPE_Q4_0:
+            elems = Q4_0_BLOCK_ELEMS, bb = Q4_0_BLOCK_BYTES;
+            break;
+        case GEIST_DTYPE_Q8_0:
+            elems = Q8_0_BLOCK_ELEMS, bb = Q8_0_BLOCK_BYTES;
+            break;
+        case GEIST_DTYPE_PQ2_0:
+            elems = PQ2_0_BLOCK_ELEMS, bb = PQ2_0_BLOCK_BYTES;
+            break;
+        default:
+            elems = TQ2_0_BLOCK_ELEMS, bb = TQ2_0_BLOCK_BYTES, scale_first = false;
+            break;
+        }
         const size_t qbytes   = bb - 2;
-        const size_t qskip    = tq ? 0 : 2;
-        const size_t scoff    = tq ? qbytes : 0;
-        const size_t n_blocks = n_out * (n_in / (tq   ? TQ2_0_BLOCK_ELEMS
-                                                 : q4 ? Q4_0_BLOCK_ELEMS
-                                                      : Q8_0_BLOCK_ELEMS));
+        const size_t qskip    = scale_first ? 2 : 0;
+        const size_t scoff    = scale_first ? 0 : qbytes;
+        const size_t n_blocks = n_out * (n_in / elems);
         uint8_t     *packed   = heap_alloc_aligned(bytes, 64);
         if (packed == nullptr) {
             *failed = true;
@@ -379,6 +402,16 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         switch ((enum geist_dtype) w->dtype) {
         case GEIST_DTYPE_F16:
         case GEIST_DTYPE_BF16:
+            /* No half-precision GPU kernel. A small matrix (Bonsai's BF16
+             * ssm_alpha / ssm_beta, 48 x 5120) is refused so the arch widens
+             * it to F32 at load (weight_load/layer_wiring.c, same rule as
+             * metal) and it runs on the device; a large one keeps the host
+             * row-dequant path below. Keep the cap in step with
+             * widen_max_elems there. */
+            if ((size_t) w->n_out * (size_t) w->n_in <= (4u << 20)) {
+                return GEIST_E_UNSUPPORTED;
+            }
+            [[fallthrough]];
         case GEIST_DTYPE_Q3_K:
             w->linear_m1 = vk_w_cpu_m1;
             w->linear_mN = vk_w_cpu_mN;
@@ -487,6 +520,8 @@ uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
     case VK_PIPE_MATVEC_Q5K:
     case VK_PIPE_MATVEC_TQ2_0:
     case VK_PIPE_MATMUL_TQ2_0:
+    case VK_PIPE_MATVEC_PQ2_0:
+    case VK_PIPE_MATMUL_PQ2_0:
     case VK_PIPE_MATMUL_Q4_0:
     case VK_PIPE_MATMUL_Q4_1:
     case VK_PIPE_MATMUL_Q8_0:
@@ -508,6 +543,7 @@ uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m) {
     case VK_PIPE_MATMUL_Q8_0:
     case VK_PIPE_MATMUL_Q5K:
     case VK_PIPE_MATMUL_TQ2_0:
+    case VK_PIPE_MATMUL_PQ2_0:
         return (m + 31u) / 32u; /* 32 batch rows per workgroup */
     case VK_PIPE_MATMUL_Q6K:
     case VK_PIPE_MATMUL_F32:
@@ -1505,6 +1541,9 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     case GEIST_DTYPE_Q6_K:
         dtype_code = 10;
         break;
+    case GEIST_DTYPE_PQ2_0:
+        dtype_code = 11;
+        break;
     default:
         return GEIST_E_UNSUPPORTED;
     }
@@ -1532,8 +1571,8 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     if (wbuf != nullptr) {
         bi[0] = (VkDescriptorBufferInfo) {.buffer = wbuf->buf, .range = VK_WHOLE_SIZE};
     } else {
-        if (dtype_code == 10 || dtype_code == 3 || dtype_code == 5) {
-            /* Q6_K / Q4_0 / Q8_0 GPU copies are repacked (216-byte blocks,
+        if (dtype_code == 10 || dtype_code == 3 || dtype_code == 5 || dtype_code == 11) {
+            /* Q6_K / Q4_0 / Q8_0 / PQ2_0 GPU copies are repacked (216-byte blocks,
              * struct-of-arrays); the arena holds the canonical layout the
              * shader can't read. */
             return GEIST_E_UNSUPPORTED;
@@ -1568,6 +1607,9 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         break;
     case 10:
         bpr = (uint32_t) (d / 256);
+        break;
+    case 11:
+        bpr = (uint32_t) (d / 128);
         break;
     default:
         bpr = 0;
@@ -2117,6 +2159,7 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
         case GEIST_DTYPE_Q4_K:
         case GEIST_DTYPE_Q5_K:
         case GEIST_DTYPE_Q6_K:
+        case GEIST_DTYPE_PQ2_0:
             return true;
         default:
             return false;
