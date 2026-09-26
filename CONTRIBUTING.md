@@ -96,6 +96,13 @@ make format          # rewrite in place (clang-format 22, .clang-format at root)
 make format-check    # verify only (CI runs this as a hard gate)
 ```
 
+Both pick a **clang-format 22.x** themselves — `clang-format-22`, then
+Homebrew's `llvm@22`, then PATH's if it is 22 — and refuse with an install
+hint if they find none. Other majors disagree with the tree on code nobody
+touched (Ubuntu's apt ships 18, Homebrew's default llvm is 23), so running
+one reports drift that is not there. `make format-check CLANG_FORMAT=...`
+forces a specific binary.
+
 ## C API style
 
 The project is C23. These are the house rules; they exist so that a

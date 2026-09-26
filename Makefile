@@ -493,12 +493,38 @@ distclean:
 FORMAT_FILES := $(wildcard *.c *.h tests/*.c tests/*.h tools/*.c tools/*.h) \
                 $(shell find src \( -name '*.c' -o -name '*.h' \) ! -name '*_spv.h')
 
+# The tree is formatted with clang-format 22 and CI pins 22.1.5. Other
+# majors disagree with it on code nobody has touched -- Ubuntu's apt ships
+# 18, Homebrew's default llvm is 23 -- so a bare `clang-format` reports
+# drift that is not there, and `make format` with one writes churn CI then
+# rejects. Resolve a 22.x binary instead of trusting PATH, and say how to
+# get one rather than emitting a diff nobody should apply. Override with
+# `make format-check CLANG_FORMAT=...` to use another version deliberately.
+# (No parentheses inside the $(shell ...) below: make would take the first
+# one as its closing paren.)
+CLANG_FORMAT_MAJOR := 22
+ifneq ($(filter format format-check,$(MAKECMDGOALS)),)
+ifeq ($(origin CLANG_FORMAT),undefined)
+CLANG_FORMAT := $(shell for c in clang-format-$(CLANG_FORMAT_MAJOR) \
+      /opt/homebrew/opt/llvm@$(CLANG_FORMAT_MAJOR)/bin/clang-format \
+      /usr/local/opt/llvm@$(CLANG_FORMAT_MAJOR)/bin/clang-format \
+      clang-format; do \
+    command -v "$$c" >/dev/null 2>&1 || continue; \
+    "$$c" --version 2>/dev/null | grep -q "version $(CLANG_FORMAT_MAJOR)\." \
+      && echo "$$c" && break; \
+  done)
+endif
+ifeq ($(strip $(CLANG_FORMAT)),)
+$(error No clang-format $(CLANG_FORMAT_MAJOR).x found. Install it with 'pip install clang-format==22.1.5' -- what CI uses -- or 'brew install llvm@$(CLANG_FORMAT_MAJOR)'. To use a different version deliberately: make $(MAKECMDGOALS) CLANG_FORMAT=clang-format)
+endif
+endif
+
 format:
-	@clang-format -i $(FORMAT_FILES)
+	@$(CLANG_FORMAT) -i $(FORMAT_FILES)
 	@echo "Formatted $(words $(FORMAT_FILES)) files."
 
 format-check:
-	@clang-format --dry-run --Werror $(FORMAT_FILES) && \
+	@$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES) && \
 	echo "All $(words $(FORMAT_FILES)) files conform to .clang-format"
 
 # Help text.

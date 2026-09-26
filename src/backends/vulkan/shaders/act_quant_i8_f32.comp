@@ -1,0 +1,45 @@
+#version 450
+
+/* BitNet activation fake-quant, in place, one workgroup per row: per-row
+ * absmax (floored at 1e-5), scale 127/absmax, round half away from zero,
+ * clamp to [-128, 127], dequantize. Same formula as the host helper
+ * apply_bitnet_input_quant_inplace. Dispatch: gx = rows. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer X {
+    float x[];
+};
+
+layout(push_constant) uniform Push {
+    uint n;
+    uint x_offset;
+    uint x_stride;
+    uint pad;
+} pc;
+
+shared float red[256];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint base = pc.x_offset + gl_WorkGroupID.x * pc.x_stride;
+    float m = 1e-5;
+    for (uint j = tid; j < pc.n; j += 256u) {
+        m = max(m, abs(x[base + j]));
+    }
+    red[tid] = m;
+    barrier();
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (tid < s) {
+            red[tid] = max(red[tid], red[tid + s]);
+        }
+        barrier();
+    }
+    float sc = 127.0 / red[0];
+    float inv = 1.0 / sc;
+    for (uint j = tid; j < pc.n; j += 256u) {
+        float q = clamp(x[base + j] * sc, -128.0, 127.0);
+        int qi = int(q < 0.0 ? q - 0.5 : q + 0.5);
+        x[base + j] = float(clamp(qi, -128, 127)) * inv;
+    }
+}

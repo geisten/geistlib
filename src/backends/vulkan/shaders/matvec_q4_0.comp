@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
+/* Q4_0 matvec — shared body and layout notes in mv_legacy.glsl */
+#define DT_Q4_0 1
+#include "mv_legacy.glsl"

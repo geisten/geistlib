@@ -10,6 +10,25 @@ minor release.
 
 ### Added
 
+- **Qwen3.5/3.6/3.8 on Vulkan** (#409, #410): the gated-DeltaNet mixer, partial
+  RoPE, SiLU/SwiGLU and attention-gate epilogues, and GPU kernels for Q4_0,
+  Q4_1, Q8_0, Q5_K and TQ2_0 (Q4_0/Q8_0/TQ2_0 are repacked struct-of-arrays at
+  upload). A qwen35 model now loads and decodes fully on the device; logits are
+  bit-identical to `cpu_scalar` on an FP32 KV cache (0.8B, 4B and the 27B Q4_0 on
+  a 21 GiB RADV iGPU; RTX 2080 Ti for the smaller ones). The DeltaNet state is
+  zeroed and snapshotted through `buffer_upload`/`buffer_download`, so it lives
+  in unmappable VRAM and `session_reset` really clears it.
+  `interleaved RoPE` (llama family) is a device op (`fused->rope_apply_interleaved`):
+  llama-3.2-3B Q4_K_M prefill at pp1024 went from 37 to 1024 t/s — the host
+  permutation was reading the query/key rows back over PCIe on every layer.
+- **BitNet prefill on Vulkan**: `relu_squared` and the BitNet int8 activation
+  fake-quant (`fused->bitnet_act_quant`) run on the device instead of as host
+  loops over mapped memory, one flush plus a PCIe round trip per layer. TQ2_0
+  bitnet_b1_58-large on an RTX 2080 Ti: pp1024 67 → 1146 t/s, tg 50 → 284 t/s.
+- New capability `weights_device_copy` (`geist_backend.h`): backends that upload
+  their large 2-D weights themselves leave them out of the host arena, so a
+  model is not held twice (a 16 GB model no longer asks for 32 GB).
+
 - **`geist_model_load_with_opts`** (`@stability EXPERIMENTAL`, `<geist.h>`):
   load a model with explicit session bounds, so the buffers the model owns —
   RoPE tables, the default session's scratch — are sized for what the caller
