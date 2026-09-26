@@ -2126,6 +2126,7 @@ static const struct geist_backend_vtbl vk_vtbl = {
         .buffer_unmap          = vk_buffer_unmap,
         .buffer_copy           = vk_buffer_copy,
         .resolve_weight        = vk_resolve_weight,
+        .fast_host_bytes       = vk_fast_host_bytes,
 };
 
 /* Probe pairing for the fused table below. Mirrors the entry checks of
@@ -2244,6 +2245,10 @@ const struct geist_backend_descriptor geist_backend_vulkan = {
                    * grow with the chunk, so GEIST_M_MAX above 64 is not capped for
                    * qwen35 hybrids. The default chunk stays 64: 128 makes the
                    * scratch pool spill out of a 256 MB BAR heap (#488) */
+                 /* 128 where the scratch pool fits the BAR window (the PQ2_0
+                  * tensor-core tile is 128 tokens wide); the arch lowers it to
+                  * 64 when it does not (vtbl->fast_host_bytes) */
+                 .preferred_m_max   = 128,
                  .dn_subchunk       = true,
                  .preferred_kv_mode = GEIST_KV_FP32},
 };
