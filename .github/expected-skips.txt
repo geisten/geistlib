@@ -41,6 +41,7 @@ test_awq_int
 
 # build/backend not present on these legs
 test_qwen35_metal_e2e_int
+test_qwen35_vulkan_e2e_int
 test_gains_int
 test_iq_kernel_int
 test_prefill_q3k_int
