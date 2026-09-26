@@ -1399,7 +1399,7 @@ static const char metal_embed_source[] =
         "v=p.dtype==0u?f32(w,p.wbo+(p.token*p.n+gid)*4u):(p.dtype==1u?h(w,p.wbo+(p.token*p.n+gid)*"
         "2u):(p.dtype==2u?bf(w,p.wbo+(p.token*p.n+gid)*2u):(p.dtype==5u?q40(w,p,p.token,gid):(p."
         "dtype==7u?q80(w,p,p.token,gid):(p.dtype==9u?q4(w,p,p.token,gid):(p.dtype==10u?q5(w,p,p."
-        "token,gid):(p.dtype==19u?pq2(w,p,p.token,gid):q6(w,p,p.token,gid))))))));"
+        "token,gid):(p.dtype==22u?pq2(w,p,p.token,gid):q6(w,p,p.token,gid))))))));"
         "y[p.yo+gid]=v*p.scale;}\n";
 
 /* Batched variant (#322 step 3): ids arrive via a small constant buffer,
@@ -1414,7 +1414,7 @@ static const char metal_embed_rows_source[] =
         "v=p.dtype==0u?f32(w,p.wbo+(row*p.n+gid.x)*4u):(p.dtype==1u?h(w,p.wbo+(row*p.n+gid.x)*"
         "2u):(p.dtype==2u?bf(w,p.wbo+(row*p.n+gid.x)*2u):(p.dtype==5u?q40(w,p,row,gid.x):(p."
         "dtype==7u?q80(w,p,row,gid.x):(p.dtype==9u?q4(w,p,row,gid.x):(p.dtype==10u?q5(w,p,row,"
-        "gid.x):(p.dtype==19u?pq2(w,p,row,gid.x):q6(w,p,row,gid.x))))))));"
+        "gid.x):(p.dtype==22u?pq2(w,p,row,gid.x):q6(w,p,row,gid.x))))))));"
         "y[p.yo+gid.y*p.n+gid.x]=v*p.scale;}\n";
 
 static const char metal_f32_source[] =
