@@ -128,6 +128,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             vk_buffer_destroy(be, st->weights[i].gpu);
         }
         geist_backend_free(be, st->weights);
+        geist_backend_free(be, st->cpu_row);
         if (st->x_stage != nullptr) {
             vk_buffer_destroy(be, st->x_stage);
         }
@@ -387,8 +388,6 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     *st                 = (struct vk_state) {0};
     st->backend         = be;
     st->profile_enabled = getenv("GEIST_VK_PROFILE") != nullptr;
-    const char *ops_env = getenv("GEIST_VK_GPU_OPS");
-    st->gpu_ops = ops_env != nullptr ? (uint32_t) strtoul(ops_env, nullptr, 0) : 0xffffffffu;
 
     enum geist_status s = vk_load_runtime(be, st);
     if (s != GEIST_OK) {

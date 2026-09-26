@@ -234,11 +234,14 @@ struct vk_state {
     bool has_int8_dot; /* shaderIntegerDotProduct + 8-bit storage */
     bool has_coopmat;  /* VK_KHR_cooperative_matrix */
 
-    /* GEIST_VK_GPU_OPS bitmask (debug bisect): 1=linear_t 2=elementwise
-     * 4=rmsnorm 8=rope 16=attention 32=copy 64=embed 128=argmax
-     * 256=deltanet_mix.
-     * Default: all on. */
-    uint32_t gpu_ops;
+    /* Set when a sequence flush failed (submit / wait / end); the next host
+     * readback (argmax, download, host view) reports it as GEIST_E_BACKEND and
+     * clears it — see vk_seq_take_failure. */
+    bool seq_failed;
+
+    /* Row scratch of the host row-dequant linear (vk_w_cpu_mN). */
+    float *cpu_row;
+    size_t cpu_row_cap;
 
     /* GEIST_VK_VERBOSE stats. */
     uint64_t stat_flushes;
@@ -356,8 +359,6 @@ struct geist_buffer {
     bool                   device_mem; /* memory type has DEVICE_LOCAL */
     bool                   borrowed;   /* buf/mem owned by a parent buffer */
 };
-/* Guard: ops require a live device + pipeline set (see lifecycle). */
-#define VK_OPS(be, bit) ((((struct vk_state *) (be)->state)->gpu_ops & (bit)) != 0)
 
 /* ---- Cross-module prototypes ------------------------------------------ */
 [[nodiscard]] enum geist_status vk_create(struct geist_backend            *be,
@@ -436,7 +437,8 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
 
 [[nodiscard]] enum geist_status vk_create_pipelines(struct geist_backend *be, struct vk_state *st);
 
-void vk_seq_flush(struct vk_state *st);
+void                            vk_seq_flush(struct vk_state *st);
+[[nodiscard]] enum geist_status vk_seq_take_failure(struct vk_state *st);
 
 [[nodiscard]] enum geist_status vk_seq_open_cmd(struct vk_state *st);
 
