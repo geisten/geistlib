@@ -364,6 +364,11 @@ int main(void) {
     /* wide n_out routes to the 128-row register-tiled kernel */
     run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 16, 2e-2);
     run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 64, 2e-2);
+    /* PQ2_0 on the tensor cores: ternary values are exact in f16, only the
+     * activations are rounded (looser bound, prefill-only path). */
+    run_case_tol(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 256, 16, 2e-2);
+    run_case_tol(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 640, 128, 64, 2e-2);
+    run_case_tol(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 4096, 48, 2e-2);
 
     geist_backend_destroy(vk);
     geist_backend_destroy(ref);
