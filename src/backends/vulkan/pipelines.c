@@ -23,6 +23,7 @@
 #include "shaders/hadamard_f32_spv.h"
 #include "shaders/kv_append_f16_spv.h"
 #include "shaders/matmul_f32_spv.h"
+#include "shaders/matmul_pq2_0_cm_spv.h"
 #include "shaders/matmul_pq2_0_spv.h"
 #include "shaders/matmul_q4_0_spv.h"
 #include "shaders/matmul_q4_1_spv.h"
@@ -218,6 +219,7 @@
             [VK_PIPE_MATMUL_TQ2_0]  = {matmul_tq2_0_spv, sizeof(matmul_tq2_0_spv)},
             [VK_PIPE_MATVEC_PQ2_0]  = {matvec_pq2_0_spv, sizeof(matvec_pq2_0_spv)},
             [VK_PIPE_MATMUL_PQ2_0]  = {matmul_pq2_0_spv, sizeof(matmul_pq2_0_spv)},
+            [VK_PIPE_MM_PQ2_0_CM]   = {matmul_pq2_0_cm_spv, sizeof(matmul_pq2_0_cm_spv)},
             [VK_PIPE_SILU]          = {silu_f32_spv, sizeof(silu_f32_spv)},
             [VK_PIPE_RELU2]         = {relu2_f32_spv, sizeof(relu2_f32_spv)},
             [VK_PIPE_HADAMARD]      = {hadamard_f32_spv, sizeof(hadamard_f32_spv)},
@@ -239,8 +241,7 @@
                     be, GEIST_E_INTERNAL, "vulkan: pipeline %d has no binding count", i);
             return GEIST_E_INTERNAL;
         }
-        if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM || i == VK_PIPE_MM_Q4K_CM32) &&
-            !st->has_coopmat) {
+        if (vk_pipe_needs_coopmat(i) && !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */
         }
         enum geist_status s = vk_make_pipeline(be,
@@ -250,7 +251,7 @@
                                                st->seq_playouts[vk_pipe_nbind[i] - 2],
                                                &st->pipes[i]);
         if (s != GEIST_OK) {
-            if (i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM || i == VK_PIPE_MM_Q4K_CM32) {
+            if (vk_pipe_needs_coopmat(i)) {
                 fprintf(stderr,
                         "geist vulkan: coopmat pipeline unavailable — using the "
                         "register-tiled GEMM\n");
