@@ -739,7 +739,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-14 ccache
       - name: Install Intel SDE
-        uses: petarpetrovt/setup-sde@31aa4a8e85e109bef00f1d838613fcc6ec421271 # v5.0
+        uses: petarpetrovt/setup-sde@6d2773bc0ef3005fd52e0ae0bb91782321793aec # v6.0
         with:
           environmentVariableName: SDE_PATH
       - name: Build (shipped x86_64 configuration)
