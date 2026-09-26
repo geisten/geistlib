@@ -49,7 +49,15 @@ holds it: it runs on a 21 GiB integrated GPU (RADV, `GEIST_VK_DEVICE=1`); an
 11 GiB card fails the load with an out-of-memory error — there is no spill to
 host memory yet. Weight matrices are read from the GGUF mmap and uploaded once
 (`caps.weights_device_copy`), so a model no longer needs its size twice in
-memory. Llama-family rows (interleaved RoPE) rotate on the device. Phase-by-phase lab log:
+memory. Llama-family rows (interleaved RoPE) rotate on the device.
+
+Ternary-Bonsai-2-27B (PQ2_0 + `prism.hadamard`, 7.21 GB) also runs on the device:
+PQ2_0 kernels, the embedding lookup and the blockwise Walsh-Hadamard rotation
+(`fused->hadamard_rotate`) are all on the GPU, bit-identical to `cpu_scalar`.
+It fits an 11 GiB card (RTX 2080 Ti: pp512 ≈ 38 t/s, tg ≈ 23 t/s — above the
+M1 Max's Metal decode). Prefill is compute-bound in the register-tiled GEMM
+(tensor cores are not used for PQ2_0 yet), and devices whose subgroup size is
+not 32 (RADV) fall back to per-row matvecs for prefill (#471, #467). Phase-by-phase lab log:
 [`../benchmark/results/VULKAN.md`](../benchmark/results/VULKAN.md).
 
 ## GPU numbers at a glance
