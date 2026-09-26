@@ -59,9 +59,7 @@ void main() {
         for (uint j = 0u; j + 1u < hist; ++j) {
             win[j] = win[j + 1u];
         }
-        if (hist > 0u) {
-            win[hist - 1u] = xt;
-        }
+        win[hist - 1u] = xt; /* hist = K - 1 >= 1 (the host rejects K < 2) */
     }
     for (uint j = 0u; j < hist; ++j) {
         cst[pc.st_off + j * pc.convd + c] = win[j];
