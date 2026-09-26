@@ -67,6 +67,12 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_ARGMAX_F32:
         have = fused->argmax_f32 != nullptr;
         break;
+    case GEIST_FUSED_ROPE_INTERLEAVED:
+        have = fused->rope_apply_interleaved != nullptr;
+        break;
+    case GEIST_FUSED_BITNET_ACT_QUANT:
+        have = fused->bitnet_act_quant != nullptr;
+        break;
     }
     return have && fused->supported != nullptr && fused->supported(be, &q);
 }
@@ -156,6 +162,15 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         q.op             = GEIST_FUSED_GELU_TANH_MUL;
         q.m              = m_cap;
         P->fuse_gelu_mul = probe(be, q);
+
+        q                        = base;
+        q.op                     = GEIST_FUSED_ROPE_INTERLEAVED;
+        q.head_dim               = L->head_dim;
+        P->fuse_rope_interleaved = P->rope_interleaved && probe(be, q);
+
+        q                        = base;
+        q.op                     = GEIST_FUSED_BITNET_ACT_QUANT;
+        P->fuse_bitnet_act_quant = P->apply_sub_ln && probe(be, q);
 
         q                = base;
         q.op             = GEIST_FUSED_SILU_MUL;

@@ -15,6 +15,7 @@ jobs:
   version-consistency:
     name: source version consistent; README follows latest release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,6 +45,7 @@ jobs:
   api-contract:
     name: API contract documented and STABLE (docs/API_CONTRACT.md)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: sh scripts/check-api-contract.sh
@@ -219,6 +221,25 @@ jobs:
         if: matrix.target == 'linux'
         run: make fetch-qwen3-model
 
+      # Integration on macOS (#441). Until now the Accelerate/AMX and Metal
+      # product paths ran no real forward per PR outside the perf sweep.
+      # qwen3.5 is the fixture this leg caches, so: its family suite (load,
+      # e2e, and the Metal e2e that skips everywhere else) plus the
+      # model-agnostic determinism and known-answer checks pointed at it.
+      # Not the whole int suite: with GEIST_GGUF_PATH at a qwen model six
+      # gemma-shaped tests fail on the fixture, not the code (#452).
+      - name: Integration tests on macOS (qwen3.5 fixture)
+        if: runner.os == 'macOS'
+        env:
+          GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/qwen3.5-0.8b-q8_0.gguf
+        run: |
+          # The runner directly: `make test-int` hard-codes its "_int" filter.
+          mk/run-tests.sh bin/${{ matrix.target }}/release/tests qwen35
+          for t in test_prefill_determinism_int test_known_answer_e2e; do
+            echo "=== $t ==="
+            bin/${{ matrix.target }}/release/tests/$t
+          done
+
       # GEIST_STRICT_FIXTURES=gguf turns "GGUF model not found" from a skip
       # into a failure. Scoped to THIS step on purpose: it is the only one
       # where both models are guaranteed present (cached + fetched above).
@@ -229,7 +250,19 @@ jobs:
         if: matrix.target == 'linux'
         env:
           GEIST_STRICT_FIXTURES: gguf
+          # Skips outside this list fail (#443): the suite may not shrink quietly.
+          GEIST_EXPECTED_SKIPS: .github/expected-skips.txt
         run: make test-int test-e2e TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
+
+      # Dequant kernels vs gguf-py, bit-exact, on every GGUF this leg holds
+      # (#440). Called directly, not via `make test-dequant`, whose 77 is a
+      # benign skip for a contributor without the package: here the package
+      # is installed and the models are present, so a skip is a failure.
+      - name: Dequant parity vs gguf-py (bit-exact, a skip is a failure)
+        if: matrix.target == 'linux'
+        run: |
+          python3 -m pip install --quiet --break-system-packages gguf
+          python3 tests/scripts/validate_gguf_dequant.py gguf_artifacts/*.gguf
 
       # The README claims "any language FFIs in with no shim" — prove it on
       # every PR: build the shared object from the freshly built archive and
@@ -250,13 +283,23 @@ jobs:
       # kernel — not subtle drift. The Pi 5 stays the precise arbiter. Floors are
       # conservative; tighten toward ~60% of the runner's real numbers once the
       # log shows them. Reuses the model already built + cached above.
+      # The floors catch cliffs; drift is for a reader. perf_gate --record
+      # puts this run's numbers in the step summary next to the last main
+      # run's, restored here from the cache (#442). Saved on main only, so a
+      # PR compares against main and never becomes the reference itself.
+      - name: Last main perf numbers
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: perf-last
+          key: perf-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: perf-${{ matrix.name }}-
       - name: Perf regression gate (Q4_K)
         if: matrix.target == 'linux'
         run: |
           bin/${{ matrix.target }}/release/tests/bench_perf_sweep \
             --gguf gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
             --seq-lens 128 --decode-n 16 --warmup 4 --repeats 3 \
-            | python3 benchmark/perf_gate.py --min-prefill 20 --min-decode 4
+            | python3 benchmark/perf_gate.py --min-prefill 20 --min-decode 4 --record perf-last/main.json
 
       # Same cliff detector on the Apple leg (#327). It runs on the qwen3.5
       # 0.8B Q8_0 that this leg already caches — the gemma4 reference is a
@@ -279,7 +322,13 @@ jobs:
           bin/${{ matrix.target }}/release/tests/bench_perf_sweep \
             --gguf gguf_artifacts/qwen3.5-0.8b-q8_0.gguf \
             --seq-lens 128 --decode-n 16 --warmup 4 --repeats 3 \
-            | python3 benchmark/perf_gate.py --min-prefill 30 --min-decode 10
+            | python3 benchmark/perf_gate.py --min-prefill 30 --min-decode 10 --record perf-last/main.json
+      - name: Save perf numbers for the next comparison (main only)
+        if: github.ref == 'refs/heads/main' && hashFiles('perf-last/main.json') != ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: perf-last
+          key: perf-${{ matrix.name }}-${{ github.run_id }}
 
       - name: Build example
         run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
@@ -340,6 +389,7 @@ jobs:
   build-test-musl:
     name: build + unit tests (Linux arm64, musl)
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Build + unit tests (musl in Alpine)
@@ -423,6 +473,8 @@ jobs:
       - name: Integration + e2e tests (real models, fixtures mandatory)
         env:
           GEIST_STRICT_FIXTURES: gguf
+          # Skips outside this list fail (#443): the suite may not shrink quietly.
+          GEIST_EXPECTED_SKIPS: .github/expected-skips.txt
         run: make test-int test-e2e TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
       # Portability gate (#96): GEIST_FORCE_ISA=avx2 clamps the kernel
       # dispatcher to the x86-64-v3 baseline, so the non-AVX512 code paths
@@ -1022,33 +1074,15 @@ jobs:
   # runner family executes it), cpu_x86/metal/vulkan (cannot execute on
   # this runner), third_party and generated *_spv.h (not ours). The control
   # test tests/test_coverage_gate_py.py proves the gate actually fires.
-  changes:
-    name: change classification
-    runs-on: ubuntu-latest
-    outputs:
-      docs_only: ${{ steps.cls.outputs.docs_only }}
-    steps:
-      - name: Classify PR diff
-        id: cls
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          DOCS=false
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            FILES=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --paginate -q '.[].filename')
-            if [ -n "$FILES" ] && ! echo "$FILES" | grep -qvE '\.(md|txt)$'; then
-              DOCS=true
-            fi
-          fi
-          echo "docs_only=$DOCS" >> "$GITHUB_OUTPUT"
-          echo "docs_only=$DOCS"
-
   coverage:
     name: coverage ratchet (Linux arm64, unit + int)
-    needs: changes
-    # Docs-only PRs skip the 60-90 minute instrumented run — nothing a
-    # .md change does can move line coverage. Push builds always run.
-    if: needs.changes.outputs.docs_only != 'true'
+    # Not on pull_request: the instrumented run is 60-100 minutes, twice
+    # the next-slowest job, and its verdict rarely changes a review. It
+    # runs on every push to main (and on dispatch), so a coverage drop is
+    # still caught — one merge later instead of one PR earlier. This
+    # replaced a docs-only classifier job that only ever skipped the .md
+    # PRs; the 60-minute wait on every code PR was the actual cost.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04-arm
     # An instrumented -O1 build prefills the real model many times across
     # the int suite: 58 minutes measured. e2e re-drives the same engine
@@ -1149,6 +1183,7 @@ jobs:
     # target $(error)s on x86_64 (kernels are NEON-only) before clang-format
     # even runs. aarch64 detects cleanly.
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     # Hard gate: the tree is clang-format-clean (clang-format 22.1.x), enforced.
     steps:
       - uses: actions/checkout@v4

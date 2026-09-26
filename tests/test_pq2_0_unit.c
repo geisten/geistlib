@@ -289,14 +289,99 @@ static int check_backend(const char *name, bool x8_policy) {
     return fails;
 }
 
+/* The pair kernels must be a pure scheduling change: they share the int8
+ * quantization of x (m1) or the activation permute (mN) between two
+ * projections, but each output row is still the same dot product. So the
+ * gate is bit-exact equality with the two separate calls -- a tolerance
+ * would hide a swapped output or an off-by-one in the index split, which
+ * is the whole risk in walking two output ranges as one. The two n_outs
+ * differ so an offset error cannot cancel. */
+static int check_pair(const char *name) {
+    struct geist_backend *be = nullptr;
+    if (geist_backend_create(name, nullptr, nullptr, &be) != GEIST_OK) {
+        printf("%s: not compiled in, skipped\n", name);
+        return 0;
+    }
+    int                 fails    = 0;
+    const size_t        n_in     = 5120;
+    const size_t        n_out[2] = {40, 264};
+    const size_t        m        = 3;
+    char                what[160];
+    size_t              bytes[2] = {0, 0};
+    uint8_t            *W[2]     = {make_tensor(n_out[0], n_in, &bytes[0]),
+                                    make_tensor(n_out[1], n_in, &bytes[1])};
+    struct geist_weight w[2];
+    for (size_t i = 0; i < 2; i++) {
+        w[i] = (struct geist_weight) {.raw        = W[i],
+                                      .raw_nbytes = bytes[i],
+                                      .n_in       = (int32_t) n_in,
+                                      .n_out      = (int32_t) n_out[i],
+                                      .dtype      = GEIST_DTYPE_PQ2_0};
+        snprintf(what, sizeof what, "%s pair: resolve w%zu", name, i);
+        fails += geist_expect(be->desc->vtbl->resolve_weight(be, &w[i]) == GEIST_OK, what);
+    }
+    float *x  = xmalloc(m * n_in * sizeof(float));
+    float *a0 = xmalloc(m * n_out[0] * sizeof(float));
+    float *a1 = xmalloc(m * n_out[1] * sizeof(float));
+    float *b0 = xmalloc(m * n_out[0] * sizeof(float));
+    float *b1 = xmalloc(m * n_out[1] * sizeof(float));
+    for (size_t i = 0; i < m * n_in; i++) {
+        x[i] = frand();
+    }
+    x[11] = -7.5f; /* an outlier fixes the shared int8 scale */
+
+    if (w[0].linear_pair_m1 != nullptr) {
+        snprintf(what, sizeof what, "%s pair: both weights carry the same pair_m1", name);
+        fails += geist_expect(w[0].linear_pair_m1 == w[1].linear_pair_m1, what);
+        w[0].linear_m1(x, &w[0], be, a0);
+        w[1].linear_m1(x, &w[1], be, a1);
+        w[0].linear_pair_m1(x, &w[0], &w[1], be, b0, b1);
+        snprintf(what, sizeof what, "%s pair_m1: y0 bit-exact vs separate calls", name);
+        fails += geist_expect(memcmp(a0, b0, n_out[0] * sizeof(float)) == 0, what);
+        snprintf(what, sizeof what, "%s pair_m1: y1 bit-exact vs separate calls", name);
+        fails += geist_expect(memcmp(a1, b1, n_out[1] * sizeof(float)) == 0, what);
+    } else {
+        printf("%s: no pair_m1 installed, skipped\n", name);
+    }
+    if (w[0].linear_pair_mN != nullptr) {
+        snprintf(what, sizeof what, "%s pair: both weights carry the same pair_mN", name);
+        fails += geist_expect(w[0].linear_pair_mN == w[1].linear_pair_mN, what);
+        w[0].linear_mN(m, x, &w[0], be, a0);
+        w[1].linear_mN(m, x, &w[1], be, a1);
+        w[0].linear_pair_mN(m, x, &w[0], &w[1], be, b0, b1);
+        snprintf(what, sizeof what, "%s pair_mN: y0 bit-exact vs separate calls", name);
+        fails += geist_expect(memcmp(a0, b0, m * n_out[0] * sizeof(float)) == 0, what);
+        snprintf(what, sizeof what, "%s pair_mN: y1 bit-exact vs separate calls", name);
+        fails += geist_expect(memcmp(a1, b1, m * n_out[1] * sizeof(float)) == 0, what);
+    }
+    for (size_t i = 0; i < 2; i++) {
+        if ((w[i].flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
+            void *aux = (void *) w[i].aux_fp32;
+            safe_free(&aux);
+        }
+        free(W[i]);
+    }
+    free(x);
+    free(a0);
+    free(a1);
+    free(b0);
+    free(b1);
+    geist_backend_destroy(be);
+    return fails;
+}
+
 int main(void) {
     int fails = 0;
     fails += check_layout();
     fails += check_backend("cpu_scalar", false);
     fails += check_backend("cpu_neon", true);
     /* The policy is read at backend create: a fresh backend sees it. */
+    fails += check_pair("cpu_scalar");
+    fails += check_pair("cpu_neon");
     setenv("GEIST_PQ2_0_X8_GEMV", "0", 1);
     fails += check_backend("cpu_neon", false);
+    /* x8 off: the row kernel's pair_m1 must still hold. */
+    fails += check_pair("cpu_neon");
     if (fails == 0) {
         printf("PASS test_pq2_0_unit\n");
     }

@@ -60,6 +60,10 @@ struct transformer_layer_exec_plan {
                                     * session KV-mode conditions stay inline
                                     * (sess->kv_*_enabled is the session
                                     * overlay) */
+    bool fuse_bitnet_act_quant;    /* BitNet activation fake-quant on the device */
+    bool fuse_rope_interleaved;    /* permute + RoPE of interleaved rows in one
+                                    * device pass (full rotation only: the call
+                                    * site also checks n_rot == head_dim) */
     bool fuse_ple_block_m1;        /* fused PLE block, decode */
     bool fuse_ple_block_mN;        /* fused PLE block, prefill */
 

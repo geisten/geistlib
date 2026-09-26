@@ -2,6 +2,9 @@
  *
  * Usage: dump_geist_logits <model.gguf> <prompt.txt> <ids.bin> <logits.bin>
  *
+ * GEIST_DUMP_BACKEND=<name> selects the backend ("auto" by default) — e.g. to
+ * compare vulkan against the cpu_scalar numerical oracle on the same ids.
+ *
  * The token IDs are written so an independent runtime can consume exactly
  * the same input, avoiding tokenizer or chat-template differences.
  */
@@ -70,7 +73,11 @@ int main(int argc, char **argv) {
     geist_token_t        *ids     = nullptr;
     int                   rc      = 1;
 
-    if (geist_backend_create("auto", nullptr, nullptr, &backend) != GEIST_OK) {
+    const char *backend_name = getenv("GEIST_DUMP_BACKEND");
+    if (backend_name == nullptr || backend_name[0] == '\0') {
+        backend_name = "auto";
+    }
+    if (geist_backend_create(backend_name, nullptr, nullptr, &backend) != GEIST_OK) {
         fprintf(stderr, "backend create failed: %s\n", geist_last_create_error());
         goto out;
     }

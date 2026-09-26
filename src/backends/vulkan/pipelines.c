@@ -42,10 +42,10 @@
 }
 
 [[nodiscard]] enum geist_status vk_create_pipelines(struct geist_backend *be, struct vk_state *st) {
-    /* Set/pipeline layouts for 2, 3 and 4 storage-buffer bindings; every
-     * shader declares a push block within the shared 128-byte range. */
-    for (uint32_t n = 2; n <= 6; ++n) {
-        VkDescriptorSetLayoutBinding bindings[6];
+    /* Set/pipeline layouts for 2..VK_MAX_BINDINGS storage-buffer bindings;
+     * every shader declares a push block within the shared 128-byte range. */
+    for (uint32_t n = 2; n <= VK_MAX_BINDINGS; ++n) {
+        VkDescriptorSetLayoutBinding bindings[VK_MAX_BINDINGS];
         for (uint32_t i = 0; i < n; ++i) {
             bindings[i] = (VkDescriptorSetLayoutBinding) {
                     .binding         = i,
@@ -76,7 +76,7 @@
         }
     }
     VkDescriptorPoolSize       psize  = {.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                         .descriptorCount = VK_SEQ_MAX_SETS * 6};
+                                         .descriptorCount = VK_SEQ_MAX_SETS * VK_MAX_BINDINGS};
     VkDescriptorPoolCreateInfo dpinfo = {.sType   = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                          .maxSets = VK_SEQ_MAX_SETS,
                                          .poolSizeCount = 1,
@@ -86,7 +86,7 @@
         return GEIST_E_BACKEND;
     }
     VkDescriptorPoolSize       csize  = {.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                         .descriptorCount = VK_DSET_CACHE * 6};
+                                         .descriptorCount = VK_DSET_CACHE * VK_MAX_BINDINGS};
     VkDescriptorPoolCreateInfo dcinfo = {.sType   = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                          .maxSets = VK_DSET_CACHE,
                                          .poolSizeCount = 1,
@@ -136,6 +136,7 @@
             [VK_PIPE_RMSNORM]       = {rmsnorm_f32_spv, sizeof(rmsnorm_f32_spv)},
             [VK_PIPE_RMSNORM_ADD]   = {rmsnorm_add_f32_spv, sizeof(rmsnorm_add_f32_spv)},
             [VK_PIPE_ROPE]          = {rope_f32_spv, sizeof(rope_f32_spv)},
+            [VK_PIPE_ROPE_IL]       = {rope_interleaved_f32_spv, sizeof(rope_interleaved_f32_spv)},
             [VK_PIPE_ATTENTION]     = {attention_f32_spv, sizeof(attention_f32_spv)},
             [VK_PIPE_ARGMAX]        = {argmax_f32_spv, sizeof(argmax_f32_spv)},
             [VK_PIPE_EMBED]         = {embed_lookup_scaled_spv, sizeof(embed_lookup_scaled_spv)},
@@ -151,8 +152,32 @@
             [VK_PIPE_MM_Q4K_CM32]   = {matmul_q4k_cm32_spv, sizeof(matmul_q4k_cm32_spv)},
             [VK_PIPE_PLE_GATE]      = {ple_gate_f32_spv, sizeof(ple_gate_f32_spv)},
             [VK_PIPE_FFN_NORM_GU]   = {ffn_norm_gate_up_q4k_spv, sizeof(ffn_norm_gate_up_q4k_spv)},
+            [VK_PIPE_DN_CONV]       = {deltanet_conv_f32_spv, sizeof(deltanet_conv_f32_spv)},
+            [VK_PIPE_DN_DELTA]      = {deltanet_delta_f32_spv, sizeof(deltanet_delta_f32_spv)},
+            [VK_PIPE_MATVEC_Q4_0]   = {matvec_q4_0_spv, sizeof(matvec_q4_0_spv)},
+            [VK_PIPE_MATMUL_Q4_0]   = {matmul_q4_0_spv, sizeof(matmul_q4_0_spv)},
+            [VK_PIPE_MATVEC_Q4_1]   = {matvec_q4_1_spv, sizeof(matvec_q4_1_spv)},
+            [VK_PIPE_MATMUL_Q4_1]   = {matmul_q4_1_spv, sizeof(matmul_q4_1_spv)},
+            [VK_PIPE_MATVEC_Q8_0]   = {matvec_q8_0_spv, sizeof(matvec_q8_0_spv)},
+            [VK_PIPE_MATMUL_Q8_0]   = {matmul_q8_0_spv, sizeof(matmul_q8_0_spv)},
+            [VK_PIPE_MATVEC_Q5K]    = {matvec_q5k_spv, sizeof(matvec_q5k_spv)},
+            [VK_PIPE_MATMUL_Q5K]    = {matmul_q5k_spv, sizeof(matmul_q5k_spv)},
+            [VK_PIPE_MATVEC_TQ2_0]  = {matvec_tq2_0_spv, sizeof(matvec_tq2_0_spv)},
+            [VK_PIPE_MATMUL_TQ2_0]  = {matmul_tq2_0_spv, sizeof(matmul_tq2_0_spv)},
+            [VK_PIPE_SILU]          = {silu_f32_spv, sizeof(silu_f32_spv)},
+            [VK_PIPE_RELU2]         = {relu2_f32_spv, sizeof(relu2_f32_spv)},
+            [VK_PIPE_ACT_QUANT]     = {act_quant_i8_f32_spv, sizeof(act_quant_i8_f32_spv)},
+            [VK_PIPE_SILU_MUL]      = {silu_mul_f32_spv, sizeof(silu_mul_f32_spv)},
+            [VK_PIPE_SIGMOID_MUL]   = {sigmoid_mul_f32_spv, sizeof(sigmoid_mul_f32_spv)},
+            [VK_PIPE_QGATE_SPLIT]   = {qgate_split_f32_spv, sizeof(qgate_split_f32_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
+        if (blobs[i].code == nullptr || blobs[i].bytes == 0) {
+            /* a pipeline added to the enum without a blob-table entry */
+            geist_backend_set_error(
+                    be, GEIST_E_INTERNAL, "vulkan: pipeline %d has no SPIR-V blob", i);
+            return GEIST_E_INTERNAL;
+        }
         if ((i == VK_PIPE_MM_Q4K_CM || i == VK_PIPE_MM_Q6K_CM || i == VK_PIPE_MM_Q4K_CM32) &&
             !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */

@@ -38,6 +38,34 @@ class PerfRatioGateTest(unittest.TestCase):
             self.assertIn("**1.30×**", md)
 
 
+bench_compare = load_module("bench_compare", "benchmark/bench_compare.py")
+
+
+def _run(commit: str, prefill: float, decode: float) -> dict:
+    return {"commit": commit, "model": "m.gguf",
+            "rows": [{"seq_len": 32, "prefill_tps": prefill, "decode_tps": decode},
+                     {"seq_len": 512, "prefill_tps": prefill, "decode_tps": decode}]}
+
+
+class BenchCompareTest(unittest.TestCase):
+    LIMITS = {"decode_tps": 3.0, "prefill_tps": 5.0}
+
+    def test_noise_passes_and_a_drop_past_the_limit_fails(self):
+        base = _run("aaa", 45.0, 15.0)
+        _, bad = bench_compare.compare(_run("bbb", 44.0, 14.7), base, self.LIMITS)
+        self.assertEqual(bad, [])
+        _, bad = bench_compare.compare(_run("bbb", 45.0, 14.4), base, self.LIMITS)
+        self.assertEqual(len(bad), 2)  # decode -4 % on both rows
+        self.assertIn("decode_tps", bad[0])
+        _, bad = bench_compare.compare(_run("bbb", 42.0, 15.0), base, self.LIMITS)
+        self.assertEqual(len(bad), 2)  # prefill -6.7 %
+
+    def test_faster_is_never_a_regression(self):
+        lines, bad = bench_compare.compare(_run("bbb", 60.0, 20.0), _run("aaa", 45.0, 15.0), self.LIMITS)
+        self.assertEqual(bad, [])
+        self.assertIn("+33.3 %", lines[2])
+
+
 class BenchmarkToolsTest(unittest.TestCase):
     def test_quality_driver_uses_machine_readable_protocol(self):
         protocol = json.loads((ROOT / "benchmark/apple_cpu_protocol.json").read_text())

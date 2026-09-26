@@ -1,0 +1,14 @@
+# test_logit_golden_int --record: argmax id and margin over the runner-up,
+# one greedy step per line. Regenerate only for a reviewed model change.
+216 6.8009
+33 9.3768
+36 8.7246
+28 6.5647
+216 6.9360
+33 10.3530
+37 9.6788
+28 5.7030
+216 6.9009
+33 9.8634
+38 10.5543
+28 6.3151
