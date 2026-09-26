@@ -21,6 +21,10 @@ minor release.
   `interleaved RoPE` (llama family) is a device op (`fused->rope_apply_interleaved`):
   llama-3.2-3B Q4_K_M prefill at pp1024 went from 37 to 1024 t/s — the host
   permutation was reading the query/key rows back over PCIe on every layer.
+- **BitNet prefill on Vulkan**: `relu_squared` and the BitNet int8 activation
+  fake-quant (`fused->bitnet_act_quant`) run on the device instead of as host
+  loops over mapped memory, one flush plus a PCIe round trip per layer. TQ2_0
+  bitnet_b1_58-large on an RTX 2080 Ti: pp1024 67 → 1146 t/s, tg 50 → 284 t/s.
 - New capability `weights_device_copy` (`geist_backend.h`): backends that upload
   their large 2-D weights themselves leave them out of the host arena, so a
   model is not held twice (a 16 GB model no longer asks for 32 GB).

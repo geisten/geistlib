@@ -286,6 +286,7 @@ enum geist_fused_op {
     GEIST_FUSED_EMBEDDING_LOOKUP_SCALED,
     GEIST_FUSED_ARGMAX_F32,
     GEIST_FUSED_ROPE_INTERLEAVED,
+    GEIST_FUSED_BITNET_ACT_QUANT,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -501,6 +502,12 @@ struct geist_backend_fused {
     enum geist_status (*argmax_f32)(struct geist_backend      *be,
                                     const struct geist_tensor *logits,
                                     int32_t                   *out_index);
+
+    /* BitNet activation fake-quant, in place: per row, scale = 127 / max(
+     * absmax, 1e-5), q = clamp(round-half-away(x * scale), -128, 127), x =
+     * q / scale (HF 1bitLLM utils_quant.py). x [rows, n] F32 DENSE. nullptr =
+     * the arch runs the same loop on the host. */
+    enum geist_status (*bitnet_act_quant)(struct geist_backend *be, struct geist_tensor *x);
 
     /* RoPE for rows in the GGUF's interleaved pair order (llama family):
      * exactly "permute (x[2i], x[2i+1]) -> (x[i], x[i + hd/2]) in place, then
