@@ -17,7 +17,7 @@ jobs:
     runs-on: [self-hosted, geist-avx512]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build (shipped x86_64 configuration)
         run: make TARGET=linux CC=gcc-14 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
       - name: Dispatcher proof — VNNI tier must actually be selected
