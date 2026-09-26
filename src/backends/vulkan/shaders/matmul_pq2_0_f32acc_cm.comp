@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* PQ2_0 GEMM on the tensor cores, f32 accumulation throughout (half rate on
+ * GeForce Turing; the exact variant, GEIST_VK_PQ2_F32_ACC=1). Body and notes:
+ * matmul_pq2_0_cm_body.glsl. */
+#include "matmul_pq2_0_cm_body.glsl"

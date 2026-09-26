@@ -23,6 +23,8 @@
 #include "shaders/hadamard_f32_spv.h"
 #include "shaders/kv_append_f16_spv.h"
 #include "shaders/matmul_f32_spv.h"
+#include "shaders/matmul_pq2_0_f32acc_cm_spv.h"
+#include "shaders/matmul_pq2_0_t64_cm_spv.h"
 #include "shaders/matmul_pq2_0_cm_spv.h"
 #include "shaders/matmul_pq2_0_spv.h"
 #include "shaders/matmul_q4_0_spv.h"
@@ -220,13 +222,16 @@
             [VK_PIPE_MATVEC_PQ2_0]  = {matvec_pq2_0_spv, sizeof(matvec_pq2_0_spv)},
             [VK_PIPE_MATMUL_PQ2_0]  = {matmul_pq2_0_spv, sizeof(matmul_pq2_0_spv)},
             [VK_PIPE_MM_PQ2_0_CM]   = {matmul_pq2_0_cm_spv, sizeof(matmul_pq2_0_cm_spv)},
-            [VK_PIPE_SILU]          = {silu_f32_spv, sizeof(silu_f32_spv)},
-            [VK_PIPE_RELU2]         = {relu2_f32_spv, sizeof(relu2_f32_spv)},
-            [VK_PIPE_HADAMARD]      = {hadamard_f32_spv, sizeof(hadamard_f32_spv)},
-            [VK_PIPE_ACT_QUANT]     = {act_quant_i8_f32_spv, sizeof(act_quant_i8_f32_spv)},
-            [VK_PIPE_SILU_MUL]      = {silu_mul_f32_spv, sizeof(silu_mul_f32_spv)},
-            [VK_PIPE_SIGMOID_MUL]   = {sigmoid_mul_f32_spv, sizeof(sigmoid_mul_f32_spv)},
-            [VK_PIPE_QGATE_SPLIT]   = {qgate_split_f32_spv, sizeof(qgate_split_f32_spv)},
+            [VK_PIPE_MM_PQ2_0_CM64] = {matmul_pq2_0_t64_cm_spv, sizeof(matmul_pq2_0_t64_cm_spv)},
+            [VK_PIPE_MM_PQ2_0_CM_F32] = {matmul_pq2_0_f32acc_cm_spv,
+                                         sizeof(matmul_pq2_0_f32acc_cm_spv)},
+            [VK_PIPE_SILU]            = {silu_f32_spv, sizeof(silu_f32_spv)},
+            [VK_PIPE_RELU2]           = {relu2_f32_spv, sizeof(relu2_f32_spv)},
+            [VK_PIPE_HADAMARD]        = {hadamard_f32_spv, sizeof(hadamard_f32_spv)},
+            [VK_PIPE_ACT_QUANT]       = {act_quant_i8_f32_spv, sizeof(act_quant_i8_f32_spv)},
+            [VK_PIPE_SILU_MUL]        = {silu_mul_f32_spv, sizeof(silu_mul_f32_spv)},
+            [VK_PIPE_SIGMOID_MUL]     = {sigmoid_mul_f32_spv, sizeof(sigmoid_mul_f32_spv)},
+            [VK_PIPE_QGATE_SPLIT]     = {qgate_split_f32_spv, sizeof(qgate_split_f32_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
         if (blobs[i].code == nullptr || blobs[i].bytes == 0) {

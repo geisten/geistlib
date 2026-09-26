@@ -1058,20 +1058,14 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         return s;
     }
 
-    /* P1.2.f: allocate the default session (KV + scratch pool + arena +
-     * sampler). transformer_session_alloc reads kv_mode + m_max from
-     * opts; AUTO falls back to env / platform default for full backward
-     * compat. The default sess is the one installed on direct-state
-     * callers (state-only int-tests, internal helpers). Engine-level
-     * geist_session_create allocates additional sessions on top. */
-    st->default_sess = transformer_session_alloc(st, opts);
-    if (st->default_sess == nullptr) {
-        /* session_alloc populated the backend error. */
-        s = geist_backend_errcode(be);
-        if (s == GEIST_OK)
-            s = GEIST_E_OOM;
-        transformer_state_destroy(st);
-        return s;
+    /* The default session (KV + scratch pool + arena + sampler) is built
+     * lazily by transformer_default_session — see arch_state.h. Keep the
+     * opts it will need: transformer_session_alloc reads kv_mode + m_max from
+     * them; AUTO falls back to env / platform default for full backward
+     * compat. */
+    if (opts != nullptr) {
+        st->default_opts     = *opts;
+        st->has_default_opts = true;
     }
 
     s = transformer_exec_plan_build(st);
@@ -1082,13 +1076,8 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
 
     /* Eager spec-head build (was lazy at first decode). Doing it here keeps
      * the model immutable during steady-state, so concurrent sessions never
-     * race a first-use build. The default session's scratch is allocated
-     * below-the-fact since session_alloc ran before the sketch existed. */
+     * race a first-use build. */
     transformer_spec_head_init(st);
-    if (st->spec_state == 1 && !transformer_spec_session_scratch_alloc(st->default_sess)) {
-        transformer_state_destroy(st);
-        return GEIST_E_OOM;
-    }
 
     /* AWQ (optional): fold attn_norm/ffn_norm gammas and stash per-layer
      * inv-scales for o/down inputs. Runs after weights are mapped but
@@ -1701,5 +1690,14 @@ void transformer_session_free(struct transformer_arch_state   *state,
 }
 
 struct transformer_arch_session *transformer_default_session(struct transformer_arch_state *state) {
-    return (state != nullptr) ? state->default_sess : nullptr;
+    if (state == nullptr) {
+        return nullptr;
+    }
+    if (state->default_sess == nullptr) {
+        /* the spec-head sketch exists by now, so session_alloc also builds the
+         * session's spec scratch (unlike at state_create time, when it ran first) */
+        state->default_sess = transformer_session_alloc(
+                state, state->has_default_opts ? &state->default_opts : nullptr);
+    }
+    return state->default_sess;
 }
