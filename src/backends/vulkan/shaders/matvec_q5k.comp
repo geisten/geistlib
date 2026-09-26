@@ -1,0 +1,102 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
+/* Q5_K matvec (native 176-byte superblocks, no repack): one row per 32-lane
+ * "warp" (derived from the thread id — any hardware subgroup size works),
+ * 8 rows per 256-thread workgroup. 32 lanes cover one 256-element
+ * superblock: lane -> sub-block sub = lane / 4 (32 elements each) and 8
+ * consecutive elements at (lane & 3) * 8, i.e. two quant words, two
+ * high-bit words and two x vec4 per superblock.
+ *
+ *   value = d * sc[sub] * q5 - dmin * mn[sub]
+ *   q5    = nibble(qs) | bit `sub` of qh[element] << 4
+ *           (group g = sub / 2 holds 32 qs bytes; even sub = low nibble,
+ *            odd sub = high nibble; qh bit index == sub)
+ *
+ * Dispatch: gx = ceil(n_out / 8). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+shared float tmpsh[8][32];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint wrp = tid >> 5u;
+    uint lane = tid & 31u;
+    uint row = gl_WorkGroupID.x * 8u + wrp;
+    uint sub = lane >> 2u;
+    uint idx8 = (lane & 3u) * 8u;
+    uint shift = (sub & 1u) * 4u;
+    uint nb = pc.blocks_per_row;
+
+    float acc = 0.0;
+    if (row < pc.n_out) {
+        uint row_word = (pc.w_offset >> 2u) + row * nb * 44u;
+        uint xbase = pc.x_offset >> 2u;
+        for (uint b = 0u; b < nb; ++b) {
+            uint blk = row_word + b * 44u;
+            uint h0 = w[blk];
+            uint h1 = w[blk + 1u];
+            uint h2 = w[blk + 2u];
+            uint h3 = w[blk + 3u];
+            vec2 dd = unpackHalf2x16(h0);
+            uint sc_u;
+            uint mn_u;
+            if (sub < 4u) {
+                sc_u = (h1 >> (8u * sub)) & 63u;
+                mn_u = (h2 >> (8u * sub)) & 63u;
+            } else {
+                uint j = sub - 4u;
+                uint q_j4 = (h3 >> (8u * j)) & 0xffu;
+                sc_u = (q_j4 & 15u) | ((((h1 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+                mn_u = (q_j4 >> 4u) | ((((h2 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+            }
+            uint qh0 = w[blk + 4u + (idx8 >> 2u)];
+            uint qh1 = w[blk + 5u + (idx8 >> 2u)];
+            uint qs = blk + 12u + (sub >> 1u) * 8u + (idx8 >> 2u);
+            uint q0 = w[qs];
+            uint q1 = w[qs + 1u];
+
+            float dsc = dd.x * float(sc_u);
+            float dmn = dd.y * float(mn_u);
+            vec4 v0 = vec4(float(((q0 >> shift) & 15u) | (((qh0 >> sub) & 1u) << 4u)),
+                           float(((q0 >> (8u + shift)) & 15u) | (((qh0 >> (8u + sub)) & 1u) << 4u)),
+                           float(((q0 >> (16u + shift)) & 15u) | (((qh0 >> (16u + sub)) & 1u) << 4u)),
+                           float(((q0 >> (24u + shift)) & 15u) | (((qh0 >> (24u + sub)) & 1u) << 4u)));
+            vec4 v1 = vec4(float(((q1 >> shift) & 15u) | (((qh1 >> sub) & 1u) << 4u)),
+                           float(((q1 >> (8u + shift)) & 15u) | (((qh1 >> (8u + sub)) & 1u) << 4u)),
+                           float(((q1 >> (16u + shift)) & 15u) | (((qh1 >> (16u + sub)) & 1u) << 4u)),
+                           float(((q1 >> (24u + shift)) & 15u) | (((qh1 >> (24u + sub)) & 1u) << 4u)));
+            uint xi = xbase + ((b * 256u + sub * 32u + idx8) >> 2u);
+            acc += dot(dsc * v0 - vec4(dmn), x4[xi]) + dot(dsc * v1 - vec4(dmn), x4[xi + 1u]);
+        }
+    }
+
+    tmpsh[wrp][lane] = acc;
+    barrier();
+    for (uint s = 16u; s > 0u; s >>= 1u) {
+        if (lane < s) {
+            tmpsh[wrp][lane] += tmpsh[wrp][lane + s];
+        }
+        barrier();
+    }
+    if (lane == 0u && row < pc.n_out) {
+        y[pc.y_offset + row] = tmpsh[wrp][0];
+    }
+}

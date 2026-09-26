@@ -1,0 +1,45 @@
+#version 450
+
+/* Llama-family RoPE on rows stored in the GGUF's interleaved pair order
+ * (x[2i], x[2i+1]): rotates each pair and writes the result in the split-half
+ * order the attention kernels use ((i, i + head_dim/2)). This is the host's
+ * permute-then-rope in one pass; the output layout differs from the input, so
+ * a head is staged in shared memory (one workgroup per (token, head)).
+ * Full rotation only: cos/sin rows are head_dim wide, head_dim <= 256. */
+
+layout(local_size_x = 128) in;
+
+layout(set = 0, binding = 0) buffer X { float x[]; };
+layout(set = 0, binding = 1) readonly buffer Cos { float cos_v[]; };
+layout(set = 0, binding = 2) readonly buffer Sin { float sin_v[]; };
+
+layout(push_constant) uniform Push {
+    uint n_heads;
+    uint head_dim;
+    uint x_offset;
+    uint cos_offset;
+    uint sin_offset;
+} pc;
+
+shared float sx[256];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint head = gl_WorkGroupID.x;
+    uint seq = head / pc.n_heads;
+    uint half_dim = pc.head_dim >> 1;
+    uint base = pc.x_offset + head * pc.head_dim;
+    for (uint i = tid; i < pc.head_dim; i += 128u) {
+        sx[i] = x[base + i];
+    }
+    barrier();
+    uint rope_base = seq * pc.head_dim;
+    for (uint i = tid; i < half_dim; i += 128u) {
+        float a = sx[2u * i];
+        float b = sx[2u * i + 1u];
+        x[base + i] = a * cos_v[pc.cos_offset + rope_base + i] -
+                      b * sin_v[pc.sin_offset + rope_base + i];
+        x[base + half_dim + i] = b * cos_v[pc.cos_offset + rope_base + half_dim + i] +
+                                 a * sin_v[pc.sin_offset + rope_base + half_dim + i];
+    }
+}

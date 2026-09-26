@@ -37,7 +37,19 @@ runtime, no link-time dependency. The first non-Apple GPU path (NVIDIA Turing
 tested): quality gate passed (MMLU-200 0.520 vs 0.490 on the CPU path, 14/14
 tool-calling) and decode reaches ~86 % of llama.cpp Vulkan (132.3 vs 154 t/s
 tg128); prefill is the open front. Every PR executes the registry, buffer and
-linear-parity tests on Mesa lavapipe in CI. Phase-by-phase lab log:
+linear-parity tests on Mesa lavapipe in CI.
+
+The Qwen3.5/3.6/3.8 hybrids (Gated-DeltaNet + attention) run end to end on the
+device: the DeltaNet mixer (causal conv + delta rule, two dispatches), partial
+RoPE, SwiGLU/gate epilogues and Q4_0 / Q4_1 / Q8_0 / Q5_K / Q6_K / TQ2_0
+kernels, with logits bit-identical to `cpu_scalar` on an FP32 KV cache (the CPU
+backends default to an INT8 KV cache, Vulkan to F16 — pin `GEIST_KV_INT8=0
+GEIST_KV_F16=0` when comparing). The 27B Q4_0 (16 GB) needs a device that
+holds it: it runs on a 21 GiB integrated GPU (RADV, `GEIST_VK_DEVICE=1`); an
+11 GiB card fails the load with an out-of-memory error — there is no spill to
+host memory yet. Weight matrices are read from the GGUF mmap and uploaded once
+(`caps.weights_device_copy`), so a model no longer needs its size twice in
+memory. Llama-family rows (interleaved RoPE) rotate on the device. Phase-by-phase lab log:
 [`../benchmark/results/VULKAN.md`](../benchmark/results/VULKAN.md).
 
 ## GPU numbers at a glance
