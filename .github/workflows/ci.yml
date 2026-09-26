@@ -325,7 +325,7 @@ jobs:
             | python3 benchmark/perf_gate.py --min-prefill 30 --min-decode 10 --record perf-last/main.json
       - name: Save perf numbers for the next comparison (main only)
         if: github.ref == 'refs/heads/main' && hashFiles('perf-last/main.json') != ''
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: perf-last
           key: perf-${{ matrix.name }}-${{ github.run_id }}
