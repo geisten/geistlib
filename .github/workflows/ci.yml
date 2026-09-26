@@ -254,6 +254,16 @@ jobs:
           GEIST_EXPECTED_SKIPS: .github/expected-skips.txt
         run: make test-int test-e2e TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}"
 
+      # Dequant kernels vs gguf-py, bit-exact, on every GGUF this leg holds
+      # (#440). Called directly, not via `make test-dequant`, whose 77 is a
+      # benign skip for a contributor without the package: here the package
+      # is installed and the models are present, so a skip is a failure.
+      - name: Dequant parity vs gguf-py (bit-exact, a skip is a failure)
+        if: matrix.target == 'linux'
+        run: |
+          python3 -m pip install --quiet --break-system-packages gguf
+          python3 tests/scripts/validate_gguf_dequant.py gguf_artifacts/*.gguf
+
       # The README claims "any language FFIs in with no shim" — prove it on
       # every PR: build the shared object from the freshly built archive and
       # run the ctypes example (the complete Python integration, ~30 lines)
