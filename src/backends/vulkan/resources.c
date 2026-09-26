@@ -1,10 +1,11 @@
 /*
  * src/backends/vulkan/resources.c — buffers, staging, the weight registry, and tensor accessors.
  *
- * Layer: BACKEND (vulkan). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
+ * Layer: BACKEND (vulkan).
  */
 #include "vk_internal.h"
+
+#include "tensor_view.h" /* geist_tensor_elems: checked element count */
 
 /* ====================================================================== */
 /* Buffers                                                                 */
@@ -410,6 +411,15 @@ vk_stage_reserve(struct geist_backend *be, struct geist_buffer **slot, size_t by
     return vk_stage_reserve_role(be, slot, bytes, GEIST_BUFFER_STAGING);
 }
 
+/* Registry copy of the weight a tensor views (nullptr: not resolved, or the
+ * tensor is not host-aliased). */
+struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor *t) {
+    if (t == nullptr || t->buffer == nullptr || t->buffer->host_alias == nullptr) {
+        return nullptr;
+    }
+    return vk_weight_lookup(st, (const uint8_t *) t->buffer->host_alias + t->offset);
+}
+
 struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host) {
     for (size_t i = 0; i < st->n_weights; ++i) {
         if (st->weights[i].host == host) {
@@ -472,20 +482,20 @@ bool vk_tensor_gpu_f16(const struct geist_tensor *t,
     return true;
 }
 
-/* Element count of an F16 DENSE tensor (metadata only). */
-size_t vk_t_n16(const struct geist_tensor *t) {
-    if (t == nullptr || t->dtype != GEIST_DTYPE_F16 || t->layout != GEIST_LAYOUT_DENSE ||
-        t->buffer == nullptr || t->ndim < 1) {
+/* Element count of a DENSE tensor of `dtype`, 0 on any mismatch (metadata
+ * only; checked product, see geist_tensor_elems). */
+static size_t vk_dense_n(const struct geist_tensor *t, enum geist_dtype dtype) {
+    size_t n = 0;
+    if (t == nullptr || t->dtype != dtype || t->layout != GEIST_LAYOUT_DENSE ||
+        t->buffer == nullptr || geist_tensor_elems(t, &n)) {
         return 0;
     }
-    size_t n = 1;
-    for (int d = 0; d < t->ndim; d++) {
-        if (t->shape[d] <= 0) {
-            return 0;
-        }
-        n *= (size_t) t->shape[d];
-    }
     return n;
+}
+
+/* Element count of an F16 DENSE tensor (metadata only). */
+size_t vk_t_n16(const struct geist_tensor *t) {
+    return vk_dense_n(t, GEIST_DTYPE_F16);
 }
 
 struct vk_access vk_acc_tensor16(const struct geist_tensor *t, bool write) {
@@ -493,29 +503,12 @@ struct vk_access vk_acc_tensor16(const struct geist_tensor *t, bool write) {
 }
 
 /* ====================================================================== */
-/* Level-2 ops — CPU loops over host-visible buffers (Phase 2)             */
-/*                                                                         */
-/* All activation/scratch buffers this backend creates are host-visible    */
-/* (or aliased host regions), so the reference-op bodies from cpu_scalar   */
-/* apply unchanged; only the pointer unwrap differs. The heavy lifting     */
-/* (linears = the weight reads) already runs on the GPU; these small       */
-/* F32 ops move to shaders in Phase 3 where fusion makes them pay.         */
+/* Tensor accessors, host views and copies                                  */
 /* ====================================================================== */
 
 /* Element count of an F32 DENSE tensor, 0 on any mismatch. Metadata only. */
 size_t vk_t_n(const struct geist_tensor *t) {
-    if (t == nullptr || t->dtype != GEIST_DTYPE_F32 || t->layout != GEIST_LAYOUT_DENSE ||
-        t->buffer == nullptr || t->ndim < 1) {
-        return 0;
-    }
-    size_t n = 1;
-    for (int d = 0; d < t->ndim; d++) {
-        if (t->shape[d] <= 0) {
-            return 0;
-        }
-        n *= (size_t) t->shape[d];
-    }
-    return n;
+    return vk_dense_n(t, GEIST_DTYPE_F32);
 }
 
 void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
