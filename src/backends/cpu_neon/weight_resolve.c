@@ -1633,6 +1633,8 @@ static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight               
     w->backend_alignment = 64;
     w->linear_m1         = cpu_neon_w_pq2_0_x8_m1;
     w->linear_mN         = cpu_neon_w_pq2_0_x8_mN;
+    w->linear_pair_m1    = cpu_neon_w_pq2_0_x8_pair_m1;
+    w->linear_pair_mN    = cpu_neon_w_pq2_0_x8_pair_mN;
 #else
     (void) w;
     (void) policy;
@@ -1825,6 +1827,17 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
             w->linear_pair_m1 = cpu_neon_w_q4k_pair_m1;
             w->linear_pair_mN = cpu_neon_w_q4k_pair_mN;
         }
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+        /* The row kernel's pair. mN stays the dequant trampoline here,
+         * which has no pair form; install_pq2_0_x8_gemv_if_eligible
+         * replaces both slots from the post hooks below when the x8
+         * repack takes over. Keyed on the kernel the table actually
+         * installed, not on the dtype: a host without dotprod took the
+         * trampoline row and must keep it. */
+        if (w->linear_m1 == cpu_neon_w_pq2_0_q8a_m1) {
+            w->linear_pair_m1 = cpu_neon_w_pq2_0_q8a_pair_m1;
+        }
+#endif
         if (w->backend_layout == 0) {
             w->backend_layout = GEIST_W_LAYOUT_SOURCE;
         }

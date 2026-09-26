@@ -17,7 +17,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build (metal)
         run: |
@@ -42,7 +42,7 @@ jobs:
 
       - name: Cache E2B model
         if: steps.probe.outputs.metal == 'yes'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
           key: geist-model-gemma4-e2b-q4km-v1
