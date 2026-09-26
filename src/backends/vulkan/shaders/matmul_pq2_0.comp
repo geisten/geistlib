@@ -1,0 +1,84 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+/* PQ2_0 GEMM, register-tiled like matmul_tq2_0: one output row per hardware
+ * subgroup, 8 rows x 32 batch rows per 256-thread workgroup. Layout and lane
+ * mapping as in matvec_pq2_0.comp (16 lanes per 128-element block, two blocks
+ * per step). Assumes subgroup size 32.
+ * Dispatch: gx = ceil(n_out / 8), gy = ceil(rows / 32). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+vec4 trits(uint bits, uint sh) {
+    return vec4(float((bits >> sh) & 3u) - 1.0,
+                float((bits >> (sh + 2u)) & 3u) - 1.0,
+                float((bits >> (sh + 4u)) & 3u) - 1.0,
+                float((bits >> (sh + 6u)) & 3u) - 1.0);
+}
+
+void main() {
+    uint row = gl_WorkGroupID.x * gl_NumSubgroups + gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint t0 = gl_WorkGroupID.y * 32u;
+    if (t0 >= pc.rows) {
+        return;
+    }
+    uint tm = min(32u, pc.rows - t0);
+    uint ib = lane >> 4u;
+    uint wq = lane & 15u;
+    uint nb = pc.blocks_per_row;
+    uint sc0 = pc.n_out * nb * 8u;
+
+    float s[32];
+    for (uint t = 0u; t < 32u; ++t) {
+        s[t] = 0.0;
+    }
+
+    if (row < pc.n_out) {
+        for (uint b0 = 0u; b0 < nb; b0 += 2u) {
+            uint b = b0 + ib;
+            if (b < nb) {
+                uint bi = row * nb + b;
+                uint bits = (w[bi * 8u + (wq >> 1u)] >> ((wq & 1u) * 16u)) & 0xffffu;
+                float d = unpackHalf2x16(w[sc0 + (bi >> 1u)] >> ((bi & 1u) * 16u)).x;
+                vec4 wv0 = d * trits(bits, 0u);
+                vec4 wv1 = d * trits(bits, 8u);
+                uint e_base = pc.x_offset + b * 128u + wq * 8u;
+                for (uint t = 0u; t < 32u; ++t) {
+                    if (t >= tm) {
+                        break;
+                    }
+                    uint xv = (e_base + (t0 + t) * pc.x_stride) >> 2u;
+                    s[t] += dot(wv0, x4[xv]) + dot(wv1, x4[xv + 1u]);
+                }
+            }
+        }
+    }
+
+    for (uint t = 0u; t < 32u; ++t) {
+        if (t >= tm) {
+            break;
+        }
+        float r = subgroupAdd(s[t]);
+        if (subgroupElect() && row < pc.n_out) {
+            y[pc.y_offset + (t0 + t) * pc.y_stride + row] = r;
+        }
+    }
+}
