@@ -1,0 +1,149 @@
+#version 450
+
+/* Gated-DeltaNet recurrence + gated per-head RMSNorm (fused->deltanet_mix,
+ * stage 2). One workgroup per v-head walks the tokens in order:
+ *
+ *   q,k  = l2norm per k-head (eps), q *= qscale          (k-head = hv % n_kh,
+ *                                                          GGUF tiled order)
+ *   beta = sigmoid(b);  g = ssm_a * softplus(a + dt_bias);  decay = exp(g)
+ *   S   *= decay;  kv = S^T k;  delta = (v - kv) * beta
+ *   S   += k (x) delta;  o = S^T q
+ *   out  = rmsnorm(o, norm_w) * silu(z)                   (written over z)
+ *
+ * Every recurrence op is independent per value column j, so thread j owns
+ * column j of S (d_k floats, streamed through L1/L2) and only the l2norms
+ * and the final RMSNorm need workgroup reductions. S is [n_vh, d_k, d_v]
+ * row-major, so threads read consecutive j — coalesced. Reductions use
+ * shared memory only (no subgroup ops): correct on any subgroup size.
+ * Limits (host-checked): d_v <= 128, d_k <= 256. Threads j >= d_v idle but
+ * still take part in every barrier.
+ *
+ * Bindings: 0 qkv (conv output) 1 z in/out 2 beta 3 alpha 4 ssm_a 5 dt_bias
+ * 6 norm_w 7 delta_state. Dispatch: gx = n_vh. */
+
+layout(local_size_x = 128) in;
+
+layout(set = 0, binding = 0) readonly buffer QKV { float qkv[]; };
+layout(set = 0, binding = 1) buffer Z { float z[]; };
+layout(set = 0, binding = 2) readonly buffer Beta { float beta_in[]; };
+layout(set = 0, binding = 3) readonly buffer Alpha { float alpha_in[]; };
+layout(set = 0, binding = 4) readonly buffer A { float ssm_a[]; };
+layout(set = 0, binding = 5) readonly buffer DT { float dt_bias[]; };
+layout(set = 0, binding = 6) readonly buffer NW { float nw[]; };
+layout(set = 0, binding = 7) buffer S { float state[]; };
+
+layout(push_constant) uniform Push {
+    uint seq;
+    uint n_kh;
+    uint n_vh;
+    uint dk;
+    uint dv;
+    uint keyd;
+    uint convd;
+    uint qkv_off;
+    uint z_off;
+    uint beta_off;
+    uint alpha_off;
+    uint a_off;
+    uint dtb_off;
+    uint nw_off;
+    uint s_off;
+    float eps;
+    float qscale;
+} pc;
+
+shared float qs[256];
+shared float ks[256];
+shared float red_a[128];
+shared float red_b[128];
+
+float silu(float v) {
+    float e = exp(-abs(v));
+    return v >= 0.0 ? v / (1.0 + e) : (v * e) / (1.0 + e);
+}
+
+/* Sum-reduce two values across the 128-thread workgroup. Ends with a barrier
+ * so the shared scratch can be reused immediately. */
+void reduce2(inout float a, inout float b, uint tid) {
+    red_a[tid] = a;
+    red_b[tid] = b;
+    barrier();
+    for (uint s = 64u; s > 0u; s >>= 1u) {
+        if (tid < s) {
+            red_a[tid] += red_a[tid + s];
+            red_b[tid] += red_b[tid + s];
+        }
+        barrier();
+    }
+    a = red_a[0];
+    b = red_b[0];
+    barrier();
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint hv = gl_WorkGroupID.x;
+    uint hk = hv % pc.n_kh;
+    uint dk = pc.dk;
+    uint dv = pc.dv;
+    bool col_ok = tid < dv;
+    uint sbase = pc.s_off + hv * dk * dv;
+
+    for (uint t = 0u; t < pc.seq; ++t) {
+        uint row = pc.qkv_off + t * pc.convd;
+
+        /* q / k of this token's k-head + their squared norms */
+        float sq = 0.0;
+        float sk = 0.0;
+        for (uint i = tid; i < dk; i += 128u) {
+            float qv = qkv[row + hk * dk + i];
+            float kv = qkv[row + pc.keyd + hk * dk + i];
+            qs[i] = qv;
+            ks[i] = kv;
+            sq += qv * qv;
+            sk += kv * kv;
+        }
+        reduce2(sq, sk, tid);
+        float inv_q = inversesqrt(sq + pc.eps) * pc.qscale;
+        float inv_k = inversesqrt(sk + pc.eps);
+        for (uint i = tid; i < dk; i += 128u) {
+            qs[i] *= inv_q;
+            ks[i] *= inv_k;
+        }
+        barrier();
+
+        /* gating scalars (identical in every thread) */
+        float b = beta_in[pc.beta_off + t * pc.n_vh + hv];
+        float a = alpha_in[pc.alpha_off + t * pc.n_vh + hv] + dt_bias[pc.dtb_off + hv];
+        float beta = 1.0 / (1.0 + exp(-b));
+        float sp = a > 30.0 ? a : log(1.0 + exp(a));
+        float decay = exp(ssm_a[pc.a_off + hv] * sp);
+
+        float o = 0.0;
+        if (col_ok) {
+            float vj = qkv[row + 2u * pc.keyd + hv * dv + tid];
+            float kvm = 0.0;
+            for (uint i = 0u; i < dk; ++i) {
+                kvm = fma(state[sbase + i * dv + tid] * decay, ks[i], kvm);
+            }
+            float delta = (vj - kvm) * beta;
+            for (uint i = 0u; i < dk; ++i) {
+                float sv = fma(ks[i], delta, state[sbase + i * dv + tid] * decay);
+                state[sbase + i * dv + tid] = sv;
+                o = fma(sv, qs[i], o);
+            }
+        }
+
+        /* per-head RMSNorm over d_v, then * silu(z) */
+        float ss = o * o;
+        float dummy = 0.0;
+        reduce2(ss, dummy, tid);
+        float inv = inversesqrt(ss / float(dv) + pc.eps);
+        if (col_ok) {
+            uint zi = pc.z_off + t * pc.n_vh * dv + hv * dv + tid;
+            z[zi] = (o * inv * nw[pc.nw_off + tid]) * silu(z[zi]);
+        }
+        /* qs/ks are rewritten next token: make sure nobody still reads them */
+        barrier();
+    }
+}

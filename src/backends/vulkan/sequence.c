@@ -272,7 +272,7 @@ void vk_seq_hazard(struct vk_state              *st,
                 st->dset_cache[slot] = (struct vk_dset_entry) {.key = h, .set = set};
             }
         }
-        VkWriteDescriptorSet writes[6];
+        VkWriteDescriptorSet writes[VK_MAX_BINDINGS];
         for (uint32_t i = 0; i < nbind; ++i) {
             writes[i] = (VkWriteDescriptorSet) {.sType  = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                                 .dstSet = set,

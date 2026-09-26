@@ -15,10 +15,17 @@
 #include "gguf_reader.h"
 
 /* Pre-scan the GGUF to compute the total byte budget for the backend
- * weight arena. Sum of every weight tensor's payload + per-tensor
+ * weight arena. Sum of every arena-resident tensor's payload + per-tensor
  * 64-byte alignment slack. */
-[[nodiscard]] enum geist_status compute_weight_arena_capacity(struct gguf_ctx *gguf,
-                                                              size_t          *out_bytes);
+[[nodiscard]] enum geist_status compute_weight_arena_capacity(const struct geist_backend *be,
+                                                              struct gguf_ctx            *gguf,
+                                                              size_t *out_bytes);
+
+/* True when `t` stays out of the backend arena: the backend copies such a
+ * matrix to the device itself (caps.weights_device_copy), so the GGUF mmap
+ * page range is aliased instead of duplicated in host memory. */
+[[nodiscard]] bool weight_skips_arena(const struct geist_backend *be,
+                                      const struct gguf_tensor_t *t);
 
 /* Load one transformer block (layer L) from the GGUF. Reads attention,
  * FFN, and per-layer norm + scalar tensors; populates L->is_full,

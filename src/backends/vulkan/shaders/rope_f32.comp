@@ -6,6 +6,10 @@ layout(set = 0, binding = 0) buffer X { float x[]; };
 layout(set = 0, binding = 1) readonly buffer Cos { float cos_v[]; };
 layout(set = 0, binding = 2) readonly buffer Sin { float sin_v[]; };
 
+/* Only the first rot_dim elements of every head rotate (partial rotary — the
+ * qwen35 family rotates 64 of 256): pairs are (i, i + rot_dim/2) INSIDE that
+ * block and cos/sin rows are rot_dim wide. rot_dim == head_dim is the classic
+ * full rotation. */
 layout(push_constant) uniform Push {
     uint total_pairs;
     uint n_heads;
@@ -13,6 +17,7 @@ layout(push_constant) uniform Push {
     uint x_offset;
     uint cos_offset;
     uint sin_offset;
+    uint rot_dim;
 } pc;
 
 void main() {
@@ -21,13 +26,13 @@ void main() {
         return;
     }
 
-    uint half_dim = pc.head_dim >> 1;
+    uint half_dim = pc.rot_dim >> 1;
     uint pair = gid % half_dim;
     uint head = (gid / half_dim) % pc.n_heads;
     uint seq = gid / (half_dim * pc.n_heads);
 
     uint x_base = pc.x_offset + (seq * pc.n_heads + head) * pc.head_dim;
-    uint rope_base = seq * pc.head_dim;
+    uint rope_base = seq * pc.rot_dim;
     uint cos_base = pc.cos_offset + rope_base;
     uint sin_base = pc.sin_offset + rope_base;
 

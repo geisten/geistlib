@@ -635,21 +635,14 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
                     geist_backend_set_error(be, GEIST_E_OOM, "transformer: dn state alloc failed");
                     return GEIST_E_OOM;
                 }
-                float *conv  = be->desc->vtbl->buffer_map(sess->dn_conv_state[li]);
-                float *delta = be->desc->vtbl->buffer_map(sess->dn_S[li]);
-                if (conv == nullptr || delta == nullptr) {
-                    if (conv != nullptr)
-                        be->desc->vtbl->buffer_unmap(sess->dn_conv_state[li]);
-                    if (delta != nullptr)
-                        be->desc->vtbl->buffer_unmap(sess->dn_S[li]);
-                    geist_backend_set_error(
-                            be, GEIST_E_BACKEND, "transformer: dn state map failed");
-                    return GEIST_E_BACKEND;
+                s = transformer_dn_state_zero(be, sess->dn_conv_state[li], conv_n * sizeof(float));
+                if (s == GEIST_OK) {
+                    s = transformer_dn_state_zero(be, sess->dn_S[li], s_n * sizeof(float));
                 }
-                memset(conv, 0, conv_n * sizeof(float));
-                memset(delta, 0, s_n * sizeof(float));
-                be->desc->vtbl->buffer_unmap(sess->dn_conv_state[li]);
-                be->desc->vtbl->buffer_unmap(sess->dn_S[li]);
+                if (s != GEIST_OK) {
+                    geist_backend_set_error(be, s, "transformer: dn state init failed");
+                    return s;
+                }
             }
         }
         /* qwen35 attention gate + DeltaNet projection scratch buffers. */
@@ -1006,7 +999,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
          * then ONE heap_alloc_aligned. All weight tensors will bump-
          * allocate from here. */
         size_t            cap = 0;
-        enum geist_status cs  = compute_weight_arena_capacity(gguf, &cap);
+        enum geist_status cs  = compute_weight_arena_capacity(be, gguf, &cap);
         if (cs != GEIST_OK) {
             transformer_state_destroy(st);
             return cs;
@@ -1119,7 +1112,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
      * drop the mmap. mmap-alias mode keeps it — kernels read weight
      * bytes directly from the mmap pages, so the GGUF must stay open
      * for state lifetime. (Closed in transformer_state_destroy.) */
-    if (!mmap_alias_mode && st->gguf != nullptr) {
+    if (!mmap_alias_mode && !st->gguf_aliased && st->gguf != nullptr) {
         gguf_close((struct gguf_ctx *) st->gguf);
         st->gguf = nullptr;
     }

@@ -1,0 +1,48 @@
+#version 450
+
+/* Split qwen35's joint per-head [query | output-gate] projection without a
+ * host gather. joint is [rows, heads * 2 * head_dim]; per head the first
+ * head_dim values are the query, the next head_dim the gate. q and gate are
+ * [rows, heads * head_dim]. Dispatch: gx = ceil(rows * heads * head_dim /
+ * 256). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer J {
+    float joint[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer Q {
+    float q[];
+};
+
+layout(set = 0, binding = 2) writeonly buffer G {
+    float gate[];
+};
+
+layout(push_constant) uniform Push {
+    uint rows;
+    uint heads;
+    uint head_dim;
+    uint joint_offset;
+    uint q_offset;
+    uint gate_offset;
+    uint joint_stride;
+    uint q_stride;
+    uint gate_stride;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint q_out = pc.heads * pc.head_dim;
+    if (i >= pc.rows * q_out) {
+        return;
+    }
+    uint r = i / q_out;
+    uint c = i - r * q_out;
+    uint h = c / pc.head_dim;
+    uint d = c - h * pc.head_dim;
+    uint src = pc.joint_offset + r * pc.joint_stride + h * 2u * pc.head_dim + d;
+    q[pc.q_offset + r * pc.q_stride + c] = joint[src];
+    gate[pc.gate_offset + r * pc.gate_stride + c] = joint[src + pc.head_dim];
+}

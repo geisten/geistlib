@@ -26,14 +26,24 @@
 #include <stdint.h>
 #include <string.h>
 
-[[nodiscard]] enum geist_status compute_weight_arena_capacity(struct gguf_ctx *gguf,
-                                                              size_t          *out_bytes) {
+bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor_t *t) {
+    /* 1 MiB: norms, biases and small mixer tensors keep bindable arena
+     * storage; only the big matrices go through the device copy. The PLE
+     * projection is widened to F32 into the arena (its capacity share is
+     * the source size), so it is not one of them. */
+    return be->desc->caps.weights_device_copy && t->n_dims == 2 && t->nbytes >= (1u << 20) &&
+           strcmp(t->name, "per_layer_model_proj.weight") != 0;
+}
+
+[[nodiscard]] enum geist_status compute_weight_arena_capacity(const struct geist_backend *be,
+                                                              struct gguf_ctx            *gguf,
+                                                              size_t *out_bytes) {
 
     size_t       total = 0;
     const size_t n     = gguf_tensor_count(gguf);
     for (size_t i = 0; i < n; i++) {
         const struct gguf_tensor_t *t = gguf_tensor_at(gguf, i);
-        if (t == nullptr)
+        if (t == nullptr || weight_skips_arena(be, t))
             continue;
         const size_t aligned = (t->nbytes + 63u) & ~((size_t) 63u);
         total += aligned;
@@ -164,7 +174,7 @@
     enum geist_status                s;
     const struct geist_backend_vtbl *v = be->desc->vtbl;
     void                            *raw_ptr;
-    if (st->weight_arena != nullptr) {
+    if (st->weight_arena != nullptr && !weight_skips_arena(be, t)) {
         /* β: bump-allocate + memcpy. */
         raw_ptr = arena_alloc(st, t->nbytes, 64);
         if (raw_ptr == nullptr) {
@@ -182,6 +192,9 @@
     } else {
         /* mmap-alias: zero-copy; gguf mmap retained by caller. */
         raw_ptr = (void *) t->data;
+        if (st->weight_arena != nullptr) {
+            st->gguf_aliased = true;
+        }
     }
     s = v->buffer_create_aliased(be, raw_ptr, t->nbytes, GEIST_BUFFER_WEIGHT, &buf);
     if (s != GEIST_OK) {
