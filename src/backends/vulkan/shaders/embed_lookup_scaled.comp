@@ -25,6 +25,7 @@ const uint DTYPE_Q8_0 = 5u;
 const uint DTYPE_Q4_K = 8u;
 const uint DTYPE_Q5_K = 9u;
 const uint DTYPE_Q6_K = 10u;
+const uint DTYPE_PQ2_0 = 11u;
 
 uint load_u8(uint byte_offset) {
     uint word = w[byte_offset >> 2];
@@ -169,6 +170,16 @@ float dequant_q8_0(uint base, uint k) {
     return d * float(load_i8(base + bi * 32u + (k & 31u)));
 }
 
+/* PQ2_0 (128-element ternary blocks, 4 elements per byte) is struct-of-arrays
+ * too: 32 quant bytes per block, then one f16 scale per block. */
+float dequant_pq2_0(uint base, uint k) {
+    uint bi = pc.token_id * pc.blocks_per_row + k / 128u;
+    uint e = k & 127u;
+    uint q = (load_u8(base + bi * 32u + (e >> 2u)) >> ((e & 3u) * 2u)) & 3u;
+    float d = load_f16(base + pc.n_rows * pc.blocks_per_row * 32u + bi * 2u);
+    return d * (float(q) - 1.0);
+}
+
 void main() {
     uint k = gl_GlobalInvocationID.x;
     if (k >= pc.n_in) {
@@ -191,6 +202,8 @@ void main() {
         value = dequant_q4_1(pc.w_byte_offset, k);
     } else if (pc.dtype == DTYPE_Q8_0) {
         value = dequant_q8_0(pc.w_byte_offset, k);
+    } else if (pc.dtype == DTYPE_PQ2_0) {
+        value = dequant_pq2_0(pc.w_byte_offset, k);
     } else if (pc.dtype == DTYPE_Q4_K) {
         uint row_base = pc.w_byte_offset +
             pc.token_id * pc.blocks_per_row * 144u;

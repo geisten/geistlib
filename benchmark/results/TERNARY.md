@@ -398,3 +398,89 @@ lm_head trick, the Cougar/bitnet.cpp head-to-head and the comparison against the
 2026 ternary-kernel literature — is a lab log, not reference material. It lives
 outside this repo (see the research write-ups).
 
+
+## Ternary-Bonsai-2-27B on Vulkan (2026-09-26)
+
+Same model as above (`Ternary-Bonsai-2-27B-PQ2_0.gguf`, 7.21 GB, sha256
+`3907dc16…`), `vulkan` backend: PQ2_0 matvec/GEMM kernels (float activations,
+struct-of-arrays copy in VRAM), the PQ2_0 embedding lookup and
+`fused->hadamard_rotate` on the device. Everything a token needs stays on the
+GPU (31.9k dispatches and 22 flushes for pp128 + 24 tokens).
+
+### Correctness
+
+- Fork goldens (`test_bonsai_e2e_int`, PrismML-Eng/llama.cpp `01ae597`): prompt
+  ids, next-token top 5 and the first 16 greedy tokens equal on the RTX 2080 Ti.
+- Logits vs `cpu_scalar` (chat prompt, `GEIST_KV_INT8=0 GEIST_KV_F16=0`):
+  cos 1.0000000, max |Δ| 0.0000 on the 2080 Ti and on the RADV iGPU; the two GPUs
+  agree with each other bit for bit. Unlike the A8 CPU kernels this path has no
+  activation quantization, so the FP32 oracle is the right reference here.
+
+### Throughput (`bench_perf_sweep --decode-n 64`, default KV = F16)
+
+| device | pp128 | pp512 | tg64 | RSS |
+| :-- | --: | --: | --: | --: |
+| RTX 2080 Ti (11 GiB, Vulkan) | 39.0 | 37.9 | **23.1 / 22.7** | 8.0 GB |
+| RADV iGPU (Ryzen 9 9950X, 21 GiB heap) | 1.5 (pp64) | 1.5 | 1.1 | 7.4 GB |
+| *(M1 Max, metal — table above)* | *84–111* | | *15.5–19.5* | *2.5 GB* |
+| *(PrismML fork, metal)* | *110.7* | | *16.65* | |
+
+The 2080 Ti's decode is above the M1 Max's; its prefill is at a third to a half of
+Metal's. The RADV row is a correctness run, not a benchmark: it is 1.5 t/s for
+prefill *and* decode, i.e. the prefill matmul degenerates to one matvec per row
+(RADV's subgroup size is 64 and the GEMM shaders assume 32 lanes, #471) and decode
+itself is an order of magnitude below what the iGPU's memory bandwidth allows
+(root cause not yet investigated; #467). RSS is the resident GGUF mapping — the
+weights are uploaded from it once and are not duplicated in host memory
+(`caps.weights_device_copy`).
+
+### Against the PrismML fork on the same card (RTX 2080 Ti, same GGUF)
+
+PrismML-Eng/llama.cpp `adfffbe` (`prism` branch), `llama-bench -ngl 99 -p 128,512
+-n 64 -r 2`, built once with CUDA (`sm_75`) and once with Vulkan; geist as above
+(`bench_perf_sweep`). Nothing else was running on the machine.
+
+| runtime | pp128 | pp512 | tg64 |
+| :-- | --: | --: | --: |
+| fork, CUDA | 577 ± 23 | 781 ± 1 | **44.4** |
+| fork, Vulkan (`KHR_coopmat`, no int-dot) | 524 ± 2 | 556 ± 0.2 | 29.7 |
+| **geist, Vulkan** | 39 | 38 | 23.1 |
+| geist / fork Vulkan | 0.07× | 0.07× | 0.78× |
+| geist / fork CUDA | 0.07× | 0.05× | 0.52× |
+
+- **Decode** is within reach: 78 % of the fork's Vulkan, 52 % of its CUDA. Neither
+  fork build uses integer dot products on this card (Vulkan reports
+  `int dot: 0`), so the difference is kernel efficiency, not the A32/A8 choice —
+  the candidates are a multi-row matvec (the fork's `mul_mat_vecq` reads several
+  output rows per workgroup) and `subgroupAdd` reductions.
+- **Prefill is 14× behind** the fork's Vulkan and 20× behind CUDA. The fork's
+  GEMM runs on the tensor cores (`KHR_coopmat`, ternary codes expanded to f16
+  in shared memory), which is where the 555 t/s ≈ 30 TFLOP/s effective comes
+  from — above the 13 TFLOP/s FP32 peak our register-tiled kernel can reach at
+  best (it measures ≈ 8). This is the single change that matters; geist already
+  has the machinery (`mm_q4k_cm` for Q4_K), PQ2_0 needs its own `_cm` variant.
+  Note the fork's own pp16 is 43.6 t/s: below the batch size where its GEMM
+  kicks in it behaves like our matvec loop.
+
+### Where the time goes (2080 Ti, `GEIST_VK_PROFILE=1`, pp128 + 24 decode steps)
+
+| pipe | calls | total | per call |
+| :-- | --: | --: | --: |
+| `matmul_pq2_0` (prefill GEMM) | 1200 | 3433 ms | 2.86 ms |
+| `matvec_pq2_0` (decode) | 8022 | 717 ms | 89 µs |
+| `dn_delta` (DeltaNet recurrence) | 1104 | 197 ms | 179 µs |
+| `rmsnorm` | 3702 | 56 ms | 15 µs |
+| `hadamard` | 5933 | 38 ms | 6.4 µs |
+| everything else | | < 60 ms each | |
+
+- The prefill GEMM sits at ≈ 8 TFLOP/s (one 5120 × 17408 projection × 128 rows in
+  2.9 ms) against ≈ 13 TFLOP/s FP32 peak: register-tiled dequant + FMA is close to
+  compute-bound. The next step is tensor cores (`coopmat`, as `mm_q4k_cm` does for
+  Q4_K) with the ternary codes expanded to f16 in shared memory.
+- Decode is 43 ms per token for 7.2 GB of weights (≈ 170 GB/s of ~616 GB/s), the
+  same shape as metal's "latency-bound GEMV" finding above: 16 lanes read one
+  128-element block, x is re-read per row group. A multi-row variant (as
+  `matvec_pq2_n8` on metal) and `subgroupAdd` reductions are the candidates.
+- The Hadamard rotation costs 38 ms in total (< 1 %), `dn_delta` ≈ 4 %.
+- Not tuned: nothing here has been optimised beyond correctness; see #467 (kernel
+  tuning) and #475 (efficiency backlog).

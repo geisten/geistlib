@@ -47,6 +47,15 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
             continue;
         const size_t aligned = (t->nbytes + 63u) & ~((size_t) 63u);
         total += aligned;
+        /* A small half-precision matrix a GPU backend refuses to resolve is
+         * widened to F32 (load_layer_proj): load_norm_to_f32_buffer stages the
+         * source in the arena a second time and adds the F32 copy — the bump
+         * allocator frees nothing. Bonsai: 96 BF16 ssm_alpha/ssm_beta. */
+        const size_t elems = gguf_tensor_elem_count(t);
+        if (be->desc->caps.weights_need_backend_arena && t->n_dims == 2 &&
+            (t->dtype == GGUF_TYPE_F16 || t->dtype == GGUF_TYPE_BF16) && elems <= (4u << 20)) {
+            total += aligned + ((elems * sizeof(float) + 63u) & ~((size_t) 63u));
+        }
     }
     /* Headroom for derived buffers: per_layer_model_proj FP32 (2× the
      * F16 source, ~28 MB extra on Gemma 4 E2B). Round up to 64 MB to
@@ -192,9 +201,6 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
     } else {
         /* mmap-alias: zero-copy; gguf mmap retained by caller. */
         raw_ptr = (void *) t->data;
-        if (st->weight_arena != nullptr) {
-            st->gguf_aliased = true;
-        }
     }
     s = v->buffer_create_aliased(be, raw_ptr, t->nbytes, GEIST_BUFFER_WEIGHT, &buf);
     if (s != GEIST_OK) {

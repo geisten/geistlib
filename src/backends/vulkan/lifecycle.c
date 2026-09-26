@@ -1,8 +1,7 @@
 /*
  * src/backends/vulkan/lifecycle.c — instance/device lifecycle and loader plumbing.
  *
- * Layer: BACKEND (vulkan). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
+ * Layer: BACKEND (vulkan).
  */
 #include "vk_internal.h"
 
@@ -153,7 +152,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         if (st->dset_cache_pool != VK_NULL_HANDLE) {
             st->fn.DestroyDescriptorPool(st->device, st->dset_cache_pool, nullptr);
         }
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < VK_MAX_BINDINGS - 1; ++i) {
             if (st->seq_playouts[i] != VK_NULL_HANDLE) {
                 st->fn.DestroyPipelineLayout(st->device, st->seq_playouts[i], nullptr);
             }
@@ -454,12 +453,59 @@ void vk_destroy(struct geist_backend *be) {
         }
         if (st->profile_enabled) {
             static const char *const names[VK_PIPE_COUNT + 1] = {
-                    "matvec_q4k", "matmul_q4k", "matvec_q6k",  "matmul_q6k",  "matvec_f32",
-                    "matmul_f32", "add",        "mul",         "gelu",        "gelu_mul",
-                    "scale",      "rmsnorm",    "rmsnorm_add", "rope",        "attention",
-                    "argmax",     "embed",      "ffn_gate_up", "qkv_prep",    "mm_q4k_cm",
-                    "mm_q6k_cm",  "attn_f16",   "qkv_f16",     "kv_app_f16",  "attn_part",
-                    "attn_comb",  "mm_cm32",    "ple_gate",    "ffn_norm_gu", "copy"};
+                    [VK_PIPE_MATVEC_Q4K]    = "matvec_q4k",
+                    [VK_PIPE_MATMUL_Q4K]    = "matmul_q4k",
+                    [VK_PIPE_MATVEC_Q6K]    = "matvec_q6k",
+                    [VK_PIPE_MATMUL_Q6K]    = "matmul_q6k",
+                    [VK_PIPE_MATVEC_F32]    = "matvec_f32",
+                    [VK_PIPE_MATMUL_F32]    = "matmul_f32",
+                    [VK_PIPE_ADD]           = "add",
+                    [VK_PIPE_MUL]           = "mul",
+                    [VK_PIPE_GELU]          = "gelu",
+                    [VK_PIPE_GELU_MUL]      = "gelu_mul",
+                    [VK_PIPE_SCALE]         = "scale",
+                    [VK_PIPE_RMSNORM]       = "rmsnorm",
+                    [VK_PIPE_RMSNORM_ADD]   = "rmsnorm_add",
+                    [VK_PIPE_ROPE]          = "rope",
+                    [VK_PIPE_ROPE_IL]       = "rope_il",
+                    [VK_PIPE_ATTENTION]     = "attention",
+                    [VK_PIPE_ARGMAX]        = "argmax",
+                    [VK_PIPE_EMBED]         = "embed",
+                    [VK_PIPE_FFN_GATE_UP]   = "ffn_gate_up",
+                    [VK_PIPE_QKV_PREP]      = "qkv_prep",
+                    [VK_PIPE_MM_Q4K_CM]     = "mm_q4k_cm",
+                    [VK_PIPE_MM_Q6K_CM]     = "mm_q6k_cm",
+                    [VK_PIPE_ATTENTION_F16] = "attention_f16",
+                    [VK_PIPE_QKV_PREP_F16]  = "qkv_prep_f16",
+                    [VK_PIPE_KV_APPEND_F16] = "kv_append_f16",
+                    [VK_PIPE_ATTN_PART_F16] = "attn_part_f16",
+                    [VK_PIPE_ATTN_COMB]     = "attn_comb",
+                    [VK_PIPE_MM_Q4K_CM32]   = "mm_q4k_cm32",
+                    [VK_PIPE_PLE_GATE]      = "ple_gate",
+                    [VK_PIPE_FFN_NORM_GU]   = "ffn_norm_gu",
+                    [VK_PIPE_DN_CONV]       = "dn_conv",
+                    [VK_PIPE_DN_DELTA]      = "dn_delta",
+                    [VK_PIPE_MATVEC_Q4_0]   = "matvec_q4_0",
+                    [VK_PIPE_MATMUL_Q4_0]   = "matmul_q4_0",
+                    [VK_PIPE_MATVEC_Q4_1]   = "matvec_q4_1",
+                    [VK_PIPE_MATMUL_Q4_1]   = "matmul_q4_1",
+                    [VK_PIPE_MATVEC_Q8_0]   = "matvec_q8_0",
+                    [VK_PIPE_MATMUL_Q8_0]   = "matmul_q8_0",
+                    [VK_PIPE_MATVEC_Q5K]    = "matvec_q5k",
+                    [VK_PIPE_MATMUL_Q5K]    = "matmul_q5k",
+                    [VK_PIPE_MATVEC_TQ2_0]  = "matvec_tq2_0",
+                    [VK_PIPE_MATMUL_TQ2_0]  = "matmul_tq2_0",
+                    [VK_PIPE_MATVEC_PQ2_0]  = "matvec_pq2_0",
+                    [VK_PIPE_MATMUL_PQ2_0]  = "matmul_pq2_0",
+                    [VK_PIPE_SILU]          = "silu",
+                    [VK_PIPE_HADAMARD]      = "hadamard",
+                    [VK_PIPE_RELU2]         = "relu2",
+                    [VK_PIPE_ACT_QUANT]     = "act_quant",
+                    [VK_PIPE_SILU_MUL]      = "silu_mul",
+                    [VK_PIPE_SIGMOID_MUL]   = "sigmoid_mul",
+                    [VK_PIPE_QGATE_SPLIT]   = "qgate_split",
+                    [VK_PIPE_COUNT]         = "copy",
+                    /* vkCmdCopyBuffer stamps */};
             fprintf(stderr, "geist vulkan gpu profile:\n");
             for (int i = 0; i <= VK_PIPE_COUNT; ++i) {
                 if (st->prof_calls[i] > 0) {

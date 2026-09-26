@@ -10,6 +10,20 @@ minor release.
 
 ### Added
 
+- **Ternary-Bonsai-2-27B on Vulkan** (PQ2_0 + `prism.hadamard`; #472, #473). PQ2_0
+  matvec/GEMM kernels (struct-of-arrays repack at upload, float activations like
+  metal), a PQ2_0 arm in the embedding lookup, and `fused->hadamard_rotate` on the
+  device (blockwise orthonormal Walsh-Hadamard transform, block up to 1024,
+  bit-identical to the host implementation). A small F16/BF16 matrix a GPU
+  backend refuses to resolve (Bonsai's BF16 `ssm_alpha`/`ssm_beta`) is widened to
+  F32 at load and runs on the device; the arena capacity now reserves for it.
+  The 7.21 GB model fits an 11 GiB RTX 2080 Ti, passes the PrismML-fork goldens
+  (prompt ids, next-token top 5, first 16 greedy tokens — `test_bonsai_e2e_int`
+  now runs them on every available backend) and its logits are bit-identical to
+  `cpu_scalar` (FP32 KV) on the 2080 Ti and the RADV iGPU. RTX 2080 Ti: pp512
+  ≈ 38 t/s, tg ≈ 23 t/s; numbers and the profile in
+  `benchmark/results/TERNARY.md`.
+
 - **Qwen3.5/3.6/3.8 on Vulkan** (#409, #410): the gated-DeltaNet mixer, partial
   RoPE, SiLU/SwiGLU and attention-gate epilogues, and GPU kernels for Q4_0,
   Q4_1, Q8_0, Q5_K and TQ2_0 (Q4_0/Q8_0/TQ2_0 are repacked struct-of-arrays at

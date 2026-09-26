@@ -453,9 +453,6 @@ struct transformer_arch_state {
      * transformer_state_destroy. */
     void  *weight_arena;
     size_t weight_arena_used;
-    /* Some weight views alias the GGUF mmap although the arena is active
-     * (caps.weights_device_copy): the mmap must outlive the load. */
-    bool gguf_aliased;
     /* P3 (vulkan): arena allocated through the backend (see
      * scratch_pool_buf) so norm weights / embed tables inside it are
      * GPU-bindable. nullptr in mmap-alias mode or on heap fallback. */

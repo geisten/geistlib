@@ -13,6 +13,9 @@
  * SKIPs (exit 77) when no Vulkan runtime/device is present. */
 #include "test_helpers.h"
 
+#include "hadamard.h"
+#include "quant.h"
+
 #include "gemma4_kernels.h"
 
 #include <geist.h>
@@ -195,6 +198,98 @@ static void test_act_quant(size_t rows, size_t n) {
     free(got);
 }
 
+/* fused->embedding_lookup_scaled on a PQ2_0 table (repacked struct-of-arrays
+ * on the device, resolved lazily by the op) against the host row dequant. */
+static void test_embed_pq2_0(size_t vocab, size_t d, int32_t token) {
+    const size_t nb = d / PQ2_0_BLOCK_ELEMS, row_bytes = nb * PQ2_0_BLOCK_BYTES;
+    uint8_t     *blob = malloc(vocab * row_bytes);
+    for (size_t i = 0; i < vocab * nb; i++) {
+        uint8_t *blk = blob + i * PQ2_0_BLOCK_BYTES;
+        for (size_t j = 0; j < PQ2_0_BLOCK_BYTES; j++) {
+            blk[j] = (uint8_t) ((i * 131u + j * 17u + (i >> 3)) * 2654435761u >> 24);
+        }
+        blk[0] = 0x00; /* d = fp16(0.75) */
+        blk[1] = 0x3A;
+    }
+    float *ref = malloc(d * sizeof(float)), *got = malloc(d * sizeof(float));
+    dequant_pq2_0_row(d, blob + (size_t) token * row_bytes, ref);
+    const float scale = 2.0f;
+    for (size_t k = 0; k < d; k++) {
+        ref[k] *= scale;
+    }
+    struct geist_buffer *tb = nullptr;
+    check(g_be->desc->vtbl->buffer_create_aliased(
+                  g_be, blob, vocab * row_bytes, GEIST_BUFFER_WEIGHT, &tb) == GEIST_OK,
+          "embed table buffer");
+    struct geist_tensor table = view(tb, 2, (int64_t) vocab, (int64_t) d, 0);
+    table.dtype               = GEIST_DTYPE_PQ2_0;
+    table.layout              = GEIST_LAYOUT_BLOCK_QUANTIZED;
+    struct geist_buffer *bo   = dev_buf(nullptr, d);
+    check(bo != nullptr, "embed out buffer");
+    struct geist_tensor out = view(bo, 1, (int64_t) d, 0, 0);
+    check(g_be->desc->fused->embedding_lookup_scaled != nullptr, "embed entry");
+    check(g_be->desc->fused->embedding_lookup_scaled(g_be, &table, token, scale, &out) == GEIST_OK,
+          "embed dispatch");
+    check(download(bo, got, d), "embed download");
+    const double e = max_abs(got, ref, d);
+    printf("  embed pq2_0 %zux%zu tok %d max_abs %.2e\n", vocab, d, (int) token, e);
+    check(e < 1e-6, "embed pq2_0");
+    free(blob);
+    free(ref);
+    free(got);
+}
+
+/* fused->hadamard_rotate on VRAM-only buffers against the host implementation
+ * (geist_hadamard_rows): same butterfly order and the same float scale, so the
+ * result must be bit-identical. */
+static void test_hadamard(size_t      rows,
+                          size_t      width,
+                          size_t      block,
+                          bool        signed_,
+                          bool        inverse,
+                          size_t      hd,
+                          size_t      nk,
+                          size_t      rep,
+                          bool        in_place,
+                          const char *name) {
+    const size_t n   = rows * width;
+    float       *x   = fill(n, 0.23f, 1.5f);
+    float       *sg  = malloc(width * sizeof(float));
+    float       *ref = malloc(n * sizeof(float));
+    float       *got = malloc(n * sizeof(float));
+    for (size_t i = 0; i < width; i++) {
+        sg[i] = ((i * 2654435761u) >> 13) & 1u ? -1.0f : 1.0f;
+    }
+    check(geist_hadamard_rows(
+                  rows, width, block, hd, nk, rep, inverse, x, signed_ ? sg : nullptr, ref) ==
+                  GEIST_OK,
+          "hadamard host reference");
+    struct geist_buffer *bx = dev_buf(x, n), *bs = signed_ ? dev_buf(sg, width) : nullptr,
+                        *by = in_place ? bx : dev_buf(nullptr, n);
+    check(bx && by && (!signed_ || bs), "hadamard buffers");
+    struct geist_tensor              tx   = view(bx, 2, (int64_t) rows, (int64_t) width, 0),
+                                     ty   = view(by, 2, (int64_t) rows, (int64_t) width, 0),
+                                     ts   = view(bs, 1, (int64_t) width, 0, 0);
+    const struct geist_hadamard_args args = {.x        = &tx,
+                                             .signs    = signed_ ? &ts : nullptr,
+                                             .y        = &ty,
+                                             .block    = block,
+                                             .perm_hd  = hd,
+                                             .perm_nk  = nk,
+                                             .perm_rep = rep,
+                                             .inverse  = inverse};
+    check(g_be->desc->fused->hadamard_rotate != nullptr, "hadamard entry");
+    check(g_be->desc->fused->hadamard_rotate(g_be, &args) == GEIST_OK, "hadamard dispatch");
+    check(download(by, got, n), "hadamard download");
+    const double e = max_abs(got, ref, n);
+    printf("  hadamard %-26s max_abs %.2e\n", name, e);
+    check(e == 0.0, name);
+    free(x);
+    free(sg);
+    free(ref);
+    free(got);
+}
+
 static void test_rope(size_t seq, size_t heads, size_t hd, size_t rot, const char *name) {
     float *x   = fill(seq * heads * hd, 0.21f, 1.0f);
     float *cs  = fill(seq * rot, 0.13f, 1.0f);
@@ -370,6 +465,15 @@ int main(void) {
     test_rope_interleaved(5, 3, 128, "interleaved 128");
     test_rope_interleaved(3, 2, 256, "interleaved 256");
     test_rope_interleaved(4, 2, 64, "interleaved 64");
+    test_embed_pq2_0(37, 384, 0);
+    test_embed_pq2_0(37, 384, 36);
+    test_embed_pq2_0(64, 1024, 17);
+    test_hadamard(3, 5120, 1024, true, false, 0, 0, 0, false, "fwd 5120/1024 signs");
+    test_hadamard(3, 5120, 1024, true, true, 0, 0, 0, false, "inv 5120/1024 signs");
+    test_hadamard(2, 6144, 1024, true, false, 128, 16, 3, false, "fwd 6144 grouped-v perm");
+    test_hadamard(4, 17408, 1024, true, false, 0, 0, 0, true, "fwd 17408/1024 in place");
+    test_hadamard(5, 384, 128, false, false, 0, 0, 0, true, "fwd 384/128 no signs");
+    test_hadamard(2, 1536, 512, true, true, 0, 0, 0, false, "inv 1536/512 (inexact scale)");
     test_relu2(1000);
     test_relu2(4096 * 3);
     test_act_quant(5, 1536);
@@ -386,7 +490,9 @@ int main(void) {
     test_attention(1, 300, 299, 8, 2, 256, 0, "decode kv=300 (flash path)");
     geist_backend_destroy(g_be);
     if (g_fail == 0) {
-        printf("PASS: Vulkan qwen35 ops (partial and interleaved rope, relu2, act_quant, silu, "
+        printf("PASS: Vulkan qwen35 ops (partial and interleaved rope, hadamard, PQ2_0 embed, "
+               "relu2, "
+               "act_quant, silu, "
                "silu_mul, "
                "sigmoid_mul, "
                "qgate_split)\n");
