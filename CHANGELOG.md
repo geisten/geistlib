@@ -197,6 +197,16 @@ deliberate exception to the `STABLE` promise recorded in
   and over 18 shape/sign combinations. The `fwht` half also serves the
   INT8 KV-cache rotation in `forward/kv_store.c`.
 
+- **`GEIST_DTYPE_PQ2_0` no longer shifts `BINARY`/`TERNARY`/`CUSTOM`.** It was
+  inserted at 19, which moved those three off the values v0.11.0 published
+  (19/20/21) — the exact breakage the note above `IQ4_NL` was written to
+  prevent. PQ2_0 moves to the end of the enum (22) and the published values
+  are restored; the metal embedding shader's dtype literal follows, and a
+  `static_assert` now pins **every** dtype that shader hardcodes, not just
+  the newest one. New `GEIST_DTYPE_COUNT` sentinel for sizing dtype-keyed
+  tables: `CUSTOM` had been serving that role, so a dtype past it silently
+  fell out of the weight-path counters. Caught before a release carried it.
+
 ### Fixed
 - **The metal quant pipeline table dispatched a nil kernel.** Collapsing the
   five per-format selection chains into `metal_quant_pipes_for` dropped the

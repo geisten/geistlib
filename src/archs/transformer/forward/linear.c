@@ -48,12 +48,12 @@ static inline void apply_gain(size_t seq, const struct geist_weight *w, float *y
 #include <stdio.h>
 #include <stdlib.h>
 
-static _Atomic uint64_t g_weight_path_m1[GEIST_DTYPE_CUSTOM + 1];
-static _Atomic uint64_t g_weight_path_mN[GEIST_DTYPE_CUSTOM + 1];
+static _Atomic uint64_t g_weight_path_m1[GEIST_DTYPE_COUNT];
+static _Atomic uint64_t g_weight_path_mN[GEIST_DTYPE_COUNT];
 static pthread_once_t   g_weight_path_once = PTHREAD_ONCE_INIT;
 
 static const char *weight_path_dtype_name(enum geist_dtype dtype) {
-    static const char *const names[GEIST_DTYPE_CUSTOM + 1] = {
+    static const char *const names[GEIST_DTYPE_COUNT] = {
             [GEIST_DTYPE_F32] = "f32",       [GEIST_DTYPE_F16] = "f16",
             [GEIST_DTYPE_BF16] = "bf16",     [GEIST_DTYPE_I8] = "i8",
             [GEIST_DTYPE_U8] = "u8",         [GEIST_DTYPE_Q4_0] = "q4_0",
@@ -72,7 +72,7 @@ static const char *weight_path_dtype_name(enum geist_dtype dtype) {
 
 static void weight_path_report(void) {
     fputs("[weight-paths] {", stderr);
-    for (enum geist_dtype dtype = GEIST_DTYPE_F32; dtype <= GEIST_DTYPE_CUSTOM; dtype++) {
+    for (enum geist_dtype dtype = GEIST_DTYPE_F32; dtype < GEIST_DTYPE_COUNT; dtype++) {
         const char *separator = dtype == GEIST_DTYPE_F32 ? "" : ",";
         fprintf(stderr,
                 "%s\"%s\":{\"m1\":%llu,\"mN\":%llu}",
@@ -91,7 +91,7 @@ static void weight_path_init(void) {
 }
 
 static void weight_path_record(const struct geist_weight *w, bool multi_row) {
-    if (w == nullptr || w->dtype < GEIST_DTYPE_F32 || w->dtype > GEIST_DTYPE_CUSTOM) {
+    if (w == nullptr || w->dtype < GEIST_DTYPE_F32 || w->dtype >= GEIST_DTYPE_COUNT) {
         return;
     }
     (void) pthread_once(&g_weight_path_once, weight_path_init);

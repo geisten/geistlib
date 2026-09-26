@@ -1570,8 +1570,20 @@ metal_embed_table_geometry(struct geist_backend      *be,
         row_bytes = blocks_per_row * block_bytes;
     } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
                embed_table->dtype == GEIST_DTYPE_PQ2_0) {
-        /* embed_lookup_scaled dispatches on the raw enum value. */
-        static_assert(GEIST_DTYPE_PQ2_0 == 19, "metal_embed_source hardcodes PQ2_0 as 19");
+        /* embed_lookup_scaled dispatches on the raw enum value, so every
+         * dtype its ternary chain names is pinned here -- not just the one
+         * being added. PQ2_0 first sat at 19 and pushed BINARY/TERNARY/
+         * CUSTOM off the values v0.11.0 published; moving it to the tail
+         * put 19 back on BINARY, which the shader would then have decoded
+         * as PQ2_0. One assert per arm is what makes that a build error
+         * instead of wrong embedding rows. */
+        static_assert(GEIST_DTYPE_F32 == 0, "embed shader hardcodes F32 as 0");
+        static_assert(GEIST_DTYPE_F16 == 1, "embed shader hardcodes F16 as 1");
+        static_assert(GEIST_DTYPE_BF16 == 2, "embed shader hardcodes BF16 as 2");
+        static_assert(GEIST_DTYPE_Q4_0 == 5, "embed shader hardcodes Q4_0 as 5");
+        static_assert(GEIST_DTYPE_Q4_K == 9, "embed shader hardcodes Q4_K as 9");
+        static_assert(GEIST_DTYPE_Q5_K == 10, "embed shader hardcodes Q5_K as 10");
+        static_assert(GEIST_DTYPE_PQ2_0 == 22, "embed shader hardcodes PQ2_0 as 22");
         if ((d_model % METAL_PQ2_BLOCK_ELEMS) != 0) {
             return GEIST_E_INVALID_ARG;
         }
