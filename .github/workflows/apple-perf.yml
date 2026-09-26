@@ -23,13 +23,13 @@ jobs:
       # The same llama.cpp pin the cross-engine campaign uses.
       LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install libomp
         run: brew install libomp
 
       - name: Cache reference model
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
           key: geist-apple-perf-gemma4-e2b-q4km-740185b21d22
@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload raw samples and provenance
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: apple-cpu-q4km-${{ github.sha }}
           path: bench-artifacts
