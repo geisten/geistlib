@@ -577,12 +577,19 @@ void vk_linear_cm_route(struct vk_state *st,
     } else if (*pipe == VK_PIPE_MATMUL_Q6K) {
         cm = VK_PIPE_MM_Q6K_CM;
     } else if (*pipe == VK_PIPE_MATMUL_PQ2_0) {
-        cm = VK_PIPE_MM_PQ2_0_CM;
+        /* 128-token tile from a full tile of tokens up; the 128 x 64 tile below
+         * it (a 128-wide tile would run half empty at the default chunk of 64) */
+        cm = m < 128u ? VK_PIPE_MM_PQ2_0_CM64
+                      : (st->pq2_f32_acc ? VK_PIPE_MM_PQ2_0_CM_F32 : VK_PIPE_MM_PQ2_0_CM);
     } else {
         return;
     }
-    /* the PQ2_0 tile covers 128 weight rows, the k-quant tiles 64 */
-    const uint32_t tile_rows = cm == VK_PIPE_MM_PQ2_0_CM ? 128u : 64u;
+    /* PQ2_0 tiles cover 128 weight rows and 128 (or 64) tokens, the k-quant
+     * tiles 64 x 64 */
+    const bool     pq2       = cm == VK_PIPE_MM_PQ2_0_CM || cm == VK_PIPE_MM_PQ2_0_CM_F32 ||
+                               cm == VK_PIPE_MM_PQ2_0_CM64;
+    const uint32_t tile_rows = pq2 ? 128u : 64u;
+    const uint32_t tile_toks = cm == VK_PIPE_MM_PQ2_0_CM64 ? 64u : tile_rows;
     if ((m & 15u) != 0 || n_out % tile_rows != 0 || st->pipes[cm] == VK_NULL_HANDLE) {
         return;
     }
@@ -597,7 +604,7 @@ void vk_linear_cm_route(struct vk_state *st,
     }
     *pipe = cm;
     *gx   = n_out / tile_rows;
-    *gy   = (m + 63u) / 64u;
+    *gy   = (m + tile_toks - 1u) / tile_toks;
 }
 
 /* GPU-first attempt for the 3-buffer elementwise family (add, mul, gelu_mul,
@@ -2233,5 +2240,10 @@ const struct geist_backend_descriptor geist_backend_vulkan = {
                   .weights_need_backend_arena = true,
                   .weights_device_copy        = true,
                   .max_m                      = 512,
-                  .preferred_kv_mode          = GEIST_KV_FP32},
+                  /* the DeltaNet mixer is sequential over tokens: its cost does not
+                   * grow with the chunk, so GEIST_M_MAX above 64 is not capped for
+                   * qwen35 hybrids. The default chunk stays 64: 128 makes the
+                   * scratch pool spill out of a 256 MB BAR heap (#488) */
+                 .dn_subchunk       = true,
+                 .preferred_kv_mode = GEIST_KV_FP32},
 };
