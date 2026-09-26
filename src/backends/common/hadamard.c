@@ -10,6 +10,19 @@
 #include <stdint.h>
 #include <string.h>
 
+/* Copy n floats, scaling by sg when there is a sign vector. The forward
+ * direction folds S into the copy or permute it has to do anyway, instead
+ * of walking the row a second time for one multiply per element. */
+static void copy_maybe_scaled(size_t n, const float *src, const float *sg, float *dst) {
+    if (sg == nullptr) {
+        memcpy(dst, src, n * sizeof *dst);
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        dst[i] = src[i] * sg[i];
+    }
+}
+
 static bool ranges_overlap(const float *a, const float *b, size_t n) {
     const uintptr_t pa = (uintptr_t) a;
     const uintptr_t pb = (uintptr_t) b;
@@ -59,28 +72,34 @@ enum geist_status geist_hadamard_rows(size_t       rows,
     for (size_t r = 0; r < rows; r++) {
         const float *xr = x + r * width;
         float       *yr = y + r * width;
+        /* S is folded into the gather/copy on the forward path; on the
+         * inverse it comes after H, where it rides along with each
+         * block while that block is still in L1. */
+        const float *fwd_signs = inverse ? nullptr : signs;
         if (permute) {
             for (size_t rep = 0; rep < perm_rep; rep++) {
                 for (size_t k = 0; k < perm_nk; k++) {
-                    memcpy(yr + perm_hd * (rep + perm_rep * k),
-                           xr + perm_hd * (k + perm_nk * rep),
-                           perm_hd * sizeof(float));
+                    const size_t dst = perm_hd * (rep + perm_rep * k);
+                    copy_maybe_scaled(perm_hd,
+                                      xr + perm_hd * (k + perm_nk * rep),
+                                      fwd_signs != nullptr ? fwd_signs + dst : nullptr,
+                                      yr + dst);
                 }
             }
         } else if (yr != xr) {
-            memcpy(yr, xr, width * sizeof(float));
-        }
-        if (signs != nullptr && !inverse) {
+            copy_maybe_scaled(width, xr, fwd_signs, yr);
+        } else if (fwd_signs != nullptr) {
+            /* In place: there is no copy to fold into. */
             for (size_t i = 0; i < width; i++) {
-                yr[i] *= signs[i];
+                yr[i] *= fwd_signs[i];
             }
         }
         for (size_t b = 0; b < width; b += block) {
             fwht_orthonormal(block, yr + b);
-        }
-        if (signs != nullptr && inverse) {
-            for (size_t i = 0; i < width; i++) {
-                yr[i] *= signs[i];
+            if (signs != nullptr && inverse) {
+                for (size_t i = b; i < b + block; i++) {
+                    yr[i] *= signs[i];
+                }
             }
         }
     }
