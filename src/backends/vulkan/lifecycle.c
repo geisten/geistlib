@@ -389,7 +389,11 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     st->backend         = be;
     st->profile_enabled = getenv("GEIST_VK_PROFILE") != nullptr;
     st->pq2_f32_acc     = getenv("GEIST_VK_PQ2_F32_ACC") != nullptr;
-    st->attn_cm         = getenv("GEIST_VK_ATTN_CM") != nullptr;
+    /* Default on since #501's rollout validated cleanly (two models,
+     * two GPUs, several misaligned chunk sizes); GEIST_VK_ATTN_CM=0 is the
+     * escape hatch back to the scalar kernel. */
+    const char *attn_cm_env = getenv("GEIST_VK_ATTN_CM");
+    st->attn_cm             = attn_cm_env == nullptr || strcmp(attn_cm_env, "0") != 0;
 
     enum geist_status s = vk_load_runtime(be, st);
     if (s != GEIST_OK) {

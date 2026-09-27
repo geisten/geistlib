@@ -503,7 +503,7 @@ from `GEIST_VK_PROFILE=1` (both timestamp queries), at the 388 t/s step:
   avoids int → float converts (code bits become the top mantissa bits of 1.0,
   `Σ(c−1)x = 4Σfx − 5Σx`).
 
-### Tensor-core attention (2026-09-27, opt-in via `GEIST_VK_ATTN_CM=1`)
+### Tensor-core attention (2026-09-27, default since #501's rollout)
 
 `attention_f16_cm.comp`: causal MQA/GQA on `coopmat` instead of one scalar
 dot product per thread — one subgroup per 16-query-row block, BR = BC = 16
@@ -536,8 +536,12 @@ total grows with it. Verified: `test_backend_vulkan_linear_parity`,
 tokens) and `test_qwen35_vulkan_e2e_int`, all green with the flag on and off
 on both the RTX 2080 Ti and RADV.
 
-Kept opt-in rather than made the default pending broader validation (only
-Bonsai's head_dim = 256 shape has been benchmarked) and because a single-pass
+Promoted to the default (`GEIST_VK_ATTN_CM=0` is the escape hatch back to the
+scalar kernel) after validating on a second, differently-sized model
+(qwen3.5-4B, also head_dim = 256) on both GPUs, plus several misaligned
+chunk sizes (`GEIST_M_MAX` 100/65/33/17 — non-multiples of BR/BC = 16, so the
+causal-masking boundary logic runs on tiles that straddle it, not just
+aligned ones) — all bit-identical against `cpu_scalar`. A single-pass
 streaming version — once the per-row rescale problem above has a portable
 answer — would close roughly another third of the remaining gap for free
 (one QK matmul pass instead of two).

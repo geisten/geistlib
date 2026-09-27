@@ -248,7 +248,8 @@ struct vk_state {
     bool has_int8_dot; /* shaderIntegerDotProduct + 8-bit storage */
     bool has_coopmat;  /* VK_KHR_cooperative_matrix */
     bool pq2_f32_acc;  /* GEIST_VK_PQ2_F32_ACC: exact f32-accumulate PQ2_0 tensor-core GEMM */
-    bool attn_cm;      /* GEIST_VK_ATTN_CM: tensor-core attention (opt-in, #475 follow-up) */
+    bool attn_cm; /* tensor-core attention (#475 follow-up), default on; GEIST_VK_ATTN_CM=0 disables
+                   */
 
     /* Set when a sequence flush failed (submit / wait / end); the next host
      * readback (argmax, download, host view) reports it as GEIST_E_BACKEND and
