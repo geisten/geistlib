@@ -37,7 +37,7 @@ struct tf_buf {
     size_t   n, cap;
 };
 
-static void tf_put(struct tf_buf *o, const void *p, size_t n) {
+static inline void tf_put(struct tf_buf *o, const void *p, size_t n) {
     if (o->n + n > o->cap) {
         size_t cap = o->cap ? o->cap : 4096;
         while (cap < o->n + n) {
@@ -54,19 +54,19 @@ static void tf_put(struct tf_buf *o, const void *p, size_t n) {
     memcpy(o->b + o->n, p, n);
     o->n += n;
 }
-static void tf_u16(struct tf_buf *o, uint16_t v) {
+static inline void tf_u16(struct tf_buf *o, uint16_t v) {
     tf_put(o, &v, 2);
 }
-static void tf_u32(struct tf_buf *o, uint32_t v) {
+static inline void tf_u32(struct tf_buf *o, uint32_t v) {
     tf_put(o, &v, 4);
 }
-static void tf_u64(struct tf_buf *o, uint64_t v) {
+static inline void tf_u64(struct tf_buf *o, uint64_t v) {
     tf_put(o, &v, 8);
 }
-static void tf_f32(struct tf_buf *o, float v) {
+static inline void tf_f32(struct tf_buf *o, float v) {
     tf_put(o, &v, 4);
 }
-static void tf_gstr(struct tf_buf *o, const char *s, size_t n) {
+static inline void tf_gstr(struct tf_buf *o, const char *s, size_t n) {
     tf_u64(o, n);
     tf_put(o, s, n);
 }
@@ -82,7 +82,7 @@ struct tf_vocab {
     uint32_t unk;
 };
 
-static void tf_free_vocab(struct tf_vocab *v) {
+static inline void tf_free_vocab(struct tf_vocab *v) {
     for (size_t i = 0; i < v->n_tok; i++) {
         free(v->tok[i]);
     }
@@ -97,7 +97,7 @@ static void tf_free_vocab(struct tf_vocab *v) {
     memset(v, 0, sizeof *v);
 }
 
-static char *tf_strndup(const char *s, size_t n) {
+static inline char *tf_strndup(const char *s, size_t n) {
     char *d = malloc(n + 1);
     if (d == nullptr) {
         exit(1);
@@ -107,7 +107,7 @@ static char *tf_strndup(const char *s, size_t n) {
     return d;
 }
 
-static bool tf_has_tok(const struct tf_vocab *v, const char *s) {
+static inline bool tf_has_tok(const struct tf_vocab *v, const char *s) {
     for (size_t i = 0; i < v->n_tok; i++) {
         if (strcmp(v->tok[i], s) == 0) {
             return true;
@@ -116,7 +116,7 @@ static bool tf_has_tok(const struct tf_vocab *v, const char *s) {
     return false;
 }
 
-static void tf_add_tok(struct tf_vocab *v, const char *s, size_t n, float score) {
+static inline void tf_add_tok(struct tf_vocab *v, const char *s, size_t n, float score) {
     char *t = tf_strndup(s, n);
     if (tf_has_tok(v, t)) {
         free(t);
@@ -130,7 +130,8 @@ static void tf_add_tok(struct tf_vocab *v, const char *s, size_t n, float score)
 }
 
 /* Appends merge (l, r) unless it is already listed: ranks follow first use. */
-static void tf_add_merge(struct tf_vocab *v, const char *l, size_t ll, const char *r, size_t rl) {
+static inline void
+tf_add_merge(struct tf_vocab *v, const char *l, size_t ll, const char *r, size_t rl) {
     for (size_t m = 0; m < v->n_merge; m++) {
         if (strlen(v->merge_l[m]) == ll && memcmp(v->merge_l[m], l, ll) == 0 &&
             strlen(v->merge_r[m]) == rl && memcmp(v->merge_r[m], r, rl) == 0) {
@@ -148,7 +149,7 @@ static void tf_add_merge(struct tf_vocab *v, const char *l, size_t ll, const cha
  * (s[0,first), s[first]), (s[0,first+1), s[first+1]), ..., and each prefix
  * as a token. Unigram scores grow with length, so the greedy pair merge
  * prefers the longer pieces. */
-static void tf_add_chain(struct tf_vocab *v, const char *s, size_t first, size_t n) {
+static inline void tf_add_chain(struct tf_vocab *v, const char *s, size_t first, size_t n) {
     for (size_t end = first + 1; end <= n; end++) {
         tf_add_merge(v, s, end - 1, s + end - 1, 1);
         tf_add_tok(v, s, end, -10.0f + (float) end);
@@ -157,7 +158,7 @@ static void tf_add_chain(struct tf_vocab *v, const char *s, size_t first, size_t
 
 /* marker: the word-start symbol ("▁" for SentencePiece, "Ġ" for gpt2).
  * byte_tokens: add the <0xXX> byte-fallback tokens (SentencePiece). */
-static struct tf_vocab tf_make_vocab(const char *marker, bool byte_tokens) {
+static inline struct tf_vocab tf_make_vocab(const char *marker, bool byte_tokens) {
     struct tf_vocab v = {0};
     tf_add_tok(&v, "<unk>", 5, 0.0f);
     tf_add_tok(&v, "<s>", 3, 0.0f);
@@ -195,46 +196,54 @@ static struct tf_vocab tf_make_vocab(const char *marker, bool byte_tokens) {
 
 enum { TF_GGUF_UINT32 = 4, TF_GGUF_FLOAT32 = 6, TF_GGUF_STRING = 8, TF_GGUF_ARRAY = 9 };
 
-/* A GGUF holding only tokenizer metadata. model is "gpt2" or "llama";
- * with_merges selects BPE (gpt2 / SPM) over unigram (scores only). */
-static struct tf_buf tf_gguf(const struct tf_vocab *v, const char *model, bool with_merges) {
+/* The tokenizer's TF_TOKENIZER_KEYS metadata keys, for a GGUF's key list.
+ * model is "gpt2" or "llama"; with_merges selects BPE (gpt2 / SPM) over
+ * unigram (scores only). */
+enum { TF_TOKENIZER_KEYS = 4 };
+static inline void
+tf_tokenizer_kv(struct tf_buf *o, const struct tf_vocab *v, const char *model, bool with_merges) {
+    tf_gstr(o, "tokenizer.ggml.model", 20);
+    tf_u32(o, TF_GGUF_STRING);
+    tf_gstr(o, model, strlen(model));
+    tf_gstr(o, "tokenizer.ggml.tokens", 21);
+    tf_u32(o, TF_GGUF_ARRAY);
+    tf_u32(o, TF_GGUF_STRING);
+    tf_u64(o, v->n_tok);
+    for (size_t i = 0; i < v->n_tok; i++) {
+        tf_gstr(o, v->tok[i], strlen(v->tok[i]));
+    }
+    if (with_merges) {
+        tf_gstr(o, "tokenizer.ggml.merges", 21);
+        tf_u32(o, TF_GGUF_ARRAY);
+        tf_u32(o, TF_GGUF_STRING);
+        tf_u64(o, v->n_merge);
+        for (size_t m = 0; m < v->n_merge; m++) {
+            char         s[128];
+            const size_t n = (size_t) snprintf(s, sizeof s, "%s %s", v->merge_l[m], v->merge_r[m]);
+            tf_gstr(o, s, n);
+        }
+    } else {
+        tf_gstr(o, "tokenizer.ggml.scores", 21);
+        tf_u32(o, TF_GGUF_ARRAY);
+        tf_u32(o, TF_GGUF_FLOAT32);
+        tf_u64(o, v->n_tok);
+        for (size_t i = 0; i < v->n_tok; i++) {
+            tf_f32(o, v->score[i]);
+        }
+    }
+    tf_gstr(o, "tokenizer.ggml.unknown_token_id", 31);
+    tf_u32(o, TF_GGUF_UINT32);
+    tf_u32(o, v->unk);
+}
+
+/* A GGUF holding only tokenizer metadata (see tf_tokenizer_kv). */
+static inline struct tf_buf tf_gguf(const struct tf_vocab *v, const char *model, bool with_merges) {
     struct tf_buf o = {0};
     tf_put(&o, "GGUF", 4);
     tf_u32(&o, 3);
     tf_u64(&o, 1); /* tensors: the reader wants at least one */
-    tf_u64(&o, 4); /* metadata keys */
-    tf_gstr(&o, "tokenizer.ggml.model", 20);
-    tf_u32(&o, TF_GGUF_STRING);
-    tf_gstr(&o, model, strlen(model));
-    tf_gstr(&o, "tokenizer.ggml.tokens", 21);
-    tf_u32(&o, TF_GGUF_ARRAY);
-    tf_u32(&o, TF_GGUF_STRING);
-    tf_u64(&o, v->n_tok);
-    for (size_t i = 0; i < v->n_tok; i++) {
-        tf_gstr(&o, v->tok[i], strlen(v->tok[i]));
-    }
-    if (with_merges) {
-        tf_gstr(&o, "tokenizer.ggml.merges", 21);
-        tf_u32(&o, TF_GGUF_ARRAY);
-        tf_u32(&o, TF_GGUF_STRING);
-        tf_u64(&o, v->n_merge);
-        for (size_t m = 0; m < v->n_merge; m++) {
-            char         s[128];
-            const size_t n = (size_t) snprintf(s, sizeof s, "%s %s", v->merge_l[m], v->merge_r[m]);
-            tf_gstr(&o, s, n);
-        }
-    } else {
-        tf_gstr(&o, "tokenizer.ggml.scores", 21);
-        tf_u32(&o, TF_GGUF_ARRAY);
-        tf_u32(&o, TF_GGUF_FLOAT32);
-        tf_u64(&o, v->n_tok);
-        for (size_t i = 0; i < v->n_tok; i++) {
-            tf_f32(&o, v->score[i]);
-        }
-    }
-    tf_gstr(&o, "tokenizer.ggml.unknown_token_id", 31);
-    tf_u32(&o, TF_GGUF_UINT32);
-    tf_u32(&o, v->unk);
+    tf_u64(&o, TF_TOKENIZER_KEYS);
+    tf_tokenizer_kv(&o, v, model, with_merges);
     /* One dummy 1-element f32 tensor: name, dims, dtype, offset. */
     tf_gstr(&o, "t", 1);
     tf_u32(&o, 1);
@@ -250,7 +259,7 @@ static struct tf_buf tf_gguf(const struct tf_vocab *v, const char *model, bool w
 
 /* ---- tokenizer.bin (sp_bpe_tokenizer) ------------------------------------ */
 
-static struct tf_buf tf_sp_bpe_bin(const struct tf_vocab *v) {
+static inline struct tf_buf tf_sp_bpe_bin(const struct tf_vocab *v) {
     struct tf_buf o = {0};
     tf_u32(&o, 0x4B544D47u); /* "GMTK" */
     tf_u32(&o, 1u);
@@ -279,7 +288,7 @@ static struct tf_buf tf_sp_bpe_bin(const struct tf_vocab *v) {
 /* n bytes of words separated by single spaces, NUL-terminated. With
  * letters_only, one unbroken run of the words' letters (one pre-tokenizer
  * chunk even for gpt2). */
-static char *tf_text(size_t n, uint32_t seed, bool letters_only) {
+static inline char *tf_text(size_t n, uint32_t seed, bool letters_only) {
     char  *t = malloc(n + 1);
     size_t w = 0;
     while (w < n) {

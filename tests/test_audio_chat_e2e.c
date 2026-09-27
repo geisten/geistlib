@@ -141,12 +141,11 @@ static enum geist_status tokenize_drop_bos(struct geist_session *s,
  *   1. The SentencePiece "leading-space" marker U+2581 (UTF-8 E2 96 81)
  *      becomes a regular space - lets prompts written with normal text
  *      match the model's "▁word" pieces.
- *   2. geist_session_token_to_str appends a per-piece SentencePiece
- *      length-class trailer byte (e.g. "Lam" -> "Lam\x12", "pe" -> "pe\x05")
- *      which fragments "Lampe" into non-contiguous bytes 4c 61 6d 12 70 65.
- *      Strip all control bytes < 0x20 (except real whitespace 0x09 \t,
- *      0x0A \n, 0x0D \r) so the cleaned haystack reads as the model's
- *      intended text. */
+ *   2. Control bytes < 0x20 (except real whitespace 0x09 \t, 0x0A \n,
+ *      0x0D \r) are stripped. geist_session_token_to_str used to return
+ *      tokenizer.bin pieces unterminated, so the next entry's length byte
+ *      trailed each one ("Lam" -> "Lam\x12") and fragmented "Lampe"; the
+ *      strings are NUL-terminated now (test_token_to_str_unit). */
 static void normalize_sp(const char *in, char *out, size_t out_cap) {
     size_t j = 0;
     for (size_t i = 0; in[i] != '\0' && j + 1 < out_cap; i++) {

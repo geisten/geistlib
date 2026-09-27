@@ -34,6 +34,34 @@
 #include <string.h>
 #include <time.h>
 
+/* geist_session_token_to_str's strings. A token is decoded the first time
+ * the session asks for it, NUL-terminated, into blocks that are neither
+ * moved nor freed before geist_session_destroy, so the pointer is stable for
+ * the session's lifetime as the STABLE contract says. A repeat is one probe
+ * of an open-addressing map from id to string. Loading pays nothing, and
+ * memory follows the tokens converted rather than the vocabulary. Map and
+ * blocks grow geometrically, like a high-water buffer (AGENT.md §3): a
+ * session converting tokens it has converted before allocates nothing.
+ *
+ * Called once per token right after a decode step has evicted the caches,
+ * so the free end of the newest block is kept here, next to the map, and a
+ * block is only walked to free it. */
+struct token_str_block {
+    struct token_str_block *next;
+    char                    bytes[];
+};
+
+struct token_strs {
+    geist_token_t          *id;        /* cap slots, -1 empty: the probe reads only these */
+    const char            **str;       /* the string of id[i] */
+    size_t                  cap;       /* a power of two; 0 before the first call */
+    size_t                  n;         /* slots in use, at most cap / 2 */
+    char                   *tail;      /* the newest block's first free byte */
+    size_t                  room;      /* bytes free from tail */
+    size_t                  block_cap; /* the newest block's size */
+    struct token_str_block *block;     /* newest first */
+};
+
 struct geist_session_full {
     struct geist_model   *model;
     struct geist_backend *backend;
@@ -69,6 +97,8 @@ struct geist_session_full {
     float         *audio_stream_buf; /* bound-sized scratch, alive begin→end */
     size_t         audio_stream_cap; /* tokens the scratch can hold */
     size_t         audio_stream_injected;
+
+    struct token_strs strs; /* geist_session_token_to_str; empty until then */
 };
 
 static inline uint64_t monotonic_ns(void) {
@@ -88,6 +118,112 @@ static inline struct geist_session_full *as_full(struct geist_session *s) {
  * itself — such an arch's model IS its one session. */
 static inline void *arch_sess(const struct geist_session_full *sf) {
     return sf->arch_session != nullptr ? sf->arch_session : sf->model->text_decoder.arch_meta;
+}
+
+/* ---- struct token_strs ---------------------------------------------------- */
+
+constexpr size_t TOKEN_STRS_SLOTS0    = 256;
+constexpr size_t TOKEN_STRS_BLOCK0    = 4096;
+constexpr size_t TOKEN_STRS_BLOCK_MAX = 65536;
+
+static size_t token_strs_home(geist_token_t id, size_t cap) {
+    const uint32_t h = (uint32_t) id * 0x9E3779B1u;
+    return (size_t) (h ^ (h >> 16)) & (cap - 1);
+}
+
+static const char *token_strs_find(const struct token_strs *ts, geist_token_t id) {
+    if (ts->cap == 0) {
+        return nullptr;
+    }
+    /* At most half full, so an empty slot ends every probe. */
+    for (size_t i = token_strs_home(id, ts->cap); ts->id[i] >= 0; i = (i + 1) & (ts->cap - 1)) {
+        if (ts->id[i] == id) {
+            return ts->str[i];
+        }
+    }
+    return nullptr;
+}
+
+static void token_strs_place(size_t        cap,
+                             geist_token_t id_slot[static cap],
+                             const char   *str_slot[static cap],
+                             geist_token_t id,
+                             const char   *s) {
+    size_t i = token_strs_home(id, cap);
+    while (id_slot[i] >= 0) {
+        i = (i + 1) & (cap - 1);
+    }
+    id_slot[i]  = id;
+    str_slot[i] = s;
+}
+
+/* Room in the map for one more id: it doubles once it would pass half full. */
+[[nodiscard]] static bool token_strs_make_room(struct token_strs *ts) {
+    if (2 * (ts->n + 1) <= ts->cap) {
+        return true;
+    }
+    const size_t   cap = ts->cap != 0 ? 2 * ts->cap : TOKEN_STRS_SLOTS0;
+    geist_token_t *id  = heap_alloc_array_aligned(geist_token_t, cap);
+    const char   **str = heap_alloc_array_aligned(const char *, cap);
+    if (id == nullptr || str == nullptr) {
+        safe_free((void **) &id);
+        safe_free((void **) &str);
+        return false;
+    }
+    for (size_t i = 0; i < cap; i++) {
+        id[i] = -1;
+    }
+    for (size_t i = 0; i < ts->cap; i++) {
+        if (ts->id[i] >= 0) {
+            token_strs_place(cap, id, str, ts->id[i], ts->str[i]);
+        }
+    }
+    safe_free((void **) &ts->id);
+    safe_free((void **) &ts->str);
+    ts->id  = id;
+    ts->str = str;
+    ts->cap = cap;
+    return true;
+}
+
+/* need free bytes at ts->tail, starting a new block when the newest has
+ * fewer: twice its size up to 64 KB, or exactly need for a longer token.
+ * nullptr when that cannot be allocated. */
+[[nodiscard]] static char *token_strs_room(struct token_strs *ts, size_t need) {
+    if (ts->room >= need) {
+        return ts->tail;
+    }
+    size_t cap = ts->block == nullptr                        ? TOKEN_STRS_BLOCK0
+                 : ts->block_cap >= TOKEN_STRS_BLOCK_MAX / 2 ? TOKEN_STRS_BLOCK_MAX
+                                                             : 2 * ts->block_cap;
+    if (cap < need) {
+        cap = need;
+    }
+    size_t bytes = 0;
+    if (ckd_add(&bytes, sizeof(struct token_str_block), cap)) {
+        return nullptr;
+    }
+    struct token_str_block *b = heap_alloc_aligned(bytes, alignof(struct token_str_block));
+    if (b == nullptr) {
+        return nullptr;
+    }
+    b->next       = ts->block;
+    ts->block     = b;
+    ts->tail      = b->bytes;
+    ts->room      = cap;
+    ts->block_cap = cap;
+    return ts->tail;
+}
+
+static void token_strs_free(struct token_strs *ts) {
+    safe_free((void **) &ts->id);
+    safe_free((void **) &ts->str);
+    while (ts->block != nullptr) {
+        struct token_str_block *next = ts->block->next;
+        safe_free((void **) &ts->block);
+        ts->block = next;
+    }
+    *ts = (struct token_strs) {0};
 }
 
 /* Record a failed per-session dispatch. The op's status return IS the
@@ -247,6 +383,7 @@ void geist_session_destroy(struct geist_session *s) {
         ops->session_free(sf->model->text_decoder.arch_meta, sf->arch_session);
         sf->arch_session = nullptr;
     }
+    token_strs_free(&sf->strs);
     /* Weights, RoPE tables, and the model's default session are owned
      * by geist_model — do NOT destroy here. */
     safe_free((void **) &s);
@@ -727,39 +864,70 @@ geist_session_decode_speculative(struct geist_session *s,
     return GEIST_OK;
 }
 
+/* The surface form comes from the model's tokenizer: the GGUF-embedded one
+ * decodes (byte-level BPE maps its codepoints back to bytes, SentencePiece
+ * ▁ to a space and <0xXX> to the byte), a tokenizer.bin piece is taken as
+ * stored. Either way it is kept in the session (struct token_strs), where
+ * later calls cannot overwrite it; like every session call, not from two
+ * threads at once. An id past a GGUF vocab reads "<unk>", as the decoder
+ * writes it; past a tokenizer.bin vocab there is nothing. */
 const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t) {
     if (s == nullptr || t < 0) {
         return nullptr;
     }
-    struct geist_session_full *sf = as_full(s);
-    /* GGUF-embedded (GPT-2 byte-level BPE) path: Llama-family models (BitNet,
-     * Mistral, SmolLM2, …) carry their tokenizer in the GGUF, not as an
-     * external SentencePiece tokenizer.bin. The encode path (set_prompt)
-     * already uses gtok; mirror it here for decode. Byte-level BPE needs the
-     * codepoint→byte reconstruction (gguf_tokenizer_decode), so decode the
-     * single token into a thread-local buffer rather than returning a raw
-     * vocab pointer. Valid until the next call — matches the streaming
-     * decode-step usage in callers. */
-    struct gguf_tokenizer *gtok = geist_model_internal_gguf_tokenizer(sf->model);
-    if (gtok != nullptr) {
-        static _Thread_local char tok_buf[256];
-        const int32_t             id = (int32_t) t;
-        /* decode returns the would-be total length, which may exceed the cap;
-         * clamp before indexing so a long token surface form cannot write past
-         * tok_buf. (decode already NUL-terminates internally on truncation.) */
-        size_t n = gguf_tokenizer_decode(gtok, &id, 1, tok_buf, sizeof tok_buf - 1);
-        if (n >= sizeof tok_buf)
-            n = sizeof tok_buf - 1;
-        tok_buf[n] = '\0';
-        return tok_buf;
+    struct geist_session_full *sf  = as_full(s);
+    const char                *hit = token_strs_find(&sf->strs, t);
+    if (hit != nullptr) {
+        return hit;
     }
-    struct sp_bpe_tokenizer *tok = geist_model_internal_tokenizer(sf->model);
-    if (tok == nullptr) {
+    struct gguf_tokenizer   *gtok  = geist_model_internal_gguf_tokenizer(sf->model);
+    struct sp_bpe_tokenizer *tok   = geist_model_internal_tokenizer(sf->model);
+    const char              *piece = nullptr; /* the tokenizer.bin piece */
+    size_t                   len   = 0;
+    if (gtok != nullptr) {
+        if ((size_t) t >= gtok->vocab_size) {
+            return "<unk>";
+        }
+        len = gtok->token_len[t]; /* decoding only ever shortens a token */
+    } else if (tok != nullptr) {
+        piece = sp_bpe_tokenizer_id_to_text(tok, (uint32_t) t, &len);
+        if (piece == nullptr) {
+            return nullptr;
+        }
+    } else {
         return nullptr;
     }
-    size_t      len  = 0;
-    const char *text = sp_bpe_tokenizer_id_to_text(tok, (uint32_t) t, &len);
-    return text; /* Pointer into tokenizer's mmap region — valid for tok's lifetime. */
+    size_t need = 0;
+    char  *dst  = nullptr;
+    if (!ckd_add(&need, len, 1) && token_strs_make_room(&sf->strs)) {
+        dst = token_strs_room(&sf->strs, need);
+    }
+    if (dst == nullptr) {
+        sf->err_code = GEIST_E_OOM;
+        snprintf(sf->err_msg, sizeof sf->err_msg, "token_to_str: out of memory for token %d", t);
+        return nullptr;
+    }
+    if (piece != nullptr) {
+        memcpy(dst, piece, len);
+    } else {
+        const int32_t id = (int32_t) t;
+        len              = gguf_tokenizer_decode(gtok, &id, 1, dst, need);
+        if (len >= need) { /* longer than stored: refuse rather than cut */
+            sf->err_code = GEIST_E_INTERNAL;
+            snprintf(sf->err_msg,
+                     sizeof sf->err_msg,
+                     "token_to_str: token %d decodes longer "
+                     "than it is stored",
+                     t);
+            return nullptr;
+        }
+    }
+    dst[len] = '\0';
+    sf->strs.tail += len + 1;
+    sf->strs.room -= len + 1;
+    token_strs_place(sf->strs.cap, sf->strs.id, sf->strs.str, t, dst);
+    sf->strs.n++;
+    return dst;
 }
 
 /* Audio path: PCM → mel → audio_conformer encode → soft tokens →

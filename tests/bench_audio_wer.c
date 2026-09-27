@@ -62,7 +62,7 @@ static enum geist_status tokenize_drop_bos(struct geist_session *s,
     return GEIST_OK;
 }
 
-/* SentencePiece cleanup: U+2581 -> space, drop control/trailer bytes,
+/* SentencePiece cleanup: U+2581 -> space, drop control bytes,
  * collapse to single-line. Same normalization test_audio_chat_e2e uses. */
 static void normalize_sp(const char *in, char *out, size_t out_cap) {
     size_t j = 0;
