@@ -315,20 +315,22 @@ struct transformer_arch_session {
      *   dn_S[li]:          [n_v_heads * head_k * head_v]  delta state */
     struct geist_buffer **dn_conv_state;
     struct geist_buffer **dn_S;
-    /* verify_forward mutates DeltaNet state in place. A single lazy,
-     * host-side checkpoint lets kv_truncate restore the backend buffers and
-     * replay exactly the accepted draft prefix. Its size is independent of
-     * the speculative width, which matters for Qwen3.5-27B. */
-    float         *dn_txn_conv;
-    float         *dn_txn_S;
-    geist_token_t *dn_txn_ids;
-    size_t         dn_txn_conv_count;
-    size_t         dn_txn_S_count;
-    size_t         dn_txn_base_kv_len;
-    size_t         dn_txn_k;
-    size_t         dn_txn_kivi_residual_count;
-    size_t         dn_txn_kivi_drained_count;
-    bool           dn_txn_active;
+    /* verify_forward mutates DeltaNet state in place. A single checkpoint,
+     * allocated once at session_alloc (n_dn * conv_n / n_dn * s_n floats,
+     * independent of the speculative width, which matters for
+     * Qwen3.5-27B), lets kv_truncate restore the backend buffers and replay
+     * exactly the accepted draft prefix. Backend buffers, not host memory
+     * (#463): on batched-submit GPUs the snapshot/restore copy is recorded
+     * on-device via vtbl->buffer_copy, no PCIe round trip and no fence wait
+     * per speculative verify. */
+    struct geist_buffer *dn_txn_conv_buf;
+    struct geist_buffer *dn_txn_S_buf;
+    geist_token_t       *dn_txn_ids;
+    size_t               dn_txn_base_kv_len;
+    size_t               dn_txn_k;
+    size_t               dn_txn_kivi_residual_count;
+    size_t               dn_txn_kivi_drained_count;
+    bool                 dn_txn_active;
     /* qwen35 scratch (#281): joint q+gate projection result
      * [m_max, 2*q_out] + saved per-head gate [m_max, q_out], and the
      * DeltaNet projection outputs (qkv [m_max, conv_dim], z
@@ -742,20 +744,12 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
  * the next transaction. */
 void transformer_recurrent_txn_commit(struct transformer_arch_session *sess);
 
-/* Recurrent-state buffer access that survives device-only memory. A backend
+/* Recurrent-state buffer zeroing that survives device-only memory. A backend
  * may answer buffer_map with nullptr for a KV_CACHE-role buffer (vulkan keeps
- * them in VRAM); these fall back to buffer_upload / buffer_download instead
- * of treating that as a failure. `bytes` must not exceed the buffer size. */
+ * them in VRAM); this falls back to buffer_upload instead of treating that
+ * as a failure. `bytes` must not exceed the buffer size. */
 [[nodiscard]] enum geist_status
 transformer_dn_state_zero(struct geist_backend *be, struct geist_buffer *buf, size_t bytes);
-[[nodiscard]] enum geist_status transformer_dn_state_read(struct geist_backend *be,
-                                                          struct geist_buffer  *buf,
-                                                          size_t                bytes,
-                                                          void                 *dst);
-[[nodiscard]] enum geist_status transformer_dn_state_write(struct geist_backend *be,
-                                                           struct geist_buffer  *buf,
-                                                           size_t                bytes,
-                                                           const void           *src);
 
 /* ---- Public functions (architecture-internal) -------------------------- */
 

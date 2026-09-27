@@ -643,6 +643,19 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
                     return s;
                 }
             }
+            /* Speculative-decode transaction snapshot (#463): one backend
+             * buffer per state kind, all n_dn layers concatenated, allocated
+             * once here rather than lazily on the first verify. On-device
+             * (vtbl->buffer_copy) so a snapshot/restore never visits host
+             * memory on batched-submit GPUs. */
+            s = alloc_scratch(be, n_dn * conv_n * sizeof(float), &sess->dn_txn_conv_buf);
+            if (s == GEIST_OK) {
+                s = alloc_scratch(be, n_dn * s_n * sizeof(float), &sess->dn_txn_S_buf);
+            }
+            if (s != GEIST_OK) {
+                geist_backend_set_error(be, s, "transformer: DeltaNet transaction alloc failed");
+                return s;
+            }
         }
         /* qwen35 attention gate + DeltaNet projection scratch buffers. */
         if (stt->config.has_attn_output_gate) {
@@ -1542,15 +1555,11 @@ void transformer_session_free(struct transformer_arch_state   *state,
         void *pb = sess->dn_S;
         safe_free(&pb);
     }
-    void *txn_conv        = sess->dn_txn_conv;
-    void *txn_S           = sess->dn_txn_S;
     void *txn_ids         = sess->dn_txn_ids;
     void *mtp_pending     = sess->mtp_pending_h;
     void *mtp_raw         = sess->mtp_target_raw;
     void *mtp_shifted     = sess->mtp_target_shifted;
     void *mtp_txn_pending = sess->mtp_txn_pending_h;
-    safe_free(&txn_conv);
-    safe_free(&txn_S);
     safe_free(&txn_ids);
     safe_free(&mtp_pending);
     safe_free(&mtp_raw);
@@ -1564,6 +1573,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
                 sess->dn_scratch_z,
                 sess->dn_scratch_b,
                 sess->dn_scratch_a,
+                sess->dn_txn_conv_buf,
+                sess->dn_txn_S_buf,
                 sess->mtp_k_cache,
                 sess->mtp_v_cache,
                 sess->mtp_embed,
@@ -1578,8 +1589,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
     sess->qgate_gate         = nullptr;
     sess->dn_conv_state      = nullptr;
     sess->dn_S               = nullptr;
-    sess->dn_txn_conv        = nullptr;
-    sess->dn_txn_S           = nullptr;
+    sess->dn_txn_conv_buf    = nullptr;
+    sess->dn_txn_S_buf       = nullptr;
     sess->dn_txn_ids         = nullptr;
     sess->mtp_k_cache        = nullptr;
     sess->mtp_v_cache        = nullptr;
