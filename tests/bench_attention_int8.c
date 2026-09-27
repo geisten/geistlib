@@ -8,8 +8,9 @@
  * int8 K/V with moderate scales and random Q keep the softmax spread out.
  *
  * Layouts: 32/8 heads hd 64 (Llama-3.2-1B), 16/8 hd 128 (Qwen3-0.6B),
- * 15/5 hd 64 (SmolLM2-360M), 8/1 hd 256 (MQA). Decode is n_q = 1 at the
- * end of the context; prefill is one 64-token chunk ending there.
+ * 15/5 hd 64 (SmolLM2-360M), 8/1 hd 256 (MQA), 32/32 hd 64 (MHA,
+ * SmolLM2-1.7B). Decode is n_q = 1 at the end of the context; prefill is
+ * one 64-token chunk ending there.
  * Reports the median of the timed calls.
  *
  * Usage: bench_attention_int8 [iters]   (default 20)
@@ -133,6 +134,7 @@ int main(int argc, char **argv) {
             {"qwen3-0.6b 16/8 hd128", 16, 8, 128},
             {"smollm2 15/5 hd64", 15, 5, 64},
             {"mqa 8/1 hd256", 8, 1, 256},
+            {"mha 32/32 hd64", 32, 32, 64},
     };
     static const size_t CTX[] = {512, 1024, 2048, 8192};
     printf("{\"bench\":\"attention_int8\",\"iters\":%d,\"rows\":[\n", iters);

@@ -1,29 +1,31 @@
 /*
- * test_attention_int8_unit — attention_int8_via_buffers against a
- * double-precision reference, on the one-head loop and the GQA-grouped
- * passes, split or not.
+ * test_attention_int8_unit — attention_int8_via_buffers and
+ * attention_int4_via_buffers against a double-precision reference, on the
+ * one-head loop and the GQA-grouped passes, split or not.
  *
- * The kernel quantizes each query head to int8 (scale amax/127, lrintf),
- * dots it exactly against the int8 K rows, softmaxes and accumulates V in
- * fp32 (the grouped passes with an online softmax over blocks of the
- * context; decode passes split into context chunks merged per head). The
- * reference repeats the same Q quantization and integer dots, then does the
- * softmax and the V sum in double: the only differences left are fp32
- * rounding, so the bound is tight (1e-5 of the output scale).
+ * The kernels quantize each query head to int8 (scale amax/127, lrintf),
+ * dot it exactly against the int8 (or unpacked int4) K rows, and softmax
+ * and accumulate V in fp32, online over blocks of the context (decode
+ * passes split into context chunks merged per head). The reference repeats
+ * the same Q quantization and integer dots, then does the softmax and the
+ * V sum in double: the only differences left are fp32 rounding, so the
+ * bound is tight (1e-5 of the output scale).
  *
  * Shapes are chosen to take each path under the current policy: passes of
  * 2, 3 and 4 heads (head_dim 128, head_dim 64 over a short and a long
  * context, MQA), decode split into chunks and decode too short to split,
- * and the one-head loop (3 heads per KV head over a short context, plain
- * MHA); decode (n_q = 1) and prefill chunks; with and without a sliding
- * window; a context shorter than one online-softmax block. Two shapes make
- * the scores trend along the context (every K row one pattern, K scales
+ * and the one-head loop (3 heads per KV head, plain MHA) over one block and
+ * over several; decode (n_q = 1) and prefill chunks; with and without a
+ * sliding window; a context shorter than one block. Some shapes make the
+ * scores trend along the context (every K row one pattern, K scales
  * rising), so the running max grows in every block for some heads (the
  * rescale path, and chunks with different maxima to merge) and never after
- * the first for others. Every output must be written (poisoned first,
- * compared by bit pattern — -ffast-math build); a 1-thread run must give
- * the same bits as the default team; a run without scratch (decode
- * unsplit) must match the reference too.
+ * the first for others. INT4 shapes pack K/V values in [-7, 7], which the
+ * 4-bit cache holds exactly, and run the INT4 kernel's one-head loop.
+ * Every output must be written (poisoned first, compared by bit pattern —
+ * -ffast-math build); a 1-thread run must give the same bits as the
+ * default team; an INT8 run without scratch (decode unsplit) must match
+ * the reference too.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -31,6 +33,8 @@
 
 #include "src/archs/transformer/forward/internal.h"
 #include "src/archs/transformer/forward.h"
+
+#include "int4_kv.h"
 
 #include "heap.h"
 
@@ -54,7 +58,54 @@ static uint32_t next_u32(void) {
 struct shape {
     size_t n_q, n_q_heads, n_kv_heads, head_dim, n_kv, window;
     bool   trend; /* one K pattern per KV head, K scales rising along the context */
+    bool   int4;  /* packed 4-bit K/V through attention_int4_via_buffers */
 };
+
+/* The kernel under test on this shape's cache. */
+static void run(const struct shape *sh,
+                size_t              n_scr,
+                const float        *q,
+                const int8_t       *k,
+                const uint8_t      *k4,
+                const float        *ks,
+                const int8_t       *v,
+                const uint8_t      *v4,
+                const float        *vs,
+                float              *out,
+                float              *scratch) {
+    const size_t q_offset = sh->n_kv - sh->n_q;
+    if (sh->int4) {
+        attention_int4_via_buffers(sh->n_q,
+                                   sh->n_q_heads,
+                                   sh->head_dim,
+                                   sh->n_kv,
+                                   sh->n_kv_heads,
+                                   q_offset,
+                                   sh->window,
+                                   q,
+                                   k4,
+                                   ks,
+                                   v4,
+                                   vs,
+                                   out);
+    } else {
+        attention_int8_via_buffers(sh->n_q,
+                                   sh->n_q_heads,
+                                   sh->head_dim,
+                                   sh->n_kv,
+                                   sh->n_kv_heads,
+                                   n_scr,
+                                   q_offset,
+                                   sh->window,
+                                   q,
+                                   k,
+                                   ks,
+                                   v,
+                                   vs,
+                                   out,
+                                   scratch);
+    }
+}
 
 /* out_ref[t, h, :] in double, the kernel's int8 Q and integer dots. */
 static void reference(const struct shape *sh,
@@ -130,17 +181,21 @@ static int check_shape(const struct shape *sh) {
     const size_t n_scr    = attention_int8_scratch_floats(sh->n_q_heads, sh->head_dim);
     float       *scratch  = heap_alloc_array_aligned(float, n_scr);
     float       *out2     = heap_alloc_array_aligned(float, q_elems);
+    uint8_t     *k4       = heap_alloc_array_aligned(uint8_t, kv_elems / 2 + 1);
+    uint8_t     *v4       = heap_alloc_array_aligned(uint8_t, kv_elems / 2 + 1);
     int          fails    = 0;
     if (k == nullptr || v == nullptr || ks == nullptr || vs == nullptr || q == nullptr ||
         out == nullptr || out1 == nullptr || ref == nullptr || scores == nullptr ||
-        scratch == nullptr || out2 == nullptr) {
+        scratch == nullptr || out2 == nullptr || k4 == nullptr || v4 == nullptr) {
         fprintf(stderr, "ERROR: allocation failed\n");
         fails = 1;
         goto done;
     }
+    /* INT4: values in [-7, 7], which the 4-bit cache holds exactly. */
+    const uint32_t span = sh->int4 ? 15u : 255u;
     for (size_t i = 0; i < kv_elems; i++) {
-        k[i] = (int8_t) (next_u32() % 255u - 127u);
-        v[i] = (int8_t) (next_u32() % 255u - 127u);
+        k[i] = (int8_t) ((int) (next_u32() % span) - (int) (span / 2));
+        v[i] = (int8_t) ((int) (next_u32() % span) - (int) (span / 2));
     }
     for (size_t i = 0; i < sh->n_kv * sh->n_kv_heads; i++) {
         ks[i] = 0.0005f + (float) (next_u32() % 1000u) * 2e-6f;
@@ -159,6 +214,19 @@ static int check_shape(const struct shape *sh) {
             }
         }
     }
+    if (sh->int4) {
+        float row[TRANSFORMER_HEAD_DIM_MAX];
+        for (size_t r = 0; r < sh->n_kv * sh->n_kv_heads; r++) {
+            for (size_t i = 0; i < sh->head_dim; i++) {
+                row[i] = (float) k[r * sh->head_dim + i];
+            }
+            int4_pack_row(sh->head_dim, row, 1.0f, k4 + r * sh->head_dim / 2);
+            for (size_t i = 0; i < sh->head_dim; i++) {
+                row[i] = (float) v[r * sh->head_dim + i];
+            }
+            int4_pack_row(sh->head_dim, row, 1.0f, v4 + r * sh->head_dim / 2);
+        }
+    }
     for (size_t i = 0; i < q_elems; i++) {
         q[i] = ((float) (next_u32() % 2001u) - 1000.0f) * 1e-3f;
     }
@@ -168,22 +236,7 @@ static int check_shape(const struct shape *sh) {
     for (size_t i = 0; i < q_elems; i++) {
         out[i] = POISON;
     }
-    const size_t q_offset = sh->n_kv - sh->n_q;
-    attention_int8_via_buffers(sh->n_q,
-                               sh->n_q_heads,
-                               sh->head_dim,
-                               sh->n_kv,
-                               sh->n_kv_heads,
-                               n_scr,
-                               q_offset,
-                               sh->window,
-                               q,
-                               k,
-                               ks,
-                               v,
-                               vs,
-                               out,
-                               scratch);
+    run(sh, n_scr, q, k, k4, ks, v, v4, vs, out, scratch);
     reference(sh, q, k, ks, v, vs, ref, scores);
 
     double scale = 0.0, max_d = 0.0;
@@ -218,21 +271,7 @@ static int check_shape(const struct shape *sh) {
         fails++;
     }
     /* Without scratch decode runs unsplit: the reference bound holds too. */
-    attention_int8_via_buffers(sh->n_q,
-                               sh->n_q_heads,
-                               sh->head_dim,
-                               sh->n_kv,
-                               sh->n_kv_heads,
-                               0,
-                               q_offset,
-                               sh->window,
-                               q,
-                               k,
-                               ks,
-                               v,
-                               vs,
-                               out2,
-                               nullptr);
+    run(sh, 0, q, k, k4, ks, v, v4, vs, out2, nullptr);
     double max_d2 = 0.0;
     for (size_t i = 0; i < q_elems; i++) {
         const double d = fabs((double) out2[i] - ref[i]);
@@ -255,21 +294,7 @@ static int check_shape(const struct shape *sh) {
     /* Same bits whatever the team: each head is one thread's sequential work. */
     const int team = omp_get_max_threads();
     omp_set_num_threads(1);
-    attention_int8_via_buffers(sh->n_q,
-                               sh->n_q_heads,
-                               sh->head_dim,
-                               sh->n_kv,
-                               sh->n_kv_heads,
-                               n_scr,
-                               q_offset,
-                               sh->window,
-                               q,
-                               k,
-                               ks,
-                               v,
-                               vs,
-                               out1,
-                               scratch);
+    run(sh, n_scr, q, k, k4, ks, v, v4, vs, out1, scratch);
     omp_set_num_threads(team);
     if (memcmp(out, out1, q_elems * sizeof *out) != 0) {
         fprintf(stderr,
@@ -283,7 +308,7 @@ static int check_shape(const struct shape *sh) {
         fails++;
     }
 #endif
-    printf("  n_q=%-2zu heads=%2zu/%zu hd=%-3zu n_kv=%-5zu window=%-3zu%s max|d|/scale %.2e\n",
+    printf("  n_q=%-2zu heads=%2zu/%zu hd=%-3zu n_kv=%-5zu window=%-3zu%s%s max|d|/scale %.2e\n",
            sh->n_q,
            sh->n_q_heads,
            sh->n_kv_heads,
@@ -291,6 +316,7 @@ static int check_shape(const struct shape *sh) {
            sh->n_kv,
            sh->window,
            sh->trend ? " trend" : "",
+           sh->int4 ? " int4" : "",
            scale > 0.0 ? max_d / scale : max_d);
 done:
     safe_free((void **) &k);
@@ -304,33 +330,42 @@ done:
     safe_free((void **) &scores);
     safe_free((void **) &scratch);
     safe_free((void **) &out2);
+    safe_free((void **) &k4);
+    safe_free((void **) &v4);
     return fails;
 }
 
 int main(void) {
     static const struct shape SHAPES[] = {
-            {1, 16, 8, 128, 512, 0, false},    /* 2 heads per pass, decode */
-            {16, 16, 8, 128, 700, 0, false},   /* ... prefill chunk */
-            {16, 16, 8, 128, 200, 0, false},   /* ... context inside one block */
-            {16, 24, 8, 128, 300, 0, false},   /* 3 heads per pass (head_dim 128) */
-            {1, 32, 8, 64, 512, 0, false},     /* 4 heads per pass, decode */
-            {16, 32, 8, 64, 2100, 0, false},   /* ... prefill chunk */
-            {2, 16, 8, 64, 1600, 0, false},    /* 2 per pass: 1.6 MB of K/V */
-            {4, 15, 5, 64, 2600, 0, false},    /* 3 per pass: 1.6 MB of K/V */
-            {9, 15, 5, 64, 300, 0, false},     /* one-head loop: 192 KB of K/V */
-            {1, 15, 5, 64, 300, 0, false},     /* ... decode */
-            {16, 8, 1, 256, 600, 0, false},    /* MQA prefill: 4 per pass */
-            {1, 8, 1, 256, 600, 0, false},     /* MQA decode: 4 per pass, 4 chunks */
-            {1, 8, 1, 256, 200, 0, false},     /* ... too short to split: one-head */
-            {1, 12, 2, 128, 500, 0, false},    /* decode: 3 per pass, 3 chunks */
-            {1, 4, 2, 128, 400, 0, false},     /* decode: 2 per pass, 2 chunks */
-            {3, 4, 4, 64, 100, 0, false},      /* MHA: one-head loop */
-            {16, 16, 8, 128, 900, 256, false}, /* sliding window, grouped */
-            {4, 32, 8, 64, 2500, 512, false},  /* sliding window, grouped */
-            {1, 8, 1, 256, 2500, 512, false},  /* sliding window, decode in chunks */
-            {1, 32, 8, 64, 3000, 0, true},     /* trending scores, decode */
-            {1, 8, 1, 256, 3000, 0, true},     /* ... decode in chunks */
-            {8, 16, 8, 128, 2000, 0, true},    /* ... prefill chunk */
+            {1, 16, 8, 128, 512, 0, false, false},    /* 2 heads per pass, decode */
+            {16, 16, 8, 128, 700, 0, false, false},   /* ... prefill chunk */
+            {16, 16, 8, 128, 200, 0, false, false},   /* ... context inside one block */
+            {16, 24, 8, 128, 300, 0, false, false},   /* 3 heads per pass (head_dim 128) */
+            {1, 32, 8, 64, 512, 0, false, false},     /* 4 heads per pass, decode */
+            {16, 32, 8, 64, 2100, 0, false, false},   /* ... prefill chunk */
+            {2, 16, 8, 64, 1600, 0, false, false},    /* 2 per pass: 1.6 MB of K/V */
+            {4, 15, 5, 64, 2600, 0, false, false},    /* 3 per pass: 1.6 MB of K/V */
+            {9, 15, 5, 64, 300, 0, false, false},     /* one-head loop: 192 KB of K/V */
+            {1, 15, 5, 64, 300, 0, false, false},     /* ... decode */
+            {1, 15, 5, 64, 1500, 0, false, false},    /* ... decode over 3 blocks */
+            {4, 15, 5, 64, 1800, 700, false, false},  /* ... sliding window, 2 blocks */
+            {16, 8, 1, 256, 600, 0, false, false},    /* MQA prefill: 4 per pass */
+            {1, 8, 1, 256, 600, 0, false, false},     /* MQA decode: 4 per pass, 4 chunks */
+            {1, 8, 1, 256, 200, 0, false, false},     /* ... too short to split: one-head */
+            {1, 12, 2, 128, 500, 0, false, false},    /* decode: 3 per pass, 3 chunks */
+            {1, 4, 2, 128, 400, 0, false, false},     /* decode: 2 per pass, 2 chunks */
+            {3, 4, 4, 64, 100, 0, false, false},      /* MHA: one-head loop */
+            {16, 16, 8, 128, 900, 256, false, false}, /* sliding window, grouped */
+            {4, 32, 8, 64, 2500, 512, false, false},  /* sliding window, grouped */
+            {1, 8, 1, 256, 2500, 512, false, false},  /* sliding window, decode in chunks */
+            {1, 32, 8, 64, 3000, 0, true, false},     /* trending scores, decode */
+            {1, 8, 1, 256, 3000, 0, true, false},     /* ... decode in chunks */
+            {8, 16, 8, 128, 2000, 0, true, false},    /* ... prefill chunk */
+            {1, 4, 4, 64, 2000, 0, true, false},      /* ... MHA, one-head over 4 blocks */
+            {16, 16, 8, 128, 700, 0, false, true},    /* INT4: prefill chunk */
+            {1, 32, 8, 64, 1500, 0, false, true},     /* INT4: decode over 3 blocks */
+            {4, 8, 1, 256, 900, 300, false, true},    /* INT4: MQA, sliding window */
+            {1, 4, 4, 64, 2000, 0, true, true},       /* INT4: trending scores */
     };
     int fails = 0;
     for (size_t i = 0; i < sizeof SHAPES / sizeof *SHAPES; i++) {

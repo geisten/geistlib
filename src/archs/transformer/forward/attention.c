@@ -667,7 +667,10 @@ void attention_int8_via_buffers(size_t        n_q,
                                          ? q_pos + 1 - sliding_window
                                          : 0;
             const size_t s_hi  = q_pos < n_kv ? q_pos : n_kv - 1;
-            float        scores[n_kv]; /* private per (t,h) */
+            /* One block of the context at a time, private per (t,h): the
+             * softmax runs online (see the grouped passes), so the stack no
+             * longer holds n_kv scores. */
+            float scores[ATTN_BLOCK];
 
             const size_t kv_h = h / kv_group_size;
             const float *qv   = q + (t * n_q_heads + h) * head_dim;
@@ -691,57 +694,78 @@ void attention_int8_via_buffers(size_t        n_q,
                 q_q8[i] = (int8_t) lrintf(qv[i] * inv_q);
             }
 
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const int8_t *k       = k_q8 + (s * n_kv_heads + kv_h) * head_dim;
-                const float   ks      = k_scale[s * n_kv_heads + kv_h];
-                int32_t       int_dot = 0;
+            float *outv = out + (t * n_q_heads + h) * head_dim;
+            for (size_t i = 0; i < head_dim; i++) {
+                outv[i] = 0.0f;
+            }
+            float  max_score = 0.0f;
+            double sum_exp   = 0.0;
+            for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_BLOCK) {
+                const size_t n = s_hi - b0 < ATTN_BLOCK ? s_hi - b0 + 1 : ATTN_BLOCK;
+                for (size_t j = 0; j < n; j++) {
+                    const size_t  s       = b0 + j;
+                    const int8_t *k       = k_q8 + (s * n_kv_heads + kv_h) * head_dim;
+                    const float   ks      = k_scale[s * n_kv_heads + kv_h];
+                    int32_t       int_dot = 0;
 /* vdotq_s32 is FEAT_DotProd, not baseline NEON: __ARM_NEON is set on every
  * armv8-a, so guarding the dot-product path on it faults on cores without
  * dotprod (Cortex-A53/A72, generic armv8-a builds). The scalar #else below
  * is the fallback that was always meant to run there. */
 #if defined(__ARM_FEATURE_DOTPROD)
-                int32x4_t acc = vdupq_n_s32(0);
-                size_t    i   = 0;
-                for (; i + 16 <= head_dim; i += 16) {
-                    acc = vdotq_s32(acc, vld1q_s8(q_q8 + i), vld1q_s8(k + i));
-                }
-                int_dot = vaddvq_s32(acc);
-                for (; i < head_dim; i++) {
-                    int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
-                }
+                    int32x4_t acc = vdupq_n_s32(0);
+                    size_t    i   = 0;
+                    for (; i + 16 <= head_dim; i += 16) {
+                        acc = vdotq_s32(acc, vld1q_s8(q_q8 + i), vld1q_s8(k + i));
+                    }
+                    int_dot = vaddvq_s32(acc);
+                    for (; i < head_dim; i++) {
+                        int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
+                    }
 #else
-                for (size_t i = 0; i < head_dim; i++) {
-                    int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
-                }
+                    for (size_t i = 0; i < head_dim; i++) {
+                        int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
+                    }
 #endif
-                scores[s] = (float) int_dot * scale_q * ks;
-            }
-
-            float max_score = scores[s_lo];
-            for (size_t s = s_lo + 1; s <= s_hi; s++) {
-                if (scores[s] > max_score) {
-                    max_score = scores[s];
+                    scores[j] = (float) int_dot * scale_q * ks;
                 }
-            }
-            double sum_exp = 0.0;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                float e   = expf(scores[s] - max_score);
-                scores[s] = e;
-                sum_exp += e;
+
+                float block_max = scores[0];
+                for (size_t j = 1; j < n; j++) {
+                    if (scores[j] > block_max) {
+                        block_max = scores[j];
+                    }
+                }
+                if (b0 == s_lo) {
+                    max_score = block_max;
+                } else if (block_max > max_score) {
+                    /* The sum and the V sums so far were taken against the
+                     * lower max: scale them down to the new one. */
+                    const float c = expf(max_score - block_max);
+                    sum_exp *= c;
+                    for (size_t i = 0; i < head_dim; i++) {
+                        outv[i] *= c;
+                    }
+                    max_score = block_max;
+                }
+                for (size_t j = 0; j < n; j++) {
+                    float e   = expf(scores[j] - max_score);
+                    scores[j] = e;
+                    sum_exp += e;
+                }
+
+                for (size_t j = 0; j < n; j++) {
+                    const size_t  s   = b0 + j;
+                    const int8_t *vv  = v_q8 + (s * n_kv_heads + kv_h) * head_dim;
+                    const float   vs  = v_scale[s * n_kv_heads + kv_h];
+                    const float   wvs = scores[j] * vs;
+                    for (size_t i = 0; i < head_dim; i++) {
+                        outv[i] += wvs * (float) vv[i];
+                    }
+                }
             }
             const float inv_sum = (float) (1.0 / sum_exp);
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
             for (size_t i = 0; i < head_dim; i++) {
-                outv[i] = 0.0f;
-            }
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const int8_t *vv  = v_q8 + (s * n_kv_heads + kv_h) * head_dim;
-                const float   vs  = v_scale[s * n_kv_heads + kv_h];
-                const float   wvs = scores[s] * inv_sum * vs;
-                for (size_t i = 0; i < head_dim; i++) {
-                    outv[i] += wvs * (float) vv[i];
-                }
+                outv[i] *= inv_sum;
             }
         }
     }
@@ -786,7 +810,7 @@ void attention_int4_via_buffers(size_t         n_q,
                                          ? q_pos + 1 - sliding_window
                                          : 0;
             const size_t s_hi  = q_pos < n_kv ? q_pos : n_kv - 1;
-            float        scores[n_kv]; /* private per (t,h) */
+            float        scores[ATTN_BLOCK]; /* one block, as in the INT8 core */
 
             const size_t kv_h = h / kv_group_size;
             const float *qv   = q + (t * n_q_heads + h) * head_dim;
@@ -808,59 +832,78 @@ void attention_int4_via_buffers(size_t         n_q,
                 q_q8[i] = (int8_t) lrintf(qv[i] * inv_q);
             }
 
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                int8_t k[TRANSFORMER_HEAD_DIM_MAX];
-                int4_unpack_row(head_dim, k_q4 + (s * n_kv_heads + kv_h) * packed, k);
-                const float ks      = k_scale[s * n_kv_heads + kv_h];
-                int32_t     int_dot = 0;
+            float *outv = out + (t * n_q_heads + h) * head_dim;
+            for (size_t i = 0; i < head_dim; i++) {
+                outv[i] = 0.0f;
+            }
+            float  max_score = 0.0f;
+            double sum_exp   = 0.0;
+            for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_BLOCK) {
+                const size_t n = s_hi - b0 < ATTN_BLOCK ? s_hi - b0 + 1 : ATTN_BLOCK;
+                for (size_t j = 0; j < n; j++) {
+                    const size_t s = b0 + j;
+                    int8_t       k[TRANSFORMER_HEAD_DIM_MAX];
+                    int4_unpack_row(head_dim, k_q4 + (s * n_kv_heads + kv_h) * packed, k);
+                    const float ks      = k_scale[s * n_kv_heads + kv_h];
+                    int32_t     int_dot = 0;
 /* vdotq_s32 is FEAT_DotProd, not baseline NEON: __ARM_NEON is set on every
  * armv8-a, so guarding the dot-product path on it faults on cores without
  * dotprod (Cortex-A53/A72, generic armv8-a builds). The scalar #else below
  * is the fallback that was always meant to run there. */
 #if defined(__ARM_FEATURE_DOTPROD)
-                int32x4_t acc = vdupq_n_s32(0);
-                size_t    i   = 0;
-                for (; i + 16 <= head_dim; i += 16) {
-                    acc = vdotq_s32(acc, vld1q_s8(q_q8 + i), vld1q_s8(k + i));
-                }
-                int_dot = vaddvq_s32(acc);
-                for (; i < head_dim; i++) {
-                    int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
-                }
+                    int32x4_t acc = vdupq_n_s32(0);
+                    size_t    i   = 0;
+                    for (; i + 16 <= head_dim; i += 16) {
+                        acc = vdotq_s32(acc, vld1q_s8(q_q8 + i), vld1q_s8(k + i));
+                    }
+                    int_dot = vaddvq_s32(acc);
+                    for (; i < head_dim; i++) {
+                        int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
+                    }
 #else
-                for (size_t i = 0; i < head_dim; i++) {
-                    int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
-                }
+                    for (size_t i = 0; i < head_dim; i++) {
+                        int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
+                    }
 #endif
-                scores[s] = (float) int_dot * scale_q * ks;
-            }
-
-            float max_score = scores[s_lo];
-            for (size_t s = s_lo + 1; s <= s_hi; s++) {
-                if (scores[s] > max_score) {
-                    max_score = scores[s];
+                    scores[j] = (float) int_dot * scale_q * ks;
                 }
-            }
-            double sum_exp = 0.0;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                float e   = expf(scores[s] - max_score);
-                scores[s] = e;
-                sum_exp += e;
+
+                float block_max = scores[0];
+                for (size_t j = 1; j < n; j++) {
+                    if (scores[j] > block_max) {
+                        block_max = scores[j];
+                    }
+                }
+                if (b0 == s_lo) {
+                    max_score = block_max;
+                } else if (block_max > max_score) {
+                    const float c = expf(max_score - block_max);
+                    sum_exp *= c;
+                    for (size_t i = 0; i < head_dim; i++) {
+                        outv[i] *= c;
+                    }
+                    max_score = block_max;
+                }
+                for (size_t j = 0; j < n; j++) {
+                    float e   = expf(scores[j] - max_score);
+                    scores[j] = e;
+                    sum_exp += e;
+                }
+
+                for (size_t j = 0; j < n; j++) {
+                    const size_t s = b0 + j;
+                    int8_t       vv[TRANSFORMER_HEAD_DIM_MAX];
+                    int4_unpack_row(head_dim, v_q4 + (s * n_kv_heads + kv_h) * packed, vv);
+                    const float vs  = v_scale[s * n_kv_heads + kv_h];
+                    const float wvs = scores[j] * vs;
+                    for (size_t i = 0; i < head_dim; i++) {
+                        outv[i] += wvs * (float) vv[i];
+                    }
+                }
             }
             const float inv_sum = (float) (1.0 / sum_exp);
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
             for (size_t i = 0; i < head_dim; i++) {
-                outv[i] = 0.0f;
-            }
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                int8_t vv[TRANSFORMER_HEAD_DIM_MAX];
-                int4_unpack_row(head_dim, v_q4 + (s * n_kv_heads + kv_h) * packed, vv);
-                const float vs  = v_scale[s * n_kv_heads + kv_h];
-                const float wvs = scores[s] * inv_sum * vs;
-                for (size_t i = 0; i < head_dim; i++) {
-                    outv[i] += wvs * (float) vv[i];
-                }
+                outv[i] *= inv_sum;
             }
         }
     }
