@@ -61,8 +61,9 @@ void q4kx8_gemm16x16_avx512_bulk(size_t                     M,
                                  float                      Y[static M * N]);
 
 /* Decode (M=1) GEMV over the compact Q4_Kx8 layout. x is the fp32 activation
- * row (length K); y is the fp32 output (length N). N % 8 == 0, K % 256 == 0.
- * 8-cell lane-parallel, no per-block reduction. See the .c for rationale. */
+ * row (length K); y is the fp32 output (length N). N % 8 == 0, K % 256 == 0,
+ * any K. 8-cell lane-parallel, no per-block reduction. See the .c for
+ * rationale. */
 void q4kx8_gemv_m1(
         size_t N, size_t K, const float *x, const struct block_q4_Kx8 *W, float y[static N]);
 

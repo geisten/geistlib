@@ -45,6 +45,11 @@ struct q8k_row {
     int16_t bsums[16];
 };
 
+/* Super-blocks of quantized activation held on the stack at once (16384
+ * elements, ~18.7 KB). Longer rows are processed in segments of this size —
+ * see q4kx8_gemv_m1 — so the bound is a tile size, not a limit on K. */
+constexpr size_t Q8K_SEG = 64;
+
 __attribute__((unused)) static void quantize_q8k_row(size_t         n_super,
                                                      const float    x[static n_super * 256],
                                                      struct q8k_row out[static n_super]) {
@@ -344,28 +349,38 @@ void q4kx8_gemv_avx2_fallback(size_t                     M,
         for (size_t i = 0; i < 4; i++) {
             const size_t m = mt * 4 + i;
 
-            struct q8k_row a[64];
-            if (n_super_k > 64)
-                continue;
-            for (size_t s = 0; s < n_super_k; s++) {
-                const struct block_q8_Kx4 *Xb = &X[mt * n_super_k + s];
-                a[s].d                        = Xb->d[i];
-                for (int sb = 0; sb < 4; sb++) {
-                    for (int stripe = 0; stripe < 8; stripe++) {
-                        const int8_t *src = Xb->qs + sb * 256 + stripe * 32 + i * 8;
-                        memcpy(a[s].qs + sb * 64 + stripe * 8, src, 8);
+            /* Q8K_SEG super-blocks at a time, like q4kx8_gemv_m1: one
+             * segment (the old single pass) up to K = 16384, accumulated
+             * segments beyond it. The activations arrive already quantized
+             * per super-block, so segmenting changes only the order of the
+             * fp32 sum across segments. */
+            struct q8k_row a[Q8K_SEG];
+            for (size_t s0 = 0; s0 < n_super_k; s0 += Q8K_SEG) {
+                const size_t ns = n_super_k - s0 < Q8K_SEG ? n_super_k - s0 : Q8K_SEG;
+                for (size_t s = 0; s < ns; s++) {
+                    const struct block_q8_Kx4 *Xb = &X[mt * n_super_k + s0 + s];
+                    a[s].d                        = Xb->d[i];
+                    for (int sb = 0; sb < 4; sb++) {
+                        for (int stripe = 0; stripe < 8; stripe++) {
+                            const int8_t *src = Xb->qs + sb * 256 + stripe * 32 + i * 8;
+                            memcpy(a[s].qs + sb * 64 + stripe * 8, src, 8);
+                        }
+                    }
+                    for (int g = 0; g < 16; g++) {
+                        a[s].bsums[g] = Xb->bsums[i * 16 + g];
                     }
                 }
-                for (int g = 0; g < 16; g++) {
-                    a[s].bsums[g] = Xb->bsums[i * 16 + g];
-                }
-            }
 
-            for (size_t nt = 0; nt < N_tiles; nt++) {
-                __m256       acc_min;
-                const __m256 acc_row =
-                        q4kx8_gemv_one_row_tile(n_super_k, &W[nt * n_super_k], a, &acc_min);
-                _mm256_storeu_ps(Y + m * N + nt * 8, _mm256_sub_ps(acc_row, acc_min));
+                for (size_t nt = 0; nt < N_tiles; nt++) {
+                    __m256       acc_min;
+                    const __m256 acc_row =
+                            q4kx8_gemv_one_row_tile(ns, &W[nt * n_super_k + s0], a, &acc_min);
+                    __m256 r = _mm256_sub_ps(acc_row, acc_min);
+                    if (s0 != 0) {
+                        r = _mm256_add_ps(r, _mm256_loadu_ps(Y + m * N + nt * 8));
+                    }
+                    _mm256_storeu_ps(Y + m * N + nt * 8, r);
+                }
             }
         }
     }
@@ -377,25 +392,40 @@ void q4kx8_gemv_avx2_fallback(size_t                     M,
  * reduced once per tile (no per-block horizontal sum, unlike the W4A8 GEMV).
  * Reads the same q4kx8 blob the prefill path uses (0.56 B/wt, vs W4A8 0.75),
  * so it is both lower-traffic and lower-compute at decode.
- * Requires N % 8 == 0 and K % 256 == 0 (every Q4_K body matrix). */
+ * Requires N % 8 == 0 and K % 256 == 0 (every Q4_K body matrix).
+ *
+ * The quantized activation lives on the stack, Q8K_SEG super-blocks at a
+ * time. K up to Q8K_SEG * 256 = 16384 is one segment — exactly the old
+ * single pass, bit for bit. A longer row (ffn_down of any model wider than
+ * 16384) runs in segments, each quantized with its own scale and added into
+ * y; that K used to return without writing y at all, and no caller had a
+ * fallback for it. */
 void q4kx8_gemv_m1(
         size_t N, size_t K, const float *x, const struct block_q4_Kx8 *W, float y[static N]) {
     const size_t n_super = K / 256;
     const size_t N_tiles = N / 8;
-    if (n_super == 0 || n_super > 64 || N % 8 != 0) {
-        return; /* caller falls back; Q4_K body shapes never hit this. */
+    if (n_super == 0 || N % 8 != 0) {
+        return; /* unreachable: the resolver only binds N % 8 == 0, K >= 256 */
     }
 
-    struct q8k_row a[64];
-    quantize_q8k_row(n_super, x, a);
+    struct q8k_row a[Q8K_SEG];
+    for (size_t s0 = 0; s0 < n_super; s0 += Q8K_SEG) {
+        const size_t ns    = n_super - s0 < Q8K_SEG ? n_super - s0 : Q8K_SEG;
+        const bool   first = s0 == 0;
+        quantize_q8k_row(ns, x + s0 * 256, a);
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
-    for (size_t nt = 0; nt < N_tiles; nt++) {
-        __m256       acc_min;
-        const __m256 acc_row = q4kx8_gemv_one_row_tile(n_super, &W[nt * n_super], a, &acc_min);
-        _mm256_storeu_ps(y + nt * 8, _mm256_sub_ps(acc_row, acc_min));
+        for (size_t nt = 0; nt < N_tiles; nt++) {
+            __m256       acc_min;
+            const __m256 acc_row = q4kx8_gemv_one_row_tile(ns, &W[nt * n_super + s0], a, &acc_min);
+            __m256       r       = _mm256_sub_ps(acc_row, acc_min);
+            if (!first) {
+                r = _mm256_add_ps(r, _mm256_loadu_ps(y + nt * 8));
+            }
+            _mm256_storeu_ps(y + nt * 8, r);
+        }
     }
 }
 
