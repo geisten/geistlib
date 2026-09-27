@@ -23,6 +23,7 @@
 
 #include "backend.h"
 
+#include "attention.h"
 #include "backend_state.h"
 #include "elementwise.h"
 #include "kernel_f16_gemv.h"
@@ -490,6 +491,7 @@ __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
 
     cpu_x86_prims           = cpu_scalar_prims;
     cpu_x86_prims.gelu_tanh = cpu_x86_gelu_tanh;
+    cpu_x86_prims.attention = cpu_x86_attention;
 
     cpu_x86_fused                      = cpu_scalar_fused;
     cpu_x86_fused.gelu_tanh_mul        = cpu_x86_gelu_tanh_mul;
