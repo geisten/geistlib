@@ -913,6 +913,24 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         gguf_close(gguf);
         return GEIST_E_FORMAT;
     }
+    /* Head counts are metadata too. Every attention path maps query head h
+     * to KV head h / (n_q_heads / n_kv_heads): more KV heads than query
+     * heads divides by zero there, and a KV count that does not divide the
+     * query count sends the last query heads to a KV head that does not
+     * exist. */
+    if (st->n_q_heads == 0 || st->n_kv_heads == 0 || st->n_q_heads % st->n_kv_heads != 0) {
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: %s head counts %zu (query) and %zu (KV): the KV "
+                                "count must divide the query count",
+                                fam->name,
+                                st->n_q_heads,
+                                st->n_kv_heads);
+        void *p = st;
+        safe_free(&p);
+        gguf_close(gguf);
+        return GEIST_E_FORMAT;
+    }
 
     /* DeltaNet hybrids prefer SMALL prefill chunks: the chunked
      * delta-rule carries O(C^2) work per chunk (A/attn matrices +
