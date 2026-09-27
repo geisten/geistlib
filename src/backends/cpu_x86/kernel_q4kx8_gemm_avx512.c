@@ -432,9 +432,11 @@ void q4kx8_gemv_m1(
 /* ---- Public entry ----
  *
  * Checks the ISA once, then dispatches: the AVX-512 16x16 panel
- * (q4kx8_gemm16x16_avx512_bulk, kernel_q4kx8_gemm_avx512_full.c) for
- * M, N >= 16 with both multiples of 16, otherwise the AVX2 GEMV above,
- * which is correct for any M (multiple of 4) and any N (multiple of 8).
+ * (q4kx8_gemm16x16_avx512_bulk, kernel_q4kx8_gemm_avx512_full.c) for the
+ * first M16 = M rounded down to 16 rows when N is a multiple of 16, and the
+ * AVX2 GEMV above for the rest, which is correct for any M (multiple of 4)
+ * and any N (multiple of 8). Rows are independent in both kernels, so each
+ * row gets exactly what that kernel computes for it in any other call.
  *
  * The check lives here and not beside the panel it guards. That TU is built
  * with -mavx512* (mk/backend-cpu_x86.mk), so the compiler may put EVEX in a
@@ -448,10 +450,12 @@ void q4kx8_gemv_m1(
  * so the non-AVX512 path is exercisable on AVX-512 hosts (CI portability
  * gate). Both reads are once-initialised globals — negligible cost.
  *
- * In Gemma 4: n_out is always a multiple of 256, so the N tail never fires
- * for body matrices. For Gemma 4 prefill at seq_len=128/256/512, m is also
- * a multiple of 16 (it equals the chunk size). The tail handler is mainly
- * defensive for smaller batches and the output projection.
+ * The last prefill chunk of almost every prompt has an M that is not a
+ * multiple of 16 (the chunk holds the prompt length mod 64). That chunk
+ * used to go to the AVX2 GEMV whole: about 1.8x the time per token of a
+ * multiple-of-16 chunk on an AVX-512 host (synthetic Llama-3.2-1B Q4_K,
+ * seq 60: 12.9 ms/token vs seq 64: 6.9). Only the M - M16 tail rows take
+ * it now.
  */
 void q4kx8_gemm_avx512(size_t                     M,
                        size_t                     N,
@@ -467,11 +471,17 @@ void q4kx8_gemm_avx512(size_t                     M,
         return;
     }
 #endif
-    if (M < 16 || N < 16 || (M % 16) != 0 || (N % 16) != 0) {
+    const size_t M16 = M / 16 * 16;
+    if (M16 == 0 || N < 16 || (N % 16) != 0) {
         /* No 16x16 panel — let the AVX2 GEMV handle everything. */
         q4kx8_gemv_avx2_fallback(M, N, K, X, W, Y);
         return;
     }
 
-    q4kx8_gemm16x16_avx512_bulk(M, N, K, X, W, Y);
+    q4kx8_gemm16x16_avx512_bulk(M16, N, K, X, W, Y);
+    if (M16 < M) {
+        /* Tail rows (a multiple of 4): their Q8_Kx4 groups start at group
+         * M16 / 4, their outputs at row M16. */
+        q4kx8_gemv_avx2_fallback(M - M16, N, K, X + M16 / 4 * (K / 256), W, Y + M16 * N);
+    }
 }

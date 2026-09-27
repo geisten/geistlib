@@ -195,7 +195,10 @@ void cpu_x86_linear_q4k_m1(const float               *x,
  *
  * Fallback: if n_out is not divisible by 8 (no Gemma 4 matrix is, this
  * is purely defensive), drop to the per-row m1 path. q4kx8_gemm_avx512
- * guards its own ISA at runtime (AVX2 GEMV fallback on non-AVX512 hosts). */
+ * guards its own ISA at runtime (AVX2 GEMV fallback on non-AVX512 hosts).
+ * The GEMM takes whole Q8_Kx4 groups of 4 rows; the last m % 4 rows of a
+ * chunk go to the M=1 GEMV. (The whole chunk used to, for any m that is
+ * not a multiple of 4: 12.1 ms/token at seq 61 vs 6.9 at seq 64.) */
 void cpu_x86_linear_q4k_mN(size_t                     m,
                            const float               *x,
                            const struct geist_weight *w,
@@ -219,12 +222,19 @@ void cpu_x86_linear_q4k_mN(size_t                     m,
     (void) scales_unused;
     (void) offsets_unused;
 
-    if (n_out % 8 != 0 || m % 4 != 0) {
+    if (n_out % 8 != 0) {
         /* Defensive scalar fallback for shapes the Q4_Kx8 kernel doesn't
          * cover. Gemma 4 never hits this. */
         for (size_t row = 0; row < m; row++) {
             cpu_x86_linear_q4k_m1(x + row * n_in, w, be, y + row * n_out);
         }
+        return;
+    }
+    const size_t m4 = m / 4 * 4;
+    for (size_t row = m4; row < m; row++) {
+        cpu_x86_linear_q4k_m1(x + row * n_in, w, be, y + row * n_out);
+    }
+    if (m4 == 0) {
         return;
     }
 
@@ -237,20 +247,20 @@ void cpu_x86_linear_q4k_mN(size_t                     m,
     size_t                    q8kx4_count = 0;
     size_t                    acts_bytes  = 0;
     struct cpu_x86_workspace *ws          = nullptr;
-    if (be != nullptr && be->state != nullptr && !ckd_mul(&q8kx4_count, m / 4, n_super_k) &&
+    if (be != nullptr && be->state != nullptr && !ckd_mul(&q8kx4_count, m4 / 4, n_super_k) &&
         !ckd_mul(&acts_bytes, q8kx4_count, sizeof(struct block_q8_Kx4))) {
         ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, 0, 0, 0, acts_bytes);
     }
     if (ws == nullptr) {
-        for (size_t row = 0; row < m; row++) {
+        for (size_t row = 0; row < m4; row++) {
             cpu_x86_linear_q4k_m1(x + row * n_in, w, be, y + row * n_out);
         }
         return;
     }
     struct block_q8_Kx4 *acts = (struct block_q8_Kx4 *) ws->mN_aux;
-    for (size_t mt = 0; mt < m / 4; mt++) {
+    for (size_t mt = 0; mt < m4 / 4; mt++) {
         quantize_q8_Kx4(n_in, x + mt * 4 * n_in, acts + mt * n_super_k);
     }
 
-    q4kx8_gemm_avx512(m, n_out, n_in, acts, q4kx8, y);
+    q4kx8_gemm_avx512(m4, n_out, n_in, acts, q4kx8, y);
 }

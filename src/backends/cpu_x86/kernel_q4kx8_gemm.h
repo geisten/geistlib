@@ -40,8 +40,9 @@ void q4kx8_gemm_scalar(size_t                     M,
                        float                      Y[static M * N]);
 
 /* Public entry (kernel_q4kx8_gemm_avx512.c, built without -mavx512*).
- * Checks the CPU once, then either runs the AVX-512 16x16 bulk below or
- * the AVX2 GEMV for the whole GEMM. Safe to call on any x86-64-v3 host. */
+ * Checks the CPU once, then runs the AVX-512 16x16 bulk below on the rows
+ * it covers (M rounded down to 16, N a multiple of 16) and the AVX2 GEMV on
+ * the rest. M a multiple of 4. Safe to call on any x86-64-v3 host. */
 void q4kx8_gemm_avx512(size_t                     M,
                        size_t                     N,
                        size_t                     K,
