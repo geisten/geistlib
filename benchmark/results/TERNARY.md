@@ -536,3 +536,40 @@ GEIST_VK_PROFILE=1 …            # per-pipe GPU time
 # fork (needs the SPIRV-Headers on the include path for the Vulkan build)
 GGML_VK_VISIBLE_DEVICES=0 GGML_VK_PERF_LOGGER=1 llama-bench -m …gguf -ngl 99 -p 512 -n 0
 ```
+
+### Paired head-to-head, repo protocol (2026-09-26, after #488/#496)
+
+`bench_cross_engine.py` against `cross_engine_gpu_protocol.json`
+(`bonsai2-27b-pq2`) rather than a hand-run `llama-bench`, on the same
+host as above. No `GEIST_M_MAX` set: the arch now halves the default
+chunk on its own until the scratch pool fits the BAR heap (#488); this
+run got the full 128-row pool without the env var.
+
+geist `c374358`; llama.cpp (PrismML fork) `adfffbe4`.
+
+| Seq/depth | geist pp tok/s | llama.cpp pp tok/s | geist vs llama | geist tg tok/s | llama.cpp tg tok/s | geist vs llama |
+| --: | --: | --: | --: | --: | --: | --: |
+| 128 | 538.95 ± 1.30 | 515.89 ± 5.16 | +4.47% | 36.09 ± 0.06 | 28.98 ± 0.29 | +24.53% |
+| 256 | 527.41 ± 1.06 | 533.59 ± 4.49 | -1.16% | 35.87 ± 0.08 | 29.21 ± 0.16 | +22.81% |
+| 512 | 508.71 ± 1.05 | 544.11 ± 3.29 | -6.51% | 35.68 ± 0.11 | 29.35 ± 0.13 | +21.59% |
+| 1024 | 477.76 ± 0.91 | 540.62 ± 4.83 | -11.63% | 35.17 ± 0.11 | 29.25 ± 0.07 | +20.23% |
+
+Decode leads the fork's Vulkan build by +20…25% across all four depths
+(one lane per row, activations broadcast from shared memory, §above).
+Prefill is at rough parity at pp128 and falls behind as depth grows
+(+4% at 128, -12% at 1024) — the fork's GEMM keeps f16 accumulation over
+the whole K and a 128×128 tile at every depth, while ours folds to f32
+every 64 k and the 128-row chunk amortizes over more workgroups at
+pp128 than at pp1024. Token streams are engine-native synthetic inputs
+(compute-shape parity, not logit parity — see *Correctness* above for
+that gate).
+
+- protocol: [`cross_engine_gpu_protocol.json`](../cross_engine_gpu_protocol.json),
+  host profile `nvidia_2080ti_vulkan`, model key `bonsai2-27b-pq2`
+- raw samples:
+  [`raw/2026-09-26T220020Z_geist_llama_gpu_bonsai2-27b-pq2_nvidia_2080ti_vulkan.jsonl`](raw/2026-09-26T220020Z_geist_llama_gpu_bonsai2-27b-pq2_nvidia_2080ti_vulkan.jsonl)
+- reproduce:
+  `python3 tools/bench_cross_engine.py --geist bin/linux/release/tests/bench_perf_sweep
+  --llama llama-bench --gguf Ternary-Bonsai-2-27B-PQ2_0.gguf
+  --protocol benchmark/cross_engine_gpu_protocol.json
+  --host-profile nvidia_2080ti_vulkan --model bonsai2-27b-pq2`
