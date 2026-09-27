@@ -408,7 +408,7 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
      * 22 separate ones; each buffer is a GEIST_MEMORY_ALIASED slice. */
     struct transformer_scratch_plan scratch_plan;
     transformer_scratch_plan_build(st, sess->m_max, &scratch_plan);
-    const size_t head_dim_max = 512;
+    const size_t head_dim_max = TRANSFORMER_HEAD_DIM_MAX;
     sess->scratch_pool_bytes  = scratch_plan.pool_bytes;
     /* Route the pool through the backend so GPU backends hand out memory
      * they can bind (host-visible VkBuffer / shared MTLBuffer); CPU
@@ -980,6 +980,26 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                                 fam->name);
         transformer_state_destroy(st);
         return GEIST_E_UNSUPPORTED;
+    }
+    /* head_dim is metadata: a layer asking for more than the forward pass
+     * holds (TRANSFORMER_HEAD_DIM_MAX) is refused here — it used to load
+     * and then overflow the per-head stack arrays of the attention kernels
+     * on the first prefill. */
+    for (size_t i = 0; i < st->n_layers + st->n_mtp_layers; i++) {
+        const size_t hd = i < st->n_layers ? st->layers[i].head_dim
+                                           : st->mtp_layers[i - st->n_layers].block.head_dim;
+        if (hd > TRANSFORMER_HEAD_DIM_MAX) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: %s layer %zu head_dim %zu exceeds the "
+                                    "supported maximum %zu",
+                                    fam->name,
+                                    i,
+                                    hd,
+                                    TRANSFORMER_HEAD_DIM_MAX);
+            transformer_state_destroy(st);
+            return GEIST_E_UNSUPPORTED;
+        }
     }
 
     /* Storage mode (mmap-alias default vs β-mode override). mmap-alias

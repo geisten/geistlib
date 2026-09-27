@@ -53,7 +53,7 @@ void kivi_drain_one_layer(size_t   drained_count,
      * single iteration in practice; coded generically. */
     for (size_t h = 0; h < n_kv_heads; h++) {
         /* K side: gather R contiguous rows from residual at column h. */
-        float k_group[KIVI_K_GROUP_SIZE * 512]; /* worst case R=128, hd=512 → 256 KB */
+        float k_group[KIVI_K_GROUP_SIZE * TRANSFORMER_HEAD_DIM_MAX]; /* R=128: 256 KB */
         for (size_t t = 0; t < R; t++) {
             const float *src = k_residual + (t * n_kv_heads + h) * head_dim;
             memcpy(k_group + t * head_dim, src, head_dim * sizeof(float));
@@ -115,7 +115,7 @@ void attention_kivi_via_buffers(size_t         n_q,
 
     const size_t kv_group_size  = n_q_heads / n_kv_heads;
     const size_t packed_per_row = head_dim / 4;
-    float        k_dequant[512];
+    float        k_dequant[TRANSFORMER_HEAD_DIM_MAX];
     for (size_t t = 0; t < n_q; t++) {
         const size_t q_pos = q_offset + t;
         const size_t s_lo =
@@ -262,8 +262,9 @@ void attention_int8_via_buffers(size_t        n_q,
             const size_t kv_h = h / kv_group_size;
             const float *qv   = q + (t * n_q_heads + h) * head_dim;
 
-            /* Per-head INT8 quant of Q[t,h,:]. head_dim ≤ 512 in Gemma 4. */
-            int8_t q_q8[512];
+            /* Per-head INT8 quant of Q[t,h,:]; head_dim <= TRANSFORMER_HEAD_DIM_MAX
+             * (enforced at load). */
+            int8_t q_q8[TRANSFORMER_HEAD_DIM_MAX];
             float  amax = 0.0f;
             for (size_t i = 0; i < head_dim; i++) {
                 float a = fabsf(qv[i]);
@@ -380,7 +381,7 @@ void attention_int4_via_buffers(size_t         n_q,
             const size_t kv_h = h / kv_group_size;
             const float *qv   = q + (t * n_q_heads + h) * head_dim;
 
-            int8_t q_q8[512];
+            int8_t q_q8[TRANSFORMER_HEAD_DIM_MAX];
             float  amax = 0.0f;
             for (size_t i = 0; i < head_dim; i++) {
                 float a = fabsf(qv[i]);
@@ -398,7 +399,7 @@ void attention_int4_via_buffers(size_t         n_q,
             }
 
             for (size_t s = s_lo; s <= s_hi; s++) {
-                int8_t k[512];
+                int8_t k[TRANSFORMER_HEAD_DIM_MAX];
                 int4_unpack_row(head_dim, k_q4 + (s * n_kv_heads + kv_h) * packed, k);
                 const float ks      = k_scale[s * n_kv_heads + kv_h];
                 int32_t     int_dot = 0;
@@ -443,7 +444,7 @@ void attention_int4_via_buffers(size_t         n_q,
                 outv[i] = 0.0f;
             }
             for (size_t s = s_lo; s <= s_hi; s++) {
-                int8_t vv[512];
+                int8_t vv[TRANSFORMER_HEAD_DIM_MAX];
                 int4_unpack_row(head_dim, v_q4 + (s * n_kv_heads + kv_h) * packed, vv);
                 const float vs  = v_scale[s * n_kv_heads + kv_h];
                 const float wvs = scores[s] * inv_sum * vs;

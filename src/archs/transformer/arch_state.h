@@ -46,6 +46,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Largest attention head_dim the forward pass supports. The attention
+ * kernels hold one head in stack arrays of this size (forward/attention.c)
+ * and the scratch plan sizes Q/K/V rows for it. head_dim comes from GGUF
+ * metadata — untrusted — so transformer_state_create_from_gguf rejects a
+ * model whose layers ask for more, before anything is sized from it. */
+constexpr size_t TRANSFORMER_HEAD_DIM_MAX = 512;
+
 /* ---- Per-layer weight bundle ------------------------------------------- */
 
 /* Holds every weight tensor needed to run one transformer layer. Layouts
