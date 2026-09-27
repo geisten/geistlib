@@ -333,8 +333,12 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
         tok->specials[i].len  = len;
         p += len;
     }
-    /* Sort by length desc so longest-match wins during scan. */
-    qsort(tok->specials, specials_count, sizeof(*tok->specials), specials_cmp_desc_len);
+    /* Sort by length desc so longest-match wins during scan. Without
+     * specials there is no array, and qsort's base must be valid even for
+     * a zero count (C11 7.22.5p1). */
+    if (specials_count > 0) {
+        qsort(tok->specials, specials_count, sizeof(*tok->specials), specials_cmp_desc_len);
+    }
 
     /* Pre-compute byte-fallback map: <0x00>..<0xFF> -> vocab IDs. */
     for (uint32_t b = 0; b < 256; b++) {
