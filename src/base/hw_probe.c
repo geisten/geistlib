@@ -203,6 +203,7 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
         char   l3_seen[16][64]       = {0};
         size_t n_physical            = 0;
         size_t n_l3                  = 0;
+        bool   physical_overflow     = false;
         for (size_t cpu = 0; cpu < out->logical_cores; cpu++) {
             char path[128];
             char buf[64];
@@ -226,6 +227,8 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
                     if (!seen && n_physical < 64) {
                         snprintf(siblings_seen[n_physical], 64, "%s", buf);
                         n_physical++;
+                    } else if (!seen) {
+                        physical_overflow = true;
                     }
                 }
                 fclose(f);
@@ -254,7 +257,10 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
                 fclose(f);
             }
         }
-        out->physical_cores = n_physical;
+        /* More distinct cores than the table holds: n_physical is a floor,
+         * not the count. Report unknown (0), as the header documents, rather
+         * than a number a thread policy would take at face value. */
+        out->physical_cores = physical_overflow ? 0 : n_physical;
         out->n_l3_domains   = n_l3;
     }
 #endif
