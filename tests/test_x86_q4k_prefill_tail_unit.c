@@ -6,7 +6,9 @@
  * multiple of 16. The Q4_K M>1 path runs the AVX-512 16x16 panel on the
  * first m16 = m rounded down to 16 rows, the AVX2 GEMV on rows [m16, m4)
  * (m4 = m rounded down to 4), and the M=1 GEMV on the last m % 4 rows. For
- * every m from 1 to 64 (and N with and without a 16-wide panel):
+ * every m from 1 to 64 (and N with and without a 16-wide panel, and one
+ * that is not a multiple of 8, where the weight is kept as W4A8 and every
+ * row takes the M=1 path):
  *
  *   - every output is written (y poisoned, compared by bit pattern — this
  *     file builds with -ffast-math) and within the int8-activation tolerance
@@ -47,8 +49,9 @@ constexpr uint16_t F16_0_002 = 0x1819; /* fp16(0.002): dmin */
  * (test_x86_large_k_unit measures 0.8-1.5 %); 4 % still fails a wrong row. */
 constexpr double TOL_REL = 0.04;
 
-static const size_t KS[]    = {256, 2048};
-static const size_t NOUTS[] = {32, 40}; /* 40: n % 16 != 0, no panel */
+static const size_t KS[] = {256, 2048};
+/* 32: the panel; 36: n % 8 != 0, the W4A8 layout; 40: no 16-wide panel. */
+static const size_t NOUTS[] = {32, 36, 40};
 
 static uint32_t g_rng = 0x6C8E9CF5u;
 static uint32_t next_u32(void) {
@@ -218,13 +221,18 @@ int main(void) {
         printf("SKIP: cpu_scalar backend did not register\n");
         return GEIST_TEST_SKIP;
     }
-    const size_t k_max = KS[sizeof KS / sizeof *KS - 1];
-    const size_t n_max = NOUTS[sizeof NOUTS / sizeof *NOUTS - 1];
-    float       *x     = heap_alloc_array_aligned(float, M_MAX *k_max);
-    float       *y_ref = heap_alloc_array_aligned(float, M_MAX *n_max);
-    float       *y     = heap_alloc_array_aligned(float, M_MAX *n_max);
-    float       *y_aux = heap_alloc_array_aligned(float, M_MAX *n_max);
-    int          fails = 0;
+    size_t k_max = 0, n_max = 0;
+    for (size_t i = 0; i < sizeof KS / sizeof *KS; i++) {
+        k_max = KS[i] > k_max ? KS[i] : k_max;
+    }
+    for (size_t i = 0; i < sizeof NOUTS / sizeof *NOUTS; i++) {
+        n_max = NOUTS[i] > n_max ? NOUTS[i] : n_max;
+    }
+    float *x     = heap_alloc_array_aligned(float, M_MAX *k_max);
+    float *y_ref = heap_alloc_array_aligned(float, M_MAX *n_max);
+    float *y     = heap_alloc_array_aligned(float, M_MAX *n_max);
+    float *y_aux = heap_alloc_array_aligned(float, M_MAX *n_max);
+    int    fails = 0;
     if (x == nullptr || y_ref == nullptr || y == nullptr || y_aux == nullptr) {
         fprintf(stderr, "ERROR: buffer allocation failed\n");
         fails = 1;
