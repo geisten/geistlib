@@ -1285,6 +1285,27 @@ attn_generic:;
                     kv16 ? vk_acc_tensor16(k, false) : vk_acc_tensor(k, false),
                     kv16 ? vk_acc_tensor16(v, false) : vk_acc_tensor(v, false),
                     vk_acc_tensor(out, true)};
+            /* Tensor-core kernel (#475 follow-up): prefill only (n_q > 1;
+             * decode already has its own tuned attn_part_f16/attn_comb
+             * path above), no sliding window (2-pass causal masking assumes
+             * a single contiguous valid range per row), head_dim == 256
+             * (HD_TILES == 16 in the shader, qwen35/Bonsai's full-attention
+             * shape). Opt-in while it is unbenchmarked outside this rollout
+             * (GEIST_VK_ATTN_CM); same push layout and bindings as
+             * VK_PIPE_ATTENTION_F16, just a 16-row dispatch. */
+            if (kv16 && n_q > 1 && sliding_window == 0 && hd == 256 && stt->attn_cm &&
+                stt->pipes[VK_PIPE_ATTENTION_F16_CM] != VK_NULL_HANDLE &&
+                vk_seq_dispatch_acc(be,
+                                    VK_PIPE_ATTENTION_F16_CM,
+                                    bi,
+                                    acc,
+                                    push,
+                                    sizeof(push),
+                                    (n_q + 15u) / 16u,
+                                    qh,
+                                    1) == GEIST_OK) {
+                return GEIST_OK;
+            }
             if (vk_seq_dispatch_acc(be,
                                     kv16 ? VK_PIPE_ATTENTION_F16 : VK_PIPE_ATTENTION,
                                     bi,

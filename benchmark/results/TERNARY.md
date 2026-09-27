@@ -503,10 +503,52 @@ from `GEIST_VK_PROFILE=1` (both timestamp queries), at the 388 t/s step:
   avoids int → float converts (code bits become the top mantissa bits of 1.0,
   `Σ(c−1)x = 4Σfx − 5Σx`).
 
+### Tensor-core attention (2026-09-27, opt-in via `GEIST_VK_ATTN_CM=1`)
+
+`attention_f16_cm.comp`: causal MQA/GQA on `coopmat` instead of one scalar
+dot product per thread — one subgroup per 16-query-row block, BR = BC = 16
+(the hardware fragment size, so QK^T and P@V are each a single
+`coopMatMulAdd` per head_dim/16 tile, no array-of-`coopmat`-in-a-loop).
+head_dim == 256 (qwen35/Bonsai's full-attention shape) and
+`sliding_window == 0` only; every other shape still runs the scalar
+`attention_f16` kernel. Two passes over the causal KV range instead of one
+(row max, then exp+accumulate) rather than a streaming rescale: `coopmat`
+under `GL_KHR_cooperative_matrix` has no portable per-row scalar multiply on
+an opaque accumulator, which streaming softmax needs every tile to rescale
+`O`. The fork's flash attention reaches into `GL_NV_cooperative_matrix2`
+(`coopMatReduceNV`) for that, an NVIDIA-only extension; this kernel stays on
+the portable KHR one so it still *builds* on RADV (RADV reports no
+`VK_KHR_cooperative_matrix` at all on this host, so it keeps running the
+scalar kernel either way — no regression there, and #471 already tracks its
+other coopmat-shader limits).
+
+| | attention only, pp512 | attention only, pp1024 | pp512 total | pp1024 total |
+| :-- | --: | --: | --: | --: |
+| scalar (`attention_f16`) | 64.8 ms | 245.7 ms | 522 t/s | 492 t/s |
+| tensor-core (`attention_f16_cm`) | 28.4 ms | 101.6 ms | 540 t/s | 527 t/s |
+
+~2.3–2.4× faster on the attention op itself at both depths (consistent with
+a fixed constant-factor win, not a change in the O(depth²) complexity — the
+kernel still computes causal attention exactly, just on tensor cores); +3.5 %
+/ +7.1 % end to end, growing with depth because attention's share of the
+total grows with it. Verified: `test_backend_vulkan_linear_parity`,
+`test_backend_vulkan_ops_unit`, `test_bonsai_e2e_int` (bit-identical greedy
+tokens) and `test_qwen35_vulkan_e2e_int`, all green with the flag on and off
+on both the RTX 2080 Ti and RADV.
+
+Kept opt-in rather than made the default pending broader validation (only
+Bonsai's head_dim = 256 shape has been benchmarked) and because a single-pass
+streaming version — once the per-row rescale problem above has a portable
+answer — would close roughly another third of the remaining gap for free
+(one QK matmul pass instead of two).
+
 ### Still behind
 
-- Attention in the prefill (64 ms vs 11: no tensor-core flash attention), the
-  DeltaNet recurrence (98 vs 46) and the elementwise ops (#475).
+- The DeltaNet recurrence (98 vs 46 at the fork) and the elementwise ops
+  (#475).
+- Attention itself, even tensor-core: 2 QK passes instead of 1 (above), and
+  no flash-attention-style KV tiling beyond what causal masking already
+  skips.
 - Against CUDA: 0.66× at pp512 and 0.82× at decode; the GEMM at m = 512 has
   not been re-measured with the f16 accumulators.
 - The default chunk of 64 leaves ~25 % of pp128 / pp512 on the table on hardware
