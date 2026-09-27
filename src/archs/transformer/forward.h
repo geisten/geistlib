@@ -76,6 +76,12 @@ transformer_check_kv_room(struct transformer_arch_session *sess, size_t n_new) {
  * if KIVI mode is enabled and residual_count >= R. No-op otherwise. */
 void transformer_kivi_drain_full(struct transformer_arch_session *sess);
 
+/* Scratch floats the INT8 KV attention uses at most per call, for these
+ * head counts and head_dim: the partial results of a decode split into
+ * context chunks (forward/attention.c). The session's frame arena is sized
+ * for it. */
+[[nodiscard]] size_t attention_int8_scratch_floats(size_t n_q_heads, size_t head_dim);
+
 /* Batched PLE precompute: dequant n PLE rows + model_proj(h) + rmsnorm.
  * Output: out_buf [n, PLE_OUT]. Caller ensures n <= st->m_max. */
 [[nodiscard]] enum geist_status

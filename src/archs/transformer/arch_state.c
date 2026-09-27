@@ -565,9 +565,23 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
      *
      * Round to 64 KB. This caps the KIVI scores path at max_seq_len 16384;
      * frame_arena_alloc fails cleanly for longer windows; size this from
-     * max_seq_len if KIVI needs them. */
+     * max_seq_len if KIVI needs them.
+     *
+     * The INT8 KV attention also takes the partial results of a split
+     * decode from here: attention_int8_scratch_floats() for the widest
+     * head, 33 KB for Llama-3.2-1B. */
     sess->scratch_arena_bytes = 64u * 1024u;
-    sess->scratch_arena_base  = heap_alloc_aligned(sess->scratch_arena_bytes, 64);
+    if (sess->kv_int8_enabled && !sess->kv_int4_packed_enabled) {
+        size_t hd_max = 0;
+        for (size_t li = 0; li < st->n_layers + st->n_mtp_layers; li++) {
+            const size_t hd = li < st->n_layers ? st->layers[li].head_dim
+                                                : st->mtp_layers[li - st->n_layers].block.head_dim;
+            hd_max          = hd > hd_max ? hd : hd_max;
+        }
+        sess->scratch_arena_bytes +=
+                attention_int8_scratch_floats(st->n_q_heads, hd_max) * sizeof(float) + 64;
+    }
+    sess->scratch_arena_base = heap_alloc_aligned(sess->scratch_arena_bytes, 64);
     if (sess->scratch_arena_base == nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_OOM,

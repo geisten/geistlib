@@ -13,6 +13,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../forward.h"
 #include <geist_types.h>
 
 #include "fwht.h"
@@ -344,13 +345,21 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                 fwht_orthonormal(ctx->hd, qp + r * ctx->hd);
             }
         }
-        /* `scores` scratch is now private per query position inside the kernel
-         * (the loop is parallelized), so no shared arena buffer is needed. */
+        /* The softmax scratch is private per work item inside the kernel;
+         * the arena holds the partial results of a split decode (sized for
+         * them at session create). Without it decode runs unsplit. */
+        size_t n_scratch = attention_int8_scratch_floats(st->n_q_heads, ctx->hd);
+        float *scratch =
+                (float *) frame_arena_alloc(&sess->scratch_arena, n_scratch * sizeof(float), 64);
+        if (scratch == nullptr) {
+            n_scratch = 0;
+        }
         attention_int8_via_buffers(ctx->seq,
                                    st->n_q_heads,
                                    ctx->hd,
                                    kv_len_now,
                                    st->n_kv_heads,
+                                   n_scratch,
                                    ctx->q_position,
                                    L->sliding_window,
                                    qp,
@@ -358,7 +367,8 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                    k_scalep,
                                    v_q8p,
                                    v_scalep,
-                                   outp);
+                                   outp,
+                                   scratch);
         if (rot) {
             for (size_t r = 0; r < n_rows; r++) {
                 fwht_orthonormal(ctx->hd, outp + r * ctx->hd);

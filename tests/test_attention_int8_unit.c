@@ -1,32 +1,36 @@
 /*
  * test_attention_int8_unit — attention_int8_via_buffers against a
  * double-precision reference, on the one-head loop and the GQA-grouped
- * passes.
+ * passes, split or not.
  *
  * The kernel quantizes each query head to int8 (scale amax/127, lrintf),
  * dots it exactly against the int8 K rows, softmaxes and accumulates V in
  * fp32 (the grouped passes with an online softmax over blocks of the
- * context). The reference repeats the same Q quantization and integer dots,
- * then does the softmax and the V sum in double: the only differences left
- * are fp32 rounding, so the bound is tight (1e-5 of the output scale).
+ * context; decode passes split into context chunks merged per head). The
+ * reference repeats the same Q quantization and integer dots, then does the
+ * softmax and the V sum in double: the only differences left are fp32
+ * rounding, so the bound is tight (1e-5 of the output scale).
  *
  * Shapes are chosen to take each path under the current policy: passes of
  * 2, 3 and 4 heads (head_dim 128, head_dim 64 over a short and a long
- * context, MQA prefill) and the one-head loop (3 heads per KV head over a
- * short context, MQA decode with too few items, plain MHA); decode
- * (n_q = 1) and prefill chunks; with and without a sliding window; a context
- * shorter than one online-softmax block. Two shapes make the scores trend
- * along the context (every K row one pattern, K scales rising), so the
- * running max grows in every block for some heads (the rescale path) and
- * never after the first for others. Every output must be written
- * (poisoned first, compared by bit pattern — -ffast-math build), and a
- * 1-thread run must give the same bits as the default team.
+ * context, MQA), decode split into chunks and decode too short to split,
+ * and the one-head loop (3 heads per KV head over a short context, plain
+ * MHA); decode (n_q = 1) and prefill chunks; with and without a sliding
+ * window; a context shorter than one online-softmax block. Two shapes make
+ * the scores trend along the context (every K row one pattern, K scales
+ * rising), so the running max grows in every block for some heads (the
+ * rescale path, and chunks with different maxima to merge) and never after
+ * the first for others. Every output must be written (poisoned first,
+ * compared by bit pattern — -ffast-math build); a 1-thread run must give
+ * the same bits as the default team; a run without scratch (decode
+ * unsplit) must match the reference too.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "test_helpers.h"
 
 #include "src/archs/transformer/forward/internal.h"
+#include "src/archs/transformer/forward.h"
 
 #include "heap.h"
 
@@ -123,9 +127,13 @@ static int check_shape(const struct shape *sh) {
     float       *out1     = heap_alloc_array_aligned(float, q_elems);
     double      *ref      = heap_alloc_array_aligned(double, q_elems);
     double      *scores   = heap_alloc_array_aligned(double, sh->n_kv);
+    const size_t n_scr    = attention_int8_scratch_floats(sh->n_q_heads, sh->head_dim);
+    float       *scratch  = heap_alloc_array_aligned(float, n_scr);
+    float       *out2     = heap_alloc_array_aligned(float, q_elems);
     int          fails    = 0;
     if (k == nullptr || v == nullptr || ks == nullptr || vs == nullptr || q == nullptr ||
-        out == nullptr || out1 == nullptr || ref == nullptr || scores == nullptr) {
+        out == nullptr || out1 == nullptr || ref == nullptr || scores == nullptr ||
+        scratch == nullptr || out2 == nullptr) {
         fprintf(stderr, "ERROR: allocation failed\n");
         fails = 1;
         goto done;
@@ -166,6 +174,7 @@ static int check_shape(const struct shape *sh) {
                                sh->head_dim,
                                sh->n_kv,
                                sh->n_kv_heads,
+                               n_scr,
                                q_offset,
                                sh->window,
                                q,
@@ -173,7 +182,8 @@ static int check_shape(const struct shape *sh) {
                                ks,
                                v,
                                vs,
-                               out);
+                               out,
+                               scratch);
     reference(sh, q, k, ks, v, vs, ref, scores);
 
     double scale = 0.0, max_d = 0.0;
@@ -207,6 +217,40 @@ static int check_shape(const struct shape *sh) {
                 tol);
         fails++;
     }
+    /* Without scratch decode runs unsplit: the reference bound holds too. */
+    attention_int8_via_buffers(sh->n_q,
+                               sh->n_q_heads,
+                               sh->head_dim,
+                               sh->n_kv,
+                               sh->n_kv_heads,
+                               0,
+                               q_offset,
+                               sh->window,
+                               q,
+                               k,
+                               ks,
+                               v,
+                               vs,
+                               out2,
+                               nullptr);
+    double max_d2 = 0.0;
+    for (size_t i = 0; i < q_elems; i++) {
+        const double d = fabs((double) out2[i] - ref[i]);
+        max_d2         = d > max_d2 ? d : max_d2;
+    }
+    if (!(max_d2 <= tol)) {
+        fprintf(stderr,
+                "FAIL: n_q=%zu heads=%zu/%zu hd=%zu n_kv=%zu without scratch: max|d| %.3g "
+                "(tol %.3g)\n",
+                sh->n_q,
+                sh->n_q_heads,
+                sh->n_kv_heads,
+                sh->head_dim,
+                sh->n_kv,
+                max_d2,
+                tol);
+        fails++;
+    }
 #if defined(_OPENMP)
     /* Same bits whatever the team: each head is one thread's sequential work. */
     const int team = omp_get_max_threads();
@@ -216,6 +260,7 @@ static int check_shape(const struct shape *sh) {
                                sh->head_dim,
                                sh->n_kv,
                                sh->n_kv_heads,
+                               n_scr,
                                q_offset,
                                sh->window,
                                q,
@@ -223,7 +268,8 @@ static int check_shape(const struct shape *sh) {
                                ks,
                                v,
                                vs,
-                               out1);
+                               out1,
+                               scratch);
     omp_set_num_threads(team);
     if (memcmp(out, out1, q_elems * sizeof *out) != 0) {
         fprintf(stderr,
@@ -256,12 +302,14 @@ done:
     safe_free((void **) &out1);
     safe_free((void **) &ref);
     safe_free((void **) &scores);
+    safe_free((void **) &scratch);
+    safe_free((void **) &out2);
     return fails;
 }
 
 int main(void) {
     static const struct shape SHAPES[] = {
-            {1, 16, 8, 128, 512, 0, false},    /* 2 heads per pass (head_dim 128) */
+            {1, 16, 8, 128, 512, 0, false},    /* 2 heads per pass, decode */
             {16, 16, 8, 128, 700, 0, false},   /* ... prefill chunk */
             {16, 16, 8, 128, 200, 0, false},   /* ... context inside one block */
             {16, 24, 8, 128, 300, 0, false},   /* 3 heads per pass (head_dim 128) */
@@ -270,12 +318,18 @@ int main(void) {
             {2, 16, 8, 64, 1600, 0, false},    /* 2 per pass: 1.6 MB of K/V */
             {4, 15, 5, 64, 2600, 0, false},    /* 3 per pass: 1.6 MB of K/V */
             {9, 15, 5, 64, 300, 0, false},     /* one-head loop: 192 KB of K/V */
+            {1, 15, 5, 64, 300, 0, false},     /* ... decode */
             {16, 8, 1, 256, 600, 0, false},    /* MQA prefill: 4 per pass */
-            {1, 8, 1, 256, 600, 0, false},     /* MQA decode: one-head loop */
+            {1, 8, 1, 256, 600, 0, false},     /* MQA decode: 4 per pass, 4 chunks */
+            {1, 8, 1, 256, 200, 0, false},     /* ... too short to split: one-head */
+            {1, 12, 2, 128, 500, 0, false},    /* decode: 3 per pass, 3 chunks */
+            {1, 4, 2, 128, 400, 0, false},     /* decode: 2 per pass, 2 chunks */
             {3, 4, 4, 64, 100, 0, false},      /* MHA: one-head loop */
             {16, 16, 8, 128, 900, 256, false}, /* sliding window, grouped */
             {4, 32, 8, 64, 2500, 512, false},  /* sliding window, grouped */
-            {1, 32, 8, 64, 3000, 0, true},     /* trending scores, 6 blocks */
+            {1, 8, 1, 256, 2500, 512, false},  /* sliding window, decode in chunks */
+            {1, 32, 8, 64, 3000, 0, true},     /* trending scores, decode */
+            {1, 8, 1, 256, 3000, 0, true},     /* ... decode in chunks */
             {8, 16, 8, 128, 2000, 0, true},    /* ... prefill chunk */
     };
     int fails = 0;

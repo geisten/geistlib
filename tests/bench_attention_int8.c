@@ -17,6 +17,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "src/archs/transformer/forward/internal.h"
+#include "src/archs/transformer/forward.h"
 
 #include "heap.h"
 
@@ -60,9 +61,11 @@ static double time_one(const struct layout *l, size_t n_kv, size_t n_q, int iter
     float       *q        = heap_alloc_array_aligned(float, q_elems);
     float       *out      = heap_alloc_array_aligned(float, q_elems);
     double      *t        = heap_alloc_array_aligned(double, (size_t) iters);
+    const size_t n_scr    = attention_int8_scratch_floats(l->n_q_heads, l->head_dim);
+    float       *scratch  = heap_alloc_array_aligned(float, n_scr);
     double       med      = -1.0;
     if (k != nullptr && v != nullptr && ks != nullptr && vs != nullptr && q != nullptr &&
-        out != nullptr && t != nullptr) {
+        out != nullptr && t != nullptr && scratch != nullptr) {
         for (size_t i = 0; i < kv_elems; i++) {
             k[i] = (int8_t) (next_u32() % 255u - 127u);
             v[i] = (int8_t) (next_u32() % 255u - 127u);
@@ -80,6 +83,7 @@ static double time_one(const struct layout *l, size_t n_kv, size_t n_q, int iter
                                    l->head_dim,
                                    n_kv,
                                    l->n_kv_heads,
+                                   n_scr,
                                    q_offset,
                                    0,
                                    q,
@@ -87,7 +91,8 @@ static double time_one(const struct layout *l, size_t n_kv, size_t n_q, int iter
                                    ks,
                                    v,
                                    vs,
-                                   out); /* warm */
+                                   out,
+                                   scratch); /* warm */
         for (int it = 0; it < iters; it++) {
             const double t0 = now_ms();
             attention_int8_via_buffers(n_q,
@@ -95,6 +100,7 @@ static double time_one(const struct layout *l, size_t n_kv, size_t n_q, int iter
                                        l->head_dim,
                                        n_kv,
                                        l->n_kv_heads,
+                                       n_scr,
                                        q_offset,
                                        0,
                                        q,
@@ -102,7 +108,8 @@ static double time_one(const struct layout *l, size_t n_kv, size_t n_q, int iter
                                        ks,
                                        v,
                                        vs,
-                                       out);
+                                       out,
+                                       scratch);
             t[it] = now_ms() - t0;
         }
         qsort(t, (size_t) iters, sizeof *t, cmp_double);
@@ -115,6 +122,7 @@ static double time_one(const struct layout *l, size_t n_kv, size_t n_q, int iter
     safe_free((void **) &q);
     safe_free((void **) &out);
     safe_free((void **) &t);
+    safe_free((void **) &scratch);
     return med;
 }
 
