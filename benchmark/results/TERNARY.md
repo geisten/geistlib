@@ -546,10 +546,39 @@ streaming version — once the per-row rescale problem above has a portable
 answer — would close roughly another third of the remaining gap for free
 (one QK matmul pass instead of two).
 
+### DeltaNet recurrence: subgroup reductions (2026-09-27, #475 item 4)
+
+`deltanet_delta_f32.comp`'s two per-token reductions (`reduce2`, the l2norm
+in `load_qk` and the RMSNorm sum in `epilogue`) were a naive 128-wide
+shared-memory tree — 7 barriers per call, 14 per token, on this kernel's
+strictly serial per-token critical path (Gated-DeltaNet's state recurrence
+can't be parallelized across time within one dispatch). Replaced with
+`rmsnorm_f32.comp`'s pattern (#475 item 4): `subgroupAdd` per subgroup, one
+tiny shared pass over the (<= 4) subgroup partials — 2 barriers per call,
+parametrized by `gl_SubgroupSize` rather than hardcoded to 32, so it stays
+correct (not just fast) on RADV's 64-lane subgroups.
+
+pp512 on the RTX 2080 Ti: `dn_delta` 98.8 → 84.3 ms (−15 %); end to end
+528 → 541 t/s (pp128 546 → 555, pp1024 515 → 520). Smaller than the
+attention win because the barriers were not the dominant cost here — the
+256 serial FMA read-modify-writes per token (two passes over the d_k = 128
+state column) are. RADV's `dn_delta` is unaffected either way (2355 vs
+2381 ms at pp512): its cost there is dominated by something else on that
+iGPU, not this reduction. Verified: `test_backend_vulkan_deltanet_unit`,
+`test_backend_vulkan_linear_parity`, `test_bonsai_e2e_int` and
+`test_qwen35_vulkan_e2e_int` on both GPUs.
+
+A real close of the 98 (now 84) vs 46 ms gap needs the chunked
+(GEMM-based) delta rule already used by the CPU host-oracle fallback
+(`dn_run_prefill_chunked` in `layer_deltanet.c`) ported to this shader —
+replacing the O(seq) sequential state-column walk with batched matmuls, the
+same shape of rewrite the tensor-core GEMM and attention kernels went
+through. Comparable scope to those; not attempted here.
+
 ### Still behind
 
-- The DeltaNet recurrence (98 vs 46 at the fork) and the elementwise ops
-  (#475).
+- The remainder of the DeltaNet recurrence gap (84 vs 46 at the fork — see
+  above) and the elementwise ops (#475).
 - Attention itself, even tensor-core: 2 QK passes instead of 1 (above), and
   no flash-attention-style KV tiling beyond what causal masking already
   skips.

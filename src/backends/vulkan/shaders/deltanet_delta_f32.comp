@@ -1,4 +1,6 @@
 #version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_basic : enable
 
 /* Gated-DeltaNet recurrence + gated per-head RMSNorm (fused->deltanet_mix,
  * stage 2). One workgroup per v-head walks the tokens in order:
@@ -16,8 +18,12 @@
  * j — coalesced. With d_k == 128 (every published qwen35) the column lives in
  * 128 registers for the whole dispatch: S is read once at the start and
  * written once at the end instead of two loads and a store per row per
- * token. Other d_k stream the column through L1/L2. Reductions use shared
- * memory only (no subgroup ops): correct on any subgroup size.
+ * token. Other d_k stream the column through L1/L2. Reductions are
+ * subgroupAdd + one tiny shared pass (rmsnorm_f32.comp's pattern, #475):
+ * the naive 128-wide shared-memory tree was 7 barriers per call, called
+ * twice per token on this kernel's serial per-token critical path.
+ * Parametrized by gl_SubgroupSize, not hardcoded to 32: correct on any
+ * subgroup size, just fewer live partials to sum on a 64-lane one (RADV).
  * Limits (host-checked): d_v <= 128, d_k <= 256. Threads j >= d_v idle but
  * still take part in every barrier.
  *
@@ -57,29 +63,30 @@ layout(push_constant) uniform Push {
 
 shared float qs[256];
 shared float ks[256];
-shared float red_a[128];
-shared float red_b[128];
+shared vec2  reduce_partial[4]; /* <= 128 / 32: worst case (smallest subgroup) */
 
 float silu(float v) {
     float e = exp(-abs(v));
     return v >= 0.0 ? v / (1.0 + e) : (v * e) / (1.0 + e);
 }
 
-/* Sum-reduce two values across the 128-thread workgroup. Ends with a barrier
- * so the shared scratch can be reused immediately. */
+/* Sum-reduce two values across the 128-thread workgroup: subgroupAdd per
+ * subgroup, one tiny shared pass across the (<= 4) subgroup partials. Ends
+ * with a barrier so reduce_partial can be reused immediately — this is
+ * called twice per token, back to back. */
 void reduce2(inout float a, inout float b, uint tid) {
-    red_a[tid] = a;
-    red_b[tid] = b;
-    barrier();
-    for (uint s = 64u; s > 0u; s >>= 1u) {
-        if (tid < s) {
-            red_a[tid] += red_a[tid + s];
-            red_b[tid] += red_b[tid + s];
-        }
-        barrier();
+    a = subgroupAdd(a);
+    b = subgroupAdd(b);
+    if (subgroupElect()) {
+        reduce_partial[gl_SubgroupID] = vec2(a, b);
     }
-    a = red_a[0];
-    b = red_b[0];
+    barrier();
+    vec2 total = vec2(0.0);
+    for (uint i = 0u; i < 128u / gl_SubgroupSize; i++) {
+        total += reduce_partial[i];
+    }
+    a = total.x;
+    b = total.y;
     barrier();
 }
 
