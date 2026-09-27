@@ -35,6 +35,7 @@
 #include "linear_q4k.h"
 #include "linear_q6k.h"
 #include "linear_q8_0.h"
+#include "threads.h"
 
 #include "geist_gemm.h"
 #include "checked.h"
@@ -504,6 +505,11 @@ __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
     cpu_x86_vtbl.create         = cpu_x86_create;
     cpu_x86_vtbl.destroy        = cpu_x86_destroy;
     cpu_x86_vtbl.resolve_weight = cpu_x86_resolve_weight;
+#if defined(_OPENMP)
+    /* Per-phase OpenMP team (threads.c): decode on physical cores. */
+    cpu_x86_vtbl.parallel_region_begin = cpu_x86_parallel_region_begin;
+    cpu_x86_vtbl.parallel_region_end   = cpu_x86_parallel_region_end;
+#endif
 
     cpu_x86_prims           = cpu_scalar_prims;
     cpu_x86_prims.gelu_tanh = cpu_x86_gelu_tanh;
@@ -521,5 +527,8 @@ const struct geist_backend_descriptor geist_backend_cpu_x86 = {
         .fused = &cpu_x86_fused,
         .caps  = {.max_m             = GEIST_QUANT_M_CAP,
                   .preferred_kv_mode = GEIST_KV_INT8,
-                  .dn_subchunk       = true /* host DeltaNet sub-chunks */},
+#if defined(_OPENMP)
+                 .manages_host_threads = true, /* the region hooks above */
+#endif
+                 .dn_subchunk = true /* host DeltaNet sub-chunks */},
 };

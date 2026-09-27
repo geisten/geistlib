@@ -55,8 +55,8 @@ struct geist_hw_probe {
     size_t logical_cores;  /* 0 when unknown. */
     size_t physical_cores; /* 0 when unknown. SMT collapsed (Linux only today). */
     size_t n_l3_domains;   /* 0 unknown, 1 = single L3, N = AMD multi-CCD / Intel
-                            * P/E cluster. Used by Phase-1a CCD-aware threading
-                            * (see docs/LINUX_X86_SPEC.md). */
+                            * P/E cluster. No consumer: pinning decode to one
+                            * L3 domain measured slower (benchmark/results/X86.md). */
 
     /* Normalized µarch identity of THIS machine: core-type fingerprint
      * plus topology, e.g. "arm64:41.d0b*4" (Pi 5, 4x Cortex-A76) or

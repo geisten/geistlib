@@ -195,8 +195,10 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
      *
      * On AMD 9950X this resolves to 16 physical cores, 2 L3 domains
      * (CCDs). On Pi 5 / single-socket Intel client it's 1 L3 domain.
-     * Used by the Phase-1a CCD-aware threading default in cpu_x86
-     * (decode pins to one L3 domain, prefill to all). */
+     * physical_cores sizes cpu_x86's decode team on SMT hosts
+     * (cpu_x86/threads.c). n_l3_domains has no consumer: pinning decode
+     * to one L3 domain measured 13-15 % slower on the 9950X
+     * (benchmark/results/X86.md). */
 #if defined(__linux__)
     if (out->logical_cores > 0 && out->logical_cores <= 256) {
         char   siblings_seen[64][64] = {0};
