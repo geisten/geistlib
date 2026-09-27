@@ -17,8 +17,17 @@
  *
  * Shapes cover one block, an odd block count (the dot's tail), the SmolLM2
  * widths, n_out that is not a multiple of anything, and m = 1 (decode) up to
- * a full 64-row prefill chunk.
+ * a full 64-row prefill chunk; m = 2, 3 and 7 leave the 4-token tiles a
+ * remainder of 2 and 3 tokens.
+ *
+ * M>1 has two kernels: the AVX2 one and, where the ISA gate allows it, the
+ * AVX-512 VNNI register tiles. The gate is decided once per process, so the
+ * whole matrix runs twice: in a child with GEIST_FORCE_ISA=avx2, then with
+ * the default dispatch. On a host without VNNI both runs take the AVX2
+ * kernel; the CI SDE leg (-spr) covers the tiles there.
  */
+#define _POSIX_C_SOURCE 200809L /* fork, setenv, waitpid */
+
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -28,7 +37,10 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #if !defined(GEIST_BACKEND_CPU_X86) || !defined(GEIST_BACKEND_CPU_SCALAR)
 int main(void) {
@@ -37,12 +49,15 @@ int main(void) {
 }
 #else
 
+#define GEIST_INTERNAL_BACKEND_LAYER
+#include "src/backends/cpu_x86/kernel_w4a8.h" /* w4a8_dispatcher_tier: which M>1 kernel */
+
 #include "heap.h"
 #include "quant.h"
 
 static const size_t N_INS[]  = {32, 96, 960, 2560};
 static const size_t N_OUTS[] = {7, 64};
-static const size_t MS[]     = {1, 2, 3, 16, 64};
+static const size_t MS[]     = {1, 2, 3, 7, 16, 64};
 constexpr size_t    M_MAX    = 64;
 
 /* Block scales exactly representable in fp16 (so the test knows d_w). */
@@ -201,7 +216,11 @@ out:
     return fails;
 }
 
-int main(void) {
+/* The whole matrix under the ISA gate this process was started with. */
+static int run_all(void) {
+    printf("ISA tier %s (GEIST_FORCE_ISA=%s)\n",
+           w4a8_isa_name(w4a8_dispatcher_tier()),
+           getenv("GEIST_FORCE_ISA") != nullptr ? getenv("GEIST_FORCE_ISA") : "<unset>");
     struct geist_backend *be_x86 = nullptr;
     struct geist_backend *be_ref = nullptr;
     if (geist_backend_create("cpu_x86", nullptr, nullptr, &be_x86) != GEIST_OK ||
@@ -254,7 +273,42 @@ int main(void) {
         fprintf(stderr, "FAIL: %d check(s)\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("PASS: cpu_x86 Q8_0 within the activation-rounding bound on every shape\n");
+    return GEIST_TEST_PASS;
+}
+
+int main(void) {
+    /* Nothing has probed the ISA yet: the child's clamp takes effect. */
+    fflush(stdout);
+    const pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return GEIST_TEST_ERROR;
+    }
+    if (pid == 0) {
+        setenv("GEIST_FORCE_ISA", "avx2", 1);
+        const int rc = run_all();
+        fflush(stdout);
+        _exit(rc);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid) {
+        perror("waitpid");
+        return GEIST_TEST_ERROR;
+    }
+    const int forced = WIFEXITED(status) ? WEXITSTATUS(status) : GEIST_TEST_ERROR;
+    const int native = run_all();
+    if (forced == GEIST_TEST_SKIP && native == GEIST_TEST_SKIP) {
+        return GEIST_TEST_SKIP;
+    }
+    if (forced == GEIST_TEST_ERROR || native == GEIST_TEST_ERROR) {
+        return GEIST_TEST_ERROR;
+    }
+    if (forced != GEIST_TEST_PASS || native != GEIST_TEST_PASS) {
+        fprintf(stderr, "FAIL: forced-avx2 run %d, default run %d\n", forced, native);
+        return GEIST_TEST_FAIL;
+    }
+    printf("PASS: cpu_x86 Q8_0 within the activation-rounding bound on every shape, "
+           "both M>1 kernels\n");
     return GEIST_TEST_PASS;
 }
 

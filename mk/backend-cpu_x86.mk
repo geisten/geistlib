@@ -1,7 +1,8 @@
 # mk/backend-cpu_x86.mk — x86_64 backend sources.
 #
 # backend.c selects kernels directly in its resolver; per-ISA kernel TUs:
-# W4A8 VPDPBUSD, BF16-SGEMM trampoline, native VDPBF16PS-SGEMM, I2_S ternary.
+# W4A8 VPDPBUSD, BF16-SGEMM trampoline, native VDPBF16PS-SGEMM, I2_S ternary,
+# Q8_0 prefill tiles.
 # See docs/LINUX_X86_SPEC.md.
 #
 # Opt-in via `make BACKENDS="cpu_x86 cpu_scalar"` (default Linux x86_64 build
@@ -22,6 +23,7 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/linear_f32q.c \
     src/backends/cpu_x86/linear_generic.c \
     src/backends/cpu_x86/linear_q8_0.c \
+    src/backends/cpu_x86/kernel_q8_0_avx512_vnni.c \
     src/backends/cpu_x86/kernel_w8a8.c \
     src/backends/cpu_x86/kernel_w8a8_scalar.c \
     src/backends/cpu_x86/kernel_w8a8_avx512_vnni.c \
@@ -52,6 +54,8 @@ $(BUILD_DIR)/src/backends/cpu_x86/kernel_w4a8_avx512_vnni.o: CFLAGS_STRICT += \
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_w8a8_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_i2s_avx512_vnni.o: CFLAGS_STRICT += \
+    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
+$(BUILD_DIR)/src/backends/cpu_x86/kernel_q8_0_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.o: CFLAGS_STRICT += \
     -mavx2 -mavx -mf16c -mfma -mavx512f -mavx512bw -mavx512dq -mavx512vl

@@ -21,13 +21,18 @@
  * row in L1 while it is dotted against every one of them.
  *
  * AVX2 is the backend's x86-64-v3 baseline, so this runs on every host
- * cpu_x86 does (the AVX2-only ones included).
+ * cpu_x86 does (the AVX2-only ones included). On AVX-512 VNNI hosts M>1
+ * binds kernel_q8_0_avx512_vnni.c's register tiles instead (same bits,
+ * about twice the throughput); M=1 is bound by memory bandwidth and keeps
+ * the AVX2 GEMV, which VNNI does not speed up.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "linear_q8_0.h"
 
 #include "backend_state.h"
+#include "kernel_q8_0_avx512_vnni.h"
+#include "kernel_w4a8.h" /* w4a8_dispatcher_tier: the ISA gate, GEIST_FORCE_ISA-clamped */
 
 #include "checked.h"
 #include "quant.h"
@@ -198,12 +203,63 @@ static void cpu_x86_linear_q8_0_mN(size_t                     m,
     }
 }
 
+/* M>1 on AVX-512 VNNI hosts: the same quantization, then 4-row x 4-token
+ * register tiles from kernel_q8_0_avx512_vnni.c, one call per group of
+ * Q8_0_VNNI_TILE_ROWS output rows. Same bits as cpu_x86_linear_q8_0_mN. */
+static void cpu_x86_linear_q8_0_mN_vnni(size_t                     m,
+                                        const float               *x,
+                                        const struct geist_weight *w,
+                                        struct geist_backend      *be,
+                                        float                     *y) {
+    const size_t              n_in  = (size_t) w->n_in;
+    const size_t              n_out = (size_t) w->n_out;
+    const size_t              nb    = n_in / QK;
+    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in);
+    if (ws == nullptr) {
+        memset(y, 0, m * n_out * sizeof *y);
+        return;
+    }
+    int8_t                    *qx      = ws->mN_acts;
+    float                     *dx      = ws->mN_scale;
+    const struct block_q8_0_t *wb      = (const struct block_q8_0_t *) w->raw;
+    const size_t               n_tiles = (n_out + Q8_0_VNNI_TILE_ROWS - 1) / Q8_0_VNNI_TILE_ROWS;
+
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+        for (size_t i = 0; i < m; i++) {
+            quantize_row_q8_0(nb, x + i * n_in, qx + i * n_in, dx + i * nb);
+        }
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+        for (size_t g = 0; g < n_tiles; g++) {
+            const size_t j0   = g * Q8_0_VNNI_TILE_ROWS;
+            const size_t rows = n_out - j0 < Q8_0_VNNI_TILE_ROWS ? n_out - j0 : Q8_0_VNNI_TILE_ROWS;
+            q8_0_gemm_rows_avx512_vnni(m, nb, n_out, j0, rows, wb, qx, dx, y);
+        }
+    }
+}
+
+/* Whether this host may run kernel_q8_0_avx512_vnni.c: the dispatcher tier
+ * (which honours GEIST_FORCE_ISA) and every AVX-512 subset that TU is
+ * compiled for. Decided here, outside that TU — see mk/backend-cpu_x86.mk. */
+static bool vnni_tiles_usable(void) {
+    return w4a8_dispatcher_tier() >= W4A8_ISA_AVX512_VNNI && __builtin_cpu_supports("avx512f") &&
+           __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512dq") &&
+           __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512vnni");
+}
+
 bool cpu_x86_linear_q8_0_bind(struct geist_weight *w) {
     if (w == nullptr || w->dtype != GEIST_DTYPE_Q8_0 || w->n_in <= 0 ||
         (size_t) w->n_in % QK != 0) {
         return false;
     }
     w->linear_m1 = cpu_x86_linear_q8_0_m1;
-    w->linear_mN = cpu_x86_linear_q8_0_mN;
+    w->linear_mN = vnni_tiles_usable() ? cpu_x86_linear_q8_0_mN_vnni : cpu_x86_linear_q8_0_mN;
     return true;
 }
