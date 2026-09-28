@@ -9,7 +9,7 @@
  *     accumulation stay readable and testable on non-ARM hosts.
  *
  * Correctness is gated from the outside rather than between these two:
- * test_tl1_parity.c asserts this kernel is bit-identical to the
+ * test_tl1_parity_unit.c asserts this kernel is bit-identical to the
  * independent TQ2_0 SDOT kernel (cpu_neon_w_tq2_0_q8a_m1) on whichever
  * lowering the host compiles.
  */

@@ -277,7 +277,7 @@ NEON_KERNEL_TESTS := \
     tests/test_q4k_kernel_int.c tests/test_q6k_prefill_int.c \
     tests/test_prefill_q3k_int.c tests/test_iq_kernel_int.c \
     tests/test_backend_vs_direct_int.c tests/bench_q4k_kernel.c \
-    tests/test_i2_s_parity.c tests/test_tl1_parity.c \
+    tests/test_i2_s_parity_unit.c tests/test_tl1_parity_unit.c \
     tests/bench_5trit_probe.c tests/test_state_layer_fwd_int.c \
     tests/test_multi_session_int.c
 ifeq ($(filter cpu_neon,$(BACKENDS)),)
