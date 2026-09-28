@@ -59,8 +59,11 @@ else
 # ----- ARM64 path (existing — Graviton2+, Ampere Altra, generic ARMv8.2) ----
 BACKENDS ?= cpu_neon cpu_scalar
 
-# Generic ARMv8.2-A tuning — runs on Graviton2+, Ampere Altra, and most
-# ARM64 SBCs. No -mcpu pin so the same binary is portable across cores.
+# Generic ARMv8.2-A tuning — runs on Graviton2+, Ampere Altra, and ARM64
+# SBCs with dotprod and fp16 (Cortex-A55/A76 and later). No -mcpu pin so the
+# same binary is portable across those cores. A Cortex-A53 or A72 (Raspberry
+# Pi 3/4) has neither feature: geist_backend_create refuses it, naming the
+# missing one, rather than letting the first SDOT raise SIGILL.
 # See target-pi5.mk for the rationale behind -ffast-math and the
 # -Wno-nonnull-compare / -Wno-vla-parameter relaxations under stricter GCC.
 CFLAGS_TARGET := -march=armv8.2-a+fp16+dotprod -fopenmp -ffast-math \

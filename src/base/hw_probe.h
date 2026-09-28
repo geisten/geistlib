@@ -46,6 +46,8 @@ struct geist_hw_probe {
     bool has_dotprod;
     bool has_fp16;
     bool has_avx2;
+    bool has_fma;
+    bool has_bmi2;
     bool has_avx512f;
     bool has_avx512_vnni;
     bool has_amx_int8;
@@ -68,5 +70,19 @@ struct geist_hw_probe {
 };
 
 void geist_hw_probe_fill(struct geist_hw_probe *out);
+
+/* The instruction-set bits only (has_neon ... has_amx_int8), everything
+ * else zero: no /sys reads, so cheap enough to run on every backend
+ * create. geist_hw_probe_fill starts from it. */
+void geist_hw_probe_isa(struct geist_hw_probe *out);
+
+/* The first instruction-set feature this build may execute that `hw` does
+ * not have, or nullptr when it has them all. The target flags
+ * (mk/target-*.mk: -march=armv8.2-a+fp16+dotprod, -mcpu=cortex-a76,
+ * -march=x86-64-v3) let the compiler use a feature in any function, not
+ * only in the kernels written for it, so no kernel table can route around
+ * a missing one: the host needs every one of them. geist_backend_create
+ * refuses a host that lacks one, before any code that might use it runs. */
+const char *geist_hw_build_isa_missing(const struct geist_hw_probe *hw);
 
 #endif /* GEIST_INTERNAL_HW_PROBE_H */

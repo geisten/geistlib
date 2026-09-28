@@ -135,6 +135,13 @@ minor release.
   the attention layers' KV cache but missing from the recurrence, and
   nothing reported it. `pin_prefix` now returns `GEIST_E_UNSUPPORTED` for
   a non-empty prefix on such a model. `n = 0` still empties the session.
+- **A CPU without the build's instruction set is refused instead of
+  crashing.** The target flags let the compiler use their features in any
+  function. For the aarch64 `linux` target those are ARMv8.2 dotprod and
+  fp16; for `x86-64-v3` they are AVX2, FMA, BMI2 and F16C. A Cortex-A53
+  or A72 (Raspberry Pi 3/4) therefore died with SIGILL during its first
+  decode. `geist_backend_create` now returns `GEIST_E_UNSUPPORTED` and
+  names the missing feature.
 
 ## [0.11.0] — 2026-09-06
 
