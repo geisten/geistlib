@@ -9,7 +9,8 @@
  * passes split into context chunks merged per head). The reference repeats
  * the same Q quantization and integer dots, then does the softmax and the
  * V sum in double: the only differences left are fp32 rounding, so the
- * bound is tight (1e-5 of the output scale).
+ * bound is tight (1e-5 of the output scale; 1e-4 for the steep trends,
+ * whose scores in the hundreds round coarser).
  *
  * Shapes are chosen to take each path under the current policy: passes of
  * 2, 3 and 4 heads (head_dim 128, head_dim 64 over a short and a long
@@ -259,7 +260,11 @@ static int check_shape(const struct shape *sh) {
         const double d = fabs((double) out[i] - ref[i]);
         max_d          = d > max_d ? d : max_d;
     }
-    const double tol = 1e-5 * scale + 1e-7;
+    /* Scores in the hundreds (steep trends) are a float ulp of 3e-5 apart,
+     * and the kernel and this reference may multiply the three factors of a
+     * score in different orders (they do under clang for aarch64): about
+     * 1e-5 of the output, in any float kernel. */
+    const double tol = (sh->trend > 1.0f ? 1e-4 : 1e-5) * scale + 1e-7;
     if (unwritten != 0 || !(max_d <= tol)) {
         fprintf(stderr,
                 "FAIL: n_q=%zu heads=%zu/%zu hd=%zu n_kv=%zu window=%zu: %zu unwritten, "
