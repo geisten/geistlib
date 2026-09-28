@@ -165,7 +165,8 @@ void attention_kivi_via_buffers(size_t         n_q,
             }
             double sum_exp = 0.0;
             for (size_t s = s_lo; s <= s_hi; s++) {
-                const float e = expf(scores[s] - max_score);
+                /* The exponent clamped at ATTN_EXP_FLOOR (gemma4_kernels.h). */
+                const float e = expf(fmaxf(scores[s] - max_score, ATTN_EXP_FLOOR));
                 scores[s]     = e;
                 sum_exp += e;
             }
