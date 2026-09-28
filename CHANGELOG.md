@@ -92,6 +92,20 @@ minor release.
 
 ### Changed
 
+- **The first token after a prefill costs no forward pass.** `decode_step`
+  returns the token the last forward predicted and leaves the forward that
+  appends it to the next call on the session: the next step, or a peek,
+  prefill, pin or speculative call, each of which runs it first. `reset`
+  drops it. Tokens, logits and `kv_len` are unchanged. The time to the first
+  token is now the prefill alone: 164 → 122 ms for a 16-token prompt on
+  Llama 3.2 1B Q4_K (x86-64, 4 threads). A generation that ends in a reset
+  skips its last forward, and the per-token decode time is unchanged.
+
+  With a sampling configuration, a reset directly after decode steps also
+  skips that forward's random draw. The tokens sampled after it therefore
+  differ from 0.11 for the same seed, though they are still the same from
+  run to run. `<geist_arch.h>` now documents that an architecture may defer
+  the forward.
 - **The public headers are includable from C++.** `include/` writes its
   `[static len]` array-parameter contracts as `GEIST_AT_LEAST(len)`, which
   expands to `static len` in C and to nothing in C++; `extern "C"` alone could

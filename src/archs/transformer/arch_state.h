@@ -199,8 +199,9 @@ struct transformer_mtp_layer_weights {
  *                    (P1.2.b).
  *   sampler        : per-session RNG + workspace, temperature, top-k,
  *                    top-p.
- *   pending logits : last decode_step's argmax, lazily consumed by
- *                    the next call.
+ *   pending logits : the prediction the next decode_step returns, and
+ *                    whether the forward that appends the token the
+ *                    last one returned is still owed (advance_deferred).
  */
 struct transformer_arch_session {
     /* Owning model. Set once at session creation, never changed. Internal
@@ -393,6 +394,11 @@ struct transformer_arch_session {
      * valid normalized hidden in scratch_h_a when this is set. */
     bool          logits_sparse;
     geist_token_t next_token_pending;
+    /* decode_step returned next_token_pending without the forward that
+     * appends it and predicts the next token. Every op that reads or
+     * extends the cache runs that forward first (settle, arch.c); reset
+     * drops it. kv_len does not count the token until it has run. */
+    bool advance_deferred;
 
     /* ---- Sampler state.
      * temperature == 0.0 → greedy argmax; top_k>1 / top_p<1 narrow the

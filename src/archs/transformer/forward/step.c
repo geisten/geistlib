@@ -403,6 +403,7 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
     }
     sess->logits_valid       = false;
     sess->next_token_pending = 0;
+    sess->advance_deferred   = false; /* the returned token is dropped, not appended */
     transformer_mtp_reset(sess);
     /* Gated-DeltaNet layers carry recurrent state with no rewind — a
      * reset clears it to the empty sequence (#281). Prefix pinning is
