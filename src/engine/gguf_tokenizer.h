@@ -37,7 +37,9 @@
  *   SPM     — SentencePiece-style BPE (▁ space marker, <0xXX> byte fallback),
  *             driven by the embedded merges. Covers Gemma / Mistral.
  *   UNIGRAM — SentencePiece unigram (▁ marker, <0xXX> fallback), driven by the
- *             per-token scores via Viterbi (no merges). Covers the classic
+ *             per-token scores (no merges): a greedy pairwise merge whose
+ *             priority is the merged token's score, llama.cpp's SPM algorithm,
+ *             not a Viterbi search (see unigram_chunk_to_ids). Covers the classic
  *             Llama/SentencePiece vocab — incl. BitNet b1.58, which ships
  *             tokenizer.ggml.model="llama" with scores but no merges.
  * UNSUPPORTED leaves the encode/decode paths refusing so the engine falls
