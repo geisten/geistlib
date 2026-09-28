@@ -12,11 +12,11 @@
  * (test_x86_kernel_no_alloc_unit and the cpu_neon sibling).
  *
  * It is a ratchet. Each KV mode has a ceiling of allocations per layer per
- * call: 0, except the FP32 cache, whose attention allocates a score buffer
- * on every call (cpu_x86 attention.c, the gemma4_kernels.c reference that
- * cpu_scalar runs, cpu_neon transformer_ops.c). Above its ceiling a mode
- * fails; below it the test says so, and the change that got it there
- * lowers the ceiling.
+ * call; above it a mode fails, below it the test says so, and the change
+ * that got it there lowers the ceiling. All are 0: the FP32 cache's
+ * attention, the last to allocate (a score buffer per call in cpu_x86
+ * attention.c, the gemma4_kernels.c reference and cpu_neon
+ * transformer_ops.c), now scores a stack-sized block at a time.
  */
 #include "test_helpers.h"
 #include "heap.h"
@@ -41,11 +41,12 @@ static const struct {
         {GEIST_KV_INT8, "INT8", 0},
         {GEIST_KV_INT4, "INT4", 0},
         {GEIST_KV_KIVI, "KIVI", 0},
-        {GEIST_KV_FP32, "FP32", 1}, /* the score buffer, see above */
+        {GEIST_KV_FP32, "FP32", 0},
 };
 
-/* cpu_neon is counted by reading its code, not by running it here: its
- * FP32 attention allocates like the others, once per call. */
+/* cpu_neon is held to these by reading its code, not by running it here
+ * (no arm64 host); its attention is the same online-softmax row as
+ * cpu_x86's. */
 static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
 
 static int check(uint64_t    got,

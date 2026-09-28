@@ -101,6 +101,24 @@ void attention_mqa_causal(size_t      seq_len,
                           const float v[static seq_len * n_kv_heads * head_dim],
                           float       out[static seq_len * n_q_heads * head_dim]);
 
+/* The KV-cached attention kernels (this one, cpu_x86's and cpu_neon's)
+ * score this many positions at a time in a stack buffer and take the
+ * softmax online across the blocks, so no buffer grows with the context
+ * and nothing is allocated per call. */
+enum { ATTN_F32_BLOCK = 512 };
+
+/* Below this, a softmax weight exp(score - running max) is taken as 0 and
+ * exp is not asked for it. The block loops are countable, so the compiler
+ * vectorizes expf (libmvec), and the vector expf sends every lane that
+ * would underflow (below about -87.3) down a scalar slow path: in a peaked
+ * softmax most lanes, which made a 15-head SmolLM2 decode 7 % slower at
+ * 2048 positions than the scalar loop it replaced. So the argument is
+ * floored for expf and the lanes under the floor are zeroed after: e^-87
+ * is 1.6e-38, below anything a weight next to the max's 1 adds in float,
+ * and 0 rather than the floor keeps the products with V out of the
+ * denormals, which cost a microcode assist each. */
+static constexpr float ATTN_EXP_FLOOR = -87.0f;
+
 /* Decoupled-length variant for KV-cached inference.
  *   q       shape [n_q,  n_q_heads,  head_dim]
  *   k       shape [n_kv, n_kv_heads, head_dim]
@@ -111,7 +129,8 @@ void attention_mqa_causal(size_t      seq_len,
  * sliding_window > 0, additionally s > q_offset + t - sliding_window.
  *
  * For prefill: n_q = n_kv, q_offset = 0  (equivalent to attention_mqa_causal).
- * For decode:  n_q = 1, n_kv = cache_len_after_append, q_offset = cache_len_before. */
+ * For decode:  n_q = 1, n_kv = cache_len_after_append, q_offset = cache_len_before.
+ * Writes all of out; allocates nothing. */
 void attention_mqa_causal_kv(size_t      n_q,
                              size_t      n_kv,
                              size_t      q_offset,
