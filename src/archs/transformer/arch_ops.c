@@ -757,6 +757,18 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
     if (n > 0 && ids == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
+    /* Gated-DeltaNet layers carry a recurrent state, which a reset clears
+     * to the empty sequence, not to a prefix: after the first reset the
+     * prefix would be in the attention layers' KV cache but missing from
+     * the recurrence. Refuse it rather than decode on that. n = 0 only
+     * empties the session, which is fine. */
+    if (n > 0 && sess->dn_S != nullptr) {
+        geist_backend_set_error(sess->model->backend,
+                                GEIST_E_UNSUPPORTED,
+                                "pin_prefix: the model has recurrent (DeltaNet) layers, and a "
+                                "reset cannot return their state to a prefix");
+        return GEIST_E_UNSUPPORTED;
+    }
     /* Empty the session the way a reset to no prefix does, so the prefill
      * that follows starts from nothing. kv_len = 0 alone is not that: the
      * KIVI drain counters would still count the old tokens (and once a

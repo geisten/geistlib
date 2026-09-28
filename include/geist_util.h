@@ -203,7 +203,9 @@ geist_session_attach_video(struct geist_session *s,
  * pin_prefix at all; transformer (Gemma 4) does, Mamba2 does not.
  *
  * Returns GEIST_E_UNSUPPORTED if the active architecture does not
- * implement prefix pinning. */
+ * implement prefix pinning, and for a non-empty prefix on a model with
+ * recurrent (DeltaNet) layers such as Qwen3.5: a reset cannot return
+ * their state to a prefix. n = 0 empties the session and unpins. */
 enum geist_status geist_session_pin_prefix(struct geist_session *s,
                                            size_t                n,
                                            const geist_token_t   ids[GEIST_AT_LEAST(n)]);

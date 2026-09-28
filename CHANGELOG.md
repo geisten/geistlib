@@ -129,6 +129,12 @@ minor release.
   corrupted system prompt: logits were off by up to 59 on SmolLM2 360M.
   Those rows are now copied when the prefix is pinned and written back on
   a reset that follows a drain.
+- **Qwen3.5: `pin_prefix` no longer accepts a prefix that a reset loses.**
+  Gated-DeltaNet layers carry a recurrent state, and a reset clears it to
+  the empty sequence. After the first reset, a pinned prefix was still in
+  the attention layers' KV cache but missing from the recurrence, and
+  nothing reported it. `pin_prefix` now returns `GEIST_E_UNSUPPORTED` for
+  a non-empty prefix on such a model. `n = 0` still empties the session.
 
 ## [0.11.0] — 2026-09-06
 

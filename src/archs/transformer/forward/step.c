@@ -480,8 +480,8 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
     sess->advance_deferred   = false; /* the returned token is dropped, not appended */
     transformer_mtp_reset(sess);
     /* Gated-DeltaNet layers carry recurrent state with no rewind — a
-     * reset clears it to the empty sequence (#281). Prefix pinning is
-     * unsupported for this family (prefix_length stays 0). */
+     * reset clears it to the empty sequence (#281). pin_prefix refuses a
+     * prefix for this family, so prefix_length stays 0. */
     if (sess->dn_conv_state != nullptr || sess->dn_S != nullptr) {
         const struct transformer_arch_state *st = sess->model;
         const size_t key_dim                    = st->config.dn_n_k_heads * st->config.dn_head_k;
