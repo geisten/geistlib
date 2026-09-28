@@ -27,6 +27,7 @@
 #include "kernel_q4kx8_gemm.h" /* lane-parallel Q4_Kx8 GEMV / GEMM */
 #include "kernel_w4a8.h"
 #include "kernel_w8a8.h" /* sum_a sized for W8A8 to also cover Q6_K */
+#include "linear_ref.h"
 #include "q4k_to_q4kx8.h"
 #include "q4k_to_w4a8.h"
 #include "q8_kx4.h"
@@ -175,7 +176,7 @@ void cpu_x86_linear_q4k_m1(const float               *x,
     /* Per-row activation quantization → int8 acts + per-block sum_a. */
     struct cpu_x86_workspace *ws = cpu_x86_ws_acquire(st, n_in);
     if (ws == nullptr) {
-        memset(y, 0, n_out * sizeof *y);
+        geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
     }
     const float scale_x = w4a8_quantize_acts_row(n_in, x, ws->acts_scratch, ws->sum_a_scratch);

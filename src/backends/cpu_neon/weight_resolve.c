@@ -26,6 +26,7 @@
 #include <geist_backend.h>
 #include <geist_weight.h>
 
+#include "linear_ref.h"
 #include "quant.h"
 
 #include <pthread.h>
@@ -107,20 +108,19 @@ static inline uint64_t qprof_now_ns(void) {
  * allocation-free; the kernels' convenience wrappers in quant.h are not,
  * so the resolver binds the _pre variants and supplies the scratch.
  *
- * Returns nullptr on OOM, having zeroed y — the kernel signature is void,
- * so a zeroed output is the only failure the caller can observe. That is
- * the behaviour the malloc paths already had, minus the null deref some
- * of them did on the way. */
-static const int8_t *ws_quantize_act(struct geist_backend *be,
-                                     size_t                m,
-                                     size_t                n_in,
-                                     const float          *x,
-                                     size_t                n_out,
-                                     float                *y,
-                                     float               **out_scales) {
+ * Returns nullptr when that scratch cannot be had, having computed y with
+ * geist_linear_ref, which needs none: the kernel signature is void, and a
+ * zeroed y (what this did before) reads as an answer. */
+static const int8_t *ws_quantize_act(struct geist_backend      *be,
+                                     size_t                     m,
+                                     size_t                     n_in,
+                                     const float               *x,
+                                     const struct geist_weight *w,
+                                     float                     *y,
+                                     float                    **out_scales) {
     struct cpu_neon_state *st = (struct cpu_neon_state *) be->state;
     if (st == nullptr) {
-        memset(y, 0, m * n_out * sizeof *y);
+        geist_linear_ref(m, x, w, y);
         return nullptr;
     }
     struct cpu_neon_workspace *ws      = cpu_neon_ws(st);
@@ -128,7 +128,7 @@ static const int8_t *ws_quantize_act(struct geist_backend *be,
     if (ws == nullptr || ckd_mul(&xq_need, m, n_in) ||
         !cpu_neon_grow_i8(&ws->act_xq, &ws->act_xq_cap, xq_need) ||
         !cpu_neon_grow_f32(&ws->act_scale, &ws->act_scale_cap, m)) {
-        memset(y, 0, m * n_out * sizeof *y);
+        geist_linear_ref(m, x, w, y);
         return nullptr;
     }
     for (size_t i = 0; i < m; i++) {
@@ -141,17 +141,17 @@ static const int8_t *ws_quantize_act(struct geist_backend *be,
 /* Same, for the k-quant kernels whose _pre variants also want per-block
  * activation sums (Q5_K; Q4_K/Q6_K already carry their own workspace
  * fields). quantize_x_for_q4k fills both in one pass. */
-static const int8_t *ws_quantize_act_q4k(struct geist_backend *be,
-                                         size_t                m,
-                                         size_t                n_in,
-                                         const float          *x,
-                                         size_t                n_out,
-                                         float                *y,
-                                         float               **out_scales,
-                                         int32_t             **out_sum32) {
+static const int8_t *ws_quantize_act_q4k(struct geist_backend      *be,
+                                         size_t                     m,
+                                         size_t                     n_in,
+                                         const float               *x,
+                                         const struct geist_weight *w,
+                                         float                     *y,
+                                         float                    **out_scales,
+                                         int32_t                  **out_sum32) {
     struct cpu_neon_state *st = (struct cpu_neon_state *) be->state;
     if (st == nullptr) {
-        memset(y, 0, m * n_out * sizeof *y);
+        geist_linear_ref(m, x, w, y);
         return nullptr;
     }
     struct cpu_neon_workspace *ws       = cpu_neon_ws(st);
@@ -161,7 +161,7 @@ static const int8_t *ws_quantize_act_q4k(struct geist_backend *be,
         !cpu_neon_grow_i8(&ws->act_xq, &ws->act_xq_cap, xq_need) ||
         !cpu_neon_grow_f32(&ws->act_scale, &ws->act_scale_cap, m) ||
         !cpu_neon_grow_i32(&ws->act_sum32, &ws->act_sum32_cap, sum_need)) {
-        memset(y, 0, m * n_out * sizeof *y);
+        geist_linear_ref(m, x, w, y);
         return nullptr;
     }
     const size_t blocks = n_in / 32u;
@@ -174,13 +174,25 @@ static const int8_t *ws_quantize_act_q4k(struct geist_backend *be,
     return ws->act_xq;
 }
 
+/* The _pre prefill kernels of Q3_K, Q5_K, Q8_0, IQ2_S and IQ3_S keep one
+ * accumulator per row on the stack, GEIST_QUANT_M_CAP of them, and return
+ * without writing y for more rows. caps.max_m keeps the engine below that;
+ * a direct caller gets y from the reference, and true. */
+static bool ref_past_m_cap(size_t m, const float *x, const struct geist_weight *w, float *y) {
+    if (m <= GEIST_QUANT_M_CAP) {
+        return false;
+    }
+    geist_linear_ref(m, x, w, y);
+    return true;
+}
+
 static void cpu_neon_w_q3k_m1(const float               *x,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
                               float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -206,6 +218,8 @@ static void cpu_neon_w_q4k_pair_m1(const float               *x,
                                    float                     *y1) {
     (void) be;
     if (w0->n_in != w1->n_in) {
+        geist_linear_ref(1, x, w0, y0);
+        geist_linear_ref(1, x, w1, y1);
         return;
     }
     linear_q4k_decode_w4a8_pair(
@@ -216,12 +230,20 @@ static void cpu_neon_w_q6k_m1(const float               *x,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
                               float                     *y) {
-    (void) be;
-    if (w->backend_layout == GEIST_W_LAYOUT_Q6_K_X8_GEMV && w->aux_fp32 != nullptr) {
-        linear_q6k_decode_w6a8_x8((size_t) w->n_in, (size_t) w->n_out, x, w->aux_fp32, y);
+    /* The _pre kernels behind the scratch the others use: the quant.h
+     * wrappers kept their own and returned without writing y when it could
+     * not be had. Same quantize_x_int8_sym, so the same bits. */
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
+    if (xq == nullptr) {
         return;
     }
-    linear_q6k_decode_w6a8((size_t) w->n_in, (size_t) w->n_out, x, w->raw, y);
+    if (w->backend_layout == GEIST_W_LAYOUT_Q6_K_X8_GEMV && w->aux_fp32 != nullptr) {
+        linear_q6k_decode_w6a8_x8_pre(n_in, n_out, sc[0], xq, w->aux_fp32, y);
+        return;
+    }
+    linear_q6k_decode_w6a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
 }
 
 static void cpu_neon_w_q8_0_m1(const float               *x,
@@ -230,7 +252,7 @@ static void cpu_neon_w_q8_0_m1(const float               *x,
                                float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -245,7 +267,7 @@ static void cpu_neon_w_q4_0_m1(const float               *x,
     if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w->aux_fp32 != nullptr) {
         float        *sc  = nullptr;
         int32_t      *s32 = nullptr;
-        const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, n_out, y, &sc, &s32);
+        const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, w, y, &sc, &s32);
         if (xq == nullptr) {
             return;
         }
@@ -253,7 +275,7 @@ static void cpu_neon_w_q4_0_m1(const float               *x,
         return;
     }
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -267,7 +289,7 @@ static void cpu_neon_w_q4_1_m1(const float               *x,
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc  = nullptr;
     int32_t      *s32 = nullptr;
-    const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, n_out, y, &sc, &s32);
+    const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, w, y, &sc, &s32);
     if (xq == nullptr) {
         return;
     }
@@ -287,7 +309,7 @@ static void cpu_neon_w_q4_0_mN(size_t                     m,
     if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w->aux_fp32 != nullptr) {
         float        *sc  = nullptr;
         int32_t      *s32 = nullptr;
-        const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, n_out, y, &sc, &s32);
+        const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, w, y, &sc, &s32);
         if (xq == nullptr) {
             return;
         }
@@ -295,7 +317,7 @@ static void cpu_neon_w_q4_0_mN(size_t                     m,
         return;
     }
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -310,7 +332,7 @@ static void cpu_neon_w_q4_1_mN(size_t                     m,
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc  = nullptr;
     int32_t      *s32 = nullptr;
-    const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, n_out, y, &sc, &s32);
+    const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, w, y, &sc, &s32);
     if (xq == nullptr) {
         return;
     }
@@ -323,7 +345,7 @@ static void cpu_neon_w_iq2s_m1(const float               *x,
                                float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -336,7 +358,7 @@ static void cpu_neon_w_iq3s_m1(const float               *x,
                                float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -349,7 +371,7 @@ static void cpu_neon_w_iq4xs_m1(const float               *x,
                                 float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -363,7 +385,7 @@ static void cpu_neon_w_iq4xs_mN(size_t                     m,
                                 float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -376,7 +398,7 @@ static void cpu_neon_w_iq4nl_m1(const float               *x,
                                 float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -433,9 +455,12 @@ static void cpu_neon_w_q3k_mN(size_t                     m,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
                               float                     *y) {
+    if (ref_past_m_cap(m, x, w, y)) {
+        return;
+    }
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -617,8 +642,14 @@ static void cpu_neon_w_q4k_mN(size_t                     m,
     struct cpu_neon_state     *st   = (struct cpu_neon_state *) be->state;
     struct cpu_neon_workspace *ws   = cpu_neon_ws(st);
     const size_t               n_in = (size_t) w->n_in;
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
+    if (m == 0)
         return;
+    /* No workspace (the thread's first call, and the heap refused it), or
+     * more rows than the kernels' stack accumulators: the reference. */
+    if (ws == nullptr || m > GEIST_QUANT_M_CAP) {
+        geist_linear_ref(m, x, w, y);
+        return;
+    }
 
     if (st->policy.q4k_sgemm_prefill && m >= st->policy.qk_sgemm_threshold &&
         cpu_neon_dequant_w_workspace_prepare(ws, qk_sgemm_tile_rows_for(st), n_in)) {
@@ -626,8 +657,10 @@ static void cpu_neon_w_q4k_mN(size_t                     m,
         return;
     }
 
-    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in))
+    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
+        geist_linear_ref(m, x, w, y);
         return;
+    }
 
     const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
                                   q4k_weight_predecoded(w) && !q4k_weight_ntile4(w);
@@ -658,8 +691,13 @@ static void cpu_neon_w_q4k_pair_mN(size_t                     m,
     struct cpu_neon_state     *st   = (struct cpu_neon_state *) be->state;
     struct cpu_neon_workspace *ws   = cpu_neon_ws(st);
     const size_t               n_in = (size_t) w0->n_in;
-    if (m == 0 || m > GEIST_QUANT_M_CAP || w0->n_in != w1->n_in)
+    if (m == 0)
         return;
+    if (ws == nullptr || m > GEIST_QUANT_M_CAP || w0->n_in != w1->n_in) {
+        geist_linear_ref(m, x, w0, y0);
+        geist_linear_ref(m, x, w1, y1);
+        return;
+    }
 
     /* SGEMM-prefill pair: reuse the same dequant_w_fp32 scratch for both
      * weights. Each gets its own dequant+sgemm tile-loop; the activation
@@ -672,8 +710,11 @@ static void cpu_neon_w_q4k_pair_mN(size_t                     m,
         return;
     }
 
-    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in))
+    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
+        geist_linear_ref(m, x, w0, y0);
+        geist_linear_ref(m, x, w1, y1);
         return;
+    }
 
     const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
                                   q4k_weight_predecoded(w0) && q4k_weight_predecoded(w1) &&
@@ -710,8 +751,12 @@ static void cpu_neon_w_q6k_mN(size_t                     m,
     struct cpu_neon_state     *st   = (struct cpu_neon_state *) be->state;
     struct cpu_neon_workspace *ws   = cpu_neon_ws(st);
     const size_t               n_in = (size_t) w->n_in;
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
+    if (m == 0)
         return;
+    if (ws == nullptr || m > GEIST_QUANT_M_CAP) {
+        geist_linear_ref(m, x, w, y);
+        return;
+    }
 
     /* SGEMM-prefill path (m ≥ threshold): dequant Q6_K + AMX SGEMM. */
     if (st->policy.q6k_sgemm_prefill && m >= st->policy.qk_sgemm_threshold &&
@@ -720,8 +765,10 @@ static void cpu_neon_w_q6k_mN(size_t                     m,
         return;
     }
 
-    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in))
+    if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
+        geist_linear_ref(m, x, w, y);
         return;
+    }
     const bool qp6 = qprof_on();
     uint64_t   t6  = qp6 ? qprof_now_ns() : 0;
     for (size_t i = 0; i < m; i++) {
@@ -751,9 +798,12 @@ static void cpu_neon_w_iq2s_mN(size_t                     m,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
+    if (ref_past_m_cap(m, x, w, y)) {
+        return;
+    }
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -765,9 +815,12 @@ static void cpu_neon_w_iq3s_mN(size_t                     m,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
+    if (ref_past_m_cap(m, x, w, y)) {
+        return;
+    }
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -785,7 +838,7 @@ static void cpu_neon_w_q5k_m1(const float               *x,
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc  = nullptr;
     int32_t      *s32 = nullptr;
-    const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, n_out, y, &sc, &s32);
+    const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, w, y, &sc, &s32);
     if (xq == nullptr) {
         return;
     }
@@ -796,10 +849,13 @@ static void cpu_neon_w_q5k_mN(size_t                     m,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
                               float                     *y) {
+    if (ref_past_m_cap(m, x, w, y)) {
+        return;
+    }
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc  = nullptr;
     int32_t      *s32 = nullptr;
-    const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, n_out, y, &sc, &s32);
+    const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, w, y, &sc, &s32);
     if (xq == nullptr) {
         return;
     }
@@ -815,9 +871,12 @@ static void cpu_neon_w_q8_0_mN(size_t                     m,
                                const struct geist_weight *w,
                                struct geist_backend      *be,
                                float                     *y) {
+    if (ref_past_m_cap(m, x, w, y)) {
+        return;
+    }
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, n_out, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
     if (xq == nullptr) {
         return;
     }
@@ -1038,36 +1097,40 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
 #ifdef _OPENMP
 #pragma omp parallel
     {
+        /* Every thread of the team takes its share of the loop, as it
+         * must; one whose tile cannot be had computes its rows with the
+         * reference instead of leaving them unwritten. */
         float *tile = tl_dequant_tile(tile_rows * n_in);
-        if (tile == nullptr) {
-            /* No room for per-thread tile — silently skip; decode will
-             * see stale y values. Caller can't propagate. */
-        } else {
 #pragma omp for schedule(static) nowait
-            for (size_t r0 = 0; r0 < n_out; r0 += tile_rows) {
-                const size_t tr = (n_out - r0 < tile_rows) ? (n_out - r0) : tile_rows;
-                dequant_tile(w, r0, tr, tile);
-                /* Force OpenBLAS to use 1 thread inside the parallel region
-                 * to avoid 4×4 = 16-way oversubscription. Set once per call
-                 * via openblas_set_num_threads — cheap. */
-                geist_sgemv(GEIST_OP_N,
-                            (int) tr,
-                            (int) n_in,
-                            1.0f,
-                            tile,
-                            (int) n_in,
-                            x,
-                            1,
-                            0.0f,
-                            y + r0,
-                            1);
+        for (size_t r0 = 0; r0 < n_out; r0 += tile_rows) {
+            const size_t tr = (n_out - r0 < tile_rows) ? (n_out - r0) : tile_rows;
+            if (tile == nullptr) {
+                geist_linear_ref_rows(1, r0, tr, n_out, x, w, y + r0);
+                continue;
             }
+            dequant_tile(w, r0, tr, tile);
+            /* Force OpenBLAS to use 1 thread inside the parallel region
+             * to avoid 4×4 = 16-way oversubscription. Set once per call
+             * via openblas_set_num_threads — cheap. */
+            geist_sgemv(GEIST_OP_N,
+                        (int) tr,
+                        (int) n_in,
+                        1.0f,
+                        tile,
+                        (int) n_in,
+                        x,
+                        1,
+                        0.0f,
+                        y + r0,
+                        1);
         }
     }
 #else
     float *tile = tl_dequant_tile(tile_rows * n_in);
-    if (tile == nullptr)
+    if (tile == nullptr) {
+        geist_linear_ref(1, x, w, y);
         return;
+    }
     for (size_t r0 = 0; r0 < n_out; r0 += tile_rows) {
         const size_t tr = (n_out - r0 < tile_rows) ? (n_out - r0) : tile_rows;
         dequant_tile(w, r0, tr, tile);
@@ -1151,26 +1214,29 @@ static void cpu_neon_qk_sgemm_run(const float               *x,
         /* Per-thread tile buffer (32-row tile fp32), kept across calls.
          * Avoid stack VLA — n_in can be large. */
         float *t_tile = tl_dequant_tile(tile_rows * n_in);
-        if (t_tile != nullptr) {
 #pragma omp for schedule(dynamic, 1)
-            for (size_t t = 0; t < n_tiles; t++) {
-                const size_t r0 = t * tile_rows;
-                const size_t tr = (n_out - r0 < tile_rows) ? (n_out - r0) : tile_rows;
-                dequant_tile(w, r0, tr, t_tile);
-                geist_sgemm(GEIST_OP_N,
-                            GEIST_OP_T,
-                            (int) m,
-                            (int) tr,
-                            (int) n_in,
-                            1.0f,
-                            x,
-                            (int) n_in,
-                            t_tile,
-                            (int) n_in,
-                            0.0f,
-                            y + r0,
-                            (int) n_out);
+        for (size_t t = 0; t < n_tiles; t++) {
+            const size_t r0 = t * tile_rows;
+            const size_t tr = (n_out - r0 < tile_rows) ? (n_out - r0) : tile_rows;
+            if (t_tile == nullptr) {
+                /* As in the m1 trampoline: the reference, not a gap. */
+                geist_linear_ref_rows(m, r0, tr, n_out, x, w, y + r0);
+                continue;
             }
+            dequant_tile(w, r0, tr, t_tile);
+            geist_sgemm(GEIST_OP_N,
+                        GEIST_OP_T,
+                        (int) m,
+                        (int) tr,
+                        (int) n_in,
+                        1.0f,
+                        x,
+                        (int) n_in,
+                        t_tile,
+                        (int) n_in,
+                        0.0f,
+                        y + r0,
+                        (int) n_out);
         }
     }
 #else
@@ -1219,33 +1285,38 @@ static void cpu_neon_w_dequant_trampoline_mN(size_t                     m,
 #pragma omp parallel
     {
         float *tile = tl_dequant_tile(DEQ_TILE_ROWS_DEFAULT * n_in);
-        if (tile != nullptr) {
 #pragma omp for schedule(dynamic, 1)
-            for (size_t ti = 0; ti < n_tiles; ti++) {
-                const size_t r0 = ti * DEQ_TILE_ROWS_DEFAULT;
-                const size_t tr =
-                        (n_out - r0 < DEQ_TILE_ROWS_DEFAULT) ? (n_out - r0) : DEQ_TILE_ROWS_DEFAULT;
-                dequant_tile(w, r0, tr, tile);
-                geist_sgemm(GEIST_OP_N,
-                            GEIST_OP_T,
-                            (int) m,
-                            (int) tr,
-                            (int) n_in,
-                            1.0f,
-                            x,
-                            (int) n_in,
-                            tile,
-                            (int) n_in,
-                            0.0f,
-                            y + r0,
-                            (int) n_out);
+        for (size_t ti = 0; ti < n_tiles; ti++) {
+            const size_t r0 = ti * DEQ_TILE_ROWS_DEFAULT;
+            const size_t tr =
+                    (n_out - r0 < DEQ_TILE_ROWS_DEFAULT) ? (n_out - r0) : DEQ_TILE_ROWS_DEFAULT;
+            if (tile == nullptr) {
+                /* As in the m1 trampoline: the reference, not a gap. */
+                geist_linear_ref_rows(m, r0, tr, n_out, x, w, y + r0);
+                continue;
             }
+            dequant_tile(w, r0, tr, tile);
+            geist_sgemm(GEIST_OP_N,
+                        GEIST_OP_T,
+                        (int) m,
+                        (int) tr,
+                        (int) n_in,
+                        1.0f,
+                        x,
+                        (int) n_in,
+                        tile,
+                        (int) n_in,
+                        0.0f,
+                        y + r0,
+                        (int) n_out);
         }
     }
 #else
     float *tile = tl_dequant_tile(DEQ_TILE_ROWS_DEFAULT * n_in);
-    if (tile == nullptr)
+    if (tile == nullptr) {
+        geist_linear_ref(m, x, w, y);
         return;
+    }
     for (size_t r0 = 0; r0 < n_out; r0 += DEQ_TILE_ROWS_DEFAULT) {
         const size_t tr =
                 (n_out - r0 < DEQ_TILE_ROWS_DEFAULT) ? (n_out - r0) : DEQ_TILE_ROWS_DEFAULT;

@@ -14,6 +14,7 @@
  */
 #include "quant_blocks.h"
 #include "heap.h"
+#include "linear_ref.h"
 #include "quant.h"
 #include "gemma4_kernels.h"
 
@@ -476,6 +477,21 @@ static void q4k_pp_pair_row(size_t n, void *vctx) {
         q4k_decode_one_row(n, c->c1);
 }
 
+/* y from geist_linear_ref, for when the wrappers below cannot have their
+ * activation scratch: they return void, and the trampolines that bind them
+ * take y as written. The descriptor names the source bytes, as the one-row
+ * views of spec_head.c do. */
+static void q4k_decode_ref(size_t n_in, size_t n_out, const float *x, const void *w_q4k, float *y) {
+    const struct geist_weight w = {
+            .raw        = w_q4k,
+            .raw_nbytes = n_out * (n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES,
+            .n_in       = (int32_t) n_in,
+            .n_out      = (int32_t) n_out,
+            .dtype      = (uint16_t) GEIST_DTYPE_Q4_K,
+    };
+    geist_linear_ref(1, x, &w, y);
+}
+
 void linear_q4k_decode_w4a8(size_t      n_in,
                             size_t      n_out,
                             const float x[static n_in],
@@ -510,6 +526,7 @@ void linear_q4k_decode_w4a8(size_t      n_in,
         tl_last_x = nullptr; /* invalidate */
         if (tl_x_q8 == nullptr || tl_sum32 == nullptr || tl_x_copy == nullptr) {
             tl_cap_n_in = 0;
+            q4k_decode_ref(n_in, n_out, x, w_q4k, y);
             return;
         }
         tl_cap_n_in = n_in;
@@ -554,6 +571,8 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
         tl_sum32 = heap_alloc_array_aligned(int32_t, n_in / 32);
         if (tl_x_q8 == nullptr || tl_sum32 == nullptr) {
             tl_cap_n_in = 0;
+            q4k_decode_ref(n_in, n_out0, x, w0_q4k, y0);
+            q4k_decode_ref(n_in, n_out1, x, w1_q4k, y1);
             return;
         }
         tl_cap_n_in = n_in;

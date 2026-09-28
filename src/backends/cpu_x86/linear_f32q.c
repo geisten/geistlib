@@ -24,6 +24,7 @@
 #include "checked.h"
 #include "kernel_w4a8.h" /* w4a8_quantize_acts_row */
 #include "kernel_w8a8.h"
+#include "linear_ref.h"
 
 #include "heap.h"
 
@@ -181,7 +182,7 @@ void cpu_x86_linear_f32q_m1(const float               *x,
 
     struct cpu_x86_workspace *ws = cpu_x86_ws_acquire(st, n_in);
     if (ws == nullptr) {
-        memset(y, 0, n_out * sizeof *y);
+        geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
     }
     const float scale_x = quant_act_row(n_in, x, ws->acts_scratch, ws->sum_a_scratch);

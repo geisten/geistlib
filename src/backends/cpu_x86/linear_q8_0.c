@@ -35,6 +35,7 @@
 #include "kernel_w4a8.h" /* w4a8_dispatcher_tier: the ISA gate, GEIST_FORCE_ISA-clamped */
 
 #include "checked.h"
+#include "linear_ref.h"
 #include "quant.h"
 #include "quant_blocks.h"
 
@@ -146,7 +147,7 @@ static void cpu_x86_linear_q8_0_m1(const float               *x,
     const size_t              nb    = n_in / QK;
     struct cpu_x86_workspace *ws    = acquire_acts(be, 1, n_in);
     if (ws == nullptr) {
-        memset(y, 0, n_out * sizeof *y); /* OOM: defined output, as the other x86 kernels */
+        geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
     }
     int8_t *qx = ws->mN_acts;
@@ -172,7 +173,7 @@ static void cpu_x86_linear_q8_0_mN(size_t                     m,
     const size_t              nb    = n_in / QK;
     struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in);
     if (ws == nullptr) {
-        memset(y, 0, m * n_out * sizeof *y);
+        geist_linear_ref(m, x, w, y);
         return;
     }
     int8_t                    *qx = ws->mN_acts;
@@ -216,7 +217,7 @@ static void cpu_x86_linear_q8_0_mN_vnni(size_t                     m,
     const size_t              nb    = n_in / QK;
     struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in);
     if (ws == nullptr) {
-        memset(y, 0, m * n_out * sizeof *y);
+        geist_linear_ref(m, x, w, y);
         return;
     }
     int8_t                    *qx      = ws->mN_acts;

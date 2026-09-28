@@ -19,6 +19,7 @@
 #include "heap.h"
 
 #include "internal.h"
+#include "linear_ref.h"
 #include "quant.h"
 
 #include <geist_weight.h>
@@ -26,7 +27,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
@@ -181,7 +181,7 @@ void cpu_neon_w_tl1_m1(const float               *x,
         xq_cache = heap_alloc_array_aligned(int8_t, n_in);
         if (xq_cache == nullptr) {
             xq_cap = 0;
-            memset(y, 0, n_out * sizeof *y);
+            geist_linear_ref(1, x, w, y); /* TQ2_0 in raw, as ever */
             return;
         }
         xq_cap = n_in;
@@ -222,7 +222,7 @@ void cpu_neon_w_tl1_m1(const float               *x,
         lut_scratch_tl = heap_alloc_array_aligned(int8_t, lut_total);
         if (lut_scratch_tl == nullptr) {
             lut_cap = 0;
-            memset(y, 0, n_out * sizeof *y);
+            geist_linear_ref(1, x, w, y); /* TQ2_0 in raw, as ever */
             return;
         }
         lut_cap = lut_total;

@@ -20,6 +20,7 @@
 #include "../internal.h"
 #include "../parallel.h"
 #include "heap.h"
+#include "linear_ref.h"
 
 #include "quant.h"
 
@@ -407,6 +408,10 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
     const size_t               blocks_per_row = n_in / 256;
     const size_t               row_bytes      = blocks_per_row * 66;
     const uint8_t             *W              = (const uint8_t *) w->raw;
+    if (ws == nullptr) {
+        geist_linear_ref(1, x, w, y); /* no workspace for the int8 x */
+        return;
+    }
 
     /* Per-call activation quant: scan x for absmax, scale to [-127, 127],
      * write to int8 scratch. Reused across all n_out output-row dots. */
@@ -429,7 +434,7 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
         ws->m1_xq = heap_alloc_array_aligned(int8_t, n_in);
         if (ws->m1_xq == nullptr) {
             ws->m1_xq_cap = 0;
-            memset(y, 0, n_out * sizeof *y);
+            geist_linear_ref(1, x, w, y);
             return;
         }
         ws->m1_xq_cap = n_in;
@@ -454,7 +459,7 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
         ws->m1_bsum = heap_alloc_array_aligned(int32_t, blocks_per_row);
         if (ws->m1_bsum == nullptr) {
             ws->m1_bsum_cap = 0;
-            memset(y, 0, n_out * sizeof *y);
+            geist_linear_ref(1, x, w, y);
             return;
         }
         ws->m1_bsum_cap = blocks_per_row;
@@ -613,10 +618,14 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
     const size_t               blocks_per_row = n_in / 256;
     const size_t               row_bytes      = blocks_per_row * 66;
     const uint8_t             *W              = (const uint8_t *) w->raw;
-    /* Match the m-cap guard every sibling mN/prefill kernel enforces: the OMP
-     * panel below indexes a fixed-size ytile[GEIST_QUANT_M_CAP * TQ2_NC]. */
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
+    if (m == 0)
         return;
+    /* The OMP panel below indexes a fixed-size ytile[GEIST_QUANT_M_CAP *
+     * TQ2_NC]; beyond that m, or with no workspace, the reference. */
+    if (ws == nullptr || m > GEIST_QUANT_M_CAP) {
+        geist_linear_ref(m, x, w, y);
+        return;
+    }
 
     /* Per-row int8 quant of x. Each row has its own absmax. xq is
      * [m, n_in] int8; inv_scales[i] = max_abs_row_i / 127. File-scope
@@ -627,7 +636,7 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
         ws->mN_xq = heap_alloc_array_aligned(int8_t, xq_need);
         if (ws->mN_xq == nullptr) {
             ws->mN_xq_cap = 0;
-            memset(y, 0, m * n_out * sizeof *y);
+            geist_linear_ref(m, x, w, y);
             return;
         }
         ws->mN_xq_cap = xq_need;
@@ -637,7 +646,7 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
         ws->mN_sc = heap_alloc_array_aligned(float, m);
         if (ws->mN_sc == nullptr) {
             ws->mN_sc_cap = 0;
-            memset(y, 0, m * n_out * sizeof *y);
+            geist_linear_ref(m, x, w, y);
             return;
         }
         ws->mN_sc_cap = m;
@@ -655,7 +664,7 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
         ws->mN_bsum = heap_alloc_array_aligned(int32_t, bsum_need_mN);
         if (ws->mN_bsum == nullptr) {
             ws->mN_bsum_cap = 0;
-            memset(y, 0, m * n_out * sizeof *y);
+            geist_linear_ref(m, x, w, y);
             return;
         }
         ws->mN_bsum_cap = bsum_need_mN;
@@ -947,6 +956,10 @@ void cpu_neon_w_i2_s_q8a_m1(const float               *x,
     const size_t               blocks_per_row = n_in / 256;
     const size_t               row_bytes      = blocks_per_row * 64;
     const uint8_t             *W              = (const uint8_t *) w->raw;
+    if (ws == nullptr) {
+        geist_linear_ref(1, x, w, y); /* no workspace for the int8 x */
+        return;
+    }
 
     float max_abs = 1e-5f;
     for (size_t i = 0; i < n_in; i++) {
@@ -962,7 +975,7 @@ void cpu_neon_w_i2_s_q8a_m1(const float               *x,
         ws->m1_xq = heap_alloc_array_aligned(int8_t, n_in);
         if (ws->m1_xq == nullptr) {
             ws->m1_xq_cap = 0;
-            memset(y, 0, n_out * sizeof *y);
+            geist_linear_ref(1, x, w, y);
             return;
         }
         ws->m1_xq_cap = n_in;
@@ -984,7 +997,7 @@ void cpu_neon_w_i2_s_q8a_m1(const float               *x,
         ws->m1_bsum = heap_alloc_array_aligned(int32_t, blocks_per_row);
         if (ws->m1_bsum == nullptr) {
             ws->m1_bsum_cap = 0;
-            memset(y, 0, n_out * sizeof *y);
+            geist_linear_ref(1, x, w, y);
             return;
         }
         ws->m1_bsum_cap = blocks_per_row;
@@ -1212,8 +1225,12 @@ void cpu_neon_w_i2_s_q8a_mN(size_t                     m,
     const size_t               blocks_per_row = n_in / 256;
     const size_t               row_bytes      = blocks_per_row * 64;
     const uint8_t             *W              = (const uint8_t *) w->raw;
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
+    if (m == 0)
         return;
+    if (ws == nullptr || m > GEIST_QUANT_M_CAP) {
+        geist_linear_ref(m, x, w, y); /* as the TQ2_0 kernel above */
+        return;
+    }
 
     const size_t xq_need = m * n_in;
     if (ws->mN_xq_cap < xq_need) {
@@ -1221,7 +1238,7 @@ void cpu_neon_w_i2_s_q8a_mN(size_t                     m,
         ws->mN_xq = heap_alloc_array_aligned(int8_t, xq_need);
         if (ws->mN_xq == nullptr) {
             ws->mN_xq_cap = 0;
-            memset(y, 0, m * n_out * sizeof *y);
+            geist_linear_ref(m, x, w, y);
             return;
         }
         ws->mN_xq_cap = xq_need;
@@ -1231,7 +1248,7 @@ void cpu_neon_w_i2_s_q8a_mN(size_t                     m,
         ws->mN_sc = heap_alloc_array_aligned(float, m);
         if (ws->mN_sc == nullptr) {
             ws->mN_sc_cap = 0;
-            memset(y, 0, m * n_out * sizeof *y);
+            geist_linear_ref(m, x, w, y);
             return;
         }
         ws->mN_sc_cap = m;
@@ -1246,7 +1263,7 @@ void cpu_neon_w_i2_s_q8a_mN(size_t                     m,
         ws->mN_bsum = heap_alloc_array_aligned(int32_t, bsum_need);
         if (ws->mN_bsum == nullptr) {
             ws->mN_bsum_cap = 0;
-            memset(y, 0, m * n_out * sizeof *y);
+            geist_linear_ref(m, x, w, y);
             return;
         }
         ws->mN_bsum_cap = bsum_need;

@@ -167,6 +167,17 @@ minor release.
   whole was whole blocks: Q4_0 with 48 columns and 2 rows loaded. Every
   resolver now returns `GEIST_E_FORMAT` for it, and for a tensor that is
   not whole blocks either, which the check used to let through.
+- **A CPU linear kernel that cannot take its fast path still computes `y`.**
+  The kernels return void, so the caller takes `y` as written. When their
+  activation scratch could not be allocated, the cpu_x86 and cpu_neon
+  kernels wrote zeros, left `y` unwritten, or (cpu_neon Q4_K and Q6_K
+  prefill, TQ2_0, I2_S) dereferenced the missing per-thread workspace and
+  crashed. Given more than 128 rows, the cpu_neon Q3_K, Q5_K, Q8_0, IQ2_S,
+  IQ3_S, TQ2_0 and I2_S prefill kernels returned without writing `y`; the
+  engine never passes that many (`caps.max_m`). All of these now compute `y`
+  with `geist_linear_ref`, which needs no scratch. The fast paths are
+  unchanged: their hot loops disassemble to the same instructions, and
+  Q8_0 end to end is within noise.
 - **`geist_weight.h` documented the wrong argument order for `linear_mN`.**
   The usage line read `w->linear_mN(x, w, m, be, y)`; the typedef, and every
   kernel, take `(m, x, w, be, y)`. Only the comment changed.

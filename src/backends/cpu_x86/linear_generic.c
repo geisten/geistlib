@@ -31,6 +31,7 @@
 #include "backend_state.h"
 
 #include "checked.h"
+#include "linear_ref.h"
 #include "quant.h"
 
 #include <geist_backend.h>
@@ -189,7 +190,7 @@ static void cpu_x86_linear_generic_m1(const float               *x,
     const size_t        n_out = (size_t) w->n_out;
     struct generic_plan p;
     if (!plan_call(w, be, &p)) {
-        memset(y, 0, n_out * sizeof *y); /* OOM: defined output, as the other x86 kernels */
+        geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
     }
     const uint8_t *raw = (const uint8_t *) w->raw;
@@ -218,7 +219,7 @@ static void cpu_x86_linear_generic_mN(size_t                     m,
     const size_t        n_out = (size_t) w->n_out;
     struct generic_plan p;
     if (!plan_call(w, be, &p)) {
-        memset(y, 0, m * n_out * sizeof *y);
+        geist_linear_ref(m, x, w, y);
         return;
     }
     const uint8_t *raw = (const uint8_t *) w->raw;

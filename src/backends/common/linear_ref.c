@@ -137,18 +137,23 @@ decode_tile(const struct geist_weight *w, size_t j, size_t k0, size_t n, float o
     }
 }
 
-void geist_linear_ref(size_t m, const float *x, const struct geist_weight *w, float *y) {
-    const size_t      n_in  = (size_t) w->n_in;
-    const size_t      n_out = (size_t) w->n_out;
+void geist_linear_ref_rows(size_t                     m,
+                           size_t                     j0,
+                           size_t                     nj,
+                           size_t                     ldy,
+                           const float               *x,
+                           const struct geist_weight *w,
+                           float                     *y) {
+    const size_t      n_in = (size_t) w->n_in;
     alignas(64) float tile[REF_TILE];
     if (m == 1) {
         /* Decode: the accumulator stays in a register. Through acc[] below
          * this measured 2 % slower for Q4_K and Q8_0 (2048 x 2048). */
-        for (size_t j = 0; j < n_out; j++) {
+        for (size_t j = 0; j < nj; j++) {
             double a = 0.0;
             for (size_t k0 = 0; k0 < n_in; k0 += REF_TILE) {
                 const size_t n = n_in - k0 < REF_TILE ? n_in - k0 : REF_TILE;
-                decode_tile(w, j, k0, n, tile);
+                decode_tile(w, j0 + j, k0, n, tile);
                 for (size_t k = 0; k < n; k++) {
                     a += (double) x[k0 + k] * (double) tile[k];
                 }
@@ -160,13 +165,13 @@ void geist_linear_ref(size_t m, const float *x, const struct geist_weight *w, fl
     double acc[REF_ROWS];
     for (size_t i0 = 0; i0 < m; i0 += REF_ROWS) {
         const size_t rows = m - i0 < REF_ROWS ? m - i0 : REF_ROWS;
-        for (size_t j = 0; j < n_out; j++) {
+        for (size_t j = 0; j < nj; j++) {
             for (size_t i = 0; i < rows; i++) {
                 acc[i] = 0.0;
             }
             for (size_t k0 = 0; k0 < n_in; k0 += REF_TILE) {
                 const size_t n = n_in - k0 < REF_TILE ? n_in - k0 : REF_TILE;
-                decode_tile(w, j, k0, n, tile);
+                decode_tile(w, j0 + j, k0, n, tile);
                 for (size_t i = 0; i < rows; i++) {
                     const float *xi = x + (i0 + i) * n_in + k0;
                     double       a  = acc[i];
@@ -177,8 +182,12 @@ void geist_linear_ref(size_t m, const float *x, const struct geist_weight *w, fl
                 }
             }
             for (size_t i = 0; i < rows; i++) {
-                y[(i0 + i) * n_out + j] = (float) acc[i];
+                y[(i0 + i) * ldy + j] = (float) acc[i];
             }
         }
     }
+}
+
+void geist_linear_ref(size_t m, const float *x, const struct geist_weight *w, float *y) {
+    geist_linear_ref_rows(m, 0, (size_t) w->n_out, (size_t) w->n_out, x, w, y);
 }
