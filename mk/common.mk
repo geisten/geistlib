@@ -213,6 +213,7 @@ LIB_SOURCES := \
     src/backends/common/kivi.c \
     src/backends/common/fwht.c \
     src/backends/common/hadamard.c \
+    src/backends/common/linear_ref.c \
     src/formats/ptqtp/gguf_ptqtp.c \
     src/formats/ptqtp/ptqtp_kernel.c \
     src/formats/ptqtp/ptqtp_awq.c \

@@ -92,6 +92,13 @@ minor release.
 
 ### Changed
 
+- **cpu_scalar's linear kernels allocate nothing.** For every quantized and
+  half-precision weight they took a heap row buffer per call, which
+  `geist_weight.h` rules out for `linear_m1` / `linear_mN`, and returned
+  without writing `y` when it could not be had. They are now
+  `geist_linear_ref`, which decodes a row a tile at a time into a stack
+  buffer: the same bits on the dtypes tested, F16 26 % faster at m = 1,
+  the rest unchanged within noise.
 - **A Qwen3.5 prefill no longer allocates per DeltaNet layer.** The chunked
   delta rule staged each chunk in a fresh heap buffer, about 2.4 MB for the
   0.8B geometry on 4 threads, and more with more threads. The session now

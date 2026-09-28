@@ -12,17 +12,19 @@
  * Performance characteristics:
  *   - F32 dense: naive triple loop with double accumulator. ~10× slower
  *     than cpu_neon + cblas; intentional, this is the reference.
- *   - Q3_K / Q4_K / Q5_K / Q6_K / Q8_0 / IQ2_S / IQ3_S / TQ2_0 / I2_S /
- *     F16 / BF16: dequant one weight row at a time into a heap row-buffer,
- *     naive dot. Same as the old cpu_scalar_linear_quant body, just exposed
- *     via the resolver pattern. (I2_S/F16 added for BitNet b1.58 2B-4T, whose
- *     ternary BitLinear weights are I2_S and whose tied lm_head is F16.)
+ *   - Every block format quant.h decodes, and F16 / BF16: geist_linear_ref
+ *     (backends/common/linear_ref.c) — each weight row decoded a tile at a
+ *     time into a stack buffer, naive dot in double. It allocates nothing,
+ *     so it cannot fail; the other CPU backends fall back to it when their
+ *     scratch cannot be had. (I2_S/F16 are there for BitNet b1.58 2B-4T,
+ *     whose ternary BitLinear weights are I2_S and whose tied lm_head is
+ *     F16.)
  *
  * No SIMD, no BLAS — that's what cpu_neon is for.
  *
  * ORACLE CAVEAT — ternary (I2_S / TQ2_0). Everywhere else this backend is the
  * correctness oracle other backends are checked against, bit for bit. For
- * ternary weights it is NOT, and cannot be: the row buffer above dequantizes
+ * ternary weights it is NOT, and cannot be: the reference kernel dequantizes
  * to fp32 and the dot then runs in fp32, i.e. W2A32, while cpu_neon binds
  * `cpu_neon_w_i2_s_q8a_*` — int8 activations, W2A8. Two different arithmetics,
  * so two different results by construction.
@@ -39,8 +41,8 @@
 
 #include "internal.h"
 
+#include "linear_ref.h"
 #include "quant.h"
-#include "heap.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -51,94 +53,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* Dispatch helper: dequant one row of weight `w` row index `j` into
- * `row` (which is `n_in` floats). Returns false on unsupported dtype. */
-static bool dequant_one_row_for(const struct geist_weight *w, size_t j, float *row) {
-    const uint8_t *base = (const uint8_t *) w->raw;
-    const size_t   n_in = (size_t) w->n_in;
-    switch ((enum geist_dtype) w->dtype) {
-    case GEIST_DTYPE_F16: {
-        const uint8_t *r = base + j * n_in * 2;
-        for (size_t i = 0; i < n_in; i++) {
-            const uint16_t h = (uint16_t) r[2 * i] | ((uint16_t) r[2 * i + 1] << 8);
-            row[i]           = fp16_to_fp32(h);
-        }
-        return true;
-    }
-    case GEIST_DTYPE_BF16: {
-        const uint8_t *r = base + j * n_in * 2;
-        for (size_t i = 0; i < n_in; i++) {
-            const uint32_t b = (uint32_t) ((uint16_t) r[2 * i] | ((uint16_t) r[2 * i + 1] << 8))
-                               << 16;
-            memcpy(&row[i], &b, sizeof b);
-        }
-        return true;
-    }
-    case GEIST_DTYPE_Q3_K:
-        dequant_q3_K_row(n_in, base + j * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q4_K:
-        dequant_q4_K_row(n_in, base + j * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q5_K:
-        dequant_q5_K_row(n_in, base + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q6_K:
-        dequant_q6_K_row(n_in, base + j * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q8_0:
-        dequant_q8_0_row(n_in, base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_IQ2_S:
-        dequant_iq2_s_row(n_in, base + j * n_in / IQ2_S_BLOCK_ELEMS * IQ2_S_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_IQ3_S:
-        dequant_iq3_s_row(n_in, base + j * n_in / IQ3_S_BLOCK_ELEMS * IQ3_S_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_IQ4_NL:
-        dequant_iq4_nl_row(n_in, base + j * n_in / IQ4_NL_BLOCK_ELEMS * IQ4_NL_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_IQ4_XS:
-        dequant_iq4_xs_row(n_in, base + j * n_in / IQ4_XS_BLOCK_ELEMS * IQ4_XS_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_TQ2_0:
-        dequant_tq2_0_row(n_in, base + j * n_in / TQ2_0_BLOCK_ELEMS * TQ2_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_PQ2_0:
-        dequant_pq2_0_row(n_in, base + j * n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_I2_S: {
-        /* BitNet b1.58 official: 256-elem/64-byte ternary blocks, four 2-bit
-         * fields per byte in REVERSE order (element 32*g+bb at shift 6-2g),
-         * ONE f32 per-TENSOR scale at the tail (offset n_in*n_out/4). */
-        float scale;
-        memcpy(&scale, base + i2_s_scale_offset(n_in * (size_t) w->n_out), sizeof scale);
-        const uint8_t *Wr = base + j * (n_in / 4);
-        for (size_t b = 0; b < n_in / 256; b++) {
-            const uint8_t *qs = Wr + b * 64;
-            for (size_t h = 0; h < 2; h++) {
-                for (size_t bb = 0; bb < 32; bb++) {
-                    const uint8_t byte = qs[h * 32 + bb];
-                    for (size_t g = 0; g < 4; g++) {
-                        const int trit = (int) ((byte >> (6 - 2 * g)) & 3) - 1;
-                        row[b * 256 + h * 128 + g * 32 + bb] = (float) trit * scale;
-                    }
-                }
-            }
-        }
-        return true;
-    }
-    case GEIST_DTYPE_Q4_0:
-        dequant_q4_0_row(n_in, base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q4_1:
-        dequant_q4_1_row(n_in, base + j * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, row);
-        return true;
-    default:
-        return false;
-    }
-}
 
 /* ---- F32 dense ---- */
 
@@ -180,29 +94,14 @@ static void cpu_scalar_w_f32_mN(size_t                     m,
     }
 }
 
-/* ---- Quantized: per-row dequant + naive dot/matmul ---- */
+/* ---- Quantized and half precision: the allocation-free reference ---- */
 
 static void cpu_scalar_w_quant_m1(const float               *x,
                                   const struct geist_weight *w,
                                   struct geist_backend      *be,
                                   float                     *y) {
     (void) be;
-    const size_t n_in  = (size_t) w->n_in;
-    const size_t n_out = (size_t) w->n_out;
-    float       *row   = heap_alloc_aligned(n_in * sizeof(float), OPTIMAL_ALIGNMENT);
-    if (row == nullptr)
-        return;
-    for (size_t j = 0; j < n_out; j++) {
-        if (!dequant_one_row_for(w, j, row)) {
-            y[j] = 0;
-            continue;
-        }
-        double acc = 0.0;
-        for (size_t k = 0; k < n_in; k++)
-            acc += (double) x[k] * (double) row[k];
-        y[j] = (float) acc;
-    }
-    safe_free((void **) &row);
+    geist_linear_ref(1, x, w, y);
 }
 
 static void cpu_scalar_w_quant_mN(size_t                     m,
@@ -211,26 +110,7 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
                                   struct geist_backend      *be,
                                   float                     *y) {
     (void) be;
-    const size_t n_in  = (size_t) w->n_in;
-    const size_t n_out = (size_t) w->n_out;
-    float       *row   = heap_alloc_aligned(n_in * sizeof(float), OPTIMAL_ALIGNMENT);
-    if (row == nullptr)
-        return;
-    for (size_t j = 0; j < n_out; j++) {
-        if (!dequant_one_row_for(w, j, row)) {
-            for (size_t i = 0; i < m; i++)
-                y[i * n_out + j] = 0;
-            continue;
-        }
-        for (size_t i = 0; i < m; i++) {
-            double acc = 0.0;
-            for (size_t k = 0; k < n_in; k++) {
-                acc += (double) x[i * n_in + k] * (double) row[k];
-            }
-            y[i * n_out + j] = (float) acc;
-        }
-    }
-    safe_free((void **) &row);
+    geist_linear_ref(m, x, w, y);
 }
 
 [[nodiscard]] enum geist_status cpu_scalar_resolve_weight(struct geist_backend *be,
@@ -239,37 +119,21 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
     if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
     }
-    /* Same source-extent contract as cpu_neon: the row dequant helpers
-     * below index `raw` by (dtype, n_in, n_out), so a short buffer reads
-     * past its end. */
+    /* Same source-extent contract as cpu_neon: the kernels index `raw` by
+     * (dtype, n_in, n_out), so a short buffer reads past its end. */
     if (!quant_weight_extent_ok(w)) {
         return GEIST_E_FORMAT;
     }
-    switch ((enum geist_dtype) w->dtype) {
-    case GEIST_DTYPE_F32:
+    if (w->dtype == GEIST_DTYPE_F32) {
         w->linear_m1 = cpu_scalar_w_f32_m1;
         w->linear_mN = cpu_scalar_w_f32_mN;
         return GEIST_OK;
-    case GEIST_DTYPE_Q4_0:
-    case GEIST_DTYPE_Q4_1:
-    case GEIST_DTYPE_Q3_K:
-    case GEIST_DTYPE_Q4_K:
-    case GEIST_DTYPE_Q5_K:
-    case GEIST_DTYPE_Q6_K:
-    case GEIST_DTYPE_Q8_0:
-    case GEIST_DTYPE_IQ2_S:
-    case GEIST_DTYPE_IQ3_S:
-    case GEIST_DTYPE_IQ4_NL:
-    case GEIST_DTYPE_IQ4_XS:
-    case GEIST_DTYPE_TQ2_0:
-    case GEIST_DTYPE_PQ2_0:
-    case GEIST_DTYPE_I2_S:
-    case GEIST_DTYPE_F16:
-    case GEIST_DTYPE_BF16:
+    }
+    /* Everything the reference decodes; its list is the one list. */
+    if (geist_linear_ref_decodes(w->dtype)) {
         w->linear_m1 = cpu_scalar_w_quant_m1;
         w->linear_mN = cpu_scalar_w_quant_mN;
         return GEIST_OK;
-    default:
-        return GEIST_E_UNSUPPORTED;
     }
+    return GEIST_E_UNSUPPORTED;
 }
