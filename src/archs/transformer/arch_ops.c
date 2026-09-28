@@ -772,7 +772,11 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
         return rc;
     }
     sess->prefix_length = sess->kv_len;
-    return GEIST_OK;
+    rc                  = transformer_kivi_pin_save(sess);
+    if (rc != GEIST_OK) {
+        sess->prefix_length = 0; /* a reset could not return to it */
+    }
+    return rc;
 }
 
 /* ---- AWQ scale application -------------------------------------------- *

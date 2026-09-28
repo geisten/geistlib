@@ -122,6 +122,13 @@ minor release.
   overflow, which ASan flags. With fewer tokens it packed stale rows into
   the 2-bit cache. `pin_prefix` now empties the session the way `reset`
   does, which also empties the MTP cache and the DeltaNet state.
+- **KIVI: a pinned prefix was corrupted by a long turn and a reset.** A
+  prefix that is not a whole number of 128-token groups keeps its last
+  rows in the residual ring, and the next drain reuses those rows. Reset
+  then read them back from the wrong place, so every later turn saw a
+  corrupted system prompt: logits were off by up to 59 on SmolLM2 360M.
+  Those rows are now copied when the prefix is pinned and written back on
+  a reset that follows a drain.
 
 ## [0.11.0] — 2026-09-06
 

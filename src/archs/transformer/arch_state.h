@@ -269,6 +269,13 @@ struct transformer_arch_session {
     size_t                max_seq_len;   /* KV-cache capacity in rows — the state
                                           * max_seq_len at alloc time; forward paths
                                           * reject writes past this */
+    /* A pinned prefix's rows in the KIVI residual ring (prefix_length mod
+     * R of them), copied at pin time for reset to write back: the drains
+     * of later turns move other rows over them. Host memory, per layer
+     * with a ring its K rows then its V rows; kivi_pin_rows is 0 without
+     * a copy. */
+    float *kivi_pin_tail;
+    size_t kivi_pin_rows;
 
     /* ---- Scratch buffers (per-forward-pass workspace).
      * 21 buffers backed by the consolidated scratch pool (P1.2.c). */

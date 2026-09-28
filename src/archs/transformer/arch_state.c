@@ -1589,6 +1589,9 @@ void transformer_session_free(struct transformer_arch_state   *state,
     void *acc = sess->embedding_acc;
     safe_free(&acc);
     sess->embedding_acc = nullptr;
+    void *tail          = sess->kivi_pin_tail;
+    safe_free(&tail);
+    sess->kivi_pin_tail = nullptr;
 
     /* Gated-DeltaNet state + qwen35 gate scratch (#281). */
     if (state != nullptr && be != nullptr && sess->dn_conv_state != nullptr) {

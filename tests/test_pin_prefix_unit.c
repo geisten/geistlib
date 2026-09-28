@@ -1,12 +1,18 @@
 /*
- * test_pin_prefix_unit — geist_session_pin_prefix gives a session the same
- * cache however it was used before: the logits after pinning a prefix and
- * prefilling a prompt are those of a fresh session, bit for bit.
+ * test_pin_prefix_unit — a pinned prefix is the same cache however the
+ * session was used around it: the logits after the prefix and a prompt
+ * are those of a fresh session, bit for bit,
  *
- * The session has held 127 or 200 tokens before the pin: one short of a
- * KIVI residual group (R = 128) and past it, so that under KIVI a group
- * has been packed into the 2-bit cache. Every CPU backend in the build,
- * every KV-cache mode, on the two-layer llama from model_fixtures.h.
+ *   - when the prefix is pinned on a session that has held 127 or 200
+ *     tokens: one short of a KIVI residual group (R = 128) and past it,
+ *     so that under KIVI a group has been packed into the 2-bit cache;
+ *   - after turns of 150 decode steps and a reset back to the prefix, for
+ *     prefixes of 20, 128 and 130 tokens: under KIVI such a turn packs
+ *     the group that holds the prefix's last tokens and reuses their
+ *     residual rows, unless the prefix fills whole groups.
+ *
+ * Every CPU backend in the build, every KV-cache mode, on the two-layer
+ * llama from model_fixtures.h.
  */
 #include "test_helpers.h"
 #include "model_fixtures.h"
@@ -22,7 +28,9 @@
 constexpr size_t VOCAB   = 512;
 constexpr size_t PROMPT  = 8;
 constexpr size_t PIN_LEN = 20;
+constexpr size_t PIN_MAX = 130;
 constexpr size_t USED    = 200; /* most tokens held before a pin */
+constexpr size_t TURN    = 150; /* decode steps in a turn */
 
 static const geist_token_t P1[PROMPT] = {1, 5, 9, 13, 17, 21, 25, 29};
 
@@ -45,7 +53,7 @@ struct run {
     size_t                mode;
 };
 
-static geist_token_t PIN[PIN_LEN];
+static geist_token_t PIN[PIN_MAX];
 static geist_token_t BEFORE[USED];
 
 static struct geist_session *open_session(const struct run *r) {
@@ -107,8 +115,40 @@ static int check_pin_after_use(const struct run *r) {
     return fails;
 }
 
+/* Turns after the pin, each decoding TURN tokens and resetting to the
+ * prefix: the prompt after each reset sees the fresh session's cache. */
+static int check_reset_after_turns(const struct run *r) {
+    static const size_t LENS[] = {PIN_LEN, 128, PIN_MAX};
+    int                 fails  = 0;
+    float               fresh[VOCAB];
+    float               again[VOCAB];
+    for (size_t i = 0; i < sizeof LENS / sizeof LENS[0]; i++) {
+        struct geist_session *s = open_session(r);
+        bool ok   = s != nullptr && geist_session_pin_prefix(s, LENS[i], PIN) == GEIST_OK &&
+                    geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK && peek(s, fresh);
+        bool same = true;
+        for (int turn = 0; ok && turn < 2; turn++) {
+            geist_token_t t = 0;
+            for (size_t j = 0; ok && j < TURN; j++) {
+                ok = geist_session_decode_step(s, &t) == GEIST_OK;
+            }
+            ok   = ok && geist_session_reset(s) == GEIST_OK &&
+                   geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK && peek(s, again);
+            same = same && memcmp(again, fresh, sizeof again) == 0;
+        }
+        geist_session_destroy(s);
+        char what[128];
+        snprintf(what,
+                 sizeof what,
+                 "a %zu-token prefix after two turns and resets gives the fresh logits",
+                 LENS[i]);
+        fails += expect(r, ok && same, what);
+    }
+    return fails;
+}
+
 int main(void) {
-    for (size_t i = 0; i < PIN_LEN; i++) {
+    for (size_t i = 0; i < PIN_MAX; i++) {
         PIN[i] = (geist_token_t) (2 + (i * 37) % (VOCAB - 2));
     }
     for (size_t i = 0; i < USED; i++) {
@@ -137,6 +177,7 @@ int main(void) {
             for (size_t k = 0; k < sizeof MODES / sizeof MODES[0]; k++) {
                 const struct run r = {m, be, BACKENDS[b], k};
                 fails += check_pin_after_use(&r);
+                fails += check_reset_after_turns(&r);
             }
             geist_model_destroy(m);
         }
@@ -151,6 +192,6 @@ int main(void) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("PASS: a pinned prefix gives the cache of a fresh session\n");
+    printf("PASS: a pinned prefix gives the cache of a fresh session, before and after turns\n");
     return GEIST_TEST_PASS;
 }
