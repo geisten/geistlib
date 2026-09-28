@@ -32,9 +32,21 @@
  * Falls back to the bit-exact IEEE-754 decode in src/formats/gguf/common.c
  * when no hardware fp16 is available. */
 #if defined(__ARM_FP) && (__ARM_FP & 2)
+#define GEIST_FP16_TO_FP32_INLINE 1
 #include <string.h>
 static inline float fp16_to_fp32(uint16_t h) {
     __fp16 f;
+    memcpy(&f, &h, sizeof(f));
+    return (float) f;
+}
+#elif defined(__F16C__) && defined(__FLT16_MAX__)
+/* x86 with F16C (the x86-64-v3 floor of the Linux build): the same, as one
+ * vcvtph2ps. Out of line it cost a call and the bit-by-bit decode per
+ * super-block in the Q6_K and Q4_K kernels. */
+#define GEIST_FP16_TO_FP32_INLINE 1
+#include <string.h>
+static inline float fp16_to_fp32(uint16_t h) {
+    _Float16 f;
     memcpy(&f, &h, sizeof(f));
     return (float) f;
 }
