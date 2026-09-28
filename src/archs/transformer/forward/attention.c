@@ -11,6 +11,7 @@
 #include "../arch_state.h"
 #include "../forward.h"
 
+#include "gemma4_kernels.h" /* ATTN_EXP_FLOOR */
 #include "int4_kv.h"
 #include "kivi.h"
 
@@ -423,8 +424,10 @@ static struct attn_plan attention_plan(size_t n_q,
                 max_score[g] = block_max;
             } else if (block_max > max_score[g]) {
                 /* The sum and the V sums so far were taken against the
-                 * lower max: scale them down to the new one. */
-                const float c = expf(max_score[g] - block_max);
+                 * lower max: scale them down to the new one (to 0 below
+                 * ATTN_EXP_FLOOR). */
+                const float d = max_score[g] - block_max;
+                const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
                 sum_exp[g] *= c;
                 for (size_t i = 0; i < head_dim; i++) {
                     acc[g][i] *= c;
@@ -433,8 +436,10 @@ static struct attn_plan attention_plan(size_t n_q,
             }
             double block_sum = 0.0;
             for (size_t j = 0; j < n; j++) {
-                float e  = expf(sc[g][j] - max_score[g]);
-                sc[g][j] = e;
+                /* As attn_exp_block, inline here: through it this pass
+                 * measured 2-3 % slower. */
+                const float e = expf(fmaxf(sc[g][j] - max_score[g], ATTN_EXP_FLOOR));
+                sc[g][j]      = e;
                 block_sum += e;
             }
             sum_exp[g] += block_sum;
@@ -486,7 +491,8 @@ attn_int8_merge(size_t n_chunks, size_t head_dim, size_t stride, const float *pa
     }
     for (size_t c = 0; c < n_chunks; c++) {
         const float *rec = part + c * stride;
-        const float  w   = expf(rec[head_dim] - max_score);
+        const float  d   = rec[head_dim] - max_score;
+        const float  w   = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
         sum_exp += (double) rec[head_dim + 1] * w;
         for (size_t i = 0; i < head_dim; i++) {
             acc[i] += w * rec[i];
@@ -496,6 +502,20 @@ attn_int8_merge(size_t n_chunks, size_t head_dim, size_t stride, const float *pa
     for (size_t i = 0; i < head_dim; i++) {
         out[i] = acc[i] * inv_sum;
     }
+}
+
+/* scores[j] = exp(scores[j] - max_score) for j < n, the exponent clamped at
+ * ATTN_EXP_FLOOR (gemma4_kernels.h); returns their sum. Out of line: inlined
+ * into the one-head loops below, the vector exp call changed the register
+ * allocation of their whole loop nest, and INT4 decode ran 2-8 % slower
+ * though the loop itself gained one vmaxps. */
+[[gnu::noinline]] static double attn_exp_block(size_t n, float scores[static n], float max_score) {
+    double sum = 0.0;
+    for (size_t j = 0; j < n; j++) {
+        scores[j] = expf(fmaxf(scores[j] - max_score, ATTN_EXP_FLOOR));
+        sum += scores[j];
+    }
+    return sum;
 }
 
 /* ---- INT8 attention helper for the KV-INT8 path -----------------------
@@ -739,19 +759,17 @@ void attention_int8_via_buffers(size_t        n_q,
                     max_score = block_max;
                 } else if (block_max > max_score) {
                     /* The sum and the V sums so far were taken against the
-                     * lower max: scale them down to the new one. */
-                    const float c = expf(max_score - block_max);
+                     * lower max: scale them down to the new one (to 0 below
+                     * ATTN_EXP_FLOOR). */
+                    const float d = max_score - block_max;
+                    const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
                     sum_exp *= c;
                     for (size_t i = 0; i < head_dim; i++) {
                         outv[i] *= c;
                     }
                     max_score = block_max;
                 }
-                for (size_t j = 0; j < n; j++) {
-                    float e   = expf(scores[j] - max_score);
-                    scores[j] = e;
-                    sum_exp += e;
-                }
+                sum_exp += attn_exp_block(n, scores, max_score);
 
                 for (size_t j = 0; j < n; j++) {
                     const size_t  s   = b0 + j;
@@ -877,18 +895,15 @@ void attention_int4_via_buffers(size_t         n_q,
                 if (b0 == s_lo) {
                     max_score = block_max;
                 } else if (block_max > max_score) {
-                    const float c = expf(max_score - block_max);
+                    const float d = max_score - block_max;
+                    const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
                     sum_exp *= c;
                     for (size_t i = 0; i < head_dim; i++) {
                         outv[i] *= c;
                     }
                     max_score = block_max;
                 }
-                for (size_t j = 0; j < n; j++) {
-                    float e   = expf(scores[j] - max_score);
-                    scores[j] = e;
-                    sum_exp += e;
-                }
+                sum_exp += attn_exp_block(n, scores, max_score);
 
                 for (size_t j = 0; j < n; j++) {
                     const size_t s = b0 + j;

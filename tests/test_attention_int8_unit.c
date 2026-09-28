@@ -20,8 +20,11 @@
  * scores trend along the context (every K row one pattern, K scales
  * rising), so the running max grows in every block for some heads (the
  * rescale path, and chunks with different maxima to merge) and never after
- * the first for others. INT4 shapes pack K/V values in [-7, 7], which the
- * 4-bit cache holds exactly, and run the INT4 kernel's one-head loop.
+ * the first for others. Steep trends put scores hundreds apart, so that
+ * most exponents, rescales and chunk merges fall below ATTN_EXP_FLOOR
+ * (gemma4_kernels.h), where the kernels clamp the exponent or drop the
+ * term. INT4 shapes pack K/V values in [-7, 7], which the 4-bit cache holds
+ * exactly, and run the INT4 kernel's one-head loop.
  * Every output must be written (poisoned first, compared by bit pattern —
  * -ffast-math build); a 1-thread run must give the same bits as the
  * default team; an INT8 run without scratch (decode unsplit) must match
@@ -57,7 +60,7 @@ static uint32_t next_u32(void) {
 
 struct shape {
     size_t n_q, n_q_heads, n_kv_heads, head_dim, n_kv, window;
-    bool   trend; /* one K pattern per KV head, K scales rising along the context */
+    float  trend; /* 0, or one K row per KV head, K scales rising to ~0.1 * trend */
     bool   int4;  /* packed 4-bit K/V through attention_int4_via_buffers */
 };
 
@@ -201,16 +204,18 @@ static int check_shape(const struct shape *sh) {
         ks[i] = 0.0005f + (float) (next_u32() % 1000u) * 2e-6f;
         vs[i] = 0.0005f + (float) (next_u32() % 1000u) * 2e-6f;
     }
-    if (sh->trend) {
-        /* |score| grows from ~0.2 to ~35 along the context: rising for the
-         * heads whose Q agrees with the pattern, falling for the others. */
+    if (sh->trend > 0.0f) {
+        /* |score| grows from ~0.2 to ~35 times trend along the context (INT8;
+         * ~17 times less for INT4's smaller values): rising for the heads
+         * whose Q agrees with the pattern, falling for the others. */
+        const float  top = 0.1f * sh->trend;
         const size_t row = sh->n_kv_heads * sh->head_dim;
         for (size_t s = 1; s < sh->n_kv; s++) {
             memcpy(k + s * row, k, row);
         }
         for (size_t s = 0; s < sh->n_kv; s++) {
             for (size_t h = 0; h < sh->n_kv_heads; h++) {
-                ks[s * sh->n_kv_heads + h] = 0.0005f + 0.1f * (float) s / (float) sh->n_kv;
+                ks[s * sh->n_kv_heads + h] = 0.0005f + top * (float) s / (float) sh->n_kv;
             }
         }
     }
@@ -315,7 +320,9 @@ static int check_shape(const struct shape *sh) {
            sh->head_dim,
            sh->n_kv,
            sh->window,
-           sh->trend ? " trend" : "",
+           sh->trend > 1.0f   ? " steep"
+           : sh->trend > 0.0f ? " trend"
+                              : "",
            sh->int4 ? " int4" : "",
            scale > 0.0 ? max_d / scale : max_d);
 done:
@@ -337,35 +344,42 @@ done:
 
 int main(void) {
     static const struct shape SHAPES[] = {
-            {1, 16, 8, 128, 512, 0, false, false},    /* 2 heads per pass, decode */
-            {16, 16, 8, 128, 700, 0, false, false},   /* ... prefill chunk */
-            {16, 16, 8, 128, 200, 0, false, false},   /* ... context inside one block */
-            {16, 24, 8, 128, 300, 0, false, false},   /* 3 heads per pass (head_dim 128) */
-            {1, 32, 8, 64, 512, 0, false, false},     /* 4 heads per pass, decode */
-            {16, 32, 8, 64, 2100, 0, false, false},   /* ... prefill chunk */
-            {2, 16, 8, 64, 1600, 0, false, false},    /* 2 per pass: 1.6 MB of K/V */
-            {4, 15, 5, 64, 2600, 0, false, false},    /* 3 per pass: 1.6 MB of K/V */
-            {9, 15, 5, 64, 300, 0, false, false},     /* one-head loop: 192 KB of K/V */
-            {1, 15, 5, 64, 300, 0, false, false},     /* ... decode */
-            {1, 15, 5, 64, 1500, 0, false, false},    /* ... decode over 3 blocks */
-            {4, 15, 5, 64, 1800, 700, false, false},  /* ... sliding window, 2 blocks */
-            {16, 8, 1, 256, 600, 0, false, false},    /* MQA prefill: 4 per pass */
-            {1, 8, 1, 256, 600, 0, false, false},     /* MQA decode: 4 per pass, 4 chunks */
-            {1, 8, 1, 256, 200, 0, false, false},     /* ... too short to split: one-head */
-            {1, 12, 2, 128, 500, 0, false, false},    /* decode: 3 per pass, 3 chunks */
-            {1, 4, 2, 128, 400, 0, false, false},     /* decode: 2 per pass, 2 chunks */
-            {3, 4, 4, 64, 100, 0, false, false},      /* MHA: one-head loop */
-            {16, 16, 8, 128, 900, 256, false, false}, /* sliding window, grouped */
-            {4, 32, 8, 64, 2500, 512, false, false},  /* sliding window, grouped */
-            {1, 8, 1, 256, 2500, 512, false, false},  /* sliding window, decode in chunks */
-            {1, 32, 8, 64, 3000, 0, true, false},     /* trending scores, decode */
-            {1, 8, 1, 256, 3000, 0, true, false},     /* ... decode in chunks */
-            {8, 16, 8, 128, 2000, 0, true, false},    /* ... prefill chunk */
-            {1, 4, 4, 64, 2000, 0, true, false},      /* ... MHA, one-head over 4 blocks */
-            {16, 16, 8, 128, 700, 0, false, true},    /* INT4: prefill chunk */
-            {1, 32, 8, 64, 1500, 0, false, true},     /* INT4: decode over 3 blocks */
-            {4, 8, 1, 256, 900, 300, false, true},    /* INT4: MQA, sliding window */
-            {1, 4, 4, 64, 2000, 0, true, true},       /* INT4: trending scores */
+            {1, 16, 8, 128, 512, 0, 0.0f, false},    /* 2 heads per pass, decode */
+            {16, 16, 8, 128, 700, 0, 0.0f, false},   /* ... prefill chunk */
+            {16, 16, 8, 128, 200, 0, 0.0f, false},   /* ... context inside one block */
+            {16, 24, 8, 128, 300, 0, 0.0f, false},   /* 3 heads per pass (head_dim 128) */
+            {1, 32, 8, 64, 512, 0, 0.0f, false},     /* 4 heads per pass, decode */
+            {16, 32, 8, 64, 2100, 0, 0.0f, false},   /* ... prefill chunk */
+            {2, 16, 8, 64, 1600, 0, 0.0f, false},    /* 2 per pass: 1.6 MB of K/V */
+            {4, 15, 5, 64, 2600, 0, 0.0f, false},    /* 3 per pass: 1.6 MB of K/V */
+            {9, 15, 5, 64, 300, 0, 0.0f, false},     /* one-head loop: 192 KB of K/V */
+            {1, 15, 5, 64, 300, 0, 0.0f, false},     /* ... decode */
+            {1, 15, 5, 64, 1500, 0, 0.0f, false},    /* ... decode over 3 blocks */
+            {4, 15, 5, 64, 1800, 700, 0.0f, false},  /* ... sliding window, 2 blocks */
+            {16, 8, 1, 256, 600, 0, 0.0f, false},    /* MQA prefill: 4 per pass */
+            {1, 8, 1, 256, 600, 0, 0.0f, false},     /* MQA decode: 4 per pass, 4 chunks */
+            {1, 8, 1, 256, 200, 0, 0.0f, false},     /* ... too short to split: one-head */
+            {1, 12, 2, 128, 500, 0, 0.0f, false},    /* decode: 3 per pass, 3 chunks */
+            {1, 4, 2, 128, 400, 0, 0.0f, false},     /* decode: 2 per pass, 2 chunks */
+            {3, 4, 4, 64, 100, 0, 0.0f, false},      /* MHA: one-head loop */
+            {16, 16, 8, 128, 900, 256, 0.0f, false}, /* sliding window, grouped */
+            {4, 32, 8, 64, 2500, 512, 0.0f, false},  /* sliding window, grouped */
+            {1, 8, 1, 256, 2500, 512, 0.0f, false},  /* sliding window, decode in chunks */
+            {1, 32, 8, 64, 3000, 0, 1.0f, false},    /* trending scores, decode */
+            {1, 8, 1, 256, 3000, 0, 1.0f, false},    /* ... decode in chunks */
+            {8, 16, 8, 128, 2000, 0, 1.0f, false},   /* ... prefill chunk */
+            {1, 4, 4, 64, 2000, 0, 1.0f, false},     /* ... MHA, one-head over 4 blocks */
+            {16, 16, 8, 128, 700, 0, 0.0f, true},    /* INT4: prefill chunk */
+            {1, 32, 8, 64, 1500, 0, 0.0f, true},     /* INT4: decode over 3 blocks */
+            {4, 8, 1, 256, 900, 300, 0.0f, true},    /* INT4: MQA, sliding window */
+            {1, 4, 4, 64, 2000, 0, 1.0f, true},      /* INT4: trending scores */
+            /* steep: scores hundreds apart, weights below the exp floor */
+            {1, 32, 8, 64, 3000, 0, 10.0f, false},   /* grouped decode */
+            {1, 8, 1, 256, 3000, 0, 10.0f, false},   /* ... in chunks: merge */
+            {8, 16, 8, 128, 2000, 0, 10.0f, false},  /* grouped prefill chunk */
+            {1, 4, 4, 64, 2000, 0, 10.0f, false},    /* one-head loop */
+            {4, 15, 5, 64, 1800, 700, 10.0f, false}, /* ... sliding window */
+            {1, 4, 4, 64, 2000, 0, 170.0f, true},    /* INT4 */
     };
     int fails = 0;
     for (size_t i = 0; i < sizeof SHAPES / sizeof *SHAPES; i++) {

@@ -3,9 +3,9 @@
  * core every CPU backend runs (cpu_x86 defaults to the INT8 cache), timed on
  * its own over context lengths and head layouts.
  *
- * Model-level runs mix it with the GEMVs and, on synthetic weights, with
- * expf slow paths from saturated scores; this isolates the kernel. Random
- * int8 K/V with moderate scales and random Q keep the softmax spread out.
+ * Model-level runs mix it with the GEMVs; this isolates the kernel. Random
+ * int8 K/V with moderate scales and random Q keep the softmax spread out;
+ * a peaked one costs the same since the exponent floor (ATTN_EXP_FLOOR).
  *
  * Layouts: 32/8 heads hd 64 (Llama-3.2-1B), 16/8 hd 128 (Qwen3-0.6B),
  * 15/5 hd 64 (SmolLM2-360M), 8/1 hd 256 (MQA), 32/32 hd 64 (MHA,
