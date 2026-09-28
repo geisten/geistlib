@@ -1009,10 +1009,26 @@ dequant_tile(const struct geist_weight *w, size_t row_start, size_t tile_rows, f
     }
 }
 
+/* The calling thread's dequant tile, at least n floats, kept for the next
+ * call (as tl1.c and the Q4_K kernel keep theirs; the OpenMP workers
+ * persist). The trampolines and cpu_neon_qk_sgemm_run run once per layer
+ * per token or prefill chunk, and allocated a tile of up to megabytes
+ * each time (AGENT.md §3). nullptr only if the first growth fails. */
+static float *tl_dequant_tile(size_t n) {
+    static _Thread_local float *tile = nullptr;
+    static _Thread_local size_t cap  = 0;
+    if (n > cap) {
+        safe_free((void **) &tile);
+        tile = heap_alloc_array_aligned(float, n);
+        cap  = tile != nullptr ? n : 0;
+    }
+    return tile;
+}
+
 /* M=1: tile through output rows, dequant each tile + sgemv. The tile
- * is heap-allocated once (tile_rows × n_in floats) and reused
- * across the output-row iterations of this single call. ~192 KB for
- * Gemma 4 d_model=1536; ~1.5 MB for FFN n_in=12288. */
+ * (tile_rows × n_in floats) is the thread's tl_dequant_tile, reused
+ * across the output rows and across calls. ~192 KB for Gemma 4
+ * d_model=1536; ~1.5 MB for FFN n_in=12288. */
 static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
                                              const struct geist_weight *w,
                                              struct geist_backend      *be,
@@ -1032,7 +1048,7 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
 #ifdef _OPENMP
 #pragma omp parallel
     {
-        float *tile = heap_alloc_array_aligned(float, tile_rows *n_in);
+        float *tile = tl_dequant_tile(tile_rows * n_in);
         if (tile == nullptr) {
             /* No room for per-thread tile — silently skip; decode will
              * see stale y values. Caller can't propagate. */
@@ -1056,11 +1072,10 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
                             y + r0,
                             1);
             }
-            safe_free((void **) &tile);
         }
     }
 #else
-    float *tile = heap_alloc_array_aligned(float, tile_rows *n_in);
+    float *tile = tl_dequant_tile(tile_rows * n_in);
     if (tile == nullptr)
         return;
     for (size_t r0 = 0; r0 < n_out; r0 += tile_rows) {
@@ -1069,7 +1084,6 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
         geist_sgemv(
                 GEIST_OP_N, (int) tr, (int) n_in, 1.0f, tile, (int) n_in, x, 1, 0.0f, y + r0, 1);
     }
-    safe_free((void **) &tile);
 #endif
 }
 
@@ -1144,9 +1158,9 @@ static void cpu_neon_qk_sgemm_run(const float               *x,
 #if defined(_OPENMP)
 #pragma omp parallel
     {
-        /* Per-thread tile buffer on heap (32-row tile fp32). Reused across
-         * the thread's iterations. Avoid stack VLA — n_in can be large. */
-        float *t_tile = heap_alloc_array_aligned(float, tile_rows *n_in);
+        /* Per-thread tile buffer (32-row tile fp32), kept across calls.
+         * Avoid stack VLA — n_in can be large. */
+        float *t_tile = tl_dequant_tile(tile_rows * n_in);
         if (t_tile != nullptr) {
 #pragma omp for schedule(dynamic, 1)
             for (size_t t = 0; t < n_tiles; t++) {
@@ -1167,7 +1181,6 @@ static void cpu_neon_qk_sgemm_run(const float               *x,
                             y + r0,
                             (int) n_out);
             }
-            safe_free((void **) &t_tile);
         }
     }
 #else
@@ -1215,7 +1228,7 @@ static void cpu_neon_w_dequant_trampoline_mN(size_t                     m,
     const size_t n_tiles = (n_out + DEQ_TILE_ROWS_DEFAULT - 1) / DEQ_TILE_ROWS_DEFAULT;
 #pragma omp parallel
     {
-        float *tile = heap_alloc_array_aligned(float, DEQ_TILE_ROWS_DEFAULT *n_in);
+        float *tile = tl_dequant_tile(DEQ_TILE_ROWS_DEFAULT * n_in);
         if (tile != nullptr) {
 #pragma omp for schedule(dynamic, 1)
             for (size_t ti = 0; ti < n_tiles; ti++) {
@@ -1237,11 +1250,10 @@ static void cpu_neon_w_dequant_trampoline_mN(size_t                     m,
                             y + r0,
                             (int) n_out);
             }
-            safe_free((void **) &tile);
         }
     }
 #else
-    float *tile = heap_alloc_array_aligned(float, DEQ_TILE_ROWS_DEFAULT *n_in);
+    float *tile = tl_dequant_tile(DEQ_TILE_ROWS_DEFAULT * n_in);
     if (tile == nullptr)
         return;
     for (size_t r0 = 0; r0 < n_out; r0 += DEQ_TILE_ROWS_DEFAULT) {
@@ -1262,7 +1274,6 @@ static void cpu_neon_w_dequant_trampoline_mN(size_t                     m,
                     y + r0,
                     (int) n_out);
     }
-    safe_free((void **) &tile);
 #endif
 }
 
