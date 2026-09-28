@@ -88,6 +88,11 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
     release_weight_aux(&L->down_proj_w);
     release_weight_aux(&L->per_layer_gate_w);
     release_weight_aux(&L->per_layer_proj_w);
+    release_weight_aux(&L->dn_qkv_w);
+    release_weight_aux(&L->dn_z_w);
+    release_weight_aux(&L->dn_beta_w);
+    release_weight_aux(&L->dn_alpha_w);
+    release_weight_aux(&L->dn_out_w);
 }
 
 /* PLE scaling constants moved to forward.c (P1.3.a) — used only by the
