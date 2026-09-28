@@ -20,6 +20,7 @@
  * geist_session_reset, and after a second session came and went.
  */
 #include "test_helpers.h"
+#include "model_fixtures.h"
 #include "tokenizer_fixtures.h"
 
 #include <geist.h>
@@ -44,87 +45,19 @@ static const char *const KIND_NAME[] = {"gpt2", "SentencePiece BPE", "unigram", 
 static const char GPT2_MARKER[] = "\xc4\xa0";     /* Ġ */
 static const char SPM_MARKER[]  = "\xe2\x96\x81"; /* ▁ */
 
-static void kv_key(struct tf_buf *o, const char *key, uint32_t type) {
-    tf_gstr(o, key, strlen(key));
-    tf_u32(o, type);
-}
-
-/* A one-layer llama, d_model 64 in one head, F32 weights. With tok_model
- * set it carries v as that GGUF tokenizer (see tf_tokenizer_kv), else none. */
+/* A one-layer llama, d_model 64 in one head (model_fixtures.h). With
+ * tok_model set it carries v as that GGUF tokenizer, else none. */
 static struct tf_buf model_gguf(const struct tf_vocab *v, const char *tok_model, bool with_merges) {
-    const struct {
-        const char *name;
-        uint64_t    ne0, ne1; /* ne1 0: one dimension */
-        float       fill;
-    } t[] = {
-            {"token_embd.weight", D, v->n_tok, 0.01f},
-            {"output_norm.weight", D, 0, 1.0f},
-            {"blk.0.attn_norm.weight", D, 0, 1.0f},
-            {"blk.0.attn_q.weight", D, D, 0.01f},
-            {"blk.0.attn_k.weight", D, D, 0.01f},
-            {"blk.0.attn_v.weight", D, D, 0.01f},
-            {"blk.0.attn_output.weight", D, D, 0.01f},
-            {"blk.0.ffn_norm.weight", D, 0, 1.0f},
-            {"blk.0.ffn_gate.weight", D, FFN, 0.01f},
-            {"blk.0.ffn_up.weight", D, FFN, 0.01f},
-            {"blk.0.ffn_down.weight", FFN, D, 0.01f},
-    };
-    static const struct {
-        const char *key;
-        uint32_t    v;
-    } U32[] = {
-            {"llama.block_count", 1},
-            {"llama.embedding_length", D},
-            {"llama.feed_forward_length", FFN},
-            {"llama.attention.head_count", 1},
-            {"llama.attention.head_count_kv", 1},
-            {"llama.context_length", 64},
-            {"llama.rope.dimension_count", D},
-    };
-    const size_t n_t   = sizeof t / sizeof t[0];
-    const size_t n_u32 = sizeof U32 / sizeof U32[0];
-
-    struct tf_buf o = {0};
-    tf_put(&o, "GGUF", 4);
-    tf_u32(&o, 3);
-    tf_u64(&o, n_t);
-    tf_u64(&o, 1 + n_u32 + 3 + (tok_model != nullptr ? TF_TOKENIZER_KEYS : 0));
-    kv_key(&o, "general.architecture", TF_GGUF_STRING);
-    tf_gstr(&o, "llama", 5);
-    for (size_t i = 0; i < n_u32; i++) {
-        kv_key(&o, U32[i].key, TF_GGUF_UINT32);
-        tf_u32(&o, U32[i].v);
-    }
-    kv_key(&o, "llama.vocab_size", TF_GGUF_UINT32);
-    tf_u32(&o, (uint32_t) v->n_tok);
-    kv_key(&o, "llama.rope.freq_base", TF_GGUF_FLOAT32);
-    tf_f32(&o, 10000.0f);
-    kv_key(&o, "llama.attention.layer_norm_rms_epsilon", TF_GGUF_FLOAT32);
-    tf_f32(&o, 1e-5f);
-    if (tok_model != nullptr) {
-        tf_tokenizer_kv(&o, v, tok_model, with_merges);
-    }
-    uint64_t off = 0;
-    for (size_t i = 0; i < n_t; i++) {
-        tf_gstr(&o, t[i].name, strlen(t[i].name));
-        tf_u32(&o, t[i].ne1 != 0 ? 2 : 1);
-        tf_u64(&o, t[i].ne0);
-        if (t[i].ne1 != 0) {
-            tf_u64(&o, t[i].ne1);
-        }
-        tf_u32(&o, 0); /* F32 */
-        tf_u64(&o, off);
-        off += (t[i].ne0 * (t[i].ne1 != 0 ? t[i].ne1 : 1) * 4 + 31) / 32 * 32;
-    }
-    for (size_t i = 0; i < n_t; i++) {
-        while (o.n % 32 != 0) {
-            tf_put(&o, "", 1);
-        }
-        for (uint64_t e = 0; e < t[i].ne0 * (t[i].ne1 != 0 ? t[i].ne1 : 1); e++) {
-            tf_f32(&o, t[i].fill);
-        }
-    }
-    return o;
+    return mf_llama_gguf(&(struct mf_llama) {.layers     = 1,
+                                             .d_model    = D,
+                                             .heads      = 1,
+                                             .kv_heads   = 1,
+                                             .ffn        = FFN,
+                                             .vocab      = (uint32_t) v->n_tok,
+                                             .context    = 64,
+                                             .tok        = tok_model != nullptr ? v : nullptr,
+                                             .tok_model  = tok_model,
+                                             .tok_merges = with_merges});
 }
 
 /* The fixture vocab for a kind, then its long tokens. */
