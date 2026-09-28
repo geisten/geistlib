@@ -7,16 +7,21 @@
  * heap.h counts successful allocations (heap_alloc_count), so the test
  * counts across 16 decode steps and one 8-token prefill after a warm-up
  * that pays for lazily sized workspaces, with greedy and with sampling
- * (temperature, top-k, top-p). The model is a two-layer GQA llama with F32
- * weights (model_fixtures.h); quantized-weight kernels have their own tests
+ * (temperature, top-k, top-p). The models are built in memory with F32
+ * weights (model_fixtures.h): a two-layer GQA llama, and a Qwen3.5-style
+ * hybrid of three gated-DeltaNet blocks and an attention block.
+ * Quantized-weight kernels have their own tests
  * (test_x86_kernel_no_alloc_unit and the cpu_neon sibling).
  *
- * It is a ratchet. Each KV mode has a ceiling of allocations per layer per
- * call; above it a mode fails, below it the test says so, and the change
- * that got it there lowers the ceiling. All are 0: the FP32 cache's
+ * It is a ratchet. Each KV mode has a ceiling of allocations per attention
+ * layer per call, and each DeltaNet block one per prefill; above it a
+ * check fails, below it the test says so, and the change that got it there
+ * lowers the ceiling. The KV modes are all at 0: the FP32 cache's
  * attention, the last to allocate (a score buffer per call in cpu_x86
  * attention.c, the gemma4_kernels.c reference and cpu_neon
- * transformer_ops.c), now scores a stack-sized block at a time.
+ * transformer_ops.c), now scores a stack-sized block at a time. A DeltaNet
+ * block still stages its chunked prefill in a heap buffer per call
+ * (dn_run_prefill_chunked, layer_deltanet.c): 1 per block per prefill.
  */
 #include "test_helpers.h"
 #include "heap.h"
@@ -29,9 +34,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-constexpr uint32_t LAYERS  = 2;
-constexpr int      STEPS   = 16;
-constexpr size_t   PREFILL = 8;
+constexpr int    STEPS   = 16;
+constexpr size_t PREFILL = 8;
 
 static const struct {
     enum geist_kv_mode kv;
@@ -49,17 +53,28 @@ static const struct {
  * cpu_x86's. */
 static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
 
-static int check(uint64_t    got,
-                 uint64_t    ceiling,
-                 const char *backend,
-                 const char *mode,
-                 bool        sampling,
-                 const char *what) {
+/* DeltaNet blocks' allocations per prefill call, at most. */
+constexpr uint64_t DN_PER_PREFILL = 1;
+
+struct model {
+    const char   *name;
+    struct tf_buf g;
+    uint64_t      attn_layers, dn_blocks;
+};
+
+static int check(uint64_t            got,
+                 uint64_t            ceiling,
+                 const struct model *md,
+                 const char         *backend,
+                 const char         *mode,
+                 bool                sampling,
+                 const char         *what) {
     char msg[192];
     snprintf(msg,
              sizeof msg,
-             "%s KV %s %s: at most %llu allocations in %s (got %llu)",
+             "%s %s KV %s %s: at most %llu allocations in %s (got %llu)",
              backend,
+             md->name,
              mode,
              sampling ? "sampling" : "greedy",
              (unsigned long long) ceiling,
@@ -71,7 +86,8 @@ static int check(uint64_t    got,
     return geist_expect(got <= ceiling, msg);
 }
 
-static int run_session(struct geist_model   *m,
+static int run_session(const struct model   *md,
+                       struct geist_model   *m,
                        struct geist_backend *be,
                        const char           *backend,
                        size_t                mode,
@@ -109,46 +125,86 @@ static int run_session(struct geist_model   *m,
                 MODES[mode].name);
         return 1;
     }
-    const uint64_t per_call = MODES[mode].per_layer * LAYERS;
+    const uint64_t per_call = MODES[mode].per_layer * md->attn_layers;
     return check(a1 - a0,
                  per_call * STEPS,
+                 md,
                  backend,
                  MODES[mode].name,
                  sampling,
                  "16 decode steps") +
-           check(a2 - a1, per_call, backend, MODES[mode].name, sampling, "an 8-token prefill");
+           check(a2 - a1,
+                 per_call + DN_PER_PREFILL * md->dn_blocks,
+                 md,
+                 backend,
+                 MODES[mode].name,
+                 sampling,
+                 "an 8-token prefill");
 }
 
 int main(void) {
-    struct tf_buf g     = mf_llama_gguf(&(struct mf_llama) {.layers   = LAYERS,
-                                                            .d_model  = 128,
-                                                            .heads    = 4,
-                                                            .kv_heads = 2,
-                                                            .ffn      = 256,
-                                                            .vocab    = 512,
-                                                            .context  = 256,
-                                                            .seed     = 7});
-    int           fails = 0, ran = 0;
+    struct tf_vocab v        = tf_make_vocab("\xc4\xa0", false); /* the hybrid's vocabulary */
+    struct model    models[] = {
+            {"llama",
+             mf_llama_gguf(&(struct mf_llama) {.layers   = 2,
+                                               .d_model  = 128,
+                                               .heads    = 4,
+                                               .kv_heads = 2,
+                                               .ffn      = 256,
+                                               .vocab    = 512,
+                                               .context  = 256,
+                                               .seed     = 7}),
+             2,
+             0},
+            {"qwen35",
+             mf_qwen35_gguf(&(struct mf_qwen35) {.layers     = 4,
+                                                 .interval   = 4,
+                                                 .d_model    = 64,
+                                                 .heads      = 4,
+                                                 .kv_heads   = 2,
+                                                 .head_dim   = 16,
+                                                 .rope_dims  = 8,
+                                                 .ffn        = 128,
+                                                 .dn_k_heads = 2,
+                                                 .dn_v_heads = 4,
+                                                 .dn_head_k  = 16,
+                                                 .dn_head_v  = 16,
+                                                 .dn_conv    = 4,
+                                                 .seed       = 1,
+                                                 .tok        = &v}),
+             1,
+             3},
+    };
+    int fails = 0, ran = 0;
     for (size_t b = 0; b < sizeof BACKENDS / sizeof BACKENDS[0]; b++) {
         struct geist_backend *be = nullptr;
         if (geist_backend_create(BACKENDS[b], nullptr, nullptr, &be) != GEIST_OK || be == nullptr) {
             continue; /* not in this build */
         }
-        struct geist_model *m = nullptr;
-        if (geist_model_load_from_memory(g.b, g.n, be, &m) != GEIST_OK) {
-            fprintf(stderr, "FAIL: %s: model load: %s\n", BACKENDS[b], geist_last_create_error());
-            fails++;
-        } else {
-            ran++;
+        ran++;
+        for (size_t i = 0; i < sizeof models / sizeof models[0]; i++) {
+            struct geist_model *m = nullptr;
+            if (geist_model_load_from_memory(models[i].g.b, models[i].g.n, be, &m) != GEIST_OK) {
+                fprintf(stderr,
+                        "FAIL: %s %s: model load: %s\n",
+                        BACKENDS[b],
+                        models[i].name,
+                        geist_last_create_error());
+                fails++;
+                continue;
+            }
             for (size_t k = 0; k < sizeof MODES / sizeof MODES[0]; k++) {
-                fails += run_session(m, be, BACKENDS[b], k, false);
-                fails += run_session(m, be, BACKENDS[b], k, true);
+                fails += run_session(&models[i], m, be, BACKENDS[b], k, false);
+                fails += run_session(&models[i], m, be, BACKENDS[b], k, true);
             }
             geist_model_destroy(m);
         }
         geist_backend_destroy(be);
     }
-    free(g.b);
+    for (size_t i = 0; i < sizeof models / sizeof models[0]; i++) {
+        free(models[i].g.b);
+    }
+    tf_free_vocab(&v);
     if (ran == 0 && fails == 0) {
         printf("SKIP: no CPU backend in this build\n");
         return GEIST_TEST_SKIP;
