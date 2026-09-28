@@ -757,12 +757,13 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
     if (n > 0 && ids == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    /* Truncate to empty so the prefill that follows starts from kv_len=0;
-     * this matches lm.c::lm_pin_prefix and gives a clean snapshot point. */
-    sess->kv_len             = 0;
-    sess->prefix_length      = 0;
-    sess->logits_valid       = false;
-    sess->next_token_pending = 0;
+    /* Empty the session the way a reset to no prefix does, so the prefill
+     * that follows starts from nothing. kv_len = 0 alone is not that: the
+     * KIVI drain counters would still count the old tokens (and once a
+     * group had drained, the prefill wrote the residual ring below its
+     * start), nor would the MTP cache or DeltaNet recurrence be empty. */
+    sess->prefix_length = 0;
+    transformer_session_reset(sess);
     if (n == 0) {
         return GEIST_OK;
     }

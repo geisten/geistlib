@@ -114,6 +114,15 @@ minor release.
   change — same parameter types, same diagnostics — and `make check-headers`
   now compiles every public header standalone as C23 and as C++17 on every PR.
 
+### Fixed
+
+- **KIVI: `pin_prefix` on a used session wrote outside the residual ring.**
+  Pinning reset `kv_len` but not the KIVI drain counters. Once 128 tokens
+  had drained, the prefix prefill wrote below the ring's start: a heap
+  overflow, which ASan flags. With fewer tokens it packed stale rows into
+  the 2-bit cache. `pin_prefix` now empties the session the way `reset`
+  does, which also empties the MTP cache and the DeltaNet state.
+
 ## [0.11.0] — 2026-09-06
 
 Ternary BitNet embedding models. Microsoft's July 2026 releases —
