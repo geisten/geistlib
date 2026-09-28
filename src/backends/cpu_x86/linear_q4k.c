@@ -24,7 +24,7 @@
 
 #include "backend_state.h"
 #include "checked.h"
-#include "kernel_q4kx8_gemm.h" /* Phase 3 lane-parallel Q4_Kx8 GEMV */
+#include "kernel_q4kx8_gemm.h" /* lane-parallel Q4_Kx8 GEMV / GEMM */
 #include "kernel_w4a8.h"
 #include "kernel_w8a8.h" /* sum_a sized for W8A8 to also cover Q6_K */
 #include "q4k_to_q4kx8.h"
@@ -161,8 +161,7 @@ void cpu_x86_linear_q4k_m1(const float               *x,
     /* Decode over the compact Q4_Kx8 layout when the blob holds it (n_out a
      * multiple of 8 — every Q4_K body matrix). The 8-cell lane-parallel GEMV
      * reduces once per tile (no per-block hsum) and reads 0.56 B/wt vs W4A8's
-     * 0.75 — both the compute and bandwidth limits of decode
-     * (docs/LINUX_X86_PERF_PROFILE.md). */
+     * 0.75 — both the compute and bandwidth limits of decode. */
     if (uses_q4kx8(n_out)) {
         q4kx8_gemv_m1(n_out, n_in, x, (const struct block_q4_Kx8 *) w->aux_fp32, y);
         return;
@@ -193,10 +192,9 @@ void cpu_x86_linear_q4k_m1(const float               *x,
               y);
 }
 
-/* Phase 3: Q4_Kx8 lane-parallel GEMM via VPMADDUBSW. 8 cells per inst
- * (vs our previous 1 cell per VPDPBUSD) — the 8× compute-density lift
- * identified empirically in docs/LINUX_X86_PERF_PROFILE.md (IPC 0.47 →
- * target 3.01). The per-row acts get quantized to Q8_Kx4 (4 m-rows
+/* Q4_Kx8 lane-parallel GEMM via VPMADDUBSW. 8 cells per inst
+ * (vs our previous 1 cell per VPDPBUSD): the per-cell kernel ran at an
+ * IPC of 0.47 when profiled. The per-row acts get quantized to Q8_Kx4 (4 m-rows
  * interleaved in 8-byte stripes) in heap scratch; the GEMV-style
  * AVX kernel handles the 8-cell tile per (m, n_tile) call.
  *

@@ -184,16 +184,15 @@ void cpu_x86_linear_q6k_m1(const float               *x,
     /* Decode straight from the native Q6_K weights (w->raw, ~0.82 B/wt; the
      * resolver requires them) rather than a W8A8 predecode (1.5 B/wt): Q6_K
      * decode (ffn_down, lm_head) is bandwidth-bound, so halving the weight
-     * traffic is the win (docs/LINUX_X86_PERF_PROFILE.md). The blob holds
-     * the prefill layout only. */
+     * traffic is the win. The blob holds the prefill layout only. */
     q6k_gemv_m1((size_t) w->n_out, (size_t) w->n_in, x, (const uint8_t *) w->raw, y);
 }
 
 /* Prefill (M>1) path. Quantizes all m tokens to int8 once, then runs a
  * tiled W8A8 GEMM that reads each weight row once and reuses it across
  * the whole token batch — the amortization the scalar mN fallback lacked.
- * Q6_K ffn_down is the dominant prefill cost in Q4_K_M models
- * (docs/LINUX_X86_PERF_PROFILE.md); this is what makes it cheap. */
+ * Q6_K ffn_down is the dominant prefill cost in Q4_K_M models; this is
+ * what makes it cheap. */
 void cpu_x86_linear_q6k_mN(size_t                     m,
                            const float               *x,
                            const struct geist_weight *w,

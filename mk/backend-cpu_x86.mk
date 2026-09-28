@@ -3,11 +3,9 @@
 # backend.c selects kernels directly in its resolver; per-ISA kernel TUs:
 # W4A8 VPDPBUSD, BF16-SGEMM trampoline, native VDPBF16PS-SGEMM, I2_S ternary,
 # Q8_0 prefill tiles.
-# See docs/LINUX_X86_SPEC.md.
 #
-# Opt-in via `make BACKENDS="cpu_x86 cpu_scalar"` (default Linux x86_64 build
-# remains cpu_scalar-only until the win-criteria pass and target-linux.mk
-# flips the default).
+# The default on Linux x86_64 (target-linux.mk: BACKENDS ?= cpu_x86
+# cpu_scalar). BACKENDS=cpu_scalar builds the portable reference alone.
 
 BACKEND_SOURCES += \
     src/backends/cpu_x86/backend.c \

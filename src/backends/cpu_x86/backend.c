@@ -1,18 +1,16 @@
 /*
- * src/backends/cpu_x86/backend.c — x86_64 backend, Phase 1a Step 5.
+ * src/backends/cpu_x86/backend.c — x86_64 backend.
  *
  * Layer: BACKEND.
  *
- * cpu_x86's vtbl reuses cpu_scalar's slots for everything except create,
- * destroy, and resolve_weight: those three are overridden to thread the
- * per-instance state needed by the W4A8 hot path (acts + sum_a scratch),
- * and to install the cpu_x86 Q4_K M=1 kernel via cpu_x86_linear_q4k_resolve.
- *
- * The vtbl is initialized at module load via __attribute__((constructor)):
- *   1. Struct-copy cpu_scalar_vtbl into cpu_x86_vtbl.
- *   2. Override .create / .destroy / .resolve_weight.
- * Constructor runs before main, so the descriptor's vtbl pointer is
- * always valid by the time the engine calls geist_backend_create.
+ * The tables are filled at module load via __attribute__((constructor)):
+ *   1. Struct-copy cpu_scalar's vtbl, prims and fused tables.
+ *   2. Override vtbl .create / .destroy (the per-instance scratch the
+ *      quantized kernels use), .resolve_weight (below) and, under OpenMP,
+ *      .parallel_region_begin / _end (threads.c); prims .attention and
+ *      .gelu_tanh; fused .gelu_tanh_mul and .gelu_tanh_mul_scaled.
+ * Constructor runs before main, so the descriptor's tables are always
+ * filled by the time the engine calls geist_backend_create.
  *
  * cpu_x86_resolve_weight starts from cpu_scalar's resolver (it validates
  * the weight and knows every dtype), then rebinds: native kernels for Q4_K,

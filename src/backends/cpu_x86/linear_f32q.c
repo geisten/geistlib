@@ -5,7 +5,7 @@
  *
  * Gemma 4's per-layer PLE projections (inp_gate 1536→256, proj 256→1536)
  * are stored F32 and were the dominant prefill gap: skinny cblas sgemm at
- * ~73 GFLOP/s (docs/LINUX_X86_PERF_PROFILE.md). Quantize them to W8A8
+ * ~73 GFLOP/s. Quantize them to W8A8
  * (per-16-block asymmetric int8) at load and run geist's VPDPBUSD GEMM
  * (~2600 GFLOP/s, OMP-parallel) instead.
  *

@@ -5,8 +5,7 @@
  *
  * Decode (M=1) reading the ORIGINAL Q6_K weights (block_q6_K_t, ~0.82 B/wt)
  * instead of the W8A8 predecode (1.5 B/wt). Q6_K decode (ffn_down, lm_head)
- * is bandwidth-bound, so halving the weight traffic is the lever
- * (docs/LINUX_X86_PERF_PROFILE.md).
+ * is bandwidth-bound, so halving the weight traffic is the lever.
  *
  * The per-row dot is a faithful port of llama.cpp's AVX2
  * ggml_vec_dot_q6_K_q8_K (ggml/src/ggml-cpu/arch/x86/quants.c): unpack the

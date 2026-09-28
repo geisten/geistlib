@@ -20,7 +20,7 @@ CC ?= cc
 # Native cpu_x86 backend is the DEFAULT (#108). The old opt-in gate ("until
 # the Phase-2 win criteria are measured") is long met: matches-to-beats
 # llama.cpp on Gemma/Llama and beats bitnet.cpp by +61 % prefill / +90 %
-# decode on BitNet (benchmark/BENCHMARK_X86.md); every AVX-512 kernel is
+# decode on BitNet (benchmark/results/X86.md); every AVX-512 kernel is
 # runtime-gated behind hw_probe/cpuid (#96) so the x86-64-v3 baseline below
 # remains the only hardware floor; the CI x86 int/e2e strand (native +
 # GEIST_FORCE_ISA=avx2) is required. A plain `make` previously shipped the

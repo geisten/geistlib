@@ -6,8 +6,8 @@
  * AVX2 lane-parallel inner kernel ported from llama.cpp's
  * ggml_gemv_q4_K_8x8_q8_K (ggml/src/ggml-cpu/arch/x86/repack.cpp:1464).
  * Produces 8 output cells per output tile via lane-parallel VPMADDUBSW
- * + VPMADD_EPI16 + scalemask byte-shuffle — the 8× cells-per-instruction
- * win identified by the perf profile (docs/LINUX_X86_PERF_PROFILE.md).
+ * + VPMADD_EPI16 + scalemask byte-shuffle: 8× the cells per instruction
+ * of one VPDPBUSD per cell.
  *
  * Original code Copyright (c) 2023-2025 The ggml authors, MIT-licensed.
  * Adapted to geist's struct conventions + wrapped in OMP m-parallel.
