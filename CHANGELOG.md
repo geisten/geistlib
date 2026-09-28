@@ -147,6 +147,10 @@ minor release.
 - **`geist_weight.h` documented the wrong argument order for `linear_mN`.**
   The usage line read `w->linear_mN(x, w, m, be, y)`; the typedef, and every
   kernel, take `(m, x, w, be, y)`. Only the comment changed.
+- **`tools/bench_quality_perf.py --record` created `benchmark/BENCHMARK.md`**
+  when run without `--benchmark-md`: its default still named that file,
+  which no longer exists. The default is now `benchmark/results/APPLE.md`,
+  the file `make bench-small` / `bench-detailed` record into.
 
 ## [0.11.0] — 2026-09-06
 

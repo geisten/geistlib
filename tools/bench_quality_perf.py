@@ -238,7 +238,7 @@ def perf_suite(args: argparse.Namespace) -> None:
         print(f"recorded to {args.benchmark_md}")
 
 
-# Marker block in benchmark/BENCHMARK.md that this script owns. Hand-written prose above
+# Marker block in benchmark/results/APPLE.md that this script owns. Hand-written prose above
 # the marker is preserved; only the auto-recorded table below it is rewritten.
 MARKER = "<!-- BENCH:AUTO -->"
 
@@ -432,7 +432,7 @@ def main() -> None:
     # so benchmark output never lands in the working tree.
     p.add_argument("--out-dir",
                    default=str(Path.home() / "bench-geistlib" / "quality_perf"))
-    p.add_argument("--benchmark-md", default="benchmark/BENCHMARK.md")
+    p.add_argument("--benchmark-md", default="benchmark/results/APPLE.md")
     p.add_argument("--record", action="store_true")
     args = p.parse_args()
 

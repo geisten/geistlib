@@ -37,7 +37,7 @@ match exactly.
 Raw timing probes for individual subsystems:
 
 ```sh
-make bench           # all bench_* binaries
+make bench-mm        # vision + video + audio encoders (bench_{vision,video,audio}_*)
 make bench-vision    # vision encoder only
 make bench-audio     # audio encoder only
 ```
@@ -53,8 +53,8 @@ in, and the input clips are **synthesized** by `tools/gen_test_wav.py`
 the repository). Protocol: quiesced board started < 55 °C, 1 warmup +
 10 repeats per clip length (2 s / 10 s / 28 s), medians, spread and
 temperatures recorded; stage shares from a `-DGEIST_AUDIO_PROFILE` build.
-`reference_runs.json` stays owned by `make bench --record` and carries no
-audio rows.
+`reference_runs.json` stays owned by `make bench BENCH_ARGS=--record`
+(`tools/bench_reproduce.py`) and carries no audio rows.
 
 ## Comparison vs llama.cpp
 

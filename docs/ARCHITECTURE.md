@@ -236,8 +236,8 @@ Per directory, the file to open first:
 | `src/backends/cpu_neon/` | `weight_resolve.c` | load-time kernel binding, NEON kernels |
 | `src/backends/cpu_x86/` | `backend.c` | AVX-512/VNNI kernels, runtime dispatch |
 | `src/backends/cpu_scalar/` | `backend.c` | the portable correctness oracle (except ternary — see below) |
-| `src/backends/metal/` | `backend.c` | Apple-GPU path (shaders in `metal_shaders.h`) |
-| `src/backends/vulkan/` | `backend.c` | Linux/NVIDIA-GPU path (SPIR-V in `shaders/`) |
+| `src/backends/metal/` | `ops.c` | Apple-GPU path (shaders in `metal_shaders.h`) |
+| `src/backends/vulkan/` | `ops.c` | Linux/NVIDIA-GPU path (SPIR-V in `shaders/`) |
 | `src/formats/gguf/` | `common.c` | per-quant decode (one file per format) |
 | `src/io/` | `gguf_reader.c` | GGUF/safetensors file parsing |
 | `tools/` | `eval_geist.c` | the eval REPL and the Python bench/eval harnesses |
