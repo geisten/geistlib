@@ -19,7 +19,7 @@
  * sense vs the spoken duration. Tests does NOT enforce a latency
  * budget (pass condition is "pipeline runs and produces tokens") so it
  * is robust across dev (M1) and target (Pi 5) hardware, but the printed
- * numbers feed benchmark/BENCHMARK_PI5.md updates.
+ * numbers feed benchmark/results/PI5-audio.md updates.
  *
  * SKIPs if GGUF / tokenizer / audio assets are missing.
  */

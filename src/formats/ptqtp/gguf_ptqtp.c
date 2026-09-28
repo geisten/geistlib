@@ -14,7 +14,7 @@
 #endif
 
 /* Bulk fp16 → fp32 conversion. Uses hardware vcvt on NEON, scalar fallback
- * everywhere else. The scalar path mirrors gguf_quant.c's fp16_to_fp32
+ * everywhere else. The scalar path mirrors quant.h's fp16_to_fp32
  * but is inlined here so this file stays standalone. */
 static void ptqtp_convert_alpha_fp16_to_fp32(float *dst, const uint16_t *src, size_t n) {
 #if defined(__ARM_NEON) && defined(__ARM_FP16_FORMAT_IEEE)

@@ -1,14 +1,13 @@
 /*
- * src/backends/cpu_scalar/weight_resolve.c — resolver for cpu_scalar (P2.e).
+ * src/backends/cpu_scalar/weight_resolve.c — resolver for cpu_scalar.
  *
  * Layer: BACKEND.
  *
- * cpu_scalar is the pure-C reference backend. After P2.e the legacy
- * v->linear() vtable slot is gone from geist_backend_vtbl; every
- * backend must install kernel pointers via resolve_weight. This
- * file gives cpu_scalar a (slow, correct) resolver that wraps the
- * existing dequant helpers from gguf_quant.c into pre-resolved
- * function pointers.
+ * cpu_scalar is the pure-C reference backend. geist_backend_vtbl has no
+ * linear() slot; every backend installs kernel pointers via
+ * resolve_weight. This file gives cpu_scalar a (slow, correct) resolver
+ * that wraps the dequant row helpers (quant.h, defined in
+ * src/formats/gguf/) into pre-resolved function pointers.
  *
  * Performance characteristics:
  *   - F32 dense: naive triple loop with double accumulator. ~10× slower

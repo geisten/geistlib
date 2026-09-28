@@ -144,6 +144,9 @@ minor release.
   names the missing feature. `mk/target-linux.mk` shows how to build for
   such a core: `BACKENDS=cpu_scalar` with a matching `CFLAGS_TARGET`,
   since the cpu_neon kernels need dotprod to compile at all.
+- **`geist_weight.h` documented the wrong argument order for `linear_mN`.**
+  The usage line read `w->linear_mN(x, w, m, be, y)`; the typedef, and every
+  kernel, take `(m, x, w, be, y)`. Only the comment changed.
 
 ## [0.11.0] — 2026-09-06
 

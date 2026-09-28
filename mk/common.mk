@@ -90,7 +90,7 @@ WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 #               shared by formats/gguf and the CPU backends.
 #   -I.         project root — internal tests reaching across the engine/arch
 #               boundary via path-relative includes
-#               (e.g. `#include "src/archs/transformer/arch_state_v2.h"`)
+#               (e.g. `#include "src/archs/transformer/arch_state.h"`)
 CFLAGS_BASE := -std=c23 $(WARNINGS_BASE) -fno-strict-aliasing \
                -Iinclude -I. \
                -Isrc/base \

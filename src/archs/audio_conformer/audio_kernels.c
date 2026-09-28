@@ -65,7 +65,7 @@ void conv2d_fp32(int          c_in,
  * h_in (boundary clipping by h_in is unchanged). This is what makes the
  * incremental subsample bit-equivalent to the full re-run for positions
  * already computed - extending h_in only adds new output positions; old
- * outputs are stable. See docs/audio-chunk-streaming/plan.md Phase 3. */
+ * outputs are stable. */
 void conv2d_fp32_from(int          c_in,
                       int          c_out,
                       int          h_in,

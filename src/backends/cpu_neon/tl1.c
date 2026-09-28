@@ -42,7 +42,7 @@ static inline uint8_t tl1_encode_pair(int8_t w0, int8_t w1) {
 }
 
 /* Unpack one TQ2_0 256-element block into a contiguous int8 trit array.
- * Mirrors the loop in gguf_quant.c::dequant_tq2_0_row (without the fp32
+ * Mirrors the loop in src/formats/gguf/tq2_0.c::dequant_tq2_0_row (no fp32
  * scale multiply): trit at output index `elem_base + 32*l + m` lives in
  * `qs[j_byte + m]` at bit-shift `l*2`. */
 static void tl1_tq2_0_unpack_block(const uint8_t *qs, int8_t trits[256]) {

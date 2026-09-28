@@ -66,8 +66,7 @@ struct audio_case {
  * Short imperatives + greetings (lampe_an, de_hello, hello_world) get
  * DOMAIN-SPECIFIC few-shot prompts. Without the vocabulary anchor
  * Gemma 4 E2B hallucinates a generic "I don't know" response on
- * sub-1 s clips - see docs/audio-chunk-streaming/short-command-analysis.md
- * for the analysis. Adding 3-4 example phrases of the right domain
+ * sub-1 s clips. Adding 3-4 example phrases of the right domain
  * to the prompt fixes recognition without retraining. */
 static struct audio_case cases[] = {
         {

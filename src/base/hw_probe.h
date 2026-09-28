@@ -1,5 +1,5 @@
 /*
- * src/engine/hw_probe.h - runtime hardware feature summary.
+ * src/base/hw_probe.h - runtime hardware feature summary.
  *
  * Layer: ENGINE.
  *

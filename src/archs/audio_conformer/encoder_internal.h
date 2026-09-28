@@ -87,12 +87,13 @@ static inline void ae_profile_print_and_reset(void) {
 #define ATTN_SOFTCAP 50.0f
 #define N_LAYERS 12
 
-/* Per-tensor precision tag, set at load time based on the call-site class
- * (struct FFN macaron layers → W8A8, struct Attn projections → W8A32, struct LConv → FP32).
- * Pi-5 profiling (benchmark/BENCHMARK_PI5.md) shows struct FFN dominates encoder cost,
- * so W8A8 there. struct Attn is quant-sensitive (relative position embeddings,
- * softmax) → W8A32 keeps activations FP32 for safety. struct LConv stays FP32 —
- * depthwise convs don't benefit from the int8 dot path. */
+/* Per-tensor precision tag, set at load time per call-site class by
+ * audio_prec_policy_resolve (encoder_weights.c): struct FFN, struct Attn
+ * projections and struct LConv linears are W8A8 by default; Attn opts out to
+ * W8A32 (activations stay FP32), LConv to FP32. Apple with Accelerate keeps
+ * every class FP32. On a Pi 5 (benchmark/results/PI5-audio.md) attention,
+ * LConv, FFN and the subsample convs each take 19-35 % of an encode, FFN
+ * the more the longer the clip. */
 enum audio_linear_prec {
     AUDIO_PREC_FP32  = 0,
     AUDIO_PREC_W8A32 = 1,
@@ -154,7 +155,7 @@ struct ConformerLayer {
 /* Max sub-tokens = mel cap / 4 (two stride-2 convs in subsample) + ceiling slack. */
 #define MAX_SUB_TOKENS ((MEL_BUF_CAP / 4) + 16)
 
-/* === Phase 8b chunk-streaming state (docs/audio-chunk-streaming/plan.md) ===
+/* === Chunk-streaming state ===
  *
  * Per-layer K/V caches and LConv depthwise-history. Lets push_pcm advance
  * Conformer layers block-by-block while audio is still arriving, instead of

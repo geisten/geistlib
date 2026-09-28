@@ -1,30 +1,20 @@
 /*
  * src/backends/cpu_neon/weight_resolve.c — load-time kernel resolution.
  *
- * Layer: BACKEND (cpu_neon). Implements geist_backend_vtbl::resolve_weight
- * for the new geist_weight flow (refactor v2, P1.1.b).
+ * Layer: BACKEND (cpu_neon). Implements geist_backend_vtbl::resolve_weight.
  *
  * Pre-resolves the (M=1 decode-style, M>1 prefill-style) kernel pair for
  * each weight tensor at model load. The forward loop then calls
  *
- *     w->linear_mN(x, w, m, y);
+ *     w->linear_mN(m, x, w, be, y);
  *
  * without dtype dispatch or vtable indirection.
  *
- * Trampolines: thin wrappers around the existing kernels in
- * src/backends/common/gguf_quant.c that translate the new signature
- * (struct geist_weight *) back into the kernels' (raw, n_in, n_out)
- * style. Once all callers are on the new flow (P1.1.c..d), the kernels
- * can be inlined here and the wrapper indirection removed.
- *
- * Supported dtypes (full M=1 + M>1 coverage):
- *   Q3_K, Q4_K, Q6_K, IQ2_S, IQ3_S
- *
- * Partial coverage (M=1 only; M>1 falls through to legacy path):
- *   Q8_0
- *
- * Not supported yet (returns GEIST_E_UNSUPPORTED → legacy path runs):
- *   Q5_K, F32 dense, F16 dense, BF16 dense, IQ2_XXS, IQ2_M (mixed)
+ * The kernels live in kernels/, one file per weight format. Which pair a
+ * dtype gets on which ISA is the table CPU_NEON_KERNELS below; a dtype
+ * without a row returns GEIST_E_UNSUPPORTED. The dequant trampolines
+ * (dequantize a tile of rows, then geist_sgemm) are the M>1 path where a
+ * format has no native one or the policy picks them.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 

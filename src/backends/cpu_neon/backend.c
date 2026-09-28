@@ -3,11 +3,8 @@
  *
  * Layer: BACKEND.
  *
- * B-3 lite (this commit): walking-skeleton mirroring cpu_scalar's shape,
- *                         with linear() routing F32 DENSE through cblas_sgemm
- *                         (Accelerate on Mac, OpenBLAS on Pi 5). Quantized
- *                         kernels (Q3_K, Q4_K, Q8_0) wrap the existing
- *                         gguf_quant.c NEON paths in subsequent sub-commits.
+ * Descriptor, lifecycle, buffers and the OpenMP region hooks. The linear
+ * kernels are bound per weight at load time (weight_resolve.c).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 

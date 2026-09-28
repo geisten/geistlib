@@ -1,7 +1,8 @@
 /*
  * ptqtp_awq.h — AWQ (Activation-aware Weight Quantization) scale loader.
  *
- * Reads an awq_scales.bin file produced by tools/awq_compute_scales.py.
+ * Reads an awq_scales.bin file ("AWQS", format below). The script that
+ * writes it, awq_compute_scales.py, is not in this repository.
  * Provides name-keyed lookup of per-input-channel scale vectors. The
  * runtime uses these to:
  *   1. Pre-divide RMSNorm gamma by s for foldable norms (zero runtime cost).

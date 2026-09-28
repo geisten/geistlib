@@ -315,7 +315,7 @@ static inline float spec_f32dot(const float *w, const float *x, size_t n) {
 
 /* Embedding dtypes the spec head can read. The tied lm_head is F16 on BitNet
  * 2B-4T and Q6_K on Gemma 4; the block-quantized ones are dequantized one row
- * at a time via geist's gguf_quant row helpers. */
+ * at a time via the quant.h row helpers. */
 static bool spec_dtype_ok(uint16_t dt) {
     switch (dt) {
     case GEIST_DTYPE_F16:

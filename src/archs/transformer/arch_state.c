@@ -1,11 +1,10 @@
 /*
- * src/archs/transformer/arch_state.c — Phase B-4e sub-step 1.
+ * src/archs/transformer/arch_state.c — model and session state lifecycle.
  *
- * Loads Gemma 4 weights from GGUF into backend-owned buffers. Each per-layer
- * and global tensor is staged via be->vtbl->buffer_create + buffer_upload;
- * the resulting geist_tensor views (dtype + layout + shape) live in the v2
- * state struct ready for sub-step 2 to feed into the linear/rmsnorm/etc.
- * vtable ops.
+ * Creates the model state from a GGUF (file or memory): the family and its
+ * hyperparameters (arch_family.c), the weights staged into backend-owned
+ * buffers (weight_load/), the rotation and the execution plan. Allocates
+ * and frees sessions: KV cache, recurrent state, scratch.
  *
  * Layer: ARCHITECTURE.
  *

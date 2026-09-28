@@ -1,5 +1,5 @@
 /*
- * src/engine/hw_probe.c — runtime hardware feature summary.
+ * src/base/hw_probe.c — runtime hardware feature summary.
  *
  * Every feature bit (NEON, dotprod, FP16, Accelerate) is probed at the
  * actual host where the process is running, not at the build host. This
