@@ -257,7 +257,14 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
     tok->pad_id         = pad;
     tok->unk_id         = unk;
 
+    /* Every count and length below comes from the file. Each is checked
+     * against the bytes left, by subtraction and before p moves (AGENT.md
+     * §4), and a count before its table is allocated: an entry takes at
+     * least 2 (vocab), 4 (merge) or 6 (special) bytes. */
+
     /* Vocab section: vocab_size entries of (len:u16, bytes) */
+    if (vocab_size > (size_t) (end - p) / 2)
+        goto bad_format_with_tok;
     tok->id_to_token    = heap_calloc_array_aligned(struct sp_token_entry, vocab_size);
     tok->vocab_hash_cap = next_pow2((size_t) vocab_size * VOCAB_LOAD_FACTOR_DENOM);
     tok->vocab_hash     = heap_alloc_array_aligned(struct sp_vocab_hash, tok->vocab_hash_cap);
@@ -267,12 +274,12 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
         tok->vocab_hash[i].id = UINT32_MAX;
 
     for (uint32_t id = 0; id < vocab_size; id++) {
-        if (p + 2 > end)
+        if ((size_t) (end - p) < 2)
             goto bad_format_with_tok;
         uint16_t len;
         memcpy(&len, p, 2);
         p += 2;
-        if (p + len > end)
+        if (len > (size_t) (end - p))
             goto bad_format_with_tok;
         tok->id_to_token[id].text = (const char *) p;
         tok->id_to_token[id].len  = len;
@@ -283,6 +290,8 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
     }
 
     /* Merges section: merges_count entries of (l_len:u16, l_bytes, r_len:u16, r_bytes) */
+    if (merges_count > (size_t) (end - p) / 4)
+        goto bad_format_with_tok;
     tok->merge_hash_cap = next_pow2((size_t) merges_count * VOCAB_LOAD_FACTOR_DENOM);
     tok->merge_hash     = heap_alloc_array_aligned(struct sp_merge_hash, tok->merge_hash_cap);
     if (!tok->merge_hash)
@@ -291,34 +300,36 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
         tok->merge_hash[i].rank = UINT32_MAX;
 
     for (uint32_t rank = 0; rank < merges_count; rank++) {
-        if (p + 2 > end)
+        if ((size_t) (end - p) < 2)
             goto bad_format_with_tok;
         uint16_t llen;
         memcpy(&llen, p, 2);
         p += 2;
-        if (p + llen > end)
+        if (llen > (size_t) (end - p))
             goto bad_format_with_tok;
         const char *lbytes = (const char *) p;
         p += llen;
-        if (p + 2 > end)
+        if ((size_t) (end - p) < 2)
             goto bad_format_with_tok;
         uint16_t rlen;
         memcpy(&rlen, p, 2);
         p += 2;
-        if (p + rlen > end)
+        if (rlen > (size_t) (end - p))
             goto bad_format_with_tok;
         const char *rbytes = (const char *) p;
         p += rlen;
         merge_hash_insert(tok->merge_hash, tok->merge_hash_cap, lbytes, llen, rbytes, rlen, rank);
     }
 
-    /* Special tokens section */
+    /* Special tokens section: specials_count entries of (id:u32, len:u16, bytes) */
+    if (specials_count > (size_t) (end - p) / 6)
+        goto bad_format_with_tok;
     tok->specials = heap_calloc_array_aligned(struct sp_special, specials_count);
     if (!tok->specials && specials_count > 0)
         goto bad_alloc;
 
     for (uint32_t i = 0; i < specials_count; i++) {
-        if (p + 6 > end)
+        if ((size_t) (end - p) < 6)
             goto bad_format_with_tok;
         uint32_t id;
         memcpy(&id, p, 4);
@@ -326,7 +337,7 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
         uint16_t len;
         memcpy(&len, p, 2);
         p += 2;
-        if (p + len > end)
+        if (len > (size_t) (end - p))
             goto bad_format_with_tok;
         tok->specials[i].id   = id;
         tok->specials[i].text = (const char *) p;
