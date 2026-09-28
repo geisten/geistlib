@@ -127,6 +127,9 @@ static void w4a8_pointers(const uint8_t  *blob,
         const size_t q4k_row_bytes = (n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES;
         const size_t w_row_bytes   = weights_bytes_per_row(n_in);
         const size_t s_row_count   = scales_count_per_row(n_in);
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static) /* see q4k_to_q4kx8_matrix */
+#endif
         for (size_t m = 0; m < n_out; m++) {
             q4k_to_w4a8_row(n_in,
                             q4k_raw + m * q4k_row_bytes,

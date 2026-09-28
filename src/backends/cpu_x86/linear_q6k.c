@@ -30,6 +30,7 @@
 
 #include <geist_backend.h>
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -103,6 +104,9 @@ constexpr size_t THP_BYTES = 2u << 20;
     const size_t   s_row_count   = blocks_per_row(n_in);
     const uint8_t *q6k_raw       = (const uint8_t *) w->raw;
     if (!q6k_use_w8x8(n_out)) {
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static) /* see q4k_to_q4kx8_matrix */
+#endif
         for (size_t m = 0; m < n_out; m++) {
             q6k_to_w8a8_row(n_in,
                             q6k_raw + m * q6k_row_bytes,
@@ -116,35 +120,52 @@ constexpr size_t THP_BYTES = 2u << 20;
          * one group at a time into a small row-major staging buffer and
          * repack it into place: the same bytes as repacking the whole
          * row-major matrix, without holding it. */
-        const size_t nrows   = n_out % W8X16_NROWS == 0 ? W8X16_NROWS : W8X8_NROWS;
-        uint8_t     *stage_w = heap_alloc_aligned(
-                nrows * w_row_bytes + 2 * nrows * s_row_count * sizeof(float), OPTIMAL_ALIGNMENT);
-        if (stage_w == nullptr) {
+        const size_t nrows = n_out % W8X16_NROWS == 0 ? W8X16_NROWS : W8X8_NROWS;
+        /* The groups are shared out as in q4k_to_q4kx8_matrix, each thread
+         * with its own staging buffer. */
+        const size_t stage_bytes = nrows * w_row_bytes + 2 * nrows * s_row_count * sizeof(float);
+        atomic_bool  oom         = false;
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+        {
+            uint8_t *stage_w = heap_alloc_aligned(stage_bytes, OPTIMAL_ALIGNMENT);
+            if (stage_w == nullptr) {
+                atomic_store_explicit(&oom, true, memory_order_relaxed);
+            }
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+            for (size_t g = 0; g < n_out / nrows; g++) {
+                if (stage_w == nullptr) {
+                    continue;
+                }
+                float *stage_s = (float *) (stage_w + nrows * w_row_bytes);
+                float *stage_o = stage_s + nrows * s_row_count;
+                for (size_t r = 0; r < nrows; r++) {
+                    q6k_to_w8a8_row(n_in,
+                                    q6k_raw + (g * nrows + r) * q6k_row_bytes,
+                                    stage_w + r * w_row_bytes,
+                                    stage_s + r * s_row_count,
+                                    stage_o + r * s_row_count);
+                }
+                uint8_t *qs_g = blob_w + g * nrows * w_row_bytes;
+                float   *sc_g = blob_s + g * nrows * s_row_count;
+                float   *of_g = blob_o + g * nrows * s_row_count;
+                if (nrows == W8X16_NROWS) {
+                    w8x16_repack(nrows, n_in, stage_w, stage_s, stage_o, qs_g, sc_g, of_g);
+                } else {
+                    w8x8_repack(nrows, n_in, stage_w, stage_s, stage_o, qs_g, sc_g, of_g);
+                }
+            }
+            void *p = stage_w;
+            safe_free(&p);
+        }
+        if (atomic_load_explicit(&oom, memory_order_relaxed)) {
             void *p = blob;
             safe_free(&p);
             return GEIST_E_OOM;
         }
-        float *stage_s = (float *) (stage_w + nrows * w_row_bytes);
-        float *stage_o = stage_s + nrows * s_row_count;
-        for (size_t g = 0; g < n_out / nrows; g++) {
-            for (size_t r = 0; r < nrows; r++) {
-                q6k_to_w8a8_row(n_in,
-                                q6k_raw + (g * nrows + r) * q6k_row_bytes,
-                                stage_w + r * w_row_bytes,
-                                stage_s + r * s_row_count,
-                                stage_o + r * s_row_count);
-            }
-            uint8_t *qs_g = blob_w + g * nrows * w_row_bytes;
-            float   *sc_g = blob_s + g * nrows * s_row_count;
-            float   *of_g = blob_o + g * nrows * s_row_count;
-            if (nrows == W8X16_NROWS) {
-                w8x16_repack(nrows, n_in, stage_w, stage_s, stage_o, qs_g, sc_g, of_g);
-            } else {
-                w8x8_repack(nrows, n_in, stage_w, stage_s, stage_o, qs_g, sc_g, of_g);
-            }
-        }
-        void *p = stage_w;
-        safe_free(&p);
     }
 
     w->aux_fp32 = (const float *) blob;
