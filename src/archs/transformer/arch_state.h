@@ -358,6 +358,13 @@ struct transformer_arch_session {
     struct geist_buffer *dn_scratch_z;
     struct geist_buffer *dn_scratch_b; /* beta projection  [m_max, n_v_heads] */
     struct geist_buffer *dn_scratch_a; /* alpha projection [m_max, n_v_heads] */
+    /* Host staging of the chunked DeltaNet prefill (dn_run_prefill_chunked,
+     * layer_deltanet.c), shared by the DeltaNet layers, which run one after
+     * another. The first chunked prefill sizes it for m_max tokens and its
+     * OpenMP team; it grows only for a larger team. Nothing in it outlives
+     * a call. */
+    float *dn_prefill_ws;
+    size_t dn_prefill_ws_floats;
 
     /* Qwen3.5 MTP owns a cache independent from the target trunk. Target
      * batches feed it one-position-shifted hidden rows when GEIST_MTP=1.

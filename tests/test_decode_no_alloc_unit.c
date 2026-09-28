@@ -16,12 +16,13 @@
  * It is a ratchet. Each KV mode has a ceiling of allocations per attention
  * layer per call, and each DeltaNet block one per prefill; above it a
  * check fails, below it the test says so, and the change that got it there
- * lowers the ceiling. The KV modes are all at 0: the FP32 cache's
- * attention, the last to allocate (a score buffer per call in cpu_x86
+ * lowers the ceiling. All are at 0. The FP32 cache's attention was the
+ * last KV mode to allocate (a score buffer per call in cpu_x86
  * attention.c, the gemma4_kernels.c reference and cpu_neon
- * transformer_ops.c), now scores a stack-sized block at a time. A DeltaNet
- * block still stages its chunked prefill in a heap buffer per call
- * (dn_run_prefill_chunked, layer_deltanet.c): 1 per block per prefill.
+ * transformer_ops.c) and now scores a stack-sized block at a time. A
+ * DeltaNet block staged its chunked prefill in a heap buffer per call
+ * (dn_run_prefill_chunked, layer_deltanet.c); the session keeps that
+ * staging now, sized by its first chunked prefill (the warm-up here).
  */
 #include "test_helpers.h"
 #include "heap.h"
@@ -54,7 +55,7 @@ static const struct {
 static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
 
 /* DeltaNet blocks' allocations per prefill call, at most. */
-constexpr uint64_t DN_PER_PREFILL = 1;
+constexpr uint64_t DN_PER_PREFILL = 0;
 
 struct model {
     const char   *name;

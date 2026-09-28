@@ -92,6 +92,15 @@ minor release.
 
 ### Changed
 
+- **A Qwen3.5 prefill no longer allocates per DeltaNet layer.** The chunked
+  delta rule staged each chunk in a fresh heap buffer, about 2.4 MB for the
+  0.8B geometry on 4 threads, and more with more threads. The session now
+  keeps that buffer, sized by its first chunked prefill. An allocator that
+  maps and unmaps such blocks every time, as musl's does, paid about 2,800
+  page faults per 256-token prefill for it and took about 4 % longer
+  (measured with glibc told to do the same). With glibc's default there is
+  no measurable change. The buffer now stays resident for the life of the
+  session instead of being returned after each chunk.
 - **The first token after a prefill costs no forward pass.** `decode_step`
   returns the token the last forward predicted and leaves the forward that
   appends it to the next call on the session: the next step, or a peek,
