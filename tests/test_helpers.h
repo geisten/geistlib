@@ -176,6 +176,19 @@ static inline const char *geist_test_find_gguf(void) {
                 "GGUF model not found. Set GEIST_GGUF_PATH or place model in ./, ../models/"); \
     }
 
+/* GEIST_GGUF_PATH is "the reference model" by convention, but nothing stops
+ * it naming a qwen or llama GGUF, and a test written against Gemma's chat
+ * template, tensor names or golden token ids then fails on the fixture, not
+ * the code (#452). Tests with a family-specific expectation say so here and
+ * skip otherwise. A plain skip, not GEIST_SKIP_FIXTURE: the fixture is
+ * present, it is just the wrong family, and strict-fixture CI must not read
+ * that as missing. `arch` is whatever names the family for the handle at
+ * hand: geist_model_arch(model), st->config.family, or the GGUF's
+ * general.architecture. */
+#define GEIST_REQUIRE_ARCH(arch, want)                              \
+    GEIST_SKIP_IF((arch) == nullptr || strcmp((arch), (want)) != 0, \
+                  "fixture is not " want " (GEIST_GGUF_PATH names another family)")
+
 /* argv[n] if the caller supplied it, else the discovered GGUF. The runner
  * invokes every binary with no arguments (mk/run-tests.sh), so a test that
  * only reads argv sits idle even when CI has the model cached. Falls back to
