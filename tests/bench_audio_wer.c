@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
     GEIST_SKIP_IF(list == nullptr, "cannot open wav list");
 
     struct geist_backend *be = nullptr;
-    enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    enum geist_status     s  = geist_backend_create("auto", nullptr, nullptr, &be);
     if (s != GEIST_OK)
         s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
     if (s != GEIST_OK) {
