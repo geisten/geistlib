@@ -294,12 +294,8 @@ void attention_mqa_causal_kv(size_t       n_q,
                     max_score = block_max;
                 }
                 for (size_t j = 0; j < n; j++) {
-                    /* Below ATTN_EXP_FLOOR the weight is 0 (gemma4_kernels.h).
-                     * The floored exp comes first, outside the choice: inside
-                     * it the compiler knows d >= the floor and drops fmaxf. */
-                    const float d = scores[j] - max_score;
-                    const float e = expf(fmaxf(d, ATTN_EXP_FLOOR));
-                    scores[j]     = d < ATTN_EXP_FLOOR ? 0.0f : e;
+                    /* The exponent clamped at ATTN_EXP_FLOOR (gemma4_kernels.h). */
+                    scores[j] = expf(fmaxf(scores[j] - max_score, ATTN_EXP_FLOOR));
                     sum_exp += scores[j];
                 }
                 for (size_t j = 0; j < n; j++) {

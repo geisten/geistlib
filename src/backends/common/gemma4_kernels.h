@@ -117,10 +117,9 @@ enum { ATTN_F32_BLOCK = 512 };
  * as on flat ones. At -60 neither happens, and no result changes: raising
  * a weight to e^-60 (or dropping it to 0) moves it by less than 8.8e-27,
  * 2^24 of them move the sum by 1.5e-19 next to the max's 1, and e^-60
- * times anything above 1.3e-12 is a normal float. The INT8 and INT4
- * kernels (forward/attention.c) clamp the argument here; the FP32 ones
- * (this file's, cpu_x86's and cpu_neon's) also zero the lanes under it,
- * one select per lane more. */
+ * times anything above 1.3e-12 is a normal float. So every kernel clamps
+ * the argument here, one max per lane, and takes a rescale or merge factor
+ * below it as 0. */
 static constexpr float ATTN_EXP_FLOOR = -60.0f;
 
 /* Decoupled-length variant for KV-cached inference.
