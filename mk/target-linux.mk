@@ -63,7 +63,10 @@ BACKENDS ?= cpu_neon cpu_scalar
 # SBCs with dotprod and fp16 (Cortex-A55/A76 and later). No -mcpu pin so the
 # same binary is portable across those cores. A Cortex-A53 or A72 (Raspberry
 # Pi 3/4) has neither feature: geist_backend_create refuses it, naming the
-# missing one, rather than letting the first SDOT raise SIGILL.
+# missing one, rather than letting the first SDOT raise SIGILL. The cpu_neon
+# kernels need dotprod to compile at all; for those cores build
+#   make TARGET=linux BACKENDS=cpu_scalar CFLAGS_TARGET="-mcpu=cortex-a72 ..."
+# (the rest of CFLAGS_TARGET as below).
 # See target-pi5.mk for the rationale behind -ffast-math and the
 # -Wno-nonnull-compare / -Wno-vla-parameter relaxations under stricter GCC.
 CFLAGS_TARGET := -march=armv8.2-a+fp16+dotprod -fopenmp -ffast-math \

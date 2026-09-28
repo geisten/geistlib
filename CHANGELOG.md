@@ -141,7 +141,9 @@ minor release.
   fp16; for `x86-64-v3` they are AVX2, FMA, BMI2 and F16C. A Cortex-A53
   or A72 (Raspberry Pi 3/4) therefore died with SIGILL during its first
   decode. `geist_backend_create` now returns `GEIST_E_UNSUPPORTED` and
-  names the missing feature.
+  names the missing feature. `mk/target-linux.mk` shows how to build for
+  such a core: `BACKENDS=cpu_scalar` with a matching `CFLAGS_TARGET`,
+  since the cpu_neon kernels need dotprod to compile at all.
 
 ## [0.11.0] — 2026-09-06
 

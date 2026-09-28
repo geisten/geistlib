@@ -83,7 +83,8 @@ enum geist_status geist_backend_create(const char                      *name,
         geist_error_set_create_time(GEIST_E_UNSUPPORTED,
                                     "geist_backend_create",
                                     "this build of geist uses %s, which this CPU does not have; "
-                                    "build it for this CPU (CFLAGS_TARGET, mk/target-*.mk)",
+                                    "build it for this CPU (CFLAGS_TARGET and BACKENDS, see "
+                                    "mk/target-linux.mk)",
                                     missing);
         return GEIST_E_UNSUPPORTED;
     }
