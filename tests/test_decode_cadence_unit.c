@@ -3,8 +3,10 @@
  * geist_session_decode_step, whatever the architecture does with the step's
  * forward pass internally: when it runs is not observable, only its result.
  *
- * Checked on a two-layer llama built in memory (model_fixtures.h), for every
- * CPU backend in the build, every KV-cache mode, greedy and sampling:
+ * Checked on two models built in memory (model_fixtures.h), a two-layer
+ * llama and a Qwen3.5-style hybrid (three gated-DeltaNet blocks and an
+ * attention block, so a recurrent state beside the KV cache), for every CPU
+ * backend in the build, every KV-cache mode, greedy and sampling:
  *
  *   - peek_logits between decode steps shows the next position's logits:
  *     new values after every step, the same values whichever steps are
@@ -14,7 +16,8 @@
  *     without a peek at the turn boundary.
  *   - reset: nothing is pending afterwards, and a prefill after it gives the
  *     logits of a fresh session, also back to a pinned prefix; so does a
- *     pin after decode steps.
+ *     pin after decode steps. The hybrid refuses to pin a prefix (a reset
+ *     cannot return its recurrent state to one).
  *   - a full context: exactly as many tokens as fit, then
  *     GEIST_E_TOO_MANY_TOKENS on every further step, the pending logits
  *     still readable.
@@ -36,7 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-constexpr size_t VOCAB  = 512;
+constexpr size_t VOCAB  = 512; /* most tokens a model here has */
 constexpr size_t PROMPT = 8;
 constexpr size_t STEPS  = 12;
 constexpr size_t TURN2  = 5;
@@ -63,6 +66,9 @@ struct run {
     struct geist_model   *m;
     struct geist_backend *be;
     const char           *backend;
+    const char           *model;
+    size_t                vocab;
+    bool                  recurrent; /* DeltaNet layers: no pinned prefix */
     size_t                mode;
     bool                  sampling;
 };
@@ -103,8 +109,9 @@ static int expect(const struct run *r, bool cond, const char *what) {
     char msg[192];
     snprintf(msg,
              sizeof msg,
-             "%s KV %s %s: %s",
+             "%s %s KV %s %s: %s",
              r->backend,
+             r->model,
              MODES[r->mode].name,
              r->sampling ? "sampling" : "greedy",
              what);
@@ -121,31 +128,33 @@ static bool decode(struct geist_session *s, size_t n, geist_token_t out[static n
     return true;
 }
 
-/* A copy of the pending logits into dst[VOCAB]; false if none are pending. */
-static bool peek(struct geist_session *s, float dst[static VOCAB]) {
+/* A copy of the pending logits into dst[r->vocab]; false if none are
+ * pending. */
+static bool peek(const struct run *r, struct geist_session *s, float *dst) {
     size_t       n = 0;
     const float *p = geist_session_peek_logits(&n, s);
-    if (p == nullptr || n != VOCAB) {
+    if (p == nullptr || n != r->vocab) {
         return false;
     }
-    memcpy(dst, p, VOCAB * sizeof *dst);
+    memcpy(dst, p, r->vocab * sizeof *dst);
     return true;
 }
 
-static bool same(const float a[static VOCAB], const float b[static VOCAB]) {
-    return memcmp(a, b, VOCAB * sizeof *a) == 0;
+static bool same(const struct run *r, const float *a, const float *b) {
+    return memcmp(a, b, r->vocab * sizeof *a) == 0;
 }
 
 /* Tokens and logits with peeks between the decode steps. */
 static int check_peeks(const struct run *r, const struct ref *ref) {
     int                   fails = 0;
-    float                *lg    = xmalloc((STEPS + 1) * VOCAB * sizeof *lg);
+    float                *lg    = xmalloc((STEPS + 1) * r->vocab * sizeof *lg);
     geist_token_t         got[STEPS];
     struct geist_session *s = open_session(r, 0);
     bool ok = s != nullptr && geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK;
-    ok      = ok && peek(s, lg);
+    ok      = ok && peek(r, s, lg);
     for (size_t i = 0; ok && i < STEPS; i++) {
-        ok = geist_session_decode_step(s, &got[i]) == GEIST_OK && peek(s, lg + (i + 1) * VOCAB);
+        ok = geist_session_decode_step(s, &got[i]) == GEIST_OK &&
+             peek(r, s, lg + (i + 1) * r->vocab);
     }
     geist_session_destroy(s);
     fails += expect(r, ok, "prefill, decode steps and a peek after each");
@@ -159,8 +168,8 @@ static int check_peeks(const struct run *r, const struct ref *ref) {
     bool moved = true;
     bool next  = true;
     for (size_t i = 0; i < STEPS; i++) {
-        moved = moved && !same(lg + i * VOCAB, lg + (i + 1) * VOCAB);
-        next  = next && argmax(VOCAB, lg + i * VOCAB) == ref->tok[i];
+        moved = moved && !same(r, lg + i * r->vocab, lg + (i + 1) * r->vocab);
+        next  = next && argmax(r->vocab, lg + i * r->vocab) == ref->tok[i];
     }
     fails += expect(r, moved, "every decode step moves the peeked logits");
     if (!r->sampling) {
@@ -168,15 +177,15 @@ static int check_peeks(const struct run *r, const struct ref *ref) {
     }
 
     /* Peeks at odd steps only: the logits there are the same values. */
-    float *one = xmalloc(VOCAB * sizeof *one);
+    float *one = xmalloc(r->vocab * sizeof *one);
     bool   eq  = true;
     s          = open_session(r, 0);
     ok         = s != nullptr && geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK;
     for (size_t i = 0; ok && i < STEPS; i++) {
         ok = geist_session_decode_step(s, &got[i]) == GEIST_OK;
         if (ok && i % 2 == 1) {
-            ok = peek(s, one);
-            eq = eq && same(one, lg + (i + 1) * VOCAB);
+            ok = peek(r, s, one);
+            eq = eq && same(r, one, lg + (i + 1) * r->vocab);
         }
     }
     geist_session_destroy(s);
@@ -191,17 +200,17 @@ static int check_peeks(const struct run *r, const struct ref *ref) {
 /* A second turn after decoding, with and without a peek at the boundary. */
 static int check_turns(const struct run *r) {
     geist_token_t t[2][STEPS + STEPS2];
-    float        *lg    = xmalloc(3 * VOCAB * sizeof *lg); /* [2]: scratch */
+    float        *lg    = xmalloc(3 * r->vocab * sizeof *lg); /* [2]: scratch */
     int           fails = 0;
     for (size_t with_peek = 0; with_peek < 2; with_peek++) {
         struct geist_session *s = open_session(r, 0);
         bool ok = s != nullptr && geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK &&
                   decode(s, STEPS, t[with_peek]);
         if (ok && with_peek) {
-            ok = peek(s, lg + 2 * VOCAB);
+            ok = peek(r, s, lg + 2 * r->vocab);
         }
         ok = ok && geist_session_prefill_tokens(s, TURN2, P2) == GEIST_OK &&
-             peek(s, lg + with_peek * VOCAB) && decode(s, STEPS2, t[with_peek] + STEPS);
+             peek(r, s, lg + with_peek * r->vocab) && decode(s, STEPS2, t[with_peek] + STEPS);
         geist_session_destroy(s);
         fails += expect(r, ok, "two turns of prefill and decode");
         if (!ok) {
@@ -210,12 +219,12 @@ static int check_turns(const struct run *r) {
         }
     }
     fails += expect(r,
-                    same(lg, lg + VOCAB),
+                    same(r, lg, lg + r->vocab),
                     "a peek between turns leaves the logits after the second prefill as they are");
     fails += expect(r, memcmp(t[0], t[1], sizeof t[0]) == 0, "and the tokens of both turns");
     if (!r->sampling) {
         fails += expect(r,
-                        argmax(VOCAB, lg) == t[0][STEPS],
+                        argmax(r->vocab, lg) == t[0][STEPS],
                         "the logits after the second prefill have its first token as argmax");
     }
     free(lg);
@@ -228,7 +237,7 @@ static int check_reset(const struct run *r, const struct ref *ref) {
     geist_token_t         got[STEPS];
     geist_token_t         t  = -1;
     size_t                n  = 1;
-    float                *lg = xmalloc(2 * VOCAB * sizeof *lg);
+    float                *lg = xmalloc(2 * r->vocab * sizeof *lg);
     struct geist_session *s  = open_session(r, 0);
     bool ok = s != nullptr && geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK &&
               decode(s, STEPS, got) && geist_session_reset(s) == GEIST_OK;
@@ -240,12 +249,12 @@ static int check_reset(const struct run *r, const struct ref *ref) {
         fails += expect(r,
                         geist_session_peek_logits(&n, s) == nullptr && n == 0,
                         "after a reset there are no logits to peek");
-        ok = geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK && peek(s, lg) &&
+        ok = geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK && peek(r, s, lg) &&
              decode(s, STEPS, got);
         fails += expect(r, ok, "prefill and decode steps after a reset");
         if (ok) {
             fails += expect(r,
-                            same(lg, ref->logits),
+                            same(r, lg, ref->logits),
                             "a prefill after a reset gives the logits of a fresh session");
             if (!r->sampling) {
                 fails += expect(
@@ -255,12 +264,22 @@ static int check_reset(const struct run *r, const struct ref *ref) {
     }
     geist_session_destroy(s);
 
+    if (r->recurrent) {
+        s  = open_session(r, 0);
+        ok = s != nullptr &&
+             geist_session_pin_prefix(s, sizeof PIN / sizeof PIN[0], PIN) == GEIST_E_UNSUPPORTED &&
+             geist_session_pin_prefix(s, 0, PIN) == GEIST_OK;
+        geist_session_destroy(s);
+        fails += expect(r, ok, "a prefix is refused, pinning nothing is not");
+        free(lg);
+        return fails;
+    }
     geist_token_t first[STEPS];
     s  = open_session(r, 0);
     ok = s != nullptr && geist_session_pin_prefix(s, sizeof PIN / sizeof PIN[0], PIN) == GEIST_OK &&
-         geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK && peek(s, lg) &&
+         geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK && peek(r, s, lg) &&
          decode(s, STEPS, first) && geist_session_reset(s) == GEIST_OK &&
-         geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK && peek(s, lg + VOCAB) &&
+         geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK && peek(r, s, lg + r->vocab) &&
          decode(s, STEPS, got);
     geist_session_destroy(s);
     fails += expect(r, ok, "pin, prefill, decode, reset to the pin, prefill, decode");
@@ -269,7 +288,7 @@ static int check_reset(const struct run *r, const struct ref *ref) {
         return fails;
     }
     fails += expect(r,
-                    same(lg, lg + VOCAB),
+                    same(r, lg, lg + r->vocab),
                     "a prefill after a reset to a pinned prefix gives the same logits");
     if (!r->sampling) {
         fails += expect(r,
@@ -282,12 +301,12 @@ static int check_reset(const struct run *r, const struct ref *ref) {
     ok = s != nullptr && geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK &&
          decode(s, STEPS, got) &&
          geist_session_pin_prefix(s, sizeof PIN / sizeof PIN[0], PIN) == GEIST_OK &&
-         geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK && peek(s, lg + VOCAB);
+         geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK && peek(r, s, lg + r->vocab);
     geist_session_destroy(s);
     fails += expect(r, ok, "prefill, decode, pin, prefill");
     if (ok) {
         fails += expect(r,
-                        same(lg, lg + VOCAB),
+                        same(r, lg, lg + r->vocab),
                         "a pin after decode steps gives the logits of a pin on a fresh session");
     }
     free(lg);
@@ -299,7 +318,7 @@ static int check_full(const struct run *r, const struct ref *ref) {
     int                   fails = 0;
     geist_token_t         got[ROOM];
     geist_token_t         t  = -1;
-    float                *lg = xmalloc(VOCAB * sizeof *lg);
+    float                *lg = xmalloc(r->vocab * sizeof *lg);
     struct geist_session *s  = open_session(r, PROMPT + ROOM);
     bool ok = s != nullptr && geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK &&
               decode(s, ROOM, got);
@@ -312,11 +331,11 @@ static int check_full(const struct run *r, const struct ref *ref) {
         fails += expect(r,
                         geist_session_decode_step(s, &t) == GEIST_E_TOO_MANY_TOKENS && t == -1,
                         "so does the next one");
-        const bool peeked = peek(s, lg);
+        const bool peeked = peek(r, s, lg);
         fails += expect(r, peeked, "the pending logits stay readable in a full context");
         if (peeked && !r->sampling) {
             fails += expect(r,
-                            argmax(VOCAB, lg) == ref->tok[ROOM],
+                            argmax(r->vocab, lg) == ref->tok[ROOM],
                             "their argmax is the token that did not fit");
         }
     }
@@ -358,7 +377,7 @@ static int run_all(const struct run *r) {
     struct ref            ref;
     struct geist_session *s = open_session(r, 0);
     bool ok = s != nullptr && geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK &&
-              peek(s, ref.logits) && decode(s, STEPS, ref.tok);
+              peek(r, s, ref.logits) && decode(s, STEPS, ref.tok);
     geist_session_destroy(s);
     int fails = expect(r, ok, "prefill and decode steps");
     if (!ok) {
@@ -373,30 +392,72 @@ static int run_all(const struct run *r) {
 }
 
 int main(void) {
-    /* Seed 14: a fixture whose greedy decoding changes token early on. */
-    struct tf_buf g     = mf_llama_gguf(&(struct mf_llama) {.layers   = 2,
-                                                            .d_model  = 128,
-                                                            .heads    = 4,
-                                                            .kv_heads = 2,
-                                                            .ffn      = 256,
-                                                            .vocab    = VOCAB,
-                                                            .context  = 256,
-                                                            .seed     = 14});
-    int           fails = 0, ran = 0;
+    struct tf_vocab v = tf_make_vocab("\xc4\xa0", false); /* the hybrid's vocabulary */
+    /* Seeds whose greedy decoding changes token early on. */
+    const struct {
+        const char   *name;
+        struct tf_buf g;
+        size_t        vocab;
+        bool          recurrent;
+    } models[] = {
+            {"llama",
+             mf_llama_gguf(&(struct mf_llama) {.layers   = 2,
+                                               .d_model  = 128,
+                                               .heads    = 4,
+                                               .kv_heads = 2,
+                                               .ffn      = 256,
+                                               .vocab    = VOCAB,
+                                               .context  = 256,
+                                               .seed     = 14}),
+             VOCAB,
+             false},
+            {"qwen35",
+             mf_qwen35_gguf(&(struct mf_qwen35) {.layers     = 4,
+                                                 .interval   = 4,
+                                                 .d_model    = 64,
+                                                 .heads      = 4,
+                                                 .kv_heads   = 2,
+                                                 .head_dim   = 16,
+                                                 .rope_dims  = 8,
+                                                 .ffn        = 128,
+                                                 .dn_k_heads = 2,
+                                                 .dn_v_heads = 4,
+                                                 .dn_head_k  = 16,
+                                                 .dn_head_v  = 16,
+                                                 .dn_conv    = 4,
+                                                 .seed       = 1,
+                                                 .tok        = &v}),
+             v.n_tok,
+             true},
+    };
+    int fails = 0, ran = 0;
     for (size_t b = 0; b < sizeof BACKENDS / sizeof BACKENDS[0]; b++) {
         struct geist_backend *be = nullptr;
         if (geist_backend_create(BACKENDS[b], nullptr, nullptr, &be) != GEIST_OK || be == nullptr) {
             continue; /* not in this build */
         }
-        struct geist_model *m = nullptr;
-        if (geist_model_load_from_memory(g.b, g.n, be, &m) != GEIST_OK) {
-            fprintf(stderr, "FAIL: %s: model load: %s\n", BACKENDS[b], geist_last_create_error());
-            fails++;
-        } else {
-            ran++;
+        ran++;
+        for (size_t i = 0; i < sizeof models / sizeof models[0]; i++) {
+            struct geist_model *m = nullptr;
+            if (geist_model_load_from_memory(models[i].g.b, models[i].g.n, be, &m) != GEIST_OK) {
+                fprintf(stderr,
+                        "FAIL: %s %s: model load: %s\n",
+                        BACKENDS[b],
+                        models[i].name,
+                        geist_last_create_error());
+                fails++;
+                continue;
+            }
             for (size_t k = 0; k < sizeof MODES / sizeof MODES[0]; k++) {
                 for (int sampling = 0; sampling < 2; sampling++) {
-                    const struct run r = {m, be, BACKENDS[b], k, sampling != 0};
+                    const struct run r = {m,
+                                          be,
+                                          BACKENDS[b],
+                                          models[i].name,
+                                          models[i].vocab,
+                                          models[i].recurrent,
+                                          k,
+                                          sampling != 0};
                     fails += run_all(&r);
                 }
             }
@@ -404,7 +465,10 @@ int main(void) {
         }
         geist_backend_destroy(be);
     }
-    free(g.b);
+    for (size_t i = 0; i < sizeof models / sizeof models[0]; i++) {
+        free(models[i].g.b);
+    }
+    tf_free_vocab(&v);
     if (ran == 0 && fails == 0) {
         printf("SKIP: no CPU backend in this build\n");
         return GEIST_TEST_SKIP;
