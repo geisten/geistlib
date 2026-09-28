@@ -138,8 +138,9 @@ jobs:
       # Mandatory GPU gate (#181): on macos-15 a Metal device is expected,
       # so a SKIP (exit 77) from either binary fails the step — a skipped
       # gate must not read as a green one. Registration, lifecycle, buffer
-      # round-trip (probe) and Q4_K/Q6_K/F32 linear parity vs cpu_scalar
-      # (m=1 and m=8) all run on the real device.
+      # round-trip (probe) and linear parity vs cpu_scalar (every quant
+      # format the test lists, decode and prefill shapes) all run on the
+      # real device.
       - name: Metal device probe + linear parity (GPU, mandatory)
         if: matrix.apple_silicon
         run: |
