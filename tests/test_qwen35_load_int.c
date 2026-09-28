@@ -199,13 +199,19 @@ int main(void) {
         fails++;
     }
 
+    /* built on first use, not at state_create */
+    struct transformer_arch_session *def = transformer_default_session(st);
+    if (def == nullptr) {
+        fprintf(stderr, "FAIL: default session\n");
+        return GEIST_TEST_FAIL;
+    }
     if (n_mtp == 0) {
         if (st->mtp_layers != nullptr) {
             fprintf(stderr, "FAIL: model without MTP allocated MTP layers\n");
             fails++;
         }
-        if (st->default_sess->mtp_k_cache != nullptr || st->default_sess->mtp_v_cache != nullptr ||
-            st->default_sess->mtp_embed != nullptr || st->default_sess->mtp_concat != nullptr) {
+        if (def->mtp_k_cache != nullptr || def->mtp_v_cache != nullptr ||
+            def->mtp_embed != nullptr || def->mtp_concat != nullptr) {
             fprintf(stderr, "FAIL: model without MTP allocated MTP runtime buffers\n");
             fails++;
         }
@@ -213,8 +219,7 @@ int main(void) {
             const geist_token_t id = 0;
             const float         h  = 0.0f;
             geist_token_t       out;
-            if (transformer_mtp_forward(st->default_sess, 1, &id, &h, &out, nullptr) !=
-                GEIST_E_UNSUPPORTED) {
+            if (transformer_mtp_forward(def, 1, &id, &h, &out, nullptr) != GEIST_E_UNSUPPORTED) {
                 fprintf(stderr, "FAIL: model without MTP did not reject MTP forward\n");
                 fails++;
             }
@@ -224,11 +229,9 @@ int main(void) {
             fprintf(stderr, "FAIL: MTP layer array missing\n");
             fails++;
         } else {
-            if (st->default_sess->mtp_k_cache == nullptr ||
-                st->default_sess->mtp_v_cache == nullptr ||
-                st->default_sess->mtp_embed == nullptr ||
-                st->default_sess->mtp_hidden_norm == nullptr ||
-                st->default_sess->mtp_concat == nullptr || st->default_sess->mtp_kv_len != 0) {
+            if (def->mtp_k_cache == nullptr || def->mtp_v_cache == nullptr ||
+                def->mtp_embed == nullptr || def->mtp_hidden_norm == nullptr ||
+                def->mtp_concat == nullptr || def->mtp_kv_len != 0) {
                 fprintf(stderr, "FAIL: MTP runtime buffers/state missing\n");
                 fails++;
             }

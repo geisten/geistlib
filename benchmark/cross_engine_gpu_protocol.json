@@ -32,6 +32,10 @@
     "qwen38-27b-q4": {
       "file": "qwen3.8-27b-q4_0.gguf",
       "sha256": "ede16c7b36e578ca87a8c70e011e4b4633a32c831c0ce76d0f474582384e671d"
+    },
+    "bonsai2-27b-pq2": {
+      "file": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+      "sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1"
     }
   },
   "workload": {

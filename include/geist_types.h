@@ -73,17 +73,29 @@ enum geist_dtype {
     GEIST_DTYPE_IQ4_NL,
     GEIST_DTYPE_IQ4_XS,
 
-    /* PrismML PQ2_0 (ggml type 142, Ternary-Bonsai): 128-elem blocks of
-     * one fp16 scale followed by 32 bytes of 2-bit codes, element j at
-     * byte j/4, bits 2*(j%4); value (code - 1) * scale, so codes 0/1/2 are
-     * the trits -1/0/+1 (code 3 decodes to +2). 2.125 bpw. Appended after
-     * IQ4_XS for the same reason IQ4 was. layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
-    GEIST_DTYPE_PQ2_0,
-
     GEIST_DTYPE_BINARY,  /* 1-bit values; storage via layout */
     GEIST_DTYPE_TERNARY, /* {-1, 0, +1}; storage via layout */
 
     GEIST_DTYPE_CUSTOM, /* user-extended via geist_quant_desc.flags */
+
+    /* PrismML PQ2_0 (ggml type 142, Ternary-Bonsai): 128-elem blocks of
+     * one fp16 scale followed by 32 bytes of 2-bit codes, element j at
+     * byte j/4, bits 2*(j%4); value (code - 1) * scale, so codes 0/1/2 are
+     * the trits -1/0/+1 (code 3 decodes to +2). 2.125 bpw.
+     * layout=GEIST_LAYOUT_BLOCK_QUANTIZED.
+     *
+     * Last, after CUSTOM: "appended" has to mean appended to the whole
+     * enum, not to the quant group. Sitting before BINARY it moved
+     * BINARY/TERNARY/CUSTOM off the values v0.11.0 published (19/20/21),
+     * which is what the IQ4 note above was written to prevent. Anything
+     * new goes here, below this line. */
+    GEIST_DTYPE_PQ2_0,
+
+    /* Not a dtype: one past the last, for sizing tables keyed by dtype.
+     * CUSTOM used to serve that role, which is why moving PQ2_0 past it
+     * silently dropped PQ2_0 from the weight-path counters. Anything
+     * appended above is covered automatically. */
+    GEIST_DTYPE_COUNT,
 };
 
 enum geist_layout {

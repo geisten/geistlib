@@ -36,6 +36,7 @@ void vk_seq_flush(struct vk_state *st) {
          * kernels. */
         fprintf(stderr, "geist vulkan: sequence flush failed — batch dropped\n");
         geist_backend_set_error(st->backend, GEIST_E_BACKEND, "vulkan: sequence flush failed");
+        st->seq_failed = true;
     }
     if (ok && st->profile_enabled && st->ts_count > 1) {
         uint64_t ts[VK_SEQ_MAX_DISPATCH + 8];
@@ -58,6 +59,18 @@ void vk_seq_flush(struct vk_state *st) {
     st->ts_count = 0;
     (void) st->fn.ResetDescriptorPool(st->device, st->seq_pool, 0);
     st->xring_used = 0;
+}
+
+/* Deliver a failed flush (or roll) to the caller of a readback: the batch was
+ * dropped, so whatever the host is about to read is not this token's result.
+ * One-shot — the flag clears once reported. */
+[[nodiscard]] enum geist_status vk_seq_take_failure(struct vk_state *st) {
+    if (st == nullptr || !st->seq_failed) {
+        return GEIST_OK;
+    }
+    st->seq_failed = false;
+    geist_backend_set_error(st->backend, GEIST_E_BACKEND, "vulkan: a submitted batch failed");
+    return GEIST_E_BACKEND;
 }
 
 [[nodiscard]] enum geist_status vk_seq_open_cmd(struct vk_state *st) {
@@ -95,7 +108,9 @@ static void vk_seq_roll(struct vk_state *st) {
     VkSubmitInfo submit = {.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                            .commandBufferCount = 1,
                            .pCommandBuffers    = &st->seq_cmd};
-    (void) st->fn.QueueSubmit(st->queue, 1, &submit, VK_NULL_HANDLE);
+    if (st->fn.QueueSubmit(st->queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS) {
+        st->seq_failed = true; /* reported at the next readback */
+    }
     st->seq_cmd_idx++;
     st->seq_cmd                    = st->seq_cmds[st->seq_cmd_idx];
     st->seq_in_cmd                 = 0;
@@ -122,13 +137,6 @@ void vk_prof_stamp(struct vk_state *st, uint32_t slot) {
 static void vk_seq_barrier(struct vk_state *st) {
     st->n_dirty = 0;
     st->stat_barriers++;
-    static _Atomic int no_bar = -1;
-    if (no_bar < 0) {
-        no_bar = getenv("GEIST_VK_NO_BARRIER") != nullptr; /* perf probe: WRONG results */
-    }
-    if (no_bar > 0) {
-        return;
-    }
     const VkMemoryBarrier mb = {
             .sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,

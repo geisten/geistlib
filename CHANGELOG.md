@@ -9,6 +9,37 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Threadgroup-limit diagnostics for the metal backend.**
+  `GEIST_METAL_LOG_TG_LIMIT=1` lists each pipeline's
+  `maxTotalThreadsPerThreadgroup`; `GEIST_METAL_CHECK_TG=1` checks every
+  dispatch's requested width against the pipeline bound at the time and warns
+  once. Nothing clamps: on an M1 Max five pipelines report below the
+  architectural 1024 (PQ2 GEMVs 576/704, `gate_up_q4k_n4` 640, simdgroup
+  GEMMs 832/896) and all of them are dispatched with at most 128 threads,
+  while every kernel that is dispatched at 1024 reports 1024. The check is
+  there so a retune cannot cross a limit silently, and it stays off the hot
+  path — with the switch off, dispatch pays one branch.
+
+
+- **Ternary-Bonsai-2-27B on Vulkan** (PQ2_0 + `prism.hadamard`; #472, #473). PQ2_0
+  matvec/GEMM kernels (struct-of-arrays repack at upload, float activations like
+  metal), a PQ2_0 arm in the embedding lookup, and `fused->hadamard_rotate` on the
+  device (blockwise orthonormal Walsh-Hadamard transform, block up to 1024,
+  bit-identical to the host implementation). A small F16/BF16 matrix a GPU
+  backend refuses to resolve (Bonsai's BF16 `ssm_alpha`/`ssm_beta`) is widened to
+  F32 at load and runs on the device; the arena capacity now reserves for it.
+  The 7.21 GB model fits an 11 GiB RTX 2080 Ti, passes the PrismML-fork goldens
+  (prompt ids, next-token top 5, first 16 greedy tokens — `test_bonsai_e2e_int`
+  now runs them on every available backend) and its logits are bit-identical to
+  `cpu_scalar` (FP32 KV) on the 2080 Ti and the RADV iGPU. PQ2_0 also has a
+  tensor-core GEMM (128 × 128 tile, f16 accumulation folded into f32 every 64 k;
+  `GEIST_VK_PQ2_F32_ACC=1` for f32), a wide-load matvec with the activations
+  broadcast from shared memory and a register-resident DeltaNet state; the
+  model-owned default session is built on first use, so a model no longer holds
+  a second, unused scratch pool. RTX 2080 Ti: pp512 ≈ 395 t/s (517 with
+  `GEIST_M_MAX=128`), tg ≈ 36 t/s — the PrismML fork's Vulkan build does 556 and
+  29.7; numbers, the side-by-side profile and the RADV analysis in
+  `benchmark/results/TERNARY.md`.
 
 - **Qwen3.5/3.6/3.8 on Vulkan** (#409, #410): the gated-DeltaNet mixer, partial
   RoPE, SiLU/SwiGLU and attention-gate epilogues, and GPU kernels for Q4_0,
@@ -204,6 +235,16 @@ deliberate exception to the `STABLE` promise recorded in
   against the previous implementation over every block size from 1 to 8192
   and over 18 shape/sign combinations. The `fwht` half also serves the
   INT8 KV-cache rotation in `forward/kv_store.c`.
+
+- **`GEIST_DTYPE_PQ2_0` no longer shifts `BINARY`/`TERNARY`/`CUSTOM`.** It was
+  inserted at 19, which moved those three off the values v0.11.0 published
+  (19/20/21) — the exact breakage the note above `IQ4_NL` was written to
+  prevent. PQ2_0 moves to the end of the enum (22) and the published values
+  are restored; the metal embedding shader's dtype literal follows, and a
+  `static_assert` now pins **every** dtype that shader hardcodes, not just
+  the newest one. New `GEIST_DTYPE_COUNT` sentinel for sizing dtype-keyed
+  tables: `CUSTOM` had been serving that role, so a dtype past it silently
+  fell out of the weight-path counters. Caught before a release carried it.
 
 ### Fixed
 - **The metal quant pipeline table dispatched a nil kernel.** Collapsing the

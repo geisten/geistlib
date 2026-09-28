@@ -140,6 +140,10 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
     }
     buf->device_mem = (st->mem_props.memoryTypes[mem_type].propertyFlags &
                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    if (buf->host_visible && buf->device_mem) {
+        buf->bar_bytes = (size_t) minfo.allocationSize;
+        st->bar_used += buf->bar_bytes;
+    }
     if (getenv("GEIST_VK_VERBOSE") != nullptr && buf->host_visible) {
         fprintf(stderr,
                 "  buffer %zu KiB role=%d bar=%d\n",
@@ -240,8 +244,36 @@ void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
         }
         st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
         st->fn.FreeMemory(st->device, buf->mem, nullptr);
+        st->bar_used -= buf->bar_bytes;
     }
     geist_backend_free(be, buf);
+}
+
+/* Scratch that the GPU reads hot and the host maps lives in the BAR window
+ * (host-visible + device-local). Without resizable BAR that window is 256 MB
+ * and everything past it falls back to system memory read over PCIe, so the
+ * arch sizes its default prefill chunk to the room that is left. A heap of
+ * 1 GiB or more is resizable BAR or unified memory: no limit worth planning
+ * for. `reserve` leaves room for other users of the window (the desktop). */
+size_t vk_fast_host_bytes(struct geist_backend *be) {
+    const struct vk_state *st   = be->state;
+    size_t                 heap = 0;
+    for (uint32_t i = 0; i < st->mem_props.memoryTypeCount; ++i) {
+        const VkMemoryPropertyFlags f    = st->mem_props.memoryTypes[i].propertyFlags;
+        const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        if ((f & want) == want) {
+            const size_t h =
+                    (size_t) st->mem_props.memoryHeaps[st->mem_props.memoryTypes[i].heapIndex].size;
+            heap = h > heap ? h : heap;
+        }
+    }
+    constexpr size_t reserve = 48u << 20;
+    if (heap == 0 || heap >= (size_t) (1u << 30)) {
+        return SIZE_MAX;
+    }
+    return heap > st->bar_used + reserve ? heap - st->bar_used - reserve : 0;
 }
 
 /* One blocking staging round-trip. Direction: upload (src != nullptr) or
@@ -352,6 +384,9 @@ vk_buffer_download(size_t n_bytes, uint8_t *dst, const struct geist_buffer *buf)
         return GEIST_E_INVALID_ARG;
     }
     vk_seq_flush(buf->owner);
+    if (vk_seq_take_failure(buf->owner) != GEIST_OK) {
+        return GEIST_E_BACKEND;
+    }
     if (buf->host_alias != nullptr) {
         memcpy(dst, buf->host_alias, n_bytes);
         return GEIST_OK;
@@ -522,6 +557,9 @@ void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
     }
     t->buffer->owner->stat_cpu_falls++;
     vk_seq_flush(t->buffer->owner); /* host access — drain pending GPU work */
+    if (vk_seq_take_failure(t->buffer->owner) != GEIST_OK) {
+        return nullptr;
+    }
     if (out_n != nullptr) {
         *out_n = n;
     }
@@ -557,7 +595,7 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
         return GEIST_E_INVALID_ARG;
     }
     struct vk_state *st = dst->owner;
-    if ((st->gpu_ops & 32u) != 0 && dst->buf != VK_NULL_HANDLE && src->buf != VK_NULL_HANDLE) {
+    if (dst->buf != VK_NULL_HANDLE && src->buf != VK_NULL_HANDLE) {
         /* On-device copy appended to the sequence — keeps KV appends from
          * breaking the per-token batch (kv_store.c uses this path). */
         enum geist_status s = vk_seq_open_cmd(st);

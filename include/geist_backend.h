@@ -145,6 +145,15 @@ struct geist_backend_vtbl {
      * per-op path. */
     enum geist_status (*resolve_weight)(struct geist_backend *be, struct geist_weight *w);
 
+    /* Bytes of the backend's FAST host-visible memory still available for
+     * per-session scratch (a GPU's BAR window: device-local and mappable, but
+     * only 256 MB on a machine without resizable BAR). A scratch pool that does
+     * not fit falls back to plain system memory, which the GPU then reads over
+     * PCIe (activation ops 30-50x slower), so the arch sizes its default
+     * prefill chunk to what fits (transformer_session_alloc). SIZE_MAX =
+     * unlimited. nullable: unlimited. */
+    size_t (*fast_host_bytes)(struct geist_backend *be);
+
     /* ---- Optional parallelism-regime hooks ----
      *
      * Let the arch layer ask the backend to enter a thread regime tuned for

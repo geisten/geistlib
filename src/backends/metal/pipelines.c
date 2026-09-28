@@ -44,6 +44,18 @@
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
     }
+    /* GEIST_METAL_LOG_TG_LIMIT=1 lists what each pipeline actually allows.
+     * Not every kernel gets the architectural 1024: on an M1 Max the
+     * simdgroup GEMMs report 832/896 and the PQ2 GEMVs 576/704, so a
+     * blanket "warn below 1024" would be noise. GEIST_METAL_CHECK_TG=1
+     * checks the thing that matters instead -- the width each dispatch
+     * actually asks for, against the pipeline bound at the time. */
+    if (getenv("GEIST_METAL_LOG_TG_LIMIT") != nullptr) {
+        fprintf(stderr,
+                "geist: metal pipeline '%s' max threads/threadgroup = %lu\n",
+                name,
+                metal_msg_send_ulong0(st, *out_pipeline, "maxTotalThreadsPerThreadgroup"));
+    }
     return GEIST_OK;
 }
 

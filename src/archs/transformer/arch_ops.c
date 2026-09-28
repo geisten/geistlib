@@ -23,6 +23,7 @@
 #include "arch_state.h"
 #include "arch_ops.h"
 #include "rotation.h"
+#include "scratch_plan.h"
 #include "forward.h"
 
 #include "gemma4_kernels.h"
@@ -86,21 +87,36 @@ transformer_dn_state_zero(struct geist_backend *be, struct geist_buffer *buf, si
     return s;
 }
 
-enum geist_status transformer_dn_state_read(struct geist_backend *be,
-                                            struct geist_buffer  *buf,
-                                            size_t                bytes,
-                                            void                 *dst) {
-    return dn_state_xfer(be, buf, bytes, dst, false);
-}
-
-enum geist_status transformer_dn_state_write(struct geist_backend *be,
-                                             struct geist_buffer  *buf,
-                                             size_t                bytes,
-                                             const void           *src) {
-    return dn_state_xfer(be, buf, bytes, (void *) src, true);
-}
-
 /* ---- DeltaNet speculative-state transaction ------------------------- */
+
+/* Move one DeltaNet layer's state between its live backend buffer and the
+ * session's transaction snapshot buffer, without visiting host memory when
+ * the backend can do an on-device copy (#463): batched-submit GPUs (Vulkan)
+ * record it into the open sequence, no PCIe round trip, no fence wait. Falls
+ * back to buffer_map + memcpy (always available on CPU backends, which is
+ * every backend without buffer_copy). */
+static enum geist_status dn_txn_copy(struct geist_backend *be,
+                                     struct geist_buffer  *dst,
+                                     size_t                dst_off,
+                                     struct geist_buffer  *src,
+                                     size_t                src_off,
+                                     size_t                bytes) {
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    if (v->buffer_copy != nullptr) {
+        return v->buffer_copy(dst, dst_off, src, src_off, bytes);
+    }
+    void *d = v->buffer_map(dst);
+    void *s = v->buffer_map(src);
+    if (d == nullptr || s == nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_UNSUPPORTED, "transformer: DeltaNet transaction state not mappable");
+        return GEIST_E_UNSUPPORTED;
+    }
+    memcpy((uint8_t *) d + dst_off, (const uint8_t *) s + src_off, bytes);
+    v->buffer_unmap(src);
+    v->buffer_unmap(dst);
+    return GEIST_OK;
+}
 
 static bool deltanet_state_geometry(const struct transformer_arch_session *sess,
                                     size_t                                *n_dn,
@@ -141,46 +157,45 @@ deltanet_txn_begin(struct transformer_arch_session *sess, size_t k, const geist_
     /* A normal append after verify commits the previous transaction. A
      * second verify therefore starts from the current, fully accepted state. */
     transformer_recurrent_txn_commit(sess);
-    const size_t conv_count = n_dn * conv_n;
-    const size_t S_count    = n_dn * s_n;
-    if (sess->dn_txn_conv == nullptr)
-        sess->dn_txn_conv = heap_alloc_aligned(conv_count * sizeof(float), 64);
-    if (sess->dn_txn_S == nullptr)
-        sess->dn_txn_S = heap_alloc_aligned(S_count * sizeof(float), 64);
     if (sess->dn_txn_ids == nullptr)
         sess->dn_txn_ids =
                 heap_alloc_aligned(sess->m_max * sizeof(geist_token_t), alignof(geist_token_t));
-    if (sess->dn_txn_conv == nullptr || sess->dn_txn_S == nullptr || sess->dn_txn_ids == nullptr) {
+    /* dn_txn_conv_buf / dn_txn_S_buf are allocated once at session_alloc
+     * (#463: on-device snapshot, no per-verify allocation). */
+    if (sess->dn_txn_conv_buf == nullptr || sess->dn_txn_S_buf == nullptr ||
+        sess->dn_txn_ids == nullptr) {
         geist_backend_set_error(sess->model->backend,
                                 GEIST_E_OOM,
                                 "transformer: DeltaNet transaction alloc failed");
         return GEIST_E_OOM;
     }
 
-    size_t dn = 0;
+    struct geist_backend *be = sess->model->backend;
+    size_t                dn = 0;
     for (size_t li = 0; li < sess->model->n_layers; li++) {
         if (sess->model->layers[li].mixer != GEIST_MIXER_DELTANET)
             continue;
-        enum geist_status rs = transformer_dn_state_read(sess->model->backend,
-                                                         sess->dn_conv_state[li],
-                                                         conv_n * sizeof(float),
-                                                         sess->dn_txn_conv + dn * conv_n);
+        enum geist_status rs = dn_txn_copy(be,
+                                           sess->dn_txn_conv_buf,
+                                           dn * conv_n * sizeof(float),
+                                           sess->dn_conv_state[li],
+                                           0,
+                                           conv_n * sizeof(float));
         if (rs == GEIST_OK) {
-            rs = transformer_dn_state_read(sess->model->backend,
-                                           sess->dn_S[li],
-                                           s_n * sizeof(float),
-                                           sess->dn_txn_S + dn * s_n);
+            rs = dn_txn_copy(be,
+                             sess->dn_txn_S_buf,
+                             dn * s_n * sizeof(float),
+                             sess->dn_S[li],
+                             0,
+                             s_n * sizeof(float));
         }
         if (rs != GEIST_OK) {
-            geist_backend_set_error(
-                    sess->model->backend, rs, "transformer: DeltaNet transaction snapshot failed");
+            geist_backend_set_error(be, rs, "transformer: DeltaNet transaction snapshot failed");
             return rs;
         }
         dn++;
     }
     memcpy(sess->dn_txn_ids, ids, k * sizeof(*ids));
-    sess->dn_txn_conv_count          = conv_count;
-    sess->dn_txn_S_count             = S_count;
     sess->dn_txn_base_kv_len         = sess->kv_len;
     sess->dn_txn_k                   = k;
     sess->dn_txn_kivi_residual_count = sess->kivi_residual_count;
@@ -198,23 +213,27 @@ static enum geist_status deltanet_txn_restore(struct transformer_arch_session *s
     size_t n_dn, conv_n, s_n;
     if (!sess->dn_txn_active || !deltanet_state_geometry(sess, &n_dn, &conv_n, &s_n))
         return GEIST_OK;
-    size_t dn = 0;
+    struct geist_backend *be = sess->model->backend;
+    size_t                dn = 0;
     for (size_t li = 0; li < sess->model->n_layers; li++) {
         if (sess->model->layers[li].mixer != GEIST_MIXER_DELTANET)
             continue;
-        enum geist_status ws = transformer_dn_state_write(sess->model->backend,
-                                                          sess->dn_conv_state[li],
-                                                          conv_n * sizeof(float),
-                                                          sess->dn_txn_conv + dn * conv_n);
+        enum geist_status ws = dn_txn_copy(be,
+                                           sess->dn_conv_state[li],
+                                           0,
+                                           sess->dn_txn_conv_buf,
+                                           dn * conv_n * sizeof(float),
+                                           conv_n * sizeof(float));
         if (ws == GEIST_OK) {
-            ws = transformer_dn_state_write(sess->model->backend,
-                                            sess->dn_S[li],
-                                            s_n * sizeof(float),
-                                            sess->dn_txn_S + dn * s_n);
+            ws = dn_txn_copy(be,
+                             sess->dn_S[li],
+                             0,
+                             sess->dn_txn_S_buf,
+                             dn * s_n * sizeof(float),
+                             s_n * sizeof(float));
         }
         if (ws != GEIST_OK) {
-            geist_backend_set_error(
-                    sess->model->backend, ws, "transformer: DeltaNet transaction restore failed");
+            geist_backend_set_error(be, ws, "transformer: DeltaNet transaction restore failed");
             return ws;
         }
         dn++;
@@ -433,8 +452,9 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     if (st == nullptr || k == 0 || ids == nullptr || out_tokens == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    if (k > sess->m_max) {
-        /* Spec K should fit in one prefill chunk. Larger requires chunking. */
+    if (k > sess->m_max || k > TRANSFORMER_LOGITS_ROWS) {
+        /* Spec K must fit one prefill chunk and the logits scratch
+         * (TRANSFORMER_LOGITS_ROWS rows). Larger requires chunking. */
         return GEIST_E_INVALID_ARG;
     }
     enum geist_status room = transformer_check_kv_room(sess, k);
