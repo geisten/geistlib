@@ -2,6 +2,8 @@
 """Hermetic checks for benchmark protocol, provenance, and A/B statistics."""
 import importlib.util
 import json
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,6 +61,22 @@ class BenchCompareTest(unittest.TestCase):
         self.assertIn("decode_tps", bad[0])
         _, bad = bench_compare.compare(_run("bbb", 42.0, 15.0), base, self.LIMITS)
         self.assertEqual(len(bad), 2)  # prefill -6.7 %
+
+    def test_contended_run_is_not_comparable(self):
+        with tempfile.TemporaryDirectory() as d:
+            base, cur = Path(d) / "base.json", Path(d) / "cur.json"
+            base.write_text(json.dumps(_run("aaa", 45.0, 15.0)))
+            noisy = _run("bbb", 45.0, 14.0)  # -6.7 % decode, would fail the gate...
+            noisy["rows"][1]["spread_pct"] = 15.4  # ...but the 512 row says the box was busy
+            cur.write_text(json.dumps(noisy))
+            with mock.patch.object(sys, "argv", ["bench_compare", str(cur), "--baseline", str(base)]), \
+                 mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("GITHUB_STEP_SUMMARY", None)
+                self.assertEqual(bench_compare.main(), 3)
+            noisy["rows"][1]["spread_pct"] = 1.2
+            cur.write_text(json.dumps(noisy))
+            with mock.patch.object(sys, "argv", ["bench_compare", str(cur), "--baseline", str(base)]):
+                self.assertEqual(bench_compare.main(), 1)  # quiet run, the drop counts
 
     def test_faster_is_never_a_regression(self):
         lines, bad = bench_compare.compare(_run("bbb", 60.0, 20.0), _run("aaa", 45.0, 15.0), self.LIMITS)
