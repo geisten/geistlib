@@ -132,10 +132,13 @@ void attention_kivi_via_buffers(size_t         n_q,
             for (size_t s = s_lo; s <= s_hi; s++) {
                 float score = 0.0f;
                 if (s < drained_count) {
+                    /* kivi_drain_one_layer packs a group one KV head after
+                     * the other: the R rows of head 0, then of head 1, ... */
                     const size_t   group_idx = s / R;
                     const float   *sc = k_scales + (group_idx * n_kv_heads + kv_h) * head_dim;
                     const float   *ze = k_zeros + (group_idx * n_kv_heads + kv_h) * head_dim;
-                    const uint8_t *kq = k_q4 + (s * n_kv_heads + kv_h) * packed_per_row;
+                    const uint8_t *kq =
+                            k_q4 + ((group_idx * n_kv_heads + kv_h) * R + s % R) * packed_per_row;
                     for (size_t i = 0; i < packed_per_row; i++) {
                         const uint8_t b      = kq[i];
                         k_dequant[4 * i + 0] = (float) (b & 0x3u) * sc[4 * i + 0] + ze[4 * i + 0];
