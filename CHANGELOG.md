@@ -153,6 +153,13 @@ minor release.
   names the missing feature. `mk/target-linux.mk` shows how to build for
   such a core: `BACKENDS=cpu_scalar` with a matching `CFLAGS_TARGET`,
   since the cpu_neon kernels need dotprod to compile at all.
+- **A quantized weight whose rows are not whole blocks is refused.** The
+  kernels decode a weight row by row, so a row that ends inside a block
+  starts the next one at the wrong byte and leaves its own end undecoded.
+  The GGUF reader and `resolve_weight` checked only that the tensor as a
+  whole was whole blocks: Q4_0 with 48 columns and 2 rows loaded. Every
+  resolver now returns `GEIST_E_FORMAT` for it, and for a tensor that is
+  not whole blocks either, which the check used to let through.
 - **`geist_weight.h` documented the wrong argument order for `linear_mN`.**
   The usage line read `w->linear_mN(x, w, m, be, y)`; the typedef, and every
   kernel, take `(m, x, w, be, y)`. Only the comment changed.
