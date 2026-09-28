@@ -751,9 +751,15 @@ size_t audio_encoder_subsample_run_inc(const struct AudioEncoder *a,
      * h_in is odd. That last position will get DIFFERENT (correct) values
      * once h_in extends past 2p+1, so we must not cache it here - the
      * next push starts conv2d at this boundary and overwrites it. For
-     * even h_in all output positions are stable. */
+     * even h_in all output positions are stable.
+     *
+     * l1's bound follows from l0's STABLE count, not from hh's parity: at
+     * an odd T, l0's last row is itself unstable, and the l1 row whose
+     * window ends on it inherits that even when hh is even (T=47: hh=24,
+     * l1 row 11 reads l0 rows 21..23, and row 23 is the unstable one).
+     * audio_subsample_stable_tokens is the one home of this rule (#506). */
     const size_t stable_l0 = (T % 2 == 0) ? (size_t) hh : (size_t) (hh - 1);
-    const size_t stable_l1 = (hh % 2 == 0) ? (size_t) hh2 : (size_t) (hh2 - 1);
+    const size_t stable_l1 = audio_subsample_stable_tokens(n_mel_total);
     subs->n_t_out0         = stable_l0;
     subs->n_t_out1         = stable_l1;
     subs->n_mel_seen       = n_mel_total;

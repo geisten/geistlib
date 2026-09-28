@@ -209,6 +209,25 @@ static inline size_t audio_soft_bound_from_mel(size_t n_mel) {
     return (n_mel + 3) / 4 + 4;
 }
 
+/* Sub-tokens whose value is FINAL once n_mel real frames are in: the two
+ * kernel-3 / stride-2 / pad-1 convs read one row past their centre, so
+ * the last output row of each depends on the zero pad whenever its input
+ * has an odd length, and gets a different (correct) value once more mel
+ * arrives. Layer 0 is stable up to an even row count; layer 1 is stable
+ * only over rows whose whole window lies inside the STABLE part of layer
+ * 0, i.e. half of it. A mid-stream push may emit sub-tokens only below
+ * this bound — a full 12-token block that ended on the unstable row went
+ * out to the LM with a value ~15 off and was never recomputed (#506: the
+ * argmax flipped whenever the worker happened to wake at 46 mod 48
+ * frames). The final push carries the padded frame and emits everything. */
+static inline size_t audio_subsample_stable_tokens(size_t n_mel) {
+    if (n_mel < 2)
+        return 0;
+    const size_t t_out0    = (n_mel - 1) / 2 + 1;
+    const size_t stable_l0 = (n_mel % 2 == 0) ? t_out0 : t_out0 - 1;
+    return stable_l0 / 2;
+}
+
 /* Mel framing constants shared by the one-shot (encode_pcm) and streaming
  * (push_pcm) paths: 10 ms hop, one 160-sample zero left-pad, and one
  * padded (mask=false) frame appended after the real ones — HF's
