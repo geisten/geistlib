@@ -4,7 +4,9 @@
  * For each (seq_len, decode_n) point in the sweep:
  *   1. Reset session, build a `seq_len`-length pseudo-random prompt.
  *   2. Prefill it — measure wall-clock ms.
- *   3. Decode `decode_n` tokens — measure wall-clock ms.
+ *   3. Decode `decode_n` tokens — measure wall-clock ms. The prefill plus
+ *      the first of these steps is also recorded on its own: the time to
+ *      the first token (ttft_ms).
  *   4. Emit one JSON line per row.
  *
  * Args:
@@ -33,9 +35,10 @@
  *
  * Output: one JSON object per line on stdout, e.g.
  *   {"seq_len":256,"decode_n":64,"prefill_ms":1234.5,"decode_ms":890.1,
- *    "total_ms":2124.6,"prefill_tps":207.4,"decode_tps":71.9,
+ *    "total_ms":2124.6,"ttft_ms":1248.4,"prefill_tps":207.4,"decode_tps":71.9,
  *    "total_tps":150.6,"rss_mb":4321.2,"threads":4,
- *    "samples":{"prefill_ms":[...],"decode_ms":[...],"total_ms":[...]}}
+ *    "samples":{"prefill_ms":[...],"decode_ms":[...],"total_ms":[...],
+ *               "ttft_ms":[...]}}
  *
  * Bench-only; not a correctness test. Exits 77 (SKIP) if no GGUF found.
  */
@@ -330,10 +333,13 @@ int main(int argc, char **argv) {
         double *prefill_ms       = (double *) malloc((size_t) repeats * sizeof(*prefill_ms));
         double *decode_ms        = (double *) malloc((size_t) repeats * sizeof(*decode_ms));
         double *total_ms_repeats = (double *) malloc((size_t) repeats * sizeof(*total_ms_repeats));
-        if (prefill_ms == nullptr || decode_ms == nullptr || total_ms_repeats == nullptr) {
+        double *ttft_ms          = (double *) malloc((size_t) repeats * sizeof(*ttft_ms));
+        if (prefill_ms == nullptr || decode_ms == nullptr || total_ms_repeats == nullptr ||
+            ttft_ms == nullptr) {
             free(prefill_ms);
             free(decode_ms);
             free(total_ms_repeats);
+            free(ttft_ms);
             fprintf(stderr, "alloc failed for repeats=%d\n", repeats);
             failed = true;
             break;
@@ -359,8 +365,9 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            const double  t1  = monotonic_ms();
-            geist_token_t out = 0;
+            const double  t1      = monotonic_ms();
+            double        t_first = 0.0;
+            geist_token_t out     = 0;
             for (int j = 0; j < decode_n; j++) {
                 s = geist_session_decode_step(sess, &out);
                 if (s != GEIST_OK) {
@@ -372,6 +379,9 @@ int main(int argc, char **argv) {
                             (int) s);
                     break;
                 }
+                if (j == 0) {
+                    t_first = monotonic_ms() - t1;
+                }
             }
             const double t_decode = monotonic_ms() - t1;
             if (s != GEIST_OK)
@@ -380,6 +390,7 @@ int main(int argc, char **argv) {
             prefill_ms[measured]       = t_prefill;
             decode_ms[measured]        = t_decode;
             total_ms_repeats[measured] = t_prefill + t_decode;
+            ttft_ms[measured]          = t_prefill + t_first;
             measured++;
         }
 
@@ -387,6 +398,7 @@ int main(int argc, char **argv) {
             free(prefill_ms);
             free(decode_ms);
             free(total_ms_repeats);
+            free(ttft_ms);
             failed = true;
             continue;
         }
@@ -396,6 +408,7 @@ int main(int argc, char **argv) {
          * not only aggregates or sorted values. */
         const double t_prefill = mean_of(measured, prefill_ms);
         const double t_decode  = mean_of(measured, decode_ms);
+        const double t_ttft    = mean_of(measured, ttft_ms);
 
         const double pre_tps   = (double) n_p * 1000.0 / t_prefill;
         const double dec_tps   = decode_n > 0 ? (double) decode_n * 1000.0 / t_decode : 0.0;
@@ -414,7 +427,7 @@ int main(int argc, char **argv) {
         const double total_tps_worst = (double) (n_p + decode_n) * 1000.0 / total_worst;
 
         printf("{\"seq_len\":%d,\"decode_n\":%d,"
-               "\"prefill_ms\":%.2f,\"decode_ms\":%.2f,\"total_ms\":%.2f,"
+               "\"prefill_ms\":%.2f,\"decode_ms\":%.2f,\"total_ms\":%.2f,\"ttft_ms\":%.2f,"
                "\"prefill_tps\":%.3f,\"decode_tps\":%.3f,\"total_tps\":%.3f,"
                "\"prefill_ms_best\":%.2f,\"prefill_ms_worst\":%.2f,"
                "\"decode_ms_best\":%.2f,\"decode_ms_worst\":%.2f,"
@@ -428,6 +441,7 @@ int main(int argc, char **argv) {
                t_prefill,
                t_decode,
                total_ms,
+               t_ttft,
                pre_tps,
                dec_tps,
                total_tps,
@@ -449,11 +463,14 @@ int main(int argc, char **argv) {
         print_json_samples(measured, decode_ms);
         printf(",\"total_ms\":");
         print_json_samples(measured, total_ms_repeats);
+        printf(",\"ttft_ms\":");
+        print_json_samples(measured, ttft_ms);
         printf("}}\n");
         fflush(stdout);
         free(prefill_ms);
         free(decode_ms);
         free(total_ms_repeats);
+        free(ttft_ms);
     }
 
     free(ids);

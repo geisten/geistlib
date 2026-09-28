@@ -16,8 +16,9 @@ BENCH_THREADS=6 OMP_WAIT_POLICY=active make bench-detailed  # pin thread count
 These run `bench_perf_sweep` (warm-up, then N measured repeats) via
 `tools/bench_quality_perf.py`, which records a tagged row per
 (model, host, os, target/mode, threads), keeping the best decode run. The row
-carries mean throughput, the run-to-run spread, and a derived TTFT. The exact
-constants come from `benchmark/apple_cpu_protocol.json`; both this document and
+carries mean throughput, the run-to-run spread, and the measured TTFT (prefill
+plus the first decode step). The exact constants come from
+`benchmark/apple_cpu_protocol.json`; both this document and
 the driver refer to that source. The timestamped raw JSONL retains every ordered
 sample plus full commit/model/binary hashes, compiler, linked libraries,
 environment and diagnostics.

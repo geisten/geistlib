@@ -172,12 +172,15 @@ def spread_pct(rec: dict) -> float:
 
 
 def ttft_ms(rec: dict) -> float:
-    """Time to first token: prefill plus one decode step.
+    """Time to first token: the prefill plus the first decode step.
 
-    Derived, not measured directly — the error is well under one token time.
+    Measured by bench_perf_sweep (ttft_ms). A record from a sweep that predates
+    the field falls back to the prefill plus the mean decode step.
     This is the ENGINE's TTFT; a request through an agent runtime additionally pays
     tokenization, chat templating and any tool round trip.
     """
+    if "ttft_ms" in rec:
+        return rec["ttft_ms"]
     decode_n = rec.get("decode_n") or 1
     return rec["prefill_ms"] + rec["decode_ms"] / decode_n
 

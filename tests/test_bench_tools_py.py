@@ -114,6 +114,11 @@ class BenchmarkToolsTest(unittest.TestCase):
             self.assertEqual(metadata["binary_sha256"], quality.hash_file(binary))
             self.assertEqual(metadata["diagnostics"], ["diagnostic line"])
 
+    def test_ttft_is_the_measured_one_when_the_sweep_reports_it(self):
+        rec = {"prefill_ms": 100.0, "decode_ms": 400.0, "decode_n": 8}
+        self.assertEqual(quality.ttft_ms({**rec, "ttft_ms": 101.5}), 101.5)
+        self.assertEqual(quality.ttft_ms(rec), 150.0)
+
     def test_recorded_suites_do_not_overwrite_each_other(self):
         base = {
             "date": "2026-08-30",
