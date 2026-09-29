@@ -885,10 +885,10 @@ void metal_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf);
                                                   size_t                     n_bytes);
 
 [[nodiscard]] enum geist_status
-metal_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src);
+metal_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t src[static n_bytes]);
 
 [[nodiscard]] enum geist_status
-metal_buffer_download(size_t n_bytes, uint8_t *dst, const struct geist_buffer *buf);
+metal_buffer_download(size_t n_bytes, uint8_t dst[static n_bytes], const struct geist_buffer *buf);
 
 void *metal_buffer_map(struct geist_buffer *buf);
 

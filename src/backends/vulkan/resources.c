@@ -362,7 +362,7 @@ out:
 }
 
 [[nodiscard]] enum geist_status
-vk_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src) {
+vk_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t src[static n_bytes]) {
     if (buf == nullptr || n_bytes > buf->bytes) {
         return GEIST_E_INVALID_ARG;
     }
@@ -379,7 +379,7 @@ vk_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src) {
 }
 
 [[nodiscard]] enum geist_status
-vk_buffer_download(size_t n_bytes, uint8_t *dst, const struct geist_buffer *buf) {
+vk_buffer_download(size_t n_bytes, uint8_t dst[static n_bytes], const struct geist_buffer *buf) {
     if (buf == nullptr || n_bytes > buf->bytes) {
         return GEIST_E_INVALID_ARG;
     }
