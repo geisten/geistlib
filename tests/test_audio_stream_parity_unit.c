@@ -109,65 +109,80 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
 
-    /* 2. Reset streaming state (audio_encoder_reset clears stream state). */
-    audio_encoder_reset(enc);
-    struct audio_stream_state *state = audio_encoder_stream_state(enc);
-    if (state == nullptr) {
-        fprintf(stderr, "FAIL: stream state is null\n");
-        free(ref_soft);
-        free(mel);
-        free(mask);
-        audio_encoder_destroy(enc);
-        return GEIST_TEST_FAIL;
-    }
-
-    /* 3. Drive streaming in two halves to exercise cross-push state carry
-     *    (K/V cache + LConv hist must survive between push calls). */
-    const size_t n_half = N_MEL_FRAMES / 2;
-
-    const size_t emit_a = audio_encoder_stream_push(enc, state, n_half, mel, mask, false);
-    printf("audio_stream_parity: push#1 (%zu mel) emitted %zu soft tokens\n", n_half, emit_a);
-
-    const size_t emit_b = audio_encoder_stream_push(enc, state, N_MEL_FRAMES, mel, mask, true);
-    printf("audio_stream_parity: push#2 (%zu mel, final) emitted %zu soft\n",
-           (size_t) N_MEL_FRAMES,
-           emit_b);
-
-    const size_t n_soft_stream = audio_stream_state_n_soft(state);
-    const float *stream_soft   = audio_stream_state_soft(state);
-    printf("audio_stream_parity: streaming produced %zu soft tokens\n", n_soft_stream);
-
-    if (n_soft_stream != n_soft_ref) {
-        fprintf(stderr,
-                "FAIL: token count mismatch ref=%zu stream=%zu\n",
-                n_soft_ref,
-                n_soft_stream);
-        free(ref_soft);
-        free(mel);
-        free(mask);
-        audio_encoder_destroy(enc);
-        return GEIST_TEST_FAIL;
-    }
-
-    /* 4. Element-wise compare. Tolerance 5e-4 — chunked attention with
-     *    K/V cache reads vs. monolithic recompute can differ by a few
-     *    ULP due to fp32 non-associativity in dot product summation. */
-    float  max_abs = 0.0f;
-    size_t max_at  = 0;
-    for (size_t i = 0; i < n_soft_ref * SOFT_DIM; i++) {
-        float d = fabsf(ref_soft[i] - stream_soft[i]);
-        if (d > max_abs) {
-            max_abs = d;
-            max_at  = i;
+    /* 2+3. Drive streaming as two pushes (mid-stream, then final) and
+     *    compare against the monolithic reference — for EVERY cut point
+     *    that has bitten. 46 and 47 end exactly on a full 12-token block
+     *    whose last sub-token still depends on the zero pad (#506: emitted
+     *    ~15 off and never recomputed; 94/95 are the same at the second
+     *    block), 48/50/96 are the block-aligned cases the worker usually
+     *    lands on, 44 emits nothing mid-stream, 99 leaves one frame. */
+    static const size_t CUTS[]    = {44, 46, 47, 48, 50, 94, 95, 96, 99};
+    float               worst_abs = 0.0f;
+    size_t              worst_cut = 0, worst_at = 0;
+    for (size_t ci = 0; ci < sizeof CUTS / sizeof CUTS[0]; ci++) {
+        const size_t cut = CUTS[ci];
+        audio_encoder_reset(enc);
+        struct audio_stream_state *state = audio_encoder_stream_state(enc);
+        if (state == nullptr) {
+            fprintf(stderr, "FAIL: stream state is null\n");
+            free(ref_soft);
+            free(mel);
+            free(mask);
+            audio_encoder_destroy(enc);
+            return GEIST_TEST_FAIL;
+        }
+        const size_t emit_a = audio_encoder_stream_push(enc, state, cut, mel, mask, false);
+        const size_t emit_b = audio_encoder_stream_push(enc, state, N_MEL_FRAMES, mel, mask, true);
+        const size_t n_soft_stream = audio_stream_state_n_soft(state);
+        const float *stream_soft   = audio_stream_state_soft(state);
+        if (n_soft_stream != n_soft_ref) {
+            fprintf(stderr,
+                    "FAIL: cut %zu: token count mismatch ref=%zu stream=%zu (%zu+%zu)\n",
+                    cut,
+                    n_soft_ref,
+                    n_soft_stream,
+                    emit_a,
+                    emit_b);
+            free(ref_soft);
+            free(mel);
+            free(mask);
+            audio_encoder_destroy(enc);
+            return GEIST_TEST_FAIL;
+        }
+        float  max_abs = 0.0f;
+        size_t max_at  = 0;
+        for (size_t i = 0; i < n_soft_ref * SOFT_DIM; i++) {
+            float d = fabsf(ref_soft[i] - stream_soft[i]);
+            if (d > max_abs) {
+                max_abs = d;
+                max_at  = i;
+            }
+        }
+        printf("audio_stream_parity: cut %3zu: %2zu+%2zu tokens, max|Δ| = %.6f (token %zu)\n",
+               cut,
+               emit_a,
+               emit_b,
+               (double) max_abs,
+               max_at / SOFT_DIM);
+        if (max_abs > worst_abs) {
+            worst_abs = max_abs;
+            worst_cut = cut;
+            worst_at  = max_at;
         }
     }
-    printf("audio_stream_parity: max|Δ| = %.6f at flat index %zu "
+    /* 4. Tolerance 5e-4 — chunked attention with K/V cache reads vs.
+     *    monolithic recompute can differ by a few ULP due to fp32
+     *    non-associativity in dot product summation (measured 1e-5, and
+     *    only in the final padded token). A wrong emission is ~15. */
+    const float  max_abs = worst_abs;
+    const size_t max_at  = worst_at;
+    printf("audio_stream_parity: worst cut %zu: max|Δ| = %.6f at flat index %zu "
            "(token %zu, dim %zu)\n",
+           worst_cut,
            (double) max_abs,
            max_at,
            max_at / SOFT_DIM,
            max_at % SOFT_DIM);
-
     free(ref_soft);
     free(mel);
     free(mask);

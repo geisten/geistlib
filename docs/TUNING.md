@@ -296,8 +296,8 @@ make TARGET=pi5 CC=clang-19 \
      EXTRA_CFLAGS="-Wno-unknown-warning-option -D_GNU_SOURCE -fno-finite-math-only -DGEIST_TUNE"
 ```
 
-`-Wno-unknown-warning-option` covers the gcc-only `-Wno-nonnull-compare` /
-`-Wno-vla-parameter` in `mk/target-pi5.mk`, `-D_GNU_SOURCE` exposes
+`-Wno-unknown-warning-option` covers the gcc-only `-Wno-vla-parameter` in
+`mk/target-pi5.mk`, `-D_GNU_SOURCE` exposes
 `clock_gettime`, and `-fno-finite-math-only` is what the mac target already
 pairs with `-ffast-math`. Absolute throughput from a clang build is not
 comparable to the gcc numbers in `../benchmark/results/PI5.md`.

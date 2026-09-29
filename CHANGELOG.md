@@ -99,14 +99,66 @@ minor release.
   `<geist_backend.h>` were unusable from a C++ translation unit. No C-visible
   change — same parameter types, same diagnostics — and `make check-headers`
   now compiles every public header standalone as C23 and as C++17 on every PR.
+- **`buffer_upload` / `buffer_download` take a non-null host pointer, as
+  `geist_backend.h` always declared** (`GEIST_AT_LEAST(n_bytes)`). The CPU
+  backends null-checked it anyway, but under that contract gcc and clang
+  delete the check at `-O1` and above, so only a `-O0` build ever ran it;
+  removing it leaves their optimized machine code unchanged. Metal, whose
+  check did run, no longer returns `GEIST_E_INVALID_ARG` for a null pointer,
+  and Metal and Vulkan now spell the contract `[static n_bytes]` like the
+  vtable.
 
 ### Fixed
 
+- **A null array passed to the public session API returns
+  `GEIST_E_INVALID_ARG` in release builds too.** `geist_session_tokenize`,
+  `pin_prefix`, `decode_speculative`, `attach_audio`, `audio_push`,
+  `attach_image` and `attach_video` null-checked their arrays, but the headers
+  declared them `GEIST_AT_LEAST(n)`, i.e. non-null. gcc and clang believed the
+  declaration and deleted the check at `-O1` and above, so a null array was
+  dereferenced. `prefill_tokens` had dropped its check to quiet gcc. All eight
+  now take plain pointers and check them. The parameter types are unchanged,
+  so there is no source or ABI change, and the preconditions only relax:
+  `tokenize`'s `out_ids`, `pin_prefix`'s `ids` and `decode_speculative`'s
+  `history` may be nullptr when their length is 0, and so may `ids` in the
+  arch vtable's `pin_prefix`. For the three STABLE symbols this is a
+  compatible change (`docs/API_CONTRACT.md`). One loss: gcc no longer warns a
+  C caller that passes a visibly short array. `-Wno-nonnull-compare`, which
+  hid the contradiction on every gcc build, is gone from `TARGET=linux` and
+  `TARGET=pi5`.
+- **Streaming audio emitted a wrong sub-token block when the encoder worker
+  woke at 46 mod 48 mel frames** (#506): the subsample's last row reads one
+  frame past the real ones, so a mid-stream push whose sub-token count ended
+  exactly on a 12-token block sent that block to the LM with its last token
+  computed from zero padding (~15 off) and never recomputed it — a greedy
+  prediction flipped whenever the top-2 margin was under the resulting ~2.5
+  logit shift. Mid-stream pushes now emit only sub-tokens no later frame can
+  change (`audio_subsample_stable_tokens`), and the incremental subsample
+  cache derives layer 1's stable rows from layer 0's instead of from a row
+  parity that missed the odd-length case. The stream-parity unit test sweeps
+  the cut points that bit.
 - **Prefix pinning on gated-DeltaNet families refused** (#452): `pin_prefix`
   returned OK on a qwen3.5 session while `session_reset` clears the recurrent
   state and kept `kv_len` at the prefix, so the first decode after a reset
   diverged from a fresh prefill. It now returns `GEIST_E_UNSUPPORTED`, which
   the reset path's comment had promised all along.
+- **`geist_session_tokenize` truncated silently on GGUF-embedded tokenizers**:
+  a text needing more than `out_capacity` tokens returned `GEIST_OK` with the
+  first `out_capacity` ids (`out_capacity == 0` returned `GEIST_OK` with none),
+  although the STABLE contract says `GEIST_E_INVALID_ARG` on overflow and the
+  `tokenizer.bin` path already returned it. The encoder stopped at its buffer
+  and still reported success; it now fails instead, with `*n_out == 0` and
+  nothing written. An allocation failure inside that encoder is now
+  `GEIST_E_OOM` instead of `GEIST_E_IO`. `set_prompt` used the same encoder:
+  a prompt past its internal bound (reachable only with an SPM vocab that has
+  no `▁` piece) now fails instead of prefilling a shortened prompt.
+- **A GGUF merge without a space reached `memcpy` as a null pointer**:
+  `gguf_tokenizer_load` gave a `tokenizer.ggml.merges` entry without a
+  space a null right half, and `gguf_tokenizer_load_copy` then copied it
+  with `memcpy(dst, nullptr, 0)` — undefined even for zero bytes, and
+  flagged by UBSan on glibc. The empty half now points at the end of the
+  string. It takes a malformed file; no shipped model has such a merge.
+  Found by the tokenizer fuzzer.
 
 ## [0.11.0] — 2026-09-06
 
