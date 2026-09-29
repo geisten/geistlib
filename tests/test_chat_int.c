@@ -71,6 +71,8 @@ int main(void) {
         geist_backend_destroy(be);
         GEIST_SKIP("model_load failed (set GEIST_GGUF_PATH)");
     }
+    /* The transcript below is Gemma's <start_of_turn>/<end_of_turn> template. */
+    GEIST_REQUIRE_ARCH(geist_model_arch(model), "gemma4");
     struct geist_session_opts opts = {0}; /* greedy, deterministic */
     struct geist_session     *sess = nullptr;
     if (geist_session_create(model, be, &opts, &sess) != GEIST_OK) {

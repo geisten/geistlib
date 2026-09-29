@@ -71,15 +71,14 @@ geist_token_t geist_model_token_by_text(const struct geist_model *m, const char 
  * would be produced by set_prompt, e.g. to seed a speculative-decode
  * drafter's history buffer with the prompt tokens, or to measure a
  * constrained candidate before committing it. Writes up to `out_capacity`
- * IDs to `out_ids` and the actual count to `*n_out`. Returns
- * GEIST_E_NOT_FOUND if no tokenizer is loaded, GEIST_E_INVALID_ARG on
- * overflow. */
-[[nodiscard]] enum geist_status
-geist_session_tokenize(struct geist_session *s,
-                       const char           *text,
-                       size_t                out_capacity,
-                       geist_token_t         out_ids[GEIST_AT_LEAST(out_capacity)],
-                       size_t               *n_out);
+ * IDs to `out_ids` and the actual count to `*n_out`; `out_ids` may be
+ * nullptr only when `out_capacity` is 0. Returns GEIST_E_NOT_FOUND if no
+ * tokenizer is loaded, GEIST_E_INVALID_ARG on overflow. */
+[[nodiscard]] enum geist_status geist_session_tokenize(struct geist_session *s,
+                                                       const char           *text,
+                                                       size_t                out_capacity,
+                                                       geist_token_t        *out_ids,
+                                                       size_t               *n_out);
 
 /* @stability STABLE since 0.1.0 — bypass tokenization: caller supplies
  * token IDs directly. Useful for testing and for integrations that
@@ -89,8 +88,8 @@ geist_session_tokenize(struct geist_session *s,
  * Appends `n` tokens to the KV cache. After return the next call to
  * geist_session_decode_step yields the prediction for the position
  * following ids[n-1]. */
-[[nodiscard]] enum geist_status geist_session_prefill_tokens(
-        struct geist_session *s, size_t n, const geist_token_t ids[GEIST_AT_LEAST(n)]);
+[[nodiscard]] enum geist_status
+geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_token_t *ids);
 
 /* ====================================================================== */
 /* Multimodal soft-token attach                                            */
@@ -127,8 +126,8 @@ unsigned geist_model_modalities(const struct geist_model *m);
  * otherwise). */
 enum geist_status geist_session_attach_audio(struct geist_session *s,
                                              size_t                n_samples,
-                                             const int16_t pcm_samples[GEIST_AT_LEAST(n_samples)],
-                                             int           sample_rate);
+                                             const int16_t        *pcm_samples,
+                                             int                   sample_rate);
 
 /* @stability EXPERIMENTAL — streaming audio turn (#256): push PCM while
  * the user is still speaking; the encoder overlaps its work with the
@@ -147,8 +146,7 @@ enum geist_status geist_session_attach_audio(struct geist_session *s,
  * model (the audio encoder is model-owned); begin returns
  * GEIST_E_INVALID_STATE if a turn is already open. */
 enum geist_status geist_session_audio_begin(struct geist_session *s);
-enum geist_status
-geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[GEIST_AT_LEAST(n)]);
+enum geist_status geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm);
 /* Optional, from the session thread between pushes: inject the soft
  * tokens that are ready NOW into the LM, so end() has less left to do.
  * Cheap no-op when nothing is ready. Never required for correctness. */
@@ -168,7 +166,7 @@ enum geist_status geist_session_audio_end(struct geist_session *s);
 enum geist_status geist_session_attach_image(struct geist_session *s,
                                              size_t                height,
                                              size_t                width,
-                                             const uint8_t rgb[GEIST_AT_LEAST(height * width * 3)]);
+                                             const uint8_t        *rgb);
 
 /* @stability EXPERIMENTAL — vision-tower soft-token injection for video.
  *
@@ -182,12 +180,11 @@ enum geist_status geist_session_attach_image(struct geist_session *s,
  *
  * Returns GEIST_E_NOT_FOUND if vision_tower.safetensors was not found
  * at model-load time. */
-enum geist_status
-geist_session_attach_video(struct geist_session *s,
-                           size_t                n_frames,
-                           size_t                height,
-                           size_t                width,
-                           const uint8_t frames[GEIST_AT_LEAST(n_frames * height * width * 3)]);
+enum geist_status geist_session_attach_video(struct geist_session *s,
+                                             size_t                n_frames,
+                                             size_t                height,
+                                             size_t                width,
+                                             const uint8_t        *frames);
 
 /* ====================================================================== */
 /* Advanced decode: KV-prefix pinning, raw logits, speculative             */
@@ -202,13 +199,13 @@ geist_session_attach_video(struct geist_session *s,
  * prompt across many chat turns. The arch decides whether to support
  * pin_prefix at all; transformer (Gemma 4) does, Mamba2 does not.
  *
- * Returns GEIST_E_UNSUPPORTED if the active architecture does not
- * implement prefix pinning, and for a non-empty prefix on a model with
- * recurrent (DeltaNet) layers such as Qwen3.5: a reset cannot return
- * their state to a prefix. n = 0 empties the session and unpins. */
-enum geist_status geist_session_pin_prefix(struct geist_session *s,
-                                           size_t                n,
-                                           const geist_token_t   ids[GEIST_AT_LEAST(n)]);
+ * `ids` may be nullptr when `n` is 0. Returns GEIST_E_UNSUPPORTED if the
+ * active architecture does not implement prefix pinning, and for a
+ * non-empty prefix on a model with recurrent (DeltaNet) layers such as
+ * Qwen3.5: a reset cannot return their state to a prefix. n = 0 empties
+ * the session and unpins. */
+enum geist_status
+geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t *ids);
 
 /* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *
@@ -311,8 +308,8 @@ geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
  *
  * `history` should hold every token committed to the cache so far
  * (prompt + previously emitted). The drafter searches it for suffix
- * matches; passing nullptr or history_n=0 degrades to single-token
- * decode. `out_capacity` must be at least k_max + 1.
+ * matches; history_n=0 (`history` may then be nullptr) degrades to
+ * single-token decode. `out_capacity` must be at least k_max + 1.
  *
  * Sampler config: each position is sampled through the session's
  * configured sampler (argmax / top_k / top_p / temperature), same as
@@ -329,14 +326,13 @@ geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
  *
  * Falls back to single-token decode if the active architecture lacks
  * the speculative primitives. */
-[[nodiscard]] enum geist_status
-geist_session_decode_speculative(struct geist_session *s,
-                                 size_t                k_max,
-                                 size_t                history_n,
-                                 const geist_token_t   history[GEIST_AT_LEAST(history_n)],
-                                 size_t                out_capacity,
-                                 geist_token_t         out_tokens[GEIST_AT_LEAST(out_capacity)],
-                                 size_t               *n_out);
+[[nodiscard]] enum geist_status geist_session_decode_speculative(struct geist_session *s,
+                                                                 size_t                k_max,
+                                                                 size_t                history_n,
+                                                                 const geist_token_t  *history,
+                                                                 size_t                out_capacity,
+                                                                 geist_token_t        *out_tokens,
+                                                                 size_t               *n_out);
 
 /* ====================================================================== */
 /* Stats / Telemetry                                                       */

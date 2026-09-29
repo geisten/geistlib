@@ -235,7 +235,7 @@ static bool tokenize(struct geist_model *model,
     const size_t cap = strlen(text) + 16;
     int32_t     *tmp = (int32_t *) malloc(cap * sizeof(int32_t));
     bool         ok  = false;
-    if (tmp != nullptr && gguf_tokenizer_encode(gtok, text, tmp, cap, n_out)) {
+    if (tmp != nullptr && gguf_tokenizer_encode(gtok, text, cap, tmp, n_out) == GEIST_OK) {
         *ids_out = (uint32_t *) malloc(*n_out * sizeof(uint32_t));
         if (*ids_out != nullptr) {
             for (size_t i = 0; i < *n_out; i++)

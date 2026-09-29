@@ -16,6 +16,7 @@
 #include "gguf_tokenizer.h"
 #include "pair_merge.h"
 
+#include "checked.h"
 #include "heap.h"
 
 #include <stdint.h>
@@ -189,15 +190,15 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
             size_t sp = 0;
             while (sp < slen && s[sp] != ' ')
                 sp++;
-            tok->merge_left[i]     = s;
-            tok->merge_left_len[i] = sp;
-            if (sp < slen) {
-                tok->merge_right[i]     = s + sp + 1;
-                tok->merge_right_len[i] = slen - sp - 1;
-            } else {
-                tok->merge_right[i]     = nullptr;
-                tok->merge_right_len[i] = 0;
-            }
+            /* No space leaves the right half empty. It points at the end of
+             * the string, never at null: load_copy memcpys it and
+             * merge_lookup memcmps it, and both need a valid pointer even
+             * for 0 bytes. */
+            const size_t r          = sp < slen ? sp + 1 : slen;
+            tok->merge_left[i]      = s;
+            tok->merge_left_len[i]  = sp;
+            tok->merge_right[i]     = s + r;
+            tok->merge_right_len[i] = slen - r;
         }
     }
 
@@ -1230,13 +1231,15 @@ fail:
     return false;
 }
 
-[[nodiscard]] bool gguf_tokenizer_encode(const struct gguf_tokenizer *tok,
-                                         const char                  *text,
-                                         int32_t                     *out_ids,
-                                         size_t                       cap,
-                                         size_t                      *n_out) {
-    if (tok == nullptr || text == nullptr || out_ids == nullptr || n_out == nullptr)
-        return false;
+/* Writes the first min(needed, cap) IDs and returns true either way — false
+ * only on allocation failure, once gguf_tokenizer_encode has refused modes
+ * that cannot encode. A full buffer is therefore ambiguous; the caller
+ * resolves it. */
+static bool encode_upto(const struct gguf_tokenizer *tok,
+                        const char                  *text,
+                        int32_t                     *out_ids,
+                        size_t                       cap,
+                        size_t                      *n_out) {
     *n_out = 0;
     if (tok->mode == GGUF_TOK_MODE_SPM || tok->mode == GGUF_TOK_MODE_UNIGRAM)
         return encode_spm(tok, text, out_ids, cap, n_out);
@@ -1410,4 +1413,36 @@ fail:
     safe_free(&p);
     *n_out = 0;
     return false;
+}
+
+[[nodiscard]] enum geist_status gguf_tokenizer_encode(const struct gguf_tokenizer *tok,
+                                                      const char                  *text,
+                                                      size_t                       cap,
+                                                      int32_t                     *out_ids,
+                                                      size_t                      *n_out) {
+    if (n_out == nullptr)
+        return GEIST_E_INVALID_ARG;
+    *n_out = 0;
+    /* One spare slot: encode_upto fills whatever room it gets, so only a
+     * filled spare proves the text needs more than `cap` IDs. */
+    size_t room;
+    if (tok == nullptr || text == nullptr || (cap > 0 && out_ids == nullptr) ||
+        ckd_add(&room, cap, 1))
+        return GEIST_E_INVALID_ARG;
+    if (tok->mode == GGUF_TOK_MODE_UNSUPPORTED)
+        return GEIST_E_UNSUPPORTED;
+    int32_t *ids = heap_alloc_array_aligned(int32_t, room);
+    if (ids == nullptr)
+        return GEIST_E_OOM;
+    size_t            n  = 0;
+    enum geist_status st = encode_upto(tok, text, ids, room, &n) ? GEIST_OK : GEIST_E_OOM;
+    if (st == GEIST_OK && n > cap)
+        st = GEIST_E_INVALID_ARG;
+    if (st == GEIST_OK && n > 0) {
+        memcpy(out_ids, ids, n * sizeof ids[0]);
+        *n_out = n;
+    }
+    void *p = ids;
+    safe_free(&p);
+    return st;
 }

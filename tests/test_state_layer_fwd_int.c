@@ -906,6 +906,8 @@ int main(void) {
         geist_backend_destroy(be);
         return GEIST_TEST_FAIL;
     }
+    /* A Gemma 4 layer reference: HIDDEN 1536, 35 layers, PLE, KV sharing. */
+    GEIST_REQUIRE_ARCH(st->config.family, "gemma4");
 
     int fails = 0;
     /* Layer 0: sliding, non-shared (head_dim 256, theta 1e4, window 512). */
