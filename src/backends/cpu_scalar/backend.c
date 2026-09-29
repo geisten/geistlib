@@ -138,10 +138,7 @@ static void cpu_scalar_buffer_destroy(struct geist_backend *be, struct geist_buf
 [[nodiscard]] static enum geist_status cpu_scalar_buffer_upload(struct geist_buffer *buf,
                                                                 size_t               n_bytes,
                                                                 const uint8_t src[static n_bytes]) {
-    if (buf == nullptr || src == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (n_bytes > buf->bytes) {
+    if (buf == nullptr || n_bytes > buf->bytes) {
         return GEIST_E_INVALID_ARG;
     }
     memcpy(buf->host, src, n_bytes);
@@ -151,10 +148,7 @@ static void cpu_scalar_buffer_destroy(struct geist_backend *be, struct geist_buf
 [[nodiscard]] static enum geist_status cpu_scalar_buffer_download(size_t  n_bytes,
                                                                   uint8_t dst[static n_bytes],
                                                                   const struct geist_buffer *buf) {
-    if (buf == nullptr || dst == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (n_bytes > buf->bytes) {
+    if (buf == nullptr || n_bytes > buf->bytes) {
         return GEIST_E_INVALID_ARG;
     }
     memcpy(dst, buf->host, n_bytes);

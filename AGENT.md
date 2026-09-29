@@ -62,9 +62,13 @@ does not, so they surface only in CI unless you run the check in §7.
 
 **A parameter the function null-checks must not be `[static]`.** The
 contract says non-null; the check says maybe. gcc calls that
-`-Wnonnull-compare` and it is right — one of the two is wrong. Public
-vtable entry points here defensively accept null and return 0, so they
-take plain pointers (`encode_pcm`'s `pcm`, `encode_image`'s `rgb`).
+`-Wnonnull-compare` and it is right — one of the two is wrong, and the
+callers decide which. The encoder vtable entry points are handed the
+caller's audio and images and defensively accept null (returning 0), so
+they take plain pointers (`encode_pcm`'s `pcm`, `encode_image`'s `rgb`).
+`buffer_upload` / `buffer_download` are only ever handed engine-owned
+memory, so they keep `[static n_bytes]` and lost the check — which gcc and
+clang had been deleting at `-O1` and above anyway.
 
 **A bound that is a product over runtime dimensions must not be
 `[static]` either**, when any factor can be 0. `float y[static m * n_out]`

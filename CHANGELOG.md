@@ -99,6 +99,14 @@ minor release.
   `<geist_backend.h>` were unusable from a C++ translation unit. No C-visible
   change — same parameter types, same diagnostics — and `make check-headers`
   now compiles every public header standalone as C23 and as C++17 on every PR.
+- **`buffer_upload` / `buffer_download` take a non-null host pointer, as
+  `geist_backend.h` always declared** (`GEIST_AT_LEAST(n_bytes)`). The CPU
+  backends null-checked it anyway, but under that contract gcc and clang
+  delete the check at `-O1` and above, so only a `-O0` build ever ran it;
+  removing it leaves their optimized machine code unchanged. Metal, whose
+  check did run, no longer returns `GEIST_E_INVALID_ARG` for a null pointer,
+  and Metal and Vulkan now spell the contract `[static n_bytes]` like the
+  vtable.
 
 ### Fixed
 
