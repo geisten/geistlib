@@ -28,6 +28,8 @@
 
 #include "gguf_reader.h"
 
+#include <geist.h>
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -171,11 +173,14 @@ size_t gguf_tokenizer_decode(
 /* Encode a UTF-8 text string into token IDs (P1.5.g).
  *
  *   text       NUL-terminated UTF-8 input.
- *   out_ids    Caller-allocated array, `cap` slots.
- *   cap        Maximum number of IDs to write.
- *   n_out      Number of IDs actually written (≤ cap).
+ *   cap        Room in out_ids.
+ *   out_ids    Caller-allocated array, `cap` slots; may be null when cap is 0.
+ *   n_out      Number of IDs written; 0 on every failure.
  *
- * Returns true on success, false on encoder failure. For
+ * GEIST_OK when every ID fit. A text that needs more than `cap` IDs is
+ * GEIST_E_INVALID_ARG with nothing written, never a shortened encoding
+ * (AGENT.md §5); GEIST_E_OOM when scratch allocation fails;
+ * GEIST_E_UNSUPPORTED for a tokenizer mode that cannot encode. For
  * tokenizer.ggml.model == "gpt2" the encoder:
  *   1. Pre-tokenizes the input into word chunks (simplified GPT-2-
  *      style: leading-space-aware runs of letters / digits / other-
@@ -190,10 +195,10 @@ size_t gguf_tokenizer_decode(
  * full GPT-2 regex, so some inputs (apostrophes, complex Unicode)
  * may tokenize slightly differently from a reference encoder. ASCII
  * English text encodes correctly. */
-[[nodiscard]] bool gguf_tokenizer_encode(const struct gguf_tokenizer *tok,
-                                         const char                  *text,
-                                         int32_t                     *out_ids,
-                                         size_t                       cap,
-                                         size_t                      *n_out);
+[[nodiscard]] enum geist_status gguf_tokenizer_encode(const struct gguf_tokenizer *tok,
+                                                      const char                  *text,
+                                                      size_t                       cap,
+                                                      int32_t                     *out_ids,
+                                                      size_t                      *n_out);
 
 #endif /* GEIST_INTERNAL_ENGINE_GGUF_TOKENIZER_H */

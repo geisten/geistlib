@@ -170,7 +170,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     int32_t ids[128];
     size_t  n_ids = 0;
-    if (gguf_tokenizer_encode(&tok, text, ids, sizeof ids / sizeof ids[0], &n_ids)) {
+    if (gguf_tokenizer_encode(&tok, text, sizeof ids / sizeof ids[0], ids, &n_ids) == GEIST_OK) {
         char out[512];
         sink = gguf_tokenizer_decode(&tok, ids, n_ids, out, sizeof out);
         /* A capacity the answer cannot fit in: the header promises a truncated
