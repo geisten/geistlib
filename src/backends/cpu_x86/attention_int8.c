@@ -690,21 +690,10 @@ static const void *ai8_view(const struct geist_tensor *t,
                             size_t                     elem,
                             int                        ndim,
                             size_t                    *out_n) {
-    if (t == nullptr || t->buffer == nullptr || t->buffer->host == nullptr || t->dtype != dtype ||
-        t->layout != GEIST_LAYOUT_DENSE || t->ndim != ndim) {
-        return nullptr;
-    }
-    size_t n = 0, bytes = 0, end = 0;
-    if (geist_tensor_elems(t, &n) || ckd_mul(&bytes, n, elem) || ckd_add(&end, t->offset, bytes) ||
-        end > t->buffer->bytes) {
-        return nullptr;
-    }
-    const uint8_t *p = (const uint8_t *) t->buffer->host + t->offset;
-    if ((uintptr_t) p % elem != 0u) {
-        return nullptr;
-    }
-    *out_n = n;
-    return p;
+    return t != nullptr && t->buffer != nullptr
+                   ? geist_tensor_dense(
+                             t, dtype, elem, ndim, t->buffer->host, t->buffer->bytes, out_n)
+                   : nullptr;
 }
 
 bool cpu_x86_attention_kv_int8_supported(const struct geist_fusion_query *q) {

@@ -3,7 +3,8 @@
  * backend's kernel (fused->attention_kv_int8) when the layer plan binds it,
  * and gets the host loop's answer.
  *
- * On every CPU backend whose probe binds the kernel (cpu_x86 must):
+ * On every CPU backend whose probe binds the kernel (cpu_x86 must, and
+ * cpu_neon where built with FEAT_DotProd):
  *
  * 1. The call site, directly. transformer_kv_store_attention runs twice on
  *    the same query and cache, once with the plan's fuse_attn_kv_int8 set
@@ -56,6 +57,16 @@
 #include <string.h>
 
 static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
+
+/* Whether backend `name` has to bind attention_kv_int8 in this build. */
+static bool must_bind(const char *name) {
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+    if (strcmp(name, "cpu_neon") == 0) {
+        return true;
+    }
+#endif
+    return strcmp(name, "cpu_x86") == 0;
+}
 
 /* Whether `be` binds attention_kv_int8 at this geometry. */
 static bool binds(struct geist_backend *be, size_t n_q_heads, size_t n_kv_heads, size_t hd) {
@@ -305,8 +316,7 @@ static int check_call_site(const char *backend, struct geist_backend *be) {
     for (size_t i = 0; i < sizeof WCASES / sizeof WCASES[0]; i++) {
         const struct wcase *c = &WCASES[i];
         if (!binds(be, c->n_q_heads, c->n_kv_heads, c->hd)) {
-            fails += geist_expect(strcmp(backend, "cpu_x86") != 0,
-                                  "cpu_x86 binds attention_kv_int8");
+            fails += geist_expect(!must_bind(backend), "the backend binds attention_kv_int8");
             continue;
         }
         fails += wiring_case(backend, be, c, &worst);
@@ -462,8 +472,7 @@ int main(void) {
             continue; /* not in this build */
         }
         if (!binds(be, 8, 2, 64)) {
-            fails += geist_expect(strcmp(BACKENDS[b], "cpu_x86") != 0,
-                                  "cpu_x86 binds attention_kv_int8");
+            fails += geist_expect(!must_bind(BACKENDS[b]), "the backend binds attention_kv_int8");
         } else {
             ran++;
             fails += check_call_site(BACKENDS[b], be);

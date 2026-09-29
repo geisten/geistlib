@@ -32,7 +32,8 @@
  * the reference too.
  *
  * The INT8 shapes run a second time through fused->attention_kv_int8 on
- * every backend in the build whose probe binds it (cpu_x86 must): the
+ * every backend in the build whose probe binds it (cpu_x86 must, and
+ * cpu_neon where built with FEAT_DotProd): the
  * backend's own kernel on buffers and tensor views, held to the same
  * reference bound, the same poison and thread-count checks, and to the
  * portable loop's output (its decomposed twin) within that bound, and a
@@ -78,7 +79,17 @@ struct shape {
     bool   full;  /* K over the whole int8 range, -128 included */
 };
 
-static const char *const     BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
+static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
+
+/* Whether backend `name` has to bind attention_kv_int8 in this build. */
+static bool must_bind(const char *name) {
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+    if (strcmp(name, "cpu_neon") == 0) {
+        return true;
+    }
+#endif
+    return strcmp(name, "cpu_x86") == 0;
+}
 constexpr size_t             N_BACKENDS = sizeof BACKENDS / sizeof BACKENDS[0];
 static struct geist_backend *g_be[N_BACKENDS];
 
@@ -240,9 +251,10 @@ static int check_backend(size_t              bi,
     const bool bound = fused->attention_kv_int8 != nullptr && fused->supported != nullptr &&
                        fused->supported(be, &pq);
     if (!bound) {
-        if (strcmp(BACKENDS[bi], "cpu_x86") == 0) {
+        if (must_bind(BACKENDS[bi])) {
             fprintf(stderr,
-                    "FAIL: cpu_x86 does not bind attention_kv_int8 (hd=%zu)\n",
+                    "FAIL: %s does not bind attention_kv_int8 (hd=%zu)\n",
+                    BACKENDS[bi],
                     sh->head_dim);
             return 1;
         }

@@ -346,6 +346,10 @@ static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geis
     case GEIST_FUSED_GELU_TANH_MUL:
     case GEIST_FUSED_GELU_TANH_MUL_SCALED:
         return true; /* F32 elementwise, any geometry, any m */
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+    case GEIST_FUSED_ATTN_KV_INT8:
+        return cpu_neon_attention_kv_int8_supported(q);
+#endif
     case GEIST_FUSED_FFN_GEGLU_Q4Q6_MN:
         return q->m >= 1 && q->m <= GEIST_QUANT_M_CAP && q->d_model > 0 && q->inter > 0 &&
                q->d_model % Q4_K_BLOCK_ELEMS == 0 && q->inter % Q6_K_BLOCK_ELEMS == 0 &&
@@ -378,6 +382,9 @@ static const struct geist_backend_fused cpu_neon_fused = {
         .gelu_tanh_mul_scaled = cpu_neon_gelu_tanh_mul_scaled,
         .ffn_geglu_q4q6_mN    = cpu_neon_ffn_geglu_q4q6_mN,
         .hadamard_rotate      = cpu_neon_hadamard_rotate,
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+        .attention_kv_int8 = cpu_neon_attention_kv_int8,
+#endif
 };
 
 const struct geist_backend_descriptor geist_backend_cpu_neon = {

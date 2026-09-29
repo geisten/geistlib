@@ -108,6 +108,17 @@ minor release.
 
 ### Changed
 
+- **cpu_neon runs the attention over the INT8 KV cache, its default off
+  Apple, as its own kernel** (`fused->attention_kv_int8`, built with
+  FEAT_DotProd). The `vdotq_s32` loop moves out of the architecture layer
+  unchanged: the same instructions (clang 19, `-mcpu=cortex-a76`; with
+  OpenMP the loop's outlined function is instruction for instruction the
+  one before) and the same bits (every output of the kernel and the logits
+  of an INT8-KV session, plain and rotated, compared under qemu). The
+  architecture's loop is portable C only now. It still runs for
+  `cpu_scalar` and under `GEIST_KV_INT8_FUSED=0`, where on arm64 its dots
+  are whatever the compiler makes of it (clang 19: `smull`/`saddw`, not
+  `sdot`).
 - **cpu_scalar's linear kernels allocate nothing.** For every quantized and
   half-precision weight they took a heap row buffer per call, which
   `geist_weight.h` rules out for `linear_m1` / `linear_mN`, and returned

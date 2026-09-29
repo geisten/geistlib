@@ -245,7 +245,8 @@ constexpr size_t ATTN_MIN_ITEMS = 8;
 constexpr size_t ATTN_HEADS_PER_PASS_MAX = 4;
 
 /* Grouped passes on x86 only for now: nothing was measured on NEON, where
- * the one-head loop has its own dot-product path. */
+ * cpu_neon runs the one-head loop below, with vdotq_s32, as its own kernel
+ * (src/backends/cpu_neon/attention_int8.c). */
 #if defined(__x86_64__)
 constexpr bool ATTN_GROUPED_PASSES = true;
 #else
@@ -526,13 +527,14 @@ attn_int8_merge(size_t n_chunks, size_t head_dim, size_t stride, const float *pa
  *
  * MQA causal attention with optional sliding window, where the K and V
  * caches are stored as INT8 with per-token-per-head FP32 scales. Q is
- * dynamically quantized per-head per-token; QK dot becomes a vdotq_s32
- * inner loop (when NEON is available) with scale_q * scale_k folded
- * scalarly per (q_pos, k_pos) pair.
+ * dynamically quantized per-head per-token; the QK dot is exact in int32,
+ * with scale_q * scale_k folded scalarly per (q_pos, k_pos) pair.
  *
  * Port of lm.c::attention_mqa_causal_kv_int8, adapted to read inputs
- * via backend buffer_map host pointers instead of raw float*. CPU-only;
- * future GPU backends will need a vtable primitive (KV-INT8 attention).
+ * via backend buffer_map host pointers instead of raw float*. Portable:
+ * this is the decomposed twin of fused->attention_kv_int8, which cpu_x86
+ * (AVX2) and cpu_neon (vdotq_s32) implement; it runs where no backend
+ * kernel is bound.
  *
  * Inputs (all host pointers obtained via buffer_map by the caller):
  *   q[seq, n_q_heads, head_dim]                   F32
@@ -731,25 +733,9 @@ void attention_int8_via_buffers(size_t        n_q,
                     const int8_t *k       = k_q8 + (s * n_kv_heads + kv_h) * head_dim;
                     const float   ks      = k_scale[s * n_kv_heads + kv_h];
                     int32_t       int_dot = 0;
-/* vdotq_s32 is FEAT_DotProd, not baseline NEON: __ARM_NEON is set on every
- * armv8-a, so guarding the dot-product path on it faults on cores without
- * dotprod (Cortex-A53/A72, generic armv8-a builds). The scalar #else below
- * is the fallback that was always meant to run there. */
-#if defined(__ARM_FEATURE_DOTPROD)
-                    int32x4_t acc = vdupq_n_s32(0);
-                    size_t    i   = 0;
-                    for (; i + 16 <= head_dim; i += 16) {
-                        acc = vdotq_s32(acc, vld1q_s8(q_q8 + i), vld1q_s8(k + i));
-                    }
-                    int_dot = vaddvq_s32(acc);
-                    for (; i < head_dim; i++) {
-                        int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
-                    }
-#else
                     for (size_t i = 0; i < head_dim; i++) {
                         int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
                     }
-#endif
                     scores[j] = (float) int_dot * scale_q * ks;
                 }
 
