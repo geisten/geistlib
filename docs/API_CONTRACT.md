@@ -124,3 +124,16 @@ either way — this is a spelling, not an API change, and consumers need no
 
 `make check-headers` compiles each public header standalone as C23 and as
 C++17 with `-pedantic-errors`, per PR, so this cannot quietly regress.
+
+## Optional backend resources (experimental)
+
+`geist_backend_resources_snapshot` is an additive, observational API. Its output
+is valid only on GEIST_OK. Null handles/outputs are invalid, missing providers are
+unsupported, and failures clear all output fields. A destroyed pointer must never
+be reused; set it to nullptr and join observers before backend destruction.
+Metal's source is the live backend's MTLDevice.currentAllocatedSize. It includes
+provider-accounted resource allocation, with provider alias/heap/driver semantics;
+no unique physical total or exact system-RAM reclamation is promised. Do not sum
+it with RSS. No model, prompt or disk storage is involved. The experimental backend
+descriptor gains an optional provider callback; third-party backends recompile
+with a zero/null callback to retain explicit unsupported behavior.

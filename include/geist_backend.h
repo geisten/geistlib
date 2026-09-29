@@ -832,6 +832,7 @@ struct geist_tunable {
 
 /* Each backend exports one of these as a `const` extern. The engine's
  * registry array points at descriptors of compiled-in backends. */
+struct geist_backend_resources;
 struct geist_backend_descriptor {
     const char *name;
 
@@ -848,6 +849,12 @@ struct geist_backend_descriptor {
     /* Measurable tuning knobs for geist_backend_calibrate(). nullptr =
      * backend has no calibrated tunables (seeds + env only). */
     const struct geist_tunable *(*tunables)(size_t *out_count);
+
+    /* Optional observational provider, independent of frozen compute ops.
+     * Consumer: geist_backend_resources_snapshot. nullptr means unsupported;
+     * the public status is the capability result, never inferred from name. */
+    enum geist_status (*resources_snapshot)(const struct geist_backend     *be,
+                                            struct geist_backend_resources *out);
 
     /* Explicit capability bits (by value; zero-init = none). */
     struct geist_backend_caps caps;

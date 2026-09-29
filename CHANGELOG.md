@@ -9,6 +9,12 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- Optional `geist_backend_resources_snapshot`: Metal device allocated bytes and
+  unified-memory attribution, callable during inference without GPU synchronization.
+  CPU providers explicitly return unsupported. Allocation is not physical residency.
+
+
+### Added
 - **Threadgroup-limit diagnostics for the metal backend.**
   `GEIST_METAL_LOG_TG_LIMIT=1` lists each pipeline's
   `maxTotalThreadsPerThreadgroup`; `GEIST_METAL_CHECK_TG=1` checks every
