@@ -120,6 +120,24 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 runs the attention over the INT8 KV cache on AVX-512 VNNI**
+  where the host has it (`attention_int8_avx512_vnni.c`; the dispatcher's
+  tier, which `GEIST_FORCE_ISA=avx2` clamps, and cpuid decide, per call).
+  The dots are `vpdpbusd`, one instruction per 32 bytes and head (per 64
+  from head_dim 128 up) where the AVX2 kernel takes four per 32, with K
+  turned into u8 once for all heads of a pass; the V sums are zmm FMAs; and
+  head_dim 512, Gemma 4 E2B's full-attention layers, is a compile-time case
+  like 64, 128 and 256. The integer dots and the order of every V sum are
+  the AVX2 kernel's; the rest rounds differently (-ffast-math), so the two
+  agree to rounding (at most 2.5e-6 of the output scale in the new
+  `test_x86_attention_int8_unit`, which also runs under Intel SDE in CI).
+  x86-64 (Sapphire Rapids, 4 threads), per call against the AVX2 kernel:
+  8-33 % faster in Llama 3.2 1B's layout, 16-29 % in Qwen3-0.6B's, 27-48 %
+  at 8/1 heads and head_dim 256 (Gemma 4 E2B's sliding layers) and 30-49 %
+  at head_dim 512 (its full ones), within noise to -27 % in SmolLM2-360M's
+  (`bench_attention_int8`, which now has the head_dim 512 layout). End to
+  end at 2048 positions (synthetic weights), prefill -3 % (Llama 3.2 1B,
+  Q4_K) and -6 % (SmolLM2-360M, Q8_0); decode within noise.
 - **The KV cache code of the architecture layer has no NEON left.** The
   last of it, the row absmax that scales K and V rows for the INT8 and INT4
   caches (`forward/kv_store.c`), is portable C that takes the maximum on the

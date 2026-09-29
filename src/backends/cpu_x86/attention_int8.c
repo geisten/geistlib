@@ -1,6 +1,8 @@
 /*
  * src/backends/cpu_x86/attention_int8.c — AVX2 attention over the INT8 KV
- * cache: cpu_x86's fused->attention_kv_int8.
+ * cache, and cpu_x86's fused->attention_kv_int8, which runs it or, where the
+ * ISA dispatch allows, the AVX-512 VNNI kernel of
+ * attention_int8_avx512_vnni.c.
  *
  * Layer: BACKEND (cpu_x86).
  *
@@ -36,6 +38,7 @@
 
 #include "attention.h"
 #include "backend_state.h"
+#include "kernel_w4a8.h" /* w4a8_dispatcher_tier */
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR */
 #include "tensor_view.h"
@@ -696,6 +699,14 @@ static const void *ai8_view(const struct geist_tensor *t,
                    : nullptr;
 }
 
+/* Whether the AVX-512 VNNI kernel may run: the dispatcher's tier, which
+ * GEIST_FORCE_ISA clamps, and cpuid, as linear_q8_0.c decides its tiles. */
+static bool ai8_vnni_usable(void) {
+    return w4a8_dispatcher_tier() >= W4A8_ISA_AVX512_VNNI && __builtin_cpu_supports("avx512f") &&
+           __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512dq") &&
+           __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512vnni");
+}
+
 bool cpu_x86_attention_kv_int8_supported(const struct geist_fusion_query *q) {
     return q != nullptr && q->head_dim >= 1 && q->head_dim <= AI8_HEAD_DIM_MAX &&
            q->n_kv_heads >= 1 && q->n_q_heads >= q->n_kv_heads && q->n_q_heads % q->n_kv_heads == 0;
@@ -763,20 +774,25 @@ enum geist_status cpu_x86_attention_kv_int8(struct geist_backend                
     const size_t part_floats = cpu_x86_attention_kv_int8_part_floats(n_q_heads, head_dim);
     float *part = n_q == 1 ? cpu_x86_ws_attn_part((struct cpu_x86_state *) be->state, part_floats)
                            : nullptr;
-    cpu_x86_attention_kv_int8_run(n_q,
-                                  n_q_heads,
-                                  head_dim,
-                                  n_kv,
-                                  n_kv_heads,
-                                  part_floats,
-                                  args->q_offset,
-                                  args->sliding_window,
-                                  q,
-                                  k,
-                                  ks,
-                                  v,
-                                  vs,
-                                  out,
-                                  part);
+    /* The AVX-512 VNNI kernel where it may run: the same results to
+     * rounding (see attention_int8_avx512_vnni.c). */
+    typeof(cpu_x86_attention_kv_int8_run) *run = ai8_vnni_usable()
+                                                         ? cpu_x86_attention_kv_int8_run_avx512_vnni
+                                                         : cpu_x86_attention_kv_int8_run;
+    run(n_q,
+        n_q_heads,
+        head_dim,
+        n_kv,
+        n_kv_heads,
+        part_floats,
+        args->q_offset,
+        args->sliding_window,
+        q,
+        k,
+        ks,
+        v,
+        vs,
+        out,
+        part);
     return GEIST_OK;
 }

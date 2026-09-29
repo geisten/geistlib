@@ -11,9 +11,10 @@
  * where none does.
  *
  * Layouts: 32/8 heads hd 64 (Llama-3.2-1B), 16/8 hd 128 (Qwen3-0.6B),
- * 15/5 hd 64 (SmolLM2-360M), 8/1 hd 256 (MQA), 32/32 hd 64 (MHA,
- * SmolLM2-1.7B). Decode is n_q = 1 at the end of the context; prefill is
- * one 64-token chunk ending there.
+ * 15/5 hd 64 (SmolLM2-360M), 8/1 hd 256 (MQA; Gemma 4 E2B's sliding layers
+ * up to their window, 512), 32/32 hd 64 (MHA, SmolLM2-1.7B), 8/1 hd 512
+ * (Gemma 4 E2B's full-attention layers). Decode is n_q = 1 at the end of
+ * the context; prefill is one 64-token chunk ending there.
  * Reports the median of the timed calls, host loop and kernel alike.
  *
  * Usage: bench_attention_int8 [iters]   (default 20)
@@ -251,6 +252,7 @@ int main(int argc, char **argv) {
             {"smollm2 15/5 hd64", 15, 5, 64},
             {"mqa 8/1 hd256", 8, 1, 256},
             {"mha 32/32 hd64", 32, 32, 64},
+            {"gemma4-e2b full 8/1 hd512", 8, 1, 512},
     };
     static const size_t CTX[] = {512, 1024, 2048, 8192};
     /* The first backend in the build that binds the kernel, if any. */
