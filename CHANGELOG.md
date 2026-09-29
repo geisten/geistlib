@@ -187,6 +187,32 @@ minor release.
   Llama 3.2 1B's geometry) the change is below the noise, -1.2 % and -1.4 %
   at 2048 and 4000 tokens; the attention stage of the prefill profile took
   7.5 % less time, in every run.
+- **cpu_x86 sessions keep a layer's FP32 K and V caches apart in the cache
+  sets too.** The dense cache had the layout the INT8 one had before: K and
+  V buffers of their own, at the same offset in a page. On backends that
+  set the new capability bit `kv_dense_block` (`geist_backend.h`,
+  EXPERIMENTAL), `cpu_x86`, a layer's FP32 (or F16) K and V are now slices
+  of one buffer, V one KV head's slice further into its page than K
+  (rounded up to 64 bytes; with one KV head, whose rows lie next to each
+  other, not at all). The results are the same bits. x86-64, 4 threads,
+  cpu_x86's FP32 attention per call at 512 / 1024 positions: a 64-token
+  prefill chunk in Llama 3.2 1B's layout -26 / -25 %, Qwen3-0.6B's
+  -19 / +1 %, Llama 3 8B's -26 / -1 %, decode -36 / -18 %, -9 / +1 %,
+  -20 / -0 %; SmolLM2-360M's, 32/32 heads and one KV head within -4 to
+  +5 %; from 2048 positions on no direction, -5 to +2 % (four points at
+  +3 to +6 % in a first run came to -5 to +0 % on two more). V half a row
+  on, as in the INT8 cache, gained more at 512 positions (-40 to -45 %
+  with 8 KV heads) but was 0-5 % slower from 4096 on. End to end
+  (synthetic weights, FP32 cache, both builds from scratch, 10 runs
+  each), Llama 3.2 1B's geometry prefills a 1024-token prompt 4.2 %
+  faster (the 64 decode steps after it -3.6 %, a 512-token prompt -1.8 %
+  and -2.7 %: within the noise); the attention stage of the prefill
+  profile took 26.5 % (16.4 %) less time, in every run. In SmolLM2-360M's
+  geometry, whose rows take every set already, the attention stage did
+  not move; there a session of 820 to 1638 positions now gets huge pages
+  for its K and V (the allocator advises them from 2 MB, which the block
+  reaches before K alone): at 1136 positions decode -6 %, prefill +1 %
+  (neither beyond the noise).
 - **The KV cache code of the architecture layer has no NEON left.** The
   last of it, the row absmax that scales K and V rows for the INT8 and INT4
   caches (`forward/kv_store.c`), is portable C that takes the maximum on the

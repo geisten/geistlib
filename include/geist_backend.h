@@ -795,6 +795,14 @@ struct geist_backend_caps {
      * GEIST_MEMORY_MAPPED buffer (metal copies them). Consumer: session
      * allocation. Opt-in after measuring: cpu_x86. */
     bool kv_q8_block;
+
+    /* The same for the dense (FP32/F16) KV cache, with V one KV head's slice
+     * (rounded up to 64 bytes) further into its page than K, and not at all
+     * with one KV head (whose rows lie next to each other and take every
+     * set). The dense caches then live in host memory: only for backends
+     * whose attention reads them there. Consumer: session allocation.
+     * Opt-in after measuring: cpu_x86. */
+    bool kv_dense_block;
 };
 
 /* ====================================================================== */

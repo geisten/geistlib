@@ -1,16 +1,18 @@
 /*
- * test_kv_placement_unit — where a session puts its INT8/INT4 KV cache.
+ * test_kv_placement_unit — where a session puts its KV cache.
  *
- * On a backend with caps.kv_q8_block (cpu_x86), a layer's K and V data are
- * aliased slices of one buffer: K at its start, V after K's pages and half
- * a row into its page (half a page at most, a multiple of 64 bytes), so
- * that a KV head's K and V rows do not take the same cache sets (see
- * alloc_kv_q8_block in arch_state.c). Checked on the fixture llama with 2
- * and 8 KV heads of 64 (rows of 128 and 512 bytes), INT8 and packed INT4
- * (half the row): the slices lie where the rule puts them, do not overlap
- * and start zeroed, and a session prefills and decodes through them to
- * finite logits. On cpu_scalar, which leaves the bit unset, K and V stay
- * buffers of their own.
+ * On a backend with caps.kv_q8_block (cpu_x86), a layer's INT8/INT4 K and V
+ * data are aliased slices of one buffer: K at its start, V after K's pages
+ * and half a row into its page (half a page at most, a multiple of 64
+ * bytes), so that a KV head's K and V rows do not take the same cache sets
+ * (see alloc_kv_block in arch_state.c). With caps.kv_dense_block the dense
+ * FP32 cache is placed the same way, V one KV head's slice on (rounded up
+ * to 64 bytes), and not at all with one KV head. Checked on the fixture
+ * llama with 1, 2 and 8 KV heads of 64, INT8, packed INT4 and FP32: the
+ * slices lie where the rule puts them, do not overlap and start zeroed, and
+ * a session prefills and decodes through them to finite logits. On
+ * cpu_scalar, which leaves both bits unset, K and V stay buffers of their
+ * own.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
@@ -44,6 +46,11 @@ static bool zeroed(size_t n, const uint8_t p[static n]) {
     return true;
 }
 
+/* The name of a cache mode in messages. */
+static const char *mode_name(enum geist_kv_mode mode) {
+    return mode == GEIST_KV_FP32 ? "FP32" : mode == GEIST_KV_INT4 ? "INT4" : "INT8";
+}
+
 /* The placement of every layer's cache in a session of `mode` on `m`. */
 static int check_placement(const char           *backend,
                            struct geist_backend *be,
@@ -52,28 +59,34 @@ static int check_placement(const char           *backend,
     struct transformer_arch_state   *st   = geist_model_internal_arch_meta(m);
     const struct geist_session_opts  o    = {.kv_mode = mode, .top_p = 1.0f};
     struct transformer_arch_session *sess = transformer_session_alloc(st, &o);
+    const char                      *name = mode_name(mode);
     char                             msg[192];
-    const bool                       int4 = mode == GEIST_KV_INT4;
-    snprintf(msg, sizeof msg, "%s %s: session", backend, int4 ? "INT4" : "INT8");
+    snprintf(msg, sizeof msg, "%s %s: session", backend, name);
     int fails = geist_expect(sess != nullptr, msg);
     if (sess == nullptr) {
         return fails;
     }
     const struct geist_backend_vtbl *vt    = be->desc->vtbl;
-    const bool                       block = be->desc->caps.kv_q8_block;
+    const bool                       dense = mode == GEIST_KV_FP32;
+    const bool   block = dense ? be->desc->caps.kv_dense_block : be->desc->caps.kv_q8_block;
+    const size_t elem  = sess->kv_f16_enabled ? 2 : sizeof(float); /* dense */
     for (size_t li = 0; li < st->n_layers; li++) {
-        const size_t hd   = st->layers[li].head_dim;
-        const size_t row  = int4 ? st->n_kv_heads * hd / 2 : st->n_kv_heads * hd;
-        const size_t data = st->max_seq_len * row;
-        const size_t span = (data + PAGE - 1) / PAGE * PAGE;
-        const size_t skip = (row < PAGE ? row : PAGE) / 2 / 64 * 64;
-        uint8_t     *k    = sess->k_cache_q8[li] ? vt->buffer_map(sess->k_cache_q8[li]) : nullptr;
-        uint8_t     *v    = sess->v_cache_q8[li] ? vt->buffer_map(sess->v_cache_q8[li]) : nullptr;
+        const size_t         hd    = st->layers[li].head_dim;
+        const size_t         slice = dense ? hd * elem : mode == GEIST_KV_INT4 ? hd / 2 : hd;
+        const size_t         row   = st->n_kv_heads * slice;
+        const size_t         data  = st->max_seq_len * row;
+        const size_t         span  = (data + PAGE - 1) / PAGE * PAGE;
+        const size_t         skip  = dense ? (st->n_kv_heads > 1 ? (slice + 63) / 64 * 64 : 0)
+                                           : (row < PAGE ? row : PAGE) / 2 / 64 * 64;
+        struct geist_buffer *kb    = dense ? sess->k_cache[li] : sess->k_cache_q8[li];
+        struct geist_buffer *vb    = dense ? sess->v_cache[li] : sess->v_cache_q8[li];
+        uint8_t             *k     = kb != nullptr ? vt->buffer_map(kb) : nullptr;
+        uint8_t             *v     = vb != nullptr ? vt->buffer_map(vb) : nullptr;
         snprintf(msg,
                  sizeof msg,
                  "%s %s layer %zu (%zu-byte rows): K and V caches",
                  backend,
-                 int4 ? "INT4" : "INT8",
+                 name,
                  li,
                  row);
         fails += geist_expect(k != nullptr && v != nullptr && k != v, msg);
@@ -81,14 +94,13 @@ static int check_placement(const char           *backend,
             continue;
         }
         if (block) {
-            const uint8_t *b =
-                    sess->kv_q8_block[li] ? vt->buffer_map(sess->kv_q8_block[li]) : nullptr;
+            const uint8_t *b = sess->kv_data[li] ? vt->buffer_map(sess->kv_data[li]) : nullptr;
             snprintf(msg,
                      sizeof msg,
                      "%s %s layer %zu: K at the block's start, V %zu bytes on (K's %zu "
                      "bytes, then %zu into the page)",
                      backend,
-                     int4 ? "INT4" : "INT8",
+                     name,
                      li,
                      span + skip,
                      data,
@@ -98,7 +110,7 @@ static int check_placement(const char           *backend,
                      sizeof msg,
                      "%s %s layer %zu: V starts %zu bytes further into its page than K",
                      backend,
-                     int4 ? "INT4" : "INT8",
+                     name,
                      li,
                      skip);
             fails += geist_expect(((uintptr_t) v - (uintptr_t) k) % PAGE == skip, msg);
@@ -107,11 +119,11 @@ static int check_placement(const char           *backend,
                      sizeof msg,
                      "%s %s layer %zu: no block, K and V buffers of their own",
                      backend,
-                     int4 ? "INT4" : "INT8",
+                     name,
                      li);
-            fails += geist_expect(sess->kv_q8_block[li] == nullptr, msg);
+            fails += geist_expect(sess->kv_data[li] == nullptr, msg);
         }
-        snprintf(msg, sizeof msg, "%s %s layer %zu: zeroed", backend, int4 ? "INT4" : "INT8", li);
+        snprintf(msg, sizeof msg, "%s %s layer %zu: zeroed", backend, name, li);
         fails += geist_expect(zeroed(data, k) && zeroed(data, v), msg);
     }
     transformer_session_free(st, sess);
@@ -146,13 +158,13 @@ static int check_run(const char           *backend,
              sizeof msg,
              "%s %s: 70 tokens prefilled and 5 decoded to finite logits",
              backend,
-             mode == GEIST_KV_INT4 ? "INT4" : "INT8");
+             mode_name(mode));
     return geist_expect(ok, msg);
 }
 
 int main(void) {
     static const char *const BACKENDS[] = {"cpu_x86", "cpu_scalar"};
-    static const uint32_t    KV_HEADS[] = {2, 8};
+    static const uint32_t    KV_HEADS[] = {1, 2, 8};
     int                      fails = 0, ran = 0;
     for (size_t b = 0; b < sizeof BACKENDS / sizeof BACKENDS[0]; b++) {
         struct geist_backend *be = nullptr;
@@ -177,10 +189,12 @@ int main(void) {
                 fails++;
             } else {
                 ran++;
-                fails += check_placement(BACKENDS[b], be, m, GEIST_KV_INT8);
-                fails += check_placement(BACKENDS[b], be, m, GEIST_KV_INT4);
-                fails += check_run(BACKENDS[b], be, m, GEIST_KV_INT8);
-                fails += check_run(BACKENDS[b], be, m, GEIST_KV_INT4);
+                static const enum geist_kv_mode MODES[] = {
+                        GEIST_KV_INT8, GEIST_KV_INT4, GEIST_KV_FP32};
+                for (size_t i = 0; i < sizeof MODES / sizeof MODES[0]; i++) {
+                    fails += check_placement(BACKENDS[b], be, m, MODES[i]);
+                    fails += check_run(BACKENDS[b], be, m, MODES[i]);
+                }
             }
             geist_model_destroy(m);
             free(g.b);
@@ -194,6 +208,7 @@ int main(void) {
     if (fails != 0) {
         return GEIST_TEST_FAIL;
     }
-    printf("PASS: INT8/INT4 KV caches placed as the backend asks, and sessions run on them\n");
+    printf("PASS: INT8/INT4 and FP32 KV caches placed as the backend asks, and sessions run on "
+           "them\n");
     return GEIST_TEST_PASS;
 }
