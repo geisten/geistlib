@@ -259,7 +259,7 @@ before pushing — a `constexpr` with two declarators compiles under clang and
 fails all nine Linux jobs:
 
 ```sh
-gcc-15 -std=c23 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+gcc-15 -std=c23 -O3 -DNDEBUG -fopenmp -Wall -Wextra -Wpedantic -Werror \
        -Wshadow -Wundef -D_GNU_SOURCE -Wno-vla-parameter \
        -DGEIST_BACKEND_CPU_NEON=1 -DGEIST_BACKEND_CPU_SCALAR=1 \
        -Iinclude -I. -Isrc/base -Isrc/quant -Isrc/backends/common \
@@ -270,7 +270,9 @@ gcc-15 -std=c23 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
 
 The `-I` list is `CFLAGS_STRICT`'s from `mk/common.mk`; keep the two in step.
 A shorter list stops `session.c` at a missing header before the optimizer
-ever runs.
+ever runs. `-fopenmp` is what every target builds with; without it the
+kernels' `#pragma omp` is an unknown pragma, which `-Werror` turns into an
+error.
 
 **`-O3 -c`, not `-fsyntax-only`.** The diagnostics that matter for the
 rules above — `-Wstringop-overflow`, `-Wstringop-overread`,
