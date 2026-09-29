@@ -99,9 +99,28 @@ minor release.
   `<geist_backend.h>` were unusable from a C++ translation unit. No C-visible
   change — same parameter types, same diagnostics — and `make check-headers`
   now compiles every public header standalone as C23 and as C++17 on every PR.
+- **`buffer_upload` / `buffer_download` take a non-null host pointer, as
+  `geist_backend.h` always declared** (`GEIST_AT_LEAST(n_bytes)`). The CPU
+  backends null-checked it anyway, but under that contract gcc and clang
+  delete the check at `-O1` and above, so only a `-O0` build ever ran it;
+  removing it leaves their optimized machine code unchanged. Metal, whose
+  check did run, no longer returns `GEIST_E_INVALID_ARG` for a null pointer,
+  and Metal and Vulkan now spell the contract `[static n_bytes]` like the
+  vtable.
 
 ### Fixed
 
+- **Streaming audio emitted a wrong sub-token block when the encoder worker
+  woke at 46 mod 48 mel frames** (#506): the subsample's last row reads one
+  frame past the real ones, so a mid-stream push whose sub-token count ended
+  exactly on a 12-token block sent that block to the LM with its last token
+  computed from zero padding (~15 off) and never recomputed it — a greedy
+  prediction flipped whenever the top-2 margin was under the resulting ~2.5
+  logit shift. Mid-stream pushes now emit only sub-tokens no later frame can
+  change (`audio_subsample_stable_tokens`), and the incremental subsample
+  cache derives layer 1's stable rows from layer 0's instead of from a row
+  parity that missed the odd-length case. The stream-parity unit test sweeps
+  the cut points that bit.
 - **Prefix pinning on gated-DeltaNet families refused** (#452): `pin_prefix`
   returned OK on a qwen3.5 session while `session_reset` clears the recurrent
   state and kept `kv_len` at the prefix, so the first decode after a reset
