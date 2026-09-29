@@ -372,7 +372,8 @@ static int check_encoders(void) {
         /* GGUF SPM (add_space_prefix on by default) and unigram */
         for (int mode = 0; mode < 2; mode++) {
             size_t n_got = 0;
-            if (!gguf_tokenizer_encode(mode == 0 ? &spm : &uni, text, got, 8192, &n_got)) {
+            if (gguf_tokenizer_encode(mode == 0 ? &spm : &uni, text, 8192, got, &n_got) !=
+                GEIST_OK) {
                 fprintf(stderr, "FAIL: encode failed\n");
                 fails++;
                 continue;

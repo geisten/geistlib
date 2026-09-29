@@ -62,7 +62,7 @@ static struct row time_gguf(const struct gguf_tokenizer *tok, const char *text, 
     for (; runs < 5; runs++) {
         size_t       n_ids = 0;
         const double t0    = now_ms();
-        if (!gguf_tokenizer_encode(tok, text, ids, n + 16, &n_ids)) {
+        if (gguf_tokenizer_encode(tok, text, n + 16, ids, &n_ids) != GEIST_OK) {
             free(ids);
             return r;
         }

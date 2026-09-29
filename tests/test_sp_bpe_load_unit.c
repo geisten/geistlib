@@ -53,7 +53,11 @@ static bool load_prefix(const struct tf_buf *b, size_t n, struct sp_bpe_tokenize
 static long peak_rss_kb(void) {
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
+#if defined(__APPLE__)
+    return ru.ru_maxrss / 1024; /* bytes on macOS, KB on Linux */
+#else
     return ru.ru_maxrss;
+#endif
 }
 
 /* Loads all of b in a child process, whose peak RSS starts where ours is
