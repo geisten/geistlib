@@ -12,9 +12,10 @@
  * 4 heads, up to three a KV head, and at head_dim 512 passes of 3 and 4
  * (two groups of heads); contexts that leave 1 to 7 positions after its
  * steps of 4 and 8 and span several blocks of 512; split and unsplit
- * decode, prefill, sliding windows; scores that trend along the context
- * (the running max grows in every block); K over the whole int8 range,
- * -128 included.
+ * decode, prefill, sliding windows; prefill items of one, two and four
+ * queries, the last item of a call with fewer, and queries whose spans end
+ * in different blocks; scores that trend along the context (the running
+ * max grows in every block); K over the whole int8 range, -128 included.
  *
  * The reference repeats the kernels' Q quantization and integer dots, then
  * does the softmax and the V sum in double: each kernel within 1e-5 of the
@@ -458,7 +459,7 @@ static int check_shape(struct geist_backend *be, const struct shape *sh, bool vn
         }
     }
     if (fails == 0) {
-        printf("  n_q=%-2zu %2zu/%-2zu hd=%-3zu n_kv=%-4zu window=%-3zu%-11s ",
+        printf("  n_q=%-2zu %2zu/%-2zu hd=%-3zu n_kv=%-4zu window=%-4zu%-11s ",
                sh->n_q,
                sh->n_q_heads,
                sh->n_kv_heads,
@@ -519,6 +520,14 @@ static int run_all(void) {
             {3, 8, 1, 256, 1100, 0, true, true},
             {1, 16, 4, 128, 900, 0, false, true},
             {2, 8, 1, 512, 700, 0, true, true},
+            /* prefill items of several queries: over 1 MB of K and V, spans
+             * past one block */
+            {7, 16, 8, 64, 2100, 0, false, false},    /* 4 an item, then 3 */
+            {4, 15, 5, 64, 2600, 0, false, false},    /* 2 an item (5 items a query) */
+            {6, 16, 8, 64, 2600, 1500, false, false}, /* 4 then 2, window */
+            {7, 8, 1, 512, 1100, 0, false, false},    /* 2 an item, then 1 */
+            {5, 12, 4, 80, 2000, 0, false, false},    /* 4 then 1, head_dim at run time */
+            {8, 16, 4, 64, 2200, 0, true, false},     /* 4 an item, max grows */
     };
     const bool            vnni = vnni_usable();
     struct geist_backend *be   = nullptr;

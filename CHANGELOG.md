@@ -151,6 +151,25 @@ minor release.
   Qwen3-0.6B's +1 to -6 %, one KV head (Gemma 4 E2B) unchanged. End to
   end, a 4000-token prompt prefills 7.4 % faster in SmolLM2-360M's geometry
   (synthetic Q8_0 weights) and as fast as before in Llama 3.2 1B's.
+- **cpu_x86's INT8-KV attention runs a prefill item over up to four
+  queries.** Both kernels (AVX2 and AVX-512 VNNI) gave each work item one
+  query, so a 64-token chunk read the same K and V rows 64 times, and from
+  2048 positions on the rows no longer stayed cached from one item to the
+  next. An item now takes up to four consecutive queries and runs each
+  block of 512 positions for all of them before the next block; each query
+  keeps its own arithmetic, so the results are the same bits. The plan does
+  this only where a span runs past one block, the call reads more than 1 MB
+  of K and V, and at least eight items remain; decode is unchanged. x86-64,
+  4 threads, a 64-token chunk, per call at 2048 / 8192 positions: Llama 3.2
+  1B's layout -30 / -44 % (VNNI kernel; AVX2 -21 / -35 %), Qwen3-0.6B's
+  -43 / -44 % (-32 / -36 %), Gemma 4 E2B's full layers -19 / -35 %
+  (-14 / -17 %), SmolLM2-360M's -4 / -30 % (-0 / -15 %: its 320-byte rows
+  spread over all cache sets and stay cached longer); at 512 positions and
+  in the sliding layers, where no item takes several queries, -11 to +2 %.
+  Decode within +-3 %, except 32/32 heads (MHA) on the VNNI kernel, +1 to
+  +4 %. End to end (synthetic weights), a 4000-token prompt prefills 6.7 %
+  faster in Llama 3.2 1B's geometry (Q4_K) and 4.4 % at 2048 tokens;
+  SmolLM2-360M's as fast as before.
 - **The KV cache code of the architecture layer has no NEON left.** The
   last of it, the row absmax that scales K and V rows for the INT8 and INT4
   caches (`forward/kv_store.c`), is portable C that takes the maximum on the

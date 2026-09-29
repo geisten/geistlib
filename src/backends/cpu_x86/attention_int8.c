@@ -94,6 +94,15 @@ constexpr size_t AI8_MIN_ITEMS = 8;
  * more than it saves. */
 constexpr size_t AI8_CHUNK_MIN = 128;
 
+/* Prefill: queries per work item, at most. An item runs each block of the
+ * context for all its queries before the next block, so that the block's K
+ * and V bytes, fetched for the first query, are near for the others ... */
+constexpr size_t AI8_QUERIES_MAX = 4;
+
+/* ... where the K and V bytes a call reads exceed this: below it they stay
+ * cached between queries anyway. */
+constexpr size_t AI8_REUSE_BYTES = (size_t) 1 << 20;
+
 size_t cpu_x86_attention_kv_int8_part_floats(size_t n_q_heads, size_t head_dim) {
     return n_q_heads * AI8_MAX_CHUNKS * (head_dim + 2);
 }
@@ -119,23 +128,36 @@ static inline void ai8_span(const struct ai8_args *a, size_t t, size_t *s_lo, si
 struct ai8_plan {
     size_t per_pass; /* query heads per pass */
     size_t n_chunks; /* decode: context chunks per pass, merged afterwards */
+    size_t per_item; /* prefill: queries per work item */
 };
 
 /* How to run a call, from its shape alone (any thread count gives the same
- * bits). Measured with every choice forced, 4 threads, decode and 64-row
- * prefill over 32/8 heads at head_dim 64, 16/8 and 24/8 at 128, 15/5 at
- * 64, 8/1 at 256 and 32/32 at 64, contexts 256-8192:
+ * bits); `span` is the number of positions the last query attends to.
+ * Measured with every choice forced, 4 threads, decode and 64-row prefill
+ * over 32/8 heads at head_dim 64, 16/8 and 24/8 at 128, 15/5 at 64, 8/1 at
+ * 256 and 32/32 at 64, contexts 256-8192:
  *   - the widest pass that divides the KV group was never slower, prefill
  *     or decode (up to 2x faster than one head per item);
  *   - a decode split into a chunk per 1024 positions ran 7-45 % faster at
  *     8192 positions than unsplit (32/8 hd 64: 0.50 -> 0.44 ms; 8/1 hd
  *     256: 0.60 -> 0.30), within noise of it at 2048, and slower at 512,
- *     where the split is left to the item count. */
+ *     where the split is left to the item count.
+ * A prefill puts its queries in items of up to AI8_QUERIES_MAX where a
+ * span runs past one block and the call reads more than AI8_REUSE_BYTES
+ * of K and V, in items of as many as leave at least AI8_MIN_ITEMS items;
+ * the queries of an item do not change each other's arithmetic, so any
+ * plan gives the same bits. Against one query an item, 64-token chunks: up
+ * to 36 % faster at 2048 and 8192 positions where the call reads more than
+ * 1 MB (at 1.3 MB, SmolLM2-360M at 2048 positions, the same); with the
+ * queries forced into items anyway, a few percent slower within one block
+ * and at 1 MB (MQA at 2048 positions), and with fewer items the threads
+ * waited on the longest (MQA with four queries a call, two items, 20-80 %
+ * slower in the VNNI kernel). */
 static struct ai8_plan ai8_plan_for(size_t n_q,
                                     size_t n_q_heads,
                                     size_t n_kv_heads,
                                     size_t head_dim,
-                                    size_t decode_span,
+                                    size_t span,
                                     size_t part_floats) {
     const size_t group    = n_q_heads / n_kv_heads;
     size_t       per_pass = 1;
@@ -145,17 +167,24 @@ static struct ai8_plan ai8_plan_for(size_t n_q,
             break;
         }
     }
-    struct ai8_plan plan = {.per_pass = per_pass, .n_chunks = 1};
+    struct ai8_plan plan  = {.per_pass = per_pass, .n_chunks = 1, .per_item = 1};
+    const size_t    items = n_kv_heads * (group / per_pass); /* per query */
     if (n_q == 1) {
-        const size_t items     = n_kv_heads * (group / per_pass);
         const size_t for_items = (AI8_MIN_ITEMS + items - 1) / items;
-        const size_t fit       = decode_span / AI8_CHUNK_MIN;
-        size_t       chunks    = decode_span / AI8_CHUNK_SPAN;
+        const size_t fit       = span / AI8_CHUNK_MIN;
+        size_t       chunks    = span / AI8_CHUNK_SPAN;
         chunks                 = chunks > for_items ? chunks : for_items;
         chunks                 = chunks < AI8_MAX_CHUNKS ? chunks : AI8_MAX_CHUNKS;
         chunks                 = chunks < fit ? chunks : fit;
         if (chunks >= 2 && part_floats >= n_q_heads * chunks * (head_dim + 2)) {
             plan.n_chunks = chunks;
+        }
+    } else if (span > AI8_BLOCK && span * n_kv_heads * head_dim * 2 > AI8_REUSE_BYTES) {
+        for (size_t per_item = AI8_QUERIES_MAX; per_item >= 2; per_item /= 2) {
+            if (items * ((n_q + per_item - 1) / per_item) >= AI8_MIN_ITEMS) {
+                plan.per_item = per_item;
+                break;
+            }
         }
     }
     return plan;
@@ -332,21 +361,25 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
 
 /* ---- One work item -------------------------------------------------------- */
 
-/* Query heads [h0, h0 + G) at position t over context positions
- * [c_lo, c_hi], all reading KV head kv_h: the body of the portable loop's
- * grouped pass (attn_int8_item). Without `part` it writes their output;
- * with it, their partial results: per head HD + 2 floats, the unnormalized
- * V sums, the running max and the sum of exponentials. G and HD are
- * compile-time constants at every call site (HD = 0: head_dim at run
- * time). */
+/* Query heads [h0, h0 + G) at the tn positions t0 .. t0 + tn - 1, all
+ * reading KV head kv_h, position t0 + i over context positions [lo[i],
+ * hi[i]]: the body of the portable loop's grouped pass (attn_int8_item)
+ * for each. The queries share only the order of the work — each block of
+ * the context runs for all of them before the next — and each keeps its
+ * own arithmetic, the same as alone in an item. Without `part` it writes
+ * their output; with it (one query), its partial results: per head HD + 2
+ * floats, the unnormalized V sums, the running max and the sum of
+ * exponentials. G and HD are compile-time constants at every call site
+ * (HD = 0: head_dim at run time). */
 [[gnu::always_inline]] static inline void ai8_item(size_t                 G,
                                                    size_t                 HD,
                                                    const struct ai8_args *a,
-                                                   size_t                 t,
+                                                   size_t                 t0,
+                                                   size_t                 tn,
                                                    size_t                 kv_h,
                                                    size_t                 h0,
-                                                   size_t                 c_lo,
-                                                   size_t                 c_hi,
+                                                   const size_t           lo[static tn],
+                                                   const size_t           hi[static tn],
                                                    float                 *part) {
     /* Locals, not a->field in the loops: after OpenMP outlining `a` points
      * into the caller's frame, and every float store could alias it. */
@@ -360,11 +393,13 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
     const int8_t *kh      = a->k + kv_h * head_dim;
     const int8_t *vh      = a->v + kv_h * head_dim;
 
-    /* The query, quantized per head exactly as the portable loop does. */
-    alignas(32) int8_t q_q8[G][AI8_HEAD_DIM_MAX];
-    float              scale_q[G];
-    for (size_t g = 0; g < G; g++) {
-        const float *qv   = a->q + (t * n_q_heads + h0 + g) * head_dim;
+    /* The queries, quantized per head exactly as the portable loop does. */
+    alignas(32) int8_t q_all[AI8_QUERIES_MAX][G][AI8_HEAD_DIM_MAX];
+    float              scale_all[AI8_QUERIES_MAX][G];
+    for (size_t i_q = 0; i_q < tn * G; i_q++) {
+        const size_t tq = i_q / G, g = i_q % G;
+        const float *qv   = a->q + ((t0 + tq) * n_q_heads + h0 + g) * head_dim;
+        int8_t      *qq   = q_all[tq][g];
         float        amax = 0.0f;
         for (size_t i = 0; i < head_dim; i++) {
             const float x = fabsf(qv[i]);
@@ -378,9 +413,9 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
         }
         const float inv_q = 1.0f / sq;
         for (size_t i = 0; i < head_dim; i++) {
-            q_q8[g][i] = (int8_t) lrintf(qv[i] * inv_q);
+            qq[i] = (int8_t) lrintf(qv[i] * inv_q);
         }
-        scale_q[g] = sq;
+        scale_all[tq][g] = sq;
     }
 
     /* sc: the block's scores, then exp(score - max), then those times the
@@ -388,153 +423,193 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
     alignas(32) float sc[G][AI8_BLOCK];
     alignas(32) float ks[AI8_BLOCK];
     alignas(32) float vs[AI8_BLOCK];
-    alignas(32) float acc[G][AI8_HEAD_DIM_MAX];
-    float             max_score[G];
-    double            sum_exp[G];
-    for (size_t g = 0; g < G; g++) {
+    alignas(32) float acc_all[AI8_QUERIES_MAX][G][AI8_HEAD_DIM_MAX];
+    float             max_all[AI8_QUERIES_MAX][G];
+    double            sum_all[AI8_QUERIES_MAX][G];
+    for (size_t i_q = 0; i_q < tn * G; i_q++) {
         for (size_t i = 0; i < head_dim; i++) {
-            acc[g][i] = 0.0f;
+            acc_all[i_q / G][i_q % G][i] = 0.0f;
         }
-        sum_exp[g] = 0.0;
+        sum_all[i_q / G][i_q % G] = 0.0;
     }
-    for (size_t b0 = c_lo; b0 <= c_hi; b0 += AI8_BLOCK) {
-        const size_t  n  = c_hi - b0 < AI8_BLOCK ? c_hi - b0 + 1 : AI8_BLOCK;
-        const int8_t *kb = kh + b0 * row;
-        const int8_t *vb = vh + b0 * row;
-        for (size_t j = 0; j < n; j++) {
-            ks[j] = k_scale[(b0 + j) * n_kv_heads + kv_h];
-            vs[j] = v_scale[(b0 + j) * n_kv_heads + kv_h];
-        }
-        size_t j = 0;
-        for (; j + 8 <= n; j += 8) {
-            const int8_t *k0  = kb + j * row;
-            const __m256  ksv = _mm256_load_ps(ks + j);
-            for (size_t g = 0; g < G; g++) {
-                __m256i d = ai8_reduce8(ai8_dot_lanes(hd32, q_q8[g], k0),
-                                        ai8_dot_lanes(hd32, q_q8[g], k0 + row),
-                                        ai8_dot_lanes(hd32, q_q8[g], k0 + 2 * row),
-                                        ai8_dot_lanes(hd32, q_q8[g], k0 + 3 * row),
-                                        ai8_dot_lanes(hd32, q_q8[g], k0 + 4 * row),
-                                        ai8_dot_lanes(hd32, q_q8[g], k0 + 5 * row),
-                                        ai8_dot_lanes(hd32, q_q8[g], k0 + 6 * row),
-                                        ai8_dot_lanes(hd32, q_q8[g], k0 + 7 * row));
-                if (hd32 < head_dim) {
-                    alignas(32) int32_t tail[8];
-                    for (size_t p = 0; p < 8; p++) {
-                        tail[p] = ai8_dot_tail(hd32, head_dim, q_q8[g], k0 + p * row);
+    for (size_t blk = 0;; blk++) {
+        bool ran = false;
+        for (size_t tq = 0; tq < tn; tq++) {
+            /* Block blk of query tq's span, if it has one. */
+            if (blk * AI8_BLOCK > hi[tq] - lo[tq]) {
+                continue;
+            }
+            ran = true;
+
+            const size_t b0                        = lo[tq] + blk * AI8_BLOCK;
+            const size_t c_hi                      = hi[tq];
+            const int8_t (*q_q8)[AI8_HEAD_DIM_MAX] = q_all[tq];
+            const float *scale_q                   = scale_all[tq];
+            float (*acc)[AI8_HEAD_DIM_MAX]         = acc_all[tq];
+            float        *max_score                = max_all[tq];
+            double       *sum_exp                  = sum_all[tq];
+            const size_t  n  = c_hi - b0 < AI8_BLOCK ? c_hi - b0 + 1 : AI8_BLOCK;
+            const int8_t *kb = kh + b0 * row;
+            const int8_t *vb = vh + b0 * row;
+            for (size_t j = 0; j < n; j++) {
+                ks[j] = k_scale[(b0 + j) * n_kv_heads + kv_h];
+                vs[j] = v_scale[(b0 + j) * n_kv_heads + kv_h];
+            }
+            size_t j = 0;
+            for (; j + 8 <= n; j += 8) {
+                const int8_t *k0  = kb + j * row;
+                const __m256  ksv = _mm256_load_ps(ks + j);
+                for (size_t g = 0; g < G; g++) {
+                    __m256i d = ai8_reduce8(ai8_dot_lanes(hd32, q_q8[g], k0),
+                                            ai8_dot_lanes(hd32, q_q8[g], k0 + row),
+                                            ai8_dot_lanes(hd32, q_q8[g], k0 + 2 * row),
+                                            ai8_dot_lanes(hd32, q_q8[g], k0 + 3 * row),
+                                            ai8_dot_lanes(hd32, q_q8[g], k0 + 4 * row),
+                                            ai8_dot_lanes(hd32, q_q8[g], k0 + 5 * row),
+                                            ai8_dot_lanes(hd32, q_q8[g], k0 + 6 * row),
+                                            ai8_dot_lanes(hd32, q_q8[g], k0 + 7 * row));
+                    if (hd32 < head_dim) {
+                        alignas(32) int32_t tail[8];
+                        for (size_t p = 0; p < 8; p++) {
+                            tail[p] = ai8_dot_tail(hd32, head_dim, q_q8[g], k0 + p * row);
+                        }
+                        d = _mm256_add_epi32(d, _mm256_load_si256((const __m256i *) tail));
                     }
-                    d = _mm256_add_epi32(d, _mm256_load_si256((const __m256i *) tail));
+                    /* (dot * scale_q) * scale_k, as the portable loop rounds it. */
+                    const __m256 s = _mm256_mul_ps(
+                            _mm256_mul_ps(_mm256_cvtepi32_ps(d), _mm256_set1_ps(scale_q[g])), ksv);
+                    _mm256_store_ps(sc[g] + j, s);
                 }
-                /* (dot * scale_q) * scale_k, as the portable loop rounds it. */
-                const __m256 s = _mm256_mul_ps(
-                        _mm256_mul_ps(_mm256_cvtepi32_ps(d), _mm256_set1_ps(scale_q[g])), ksv);
-                _mm256_store_ps(sc[g] + j, s);
             }
-        }
-        for (; j < n; j++) {
-            const int8_t *kr = kb + j * row;
+            for (; j < n; j++) {
+                const int8_t *kr = kb + j * row;
+                for (size_t g = 0; g < G; g++) {
+                    const int32_t d = ai8_hsum(ai8_dot_lanes(hd32, q_q8[g], kr)) +
+                                      ai8_dot_tail(hd32, head_dim, q_q8[g], kr);
+                    sc[g][j]        = (float) d * scale_q[g] * ks[j];
+                }
+            }
             for (size_t g = 0; g < G; g++) {
-                const int32_t d = ai8_hsum(ai8_dot_lanes(hd32, q_q8[g], kr)) +
-                                  ai8_dot_tail(hd32, head_dim, q_q8[g], kr);
-                sc[g][j]        = (float) d * scale_q[g] * ks[j];
-            }
-        }
-        for (size_t g = 0; g < G; g++) {
-            float block_max = sc[g][0];
-            for (size_t i = 1; i < n; i++) {
-                if (sc[g][i] > block_max) {
-                    block_max = sc[g][i];
-                }
-            }
-            if (b0 == c_lo) {
-                max_score[g] = block_max;
-            } else if (block_max > max_score[g]) {
-                /* The sums so far were taken against the lower max: scale
-                 * them down to the new one (to 0 below ATTN_EXP_FLOOR). */
-                const float d = max_score[g] - block_max;
-                const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
-                sum_exp[g] *= c;
-                for (size_t i = 0; i < head_dim; i++) {
-                    acc[g][i] *= c;
-                }
-                max_score[g] = block_max;
-            }
-            double block_sum = 0.0;
-            for (size_t i = 0; i < n; i++) {
-                const float e = expf(fmaxf(sc[g][i] - max_score[g], ATTN_EXP_FLOOR));
-                block_sum += e;
-                sc[g][i] = e * vs[i];
-            }
-            sum_exp[g] += block_sum;
-        }
-        /* AI8_PV_ROWS rows at a time, so that their V bytes stay in L1
-         * while every slice of the output dimensions passes over them
-         * (128 KB a block at head_dim 256). The sums keep their order. */
-        for (size_t r0 = 0; r0 < n; r0 += AI8_PV_ROWS) {
-            const size_t  nr            = n - r0 < AI8_PV_ROWS ? n - r0 : AI8_PV_ROWS;
-            const int8_t *vr            = vb + r0 * row;
-            const float (*w)[AI8_BLOCK] = (const float (*)[AI8_BLOCK]) & sc[0][r0];
-            size_t c                    = 0;
-            if (G <= 2) {
-                const size_t width = G == 1 ? 64 : 32;
-                for (; c + width <= head_dim; c += width) {
-                    ai8_pv_wide(G, nr, row, c, vr, w, acc);
-                }
-            }
-            for (; c < hd16; c += 16) {
-                ai8_pv16(G, nr, row, c, vr, w, acc);
-            }
-            for (; c < head_dim; c++) {
-                for (size_t i = 0; i < nr; i++) {
-                    const float vf = (float) vr[i * row + c];
-                    for (size_t g = 0; g < G; g++) {
-                        acc[g][c] += w[g][i] * vf;
+                float block_max = sc[g][0];
+                for (size_t i = 1; i < n; i++) {
+                    if (sc[g][i] > block_max) {
+                        block_max = sc[g][i];
                     }
                 }
+                if (blk == 0) {
+                    max_score[g] = block_max;
+                } else if (block_max > max_score[g]) {
+                    /* The sums so far were taken against the lower max: scale
+                     * them down to the new one (to 0 below ATTN_EXP_FLOOR). */
+                    const float d = max_score[g] - block_max;
+                    const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
+                    sum_exp[g] *= c;
+                    for (size_t i = 0; i < head_dim; i++) {
+                        acc[g][i] *= c;
+                    }
+                    max_score[g] = block_max;
+                }
+                double block_sum = 0.0;
+                for (size_t i = 0; i < n; i++) {
+                    const float e = expf(fmaxf(sc[g][i] - max_score[g], ATTN_EXP_FLOOR));
+                    block_sum += e;
+                    sc[g][i] = e * vs[i];
+                }
+                sum_exp[g] += block_sum;
+            }
+            /* AI8_PV_ROWS rows at a time, so that their V bytes stay in L1
+             * while every slice of the output dimensions passes over them
+             * (128 KB a block at head_dim 256). The sums keep their order. */
+            for (size_t r0 = 0; r0 < n; r0 += AI8_PV_ROWS) {
+                const size_t  nr            = n - r0 < AI8_PV_ROWS ? n - r0 : AI8_PV_ROWS;
+                const int8_t *vr            = vb + r0 * row;
+                const float (*w)[AI8_BLOCK] = (const float (*)[AI8_BLOCK]) & sc[0][r0];
+                size_t c                    = 0;
+                if (G <= 2) {
+                    const size_t width = G == 1 ? 64 : 32;
+                    for (; c + width <= head_dim; c += width) {
+                        ai8_pv_wide(G, nr, row, c, vr, w, acc);
+                    }
+                }
+                for (; c < hd16; c += 16) {
+                    ai8_pv16(G, nr, row, c, vr, w, acc);
+                }
+                for (; c < head_dim; c++) {
+                    for (size_t i = 0; i < nr; i++) {
+                        const float vf = (float) vr[i * row + c];
+                        for (size_t g = 0; g < G; g++) {
+                            acc[g][c] += w[g][i] * vf;
+                        }
+                    }
+                }
             }
         }
+        if (!ran) {
+            break;
+        }
     }
-    for (size_t g = 0; g < G; g++) {
+    for (size_t i_q = 0; i_q < tn * G; i_q++) {
+        const size_t tq = i_q / G, g = i_q % G;
         if (part != nullptr) {
             float *rec = part + g * (head_dim + 2);
-            memcpy(rec, acc[g], head_dim * sizeof(float));
-            rec[head_dim]     = max_score[g];
-            rec[head_dim + 1] = (float) sum_exp[g];
+            memcpy(rec, acc_all[tq][g], head_dim * sizeof(float));
+            rec[head_dim]     = max_all[tq][g];
+            rec[head_dim + 1] = (float) sum_all[tq][g];
         } else {
-            const float inv_sum = (float) (1.0 / sum_exp[g]);
-            float      *outv    = a->out + (t * n_q_heads + h0 + g) * head_dim;
+            const float inv_sum = (float) (1.0 / sum_all[tq][g]);
+            float      *outv    = a->out + ((t0 + tq) * n_q_heads + h0 + g) * head_dim;
             for (size_t i = 0; i < head_dim; i++) {
-                outv[i] = acc[g][i] * inv_sum;
+                outv[i] = acc_all[tq][g][i] * inv_sum;
             }
         }
     }
 }
 
-#define AI8_ITEM_HD(G)                                          \
-    do {                                                        \
-        switch (a->head_dim) {                                  \
-        case 64:                                                \
-            ai8_item(G, 64, a, t, kv_h, h0, c_lo, c_hi, part);  \
-            break;                                              \
-        case 128:                                               \
-            ai8_item(G, 128, a, t, kv_h, h0, c_lo, c_hi, part); \
-            break;                                              \
-        case 256:                                               \
-            ai8_item(G, 256, a, t, kv_h, h0, c_lo, c_hi, part); \
-            break;                                              \
-        default:                                                \
-            ai8_item(G, 0, a, t, kv_h, h0, c_lo, c_hi, part);   \
-            break;                                              \
-        }                                                       \
+/* One function per compiled shape (G, HD): in one function holding all of
+ * them, every change to one moved the hot loops of the others. */
+#define AI8_ITEM_FN(G, HD)                                                                  \
+    [[gnu::noinline]] static void ai8_item_##G##_##HD(const struct ai8_args *a,             \
+                                                      size_t                 t0,            \
+                                                      size_t                 tn,            \
+                                                      size_t                 kv_h,          \
+                                                      size_t                 h0,            \
+                                                      const size_t           lo[static tn], \
+                                                      const size_t           hi[static tn], \
+                                                      float                 *part) {        \
+        ai8_item(G, HD, a, t0, tn, kv_h, h0, lo, hi, part);                                 \
+    }
+#define AI8_ITEM_FNS(G) AI8_ITEM_FN(G, 64) AI8_ITEM_FN(G, 128) AI8_ITEM_FN(G, 256) AI8_ITEM_FN(G, 0)
+AI8_ITEM_FNS(1)
+AI8_ITEM_FNS(2)
+AI8_ITEM_FNS(3)
+AI8_ITEM_FNS(4)
+
+#define AI8_ITEM_HD(G)                                             \
+    do {                                                           \
+        switch (a->head_dim) {                                     \
+        case 64:                                                   \
+            ai8_item_##G##_64(a, t0, tn, kv_h, h0, lo, hi, part);  \
+            break;                                                 \
+        case 128:                                                  \
+            ai8_item_##G##_128(a, t0, tn, kv_h, h0, lo, hi, part); \
+            break;                                                 \
+        case 256:                                                  \
+            ai8_item_##G##_256(a, t0, tn, kv_h, h0, lo, hi, part); \
+            break;                                                 \
+        default:                                                   \
+            ai8_item_##G##_0(a, t0, tn, kv_h, h0, lo, hi, part);   \
+            break;                                                 \
+        }                                                          \
     } while (0)
 
 static void ai8_run_item(size_t                 per_pass,
                          const struct ai8_args *a,
-                         size_t                 t,
+                         size_t                 t0,
+                         size_t                 tn,
                          size_t                 kv_h,
                          size_t                 h0,
-                         size_t                 c_lo,
-                         size_t                 c_hi,
+                         const size_t           lo[static tn],
+                         const size_t           hi[static tn],
                          float                 *part) {
     switch (per_pass) {
     case 4:
@@ -610,13 +685,14 @@ void cpu_x86_attention_kv_int8_run(size_t        n_q,
                                     .v_scale        = v_scale,
                                     .out            = out};
     const size_t          group  = n_q_heads / n_kv_heads;
-    size_t                dec_lo = 0, dec_hi = 0;
+    size_t                dec_lo = 0, dec_hi = 0, last_lo = 0, last_hi = 0;
     ai8_span(&a, 0, &dec_lo, &dec_hi);
+    ai8_span(&a, n_q - 1, &last_lo, &last_hi);
     const struct ai8_plan plan     = ai8_plan_for(n_q,
                                                   n_q_heads,
                                                   n_kv_heads,
                                                   head_dim,
-                                                  dec_hi - dec_lo + 1,
+                                                  last_hi - last_lo + 1,
                                                   part != nullptr ? part_floats : 0);
     const size_t          per_pass = plan.per_pass;
     const size_t          n_passes = group / per_pass;
@@ -643,10 +719,11 @@ void cpu_x86_attention_kv_int8_run(size_t        n_q,
                         ai8_run_item(per_pass,
                                      &a,
                                      0,
+                                     1,
                                      kv_h,
                                      kv_h * group + pass * per_pass,
-                                     c_lo,
-                                     c_hi,
+                                     &c_lo,
+                                     &c_hi,
                                      part + ((kv_h * n_passes + pass) * n_chunks + c) * rec);
                     }
                 }
@@ -668,21 +745,35 @@ void cpu_x86_attention_kv_int8_run(size_t        n_q,
         }
         return;
     }
-    /* Items by KV head, then pass, then query: the team works through one
-     * KV head's rows at a time, which then stay in each core's L2 (1 MB at
-     * 8192 positions and head_dim 64), where in query order every thread
-     * went through all KV heads' (five of them in SmolLM2-360M, 5 MB).
-     * Causal and window masks make later positions longer: dynamic. */
+    /* Items by KV head, then pass, then block of queries: the team works
+     * through one KV head's rows at a time, which then stay in each core's
+     * L2 (1 MB at 8192 positions and head_dim 64), where in query order
+     * every thread went through all KV heads' (five of them in
+     * SmolLM2-360M, 5 MB). Causal and window masks make later positions
+     * longer: dynamic. */
+    const size_t per_item = plan.per_item;
+    const size_t n_blocks = (n_q + per_item - 1) / per_item;
 #if defined(_OPENMP)
 #pragma omp parallel for collapse(3) schedule(dynamic)
 #endif
     for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
         for (size_t pass = 0; pass < n_passes; pass++) {
-            for (size_t t = 0; t < n_q; t++) {
-                size_t c_lo = 0, c_hi = 0;
-                ai8_span(&a, t, &c_lo, &c_hi);
-                ai8_run_item(
-                        per_pass, &a, t, kv_h, kv_h * group + pass * per_pass, c_lo, c_hi, nullptr);
+            for (size_t qb = 0; qb < n_blocks; qb++) {
+                const size_t t0 = qb * per_item;
+                const size_t tn = n_q - t0 < per_item ? n_q - t0 : per_item;
+                size_t       lo[AI8_QUERIES_MAX], hi[AI8_QUERIES_MAX];
+                for (size_t tq = 0; tq < tn; tq++) {
+                    ai8_span(&a, t0 + tq, &lo[tq], &hi[tq]);
+                }
+                ai8_run_item(per_pass,
+                             &a,
+                             t0,
+                             tn,
+                             kv_h,
+                             kv_h * group + pass * per_pass,
+                             lo,
+                             hi,
+                             nullptr);
             }
         }
     }
