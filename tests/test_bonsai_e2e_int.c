@@ -11,12 +11,13 @@
  * apart after ~24 tokens on this prompt, so the greedy check stops well
  * short of that; a missing or misplaced rotation diverges at token 0.
  *
- * Runs on cpu_neon and, when compiled in, on metal (PQ2_0 kernels and
- * fused->hadamard_rotate on the GPU) against the same goldens.
+ * Runs on cpu_neon and, when compiled in, on metal and vulkan (PQ2_0 kernels
+ * and fused->hadamard_rotate on the GPU) against the same goldens.
  *
  * 27B: needs ~8 GB and a minute per backend, so no CI leg fetches it: the
  * test SKIPs without the fixture (GEIST_BONSAI_GGUF_PATH or
- * gguf_artifacts/) or without cpu_neon, strict-fixture mode included.
+ * gguf_artifacts/) or without any of the backends above, strict-fixture mode
+ * included.
  */
 #include "test_helpers.h"
 
@@ -165,10 +166,18 @@ int main(void) {
      * strict-fixture mode guards, never this 7.2 GB one. */
     GEIST_SKIP_IF(path == nullptr,
                   "Ternary-Bonsai-2-27B-PQ2_0.gguf not found (GEIST_BONSAI_GGUF_PATH)");
-    const int neon = run_backend(path, "cpu_neon");
-    GEIST_SKIP_IF(neon < 0, "cpu_neon backend not compiled in");
-    const int metal = run_backend(path, "metal"); /* -1: not compiled in */
-    const int fails = neon + (metal > 0 ? metal : 0);
+    /* Every backend that is compiled in and has a device runs the same goldens
+     * (-1: not compiled in / no device). */
+    static const char *const backends[] = {"cpu_neon", "metal", "vulkan"};
+    int                      fails = 0, ran = 0;
+    for (size_t i = 0; i < sizeof backends / sizeof backends[0]; i++) {
+        const int r = run_backend(path, backends[i]);
+        if (r >= 0) {
+            ran++;
+            fails += r;
+        }
+    }
+    GEIST_SKIP_IF(ran == 0, "no cpu_neon / metal / vulkan backend available");
     if (fails == 0) {
         printf("PASS test_bonsai_e2e_int\n");
     }

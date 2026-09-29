@@ -657,6 +657,7 @@ void metal_destroy(struct geist_backend *be) {
     st->use_dn_dec           = dn_serial == nullptr || strcmp(dn_serial, "1") != 0;
     const char *rmsnorm_simd = getenv("GEIST_METAL_RMSNORM_SIMD");
     st->use_rmsnorm_simd     = rmsnorm_simd == nullptr || strcmp(rmsnorm_simd, "0") != 0;
+    st->check_tg             = getenv("GEIST_METAL_CHECK_TG") != nullptr;
     const char *q6k_n4       = getenv("GEIST_METAL_Q6K_N4");
     st->use_q6k_n4           = q6k_n4 == nullptr || strcmp(q6k_n4, "0") != 0;
     metal_tuning_init(be, st);
