@@ -218,9 +218,9 @@ int main(void) {
             size_t  n_enc          = 0;
             if (gguf_tokenizer_encode(&tok,
                                       "The capital of France is",
-                                      enc,
                                       sizeof enc / sizeof enc[0],
-                                      &n_enc)) {
+                                      enc,
+                                      &n_enc) == GEIST_OK) {
                 for (size_t i = 0; i < n_enc && n_prompt < 32; i++) {
                     prompt_ids[n_prompt++] = enc[i];
                 }
