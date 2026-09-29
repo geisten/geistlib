@@ -137,3 +137,13 @@ no unique physical total or exact system-RAM reclamation is promised. Do not sum
 it with RSS. No model, prompt or disk storage is involved. The experimental backend
 descriptor gains an optional provider callback; third-party backends recompile
 with a zero/null callback to retain explicit unsupported behavior.
+
+Provider validation on Apple M1 Max / macOS 27 (2026-09-29), release and ASan:
+initial 393216 B, two 16-MiB shared/private buffers 33947648 B, three no-copy
+wrappers over overlapping pages 34111488 B, heap plus buffer 67665920 B,
+failed over-capacity heap allocation unchanged, release returned 393216 B.
+Every snapshot equalled a direct query of the same device in the same process.
+The alias increment illustrates why this is a provider allocation counter and
+not unique physical residency. Driver retention on other versions may differ.
+The opt-in test also queries during concurrent allocate/release, rejects partial
+initialization, and uses null after shutdown; it never dereferences freed handles.
