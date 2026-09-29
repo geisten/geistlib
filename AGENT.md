@@ -114,14 +114,17 @@ not help — it changes linkage, not the grammar. Headers under `include/`
 therefore spell the same contract
 
 ```c
-void geist_session_pin_prefix(struct geist_session *s, size_t n,
-                              const geist_token_t ids[GEIST_AT_LEAST(n)]);
+enum geist_status (*prefill)(void *session, size_t n,
+                             const geist_token_t ids[GEIST_AT_LEAST(n)]);
 ```
 
 which expands to `static n` in C and to nothing in C++ (`ids[]` — the same
 parameter type; both decay to `geist_token_t *`). The rules above are
 unchanged: the macro is where you would have written `static`, so "when it
-is a lie" still decides whether it appears at all.
+is a lie" still decides whether it appears at all. The `geist_session_*`
+entry points that take arrays are the standing counter-example: they check
+the consumer's pointer and return `GEIST_E_INVALID_ARG`, so they take
+plain pointers.
 
 Code under `src/` keeps the plain `[static len]` form. Nothing includes it
 from C++, and the extra indirection would buy nothing there.

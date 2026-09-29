@@ -110,6 +110,20 @@ minor release.
 
 ### Fixed
 
+- **A null array passed to the public session API returns
+  `GEIST_E_INVALID_ARG` in release builds too.** `geist_session_tokenize`,
+  `pin_prefix`, `decode_speculative`, `attach_audio`, `audio_push`,
+  `attach_image` and `attach_video` null-checked their arrays, but the headers
+  declared them `GEIST_AT_LEAST(n)`, i.e. non-null. gcc and clang believed the
+  declaration and deleted the check at `-O1` and above, so a null array was
+  dereferenced. `prefill_tokens` had dropped its check to quiet gcc. All eight
+  now take plain pointers and check them. The parameter types are unchanged,
+  so there is no source or ABI change, and the preconditions only relax:
+  `tokenize`'s `out_ids`, `pin_prefix`'s `ids` and `decode_speculative`'s
+  `history` may be nullptr when their length is 0, and so may `ids` in the
+  arch vtable's `pin_prefix`. For the three STABLE symbols this is a
+  compatible change (`docs/API_CONTRACT.md`). One loss: gcc no longer warns a
+  C caller that passes a visibly short array.
 - **Streaming audio emitted a wrong sub-token block when the encoder worker
   woke at 46 mod 48 mel frames** (#506): the subsample's last row reads one
   frame past the real ones, so a mid-stream push whose sub-token count ended

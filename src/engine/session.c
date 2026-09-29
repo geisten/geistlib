@@ -350,8 +350,8 @@ const char *geist_session_errmsg(const struct geist_session *s) {
 [[nodiscard]] enum geist_status geist_session_tokenize(struct geist_session *s,
                                                        const char           *text,
                                                        size_t                out_capacity,
-                                                       geist_token_t out_ids[static out_capacity],
-                                                       size_t       *n_out) {
+                                                       geist_token_t        *out_ids,
+                                                       size_t               *n_out) {
     if (s == nullptr || text == nullptr || n_out == nullptr ||
         (out_capacity > 0 && out_ids == nullptr)) {
         return GEIST_E_INVALID_ARG;
@@ -418,10 +418,8 @@ const char *geist_session_errmsg(const struct geist_session *s) {
 }
 
 [[nodiscard]] enum geist_status
-geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_token_t ids[static n]) {
-    /* `ids` is declared [static n] — the contract guarantees non-null;
-     * GCC -Wnonnull-compare rejects an explicit ids==null check here. */
-    if (s == nullptr || n == 0) {
+geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_token_t *ids) {
+    if (s == nullptr || n == 0 || ids == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
     struct geist_session_full           *sf  = as_full(s);
@@ -592,14 +590,13 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
     return GEIST_OK;
 }
 
-[[nodiscard]] enum geist_status
-geist_session_decode_speculative(struct geist_session *s,
-                                 size_t                k_max,
-                                 size_t                history_n,
-                                 const geist_token_t   history[static history_n],
-                                 size_t                out_capacity,
-                                 geist_token_t         out_tokens[static out_capacity],
-                                 size_t               *n_out) {
+[[nodiscard]] enum geist_status geist_session_decode_speculative(struct geist_session *s,
+                                                                 size_t                k_max,
+                                                                 size_t                history_n,
+                                                                 const geist_token_t  *history,
+                                                                 size_t                out_capacity,
+                                                                 geist_token_t        *out_tokens,
+                                                                 size_t               *n_out) {
     if (s == nullptr || n_out == nullptr || (history_n > 0 && history == nullptr) ||
         (out_capacity > 0 && out_tokens == nullptr)) {
         return GEIST_E_INVALID_ARG;
@@ -764,11 +761,10 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
 
 /* Audio path: PCM → mel → audio_conformer encode → soft tokens →
  * decoder arch_ops->prefill_audio. */
-[[nodiscard]] enum geist_status
-geist_session_attach_audio(struct geist_session *s,
-                           size_t                n_samples,
-                           const int16_t         pcm_samples[static n_samples],
-                           int                   sample_rate) {
+[[nodiscard]] enum geist_status geist_session_attach_audio(struct geist_session *s,
+                                                           size_t                n_samples,
+                                                           const int16_t        *pcm_samples,
+                                                           int                   sample_rate) {
     if (s == nullptr || n_samples == 0 || pcm_samples == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -944,7 +940,7 @@ geist_session_attach_audio(struct geist_session *s,
 }
 
 [[nodiscard]] enum geist_status
-geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[static n]) {
+geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) {
     if (s == nullptr || n == 0 || pcm == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -1022,11 +1018,10 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t pcm[st
 
 /* Vision path: RGB pixels → image_pipeline → vision_siglip tower →
  * pool → projector → soft tokens → decoder arch_ops->prefill_image. */
-[[nodiscard]] enum geist_status
-geist_session_attach_image(struct geist_session *s,
-                           size_t                height,
-                           size_t                width,
-                           const uint8_t         rgb[static height * width * 3]) {
+[[nodiscard]] enum geist_status geist_session_attach_image(struct geist_session *s,
+                                                           size_t                height,
+                                                           size_t                width,
+                                                           const uint8_t        *rgb) {
     if (s == nullptr || height == 0 || width == 0 || rgb == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -1091,12 +1086,11 @@ geist_session_attach_image(struct geist_session *s,
 /* Video path: per-frame run_image → concat soft tokens →
  * decoder arch_ops->prefill_image. Reuses prefill_image since image
  * and video soft tokens share the 1536-dim wire format. */
-[[nodiscard]] enum geist_status
-geist_session_attach_video(struct geist_session *s,
-                           size_t                n_frames,
-                           size_t                height,
-                           size_t                width,
-                           const uint8_t         frames[static n_frames * height * width * 3]) {
+[[nodiscard]] enum geist_status geist_session_attach_video(struct geist_session *s,
+                                                           size_t                n_frames,
+                                                           size_t                height,
+                                                           size_t                width,
+                                                           const uint8_t        *frames) {
     if (s == nullptr || n_frames == 0 || height == 0 || width == 0 || frames == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -1169,7 +1163,7 @@ geist_session_attach_video(struct geist_session *s,
 }
 
 [[nodiscard]] enum geist_status
-geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t ids[static n]) {
+geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t *ids) {
     if (s == nullptr || (n > 0 && ids == nullptr)) {
         return GEIST_E_INVALID_ARG;
     }
