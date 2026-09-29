@@ -126,6 +126,16 @@ minor release.
   state and kept `kv_len` at the prefix, so the first decode after a reset
   diverged from a fresh prefill. It now returns `GEIST_E_UNSUPPORTED`, which
   the reset path's comment had promised all along.
+- **`geist_session_tokenize` truncated silently on GGUF-embedded tokenizers**:
+  a text needing more than `out_capacity` tokens returned `GEIST_OK` with the
+  first `out_capacity` ids (`out_capacity == 0` returned `GEIST_OK` with none),
+  although the STABLE contract says `GEIST_E_INVALID_ARG` on overflow and the
+  `tokenizer.bin` path already returned it. The encoder stopped at its buffer
+  and still reported success; it now fails instead, with `*n_out == 0` and
+  nothing written. An allocation failure inside that encoder is now
+  `GEIST_E_OOM` instead of `GEIST_E_IO`. `set_prompt` used the same encoder:
+  a prompt past its internal bound (reachable only with an SPM vocab that has
+  no `▁` piece) now fails instead of prefilling a shortened prompt.
 
 ## [0.11.0] — 2026-09-06
 
