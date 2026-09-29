@@ -15,6 +15,7 @@
 
 #include "gguf_tokenizer.h"
 
+#include "checked.h"
 #include "heap.h"
 
 #include <stdint.h>
@@ -1210,13 +1211,15 @@ fail:
     return false;
 }
 
-[[nodiscard]] bool gguf_tokenizer_encode(const struct gguf_tokenizer *tok,
-                                         const char                  *text,
-                                         int32_t                     *out_ids,
-                                         size_t                       cap,
-                                         size_t                      *n_out) {
-    if (tok == nullptr || text == nullptr || out_ids == nullptr || n_out == nullptr)
-        return false;
+/* Writes the first min(needed, cap) IDs and returns true either way — false
+ * only on allocation failure, once gguf_tokenizer_encode has refused modes
+ * that cannot encode. A full buffer is therefore ambiguous; the caller
+ * resolves it. */
+static bool encode_upto(const struct gguf_tokenizer *tok,
+                        const char                  *text,
+                        int32_t                     *out_ids,
+                        size_t                       cap,
+                        size_t                      *n_out) {
     *n_out = 0;
     if (tok->mode == GGUF_TOK_MODE_SPM || tok->mode == GGUF_TOK_MODE_UNIGRAM)
         return encode_spm(tok, text, out_ids, cap, n_out);
@@ -1390,4 +1393,36 @@ fail:
     safe_free(&p);
     *n_out = 0;
     return false;
+}
+
+[[nodiscard]] enum geist_status gguf_tokenizer_encode(const struct gguf_tokenizer *tok,
+                                                      const char                  *text,
+                                                      size_t                       cap,
+                                                      int32_t                     *out_ids,
+                                                      size_t                      *n_out) {
+    if (n_out == nullptr)
+        return GEIST_E_INVALID_ARG;
+    *n_out = 0;
+    /* One spare slot: encode_upto fills whatever room it gets, so only a
+     * filled spare proves the text needs more than `cap` IDs. */
+    size_t room;
+    if (tok == nullptr || text == nullptr || (cap > 0 && out_ids == nullptr) ||
+        ckd_add(&room, cap, 1))
+        return GEIST_E_INVALID_ARG;
+    if (tok->mode == GGUF_TOK_MODE_UNSUPPORTED)
+        return GEIST_E_UNSUPPORTED;
+    int32_t *ids = heap_alloc_array_aligned(int32_t, room);
+    if (ids == nullptr)
+        return GEIST_E_OOM;
+    size_t            n  = 0;
+    enum geist_status st = encode_upto(tok, text, ids, room, &n) ? GEIST_OK : GEIST_E_OOM;
+    if (st == GEIST_OK && n > cap)
+        st = GEIST_E_INVALID_ARG;
+    if (st == GEIST_OK && n > 0) {
+        memcpy(out_ids, ids, n * sizeof ids[0]);
+        *n_out = n;
+    }
+    void *p = ids;
+    safe_free(&p);
+    return st;
 }
