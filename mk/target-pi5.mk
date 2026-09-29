@@ -15,13 +15,12 @@ BACKENDS ?= cpu_neon cpu_scalar
 
 # Cortex-A76 specialization — best codegen for NEON kernels.
 #
-# Pi-side GCC (14.2 on Debian Trixie) is stricter than Mac's clang/gcc on a
-# few defensive-coding patterns that the static-array contract makes
-# redundant but harmless: explicit NULL checks on parameters declared with
-# `[static n]` (-Wnonnull-compare) trigger errors under -Werror even though
-# the code is correct. Mac builds keep the stricter form for our own
-# discipline; on Pi we just disable the warning rather than weakening the
-# code style across the codebase.
+# `-Wno-vla-parameter`: GCC (clang has no such warning) flags a parameter
+# that one declaration spells `[static n]` and another a plain pointer —
+# mostly gemma4_kernels.c against its header. Both spell the same type.
+# -Wnonnull-compare stays on: a null check on a `[static n]` parameter is a
+# contradiction, and GCC and clang settle it by deleting the check at -O1
+# and above (AGENT.md §1).
 # `-ffast-math` enables fp reassociation + finite-math assumptions,
 # unlocking substantially more aggressive NEON autovectorization in
 # the softmax / activation / elementwise kernels. +12% Pi 5 decode on
@@ -29,7 +28,7 @@ BACKENDS ?= cpu_neon cpu_scalar
 # strict-math within noise (verified on bitnet-2b4t-TQ2_0-v2.gguf).
 # GCC's `-ffast-math` defines `__FAST_MATH__`; some code paths may opt
 # out via `#pragma STDC FENV_ACCESS ON` if exact rounding ever matters.
-CFLAGS_TARGET := -DGEIST_TARGET_PI5=1 -mcpu=cortex-a76 -fopenmp -ffast-math -Wno-nonnull-compare -Wno-vla-parameter
+CFLAGS_TARGET := -DGEIST_TARGET_PI5=1 -mcpu=cortex-a76 -fopenmp -ffast-math -Wno-vla-parameter
 
 # Same rationale as mk/target-linux.mk: -std=c23 defines __STRICT_ANSI__,
 # under which POSIX symbols (mkstemp, strdup, ...) vanish without a feature
