@@ -28,9 +28,10 @@ static bool ffn_tile_fusion_enabled(void) {
     return env != nullptr && env[0] == '1';
 }
 
-/* The backend's INT8-KV attention is bound unless GEIST_KV_INT8_FUSED=0,
- * which keeps the host loop (forward/attention.c): for A/B runs, and to
- * rule the kernel out. Read once at plan build. */
+/* The backend's attention over the INT8 cache, and over the packed INT4
+ * one that rides its storage, is bound unless GEIST_KV_INT8_FUSED=0, which
+ * keeps the host loops (forward/attention.c): for A/B runs, and to rule
+ * the kernels out. Read once at plan build. */
 static bool kv_int8_fused_enabled(void) {
     const char *env = getenv("GEIST_KV_INT8_FUSED");
     return env == nullptr || env[0] != '0';
@@ -83,6 +84,9 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
         break;
     case GEIST_FUSED_ATTN_KV_INT8:
         have = fused->attention_kv_int8 != nullptr;
+        break;
+    case GEIST_FUSED_ATTN_KV_INT4:
+        have = fused->attention_kv_int4 != nullptr;
         break;
     }
     return have && fused->supported != nullptr && fused->supported(be, &q);
@@ -223,6 +227,8 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
                                                             .n_q_heads  = st->n_q_heads,
                                                             .n_kv_heads = st->n_kv_heads};
         P->fuse_attn_kv_int8 = kv_int8_fused_enabled() && probe(be, q);
+        q.op                 = GEIST_FUSED_ATTN_KV_INT4;
+        P->fuse_attn_kv_int4 = kv_int8_fused_enabled() && probe(be, q);
 
         struct geist_fusion_query pq = {
                 .op      = GEIST_FUSED_PLE_BLOCK,

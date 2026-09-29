@@ -20,10 +20,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(__ARM_NEON)
-#include <arm_neon.h>
-#endif
-
 /* ---- KIVI helpers ----------------------------------------------------- *
  *
  * Drain ONE group (KIVI_K_GROUP_SIZE residual tokens) of one layer into
@@ -781,9 +777,11 @@ void attention_int8_via_buffers(size_t        n_q,
 
 /* Packed-INT4 attention. Identical to attention_int8_via_buffers except each
  * K/V cache row is unpacked from head_dim/2 bytes into a stack int8 row
- * before the (reused) int8 dot / weighted-sum. See internal.h.
+ * before the (reused) int8 dot / weighted-sum. See internal.h. Portable:
+ * the decomposed twin of fused->attention_kv_int4, which cpu_neon
+ * implements (vdotq_s32); it runs where no backend kernel is bound.
  *
- * int4_unpack_row fully writes [0,head_dim); the NEON tail reads only that
+ * int4_unpack_row fully writes [0,head_dim); the loops read only that
  * range, so GCC's -Wmaybe-uninitialized on the unpack buffers is a false
  * positive — suppressed here rather than paid for with a per-row zero-init. */
 #if defined(__GNUC__) && !defined(__clang__)
@@ -854,25 +852,9 @@ void attention_int4_via_buffers(size_t         n_q,
                     int4_unpack_row(head_dim, k_q4 + (s * n_kv_heads + kv_h) * packed, k);
                     const float ks      = k_scale[s * n_kv_heads + kv_h];
                     int32_t     int_dot = 0;
-/* vdotq_s32 is FEAT_DotProd, not baseline NEON: __ARM_NEON is set on every
- * armv8-a, so guarding the dot-product path on it faults on cores without
- * dotprod (Cortex-A53/A72, generic armv8-a builds). The scalar #else below
- * is the fallback that was always meant to run there. */
-#if defined(__ARM_FEATURE_DOTPROD)
-                    int32x4_t acc = vdupq_n_s32(0);
-                    size_t    i   = 0;
-                    for (; i + 16 <= head_dim; i += 16) {
-                        acc = vdotq_s32(acc, vld1q_s8(q_q8 + i), vld1q_s8(k + i));
-                    }
-                    int_dot = vaddvq_s32(acc);
-                    for (; i < head_dim; i++) {
-                        int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
-                    }
-#else
                     for (size_t i = 0; i < head_dim; i++) {
                         int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
                     }
-#endif
                     scores[j] = (float) int_dot * scale_q * ks;
                 }
 

@@ -297,6 +297,7 @@ enum geist_fused_op {
     GEIST_FUSED_ROPE_INTERLEAVED,
     GEIST_FUSED_BITNET_ACT_QUANT,
     GEIST_FUSED_ATTN_KV_INT8,
+    GEIST_FUSED_ATTN_KV_INT4,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -310,9 +311,9 @@ struct geist_fusion_query {
     size_t              m;
     size_t              d_model;
     size_t              inter;
-    size_t              head_dim;    /* attn_qkv_prep, attn_kv_int8 */
-    size_t              n_q_heads;   /* attn_qkv_prep, attn_kv_int8 */
-    size_t              n_kv_heads;  /* attn_qkv_prep, attn_kv_int8 */
+    size_t              head_dim;    /* attn_qkv_prep, attn_kv_int8/int4 */
+    size_t              n_q_heads;   /* attn_qkv_prep, attn_kv_int8/int4 */
+    size_t              n_kv_heads;  /* attn_qkv_prep, attn_kv_int8/int4 */
     uint16_t            table_dtype; /* embedding_lookup_scaled: geist_dtype
                                       * of the (tensor-typed) lookup table */
     const struct geist_weight *gate_w;
@@ -364,6 +365,25 @@ struct geist_deltanet_mix_args {
  * (attention_int8_via_buffers); a kernel agrees with it to fp32 rounding
  * and gives the same bits for any thread count. */
 struct geist_attention_kv_int8_args {
+    const struct geist_tensor *q;
+    const struct geist_tensor *k;
+    const struct geist_tensor *k_scale;
+    const struct geist_tensor *v;
+    const struct geist_tensor *v_scale;
+    struct geist_tensor       *out;
+    size_t                     q_offset;
+    size_t                     sliding_window;
+};
+
+/* Arguments for fused->attention_kv_int4: attention over the packed INT4 KV
+ * cache (GEIST_KV_INT4), as fused->attention_kv_int8 but for K and V:
+ *   k, v    U8 DENSE [n_kv, n_kv_heads, head_dim / 2]   two signed 4-bit
+ *           values per byte, element 2i in the low nibble and 2i + 1 in
+ *           the high one, two's complement (the cache holds [-7, 7])
+ * head_dim is even. Everything else, the query quantization, the checks
+ * and the codes they return included, is attention_kv_int8's; its
+ * decomposed twin is the architecture's attention_int4_via_buffers. */
+struct geist_attention_kv_int4_args {
     const struct geist_tensor *q;
     const struct geist_tensor *k;
     const struct geist_tensor *k_scale;
@@ -684,6 +704,12 @@ struct geist_backend_fused {
      * architecture's host loop. */
     enum geist_status (*attention_kv_int8)(struct geist_backend                      *be,
                                            const struct geist_attention_kv_int8_args *args);
+
+    /* Attention over the packed INT4 KV cache. See
+     * geist_attention_kv_int4_args. Plan-bound per layer like
+     * attention_kv_int8, with GEIST_FUSED_ATTN_KV_INT4. */
+    enum geist_status (*attention_kv_int4)(struct geist_backend                      *be,
+                                           const struct geist_attention_kv_int4_args *args);
 };
 
 /* ====================================================================== */

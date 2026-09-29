@@ -31,9 +31,10 @@
  * default team; an INT8 run without scratch (decode unsplit) must match
  * the reference too.
  *
- * The INT8 shapes run a second time through fused->attention_kv_int8 on
- * every backend in the build whose probe binds it (cpu_x86 must, and
- * cpu_neon where built with FEAT_DotProd): the
+ * Every shape runs a second time through fused->attention_kv_int8 (the
+ * packed ones through attention_kv_int4) on every backend in the build
+ * whose probe binds it (cpu_x86 must bind the INT8 op; cpu_neon, where
+ * built with FEAT_DotProd, both): the
  * backend's own kernel on buffers and tensor views, held to the same
  * reference bound, the same poison and thread-count checks, and to the
  * portable loop's output (its decomposed twin) within that bound, and a
@@ -81,14 +82,15 @@ struct shape {
 
 static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
 
-/* Whether backend `name` has to bind attention_kv_int8 in this build. */
-static bool must_bind(const char *name) {
+/* Whether backend `name` has to bind attention_kv_int8 (attention_kv_int4
+ * when int4) in this build. */
+static bool must_bind(const char *name, bool int4) {
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
     if (strcmp(name, "cpu_neon") == 0) {
         return true;
     }
 #endif
-    return strcmp(name, "cpu_x86") == 0;
+    return !int4 && strcmp(name, "cpu_x86") == 0;
 }
 constexpr size_t             N_BACKENDS = sizeof BACKENDS / sizeof BACKENDS[0];
 static struct geist_backend *g_be[N_BACKENDS];
@@ -229,44 +231,71 @@ tensor(struct geist_buffer *b, enum geist_dtype dt, int ndim, size_t s0, size_t 
     return t;
 }
 
-/* fused->attention_kv_int8 of backend `bi` on this shape's cache, against
- * the reference and against the portable loop's `twin`. */
+/* The backend's op for this shape's cache: attention_kv_int4 on packed
+ * rows, attention_kv_int8 otherwise; `a` carries the views either way. */
+static enum geist_status
+call_kernel(struct geist_backend *be, bool int4, const struct geist_attention_kv_int8_args *a) {
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    if (int4) {
+        const struct geist_attention_kv_int4_args b = {.q              = a->q,
+                                                       .k              = a->k,
+                                                       .k_scale        = a->k_scale,
+                                                       .v              = a->v,
+                                                       .v_scale        = a->v_scale,
+                                                       .out            = a->out,
+                                                       .q_offset       = a->q_offset,
+                                                       .sliding_window = a->sliding_window};
+        return fused->attention_kv_int4(be, &b);
+    }
+    return fused->attention_kv_int8(be, a);
+}
+
+/* fused->attention_kv_int8 (attention_kv_int4 for a packed shape) of backend
+ * `bi` on this shape's cache, against the reference and against the
+ * portable loop's `twin`. */
 static int check_backend(size_t              bi,
                          const struct shape *sh,
                          const float        *q,
                          const int8_t       *k,
+                         const uint8_t      *k4,
                          const float        *ks,
                          const int8_t       *v,
+                         const uint8_t      *v4,
                          const float        *vs,
                          const double       *ref,
                          const float        *twin,
                          double              tol) {
     struct geist_backend             *be    = g_be[bi];
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
-    const struct geist_fusion_query   pq    = {.op         = GEIST_FUSED_ATTN_KV_INT8,
+    const struct geist_fusion_query   pq    = {.op         = sh->int4 ? GEIST_FUSED_ATTN_KV_INT4
+                                                                      : GEIST_FUSED_ATTN_KV_INT8,
                                                .m          = sh->n_q,
                                                .head_dim   = sh->head_dim,
                                                .n_q_heads  = sh->n_q_heads,
                                                .n_kv_heads = sh->n_kv_heads};
-    const bool bound = fused->attention_kv_int8 != nullptr && fused->supported != nullptr &&
-                       fused->supported(be, &pq);
+    const bool                        slot =
+            sh->int4 ? fused->attention_kv_int4 != nullptr : fused->attention_kv_int8 != nullptr;
+    const bool bound = slot && fused->supported != nullptr && fused->supported(be, &pq);
     if (!bound) {
-        if (must_bind(BACKENDS[bi])) {
+        if (must_bind(BACKENDS[bi], sh->int4)) {
             fprintf(stderr,
-                    "FAIL: %s does not bind attention_kv_int8 (hd=%zu)\n",
+                    "FAIL: %s does not bind attention_kv_%s (hd=%zu)\n",
                     BACKENDS[bi],
+                    sh->int4 ? "int4" : "int8",
                     sh->head_dim);
             return 1;
         }
         return 0;
     }
-    const struct geist_backend_vtbl *vt       = be->desc->vtbl;
-    const size_t                     kv_elems = sh->n_kv * sh->n_kv_heads * sh->head_dim;
-    const size_t                     q_elems  = sh->n_q * sh->n_q_heads * sh->head_dim;
-    const size_t                     n_sc     = sh->n_kv * sh->n_kv_heads;
-    float                           *poison   = heap_alloc_array_aligned(float, q_elems);
-    float                           *out      = heap_alloc_array_aligned(float, q_elems);
-    float                           *out1     = heap_alloc_array_aligned(float, q_elems);
+    const struct geist_backend_vtbl *vt = be->desc->vtbl;
+    /* K and V as the op takes them: one int8 per value, or two per byte. */
+    const size_t         row      = sh->int4 ? sh->head_dim / 2 : sh->head_dim;
+    const size_t         kv_elems = sh->n_kv * sh->n_kv_heads * row;
+    const size_t         q_elems  = sh->n_q * sh->n_q_heads * sh->head_dim;
+    const size_t         n_sc     = sh->n_kv * sh->n_kv_heads;
+    float               *poison   = heap_alloc_array_aligned(float, q_elems);
+    float               *out      = heap_alloc_array_aligned(float, q_elems);
+    float               *out1     = heap_alloc_array_aligned(float, q_elems);
     struct geist_buffer *bq = nullptr, *bk = nullptr, *bks = nullptr, *bv = nullptr, *bvs = nullptr,
                         *bo = nullptr;
     int fails               = 0;
@@ -280,9 +309,9 @@ static int check_backend(size_t              bi,
         poison[i] = POISON;
     }
     bq  = upload(be, q_elems * sizeof *q, q);
-    bk  = upload(be, kv_elems, k);
+    bk  = upload(be, kv_elems, sh->int4 ? (const void *) k4 : (const void *) k);
     bks = upload(be, n_sc * sizeof *ks, ks);
-    bv  = upload(be, kv_elems, v);
+    bv  = upload(be, kv_elems, sh->int4 ? (const void *) v4 : (const void *) v);
     bvs = upload(be, n_sc * sizeof *vs, vs);
     bo  = upload(be, q_elems * sizeof *out, poison);
     if (bq == nullptr || bk == nullptr || bks == nullptr || bv == nullptr || bvs == nullptr ||
@@ -293,10 +322,9 @@ static int check_backend(size_t              bi,
     }
     const struct geist_tensor tq =
             tensor(bq, GEIST_DTYPE_F32, 3, sh->n_q, sh->n_q_heads, sh->head_dim);
-    const struct geist_tensor tk =
-            tensor(bk, GEIST_DTYPE_I8, 3, sh->n_kv, sh->n_kv_heads, sh->head_dim);
-    const struct geist_tensor tv =
-            tensor(bv, GEIST_DTYPE_I8, 3, sh->n_kv, sh->n_kv_heads, sh->head_dim);
+    const enum geist_dtype    kvt = sh->int4 ? GEIST_DTYPE_U8 : GEIST_DTYPE_I8;
+    const struct geist_tensor tk  = tensor(bk, kvt, 3, sh->n_kv, sh->n_kv_heads, row);
+    const struct geist_tensor tv  = tensor(bv, kvt, 3, sh->n_kv, sh->n_kv_heads, row);
     const struct geist_tensor tks = tensor(bks, GEIST_DTYPE_F32, 2, sh->n_kv, sh->n_kv_heads, 0);
     const struct geist_tensor tvs = tensor(bvs, GEIST_DTYPE_F32, 2, sh->n_kv, sh->n_kv_heads, 0);
     struct geist_tensor to = tensor(bo, GEIST_DTYPE_F32, 3, sh->n_q, sh->n_q_heads, sh->head_dim);
@@ -308,7 +336,7 @@ static int check_backend(size_t              bi,
                                                       .out            = &to,
                                                       .q_offset       = sh->n_kv - sh->n_q,
                                                       .sliding_window = sh->window};
-    enum geist_status                         st   = fused->attention_kv_int8(be, &args);
+    enum geist_status                         st   = call_kernel(be, sh->int4, &args);
     memcpy(out, vt->buffer_map(bo), q_elems * sizeof *out);
     vt->buffer_unmap(bo);
     size_t unwritten = 0;
@@ -344,7 +372,7 @@ static int check_backend(size_t              bi,
 #if defined(_OPENMP)
     const int team = omp_get_max_threads();
     omp_set_num_threads(1);
-    st = fused->attention_kv_int8(be, &args);
+    st = call_kernel(be, sh->int4, &args);
     omp_set_num_threads(team);
     memcpy(out1, vt->buffer_map(bo), q_elems * sizeof *out1);
     vt->buffer_unmap(bo);
@@ -366,7 +394,7 @@ static int check_backend(size_t              bi,
     past.q_offset                            = sh->n_kv - sh->n_q + 1;
     memcpy(out1, vt->buffer_map(bo), q_elems * sizeof *out1);
     vt->buffer_unmap(bo);
-    st                 = fused->attention_kv_int8(be, &past);
+    st                 = call_kernel(be, sh->int4, &past);
     const bool touched = memcmp(out1, vt->buffer_map(bo), q_elems * sizeof *out1) != 0;
     vt->buffer_unmap(bo);
     if (st != GEIST_E_INVALID_ARG || touched) {
@@ -529,11 +557,9 @@ static int check_shape(const struct shape *sh) {
                 tol);
         fails++;
     }
-    if (!sh->int4) {
-        for (size_t bi = 0; bi < N_BACKENDS; bi++) {
-            if (g_be[bi] != nullptr) {
-                fails += check_backend(bi, sh, q, k, ks, v, vs, ref, out, tol);
-            }
+    for (size_t bi = 0; bi < N_BACKENDS; bi++) {
+        if (g_be[bi] != nullptr) {
+            fails += check_backend(bi, sh, q, k, k4, ks, v, v4, vs, ref, out, tol);
         }
     }
 #if defined(_OPENMP)

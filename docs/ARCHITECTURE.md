@@ -188,10 +188,11 @@ backend that leaves it null. Qwen35's Gated-DeltaNet mixer has a dedicated
 optional backend hook and a portable architecture-layer implementation rather
 than placeholder SSM enum values. Attention over the INT8 KV cache is the same
 kind of hook (`fused->attention_kv_int8`: AVX2 on `cpu_x86`, `vdotq_s32` on
-`cpu_neon`): its decomposed equivalent is the architecture's host loop over the
+`cpu_neon`), and over the packed INT4 cache (`fused->attention_kv_int4`,
+`cpu_neon`): the decomposed equivalent is the architecture's host loop over the
 same cache bytes, portable C, not `attention` on dequantized rows, because the
 scores are integer dots of an int8-quantized query. `GEIST_KV_INT8_FUSED=0`
-keeps the host loop.
+keeps the host loops.
 
 ## Sessions and the KV cache
 

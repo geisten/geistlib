@@ -77,6 +77,7 @@ struct transformer_layer_exec_plan {
     bool fuse_attn_kv_int8;     /* the backend's INT8-KV attention; the
                                  * session's KV mode (INT8, not INT4) is
                                  * checked at the call site */
+    bool fuse_attn_kv_int4;     /* ... and its packed INT4-KV attention */
 };
 
 /* Model-level fusion decisions (not per-layer): lookup tables and the

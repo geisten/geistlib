@@ -7,6 +7,7 @@
 # this is enabled on a non-ARM target via the cross-build matrix.
 
 BACKEND_SOURCES += \
+    src/backends/cpu_neon/attention_int4.c \
     src/backends/cpu_neon/attention_int8.c \
     src/backends/cpu_neon/backend.c \
     src/backends/cpu_neon/elementwise.c \

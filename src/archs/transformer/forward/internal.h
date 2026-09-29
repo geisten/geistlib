@@ -174,6 +174,14 @@ view_3d_i8(struct geist_buffer *b, int64_t s0, int64_t s1, int64_t s2) {
     return t;
 }
 
+/* U8 variant — the packed INT4 KV cache rows (two values per byte). */
+static inline struct geist_tensor
+view_3d_u8(struct geist_buffer *b, int64_t s0, int64_t s1, int64_t s2) {
+    struct geist_tensor t = view_3d(b, s0, s1, s2);
+    t.dtype               = GEIST_DTYPE_U8;
+    return t;
+}
+
 /* ---- Per-row activation-quant helpers --------------------------------- *
  *
  * AWQ inverse scale: y[t, j] *= scale[j]. No-op if scale == nullptr.

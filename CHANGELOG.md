@@ -105,6 +105,18 @@ minor release.
   times both). End to end at 2048 positions (synthetic weights), prefill
   -11 % and decode -13 % in the Llama 3.2 1B geometry (Q4_K), -21 % and
   -14 % in SmolLM2-360M's (Q8_0); at 512, within noise to -8 %.
+- **Attention over the packed INT4 KV cache is a backend op too**
+  (`fused->attention_kv_int4`, `GEIST_FUSED_ATTN_KV_INT4`,
+  `struct geist_attention_kv_int4_args`, `<geist_backend.h>`): K and V are
+  packed U8 views, two signed 4-bit values a byte; the rest is
+  `attention_kv_int8`'s. `cpu_neon` implements it with the `vdotq_s32` loop
+  that was in the architecture layer, unchanged: the same instructions
+  (clang 19, with and without OpenMP, alignment NOPs aside) and the same
+  bits (kernel outputs and the logits of an INT4-KV session, plain and
+  rotated, compared under qemu). The architecture's
+  `attention_int4_via_buffers` is portable C, the decomposed twin, and
+  `forward/attention.c` no longer includes `arm_neon.h`.
+  `GEIST_KV_INT8_FUSED=0` keeps both host loops.
 
 ### Changed
 

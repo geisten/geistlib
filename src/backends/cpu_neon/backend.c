@@ -349,6 +349,8 @@ static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geis
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
     case GEIST_FUSED_ATTN_KV_INT8:
         return cpu_neon_attention_kv_int8_supported(q);
+    case GEIST_FUSED_ATTN_KV_INT4:
+        return cpu_neon_attention_kv_int4_supported(q);
 #endif
     case GEIST_FUSED_FFN_GEGLU_Q4Q6_MN:
         return q->m >= 1 && q->m <= GEIST_QUANT_M_CAP && q->d_model > 0 && q->inter > 0 &&
@@ -384,6 +386,7 @@ static const struct geist_backend_fused cpu_neon_fused = {
         .hadamard_rotate      = cpu_neon_hadamard_rotate,
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
         .attention_kv_int8 = cpu_neon_attention_kv_int8,
+        .attention_kv_int4 = cpu_neon_attention_kv_int4,
 #endif
 };
 
