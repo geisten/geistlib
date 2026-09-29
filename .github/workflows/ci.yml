@@ -146,6 +146,8 @@ jobs:
         run: |
           ./bin/${{ matrix.target }}/release/tests/test_backend_metal_probe
           ./bin/${{ matrix.target }}/release/tests/test_backend_metal_parity_unit
+          GEIST_TEST_METAL_RESOURCES=1 ./bin/${{ matrix.target }}/release/tests/test_metal_resources_unit
+          GEIST_TEST_METAL_RESOURCES=1 ./bin/${{ matrix.target }}/asan/tests/test_metal_resources_unit
 
       # Hermetic Python suite (algorithm reference impls). Part of `make test`,
       # so it must stay green — a suite nothing runs is a suite that rots (#146).

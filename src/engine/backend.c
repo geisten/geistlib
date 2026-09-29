@@ -9,6 +9,7 @@
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
+#include <geist_util.h>
 #include "model.h" /* for geist_arch_registry forward decl pattern */
 
 #include <geist.h>
@@ -154,6 +155,22 @@ const char *geist_backend_errmsg(const struct geist_backend *be) {
 
 enum geist_status geist_backend_errcode(const struct geist_backend *be) {
     return be != nullptr ? be->err_code : GEIST_E_INVALID_ARG;
+}
+
+enum geist_status geist_backend_resources_snapshot(const struct geist_backend     *be,
+                                                   struct geist_backend_resources *out) {
+    if (out == nullptr)
+        return GEIST_E_INVALID_ARG;
+    *out = (struct geist_backend_resources) {0};
+    if (be == nullptr || be->desc == nullptr)
+        return GEIST_E_INVALID_ARG;
+    if (be->desc->resources_snapshot == nullptr)
+        return GEIST_E_UNSUPPORTED;
+    struct geist_backend_resources sample = {0};
+    enum geist_status              status = be->desc->resources_snapshot(be, &sample);
+    if (status == GEIST_OK)
+        *out = sample;
+    return status;
 }
 
 const struct geist_backend_fused geist_backend_no_fused = {0};

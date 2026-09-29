@@ -360,6 +360,26 @@ enum geist_status geist_session_get_stats(const struct geist_session *s,
                                           struct geist_session_stats *out);
 enum geist_status geist_session_reset_stats(struct geist_session *s);
 
+/* @stability EXPERIMENTAL — optional, observational backend telemetry.
+ * Metal reports MTLDevice.currentAllocatedSize from this backend's device.
+ * This is provider resource allocation, NOT unique physical residency, a
+ * process RSS or a working-set budget. Never add it to RSS on unified memory.
+ * No-copy aliases, heaps and driver retention follow the provider's accounting.
+ * The backend must remain alive throughout the call; join observer threads
+ * before destroy. Concurrent model/inference use is supported. No inference
+ * lock, command submission, GPU synchronization or heap allocation is required.
+ * Failure zero-initializes out; only GEIST_OK makes a zero a known measurement.
+ * CPU/other unimplemented providers return GEIST_E_UNSUPPORTED. */
+enum geist_resource_source { GEIST_RESOURCE_NONE, GEIST_RESOURCE_METAL_DEVICE };
+struct geist_backend_resources {
+    uint64_t                   allocated_bytes;
+    enum geist_resource_source source;
+    bool                       unified_memory;
+};
+[[nodiscard]] enum geist_status
+geist_backend_resources_snapshot(const struct geist_backend     *be,
+                                 struct geist_backend_resources *out);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
