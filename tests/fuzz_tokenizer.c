@@ -76,6 +76,13 @@ enum { VT_U32 = 4, VT_I32 = 5, VT_F32 = 6, VT_STRING = 8, VT_ARRAY = 9 };
 static const char *const VOCAB[] = {"<unk>", "<s>", "</s>", "\xe2\x96\x81the", "he", "t", "h", "e"};
 #define VOCAB_N ((uint64_t) (sizeof VOCAB / sizeof VOCAB[0]))
 
+/* The seed's last 64 bytes, which the target encodes: merges, specials, a
+ * literal ▁, multi-byte and invalid UTF-8, runs of whitespace. */
+static const char SEED_TEXT[] =
+        "the hehe teeth <s>th</s> \xe2\x96\x81the\t\xc3\xa9\xf0\x9f\x98\x80 "
+        "\xff\xc3  eh\nthe heath the thee";
+static_assert(sizeof SEED_TEXT - 1 == 64, "the target encodes the input's last 64 bytes");
+
 /* A GGUF carrying a loadable SPM tokenizer: model + tokens are the two keys
  * gguf_tokenizer_load requires, the rest exercise the optional paths. */
 static void seed_gguf(struct buf *o) {
@@ -127,15 +134,16 @@ static void seed_gguf(struct buf *o) {
     put_u32(o, 1);
 
     /* The tokenizer reads no tensor, but gguf_open_memory refuses a file
-     * without one, and a refused input never reaches the tokenizer. */
-    put_gstr(o, "t"); /* a 1-element f32 tensor: name, n_dims, dim, dtype, offset */
+     * without one, and a refused input never reaches the tokenizer. Its
+     * data ends the file, so it carries the text. */
+    put_gstr(o, "t"); /* a 16-element f32 tensor: name, n_dims, dim, dtype, offset */
     put_u32(o, 1);
-    put_u64(o, 1);
+    put_u64(o, (sizeof SEED_TEXT - 1) / 4);
     put_u32(o, 0);
     put_u64(o, 0);
     static const uint8_t zeros[32] = {0};
     put_bytes(o, zeros, (32 - o->n % 32) % 32); /* general.alignment above */
-    put_bytes(o, zeros, 4);                     /* the tensor's 4 bytes */
+    put_bytes(o, SEED_TEXT, sizeof SEED_TEXT - 1);
 }
 
 #endif /* GEIST_FUZZ_STANDALONE */
