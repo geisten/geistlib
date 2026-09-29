@@ -1560,6 +1560,7 @@ install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
     w->backend_alignment = 64;
 #else
     (void) w;
+    (void) policy;
 #endif
     return GEIST_OK;
 }
