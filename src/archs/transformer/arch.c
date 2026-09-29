@@ -147,7 +147,7 @@ static enum geist_status op_prefill_image(void *session, size_t n, const float *
  * prefix once, snapshots the resulting kv_len as the reset target.
  * Subsequent state_reset calls truncate kv_len back to the pinned length,
  * keeping the prefix's KV state across conversation turns. */
-static enum geist_status op_pin_prefix(void *session, size_t n, const geist_token_t ids[static n]) {
+static enum geist_status op_pin_prefix(void *session, size_t n, const geist_token_t *ids) {
     struct transformer_arch_session *sess = session;
     if (sess == nullptr) {
         return GEIST_E_INVALID_ARG;

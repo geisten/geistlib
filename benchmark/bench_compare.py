@@ -13,7 +13,16 @@ cliff detector for noisy cloud runners; this one is for a quiet board.
 A missing baseline, or one for another model, prints and passes — the caller
 then promotes the current run, and the next night has something to compare.
 
-Exit codes: 0 ok (or nothing to compare), 1 regression, 2 usage.
+A run is judged only if the board was quiet while it ran. The measurement
+itself says so: bench_perf_sweep's best/worst spread per row is 0.4-1.5 % on
+an idle Pi 5 and jumped to 15 % on the one night (2026-09-26) that another
+job shared the board — a row like that would have failed the 3 % decode gate
+for reasons that had nothing to do with the tree (#446). Past --max-spread
+the run is reported as not comparable: exit 3, so the workflow neither fails
+on it nor promotes it to the new baseline.
+
+Exit codes: 0 ok (or nothing to compare), 1 regression, 2 usage,
+3 not comparable (contended run).
 """
 import argparse
 import json
@@ -49,6 +58,8 @@ def main() -> int:
     ap.add_argument("--baseline", required=True, help="raw JSON of the last green run")
     ap.add_argument("--max-drop-decode", type=float, default=3.0, help="percent")
     ap.add_argument("--max-drop-prefill", type=float, default=5.0, help="percent")
+    ap.add_argument("--max-spread", type=float, default=5.0,
+                    help="percent; a row spread above this makes the run not comparable")
     args = ap.parse_args()
 
     try:
@@ -64,6 +75,17 @@ def main() -> int:
     if base.get("model") != cur.get("model"):
         print(f"baseline is for {base.get('model')}, this run is {cur.get('model')} — not comparable")
         return 0
+    noisy = [f"seq {r['seq_len']}: ±{float(r.get('spread_pct', 0.0)):.1f} %"
+             for r in cur["rows"] if float(r.get("spread_pct", 0.0)) > args.max_spread]
+    if noisy:
+        msg = (f"bench_compare: run not comparable — spread above {args.max_spread:.0f} % "
+               f"says the board was busy ({'; '.join(noisy)}); not judged, not promoted")
+        print(msg)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a", encoding="utf-8") as fh:
+                fh.write(f"## bench vs last green\n\n{msg}\n\n")
+        return 3
 
     lines, bad = compare(cur, base, {"decode_tps": args.max_drop_decode,
                                      "prefill_tps": args.max_drop_prefill})

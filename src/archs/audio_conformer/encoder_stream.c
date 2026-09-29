@@ -644,14 +644,23 @@ size_t audio_encoder_stream_push(struct AudioEncoder       *a,
      *    kick, where re-running from frame 0 is O(T²) over the clip — it
      *    defaults to the incremental path. GEIST_AUDIO_SUBSAMPLE_INC=0/1
      *    overrides either way. */
-    const char  *inc_env  = getenv("GEIST_AUDIO_SUBSAMPLE_INC");
-    const bool   subs_inc = inc_env != nullptr ? inc_env[0] == '1' : a->stream_enabled;
-    const size_t n_sub_full =
+    const char *inc_env  = getenv("GEIST_AUDIO_SUBSAMPLE_INC");
+    const bool  subs_inc = inc_env != nullptr ? inc_env[0] == '1' : a->stream_enabled;
+    size_t      n_sub_full =
             subs_inc ? audio_encoder_subsample_run_inc(
                                a, &state->subs, mel_full, mel_mask, n_mel_total, state->sub_buf)
                      : audio_encoder_subsample_run(
                                a, mel_full, mel_mask, n_mel_total, state->sub_buf);
 
+    /* Mid-stream, only sub-tokens that no later frame can change may
+     * leave: the subsample's last row reads past the real frames (#506,
+     * audio_subsample_stable_tokens). The final push sees the padded frame
+     * and emits everything, unstable tail included — that IS the tail. */
+    if (!is_final) {
+        const size_t stable = audio_subsample_stable_tokens(n_mel_total);
+        if (n_sub_full > stable)
+            n_sub_full = stable;
+    }
     if (n_sub_full <= state->n_sub_total)
         return 0;
 

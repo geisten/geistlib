@@ -10,8 +10,13 @@ both engines, each at its best thread count, after a discarded warm-up.
 | Dense fp32 path | native NEON (BLAS-free) | Accelerate / **AMX** |
 | Measurement | quiesced + cool → **mean of 10** | live desktop → **best of 10** |
 
-> **TL;DR** — On **Apple Silicon** geist wins prefill at *every* length and the
-> lead **widens** with context (1.48× at 1024 tokens). On the **Pi 5** llama.cpp's
+> **TL;DR** — On **Apple Silicon** the CPU path trails current llama.cpp:
+> the strict same-protocol cell ([CROSS-ENGINE-APPLE-M1MAX.md](results/CROSS-ENGINE-APPLE-M1MAX.md),
+> llama.cpp `2d8d612e`) has geist at 0.53× prefill and 0.72× decode at 512
+> tokens, the gap widening with depth — llama.cpp's Accelerate-BLAS prompt
+> path beats geist's int8 W4A8 NEON kernels there. (The earlier "wins prefill
+> at every length, 1.48× at 1024" was against llama.cpp `d05fe1d` under
+> best-of-10 rules and no longer holds.) On the **Pi 5** llama.cpp's
 > OpenBLAS prefill leads geist by ~10–15 % across the sweep (both flat, ~37–39 vs
 > ~32–34 t/s); **decode ties on the sweep and edges ahead** with the spec-decode
 > head (7.5 vs 6.8 t/s). geist's Pi value is the dependency-free static binary +

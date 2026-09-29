@@ -76,13 +76,20 @@ enum { VT_U32 = 4, VT_I32 = 5, VT_F32 = 6, VT_STRING = 8, VT_ARRAY = 9 };
 static const char *const VOCAB[] = {"<unk>", "<s>", "</s>", "\xe2\x96\x81the", "he", "t", "h", "e"};
 #define VOCAB_N ((uint64_t) (sizeof VOCAB / sizeof VOCAB[0]))
 
+/* The seed's last 64 bytes, which the target encodes: merges, specials, a
+ * literal ▁, multi-byte and invalid UTF-8, runs of whitespace. */
+static const char SEED_TEXT[] =
+        "the hehe teeth <s>th</s> \xe2\x96\x81the\t\xc3\xa9\xf0\x9f\x98\x80 "
+        "\xff\xc3  eh\nthe heath the thee";
+static_assert(sizeof SEED_TEXT - 1 == 64, "the target encodes the input's last 64 bytes");
+
 /* A GGUF carrying a loadable SPM tokenizer: model + tokens are the two keys
  * gguf_tokenizer_load requires, the rest exercise the optional paths. */
 static void seed_gguf(struct buf *o) {
     o->n = 0;
     put_u32(o, GGUF_MAGIC);
     put_u32(o, 3); /* version */
-    put_u64(o, 0); /* n_tensors — the tokenizer needs none */
+    put_u64(o, 1); /* n_tensors — the reader refuses 0, see below */
     put_u64(o, 7); /* n_meta */
 
     put_gstr(o, "general.alignment");
@@ -117,13 +124,26 @@ static void seed_gguf(struct buf *o) {
     put_gstr(o, "tokenizer.ggml.merges");
     put_u32(o, VT_ARRAY);
     put_u32(o, VT_STRING);
-    put_u64(o, 2);
+    put_u64(o, 3);
     put_gstr(o, "t h");
     put_gstr(o, "he e");
+    put_gstr(o, "the"); /* no space: the loader's empty-right-half path */
 
     put_gstr(o, "tokenizer.ggml.bos_token_id");
     put_u32(o, VT_U32);
     put_u32(o, 1);
+
+    /* The tokenizer reads no tensor, but gguf_open_memory refuses a file
+     * without one, and a refused input never reaches the tokenizer. Its
+     * data ends the file, so it carries the text. */
+    put_gstr(o, "t"); /* a 16-element f32 tensor: name, n_dims, dim, dtype, offset */
+    put_u32(o, 1);
+    put_u64(o, (sizeof SEED_TEXT - 1) / 4);
+    put_u32(o, 0);
+    put_u64(o, 0);
+    static const uint8_t zeros[32] = {0};
+    put_bytes(o, zeros, (32 - o->n % 32) % 32); /* general.alignment above */
+    put_bytes(o, SEED_TEXT, sizeof SEED_TEXT - 1);
 }
 
 #endif /* GEIST_FUZZ_STANDALONE */
@@ -170,7 +190,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     int32_t ids[128];
     size_t  n_ids = 0;
-    if (gguf_tokenizer_encode(&tok, text, ids, sizeof ids / sizeof ids[0], &n_ids)) {
+    if (gguf_tokenizer_encode(&tok, text, sizeof ids / sizeof ids[0], ids, &n_ids) == GEIST_OK) {
         char out[512];
         sink = gguf_tokenizer_decode(&tok, ids, n_ids, out, sizeof out);
         /* A capacity the answer cannot fit in: the header promises a truncated
@@ -211,14 +231,31 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    /* A seed the reader refuses never reaches the tokenizer: every run below
+     * would fuzz the reader alone and still report no crash. */
+    const char           *err = nullptr;
+    struct gguf_ctx      *ctx = gguf_open_memory(seed.b, seed.n, &err);
+    struct gguf_tokenizer tok;
+    if (ctx == nullptr || !gguf_tokenizer_load_copy(&tok, ctx)) {
+        fprintf(stderr,
+                "fuzz_tokenizer: the seed loads no tokenizer (%s)\n",
+                err != nullptr ? err : "gguf_tokenizer_load_copy failed");
+        gguf_close(ctx);
+        return 1;
+    }
+    gguf_tokenizer_unload(&tok);
+    gguf_close(ctx);
+
     const long runs = (argc == 2) ? strtol(argv[1], nullptr, 10) : 3000;
     uint64_t   s    = 0xC0FFEEull;
 
     LLVMFuzzerTestOneInput(seed.b, seed.n);
 
     for (long i = 0; i < runs; i++) {
-        uint8_t      input[sizeof seed.b];
-        const size_t size = 1 + (size_t) (prng(&s) % seed.n);
+        uint8_t input[sizeof seed.b];
+        /* Full length: the reader refuses every prefix of the seed, so a cut
+         * input never reaches the tokenizer. Cutting is fuzz_gguf's job. */
+        const size_t size = seed.n;
         memcpy(input, seed.b, size);
         const unsigned pokes = 1u + (unsigned) (prng(&s) % 8u);
         for (unsigned p = 0; p < pokes; p++)

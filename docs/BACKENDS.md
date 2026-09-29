@@ -49,7 +49,19 @@ holds it: it runs on a 21 GiB integrated GPU (RADV, `GEIST_VK_DEVICE=1`); an
 11 GiB card fails the load with an out-of-memory error — there is no spill to
 host memory yet. Weight matrices are read from the GGUF mmap and uploaded once
 (`caps.weights_device_copy`), so a model no longer needs its size twice in
-memory. Llama-family rows (interleaved RoPE) rotate on the device. Phase-by-phase lab log:
+memory. Llama-family rows (interleaved RoPE) rotate on the device.
+
+Ternary-Bonsai-2-27B (PQ2_0 + `prism.hadamard`, 7.21 GB) also runs on the device:
+PQ2_0 kernels (a tensor-core GEMM and a wide-load matvec), the embedding lookup
+and the blockwise Walsh-Hadamard rotation (`fused->hadamard_rotate`) are all on
+the GPU. It fits an 11 GiB card; on an RTX 2080 Ti it reaches pp512 ≈ 395 t/s
+(≈ 517 with `GEIST_M_MAX=128`) and tg ≈ 36 t/s — 0.93× the PrismML fork's Vulkan
+prefill and 1.22× its decode on the same card (the default chunk stays 64 so the
+scratch pool fits a 256 MB BAR heap). The tensor-core GEMM accumulates in f16 and
+folds into f32 every 64 k like the fork's default; `GEIST_VK_PQ2_F32_ACC=1`
+selects f32 accumulation. Devices whose subgroup size is not 32 (RADV) still fall
+back to per-row matvecs for prefill (#471). Details and the side-by-side
+profile: `benchmark/results/TERNARY.md`. Phase-by-phase lab log:
 [`../benchmark/results/VULKAN.md`](../benchmark/results/VULKAN.md).
 
 ## GPU numbers at a glance

@@ -538,11 +538,10 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     if (s != GEIST_OK) {
         return s;
     }
-    /* scratch_logits holds m_max × VOCAB floats so verify_forward can do
-     * ONE batched lm_head per call (the lm_head is the dominant cost on
-     * Pi 5; M>1 IQ kernels amortize the 262K-wide weight stream over
-     * k columns). At m_max=64 and VOCAB=262144 this is ~64 MB. Lives
-     * in the scratch pool. */
+    /* scratch_logits holds min(m_max, TRANSFORMER_LOGITS_ROWS) × VOCAB floats
+     * so verify_forward can do ONE batched lm_head per call (the lm_head is
+     * the dominant cost on Pi 5; M>1 IQ kernels amortize the 262K-wide weight
+     * stream over k columns). Lives in the scratch pool. */
     s = alloc_pool_buffer(sess, scratch_plan.vocab, &sess->scratch_logits);
     if (s != GEIST_OK) {
         return s;
@@ -643,6 +642,19 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
                     geist_backend_set_error(be, s, "transformer: dn state init failed");
                     return s;
                 }
+            }
+            /* Speculative-decode transaction snapshot (#463): one backend
+             * buffer per state kind, all n_dn layers concatenated, allocated
+             * once here rather than lazily on the first verify. On-device
+             * (vtbl->buffer_copy) so a snapshot/restore never visits host
+             * memory on batched-submit GPUs. */
+            s = alloc_scratch(be, n_dn * conv_n * sizeof(float), &sess->dn_txn_conv_buf);
+            if (s == GEIST_OK) {
+                s = alloc_scratch(be, n_dn * s_n * sizeof(float), &sess->dn_txn_S_buf);
+            }
+            if (s != GEIST_OK) {
+                geist_backend_set_error(be, s, "transformer: DeltaNet transaction alloc failed");
+                return s;
             }
         }
         /* qwen35 attention gate + DeltaNet projection scratch buffers. */
@@ -1058,20 +1070,14 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         return s;
     }
 
-    /* P1.2.f: allocate the default session (KV + scratch pool + arena +
-     * sampler). transformer_session_alloc reads kv_mode + m_max from
-     * opts; AUTO falls back to env / platform default for full backward
-     * compat. The default sess is the one installed on direct-state
-     * callers (state-only int-tests, internal helpers). Engine-level
-     * geist_session_create allocates additional sessions on top. */
-    st->default_sess = transformer_session_alloc(st, opts);
-    if (st->default_sess == nullptr) {
-        /* session_alloc populated the backend error. */
-        s = geist_backend_errcode(be);
-        if (s == GEIST_OK)
-            s = GEIST_E_OOM;
-        transformer_state_destroy(st);
-        return s;
+    /* The default session (KV + scratch pool + arena + sampler) is built
+     * lazily by transformer_default_session — see arch_state.h. Keep the
+     * opts it will need: transformer_session_alloc reads kv_mode + m_max from
+     * them; AUTO falls back to env / platform default for full backward
+     * compat. */
+    if (opts != nullptr) {
+        st->default_opts     = *opts;
+        st->has_default_opts = true;
     }
 
     s = transformer_exec_plan_build(st);
@@ -1082,13 +1088,8 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
 
     /* Eager spec-head build (was lazy at first decode). Doing it here keeps
      * the model immutable during steady-state, so concurrent sessions never
-     * race a first-use build. The default session's scratch is allocated
-     * below-the-fact since session_alloc ran before the sketch existed. */
+     * race a first-use build. */
     transformer_spec_head_init(st);
-    if (st->spec_state == 1 && !transformer_spec_session_scratch_alloc(st->default_sess)) {
-        transformer_state_destroy(st);
-        return GEIST_E_OOM;
-    }
 
     /* AWQ (optional): fold attn_norm/ffn_norm gammas and stash per-layer
      * inv-scales for o/down inputs. Runs after weights are mapped but
@@ -1343,6 +1344,23 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
      * batches). 0 = uncapped. */
     const size_t m_cap =
             (be->desc != nullptr && be->desc->caps.max_m > 0) ? be->desc->caps.max_m : SIZE_MAX;
+    /* Default chunk only (opts / GEIST_M_MAX win): a pool that does not fit the
+     * backend's fast host-visible window lands in system memory and every
+     * activation op then runs over PCIe (Bonsai 27B at m 128 without resizable
+     * BAR: 3x slower prefill), so shrink to what fits, never below 64. */
+    if (opts == nullptr || opts->m_max == 0) {
+        if (!state->m_max_from_env && be->desc != nullptr &&
+            be->desc->vtbl->fast_host_bytes != nullptr) {
+            const size_t                    fast = be->desc->vtbl->fast_host_bytes(be);
+            struct transformer_scratch_plan fit;
+            transformer_scratch_plan_build(state, sess->m_max, &fit);
+            /* slack for the per-session slabs outside the pool (DeltaNet, q gate) */
+            while (sess->m_max > 64 && fit.pool_bytes + fit.pool_bytes / 4 > fast) {
+                sess->m_max = sess->m_max / 2 < 64 ? 64 : sess->m_max / 2;
+                transformer_scratch_plan_build(state, sess->m_max, &fit);
+            }
+        }
+    }
     if (sess->m_max == 0 || sess->m_max > m_cap) {
         geist_backend_set_error(
                 be,
@@ -1537,15 +1555,11 @@ void transformer_session_free(struct transformer_arch_state   *state,
         void *pb = sess->dn_S;
         safe_free(&pb);
     }
-    void *txn_conv        = sess->dn_txn_conv;
-    void *txn_S           = sess->dn_txn_S;
     void *txn_ids         = sess->dn_txn_ids;
     void *mtp_pending     = sess->mtp_pending_h;
     void *mtp_raw         = sess->mtp_target_raw;
     void *mtp_shifted     = sess->mtp_target_shifted;
     void *mtp_txn_pending = sess->mtp_txn_pending_h;
-    safe_free(&txn_conv);
-    safe_free(&txn_S);
     safe_free(&txn_ids);
     safe_free(&mtp_pending);
     safe_free(&mtp_raw);
@@ -1559,6 +1573,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
                 sess->dn_scratch_z,
                 sess->dn_scratch_b,
                 sess->dn_scratch_a,
+                sess->dn_txn_conv_buf,
+                sess->dn_txn_S_buf,
                 sess->mtp_k_cache,
                 sess->mtp_v_cache,
                 sess->mtp_embed,
@@ -1573,8 +1589,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
     sess->qgate_gate         = nullptr;
     sess->dn_conv_state      = nullptr;
     sess->dn_S               = nullptr;
-    sess->dn_txn_conv        = nullptr;
-    sess->dn_txn_S           = nullptr;
+    sess->dn_txn_conv_buf    = nullptr;
+    sess->dn_txn_S_buf       = nullptr;
     sess->dn_txn_ids         = nullptr;
     sess->mtp_k_cache        = nullptr;
     sess->mtp_v_cache        = nullptr;
@@ -1701,5 +1717,14 @@ void transformer_session_free(struct transformer_arch_state   *state,
 }
 
 struct transformer_arch_session *transformer_default_session(struct transformer_arch_state *state) {
-    return (state != nullptr) ? state->default_sess : nullptr;
+    if (state == nullptr) {
+        return nullptr;
+    }
+    if (state->default_sess == nullptr) {
+        /* the spec-head sketch exists by now, so session_alloc also builds the
+         * session's spec scratch (unlike at state_create time, when it ran first) */
+        state->default_sess = transformer_session_alloc(
+                state, state->has_default_opts ? &state->default_opts : nullptr);
+    }
+    return state->default_sess;
 }

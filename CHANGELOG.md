@@ -9,6 +9,37 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Threadgroup-limit diagnostics for the metal backend.**
+  `GEIST_METAL_LOG_TG_LIMIT=1` lists each pipeline's
+  `maxTotalThreadsPerThreadgroup`; `GEIST_METAL_CHECK_TG=1` checks every
+  dispatch's requested width against the pipeline bound at the time and warns
+  once. Nothing clamps: on an M1 Max five pipelines report below the
+  architectural 1024 (PQ2 GEMVs 576/704, `gate_up_q4k_n4` 640, simdgroup
+  GEMMs 832/896) and all of them are dispatched with at most 128 threads,
+  while every kernel that is dispatched at 1024 reports 1024. The check is
+  there so a retune cannot cross a limit silently, and it stays off the hot
+  path — with the switch off, dispatch pays one branch.
+
+
+- **Ternary-Bonsai-2-27B on Vulkan** (PQ2_0 + `prism.hadamard`; #472, #473). PQ2_0
+  matvec/GEMM kernels (struct-of-arrays repack at upload, float activations like
+  metal), a PQ2_0 arm in the embedding lookup, and `fused->hadamard_rotate` on the
+  device (blockwise orthonormal Walsh-Hadamard transform, block up to 1024,
+  bit-identical to the host implementation). A small F16/BF16 matrix a GPU
+  backend refuses to resolve (Bonsai's BF16 `ssm_alpha`/`ssm_beta`) is widened to
+  F32 at load and runs on the device; the arena capacity now reserves for it.
+  The 7.21 GB model fits an 11 GiB RTX 2080 Ti, passes the PrismML-fork goldens
+  (prompt ids, next-token top 5, first 16 greedy tokens — `test_bonsai_e2e_int`
+  now runs them on every available backend) and its logits are bit-identical to
+  `cpu_scalar` (FP32 KV) on the 2080 Ti and the RADV iGPU. PQ2_0 also has a
+  tensor-core GEMM (128 × 128 tile, f16 accumulation folded into f32 every 64 k;
+  `GEIST_VK_PQ2_F32_ACC=1` for f32), a wide-load matvec with the activations
+  broadcast from shared memory and a register-resident DeltaNet state; the
+  model-owned default session is built on first use, so a model no longer holds
+  a second, unused scratch pool. RTX 2080 Ti: pp512 ≈ 395 t/s (517 with
+  `GEIST_M_MAX=128`), tg ≈ 36 t/s — the PrismML fork's Vulkan build does 556 and
+  29.7; numbers, the side-by-side profile and the RADV analysis in
+  `benchmark/results/TERNARY.md`.
 
 - **Qwen3.5/3.6/3.8 on Vulkan** (#409, #410): the gated-DeltaNet mixer, partial
   RoPE, SiLU/SwiGLU and attention-gate epilogues, and GPU kernels for Q4_0,
@@ -68,6 +99,66 @@ minor release.
   `<geist_backend.h>` were unusable from a C++ translation unit. No C-visible
   change — same parameter types, same diagnostics — and `make check-headers`
   now compiles every public header standalone as C23 and as C++17 on every PR.
+- **`buffer_upload` / `buffer_download` take a non-null host pointer, as
+  `geist_backend.h` always declared** (`GEIST_AT_LEAST(n_bytes)`). The CPU
+  backends null-checked it anyway, but under that contract gcc and clang
+  delete the check at `-O1` and above, so only a `-O0` build ever ran it;
+  removing it leaves their optimized machine code unchanged. Metal, whose
+  check did run, no longer returns `GEIST_E_INVALID_ARG` for a null pointer,
+  and Metal and Vulkan now spell the contract `[static n_bytes]` like the
+  vtable.
+
+### Fixed
+
+- **A null array passed to the public session API returns
+  `GEIST_E_INVALID_ARG` in release builds too.** `geist_session_tokenize`,
+  `pin_prefix`, `decode_speculative`, `attach_audio`, `audio_push`,
+  `attach_image` and `attach_video` null-checked their arrays, but the headers
+  declared them `GEIST_AT_LEAST(n)`, i.e. non-null. gcc and clang believed the
+  declaration and deleted the check at `-O1` and above, so a null array was
+  dereferenced. `prefill_tokens` had dropped its check to quiet gcc. All eight
+  now take plain pointers and check them. The parameter types are unchanged,
+  so there is no source or ABI change, and the preconditions only relax:
+  `tokenize`'s `out_ids`, `pin_prefix`'s `ids` and `decode_speculative`'s
+  `history` may be nullptr when their length is 0, and so may `ids` in the
+  arch vtable's `pin_prefix`. For the three STABLE symbols this is a
+  compatible change (`docs/API_CONTRACT.md`). One loss: gcc no longer warns a
+  C caller that passes a visibly short array. `-Wno-nonnull-compare`, which
+  hid the contradiction on every gcc build, is gone from `TARGET=linux` and
+  `TARGET=pi5`.
+- **Streaming audio emitted a wrong sub-token block when the encoder worker
+  woke at 46 mod 48 mel frames** (#506): the subsample's last row reads one
+  frame past the real ones, so a mid-stream push whose sub-token count ended
+  exactly on a 12-token block sent that block to the LM with its last token
+  computed from zero padding (~15 off) and never recomputed it — a greedy
+  prediction flipped whenever the top-2 margin was under the resulting ~2.5
+  logit shift. Mid-stream pushes now emit only sub-tokens no later frame can
+  change (`audio_subsample_stable_tokens`), and the incremental subsample
+  cache derives layer 1's stable rows from layer 0's instead of from a row
+  parity that missed the odd-length case. The stream-parity unit test sweeps
+  the cut points that bit.
+- **Prefix pinning on gated-DeltaNet families refused** (#452): `pin_prefix`
+  returned OK on a qwen3.5 session while `session_reset` clears the recurrent
+  state and kept `kv_len` at the prefix, so the first decode after a reset
+  diverged from a fresh prefill. It now returns `GEIST_E_UNSUPPORTED`, which
+  the reset path's comment had promised all along.
+- **`geist_session_tokenize` truncated silently on GGUF-embedded tokenizers**:
+  a text needing more than `out_capacity` tokens returned `GEIST_OK` with the
+  first `out_capacity` ids (`out_capacity == 0` returned `GEIST_OK` with none),
+  although the STABLE contract says `GEIST_E_INVALID_ARG` on overflow and the
+  `tokenizer.bin` path already returned it. The encoder stopped at its buffer
+  and still reported success; it now fails instead, with `*n_out == 0` and
+  nothing written. An allocation failure inside that encoder is now
+  `GEIST_E_OOM` instead of `GEIST_E_IO`. `set_prompt` used the same encoder:
+  a prompt past its internal bound (reachable only with an SPM vocab that has
+  no `▁` piece) now fails instead of prefilling a shortened prompt.
+- **A GGUF merge without a space reached `memcpy` as a null pointer**:
+  `gguf_tokenizer_load` gave a `tokenizer.ggml.merges` entry without a
+  space a null right half, and `gguf_tokenizer_load_copy` then copied it
+  with `memcpy(dst, nullptr, 0)` — undefined even for zero bytes, and
+  flagged by UBSan on glibc. The empty half now points at the end of the
+  string. It takes a malformed file; no shipped model has such a merge.
+  Found by the tokenizer fuzzer.
 
 ## [0.11.0] — 2026-09-06
 
@@ -196,6 +287,16 @@ deliberate exception to the `STABLE` promise recorded in
   against the previous implementation over every block size from 1 to 8192
   and over 18 shape/sign combinations. The `fwht` half also serves the
   INT8 KV-cache rotation in `forward/kv_store.c`.
+
+- **`GEIST_DTYPE_PQ2_0` no longer shifts `BINARY`/`TERNARY`/`CUSTOM`.** It was
+  inserted at 19, which moved those three off the values v0.11.0 published
+  (19/20/21) — the exact breakage the note above `IQ4_NL` was written to
+  prevent. PQ2_0 moves to the end of the enum (22) and the published values
+  are restored; the metal embedding shader's dtype literal follows, and a
+  `static_assert` now pins **every** dtype that shader hardcodes, not just
+  the newest one. New `GEIST_DTYPE_COUNT` sentinel for sizing dtype-keyed
+  tables: `CUSTOM` had been serving that role, so a dtype past it silently
+  fell out of the weight-path counters. Caught before a release carried it.
 
 ### Fixed
 - **The metal quant pipeline table dispatched a nil kernel.** Collapsing the
