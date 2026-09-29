@@ -82,7 +82,7 @@ static void seed_gguf(struct buf *o) {
     o->n = 0;
     put_u32(o, GGUF_MAGIC);
     put_u32(o, 3); /* version */
-    put_u64(o, 0); /* n_tensors — the tokenizer needs none */
+    put_u64(o, 1); /* n_tensors — the reader refuses 0, see below */
     put_u64(o, 7); /* n_meta */
 
     put_gstr(o, "general.alignment");
@@ -124,6 +124,17 @@ static void seed_gguf(struct buf *o) {
     put_gstr(o, "tokenizer.ggml.bos_token_id");
     put_u32(o, VT_U32);
     put_u32(o, 1);
+
+    /* The tokenizer reads no tensor, but gguf_open_memory refuses a file
+     * without one, and a refused input never reaches the tokenizer. */
+    put_gstr(o, "t"); /* a 1-element f32 tensor: name, n_dims, dim, dtype, offset */
+    put_u32(o, 1);
+    put_u64(o, 1);
+    put_u32(o, 0);
+    put_u64(o, 0);
+    static const uint8_t zeros[32] = {0};
+    put_bytes(o, zeros, (32 - o->n % 32) % 32); /* general.alignment above */
+    put_bytes(o, zeros, 4);                     /* the tensor's 4 bytes */
 }
 
 #endif /* GEIST_FUZZ_STANDALONE */
@@ -210,6 +221,21 @@ int main(int argc, char **argv) {
         fwrite(seed.b, 1, seed.n, stdout);
         return 0;
     }
+
+    /* A seed the reader refuses never reaches the tokenizer: every run below
+     * would fuzz the reader alone and still report no crash. */
+    const char           *err = nullptr;
+    struct gguf_ctx      *ctx = gguf_open_memory(seed.b, seed.n, &err);
+    struct gguf_tokenizer tok;
+    if (ctx == nullptr || !gguf_tokenizer_load_copy(&tok, ctx)) {
+        fprintf(stderr,
+                "fuzz_tokenizer: the seed loads no tokenizer (%s)\n",
+                err != nullptr ? err : "gguf_tokenizer_load_copy failed");
+        gguf_close(ctx);
+        return 1;
+    }
+    gguf_tokenizer_unload(&tok);
+    gguf_close(ctx);
 
     const long runs = (argc == 2) ? strtol(argv[1], nullptr, 10) : 3000;
     uint64_t   s    = 0xC0FFEEull;
