@@ -263,8 +263,14 @@ gcc-15 -std=c23 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
        -Wshadow -Wundef -D_GNU_SOURCE -Wno-vla-parameter \
        -DGEIST_BACKEND_CPU_NEON=1 -DGEIST_BACKEND_CPU_SCALAR=1 \
        -Iinclude -I. -Isrc/base -Isrc/quant -Isrc/backends/common \
-       -Isrc/formats/gguf -Isrc/io -Isrc/engine -c <changed>.c -o /dev/null
+       -Isrc/formats/gguf -Isrc/formats/ptqtp -Isrc/io -Isrc/engine \
+       -Isrc/archs/audio_conformer -Isrc/archs/vision_siglip -Ithird_party/stb \
+       -c <changed>.c -o /dev/null
 ```
+
+The `-I` list is `CFLAGS_STRICT`'s from `mk/common.mk`; keep the two in step.
+A shorter list stops `session.c` at a missing header before the optimizer
+ever runs.
 
 **`-O3 -c`, not `-fsyntax-only`.** The diagnostics that matter for the
 rules above — `-Wstringop-overflow`, `-Wstringop-overread`,
