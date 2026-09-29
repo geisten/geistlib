@@ -14,6 +14,11 @@
  *
  * SKIPs cleanly without GGUF/tower; the audio-smoke CI job runs it with
  * fixtures mandatory.
+ *
+ * Reproducing a timing-dependent divergence (#506): GEIST_TEST_PUSH_CHUNK
+ * (samples per push, default 320) and GEIST_TEST_PUSH_PACE_US (sleep after
+ * each push) pin where the encoder worker snapshots the mel — 15040/600000
+ * puts it at 94 frames, the cut that emitted a wrong block before the fix.
  */
 #include "audio_test_util.h"
 #include "test_helpers.h"
@@ -24,6 +29,7 @@
 
 #include <math.h>
 #include <pthread.h>
+#include <unistd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,13 +47,19 @@ struct pusher_arg {
 
 /* Capture-thread pattern: push the clip in 20 ms chunks. */
 static void *pusher(void *p) {
-    struct pusher_arg *a = p;
-    for (size_t off = 0; off < N_PCM; off += PUSH_CHUNK) {
-        size_t take = N_PCM - off < PUSH_CHUNK ? N_PCM - off : PUSH_CHUNK;
+    struct pusher_arg *a     = p;
+    const char        *pace  = getenv("GEIST_TEST_PUSH_PACE_US");
+    const long         us    = pace != nullptr ? atol(pace) : 0;
+    const char        *ce    = getenv("GEIST_TEST_PUSH_CHUNK");
+    const size_t       chunk = ce != nullptr && atol(ce) > 0 ? (size_t) atol(ce) : PUSH_CHUNK;
+    for (size_t off = 0; off < N_PCM; off += chunk) {
+        size_t take = N_PCM - off < chunk ? N_PCM - off : chunk;
         if (geist_session_audio_push(a->sess, take, g_pcm + off) != GEIST_OK) {
             a->rc = 1;
             return nullptr;
         }
+        if (us > 0)
+            usleep((useconds_t) us);
     }
     a->rc = 0;
     return nullptr;
@@ -136,6 +148,22 @@ int main(void) {
                 am_a = i;
             if (lb[i] > lb[am_b])
                 am_b = i;
+        }
+        {
+            size_t s2 = am_a == 0 ? 1 : 0;
+            for (size_t i = 0; i < na; i++)
+                if (i != am_a && la[i] > la[s2])
+                    s2 = i;
+            printf("A top-2: %zu (%.3f) vs %zu (%.3f) margin %.3f; B[%zu]=%.3f B[%zu]=%.3f\n",
+                   am_a,
+                   (double) la[am_a],
+                   s2,
+                   (double) la[s2],
+                   (double) (la[am_a] - la[s2]),
+                   am_a,
+                   (double) lb[am_a],
+                   s2,
+                   (double) lb[s2]);
         }
         printf("logits: %zu entries, max|Δ| = %.3e, argmax %zu vs %zu\n", na, worst, am_a, am_b);
         /* Greedy equivalence is the contract; the measured logit shift
