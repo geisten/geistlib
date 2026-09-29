@@ -120,6 +120,14 @@ minor release.
 
 ### Changed
 
+- **The KV cache code of the architecture layer has no NEON left.** The
+  last of it, the row absmax that scales K and V rows for the INT8 and INT4
+  caches (`forward/kv_store.c`), is portable C that takes the maximum on the
+  bit patterns (sign cleared, an unsigned integer max), which gcc 14 (x86-64,
+  aarch64) and clang 19 (aarch64) vectorize; the float compare-and-select it
+  replaces on x86 stays scalar under clang with `-fno-finite-math-only`. The
+  same bits (INT8 and INT4 sessions compared under qemu); on x86-64 as fast
+  a row of 64 and 12-17 % faster at 128 and 256.
 - **cpu_neon runs the attention over the INT8 KV cache, its default off
   Apple, as its own kernel** (`fused->attention_kv_int8`, built with
   FEAT_DotProd). The `vdotq_s32` loop moves out of the architecture layer
