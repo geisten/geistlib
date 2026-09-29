@@ -117,9 +117,10 @@ static void seed_gguf(struct buf *o) {
     put_gstr(o, "tokenizer.ggml.merges");
     put_u32(o, VT_ARRAY);
     put_u32(o, VT_STRING);
-    put_u64(o, 2);
+    put_u64(o, 3);
     put_gstr(o, "t h");
     put_gstr(o, "he e");
+    put_gstr(o, "the"); /* no space: the loader's empty-right-half path */
 
     put_gstr(o, "tokenizer.ggml.bos_token_id");
     put_u32(o, VT_U32);

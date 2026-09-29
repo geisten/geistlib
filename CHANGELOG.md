@@ -136,6 +136,13 @@ minor release.
   `GEIST_E_OOM` instead of `GEIST_E_IO`. `set_prompt` used the same encoder:
   a prompt past its internal bound (reachable only with an SPM vocab that has
   no `▁` piece) now fails instead of prefilling a shortened prompt.
+- **A GGUF merge without a space reached `memcpy` as a null pointer**:
+  `gguf_tokenizer_load` gave a `tokenizer.ggml.merges` entry without a
+  space a null right half, and `gguf_tokenizer_load_copy` then copied it
+  with `memcpy(dst, nullptr, 0)` — undefined even for zero bytes, and
+  flagged by UBSan on glibc. The empty half now points at the end of the
+  string. It takes a malformed file; no shipped model has such a merge.
+  Found by the tokenizer fuzzer.
 
 ## [0.11.0] — 2026-09-06
 
