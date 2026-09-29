@@ -244,8 +244,10 @@ int main(int argc, char **argv) {
     LLVMFuzzerTestOneInput(seed.b, seed.n);
 
     for (long i = 0; i < runs; i++) {
-        uint8_t      input[sizeof seed.b];
-        const size_t size = 1 + (size_t) (prng(&s) % seed.n);
+        uint8_t input[sizeof seed.b];
+        /* Full length: the reader refuses every prefix of the seed, so a cut
+         * input never reaches the tokenizer. Cutting is fuzz_gguf's job. */
+        const size_t size = seed.n;
         memcpy(input, seed.b, size);
         const unsigned pokes = 1u + (unsigned) (prng(&s) % 8u);
         for (unsigned p = 0; p < pokes; p++)
