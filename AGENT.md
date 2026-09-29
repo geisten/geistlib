@@ -261,6 +261,7 @@ fails all nine Linux jobs:
 ```sh
 gcc-15 -std=c23 -O3 -DNDEBUG -fopenmp -Wall -Wextra -Wpedantic -Werror \
        -Wshadow -Wundef -D_GNU_SOURCE -Wno-vla-parameter \
+       -march=armv8.2-a+fp16+dotprod \
        -DGEIST_BACKEND_CPU_NEON=1 -DGEIST_BACKEND_CPU_SCALAR=1 \
        -Iinclude -I. -Isrc/base -Isrc/quant -Isrc/backends/common \
        -Isrc/formats/gguf -Isrc/formats/ptqtp -Isrc/io -Isrc/engine \
@@ -268,11 +269,14 @@ gcc-15 -std=c23 -O3 -DNDEBUG -fopenmp -Wall -Wextra -Wpedantic -Werror \
        -c <changed>.c -o /dev/null
 ```
 
-The `-I` list is `CFLAGS_STRICT`'s from `mk/common.mk`; keep the two in step.
-A shorter list stops `session.c` at a missing header before the optimizer
-ever runs. `-fopenmp` is what every target builds with; without it the
-kernels' `#pragma omp` is an unknown pragma, which `-Werror` turns into an
-error.
+The `-I` list is `CFLAGS_STRICT`'s from `mk/common.mk` and `-march` is the
+arm64 one from `mk/target-linux.mk`; keep them in step. With a shorter `-I`
+list, `session.c` stops at a missing header before the optimizer ever runs.
+`-fopenmp` is what every target builds with; without it the kernels'
+`#pragma omp` is an unknown pragma, which `-Werror` turns into an error.
+`-march` makes the check see what CI's arm64 legs compile, and a generic
+aarch64 gcc, which defaults to plain armv8-a, cannot inline the kernels'
+dot-product intrinsics without it.
 
 **`-O3 -c`, not `-fsyntax-only`.** The diagnostics that matter for the
 rules above — `-Wstringop-overflow`, `-Wstringop-overread`,
