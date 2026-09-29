@@ -170,6 +170,23 @@ minor release.
   +4 %. End to end (synthetic weights), a 4000-token prompt prefills 6.7 %
   faster in Llama 3.2 1B's geometry (Q4_K) and 4.4 % at 2048 tokens;
   SmolLM2-360M's as fast as before.
+- **cpu_x86 sessions keep a layer's INT8/INT4 K and V caches apart in the
+  cache sets.** K and V were buffers of their own, and large allocations
+  start at the same offset in a page; one KV head's rows lie a cache row
+  apart, so at a power-of-two row (512 bytes in Llama 3.2 1B) they take
+  one n_kv_heads-th of the L1 and L2 sets, and a KV head's K and V rows
+  took the same ones. A layer's K and V are now slices of one buffer, V
+  half a row further into its page than K (half a page at most), on
+  backends that set the new capability bit `kv_q8_block`
+  (`geist_backend.h`, EXPERIMENTAL): `cpu_x86`. The results are the same
+  bits. x86-64, 4 threads, a 64-token prefill chunk at 1024-4096 positions,
+  per call: Llama 3.2 1B's layout -5 to -15 % (VNNI kernel; AVX2 -0 to
+  -9 %), Qwen3-0.6B's -5 to -19 % (-4 to -10 %), 32/32 heads -26 to -39 %
+  (-23 to -38 %); SmolLM2-360M (320-byte rows) and one KV head (Gemma 4
+  E2B) within +-2 %; decode -10 to +3 %. End to end (synthetic weights,
+  Llama 3.2 1B's geometry) the change is below the noise, -1.2 % and -1.4 %
+  at 2048 and 4000 tokens; the attention stage of the prefill profile took
+  7.5 % less time, in every run.
 - **The KV cache code of the architecture layer has no NEON left.** The
   last of it, the row absmax that scales K and V rows for the INT8 and INT4
   caches (`forward/kv_store.c`), is portable C that takes the maximum on the

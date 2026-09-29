@@ -206,6 +206,13 @@ and prefix pinning
 amortize a constant system prompt across chat turns. Speculative decode drafts
 via an n-gram lookup over history and verifies in one batched forward.
 
+Where the backend asks for it (`caps.kv_q8_block`: `cpu_x86`), a layer's INT8 or
+INT4 K and V data are one allocation, and V starts half a row further into its
+page than K. The rows of one KV head lie a cache row apart; at the
+power-of-two rows of most models they take one n_kv_heads-th of the cache sets,
+and K and V as allocations of their own started at the same page offset and
+took the same ones.
+
 The rotation and packed-INT4 modes store K post-RoPE and rotated; this is only
 safe because geist never re-bases cached positions (the sliding window masks,
 it does not re-RoPE the cache). A future KV context-shift feature would have to

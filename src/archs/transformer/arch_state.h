@@ -261,6 +261,10 @@ struct transformer_arch_session {
     struct geist_buffer **v_kivi_zeros;
     struct geist_buffer **k_residual;
     struct geist_buffer **v_residual;
+    /* INT8/INT4 on a backend with caps.kv_q8_block: the buffer that holds
+     * the layer's K and V data, k_cache_q8[] and v_cache_q8[] being
+     * aliased slices of it (see alloc_kv_q8_block); nullptr otherwise. */
+    struct geist_buffer **kv_q8_block;
     size_t                kivi_residual_count;
     size_t                kivi_drained_count;
     size_t                kv_len;        /* valid prefix across all caches */

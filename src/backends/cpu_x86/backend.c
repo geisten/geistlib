@@ -536,6 +536,7 @@ const struct geist_backend_descriptor geist_backend_cpu_x86 = {
         .fused = &cpu_x86_fused,
         .caps  = {.max_m             = GEIST_QUANT_M_CAP,
                   .preferred_kv_mode = GEIST_KV_INT8,
+                  .kv_q8_block       = true, /* K and V apart in the cache sets */
 #if defined(_OPENMP)
                  .manages_host_threads = true, /* the region hooks above */
 #endif

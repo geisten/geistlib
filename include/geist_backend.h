@@ -785,6 +785,16 @@ struct geist_backend_caps {
      * Platform-specific compilands (cpu_neon/cpu_scalar) set this per
      * their own build target; the arch layer never sniffs platforms. */
     enum geist_kv_mode preferred_kv_mode;
+
+    /* A layer's INT8/INT4 KV cache is one buffer, K and V aliased slices
+     * of it, V half a row further into its page than K (half a page at
+     * most). A KV head's rows lie a cache row apart: at a power-of-two row
+     * they take 1/n_kv_heads of the cache sets, and K and V in buffers of
+     * their own, which start at the same offset in a page, took the same
+     * ones. Needs buffer_create_aliased to share the bytes of a
+     * GEIST_MEMORY_MAPPED buffer (metal copies them). Consumer: session
+     * allocation. Opt-in after measuring: cpu_x86. */
+    bool kv_q8_block;
 };
 
 /* ====================================================================== */
