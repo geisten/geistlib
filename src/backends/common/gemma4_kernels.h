@@ -101,6 +101,27 @@ void attention_mqa_causal(size_t      seq_len,
                           const float v[static seq_len * n_kv_heads * head_dim],
                           float       out[static seq_len * n_q_heads * head_dim]);
 
+/* The KV-cached attention kernels (this one, cpu_x86's and cpu_neon's)
+ * score this many positions at a time in a stack buffer and take the
+ * softmax online across the blocks, so no buffer grows with the context
+ * and nothing is allocated per call. */
+enum { ATTN_F32_BLOCK = 512 };
+
+/* No attention softmax takes exp of (score - running max) below this. The
+ * block loops are countable, so the compiler vectorizes expf (libmvec), and
+ * the vector expf sends every lane below about -87.3 down a scalar slow
+ * path: in a peaked softmax most lanes, which made a 15-head SmolLM2 decode
+ * 7 % slower at 2048 positions. Weights near e^-87 times a V value or scale
+ * are denormals besides, which cost a microcode assist each: floored at
+ * -87, the INT8 cache's attention still ran twice as slow on peaked scores
+ * as on flat ones. At -60 neither happens, and no result changes: raising
+ * a weight to e^-60 (or dropping it to 0) moves it by less than 8.8e-27,
+ * 2^24 of them move the sum by 1.5e-19 next to the max's 1, and e^-60
+ * times anything above 1.3e-12 is a normal float. So every kernel clamps
+ * the argument here, one max per lane, and takes a rescale or merge factor
+ * below it as 0. */
+static constexpr float ATTN_EXP_FLOOR = -60.0f;
+
 /* Decoupled-length variant for KV-cached inference.
  *   q       shape [n_q,  n_q_heads,  head_dim]
  *   k       shape [n_kv, n_kv_heads, head_dim]
@@ -111,7 +132,8 @@ void attention_mqa_causal(size_t      seq_len,
  * sliding_window > 0, additionally s > q_offset + t - sliding_window.
  *
  * For prefill: n_q = n_kv, q_offset = 0  (equivalent to attention_mqa_causal).
- * For decode:  n_q = 1, n_kv = cache_len_after_append, q_offset = cache_len_before. */
+ * For decode:  n_q = 1, n_kv = cache_len_after_append, q_offset = cache_len_before.
+ * Writes all of out; allocates nothing. */
 void attention_mqa_causal_kv(size_t      n_q,
                              size_t      n_kv,
                              size_t      q_offset,

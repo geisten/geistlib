@@ -1,12 +1,7 @@
 /*
- * test_backend_vs_direct_int — verifies backend->vtbl->linear on real
- * Q4_K weight data matches the direct gguf_quant.c kernel.
- *
- * Phase B-4e verification: proves that lm.c's per-layer Q4_K matmul calls
- * can be replaced one-for-one with backend->vtbl->linear without changing
- * output. The actual lm.c surgery to route hot-path calls through the
- * vtable is left for a follow-up commit; this test demonstrates that the
- * architectural foundation is sound.
+ * test_backend_vs_direct_int — on real Q4_K weight data, the kernel
+ * cpu_neon's resolve_weight binds matches the direct quant.h kernel
+ * (linear_q4k_decode_w4a8).
  *
  * SKIPs cleanly if no GGUF model is available (set GEIST_GGUF_PATH).
  */
@@ -86,7 +81,7 @@ int main(void) {
         x_in[i] = (float) ((int32_t) seed) * (1.0f / (float) INT32_MAX);
     }
 
-    /* ---- Direct path: legacy gguf_quant.c kernel ---- */
+    /* ---- Direct path: the quant.h kernel ---- */
     float *y_direct = aligned_alloc(64, n_out * sizeof(float));
     if (y_direct == nullptr) {
         free(x_in);
@@ -95,7 +90,7 @@ int main(void) {
     }
     linear_q4k_decode_w4a8(n_in, n_out, x_in, t->data, y_direct);
 
-    /* ---- Vtable path: cpu_neon backend->vtbl->linear ---- */
+    /* ---- Resolver path: the kernel cpu_neon binds ---- */
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
     if (s != GEIST_OK) {

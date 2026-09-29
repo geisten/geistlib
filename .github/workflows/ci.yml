@@ -138,8 +138,9 @@ jobs:
       # Mandatory GPU gate (#181): on macos-15 a Metal device is expected,
       # so a SKIP (exit 77) from either binary fails the step — a skipped
       # gate must not read as a green one. Registration, lifecycle, buffer
-      # round-trip (probe) and Q4_K/Q6_K/F32 linear parity vs cpu_scalar
-      # (m=1 and m=8) all run on the real device.
+      # round-trip (probe) and linear parity vs cpu_scalar (every quant
+      # format the test lists, decode and prefill shapes) all run on the
+      # real device.
       - name: Metal device probe + linear parity (GPU, mandatory)
         if: matrix.apple_silicon
         run: |
@@ -483,6 +484,35 @@ jobs:
       # kernel gets installed without a runtime CPU check (SIGILL on v3 CPUs).
       - name: Integration tests, non-AVX512 dispatch (GEIST_FORCE_ISA=avx2)
         run: GEIST_FORCE_ISA=avx2 make test-int TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
+      # Coarse perf cliff detector for cpu_x86, the one CPU backend no gate
+      # measured. The model is the hermetic synthetic Llama 3.2 1B Q4_K
+      # (tools/gen_synth_gguf.py: about 6 s, no download, the same bytes on
+      # every run), written outside gguf_artifacts so the model cache above
+      # never stores it. The floors are ~25% of what a 4-vCPU x86 VM
+      # measures with this build (prefill ~160, decode ~32 tok/s); the cliff
+      # they are for is far below them: the scalar reference backend gives
+      # 3.9 / 1.4. Tighten them once this runner's numbers are in the logs.
+      # perf_gate --record puts this run next to the last main run in the
+      # step summary (#442), as on the arm64 leg.
+      - name: Last main perf numbers (x86, synthetic)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: perf-last
+          key: perf-x86_64-synth-${{ github.run_id }}
+          restore-keys: perf-x86_64-synth-
+      - name: Perf regression gate (x86, synthetic Q4_K)
+        run: |
+          python3 tools/gen_synth_gguf.py "$RUNNER_TEMP/llama32-1b-q4_k.gguf" --preset llama32-1b-q4_k
+          bin/linux/release/tests/bench_perf_sweep \
+            --gguf "$RUNNER_TEMP/llama32-1b-q4_k.gguf" \
+            --seq-lens 128 --decode-n 16 --warmup 4 --repeats 3 \
+            | python3 benchmark/perf_gate.py --min-prefill 40 --min-decode 8 --record perf-last/main.json
+      - name: Save perf numbers for the next comparison (main only, x86)
+        if: github.ref == 'refs/heads/main' && hashFiles('perf-last/main.json') != ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: perf-last
+          key: perf-x86_64-synth-${{ github.run_id }}
 
   # Guarantee the SIMD-free portable reference builds + passes on x86_64,
   # independent of whatever SIMD the runner CPU happens to have. This is the
@@ -712,10 +742,11 @@ jobs:
   #      GEIST_EXPECT_ISA=avx512_vnni — it prints CPUID features + the
   #      dispatcher tier and HARD-FAILS on any silent downgrade (SDE
   #      missing, wrong chip model, clamp bug).
-  #   2. The targeted W4A8/W8A8/Q4Kx8/Q6K/i2s kernel unit tests then run
-  #      under the same emulation; each carries its own scalar-reference
-  #      parity checks. Whole-suite-under-SDE is deliberately out: 10-50×
-  #      emulation overhead buys no additional SIMD coverage.
+  #   2. The targeted W4A8/W8A8/Q4Kx8/Q6K/i2s and INT8-KV attention kernel
+  #      unit tests then run under the same emulation; each carries its own
+  #      scalar-reference parity checks. Whole-suite-under-SDE is
+  #      deliberately out: 10-50× emulation overhead buys no additional SIMD
+  #      coverage.
   # Real-hardware e2e (big model, perf) stays a self-hosted concern —
   # runner contract: labels [self-hosted, linux, x64, geist-avx512],
   # AVX-512F/BW/DQ/VL+VNNI mandatory, checked by the same dispatch test.
@@ -767,7 +798,9 @@ jobs:
                    test_q4k_to_q4kx8_unit test_q4kx8_gemm_unit \
                    test_q6k_gemv_unit test_q8w_gemv_unit test_f32q_unit \
                    test_i2s_gemv_unit test_gelu_x86_unit \
-                   test_x86_kernel_no_alloc_unit; do
+                   test_x86_kernel_no_alloc_unit test_x86_q8_0_unit \
+                   test_x86_q4k_prefill_tail_unit test_x86_q6k_layout_unit \
+                   test_x86_attention_int8_unit test_attention_int8_unit; do
             echo "=== $t (sde -spr) ==="
             "$SDE_PATH/sde64" -spr -- "bin/linux/release/tests/$t" 2>&1 \
               | tee -a ci-diagnostics/avx512-tests.txt

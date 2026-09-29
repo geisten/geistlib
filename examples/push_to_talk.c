@@ -99,7 +99,7 @@ static void answer_utterance(struct geist_session *sess,
         const char *t = geist_session_token_to_str(sess, tok);
         if (t != nullptr) {
             /* SentencePiece: U+2581 marks a leading space; control bytes
-             * are per-piece trailers — print the readable part. */
+             * are dropped — print the readable part. */
             for (const char *p = t; *p; p++) {
                 if ((unsigned char) p[0] == 0xE2 && (unsigned char) p[1] == 0x96 &&
                     (unsigned char) p[2] == 0x81) {

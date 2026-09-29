@@ -14,6 +14,7 @@
  */
 #include "quant_blocks.h"
 #include "heap.h"
+#include "linear_ref.h"
 #include "quant.h"
 #include "gemma4_kernels.h"
 
@@ -476,6 +477,21 @@ static void q4k_pp_pair_row(size_t n, void *vctx) {
         q4k_decode_one_row(n, c->c1);
 }
 
+/* y from geist_linear_ref, for when the wrappers below cannot have their
+ * activation scratch: they return void, and the trampolines that bind them
+ * take y as written. The descriptor names the source bytes, as the one-row
+ * views of spec_head.c do. */
+static void q4k_decode_ref(size_t n_in, size_t n_out, const float *x, const void *w_q4k, float *y) {
+    const struct geist_weight w = {
+            .raw        = w_q4k,
+            .raw_nbytes = n_out * (n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES,
+            .n_in       = (int32_t) n_in,
+            .n_out      = (int32_t) n_out,
+            .dtype      = (uint16_t) GEIST_DTYPE_Q4_K,
+    };
+    geist_linear_ref(1, x, &w, y);
+}
+
 void linear_q4k_decode_w4a8(size_t      n_in,
                             size_t      n_out,
                             const float x[static n_in],
@@ -486,53 +502,45 @@ void linear_q4k_decode_w4a8(size_t      n_in,
      * norm input x. Caching x_q8 + sum32 + scale across the 3 (or 2) calls
      * saves 2 of 3 (or 1 of 2) quantize_x_for_q4k passes per group. The
      * cache hangs off the master thread (this function runs serially before
-     * the inner-loop OMP team is spawned). Key: (x ptr, n_in, fingerprint).
-     * Fingerprint guards against same-pointer reuse across rmsnorm cycles. */
+     * the inner-loop OMP team is spawned). Key: the x pointer, n_in and a
+     * copy of x itself: the next rmsnorm rewrites the same buffer, and a
+     * sample of its values could match the old vector's where the rest does
+     * not (test_neon_q4k_act_cache_unit). Comparing n_in floats costs a
+     * fraction of quantizing them. */
     static _Thread_local int8_t      *tl_x_q8         = nullptr;
     static _Thread_local int32_t     *tl_sum32        = nullptr;
+    static _Thread_local float       *tl_x_copy       = nullptr;
     static _Thread_local size_t       tl_cap_n_in     = 0;
     static _Thread_local const float *tl_last_x       = nullptr;
     static _Thread_local size_t       tl_last_n_in    = 0;
-    static _Thread_local uint64_t     tl_last_sig     = 0;
     static _Thread_local float        tl_last_scale_x = 0.0f;
 
     /* Grow scratch caches on demand. */
     if (n_in > tl_cap_n_in) {
         safe_free((void **) &tl_x_q8);
         safe_free((void **) &tl_sum32);
-        tl_x_q8  = heap_alloc_array_aligned(int8_t, n_in);
-        tl_sum32 = heap_alloc_array_aligned(int32_t, n_in / 32);
-        if (tl_x_q8 == nullptr || tl_sum32 == nullptr) {
+        safe_free((void **) &tl_x_copy);
+        tl_x_q8   = heap_alloc_array_aligned(int8_t, n_in);
+        tl_sum32  = heap_alloc_array_aligned(int32_t, n_in / 32);
+        tl_x_copy = heap_alloc_array_aligned(float, n_in);
+        tl_last_x = nullptr; /* invalidate */
+        if (tl_x_q8 == nullptr || tl_sum32 == nullptr || tl_x_copy == nullptr) {
             tl_cap_n_in = 0;
+            q4k_decode_ref(n_in, n_out, x, w_q4k, y);
             return;
         }
         tl_cap_n_in = n_in;
-        tl_last_x   = nullptr; /* invalidate */
     }
 
-    /* Cheap fingerprint: 5 fp32 samples across the vector. ~5 ns vs ~1.5 μs
-     * for a full re-quantize, so the false-miss cost is irrelevant. */
-    union {
-        float    f;
-        uint32_t u;
-    } s0, s1, s2, s3, s4;
-    s0.f               = x[0];
-    s1.f               = x[n_in / 4];
-    s2.f               = x[n_in / 2];
-    s3.f               = x[(3 * n_in) / 4];
-    s4.f               = x[n_in - 1];
-    const uint64_t sig = (uint64_t) s0.u ^ ((uint64_t) s1.u << 7) ^ ((uint64_t) s2.u << 13) ^
-                         ((uint64_t) s3.u << 19) ^ ((uint64_t) s4.u << 23);
-
     float scale_x;
-    if (tl_last_x == x && tl_last_n_in == n_in && tl_last_sig == sig) {
-        /* Cache hit — reuse pre-quantized data. */
+    if (tl_last_x == x && tl_last_n_in == n_in && memcmp(tl_x_copy, x, n_in * sizeof *x) == 0) {
+        /* Cache hit — the same input: reuse its quantization. */
         scale_x = tl_last_scale_x;
     } else {
-        scale_x         = quantize_x_for_q4k(n_in, x, tl_x_q8, tl_sum32);
+        scale_x = quantize_x_for_q4k(n_in, x, tl_x_q8, tl_sum32);
+        memcpy(tl_x_copy, x, n_in * sizeof *x);
         tl_last_x       = x;
         tl_last_n_in    = n_in;
-        tl_last_sig     = sig;
         tl_last_scale_x = scale_x;
     }
 
@@ -563,6 +571,8 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
         tl_sum32 = heap_alloc_array_aligned(int32_t, n_in / 32);
         if (tl_x_q8 == nullptr || tl_sum32 == nullptr) {
             tl_cap_n_in = 0;
+            q4k_decode_ref(n_in, n_out0, x, w0_q4k, y0);
+            q4k_decode_ref(n_in, n_out1, x, w1_q4k, y1);
             return;
         }
         tl_cap_n_in = n_in;

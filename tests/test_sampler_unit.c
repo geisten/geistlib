@@ -16,6 +16,7 @@
 #include <geist.h>
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,64 @@ int main(void) {
         float         logits[] = {-1.0f, 2.0f, 0.5f, 3.0f, 3.0f, -0.5f};
         geist_token_t t        = geist_sampler_argmax(6, logits);
         fails += check(t == 3, "argmax picks first occurrence of max (idx 3)");
+    }
+    /* ... against a plain scan: vocabularies of every size class, the
+     * maximum at the start, the end, repeated far apart, all values equal,
+     * all negative. */
+    {
+        static const size_t SIZES[] = {1, 2, 7, 255, 256, 257, 1000, 49152, 128256};
+        uint64_t            s       = 0x9E3779B97F4A7C15ull;
+        float              *l       = xmalloc(128256 * sizeof *l);
+        for (size_t si = 0; si < sizeof SIZES / sizeof SIZES[0]; si++) {
+            const size_t n = SIZES[si];
+            for (int variant = 0; variant < 7; variant++) {
+                for (size_t i = 0; i < n; i++) {
+                    s ^= s << 13;
+                    s ^= s >> 7;
+                    s ^= s << 17;
+                    l[i] = (float) (s >> 40) / 16777216.0f * 20.0f - 10.0f;
+                }
+                switch (variant) {
+                case 1: /* at the start, again at the end */
+                    l[0] = l[n - 1] = 50.0f;
+                    break;
+                case 2: /* at the end only */
+                    l[n - 1] = 50.0f;
+                    break;
+                case 3: /* the same maximum at three places, far apart */
+                    l[n / 2] = l[n / 3] = l[n - 1] = 50.0f;
+                    break;
+                case 4: /* all equal */
+                    for (size_t i = 0; i < n; i++) {
+                        l[i] = 1.5f;
+                    }
+                    break;
+                case 5: /* all negative */
+                    for (size_t i = 0; i < n; i++) {
+                        l[i] = -1.0f - fabsf(l[i]);
+                    }
+                    break;
+                case 6: /* ties just across every 256th position */
+                    for (size_t i = 255; i < n; i += 256) {
+                        l[i] = 40.0f;
+                        if (i + 1 < n) {
+                            l[i + 1] = 40.0f;
+                        }
+                    }
+                    break;
+                default:
+                    break;
+                }
+                size_t want = 0;
+                for (size_t i = 1; i < n; i++) {
+                    want = l[i] > l[want] ? i : want;
+                }
+                char what[96];
+                snprintf(what, sizeof what, "argmax = plain scan (n %zu, case %d)", n, variant);
+                fails += check((size_t) geist_sampler_argmax(n, l) == want, what);
+            }
+        }
+        free(l);
     }
 
     /* ---- 2. Temperature: highly peaked → near-argmax ---- */

@@ -15,6 +15,7 @@
 #include <geist_backend.h>
 
 #include "error.h"
+#include "hw_probe.h"
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -71,6 +72,21 @@ enum geist_status geist_backend_create(const char                      *name,
                                     "backend '%s' has incomplete vtable",
                                     desc->name);
         return GEIST_E_INTERNAL;
+    }
+    /* The target flags let the compiler use their instruction-set features
+     * anywhere in the library, so a host that lacks one would die with
+     * SIGILL somewhere in a decode. Say so here instead. */
+    struct geist_hw_probe hw;
+    geist_hw_probe_isa(&hw);
+    const char *missing = geist_hw_build_isa_missing(&hw);
+    if (missing != nullptr) {
+        geist_error_set_create_time(GEIST_E_UNSUPPORTED,
+                                    "geist_backend_create",
+                                    "this build of geist uses %s, which this CPU does not have; "
+                                    "build it for this CPU (CFLAGS_TARGET and BACKENDS, see "
+                                    "mk/target-linux.mk)",
+                                    missing);
+        return GEIST_E_UNSUPPORTED;
     }
 
     const struct geist_allocator *a = alloc != nullptr ? alloc : &geist_libc_allocator;

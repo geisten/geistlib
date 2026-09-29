@@ -93,7 +93,13 @@ Sub-parity rows are kept on purpose — nothing cherry-picked.</sub>
 make bench-small        # quick check — records a table row + a raw JSONL record
 make bench-detailed     # more repeats, tighter spread
 make bench-mmlu         # quality (MMLU), self-contained
+make bench-synth        # no download: perf sweep on a synthetic GGUF (SYNTH_PRESET=...)
 ```
+
+`bench-synth` generates its model with `tools/gen_synth_gguf.py`: a real model's
+geometry and quantization, random weights. Kernel, attention and memory timings
+transfer to the real model; outputs and value-dependent costs (e.g. `expf` slow
+paths) do not, so it is a baseline for engine changes, never a quality number.
 
 Raw run artifacts land in `~/bench-geistlib/` — outside the repo, so the working
 tree stays clean. Read [METHODOLOGY.md](METHODOLOGY.md) before trusting a number:

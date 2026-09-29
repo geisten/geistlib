@@ -30,6 +30,7 @@
 #include "checked.h"
 #include "geist_gemm.h"
 #include "heap.h"
+#include "linear_ref.h"
 
 #include "quant.h"
 
@@ -98,22 +99,16 @@ static void pq2_0_m1_row_body(size_t r, void *vctx) {
 /* Per-call activation prep shared by both kernels: absmax int8 quant in
  * the kernel element order (see file comment) plus the per-block sums
  * that fold the code bias out. Rounding matches tq2_0.c. Thread-local
- * workspace, grown on demand; false (y zeroed) on OOM or a width that
- * is not a whole number of blocks. */
-static bool pq2_0_prep(struct cpu_neon_workspace *ws,
-                       size_t                     n_in,
-                       size_t                     n_out,
-                       const float               *x,
-                       float                     *y,
-                       float                     *inv_act_scale) {
+ * workspace, grown on demand; false on OOM or a width that is not a whole
+ * number of blocks, and the caller computes y with geist_linear_ref. */
+static bool
+pq2_0_prep(struct cpu_neon_workspace *ws, size_t n_in, const float *x, float *inv_act_scale) {
     const size_t nb = n_in / PQ2_0_BLOCK_ELEMS;
     if (ws == nullptr || n_in % PQ2_0_BLOCK_ELEMS != 0) {
-        memset(y, 0, n_out * sizeof *y);
         return false;
     }
     if (!cpu_neon_grow_i8(&ws->m1_xq, &ws->m1_xq_cap, n_in) ||
         !cpu_neon_grow_i32(&ws->m1_bsum, &ws->m1_bsum_cap, nb)) {
-        memset(y, 0, n_out * sizeof *y);
         return false;
     }
     /* n_in is a whole number of 128-element blocks (checked above), so
@@ -191,7 +186,8 @@ void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
     const size_t               n_in  = (size_t) w->n_in;
     const size_t               n_out = (size_t) w->n_out;
     float                      inv   = 0.0f;
-    if (!pq2_0_prep(ws, n_in, n_out, x, y, &inv)) {
+    if (!pq2_0_prep(ws, n_in, x, &inv)) {
+        geist_linear_ref(1, x, w, y);
         return;
     }
     struct pq2_0_m1_ctx ctx = {
@@ -235,12 +231,9 @@ void cpu_neon_w_pq2_0_q8a_pair_m1(const float               *x,
     const size_t               nin = (size_t) w0->n_in;
     const size_t               n0 = (size_t) w0->n_out, n1 = (size_t) w1->n_out;
     float                      inv = 0.0f;
-    if ((size_t) w1->n_in != nin) {
-        return;
-    }
-    /* prep zeroes y0 on refusal; y1 is this function's to zero. */
-    if (!pq2_0_prep(ws, nin, n0, x, y0, &inv)) {
-        memset(y1, 0, n1 * sizeof *y1);
+    if ((size_t) w1->n_in != nin || !pq2_0_prep(ws, nin, x, &inv)) {
+        geist_linear_ref(1, x, w0, y0);
+        geist_linear_ref(1, x, w1, y1);
         return;
     }
     const size_t             rb = nin / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES;
@@ -401,8 +394,8 @@ void cpu_neon_w_pq2_0_x8_m1(const float               *x,
     const size_t               n_in  = (size_t) w->n_in;
     const size_t               n_out = (size_t) w->n_out;
     float                      inv   = 0.0f;
-    if (!pq2_0_prep(ws, n_in, n_out, x, y, &inv) || w->aux_fp32 == nullptr) {
-        memset(y, 0, n_out * sizeof *y);
+    if (w->aux_fp32 == nullptr || !pq2_0_prep(ws, n_in, x, &inv)) {
+        geist_linear_ref(1, x, w, y);
         return;
     }
     struct pq2_0_x8_ctx ctx = {
@@ -441,13 +434,10 @@ void cpu_neon_w_pq2_0_x8_pair_m1(const float               *x,
     const size_t               nin = (size_t) w0->n_in;
     const size_t               n0 = (size_t) w0->n_out, n1 = (size_t) w1->n_out;
     float                      inv = 0.0f;
-    if ((size_t) w1->n_in != nin) {
-        return;
-    }
-    if (!pq2_0_prep(ws, nin, n0, x, y0, &inv) || w0->aux_fp32 == nullptr ||
-        w1->aux_fp32 == nullptr) {
-        memset(y0, 0, n0 * sizeof *y0);
-        memset(y1, 0, n1 * sizeof *y1);
+    if ((size_t) w1->n_in != nin || w0->aux_fp32 == nullptr || w1->aux_fp32 == nullptr ||
+        !pq2_0_prep(ws, nin, x, &inv)) {
+        geist_linear_ref(1, x, w0, y0);
+        geist_linear_ref(1, x, w1, y1);
         return;
     }
     const size_t             bp = nin / PQ2_0_BLOCK_ELEMS;
@@ -574,13 +564,15 @@ constexpr size_t PQ2_0_X8_TILE_ROWS = 128;
  * out so the pair path can permute once and run it twice: at m = 128 the
  * permute moves ~22 MB in and 22 MB out per layer, and gate/up or q/k/v
  * were each paying for it separately. */
-static void pq2_0_x8_gemm_permuted(struct cpu_neon_state *st,
-                                   size_t                 m,
-                                   size_t                 n_in,
-                                   size_t                 n_out,
-                                   const uint8_t         *W,
-                                   const float           *xp,
-                                   float                 *y) {
+static void pq2_0_x8_gemm_permuted(struct cpu_neon_state     *st,
+                                   size_t                     m,
+                                   size_t                     n_in,
+                                   size_t                     n_out,
+                                   const uint8_t             *W,
+                                   const float               *xp,
+                                   const float               *x,
+                                   const struct geist_weight *w,
+                                   float                     *y) {
     const size_t nb      = n_in / PQ2_0_BLOCK_ELEMS;
     const size_t T       = PQ2_0_X8_TILE_ROWS;
     const size_t n_tiles = (n_out + T - 1) / T;
@@ -592,11 +584,9 @@ static void pq2_0_x8_gemm_permuted(struct cpu_neon_state *st,
         const size_t               r0  = ti * T;
         const size_t               tr  = n_out - r0 < T ? n_out - r0 : T;
         if (tws == nullptr || !cpu_neon_grow_f32(&tws->pq2_tile, &tws->pq2_tile_cap, T * n_in)) {
-            /* geist_sgemm would have written these rows with beta = 0;
-             * zero them so the caller never reads the previous layer. */
-            for (size_t r = 0; r < m; r++) {
-                memset(y + r * n_out + r0, 0, tr * sizeof *y);
-            }
+            /* No tile to stage these rows in: the reference computes them,
+             * from the unpermuted x and the source weight. */
+            geist_linear_ref_rows(m, r0, tr, n_out, x, w, y + r0);
             continue;
         }
         for (size_t k = 0; k < tr / 8; k++) {
@@ -643,13 +633,10 @@ void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
     const uint8_t             *W     = (const uint8_t *) w->aux_fp32;
     const float               *xp    = pq2_0_permuted_x(ws, m, n_in, x);
     if (W == nullptr || xp == nullptr) {
-        /* Same refusal as the m1 kernels: zeroed y, never stale scratch. */
-        if (m != 0) {
-            memset(y, 0, m * n_out * sizeof *y);
-        }
+        geist_linear_ref(m, x, w, y); /* as the m1 kernels: the reference */
         return;
     }
-    pq2_0_x8_gemm_permuted(st, m, n_in, n_out, W, xp, y);
+    pq2_0_x8_gemm_permuted(st, m, n_in, n_out, W, xp, x, w, y);
 }
 
 /* Prefill twin of cpu_neon_w_pq2_0_x8_pair_m1: one permute, two GEMMs.
@@ -671,14 +658,12 @@ void cpu_neon_w_pq2_0_x8_pair_mN(size_t                     m,
     const uint8_t             *W1 = (const uint8_t *) w1->aux_fp32;
     const float *xp = (size_t) w1->n_in == nin ? pq2_0_permuted_x(ws, m, nin, x) : nullptr;
     if (W0 == nullptr || W1 == nullptr || xp == nullptr) {
-        if (m != 0) {
-            memset(y0, 0, m * n0 * sizeof *y0);
-            memset(y1, 0, m * n1 * sizeof *y1);
-        }
+        geist_linear_ref(m, x, w0, y0);
+        geist_linear_ref(m, x, w1, y1);
         return;
     }
-    pq2_0_x8_gemm_permuted(st, m, nin, n0, W0, xp, y0);
-    pq2_0_x8_gemm_permuted(st, m, nin, n1, W1, xp, y1);
+    pq2_0_x8_gemm_permuted(st, m, nin, n0, W0, xp, x, w0, y0);
+    pq2_0_x8_gemm_permuted(st, m, nin, n1, W1, xp, x, w1, y1);
 }
 
 #endif /* __ARM_NEON && __ARM_FEATURE_DOTPROD */
