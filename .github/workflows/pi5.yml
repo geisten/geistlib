@@ -66,10 +66,17 @@ jobs:
       # the board's measured night-to-night noise on an unchanged commit —
       # benchmark/bench_compare.py has the numbers. A deliberate slowdown
       # leaves this red until someone re-runs with reset_baseline.
+      # Exit 3 = the run's own spread says the board was busy: neither a
+      # verdict nor a new baseline (#446), the step summary says why.
       - name: regression vs the last green run
+        id: compare
         if: ${{ !inputs.reset_baseline }}
-        run: python3 benchmark/bench_compare.py "$RUNNER_TEMP"/bench/*_raw.json --baseline ~/bench-geistlib/last-green.json
+        run: |
+          python3 benchmark/bench_compare.py "$RUNNER_TEMP"/bench/*_raw.json --baseline ~/bench-geistlib/last-green.json && rc=0 || rc=$?
+          echo "comparable=$([ "$rc" -eq 3 ] && echo false || echo true)" >> "$GITHUB_OUTPUT"
+          [ "$rc" -eq 3 ] && exit 0 || exit "$rc"
       - name: promote this run to last green
+        if: ${{ steps.compare.outputs.comparable != 'false' }}
         run: cp "$RUNNER_TEMP"/bench/*_raw.json ~/bench-geistlib/last-green.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

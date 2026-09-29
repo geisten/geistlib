@@ -1,0 +1,300 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_memory_scope_semantics : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+
+/* Tensor-core causal MQA/GQA attention (full prefill/decode-batch, no
+ * sliding window). One subgroup (32 lanes) per 16-query-row block per head;
+ * BR = BC = 16 match the hardware coopmat fragment size directly, so QK^T
+ * and P@V are each a single coopMatMulAdd per head_dim/16 tile -- no
+ * array-of-coopmat-in-a-loop (measured 4x slower elsewhere, see
+ * matmul_pq2_0_cm_body.glsl). Requires sliding_window == 0 and
+ * head_dim == 256 (HD_TILES == 16, the shape qwen35/Bonsai's full-attention
+ * layers actually use); the host falls back to attention_f16 for every
+ * other shape (#475 follow-up).
+ *
+ * Two passes over the causal KV range instead of one:
+ *   pass A: QK^T per tile, row max only (discarded otherwise).
+ *   pass B: QK^T again, now exp(s - m_final) is safe outright (m_final is
+ *     the true max), so l (row sum) and the O = P@V accumulators need no
+ *     further rescaling as later tiles arrive.
+ * This costs one extra QK matmul pass versus single-pass (streaming)
+ * flash attention, to avoid it: GL_KHR_cooperative_matrix has no portable
+ * per-row scalar multiply on an opaque accumulator matrix, which a
+ * streaming softmax needs every tile to rescale O by exp(m_old - m_new).
+ * The fork's flash attention reaches into GL_NV_cooperative_matrix2 for
+ * that (coopMatReduceNV); this kernel stays on the portable KHR extension
+ * so it still builds and runs on RADV (#471 already tracks that backend's
+ * other coopmat-shader limits; this one is squarely in scope for a later
+ * single-pass version once this baseline is validated).
+ *
+ * GPU layout: Q f32 (vec4), K/V f16 (f16vec4), matching attention_f16.comp
+ * so the two kernels are drop-in alternatives from the host's POV.
+ * Dispatch: gx = ceil(n_q / 16), gy = n_q_heads, one subgroup/workgroup. */
+
+layout(local_size_x = 32) in;
+
+layout(set = 0, binding = 0) readonly buffer Q { vec4 q4[]; };
+layout(set = 0, binding = 1) readonly buffer K { f16vec4 k4[]; };
+layout(set = 0, binding = 2) readonly buffer V { f16vec4 v4[]; };
+layout(set = 0, binding = 3) writeonly buffer Out { float out_v[]; };
+
+layout(push_constant) uniform Push {
+    uint n_q;
+    uint n_kv;
+    uint n_q_heads;
+    uint n_kv_heads;
+    uint head_dim;      /* must be 256 */
+    uint q_offset_abs;
+    uint sliding_window; /* must be 0 */
+    uint q_offset;
+    uint k_offset;
+    uint v_offset;
+    uint out_offset;
+} pc;
+
+const uint BR = 16u;
+const uint BC = 16u;
+const uint HD_U4 = 32u; /* head_dim(256) / 8 f16-per-uvec4 */
+
+shared uvec4 Qsh[BR * HD_U4];
+shared uvec4 Ksh[BC * HD_U4];
+shared uvec4 Vsh[BC * HD_U4];
+shared float Ssh[BR * BC];
+shared uvec4 Psh[BR * 2u]; /* packed f16 P tile, BC(16)/8 = 2 uvec4 per row */
+shared float mrow[BR];
+shared float lrow[BR];
+
+/* pack 2 consecutive f32 vec4s (8 floats) into one uvec4 of packed f16 */
+uvec4 pack_f32x8(vec4 a, vec4 b) {
+    return uvec4(packHalf2x16(a.xy), packHalf2x16(a.zw), packHalf2x16(b.xy), packHalf2x16(b.zw));
+}
+
+uvec4 pack_f16x8(f16vec4 a, f16vec4 b) {
+    return uvec4(packHalf2x16(vec2(a.xy)),
+                 packHalf2x16(vec2(a.zw)),
+                 packHalf2x16(vec2(b.xy)),
+                 packHalf2x16(vec2(b.zw)));
+}
+
+void main() {
+    uint lid     = gl_LocalInvocationID.x;
+    uint q_block = gl_WorkGroupID.x * BR;
+    uint q_head  = gl_WorkGroupID.y;
+    if (q_block >= pc.n_q || q_head >= pc.n_q_heads || pc.n_kv == 0) {
+        return;
+    }
+    uint kv_group = pc.n_q_heads / pc.n_kv_heads;
+    uint kv_head  = q_head / kv_group;
+    uint hd4      = pc.head_dim >> 2u; /* vec4s per row, Q side (f32) */
+    uint kv_row4  = pc.n_kv_heads * hd4;
+
+    /* stage the 16-row Q tile (rows beyond n_q read the last valid row —
+     * harmless padding, those rows are never written back) */
+    for (uint idx = lid; idx < BR * HD_U4; idx += 32u) {
+        uint r    = idx / HD_U4;
+        uint j    = idx % HD_U4; /* uvec4 index within the row, 2 src vec4s each */
+        uint qpos = min(q_block + r, pc.n_q - 1u);
+        uint base = (pc.q_offset >> 2u) + (qpos * pc.n_q_heads + q_head) * hd4 + j * 2u;
+        Qsh[idx]  = pack_f32x8(q4[base], q4[base + 1u]);
+    }
+    barrier();
+
+    uint last_kb = (pc.q_offset_abs + q_block + BR - 1u) / BC;
+    uint kb_cap  = (pc.n_kv - 1u) / BC;
+    if (last_kb > kb_cap) {
+        last_kb = kb_cap;
+    }
+
+    if (lid < BR) {
+        mrow[lid] = -1.0 / 0.0;
+        lrow[lid] = 0.0;
+    }
+    barrier();
+
+    /* ---- pass A: row max only ---- */
+    for (uint kb = 0u; kb <= last_kb; kb++) {
+        uint kv0 = kb * BC;
+        for (uint idx = lid; idx < BC * HD_U4; idx += 32u) {
+            uint c    = idx / HD_U4;
+            uint j    = idx % HD_U4;
+            uint kpos = min(kv0 + c, pc.n_kv - 1u);
+            uint base = (pc.k_offset >> 2u) + kpos * kv_row4 + kv_head * hd4 + j * 2u;
+            Ksh[idx]  = pack_f16x8(k4[base], k4[base + 1u]);
+        }
+        barrier();
+
+        coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matQ;
+        coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> accS =
+                coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+        for (uint j = 0u; j < HD_U4; j += 2u) {
+            coopMatLoad(matQ, Qsh, j, HD_U4, gl_CooperativeMatrixLayoutRowMajor);
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matK;
+            coopMatLoad(matK, Ksh, j, HD_U4, gl_CooperativeMatrixLayoutColumnMajor);
+            accS = coopMatMulAdd(matQ, matK, accS);
+        }
+        coopMatStore(accS, Ssh, 0u, BC, gl_CooperativeMatrixLayoutRowMajor);
+        barrier();
+
+        if (lid < BR) {
+            uint qabs = pc.q_offset_abs + q_block + lid;
+            uint shi  = min(qabs, pc.n_kv - 1u);
+            float m   = mrow[lid];
+            for (uint c = 0u; c < BC; c++) {
+                if (kv0 + c <= shi) {
+                    float s = Ssh[lid * BC + c];
+                    if (s > m) {
+                        m = s;
+                    }
+                }
+            }
+            mrow[lid] = m;
+        }
+        barrier();
+    }
+
+    /* ---- pass B: exp(s - m_final), accumulate l and O = P @ V ----
+     * HD_TILES (16) named accumulators, not an array indexed in a loop
+     * (measured 4x slower elsewhere, see matmul_pq2_0_cm_body.glsl). */
+#define GEIST_ATTN_CM_DECLO(N)                                                        \
+    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> O##N =          \
+            coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+    GEIST_ATTN_CM_DECLO(0)
+    GEIST_ATTN_CM_DECLO(1)
+    GEIST_ATTN_CM_DECLO(2)
+    GEIST_ATTN_CM_DECLO(3)
+    GEIST_ATTN_CM_DECLO(4)
+    GEIST_ATTN_CM_DECLO(5)
+    GEIST_ATTN_CM_DECLO(6)
+    GEIST_ATTN_CM_DECLO(7)
+    GEIST_ATTN_CM_DECLO(8)
+    GEIST_ATTN_CM_DECLO(9)
+    GEIST_ATTN_CM_DECLO(10)
+    GEIST_ATTN_CM_DECLO(11)
+    GEIST_ATTN_CM_DECLO(12)
+    GEIST_ATTN_CM_DECLO(13)
+    GEIST_ATTN_CM_DECLO(14)
+    GEIST_ATTN_CM_DECLO(15)
+#undef GEIST_ATTN_CM_DECLO
+
+    for (uint kb = 0u; kb <= last_kb; kb++) {
+        uint kv0 = kb * BC;
+        for (uint idx = lid; idx < BC * HD_U4; idx += 32u) {
+            uint c    = idx / HD_U4;
+            uint j    = idx % HD_U4;
+            uint kpos = min(kv0 + c, pc.n_kv - 1u);
+            uint base = (pc.k_offset >> 2u) + kpos * kv_row4 + kv_head * hd4 + j * 2u;
+            Ksh[idx]  = pack_f16x8(k4[base], k4[base + 1u]);
+            uint vbase = (pc.v_offset >> 2u) + kpos * kv_row4 + kv_head * hd4 + j * 2u;
+            Vsh[idx]   = pack_f16x8(v4[vbase], v4[vbase + 1u]);
+        }
+        barrier();
+
+        coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> accS =
+                coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+        for (uint j = 0u; j < HD_U4; j += 2u) {
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matQ;
+            coopMatLoad(matQ, Qsh, j, HD_U4, gl_CooperativeMatrixLayoutRowMajor);
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matK;
+            coopMatLoad(matK, Ksh, j, HD_U4, gl_CooperativeMatrixLayoutColumnMajor);
+            accS = coopMatMulAdd(matQ, matK, accS);
+        }
+        coopMatStore(accS, Ssh, 0u, BC, gl_CooperativeMatrixLayoutRowMajor);
+        barrier();
+
+        if (lid < BR) {
+            uint  qabs = pc.q_offset_abs + q_block + lid;
+            uint  shi  = min(qabs, pc.n_kv - 1u);
+            float m    = mrow[lid];
+            float l    = 0.0;
+            uvec4 p01  = uvec4(0u);
+            uvec4 p23  = uvec4(0u);
+            float wlo  = 0.0;
+            for (uint c = 0u; c < BC; c++) {
+                float w = 0.0;
+                if (kv0 + c <= shi) {
+                    w = exp(Ssh[lid * BC + c] - m);
+                    l += w;
+                }
+                if ((c & 1u) == 0u) {
+                    wlo = w;
+                } else {
+                    uint packed = packHalf2x16(vec2(wlo, w));
+                    uint slot   = c >> 1u; /* 0..7, pairs (0,1)..(14,15) */
+                    if (slot < 4u) {
+                        p01[slot] = packed;
+                    } else {
+                        p23[slot - 4u] = packed;
+                    }
+                }
+            }
+            lrow[lid] += l;
+            Psh[lid * 2u]      = p01;
+            Psh[lid * 2u + 1u] = p23;
+        }
+        barrier();
+
+        coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matP;
+        coopMatLoad(matP, Psh, 0u, 2u, gl_CooperativeMatrixLayoutRowMajor);
+        coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matV;
+#define GEIST_ATTN_CM_PV(N, COL)                                                 \
+    coopMatLoad(matV, Vsh, COL, HD_U4, gl_CooperativeMatrixLayoutRowMajor);      \
+    O##N = coopMatMulAdd(matP, matV, O##N);
+        GEIST_ATTN_CM_PV(0, 0u)
+        GEIST_ATTN_CM_PV(1, 2u)
+        GEIST_ATTN_CM_PV(2, 4u)
+        GEIST_ATTN_CM_PV(3, 6u)
+        GEIST_ATTN_CM_PV(4, 8u)
+        GEIST_ATTN_CM_PV(5, 10u)
+        GEIST_ATTN_CM_PV(6, 12u)
+        GEIST_ATTN_CM_PV(7, 14u)
+        GEIST_ATTN_CM_PV(8, 16u)
+        GEIST_ATTN_CM_PV(9, 18u)
+        GEIST_ATTN_CM_PV(10, 20u)
+        GEIST_ATTN_CM_PV(11, 22u)
+        GEIST_ATTN_CM_PV(12, 24u)
+        GEIST_ATTN_CM_PV(13, 26u)
+        GEIST_ATTN_CM_PV(14, 28u)
+        GEIST_ATTN_CM_PV(15, 30u)
+#undef GEIST_ATTN_CM_PV
+        barrier();
+    }
+
+    /* O accumulators reuse Ssh (16x16 f32, exactly one hd-tile's worth) as
+     * the store/scale/write staging area, one hd-tile at a time. Unrolled by
+     * hand, not an array indexed in a loop (measured 4x slower elsewhere). */
+#define GEIST_ATTN_CM_FINISH(ACC, HDTILE)                                             \
+    coopMatStore(ACC, Ssh, 0u, 16u, gl_CooperativeMatrixLayoutRowMajor);              \
+    barrier();                                                                        \
+    for (uint idx = lid; idx < BR * 16u; idx += 32u) {                                \
+        uint r    = idx / 16u;                                                        \
+        uint c    = idx % 16u;                                                        \
+        uint qpos = q_block + r;                                                      \
+        if (qpos < pc.n_q) {                                                          \
+            float inv_l  = lrow[r] > 0.0 ? 1.0 / lrow[r] : 0.0;                       \
+            uint  d      = (HDTILE) *16u + c;                                         \
+            uint  obase  = pc.out_offset + (qpos * pc.n_q_heads + q_head) * pc.head_dim + d; \
+            out_v[obase] = Ssh[r * 16u + c] * inv_l;                                  \
+        }                                                                              \
+    }                                                                                  \
+    barrier();
+
+    GEIST_ATTN_CM_FINISH(O0, 0u)
+    GEIST_ATTN_CM_FINISH(O1, 1u)
+    GEIST_ATTN_CM_FINISH(O2, 2u)
+    GEIST_ATTN_CM_FINISH(O3, 3u)
+    GEIST_ATTN_CM_FINISH(O4, 4u)
+    GEIST_ATTN_CM_FINISH(O5, 5u)
+    GEIST_ATTN_CM_FINISH(O6, 6u)
+    GEIST_ATTN_CM_FINISH(O7, 7u)
+    GEIST_ATTN_CM_FINISH(O8, 8u)
+    GEIST_ATTN_CM_FINISH(O9, 9u)
+    GEIST_ATTN_CM_FINISH(O10, 10u)
+    GEIST_ATTN_CM_FINISH(O11, 11u)
+    GEIST_ATTN_CM_FINISH(O12, 12u)
+    GEIST_ATTN_CM_FINISH(O13, 13u)
+    GEIST_ATTN_CM_FINISH(O14, 14u)
+    GEIST_ATTN_CM_FINISH(O15, 15u)
+#undef GEIST_ATTN_CM_FINISH
+}

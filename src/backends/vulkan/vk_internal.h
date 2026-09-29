@@ -29,58 +29,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Committed SPIR-V blobs — regenerate with `make vulkan-shaders`. */
-#include "shaders/add_f32_spv.h"
-#include "shaders/argmax_f32_spv.h"
-#include "shaders/attention_f32_spv.h"
-#include "shaders/embed_lookup_scaled_spv.h"
-#include "shaders/ffn_gate_up_gelu_q4k_spv.h"
-#include "shaders/attention_f16_spv.h"
-#include "shaders/deltanet_conv_f32_spv.h"
-#include "shaders/deltanet_delta_f32_spv.h"
-#include "shaders/attn_comb_spv.h"
-#include "shaders/attn_part_f16_spv.h"
-#include "shaders/kv_append_f16_spv.h"
-#include "shaders/matmul_q4k_cm32_spv.h"
-#include "shaders/matmul_q4k_cm_spv.h"
-#include "shaders/matmul_q6k_cm_spv.h"
-#include "shaders/qkv_prep_f16_spv.h"
-#include "shaders/qkv_prep_f32_spv.h"
-#include "shaders/gelu_tanh_f32_spv.h"
-#include "shaders/gelu_tanh_mul_f32_spv.h"
-#include "shaders/matmul_f32_spv.h"
-#include "shaders/matmul_q4k_spv.h"
-#include "shaders/matmul_q6k_spv.h"
-#include "shaders/matvec_f32_spv.h"
-#include "shaders/ffn_norm_gate_up_q4k_spv.h"
-#include "shaders/ple_gate_f32_spv.h"
-#include "shaders/matvec_q4k_spv.h"
-#include "shaders/silu_f32_spv.h"
-#include "shaders/relu2_f32_spv.h"
-#include "shaders/act_quant_i8_f32_spv.h"
-#include "shaders/silu_mul_f32_spv.h"
-#include "shaders/sigmoid_mul_f32_spv.h"
-#include "shaders/qgate_split_f32_spv.h"
-#include "shaders/matvec_q4_0_spv.h"
-#include "shaders/matmul_q4_0_spv.h"
-#include "shaders/matvec_q4_1_spv.h"
-#include "shaders/matmul_q4_1_spv.h"
-#include "shaders/matvec_q8_0_spv.h"
-#include "shaders/matmul_q8_0_spv.h"
-#include "shaders/matvec_q5k_spv.h"
-#include "shaders/matmul_q5k_spv.h"
-#include "shaders/matvec_tq2_0_spv.h"
-#include "shaders/matmul_tq2_0_spv.h"
-#include "shaders/matvec_pq2_0_spv.h"
-#include "shaders/matmul_pq2_0_spv.h"
-#include "shaders/matvec_q6k_spv.h"
-#include "shaders/mul_f32_spv.h"
-#include "shaders/rmsnorm_add_f32_spv.h"
-#include "shaders/rmsnorm_f32_spv.h"
-#include "shaders/rope_f32_spv.h"
-#include "shaders/rope_interleaved_f32_spv.h"
-#include "shaders/scale_f32_spv.h"
-
 /* ====================================================================== */
 /* Runtime loader                                                          */
 /* ====================================================================== */
@@ -180,10 +128,14 @@ enum vk_pipe {
     VK_PIPE_ATTN_PART_F16,
     VK_PIPE_ATTN_COMB,
     VK_PIPE_MM_Q4K_CM32, /* small-n_out tensor-core tile */
-    VK_PIPE_PLE_GATE,    /* fused PLE gate: gelu(x.gate_w) * ple_in */
-    VK_PIPE_FFN_NORM_GU, /* ffn_gate_up with the pre-FFN rmsnorm folded in */
-    VK_PIPE_DN_CONV,     /* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
-    VK_PIPE_DN_DELTA,    /* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
+    VK_PIPE_MM_PQ2_0_CM, /* PQ2_0 tensor-core GEMM (ternary codes -> f16, f16 acc folded into f32)
+                          */
+    VK_PIPE_MM_PQ2_0_CM_F32, /* the same with f32 accumulation throughout (GEIST_VK_PQ2_F32_ACC) */
+    VK_PIPE_MM_PQ2_0_CM64,   /* 128 x 64 tile (f32 acc) for batches under 128 tokens */
+    VK_PIPE_PLE_GATE,        /* fused PLE gate: gelu(x.gate_w) * ple_in */
+    VK_PIPE_FFN_NORM_GU,     /* ffn_gate_up with the pre-FFN rmsnorm folded in */
+    VK_PIPE_DN_CONV,         /* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
+    VK_PIPE_DN_DELTA,        /* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
     VK_PIPE_MATVEC_Q4_0,
     VK_PIPE_MATMUL_Q4_0,
     VK_PIPE_MATVEC_Q4_1,
@@ -196,14 +148,24 @@ enum vk_pipe {
     VK_PIPE_MATMUL_TQ2_0,
     VK_PIPE_MATVEC_PQ2_0,
     VK_PIPE_MATMUL_PQ2_0,
-    VK_PIPE_SILU,        /* y = silu(x) */
-    VK_PIPE_RELU2,       /* y = relu(x)^2 (BitNet FFN) */
-    VK_PIPE_ACT_QUANT,   /* BitNet int8 absmax activation round trip, in place */
-    VK_PIPE_SILU_MUL,    /* y = silu(a) * b (SwiGLU epilogue) */
-    VK_PIPE_SIGMOID_MUL, /* y = a * sigmoid(gate) (qwen35 attention gate) */
-    VK_PIPE_QGATE_SPLIT, /* [query | gate] per-head split (qwen35) */
+    VK_PIPE_SILU,             /* y = silu(x) */
+    VK_PIPE_HADAMARD,         /* blockwise orthonormal WHT of rows (prism.hadamard) */
+    VK_PIPE_RELU2,            /* y = relu(x)^2 (BitNet FFN) */
+    VK_PIPE_ACT_QUANT,        /* BitNet int8 absmax activation round trip, in place */
+    VK_PIPE_SILU_MUL,         /* y = silu(a) * b (SwiGLU epilogue) */
+    VK_PIPE_SIGMOID_MUL,      /* y = a * sigmoid(gate) (qwen35 attention gate) */
+    VK_PIPE_QGATE_SPLIT,      /* [query | gate] per-head split (qwen35) */
+    VK_PIPE_ATTENTION_F16_CM, /* tensor-core causal attention, no sliding window, head_dim==128 */
     VK_PIPE_COUNT,
 };
+
+/* Pipelines that exist only with VK_KHR_cooperative_matrix; without it they
+ * stay VK_NULL_HANDLE and vk_linear_cm_route keeps the register-tiled GEMM. */
+static inline bool vk_pipe_needs_coopmat(int pipe) {
+    return pipe == VK_PIPE_MM_Q4K_CM || pipe == VK_PIPE_MM_Q6K_CM || pipe == VK_PIPE_MM_Q4K_CM32 ||
+           pipe == VK_PIPE_MM_PQ2_0_CM || pipe == VK_PIPE_MM_PQ2_0_CM_F32 ||
+           pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM;
+}
 
 struct vk_push {
     uint32_t n_in, n_out, blocks_per_row, rows;
@@ -269,9 +231,10 @@ struct vk_state {
     uint32_t         queue_family;
 
     VkPhysicalDeviceMemoryProperties mem_props;
-    VkCommandPool                    cmd_pool;
-    VkCommandBuffer                  xfer_cmd;
-    VkFence                          xfer_fence;
+    size_t          bar_used; /* live host-visible + device-local bytes (the BAR window) */
+    VkCommandPool   cmd_pool;
+    VkCommandBuffer xfer_cmd;
+    VkFence         xfer_fence;
 
     char device_name[256];
 
@@ -284,12 +247,18 @@ struct vk_state {
     bool has_fp16;     /* shaderFloat16 + 16-bit storage */
     bool has_int8_dot; /* shaderIntegerDotProduct + 8-bit storage */
     bool has_coopmat;  /* VK_KHR_cooperative_matrix */
+    bool pq2_f32_acc;  /* GEIST_VK_PQ2_F32_ACC: exact f32-accumulate PQ2_0 tensor-core GEMM */
+    bool attn_cm; /* tensor-core attention (#475 follow-up), default on; GEIST_VK_ATTN_CM=0 disables
+                   */
 
-    /* GEIST_VK_GPU_OPS bitmask (debug bisect): 1=linear_t 2=elementwise
-     * 4=rmsnorm 8=rope 16=attention 32=copy 64=embed 128=argmax
-     * 256=deltanet_mix.
-     * Default: all on. */
-    uint32_t gpu_ops;
+    /* Set when a sequence flush failed (submit / wait / end); the next host
+     * readback (argmax, download, host view) reports it as GEIST_E_BACKEND and
+     * clears it — see vk_seq_take_failure. */
+    bool seq_failed;
+
+    /* Row scratch of the host row-dequant linear (vk_w_cpu_mN). */
+    float *cpu_row;
+    size_t cpu_row_cap;
 
     /* GEIST_VK_VERBOSE stats. */
     uint64_t stat_flushes;
@@ -307,12 +276,8 @@ struct vk_state {
     uint64_t    prof_ns[VK_PIPE_COUNT + 1];
     uint64_t    prof_calls[VK_PIPE_COUNT + 1];
 
-    /* Compute pipelines (Phase 2). */
-    VkDescriptorSetLayout dset_layout;
-    VkPipelineLayout      pipe_layout;
-    VkDescriptorPool      dset_pool;
-    VkDescriptorSet       dset;
-    VkPipeline            pipes[VK_PIPE_COUNT];
+    /* Compute pipelines (layouts: seq_dlayouts / seq_playouts). */
+    VkPipeline pipes[VK_PIPE_COUNT];
 
     /* Weight registry: host pointer → VRAM buffer, filled by resolve_weight.
      * Linear search — a model has a few hundred weights; the lookup is one
@@ -378,23 +343,61 @@ struct vk_state {
 
 /* binding count per pipeline (descriptor set layout selector) */
 static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
-        [VK_PIPE_MATVEC_Q4K] = 3,    [VK_PIPE_MATMUL_Q4K] = 3,    [VK_PIPE_MATVEC_Q6K] = 3,
-        [VK_PIPE_MATMUL_Q6K] = 3,    [VK_PIPE_MATVEC_F32] = 3,    [VK_PIPE_MATMUL_F32] = 3,
-        [VK_PIPE_ADD] = 3,           [VK_PIPE_MUL] = 3,           [VK_PIPE_GELU] = 2,
-        [VK_PIPE_GELU_MUL] = 3,      [VK_PIPE_SCALE] = 2,         [VK_PIPE_RMSNORM] = 3,
-        [VK_PIPE_RMSNORM_ADD] = 4,   [VK_PIPE_ROPE] = 3,          [VK_PIPE_ROPE_IL] = 3,
-        [VK_PIPE_ATTENTION] = 4,     [VK_PIPE_ARGMAX] = 2,        [VK_PIPE_EMBED] = 2,
-        [VK_PIPE_FFN_GATE_UP] = 4,   [VK_PIPE_QKV_PREP] = 6,      [VK_PIPE_MM_Q4K_CM] = 3,
-        [VK_PIPE_MM_Q6K_CM] = 3,     [VK_PIPE_ATTENTION_F16] = 4, [VK_PIPE_QKV_PREP_F16] = 6,
-        [VK_PIPE_KV_APPEND_F16] = 4, [VK_PIPE_ATTN_PART_F16] = 4, [VK_PIPE_ATTN_COMB] = 2,
-        [VK_PIPE_MM_Q4K_CM32] = 3,   [VK_PIPE_PLE_GATE] = 4,      [VK_PIPE_FFN_NORM_GU] = 5,
-        [VK_PIPE_DN_CONV] = 3,       [VK_PIPE_DN_DELTA] = 8,      [VK_PIPE_MATVEC_Q4_0] = 3,
-        [VK_PIPE_MATMUL_Q4_0] = 3,   [VK_PIPE_MATVEC_Q4_1] = 3,   [VK_PIPE_MATMUL_Q4_1] = 3,
-        [VK_PIPE_MATVEC_Q8_0] = 3,   [VK_PIPE_MATMUL_Q8_0] = 3,   [VK_PIPE_MATVEC_Q5K] = 3,
-        [VK_PIPE_MATMUL_Q5K] = 3,    [VK_PIPE_MATVEC_TQ2_0] = 3,  [VK_PIPE_MATMUL_TQ2_0] = 3,
-        [VK_PIPE_MATVEC_PQ2_0] = 3,  [VK_PIPE_MATMUL_PQ2_0] = 3,  [VK_PIPE_SILU] = 2,
-        [VK_PIPE_RELU2] = 2,         [VK_PIPE_ACT_QUANT] = 2,     [VK_PIPE_SILU_MUL] = 3,
-        [VK_PIPE_SIGMOID_MUL] = 3,   [VK_PIPE_QGATE_SPLIT] = 3,
+        [VK_PIPE_MATVEC_Q4K]       = 3,
+        [VK_PIPE_MATMUL_Q4K]       = 3,
+        [VK_PIPE_MATVEC_Q6K]       = 3,
+        [VK_PIPE_MATMUL_Q6K]       = 3,
+        [VK_PIPE_MATVEC_F32]       = 3,
+        [VK_PIPE_MATMUL_F32]       = 3,
+        [VK_PIPE_ADD]              = 3,
+        [VK_PIPE_MUL]              = 3,
+        [VK_PIPE_GELU]             = 2,
+        [VK_PIPE_GELU_MUL]         = 3,
+        [VK_PIPE_SCALE]            = 2,
+        [VK_PIPE_RMSNORM]          = 3,
+        [VK_PIPE_RMSNORM_ADD]      = 4,
+        [VK_PIPE_ROPE]             = 3,
+        [VK_PIPE_ROPE_IL]          = 3,
+        [VK_PIPE_ATTENTION]        = 4,
+        [VK_PIPE_ARGMAX]           = 2,
+        [VK_PIPE_EMBED]            = 2,
+        [VK_PIPE_FFN_GATE_UP]      = 4,
+        [VK_PIPE_QKV_PREP]         = 6,
+        [VK_PIPE_MM_Q4K_CM]        = 3,
+        [VK_PIPE_MM_Q6K_CM]        = 3,
+        [VK_PIPE_ATTENTION_F16]    = 4,
+        [VK_PIPE_QKV_PREP_F16]     = 6,
+        [VK_PIPE_KV_APPEND_F16]    = 4,
+        [VK_PIPE_ATTN_PART_F16]    = 4,
+        [VK_PIPE_ATTN_COMB]        = 2,
+        [VK_PIPE_MM_Q4K_CM32]      = 3,
+        [VK_PIPE_MM_PQ2_0_CM]      = 3,
+        [VK_PIPE_MM_PQ2_0_CM_F32]  = 3,
+        [VK_PIPE_MM_PQ2_0_CM64]    = 3,
+        [VK_PIPE_PLE_GATE]         = 4,
+        [VK_PIPE_FFN_NORM_GU]      = 5,
+        [VK_PIPE_DN_CONV]          = 3,
+        [VK_PIPE_DN_DELTA]         = 8,
+        [VK_PIPE_MATVEC_Q4_0]      = 3,
+        [VK_PIPE_MATMUL_Q4_0]      = 3,
+        [VK_PIPE_MATVEC_Q4_1]      = 3,
+        [VK_PIPE_MATMUL_Q4_1]      = 3,
+        [VK_PIPE_MATVEC_Q8_0]      = 3,
+        [VK_PIPE_MATMUL_Q8_0]      = 3,
+        [VK_PIPE_MATVEC_Q5K]       = 3,
+        [VK_PIPE_MATMUL_Q5K]       = 3,
+        [VK_PIPE_MATVEC_TQ2_0]     = 3,
+        [VK_PIPE_MATMUL_TQ2_0]     = 3,
+        [VK_PIPE_MATVEC_PQ2_0]     = 3,
+        [VK_PIPE_MATMUL_PQ2_0]     = 3,
+        [VK_PIPE_SILU]             = 2,
+        [VK_PIPE_RELU2]            = 2,
+        [VK_PIPE_HADAMARD]         = 3,
+        [VK_PIPE_ACT_QUANT]        = 2,
+        [VK_PIPE_SILU_MUL]         = 3,
+        [VK_PIPE_SIGMOID_MUL]      = 3,
+        [VK_PIPE_QGATE_SPLIT]      = 3,
+        [VK_PIPE_ATTENTION_F16_CM] = 4,
 };
 
 struct geist_buffer {
@@ -410,9 +413,8 @@ struct geist_buffer {
     bool                   host_visible;
     bool                   device_mem; /* memory type has DEVICE_LOCAL */
     bool                   borrowed;   /* buf/mem owned by a parent buffer */
+    size_t bar_bytes; /* counted in vk_state.bar_used (host-visible + device-local) */
 };
-/* Guard: ops require a live device + pipeline set (see lifecycle). */
-#define VK_OPS(be, bit) ((((struct vk_state *) (be)->state)->gpu_ops & (bit)) != 0)
 
 /* ---- Cross-module prototypes ------------------------------------------ */
 [[nodiscard]] enum geist_status vk_create(struct geist_backend            *be,
@@ -435,10 +437,10 @@ void vk_destroy(struct geist_backend *be);
 void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf);
 
 [[nodiscard]] enum geist_status
-vk_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src);
+vk_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t src[static n_bytes]);
 
 [[nodiscard]] enum geist_status
-vk_buffer_download(size_t n_bytes, uint8_t *dst, const struct geist_buffer *buf);
+vk_buffer_download(size_t n_bytes, uint8_t dst[static n_bytes], const struct geist_buffer *buf);
 
 void *vk_buffer_map(struct geist_buffer *buf);
 
@@ -453,6 +455,8 @@ void vk_buffer_unmap(struct geist_buffer *buf);
 vk_stage_reserve(struct geist_backend *be, struct geist_buffer **slot, size_t bytes);
 
 struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host);
+struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor *t);
+size_t               vk_fast_host_bytes(struct geist_backend *be);
 
 struct vk_access vk_acc(uint64_t lo_bytes, uint64_t n_bytes, bool write);
 
@@ -490,7 +494,8 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
 
 [[nodiscard]] enum geist_status vk_create_pipelines(struct geist_backend *be, struct vk_state *st);
 
-void vk_seq_flush(struct vk_state *st);
+void                            vk_seq_flush(struct vk_state *st);
+[[nodiscard]] enum geist_status vk_seq_take_failure(struct vk_state *st);
 
 [[nodiscard]] enum geist_status vk_seq_open_cmd(struct vk_state *st);
 

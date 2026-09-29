@@ -651,9 +651,29 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
         const float *nrm    = (const float *) v->buffer_map(L->dn_norm.buffer);
         float       *cstate = (float *) v->buffer_map(sess->dn_conv_state[ctx->layer_idx]);
         float       *S      = (float *) v->buffer_map(sess->dn_S[ctx->layer_idx]);
+        if (cstate == nullptr || S == nullptr) {
+            /* #470: the fused kernel above already refused this call
+             * (UNSUPPORTED) or was never offered; the state buffers
+             * themselves are device-only VRAM here (e.g. batched-submit GPU,
+             * geometry outside the fused kernel's covered range: this model's
+             * head_k/head_v/conv_kernel), so the host-oracle fallback that
+             * every other backend relies on cannot reach them. Name the
+             * geometry so this reads as "unsupported model shape", not a
+             * generic backend fault. */
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "deltanet: recurrent state not host-mappable and no fused "
+                                    "kernel covers this geometry (head_k=%zu, head_v=%zu, "
+                                    "n_v_heads=%zu, conv_kernel=%zu)",
+                                    d_k,
+                                    d_v,
+                                    n_vh,
+                                    K);
+            return GEIST_E_UNSUPPORTED;
+        }
         if (qkv == nullptr || zg == nullptr || bb == nullptr || baa == nullptr ||
-            convw == nullptr || aw == nullptr || dtb == nullptr || nrm == nullptr ||
-            cstate == nullptr || S == nullptr || d_v > 512 || d_k > 512) {
+            convw == nullptr || aw == nullptr || dtb == nullptr || nrm == nullptr || d_v > 512 ||
+            d_k > 512) {
             geist_backend_set_error(be, GEIST_E_BACKEND, "deltanet: buffer_map failed");
             return GEIST_E_BACKEND;
         }

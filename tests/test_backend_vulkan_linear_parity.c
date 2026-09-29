@@ -347,6 +347,9 @@ int main(void) {
      * exercises the odd tail, 384 a single-step row. */
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 1);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1);
+    /* rows longer than one 16-block step of the matvec warp (40 and 136 blocks) */
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 5120, 200, 1);
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 17408, 96, 1);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 384, 45, 8);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 37);
     run_case_t(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1, 1e-3);
@@ -364,8 +367,30 @@ int main(void) {
     /* wide n_out routes to the 128-row register-tiled kernel */
     run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 16, 2e-2);
     run_case_tol(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 64, 2e-2);
-
+    /* PQ2_0 on the tensor cores. The ternary values are exact in f16; the
+     * activations are rounded to f16 and the default kernel accumulates in f16
+     * (folded into f32 every 64 k): the test data (activations up to +-4,
+     * outputs in the hundreds, cancelling sums) makes that a few percent of a
+     * small output, so the bound is loose here — the model-level check (logits
+     * vs cpu_scalar, the fork goldens) is the real gate. The f32-accumulate
+     * variant is exact on this data (second backend below). */
+    run_case_tol(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 256, 16, 0.25);
+    run_case_tol(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 640, 128, 64, 0.25);
+    run_case_tol(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 4096, 48, 0.25);
+    run_case_tol(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 5120, 256, 128, 0.25);
     geist_backend_destroy(vk);
+
+    /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */
+    setenv("GEIST_VK_PQ2_F32_ACC", "1", 1);
+    struct geist_backend *vk32 = nullptr;
+    check(geist_backend_create("vulkan", nullptr, nullptr, &vk32) == GEIST_OK, "vulkan f32-acc");
+    if (vk32 != nullptr) {
+        run_case_tol(vk32, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm32", 512, 256, 16, 1e-3);
+        run_case_tol(vk32, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm32", 640, 128, 64, 1e-3);
+        run_case_tol(vk32, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm32", 5120, 256, 128, 1e-3);
+        geist_backend_destroy(vk32);
+    }
+    unsetenv("GEIST_VK_PQ2_F32_ACC");
     geist_backend_destroy(ref);
     if (g_fail == 0) {
         printf("test_backend_vulkan_linear_parity: all checks passed\n");

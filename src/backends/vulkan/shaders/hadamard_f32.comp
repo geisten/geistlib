@@ -1,0 +1,86 @@
+#version 450
+
+/* Blockwise orthonormal Walsh-Hadamard transform of rows (Ternary-Bonsai's
+ * prism.hadamard basis), same math and operation order as the host
+ * geist_hadamard_rows:
+ *
+ *   forward: y = H_block(signs * P(x))       inverse: y = signs * H_block(x)
+ *
+ * P is the grouped-value permutation (perm_rep > 1):
+ *   P(x)[d + hd*(r + rep*k)] = x[d + hd*(k + nk*r)]
+ * H_block is the Sylvester butterfly (len = 1, 2, 4, ...) scaled by `scale`
+ * (= 1/sqrt(block), computed on the host so both sides use the same float).
+ * One workgroup per (row, block): the block is staged in shared memory, which
+ * also makes x == y (no permutation) safe. block <= 1024.
+ * Dispatch: gx = rows * width / block. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { float x[]; };
+layout(set = 0, binding = 1) readonly buffer S { float sg[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint width;
+    uint block;
+    uint blocks_per_row;
+    uint perm_hd;
+    uint perm_nk;
+    uint perm_rep;
+    uint flags; /* bit 0: inverse, bit 1: signs bound */
+    uint x_offset;
+    uint s_offset;
+    uint y_offset;
+    float scale;
+} pc;
+
+shared float sh[1024];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint wg = gl_WorkGroupID.x;
+    uint row = wg / pc.blocks_per_row;
+    uint base = (wg % pc.blocks_per_row) * pc.block;
+    bool inverse = (pc.flags & 1u) != 0u;
+    bool has_signs = (pc.flags & 2u) != 0u;
+    uint xrow = pc.x_offset + row * pc.width;
+
+    for (uint i = tid; i < pc.block; i += 256u) {
+        uint di = base + i;
+        uint src = di;
+        if (pc.perm_rep > 1u) {
+            uint d = di % pc.perm_hd;
+            uint t = di / pc.perm_hd;
+            uint r = t % pc.perm_rep;
+            uint k = t / pc.perm_rep;
+            src = d + pc.perm_hd * (k + pc.perm_nk * r);
+        }
+        float v = x[xrow + src];
+        if (has_signs && !inverse) {
+            v *= sg[pc.s_offset + di];
+        }
+        sh[i] = v;
+    }
+    memoryBarrierBuffer(); /* x may alias y: every read lands before any write */
+    barrier();
+
+    for (uint len = 1u; len < pc.block; len <<= 1u) {
+        for (uint p = tid; p < (pc.block >> 1u); p += 256u) {
+            uint j = (p / len) * (len << 1u) + (p % len);
+            float a = sh[j];
+            float b = sh[j + len];
+            sh[j] = a + b;
+            sh[j + len] = a - b;
+        }
+        barrier();
+    }
+
+    uint yrow = pc.y_offset + row * pc.width;
+    for (uint i = tid; i < pc.block; i += 256u) {
+        float v = sh[i] * pc.scale;
+        if (has_signs && inverse) {
+            v *= sg[pc.s_offset + base + i];
+        }
+        y[yrow + base + i] = v;
+    }
+}

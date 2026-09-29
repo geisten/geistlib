@@ -1,10 +1,11 @@
 /*
  * src/backends/vulkan/resources.c — buffers, staging, the weight registry, and tensor accessors.
  *
- * Layer: BACKEND (vulkan). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
+ * Layer: BACKEND (vulkan).
  */
 #include "vk_internal.h"
+
+#include "tensor_view.h" /* geist_tensor_elems: checked element count */
 
 /* ====================================================================== */
 /* Buffers                                                                 */
@@ -139,6 +140,10 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
     }
     buf->device_mem = (st->mem_props.memoryTypes[mem_type].propertyFlags &
                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    if (buf->host_visible && buf->device_mem) {
+        buf->bar_bytes = (size_t) minfo.allocationSize;
+        st->bar_used += buf->bar_bytes;
+    }
     if (getenv("GEIST_VK_VERBOSE") != nullptr && buf->host_visible) {
         fprintf(stderr,
                 "  buffer %zu KiB role=%d bar=%d\n",
@@ -239,8 +244,36 @@ void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
         }
         st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
         st->fn.FreeMemory(st->device, buf->mem, nullptr);
+        st->bar_used -= buf->bar_bytes;
     }
     geist_backend_free(be, buf);
+}
+
+/* Scratch that the GPU reads hot and the host maps lives in the BAR window
+ * (host-visible + device-local). Without resizable BAR that window is 256 MB
+ * and everything past it falls back to system memory read over PCIe, so the
+ * arch sizes its default prefill chunk to the room that is left. A heap of
+ * 1 GiB or more is resizable BAR or unified memory: no limit worth planning
+ * for. `reserve` leaves room for other users of the window (the desktop). */
+size_t vk_fast_host_bytes(struct geist_backend *be) {
+    const struct vk_state *st   = be->state;
+    size_t                 heap = 0;
+    for (uint32_t i = 0; i < st->mem_props.memoryTypeCount; ++i) {
+        const VkMemoryPropertyFlags f    = st->mem_props.memoryTypes[i].propertyFlags;
+        const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        if ((f & want) == want) {
+            const size_t h =
+                    (size_t) st->mem_props.memoryHeaps[st->mem_props.memoryTypes[i].heapIndex].size;
+            heap = h > heap ? h : heap;
+        }
+    }
+    constexpr size_t reserve = 48u << 20;
+    if (heap == 0 || heap >= (size_t) (1u << 30)) {
+        return SIZE_MAX;
+    }
+    return heap > st->bar_used + reserve ? heap - st->bar_used - reserve : 0;
 }
 
 /* One blocking staging round-trip. Direction: upload (src != nullptr) or
@@ -329,7 +362,7 @@ out:
 }
 
 [[nodiscard]] enum geist_status
-vk_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src) {
+vk_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t src[static n_bytes]) {
     if (buf == nullptr || n_bytes > buf->bytes) {
         return GEIST_E_INVALID_ARG;
     }
@@ -346,11 +379,14 @@ vk_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src) {
 }
 
 [[nodiscard]] enum geist_status
-vk_buffer_download(size_t n_bytes, uint8_t *dst, const struct geist_buffer *buf) {
+vk_buffer_download(size_t n_bytes, uint8_t dst[static n_bytes], const struct geist_buffer *buf) {
     if (buf == nullptr || n_bytes > buf->bytes) {
         return GEIST_E_INVALID_ARG;
     }
     vk_seq_flush(buf->owner);
+    if (vk_seq_take_failure(buf->owner) != GEIST_OK) {
+        return GEIST_E_BACKEND;
+    }
     if (buf->host_alias != nullptr) {
         memcpy(dst, buf->host_alias, n_bytes);
         return GEIST_OK;
@@ -408,6 +444,15 @@ void vk_buffer_unmap(struct geist_buffer *buf) {
 [[nodiscard]] enum geist_status
 vk_stage_reserve(struct geist_backend *be, struct geist_buffer **slot, size_t bytes) {
     return vk_stage_reserve_role(be, slot, bytes, GEIST_BUFFER_STAGING);
+}
+
+/* Registry copy of the weight a tensor views (nullptr: not resolved, or the
+ * tensor is not host-aliased). */
+struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor *t) {
+    if (t == nullptr || t->buffer == nullptr || t->buffer->host_alias == nullptr) {
+        return nullptr;
+    }
+    return vk_weight_lookup(st, (const uint8_t *) t->buffer->host_alias + t->offset);
 }
 
 struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host) {
@@ -472,20 +517,20 @@ bool vk_tensor_gpu_f16(const struct geist_tensor *t,
     return true;
 }
 
-/* Element count of an F16 DENSE tensor (metadata only). */
-size_t vk_t_n16(const struct geist_tensor *t) {
-    if (t == nullptr || t->dtype != GEIST_DTYPE_F16 || t->layout != GEIST_LAYOUT_DENSE ||
-        t->buffer == nullptr || t->ndim < 1) {
+/* Element count of a DENSE tensor of `dtype`, 0 on any mismatch (metadata
+ * only; checked product, see geist_tensor_elems). */
+static size_t vk_dense_n(const struct geist_tensor *t, enum geist_dtype dtype) {
+    size_t n = 0;
+    if (t == nullptr || t->dtype != dtype || t->layout != GEIST_LAYOUT_DENSE ||
+        t->buffer == nullptr || geist_tensor_elems(t, &n)) {
         return 0;
     }
-    size_t n = 1;
-    for (int d = 0; d < t->ndim; d++) {
-        if (t->shape[d] <= 0) {
-            return 0;
-        }
-        n *= (size_t) t->shape[d];
-    }
     return n;
+}
+
+/* Element count of an F16 DENSE tensor (metadata only). */
+size_t vk_t_n16(const struct geist_tensor *t) {
+    return vk_dense_n(t, GEIST_DTYPE_F16);
 }
 
 struct vk_access vk_acc_tensor16(const struct geist_tensor *t, bool write) {
@@ -493,29 +538,12 @@ struct vk_access vk_acc_tensor16(const struct geist_tensor *t, bool write) {
 }
 
 /* ====================================================================== */
-/* Level-2 ops — CPU loops over host-visible buffers (Phase 2)             */
-/*                                                                         */
-/* All activation/scratch buffers this backend creates are host-visible    */
-/* (or aliased host regions), so the reference-op bodies from cpu_scalar   */
-/* apply unchanged; only the pointer unwrap differs. The heavy lifting     */
-/* (linears = the weight reads) already runs on the GPU; these small       */
-/* F32 ops move to shaders in Phase 3 where fusion makes them pay.         */
+/* Tensor accessors, host views and copies                                  */
 /* ====================================================================== */
 
 /* Element count of an F32 DENSE tensor, 0 on any mismatch. Metadata only. */
 size_t vk_t_n(const struct geist_tensor *t) {
-    if (t == nullptr || t->dtype != GEIST_DTYPE_F32 || t->layout != GEIST_LAYOUT_DENSE ||
-        t->buffer == nullptr || t->ndim < 1) {
-        return 0;
-    }
-    size_t n = 1;
-    for (int d = 0; d < t->ndim; d++) {
-        if (t->shape[d] <= 0) {
-            return 0;
-        }
-        n *= (size_t) t->shape[d];
-    }
-    return n;
+    return vk_dense_n(t, GEIST_DTYPE_F32);
 }
 
 void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
@@ -529,6 +557,9 @@ void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
     }
     t->buffer->owner->stat_cpu_falls++;
     vk_seq_flush(t->buffer->owner); /* host access — drain pending GPU work */
+    if (vk_seq_take_failure(t->buffer->owner) != GEIST_OK) {
+        return nullptr;
+    }
     if (out_n != nullptr) {
         *out_n = n;
     }
@@ -564,7 +595,7 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
         return GEIST_E_INVALID_ARG;
     }
     struct vk_state *st = dst->owner;
-    if ((st->gpu_ops & 32u) != 0 && dst->buf != VK_NULL_HANDLE && src->buf != VK_NULL_HANDLE) {
+    if (dst->buf != VK_NULL_HANDLE && src->buf != VK_NULL_HANDLE) {
         /* On-device copy appended to the sequence — keeps KV appends from
          * breaking the per-token batch (kv_store.c uses this path). */
         enum geist_status s = vk_seq_open_cmd(st);

@@ -5,6 +5,7 @@
 #include "profile.h"
 #include "../arch_state.h"
 #include "../forward.h"
+#include "../scratch_plan.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -229,6 +230,9 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
         }
     }
 
+    if ((size_t) N > TRANSFORMER_LOGITS_ROWS) {
+        return GEIST_E_INVALID_ARG; /* the logits scratch holds TRANSFORMER_LOGITS_ROWS rows */
+    }
     struct geist_tensor t_logits = view_2d(sess->scratch_logits, N, st->vocab_size);
     s                            = linear_w_or_legacy(be,
                                                       v,
