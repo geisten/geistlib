@@ -114,14 +114,17 @@ not help — it changes linkage, not the grammar. Headers under `include/`
 therefore spell the same contract
 
 ```c
-void geist_session_pin_prefix(struct geist_session *s, size_t n,
-                              const geist_token_t ids[GEIST_AT_LEAST(n)]);
+enum geist_status (*prefill)(void *session, size_t n,
+                             const geist_token_t ids[GEIST_AT_LEAST(n)]);
 ```
 
 which expands to `static n` in C and to nothing in C++ (`ids[]` — the same
 parameter type; both decay to `geist_token_t *`). The rules above are
 unchanged: the macro is where you would have written `static`, so "when it
-is a lie" still decides whether it appears at all.
+is a lie" still decides whether it appears at all. The `geist_session_*`
+entry points that take arrays are the standing counter-example: they check
+the consumer's pointer and return `GEIST_E_INVALID_ARG`, so they take
+plain pointers.
 
 Code under `src/` keeps the plain `[static len]` form. Nothing includes it
 from C++, and the extra indirection would buy nothing there.
@@ -256,18 +259,24 @@ before pushing — a `constexpr` with two declarators compiles under clang and
 fails all nine Linux jobs:
 
 ```sh
-gcc-15 -std=c23 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
-       -Wshadow -Wundef -D_GNU_SOURCE -Wno-vla-parameter -fopenmp \
+gcc-15 -std=c23 -O3 -DNDEBUG -fopenmp -Wall -Wextra -Wpedantic -Werror \
+       -Wshadow -Wundef -D_GNU_SOURCE -Wno-vla-parameter \
+       -march=armv8.2-a+fp16+dotprod \
        -DGEIST_BACKEND_CPU_NEON=1 -DGEIST_BACKEND_CPU_SCALAR=1 \
        -Iinclude -I. -Isrc/base -Isrc/quant -Isrc/backends/common \
        -Isrc/formats/gguf -Isrc/formats/ptqtp -Isrc/io -Isrc/engine \
-       -Isrc/archs/audio_conformer -Isrc/archs/vision_siglip \
-       -Ithird_party/stb -c <changed>.c -o /dev/null
+       -Isrc/archs/audio_conformer -Isrc/archs/vision_siglip -Ithird_party/stb \
+       -c <changed>.c -o /dev/null
 ```
 
-The `-I` list is `CFLAGS_STRICT`'s in `mk/common.mk`, and `-fopenmp` comes
-from `mk/target-linux.mk` / `mk/target-pi5.mk`; when those change, copy
-them here.
+The `-I` list is `CFLAGS_STRICT`'s from `mk/common.mk` and `-march` is the
+arm64 one from `mk/target-linux.mk`; keep them in step. With a shorter `-I`
+list, `session.c` stops at a missing header before the optimizer ever runs.
+`-fopenmp` is what every target builds with; without it the kernels'
+`#pragma omp` is an unknown pragma, which `-Werror` turns into an error.
+`-march` makes the check see what CI's arm64 legs compile, and a generic
+aarch64 gcc, which defaults to plain armv8-a, cannot inline the kernels'
+dot-product intrinsics without it.
 
 **`-O3 -c`, not `-fsyntax-only`.** The diagnostics that matter for the
 rules above — `-Wstringop-overflow`, `-Wstringop-overread`,
