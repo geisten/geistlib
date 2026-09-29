@@ -189,15 +189,15 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
             size_t sp = 0;
             while (sp < slen && s[sp] != ' ')
                 sp++;
-            tok->merge_left[i]     = s;
-            tok->merge_left_len[i] = sp;
-            if (sp < slen) {
-                tok->merge_right[i]     = s + sp + 1;
-                tok->merge_right_len[i] = slen - sp - 1;
-            } else {
-                tok->merge_right[i]     = nullptr;
-                tok->merge_right_len[i] = 0;
-            }
+            /* No space leaves the right half empty. It points at the end of
+             * the string, never at null: load_copy memcpys it and
+             * merge_lookup memcmps it, and both need a valid pointer even
+             * for 0 bytes. */
+            const size_t r          = sp < slen ? sp + 1 : slen;
+            tok->merge_left[i]      = s;
+            tok->merge_left_len[i]  = sp;
+            tok->merge_right[i]     = s + r;
+            tok->merge_right_len[i] = slen - r;
         }
     }
 
