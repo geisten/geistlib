@@ -312,7 +312,9 @@ int pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
      * the destination index is contiguous in m within each group of 4,
      * and so is the source. */
     const size_t n_tiles = n_out / 8;
+#if defined(_OPENMP)
 #pragma omp parallel for schedule(static) if (n_tiles > 1)
+#endif
     for (size_t tile = 0; tile < n_tiles; tile++) {
         for (size_t b = 0; b < nb; b++) {
             uint8_t *ob = d + (tile * nb + b) * PQ2_0_X8_BLOCK_BYTES;
