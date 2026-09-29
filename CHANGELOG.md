@@ -219,6 +219,25 @@ minor release.
   for its K and V (the allocator advises them from 2 MB, which the block
   reaches before K alone): at 1136 positions decode -6 %, prefill +1 %
   (neither beyond the noise).
+- **cpu_x86's attention over the FP32 KV cache works as its INT8 one.**
+  Each (query, head) pair was a work item that read its KV head's K and V
+  rows on its own — 1 GB of reads for a 64-token chunk at 1024 positions
+  in Llama 3.2 1B's layout — and a decode with fewer than 16 (query, head)
+  pairs (SmolLM2-360M's 15 heads, 8 heads on one KV head) ran the scalar
+  reference. Now a work item takes up to four query heads of one KV head
+  and, in a prefill, up to four queries, scores eight positions at a time
+  and keeps its V sums in registers, and a decode is split across the
+  context into up to four chunks (`attention.c`, its plan measured for
+  it). The same results to rounding: 1.4e-6 of the largest output at most
+  in a prefill, 3.6e-6 in a split decode. x86-64, 4 threads, per call at
+  512-8192 positions: a 64-token prefill chunk 48-82 % faster (Llama 3.2
+  1B's layout -53 to -79 %), decode 29-91 % faster (-43 to -74 %; 15/5
+  heads and one KV head, which ran the reference, -81 to -91 %). End to end
+  (synthetic weights, FP32 cache, both builds from scratch, 8 runs each),
+  Llama 3.2 1B's geometry prefills 512, 1024 and 2048 tokens 4, 16 and
+  33 % faster and decodes 5 and 14 % faster after 1024 and 2048 (after 512,
+  within the noise); SmolLM2-360M's prefills 1024 and 2048 tokens 15 and
+  40 % faster and decodes 39 and 60 % faster.
 - **The KV cache code of the architecture layer has no NEON left.** The
   last of it, the row absmax that scales K and V rows for the INT8 and INT4
   caches (`forward/kv_store.c`), is portable C that takes the maximum on the
