@@ -74,6 +74,9 @@ struct transformer_layer_exec_plan {
      * accept any geometry today. */
     bool fuse_attn_rmsnorm_add; /* post-attn norm+residual, d_model rows */
     bool fuse_ple_gelu_mul;     /* PLE gate epilogue, hidden_per_layer rows */
+    bool fuse_attn_kv_int8;     /* the backend's INT8-KV attention; the
+                                 * session's KV mode (INT8, not INT4) is
+                                 * checked at the call site */
 };
 
 /* Model-level fusion decisions (not per-layer): lookup tables and the

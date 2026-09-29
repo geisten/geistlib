@@ -496,6 +496,15 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
     return GEIST_OK;
 }
 
+/* cpu_scalar's answers (the elementwise fusions, which cpu_x86 overrides
+ * with the same geometry) plus the INT8-KV attention. */
+static bool cpu_x86_fused_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
+    if (q != nullptr && q->op == GEIST_FUSED_ATTN_KV_INT8) {
+        return cpu_x86_attention_kv_int8_supported(q);
+    }
+    return cpu_scalar_fused.supported(be, q);
+}
+
 /* ---------- Vtbl init ---------- */
 
 __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
@@ -514,8 +523,10 @@ __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
     cpu_x86_prims.attention = cpu_x86_attention;
 
     cpu_x86_fused                      = cpu_scalar_fused;
+    cpu_x86_fused.supported            = cpu_x86_fused_supported;
     cpu_x86_fused.gelu_tanh_mul        = cpu_x86_gelu_tanh_mul;
     cpu_x86_fused.gelu_tanh_mul_scaled = cpu_x86_gelu_tanh_mul_scaled;
+    cpu_x86_fused.attention_kv_int8    = cpu_x86_attention_kv_int8;
 }
 
 const struct geist_backend_descriptor geist_backend_cpu_x86 = {

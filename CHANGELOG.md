@@ -89,6 +89,22 @@ minor release.
   128). The default stays 64.
 - **Dense F16/BF16 projections a backend cannot resolve** are widened to F32
   at load (metal has no half-precision dense linear).
+- **cpu_x86 runs the attention over the INT8 KV cache, its default, in its
+  own AVX2 kernel.** It was the architecture's portable loop, vectorized by
+  the compiler alone; the backend's AVX2 attention served only the F32
+  cache. New optional backend op `fused->attention_kv_int8`
+  (`GEIST_FUSED_ATTN_KV_INT8`, `struct geist_attention_kv_int8_args`,
+  `<geist_backend.h>`): the layer plan binds it where the backend's probe
+  accepts the geometry, and the architecture keeps the rotation
+  (`GEIST_KV_ROT`). Its decomposed twin is the host loop over the same
+  cache bytes, which `GEIST_KV_INT8_FUSED=0` keeps. The two agree to fp32
+  rounding, not bit for bit (-ffast-math groups the softmax sums
+  differently); any thread count gives the same bits. x86-64, 4 threads: per
+  call 1.4-2.8x faster than the host loop (five head layouts, 512-8192
+  positions, decode and 64-token prefill chunks; `bench_attention_int8` now
+  times both). End to end at 2048 positions (synthetic weights), prefill
+  -11 % and decode -13 % in the Llama 3.2 1B geometry (Q4_K), -21 % and
+  -14 % in SmolLM2-360M's (Q8_0); at 512, within noise to -8 %.
 
 ### Changed
 

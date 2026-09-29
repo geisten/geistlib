@@ -30,6 +30,15 @@
  * -ffast-math build); a 1-thread run must give the same bits as the
  * default team; an INT8 run without scratch (decode unsplit) must match
  * the reference too.
+ *
+ * The INT8 shapes run a second time through fused->attention_kv_int8 on
+ * every backend in the build whose probe binds it (cpu_x86 must): the
+ * backend's own kernel on buffers and tensor views, held to the same
+ * reference bound, the same poison and thread-count checks, and to the
+ * portable loop's output (its decomposed twin) within that bound, and a
+ * last query one position past the cache must be refused
+ * (GEIST_E_INVALID_ARG) with the output untouched. Two shapes put -128 in
+ * K, which the cache never writes but an int8 is.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -37,6 +46,9 @@
 
 #include "src/archs/transformer/forward/internal.h"
 #include "src/archs/transformer/forward.h"
+
+#include <geist.h>
+#include <geist_backend.h>
 
 #include "int4_kv.h"
 
@@ -63,7 +75,12 @@ struct shape {
     size_t n_q, n_q_heads, n_kv_heads, head_dim, n_kv, window;
     float  trend; /* 0, or one K row per KV head, K scales rising to ~0.1 * trend */
     bool   int4;  /* packed 4-bit K/V through attention_int4_via_buffers */
+    bool   full;  /* K over the whole int8 range, -128 included */
 };
+
+static const char *const     BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
+constexpr size_t             N_BACKENDS = sizeof BACKENDS / sizeof BACKENDS[0];
+static struct geist_backend *g_be[N_BACKENDS];
 
 /* The kernel under test on this shape's cache. */
 static void run(const struct shape *sh,
@@ -170,6 +187,203 @@ static void reference(const struct shape *sh,
     }
 }
 
+/* A DENSE view of `bytes` uploaded from `src`, or nullptr. */
+static struct geist_buffer *upload(struct geist_backend *be, size_t bytes, const void *src) {
+    const struct geist_backend_vtbl *vt = be->desc->vtbl;
+    struct geist_buffer             *b  = nullptr;
+    if (vt->buffer_create(be, bytes, GEIST_BUFFER_SCRATCH, 0, &b) != GEIST_OK || b == nullptr) {
+        return nullptr;
+    }
+    void *p = vt->buffer_map(b);
+    if (p == nullptr) {
+        vt->buffer_destroy(be, b);
+        return nullptr;
+    }
+    memcpy(p, src, bytes);
+    vt->buffer_unmap(b);
+    return b;
+}
+
+static struct geist_tensor
+tensor(struct geist_buffer *b, enum geist_dtype dt, int ndim, size_t s0, size_t s1, size_t s2) {
+    struct geist_tensor t = {.buffer = b, .dtype = dt, .layout = GEIST_LAYOUT_DENSE, .ndim = ndim};
+    t.shape[0]            = (int64_t) s0;
+    t.shape[1]            = (int64_t) s1;
+    t.shape[2]            = (int64_t) s2;
+    t.stride[ndim - 1]    = 1;
+    t.stride[0]           = ndim == 3 ? (int64_t) (s1 * s2) : (int64_t) s1;
+    if (ndim == 3) {
+        t.stride[1] = (int64_t) s2;
+    }
+    return t;
+}
+
+/* fused->attention_kv_int8 of backend `bi` on this shape's cache, against
+ * the reference and against the portable loop's `twin`. */
+static int check_backend(size_t              bi,
+                         const struct shape *sh,
+                         const float        *q,
+                         const int8_t       *k,
+                         const float        *ks,
+                         const int8_t       *v,
+                         const float        *vs,
+                         const double       *ref,
+                         const float        *twin,
+                         double              tol) {
+    struct geist_backend             *be    = g_be[bi];
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    const struct geist_fusion_query   pq    = {.op         = GEIST_FUSED_ATTN_KV_INT8,
+                                               .m          = sh->n_q,
+                                               .head_dim   = sh->head_dim,
+                                               .n_q_heads  = sh->n_q_heads,
+                                               .n_kv_heads = sh->n_kv_heads};
+    const bool bound = fused->attention_kv_int8 != nullptr && fused->supported != nullptr &&
+                       fused->supported(be, &pq);
+    if (!bound) {
+        if (strcmp(BACKENDS[bi], "cpu_x86") == 0) {
+            fprintf(stderr,
+                    "FAIL: cpu_x86 does not bind attention_kv_int8 (hd=%zu)\n",
+                    sh->head_dim);
+            return 1;
+        }
+        return 0;
+    }
+    const struct geist_backend_vtbl *vt       = be->desc->vtbl;
+    const size_t                     kv_elems = sh->n_kv * sh->n_kv_heads * sh->head_dim;
+    const size_t                     q_elems  = sh->n_q * sh->n_q_heads * sh->head_dim;
+    const size_t                     n_sc     = sh->n_kv * sh->n_kv_heads;
+    float                           *poison   = heap_alloc_array_aligned(float, q_elems);
+    float                           *out      = heap_alloc_array_aligned(float, q_elems);
+    float                           *out1     = heap_alloc_array_aligned(float, q_elems);
+    struct geist_buffer *bq = nullptr, *bk = nullptr, *bks = nullptr, *bv = nullptr, *bvs = nullptr,
+                        *bo = nullptr;
+    int fails               = 0;
+    if (poison == nullptr || out == nullptr || out1 == nullptr) {
+        fprintf(stderr, "ERROR: allocation failed\n");
+        fails = 1;
+        goto done;
+    }
+    const float POISON = -7.5e30f;
+    for (size_t i = 0; i < q_elems; i++) {
+        poison[i] = POISON;
+    }
+    bq  = upload(be, q_elems * sizeof *q, q);
+    bk  = upload(be, kv_elems, k);
+    bks = upload(be, n_sc * sizeof *ks, ks);
+    bv  = upload(be, kv_elems, v);
+    bvs = upload(be, n_sc * sizeof *vs, vs);
+    bo  = upload(be, q_elems * sizeof *out, poison);
+    if (bq == nullptr || bk == nullptr || bks == nullptr || bv == nullptr || bvs == nullptr ||
+        bo == nullptr) {
+        fprintf(stderr, "ERROR: %s: buffers\n", BACKENDS[bi]);
+        fails = 1;
+        goto done;
+    }
+    const struct geist_tensor tq =
+            tensor(bq, GEIST_DTYPE_F32, 3, sh->n_q, sh->n_q_heads, sh->head_dim);
+    const struct geist_tensor tk =
+            tensor(bk, GEIST_DTYPE_I8, 3, sh->n_kv, sh->n_kv_heads, sh->head_dim);
+    const struct geist_tensor tv =
+            tensor(bv, GEIST_DTYPE_I8, 3, sh->n_kv, sh->n_kv_heads, sh->head_dim);
+    const struct geist_tensor tks = tensor(bks, GEIST_DTYPE_F32, 2, sh->n_kv, sh->n_kv_heads, 0);
+    const struct geist_tensor tvs = tensor(bvs, GEIST_DTYPE_F32, 2, sh->n_kv, sh->n_kv_heads, 0);
+    struct geist_tensor to = tensor(bo, GEIST_DTYPE_F32, 3, sh->n_q, sh->n_q_heads, sh->head_dim);
+    const struct geist_attention_kv_int8_args args = {.q              = &tq,
+                                                      .k              = &tk,
+                                                      .k_scale        = &tks,
+                                                      .v              = &tv,
+                                                      .v_scale        = &tvs,
+                                                      .out            = &to,
+                                                      .q_offset       = sh->n_kv - sh->n_q,
+                                                      .sliding_window = sh->window};
+    enum geist_status                         st   = fused->attention_kv_int8(be, &args);
+    memcpy(out, vt->buffer_map(bo), q_elems * sizeof *out);
+    vt->buffer_unmap(bo);
+    size_t unwritten = 0;
+    double max_d = 0.0, max_t = 0.0;
+    for (size_t i = 0; i < q_elems; i++) {
+        if (memcmp(&out[i], &POISON, sizeof POISON) == 0) {
+            unwritten++;
+            continue;
+        }
+        const double d = fabs((double) out[i] - ref[i]);
+        const double e = fabs((double) out[i] - (double) twin[i]);
+        max_d          = d > max_d ? d : max_d;
+        max_t          = e > max_t ? e : max_t;
+    }
+    if (st != GEIST_OK || unwritten != 0 || !(max_d <= tol) || !(max_t <= tol)) {
+        fprintf(stderr,
+                "FAIL: %s n_q=%zu heads=%zu/%zu hd=%zu n_kv=%zu window=%zu: status %d, %zu "
+                "unwritten, max|d| %.3g vs the reference, %.3g vs the portable loop (tol %.3g)\n",
+                BACKENDS[bi],
+                sh->n_q,
+                sh->n_q_heads,
+                sh->n_kv_heads,
+                sh->head_dim,
+                sh->n_kv,
+                sh->window,
+                (int) st,
+                unwritten,
+                max_d,
+                max_t,
+                tol);
+        fails++;
+    }
+#if defined(_OPENMP)
+    const int team = omp_get_max_threads();
+    omp_set_num_threads(1);
+    st = fused->attention_kv_int8(be, &args);
+    omp_set_num_threads(team);
+    memcpy(out1, vt->buffer_map(bo), q_elems * sizeof *out1);
+    vt->buffer_unmap(bo);
+    if (st != GEIST_OK || memcmp(out, out1, q_elems * sizeof *out) != 0) {
+        fprintf(stderr,
+                "FAIL: %s n_q=%zu heads=%zu/%zu hd=%zu n_kv=%zu: 1 thread != %d threads\n",
+                BACKENDS[bi],
+                sh->n_q,
+                sh->n_q_heads,
+                sh->n_kv_heads,
+                sh->head_dim,
+                sh->n_kv,
+                team);
+        fails++;
+    }
+#endif
+    /* The last query one position past the cache: refused, nothing written. */
+    struct geist_attention_kv_int8_args past = args;
+    past.q_offset                            = sh->n_kv - sh->n_q + 1;
+    memcpy(out1, vt->buffer_map(bo), q_elems * sizeof *out1);
+    vt->buffer_unmap(bo);
+    st                 = fused->attention_kv_int8(be, &past);
+    const bool touched = memcmp(out1, vt->buffer_map(bo), q_elems * sizeof *out1) != 0;
+    vt->buffer_unmap(bo);
+    if (st != GEIST_E_INVALID_ARG || touched) {
+        fprintf(stderr,
+                "FAIL: %s n_q=%zu n_kv=%zu q_offset=%zu: status %d (%s the output), not a "
+                "refusal\n",
+                BACKENDS[bi],
+                sh->n_q,
+                sh->n_kv,
+                past.q_offset,
+                (int) st,
+                touched ? "wrote" : "left");
+        fails++;
+    }
+done:
+    for (struct geist_buffer **b = (struct geist_buffer *[]) {bq, bk, bks, bv, bvs, bo},
+                             **e = b + 6;
+         b < e;
+         b++) {
+        if (*b != nullptr) {
+            vt->buffer_destroy(be, *b);
+        }
+    }
+    safe_free((void **) &poison);
+    safe_free((void **) &out);
+    safe_free((void **) &out1);
+    return fails;
+}
+
 static int check_shape(const struct shape *sh) {
     const size_t kv_elems = sh->n_kv * sh->n_kv_heads * sh->head_dim;
     const size_t q_elems  = sh->n_q * sh->n_q_heads * sh->head_dim;
@@ -200,6 +414,9 @@ static int check_shape(const struct shape *sh) {
     for (size_t i = 0; i < kv_elems; i++) {
         k[i] = (int8_t) ((int) (next_u32() % span) - (int) (span / 2));
         v[i] = (int8_t) ((int) (next_u32() % span) - (int) (span / 2));
+        if (sh->full) {
+            k[i] = (int8_t) (next_u32() % 3u == 0u ? -128 : (int) (next_u32() % 256u) - 128);
+        }
     }
     for (size_t i = 0; i < sh->n_kv * sh->n_kv_heads; i++) {
         ks[i] = 0.0005f + (float) (next_u32() % 1000u) * 2e-6f;
@@ -300,6 +517,13 @@ static int check_shape(const struct shape *sh) {
                 tol);
         fails++;
     }
+    if (!sh->int4) {
+        for (size_t bi = 0; bi < N_BACKENDS; bi++) {
+            if (g_be[bi] != nullptr) {
+                fails += check_backend(bi, sh, q, k, ks, v, vs, ref, out, tol);
+            }
+        }
+    }
 #if defined(_OPENMP)
     /* Same bits whatever the team: each head is one thread's sequential work. */
     const int team = omp_get_max_threads();
@@ -349,51 +573,69 @@ done:
 
 int main(void) {
     static const struct shape SHAPES[] = {
-            {1, 16, 8, 128, 512, 0, 0.0f, false},    /* 2 heads per pass, decode */
-            {16, 16, 8, 128, 700, 0, 0.0f, false},   /* ... prefill chunk */
-            {16, 16, 8, 128, 200, 0, 0.0f, false},   /* ... context inside one block */
-            {16, 24, 8, 128, 300, 0, 0.0f, false},   /* 3 heads per pass (head_dim 128) */
-            {1, 32, 8, 64, 512, 0, 0.0f, false},     /* 4 heads per pass, decode */
-            {16, 32, 8, 64, 2100, 0, 0.0f, false},   /* ... prefill chunk */
-            {2, 16, 8, 64, 1600, 0, 0.0f, false},    /* 2 per pass: 1.6 MB of K/V */
-            {4, 15, 5, 64, 2600, 0, 0.0f, false},    /* 3 per pass: 1.6 MB of K/V */
-            {9, 15, 5, 64, 300, 0, 0.0f, false},     /* one-head loop: 192 KB of K/V */
-            {1, 15, 5, 64, 300, 0, 0.0f, false},     /* ... decode */
-            {1, 15, 5, 64, 1500, 0, 0.0f, false},    /* ... decode over 3 blocks */
-            {4, 15, 5, 64, 1800, 700, 0.0f, false},  /* ... sliding window, 2 blocks */
-            {16, 8, 1, 256, 600, 0, 0.0f, false},    /* MQA prefill: 4 per pass */
-            {1, 8, 1, 256, 600, 0, 0.0f, false},     /* MQA decode: 4 per pass, 4 chunks */
-            {1, 8, 1, 256, 200, 0, 0.0f, false},     /* ... too short to split: one-head */
-            {1, 12, 2, 128, 500, 0, 0.0f, false},    /* decode: 3 per pass, 3 chunks */
-            {1, 4, 2, 128, 400, 0, 0.0f, false},     /* decode: 2 per pass, 2 chunks */
-            {3, 4, 4, 64, 100, 0, 0.0f, false},      /* MHA: one-head loop */
-            {16, 16, 8, 128, 900, 256, 0.0f, false}, /* sliding window, grouped */
-            {4, 32, 8, 64, 2500, 512, 0.0f, false},  /* sliding window, grouped */
-            {1, 8, 1, 256, 2500, 512, 0.0f, false},  /* sliding window, decode in chunks */
-            {1, 32, 8, 64, 3000, 0, 1.0f, false},    /* trending scores, decode */
-            {1, 8, 1, 256, 3000, 0, 1.0f, false},    /* ... decode in chunks */
-            {8, 16, 8, 128, 2000, 0, 1.0f, false},   /* ... prefill chunk */
-            {1, 4, 4, 64, 2000, 0, 1.0f, false},     /* ... MHA, one-head over 4 blocks */
-            {16, 16, 8, 128, 700, 0, 0.0f, true},    /* INT4: prefill chunk */
-            {1, 32, 8, 64, 1500, 0, 0.0f, true},     /* INT4: decode over 3 blocks */
-            {4, 8, 1, 256, 900, 300, 0.0f, true},    /* INT4: MQA, sliding window */
-            {1, 4, 4, 64, 2000, 0, 1.0f, true},      /* INT4: trending scores */
+            {1, 16, 8, 128, 512, 0, 0.0f, false, false},    /* 2 heads per pass, decode */
+            {16, 16, 8, 128, 700, 0, 0.0f, false, false},   /* ... prefill chunk */
+            {16, 16, 8, 128, 200, 0, 0.0f, false, false},   /* ... context inside one block */
+            {16, 24, 8, 128, 300, 0, 0.0f, false, false},   /* 3 heads per pass (head_dim 128) */
+            {1, 32, 8, 64, 512, 0, 0.0f, false, false},     /* 4 heads per pass, decode */
+            {16, 32, 8, 64, 2100, 0, 0.0f, false, false},   /* ... prefill chunk */
+            {2, 16, 8, 64, 1600, 0, 0.0f, false, false},    /* 2 per pass: 1.6 MB of K/V */
+            {4, 15, 5, 64, 2600, 0, 0.0f, false, false},    /* 3 per pass: 1.6 MB of K/V */
+            {9, 15, 5, 64, 300, 0, 0.0f, false, false},     /* one-head loop: 192 KB of K/V */
+            {1, 15, 5, 64, 300, 0, 0.0f, false, false},     /* ... decode */
+            {1, 15, 5, 64, 1500, 0, 0.0f, false, false},    /* ... decode over 3 blocks */
+            {4, 15, 5, 64, 1800, 700, 0.0f, false, false},  /* ... sliding window, 2 blocks */
+            {16, 8, 1, 256, 600, 0, 0.0f, false, false},    /* MQA prefill: 4 per pass */
+            {1, 8, 1, 256, 600, 0, 0.0f, false, false},     /* MQA decode: 4 per pass, 4 chunks */
+            {1, 8, 1, 256, 200, 0, 0.0f, false, false},     /* ... too short to split: one-head */
+            {1, 12, 2, 128, 500, 0, 0.0f, false, false},    /* decode: 3 per pass, 3 chunks */
+            {1, 4, 2, 128, 400, 0, 0.0f, false, false},     /* decode: 2 per pass, 2 chunks */
+            {3, 4, 4, 64, 100, 0, 0.0f, false, false},      /* MHA: one-head loop */
+            {16, 16, 8, 128, 900, 256, 0.0f, false, false}, /* sliding window, grouped */
+            {4, 32, 8, 64, 2500, 512, 0.0f, false, false},  /* sliding window, grouped */
+            {1, 8, 1, 256, 2500, 512, 0.0f, false, false},  /* sliding window, decode in chunks */
+            {1, 32, 8, 64, 3000, 0, 1.0f, false, false},    /* trending scores, decode */
+            {1, 8, 1, 256, 3000, 0, 1.0f, false, false},    /* ... decode in chunks */
+            {8, 16, 8, 128, 2000, 0, 1.0f, false, false},   /* ... prefill chunk */
+            {1, 4, 4, 64, 2000, 0, 1.0f, false, false},     /* ... MHA, one-head over 4 blocks */
+            {16, 16, 8, 128, 700, 0, 0.0f, true, false},    /* INT4: prefill chunk */
+            {1, 32, 8, 64, 1500, 0, 0.0f, true, false},     /* INT4: decode over 3 blocks */
+            {4, 8, 1, 256, 900, 300, 0.0f, true, false},    /* INT4: MQA, sliding window */
+            {1, 4, 4, 64, 2000, 0, 1.0f, true, false},      /* INT4: trending scores */
             /* steep: scores hundreds apart, weights below the exp floor */
-            {1, 32, 8, 64, 3000, 0, 10.0f, false},   /* grouped decode */
-            {1, 8, 1, 256, 3000, 0, 10.0f, false},   /* ... in chunks: merge */
-            {8, 16, 8, 128, 2000, 0, 10.0f, false},  /* grouped prefill chunk */
-            {1, 4, 4, 64, 2000, 0, 10.0f, false},    /* one-head loop */
-            {4, 15, 5, 64, 1800, 700, 10.0f, false}, /* ... sliding window */
-            {1, 4, 4, 64, 2000, 0, 170.0f, true},    /* INT4 */
+            {1, 32, 8, 64, 3000, 0, 10.0f, false, false},   /* grouped decode */
+            {1, 8, 1, 256, 3000, 0, 10.0f, false, false},   /* ... in chunks: merge */
+            {8, 16, 8, 128, 2000, 0, 10.0f, false, false},  /* grouped prefill chunk */
+            {1, 4, 4, 64, 2000, 0, 10.0f, false, false},    /* one-head loop */
+            {4, 15, 5, 64, 1800, 700, 10.0f, false, false}, /* ... sliding window */
+            {1, 4, 4, 64, 2000, 0, 170.0f, true, false},    /* INT4 */
+            /* K over the whole int8 range, -128 included */
+            {1, 32, 8, 64, 700, 0, 0.0f, false, true},  /* grouped decode */
+            {5, 16, 8, 80, 300, 0, 0.0f, false, true},  /* head_dim 80: the tails */
+            {3, 12, 4, 72, 200, 0, 0.0f, false, false}, /* head_dim 72, 3 per pass */
+            {2, 2, 2, 96, 150, 0, 0.0f, false, false},  /* MHA at head_dim 96 */
+            {5, 6, 2, 24, 300, 0, 0.0f, false, true},   /* head_dim 24: dots all tail */
+            {1, 4, 1, 8, 700, 0, 0.0f, false, false},   /* head_dim 8, split decode */
     };
+    for (size_t bi = 0; bi < N_BACKENDS; bi++) {
+        if (geist_backend_create(BACKENDS[bi], nullptr, nullptr, &g_be[bi]) != GEIST_OK) {
+            g_be[bi] = nullptr; /* not in this build */
+        }
+    }
     int fails = 0;
     for (size_t i = 0; i < sizeof SHAPES / sizeof *SHAPES; i++) {
         fails += check_shape(&SHAPES[i]);
+    }
+    for (size_t bi = 0; bi < N_BACKENDS; bi++) {
+        if (g_be[bi] != nullptr) {
+            geist_backend_destroy(g_be[bi]);
+        }
     }
     if (fails != 0) {
         fprintf(stderr, "FAIL: %d check(s)\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("PASS: INT8 attention matches the double reference on every path\n");
+    printf("PASS: INT8 attention matches the double reference on every path, the backends' "
+           "kernels too\n");
     return GEIST_TEST_PASS;
 }

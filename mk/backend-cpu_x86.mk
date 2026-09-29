@@ -13,6 +13,7 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/threads.c \
     src/backends/cpu_x86/elementwise.c \
     src/backends/cpu_x86/attention.c \
+    src/backends/cpu_x86/attention_int8.c \
     src/backends/cpu_x86/kernel_w4a8.c \
     src/backends/cpu_x86/kernel_w4a8_scalar.c \
     src/backends/cpu_x86/kernel_w4a8_avx512_vnni.c \

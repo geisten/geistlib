@@ -296,6 +296,7 @@ enum geist_fused_op {
     GEIST_FUSED_ARGMAX_F32,
     GEIST_FUSED_ROPE_INTERLEAVED,
     GEIST_FUSED_BITNET_ACT_QUANT,
+    GEIST_FUSED_ATTN_KV_INT8,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -309,9 +310,9 @@ struct geist_fusion_query {
     size_t              m;
     size_t              d_model;
     size_t              inter;
-    size_t              head_dim;    /* attn_qkv_prep */
-    size_t              n_q_heads;   /* attn_qkv_prep */
-    size_t              n_kv_heads;  /* attn_qkv_prep */
+    size_t              head_dim;    /* attn_qkv_prep, attn_kv_int8 */
+    size_t              n_q_heads;   /* attn_qkv_prep, attn_kv_int8 */
+    size_t              n_kv_heads;  /* attn_qkv_prep, attn_kv_int8 */
     uint16_t            table_dtype; /* embedding_lookup_scaled: geist_dtype
                                       * of the (tensor-typed) lookup table */
     const struct geist_weight *gate_w;
@@ -343,6 +344,34 @@ struct geist_deltanet_mix_args {
     size_t                     head_v;
     size_t                     conv_kernel;
     float                      eps;
+};
+
+/* Arguments for fused->attention_kv_int8: attention over the INT8 KV cache
+ * (GEIST_KV_INT8), masked as prims->attention is.
+ *   q       F32 DENSE [n_q,  n_q_heads,  head_dim]
+ *   k, v    I8  DENSE [n_kv, n_kv_heads, head_dim]
+ *   k_scale F32 DENSE [n_kv, n_kv_heads]   row (s, h) of K is k * k_scale
+ *   v_scale F32 DENSE [n_kv, n_kv_heads]
+ *   out     F32 DENSE [n_q,  n_q_heads,  head_dim]
+ * q[t] sits at position q_offset + t, which the cache must hold:
+ * q_offset + n_q <= n_kv, or the kernel returns GEIST_E_INVALID_ARG, as
+ * for views that do not match; a geometry its probe refuses returns
+ * GEIST_E_UNSUPPORTED.
+ * The scores are integer dots: each query head is quantized to int8 with
+ * scale amax/127 (round to nearest) and dotted exactly against the int8 K
+ * rows. The decomposed twin is therefore not prims->attention on
+ * dequantized rows but the architecture's host loop over the same bytes
+ * (attention_int8_via_buffers); a kernel agrees with it to fp32 rounding
+ * and gives the same bits for any thread count. */
+struct geist_attention_kv_int8_args {
+    const struct geist_tensor *q;
+    const struct geist_tensor *k;
+    const struct geist_tensor *k_scale;
+    const struct geist_tensor *v;
+    const struct geist_tensor *v_scale;
+    struct geist_tensor       *out;
+    size_t                     q_offset;
+    size_t                     sliding_window;
 };
 
 /* Arguments for fused->hadamard_rotate. x and y are F32 DENSE
@@ -648,6 +677,13 @@ struct geist_backend_fused {
      * leaves it nullptr, instead of running a host round-trip per call. */
     enum geist_status (*hadamard_rotate)(struct geist_backend             *be,
                                          const struct geist_hadamard_args *args);
+
+    /* Attention over the INT8 KV cache. See geist_attention_kv_int8_args.
+     * Plan-bound per layer: GEIST_FUSED_ATTN_KV_INT8 with head_dim and the
+     * head counts; nullptr (or a probe that says no) leaves the
+     * architecture's host loop. */
+    enum geist_status (*attention_kv_int8)(struct geist_backend                      *be,
+                                           const struct geist_attention_kv_int8_args *args);
 };
 
 /* ====================================================================== */

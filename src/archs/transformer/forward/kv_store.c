@@ -328,6 +328,43 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         v->buffer_unmap(ctx->k_cache_scale_buf);
         v->buffer_unmap(ctx->v_cache_scale_buf);
         v->buffer_unmap(sess->scratch_attn);
+    } else if (ctx->kv_int8_enabled && ctx->P != nullptr && ctx->P->fuse_attn_kv_int8) {
+        /* The backend's kernel (plan-bound) reads the cache through views;
+         * the rotation of Q and of the output stays here, as below. */
+        const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
+        const size_t n_rows = ctx->seq * st->n_q_heads;
+        if (rot) {
+            float *qp = (float *) v->buffer_map(sess->scratch_q);
+            for (size_t r = 0; r < n_rows; r++) {
+                fwht_orthonormal(ctx->hd, qp + r * ctx->hd);
+            }
+            v->buffer_unmap(sess->scratch_q);
+        }
+        const int64_t       n_kv = (int64_t) kv_len_now;
+        const int64_t       n_kh = st->n_kv_heads;
+        struct geist_tensor t_k  = view_3d_i8(ctx->k_cache_q8_buf, n_kv, n_kh, (int64_t) ctx->hd);
+        struct geist_tensor t_v  = view_3d_i8(ctx->v_cache_q8_buf, n_kv, n_kh, (int64_t) ctx->hd);
+        struct geist_tensor t_ks = view_2d(ctx->k_cache_scale_buf, n_kv, n_kh);
+        struct geist_tensor t_vs = view_2d(ctx->v_cache_scale_buf, n_kv, n_kh);
+        const struct geist_attention_kv_int8_args args = {.q              = t_q_3d,
+                                                          .k              = &t_k,
+                                                          .k_scale        = &t_ks,
+                                                          .v              = &t_v,
+                                                          .v_scale        = &t_vs,
+                                                          .out            = t_attn_3d,
+                                                          .q_offset       = ctx->q_position,
+                                                          .sliding_window = L->sliding_window};
+        const enum geist_status                   s    = ctx->fused->attention_kv_int8(be, &args);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        if (rot) {
+            float *outp = (float *) v->buffer_map(sess->scratch_attn);
+            for (size_t r = 0; r < n_rows; r++) {
+                fwht_orthonormal(ctx->hd, outp + r * ctx->hd);
+            }
+            v->buffer_unmap(sess->scratch_attn);
+        }
     } else if (ctx->kv_int8_enabled) {
         float        *qp       = (float *) v->buffer_map(sess->scratch_q);
         const int8_t *k_q8p    = (const int8_t *) v->buffer_map(ctx->k_cache_q8_buf);

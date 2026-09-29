@@ -15,6 +15,10 @@
  *     entry checks run before any weight bytes are read, so calling
  *     with a hollow weight struct is safe).
  *
+ *   - INT8-KV attention: yes for a GQA prefill chunk → GEIST_OK on
+ *     zeroed buffers; no for a head_dim past 512 and for query heads that
+ *     are not a multiple of the KV heads → GEIST_E_UNSUPPORTED.
+ *
  * The positive GEGLU case (real Q4_K/Q6_K weights) is covered end-to-end
  * by running the decode suite with GEIST_FFN_TILE_FUSION=1 — the plan
  * binds the tile kernel and the canonical-token tests prove the output.
@@ -26,6 +30,87 @@
 
 #include <stdio.h>
 #include <string.h>
+
+/* A zeroed DENSE view of `dtype` over a new buffer on `be`; t->buffer is
+ * nullptr when the buffer cannot be made. */
+static struct geist_tensor zeroed(struct geist_backend *be,
+                                  enum geist_dtype      dtype,
+                                  size_t                elem,
+                                  int                   ndim,
+                                  const int64_t         shape[static ndim]) {
+    const struct geist_backend_vtbl *vt = be->desc->vtbl;
+    struct geist_tensor t = {.dtype = dtype, .layout = GEIST_LAYOUT_DENSE, .ndim = ndim};
+    size_t              n = 1;
+    for (int d = ndim - 1; d >= 0; d--) {
+        t.shape[d]  = shape[d];
+        t.stride[d] = (int64_t) n;
+        n *= (size_t) shape[d];
+    }
+    if (vt->buffer_create(be, n * elem, GEIST_BUFFER_SCRATCH, 0, &t.buffer) != GEIST_OK) {
+        t.buffer = nullptr;
+        return t;
+    }
+    memset(vt->buffer_map(t.buffer), 0, n * elem);
+    vt->buffer_unmap(t.buffer);
+    return t;
+}
+
+/* INT8-KV attention at one geometry, n_q queries at the end of a cache of
+ * n_q + 1 positions: the probe must answer `want`, and the kernel must
+ * return GEIST_OK when it says yes and GEIST_E_UNSUPPORTED when it says no
+ * (its entry checks refuse before reading anything). */
+static int kv_int8_agreement(struct geist_backend *be,
+                             size_t                n_q,
+                             size_t                n_q_heads,
+                             size_t                n_kv_heads,
+                             size_t                head_dim,
+                             bool                  want) {
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    const struct geist_fusion_query   q     = {.op         = GEIST_FUSED_ATTN_KV_INT8,
+                                               .m          = n_q,
+                                               .head_dim   = head_dim,
+                                               .n_q_heads  = n_q_heads,
+                                               .n_kv_heads = n_kv_heads};
+    const bool                        yes = fused->supported != nullptr && fused->supported(be, &q);
+    int           fails = geist_expect(yes == want, "attention_kv_int8: the probe's answer");
+    const int64_t n_kv = (int64_t) n_q + 1, qh = (int64_t) n_q_heads, kh = (int64_t) n_kv_heads,
+                  hd = (int64_t) head_dim;
+    struct geist_tensor tq =
+            zeroed(be, GEIST_DTYPE_F32, sizeof(float), 3, (int64_t[]) {(int64_t) n_q, qh, hd});
+    struct geist_tensor tk  = zeroed(be, GEIST_DTYPE_I8, 1, 3, (int64_t[]) {n_kv, kh, hd});
+    struct geist_tensor tv  = zeroed(be, GEIST_DTYPE_I8, 1, 3, (int64_t[]) {n_kv, kh, hd});
+    struct geist_tensor tks = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, (int64_t[]) {n_kv, kh});
+    struct geist_tensor tvs = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, (int64_t[]) {n_kv, kh});
+    struct geist_tensor to =
+            zeroed(be, GEIST_DTYPE_F32, sizeof(float), 3, (int64_t[]) {(int64_t) n_q, qh, hd});
+    struct geist_tensor *all[] = {&tq, &tk, &tv, &tks, &tvs, &to};
+    bool                 made  = true;
+    for (size_t i = 0; i < 6; i++) {
+        made = made && all[i]->buffer != nullptr;
+    }
+    if (!made) {
+        fails += geist_expect(false, "attention_kv_int8: buffers");
+    } else {
+        const struct geist_attention_kv_int8_args args = {.q        = &tq,
+                                                          .k        = &tk,
+                                                          .k_scale  = &tks,
+                                                          .v        = &tv,
+                                                          .v_scale  = &tvs,
+                                                          .out      = &to,
+                                                          .q_offset = 1};
+        const enum geist_status                   s    = fused->attention_kv_int8(be, &args);
+        fails += geist_expect(s == (yes ? GEIST_OK : GEIST_E_UNSUPPORTED),
+                              yes ? "probe said yes: attention_kv_int8 must return GEIST_OK"
+                                  : "probe said no: attention_kv_int8 must refuse with "
+                                    "GEIST_E_UNSUPPORTED");
+    }
+    for (size_t i = 0; i < 6; i++) {
+        if (all[i]->buffer != nullptr) {
+            be->desc->vtbl->buffer_destroy(be, all[i]->buffer);
+        }
+    }
+    return fails;
+}
 
 static int check_backend(const char *name) {
     struct geist_backend *be = nullptr;
@@ -214,6 +299,14 @@ static int check_backend(const char *name) {
         }
     }
 
+    /* ---- INT8-KV attention: a prefill chunk of 4 heads on 2; a head_dim
+     * past 512 and 3 query heads on 2 KV heads, which no kernel runs. */
+    if (fused->attention_kv_int8 != nullptr) {
+        fails += kv_int8_agreement(be, 2, 4, 2, 64, true);
+        fails += kv_int8_agreement(be, 1, 2, 1, 520, false);
+        fails += kv_int8_agreement(be, 1, 3, 2, 64, false);
+    }
+
     printf("  %s: probe/kernel agreement ok\n", name);
     geist_backend_destroy(be);
     return fails;
@@ -221,6 +314,7 @@ static int check_backend(const char *name) {
 
 int main(void) {
     int fails = 0;
+    fails += check_backend("cpu_x86");
     fails += check_backend("cpu_neon");
     fails += check_backend("cpu_scalar");
     fails += check_backend("metal");
