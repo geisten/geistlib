@@ -302,7 +302,9 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     /* P1.6: GGUF-embedded tokenizer path. Prepends BOS automatically;
      * gguf_tokenizer_encode handles byte-level BPE + merges. */
     if (gtok != nullptr) {
-        const size_t cap     = strlen(prompt) + 8; /* upper bound */
+        /* ≤ 1 id per byte + ▁ prefix + BOS. An SPM vocab without a ▁ piece
+         * spends 3 byte ids per space; encode then fails, it never truncates. */
+        const size_t cap     = strlen(prompt) + 8;
         int32_t     *enc_ids = heap_alloc_array_aligned(int32_t, cap);
         if (enc_ids == nullptr) {
             snprintf(sf->err_msg, sizeof(sf->err_msg), "set_prompt: alloc fail");
@@ -314,7 +316,7 @@ const char *geist_session_errmsg(const struct geist_session *s) {
             enc_ids[n_enc++] = gtok->bos_id;
         }
         size_t enc_n = 0;
-        if (!gguf_tokenizer_encode(gtok, prompt, enc_ids + n_enc, cap - n_enc, &enc_n)) {
+        if (gguf_tokenizer_encode(gtok, prompt, cap - n_enc, enc_ids + n_enc, &enc_n) != GEIST_OK) {
             void *p = enc_ids;
             safe_free(&p);
             snprintf(sf->err_msg, sizeof(sf->err_msg), "set_prompt: gguf_tokenizer_encode failed");
@@ -363,25 +365,17 @@ const char *geist_session_errmsg(const struct geist_session *s) {
      * tokenize reports the content tokens; callers add BOS if they need it. */
     struct gguf_tokenizer *gtok = geist_model_internal_gguf_tokenizer(sf->model);
     if (gtok != nullptr) {
-        int32_t *enc = heap_alloc_array_aligned(int32_t, out_capacity ? out_capacity : 1);
-        if (enc == nullptr) {
-            sf->err_code = GEIST_E_OOM;
-            return GEIST_E_OOM;
+        const enum geist_status st =
+                gguf_tokenizer_encode(gtok, text, out_capacity, out_ids, n_out);
+        if (st != GEIST_OK) {
+            snprintf(sf->err_msg,
+                     sizeof(sf->err_msg),
+                     "tokenize: %s (out_capacity %zu)",
+                     st == GEIST_E_INVALID_ARG ? "more tokens than fit" : "gguf encode failed",
+                     out_capacity);
+            sf->err_code = st;
         }
-        size_t enc_n = 0;
-        if (!gguf_tokenizer_encode(gtok, text, enc, out_capacity, &enc_n)) {
-            void *p = enc;
-            safe_free(&p);
-            snprintf(sf->err_msg, sizeof(sf->err_msg), "tokenize: gguf encode failed");
-            sf->err_code = GEIST_E_IO;
-            return GEIST_E_IO;
-        }
-        for (size_t i = 0; i < enc_n; i++)
-            out_ids[i] = (geist_token_t) enc[i];
-        *n_out  = enc_n;
-        void *p = enc;
-        safe_free(&p);
-        return GEIST_OK;
+        return st;
     }
 
     struct sp_bpe_tokenizer *tok = geist_model_internal_tokenizer(sf->model);
