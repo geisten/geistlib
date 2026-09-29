@@ -138,6 +138,19 @@ minor release.
   (`bench_attention_int8`, which now has the head_dim 512 layout). End to
   end at 2048 positions (synthetic weights), prefill -3 % (Llama 3.2 1B,
   Q4_K) and -6 % (SmolLM2-360M, Q8_0); decode within noise.
+- **cpu_x86's INT8-KV attention takes its prefill work KV head by KV
+  head.** Both kernels (AVX2 and AVX-512 VNNI) handed the prefill items to
+  the thread team in query order, so every thread went through the K and V
+  rows of several KV heads in turn: with SmolLM2-360M's five KV heads on
+  four threads, all five, 5 MB at 8192 positions where one core's L2 holds
+  2 MB. The same items now come KV head by KV head; the results are the
+  same bits, and a decode runs as before. x86-64, 4 threads, a 64-token
+  prefill chunk, both orders alternated in one process: SmolLM2-360M's
+  layout -3 / -11 / -35 % at 512 / 2048 / 8192 positions (VNNI kernel;
+  AVX2 -0 / -9 / -20 %), 32/32 heads -1 to -12 %, Llama 3.2 1B's and
+  Qwen3-0.6B's +1 to -6 %, one KV head (Gemma 4 E2B) unchanged. End to
+  end, a 4000-token prompt prefills 7.4 % faster in SmolLM2-360M's geometry
+  (synthetic Q8_0 weights) and as fast as before in Llama 3.2 1B's.
 - **The KV cache code of the architecture layer has no NEON left.** The
   last of it, the row absmax that scales K and V rows for the INT8 and INT4
   caches (`forward/kv_store.c`), is portable C that takes the maximum on the

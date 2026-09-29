@@ -730,13 +730,17 @@ void cpu_x86_attention_kv_int8_run_avx512_vnni(size_t        n_q,
         }
         return;
     }
-    /* Causal and window masks make later positions longer: dynamic. */
+    /* Items by KV head, then pass, then query: the team works through one
+     * KV head's rows at a time, which then stay in each core's L2 (1 MB at
+     * 8192 positions and head_dim 64), where in query order every thread
+     * went through all KV heads' (five of them in SmolLM2-360M, 5 MB).
+     * Causal and window masks make later positions longer: dynamic. */
 #if defined(_OPENMP)
 #pragma omp parallel for collapse(3) schedule(dynamic)
 #endif
-    for (size_t t = 0; t < n_q; t++) {
-        for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-            for (size_t pass = 0; pass < n_passes; pass++) {
+    for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
+        for (size_t pass = 0; pass < n_passes; pass++) {
+            for (size_t t = 0; t < n_q; t++) {
                 size_t c_lo = 0, c_hi = 0;
                 avn_span(&a, t, &c_lo, &c_hi);
                 avn_run_item(
