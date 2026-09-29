@@ -27,13 +27,13 @@ CC ?= cc
 # ~200× slower scalar path — the same trap #102 fixed in bench_perf_sweep.
 # BACKENDS="cpu_scalar" still builds the portable reference (dedicated CI
 # job). Remember `make clean` when switching BACKENDS.
-# The -Wno-* relaxations below are GCC-only names; clang treats unknown
-# -Wno- options as errors under -Werror. Detect the compiler family once.
+# The -Wno-vla-parameter relaxation below is a GCC-only name; clang treats
+# unknown -Wno- options as errors under -Werror. Detect the compiler family once.
 # For clang, also keep INFINITY well-defined under -ffast-math
 # (-fno-finite-math-only, same as the mac-omp target) — clang 18+ makes
 # INFINITY-with-finite-math a hard error, and the attention mask needs it.
 ifeq (,$(findstring clang,$(CC)))
-WARN_RELAX := -Wno-nonnull-compare -Wno-vla-parameter
+WARN_RELAX := -Wno-vla-parameter
 else
 WARN_RELAX := -fno-finite-math-only
 endif
@@ -62,7 +62,7 @@ BACKENDS ?= cpu_neon cpu_scalar
 # Generic ARMv8.2-A tuning — runs on Graviton2+, Ampere Altra, and most
 # ARM64 SBCs. No -mcpu pin so the same binary is portable across cores.
 # See target-pi5.mk for the rationale behind -ffast-math and the
-# -Wno-nonnull-compare / -Wno-vla-parameter relaxations under stricter GCC.
+# -Wno-vla-parameter relaxation.
 CFLAGS_TARGET := -march=armv8.2-a+fp16+dotprod -fopenmp -ffast-math \
                  $(WARN_RELAX)
 

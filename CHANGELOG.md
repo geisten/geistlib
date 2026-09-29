@@ -123,7 +123,9 @@ minor release.
   `history` may be nullptr when their length is 0, and so may `ids` in the
   arch vtable's `pin_prefix`. For the three STABLE symbols this is a
   compatible change (`docs/API_CONTRACT.md`). One loss: gcc no longer warns a
-  C caller that passes a visibly short array.
+  C caller that passes a visibly short array. `-Wno-nonnull-compare`, which
+  hid the contradiction on every gcc build, is gone from `TARGET=linux` and
+  `TARGET=pi5`.
 - **Streaming audio emitted a wrong sub-token block when the encoder worker
   woke at 46 mod 48 mel frames** (#506): the subsample's last row reads one
   frame past the real ones, so a mid-stream push whose sub-token count ended
