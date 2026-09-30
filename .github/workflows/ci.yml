@@ -568,7 +568,11 @@ jobs:
       # -fsanitize=fuzzer-no-link into its own tree, which is why this cannot
       # reuse the objects above. 30 s per target reaches ~7 M executions;
       # the corpus is seeded by the harness itself, no fixture, no network.
+      # UBSan halts, as in the deterministic gate: in its default recover
+      # mode a finding is printed and libFuzzer runs on to a green exit.
       - name: Fuzz harnesses (libFuzzer, 30 s per target)
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: make fuzz-libfuzzer TARGET=linux CC=clang-19 FUZZ_CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native FUZZ_SECONDS=30
 
   # Audio harness smoke (#234). The Pi 5 audio baseline is produced by
