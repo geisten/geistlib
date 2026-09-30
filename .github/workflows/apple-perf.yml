@@ -23,7 +23,7 @@ jobs:
       # The same llama.cpp pin the cross-engine campaign uses.
       LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install libomp
         run: brew install libomp
