@@ -85,7 +85,9 @@ jobs:
           if [ ! -x "$BUILD/bin/llama-bench" ] \
              || [ "$(git -C "$DIR" rev-parse HEAD)" != "$LLAMA_PIN" ]; then
             [ -d "$DIR/.git" ] || git clone "https://github.com/$LLAMA_REPO" "$DIR"
-            git -C "$DIR" fetch origin "$LLAMA_PIN"
+            # A full SHA fetches directly; a short one or a branch needs
+            # the history first.
+            git -C "$DIR" fetch origin "$LLAMA_PIN" 2>/dev/null || git -C "$DIR" fetch origin
             git -C "$DIR" checkout "$LLAMA_PIN"
             if [ "$VARIANT" = gpu ]; then
               # ggml-vulkan #includes spirv/unified1/spirv.hpp directly, so
