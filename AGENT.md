@@ -276,14 +276,19 @@ list, `session.c` stops at a missing header before the optimizer ever runs.
 `#pragma omp` is an unknown pragma, which `-Werror` turns into an error.
 `-march` makes the check see what CI's arm64 legs compile, and a generic
 aarch64 gcc, which defaults to plain armv8-a, cannot inline the kernels'
-dot-product intrinsics without it.
+dot-product intrinsics without it. An x86-64 gcc rejects that value
+outright; on an x86-64 host use the x86 one from the same file,
+`-march=x86-64-v3`.
 
 **`-O3 -c`, not `-fsyntax-only`.** The diagnostics that matter for the
 rules above — `-Wstringop-overflow`, `-Wstringop-overread`,
 `-Wnonnull-compare` — come out of the optimizer, so a syntax-only pass
 reports none of them and CI finds them for you instead. Skip
-`src/backends/{metal,vulkan,cpu_x86}`; those need SDKs or target
-intrinsics this host lacks, and CI covers them.
+`src/backends/{metal,vulkan}`, which need SDKs, and the CPU backend the
+Linux target for your architecture does not build: `cpu_x86` on arm64,
+`cpu_neon` on x86-64. On x86-64 also skip the `cpu_x86` kernels that
+`mk/backend-cpu_x86.mk` gives extra `-mavx512*` flags; this command does
+not carry them. CI covers all of these.
 
 gcc-15 is stricter than CI's gcc-14. A hit that also reproduces on
 `origin/main` is pre-existing, not yours — check before chasing it.
