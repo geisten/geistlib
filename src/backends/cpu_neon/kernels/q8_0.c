@@ -41,7 +41,7 @@ void linear_q8_0_decode_w8a8_pre(size_t       n_in,
             int_dot += dot16_i8(xb, vld1q_s8(blk->qs));
             int_dot += dot16_i8(xb + 16, vld1q_s8(blk->qs + 16));
 #else
-            for (int j = 0; j < Q8_0_BLOCK_ELEMS; j++) {
+            for (size_t j = 0; j < Q8_0_BLOCK_ELEMS; j++) {
                 int_dot += (int32_t) xb[j] * (int32_t) blk->qs[j];
             }
 #endif
