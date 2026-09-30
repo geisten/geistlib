@@ -90,7 +90,7 @@ WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 #               shared by formats/gguf and the CPU backends.
 #   -I.         project root — internal tests reaching across the engine/arch
 #               boundary via path-relative includes
-#               (e.g. `#include "src/archs/transformer/arch_state_v2.h"`)
+#               (e.g. `#include "src/archs/transformer/arch_state.h"`)
 CFLAGS_BASE := -std=c23 $(WARNINGS_BASE) -fno-strict-aliasing \
                -Iinclude -I. \
                -Isrc/base \
@@ -213,6 +213,7 @@ LIB_SOURCES := \
     src/backends/common/kivi.c \
     src/backends/common/fwht.c \
     src/backends/common/hadamard.c \
+    src/backends/common/linear_ref.c \
     src/formats/ptqtp/gguf_ptqtp.c \
     src/formats/ptqtp/ptqtp_kernel.c \
     src/formats/ptqtp/ptqtp_awq.c \
@@ -277,7 +278,7 @@ NEON_KERNEL_TESTS := \
     tests/test_q4k_kernel_int.c tests/test_q6k_prefill_int.c \
     tests/test_prefill_q3k_int.c tests/test_iq_kernel_int.c \
     tests/test_backend_vs_direct_int.c tests/bench_q4k_kernel.c \
-    tests/test_i2_s_parity.c tests/test_tl1_parity.c \
+    tests/test_i2_s_parity_unit.c tests/test_tl1_parity_unit.c \
     tests/bench_5trit_probe.c tests/test_state_layer_fwd_int.c \
     tests/test_multi_session_int.c
 ifeq ($(filter cpu_neon,$(BACKENDS)),)

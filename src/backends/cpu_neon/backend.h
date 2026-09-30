@@ -6,15 +6,15 @@
  * to scalar paths inside the backend for ops that are not yet
  * NEON-accelerated; never reaches across to cpu_scalar's symbols.
  *
- * Defined in (Phase B-3):
- *   src/backends/cpu_neon/backend.c       — descriptor, lifecycle, capability
- *   src/backends/cpu_neon/linear_q3k.c    — W3A8 vdotq_s32 kernels
- *   src/backends/cpu_neon/linear_q4k.c    — W4A8 kernels
- *   src/backends/cpu_neon/linear_q8.c     — W8A8 kernels
- *   src/backends/cpu_neon/linear_f16.c    — F16 dot kernels
- *   src/backends/cpu_neon/attention.c     — INT8 QK NEON
- *   src/backends/cpu_neon/rmsnorm.c
- *   src/backends/cpu_neon/neon_helpers.h  — shared intrinsic wrappers
+ * Defined in (src/backends/cpu_neon/):
+ *   backend.c          — descriptor, lifecycle, capability
+ *   weight_resolve.c   — load-time kernel binding (the dtype × ISA table)
+ *   kernels/           — the linear kernels, one file per weight format
+ *   tl1.c              — W1.58 × A8 LUT-GEMV decode kernel
+ *   elementwise.c, transformer_ops.c — elementwise ops and norms; RoPE,
+ *                        embedding, attention
+ *   parallel.c, workspace.c — spin-pool parallel_for, per-thread scratch
+ *   kernel_catalog.c, calibrate.c — kernel policy and its calibration
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_NEON_H
 #define GEIST_INTERNAL_BACKEND_CPU_NEON_H

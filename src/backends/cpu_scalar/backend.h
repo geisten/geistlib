@@ -4,18 +4,15 @@
  * Layer: BACKEND. Architecture-agnostic primitive op implementations
  * in scalar C (no SIMD intrinsics). Serves three roles:
  *   1. Reference implementation against which optimized backends validate
- *      (cross-reference tests in Phase E_unit suffix).
+ *      (the cross-reference *_unit tests).
  *   2. Portability fallback for x86 dev hosts (no NEON).
  *   3. Algorithm documentation — clearer to read than NEON-optimized code.
  *
- * Defined in (Phase B-2):
- *   src/backends/cpu_scalar/backend.c    — descriptor, lifecycle, capability
- *   src/backends/cpu_scalar/linear.c     — all dtype/layout matmul combinations
- *   src/backends/cpu_scalar/attention.c
- *   src/backends/cpu_scalar/rmsnorm.c
- *   src/backends/cpu_scalar/silu_gate.c
- *   src/backends/cpu_scalar/embedding.c
- *   src/backends/cpu_scalar/dequant.c    — for EMULATED matmul (q4_k → f32)
+ * Defined in (src/backends/cpu_scalar/):
+ *   backend.c         — descriptor, lifecycle, capability
+ *   weight_resolve.c  — load-time kernel binding (row dequant + dot)
+ *   elementwise.c     — per-element ops and norms
+ *   transformer_ops.c — RoPE, embedding lookup, attention
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_SCALAR_H
 #define GEIST_INTERNAL_BACKEND_CPU_SCALAR_H

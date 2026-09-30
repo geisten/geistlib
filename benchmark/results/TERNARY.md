@@ -73,7 +73,7 @@ headline, 17.4/8.2, suffered exactly that drift and is superseded.)
 ## Verified so far (2026-06)
 
 1. **geist runs a real BitNet ternary model end-to-end.** Previously the TQ2_0 /
-   TL1 path was only *synthetically* unit-tested (`tests/test_tl1_parity.c`).
+   TL1 path was only *synthetically* unit-tested (`tests/test_tl1_parity_unit.c`).
    Confirmed on `gianni-cor/bitnet_b1_58-large-TQ2_0` (0.7 B, 217 MB, real
    ternary weights, `general.architecture = bitnet`): geist loads the arch
    (generic GGUF-driven populator, SubLN + activation detection in

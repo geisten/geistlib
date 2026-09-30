@@ -23,7 +23,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin fuzz fuzz-libfuzzer fuzz-libfuzzer-run run agent-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
+.PHONY: all lib bin fuzz fuzz-libfuzzer fuzz-libfuzzer-run run agent-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-synth bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -429,6 +429,26 @@ bench: bin fetch-bench-model
 	@python3 tools/bench_reproduce.py --gguf "$(BENCH_MODEL_PATH)" \
 	  --target "$(TARGET)" --mode "$(MODE)" $(BENCH_ARGS)
 
+# ---- make bench-synth: the hermetic baseline -------------------------------
+# No download. tools/gen_synth_gguf.py writes a Llama-family GGUF with a real
+# model's geometry and random weights (stdlib only, seconds), then the same
+# bench_perf_sweep every other suite uses runs on it. Kernel, attention and
+# memory timings transfer to a real model of that geometry and quantization;
+# the outputs, and anything value-dependent (expf slow paths), do not — see
+# the tool's docstring. SYNTH_PRESET: llama32-1b-q4_k | smollm2-360m-q8_0.
+SYNTH_DIR    ?= gguf_artifacts/synth
+SYNTH_PRESET ?= llama32-1b-q4_k
+SYNTH_GGUF   := $(SYNTH_DIR)/$(SYNTH_PRESET).gguf
+SYNTH_ARGS   ?= --seq-lens 128,512 --decode-n 64 --warmup 32 --repeats 3
+
+$(SYNTH_DIR)/%.gguf: tools/gen_synth_gguf.py
+	@mkdir -p $(@D)
+	@python3 tools/gen_synth_gguf.py "$@" --preset "$*"
+
+bench-synth: bin $(SYNTH_GGUF)
+	@OMP_WAIT_POLICY=$${OMP_WAIT_POLICY:-active} \
+	  $(TEST_BIN_DIR)/bench_perf_sweep --gguf "$(SYNTH_GGUF)" $(SYNTH_ARGS)
+
 # Modality-specific multimodal benches — runnable separately so a user
 # benching the vision pipeline doesn't pay for audio/quality suites.
 # Each just filters the bench_<modality>_* binaries; argument-less
@@ -553,6 +573,7 @@ help:
 	"  make bench                                  reproducible cross-engine benchmark" \
 	"  make fetch-bench-model                      download the BitNet GGUF bench needs (~1.1 GB, SHA-pinned)" \
 	"  make bench-smoke | bench-mm                 raw probes | multimodal encoders" \
+	"  make bench-synth [SYNTH_PRESET=...]         hermetic perf sweep on a synthetic GGUF (no download)" \
 	"  make bench-small | bench-detailed           record perf to benchmark/results/APPLE.md" \
 	"  make bench-quality-small|-detailed          MMLU acc -> benchmark/results/APPLE.md" \
 	"  make bench-compare-ref BENCH_REF_URL=...    MMLU vs a running llama-server" \

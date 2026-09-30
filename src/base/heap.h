@@ -44,6 +44,12 @@ void *heap_alloc_n_aligned(size_t count, size_t size, size_t alignment);
  * trusting the comment. Monotonic, relaxed — a counter, not a barrier. */
 [[nodiscard]] uint64_t heap_alloc_count(void);
 
+/* Test hook: while `on`, every allocation in this header fails and returns
+ * nullptr as if memory were exhausted — the only way a test reaches the
+ * code that handles that. Process-wide and relaxed; nothing outside tests
+ * sets it. */
+void heap_fail_allocations(bool on);
+
 /* The array macros multiplied `count * sizeof(type)` at the call site and
  * handed the allocator whatever came out. Model- and caller-controlled
  * counts reach these (GGUF tensor dimensions, image geometry, KV

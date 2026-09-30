@@ -7,12 +7,15 @@
  * The vtable shape itself lives in <geist_arch.h> (engine-owned interface);
  * this header only exports the concrete descriptor.
  *
- * Defined in (Phase B-4):
- *   src/archs/transformer/arch.c              — descriptor, state lifecycle
- *   src/archs/transformer/attention_loop.c    — per-layer attention sequence
- *   src/archs/transformer/ffn_loop.c          — per-layer FFN sequence
- *   src/archs/transformer/kv_cache.c          — KV-cache layout, pin_prefix
- *   src/archs/transformer/rope.c              — RoPE helpers
+ * Defined in (src/archs/transformer/):
+ *   arch.c        — descriptor; thunks into arch_ops.c and forward/
+ *   arch_ops.c    — op entry points (prefill, decode, pin_prefix, reset, ...)
+ *   arch_state.c  — model state from a GGUF, session lifecycle
+ *   arch_family.c — `general.architecture` → family registry, hparams
+ *   weight_load/  — GGUF tensors → backend buffers and weight views
+ *   exec_plan.c, scratch_plan.c, rotation.c — per-layer plan, scratch
+ *                   sizing, prism.hadamard rotation
+ *   forward/      — the per-token forward pass (step.c first)
  */
 #ifndef GEIST_INTERNAL_ARCH_TRANSFORMER_H
 #define GEIST_INTERNAL_ARCH_TRANSFORMER_H

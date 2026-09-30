@@ -295,7 +295,7 @@ Three things the implementation settled that the upstream guide did not:
   at shift `6-2g` — the four values sharing a byte are 32 apart, not adjacent.
   Written naively the file loads and produces silent garbage. The converter's
   output is verified **byte-identical** against `pack_i2_s` from
-  `tests/test_i2_s_parity.c:30`, frozen as a golden vector in the test.
+  `tests/test_i2_s_parity_unit.c:30`, frozen as a golden vector in the test.
 - **The trailing f32 scale is a multiplier, not its reciprocal.** geistlib
   dequants as `trit * scale` (`cpu_scalar/weight_resolve.c:109`), so the value
   written is `mean(|w|)`. Upstream's "`scale = 1/mean(|w|)`" describes its

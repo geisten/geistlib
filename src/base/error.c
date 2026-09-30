@@ -1,5 +1,5 @@
 /*
- * src/engine/error.c — status strings + error-slot plumbing.
+ * src/base/error.c — status strings + error-slot plumbing.
  *
  * Layer: ENGINE.
  *

@@ -139,17 +139,17 @@ int main(int argc, char **argv) {
         FILE *f = fopen(p, "rb");
         if (f == nullptr) {
             fprintf(stdout,
-                    "SKIP: %s not found. Run "
-                    "tools/dump_vision_preprocess.py first.\n",
+                    "SKIP: %s not found (HF reference dumps; the script that "
+                    "writes them is not in this repository).\n",
                     p);
             return GEIST_TEST_SKIP;
         }
         fclose(f);
         /* HF block dumps are optional — if missing, the per-layer
          * comparisons skip individually and the test passes after the
-         * tower runs without crashing. This lets us validate the load +
-         * forward path locally before running tools/dump_vision_tower_blocks.py
-         * (which requires torch). */
+         * tower runs without crashing: the load + forward path is checked
+         * without the per-block dumps (their torch script,
+         * dump_vision_tower_blocks.py, is not in this repository). */
     }
 
     /* Read patches + positions. */

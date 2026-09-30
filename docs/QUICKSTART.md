@@ -231,7 +231,7 @@ not copied).
 | :-- | :-- |
 | `OMP_WAIT_POLICY=active` | keep OMP threads hot between tokens — set it for every run |
 | `GEIST_WEIGHT_MMAP=1` | mmap-alias weights instead of copying resident (the default; important on low-RAM boards) |
-| `GEIST_PREFILL_THREADS` / `GEIST_DECODE_THREADS` | override the auto thread split (prefill scales with all cores; decode is bandwidth-bound and often fastest one core below) |
+| `GEIST_PREFILL_THREADS` / `GEIST_DECODE_THREADS` | override the auto thread split (prefill scales with all cores; decode is bandwidth-bound and often fastest one core below — on x86 with SMT it defaults to one thread per physical core unless `OMP_NUM_THREADS` is set) |
 | `GEIST_MMAP_PREFETCH=1` | `MADV_WILLNEED` prefault of the weight map — steadier first-token latency on 4 KB-page Linux (no-op on the Pi 5's 16 KB pages) |
 
 Tuning rationale and measured numbers are in

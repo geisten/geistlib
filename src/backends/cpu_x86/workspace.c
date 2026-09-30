@@ -13,6 +13,7 @@
 
 #include "kernel_w8a8.h" /* W8A8_BLOCK_ELEMS — smallest sum_a granularity */
 
+#include "checked.h"
 #include "heap.h"
 
 #include <stdbool.h>
@@ -124,6 +125,16 @@ struct cpu_x86_workspace *cpu_x86_ws_acquire_mN(struct cpu_x86_state *st,
     return ws;
 }
 
+float *cpu_x86_ws_attn_part(struct cpu_x86_state *st, size_t floats) {
+    struct cpu_x86_workspace *ws    = ws_find_or_mint(st);
+    size_t                    bytes = 0;
+    if (ws == nullptr || ckd_mul(&bytes, floats, sizeof(float)) ||
+        !ws_grow_bytes((void **) &ws->attn_part, &ws->attn_part_cap, bytes)) {
+        return nullptr;
+    }
+    return ws->attn_part;
+}
+
 void cpu_x86_ws_destroy_all(struct cpu_x86_state *st) {
     struct cpu_x86_ws_node *n = atomic_exchange(&st->ws_head, nullptr);
     while (n != nullptr) {
@@ -134,6 +145,7 @@ void cpu_x86_ws_destroy_all(struct cpu_x86_state *st) {
         safe_free((void **) &n->ws.mN_sum_a);
         safe_free((void **) &n->ws.mN_scale);
         safe_free((void **) &n->ws.mN_aux);
+        safe_free((void **) &n->ws.attn_part);
         void *p = n;
         safe_free(&p);
         n = next;

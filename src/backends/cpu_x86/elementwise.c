@@ -5,7 +5,7 @@
  *
  * The cpu_scalar gelu_tanh* are a single-threaded scalar `tanhf` per
  * element — the dominant FFN "act" cost at prefill once the matmuls are
- * fast (docs/LINUX_X86_PERF_PROFILE.md). These overrides (a) OMP-parallel
+ * fast. These overrides (a) OMP-parallel
  * over the work and (b) compute tanh as 1 - 2/(e^2u+1) so the inner loop's
  * expf auto-vectorizes via glibc libmvec under -ffast-math -fopenmp (the
  * project's standard flags). u is clamped to ±10 (tanh(10) is 1 to float

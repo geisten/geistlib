@@ -1,5 +1,5 @@
 /*
- * src/engine/arena.h — Bump-allocator scratch arena.
+ * src/base/arena.h — Bump-allocator scratch arena.
  *
  * Layer: ENGINE (internal). Inline helpers for malloc-free hot-path
  * scratch. Used as the per-session frame arena for transformer scratch
@@ -32,7 +32,7 @@
 #define GEIST_INTERNAL_ARENA_H
 
 #ifndef GEIST_INTERNAL_ENGINE_LAYER
-#error "src/engine/arena.h is internal to the engine layer."
+#error "src/base/arena.h is internal to the engine layer."
 #endif
 
 #include <stddef.h>

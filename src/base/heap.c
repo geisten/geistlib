@@ -21,6 +21,13 @@ uint64_t heap_alloc_count(void) {
     return atomic_load_explicit(&g_heap_allocs, memory_order_relaxed);
 }
 
+/* See heap_fail_allocations(). */
+static _Atomic bool g_heap_fail;
+
+void heap_fail_allocations(bool on) {
+    atomic_store_explicit(&g_heap_fail, on, memory_order_relaxed);
+}
+
 /* True iff x is a non-zero power of two. Allocation alignments must satisfy
  * this: the rounding mask ~(alignment-1) and aligned_alloc() are both
  * undefined otherwise. */
@@ -60,7 +67,7 @@ static void *portable_aligned_alloc(const size_t alignment, const size_t size) {
 void *heap_alloc_aligned(const size_t size, size_t alignment) {
     size_t aligned = 0;
 
-    if (size == 0u) {
+    if (size == 0u || atomic_load_explicit(&g_heap_fail, memory_order_relaxed)) {
         return nullptr;
     }
     if (alignment == 0u) {
