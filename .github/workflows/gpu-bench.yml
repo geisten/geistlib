@@ -1,0 +1,78 @@
+name: gpu-bench
+
+# Bonsai-27B (PQ2_0) on the self-hosted discrete-GPU desktop (RTX 2080 Ti):
+# geist Vulkan vs the PrismML llama.cpp fork built with Vulkan and with CUDA.
+# Same runner contract as ci.yml's vulkan-gpu leg (docs/CI_SELF_HOSTED.md).
+# Manual only: it runs job code on a personal desktop.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: "measured repeats"
+        default: "3"
+
+env:
+  REPO: prism-ml/Ternary-Bonsai-2-27B-gguf
+  FILE: Ternary-Bonsai-2-27B-PQ2_0.gguf
+  FORK_REV: 01ae597e3f7d4742909e1e831abb12fe3d24b2cf
+
+jobs:
+  bench:
+    runs-on: [self-hosted, linux, x64, geist-vulkan]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          nvidia-smi
+          vulkaninfo --summary 2>&1 | grep -E "deviceName|deviceType" || true
+          which nvcc cmake glslc || true
+          uptime
+
+      - name: Fetch model (cached outside the workspace)
+        run: |
+          mkdir -p "$HOME/bench-cache"
+          [ -s "$HOME/bench-cache/$FILE" ] || curl -fL --retry 3 -o "$HOME/bench-cache/$FILE" \
+            "https://huggingface.co/$REPO/resolve/main/$FILE"
+          ls -l "$HOME/bench-cache/$FILE"
+
+      - name: Build geist (Vulkan)
+        run: make TARGET=linux CC=gcc-14 BACKENDS="vulkan cpu_x86" bin/linux/release/tests/bench_perf_sweep -j"$(nproc)"
+
+      - name: geist Vulkan
+        run: |
+          GEIST_BENCH_BACKEND=vulkan bin/linux/release/tests/bench_perf_sweep \
+            --gguf "$HOME/bench-cache/$FILE" --seq-lens 512 --decode-n 64 \
+            --warmup 32 --repeats "${{ inputs.repeats }}" --emit-jsonl | tee geist-vulkan.jsonl
+          echo "### GEIST_M_MAX=128"
+          GEIST_M_MAX=128 GEIST_BENCH_BACKEND=vulkan bin/linux/release/tests/bench_perf_sweep \
+            --gguf "$HOME/bench-cache/$FILE" --seq-lens 512 --decode-n 64 \
+            --warmup 32 --repeats "${{ inputs.repeats }}" --emit-jsonl | tee geist-vulkan-m128.jsonl
+
+      - name: Build fork (Vulkan + CUDA)
+        run: |
+          D="$HOME/bench-cache/fork"
+          [ -d "$D/.git" ] || git clone https://github.com/PrismML-Eng/llama.cpp "$D"
+          git -C "$D" fetch -q origin && git -C "$D" checkout -q "$FORK_REV"
+          cmake -S "$D" -B "$D/build-vk"   -DGGML_VULKAN=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$D/build-vk" --target llama-bench -j"$(nproc)"
+          cmake -S "$D" -B "$D/build-cuda" -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$D/build-cuda" --target llama-bench -j"$(nproc)"
+
+      - name: Fork llama-bench (Vulkan, CUDA)
+        run: |
+          D="$HOME/bench-cache/fork"
+          for b in vk cuda; do
+            echo "### fork $b"
+            "$D/build-$b/bin/llama-bench" -m "$HOME/bench-cache/$FILE" -ngl 99 -p 512 -n 64 -r "${{ inputs.repeats }}" -o md | tee "fork-$b.md"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-bench
+          path: |
+            *.jsonl
+            fork-*.md
