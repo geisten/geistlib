@@ -53,7 +53,8 @@ static void ref_gemv_2plane(size_t        n_in,
 }
 
 /* Encode (T1, T2) into 4-bit joint nibble, 2 weights per byte.
- * Packing matches src/backends/common/gguf_ptqtp.c. */
+ * idx = (T1+1)*3 + (T2+1), the code the 2-plane LUTs in
+ * src/formats/ptqtp/ptqtp_kernel.c decode. */
 static void
 pack_trits(size_t n_out, size_t n_in, const int8_t *T1, const int8_t *T2, uint8_t *trits_out) {
     for (size_t n = 0; n < n_out; n++) {

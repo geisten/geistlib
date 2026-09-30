@@ -1,5 +1,5 @@
 /*
- * tests/test_i2_s_parity.c — verify the i2_s (BitNet b1.58 official) NEON
+ * tests/test_i2_s_parity_unit.c — verify the i2_s (BitNet b1.58 official) NEON
  * kernels (cpu_neon_w_i2_s_q8a_m1 / _mN) against a hand-computed reference.
  *
  * Builds a synthetic i2_s weight tensor (reversed-shift 2-bit packing + ONE

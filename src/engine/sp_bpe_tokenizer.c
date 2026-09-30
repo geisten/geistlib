@@ -1,7 +1,9 @@
 #include "sp_bpe_tokenizer.h"
 #include "heap.h"
+#include "pair_merge.h"
 
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -255,7 +257,14 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
     tok->pad_id         = pad;
     tok->unk_id         = unk;
 
+    /* Every count and length below comes from the file. Each is checked
+     * against the bytes left, by subtraction and before p moves (AGENT.md
+     * §4), and a count before its table is allocated: an entry takes at
+     * least 2 (vocab), 4 (merge) or 6 (special) bytes. */
+
     /* Vocab section: vocab_size entries of (len:u16, bytes) */
+    if (vocab_size > (size_t) (end - p) / 2)
+        goto bad_format_with_tok;
     tok->id_to_token    = heap_calloc_array_aligned(struct sp_token_entry, vocab_size);
     tok->vocab_hash_cap = next_pow2((size_t) vocab_size * VOCAB_LOAD_FACTOR_DENOM);
     tok->vocab_hash     = heap_alloc_array_aligned(struct sp_vocab_hash, tok->vocab_hash_cap);
@@ -265,12 +274,12 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
         tok->vocab_hash[i].id = UINT32_MAX;
 
     for (uint32_t id = 0; id < vocab_size; id++) {
-        if (p + 2 > end)
+        if ((size_t) (end - p) < 2)
             goto bad_format_with_tok;
         uint16_t len;
         memcpy(&len, p, 2);
         p += 2;
-        if (p + len > end)
+        if (len > (size_t) (end - p))
             goto bad_format_with_tok;
         tok->id_to_token[id].text = (const char *) p;
         tok->id_to_token[id].len  = len;
@@ -281,6 +290,8 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
     }
 
     /* Merges section: merges_count entries of (l_len:u16, l_bytes, r_len:u16, r_bytes) */
+    if (merges_count > (size_t) (end - p) / 4)
+        goto bad_format_with_tok;
     tok->merge_hash_cap = next_pow2((size_t) merges_count * VOCAB_LOAD_FACTOR_DENOM);
     tok->merge_hash     = heap_alloc_array_aligned(struct sp_merge_hash, tok->merge_hash_cap);
     if (!tok->merge_hash)
@@ -289,34 +300,36 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
         tok->merge_hash[i].rank = UINT32_MAX;
 
     for (uint32_t rank = 0; rank < merges_count; rank++) {
-        if (p + 2 > end)
+        if ((size_t) (end - p) < 2)
             goto bad_format_with_tok;
         uint16_t llen;
         memcpy(&llen, p, 2);
         p += 2;
-        if (p + llen > end)
+        if (llen > (size_t) (end - p))
             goto bad_format_with_tok;
         const char *lbytes = (const char *) p;
         p += llen;
-        if (p + 2 > end)
+        if ((size_t) (end - p) < 2)
             goto bad_format_with_tok;
         uint16_t rlen;
         memcpy(&rlen, p, 2);
         p += 2;
-        if (p + rlen > end)
+        if (rlen > (size_t) (end - p))
             goto bad_format_with_tok;
         const char *rbytes = (const char *) p;
         p += rlen;
         merge_hash_insert(tok->merge_hash, tok->merge_hash_cap, lbytes, llen, rbytes, rlen, rank);
     }
 
-    /* Special tokens section */
+    /* Special tokens section: specials_count entries of (id:u32, len:u16, bytes) */
+    if (specials_count > (size_t) (end - p) / 6)
+        goto bad_format_with_tok;
     tok->specials = heap_calloc_array_aligned(struct sp_special, specials_count);
     if (!tok->specials && specials_count > 0)
         goto bad_alloc;
 
     for (uint32_t i = 0; i < specials_count; i++) {
-        if (p + 6 > end)
+        if ((size_t) (end - p) < 6)
             goto bad_format_with_tok;
         uint32_t id;
         memcpy(&id, p, 4);
@@ -324,15 +337,19 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
         uint16_t len;
         memcpy(&len, p, 2);
         p += 2;
-        if (p + len > end)
+        if (len > (size_t) (end - p))
             goto bad_format_with_tok;
         tok->specials[i].id   = id;
         tok->specials[i].text = (const char *) p;
         tok->specials[i].len  = len;
         p += len;
     }
-    /* Sort by length desc so longest-match wins during scan. */
-    qsort(tok->specials, specials_count, sizeof(*tok->specials), specials_cmp_desc_len);
+    /* Sort by length desc so longest-match wins during scan. Without
+     * specials there is no array, and qsort's base must be valid even for
+     * a zero count (C11 7.22.5p1). */
+    if (specials_count > 0) {
+        qsort(tok->specials, specials_count, sizeof(*tok->specials), specials_cmp_desc_len);
+    }
 
     /* Pre-compute byte-fallback map: <0x00>..<0xFF> -> vocab IDs. */
     for (uint32_t b = 0; b < 256; b++) {
@@ -462,6 +479,20 @@ static size_t match_special(const struct sp_bpe_tokenizer *tok,
     return 0;
 }
 
+/* Merge-engine key (pair_merge.h): the merge's rank, lowest first. */
+static bool sp_merge_key(
+        const void *ctx, const char *buf, size_t off, size_t llen, size_t rlen, uint64_t *key) {
+    const struct sp_bpe_tokenizer *tok  = ctx;
+    const uint32_t                 rank = merge_hash_lookup(tok->merge_hash,
+                                                            tok->merge_hash_cap,
+                                                            buf + off,
+                                                            (uint32_t) llen,
+                                                            buf + off + llen,
+                                                            (uint32_t) rlen);
+    *key                                = rank;
+    return rank != UINT32_MAX;
+}
+
 /* BPE-encode a single chunk (no specials inside). The chunk is normalized
  * (" " -> "▁") into a stack/heap buffer, then greedy-merged. Output token
  * IDs are appended to (*tokens). */
@@ -480,7 +511,9 @@ static bool encode_chunk(const struct sp_bpe_tokenizer *tok,
         if (in[i] == ' ')
             n_spaces++;
     size_t buf_len = in_len + n_spaces * (SP_MARKER_LEN - 1);
-    char  *buf     = heap_alloc_array_aligned(char, buf_len);
+    if (buf_len > (size_t) INT_MAX)
+        return false; /* symbol indices are int (pair_merge.h) */
+    char *buf = heap_alloc_array_aligned(char, buf_len);
     if (!buf)
         return false;
     {
@@ -495,12 +528,10 @@ static bool encode_chunk(const struct sp_bpe_tokenizer *tok,
         }
     }
 
-    /* Step 2: split into UTF-8 codepoints (initial symbols). Each symbol
-     * is a slice [offsets[i], offsets[i+1]) of buf. We store offsets +1
-     * sentinel for length-of-last computation. */
-    /* Worst case: each byte is its own codepoint (ASCII); buf_len + 1 entries. */
-    size_t *offsets = heap_alloc_array_aligned(size_t, (buf_len + 1));
-    if (!offsets) {
+    /* Step 2: split into UTF-8 codepoints (initial symbols), each a slice
+     * of buf. Worst case: each byte is its own codepoint (ASCII). */
+    struct pair_merge_sym *syms = heap_alloc_array_aligned(struct pair_merge_sym, buf_len);
+    if (!syms) {
         safe_free((void **) &buf);
         return false;
     }
@@ -508,45 +539,31 @@ static bool encode_chunk(const struct sp_bpe_tokenizer *tok,
     {
         size_t i = 0;
         while (i < buf_len) {
-            offsets[n_syms++] = i;
-            i += utf8_cp_len((uint8_t) buf[i]);
-            if (i > buf_len)
-                i = buf_len;
+            size_t len = utf8_cp_len((uint8_t) buf[i]);
+            if (i + len > buf_len)
+                len = buf_len - i;
+            syms[n_syms] = (struct pair_merge_sym) {
+                    .off = i, .len = len, .prev = (int) n_syms - 1, .next = (int) n_syms + 1};
+            n_syms++;
+            i += len;
         }
-        offsets[n_syms] = buf_len;
+        syms[n_syms - 1].next = -1;
     }
 
-    /* Step 3: greedy lowest-rank merge until no merges available. */
-    while (n_syms > 1) {
-        size_t   best_idx  = SIZE_MAX;
-        uint32_t best_rank = UINT32_MAX;
-        for (size_t i = 0; i + 1 < n_syms; i++) {
-            const char *l    = buf + offsets[i];
-            uint32_t    llen = (uint32_t) (offsets[i + 1] - offsets[i]);
-            const char *r    = buf + offsets[i + 1];
-            uint32_t    rlen = (uint32_t) (offsets[i + 2] - offsets[i + 1]);
-            uint32_t    rank =
-                    merge_hash_lookup(tok->merge_hash, tok->merge_hash_cap, l, llen, r, rlen);
-            if (rank < best_rank) {
-                best_rank = rank;
-                best_idx  = i;
-            }
-        }
-        if (best_idx == SIZE_MAX)
-            break;
-        /* Drop offsets[best_idx + 1]: shift left. */
-        memmove(&offsets[best_idx + 1],
-                &offsets[best_idx + 2],
-                (n_syms - best_idx - 1) * sizeof(size_t));
-        n_syms--;
+    /* Step 3: greedy lowest-rank merge, leftmost among equal ranks, until
+     * no merges are available (pair_merge.h, O(n log n)). */
+    if (!pair_merge_run(n_syms, syms, buf, sp_merge_key, tok)) {
+        safe_free((void **) &syms);
+        safe_free((void **) &buf);
+        return false;
     }
 
     /* Step 4: lookup each symbol in vocab. If missing, byte-fallback
      * (emit one <0xXX> token per byte); if that fails too, emit unk_id. */
     bool ok = true;
-    for (size_t i = 0; i < n_syms; i++) {
-        const char *t    = buf + offsets[i];
-        uint32_t    tlen = (uint32_t) (offsets[i + 1] - offsets[i]);
+    for (int i = 0; i >= 0; i = syms[i].next) {
+        const char *t    = buf + syms[i].off;
+        uint32_t    tlen = (uint32_t) syms[i].len;
         uint32_t    id   = vocab_hash_lookup(tok->vocab_hash, tok->vocab_hash_cap, t, tlen);
         if (id != UINT32_MAX) {
             if (!append_id(tokens, count, cap, id)) {
@@ -568,7 +585,7 @@ static bool encode_chunk(const struct sp_bpe_tokenizer *tok,
         }
     }
 
-    safe_free((void **) &offsets);
+    safe_free((void **) &syms);
     safe_free((void **) &buf);
     return ok;
 }

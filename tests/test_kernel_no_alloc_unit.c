@@ -17,10 +17,11 @@
  * kernel many times over growing shapes and assert the workspace
  * capacity settles — i.e. the steady state allocates nothing.
  *
- * Observing "no malloc" portably is not possible without interposition,
- * so the observable proxy is the workspace itself: capacity must stop
- * changing, and the buffer pointer must stop moving, after the first
- * call at the largest shape.
+ * Two observations: the workspace itself, whose capacity must stop
+ * changing and whose buffers must stop moving after the first call at the
+ * largest shape, and heap_alloc_count, which counts every allocation made
+ * through heap.h, the workspace's or not (the dequant trampolines' tiles
+ * were not in the workspace, and were allocated on every call).
  */
 #include "test_helpers.h"
 
@@ -82,6 +83,8 @@ struct dtype_case {
  * WHOLE workspace and not just the activation scratch: the trampoline has
  * its own fields, and they must be just as stable. */
 static const struct dtype_case CASES[] = {
+        {"Q4_K", (uint16_t) GEIST_DTYPE_Q4_K, Q4_K_BLOCK_ELEMS, Q4_K_BLOCK_BYTES},
+        {"Q6_K", (uint16_t) GEIST_DTYPE_Q6_K, Q6_K_BLOCK_ELEMS, Q6_K_BLOCK_BYTES},
         {"Q3_K", (uint16_t) GEIST_DTYPE_Q3_K, Q3_K_BLOCK_ELEMS, Q3_K_BLOCK_BYTES},
         {"Q5_K", (uint16_t) GEIST_DTYPE_Q5_K, Q5_K_BLOCK_ELEMS, Q5_K_BLOCK_BYTES},
         {"Q8_0", (uint16_t) GEIST_DTYPE_Q8_0, Q8_0_BLOCK_ELEMS, Q8_0_BLOCK_BYTES},
@@ -90,6 +93,11 @@ static const struct dtype_case CASES[] = {
         {"IQ4_XS", (uint16_t) GEIST_DTYPE_IQ4_XS, IQ4_XS_BLOCK_ELEMS, IQ4_XS_BLOCK_BYTES},
         {"IQ2_S", (uint16_t) GEIST_DTYPE_IQ2_S, IQ2_S_BLOCK_ELEMS, IQ2_S_BLOCK_BYTES},
         {"IQ3_S", (uint16_t) GEIST_DTYPE_IQ3_S, IQ3_S_BLOCK_ELEMS, IQ3_S_BLOCK_BYTES},
+        /* The dequant + SGEMM trampolines: IQ4_NL and F16 prefill, BF16
+         * decode and prefill. */
+        {"IQ4_NL", (uint16_t) GEIST_DTYPE_IQ4_NL, IQ4_NL_BLOCK_ELEMS, IQ4_NL_BLOCK_BYTES},
+        {"F16", (uint16_t) GEIST_DTYPE_F16, 1, 2},
+        {"BF16", (uint16_t) GEIST_DTYPE_BF16, 1, 2},
 };
 
 constexpr size_t N_IN  = 512;
@@ -135,6 +143,7 @@ static bool run_case(struct geist_backend *be, const struct dtype_case *c, float
     w.linear_mN(M_MAX, x, &w, be, y);
     w.linear_m1(x, &w, be, y);
     const struct cpu_neon_workspace snapshot = *ws;
+    const uint64_t                  allocs   = heap_alloc_count();
 
     /* Steady state: 200 decode calls and every prefill shape up to the
      * high-water mark. None of them may move a buffer or change a
@@ -144,6 +153,13 @@ static bool run_case(struct geist_backend *be, const struct dtype_case *c, float
     }
     for (size_t m = 1; m <= M_MAX; m++) {
         w.linear_mN(m, x, &w, be, y);
+    }
+    if (heap_alloc_count() != allocs) {
+        fprintf(stderr,
+                "FAIL: %s: %llu heap allocations in steady state\n",
+                c->name,
+                (unsigned long long) (heap_alloc_count() - allocs));
+        g_fail = 1;
     }
     if (memcmp(&snapshot, ws, sizeof snapshot) != 0) {
         const unsigned char *a = (const unsigned char *) &snapshot;

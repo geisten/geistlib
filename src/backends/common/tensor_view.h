@@ -85,3 +85,29 @@ geist_tensor_f32_dense(const struct geist_tensor *t, void *host, size_t host_byt
     *out_n = n;
     return (float *) p;
 }
+
+/* As geist_tensor_f32_dense for a view of `ndim` dimensions (exactly) and
+ * `dtype`, whose elements are `elem` bytes and aligned to them. */
+[[nodiscard]] static inline void *geist_tensor_dense(const struct geist_tensor *t,
+                                                     enum geist_dtype           dtype,
+                                                     size_t                     elem,
+                                                     int                        ndim,
+                                                     void                      *host,
+                                                     size_t                     host_bytes,
+                                                     size_t                    *out_n) {
+    if (t == nullptr || host == nullptr || t->dtype != dtype || t->layout != GEIST_LAYOUT_DENSE ||
+        t->ndim != ndim) {
+        return nullptr;
+    }
+    size_t n = 0, bytes = 0, end = 0;
+    if (geist_tensor_elems(t, &n) || ckd_mul(&bytes, n, elem) || ckd_add(&end, t->offset, bytes) ||
+        end > host_bytes) {
+        return nullptr;
+    }
+    uint8_t *p = (uint8_t *) host + t->offset;
+    if ((uintptr_t) p % elem != 0u) {
+        return nullptr;
+    }
+    *out_n = n;
+    return p;
+}

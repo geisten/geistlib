@@ -54,6 +54,10 @@ struct cpu_x86_workspace {
     size_t   mN_scale_cap;
     uint8_t *mN_aux;
     size_t   mN_aux_cap;
+    /* Split-decode partial results of the INT8-KV attention
+     * (attention_int8.c): written by the team, merged afterwards. */
+    float *attn_part;
+    size_t attn_part_cap; /* bytes */
 };
 
 /* One node per (backend, thread) pair; ws_head is a lock-free push-only
@@ -84,6 +88,10 @@ struct cpu_x86_workspace *cpu_x86_ws_acquire_mN(struct cpu_x86_state *st,
                                                 size_t                sum_a_bytes,
                                                 size_t                scale_bytes,
                                                 size_t                aux_bytes);
+
+/* The calling thread's attention part buffer, grown to `floats` floats;
+ * nullptr if that cannot be had (the caller then runs unsplit). */
+float *cpu_x86_ws_attn_part(struct cpu_x86_state *st, size_t floats);
 
 void cpu_x86_ws_destroy_all(struct cpu_x86_state *st);
 

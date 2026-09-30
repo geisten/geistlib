@@ -4,6 +4,7 @@
  * Layer: BACKEND (metal). Split from the former monolithic backend.c;
  * pure moves, no behavior change.
  */
+#include <geist_util.h>
 #include "metal_internal.h"
 
 #include "checked.h"
@@ -4209,16 +4210,32 @@ static const struct geist_backend_fused metal_fused = {
         .hadamard_rotate              = metal_hadamard_rotate,
 };
 
+/* The immutable device belongs to this live backend. This getter intentionally
+ * does not touch command queues, inference state, buffer registries or budgets. */
+static enum geist_status metal_resources_snapshot(const struct geist_backend     *be,
+                                                  struct geist_backend_resources *out) {
+    struct metal_state *st = be->state;
+    if (st == nullptr || st->device == nullptr)
+        return GEIST_E_INVALID_STATE;
+    *out = (struct geist_backend_resources) {
+            .allocated_bytes = metal_msg_send_ulong0(st, st->device, "currentAllocatedSize"),
+            .source          = GEIST_RESOURCE_METAL_DEVICE,
+            .unified_memory  = metal_msg_send_bool0(st, st->device, "hasUnifiedMemory"),
+    };
+    return GEIST_OK;
+}
+
 const struct geist_backend_descriptor geist_backend_metal = {
-        .name     = "metal",
-        .vtbl     = &metal_vtbl,
-        .prims    = &metal_prims,
-        .fused    = &metal_fused,
-        .tunables = metal_tunables,
-        .caps     = {.kv_f16_attention = true,
-                     .batched_submit   = true,
-                     /* deltanet_mix encodes 64-token sub-chunks internally
-                      * (#322), so DN models keep preferred_m_max. */
+        .name               = "metal",
+        .resources_snapshot = metal_resources_snapshot,
+        .vtbl               = &metal_vtbl,
+        .prims              = &metal_prims,
+        .fused              = &metal_fused,
+        .tunables           = metal_tunables,
+        .caps               = {.kv_f16_attention = true,
+                               .batched_submit   = true,
+                               /* deltanet_mix encodes 64-token sub-chunks internally
+                                * (#322), so DN models keep preferred_m_max. */
                  .dn_subchunk = true,
                  /* 256 since the simdgroup GEMM work. The original
                   * 2026-08-27 A/B was void — pre-#312, m_max requests

@@ -1,11 +1,10 @@
 /*
- * src/archs/transformer/arch_state.c — Phase B-4e sub-step 1.
+ * src/archs/transformer/arch_state.c — model and session state lifecycle.
  *
- * Loads Gemma 4 weights from GGUF into backend-owned buffers. Each per-layer
- * and global tensor is staged via be->vtbl->buffer_create + buffer_upload;
- * the resulting geist_tensor views (dtype + layout + shape) live in the v2
- * state struct ready for sub-step 2 to feed into the linear/rmsnorm/etc.
- * vtable ops.
+ * Creates the model state from a GGUF (file or memory): the family and its
+ * hyperparameters (arch_family.c), the weights staged into backend-owned
+ * buffers (weight_load/), the rotation and the execution plan. Allocates
+ * and frees sessions: KV cache, recurrent state, scratch.
  *
  * Layer: ARCHITECTURE.
  *
@@ -26,6 +25,7 @@
 
 #include "gguf_reader.h"
 #include "gemma4_kernels.h"
+#include "checked.h"
 #include "heap.h"
 #include "fwht.h"
 #include "kivi.h"
@@ -88,6 +88,11 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
     release_weight_aux(&L->down_proj_w);
     release_weight_aux(&L->per_layer_gate_w);
     release_weight_aux(&L->per_layer_proj_w);
+    release_weight_aux(&L->dn_qkv_w);
+    release_weight_aux(&L->dn_z_w);
+    release_weight_aux(&L->dn_beta_w);
+    release_weight_aux(&L->dn_alpha_w);
+    release_weight_aux(&L->dn_out_w);
 }
 
 /* PLE scaling constants moved to forward.c (P1.3.a) — used only by the
@@ -146,6 +151,50 @@ alloc_scratch(struct geist_backend *be, size_t bytes, struct geist_buffer **out)
     memset(p, 0, bytes);
     sess->scratch_pool_used = aligned + bytes;
     return be->desc->vtbl->buffer_create_aliased(be, p, bytes, GEIST_BUFFER_SCRATCH, out_buf);
+}
+
+/* Layer li's K and V data, `bytes` each, in one zeroed buffer, kv_data[li],
+ * with *k and *v aliased slices of it (caps.kv_q8_block, caps.kv_dense_block):
+ * K at the start, V after K's pages and `shift` bytes into its page, a
+ * multiple of 64 (V as aligned as K). A KV head's rows lie a cache row
+ * apart, so at a power-of-two row they share their low address bits and take
+ * one n_kv_heads-th of the cache sets. K and V as two buffers of their own
+ * start at the same offset in a page, as large allocations do: a KV head's K
+ * and V rows took the same sets. With V `shift` bytes on, its V rows take
+ * another KV head's. */
+[[nodiscard]] static enum geist_status alloc_kv_block(struct transformer_arch_session *sess,
+                                                      size_t                           li,
+                                                      size_t                           bytes,
+                                                      size_t                           shift,
+                                                      enum geist_buffer_role           role,
+                                                      struct geist_buffer            **k,
+                                                      struct geist_buffer            **v) {
+    struct geist_backend *be     = sess->model->backend;
+    size_t                k_span = 0;
+    size_t                total  = 0;
+    if (geist_ckd_round_up_pow2(bytes, 4096, &k_span) || ckd_add(&total, k_span, shift) ||
+        ckd_add(&total, total, bytes)) {
+        geist_backend_set_error(
+                be, GEIST_E_OOM, "transformer: a %zu-byte KV cache overflows", bytes);
+        return GEIST_E_OOM;
+    }
+    enum geist_status s =
+            be->desc->vtbl->buffer_create(be, total, role, GEIST_MEMORY_MAPPED, &sess->kv_data[li]);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    uint8_t *base = be->desc->vtbl->buffer_map(sess->kv_data[li]);
+    if (base == nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_BACKEND, "transformer: the %zu-byte KV cache did not map", total);
+        return GEIST_E_BACKEND;
+    }
+    memset(base, 0, total);
+    s = be->desc->vtbl->buffer_create_aliased(be, base, bytes, role, k);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    return be->desc->vtbl->buffer_create_aliased(be, base + k_span + shift, bytes, role, v);
 }
 
 /* Upload a host-side cos or sin table into a backend buffer. */
@@ -344,13 +393,32 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
              * unchanged. hd is a power of two (128/256/512) so n_elems is even. */
             const size_t data_bytes =
                     sess->kv_int4_packed_enabled ? n_elems / 2 : n_elems * sizeof(int8_t);
-            s = alloc_scratch(be, data_bytes, &sess->k_cache_q8[li]);
-            if (s != GEIST_OK) {
-                return s;
-            }
-            s = alloc_scratch(be, data_bytes, &sess->v_cache_q8[li]);
-            if (s != GEIST_OK) {
-                return s;
+            if (be->desc->caps.kv_q8_block) {
+                /* V half a row on (half a page at most, a multiple of 64):
+                 * the cpu_x86 kernels gained 3-39 % over V at K's offset,
+                 * more than with V one KV head's slice on. */
+                const size_t row   = sess->kv_int4_packed_enabled ? st->n_kv_heads * hd / 2
+                                                                  : st->n_kv_heads * hd;
+                const size_t shift = ((row < 4096 ? row : 4096) / 2) & ~(size_t) 63;
+                s                  = alloc_kv_block(sess,
+                                                    li,
+                                                    data_bytes,
+                                                    shift,
+                                                    GEIST_BUFFER_SCRATCH,
+                                                    &sess->k_cache_q8[li],
+                                                    &sess->v_cache_q8[li]);
+                if (s != GEIST_OK) {
+                    return s;
+                }
+            } else {
+                s = alloc_scratch(be, data_bytes, &sess->k_cache_q8[li]);
+                if (s != GEIST_OK) {
+                    return s;
+                }
+                s = alloc_scratch(be, data_bytes, &sess->v_cache_q8[li]);
+                if (s != GEIST_OK) {
+                    return s;
+                }
             }
             s = alloc_scratch(be, n_scales * sizeof(float), &sess->k_cache_scale[li]);
             if (s != GEIST_OK) {
@@ -368,32 +436,52 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
              * alloc_scratch is safe: causal attention reads only rows that
              * a prior append wrote. */
             const size_t kv_elem_bytes = sess->kv_f16_enabled ? 2u : sizeof(float);
-            s                          = be->desc->vtbl->buffer_create(be,
-                                                                       n_elems * kv_elem_bytes,
-                                                                       GEIST_BUFFER_KV_CACHE,
-                                                                       GEIST_MEMORY_AUTO,
-                                                                       &sess->k_cache[li]);
-            if (s != GEIST_OK) {
-                return s;
+            if (be->desc->caps.kv_dense_block) {
+                /* V one KV head's slice on (rounded up to 64 bytes, as
+                 * aligned as K); with one KV head, whose rows lie next to
+                 * each other and take every set, not at all. Half a row
+                 * on, cpu_x86's attention gained more up to 1024 positions
+                 * but was 0-5 % slower from 4096 on. */
+                const size_t shift =
+                        st->n_kv_heads > 1 ? (hd * kv_elem_bytes + 63) & ~(size_t) 63 : 0;
+                s = alloc_kv_block(sess,
+                                   li,
+                                   n_elems * kv_elem_bytes,
+                                   shift,
+                                   GEIST_BUFFER_KV_CACHE,
+                                   &sess->k_cache[li],
+                                   &sess->v_cache[li]);
+                if (s != GEIST_OK) {
+                    return s;
+                }
+            } else {
+                s = be->desc->vtbl->buffer_create(be,
+                                                  n_elems * kv_elem_bytes,
+                                                  GEIST_BUFFER_KV_CACHE,
+                                                  GEIST_MEMORY_AUTO,
+                                                  &sess->k_cache[li]);
+                if (s != GEIST_OK) {
+                    return s;
+                }
+                s = be->desc->vtbl->buffer_create(be,
+                                                  n_elems * kv_elem_bytes,
+                                                  GEIST_BUFFER_KV_CACHE,
+                                                  GEIST_MEMORY_AUTO,
+                                                  &sess->v_cache[li]);
+                if (s != GEIST_OK) {
+                    return s;
+                }
+                void *pk = be->desc->vtbl->buffer_map(sess->k_cache[li]);
+                if (pk != nullptr) {
+                    memset(pk, 0, n_elems * kv_elem_bytes);
+                }
+                be->desc->vtbl->buffer_unmap(sess->k_cache[li]);
+                void *pv = be->desc->vtbl->buffer_map(sess->v_cache[li]);
+                if (pv != nullptr) {
+                    memset(pv, 0, n_elems * kv_elem_bytes);
+                }
+                be->desc->vtbl->buffer_unmap(sess->v_cache[li]);
             }
-            s = be->desc->vtbl->buffer_create(be,
-                                              n_elems * kv_elem_bytes,
-                                              GEIST_BUFFER_KV_CACHE,
-                                              GEIST_MEMORY_AUTO,
-                                              &sess->v_cache[li]);
-            if (s != GEIST_OK) {
-                return s;
-            }
-            void *pk = be->desc->vtbl->buffer_map(sess->k_cache[li]);
-            if (pk != nullptr) {
-                memset(pk, 0, n_elems * kv_elem_bytes);
-            }
-            be->desc->vtbl->buffer_unmap(sess->k_cache[li]);
-            void *pv = be->desc->vtbl->buffer_map(sess->v_cache[li]);
-            if (pv != nullptr) {
-                memset(pv, 0, n_elems * kv_elem_bytes);
-            }
-            be->desc->vtbl->buffer_unmap(sess->v_cache[li]);
         }
     }
     sess->kv_len = 0;
@@ -408,7 +496,7 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
      * 22 separate ones; each buffer is a GEIST_MEMORY_ALIASED slice. */
     struct transformer_scratch_plan scratch_plan;
     transformer_scratch_plan_build(st, sess->m_max, &scratch_plan);
-    const size_t head_dim_max = 512;
+    const size_t head_dim_max = TRANSFORMER_HEAD_DIM_MAX;
     sess->scratch_pool_bytes  = scratch_plan.pool_bytes;
     /* Route the pool through the backend so GPU backends hand out memory
      * they can bind (host-visible VkBuffer / shared MTLBuffer); CPU
@@ -565,9 +653,23 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
      *
      * Round to 64 KB. This caps the KIVI scores path at max_seq_len 16384;
      * frame_arena_alloc fails cleanly for longer windows; size this from
-     * max_seq_len if KIVI needs them. */
+     * max_seq_len if KIVI needs them.
+     *
+     * The INT8 KV attention also takes the partial results of a split
+     * decode from here: attention_int8_scratch_floats() for the widest
+     * head, 33 KB for Llama-3.2-1B. */
     sess->scratch_arena_bytes = 64u * 1024u;
-    sess->scratch_arena_base  = heap_alloc_aligned(sess->scratch_arena_bytes, 64);
+    if (sess->kv_int8_enabled && !sess->kv_int4_packed_enabled) {
+        size_t hd_max = 0;
+        for (size_t li = 0; li < st->n_layers + st->n_mtp_layers; li++) {
+            const size_t hd = li < st->n_layers ? st->layers[li].head_dim
+                                                : st->mtp_layers[li - st->n_layers].block.head_dim;
+            hd_max          = hd > hd_max ? hd : hd_max;
+        }
+        sess->scratch_arena_bytes +=
+                attention_int8_scratch_floats(st->n_q_heads, hd_max) * sizeof(float) + 64;
+    }
+    sess->scratch_arena_base = heap_alloc_aligned(sess->scratch_arena_bytes, 64);
     if (sess->scratch_arena_base == nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_OOM,
@@ -913,6 +1015,24 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         gguf_close(gguf);
         return GEIST_E_FORMAT;
     }
+    /* Head counts are metadata too. Every attention path maps query head h
+     * to KV head h / (n_q_heads / n_kv_heads): more KV heads than query
+     * heads divides by zero there, and a KV count that does not divide the
+     * query count sends the last query heads to a KV head that does not
+     * exist. */
+    if (st->n_q_heads == 0 || st->n_kv_heads == 0 || st->n_q_heads % st->n_kv_heads != 0) {
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: %s head counts %zu (query) and %zu (KV): the KV "
+                                "count must divide the query count",
+                                fam->name,
+                                st->n_q_heads,
+                                st->n_kv_heads);
+        void *p = st;
+        safe_free(&p);
+        gguf_close(gguf);
+        return GEIST_E_FORMAT;
+    }
 
     /* DeltaNet hybrids prefer SMALL prefill chunks: the chunked
      * delta-rule carries O(C^2) work per chunk (A/attn matrices +
@@ -980,6 +1100,26 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                                 fam->name);
         transformer_state_destroy(st);
         return GEIST_E_UNSUPPORTED;
+    }
+    /* head_dim is metadata: a layer asking for more than the forward pass
+     * holds (TRANSFORMER_HEAD_DIM_MAX) is refused here — it used to load
+     * and then overflow the per-head stack arrays of the attention kernels
+     * on the first prefill. */
+    for (size_t i = 0; i < st->n_layers + st->n_mtp_layers; i++) {
+        const size_t hd = i < st->n_layers ? st->layers[i].head_dim
+                                           : st->mtp_layers[i - st->n_layers].block.head_dim;
+        if (hd > TRANSFORMER_HEAD_DIM_MAX) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: %s layer %zu head_dim %zu exceeds the "
+                                    "supported maximum %zu",
+                                    fam->name,
+                                    i,
+                                    hd,
+                                    TRANSFORMER_HEAD_DIM_MAX);
+            transformer_state_destroy(st);
+            return GEIST_E_UNSUPPORTED;
+        }
     }
 
     /* Storage mode (mmap-alias default vs β-mode override). mmap-alias
@@ -1395,12 +1535,12 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     }
     sess->max_seq_len = req_seq;
 
-    /* P1.4.c: heap-allocate the 14 per-layer KV slot arrays. One
-     * combined allocation, partitioned across the 14 pointer-array
+    /* P1.4.c: heap-allocate the 15 per-layer KV slot arrays. One
+     * combined allocation, partitioned across the 15 pointer-array
      * slots; freed in one safe_free at session_free. Sized to the
      * model's actual layer count, not a compile-time cap. */
     const size_t          n_layers = state->n_layers;
-    const size_t          kv_slots = 14;
+    const size_t          kv_slots = 15;
     const size_t          kv_bytes = kv_slots * n_layers * sizeof(struct geist_buffer *);
     struct geist_buffer **kv_block = heap_alloc_aligned(kv_bytes, alignof(struct geist_buffer *));
     if (kv_block == nullptr) {
@@ -1429,6 +1569,7 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     sess->v_kivi_zeros  = kv_block + 11 * n_layers;
     sess->k_residual    = kv_block + 12 * n_layers;
     sess->v_residual    = kv_block + 13 * n_layers;
+    sess->kv_data       = kv_block + 14 * n_layers;
 
     /* KV-mode resolution: opts override > env > backend/platform default. */
     const enum geist_kv_mode mode = resolve_kv_mode(be, opts);
@@ -1537,8 +1678,16 @@ void transformer_session_free(struct transformer_arch_state   *state,
     void *acc = sess->embedding_acc;
     safe_free(&acc);
     sess->embedding_acc = nullptr;
+    void *tail          = sess->kivi_pin_tail;
+    safe_free(&tail);
+    sess->kivi_pin_tail = nullptr;
 
     /* Gated-DeltaNet state + qwen35 gate scratch (#281). */
+    void *dn_ws = sess->dn_prefill_ws;
+    safe_free(&dn_ws);
+    sess->dn_prefill_ws        = nullptr;
+    sess->dn_prefill_ws_floats = 0;
+
     if (state != nullptr && be != nullptr && sess->dn_conv_state != nullptr) {
         for (size_t li = 0; li < state->n_layers; li++) {
             if (sess->dn_conv_state[li] != nullptr)
@@ -1622,6 +1771,7 @@ void transformer_session_free(struct transformer_arch_state   *state,
                     sess->v_kivi_zeros[li],
                     sess->k_residual[li],
                     sess->v_residual[li],
+                    sess->kv_data[li], /* after the k/v caches, its slices */
             };
             for (size_t i = 0; i < sizeof kv_bufs / sizeof kv_bufs[0]; i++) {
                 if (kv_bufs[i] != nullptr) {
@@ -1688,10 +1838,10 @@ void transformer_session_free(struct transformer_arch_state   *state,
     geist_sampler_workspace_destroy(&sess->sampler_ws);
     transformer_spec_session_scratch_free(sess);
 
-    /* P1.4.c: release the combined 14-slot KV pointer block. The
+    /* P1.4.c: release the combined 15-slot KV pointer block. The
      * underlying geist_buffer headers were destroyed above; this just
      * reclaims the pointer-array slab. k_cache happens to be the base
-     * pointer (slots 0..n_layers-1 of the block); the other 13 are
+     * pointer (slots 0..n_layers-1 of the block); the other 14 are
      * slices that point further into the same allocation. */
     if (sess->k_cache != nullptr) {
         void *p_kv = sess->k_cache;
@@ -1710,6 +1860,7 @@ void transformer_session_free(struct transformer_arch_state   *state,
         sess->v_kivi_zeros  = nullptr;
         sess->k_residual    = nullptr;
         sess->v_residual    = nullptr;
+        sess->kv_data       = nullptr;
     }
 
     void *sp = sess;

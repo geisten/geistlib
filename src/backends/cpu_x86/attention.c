@@ -11,7 +11,9 @@
  * (n_kv_heads == 1, the common case) plus a general GQA path, both
  * FMA-vectorized 8-wide (__m256) with 2-4 independent accumulators, OpenMP
  * over (q_pos, q_head) pairs. Falls back to attention_mqa_causal_kv for
- * whatever it does not cover (n_q * n_q_heads < 16, allocation failure).
+ * whatever it does not cover (n_q * n_q_heads < 16). Like that reference,
+ * the softmax runs online over stack-sized blocks of the context
+ * (attn_row_avx2), so neither allocates.
  *
  * -march=x86-64-v3 (this backend's floor) guarantees AVX2 + FMA + F16C
  * unconditionally, so this file needs no runtime ISA dispatch (unlike the
@@ -23,7 +25,6 @@
 #include "attention.h"
 
 #include "gemma4_kernels.h"
-#include "heap.h"
 #include "tensor_view.h"
 
 #include <geist.h>
@@ -33,10 +34,6 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 /* CPU buffer layout, owned by cpu_scalar's buffer_create (cpu_x86 inherits
  * its buffer vtable). Mirrored here as elementwise.c does — geist.h keeps
@@ -133,6 +130,80 @@ static inline void add_scaled_f32_avx2_256(float *dst, const float *src, float s
     }
 }
 
+static inline void scale_f32_avx2(float *x, float scale, size_t n) {
+    size_t       i = 0;
+    const __m256 s = _mm256_set1_ps(scale);
+    for (; i + 8 <= n; i += 8) {
+        _mm256_storeu_ps(x + i, _mm256_mul_ps(_mm256_loadu_ps(x + i), s));
+    }
+    for (; i < n; i++) {
+        x[i] *= scale;
+    }
+}
+
+/* One (query, head): outv = softmax_s(qv . k[s]) v[s] over s in [s_lo, s_hi],
+ * where k[s] = k + s * row and v[s] = v + s * row (the KV head applied, row
+ * the floats between positions). The scores go a block at a time through
+ * the stack (ATTN_F32_BLOCK); the running max and sum carry across blocks,
+ * outv is accumulated unnormalized, rescaled when a block raises the max
+ * and divided by the sum last. Nothing grows with the context, nothing is
+ * allocated. */
+static inline void attn_row_avx2(const float *qv,
+                                 const float *k,
+                                 const float *v,
+                                 size_t       row,
+                                 size_t       s_lo,
+                                 size_t       s_hi,
+                                 size_t       head_dim,
+                                 bool         hd256,
+                                 float       *outv) {
+    float  scores[ATTN_F32_BLOCK];
+    float  max_score = 0.0f;
+    double sum_exp   = 0.0;
+    if (hd256) {
+        zero_f32_avx2_256(outv);
+    } else {
+        zero_f32_avx2(outv, head_dim);
+    }
+    for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_F32_BLOCK) {
+        const size_t n         = s_hi - b0 < ATTN_F32_BLOCK ? s_hi - b0 + 1 : ATTN_F32_BLOCK;
+        float        block_max = 0.0f;
+        for (size_t j = 0; j < n; j++) {
+            const float *kv = k + (b0 + j) * row;
+            const float  sc = hd256 ? dot_f32_avx2_256(qv, kv) : dot_f32_avx2(qv, kv, head_dim);
+            scores[j]       = sc;
+            if (j == 0 || sc > block_max) {
+                block_max = sc;
+            }
+        }
+        if (b0 == s_lo) {
+            max_score = block_max;
+        } else if (block_max > max_score) {
+            const float d = max_score - block_max;
+            const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
+            sum_exp *= c;
+            scale_f32_avx2(outv, c, head_dim);
+            max_score = block_max;
+        }
+        for (size_t j = 0; j < n; j++) {
+            /* The exponent clamped at ATTN_EXP_FLOOR (gemma4_kernels.h). */
+            scores[j] = expf(fmaxf(scores[j] - max_score, ATTN_EXP_FLOOR));
+            sum_exp += scores[j];
+        }
+        for (size_t j = 0; j < n; j++) {
+            const float *vv = v + (b0 + j) * row;
+            if (hd256) {
+                add_scaled_f32_avx2_256(outv, vv, scores[j]);
+            } else {
+                add_scaled_f32_avx2(outv, vv, scores[j], head_dim);
+            }
+        }
+    }
+    if (sum_exp > 0.0) { /* else an empty window: outv stays zero */
+        scale_f32_avx2(outv, (float) (1.0 / sum_exp), head_dim);
+    }
+}
+
 /* MQA fast path: n_kv_heads == 1 (every q_head reads the same K/V row). */
 static bool attention_mqa1_causal_kv_avx2(const float *q,
                                           const float *k,
@@ -154,73 +225,26 @@ static bool attention_mqa1_causal_kv_avx2(const float *q,
     }
     const bool hd256 = head_dim == 256;
 
-    size_t n_threads = 1;
 #ifdef _OPENMP
-    n_threads = (size_t) omp_get_max_threads();
+#pragma omp parallel for schedule(dynamic, 8)
 #endif
-    float *score_arena = heap_alloc_array_aligned(float, n_threads *n_kv);
-    if (score_arena == nullptr) {
-        return false;
+    for (size_t idx = 0; idx < total; idx++) {
+        const size_t t     = idx / n_q_heads;
+        const size_t h     = idx - t * n_q_heads;
+        const size_t q_pos = q_offset + t;
+        const size_t s_lo =
+                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
+        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
+        attn_row_avx2(q + (t * n_q_heads + h) * head_dim,
+                      k,
+                      v,
+                      head_dim,
+                      s_lo,
+                      s_hi,
+                      head_dim,
+                      hd256,
+                      out + (t * n_q_heads + h) * head_dim);
     }
-
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-    {
-#ifdef _OPENMP
-        const int tid    = omp_get_thread_num();
-        float    *scores = score_arena + (size_t) tid * n_kv;
-#pragma omp for schedule(dynamic, 8)
-#else
-        float *scores = score_arena;
-#endif
-        for (size_t idx = 0; idx < total; idx++) {
-            const size_t t     = idx / n_q_heads;
-            const size_t h     = idx - t * n_q_heads;
-            const size_t q_pos = q_offset + t;
-            const size_t s_lo  = (sliding_window > 0 && q_pos + 1 > sliding_window)
-                                         ? q_pos + 1 - sliding_window
-                                         : 0;
-            size_t       s_hi  = q_pos;
-            if (s_hi >= n_kv) {
-                s_hi = n_kv - 1;
-            }
-
-            const float *qv        = q + (t * n_q_heads + h) * head_dim;
-            float        max_score = -INFINITY;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float *kv = k + s * head_dim;
-                const float  sc = hd256 ? dot_f32_avx2_256(qv, kv) : dot_f32_avx2(qv, kv, head_dim);
-                scores[s]       = sc;
-                if (sc > max_score) {
-                    max_score = sc;
-                }
-            }
-
-            double sum_exp = 0.0;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float e = expf(scores[s] - max_score);
-                scores[s]     = e;
-                sum_exp += e;
-            }
-            const float inv_sum = (float) (1.0 / sum_exp);
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
-            if (hd256) {
-                zero_f32_avx2_256(outv);
-                for (size_t s = s_lo; s <= s_hi; s++) {
-                    add_scaled_f32_avx2_256(outv, v + s * head_dim, scores[s] * inv_sum);
-                }
-            } else {
-                zero_f32_avx2(outv, head_dim);
-                for (size_t s = s_lo; s <= s_hi; s++) {
-                    add_scaled_f32_avx2(outv, v + s * head_dim, scores[s] * inv_sum, head_dim);
-                }
-            }
-        }
-    }
-
-    safe_free((void **) &score_arena);
     return true;
 }
 
@@ -247,75 +271,27 @@ static bool attention_mqa_causal_kv_avx2(const float *q,
     const size_t kv_group_size = n_q_heads / n_kv_heads;
     const bool   hd256         = head_dim == 256;
 
-    size_t n_threads = 1;
 #ifdef _OPENMP
-    n_threads = (size_t) omp_get_max_threads();
+#pragma omp parallel for schedule(dynamic, 8)
 #endif
-    float *score_arena = heap_alloc_array_aligned(float, n_threads *n_kv);
-    if (score_arena == nullptr) {
-        return false;
+    for (size_t idx = 0; idx < total; idx++) {
+        const size_t t     = idx / n_q_heads;
+        const size_t h     = idx - t * n_q_heads;
+        const size_t q_pos = q_offset + t;
+        const size_t s_lo =
+                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
+        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
+        const size_t kv_h = h / kv_group_size;
+        attn_row_avx2(q + (t * n_q_heads + h) * head_dim,
+                      k + kv_h * head_dim,
+                      v + kv_h * head_dim,
+                      n_kv_heads * head_dim,
+                      s_lo,
+                      s_hi,
+                      head_dim,
+                      hd256,
+                      out + (t * n_q_heads + h) * head_dim);
     }
-
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-    {
-#ifdef _OPENMP
-        const int tid    = omp_get_thread_num();
-        float    *scores = score_arena + (size_t) tid * n_kv;
-#pragma omp for schedule(dynamic, 8)
-#else
-        float *scores = score_arena;
-#endif
-        for (size_t idx = 0; idx < total; idx++) {
-            const size_t t     = idx / n_q_heads;
-            const size_t h     = idx - t * n_q_heads;
-            const size_t q_pos = q_offset + t;
-            const size_t s_lo  = (sliding_window > 0 && q_pos + 1 > sliding_window)
-                                         ? q_pos + 1 - sliding_window
-                                         : 0;
-            size_t       s_hi  = q_pos;
-            if (s_hi >= n_kv) {
-                s_hi = n_kv - 1;
-            }
-            const size_t kv_h = h / kv_group_size;
-            const float *qv   = q + (t * n_q_heads + h) * head_dim;
-
-            float max_score = -INFINITY;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float *kv = k + (s * n_kv_heads + kv_h) * head_dim;
-                const float  sc = hd256 ? dot_f32_avx2_256(qv, kv) : dot_f32_avx2(qv, kv, head_dim);
-                scores[s]       = sc;
-                if (sc > max_score) {
-                    max_score = sc;
-                }
-            }
-            double sum_exp = 0.0;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float e = expf(scores[s] - max_score);
-                scores[s]     = e;
-                sum_exp += e;
-            }
-            const float inv_sum = (float) (1.0 / sum_exp);
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
-            if (hd256) {
-                zero_f32_avx2_256(outv);
-                for (size_t s = s_lo; s <= s_hi; s++) {
-                    const float *vv = v + (s * n_kv_heads + kv_h) * head_dim;
-                    add_scaled_f32_avx2_256(outv, vv, scores[s] * inv_sum);
-                }
-            } else {
-                zero_f32_avx2(outv, head_dim);
-                for (size_t s = s_lo; s <= s_hi; s++) {
-                    const float *vv = v + (s * n_kv_heads + kv_h) * head_dim;
-                    add_scaled_f32_avx2(outv, vv, scores[s] * inv_sum, head_dim);
-                }
-            }
-        }
-    }
-
-    safe_free((void **) &score_arena);
     return true;
 }
 

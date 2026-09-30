@@ -7,11 +7,16 @@
  * The vtable shape itself lives in <geist_arch.h> (engine-owned interface);
  * this header only exports the concrete descriptor.
  *
- * Defined in (Phase B-5):
- *   src/archs/audio_conformer/arch.c           — descriptor, encode entry
- *   src/archs/audio_conformer/conformer_loop.c — per-block layer sequence
- *   src/archs/audio_conformer/mel_pipeline.c   — FFTW3/vDSP wrapper
- *   src/archs/audio_conformer/projector.c      — audio_dim → LM_dim linear
+ * Defined in (src/archs/audio_conformer/):
+ *   arch.c            — descriptor, encode entry
+ *   audio_encoder.c   — encoder orchestration (start reading here)
+ *   encoder_forward.c — the Conformer forward stages
+ *   encoder_stream.c  — the streaming API and its worker thread
+ *   encoder_weights.c — weight loading, per-class precision, teardown
+ *   audio_linear.c    — quantized matmuls
+ *   audio_kernels.c   — conv2d, LayerNorm, ReLU (FP32)
+ *   mel_pipeline.c    — log-mel spectrogram (vDSP on Apple, vendored FFT
+ *                       elsewhere)
  */
 #ifndef GEIST_INTERNAL_ARCH_AUDIO_CONFORMER_H
 #define GEIST_INTERNAL_ARCH_AUDIO_CONFORMER_H

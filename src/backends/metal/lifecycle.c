@@ -646,9 +646,9 @@ void metal_destroy(struct geist_backend *be) {
     /* Simdgroup-matmul Q4_K GEMM (llama.cpp mul_mm-derived). Default ON: only
      * runs for full tiles (dispatch guard requires rows%32==0 && n_out%64==0),
      * so the partial-tile path never executes and non-conforming shapes fall
-     * back to the m16 kernel. Numerical parity for both paths is covered by
-     * tests/test_backend_metal_q4k_matmul_parity.c. Set
-     * GEIST_METAL_Q4K_MM_SG=0 to disable. */
+     * back to the m16 kernel. test_backend_metal_parity_unit.c covers both
+     * (Q4_K m=32 x 384 and m=33 x 383). Set GEIST_METAL_Q4K_MM_SG=0 to
+     * disable. */
     const char *q4k_mm_sg    = getenv("GEIST_METAL_Q4K_MM_SG");
     st->use_q4k_mm_sg        = q4k_mm_sg == nullptr || strcmp(q4k_mm_sg, "0") != 0;
     const char *pq2_n8       = getenv("GEIST_METAL_PQ2_N8");

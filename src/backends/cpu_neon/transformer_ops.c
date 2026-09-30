@@ -425,6 +425,80 @@ static void attention_set_omp_schedule(void) {
 }
 #endif
 
+static inline void scale_f32_neon(float *x, float scale, size_t n) {
+    size_t            i = 0;
+    const float32x4_t s = vdupq_n_f32(scale);
+    for (; i + 4 <= n; i += 4) {
+        vst1q_f32(x + i, vmulq_f32(vld1q_f32(x + i), s));
+    }
+    for (; i < n; i++) {
+        x[i] *= scale;
+    }
+}
+
+/* One (query, head): outv = softmax_s(qv . k[s]) v[s] over s in [s_lo, s_hi],
+ * where k[s] = k + s * row and v[s] = v + s * row (the KV head applied, row
+ * the floats between positions). The scores go a block at a time through
+ * the stack (ATTN_F32_BLOCK); the running max and sum carry across blocks,
+ * outv is accumulated unnormalized, rescaled when a block raises the max
+ * and divided by the sum last. Nothing grows with the context, nothing is
+ * allocated. */
+static inline void attn_row_neon(const float *qv,
+                                 const float *k,
+                                 const float *v,
+                                 size_t       row,
+                                 size_t       s_lo,
+                                 size_t       s_hi,
+                                 size_t       head_dim,
+                                 bool         hd256,
+                                 float       *outv) {
+    float  scores[ATTN_F32_BLOCK];
+    float  max_score = 0.0f;
+    double sum_exp   = 0.0;
+    if (hd256) {
+        zero_f32_neon_256(outv);
+    } else {
+        zero_f32_neon(outv, head_dim);
+    }
+    for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_F32_BLOCK) {
+        const size_t n         = s_hi - b0 < ATTN_F32_BLOCK ? s_hi - b0 + 1 : ATTN_F32_BLOCK;
+        float        block_max = 0.0f;
+        for (size_t j = 0; j < n; j++) {
+            const float *kv = k + (b0 + j) * row;
+            const float  sc = hd256 ? dot_f32_neon_256(qv, kv) : dot_f32_neon(qv, kv, head_dim);
+            scores[j]       = sc;
+            if (j == 0 || sc > block_max) {
+                block_max = sc;
+            }
+        }
+        if (b0 == s_lo) {
+            max_score = block_max;
+        } else if (block_max > max_score) {
+            const float d = max_score - block_max;
+            const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
+            sum_exp *= c;
+            scale_f32_neon(outv, c, head_dim);
+            max_score = block_max;
+        }
+        for (size_t j = 0; j < n; j++) {
+            /* The exponent clamped at ATTN_EXP_FLOOR (gemma4_kernels.h). */
+            scores[j] = expf(fmaxf(scores[j] - max_score, ATTN_EXP_FLOOR));
+            sum_exp += scores[j];
+        }
+        for (size_t j = 0; j < n; j++) {
+            const float *vv = v + (b0 + j) * row;
+            if (hd256) {
+                add_scaled_f32_neon_256(outv, vv, scores[j]);
+            } else {
+                add_scaled_f32_neon(outv, vv, scores[j], head_dim);
+            }
+        }
+    }
+    if (sum_exp > 0.0) { /* else an empty window: outv stays zero */
+        scale_f32_neon(outv, (float) (1.0 / sum_exp), head_dim);
+    }
+}
+
 static bool attention_mqa1_causal_kv_neon(const float *q,
                                           const float *k,
                                           const float *v,
@@ -443,120 +517,29 @@ static bool attention_mqa1_causal_kv_neon(const float *q,
     if (total < 16) {
         return false;
     }
-
-    size_t n_threads = 1;
-#ifdef _OPENMP
-    n_threads = (size_t) omp_get_max_threads();
-#endif
-    float *score_arena = heap_alloc_array_aligned(float, n_threads *n_kv);
-    if (score_arena == nullptr) {
-        return false;
-    }
     const bool hd256 = head_dim == 256;
 
 #ifdef _OPENMP
     attention_set_omp_schedule();
-#pragma omp parallel
-    {
-        const int tid    = omp_get_thread_num();
-        float    *scores = score_arena + (size_t) tid * n_kv;
-#pragma omp for schedule(runtime)
-        for (size_t idx = 0; idx < total; idx++) {
-            const size_t t     = idx / n_q_heads;
-            const size_t h     = idx - t * n_q_heads;
-            const size_t q_pos = q_offset + t;
-            const size_t s_lo  = (sliding_window > 0 && q_pos + 1 > sliding_window)
-                                         ? q_pos + 1 - sliding_window
-                                         : 0;
-            size_t       s_hi  = q_pos;
-            if (s_hi >= n_kv) {
-                s_hi = n_kv - 1;
-            }
-
-            const float *qv        = q + (t * n_q_heads + h) * head_dim;
-            float        max_score = -INFINITY;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float *kv = k + s * head_dim;
-                const float  sc = hd256 ? dot_f32_neon_256(qv, kv) : dot_f32_neon(qv, kv, head_dim);
-                scores[s]       = sc;
-                if (sc > max_score) {
-                    max_score = sc;
-                }
-            }
-
-            double sum_exp = 0.0;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float e = expf(scores[s] - max_score);
-                scores[s]     = e;
-                sum_exp += e;
-            }
-            const float inv_sum = (float) (1.0 / sum_exp);
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
-            if (hd256) {
-                zero_f32_neon_256(outv);
-                for (size_t s = s_lo; s <= s_hi; s++) {
-                    add_scaled_f32_neon_256(outv, v + s * head_dim, scores[s] * inv_sum);
-                }
-            } else {
-                zero_f32_neon(outv, head_dim);
-                for (size_t s = s_lo; s <= s_hi; s++) {
-                    add_scaled_f32_neon(outv, v + s * head_dim, scores[s] * inv_sum, head_dim);
-                }
-            }
-        }
-    }
-#else
-    {
-        float *scores = score_arena;
-        for (size_t idx = 0; idx < total; idx++) {
-            const size_t t     = idx / n_q_heads;
-            const size_t h     = idx - t * n_q_heads;
-            const size_t q_pos = q_offset + t;
-            const size_t s_lo  = (sliding_window > 0 && q_pos + 1 > sliding_window)
-                                         ? q_pos + 1 - sliding_window
-                                         : 0;
-            size_t       s_hi  = q_pos;
-            if (s_hi >= n_kv) {
-                s_hi = n_kv - 1;
-            }
-
-            const float *qv        = q + (t * n_q_heads + h) * head_dim;
-            float        max_score = -INFINITY;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float *kv = k + s * head_dim;
-                const float  sc = hd256 ? dot_f32_neon_256(qv, kv) : dot_f32_neon(qv, kv, head_dim);
-                scores[s]       = sc;
-                if (sc > max_score) {
-                    max_score = sc;
-                }
-            }
-
-            double sum_exp = 0.0;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float e = expf(scores[s] - max_score);
-                scores[s]     = e;
-                sum_exp += e;
-            }
-            const float inv_sum = (float) (1.0 / sum_exp);
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
-            if (hd256) {
-                zero_f32_neon_256(outv);
-                for (size_t s = s_lo; s <= s_hi; s++) {
-                    add_scaled_f32_neon_256(outv, v + s * head_dim, scores[s] * inv_sum);
-                }
-            } else {
-                zero_f32_neon(outv, head_dim);
-                for (size_t s = s_lo; s <= s_hi; s++) {
-                    add_scaled_f32_neon(outv, v + s * head_dim, scores[s] * inv_sum, head_dim);
-                }
-            }
-        }
-    }
+#pragma omp parallel for schedule(runtime)
 #endif
-
-    safe_free((void **) &score_arena);
+    for (size_t idx = 0; idx < total; idx++) {
+        const size_t t     = idx / n_q_heads;
+        const size_t h     = idx - t * n_q_heads;
+        const size_t q_pos = q_offset + t;
+        const size_t s_lo =
+                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
+        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
+        attn_row_neon(q + (t * n_q_heads + h) * head_dim,
+                      k,
+                      v,
+                      head_dim,
+                      s_lo,
+                      s_hi,
+                      head_dim,
+                      hd256,
+                      out + (t * n_q_heads + h) * head_dim);
+    }
     return true;
 }
 
@@ -581,107 +564,28 @@ static bool attention_mqa_causal_kv_neon(const float *q,
     }
     const size_t kv_group_size = n_q_heads / n_kv_heads;
 
-    size_t n_threads = 1;
-#ifdef _OPENMP
-    n_threads = (size_t) omp_get_max_threads();
-#endif
-    float *score_arena = heap_alloc_array_aligned(float, n_threads *n_kv);
-    if (score_arena == nullptr) {
-        return false;
-    }
-
 #ifdef _OPENMP
     attention_set_omp_schedule();
-#pragma omp parallel
-    {
-        const int tid    = omp_get_thread_num();
-        float    *scores = score_arena + (size_t) tid * n_kv;
-#pragma omp for schedule(runtime)
-        for (size_t idx = 0; idx < total; idx++) {
-            const size_t t     = idx / n_q_heads;
-            const size_t h     = idx - t * n_q_heads;
-            const size_t q_pos = q_offset + t;
-            const size_t s_lo  = (sliding_window > 0 && q_pos + 1 > sliding_window)
-                                         ? q_pos + 1 - sliding_window
-                                         : 0;
-            size_t       s_hi  = q_pos;
-            if (s_hi >= n_kv) {
-                s_hi = n_kv - 1;
-            }
-            const size_t kv_h = h / kv_group_size;
-            const float *qv   = q + (t * n_q_heads + h) * head_dim;
-
-            float max_score = -INFINITY;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float *kv = k + (s * n_kv_heads + kv_h) * head_dim;
-                const float  sc = dot_f32_neon(qv, kv, head_dim);
-                scores[s]       = sc;
-                if (sc > max_score) {
-                    max_score = sc;
-                }
-            }
-            double sum_exp = 0.0;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float e = expf(scores[s] - max_score);
-                scores[s]     = e;
-                sum_exp += e;
-            }
-            const float inv_sum = (float) (1.0 / sum_exp);
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
-            zero_f32_neon(outv, head_dim);
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float *vv = v + (s * n_kv_heads + kv_h) * head_dim;
-                add_scaled_f32_neon(outv, vv, scores[s] * inv_sum, head_dim);
-            }
-        }
-    }
+#pragma omp parallel for schedule(runtime)
 #endif
-#if !defined(_OPENMP)
-    {
-        float *scores = score_arena;
-        for (size_t idx = 0; idx < total; idx++) {
-            const size_t t     = idx / n_q_heads;
-            const size_t h     = idx - t * n_q_heads;
-            const size_t q_pos = q_offset + t;
-            const size_t s_lo  = (sliding_window > 0 && q_pos + 1 > sliding_window)
-                                         ? q_pos + 1 - sliding_window
-                                         : 0;
-            size_t       s_hi  = q_pos;
-            if (s_hi >= n_kv) {
-                s_hi = n_kv - 1;
-            }
-            const size_t kv_h = h / kv_group_size;
-            const float *qv   = q + (t * n_q_heads + h) * head_dim;
-
-            float max_score = -INFINITY;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float *kv = k + (s * n_kv_heads + kv_h) * head_dim;
-                const float  sc = dot_f32_neon(qv, kv, head_dim);
-                scores[s]       = sc;
-                if (sc > max_score) {
-                    max_score = sc;
-                }
-            }
-            double sum_exp = 0.0;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float e = expf(scores[s] - max_score);
-                scores[s]     = e;
-                sum_exp += e;
-            }
-            const float inv_sum = (float) (1.0 / sum_exp);
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
-            zero_f32_neon(outv, head_dim);
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float *vv = v + (s * n_kv_heads + kv_h) * head_dim;
-                add_scaled_f32_neon(outv, vv, scores[s] * inv_sum, head_dim);
-            }
-        }
+    for (size_t idx = 0; idx < total; idx++) {
+        const size_t t     = idx / n_q_heads;
+        const size_t h     = idx - t * n_q_heads;
+        const size_t q_pos = q_offset + t;
+        const size_t s_lo =
+                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
+        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
+        const size_t kv_h = h / kv_group_size;
+        attn_row_neon(q + (t * n_q_heads + h) * head_dim,
+                      k + kv_h * head_dim,
+                      v + kv_h * head_dim,
+                      n_kv_heads * head_dim,
+                      s_lo,
+                      s_hi,
+                      head_dim,
+                      false, /* this path has always used the general dot */
+                      out + (t * n_q_heads + h) * head_dim);
     }
-#endif
-
-    safe_free((void **) &score_arena);
     return true;
 }
 #endif
