@@ -34,6 +34,28 @@ An interrupted campaign can be continued with `--resume` only when its model,
 protocol, environment, baseline, binary hashes and rotated run prefix still
 match exactly.
 
+To compare git revisions end to end, build each one from scratch. An
+incremental build appends the objects it rebuilds to the archive, so a parent
+built in the tree and a commit built on top of it also differ in code layout,
+which on x86-64 moved single prefill stages by 2-3 % on its own.
+`tools/bench_revision_ab.py` builds every revision in a git worktree of its
+own, runs `bench_perf_sweep` on the binaries in rotating order and runs a copy
+of the baseline binary as a control. Each cycle runs every variant back to
+back; a row reports the median of the per-cycle ratios to the baseline, a
+distribution-free 95 % interval for it (order statistics: the sign test's,
+exact for any noise) and the number of cycles each variant was faster. Six
+cycles is the least that can exclude zero, and only when all six agree; the
+default ten decide on nine. A bootstrap over this few cycles gives intervals
+too narrow: it called the same binary 2.7 % faster. When the control's
+interval excludes zero the host moved during the run, and a difference of
+that size is not the change.
+
+```sh
+make gguf_artifacts/synth/llama32-1b-q4_k.gguf
+tools/bench_revision_ab.py --rev base=main --rev new=HEAD \
+    --gguf gguf_artifacts/synth/llama32-1b-q4_k.gguf --seq-lens 512,2048
+```
+
 Raw timing probes for individual subsystems:
 
 ```sh
