@@ -311,6 +311,16 @@ minor release.
 
 ### Fixed
 
+- **The metal backend no longer leaks a command buffer and an encoder per
+  submission** (#527). It drives Metal from plain C, where nothing drained the
+  autoreleased `commandBuffer` and `compute`/`blitCommandEncoder` results: a
+  decode loop's `phys_footprint` grew 7.3 KiB per token on qwen3.5-0.8B and
+  9.2 KiB on gemma4-e2b (M1 Max), 7 to 9 GB per million tokens in a
+  long-running server. Each command sequence (one prefill batch or decode step)
+  and each standalone submission now runs in its own autorelease pool; growth
+  is zero within noise and outputs are byte-identical.
+  `test_metal_autorelease_unit` (opt-in, `GEIST_TEST_METAL_AUTORELEASE=1`)
+  bounds it.
 - **A null array passed to the public session API returns
   `GEIST_E_INVALID_ARG` in release builds too.** `geist_session_tokenize`,
   `pin_prefix`, `decode_speculative`, `attach_audio`, `audio_push`,
