@@ -12,6 +12,14 @@ minor release.
 - Optional `geist_backend_resources_snapshot`: Metal device allocated bytes and
   unified-memory attribution, callable during inference without GPU synchronization.
   CPU providers explicitly return unsupported. Allocation is not physical residency.
+- **`tools/bench_revision_ab.py`: end-to-end A/B of git revisions, each built
+  from scratch.** Every revision gets a git worktree of its own;
+  `bench_perf_sweep` runs on the binaries in rotating order, next to a copy of
+  the baseline binary as a control; each row reports the median per-cycle
+  change with a distribution-free 95 % interval (the sign test's). An
+  incrementally built tree differs from a clean build in code layout, which
+  on x86-64 moved single prefill stages by 2-3 % on its own, and the control
+  shows how far the host moves while it runs (`benchmark/METHODOLOGY.md`).
 
 
 ### Added
