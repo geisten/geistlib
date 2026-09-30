@@ -108,9 +108,11 @@ minor release.
   differently); any thread count gives the same bits. x86-64, 4 threads: per
   call 1.4-2.8x faster than the host loop (five head layouts, 512-8192
   positions, decode and 64-token prefill chunks; `bench_attention_int8` now
-  times both). End to end at 2048 positions (synthetic weights), prefill
-  -11 % and decode -13 % in the Llama 3.2 1B geometry (Q4_K), -21 % and
-  -14 % in SmolLM2-360M's (Q8_0); at 512, within noise to -8 %.
+  times both). End to end (synthetic weights, both builds from scratch) at
+  2048 positions, prefill -11 % and decode -11 % in the Llama 3.2 1B
+  geometry (Q4_K), -24 % and -23 % in SmolLM2-360M's (Q8_0); at 512, the
+  same within the noise in Llama 3.2 1B's, -10 % and -20 % in
+  SmolLM2-360M's.
 - **Attention over the packed INT4 KV cache is a backend op too**
   (`fused->attention_kv_int4`, `GEIST_FUSED_ATTN_KV_INT4`,
   `struct geist_attention_kv_int4_args`, `<geist_backend.h>`): K and V are
@@ -155,8 +157,10 @@ minor release.
   layout -3 / -11 / -35 % at 512 / 2048 / 8192 positions (VNNI kernel;
   AVX2 -0 / -9 / -20 %), 32/32 heads -1 to -12 %, Llama 3.2 1B's and
   Qwen3-0.6B's +1 to -6 %, one KV head (Gemma 4 E2B) unchanged. End to
-  end, a 4000-token prompt prefills 7.4 % faster in SmolLM2-360M's geometry
-  (synthetic Q8_0 weights) and as fast as before in Llama 3.2 1B's.
+  end (synthetic weights, both builds from scratch), a 4000-token prompt
+  prefills as fast as before within the noise, -1.8 % in SmolLM2-360M's
+  geometry (Q8_0) and -2.3 % in Llama 3.2 1B's; the attention stage of the
+  prefill profile took 11.8 % less time in SmolLM2-360M's, in every run.
 - **cpu_x86's INT8-KV attention runs a prefill item over up to four
   queries.** Both kernels (AVX2 and AVX-512 VNNI) gave each work item one
   query, so a 64-token chunk read the same K and V rows 64 times, and from
@@ -173,9 +177,11 @@ minor release.
   spread over all cache sets and stay cached longer); at 512 positions and
   in the sliding layers, where no item takes several queries, -11 to +2 %.
   Decode within +-3 %, except 32/32 heads (MHA) on the VNNI kernel, +1 to
-  +4 %. End to end (synthetic weights), a 4000-token prompt prefills 6.7 %
-  faster in Llama 3.2 1B's geometry (Q4_K) and 4.4 % at 2048 tokens;
-  SmolLM2-360M's as fast as before.
+  +4 %. End to end (synthetic weights, both builds from scratch), within
+  the noise: a 4000-token prompt prefills 3.1 % faster in Llama 3.2 1B's
+  geometry (Q4_K), a 2048-token one and SmolLM2-360M's as fast as before;
+  at 4000 tokens the attention stage of the prefill profile took 19.7 %
+  less time in Llama 3.2 1B's, in every run.
 - **cpu_x86 sessions keep a layer's INT8/INT4 K and V caches apart in the
   cache sets.** K and V were buffers of their own, and large allocations
   start at the same offset in a page; one KV head's rows lie a cache row
@@ -190,9 +196,9 @@ minor release.
   -9 %), Qwen3-0.6B's -5 to -19 % (-4 to -10 %), 32/32 heads -26 to -39 %
   (-23 to -38 %); SmolLM2-360M (320-byte rows) and one KV head (Gemma 4
   E2B) within +-2 %; decode -10 to +3 %. End to end (synthetic weights,
-  Llama 3.2 1B's geometry) the change is below the noise, -1.2 % and -1.4 %
-  at 2048 and 4000 tokens; the attention stage of the prefill profile took
-  7.5 % less time, in every run.
+  Llama 3.2 1B's geometry, both builds from scratch) the change is below
+  the noise, -0.5 % and +0.4 % at 2048 and 4000 tokens; the attention stage
+  of the prefill profile took 4.4 % less time, in every run.
 - **cpu_x86 sessions keep a layer's FP32 K and V caches apart in the cache
   sets too.** The dense cache had the layout the INT8 one had before: K and
   V buffers of their own, at the same offset in a page. On backends that
