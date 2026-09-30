@@ -9,12 +9,14 @@
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
+#include <geist_util.h>
 #include "model.h" /* for geist_arch_registry forward decl pattern */
 
 #include <geist.h>
 #include <geist_backend.h>
 
 #include "error.h"
+#include "hw_probe.h"
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -71,6 +73,21 @@ enum geist_status geist_backend_create(const char                      *name,
                                     "backend '%s' has incomplete vtable",
                                     desc->name);
         return GEIST_E_INTERNAL;
+    }
+    /* The target flags let the compiler use their instruction-set features
+     * anywhere in the library, so a host that lacks one would die with
+     * SIGILL somewhere in a decode. Say so here instead. */
+    struct geist_hw_probe hw;
+    geist_hw_probe_isa(&hw);
+    const char *missing = geist_hw_build_isa_missing(&hw);
+    if (missing != nullptr) {
+        geist_error_set_create_time(GEIST_E_UNSUPPORTED,
+                                    "geist_backend_create",
+                                    "this build of geist uses %s, which this CPU does not have; "
+                                    "build it for this CPU (CFLAGS_TARGET and BACKENDS, see "
+                                    "mk/target-linux.mk)",
+                                    missing);
+        return GEIST_E_UNSUPPORTED;
     }
 
     const struct geist_allocator *a = alloc != nullptr ? alloc : &geist_libc_allocator;
@@ -138,6 +155,22 @@ const char *geist_backend_errmsg(const struct geist_backend *be) {
 
 enum geist_status geist_backend_errcode(const struct geist_backend *be) {
     return be != nullptr ? be->err_code : GEIST_E_INVALID_ARG;
+}
+
+enum geist_status geist_backend_resources_snapshot(const struct geist_backend     *be,
+                                                   struct geist_backend_resources *out) {
+    if (out == nullptr)
+        return GEIST_E_INVALID_ARG;
+    *out = (struct geist_backend_resources) {0};
+    if (be == nullptr || be->desc == nullptr)
+        return GEIST_E_INVALID_ARG;
+    if (be->desc->resources_snapshot == nullptr)
+        return GEIST_E_UNSUPPORTED;
+    struct geist_backend_resources sample = {0};
+    enum geist_status              status = be->desc->resources_snapshot(be, &sample);
+    if (status == GEIST_OK)
+        *out = sample;
+    return status;
 }
 
 const struct geist_backend_fused geist_backend_no_fused = {0};

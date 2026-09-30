@@ -1,8 +1,10 @@
 /*
  * gguf_ptqtp — loader for PTQTP-quantized weight files (.ptqtp.bin).
  *
- * Companion to tools/ptqtp_quantize_full.py. The file format stores per-tensor
- * 2-trit-plane representations with per-row-group FP16 scales:
+ * The writer, ptqtp_quantize_full.py, is not in this repository
+ * (tools/ptqtp_single_tensor.py is the single-tensor validator). The file
+ * format stores per-tensor 2-trit-plane representations with per-row-group
+ * FP16 scales:
  *
  *   header: magic "PTQT", version, n_tensors, group_size, n_planes
  *   TOC (one entry per tensor): name, n_in, n_out, n_groups, offsets+sizes,

@@ -1,5 +1,5 @@
 /*
- * src/engine/hw_probe.c — runtime hardware feature summary.
+ * src/base/hw_probe.c — runtime hardware feature summary.
  *
  * Every feature bit (NEON, dotprod, FP16, Accelerate) is probed at the
  * actual host where the process is running, not at the build host. This
@@ -68,36 +68,11 @@ static bool sysctl_bool(const char *name, bool fallback) {
 }
 #endif
 
-void geist_hw_probe_fill(struct geist_hw_probe *out) {
+void geist_hw_probe_isa(struct geist_hw_probe *out) {
     if (out == nullptr) {
         return;
     }
     *out = (struct geist_hw_probe) {0};
-
-    /* ----- OS ------------------------------------------------------- */
-#if defined(__APPLE__)
-    out->os = GEIST_HW_OS_MACOS;
-#elif defined(__linux__)
-    out->os = GEIST_HW_OS_LINUX;
-#elif defined(_WIN32)
-    out->os = GEIST_HW_OS_WINDOWS;
-#else
-    out->os = GEIST_HW_OS_UNKNOWN;
-#endif
-
-    /* ----- CPU family ---------------------------------------------- */
-#if defined(__aarch64__) || defined(__arm64__)
-#if defined(__APPLE__)
-    out->cpu              = GEIST_HW_CPU_APPLE_SILICON;
-    out->is_apple_silicon = true;
-#else
-    out->cpu = GEIST_HW_CPU_ARM64_GENERIC;
-#endif
-#elif defined(__x86_64__) || defined(_M_X64)
-    out->cpu = GEIST_HW_CPU_X86_64_GENERIC;
-#else
-    out->cpu = GEIST_HW_CPU_UNKNOWN;
-#endif
 
     /* ----- Feature bits — RUNTIME probe ---------------------------- */
 #if defined(__aarch64__) && defined(__linux__)
@@ -144,6 +119,8 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
     out->has_dotprod = false;
     out->has_fp16    = __builtin_cpu_supports("f16c");
     out->has_avx2    = __builtin_cpu_supports("avx2");
+    out->has_fma     = __builtin_cpu_supports("fma");
+    out->has_bmi2    = __builtin_cpu_supports("bmi2");
     out->has_avx512f = __builtin_cpu_supports("avx512f");
 #if defined(__GNUC__) || defined(__clang__)
     out->has_avx512_vnni = __builtin_cpu_supports("avx512vnni");
@@ -161,6 +138,38 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
 #if (defined(__ARM_FP) && (__ARM_FP & 2)) || defined(__ARM_FP16_FORMAT_IEEE)
     out->has_fp16 = true;
 #endif
+#endif
+}
+
+void geist_hw_probe_fill(struct geist_hw_probe *out) {
+    if (out == nullptr) {
+        return;
+    }
+    geist_hw_probe_isa(out);
+
+    /* ----- OS ------------------------------------------------------- */
+#if defined(__APPLE__)
+    out->os = GEIST_HW_OS_MACOS;
+#elif defined(__linux__)
+    out->os = GEIST_HW_OS_LINUX;
+#elif defined(_WIN32)
+    out->os = GEIST_HW_OS_WINDOWS;
+#else
+    out->os = GEIST_HW_OS_UNKNOWN;
+#endif
+
+    /* ----- CPU family ---------------------------------------------- */
+#if defined(__aarch64__) || defined(__arm64__)
+#if defined(__APPLE__)
+    out->cpu              = GEIST_HW_CPU_APPLE_SILICON;
+    out->is_apple_silicon = true;
+#else
+    out->cpu = GEIST_HW_CPU_ARM64_GENERIC;
+#endif
+#elif defined(__x86_64__) || defined(_M_X64)
+    out->cpu = GEIST_HW_CPU_X86_64_GENERIC;
+#else
+    out->cpu = GEIST_HW_CPU_UNKNOWN;
 #endif
 
 #if defined(HAVE_ACCELERATE)
@@ -195,14 +204,17 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
      *
      * On AMD 9950X this resolves to 16 physical cores, 2 L3 domains
      * (CCDs). On Pi 5 / single-socket Intel client it's 1 L3 domain.
-     * Used by the Phase-1a CCD-aware threading default in cpu_x86
-     * (decode pins to one L3 domain, prefill to all). */
+     * physical_cores sizes cpu_x86's decode team on SMT hosts
+     * (cpu_x86/threads.c). n_l3_domains has no consumer: pinning decode
+     * to one L3 domain measured 13-15 % slower on the 9950X
+     * (benchmark/results/X86.md). */
 #if defined(__linux__)
     if (out->logical_cores > 0 && out->logical_cores <= 256) {
         char   siblings_seen[64][64] = {0};
         char   l3_seen[16][64]       = {0};
         size_t n_physical            = 0;
         size_t n_l3                  = 0;
+        bool   physical_overflow     = false;
         for (size_t cpu = 0; cpu < out->logical_cores; cpu++) {
             char path[128];
             char buf[64];
@@ -226,6 +238,8 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
                     if (!seen && n_physical < 64) {
                         snprintf(siblings_seen[n_physical], 64, "%s", buf);
                         n_physical++;
+                    } else if (!seen) {
+                        physical_overflow = true;
                     }
                 }
                 fclose(f);
@@ -254,7 +268,10 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
                 fclose(f);
             }
         }
-        out->physical_cores = n_physical;
+        /* More distinct cores than the table holds: n_physical is a floor,
+         * not the count. Report unknown (0), as the header documents, rather
+         * than a number a thread policy would take at face value. */
+        out->physical_cores = physical_overflow ? 0 : n_physical;
         out->n_l3_domains   = n_l3;
     }
 #endif
@@ -357,4 +374,45 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
                  out->logical_cores);
     }
 #endif
+}
+
+/* The macros say what the target flags allow the compiler to emit; the
+ * probe says what this host executes. */
+const char *geist_hw_build_isa_missing(const struct geist_hw_probe *hw) {
+    if (hw == nullptr) {
+        return nullptr;
+    }
+#if defined(__ARM_FEATURE_DOTPROD)
+    if (!hw->has_dotprod) {
+        return "dotprod (ARMv8.2 SDOT/UDOT)";
+    }
+#endif
+#if defined(__ARM_FEATURE_FP16_SCALAR_ARITHMETIC) || defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+    if (!hw->has_fp16) {
+        return "fp16 (ARMv8.2 half-precision arithmetic)";
+    }
+#endif
+#if defined(__x86_64__)
+#if defined(__AVX2__)
+    if (!hw->has_avx2) {
+        return "AVX2";
+    }
+#endif
+#if defined(__FMA__)
+    if (!hw->has_fma) {
+        return "FMA";
+    }
+#endif
+#if defined(__BMI2__)
+    if (!hw->has_bmi2) {
+        return "BMI2";
+    }
+#endif
+#if defined(__F16C__)
+    if (!hw->has_fp16) {
+        return "F16C";
+    }
+#endif
+#endif
+    return nullptr;
 }

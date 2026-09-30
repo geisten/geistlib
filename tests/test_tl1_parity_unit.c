@@ -1,5 +1,5 @@
 /*
- * tests/test_tl1_parity.c — verify TL1 scalar GEMV matches W1.58×A8 path.
+ * tests/test_tl1_parity_unit.c — verify TL1 scalar GEMV matches W1.58×A8 path.
  *
  * Builds a synthetic TQ2_0 weight tensor + random fp32 input, runs both
  * cpu_neon_w_tq2_0_q8a_m1 and cpu_neon_w_tl1_m1, and asserts the outputs
