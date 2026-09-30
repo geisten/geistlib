@@ -1,17 +1,17 @@
 /*
  * test_w4a8_kernel_unit — unit tests for the cpu_x86 W4A8 dot kernel.
  *
- * Phase 1a (current): exercises the API contract + scalar reference + every
- * compiled-in ISA-specific variant.
+ * Exercises the API contract + scalar reference + every compiled-in
+ * ISA-specific variant.
  *   1. tiny-deterministic: 2 blocks of hand-set values, expected exact.
  *      Includes a non-zero w_offset to verify the offset term contributes.
  *   2. zero-blocks: n_blocks=0 must return 0 cleanly.
  *   3. random-cross-check: 64 blocks of seeded PRNG data, dispatcher
- *      output matches scalar reference to ≤1e-3 (γ tolerance from spec).
+ *      output matches scalar reference to ≤1e-3 abs + rel (the tolerance
+ *      kernel_w4a8.h promises).
  *   4. cross-ISA direct: call each compiled-in variant directly (bypassing
  *      the dispatcher latch) and verify each agrees with the scalar
- *      reference. This is the cross-ISA-consistency test from the spec's
- *      Quality-Gates section.
+ *      reference to the same tolerance.
  *
  * Deterministic; runs in <100 ms; no model, no fixture files.
  */

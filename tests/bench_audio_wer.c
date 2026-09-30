@@ -62,7 +62,7 @@ static enum geist_status tokenize_drop_bos(struct geist_session *s,
     return GEIST_OK;
 }
 
-/* SentencePiece cleanup: U+2581 -> space, drop control/trailer bytes,
+/* SentencePiece cleanup: U+2581 -> space, drop control bytes,
  * collapse to single-line. Same normalization test_audio_chat_e2e uses. */
 static void normalize_sp(const char *in, char *out, size_t out_cap) {
     size_t j = 0;
@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
     GEIST_SKIP_IF(list == nullptr, "cannot open wav list");
 
     struct geist_backend *be = nullptr;
-    enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    enum geist_status     s  = geist_backend_create("auto", nullptr, nullptr, &be);
     if (s != GEIST_OK)
         s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
     if (s != GEIST_OK) {

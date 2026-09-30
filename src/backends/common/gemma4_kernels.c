@@ -248,19 +248,6 @@ void attention_mqa_causal_kv(size_t       n_q,
     const float  scale         = 1.0f; /* Gemma 4: scaling encoded via Q/K-norms. */
     const size_t kv_group_size = n_q_heads / n_kv_heads;
 
-    float *scores = heap_alloc_array_aligned(float, n_kv);
-    if (scores == nullptr) {
-        /* No status channel on this signature. Zero `out` so the caller
-         * reads defined values rather than uninitialized stack/heap, and
-         * make the failure audible — a silent all-zero attention output
-         * is indistinguishable from a legitimate one. */
-        memset(out, 0, n_q * n_q_heads * head_dim * sizeof(float));
-        fprintf(stderr,
-                "geist: attention_mqa_causal_kv: score buffer alloc failed "
-                "(%zu floats) — output zeroed\n",
-                n_kv);
-        return;
-    }
     for (size_t t = 0; t < n_q; t++) {
         size_t q_pos = q_offset + t;
         size_t s_lo  = 0;
@@ -274,38 +261,56 @@ void attention_mqa_causal_kv(size_t       n_q,
         for (size_t h = 0; h < n_q_heads; h++) {
             size_t       kv_h = h / kv_group_size;
             const float *qv   = q + (t * n_q_heads + h) * head_dim;
-
-            float max_score = -INFINITY;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                const float *kv_kh = k + (s * n_kv_heads + kv_h) * head_dim;
-                float        dot   = 0.0f;
-                for (size_t i = 0; i < head_dim; i++)
-                    dot += qv[i] * kv_kh[i];
-                float sc  = dot * scale;
-                scores[s] = sc;
-                if (sc > max_score)
-                    max_score = sc;
-            }
-            double sum_exp = 0.0;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                float e   = expf(scores[s] - max_score);
-                scores[s] = e;
-                sum_exp += e;
-            }
-            float inv_sum = (float) (1.0 / sum_exp);
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
+            float       *outv = out + (t * n_q_heads + h) * head_dim;
             for (size_t i = 0; i < head_dim; i++)
                 outv[i] = 0.0f;
-            for (size_t s = s_lo; s <= s_hi; s++) {
-                float        w  = scores[s] * inv_sum;
-                const float *vv = v + (s * n_kv_heads + kv_h) * head_dim;
+
+            /* A block of scores at a time (ATTN_F32_BLOCK); the running max
+             * and sum carry across blocks, outv is accumulated unnormalized,
+             * rescaled when a block raises the max, divided by the sum last. */
+            float  scores[ATTN_F32_BLOCK];
+            float  max_score = 0.0f;
+            double sum_exp   = 0.0;
+            for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_F32_BLOCK) {
+                const size_t n = s_hi - b0 < ATTN_F32_BLOCK ? s_hi - b0 + 1 : ATTN_F32_BLOCK;
+                float        block_max = 0.0f;
+                for (size_t j = 0; j < n; j++) {
+                    const float *kv_kh = k + ((b0 + j) * n_kv_heads + kv_h) * head_dim;
+                    float        dot   = 0.0f;
+                    for (size_t i = 0; i < head_dim; i++)
+                        dot += qv[i] * kv_kh[i];
+                    scores[j] = dot * scale;
+                    if (j == 0 || scores[j] > block_max)
+                        block_max = scores[j];
+                }
+                if (b0 == s_lo) {
+                    max_score = block_max;
+                } else if (block_max > max_score) {
+                    const float d = max_score - block_max;
+                    const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
+                    sum_exp *= c;
+                    for (size_t i = 0; i < head_dim; i++)
+                        outv[i] *= c;
+                    max_score = block_max;
+                }
+                for (size_t j = 0; j < n; j++) {
+                    /* The exponent clamped at ATTN_EXP_FLOOR (gemma4_kernels.h). */
+                    scores[j] = expf(fmaxf(scores[j] - max_score, ATTN_EXP_FLOOR));
+                    sum_exp += scores[j];
+                }
+                for (size_t j = 0; j < n; j++) {
+                    const float *vv = v + ((b0 + j) * n_kv_heads + kv_h) * head_dim;
+                    for (size_t i = 0; i < head_dim; i++)
+                        outv[i] += scores[j] * vv[i];
+                }
+            }
+            if (sum_exp > 0.0) { /* else an empty window: out stays zero */
+                const float inv_sum = (float) (1.0 / sum_exp);
                 for (size_t i = 0; i < head_dim; i++)
-                    outv[i] += w * vv[i];
+                    outv[i] *= inv_sum;
             }
         }
     }
-    safe_free((void **) &scores);
 }
 
 void attention_mqa_causal(size_t       seq_len,

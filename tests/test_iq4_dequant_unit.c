@@ -180,7 +180,7 @@ int main(void) {
                           "neon IQ4_XS w4a8 matches dequant+dot (a8 tolerance)");
                 }
             }
-#if defined(__ARM_NEON)
+#if defined(GEIST_BACKEND_CPU_NEON) /* the kernels, not just NEON */
             /* #321 mN prefill: per (row, token) the op order matches the
              * m1 GEMV exactly, so the batched result must be BIT-equal
              * to m separate m1 calls — no tolerance. m=5 covers the

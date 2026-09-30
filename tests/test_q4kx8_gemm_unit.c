@@ -342,5 +342,15 @@ int main(void) {
         fputs("scenario_endtoend_m16(32,32,256) FAILED\n", stderr);
         fails++;
     }
+    /* M not a multiple of 16: 16x16 panels on the first M16 rows, the AVX2
+     * GEMV on the 4 / 12 rows after them. */
+    if (scenario_endtoend_m16(20, 16, 256) != 0) {
+        fputs("scenario_endtoend_m16(20,16,256) FAILED\n", stderr);
+        fails++;
+    }
+    if (scenario_endtoend_m16(60, 32, 512) != 0) {
+        fputs("scenario_endtoend_m16(60,32,512) FAILED\n", stderr);
+        fails++;
+    }
     return fails == 0 ? GEIST_TEST_PASS : GEIST_TEST_FAIL;
 }

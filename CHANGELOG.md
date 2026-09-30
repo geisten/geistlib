@@ -9,6 +9,12 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- Optional `geist_backend_resources_snapshot`: Metal device allocated bytes and
+  unified-memory attribution, callable during inference without GPU synchronization.
+  CPU providers explicitly return unsupported. Allocation is not physical residency.
+
+
+### Added
 - **Threadgroup-limit diagnostics for the metal backend.**
   `GEIST_METAL_LOG_TG_LIMIT=1` lists each pipeline's
   `maxTotalThreadsPerThreadgroup`; `GEIST_METAL_CHECK_TG=1` checks every
@@ -89,9 +95,179 @@ minor release.
   128). The default stays 64.
 - **Dense F16/BF16 projections a backend cannot resolve** are widened to F32
   at load (metal has no half-precision dense linear).
+- **cpu_x86 runs the attention over the INT8 KV cache, its default, in its
+  own AVX2 kernel.** It was the architecture's portable loop, vectorized by
+  the compiler alone; the backend's AVX2 attention served only the F32
+  cache. New optional backend op `fused->attention_kv_int8`
+  (`GEIST_FUSED_ATTN_KV_INT8`, `struct geist_attention_kv_int8_args`,
+  `<geist_backend.h>`): the layer plan binds it where the backend's probe
+  accepts the geometry, and the architecture keeps the rotation
+  (`GEIST_KV_ROT`). Its decomposed twin is the host loop over the same
+  cache bytes, which `GEIST_KV_INT8_FUSED=0` keeps. The two agree to fp32
+  rounding, not bit for bit (-ffast-math groups the softmax sums
+  differently); any thread count gives the same bits. x86-64, 4 threads: per
+  call 1.4-2.8x faster than the host loop (five head layouts, 512-8192
+  positions, decode and 64-token prefill chunks; `bench_attention_int8` now
+  times both). End to end at 2048 positions (synthetic weights), prefill
+  -11 % and decode -13 % in the Llama 3.2 1B geometry (Q4_K), -21 % and
+  -14 % in SmolLM2-360M's (Q8_0); at 512, within noise to -8 %.
+- **Attention over the packed INT4 KV cache is a backend op too**
+  (`fused->attention_kv_int4`, `GEIST_FUSED_ATTN_KV_INT4`,
+  `struct geist_attention_kv_int4_args`, `<geist_backend.h>`): K and V are
+  packed U8 views, two signed 4-bit values a byte; the rest is
+  `attention_kv_int8`'s. `cpu_neon` implements it with the `vdotq_s32` loop
+  that was in the architecture layer, unchanged: the same instructions
+  (clang 19, with and without OpenMP, alignment NOPs aside) and the same
+  bits (kernel outputs and the logits of an INT4-KV session, plain and
+  rotated, compared under qemu). The architecture's
+  `attention_int4_via_buffers` is portable C, the decomposed twin, and
+  `forward/attention.c` no longer includes `arm_neon.h`.
+  `GEIST_KV_INT8_FUSED=0` keeps both host loops.
 
 ### Changed
 
+- **cpu_x86 runs the attention over the INT8 KV cache on AVX-512 VNNI**
+  where the host has it (`attention_int8_avx512_vnni.c`; the dispatcher's
+  tier, which `GEIST_FORCE_ISA=avx2` clamps, and cpuid decide, per call).
+  The dots are `vpdpbusd`, one instruction per 32 bytes and head (per 64
+  from head_dim 128 up) where the AVX2 kernel takes four per 32, with K
+  turned into u8 once for all heads of a pass; the V sums are zmm FMAs; and
+  head_dim 512, Gemma 4 E2B's full-attention layers, is a compile-time case
+  like 64, 128 and 256. The integer dots and the order of every V sum are
+  the AVX2 kernel's; the rest rounds differently (-ffast-math), so the two
+  agree to rounding (at most 2.5e-6 of the output scale in the new
+  `test_x86_attention_int8_unit`, which also runs under Intel SDE in CI).
+  x86-64 (Sapphire Rapids, 4 threads), per call against the AVX2 kernel:
+  8-33 % faster in Llama 3.2 1B's layout, 16-29 % in Qwen3-0.6B's, 27-48 %
+  at 8/1 heads and head_dim 256 (Gemma 4 E2B's sliding layers) and 30-49 %
+  at head_dim 512 (its full ones), within noise to -27 % in SmolLM2-360M's
+  (`bench_attention_int8`, which now has the head_dim 512 layout). End to
+  end at 2048 positions (synthetic weights), prefill -3 % (Llama 3.2 1B,
+  Q4_K) and -6 % (SmolLM2-360M, Q8_0); decode within noise.
+- **cpu_x86's INT8-KV attention takes its prefill work KV head by KV
+  head.** Both kernels (AVX2 and AVX-512 VNNI) handed the prefill items to
+  the thread team in query order, so every thread went through the K and V
+  rows of several KV heads in turn: with SmolLM2-360M's five KV heads on
+  four threads, all five, 5 MB at 8192 positions where one core's L2 holds
+  2 MB. The same items now come KV head by KV head; the results are the
+  same bits, and a decode runs as before. x86-64, 4 threads, a 64-token
+  prefill chunk, both orders alternated in one process: SmolLM2-360M's
+  layout -3 / -11 / -35 % at 512 / 2048 / 8192 positions (VNNI kernel;
+  AVX2 -0 / -9 / -20 %), 32/32 heads -1 to -12 %, Llama 3.2 1B's and
+  Qwen3-0.6B's +1 to -6 %, one KV head (Gemma 4 E2B) unchanged. End to
+  end, a 4000-token prompt prefills 7.4 % faster in SmolLM2-360M's geometry
+  (synthetic Q8_0 weights) and as fast as before in Llama 3.2 1B's.
+- **cpu_x86's INT8-KV attention runs a prefill item over up to four
+  queries.** Both kernels (AVX2 and AVX-512 VNNI) gave each work item one
+  query, so a 64-token chunk read the same K and V rows 64 times, and from
+  2048 positions on the rows no longer stayed cached from one item to the
+  next. An item now takes up to four consecutive queries and runs each
+  block of 512 positions for all of them before the next block; each query
+  keeps its own arithmetic, so the results are the same bits. The plan does
+  this only where a span runs past one block, the call reads more than 1 MB
+  of K and V, and at least eight items remain; decode is unchanged. x86-64,
+  4 threads, a 64-token chunk, per call at 2048 / 8192 positions: Llama 3.2
+  1B's layout -30 / -44 % (VNNI kernel; AVX2 -21 / -35 %), Qwen3-0.6B's
+  -43 / -44 % (-32 / -36 %), Gemma 4 E2B's full layers -19 / -35 %
+  (-14 / -17 %), SmolLM2-360M's -4 / -30 % (-0 / -15 %: its 320-byte rows
+  spread over all cache sets and stay cached longer); at 512 positions and
+  in the sliding layers, where no item takes several queries, -11 to +2 %.
+  Decode within +-3 %, except 32/32 heads (MHA) on the VNNI kernel, +1 to
+  +4 %. End to end (synthetic weights), a 4000-token prompt prefills 6.7 %
+  faster in Llama 3.2 1B's geometry (Q4_K) and 4.4 % at 2048 tokens;
+  SmolLM2-360M's as fast as before.
+- **cpu_x86 sessions keep a layer's INT8/INT4 K and V caches apart in the
+  cache sets.** K and V were buffers of their own, and large allocations
+  start at the same offset in a page; one KV head's rows lie a cache row
+  apart, so at a power-of-two row (512 bytes in Llama 3.2 1B) they take
+  one n_kv_heads-th of the L1 and L2 sets, and a KV head's K and V rows
+  took the same ones. A layer's K and V are now slices of one buffer, V
+  half a row further into its page than K (half a page at most), on
+  backends that set the new capability bit `kv_q8_block`
+  (`geist_backend.h`, EXPERIMENTAL): `cpu_x86`. The results are the same
+  bits. x86-64, 4 threads, a 64-token prefill chunk at 1024-4096 positions,
+  per call: Llama 3.2 1B's layout -5 to -15 % (VNNI kernel; AVX2 -0 to
+  -9 %), Qwen3-0.6B's -5 to -19 % (-4 to -10 %), 32/32 heads -26 to -39 %
+  (-23 to -38 %); SmolLM2-360M (320-byte rows) and one KV head (Gemma 4
+  E2B) within +-2 %; decode -10 to +3 %. End to end (synthetic weights,
+  Llama 3.2 1B's geometry) the change is below the noise, -1.2 % and -1.4 %
+  at 2048 and 4000 tokens; the attention stage of the prefill profile took
+  7.5 % less time, in every run.
+- **cpu_x86 sessions keep a layer's FP32 K and V caches apart in the cache
+  sets too.** The dense cache had the layout the INT8 one had before: K and
+  V buffers of their own, at the same offset in a page. On backends that
+  set the new capability bit `kv_dense_block` (`geist_backend.h`,
+  EXPERIMENTAL), `cpu_x86`, a layer's FP32 (or F16) K and V are now slices
+  of one buffer, V one KV head's slice further into its page than K
+  (rounded up to 64 bytes; with one KV head, whose rows lie next to each
+  other, not at all). The results are the same bits. x86-64, 4 threads,
+  cpu_x86's FP32 attention per call at 512 / 1024 positions: a 64-token
+  prefill chunk in Llama 3.2 1B's layout -26 / -25 %, Qwen3-0.6B's
+  -19 / +1 %, Llama 3 8B's -26 / -1 %, decode -36 / -18 %, -9 / +1 %,
+  -20 / -0 %; SmolLM2-360M's, 32/32 heads and one KV head within -4 to
+  +5 %; from 2048 positions on no direction, -5 to +2 % (four points at
+  +3 to +6 % in a first run came to -5 to +0 % on two more). V half a row
+  on, as in the INT8 cache, gained more at 512 positions (-40 to -45 %
+  with 8 KV heads) but was 0-5 % slower from 4096 on. End to end
+  (synthetic weights, FP32 cache, both builds from scratch, 10 runs
+  each), Llama 3.2 1B's geometry prefills a 1024-token prompt 4.2 %
+  faster (the 64 decode steps after it -3.6 %, a 512-token prompt -1.8 %
+  and -2.7 %: within the noise); the attention stage of the prefill
+  profile took 26.5 % (16.4 %) less time, in every run. In SmolLM2-360M's
+  geometry, whose rows take every set already, the attention stage did
+  not move; there a session of 820 to 1638 positions now gets huge pages
+  for its K and V (the allocator advises them from 2 MB, which the block
+  reaches before K alone): at 1136 positions decode -6 %, prefill +1 %
+  (neither beyond the noise).
+- **The KV cache code of the architecture layer has no NEON left.** The
+  last of it, the row absmax that scales K and V rows for the INT8 and INT4
+  caches (`forward/kv_store.c`), is portable C that takes the maximum on the
+  bit patterns (sign cleared, an unsigned integer max), which gcc 14 (x86-64,
+  aarch64) and clang 19 (aarch64) vectorize; the float compare-and-select it
+  replaces on x86 stays scalar under clang with `-fno-finite-math-only`. The
+  same bits (INT8 and INT4 sessions compared under qemu); on x86-64 as fast
+  a row of 64 and 12-17 % faster at 128 and 256.
+- **cpu_neon runs the attention over the INT8 KV cache, its default off
+  Apple, as its own kernel** (`fused->attention_kv_int8`, built with
+  FEAT_DotProd). The `vdotq_s32` loop moves out of the architecture layer
+  unchanged: the same instructions (clang 19, `-mcpu=cortex-a76`; with
+  OpenMP the loop's outlined function is instruction for instruction the
+  one before) and the same bits (every output of the kernel and the logits
+  of an INT8-KV session, plain and rotated, compared under qemu). The
+  architecture's loop is portable C only now. It still runs for
+  `cpu_scalar` and under `GEIST_KV_INT8_FUSED=0`, where on arm64 its dots
+  are whatever the compiler makes of it (clang 19: `smull`/`saddw`, not
+  `sdot`).
+- **cpu_scalar's linear kernels allocate nothing.** For every quantized and
+  half-precision weight they took a heap row buffer per call, which
+  `geist_weight.h` rules out for `linear_m1` / `linear_mN`, and returned
+  without writing `y` when it could not be had. They are now
+  `geist_linear_ref`, which decodes a row a tile at a time into a stack
+  buffer: the same bits on the dtypes tested, F16 26 % faster at m = 1,
+  the rest unchanged within noise.
+- **A Qwen3.5 prefill no longer allocates per DeltaNet layer.** The chunked
+  delta rule staged each chunk in a fresh heap buffer, about 2.4 MB for the
+  0.8B geometry on 4 threads, and more with more threads. The session now
+  keeps that buffer, sized by its first chunked prefill. An allocator that
+  maps and unmaps such blocks every time, as musl's does, paid about 2,800
+  page faults per 256-token prefill for it and took about 4 % longer
+  (measured with glibc told to do the same). With glibc's default there is
+  no measurable change. The buffer now stays resident for the life of the
+  session instead of being returned after each chunk.
+- **The first token after a prefill costs no forward pass.** `decode_step`
+  returns the token the last forward predicted and leaves the forward that
+  appends it to the next call on the session: the next step, or a peek,
+  prefill, pin or speculative call, each of which runs it first. `reset`
+  drops it. Tokens, logits and `kv_len` are unchanged. The time to the first
+  token is now the prefill alone: 164 → 122 ms for a 16-token prompt on
+  Llama 3.2 1B Q4_K (x86-64, 4 threads). A generation that ends in a reset
+  skips its last forward, and the per-token decode time is unchanged.
+
+  With a sampling configuration, a reset directly after decode steps also
+  skips that forward's random draw. The tokens sampled after it therefore
+  differ from 0.11 for the same seed, though they are still the same from
+  run to run. `<geist_arch.h>` now documents that an architecture may defer
+  the forward.
 - **The public headers are includable from C++.** `include/` writes its
   `[static len]` array-parameter contracts as `GEIST_AT_LEAST(len)`, which
   expands to `static len` in C and to nothing in C++; `extern "C"` alone could
@@ -159,6 +335,62 @@ minor release.
   flagged by UBSan on glibc. The empty half now points at the end of the
   string. It takes a malformed file; no shipped model has such a merge.
   Found by the tokenizer fuzzer.
+
+### Fixed
+
+- **KIVI: `pin_prefix` on a used session wrote outside the residual ring.**
+  Pinning reset `kv_len` but not the KIVI drain counters. Once 128 tokens
+  had drained, the prefix prefill wrote below the ring's start: a heap
+  overflow, which ASan flags. With fewer tokens it packed stale rows into
+  the 2-bit cache. `pin_prefix` now empties the session the way `reset`
+  does, which also empties the MTP cache and the DeltaNet state.
+- **KIVI: a pinned prefix was corrupted by a long turn and a reset.** A
+  prefix that is not a whole number of 128-token groups keeps its last
+  rows in the residual ring, and the next drain reuses those rows. Reset
+  then read them back from the wrong place, so every later turn saw a
+  corrupted system prompt: logits were off by up to 59 on SmolLM2 360M.
+  Those rows are now copied when the prefix is pinned and written back on
+  a reset that follows a drain.
+- **Qwen3.5: `pin_prefix` no longer accepts a prefix that a reset loses.**
+  Gated-DeltaNet layers carry a recurrent state, and a reset clears it to
+  the empty sequence. After the first reset, a pinned prefix was still in
+  the attention layers' KV cache but missing from the recurrence, and
+  nothing reported it. `pin_prefix` now returns `GEIST_E_UNSUPPORTED` for
+  a non-empty prefix on such a model. `n = 0` still empties the session.
+- **A CPU without the build's instruction set is refused instead of
+  crashing.** The target flags let the compiler use their features in any
+  function. For the aarch64 `linux` target those are ARMv8.2 dotprod and
+  fp16; for `x86-64-v3` they are AVX2, FMA, BMI2 and F16C. A Cortex-A53
+  or A72 (Raspberry Pi 3/4) therefore died with SIGILL during its first
+  decode. `geist_backend_create` now returns `GEIST_E_UNSUPPORTED` and
+  names the missing feature. `mk/target-linux.mk` shows how to build for
+  such a core: `BACKENDS=cpu_scalar` with a matching `CFLAGS_TARGET`,
+  since the cpu_neon kernels need dotprod to compile at all.
+- **A quantized weight whose rows are not whole blocks is refused.** The
+  kernels decode a weight row by row, so a row that ends inside a block
+  starts the next one at the wrong byte and leaves its own end undecoded.
+  The GGUF reader and `resolve_weight` checked only that the tensor as a
+  whole was whole blocks: Q4_0 with 48 columns and 2 rows loaded. Every
+  resolver now returns `GEIST_E_FORMAT` for it, and for a tensor that is
+  not whole blocks either, which the check used to let through.
+- **A CPU linear kernel that cannot take its fast path still computes `y`.**
+  The kernels return void, so the caller takes `y` as written. When their
+  activation scratch could not be allocated, the cpu_x86 and cpu_neon
+  kernels wrote zeros, left `y` unwritten, or (cpu_neon Q4_K and Q6_K
+  prefill, TQ2_0, I2_S) dereferenced the missing per-thread workspace and
+  crashed. Given more than 128 rows, the cpu_neon Q3_K, Q5_K, Q8_0, IQ2_S,
+  IQ3_S, TQ2_0 and I2_S prefill kernels returned without writing `y`; the
+  engine never passes that many (`caps.max_m`). All of these now compute `y`
+  with `geist_linear_ref`, which needs no scratch. The fast paths are
+  unchanged: their hot loops disassemble to the same instructions, and
+  Q8_0 end to end is within noise.
+- **`geist_weight.h` documented the wrong argument order for `linear_mN`.**
+  The usage line read `w->linear_mN(x, w, m, be, y)`; the typedef, and every
+  kernel, take `(m, x, w, be, y)`. Only the comment changed.
+- **`tools/bench_quality_perf.py --record` created `benchmark/BENCHMARK.md`**
+  when run without `--benchmark-md`: its default still named that file,
+  which no longer exists. The default is now `benchmark/results/APPLE.md`,
+  the file `make bench-small` / `bench-detailed` record into.
 
 ## [0.11.0] — 2026-09-06
 

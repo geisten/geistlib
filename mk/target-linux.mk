@@ -20,7 +20,7 @@ CC ?= cc
 # Native cpu_x86 backend is the DEFAULT (#108). The old opt-in gate ("until
 # the Phase-2 win criteria are measured") is long met: matches-to-beats
 # llama.cpp on Gemma/Llama and beats bitnet.cpp by +61 % prefill / +90 %
-# decode on BitNet (benchmark/BENCHMARK_X86.md); every AVX-512 kernel is
+# decode on BitNet (benchmark/results/X86.md); every AVX-512 kernel is
 # runtime-gated behind hw_probe/cpuid (#96) so the x86-64-v3 baseline below
 # remains the only hardware floor; the CI x86 int/e2e strand (native +
 # GEIST_FORCE_ISA=avx2) is required. A plain `make` previously shipped the
@@ -59,8 +59,14 @@ else
 # ----- ARM64 path (existing — Graviton2+, Ampere Altra, generic ARMv8.2) ----
 BACKENDS ?= cpu_neon cpu_scalar
 
-# Generic ARMv8.2-A tuning — runs on Graviton2+, Ampere Altra, and most
-# ARM64 SBCs. No -mcpu pin so the same binary is portable across cores.
+# Generic ARMv8.2-A tuning — runs on Graviton2+, Ampere Altra, and ARM64
+# SBCs with dotprod and fp16 (Cortex-A55/A76 and later). No -mcpu pin so the
+# same binary is portable across those cores. A Cortex-A53 or A72 (Raspberry
+# Pi 3/4) has neither feature: geist_backend_create refuses it, naming the
+# missing one, rather than letting the first SDOT raise SIGILL. The cpu_neon
+# kernels need dotprod to compile at all; for those cores build
+#   make TARGET=linux BACKENDS=cpu_scalar CFLAGS_TARGET="-mcpu=cortex-a72 ..."
+# (the rest of CFLAGS_TARGET as below).
 # See target-pi5.mk for the rationale behind -ffast-math and the
 # -Wno-vla-parameter relaxation.
 CFLAGS_TARGET := -march=armv8.2-a+fp16+dotprod -fopenmp -ffast-math \

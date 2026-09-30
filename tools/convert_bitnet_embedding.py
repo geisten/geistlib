@@ -14,7 +14,7 @@ The I2_S layout is NOT the naive "four consecutive values per byte" the upstream
 guide's prose suggests. It is strided, and the packing below mirrors, byte for
 byte, geistlib's own reference implementations:
 
-  - pack:   tests/test_i2_s_parity.c:30 (pack_i2_s)
+  - pack:   tests/test_i2_s_parity_unit.c:30 (pack_i2_s)
   - unpack: src/backends/cpu_scalar/weight_resolve.c:109
   - extent: src/quant/quant.h:162 (I2_S_BLOCK_ELEMS/BYTES, i2_s_scale_offset)
 

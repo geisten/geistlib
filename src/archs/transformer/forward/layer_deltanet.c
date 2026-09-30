@@ -37,6 +37,7 @@
 #include "../rotation.h"
 #include "../arch_state.h"
 
+#include "checked.h"
 #include "geist_gemm.h"
 #include "heap.h"
 
@@ -357,17 +358,77 @@ void transformer_dn_head_chunk(float       *S,
                 (int) d_v);
 }
 
-/* Chunked prefill (#281 phase 3). The engine batches prefill at m_max
- * (= 64) tokens per forward call, so the whole call is ONE chunk of
- * C = seq — no chunk loop, no remainder. Conv + norms + gating run as
- * whole-batch passes into a heap y buffer, then dn_head_chunk per
- * v-head (OMP). Returns false if scratch allocation fails; the caller
- * falls back to the sequential token loop. */
 /* Largest delta-rule chunk the host path runs at once; see
  * dn_run_prefill_chunked. Matches the metal sub-chunk (#340). */
 constexpr size_t DN_SUBCHUNK = 64;
 
-static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, mapped */
+/* Per-thread delta-rule workspace of a chunked prefill of seq tokens:
+ * dn_head_chunk's scratch for one sub-chunk, then the seq output rows. */
+static size_t dn_prefill_thread_ws_floats(size_t seq, size_t d_k, size_t d_v) {
+    const size_t sub_c = seq < DN_SUBCHUNK ? seq : DN_SUBCHUNK;
+    return transformer_dn_chunk_ws_floats(sub_c, d_k, d_v) + seq * d_v;
+}
+
+/* Floats a chunked prefill of seq tokens stages on nthr threads: the conv
+ * output [seq, convd], beta and g [seq, n_vh] each, the old conv state
+ * [K-1, convd] and one workspace per thread. 0 if that overflows; when it
+ * does not, neither does any term above. d_k and d_v are at most 512 (the
+ * caller's check), so dn_head_chunk's part cannot. */
+static size_t dn_prefill_ws_floats(
+        size_t seq, size_t nthr, size_t n_vh, size_t d_k, size_t d_v, size_t K, size_t convd) {
+    const size_t sub_c = seq < DN_SUBCHUNK ? seq : DN_SUBCHUNK;
+    size_t       y_f, bg_f, old_f, o_f, thr_f, ws_all, total;
+    if (K == 0 || ckd_mul(&y_f, seq, convd) || ckd_mul(&bg_f, seq, n_vh) ||
+        ckd_mul(&old_f, K - 1, convd) || ckd_mul(&o_f, seq, d_v) ||
+        ckd_add(&thr_f, transformer_dn_chunk_ws_floats(sub_c, d_k, d_v), o_f) ||
+        ckd_mul(&ws_all, nthr, thr_f) || ckd_add(&total, y_f, bg_f) ||
+        ckd_add(&total, total, bg_f) || ckd_add(&total, total, old_f) ||
+        ckd_add(&total, total, ws_all)) {
+        return 0;
+    }
+    return total;
+}
+
+/* The session's staging for a chunked prefill that needs `need` floats.
+ * The first call sizes it for m_max tokens on the current team, so a
+ * shorter chunk or a later call reuses it; a larger team grows it. nullptr
+ * if that allocation fails, the old buffer then kept. */
+static float *dn_prefill_ws(struct transformer_arch_session *sess,
+                            size_t                           need,
+                            size_t                           nthr,
+                            size_t                           n_vh,
+                            size_t                           d_k,
+                            size_t                           d_v,
+                            size_t                           K,
+                            size_t                           convd) {
+    if (need != 0 && need <= sess->dn_prefill_ws_floats) {
+        return sess->dn_prefill_ws;
+    }
+    const size_t full = dn_prefill_ws_floats(sess->m_max, nthr, n_vh, d_k, d_v, K, convd);
+    const size_t want = full > need ? full : need;
+    size_t       bytes;
+    if (need == 0 || ckd_mul(&bytes, want, sizeof(float))) {
+        return nullptr;
+    }
+    float *ws = heap_alloc_aligned(bytes, OPTIMAL_ALIGNMENT);
+    if (ws == nullptr) {
+        return nullptr;
+    }
+    void *old = sess->dn_prefill_ws;
+    safe_free(&old);
+    sess->dn_prefill_ws        = ws;
+    sess->dn_prefill_ws_floats = want;
+    return ws;
+}
+
+/* Chunked prefill (#281 phase 3). The engine batches prefill at m_max
+ * (= 64) tokens per forward call, so the whole call is ONE chunk of
+ * C = seq — no chunk loop, no remainder. Conv + norms + gating run as
+ * whole-batch passes into the session's staging (dn_prefill_ws), then
+ * dn_head_chunk per v-head (OMP). Returns false if that staging cannot be
+ * had; the caller falls back to the sequential token loop. */
+static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
+                                   float       *qkv, /* [seq, convd] pre-conv, mapped */
                                    float       *zg,  /* [seq, vald] gate in / mix out */
                                    const float *bb,
                                    const float *baa,
@@ -397,18 +458,24 @@ static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, m
      * caller batches, so the surrounding GEMMs may take larger m
      * (caps.dn_subchunk). Boundaries sit at multiples of DN_SUBCHUNK, the
      * positions the old m_max = 64 outer chunking produced. */
-    const size_t sub_c = seq < DN_SUBCHUNK ? seq : DN_SUBCHUNK;
-    const size_t ws_f  = transformer_dn_chunk_ws_floats(sub_c, d_k, d_v) + seq * d_v;
+    const size_t ws_f = dn_prefill_thread_ws_floats(seq, d_k, d_v);
 #if defined(_OPENMP)
     const size_t nthr = (size_t) omp_get_max_threads();
 #else
     const size_t nthr = 1;
 #endif
-    /* One allocation up front — no alloc inside the head loop, so a
-     * failure here leaves state untouched and the sequential fallback
-     * stays valid. */
-    float *y = heap_alloc_aligned((y_f + 2 * bg_f + old_f + nthr * ws_f) * sizeof(float),
-                                  OPTIMAL_ALIGNMENT);
+    /* All staging up front — nothing inside the head loop, so a failure
+     * here leaves state untouched and the sequential fallback stays
+     * valid. The session keeps it: it used to be a heap allocation per
+     * DeltaNet layer per chunk. */
+    float *y = dn_prefill_ws(sess,
+                             dn_prefill_ws_floats(seq, nthr, n_vh, d_k, d_v, K, convd),
+                             nthr,
+                             n_vh,
+                             d_k,
+                             d_v,
+                             K,
+                             convd);
     if (y == nullptr)
         return false;
     float *betas   = y + y_f;
@@ -495,7 +562,6 @@ static bool dn_run_prefill_chunked(float       *qkv, /* [seq, convd] pre-conv, m
                 z_t[j] = o_t[j] * silu_f(z_t[j]); /* gate read, then slot reused as mix */
         }
     }
-    safe_free((void **) &y);
     return true;
 }
 
@@ -685,7 +751,8 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
          * sequential state passes. Decode and the (alloc-failure) fallback
          * take the exact sequential loop below. */
         const bool chunked = seq > 1 && !st->runtime_flags.dn_seq_prefill &&
-                             dn_run_prefill_chunked(qkv,
+                             dn_run_prefill_chunked(sess,
+                                                    qkv,
                                                     zg,
                                                     bb,
                                                     baa,

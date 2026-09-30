@@ -86,6 +86,23 @@ static enum geist_status op_gains(void *arch_state, float **out, size_t *n) {
     return GEIST_OK;
 }
 
+/* Run the forward decode_step left owed (advance_deferred): it appends the
+ * token decode_step last returned and predicts the next one. Every op that
+ * reads or extends the cache calls this first, so none can tell whether the
+ * forward ran in decode_step or here; reset drops the debt instead. On
+ * failure the debt stays and the next call retries the same forward. */
+[[nodiscard]] static enum geist_status settle(struct transformer_arch_session *sess) {
+    if (sess == nullptr || !sess->advance_deferred) {
+        return GEIST_OK;
+    }
+    geist_token_t           next = -1;
+    const enum geist_status s    = transformer_decode_step(sess, sess->next_token_pending, &next);
+    if (s == GEIST_OK) {
+        sess->advance_deferred = false;
+    }
+    return s;
+}
+
 static void op_state_reset(void *session) {
     if (session != nullptr) {
         transformer_session_reset(session);
@@ -95,6 +112,10 @@ static void op_state_reset(void *session) {
 static enum geist_status op_set_session_opts(void *session, const struct geist_session_opts *opts) {
     if (session == nullptr) {
         return GEIST_E_INVALID_ARG;
+    }
+    const enum geist_status s = settle(session); /* samples under the old opts */
+    if (s != GEIST_OK) {
+        return s;
     }
     return transformer_session_apply_opts(session, opts);
 }
@@ -111,6 +132,10 @@ static enum geist_status op_prefill(void *session, size_t n, const geist_token_t
     if (n == 0) {
         return GEIST_OK; /* no-op */
     }
+    const enum geist_status s = settle(sess);
+    if (s != GEIST_OK) {
+        return s;
+    }
     return transformer_prefill_text_batch(sess, n, ids);
 }
 
@@ -124,6 +149,10 @@ static enum geist_status op_prefill_audio(void *session, size_t n, const float *
     }
     if (n == 0) {
         return GEIST_OK; /* no-op */
+    }
+    const enum geist_status s = settle(sess);
+    if (s != GEIST_OK) {
+        return s;
     }
     return transformer_prefill_audio_batch(sess, n, soft_tokens);
 }
@@ -140,6 +169,10 @@ static enum geist_status op_prefill_image(void *session, size_t n, const float *
     if (n == 0) {
         return GEIST_OK; /* no-op */
     }
+    const enum geist_status s = settle(sess);
+    if (s != GEIST_OK) {
+        return s;
+    }
     return transformer_prefill_audio_batch(sess, n, soft_tokens);
 }
 
@@ -152,14 +185,20 @@ static enum geist_status op_pin_prefix(void *session, size_t n, const geist_toke
     if (sess == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
+    const enum geist_status s = settle(sess);
+    if (s != GEIST_OK) {
+        return s;
+    }
     return transformer_pin_prefix(sess, n, ids);
 }
 
-/* Greedy one-token autoregressive step. Returns the prediction computed
- * by the prior prefill/decode call, then advances the KV cache with that
- * prediction so the next call's pending value is the prediction for the
- * following position. Mirrors lm.c::lm_decode_step's "return-then-advance"
- * cadence. */
+/* One autoregressive step. Returns the prediction the last forward
+ * (prefill or decode) made, and leaves the forward that appends it to the
+ * cache and predicts the next token owed (advance_deferred): the next
+ * decode_step runs it, or whichever op reads or extends the cache first
+ * (settle). The token after a prefill therefore costs no forward, and the
+ * last one before a reset none at all, while callers see the tokens,
+ * logits and kv_len they would if the forward ran here. */
 static enum geist_status op_decode_step(void *session, geist_token_t *out) {
     struct transformer_arch_session *sess = session;
     if (sess == nullptr || out == nullptr) {
@@ -171,16 +210,22 @@ static enum geist_status op_decode_step(void *session, geist_token_t *out) {
          * that sends the caller looking for a missing prefill. */
         return GEIST_E_UNSUPPORTED;
     }
-    if (!sess->logits_valid) {
-        return GEIST_E_INVALID_STATE; /* nothing pending — prefill first */
-    }
-    const geist_token_t     prev    = sess->next_token_pending;
-    geist_token_t           scratch = -1;
-    const enum geist_status s       = transformer_decode_step(sess, prev, &scratch);
+    enum geist_status s = settle(sess);
     if (s != GEIST_OK) {
         return s;
     }
-    *out = prev;
+    if (!sess->logits_valid) {
+        return GEIST_E_INVALID_STATE; /* nothing pending — prefill first */
+    }
+    /* What the forward does before it touches the cache: a full context
+     * fails here, with no token emitted, as when the forward ran here. */
+    transformer_recurrent_txn_commit(sess);
+    s = transformer_check_kv_room(sess, 1);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    *out                   = sess->next_token_pending;
+    sess->advance_deferred = true;
     return GEIST_OK;
 }
 
@@ -190,8 +235,8 @@ static size_t op_hidden_dim(const void *arch_state) {
 }
 
 static geist_token_t op_peek_next_token(void *session) {
-    const struct transformer_arch_session *sess = session;
-    if (sess == nullptr || !sess->logits_valid)
+    struct transformer_arch_session *sess = session;
+    if (sess == nullptr || settle(sess) != GEIST_OK || !sess->logits_valid)
         return -1;
     return sess->next_token_pending;
 }
@@ -204,7 +249,8 @@ static const float *op_peek_logits(size_t *n_logits, void *session) {
     struct transformer_arch_session *sess = session;
     if (n_logits == nullptr)
         return nullptr;
-    if (sess == nullptr || !sess->logits_valid || sess->scratch_logits == nullptr) {
+    if (sess == nullptr || settle(sess) != GEIST_OK || !sess->logits_valid ||
+        sess->scratch_logits == nullptr) {
         *n_logits = 0;
         return nullptr;
     }
@@ -243,7 +289,8 @@ static const float *op_peek_embedding(size_t *n_dims, void *session) {
         return nullptr;
     }
     *n_dims = 0;
-    if (sess == nullptr || !sess->embedding_valid || sess->scratch_h_a == nullptr) {
+    if (sess == nullptr || settle(sess) != GEIST_OK || !sess->embedding_valid ||
+        sess->scratch_h_a == nullptr) {
         return nullptr;
     }
     struct transformer_arch_state *st = sess->model;
@@ -259,23 +306,37 @@ static enum geist_status op_verify_forward(void               *session,
                                            size_t              k,
                                            const geist_token_t ids[static k],
                                            geist_token_t       out_tokens[static k]) {
+    const enum geist_status s = settle(session);
+    if (s != GEIST_OK) {
+        return s;
+    }
     return transformer_verify_forward(
             (struct transformer_arch_session *) session, k, ids, out_tokens);
 }
 
 static enum geist_status op_draft_tokens(
         void *session, size_t k_max, geist_token_t seed, geist_token_t *out_tokens, size_t *n_out) {
+    const enum geist_status s = settle(session);
+    if (s != GEIST_OK) {
+        return s;
+    }
     return transformer_mtp_draft(
             (struct transformer_arch_session *) session, k_max, seed, out_tokens, n_out);
 }
 
 static enum geist_status op_kv_truncate(void *session, size_t new_len) {
+    const enum geist_status s = settle(session);
+    if (s != GEIST_OK) {
+        return s;
+    }
     return transformer_kv_truncate((struct transformer_arch_session *) session, new_len);
 }
 
+/* A token decode_step returned counts as filled whether or not its
+ * forward has run yet (settle). */
 static size_t op_kv_len(const void *session) {
     const struct transformer_arch_session *sess = session;
-    return sess != nullptr ? sess->kv_len : 0;
+    return sess != nullptr ? sess->kv_len + (sess->advance_deferred ? 1 : 0) : 0;
 }
 
 /* ---- Session lifecycle vtable hooks (P1.2.f) -------------------------- */

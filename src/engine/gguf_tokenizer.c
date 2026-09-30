@@ -14,6 +14,7 @@
 #define GEIST_INTERNAL_ENGINE_LAYER
 
 #include "gguf_tokenizer.h"
+#include "pair_merge.h"
 
 #include "checked.h"
 #include "heap.h"
@@ -728,22 +729,13 @@ static size_t merge_lookup(const struct gguf_tokenizer *tok,
     }
 }
 
-/* One symbol in the BPE merge loop: a slice of the chunk's UTF-8
- * byte buffer plus a doubly-linked-list pointer pair (sym indices). */
-struct bpe_sym {
-    size_t off;
-    size_t len;
-    int    prev; /* -1 = head */
-    int    next; /* -1 = tail */
-};
-
 /* Find the lowest-rank merge in the symbol list. Returns the index
  * of the LEFT symbol of the winning pair, or -1 when no adjacent
  * pair has a merge entry. P1.5.h: uses the merge hash index — O(1)
  * per pair instead of O(N_merges). */
 static int find_best_merge(const struct gguf_tokenizer *tok,
                            const char                  *buf,
-                           const struct bpe_sym        *syms,
+                           const struct pair_merge_sym *syms,
                            int                          head) {
     int    best_left = -1;
     size_t best_rank = SIZE_MAX;
@@ -759,6 +751,23 @@ static int find_best_merge(const struct gguf_tokenizer *tok,
         i = j;
     }
     return best_left;
+}
+
+/* Symbols up to which a chunk rescans with find_best_merge instead of
+ * running the merge heap: gpt2 hands over one pre-tokenized word at a
+ * time, and for a word of a few symbols the rescan costs no more lookups
+ * and none of the heap's bookkeeping. Measured (bench_tokenizer style,
+ * 64 KB of letter runs): 3 and 5 symbols 5-8 % faster rescanning, 9
+ * symbols 24 % faster with the heap, 129 symbols 76 %. */
+constexpr int BPE_RESCAN_MAX_SYMS = 8;
+
+/* Merge-engine key (pair_merge.h) for BPE: the merge's rank, lowest
+ * first. P1.5.h: the merge hash index makes each lookup O(1). */
+static bool bpe_merge_key(
+        const void *ctx, const char *buf, size_t off, size_t llen, size_t rlen, uint64_t *key) {
+    const size_t m = merge_lookup(ctx, buf + off, llen, buf + off + llen, rlen);
+    *key           = m;
+    return m != SIZE_MAX;
 }
 
 /* Apply one BPE step on a pre-tokenized chunk's byte buffer, emitting
@@ -780,7 +789,7 @@ static size_t bpe_chunk_to_ids(const struct gguf_tokenizer *tok,
 
     /* Decompose into one symbol per UTF-8 codepoint. Cap symbols at
      * buf_len since each codepoint takes >= 1 byte. */
-    struct bpe_sym *syms = heap_alloc_array_aligned(struct bpe_sym, buf_len);
+    struct pair_merge_sym *syms = heap_alloc_array_aligned(struct pair_merge_sym, buf_len);
     if (syms == nullptr)
         return SIZE_MAX; /* Allocation failure, never an empty chunk. */
     int    n_syms = 0;
@@ -806,18 +815,25 @@ static size_t bpe_chunk_to_ids(const struct gguf_tokenizer *tok,
     }
     syms[n_syms - 1].next = -1;
 
-    /* Greedy merge loop. Each iteration finds the global lowest-rank
-     * adjacent pair and merges. Stops when no merge exists. */
+    /* Greedy merges, lowest rank first, leftmost among equal ranks, until
+     * no adjacent pair has a merge: a rescan per merge for a short chunk,
+     * the merge heap (pair_merge.h, O(n log n)) for a longer one. */
     int head = 0;
-    while (true) {
-        int li = find_best_merge(tok, buf, syms, head);
-        if (li < 0)
-            break;
-        int ri = syms[li].next;
-        syms[li].len += syms[ri].len;
-        syms[li].next = syms[ri].next;
-        if (syms[ri].next >= 0)
-            syms[syms[ri].next].prev = li;
+    if (n_syms <= BPE_RESCAN_MAX_SYMS) {
+        while (true) {
+            int li = find_best_merge(tok, buf, syms, head);
+            if (li < 0)
+                break;
+            int ri = syms[li].next;
+            syms[li].len += syms[ri].len;
+            syms[li].next = syms[ri].next;
+            if (syms[ri].next >= 0)
+                syms[syms[ri].next].prev = li;
+        }
+    } else if (!pair_merge_run((size_t) n_syms, syms, buf, bpe_merge_key, tok)) {
+        void *p = syms;
+        safe_free(&p);
+        return SIZE_MAX;
     }
 
     /* Walk the surviving symbols and look up each in the vocab. */
@@ -1031,6 +1047,26 @@ static size_t qwen2_chunk_end(const char *text, size_t tlen, size_t i) {
     return q2_punct_run_end(text, tlen, i); /* 4. no lead space */
 }
 
+/* Merge-engine key for unigram: the joined piece's score, highest first.
+ * The float's bits made to sort as unsigned (sign bit set: all bits
+ * flipped; clear: sign bit set) and then reversed. -0 is made +0 first,
+ * on the bits: under -ffast-math a float compare may not tell them apart,
+ * and a float compare is what the scan this replaces used, so they tie. */
+static bool unigram_merge_key(
+        const void *ctx, const char *buf, size_t off, size_t llen, size_t rlen, uint64_t *key) {
+    const struct gguf_tokenizer *tok = ctx;
+    const int32_t                id  = vocab_lookup(tok, buf + off, llen + rlen);
+    if (id < 0)
+        return false;
+    uint32_t u;
+    memcpy(&u, &tok->scores[id], sizeof u);
+    if ((u << 1) == 0)
+        u = 0;
+    u    = (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+    *key = UINT32_MAX - u;
+    return true;
+}
+
 /* SentencePiece *unigram* encode of one normalized chunk. Same greedy pairwise
  * merge as SPM-BPE, but with no merges table: a pair may merge iff its
  * concatenation is a vocab token, and the merge PRIORITY is that token's score
@@ -1046,7 +1082,7 @@ static size_t unigram_chunk_to_ids(const struct gguf_tokenizer *tok,
                                    size_t                       cap) {
     if (buf_len == 0 || cap == 0)
         return 0;
-    struct bpe_sym *syms = heap_alloc_array_aligned(struct bpe_sym, buf_len);
+    struct pair_merge_sym *syms = heap_alloc_array_aligned(struct pair_merge_sym, buf_len);
     if (syms == nullptr)
         return SIZE_MAX; /* Allocation failure, never an empty chunk. */
     int    n_syms = 0;
@@ -1073,29 +1109,13 @@ static size_t unigram_chunk_to_ids(const struct gguf_tokenizer *tok,
     syms[n_syms - 1].next = -1;
 
     /* Greedy merge: each step joins the adjacent pair whose concatenation is a
-     * vocab token with the highest score. Stops when no pair forms a token. */
+     * vocab token with the highest score, the leftmost among equal scores.
+     * Stops when no pair forms a token (pair_merge.h, O(n log n)). */
     int head = 0;
-    while (true) {
-        int   best_left  = -1;
-        float best_score = 0.0f;
-        for (int i = head; i >= 0 && syms[i].next >= 0; i = syms[i].next) {
-            const int     j  = syms[i].next;
-            const int32_t id = vocab_lookup(tok, buf + syms[i].off, syms[i].len + syms[j].len);
-            if (id < 0)
-                continue;
-            const float sc = tok->scores[id];
-            if (best_left < 0 || sc > best_score) {
-                best_score = sc;
-                best_left  = i;
-            }
-        }
-        if (best_left < 0)
-            break;
-        const int ri = syms[best_left].next;
-        syms[best_left].len += syms[ri].len;
-        syms[best_left].next = syms[ri].next;
-        if (syms[ri].next >= 0)
-            syms[syms[ri].next].prev = best_left;
+    if (!pair_merge_run((size_t) n_syms, syms, buf, unigram_merge_key, tok)) {
+        void *p = syms;
+        safe_free(&p);
+        return SIZE_MAX;
     }
 
     size_t n_out = 0;

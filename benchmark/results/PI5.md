@@ -313,9 +313,10 @@ Both engines reach the Q4_K matmuls differently, and both prefill curves are now
 > [PI5.md](PI5.md).
 
 **How to dig deeper.** To attribute the scaling, profile prefill *phase-by-phase*
-(attention vs FFN-matmul vs PLE) at each seq_len rather than as one number: build
-with `-DGEIST_PROFILE_QUANT` (per-kernel ns counters, auto-reported at exit) and
-compare the attention fraction at 128 vs 1024. For llama.cpp, `llama-bench -p <n>`
+(attention vs FFN-matmul vs PLE) at each seq_len rather than as one number: run
+with `GEIST_PROFILE_PREFILL=1` (attention / ffn / ple / scale time, printed at
+exit, no rebuild; `GEIST_PROFILE_QUANT=1` also splits the NEON activation
+quantization from the matmul) and compare the attention fraction at 128 vs 1024. For llama.cpp, `llama-bench -p <n>`
 plus `perf stat` (or Instruments on macOS) isolates where its CPU path loses time
 past 256 tokens.
 

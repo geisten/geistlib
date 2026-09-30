@@ -6,7 +6,7 @@ Hermetic by contract: no GGUF, no network, no model weights.
 
 The point of this test is that the converter's I2_S packing agrees with the C
 side byte for byte. The golden vector below was produced by compiling the
-`pack_i2_s` helper from tests/test_i2_s_parity.c:30 verbatim and dumping its
+`pack_i2_s` helper from tests/test_i2_s_parity_unit.c:30 verbatim and dumping its
 output for a deterministic trit pattern — so a drift in either implementation
 fails here rather than in a silently wrong embedding.
 
@@ -40,7 +40,7 @@ from convert_bitnet_embedding import (  # noqa: E402
     unpack_i2s,
 )
 
-# pack_i2_s() from tests/test_i2_s_parity.c over trits[i] = ((i*7 + i//13) % 3) - 1
+# pack_i2_s() from tests/test_i2_s_parity_unit.c over trits[i] = ((i*7 + i//13) % 3) - 1
 # for n_in=256, n_out=1, with the f32 tensor scale 0.125 appended.
 GOLDEN_HEX = (
     "196688116688114699224499228411668811668821449922449962881166881199228411"

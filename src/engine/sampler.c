@@ -51,16 +51,32 @@ float geist_rng_next_unit(struct geist_rng *rng) {
 
 /* ---- Argmax ------------------------------------------------------------- */
 
+/* A scan that carries the index takes a compare and a conditional move per
+ * logit, each waiting on the one before: 180 us over a 128k vocabulary.
+ * The maximum of a block has no such chain, so the compiler vectorizes it;
+ * the first block whose maximum beats every earlier block holds the first
+ * occurrence, found by a scan of that block alone. */
 geist_token_t geist_sampler_argmax(size_t n_vocab, const float logits[static n_vocab]) {
-    geist_token_t best_idx = 0;
-    float         best_val = logits[0];
-    for (size_t i = 1; i < n_vocab; i++) {
-        if (logits[i] > best_val) {
-            best_val = logits[i];
-            best_idx = (geist_token_t) i;
+    enum { BLOCK = 256 };
+    float  best       = logits[0];
+    size_t best_block = 0;
+    for (size_t b = 0; b < n_vocab; b += BLOCK) {
+        const size_t n = n_vocab - b < BLOCK ? n_vocab - b : BLOCK;
+        float        m = logits[b];
+        for (size_t j = 1; j < n; j++) {
+            m = logits[b + j] > m ? logits[b + j] : m;
+        }
+        if (m > best) {
+            best       = m;
+            best_block = b;
         }
     }
-    return best_idx;
+    for (size_t i = best_block; i < n_vocab; i++) {
+        if (logits[i] == best) {
+            return (geist_token_t) i;
+        }
+    }
+    return 0; /* best is NaN: logits[0] was */
 }
 
 /* ---- Softmax helpers ---------------------------------------------------- */
