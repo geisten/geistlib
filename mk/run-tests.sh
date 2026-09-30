@@ -77,8 +77,15 @@ while [ "$i" -lt "$n_candidates" ]; do
     i=$((i + 1))
     [ -x "$b" ] || continue
     if [ -n "$FILTER" ]; then
+        # The three suite classes match the NAME SUFFIX, a user filter any
+        # substring: `_int` as a substring also picked up *_int8_unit and
+        # ran an x86 unit test in the arm64 integration suite (PR #512).
+        case "$FILTER" in
+            _unit | _int | _e2e) pat="*$FILTER" ;;
+            *) pat="*$FILTER*" ;;
+        esac
         case $(basename "$b") in
-            *"$FILTER"*) ;;
+            $pat) ;;
             *) continue ;;
         esac
     fi

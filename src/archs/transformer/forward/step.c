@@ -8,6 +8,7 @@
  * Contains:
  *
  *   transformer_kivi_drain_full   — group-drain residual KV across layers
+ *   transformer_kivi_pin_save / _restore — a pinned prefix's residual rows
  *   transformer_run_all_layers    — single- + multi-step layer loop
  *   embed_lookup_and_scale (st.)  — token id → hidden vector + scale
  *   transformer_run_one_step (st.)— one-token forward including head
@@ -23,6 +24,8 @@
 #include "../rotation.h"
 #include "../forward.h"
 
+#include "checked.h"
+#include "heap.h"
 #include "quant.h"
 #include "gemma4_kernels.h"
 #include "kivi.h"
@@ -82,6 +85,70 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
         }
         sess->kivi_drained_count += R;
         sess->kivi_residual_count -= R;
+    }
+}
+
+/* A pinned prefix that is no whole number of groups keeps its last
+ * (prefix_length mod R) rows in the residual ring. The first drain of a
+ * later turn packs them into a 2-bit group with that turn's tokens and
+ * moves later tokens over their rows, but a reset to the prefix reads them
+ * from those rows again. So pinning copies them out, and reset writes them
+ * back: the prefix is then the ring and groups it was at pin time. */
+static void kivi_pin_copy(struct transformer_arch_session *sess, bool save) {
+    const struct transformer_arch_state *st   = sess->model;
+    const struct geist_backend_vtbl     *v    = st->backend->desc->vtbl;
+    float                               *tail = sess->kivi_pin_tail;
+    for (size_t li = 0; li < st->n_layers; li++) {
+        if (sess->k_residual[li] == nullptr) {
+            continue; /* KV-shared or DeltaNet: no ring */
+        }
+        const size_t         len = sess->kivi_pin_rows * st->n_kv_heads * st->layers[li].head_dim;
+        struct geist_buffer *ring[2] = {sess->k_residual[li], sess->v_residual[li]};
+        for (size_t i = 0; i < 2; i++) {
+            float *rows = (float *) v->buffer_map(ring[i]);
+            memcpy(save ? tail : rows, save ? rows : tail, len * sizeof *tail);
+            v->buffer_unmap(ring[i]);
+            tail += len;
+        }
+    }
+}
+
+enum geist_status transformer_kivi_pin_save(struct transformer_arch_session *sess) {
+    void *old = sess->kivi_pin_tail;
+    safe_free(&old);
+    sess->kivi_pin_tail = nullptr;
+    sess->kivi_pin_rows = 0;
+    const size_t rows   = sess->kivi_residual_count; /* < R after the prefill's drains */
+    if (!sess->kv_kivi_enabled || rows == 0) {
+        return GEIST_OK;
+    }
+    const struct transformer_arch_state *st = sess->model;
+    size_t                               n  = 0;
+    for (size_t li = 0; li < st->n_layers; li++) {
+        size_t layer = 0;
+        if (sess->k_residual[li] != nullptr &&
+            (ckd_mul(&layer, rows, 2 * st->n_kv_heads * st->layers[li].head_dim) ||
+             ckd_add(&n, n, layer))) {
+            return GEIST_E_OOM;
+        }
+    }
+    if (n == 0) {
+        return GEIST_OK; /* no layer has a ring */
+    }
+    sess->kivi_pin_tail = heap_alloc_array_aligned(float, n);
+    if (sess->kivi_pin_tail == nullptr) {
+        return GEIST_E_OOM;
+    }
+    sess->kivi_pin_rows = rows;
+    kivi_pin_copy(sess, true);
+    return GEIST_OK;
+}
+
+void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
+    /* Reset has put the counters back to the prefix: exactly the rows the
+     * pin copied are residual again. Anything else is not that prefix. */
+    if (sess->kivi_pin_rows != 0 && sess->kivi_pin_rows == sess->kivi_residual_count) {
+        kivi_pin_copy(sess, false);
     }
 }
 
@@ -398,15 +465,23 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
          * pin_prefix flow pre-prefills with KIVI active, so the counters
          * are already aligned (drained = floor(kv_len/R)*R, residual =
          * remainder). Reset preserves this alignment. */
+        const size_t drained      = sess->kivi_drained_count;
         sess->kivi_drained_count  = (sess->kv_len / KIVI_K_GROUP_SIZE) * KIVI_K_GROUP_SIZE;
         sess->kivi_residual_count = sess->kv_len - sess->kivi_drained_count;
+        /* The counters, not the rows: a drain since the pin has moved later
+         * tokens over the prefix's residual rows. Nothing else writes
+         * there, so without one they are still in place. */
+        if (drained != sess->kivi_drained_count) {
+            transformer_kivi_pin_restore(sess);
+        }
     }
     sess->logits_valid       = false;
     sess->next_token_pending = 0;
+    sess->advance_deferred   = false; /* the returned token is dropped, not appended */
     transformer_mtp_reset(sess);
     /* Gated-DeltaNet layers carry recurrent state with no rewind — a
-     * reset clears it to the empty sequence (#281). Prefix pinning is
-     * unsupported for this family (prefix_length stays 0). */
+     * reset clears it to the empty sequence (#281). pin_prefix refuses a
+     * prefix for this family, so prefix_length stays 0. */
     if (sess->dn_conv_state != nullptr || sess->dn_S != nullptr) {
         const struct transformer_arch_state *st = sess->model;
         const size_t key_dim                    = st->config.dn_n_k_heads * st->config.dn_head_k;

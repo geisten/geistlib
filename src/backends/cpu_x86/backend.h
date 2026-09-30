@@ -3,11 +3,11 @@
  *
  * Layer: BACKEND.
  *
- * Phase 0 (this commit): empty shell. The descriptor exists and the
- * registry slot is wired (gated by GEIST_BACKEND_CPU_X86), but the vtbl
- * points to cpu_scalar's implementation — i.e. cpu_x86 today is a renamed
- * cpu_scalar. Phase 1a/1b/2 (see docs/LINUX_X86_SPEC.md) replace individual
- * vtbl slots with native VPDPBUSD / VDPBF16PS kernels.
+ * The descriptor (gated by GEIST_BACKEND_CPU_X86) starts from cpu_scalar's
+ * vtbl, prims and fused tables and overrides what cpu_x86 has native code
+ * for: create/destroy, resolve_weight (the AVX2 / AVX-512 linear kernels,
+ * per dtype), the per-phase OpenMP regions, attention and the GELU
+ * entries. backend.c has the list.
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_X86_H
 #define GEIST_INTERNAL_BACKEND_CPU_X86_H

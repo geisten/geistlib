@@ -144,6 +144,16 @@ metal_msg_send_ulong0(struct metal_state *st, void *receiver, const char *select
     return send.fn(receiver, sel);
 }
 
+static inline bool
+metal_msg_send_bool0(struct metal_state *st, void *receiver, const char *selector) {
+    void *sel = metal_sel_register_name(st, selector);
+    union {
+        void *raw;
+        bool (*fn)(void *, void *);
+    } send = {.raw = st->objc_msgSend};
+    return send.fn(receiver, sel);
+}
+
 static inline void metal_msg_send_void_ulong(struct metal_state *st,
                                              void               *receiver,
                                              const char         *selector,

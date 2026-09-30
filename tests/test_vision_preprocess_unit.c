@@ -1,7 +1,8 @@
 /*
  * test_vision_preprocess_unit — Gemma 4 image-preprocess parity vs HF.
  *
- * Reads dumps written by tools/dump_vision_preprocess.py and asserts:
+ * Reads HF reference dumps and asserts (the script that wrote them,
+ * dump_vision_preprocess.py, is not in this repository):
  *   - image_pipeline_plan produces identical plan fields
  *   - image_pipeline_position_ids matches exactly
  *   - image_pipeline_preprocess matches the HF (PIL bicubic) reference
@@ -96,9 +97,8 @@ int main(int argc, char **argv) {
     uint8_t *rgb = read_input_bin(path, &in_h, &in_w);
     if (rgb == nullptr) {
         fprintf(stdout,
-                "SKIP: dumps not found at %s.*. Run:\n"
-                "  python tools/dump_vision_preprocess.py --synthetic "
-                "--syn-h 320 --syn-w 224 --stem syn_320x224\n",
+                "SKIP: dumps not found at %s.* (HF reference dumps; the "
+                "script that writes them is not in this repository)\n",
                 base);
         return GEIST_TEST_SKIP;
     }

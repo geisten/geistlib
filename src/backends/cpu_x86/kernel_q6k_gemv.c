@@ -5,8 +5,7 @@
  *
  * Decode (M=1) reading the ORIGINAL Q6_K weights (block_q6_K_t, ~0.82 B/wt)
  * instead of the W8A8 predecode (1.5 B/wt). Q6_K decode (ffn_down, lm_head)
- * is bandwidth-bound, so halving the weight traffic is the lever
- * (docs/LINUX_X86_PERF_PROFILE.md).
+ * is bandwidth-bound, so halving the weight traffic is the lever.
  *
  * The per-row dot is a faithful port of llama.cpp's AVX2
  * ggml_vec_dot_q6_K_q8_K (ggml/src/ggml-cpu/arch/x86/quants.c): unpack the
@@ -159,21 +158,37 @@ static float dot_q6k_q8k(size_t n_super, const struct block_q6_K_t *x, const str
     return hsum_ps_avx(acc);
 }
 
+/* Super-blocks of quantized activation held on the stack at once (16384
+ * elements, ~18.7 KB). A longer row runs in segments of this size — the
+ * bound is a tile size, not a limit on K. */
+constexpr size_t Q8K_SEG = 64;
+
+/* K up to Q8K_SEG * 256 = 16384 is one segment, exactly the old single pass.
+ * Beyond it (ffn_down of any model wider than 16384) each segment's partial
+ * dot is added into y. The activation is quantized per super-block either
+ * way, so segmenting changes only the order of the fp32 sum across segments;
+ * that K used to return without writing y, and no caller had a fallback. */
 void q6k_gemv_m1(size_t N, size_t K, const float *x, const uint8_t *q6k_raw, float y[static N]) {
     const size_t n_super = K / 256;
-    if (n_super == 0 || n_super > 64) {
-        return; /* caller falls back. */
+    if (n_super == 0) {
+        return; /* unreachable: the caller only binds K % 256 == 0, K >= 256 */
     }
-    struct q8k_act a[64];
-    quantize_q8k_act(n_super, x, a);
-
     const size_t row_bytes = n_super * sizeof(struct block_q6_K_t);
+
+    struct q8k_act a[Q8K_SEG];
+    for (size_t s0 = 0; s0 < n_super; s0 += Q8K_SEG) {
+        const size_t ns    = n_super - s0 < Q8K_SEG ? n_super - s0 : Q8K_SEG;
+        const bool   first = s0 == 0;
+        quantize_q8k_act(ns, x + s0 * 256, a);
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
-    for (size_t r = 0; r < N; r++) {
-        const struct block_q6_K_t *xr = (const struct block_q6_K_t *) (q6k_raw + r * row_bytes);
-        y[r]                          = dot_q6k_q8k(n_super, xr, a);
+        for (size_t r = 0; r < N; r++) {
+            const struct block_q6_K_t *xr =
+                    (const struct block_q6_K_t *) (q6k_raw + r * row_bytes) + s0;
+            const float d = dot_q6k_q8k(ns, xr, a);
+            y[r]          = first ? d : y[r] + d;
+        }
     }
 }

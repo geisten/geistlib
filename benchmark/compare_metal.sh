@@ -12,7 +12,7 @@
 #   PP, TG        workload sizes (default 512 / 64, matches llama-bench -p/-n)
 #
 # This is a shell-level comparison, not a general benchmark harness. The
-# reference column comes from docs/proposals/metal-beat-llamacpp-plan.md.
+# reference columns are the fixed REF_* numbers below.
 set -euo pipefail
 
 # Self-check the llama-bench field parse (the format is easy to mis-grep —

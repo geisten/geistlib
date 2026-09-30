@@ -171,8 +171,8 @@ static int scenario_random_gemv(void) {
      *
      * Empirical max |diff| on this input distribution is ~0.4; with
      * RMS(y_ref) ~ 3 this is ~13% RMS-relative. We assert ≤ 20% RMS-
-     * relative — generous but bounded; will tighten once the W4A8
-     * activation quant adopts per-block scales (Phase 1a Step 4.5). */
+     * relative — generous but bounded; per-block activation scales
+     * (the quantizer has one scale per row) would allow a tighter one. */
     double rms_sq_acc = 0.0;
     for (size_t m = 0; m < N_ROWS; m++) {
         rms_sq_acc += (double) y_ref[m] * (double) y_ref[m];

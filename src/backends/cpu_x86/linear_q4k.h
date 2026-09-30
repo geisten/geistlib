@@ -1,14 +1,14 @@
 /*
- * src/backends/cpu_x86/linear_q4k.h — cpu_x86 Q4_K linear M=1 (decode) path.
+ * src/backends/cpu_x86/linear_q4k.h — cpu_x86 Q4_K linear (decode and prefill).
  *
  * Layer: BACKEND (cpu_x86, internal).
  *
  * The resolver in backend.c calls cpu_x86_linear_q4k_resolve() per Q4_K
- * weight: it predecodes the GGUF Q4_K layout into the W4A8 SoA the inner
- * kernel consumes (one allocation per weight via heap.h, stored in
- * w->aux_fp32 reinterpreted as a byte blob), grows the backend's
- * activation scratch if needed, and installs cpu_x86_linear_q4k_m1 as
- * w->linear_m1.
+ * weight: it repacks the GGUF Q4_K layout into the one layout the kernels
+ * read for that shape (Q4_Kx8 when n_out % 8 == 0, else the W4A8 SoA; one
+ * allocation per weight via heap.h, stored in w->aux_fp32 reinterpreted
+ * as a byte blob) and installs cpu_x86_linear_q4k_m1 / _mN. The
+ * activation scratch comes from the per-thread workspace at call time.
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_X86_LINEAR_Q4K_H
 #define GEIST_INTERNAL_BACKEND_CPU_X86_LINEAR_Q4K_H
@@ -24,11 +24,11 @@
 
 struct cpu_x86_state;
 
-/* Predecode one Q4_K weight to the W4A8 layout, install the M=1 kernel
- * pointer, and grow the per-backend activation scratch if needed.
+/* Repack one Q4_K weight (see above) and install the M=1 and M>1 kernel
+ * pointers.
  *
  * Returns:
- *   GEIST_OK          — weight predecoded, scratch ensured, kernel pointer set.
+ *   GEIST_OK          — weight repacked, kernel pointers set.
  *   GEIST_E_OOM       — heap.h allocation failed; w->aux_fp32 left unset.
  *   GEIST_E_INVALID_ARG — w->n_in not a positive multiple of Q4_K_BLOCK_ELEMS.
  *
@@ -43,15 +43,9 @@ void cpu_x86_linear_q4k_m1(const float               *x,
                            struct geist_backend      *be,
                            float                     *y);
 
-/* The M>1 (prefill) kernel installed into w->linear_mN by the resolver.
- *
- * Phase-1b-Step-1 implementation: serial loop calling the M=1 kernel
- * m times. Correct but does not amortize the weight-read across the
- * batch (every row re-streams the W4A8 SoA). The next iteration in
- * Phase 1b fuses the inner so each weight block is read once per
- * m-tile; benchmarks against cpu_scalar should still show a large win
- * here because cpu_scalar dequants Q4_K → fp32 per row inside the
- * inner. */
+/* The M>1 (prefill) kernel installed into w->linear_mN by the resolver:
+ * the Q4_Kx8 GEMM over whole groups of 4 rows, the M=1 kernel for the
+ * last m % 4 rows and for a weight in the W4A8 layout. */
 void cpu_x86_linear_q4k_mN(
         size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
 

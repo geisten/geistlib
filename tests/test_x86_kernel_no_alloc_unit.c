@@ -68,12 +68,32 @@ static size_t bytes_q6k(void) {
 static size_t bytes_f32(void) {
     return N_IN * N_OUT * sizeof(float);
 }
+/* The dtypes below run on the generic kernels (linear_generic.c). Until
+ * those existed they stayed on cpu_scalar's reference kernels, which
+ * allocate a row buffer on every call. */
+static size_t bytes_q8_0(void) {
+    return (N_IN / Q8_0_BLOCK_ELEMS) * Q8_0_BLOCK_BYTES * N_OUT;
+}
+static size_t bytes_q5k(void) {
+    return (N_IN / Q5_K_BLOCK_ELEMS) * Q5_K_BLOCK_BYTES * N_OUT;
+}
+static size_t bytes_tq2_0(void) {
+    return (N_IN / TQ2_0_BLOCK_ELEMS) * TQ2_0_BLOCK_BYTES * N_OUT;
+}
+static size_t bytes_half(void) {
+    return N_IN * N_OUT * 2;
+}
 
 static const struct dtype_case CASES[] = {
         {"I2_S", (uint16_t) GEIST_DTYPE_I2_S, bytes_i2s},
         {"Q4_K", (uint16_t) GEIST_DTYPE_Q4_K, bytes_q4k},
         {"Q6_K", (uint16_t) GEIST_DTYPE_Q6_K, bytes_q6k},
         {"F32", (uint16_t) GEIST_DTYPE_F32, bytes_f32},
+        {"Q8_0", (uint16_t) GEIST_DTYPE_Q8_0, bytes_q8_0},
+        {"Q5_K", (uint16_t) GEIST_DTYPE_Q5_K, bytes_q5k},
+        {"TQ2_0", (uint16_t) GEIST_DTYPE_TQ2_0, bytes_tq2_0},
+        {"BF16", (uint16_t) GEIST_DTYPE_BF16, bytes_half},
+        {"F16", (uint16_t) GEIST_DTYPE_F16, bytes_half},
 };
 
 /* Deterministic bytes. Contents are irrelevant — this test is about

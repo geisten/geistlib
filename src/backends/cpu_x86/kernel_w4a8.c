@@ -3,10 +3,12 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * Phase 1a Step 1 (current): scalar-only dispatcher. The function-pointer
- * indirection is in place from day one so adding the AVX-512+VNNI / AVX-512
- * / AVX2 tiers is "fill the slot at init" and not "rewrite the caller". See
- * docs/LINUX_X86_SPEC.md §"Architecture commits" (commit 3).
+ * One function-pointer slot, filled at init: the AVX-512 VNNI variant, or
+ * the scalar one. AVX-512 without VNNI and AVX2 have no W4A8 variant of
+ * their own. Only Q4_K weights with n_out % 8 != 0 reach W4A8 (see
+ * linear_q4k.c); every other Q4_K matrix runs the Q4_Kx8 kernels, which
+ * have an AVX2 path. kernel_i2s.c and kernel_w8a8.c take their tier from
+ * w4a8_dispatcher_init as well.
  *
  * Init policy:
  *   1. Probe ISA via geist_hw_probe.
@@ -107,8 +109,8 @@ enum w4a8_isa w4a8_dispatcher_init(void) {
     enum w4a8_isa chosen = (forced < best) ? forced : best;
     g_tier               = chosen;
 
-    /* Wire the function-pointer slot. AVX-512 (no VNNI) and AVX2 variants
-     * arrive in Phase 1a Step 3/4; until then they fall back to scalar. */
+    /* Wire the function-pointer slot. AVX-512 without VNNI and AVX2 have
+     * no variant of their own: scalar. */
     switch (chosen) {
     case W4A8_ISA_AVX512_BF16:
     case W4A8_ISA_AVX512_VNNI:

@@ -52,6 +52,16 @@ class RunTestsTest(unittest.TestCase):
         self.assertIn("test_unlisted_unit", r.stdout)
         self.assertIn("1 skipped, 1 failed", r.stdout)
 
+    def test_suite_class_filters_match_the_suffix_only(self):
+        fake_bin(self.bin, "test_attention_int8_unit", 0, "int8 kernel ok")
+        fake_bin(self.bin, "test_thing_int", 0, "int ok")
+        r = subprocess.run(["sh", str(RUNNER), str(self.bin), "_int"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("test_thing_int", r.stdout)
+        self.assertNotIn("test_attention_int8_unit", r.stdout)  # a unit test, whatever its name
+        r = subprocess.run(["sh", str(RUNNER), str(self.bin), "int8"], capture_output=True, text=True)
+        self.assertIn("test_attention_int8_unit", r.stdout)  # a user substring still works
+
     def test_missing_allowlist_is_a_harness_error(self):
         r = self.run_it(GEIST_EXPECTED_SKIPS=str(self.allow) + ".nope")
         self.assertEqual(r.returncode, 99)

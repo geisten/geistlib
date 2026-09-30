@@ -1,10 +1,9 @@
 /*
- * src/engine/error.h — internal error-context plumbing.
+ * src/base/error.h — internal error-context plumbing.
  *
  * Layer: ENGINE.
  *
- * Defined in (Phase B-4):
- *   src/engine/error.c
+ * Defined in src/base/error.c.
  *
  * Pattern (per Q27):
  *   - Status code is the return value of every fallible API.

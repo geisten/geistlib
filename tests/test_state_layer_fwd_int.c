@@ -85,8 +85,8 @@ read_norm(struct geist_backend *be, const struct geist_tensor *t, float *dst, si
 }
 
 /* Dequantize a 2D weight tensor's bytes (whatever GGUF dtype) to a host
- * FP32 buffer using the gguf_quant.c row helpers — same way lm.c builds
- * its FP32 mirror. n_out * n_in floats written. The caller frees. */
+ * FP32 buffer using the quant.h row helpers. n_out * n_in floats written.
+ * The caller frees. */
 static float *dequant_proj_to_fp32(struct geist_backend      *be,
                                    const struct geist_tensor *t,
                                    size_t                     n_out,
