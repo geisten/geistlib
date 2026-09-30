@@ -48,5 +48,9 @@ jobs:
                   "First failure: $line")"
               fi ;;
             success)
-              [ -n "$n" ] && gh issue close "$n" --comment "Green again: $line" ;;
+              # if, not `[ -n "$n" ] && ...`: that list is the script's last
+              # command, so with no issue to close it failed the step.
+              if [ -n "$n" ]; then
+                gh issue close "$n" --comment "Green again: $line"
+              fi ;;
           esac
