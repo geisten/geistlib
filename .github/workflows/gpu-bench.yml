@@ -58,15 +58,18 @@ jobs:
           D="$HOME/bench-cache/fork"
           [ -d "$D/.git" ] || git clone https://github.com/PrismML-Eng/llama.cpp "$D"
           git -C "$D" fetch -q origin && git -C "$D" checkout -q "$FORK_REV"
-          cmake -S "$D" -B "$D/build-vk"   -DGGML_VULKAN=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$D/build-vk" --target llama-bench -j"$(nproc)"
+          # spirv-headers is not installed on the runner and there is no apt step: take the headers from source
+          [ -d "$HOME/bench-cache/spirv" ] || git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers "$HOME/bench-cache/spirv"
           cmake -S "$D" -B "$D/build-cuda" -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
           cmake --build "$D/build-cuda" --target llama-bench -j"$(nproc)"
+          cmake -S "$D" -B "$D/build-vk" -DGGML_VULKAN=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-I$HOME/bench-cache/spirv/include"
+          cmake --build "$D/build-vk" --target llama-bench -j"$(nproc)"
 
       - name: Fork llama-bench (Vulkan, CUDA)
         run: |
           D="$HOME/bench-cache/fork"
-          for b in vk cuda; do
+          for b in cuda vk; do
             echo "### fork $b"
             "$D/build-$b/bin/llama-bench" -m "$HOME/bench-cache/$FILE" -ngl 99 -p 512 -n 64 -r "${{ inputs.repeats || 3 }}" -o md | tee "fork-$b.md"
           done
