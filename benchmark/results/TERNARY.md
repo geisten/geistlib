@@ -648,3 +648,48 @@ that gate).
   --llama llama-bench --gguf Ternary-Bonsai-2-27B-PQ2_0.gguf
   --protocol benchmark/cross_engine_gpu_protocol.json
   --host-profile nvidia_2080ti_vulkan --model bonsai2-27b-pq2`
+
+## Ternary-Bonsai-2-27B on x86-64 (2026-09-30, synthetic weights)
+
+cpu_x86 has no `PQ2_0` kernel yet. The format runs through
+`linear_generic.c`, which decodes each weight row to fp32 with
+`dequant_pq2_0_row`, one element at a time, and dots it with AVX2 FMAs.
+
+Measured on `tools/gen_synth_gguf.py --preset bonsai2-27b-pq2_0`: the real
+file's geometry, formats and `prism.hadamard` keys (26.9 G parameters,
+7.20 GB) with random ternary weights. Kernel timings do not depend on the
+values. The host is an Intel Xeon (Sapphire Rapids) at 2.1 GHz, 4 vCPUs of a
+cloud VM, gcc 14, `OMP_WAIT_POLICY=active`, with 41.7 GB/s read bandwidth on
+4 threads.
+
+| | geist cpu_x86, generic path |
+| :-- | --: |
+| prefill, 64 tokens | 39.1 s, 1.64 t/s |
+| decode | 7.53 s a token, 0.13 t/s |
+| RSS | 7.1 GB (the mmap'd file, nothing repacked) |
+
+The forward profiler (`GEIST_PROFILE_FORWARD=1`) splits the time into:
+
+- the FFN: 74 % of prefill, 70 % of decode;
+- the mixers: 26 % and 30 %. They are nearly all projections. The 16
+  attention cores took 6 ms of the 39 s prefill, and the DeltaNet recurrence
+  and the Hadamard rotation do not show;
+- the lm_head: 0.35 s a token.
+
+`perf` (cpu-clock samples) attributes the time as follows:
+
+- decode: 88 % in `dequant_pq2_0_row`, 6 % in the FMA dot;
+- prefill: 75 % in the FMA dot (64 activation rows against each decoded
+  weight row), 18 % in the decoder.
+
+Decode reads 7.2 GB a token in 7.5 s, about 1 GB/s, or 2 % of the bandwidth.
+A W2A8 kernel on the raw rows would be bandwidth-bound instead: int8
+activations stored in the codes' order, as cpu_neon's kernel does. A repacked
+copy like cpu_neon's x8 layout would not fit next to the model in this host's
+15 GB.
+
+- reproduce:
+  `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
+  `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep
+  --gguf gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf --seq-lens 64 --decode-n 1 --warmup 0
+  --repeats 1` (and `--seq-lens 1 --decode-n 9` for decode)
