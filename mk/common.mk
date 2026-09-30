@@ -161,6 +161,7 @@ LIB_SOURCES := \
     src/engine/version.c \
     src/archs/transformer/arch.c \
     src/archs/transformer/arch_state.c \
+    src/archs/transformer/prefill_tuning.c \
     src/archs/transformer/arch_family.c \
     src/archs/transformer/exec_plan.c \
     src/archs/transformer/scratch_plan.c \
