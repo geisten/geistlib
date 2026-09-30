@@ -652,7 +652,7 @@ static enum geist_ffn_activation_kind ffn_activation_from_meta(struct gguf_ctx *
      * families differ: "bitnet-b1.58" (Microsoft 2B-4T) needs gated squared-ReLU
      * — verified MMLU 25.5% (SwiGLU, chance) -> 50% (relu2, ~published ~53%) —
      * while community "bitnet" uses SwiGLU. The official 2B-4T converter / mainline
-     * llama.cpp don't emit the activation key (see docs/bitnet_conversion.md). */
+     * llama.cpp don't emit the activation key. */
     size_t      al = 0, len = 0;
     const char *arch = gguf_get_meta_string(gguf, "general.architecture", &al);
     const char *s    = gguf_get_meta_string(gguf, "bitnet-b1.58.feed_forward_activation", &len);

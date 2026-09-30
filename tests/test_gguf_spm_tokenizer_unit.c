@@ -23,9 +23,7 @@
 /* gemma4-E2B "Hello" → this single vocab id (see test_session_sampling_int). */
 #define GEMMA4_HELLO_TOKEN 9259
 
-/* Decode all ids by concatenating per-token strings into out (NUL-terminated).
- * geist_session_token_to_str returns a thread-local buffer valid only until the
- * next call, so each piece is copied immediately. */
+/* Decode all ids by concatenating per-token strings into out (NUL-terminated). */
 static void decode_concat(
         struct geist_session *s, const geist_token_t *ids, size_t n, char *out, size_t out_cap) {
     size_t w = 0;

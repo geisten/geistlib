@@ -32,9 +32,21 @@
  * Falls back to the bit-exact IEEE-754 decode in src/formats/gguf/common.c
  * when no hardware fp16 is available. */
 #if defined(__ARM_FP) && (__ARM_FP & 2)
+#define GEIST_FP16_TO_FP32_INLINE 1
 #include <string.h>
 static inline float fp16_to_fp32(uint16_t h) {
     __fp16 f;
+    memcpy(&f, &h, sizeof(f));
+    return (float) f;
+}
+#elif defined(__F16C__) && defined(__FLT16_MAX__)
+/* x86 with F16C (the x86-64-v3 floor of the Linux build): the same, as one
+ * vcvtph2ps. Out of line it cost a call and the bit-by-bit decode per
+ * super-block in the Q6_K and Q4_K kernels. */
+#define GEIST_FP16_TO_FP32_INLINE 1
+#include <string.h>
+static inline float fp16_to_fp32(uint16_t h) {
+    _Float16 f;
     memcpy(&f, &h, sizeof(f));
     return (float) f;
 }
@@ -175,23 +187,16 @@ static inline size_t i2_s_scale_offset(const size_t n_elems) {
     return n_elems / 4u;
 }
 
-/* Hard cap on the M dimension of native prefill kernels. The engine's
- * default m_max remains lower, but sessions can opt into larger prefill
- * chunks up to this cap when memory allows. Lets kernels stack-allocate
- * per-row accumulators without heap in the inner loop. */
-/* Bytes a tensor of `n_elems` elements occupies in its raw (on-disk /
- * as-loaded) form. This is the extent a resolver, a repack, or a dequant
- * kernel is allowed to read from `geist_weight::raw` — nothing computes it
- * privately any more.
- *
- * Returns true (failure) for a dtype with no fixed raw layout, for an
- * element count that is not a whole number of blocks, or on overflow;
- * *out is written only on success.
+/* The raw (on-disk / as-loaded) storage of `dt`: elements and bytes per
+ * block, and the bytes of a per-tensor tail after the blocks. false for a
+ * dtype with no fixed raw layout; the outputs are then untouched.
  *
  * Kept next to the block constants deliberately: when a dtype's storage
- * changes, the size formula has to change in the same edit. */
-[[nodiscard]] static inline bool
-quant_raw_bytes(const enum geist_dtype dt, const size_t n_elems, size_t *out) {
+ * changes, this has to change in the same edit. */
+[[nodiscard]] static inline bool quant_block_layout(const enum geist_dtype dt,
+                                                    size_t                *blk_elems_out,
+                                                    size_t                *blk_bytes_out,
+                                                    size_t                *tail_out) {
     size_t blk_elems = 0;
     size_t blk_bytes = 0;
     size_t tail      = 0;
@@ -253,9 +258,30 @@ quant_raw_bytes(const enum geist_dtype dt, const size_t n_elems, size_t *out) {
         break;
     default:
         /* TQ1_0, BINARY, TERNARY, CUSTOM: no fixed raw layout here. */
+        return false;
+    }
+    *blk_elems_out = blk_elems;
+    *blk_bytes_out = blk_bytes;
+    *tail_out      = tail;
+    return true;
+}
+
+/* Bytes a tensor of `n_elems` elements occupies in its raw (on-disk /
+ * as-loaded) form. This is the extent a resolver, a repack, or a dequant
+ * kernel is allowed to read from `geist_weight::raw` — nothing computes it
+ * privately any more.
+ *
+ * Returns true (failure) for a dtype with no fixed raw layout, for an
+ * element count that is not a whole number of blocks, or on overflow;
+ * *out is written only on success. */
+[[nodiscard]] static inline bool
+quant_raw_bytes(const enum geist_dtype dt, const size_t n_elems, size_t *out) {
+    size_t blk_elems = 0;
+    size_t blk_bytes = 0;
+    size_t tail      = 0;
+    if (!quant_block_layout(dt, &blk_elems, &blk_bytes, &tail)) {
         return true;
     }
-
     if (n_elems == 0u || n_elems % blk_elems != 0u) {
         return true;
     }
@@ -267,21 +293,35 @@ quant_raw_bytes(const enum geist_dtype dt, const size_t n_elems, size_t *out) {
     return false;
 }
 
-/* True when `w->raw` holds at least as many bytes as (dtype, n_in, n_out)
- * requires. Every resolve_weight implementation calls this before it
- * installs a kernel or repacks: the kernels index `raw` by shape, so a
- * source shorter than the shape is read straight past its end.
+/* True when (dtype, n_in, n_out) is a well-formed shape for `w->raw` and
+ * the source holds at least the bytes it requires. Every resolve_weight
+ * implementation calls this before it installs a kernel or repacks: the
+ * kernels index `raw` by row, so each row must be a whole number of
+ * blocks — a row that ends inside a block puts the next row's start at
+ * the wrong byte and leaves the end of its own undecoded — and a source
+ * shorter than the shape is read straight past its end.
  *
  * A dtype with no fixed raw layout cannot be checked this way and passes;
  * the kernel tables only match dtypes that do have one. */
 [[nodiscard]] static inline bool quant_weight_extent_ok(const struct geist_weight *w) {
-    size_t need = 0;
-    if (quant_raw_bytes((enum geist_dtype) w->dtype, (size_t) w->n_in * (size_t) w->n_out, &need)) {
+    size_t blk_elems = 0;
+    size_t blk_bytes = 0;
+    size_t tail      = 0;
+    if (!quant_block_layout((enum geist_dtype) w->dtype, &blk_elems, &blk_bytes, &tail)) {
         return true;
+    }
+    size_t need = 0;
+    if (w->n_in <= 0 || w->n_out <= 0 || (size_t) w->n_in % blk_elems != 0u ||
+        quant_raw_bytes((enum geist_dtype) w->dtype, (size_t) w->n_in * (size_t) w->n_out, &need)) {
+        return false;
     }
     return w->raw_nbytes >= need;
 }
 
+/* Hard cap on the M dimension of native prefill kernels. The engine's
+ * default m_max remains lower, but sessions can opt into larger prefill
+ * chunks up to this cap when memory allows. Lets kernels stack-allocate
+ * per-row accumulators without heap in the inner loop. */
 constexpr size_t GEIST_QUANT_M_CAP = 128;
 
 /* W2A8 fast path for IQ2_S. Reconstructs 32 int8 weights per sub-block

@@ -101,7 +101,12 @@ struct geist_arch_ops_decoder {
                                  const geist_token_t ids[GEIST_AT_LEAST(n)]);
 
     /* decode_step: one autoregressive step. Writes the emitted token to
-     * *out on GEIST_OK only — no in-band sentinel values. */
+     * *out on GEIST_OK only — no in-band sentinel values. The forward that
+     * appends the token may be deferred to the next call on the session
+     * that reads or extends its state (transformer defers it, so the first
+     * token after a prefill costs no forward). That call then returns what
+     * it would have anyway, kv_len counts the token from this call on, and
+     * a failure of the deferred forward is that call's status. */
     enum geist_status (*decode_step)(void *session, geist_token_t *out);
 
     /* Optional: pin prefix into the session's KV cache so reset()
@@ -149,7 +154,8 @@ struct geist_arch_ops_decoder {
      *
      * peek_next_token: the architecture's already-computed argmax for the
      *   immediate next position, or -1 if no valid logits are pending.
-     *   "Free" — must not run a forward pass.
+     *   "Free" — must not run a forward pass of its own; it may run one
+     *   decode_step deferred (see there).
      * verify_forward: feed k candidate tokens through the full stack,
      *   advance kv_len by k, write k per-position samples to out_tokens.
      * kv_truncate: shrink recurrent state to new_len. Subsequent prefill

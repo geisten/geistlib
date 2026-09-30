@@ -13,6 +13,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../forward.h"
 #include <geist_types.h>
 
 #include "fwht.h"
@@ -22,36 +23,25 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
-#if defined(__ARM_NEON)
-#include <arm_neon.h>
-#endif
 
-static inline float kv_row_absmax(const float *x, size_t n) {
-#if defined(__ARM_NEON)
-    size_t      i    = 0;
-    float32x4_t vmax = vdupq_n_f32(0.0f);
-    for (; i + 4 <= n; i += 4) {
-        const float32x4_t v = vabsq_f32(vld1q_f32(x + i));
-        vmax                = vmaxq_f32(vmax, v);
-    }
-    float out = vmaxvq_f32(vmax);
-    for (; i < n; i++) {
-        const float a = fabsf(x[i]);
-        if (a > out) {
-            out = a;
-        }
-    }
-    return out;
-#else
-    float out = 0.0f;
+/* max |x[i]|; 0 for a row of zeros. Taken on the bit patterns: with the
+ * sign cleared, the unsigned integers order as the values do (NaN aside),
+ * and an integer max vectorizes under any floating-point flags, where
+ * clang keeps a float compare-and-select scalar unless it may assume no
+ * NaNs (not under -fno-finite-math-only). gcc 14 (x86-64-v3, aarch64) and
+ * clang 19 (aarch64) all give vector code; on x86-64 it is as fast as the
+ * float compare a row of 64 and 12-17 % faster at 128 and 256. */
+static inline float kv_row_absmax(size_t n, const float x[static n]) {
+    uint32_t m = 0;
     for (size_t i = 0; i < n; i++) {
-        const float a = fabsf(x[i]);
-        if (a > out) {
-            out = a;
-        }
+        uint32_t b;
+        memcpy(&b, &x[i], sizeof b);
+        b &= 0x7FFFFFFFu;
+        m = b > m ? b : m;
     }
+    float out;
+    memcpy(&out, &m, sizeof out);
     return out;
-#endif
 }
 
 enum geist_status transformer_kv_store_append(struct transformer_layer_forward_ctx *ctx) {
@@ -137,8 +127,8 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
                     k_row = krot;
                     v_row = vrot;
                 }
-                float k_scale = kv_row_absmax(k_row, hd) / 7.0f;
-                float v_scale = kv_row_absmax(v_row, hd) / 7.0f;
+                float k_scale = kv_row_absmax(hd, k_row) / 7.0f;
+                float v_scale = kv_row_absmax(hd, v_row) / 7.0f;
                 if (k_scale == 0.0f)
                     k_scale = 1.0f;
                 if (v_scale == 0.0f)
@@ -185,8 +175,8 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
                     k_row = krot;
                     v_row = vrot;
                 }
-                const float k_amax  = kv_row_absmax(k_row, hd);
-                const float v_amax  = kv_row_absmax(v_row, hd);
+                const float k_amax  = kv_row_absmax(hd, k_row);
+                const float v_amax  = kv_row_absmax(hd, v_row);
                 float       k_scale = k_amax / denom;
                 if (k_scale == 0.0f) {
                     k_scale = 1.0f;
@@ -224,6 +214,20 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
     v->buffer_unmap(sess->scratch_k);
     v->buffer_unmap(sess->scratch_v);
     return GEIST_OK;
+}
+
+/* fwht_orthonormal on each of the first n_rows rows (hd floats) of `b`:
+ * Q before a backend's attention kernel and its output after, where the
+ * cache holds rotated rows (GEIST_KV_ROT). H is its own inverse. */
+static void kv_rotate_rows(const struct geist_backend_vtbl *v,
+                           size_t                           n_rows,
+                           size_t                           hd,
+                           struct geist_buffer             *b) {
+    float *p = (float *) v->buffer_map(b);
+    for (size_t r = 0; r < n_rows; r++) {
+        fwht_orthonormal(hd, p + r * hd);
+    }
+    v->buffer_unmap(b);
 }
 
 enum geist_status transformer_kv_store_attention(struct transformer_layer_forward_ctx *ctx,
@@ -289,6 +293,36 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         v->buffer_unmap(ctx->k_residual_buf);
         v->buffer_unmap(ctx->v_residual_buf);
         v->buffer_unmap(sess->scratch_attn);
+    } else if (sess->kv_int4_packed_enabled && ctx->P != nullptr && ctx->P->fuse_attn_kv_int4) {
+        /* The backend's kernel (plan-bound) reads the packed cache through
+         * views; the rotation of Q and of the output stays here. */
+        const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
+        const size_t n_rows = ctx->seq * st->n_q_heads;
+        if (rot) {
+            kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_q);
+        }
+        const int64_t       n_kv   = (int64_t) kv_len_now;
+        const int64_t       n_kh   = st->n_kv_heads;
+        const int64_t       packed = (int64_t) (ctx->hd / 2);
+        struct geist_tensor t_k    = view_3d_u8(ctx->k_cache_q8_buf, n_kv, n_kh, packed);
+        struct geist_tensor t_v    = view_3d_u8(ctx->v_cache_q8_buf, n_kv, n_kh, packed);
+        struct geist_tensor t_ks   = view_2d(ctx->k_cache_scale_buf, n_kv, n_kh);
+        struct geist_tensor t_vs   = view_2d(ctx->v_cache_scale_buf, n_kv, n_kh);
+        const struct geist_attention_kv_int4_args args = {.q              = t_q_3d,
+                                                          .k              = &t_k,
+                                                          .k_scale        = &t_ks,
+                                                          .v              = &t_v,
+                                                          .v_scale        = &t_vs,
+                                                          .out            = t_attn_3d,
+                                                          .q_offset       = ctx->q_position,
+                                                          .sliding_window = L->sliding_window};
+        const enum geist_status                   s    = ctx->fused->attention_kv_int4(be, &args);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        if (rot) {
+            kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_attn);
+        }
     } else if (sess->kv_int4_packed_enabled) {
         float         *qp       = (float *) v->buffer_map(sess->scratch_q);
         const uint8_t *k_q4p    = (const uint8_t *) v->buffer_map(ctx->k_cache_q8_buf);
@@ -327,6 +361,35 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         v->buffer_unmap(ctx->k_cache_scale_buf);
         v->buffer_unmap(ctx->v_cache_scale_buf);
         v->buffer_unmap(sess->scratch_attn);
+    } else if (ctx->kv_int8_enabled && ctx->P != nullptr && ctx->P->fuse_attn_kv_int8) {
+        /* The backend's kernel (plan-bound) reads the cache through views;
+         * the rotation of Q and of the output stays here. */
+        const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
+        const size_t n_rows = ctx->seq * st->n_q_heads;
+        if (rot) {
+            kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_q);
+        }
+        const int64_t       n_kv = (int64_t) kv_len_now;
+        const int64_t       n_kh = st->n_kv_heads;
+        struct geist_tensor t_k  = view_3d_i8(ctx->k_cache_q8_buf, n_kv, n_kh, (int64_t) ctx->hd);
+        struct geist_tensor t_v  = view_3d_i8(ctx->v_cache_q8_buf, n_kv, n_kh, (int64_t) ctx->hd);
+        struct geist_tensor t_ks = view_2d(ctx->k_cache_scale_buf, n_kv, n_kh);
+        struct geist_tensor t_vs = view_2d(ctx->v_cache_scale_buf, n_kv, n_kh);
+        const struct geist_attention_kv_int8_args args = {.q              = t_q_3d,
+                                                          .k              = &t_k,
+                                                          .k_scale        = &t_ks,
+                                                          .v              = &t_v,
+                                                          .v_scale        = &t_vs,
+                                                          .out            = t_attn_3d,
+                                                          .q_offset       = ctx->q_position,
+                                                          .sliding_window = L->sliding_window};
+        const enum geist_status                   s    = ctx->fused->attention_kv_int8(be, &args);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        if (rot) {
+            kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_attn);
+        }
     } else if (ctx->kv_int8_enabled) {
         float        *qp       = (float *) v->buffer_map(sess->scratch_q);
         const int8_t *k_q8p    = (const int8_t *) v->buffer_map(ctx->k_cache_q8_buf);
@@ -344,13 +407,21 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                 fwht_orthonormal(ctx->hd, qp + r * ctx->hd);
             }
         }
-        /* `scores` scratch is now private per query position inside the kernel
-         * (the loop is parallelized), so no shared arena buffer is needed. */
+        /* The softmax scratch is private per work item inside the kernel;
+         * the arena holds the partial results of a split decode (sized for
+         * them at session create). Without it decode runs unsplit. */
+        size_t n_scratch = attention_int8_scratch_floats(st->n_q_heads, ctx->hd);
+        float *scratch =
+                (float *) frame_arena_alloc(&sess->scratch_arena, n_scratch * sizeof(float), 64);
+        if (scratch == nullptr) {
+            n_scratch = 0;
+        }
         attention_int8_via_buffers(ctx->seq,
                                    st->n_q_heads,
                                    ctx->hd,
                                    kv_len_now,
                                    st->n_kv_heads,
+                                   n_scratch,
                                    ctx->q_position,
                                    L->sliding_window,
                                    qp,
@@ -358,7 +429,8 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                    k_scalep,
                                    v_q8p,
                                    v_scalep,
-                                   outp);
+                                   outp,
+                                   scratch);
         if (rot) {
             for (size_t r = 0; r < n_rows; r++) {
                 fwht_orthonormal(ctx->hd, outp + r * ctx->hd);

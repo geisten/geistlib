@@ -46,6 +46,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Largest attention head_dim the forward pass supports. The attention
+ * kernels hold one head in stack arrays of this size (forward/attention.c)
+ * and the scratch plan sizes Q/K/V rows for it. head_dim comes from GGUF
+ * metadata — untrusted — so transformer_state_create_from_gguf rejects a
+ * model whose layers ask for more, before anything is sized from it. */
+constexpr size_t TRANSFORMER_HEAD_DIM_MAX = 512;
+
 /* ---- Per-layer weight bundle ------------------------------------------- */
 
 /* Holds every weight tensor needed to run one transformer layer. Layouts
@@ -192,8 +199,9 @@ struct transformer_mtp_layer_weights {
  *                    (P1.2.b).
  *   sampler        : per-session RNG + workspace, temperature, top-k,
  *                    top-p.
- *   pending logits : last decode_step's argmax, lazily consumed by
- *                    the next call.
+ *   pending logits : the prediction the next decode_step returns, and
+ *                    whether the forward that appends the token the
+ *                    last one returned is still owed (advance_deferred).
  */
 struct transformer_arch_session {
     /* Owning model. Set once at session creation, never changed. Internal
@@ -253,6 +261,11 @@ struct transformer_arch_session {
     struct geist_buffer **v_kivi_zeros;
     struct geist_buffer **k_residual;
     struct geist_buffer **v_residual;
+    /* On a backend with caps.kv_q8_block (INT8/INT4) or caps.kv_dense_block
+     * (FP32/F16): the buffer that holds the layer's K and V data, the k/v
+     * cache slots being aliased slices of it (see alloc_kv_block); nullptr
+     * otherwise. */
+    struct geist_buffer **kv_data;
     size_t                kivi_residual_count;
     size_t                kivi_drained_count;
     size_t                kv_len;        /* valid prefix across all caches */
@@ -261,6 +274,13 @@ struct transformer_arch_session {
     size_t                max_seq_len;   /* KV-cache capacity in rows — the state
                                           * max_seq_len at alloc time; forward paths
                                           * reject writes past this */
+    /* A pinned prefix's rows in the KIVI residual ring (prefix_length mod
+     * R of them), copied at pin time for reset to write back: the drains
+     * of later turns move other rows over them. Host memory, per layer
+     * with a ring its K rows then its V rows; kivi_pin_rows is 0 without
+     * a copy. */
+    float *kivi_pin_tail;
+    size_t kivi_pin_rows;
 
     /* ---- Scratch buffers (per-forward-pass workspace).
      * 21 buffers backed by the consolidated scratch pool (P1.2.c). */
@@ -343,6 +363,13 @@ struct transformer_arch_session {
     struct geist_buffer *dn_scratch_z;
     struct geist_buffer *dn_scratch_b; /* beta projection  [m_max, n_v_heads] */
     struct geist_buffer *dn_scratch_a; /* alpha projection [m_max, n_v_heads] */
+    /* Host staging of the chunked DeltaNet prefill (dn_run_prefill_chunked,
+     * layer_deltanet.c), shared by the DeltaNet layers, which run one after
+     * another. The first chunked prefill sizes it for m_max tokens and its
+     * OpenMP team; it grows only for a larger team. Nothing in it outlives
+     * a call. */
+    float *dn_prefill_ws;
+    size_t dn_prefill_ws_floats;
 
     /* Qwen3.5 MTP owns a cache independent from the target trunk. Target
      * batches feed it one-position-shifted hidden rows when GEIST_MTP=1.
@@ -386,6 +413,11 @@ struct transformer_arch_session {
      * valid normalized hidden in scratch_h_a when this is set. */
     bool          logits_sparse;
     geist_token_t next_token_pending;
+    /* decode_step returned next_token_pending without the forward that
+     * appends it and predicts the next token. Every op that reads or
+     * extends the cache runs that forward first (settle, arch.c); reset
+     * drops it. kv_len does not count the token until it has run. */
+    bool advance_deferred;
 
     /* ---- Sampler state.
      * temperature == 0.0 → greedy argmax; top_k>1 / top_p<1 narrow the

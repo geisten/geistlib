@@ -9,7 +9,7 @@
  *     accumulation stay readable and testable on non-ARM hosts.
  *
  * Correctness is gated from the outside rather than between these two:
- * test_tl1_parity.c asserts this kernel is bit-identical to the
+ * test_tl1_parity_unit.c asserts this kernel is bit-identical to the
  * independent TQ2_0 SDOT kernel (cpu_neon_w_tq2_0_q8a_m1) on whichever
  * lowering the host compiles.
  */
@@ -19,6 +19,7 @@
 #include "heap.h"
 
 #include "internal.h"
+#include "linear_ref.h"
 #include "quant.h"
 
 #include <geist_weight.h>
@@ -26,7 +27,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
@@ -42,7 +42,7 @@ static inline uint8_t tl1_encode_pair(int8_t w0, int8_t w1) {
 }
 
 /* Unpack one TQ2_0 256-element block into a contiguous int8 trit array.
- * Mirrors the loop in gguf_quant.c::dequant_tq2_0_row (without the fp32
+ * Mirrors the loop in src/formats/gguf/tq2_0.c::dequant_tq2_0_row (no fp32
  * scale multiply): trit at output index `elem_base + 32*l + m` lives in
  * `qs[j_byte + m]` at bit-shift `l*2`. */
 static void tl1_tq2_0_unpack_block(const uint8_t *qs, int8_t trits[256]) {
@@ -181,7 +181,7 @@ void cpu_neon_w_tl1_m1(const float               *x,
         xq_cache = heap_alloc_array_aligned(int8_t, n_in);
         if (xq_cache == nullptr) {
             xq_cap = 0;
-            memset(y, 0, n_out * sizeof *y);
+            geist_linear_ref(1, x, w, y); /* TQ2_0 in raw, as ever */
             return;
         }
         xq_cap = n_in;
@@ -222,7 +222,7 @@ void cpu_neon_w_tl1_m1(const float               *x,
         lut_scratch_tl = heap_alloc_array_aligned(int8_t, lut_total);
         if (lut_scratch_tl == nullptr) {
             lut_cap = 0;
-            memset(y, 0, n_out * sizeof *y);
+            geist_linear_ref(1, x, w, y); /* TQ2_0 in raw, as ever */
             return;
         }
         lut_cap = lut_total;

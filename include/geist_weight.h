@@ -9,13 +9,13 @@
  * direct function pointers for the M=1 (decode) and M>1 (prefill)
  * kernels. Hot-path callers then invoke
  *
- *     w->linear_mN(x, w, m, be, y);
+ *     w->linear_mN(m, x, w, be, y);
  *
  * without any vtable indirection or per-call dtype switch.
  *
  * Rationale: at load time we know everything needed to pick a kernel —
  * weight dtype, shape, the active backend. Re-deciding on every call
- * (current cpu_neon_linear switch over Q3_K/Q4_K/Q5_K/Q6_K/Q8_0/IQ2_S/
+ * (the former cpu_neon_linear switch over Q3_K/Q4_K/Q5_K/Q6_K/Q8_0/IQ2_S/
  * IQ3_S × M=1/M>1) is wasted work in the hot path. This struct moves
  * that decision out.
  *

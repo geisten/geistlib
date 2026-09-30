@@ -148,7 +148,7 @@ int main(int argc, char **argv) {
 
     const char *backend_name = getenv("GEIST_BENCH_BACKEND");
     if (backend_name == nullptr || backend_name[0] == '\0') {
-        backend_name = "cpu_neon";
+        backend_name = "auto";
     }
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create(backend_name, nullptr, nullptr, &be);
