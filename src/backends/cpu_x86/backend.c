@@ -14,8 +14,8 @@
  *
  * cpu_x86_resolve_weight starts from cpu_scalar's resolver (it validates
  * the weight and knows every dtype), then rebinds: native kernels for Q4_K,
- * Q6_K, Q8_0, I2_S, F16 decode and F32, and the generic multi-threaded kernels
- * (linear_generic.c) for every other dtype. cpu_scalar's own kernels — the
+ * Q6_K, Q8_0, I2_S, PQ2_0 decode, F16 decode and F32, and the generic
+ * multi-threaded kernels (linear_generic.c) for every other dtype. cpu_scalar's own kernels — the
  * single-threaded correctness oracle — are never left bound for a dtype
  * cpu_x86 can serve.
  */
@@ -33,6 +33,7 @@
 #include "linear_q4k.h"
 #include "linear_q6k.h"
 #include "linear_q8_0.h"
+#include "linear_pq2_0.h"
 #include "threads.h"
 
 #include "geist_gemm.h"
@@ -439,8 +440,8 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
         return base;
     }
     /* Rebind per dtype. Q4_K → Q4_Kx8 GEMV/GEMM; Q6_K → native GEMV +
-     * W8x16 GEMM; Q8_0 → int8 Q8_0 x Q8_0; I2_S → VNNI x4; F16 → Q8 or F16C
-     * GEMV for M=1; F32 → W8A8.
+     * W8x16 GEMM; Q8_0 → int8 Q8_0 x Q8_0; PQ2_0 → W2 x A8 GEMV for M=1;
+     * I2_S → VNNI x4; F16 → Q8 or F16C GEMV for M=1; F32 → W8A8.
      * Everything else — and Q4_K / Q6_K when their repack cannot be built —
      * takes the generic kernels, never cpu_scalar's single-threaded ones. */
     switch ((enum geist_dtype) w->dtype) {
@@ -460,6 +461,11 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
         if (!cpu_x86_linear_q8_0_bind(w)) {
             (void) cpu_x86_linear_generic_bind(w);
         }
+        break;
+    case GEIST_DTYPE_PQ2_0:
+        /* Prefill on the generic kernel, decode on the W2 x A8 GEMV. */
+        (void) cpu_x86_linear_generic_bind(w);
+        (void) cpu_x86_linear_pq2_0_bind_m1(w);
         break;
     case GEIST_DTYPE_I2_S:
         /* Fast path: 4-row-interleaved x4 layout (one act load feeds 4 rows).

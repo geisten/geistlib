@@ -141,6 +141,24 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 decodes `PQ2_0` (Ternary-Bonsai) with a W2 x A8 GEMV**
+  (`linear_pq2_0.c`) instead of the generic kernel, which turned every
+  weight into fp32 one element at a time. It is cpu_neon's recipe in AVX2:
+  the activation is quantized to int8 once per call and stored in the codes'
+  packing order, the raw 2-bit codes go into `maddubs`, and the +1 bias
+  leaves through each block's activation sum. The GGUF bytes are read as
+  they are; nothing is repacked. The dot outruns DRAM, so the loop prefetches
+  4 KB ahead: the hardware prefetchers alone held it to 18 GB/s on 4
+  threads. On a 4-vCPU Xeon (Sapphire Rapids class) one 17408 × 5120 FFN
+  matrix takes 0.56 ms instead of 25.5 ms (43 GB/s, the host's read
+  bandwidth). The synthetic Ternary-Bonsai-2-27B decodes a token in 0.200 s
+  instead of 7.70 s, 38 times as fast (-97.4 %, 95 % interval -97.6 to
+  -97.3 %, 6 of 6 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). Prefill of more than one token stays on the
+  generic kernel. The int8 activation is cpu_neon's, value for value: the
+  scheme `benchmark/results/TERNARY.md` checked against fp32 activations on
+  the real model. `test_pq2_0_unit` holds the kernel to an exact model of
+  that arithmetic.
 - **cpu_x86 runs the attention over the INT8 KV cache on AVX-512 VNNI**
   where the host has it (`attention_int8_avx512_vnni.c`; the dispatcher's
   tier, which `GEIST_FORCE_ISA=avx2` clamps, and cpuid decide, per call).

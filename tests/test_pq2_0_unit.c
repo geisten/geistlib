@@ -10,11 +10,12 @@
  *      reference built from (1), for n_in 128 / 5120 / 17408 and an odd
  *      n_out. The fp32-accumulating paths (cpu_scalar, the NEON
  *      trampolines) match it tightly.
- *   3. The NEON SDOT decode kernel against an exact model of its own
- *      W2A8 arithmetic (per-call absmax int8 activation, integer block
- *      dots) — tight — and against fp32 within the A8 quantization error.
- *      Matching the A8 model and not the fp32 one is also what shows the
- *      SDOT path, not the trampoline, was installed.
+ *   3. The int8 decode kernels — cpu_neon's SDOT one and cpu_x86's AVX2
+ *      one — against an exact model of their W2A8 arithmetic (per-call
+ *      absmax int8 activation, integer block dots) — tight — and against
+ *      fp32 within the A8 quantization error. Matching the A8 model and not
+ *      the fp32 one is also what shows the int8 path, not the fp32
+ *      trampoline or the generic kernel, was installed.
  *   4. Both SDOT layouts: n_out 40 installs the x8 interleaved repack
  *      (GEIST_W_LAYOUT_PQ2_0_X8_GEMV) — n_out 264 spans two full prefill
  *      tiles plus a remainder — n_out 37 cannot and keeps the row
@@ -112,12 +113,17 @@ static void ref_fp32(size_t n_out, size_t n_in, const uint8_t *W, const float *x
     free(row);
 }
 
-/* The two references below restate what the SDOT kernels do, so they only
- * exist on the legs that have them. */
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
-/* The NEON kernel's arithmetic, restated: absmax int8 activation with
+/* The two references below restate what the int8 kernels do, so they only
+ * exist on the legs that have one. */
+#if (defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)) || defined(GEIST_BACKEND_CPU_X86)
+#define HAVE_W2A8_KERNEL 1
+#endif
+
+#if defined(HAVE_W2A8_KERNEL)
+/* The int8 kernels' arithmetic, restated: absmax int8 activation with
  * round-half-away, integer (code - 1) dot per block, float accumulation
- * over blocks in order. */
+ * over blocks in order (the kernels sum in other orders; the gate below is
+ * far wider than that). */
 static void ref_w2a8(size_t n_out, size_t n_in, const uint8_t *W, const float *x, float *y) {
     float max_abs = 1e-5f;
     for (size_t i = 0; i < n_in; i++) {
@@ -194,6 +200,8 @@ static int check_backend(const char *name, bool x8_policy) {
         return 0;
     }
     const bool neon = strcmp(name, "cpu_neon") == 0;
+    /* The backends whose m1 is an int8 kernel. */
+    const bool w2a8 = neon || strcmp(name, "cpu_x86") == 0;
     /* x8_policy states what the NEON resolver should install; the other
      * legs have no x8 layout to check. */
     (void) x8_policy;
@@ -250,24 +258,25 @@ static int check_backend(const char *name, bool x8_policy) {
 
         ref_fp32(n_out, n_in, W, x, yf);
         w.linear_m1(x, &w, be, y);
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
-        if (neon) {
+#if defined(HAVE_W2A8_KERNEL)
+        if (w2a8) {
             ref_w2a8(n_out, n_in, W, x, yq);
             snprintf(what, sizeof what, "%s n_in=%zu: m1 == W2A8 model", name, n_in);
             fails += geist_expect(rel_err(n_out, y, yq) < 1e-5, what);
             snprintf(what, sizeof what, "%s n_in=%zu: m1 within A8 error of fp32", name, n_in);
             fails += geist_expect(within_a8_bound(n_out, n_in, W, x, y, yf), what);
-            snprintf(what, sizeof what, "%s n_in=%zu: m1 is the SDOT path", name, n_in);
+            snprintf(what, sizeof what, "%s n_in=%zu: m1 is the int8 path", name, n_in);
             fails += geist_expect(rel_err(n_out, y, yf) > 1e-5, what);
         } else
 #endif
         {
-            (void) neon;
+            (void) w2a8;
             snprintf(what, sizeof what, "%s n_in=%zu: m1 == fp32", name, n_in);
             fails += geist_expect(rel_err(n_out, y, yf) < 1e-5, what);
         }
 
-        /* m > 1: fp32-accumulating on every backend (trampoline / scalar). */
+        /* m > 1: fp32-accumulating on every backend (trampoline / scalar /
+         * cpu_x86's generic kernel). */
         w.linear_mN(m, x, &w, be, y);
         for (size_t t = 0; t < m; t++) {
             ref_fp32(n_out, n_in, W, x + t * n_in, yf);
@@ -375,9 +384,11 @@ int main(void) {
     fails += check_layout();
     fails += check_backend("cpu_scalar", false);
     fails += check_backend("cpu_neon", true);
+    fails += check_backend("cpu_x86", false);
     /* The policy is read at backend create: a fresh backend sees it. */
     fails += check_pair("cpu_scalar");
     fails += check_pair("cpu_neon");
+    fails += check_pair("cpu_x86");
     setenv("GEIST_PQ2_0_X8_GEMV", "0", 1);
     fails += check_backend("cpu_neon", false);
     /* x8 off: the row kernel's pair_m1 must still hold. */

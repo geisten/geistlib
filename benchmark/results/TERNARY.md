@@ -651,22 +651,25 @@ that gate).
 
 ## Ternary-Bonsai-2-27B on x86-64 (2026-09-30, synthetic weights)
 
-cpu_x86 has no `PQ2_0` kernel yet. The format runs through
-`linear_generic.c`, which decodes each weight row to fp32 with
-`dequant_pq2_0_row`, one element at a time, and dots it with AVX2 FMAs.
-
 Measured on `tools/gen_synth_gguf.py --preset bonsai2-27b-pq2_0`: the real
 file's geometry, formats and `prism.hadamard` keys (26.9 G parameters,
 7.20 GB) with random ternary weights. Kernel timings do not depend on the
 values. The host is an Intel Xeon (Sapphire Rapids) at 2.1 GHz, 4 vCPUs of a
-cloud VM, gcc 14, `OMP_WAIT_POLICY=active`, with 41.7 GB/s read bandwidth on
-4 threads.
+cloud VM with 260 MB of L3, gcc 14, `OMP_WAIT_POLICY=active`, with 41.7 GB/s
+read bandwidth on 4 threads.
 
-| | geist cpu_x86, generic path |
-| :-- | --: |
-| prefill, 64 tokens | 39.1 s, 1.64 t/s |
-| decode | 7.53 s a token, 0.13 t/s |
-| RSS | 7.1 GB (the mmap'd file, nothing repacked) |
+| | generic path | `PQ2_0` decode GEMV |
+| :-- | --: | --: |
+| prefill, 64 tokens | 39.1 s, 1.64 t/s | 38.3 s, 1.67 t/s: its projections are still generic |
+| decode | 7.53 s a token, 0.13 t/s | **0.200 s a token, 5.0 t/s** |
+| RSS | 7.1 GB (the mmap'd file, nothing repacked) | 7.1 GB |
+
+### The generic path
+
+cpu_x86 had no `PQ2_0` kernel at first. The format ran through
+`linear_generic.c`, which decodes each weight row to fp32 with
+`dequant_pq2_0_row`, one element at a time, and dots it with AVX2 FMAs.
+Prefill of more than one token still does.
 
 The forward profiler (`GEIST_PROFILE_FORWARD=1`) splits the time into:
 
@@ -682,14 +685,54 @@ The forward profiler (`GEIST_PROFILE_FORWARD=1`) splits the time into:
 - prefill: 75 % in the FMA dot (64 activation rows against each decoded
   weight row), 18 % in the decoder.
 
-Decode reads 7.2 GB a token in 7.5 s, about 1 GB/s, or 2 % of the bandwidth.
-A W2A8 kernel on the raw rows would be bandwidth-bound instead: int8
-activations stored in the codes' order, as cpu_neon's kernel does. A repacked
-copy like cpu_neon's x8 layout would not fit next to the model in this host's
-15 GB.
+Decode read 7.2 GB a token in 7.5 s, about 1 GB/s, or 2 % of the bandwidth.
+A repacked copy like cpu_neon's x8 layout would not fit next to the model in
+this host's 15 GB.
+
+### The decode GEMV
+
+`src/backends/cpu_x86/linear_pq2_0.c` is cpu_neon's W2A8 recipe in AVX2.
+The activation is quantized to int8 once per call, with cpu_neon's scale and
+rounding, and stored in the order the codes are packed. The raw 2-bit codes
+go into `maddubs`, and the +1 bias leaves through each block's activation
+sum. The weights are the GGUF bytes, read as they are.
+
+One call on a 17408 × 5120 FFN matrix, 4 threads, 64 distinct copies of it
+(1.5 GB, past the L3); the median of 3 alternating rounds:
+
+| | time | weights read |
+| :-- | --: | --: |
+| generic path | 25.5 ms | 0.93 GB/s |
+| W2A8 GEMV, hardware prefetch only | 1.29 ms | 18.4 GB/s |
+| **W2A8 GEMV** | **0.556 ms** | **42.6 GB/s** |
+
+With the data in L2, the dot runs at about 12 GB/s per core, so four cores
+could take 48 GB/s. From DRAM, the hardware prefetchers set the limit. A
+software prefetch 4 KB ahead of the dot brings the kernel to the host's read
+bandwidth; 4-8 KB measured best, 2 KB was 15-20 % slower, 32 KB about 10 %.
+
+An AVX-512 VNNI block dot (`vpdpbusd`) is 20 % faster from L2. From DRAM it
+gained 2.6 % (median of 8 alternating rounds, 6 of them faster), so it is
+not in.
+
+End to end, both builds from scratch (`tools/bench_revision_ab.py`,
+6 cycles alternating with a control copy of the baseline; median of the
+per-cycle ratios, 95 % interval):
+
+| | generic path | `PQ2_0` decode GEMV | change |
+| :-- | --: | --: | --: |
+| decode, per token | 7.70 s | 0.200 s | -97.4 % [-97.6, -97.3], 6/6 |
+| one-token prefill | 7.63 s | 0.194 s | -97.4 % [-97.7, -97.2], 6/6 |
+
+A decode token now reads the 7.2 GB of weights at about 36 GB/s, 38 times as
+fast as before. The control, the baseline's binary run again, stayed within
+±6 %.
 
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
   `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep
   --gguf gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf --seq-lens 64 --decode-n 1 --warmup 0
-  --repeats 1` (and `--seq-lens 1 --decode-n 9` for decode)
+  --repeats 1` (and `--seq-lens 1 --decode-n 9` for decode); the A/B:
+  `tools/bench_revision_ab.py --rev base=<parent> --rev new=<commit>
+  --gguf gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf --seq-lens 1 --decode-n 4
+  --warmup 1 --cycles 6 --env OMP_WAIT_POLICY=active`
