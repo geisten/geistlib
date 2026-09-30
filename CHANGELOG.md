@@ -151,6 +151,18 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 runs SiLU, and SwiGLU's silu(gate) * up in one pass, in AVX2 on
+  all threads** (`elementwise.c`). Before, it used cpu_scalar's
+  single-threaded loop, a libm `expf` and a division per element, followed
+  by a second pass for the multiply. The exp is Cephes' in AVX2 (1.26 ulp),
+  floored at -87 so that it never takes libmvec's slow path. The fused
+  `silu_mul` matches `silu` then `mul` bit for bit, and the exec plan now
+  binds it on cpu_x86. On a 4-vCPU Xeon one call on a 64 × 17408 FFN gate
+  takes 226 µs instead of 1143 µs. The synthetic Ternary-Bonsai-2-27B
+  prefills 64 tokens in 1.507 s instead of 1.566 s (-3.9 %, 95 % interval
+  -12.3 to -1.2 %, 9 of 10 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). `test_silu_x86_unit` holds `silu` to 8 ulp
+  of a double reference and `silu_mul` to the bytes of `silu` then `mul`.
 - **cpu_x86 prefills `PQ2_0` on AMX-INT8** (`kernel_pq2_0_amx.c`) where the
   host has it and Linux grants the tile data. The AVX2 GEMM ran at its floor,
   four `maddubs` per block, row and token; one `TDPBSSD` does a 16 × 16 × 64

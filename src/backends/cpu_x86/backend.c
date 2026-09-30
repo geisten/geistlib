@@ -7,8 +7,9 @@
  *   1. Struct-copy cpu_scalar's vtbl, prims and fused tables.
  *   2. Override vtbl .create / .destroy (the per-instance scratch the
  *      quantized kernels use), .resolve_weight (below) and, under OpenMP,
- *      .parallel_region_begin / _end (threads.c); prims .attention and
- *      .gelu_tanh; fused .gelu_tanh_mul and .gelu_tanh_mul_scaled.
+ *      .parallel_region_begin / _end (threads.c); prims .attention,
+ *      .gelu_tanh and .silu; fused .gelu_tanh_mul, .gelu_tanh_mul_scaled
+ *      and .silu_mul.
  * Constructor runs before main, so the descriptor's tables are always
  * filled by the time the engine calls geist_backend_create.
  *
@@ -503,10 +504,14 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
 }
 
 /* cpu_scalar's answers (the elementwise fusions, which cpu_x86 overrides
- * with the same geometry) plus the INT8-KV attention. */
+ * with the same geometry), plus SiLU x mul (any F32 geometry) and the
+ * INT8-KV attention. */
 static bool cpu_x86_fused_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
     if (q != nullptr && q->op == GEIST_FUSED_ATTN_KV_INT8) {
         return cpu_x86_attention_kv_int8_supported(q);
+    }
+    if (q != nullptr && q->op == GEIST_FUSED_SILU_MUL) {
+        return true;
     }
     return cpu_scalar_fused.supported(be, q);
 }
@@ -526,11 +531,13 @@ __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
 
     cpu_x86_prims           = cpu_scalar_prims;
     cpu_x86_prims.gelu_tanh = cpu_x86_gelu_tanh;
+    cpu_x86_prims.silu      = cpu_x86_silu;
     cpu_x86_prims.attention = cpu_x86_attention;
 
     cpu_x86_fused                      = cpu_scalar_fused;
     cpu_x86_fused.supported            = cpu_x86_fused_supported;
     cpu_x86_fused.gelu_tanh_mul        = cpu_x86_gelu_tanh_mul;
+    cpu_x86_fused.silu_mul             = cpu_x86_silu_mul;
     cpu_x86_fused.gelu_tanh_mul_scaled = cpu_x86_gelu_tanh_mul_scaled;
     cpu_x86_fused.attention_kv_int8    = cpu_x86_attention_kv_int8;
 }

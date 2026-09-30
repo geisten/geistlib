@@ -853,6 +853,45 @@ tier (so `GEIST_FORCE_ISA=avx2` keeps the AVX2 GEMM), cpuid for AMX-INT8,
 AVX-512F and AVX-512BW, and asks Linux for the tile data
 (`arch_prctl(ARCH_REQ_XCOMP_PERM)`, Linux 5.16 and later).
 
+### The SwiGLU activation
+
+With the projections on AMX, the FFN's activation became visible. cpu_x86
+took cpu_scalar's `silu`: a libm `expf` and a division per element on one
+thread (the branch between its two overflow-safe forms keeps gcc from
+vectorizing it), and then a separate `mul` pass. The forward profiler put them
+at 56 and 27 ms of the 1.6 s prefill.
+
+`src/backends/cpu_x86/elementwise.c` now does both in one pass on the whole
+team, eight lanes at a time:
+
+- The exp is Cephes' `expf` in AVX2 (1.26 ulp at worst). A vectorized libm
+  `expf` is libmvec, which only glibc has and which runs every lane below
+  -87.3 through a scalar slow path. The argument is floored at -87, where
+  2^n is still normal.
+- A masked tail runs the last lanes through the same instructions, so every
+  element takes the same path.
+- The fused `silu_mul` is `silu` then `mul` to the bit, as the fused table's
+  contract asks. The exec plan now binds it on cpu_x86, and the separate
+  `mul` pass is gone.
+
+One call on the FFN gate (m × 17408), 4 threads, best of 20:
+
+| m | cpu_scalar `silu` + `mul` | cpu_x86 `silu_mul` | |
+| :-- | --: | --: | --: |
+| 1 (decode) | 14.9 µs | 8.8 µs | 1.7× |
+| 64 | 1143 µs | 226 µs | 5.1× |
+
+End to end, both builds from scratch (`tools/bench_revision_ab.py`, 10 cycles
+with a control):
+
+| | before | after | change |
+| :-- | --: | --: | --: |
+| prefill, 64 tokens | 1.566 s | 1.507 s | -3.9 % [-12.3, -1.2], 9/10 |
+
+The control stayed within +1.8 % [-5.6, +10.1], and decode moved -0.8 %
+[-6.5, +5.2], inside it. The forward profiler puts the activation at 22 ms
+of the prefill, with no `mul` stage left.
+
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
   `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep

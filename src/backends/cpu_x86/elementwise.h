@@ -1,5 +1,5 @@
 /*
- * src/backends/cpu_x86/elementwise.h — cpu_x86 gelu_tanh overrides.
+ * src/backends/cpu_x86/elementwise.h — cpu_x86 gelu_tanh and SiLU overrides.
  *
  * Layer: BACKEND (cpu_x86, internal). See elementwise.c.
  */
@@ -26,5 +26,14 @@ cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct
                                                              const struct geist_tensor *z,
                                                              const float               *scale,
                                                              struct geist_tensor       *y);
+
+[[nodiscard]] enum geist_status
+cpu_x86_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y);
+
+/* silu(x) * z, bit-identical to cpu_x86_silu then cpu_scalar_mul. */
+[[nodiscard]] enum geist_status cpu_x86_silu_mul(struct geist_backend      *be,
+                                                 const struct geist_tensor *x,
+                                                 const struct geist_tensor *z,
+                                                 struct geist_tensor       *y);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_ELEMENTWISE_H */
