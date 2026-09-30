@@ -21,10 +21,10 @@
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 static const int8_t kvalues_iq4nl_k[16] = {
         -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+#endif
 
 void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
                                   size_t       n_out,

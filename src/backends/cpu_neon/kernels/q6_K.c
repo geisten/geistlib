@@ -30,6 +30,7 @@ typedef void (*geist_pp_body_fn)(size_t i, void *ctx);
 extern void geist_pp_parallel_for(size_t n, geist_pp_body_fn body_fn, void *ctx)
         __attribute__((weak));
 
+#if defined(__ARM_NEON)
 static int q6k_pp_enabled(void) {
     static _Atomic int enabled = -1;
     if (enabled >= 0)
@@ -42,6 +43,7 @@ static int q6k_pp_enabled(void) {
     enabled = 0;
     return enabled;
 }
+#endif
 
 struct q6k_predecode_header {
     uint32_t magic;
@@ -148,12 +150,12 @@ struct q6k_pp_ctx {
     float          scale_x;
     float         *y;
 };
+#if defined(__ARM_NEON)
 static void q6k_decode_one_row(size_t n, const struct q6k_pp_ctx *c);
 static void q6k_pp_row(size_t n, void *vctx) {
     q6k_decode_one_row(n, (const struct q6k_pp_ctx *) vctx);
 }
 
-#if defined(__ARM_NEON)
 static inline float q6k_dot4_scaled(const int8_t *xb,
                                     int8x16_t     q0,
                                     int8x16_t     q1,
@@ -783,11 +785,6 @@ static void q6k_decode_one_row(size_t n, const struct q6k_pp_ctx *c) {
         acc += d * scale_x * (float) (isum - 32 * isum_mins);
     }
     y[n] = acc;
-}
-#else
-static void q6k_decode_one_row(size_t n, const struct q6k_pp_ctx *c) {
-    (void) n;
-    (void) c;
 }
 #endif
 
