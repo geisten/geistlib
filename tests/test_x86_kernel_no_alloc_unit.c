@@ -80,6 +80,9 @@ static size_t bytes_q5k(void) {
 static size_t bytes_tq2_0(void) {
     return (N_IN / TQ2_0_BLOCK_ELEMS) * TQ2_0_BLOCK_BYTES * N_OUT;
 }
+static size_t bytes_pq2_0(void) {
+    return (N_IN / PQ2_0_BLOCK_ELEMS) * PQ2_0_BLOCK_BYTES * N_OUT;
+}
 static size_t bytes_half(void) {
     return N_IN * N_OUT * 2;
 }
@@ -92,6 +95,7 @@ static const struct dtype_case CASES[] = {
         {"Q8_0", (uint16_t) GEIST_DTYPE_Q8_0, bytes_q8_0},
         {"Q5_K", (uint16_t) GEIST_DTYPE_Q5_K, bytes_q5k},
         {"TQ2_0", (uint16_t) GEIST_DTYPE_TQ2_0, bytes_tq2_0},
+        {"PQ2_0", (uint16_t) GEIST_DTYPE_PQ2_0, bytes_pq2_0},
         {"BF16", (uint16_t) GEIST_DTYPE_BF16, bytes_half},
         {"F16", (uint16_t) GEIST_DTYPE_F16, bytes_half},
 };

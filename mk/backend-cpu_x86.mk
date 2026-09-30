@@ -2,7 +2,7 @@
 #
 # backend.c selects kernels directly in its resolver; per-ISA kernel TUs:
 # W4A8 VPDPBUSD, BF16-SGEMM trampoline, native VDPBF16PS-SGEMM, I2_S ternary,
-# Q8_0 prefill tiles, INT8-KV attention.
+# Q8_0 prefill tiles, INT8-KV attention, PQ2_0 prefill on AMX-INT8.
 #
 # The default on Linux x86_64 (target-linux.mk: BACKENDS ?= cpu_x86
 # cpu_scalar). BACKENDS=cpu_scalar builds the portable reference alone.
@@ -24,6 +24,8 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/linear_f32q.c \
     src/backends/cpu_x86/linear_generic.c \
     src/backends/cpu_x86/linear_q8_0.c \
+    src/backends/cpu_x86/linear_pq2_0.c \
+    src/backends/cpu_x86/kernel_pq2_0_amx.c \
     src/backends/cpu_x86/kernel_q8_0_avx512_vnni.c \
     src/backends/cpu_x86/kernel_w8a8.c \
     src/backends/cpu_x86/kernel_w8a8_scalar.c \
@@ -62,3 +64,6 @@ $(BUILD_DIR)/src/backends/cpu_x86/attention_int8_avx512_vnni.o: CFLAGS_STRICT +=
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.o: CFLAGS_STRICT += \
     -mavx2 -mavx -mf16c -mfma -mavx512f -mavx512bw -mavx512dq -mavx512vl
+# linear_pq2_0.c's amx_usable() also checks the kernel granted the tile data.
+$(BUILD_DIR)/src/backends/cpu_x86/kernel_pq2_0_amx.o: CFLAGS_STRICT += \
+    -mamx-tile -mamx-int8 -mavx512f -mavx512bw
