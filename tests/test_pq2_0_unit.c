@@ -146,12 +146,19 @@ static void ref_w2a8(size_t n_out, size_t n_in, const uint8_t *W, const float *x
     for (size_t i = 0; i < n_in; i++) {
         max_abs = fabsf(x[i]) > max_abs ? fabsf(x[i]) : max_abs;
     }
-    const float act_scale = 127.0f / max_abs;
-    int8_t     *xq        = xmalloc(n_in);
+    /* The kernels multiply by the rounded scale and round that product
+     * before the half is added; the volatiles hold this reference to the
+     * same two roundings. Under -ffast-math clang-19 rewrote x * (127 / max)
+     * as (x * 127) * (1 / max), which put some exact halves (x * scale =
+     * k + 0.5) on the other side. */
+    volatile float scale_v   = 127.0f / max_abs;
+    const float    act_scale = scale_v;
+    int8_t        *xq        = xmalloc(n_in);
     for (size_t i = 0; i < n_in; i++) {
-        const float q  = x[i] * act_scale;
-        int32_t     qi = (int32_t) (q < 0.0f ? q - 0.5f : q + 0.5f);
-        xq[i]          = (int8_t) (qi > 127 ? 127 : (qi < -128 ? -128 : qi));
+        volatile float q_v = x[i] * act_scale;
+        const float    q   = q_v;
+        int32_t        qi  = (int32_t) (q < 0.0f ? q - 0.5f : q + 0.5f);
+        xq[i]              = (int8_t) (qi > 127 ? 127 : (qi < -128 ? -128 : qi));
     }
     const size_t nb = n_in / PQ2_0_BLOCK_ELEMS;
     for (size_t r = 0; r < n_out; r++) {
