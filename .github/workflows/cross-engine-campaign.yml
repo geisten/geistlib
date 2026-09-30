@@ -27,6 +27,14 @@ on:
         description: "optional download URL when no local candidate matches the SHA"
         type: string
         default: ""
+      llama_repo:
+        description: "llama.cpp repository for the reference engine (owner/name); a fork for formats upstream cannot read, e.g. PrismML-Eng/llama.cpp for PQ2_0"
+        type: string
+        default: ggml-org/llama.cpp
+      llama_pin:
+        description: "commit to build the reference engine at (default: the protocol's upstream pin)"
+        type: string
+        default: ""
 
 jobs:
   campaign:
@@ -61,15 +69,22 @@ jobs:
         # build must not link a GPU backend or the runner's CPU-only
         # validation rejects it.
         env:
-          LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
+          LLAMA_REPO: ${{ inputs.llama_repo }}
+          LLAMA_PIN: ${{ inputs.llama_pin || '2d8d612e4c68d3801e556a1b4a028f55ec33ecbb' }}
           VARIANT: ${{ inputs.protocol }}
         run: |
           set -e
-          DIR="$HOME/llama.cpp-cross-engine"
+          # One checkout per repository, so a fork build never shadows the
+          # upstream pin's (the cell records which one ran).
+          if [ "$LLAMA_REPO" = "ggml-org/llama.cpp" ]; then
+            DIR="$HOME/llama.cpp-cross-engine"
+          else
+            DIR="$HOME/llama.cpp-cross-engine-$(echo "$LLAMA_REPO" | tr '/' '_')"
+          fi
           BUILD="$DIR/build-$([ "$VARIANT" = gpu ] && echo vulkan || echo cpu)"
           if [ ! -x "$BUILD/bin/llama-bench" ] \
              || [ "$(git -C "$DIR" rev-parse HEAD)" != "$LLAMA_PIN" ]; then
-            [ -d "$DIR/.git" ] || git clone https://github.com/ggml-org/llama.cpp "$DIR"
+            [ -d "$DIR/.git" ] || git clone "https://github.com/$LLAMA_REPO" "$DIR"
             git -C "$DIR" fetch origin "$LLAMA_PIN"
             git -C "$DIR" checkout "$LLAMA_PIN"
             if [ "$VARIANT" = gpu ]; then
@@ -105,6 +120,7 @@ jobs:
           MODEL=""
           for cand in "$HOME/workplace/geistlib/gguf_artifacts/$FILE" \
                       "$HOME/gguf-campaign/$FILE" \
+                      "$HOME"/workplace/geistlib-wt/*/gguf_artifacts/"$FILE" \
                       "$GEIST_GGUF_PATH"; do
             if [ -f "$cand" ] && [ "$(sha256sum "$cand" | cut -d' ' -f1)" = "$WANT" ]; then
               MODEL="$cand"; break
@@ -128,9 +144,14 @@ jobs:
         run: |
           set -eo pipefail
           BUILD=$([ "${{ inputs.protocol }}" = gpu ] && echo build-vulkan || echo build-cpu)
+          if [ "${{ inputs.llama_repo }}" = "ggml-org/llama.cpp" ]; then
+            DIR="$HOME/llama.cpp-cross-engine"
+          else
+            DIR="$HOME/llama.cpp-cross-engine-$(echo "${{ inputs.llama_repo }}" | tr '/' '_')"
+          fi
           python3 tools/bench_cross_engine.py \
             --geist bin/linux/release/tests/bench_perf_sweep \
-            --llama "$HOME/llama.cpp-cross-engine/$BUILD/bin/llama-bench" \
+            --llama "$DIR/$BUILD/bin/llama-bench" \
             --gguf "$MODEL_PATH" \
             --protocol "benchmark/cross_engine_${{ inputs.protocol }}_protocol.json" \
             --host-profile "${{ inputs.host_profile }}" \
