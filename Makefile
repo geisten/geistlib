@@ -430,12 +430,14 @@ bench: bin fetch-bench-model
 	  --target "$(TARGET)" --mode "$(MODE)" $(BENCH_ARGS)
 
 # ---- make bench-synth: the hermetic baseline -------------------------------
-# No download. tools/gen_synth_gguf.py writes a Llama-family GGUF with a real
-# model's geometry and random weights (stdlib only, seconds), then the same
+# No download. tools/gen_synth_gguf.py writes a GGUF with a real model's
+# geometry and random weights (stdlib only, seconds), then the same
 # bench_perf_sweep every other suite uses runs on it. Kernel, attention and
 # memory timings transfer to a real model of that geometry and quantization;
 # the outputs, and anything value-dependent (expf slow paths), do not — see
-# the tool's docstring. SYNTH_PRESET: llama32-1b-q4_k | smollm2-360m-q8_0.
+# the tool's docstring. SYNTH_PRESET: llama32-1b-q4_k | smollm2-360m-q8_0 |
+# bonsai2-27b-pq2_0 (7.2 GB, under a minute to write; shorten SYNTH_ARGS for
+# it on a CPU host).
 SYNTH_DIR    ?= gguf_artifacts/synth
 SYNTH_PRESET ?= llama32-1b-q4_k
 SYNTH_GGUF   := $(SYNTH_DIR)/$(SYNTH_PRESET).gguf

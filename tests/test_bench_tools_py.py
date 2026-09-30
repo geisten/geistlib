@@ -22,6 +22,7 @@ def load_module(name: str, relative: str):
 
 quality = load_module("bench_quality_perf", "tools/bench_quality_perf.py")
 apple_ab = load_module("bench_mac_ab", "tools/bench_mac_ab.py")
+revision_ab = load_module("bench_revision_ab", "tools/bench_revision_ab.py")
 ratio_gate = load_module("perf_ratio_gate", "benchmark/perf_ratio_gate.py")
 
 
@@ -231,6 +232,126 @@ class BenchmarkToolsTest(unittest.TestCase):
         active = [{**variants[0], "binary_sha256": "new"}]
         with self.assertRaisesRegex(ValueError, "variant binaries"):
             apple_ab.validate_resume(metadata, [], metadata, active, "base")
+
+
+def _revision_runs(times: dict[str, list[float]], seq_len: int = 512) -> list[dict]:
+    """One run per variant and cycle; times[label][cycle] is its prefill."""
+    return [{"cycle": cycle, "variant": label,
+             "rows": [{"seq_len": seq_len, "prefill_ms": value, "decode_ms": 0.0}]}
+            for label, series in times.items() for cycle, value in enumerate(series)]
+
+
+REVISION_METADATA = {
+    "baseline": "base",
+    "control": True,
+    "revisions": [{"label": "base", "ref": "main", "sha": "a" * 40},
+                  {"label": "new", "ref": "HEAD", "sha": "b" * 40}],
+    "model": {"file": "m.gguf", "sha256": "c" * 64},
+    "protocol": {"cycles": 6, "seq_lens": "512", "decode_n": 0, "repeats": 1, "warmup": 16},
+    "environment": {"OMP_WAIT_POLICY": "active"},
+    "system": {"cpu": "cpu", "cores": 4, "os": "Linux", "thp": "[madvise]"},
+}
+
+
+class RevisionAbTest(unittest.TestCase):
+    BASE = [100.0, 104.0, 98.0, 101.0, 99.0, 103.0, 97.0, 102.0]
+
+    def test_revisions_need_unique_labels_and_leave_the_control_free(self):
+        self.assertEqual(revision_ab.parse_revs(["base=main", "new=HEAD~1"]),
+                         [("base", "main"), ("new", "HEAD~1")])
+        for bad in (["base"], ["=main"], ["base="], ["base=a", "base=b"], ["control=main"]):
+            with self.assertRaises(ValueError):
+                revision_ab.parse_revs(bad)
+
+    def test_the_bench_is_found_where_target_and_mode_put_it(self):
+        self.assertEqual(revision_ab.bench_relpath(["CC=gcc-14"], "linux"),
+                         Path("bin/linux/release/tests/bench_perf_sweep"))
+        self.assertEqual(revision_ab.bench_relpath(["MODE=asan", "TARGET=pi5"], "linux"),
+                         Path("bin/pi5/asan/tests/bench_perf_sweep"))
+
+    def test_a_run_counts_the_median_of_its_repeats(self):
+        row = {"prefill_ms": 16.3, "samples": {"prefill_ms": [9.0, 10.0, 30.0]}}
+        self.assertEqual(revision_ab.run_value(row, "prefill_ms"), 10.0)
+        self.assertEqual(revision_ab.run_value({"prefill_ms": 16.3}, "prefill_ms"), 16.3)
+
+    def test_the_interval_ranks_are_the_sign_tests(self):
+        # 1 - 2 P(Bin(n, 1/2) < k) >= 95 %: five cycles bound nothing, six to
+        # eight only by their extremes, nine and ten by the 2nd, twelve by the
+        # 3rd (nine: 1 - 2 * 10 / 512 = 96.1 %; eight: 1 - 2 * 9 / 256 = 93 %).
+        ranks = {n: revision_ab.interval_rank(n) for n in (5, 6, 8, 9, 10, 12, 16)}
+        self.assertEqual(ranks, {5: None, 6: 1, 8: 1, 9: 2, 10: 2, 12: 3, 16: 4})
+        self.assertIsNone(revision_ab.interval_rank(revision_ab.MIN_CYCLES - 1))
+        self.assertEqual(revision_ab.interval_rank(revision_ab.MIN_CYCLES), 1)
+
+    def test_noise_stays_noise_and_a_change_is_found_either_way(self):
+        jitter = [(a, a * (1.0 + 0.01 * (i % 3 - 1))) for i, a in enumerate(self.BASE)]
+        same = revision_ab.paired_change(jitter)
+        self.assertEqual(revision_ab.verdict(same), "within noise")
+        self.assertEqual((same["low"], same["high"]), (0.99, 1.01))
+        gain = revision_ab.paired_change([(a, 0.8 * a) for a in self.BASE])
+        self.assertEqual(revision_ab.verdict(gain), "faster")
+        self.assertAlmostEqual(gain["ratio"], 0.8)
+        self.assertEqual((gain["faster"], gain["cycles"]), (8, 8))
+        loss = revision_ab.paired_change([(a, 1.1 * a) for a in self.BASE])
+        self.assertEqual(revision_ab.verdict(loss), "slower")
+
+    def test_seven_of_eight_is_noise_and_nine_of_ten_is_not(self):
+        def pairs(wins, n):
+            return [(100.0, 97.0 if i < wins else 101.0) for i in range(n)]
+
+        self.assertEqual(revision_ab.verdict(revision_ab.paired_change(pairs(7, 8))),
+                         "within noise")
+        self.assertEqual(revision_ab.verdict(revision_ab.paired_change(pairs(9, 10))), "faster")
+        with self.assertRaises(ValueError):
+            revision_ab.paired_change(pairs(5, 5))
+
+    def test_the_interval_is_the_ranked_ratios(self):
+        ratios = [0.90, 1.08, 0.94, 1.02, 0.96, 1.06, 0.98, 1.00, 0.92, 1.04]
+        change = revision_ab.paired_change([(100.0, 100.0 * r) for r in ratios])
+        self.assertEqual((change["low"], change["high"]), (0.92, 1.06))  # rank 2 of 10
+        self.assertAlmostEqual(change["ratio"], 0.99)
+
+    def test_cycles_pair_by_cycle_not_by_rank(self):
+        # Faster in seven cycles, slower in one: noise at eight cycles, though
+        # the variant's times sorted against the baseline's all look lower.
+        base = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0]
+        new = [106.0, 95.0, 96.0, 97.0, 98.0, 99.0, 100.0, 101.0]
+        change = revision_ab.paired_change(list(zip(base, new)))
+        self.assertEqual(change["faster"], 7)
+        self.assertEqual(revision_ab.verdict(change), "within noise")
+
+    def test_drift_between_cycles_cancels_within_them(self):
+        # The host doubles its speed from one cycle to the next; each cycle's
+        # pair still shows the same -5 %, and so does the per-cycle ratio.
+        drift = [100.0, 210.0, 90.0, 180.0, 120.0, 240.0, 95.0, 200.0]
+        change = revision_ab.paired_change([(a, 0.95 * a) for a in drift])
+        self.assertEqual(revision_ab.verdict(change), "faster")
+        self.assertAlmostEqual(change["high"], 0.95)
+
+    def test_cycles_are_paired_and_untimed_phases_left_out(self):
+        runs = _revision_runs({"base": self.BASE, "new": [0.8 * a for a in self.BASE],
+                               "control": self.BASE[1:] + self.BASE[:1]})
+        runs = [run for run in runs if not (run["variant"] == "new" and run["cycle"] == 7)]
+        rows = revision_ab.summarize(runs, ["base", "new", "control"], "base")
+        # decode_ms reads 0.00: no decode rows. Cycle 7 lacks "new": 7 cycles.
+        self.assertEqual([(r["metric"], r["variant"]) for r in rows],
+                         [("prefill_ms", "new"), ("prefill_ms", "control")])
+        self.assertEqual(rows[0]["cycles"], 7)
+        self.assertEqual(rows[0]["verdict"], "faster")
+        self.assertEqual(rows[1]["verdict"], "within noise")
+        short = [run for run in runs if run["cycle"] < revision_ab.MIN_CYCLES - 1]
+        self.assertEqual(revision_ab.summarize(short, ["base", "new", "control"], "base"), [])
+
+    def test_the_report_warns_when_the_control_moves(self):
+        runs = _revision_runs({"base": self.BASE, "new": self.BASE,
+                               "control": [1.1 * a for a in self.BASE]})
+        rows = revision_ab.summarize(runs, ["base", "new", "control"], "base")
+        report = revision_ab.render_report(REVISION_METADATA, rows)
+        self.assertIn("| prefill_ms @ 512 | new |", report)
+        self.assertIn("within noise", report)
+        self.assertIn("The control moved in 1 of 1 rows", report)
+        quiet = revision_ab.render_report(REVISION_METADATA, rows[:1])
+        self.assertNotIn("The control moved", quiet)
 
 
 if __name__ == "__main__":
