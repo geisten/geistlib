@@ -185,14 +185,14 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
         st->copy_u32_pipeline != nullptr && (src_offset % 4u) == 0 && (dst_offset % 4u) == 0 &&
         (n_bytes % 4u) == 0) {
         void *enc = metal_sequence_encoder(st);
+        /* Bound at the copy's own offsets, not at 0: the batch's reference
+         * set tells views of one MTLBuffer apart by bind offset (#528). */
         struct {
             uint32_t so, dof, n;
-        } cp = {(uint32_t) (src_offset / 4u),
-                (uint32_t) (dst_offset / 4u),
-                (uint32_t) (n_bytes / 4u)};
+        } cp = {0u, 0u, (uint32_t) (n_bytes / 4u)};
         metal_msg_send_set_pipeline(st, enc, st->copy_u32_pipeline);
-        metal_msg_send_set_buffer(st, enc, src, 0, 0);
-        metal_msg_send_set_buffer(st, enc, dst, 0, 1);
+        metal_msg_send_set_buffer(st, enc, src, src_offset, 0);
+        metal_msg_send_set_buffer(st, enc, dst, dst_offset, 1);
         metal_msg_send_set_bytes(st, enc, &cp, sizeof(cp), 2);
         const struct metal_size groups  = {(cp.n + 255u) / 256u, 1, 1};
         const struct metal_size threads = {256, 1, 1};
@@ -252,9 +252,9 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
  * aligned, so the wrapper covers whole pages and the caller keeps the
  * in-page offset. Neighbouring wrappers overlap on a boundary page; that is
  * fine for read-only file pages (llama.cpp's Metal backend does the same).
- * A heap pointer — load-from-memory, an arena slice — fails the region
- * check and takes the copy path, the only one safe for memory whose extent
- * the backend does not know. */
+ * A heap pointer (load-from-memory) fails the region check and takes the
+ * copy path, the only one safe for memory whose extent the backend does not
+ * know. */
 static bool
 metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t *len_out) {
     const uintptr_t page = (uintptr_t) vm_page_size;
@@ -292,14 +292,18 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
 }
 
 /* Alias a host-resident region (mmap'd weight or an arena sub-range) as a
- * device buffer. A region that lives in a file-backed mapping is wrapped in
- * place (newBufferWithBytesNoCopy over its page range, base_off pointing at
- * the bytes) — the model is then resident once, as file pages, instead of
- * once as file pages and once more as device copies (#357). Anything else
- * arrives as an arbitrary 64-byte-aligned sub-pointer that NoCopy cannot
- * wrap, and is copied into a SHARED MTLBuffer (unified memory, host+GPU
- * coherent). Weights are read-only; arena scratch is always accessed via
- * this handle, so a per-buffer copy stays coherent. */
+ * device buffer, without a copy wherever the memory allows one:
+ *  - inside a live Metal buffer (a scratch-pool slice, a weight-arena
+ *    tensor): a view of that buffer — its MTLBuffer, retained, at the
+ *    absolute base_off (#528). A copy left the pool as dead memory beside
+ *    per-slice duplicates. Views share their parent's MTLBuffer, and the
+ *    open batch tracks references per MTLBuffer, so mapping one slice
+ *    flushes while a sibling is bound — conservative, never unsafe;
+ *  - in a file-backed mapping: wrapped in place (newBufferWithBytesNoCopy
+ *    over its page range, base_off pointing at the bytes), so the model is
+ *    resident once, as file pages (#357);
+ *  - anything else (a heap pointer NoCopy cannot wrap) is copied into a
+ *    SHARED MTLBuffer and always accessed through this handle. */
 [[nodiscard]] enum geist_status metal_buffer_create_aliased(struct geist_backend  *be,
                                                             void                  *host_ptr,
                                                             size_t                 n_bytes,
@@ -323,11 +327,16 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
         geist_backend_set_error(be, GEIST_E_OOM, "metal: failed to allocate buffer handle");
         return GEIST_E_OOM;
     }
-    uint8_t *base       = nullptr;
-    size_t   base_len   = 0;
-    size_t   base_off   = 0;
-    void    *mtl_buffer = nullptr;
-    if (metal_host_range_file_backed(host_ptr, n_bytes, &base, &base_len)) {
+    uint8_t             *base       = nullptr;
+    size_t               base_len   = 0;
+    size_t               base_off   = 0;
+    void                *mtl_buffer = nullptr;
+    struct geist_buffer *parent     = metal_buf_reg_find(st, host_ptr, &base_off);
+    if (parent != nullptr && n_bytes <= parent->bytes - base_off) {
+        mtl_buffer = parent->buffer;
+        metal_msg_send_void0(st, mtl_buffer, "retain");
+        base_off += parent->base_off;
+    } else if (metal_host_range_file_backed(host_ptr, n_bytes, &base, &base_len)) {
         mtl_buffer = metal_msg_send_id_ptr_size_uint_ptr(
                 st,
                 st->device,
@@ -403,7 +412,10 @@ void metal_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
     }
 
     struct metal_state *st = dst->owner;
-    if (dst == src && metal_ranges_overlap(dst_offset, src_offset, n_bytes)) {
+    /* Views (#528) put distinct handles on one MTLBuffer: overlap is a
+     * property of the absolute ranges, not of handle identity. */
+    if (dst->buffer == src->buffer &&
+        metal_ranges_overlap(dst->base_off + dst_offset, src->base_off + src_offset, n_bytes)) {
         struct geist_buffer *tmp = nullptr;
         enum geist_status    s   = metal_new_buffer(
                 st->backend, n_bytes, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, false, &tmp);
@@ -436,7 +448,7 @@ metal_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t src[
     if (n_bytes == 0) {
         return GEIST_OK;
     }
-    metal_flush_if_referenced(buf->owner, buf->buffer);
+    metal_flush_if_referenced(buf->owner, buf->buffer, buf->base_off, buf->bytes);
 
     if (buf->host_visible) {
         memcpy(buf->mapped, src, n_bytes);
@@ -465,7 +477,7 @@ metal_buffer_download(size_t n_bytes, uint8_t dst[static n_bytes], const struct 
     if (n_bytes == 0) {
         return GEIST_OK;
     }
-    metal_flush_if_referenced(buf->owner, buf->buffer);
+    metal_flush_if_referenced(buf->owner, buf->buffer, buf->base_off, buf->bytes);
 
     if (buf->host_visible) {
         memcpy(dst, buf->mapped, n_bytes);
@@ -496,7 +508,7 @@ void *metal_buffer_map(struct geist_buffer *buf) {
      * visible; write: encoded ops must not observe the new contents). */
     {
         struct metal_state *st = buf->owner;
-        if (metal_seq_references(st, buf->buffer)) {
+        if (metal_seq_references(st, buf->buffer, buf->base_off, buf->bytes)) {
             if (metal_env_enabled("GEIST_METAL_STRICT_BATCH")) {
                 geist_backend_set_error(st->backend,
                                         GEIST_E_BACKEND,

@@ -227,12 +227,12 @@ static inline void metal_msg_send_copy_buffer(struct metal_state *st,
 }
 
 /* Defined in sequence.c (non-static since the module split). */
-void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf);
+void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf, size_t off);
 
 static inline void metal_msg_send_set_buffer(
         struct metal_state *st, void *receiver, void *buffer, size_t offset, size_t index) {
     void *sel = metal_sel_register_name(st, "setBuffer:offset:atIndex:");
-    metal_seq_mark_buffer(st, buffer);
+    metal_seq_mark_buffer(st, buffer, offset);
     union {
         void *raw;
         void (*fn)(void *, void *, void *, size_t, size_t);

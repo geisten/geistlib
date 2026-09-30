@@ -127,10 +127,18 @@ struct metal_state {
     struct metal_buf_reg_entry *buf_reg;
     size_t                      buf_reg_count;
     size_t                      buf_reg_cap;
-    /* MTLBuffers referenced by ops encoded on the open (unflushed) batch;
-     * a host map/upload/download of a referenced buffer forces a flush.
-     * Open-addressed pointer set; overflow degrades to always-flush. */
-    void  *seq_ref[4096];
+    /* Buffers bound by ops encoded on the open (unflushed) batch, as
+     * (MTLBuffer, bind offset) pairs; a host map/upload/download of a
+     * range holding a bind offset forces a flush. Every handle binds at
+     * its base_off, so the offset tells views of one MTLBuffer apart
+     * (#528). */
+    struct metal_seq_ref {
+        const void *buf;
+        size_t      off;
+    } seq_ref[4096];
+    uint16_t seq_ref_used[4096];
+    /* seq_ref_used[0 .. seq_ref_count) are the occupied slots, in insertion
+     * order. Open-addressed set; overflow degrades to always-flush. */
     size_t seq_ref_count;
     bool   seq_ref_overflow;
     void  *q4k_library;
@@ -476,9 +484,10 @@ struct geist_buffer {
     void               *mapped;
     size_t              bytes;
     /* Where this buffer's bytes start inside `buffer`. Non-zero only for a
-     * zero-copy alias of the loader's mmap (#357): the MTLBuffer wraps the
-     * enclosing page range, the weight begins base_off bytes into it. Every
-     * bind and blit adds it; `mapped` already has it applied. */
+     * zero-copy alias: of the loader's mmap (#357), where the MTLBuffer
+     * wraps the enclosing page range, or of another Metal buffer (#528),
+     * whose MTLBuffer the view shares. Every bind and blit adds it;
+     * `mapped` already has it applied. */
     size_t                 base_off;
     enum geist_buffer_role role;
     unsigned int           memory_flags;
@@ -959,11 +968,13 @@ void metal_release_sequence_objects(struct metal_state *st);
 
 void metal_seq_ref_clear(struct metal_state *st);
 
-bool metal_seq_references(struct metal_state *st, const void *mtl_buf);
+/* Could the open batch touch bytes [off, off + n) of mtl_buf? n = SIZE_MAX
+ * asks about the whole buffer. */
+bool metal_seq_references(struct metal_state *st, const void *mtl_buf, size_t off, size_t n);
 
 void metal_batch_flush(struct metal_state *st);
 
-void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf);
+void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size_t off, size_t n);
 
 [[nodiscard]] enum geist_status metal_command_sequence_begin(struct geist_backend            *be,
                                                              enum geist_command_sequence_kind kind,
