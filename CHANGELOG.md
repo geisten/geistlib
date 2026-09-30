@@ -22,6 +22,19 @@ minor release.
 - Optional `geist_backend_resources_snapshot`: Metal device allocated bytes and
   unified-memory attribution, callable during inference without GPU synchronization.
   CPU providers explicitly return unsupported. Allocation is not physical residency.
+- **`tools/gen_synth_gguf.py --preset bonsai2-27b-pq2_0`**: a synthetic
+  Ternary-Bonsai-2-27B, the real file's geometry, tensor formats (`PQ2_0`, BF16
+  DeltaNet alpha/beta) and `prism.hadamard` keys to the byte (7.2 GB), so the
+  27B ternary path can be timed without the download. `benchmark/results/
+  TERNARY.md` has the first x86 numbers taken with it.
+- **`tools/bench_revision_ab.py`: end-to-end A/B of git revisions, each built
+  from scratch.** Every revision gets a git worktree of its own;
+  `bench_perf_sweep` runs on the binaries in rotating order, next to a copy of
+  the baseline binary as a control; each row reports the median per-cycle
+  change with a distribution-free 95 % interval (the sign test's). An
+  incrementally built tree differs from a clean build in code layout, which
+  on x86-64 moved single prefill stages by 2-3 % on its own, and the control
+  shows how far the host moves while it runs (`benchmark/METHODOLOGY.md`).
 
 
 ### Added
@@ -121,8 +134,8 @@ minor release.
   times both). End to end (synthetic weights, both builds from scratch) at
   2048 positions, prefill -11 % and decode -11 % in the Llama 3.2 1B
   geometry (Q4_K), -24 % and -23 % in SmolLM2-360M's (Q8_0); at 512, the
-  same within the noise in Llama 3.2 1B's, -10 % and -20 % in
-  SmolLM2-360M's.
+  same within the noise in Llama 3.2 1B's, and in SmolLM2-360M's prefill
+  -8 % (15 of 16 runs) and decode within the noise.
 - **Attention over the packed INT4 KV cache is a backend op too**
   (`fused->attention_kv_int4`, `GEIST_FUSED_ATTN_KV_INT4`,
   `struct geist_attention_kv_int4_args`, `<geist_backend.h>`): K and V are

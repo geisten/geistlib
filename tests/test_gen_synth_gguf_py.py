@@ -6,8 +6,11 @@ would make every number taken with it meaningless, so the structure is pinned
 here with an independent minimal GGUF reader: header, metadata, tensor table,
 alignment, payload sizes, valid fp16 block scales, and seed determinism.
 """
+import contextlib
 import hashlib
 import importlib.util
+import io
+import math
 import struct
 import tempfile
 import unittest
@@ -41,19 +44,26 @@ def read_gguf(path: Path) -> tuple[dict, list[tuple], int, bytes]:
         key = string()
         (vt,) = struct.unpack_from("<I", data, p)
         p += 4
-        if vt == 4:
-            (meta[key],) = struct.unpack_from("<I", data, p)
+        if vt in (4, 5):
+            (meta[key],) = struct.unpack_from("<I" if vt == 4 else "<i", data, p)
             p += 4
         elif vt == 6:
             (meta[key],) = struct.unpack_from("<f", data, p)
             p += 4
+        elif vt == 7:
+            meta[key] = data[p] != 0
+            p += 1
         elif vt == 8:
             meta[key] = string()
         elif vt == 9:
             et, n = struct.unpack_from("<IQ", data, p)
             p += 12
-            assert et == 8
-            meta[key] = [string() for _ in range(n)]
+            if et == 5:
+                meta[key] = list(struct.unpack_from(f"<{n}i", data, p))
+                p += 4 * n
+            else:
+                assert et == 8
+                meta[key] = [string() for _ in range(n)]
         else:
             raise AssertionError(f"unexpected value type {vt}")
     tensors = []
@@ -124,10 +134,69 @@ class GenSynthGgufTest(unittest.TestCase):
 
     def test_presets_are_complete(self):
         for name, cfg in gen.PRESETS.items():
-            self.assertEqual(cfg["d_model"] % cfg["heads"], 0, name)
+            if cfg.get("arch") != "qwen35":  # qwen35 sets its head width apart
+                self.assertEqual(cfg["d_model"] % cfg["heads"], 0, name)
             self.assertEqual(cfg["heads"] % cfg["kv_heads"], 0, name)
             self.assertIn(cfg["wtype"], gen.QTYPES)
             self.assertIn(cfg["embd_type"], gen.QTYPES)
+
+    def test_bonsai_preset_is_the_real_file_to_the_byte(self):
+        # Ternary-Bonsai-2-27B-PQ2_0.gguf as llama-bench reports it (model_n_params,
+        # model_size in benchmark/results/raw/*bonsai2-27b-pq2*.jsonl): 851 tensors.
+        _, tensors = gen.build_qwen35(gen.PRESETS["bonsai2-27b-pq2_0"], 1234)
+        params = sum(math.prod(dims) for _, dims, _, _ in tensors)
+        size = sum(math.prod(dims) // gen.QTYPES[qt][1] * gen.QTYPES[qt][2]
+                   for _, dims, qt, _ in tensors)
+        self.assertEqual((len(tensors), params, size), (851, 26_895_998_464, 7_195_047_936))
+
+    def test_qwen35_preset_takes_only_its_depth(self):
+        # A silently ignored --d-model would time another model than asked for.
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()):
+            out = Path(d) / "x.gguf"
+            for extra in (["--d-model", "64"], ["--wtype", "q8_0"], ["--spm-tokenizer"]):
+                with self.assertRaises(SystemExit):
+                    gen.main([str(out), "--preset", "bonsai2-27b-pq2_0"] + extra)
+            self.assertFalse(out.exists())
+
+    def test_qwen35_structure_rotation_and_ternary_blocks(self):
+        cfg = dict(arch="qwen35", layers=4, d_model=1024, heads=4, kv_heads=1, head_dim=256,
+                   rope_dims=64, ffn=2048, vocab=1000, dn_k_heads=2, dn_v_heads=6,
+                   dn_head_dim=128, conv=4, interval=4, wtype="pq2_0", embd_type="pq2_0",
+                   ab_type="bf16", hadamard_block=256)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "qwen35.gguf"
+            gen.write_gguf(str(path), *gen.build_qwen35(cfg, 7), 7)
+            meta, tensors, data_start, data = read_gguf(path)
+        self.assertEqual(meta["general.architecture"], "qwen35")
+        self.assertEqual(len(meta["tokenizer.ggml.tokens"]), 1000)
+        by_name = {name: (dims, ttype, off) for name, dims, ttype, off in tensors}
+        # Layers 0-2 are DeltaNet (14 tensors), layer 3 attention (11), plus 3 globals.
+        self.assertEqual(len(tensors), 3 + 3 * 14 + 11)
+        self.assertEqual(by_name["blk.0.attn_qkv.weight"][0], (1024, 2 * 256 + 768))
+        self.assertEqual(by_name["blk.0.ssm_alpha.weight"][:2], ((1024, 6), 30))
+        self.assertEqual(by_name["blk.3.attn_q.weight"][0], (1024, 2 * 4 * 256))
+        names = meta["prism.hadamard.weight_names"]
+        self.assertEqual(len(names), 3 * 6 + 7 + 1)
+        self.assertTrue(set(names) <= set(by_name))
+        self.assertEqual(meta["prism.hadamard.inverse_weight_names"], ["token_embd.weight"])
+        self.assertTrue(meta["prism.hadamard.gdn_v_grouped"])
+        widths = meta["prism.hadamard.sign_widths"]
+        self.assertEqual(widths, sorted({by_name[n][0][0] for n in names}))
+        self.assertEqual(len(meta["prism.hadamard.sign_values"]), sum(widths))
+        self.assertEqual(set(meta["prism.hadamard.sign_values"]), {-1, 1})
+        for w in widths:
+            self.assertEqual(w % meta["prism.hadamard.block_size"], 0)
+        # Every PQ2_0 block: the fixed scale, and codes 0..2 only (no +2).
+        for name, (dims, ttype, off) in by_name.items():
+            if ttype != 142:
+                continue
+            start = data_start + off
+            n_blocks = math.prod(dims) // 128
+            for b in range(n_blocks):
+                blk = data[start + 34 * b:start + 34 * b + 34]
+                self.assertAlmostEqual(struct.unpack_from("<e", blk)[0], gen.SCALES[0], places=5)
+                self.assertFalse(any((q >> s) & 3 == 3 for q in blk[2:] for s in (0, 2, 4, 6)),
+                                 name)
 
 
 if __name__ == "__main__":
