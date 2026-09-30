@@ -166,6 +166,22 @@ view_3d_f16(struct geist_buffer *b, int64_t s0, int64_t s1, int64_t s2) {
     return t;
 }
 
+/* I8 variant — the INT8 KV cache rows. */
+static inline struct geist_tensor
+view_3d_i8(struct geist_buffer *b, int64_t s0, int64_t s1, int64_t s2) {
+    struct geist_tensor t = view_3d(b, s0, s1, s2);
+    t.dtype               = GEIST_DTYPE_I8;
+    return t;
+}
+
+/* U8 variant — the packed INT4 KV cache rows (two values per byte). */
+static inline struct geist_tensor
+view_3d_u8(struct geist_buffer *b, int64_t s0, int64_t s1, int64_t s2) {
+    struct geist_tensor t = view_3d(b, s0, s1, s2);
+    t.dtype               = GEIST_DTYPE_U8;
+    return t;
+}
+
 /* ---- Per-row activation-quant helpers --------------------------------- *
  *
  * AWQ inverse scale: y[t, j] *= scale[j]. No-op if scale == nullptr.
@@ -304,13 +320,17 @@ void attention_kivi_via_buffers(size_t         n_q,
                                 float         *scores,
                                 float         *out);
 
-/* Parallelized over query positions; `scores` scratch is now private per
- * iteration, so it is no longer a caller-supplied buffer. */
+/* Parallelized over query positions and heads; the softmax scratch is
+ * private per work item. `scratch` holds the partial results of a decode
+ * split into context chunks: pass attention_int8_scratch_floats(n_q_heads,
+ * head_dim) floats (forward.h). With less, or nullptr, decode runs unsplit
+ * (slower on GQA/MQA shapes, the same up to rounding). */
 void attention_int8_via_buffers(size_t        n_q,
                                 size_t        n_q_heads,
                                 size_t        head_dim,
                                 size_t        n_kv,
                                 size_t        n_kv_heads,
+                                size_t        scratch_floats,
                                 size_t        q_offset,
                                 size_t        sliding_window,
                                 const float  *q,
@@ -318,7 +338,8 @@ void attention_int8_via_buffers(size_t        n_q,
                                 const float  *k_scale,
                                 const int8_t *v_q8,
                                 const float  *v_scale,
-                                float        *out);
+                                float        *out,
+                                float        *scratch);
 
 /* Packed-INT4 variant (issue #61): k_q4/v_q4 hold two 4-bit values per byte
  * (head_dim/2 bytes per row); otherwise identical to the INT8 kernel. */

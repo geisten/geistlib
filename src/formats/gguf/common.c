@@ -17,14 +17,14 @@
 #include <arm_neon.h>
 #endif
 
-#if !(defined(__ARM_FP) && (__ARM_FP & 2))
+#if !defined(GEIST_FP16_TO_FP32_INLINE)
 /* IEEE-754 fp16 → fp32. Bit-exact decode (subnormals + inf + nan handled).
  *
  * Used only on builds without hardware fp16 support. On ARM64 with native
- * __fp16 (the typical Pi 5 / Apple Silicon case), the header has a
- * `static inline` version that compiles to a single `fcvt` instruction
- * and inlines everywhere, eliminating the call-overhead measured at ~5%
- * of Pi 5 Gemma 4 decode time. */
+ * __fp16 (the typical Pi 5 / Apple Silicon case) and on x86 with F16C, the
+ * header has a `static inline` version that compiles to a single `fcvt`
+ * or `vcvtph2ps` and inlines everywhere, eliminating the call-overhead
+ * measured at ~5% of Pi 5 Gemma 4 decode time. */
 float fp16_to_fp32(uint16_t h) {
     uint32_t sign = (uint32_t) (h >> 15) & 0x1;
     uint32_t exp  = (uint32_t) (h >> 10) & 0x1F;

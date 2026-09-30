@@ -186,7 +186,13 @@ fusion has a decomposed equivalent except `hadamard_rotate`, whose decomposition
 would be a host round-trip per call, so a rotated model refuses to load on a
 backend that leaves it null. Qwen35's Gated-DeltaNet mixer has a dedicated
 optional backend hook and a portable architecture-layer implementation rather
-than placeholder SSM enum values.
+than placeholder SSM enum values. Attention over the INT8 KV cache is the same
+kind of hook (`fused->attention_kv_int8`: AVX2 or, where the ISA dispatch
+allows it, AVX-512 VNNI on `cpu_x86`, `vdotq_s32` on `cpu_neon`), and over the
+packed INT4 cache (`fused->attention_kv_int4`, `cpu_neon`): the decomposed
+equivalent is the architecture's host loop over the same cache bytes, portable
+C, not `attention` on dequantized rows, because the scores are integer dots of
+an int8-quantized query. `GEIST_KV_INT8_FUSED=0` keeps the host loops.
 
 ## Sessions and the KV cache
 
@@ -199,6 +205,15 @@ and prefix pinning
 (`geist_session_pin_prefix`) to
 amortize a constant system prompt across chat turns. Speculative decode drafts
 via an n-gram lookup over history and verifies in one batched forward.
+
+Where the backend asks for it (`caps.kv_q8_block` for INT8 and INT4,
+`caps.kv_dense_block` for FP32 and F16: `cpu_x86`), a layer's K and V data are
+one allocation, and V starts further into its page than K: half a row in the
+INT8 and INT4 caches, one KV head's slice in the dense ones (not at all with
+one KV head, whose rows lie next to each other). The rows of one KV head lie a
+cache row apart; at the power-of-two rows of most models they take one
+n_kv_heads-th of the cache sets, and K and V as allocations of their own
+started at the same page offset and took the same ones.
 
 The rotation and packed-INT4 modes store K post-RoPE and rotated; this is only
 safe because geist never re-bases cached positions (the sliding window masks,
@@ -236,8 +251,8 @@ Per directory, the file to open first:
 | `src/backends/cpu_neon/` | `weight_resolve.c` | load-time kernel binding, NEON kernels |
 | `src/backends/cpu_x86/` | `backend.c` | AVX-512/VNNI kernels, runtime dispatch |
 | `src/backends/cpu_scalar/` | `backend.c` | the portable correctness oracle (except ternary — see below) |
-| `src/backends/metal/` | `backend.c` | Apple-GPU path (shaders in `metal_shaders.h`) |
-| `src/backends/vulkan/` | `backend.c` | Linux/NVIDIA-GPU path (SPIR-V in `shaders/`) |
+| `src/backends/metal/` | `ops.c` | Apple-GPU path (shaders in `metal_shaders.h`) |
+| `src/backends/vulkan/` | `ops.c` | Linux/NVIDIA-GPU path (SPIR-V in `shaders/`) |
 | `src/formats/gguf/` | `common.c` | per-quant decode (one file per format) |
 | `src/io/` | `gguf_reader.c` | GGUF/safetensors file parsing |
 | `tools/` | `eval_geist.c` | the eval REPL and the Python bench/eval harnesses |

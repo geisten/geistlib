@@ -47,7 +47,7 @@
  * 60960 per block). The fp32 accumulation across blocks uses single rounding
  * per block. Cross-ISA differences are bounded by fp32 reorder ε.
  *
- * Win-criterion γ tolerance (see docs/LINUX_X86_SPEC.md §Quality gates):
+ * Tolerance between tiers, checked by test_w4a8_kernel_unit.c:
  *   |y_isa - y_scalar| ≤ 1e-3 abs/rel for n_blocks ≤ 1024.
  *
  * --- Error model -------------------------------------------------------------
@@ -72,7 +72,7 @@ enum w4a8_isa {
     W4A8_ISA_AVX2        = 1,
     W4A8_ISA_AVX512      = 2,
     W4A8_ISA_AVX512_VNNI = 3,
-    W4A8_ISA_AVX512_BF16 = 4, /* alias of VNNI for now; reserved for Phase 2 */
+    W4A8_ISA_AVX512_BF16 = 4, /* top of the order, never probed: "no override" */
 };
 
 /* Width of one block; not a runtime parameter — required by the layout. */

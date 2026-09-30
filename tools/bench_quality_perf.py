@@ -172,12 +172,15 @@ def spread_pct(rec: dict) -> float:
 
 
 def ttft_ms(rec: dict) -> float:
-    """Time to first token: prefill plus one decode step.
+    """Time to first token: the prefill plus the first decode step.
 
-    Derived, not measured directly — the error is well under one token time.
+    Measured by bench_perf_sweep (ttft_ms). A record from a sweep that predates
+    the field falls back to the prefill plus the mean decode step.
     This is the ENGINE's TTFT; a request through an agent runtime additionally pays
     tokenization, chat templating and any tool round trip.
     """
+    if "ttft_ms" in rec:
+        return rec["ttft_ms"]
     decode_n = rec.get("decode_n") or 1
     return rec["prefill_ms"] + rec["decode_ms"] / decode_n
 
@@ -235,7 +238,7 @@ def perf_suite(args: argparse.Namespace) -> None:
         print(f"recorded to {args.benchmark_md}")
 
 
-# Marker block in benchmark/BENCHMARK.md that this script owns. Hand-written prose above
+# Marker block in benchmark/results/APPLE.md that this script owns. Hand-written prose above
 # the marker is preserved; only the auto-recorded table below it is rewritten.
 MARKER = "<!-- BENCH:AUTO -->"
 
@@ -429,7 +432,7 @@ def main() -> None:
     # so benchmark output never lands in the working tree.
     p.add_argument("--out-dir",
                    default=str(Path.home() / "bench-geistlib" / "quality_perf"))
-    p.add_argument("--benchmark-md", default="benchmark/BENCHMARK.md")
+    p.add_argument("--benchmark-md", default="benchmark/results/APPLE.md")
     p.add_argument("--record", action="store_true")
     args = p.parse_args()
 

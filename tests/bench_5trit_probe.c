@@ -38,7 +38,8 @@ static double now_ms(void) {
     return (double) tv.tv_sec * 1000.0 + (double) tv.tv_usec / 1000.0;
 }
 
-/* Decode 4 bits → trit. Mirror of gguf_quant.c. */
+/* Decode 4 bits → trit. Mirror of PTQTP_2P_T1_LUT / _T2_LUT in
+ * src/formats/ptqtp/ptqtp_kernel.c. */
 static const int8_t T1_LUT[16] = {-1, -1, -1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0};
 static const int8_t T2_LUT[16] = {-1, 0, 1, -1, 0, 1, -1, 0, 1, 0, 0, 0, 0, 0, 0, 0};
 

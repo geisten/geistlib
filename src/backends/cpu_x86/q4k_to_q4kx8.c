@@ -108,6 +108,12 @@ void q4k_to_q4kx8_matrix(size_t               n_in,
     const size_t row_bytes      = n_super * Q4_K_BLOCK_BYTES;
     const size_t n_octets       = n_out / 8;
     const size_t blocks_per_oct = n_super;
+    /* Run at load, and the first write to the output faults its pages in:
+     * one thread per share of the octets writes (and faults) its own part.
+     * The bytes do not depend on the team. */
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (size_t oct = 0; oct < n_octets; oct++) {
         const uint8_t *row_base = q4k_data + oct * 8 * row_bytes;
         q4k_to_q4kx8_octet(n_super, row_base, q4kx8_out + oct * blocks_per_oct);

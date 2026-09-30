@@ -1,23 +1,23 @@
 /*
- * src/backends/cpu_x86/backend.c — x86_64 backend, Phase 1a Step 5.
+ * src/backends/cpu_x86/backend.c — x86_64 backend.
  *
  * Layer: BACKEND.
  *
- * cpu_x86's vtbl reuses cpu_scalar's slots for everything except create,
- * destroy, and resolve_weight: those three are overridden to thread the
- * per-instance state needed by the W4A8 hot path (acts + sum_a scratch),
- * and to install the cpu_x86 Q4_K M=1 kernel via cpu_x86_linear_q4k_resolve.
+ * The tables are filled at module load via __attribute__((constructor)):
+ *   1. Struct-copy cpu_scalar's vtbl, prims and fused tables.
+ *   2. Override vtbl .create / .destroy (the per-instance scratch the
+ *      quantized kernels use), .resolve_weight (below) and, under OpenMP,
+ *      .parallel_region_begin / _end (threads.c); prims .attention and
+ *      .gelu_tanh; fused .gelu_tanh_mul and .gelu_tanh_mul_scaled.
+ * Constructor runs before main, so the descriptor's tables are always
+ * filled by the time the engine calls geist_backend_create.
  *
- * The vtbl is initialized at module load via __attribute__((constructor)):
- *   1. Struct-copy cpu_scalar_vtbl into cpu_x86_vtbl.
- *   2. Override .create / .destroy / .resolve_weight.
- * Constructor runs before main, so the descriptor's vtbl pointer is
- * always valid by the time the engine calls geist_backend_create.
- *
- * Non-Q4_K dtypes fall through to cpu_scalar's resolver via the same
- * cpu_scalar_resolve_weight function — the descriptor remains drop-in
- * compatible with every Gemma 4 weight, and only the Q4_K decode path
- * routes through W4A8 + VPDPBUSD today.
+ * cpu_x86_resolve_weight starts from cpu_scalar's resolver (it validates
+ * the weight and knows every dtype), then rebinds: native kernels for Q4_K,
+ * Q6_K, Q8_0, I2_S, F16 decode and F32, and the generic multi-threaded kernels
+ * (linear_generic.c) for every other dtype. cpu_scalar's own kernels — the
+ * single-threaded correctness oracle — are never left bound for a dtype
+ * cpu_x86 can serve.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -29,8 +29,11 @@
 #include "kernel_f16_gemv.h"
 #include "kernel_i2s.h"
 #include "linear_f32q.h"
+#include "linear_generic.h"
 #include "linear_q4k.h"
 #include "linear_q6k.h"
+#include "linear_q8_0.h"
+#include "threads.h"
 
 #include "geist_gemm.h"
 #include "checked.h"
@@ -435,20 +438,28 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
     if (base != GEIST_OK) {
         return base;
     }
-    /* Override the M=1 path per dtype. M>1 stays on cpu_scalar's slow
-     * path for now — Phase 1b wires the W4A8 prefill kernel (see
-     * docs/LINUX_X86_SPEC.md §"Prefill kernel topology").
-     *
-     * Q4_K → W4A8 + VPDPBUSD. Q6_K → fp32 predecode + cblas_sgemv (the
-     * typical Gemma 4 tied lm_head). Other dtypes stay on cpu_scalar. */
+    /* Rebind per dtype. Q4_K → Q4_Kx8 GEMV/GEMM; Q6_K → native GEMV +
+     * W8x16 GEMM; Q8_0 → int8 Q8_0 x Q8_0; I2_S → VNNI x4; F16 → Q8 or F16C
+     * GEMV for M=1; F32 → W8A8.
+     * Everything else — and Q4_K / Q6_K when their repack cannot be built —
+     * takes the generic kernels, never cpu_scalar's single-threaded ones. */
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_K: {
         struct cpu_x86_state *st = (struct cpu_x86_state *) be->state;
-        (void) cpu_x86_linear_q4k_resolve(st, w); /* OOM → keep scalar m1 */
+        if (cpu_x86_linear_q4k_resolve(st, w) != GEIST_OK) {
+            (void) cpu_x86_linear_generic_bind(w);
+        }
         break;
     }
     case GEIST_DTYPE_Q6_K:
-        (void) cpu_x86_linear_q6k_resolve(w); /* OOM → keep scalar m1 */
+        if (cpu_x86_linear_q6k_resolve(w) != GEIST_OK) {
+            (void) cpu_x86_linear_generic_bind(w);
+        }
+        break;
+    case GEIST_DTYPE_Q8_0:
+        if (!cpu_x86_linear_q8_0_bind(w)) {
+            (void) cpu_x86_linear_generic_bind(w);
+        }
         break;
     case GEIST_DTYPE_I2_S:
         /* Fast path: 4-row-interleaved x4 layout (one act load feeds 4 rows).
@@ -460,8 +471,11 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
         }
         break;
     case GEIST_DTYPE_F16:
-        /* Tied lm_head on BitNet: Q8 weight (half the BW) for the M=1 head;
-         * F16C GEMV fallback on OOM / tiny weights. */
+        /* Prefill on the generic kernel (F16C row decode, fp32 dot); then
+         * the M=1 path is replaced. Tied lm_head on BitNet: Q8 weight (half
+         * the BW) for the M=1 head; F16C GEMV fallback on OOM / tiny
+         * weights. */
+        (void) cpu_x86_linear_generic_bind(w);
         if (!cpu_x86_linear_q8w_resolve(w)) {
             w->linear_m1 = cpu_x86_linear_f16_m1;
         }
@@ -476,9 +490,19 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
         }
         break;
     default:
+        (void) cpu_x86_linear_generic_bind(w);
         break;
     }
     return GEIST_OK;
+}
+
+/* cpu_scalar's answers (the elementwise fusions, which cpu_x86 overrides
+ * with the same geometry) plus the INT8-KV attention. */
+static bool cpu_x86_fused_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
+    if (q != nullptr && q->op == GEIST_FUSED_ATTN_KV_INT8) {
+        return cpu_x86_attention_kv_int8_supported(q);
+    }
+    return cpu_scalar_fused.supported(be, q);
 }
 
 /* ---------- Vtbl init ---------- */
@@ -488,14 +512,21 @@ __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
     cpu_x86_vtbl.create         = cpu_x86_create;
     cpu_x86_vtbl.destroy        = cpu_x86_destroy;
     cpu_x86_vtbl.resolve_weight = cpu_x86_resolve_weight;
+#if defined(_OPENMP)
+    /* Per-phase OpenMP team (threads.c): decode on physical cores. */
+    cpu_x86_vtbl.parallel_region_begin = cpu_x86_parallel_region_begin;
+    cpu_x86_vtbl.parallel_region_end   = cpu_x86_parallel_region_end;
+#endif
 
     cpu_x86_prims           = cpu_scalar_prims;
     cpu_x86_prims.gelu_tanh = cpu_x86_gelu_tanh;
     cpu_x86_prims.attention = cpu_x86_attention;
 
     cpu_x86_fused                      = cpu_scalar_fused;
+    cpu_x86_fused.supported            = cpu_x86_fused_supported;
     cpu_x86_fused.gelu_tanh_mul        = cpu_x86_gelu_tanh_mul;
     cpu_x86_fused.gelu_tanh_mul_scaled = cpu_x86_gelu_tanh_mul_scaled;
+    cpu_x86_fused.attention_kv_int8    = cpu_x86_attention_kv_int8;
 }
 
 const struct geist_backend_descriptor geist_backend_cpu_x86 = {
@@ -505,5 +536,10 @@ const struct geist_backend_descriptor geist_backend_cpu_x86 = {
         .fused = &cpu_x86_fused,
         .caps  = {.max_m             = GEIST_QUANT_M_CAP,
                   .preferred_kv_mode = GEIST_KV_INT8,
-                  .dn_subchunk       = true /* host DeltaNet sub-chunks */},
+                  .kv_q8_block       = true, /* K and V apart in the cache sets */
+                  .kv_dense_block    = true,
+#if defined(_OPENMP)
+                 .manages_host_threads = true, /* the region hooks above */
+#endif
+                 .dn_subchunk = true /* host DeltaNet sub-chunks */},
 };
