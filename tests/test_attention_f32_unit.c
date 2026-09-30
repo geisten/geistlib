@@ -3,12 +3,17 @@
  * of the FP32 KV cache, against a double-precision reference.
  *
  * desc->prims->attention is what the transformer calls with an FP32 cache.
- * Each backend has its own: cpu_x86 an AVX2 kernel, cpu_neon a NEON one,
- * both falling back to the gemma4_kernels.c reference that cpu_scalar runs
- * when there are fewer than 16 (query, head) pairs. The shapes cover every
- * branch: MQA and GQA, one query (decode) and many (prefill), head_dim 64,
- * 128 and 256 (the unrolled one), contexts on both sides of 512-position
- * blocks, and sliding windows.
+ * Each backend has its own: cpu_neon a NEON kernel that falls back to the
+ * gemma4_kernels.c reference cpu_scalar runs when there are fewer than 16
+ * (query, head) pairs, cpu_x86 an AVX2 kernel that takes every shape and
+ * plans its work (attention.c: passes of up to four heads of a KV group,
+ * prefill items of up to four queries, decode split into chunks). The
+ * shapes cover every branch: MQA, GQA and MHA, one query (decode) and many
+ * (prefill), head_dim 64, 128 and 256 (compiled for) and others (20, 40
+ * and 80 with their tails, 512), contexts on both sides of 512-position
+ * blocks, sliding windows, and each of cpu_x86's plans: passes of 1-4
+ * heads, one, two or four queries an item (the last one short), decode
+ * split into 2-4 chunks or not.
  *
  * K and V rows that no query may see (before every window) hold NaN, and
  * the output starts as NaN: a kernel that reads past the mask, or leaves a
@@ -209,7 +214,7 @@ static int run(struct geist_backend *be, const char *backend, const struct shape
 
 int main(void) {
     static const struct shape SHAPES[] = {
-            /* decode, fewer than 16 (query, head) pairs: the reference path */
+            /* decode, fewer than 16 (query, head) pairs: cpu_neon's reference path */
             {1, 4, 1, 64, 1, 0, 0.0f},
             {1, 4, 2, 64, 700, 0, 0.0f},
             /* decode, 16+ pairs: the SIMD kernels, MQA and GQA */
@@ -233,6 +238,26 @@ int main(void) {
             {1, 16, 4, 128, 1500, 0, 300.0f},
             {1, 16, 1, 256, 1100, 0, 300.0f},
             {20, 8, 2, 64, 1200, 0, 300.0f},
+            {24, 8, 2, 64, 1300, 0, 300.0f},
+            /* cpu_x86's plans: passes of three heads (groups of 3 and 6),
+             * four queries an item (the last one short) and two, a window
+             * that differs between an item's queries, decode split into 2-4
+             * chunks and not, head_dim with tails and 512 */
+            {1, 12, 4, 64, 700, 0, 0.0f},
+            {1, 12, 2, 64, 1000, 0, 0.0f},
+            {30, 15, 5, 64, 1100, 0, 0.0f},
+            {23, 8, 1, 256, 1300, 0, 0.0f},
+            {30, 16, 4, 64, 2000, 1000, 0.0f},
+            {20, 8, 8, 64, 1100, 0, 0.0f},
+            {1, 32, 8, 64, 300, 0, 0.0f},
+            {1, 8, 2, 80, 900, 0, 0.0f},
+            {33, 8, 2, 80, 1200, 0, 0.0f},
+            {1, 6, 3, 40, 600, 0, 0.0f},
+            {9, 6, 3, 40, 700, 0, 0.0f},
+            {1, 4, 4, 20, 530, 0, 0.0f},
+            {17, 4, 1, 20, 600, 0, 0.0f},
+            {1, 8, 1, 512, 1500, 0, 0.0f},
+            {12, 8, 1, 512, 900, 0, 0.0f},
     };
     static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
     int                      fails = 0, ran = 0;
