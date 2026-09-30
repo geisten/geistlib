@@ -119,8 +119,8 @@ minor release.
   times both). End to end (synthetic weights, both builds from scratch) at
   2048 positions, prefill -11 % and decode -11 % in the Llama 3.2 1B
   geometry (Q4_K), -24 % and -23 % in SmolLM2-360M's (Q8_0); at 512, the
-  same within the noise in Llama 3.2 1B's, -10 % and -20 % in
-  SmolLM2-360M's.
+  same within the noise in Llama 3.2 1B's, and in SmolLM2-360M's prefill
+  -8 % (15 of 16 runs) and decode within the noise.
 - **Attention over the packed INT4 KV cache is a backend op too**
   (`fused->attention_kv_int4`, `GEIST_FUSED_ATTN_KV_INT4`,
   `struct geist_attention_kv_int4_args`, `<geist_backend.h>`): K and V are
