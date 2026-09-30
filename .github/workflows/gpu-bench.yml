@@ -6,6 +6,8 @@ name: gpu-bench
 # Manual only: it runs job code on a personal desktop.
 
 on:
+  push:
+    branches: [bench/rtx2080ti-bonsai27b]  # one-shot: dispatch needs the file on main
   workflow_dispatch:
     inputs:
       repeats:
@@ -45,11 +47,11 @@ jobs:
         run: |
           GEIST_BENCH_BACKEND=vulkan bin/linux/release/tests/bench_perf_sweep \
             --gguf "$HOME/bench-cache/$FILE" --seq-lens 512 --decode-n 64 \
-            --warmup 32 --repeats "${{ inputs.repeats }}" --emit-jsonl | tee geist-vulkan.jsonl
+            --warmup 32 --repeats "${{ inputs.repeats || 3 }}" --emit-jsonl | tee geist-vulkan.jsonl
           echo "### GEIST_M_MAX=128"
           GEIST_M_MAX=128 GEIST_BENCH_BACKEND=vulkan bin/linux/release/tests/bench_perf_sweep \
             --gguf "$HOME/bench-cache/$FILE" --seq-lens 512 --decode-n 64 \
-            --warmup 32 --repeats "${{ inputs.repeats }}" --emit-jsonl | tee geist-vulkan-m128.jsonl
+            --warmup 32 --repeats "${{ inputs.repeats || 3 }}" --emit-jsonl | tee geist-vulkan-m128.jsonl
 
       - name: Build fork (Vulkan + CUDA)
         run: |
@@ -66,7 +68,7 @@ jobs:
           D="$HOME/bench-cache/fork"
           for b in vk cuda; do
             echo "### fork $b"
-            "$D/build-$b/bin/llama-bench" -m "$HOME/bench-cache/$FILE" -ngl 99 -p 512 -n 64 -r "${{ inputs.repeats }}" -o md | tee "fork-$b.md"
+            "$D/build-$b/bin/llama-bench" -m "$HOME/bench-cache/$FILE" -ngl 99 -p 512 -n 64 -r "${{ inputs.repeats || 3 }}" -o md | tee "fork-$b.md"
           done
 
       - uses: actions/upload-artifact@v4
