@@ -41,7 +41,7 @@ jobs:
           ls -l "$HOME/bench-cache/$FILE"
 
       - name: Build geist (Vulkan)
-        run: make TARGET=linux CC=gcc-14 BACKENDS="vulkan cpu_x86" bin/linux/release/tests/bench_perf_sweep -j"$(nproc)"
+        run: make TARGET=linux CC=gcc-14 BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin/linux/release/tests/bench_perf_sweep -j"$(nproc)"
 
       - name: geist Vulkan
         run: |
