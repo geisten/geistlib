@@ -12,6 +12,11 @@ minor release.
 - Optional `geist_backend_resources_snapshot`: Metal device allocated bytes and
   unified-memory attribution, callable during inference without GPU synchronization.
   CPU providers explicitly return unsupported. Allocation is not physical residency.
+- **`tools/gen_synth_gguf.py --preset bonsai2-27b-pq2_0`**: a synthetic
+  Ternary-Bonsai-2-27B, the real file's geometry, tensor formats (`PQ2_0`, BF16
+  DeltaNet alpha/beta) and `prism.hadamard` keys to the byte (7.2 GB), so the
+  27B ternary path can be timed without the download. `benchmark/results/
+  TERNARY.md` has the first x86 numbers taken with it.
 - **`tools/bench_revision_ab.py`: end-to-end A/B of git revisions, each built
   from scratch.** Every revision gets a git worktree of its own;
   `bench_perf_sweep` runs on the binaries in rotating order, next to a copy of
