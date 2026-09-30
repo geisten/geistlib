@@ -15,10 +15,13 @@
  *      absmax int8 activation, integer block dots) — tight — and against
  *      fp32 within the A8 quantization error. Matching the A8 model and not
  *      the fp32 one is also what shows the int8 path, not the fp32
- *      trampoline or the generic kernel, was installed.
+ *      trampoline or the generic kernel, was installed. cpu_x86's prefill
+ *      GEMM is held to the same model token by token (each token row has
+ *      its own scale); m = 7 runs its four-token steps and a tail, and
+ *      n_out 37 / 38 / 39 leave its 4-row groups 1, 2 and 3 rows.
  *   4. Both SDOT layouts: n_out 40 installs the x8 interleaved repack
  *      (GEIST_W_LAYOUT_PQ2_0_X8_GEMV) — n_out 264 spans two full prefill
- *      tiles plus a remainder — n_out 37 cannot and keeps the row
+ *      tiles plus a remainder — n_out 37 to 39 cannot and keep the row
  *      kernel, and GEIST_PQ2_0_X8_GEMV=0 keeps the row kernel for both —
  *      every one of them held to the same W2A8 model.
  *
@@ -200,19 +203,21 @@ static int check_backend(const char *name, bool x8_policy) {
         return 0;
     }
     const bool neon = strcmp(name, "cpu_neon") == 0;
-    /* The backends whose m1 is an int8 kernel. */
-    const bool w2a8 = neon || strcmp(name, "cpu_x86") == 0;
+    /* The backends whose m1 is an int8 kernel; cpu_x86's mN is one too. */
+    const bool x86  = strcmp(name, "cpu_x86") == 0;
+    const bool w2a8 = neon || x86;
     /* x8_policy states what the NEON resolver should install; the other
      * legs have no x8 layout to check. */
     (void) x8_policy;
     int          fails     = 0;
     const size_t n_ins[]   = {128, 5120, 17408};
-    const size_t n_outs[]  = {37, 40, 264};
-    const size_t m         = 3;
+    const size_t n_outs[]  = {37, 38, 39, 40, 264};
+    const size_t m         = 7;
     char         what[160] = {0};
-    for (size_t kk = 0; kk < 3 * sizeof n_ins / sizeof n_ins[0]; kk++) {
-        const size_t k     = kk / 3;
-        const size_t n_out = n_outs[kk % 3];
+    const size_t n_shapes  = sizeof n_outs / sizeof n_outs[0];
+    for (size_t kk = 0; kk < n_shapes * sizeof n_ins / sizeof n_ins[0]; kk++) {
+        const size_t k     = kk / n_shapes;
+        const size_t n_out = n_outs[kk % n_shapes];
         const size_t n_in  = n_ins[k];
         size_t       bytes = 0;
         uint8_t     *W     = make_tensor(n_out, n_in, &bytes);
@@ -275,11 +280,27 @@ static int check_backend(const char *name, bool x8_policy) {
             fails += geist_expect(rel_err(n_out, y, yf) < 1e-5, what);
         }
 
-        /* m > 1: fp32-accumulating on every backend (trampoline / scalar /
-         * cpu_x86's generic kernel). */
+        /* m > 1: cpu_x86 runs the int8 GEMM; the other backends accumulate
+         * in fp32 (trampoline / scalar / x8 SGEMM). */
         w.linear_mN(m, x, &w, be, y);
         for (size_t t = 0; t < m; t++) {
             ref_fp32(n_out, n_in, W, x + t * n_in, yf);
+#if defined(GEIST_BACKEND_CPU_X86)
+            if (x86) {
+                ref_w2a8(n_out, n_in, W, x + t * n_in, yq);
+                snprintf(what, sizeof what, "%s n_in=%zu: mN row %zu == W2A8 model", name, n_in, t);
+                fails += geist_expect(rel_err(n_out, y + t * n_out, yq) < 1e-5, what);
+                snprintf(what,
+                         sizeof what,
+                         "%s n_in=%zu: mN row %zu within A8 error of fp32",
+                         name,
+                         n_in,
+                         t);
+                fails += geist_expect(
+                        within_a8_bound(n_out, n_in, W, x + t * n_in, y + t * n_out, yf), what);
+                continue;
+            }
+#endif
             snprintf(what, sizeof what, "%s n_in=%zu: mN row %zu == fp32", name, n_in, t);
             fails += geist_expect(rel_err(n_out, y + t * n_out, yf) < 1e-4, what);
         }

@@ -658,18 +658,17 @@ values. The host is an Intel Xeon (Sapphire Rapids) at 2.1 GHz, 4 vCPUs of a
 cloud VM with 260 MB of L3, gcc 14, `OMP_WAIT_POLICY=active`, with 41.7 GB/s
 read bandwidth on 4 threads.
 
-| | generic path | `PQ2_0` decode GEMV |
-| :-- | --: | --: |
-| prefill, 64 tokens | 39.1 s, 1.64 t/s | 38.3 s, 1.67 t/s: its projections are still generic |
-| decode | 7.53 s a token, 0.13 t/s | **0.200 s a token, 5.0 t/s** |
-| RSS | 7.1 GB (the mmap'd file, nothing repacked) | 7.1 GB |
+| | generic path | `PQ2_0` decode GEMV | and prefill GEMM |
+| :-- | --: | --: | --: |
+| prefill, 64 tokens | 39.1 s, 1.64 t/s | 38.3 s, 1.67 t/s | **7.31 s, 8.75 t/s** |
+| decode | 7.53 s a token, 0.13 t/s | **0.200 s a token, 5.0 t/s** | the same |
+| RSS | 7.1 GB (the mmap'd file, nothing repacked) | 7.1 GB | 7.1 GB |
 
 ### The generic path
 
 cpu_x86 had no `PQ2_0` kernel at first. The format ran through
 `linear_generic.c`, which decodes each weight row to fp32 with
 `dequant_pq2_0_row`, one element at a time, and dots it with AVX2 FMAs.
-Prefill of more than one token still does.
 
 The forward profiler (`GEIST_PROFILE_FORWARD=1`) splits the time into:
 
@@ -727,6 +726,43 @@ per-cycle ratios, 95 % interval):
 A decode token now reads the 7.2 GB of weights at about 36 GB/s, 38 times as
 fast as before. The control, the baseline's binary run again, stayed within
 ±6 %.
+
+### The prefill GEMM
+
+Prefill is the same arithmetic as a GEMM, in the same file. Every token's row
+is quantized with its own absmax scale, and the blocks of all tokens are laid
+out side by side. A group of 4 weight rows then walks the blocks: each
+block's codes are extracted once and dotted against every token, into
+per-(row, token) accumulators that stay in L1. The four `maddubs` per block
+and token are the floor of the loop, so it is compute-bound and needs no
+prefetch.
+
+One call at m = 64, 4 threads, the median of 3 alternating rounds:
+
+| matrix | generic path | W2A8 GEMM | |
+| :-- | --: | --: | --: |
+| 17408 × 5120 (FFN gate, up) | 107.5 ms | 22.7 ms | 4.7× |
+| 5120 × 17408 (FFN down) | 204 ms | 20.3 ms | 10× |
+
+The generic path dequantizes each weight row to fp32 once and then dots it
+against all 64 tokens: slower still for the down projection, whose
+17408-float row does not stay in L1. The GEMM runs at about 1.8 to 2.0 ns per
+block and token on each core. That is the AVX2 floor: four `maddubs`, one
+`madd`, one convert and one FMA per block and token, all on the same two
+ports. Other block orders (rows 2 to 8 per group, one to four tokens per
+step, one convert for 8 blocks after a transpose-reduce) measured within
+noise of this one or slower.
+
+End to end, both builds from scratch (`tools/bench_revision_ab.py`, 6 cycles
+with a control):
+
+| | decode GEMV only | and prefill GEMM | change |
+| :-- | --: | --: | --: |
+| prefill, 64 tokens | 37.7 s | 7.31 s | -80.5 % [-80.8, -78.9], 6/6 |
+
+AVX-512 VNNI (`vpdpbusd`, two 64-byte dots per block and token) or AMX-INT8,
+which this host has, would take the next steps; both are compute paths the
+AVX2 kernel cannot reach.
 
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then

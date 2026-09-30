@@ -41,8 +41,16 @@
  * prefetch address runs on across row boundaries. A prefetch never faults,
  * past the end of the weight included.
  *
+ * Prefill (M>1) is the same arithmetic as a GEMM. Every token's row is
+ * quantized with its own absmax scale, in the same code order, the blocks
+ * of all tokens side by side (XQ[b][t]). A group of GEMM_ROWS weight rows
+ * then walks the blocks: each block's codes are extracted once and dotted
+ * against every token, into per-(row, token) accumulators that stay in L1.
+ * The four maddubs per block and token are the floor there, so the loop is
+ * compute-bound, not bandwidth-bound, and needs no prefetch.
+ *
  * AVX2 is the backend's x86-64-v3 baseline, so this runs on every host
- * cpu_x86 does. Prefill (M>1) stays on linear_generic.c.
+ * cpu_x86 does.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -62,6 +70,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
 constexpr size_t QK = PQ2_0_BLOCK_ELEMS; /* 128 */
 constexpr size_t BB = PQ2_0_BLOCK_BYTES; /* fp16 d, then 32 code bytes */
 static_assert(PQ2_0_BLOCK_ELEMS == 128 && PQ2_0_BLOCK_BYTES == 34,
@@ -74,74 +86,100 @@ constexpr size_t BIAS_LANES = 8;
  * about 10 %. */
 constexpr size_t PREFETCH_BYTES = 4096;
 
+/* Weight rows per step of the prefill GEMM. A group reads each block's
+ * activations (m x 128 bytes) once for all its rows, and its accumulators
+ * (GEMM_ROWS x m x 32 bytes, 16 KB at m = 128) stay in L1. 2 and 8 measured
+ * within noise of 4 at m = 64. */
+constexpr size_t GEMM_ROWS = 4;
+
 /* Within a 16-byte lane of 4 elements x 4 levels: the bytes grouped by
  * level (the same for both lanes). */
 alignas(16) static const int8_t BY_LEVEL[16] = {
         0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15};
 
-/* x (nb blocks) to int8 in code order, plus the bias vectors. Returns the
- * dequantization factor of the activation, max|x| / 127. The quantization is
- * cpu_neon's: max|x| floored at 1e-5, q = x * 127 / max rounded half away
- * from zero (so |q| <= 127). */
-static float quantize_acts(size_t nb, const float *x, int8_t *xq, int32_t *bias) {
-    const size_t n    = nb * QK;
+/* max|x| over n floats (n a multiple of 8), floored at 1e-5 as cpu_neon's
+ * is. */
+static float act_absmax(size_t n, const float *x) {
     const __m256 absm = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
     __m256       mx   = _mm256_set1_ps(1e-5f);
     for (size_t i = 0; i < n; i += 8) {
         mx = _mm256_max_ps(mx, _mm256_and_ps(_mm256_loadu_ps(x + i), absm));
     }
-    __m128 m4           = _mm_max_ps(_mm256_castps256_ps128(mx), _mm256_extractf128_ps(mx, 1));
-    m4                  = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
-    m4                  = _mm_max_ss(m4, _mm_movehdup_ps(m4));
-    const float max_abs = _mm_cvtss_f32(m4);
+    __m128 m4 = _mm_max_ps(_mm256_castps256_ps128(mx), _mm256_extractf128_ps(mx, 1));
+    m4        = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
+    m4        = _mm_max_ss(m4, _mm_movehdup_ps(m4));
+    return _mm_cvtss_f32(m4);
+}
 
-    const __m256 scale = _mm256_set1_ps(127.0f / max_abs);
-    const __m256 half  = _mm256_set1_ps(0.5f);
-    const __m256 sign  = _mm256_castsi256_ps(_mm256_set1_epi32((int32_t) 0x80000000u));
+/* One 128-element block of x to int8 in code order, xq[32*l + m] =
+ * q(x[4*m + l]), with cpu_neon's rounding: x * scale rounded half away from
+ * zero, so |q| <= 127 when scale = 127 / max|x|. Returns the sum of the 128
+ * int8 values. */
+static inline int32_t quantize_block(const float *x, __m256 scale, int8_t *xq) {
+    const __m256 half = _mm256_set1_ps(0.5f);
+    const __m256 sign = _mm256_castsi256_ps(_mm256_set1_epi32((int32_t) 0x80000000u));
     /* The packs interleave 128-bit lanes; this restores element order. */
     const __m256i order = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
     const __m256i by_level =
             _mm256_broadcastsi128_si256(_mm_load_si128((const __m128i *) BY_LEVEL));
-    const __m256i ones8  = _mm256_set1_epi8(1);
-    const __m256i ones16 = _mm256_set1_epi16(1);
+    /* r[k]: elements 32k .. 32k+31, each 16-byte lane holding its 4 code
+     * bytes' elements grouped by level (dword l). */
+    __m256i r[4];
+    for (size_t k = 0; k < 4; k++) {
+        __m256i q[4];
+        for (size_t t = 0; t < 4; t++) {
+            const __m256 v = _mm256_mul_ps(_mm256_loadu_ps(x + 32 * k + 8 * t), scale);
+            q[t]           = _mm256_cvttps_epi32(
+                    _mm256_add_ps(v, _mm256_or_ps(_mm256_and_ps(v, sign), half)));
+        }
+        const __m256i p =
+                _mm256_packs_epi16(_mm256_packs_epi32(q[0], q[1]), _mm256_packs_epi32(q[2], q[3]));
+        r[k] = _mm256_shuffle_epi8(_mm256_permutevar8x32_epi32(p, order), by_level);
+    }
+    /* 4 x 8 dword transpose: level l's dwords from every lane, in code byte
+     * order. */
+    const __m256i t01l  = _mm256_unpacklo_epi32(r[0], r[1]);
+    const __m256i t01h  = _mm256_unpackhi_epi32(r[0], r[1]);
+    const __m256i t23l  = _mm256_unpacklo_epi32(r[2], r[3]);
+    const __m256i t23h  = _mm256_unpackhi_epi32(r[2], r[3]);
+    const __m256i lv[4] = {_mm256_unpacklo_epi64(t01l, t23l),
+                           _mm256_unpackhi_epi64(t01l, t23l),
+                           _mm256_unpacklo_epi64(t01h, t23h),
+                           _mm256_unpackhi_epi64(t01h, t23h)};
+    __m256i       s16   = _mm256_setzero_si256();
+    for (size_t l = 0; l < 4; l++) {
+        const __m256i v = _mm256_permutevar8x32_epi32(lv[l], order);
+        _mm256_storeu_si256((__m256i *) (xq + 32 * l), v);
+        s16 = _mm256_add_epi16(s16, _mm256_maddubs_epi16(_mm256_set1_epi8(1), v));
+    }
+    const __m256i s32 = _mm256_madd_epi16(s16, _mm256_set1_epi16(1));
+    __m128i       s4 = _mm_add_epi32(_mm256_castsi256_si128(s32), _mm256_extracti128_si256(s32, 1));
+    s4               = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, 0x4E));
+    s4               = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, 0xB1));
+    return _mm_cvtsi128_si32(s4);
+}
+
+/* x (nb blocks) to int8 in code order, plus the bias vectors. Returns the
+ * dequantization factor of the activation, max|x| / 127. */
+static float quantize_acts(size_t nb, const float *x, int8_t *xq, int32_t *bias) {
+    const float  max_abs = act_absmax(nb * QK, x);
+    const __m256 scale   = _mm256_set1_ps(127.0f / max_abs);
     for (size_t b = 0; b < nb; b++) {
-        /* r[k]: elements 32k .. 32k+31 of the block, each 16-byte lane
-         * holding its 4 code bytes' elements grouped by level (dword l). */
-        __m256i r[4];
-        for (size_t k = 0; k < 4; k++) {
-            const float *xk = x + b * QK + 32 * k;
-            __m256i      q[4];
-            for (size_t t = 0; t < 4; t++) {
-                const __m256 v = _mm256_mul_ps(_mm256_loadu_ps(xk + 8 * t), scale);
-                q[t]           = _mm256_cvttps_epi32(
-                        _mm256_add_ps(v, _mm256_or_ps(_mm256_and_ps(v, sign), half)));
-            }
-            const __m256i p = _mm256_packs_epi16(_mm256_packs_epi32(q[0], q[1]),
-                                                 _mm256_packs_epi32(q[2], q[3]));
-            r[k]            = _mm256_shuffle_epi8(_mm256_permutevar8x32_epi32(p, order), by_level);
-        }
-        /* 4 x 8 dword transpose: level l's dwords from every lane, in code
-         * byte order. */
-        const __m256i t01l  = _mm256_unpacklo_epi32(r[0], r[1]);
-        const __m256i t01h  = _mm256_unpackhi_epi32(r[0], r[1]);
-        const __m256i t23l  = _mm256_unpacklo_epi32(r[2], r[3]);
-        const __m256i t23h  = _mm256_unpackhi_epi32(r[2], r[3]);
-        const __m256i lv[4] = {_mm256_unpacklo_epi64(t01l, t23l),
-                               _mm256_unpackhi_epi64(t01l, t23l),
-                               _mm256_unpacklo_epi64(t01h, t23h),
-                               _mm256_unpackhi_epi64(t01h, t23h)};
-        __m256i       s16   = _mm256_setzero_si256();
-        for (size_t l = 0; l < 4; l++) {
-            const __m256i v = _mm256_permutevar8x32_epi32(lv[l], order);
-            _mm256_storeu_si256((__m256i *) (xq + b * QK + 32 * l), v);
-            s16 = _mm256_add_epi16(s16, _mm256_maddubs_epi16(ones8, v));
-        }
-        const __m256i s32 = _mm256_madd_epi16(s16, ones16);
-        __m128i s4 = _mm_add_epi32(_mm256_castsi256_si128(s32), _mm256_extracti128_si256(s32, 1));
-        s4         = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, 0x4E));
-        s4         = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, 0xB1));
+        const int32_t sum = quantize_block(x + b * QK, scale, xq + b * QK);
         _mm256_store_si256((__m256i *) (bias + b * BIAS_LANES),
-                           _mm256_setr_epi32(-_mm_cvtsi128_si32(s4), 0, 0, 0, 0, 0, 0, 0));
+                           _mm256_setr_epi32(-sum, 0, 0, 0, 0, 0, 0, 0));
+    }
+    return max_abs / 127.0f;
+}
+
+/* One token's row x (nb blocks) to int8 in code order, in the GEMM layout:
+ * block b at xq + b * m * QK, minus its sum at neg_sum[b * m]. Returns the
+ * row's dequantization factor. */
+static float quantize_token(size_t m, size_t nb, const float *x, int8_t *xq, int32_t *neg_sum) {
+    const float  max_abs = act_absmax(nb * QK, x);
+    const __m256 scale   = _mm256_set1_ps(127.0f / max_abs);
+    for (size_t b = 0; b < nb; b++) {
+        neg_sum[b * m] = -quantize_block(x + b * QK, scale, xq + b * m * QK);
     }
     return max_abs / 127.0f;
 }
@@ -238,11 +276,146 @@ static void cpu_x86_linear_pq2_0_m1(const float               *x,
     }
 }
 
-bool cpu_x86_linear_pq2_0_bind_m1(struct geist_weight *w) {
+/* codes . xq over one block, as 8 int32 lanes, minus the block's xq sum
+ * (neg_sum, into lane 0). */
+static inline __m256i
+codes_dot(__m256i c0, __m256i c1, __m256i c2, __m256i c3, const int8_t *xt, int32_t neg_sum) {
+    const __m256i p01 = _mm256_add_epi16(
+            _mm256_maddubs_epi16(c0, _mm256_loadu_si256((const __m256i *) xt)),
+            _mm256_maddubs_epi16(c1, _mm256_loadu_si256((const __m256i *) (xt + 32))));
+    const __m256i p23 = _mm256_add_epi16(
+            _mm256_maddubs_epi16(c2, _mm256_loadu_si256((const __m256i *) (xt + 64))),
+            _mm256_maddubs_epi16(c3, _mm256_loadu_si256((const __m256i *) (xt + 96))));
+    return _mm256_add_epi32(_mm256_madd_epi16(_mm256_add_epi16(p01, p23), _mm256_set1_epi16(1)),
+                            _mm256_zextsi128_si256(_mm_cvtsi32_si128(neg_sum)));
+}
+
+/* One weight block against every token's activation block: acc[t] (8 fp32
+ * lanes) += d * (code . xq_t - sum xq_t). The codes are extracted once; the
+ * four maddubs per token are what the loop costs. */
+static inline void
+block_tokens(size_t m, const uint8_t *blk, const int8_t *xb, const int32_t *neg_sum, float *acc) {
+    const __m256i m3 = _mm256_set1_epi8(3);
+    const __m256i v  = _mm256_loadu_si256((const __m256i *) (blk + 2));
+    const __m256i c0 = _mm256_and_si256(v, m3);
+    const __m256i c1 = _mm256_and_si256(_mm256_srli_epi16(v, 2), m3);
+    const __m256i c2 = _mm256_and_si256(_mm256_srli_epi16(v, 4), m3);
+    const __m256i c3 = _mm256_and_si256(_mm256_srli_epi16(v, 6), m3);
+    const __m256  d  = block_scale(blk);
+    size_t        t  = 0;
+    for (; t + 4 <= m; t += 4) {
+        for (size_t k = 0; k < 4; k++) {
+            const __m256i dot = codes_dot(c0, c1, c2, c3, xb + (t + k) * QK, neg_sum[t + k]);
+            float        *a   = acc + (t + k) * 8;
+            _mm256_store_ps(a, _mm256_fmadd_ps(_mm256_cvtepi32_ps(dot), d, _mm256_load_ps(a)));
+        }
+    }
+    for (; t < m; t++) {
+        const __m256i dot = codes_dot(c0, c1, c2, c3, xb + t * QK, neg_sum[t]);
+        float        *a   = acc + t * 8;
+        _mm256_store_ps(a, _mm256_fmadd_ps(_mm256_cvtepi32_ps(dot), d, _mm256_load_ps(a)));
+    }
+}
+
+static inline float hsum8(const float *v) {
+    const __m256 s  = _mm256_load_ps(v);
+    __m128       s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
+    s4              = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
+    s4              = _mm_add_ss(s4, _mm_movehdup_ps(s4));
+    return _mm_cvtss_f32(s4);
+}
+
+static inline size_t team_max(void) {
+#if defined(_OPENMP)
+    return (size_t) omp_get_max_threads();
+#else
+    return 1;
+#endif
+}
+
+static inline size_t team_id(void) {
+#if defined(_OPENMP)
+    return (size_t) omp_get_thread_num();
+#else
+    return 0;
+#endif
+}
+
+/* M>1: all m rows quantized (in parallel, one token per iteration), then the
+ * GEMM by groups of GEMM_ROWS weight rows, each thread with its own
+ * accumulators. The workspace holds the int8 activations (mN_acts), the
+ * block sums (mN_sum_a), the per-token factors (mN_scale) and the
+ * accumulators (mN_aux). */
+static void cpu_x86_linear_pq2_0_mN(size_t                     m,
+                                    const float               *x,
+                                    const struct geist_weight *w,
+                                    struct geist_backend      *be,
+                                    float                     *y) {
+    const size_t              n_in      = (size_t) w->n_in;
+    const size_t              n_out     = (size_t) w->n_out;
+    const size_t              nb        = n_in / QK;
+    const size_t              acc_elems = GEMM_ROWS * m * 8;
+    size_t                    acts = 0, sums = 0, scales = 0, accs = 0;
+    struct cpu_x86_workspace *ws = nullptr;
+    if (be != nullptr && be->state != nullptr && !ckd_mul(&acts, m, n_in) &&
+        !ckd_mul(&sums, m, nb * sizeof(int32_t)) && !ckd_mul(&scales, m, sizeof(float)) &&
+        !ckd_mul(&accs, team_max(), acc_elems * sizeof(float))) {
+        ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, acts, sums, scales, accs);
+    }
+    if (ws == nullptr) {
+        geist_linear_ref(m, x, w, y); /* no scratch: the reference needs none */
+        return;
+    }
+    int8_t        *xq      = ws->mN_acts;
+    int32_t       *neg_sum = ws->mN_sum_a;
+    float         *inv     = ws->mN_scale;
+    float         *accs_ws = (float *) (void *) ws->mN_aux;
+    const uint8_t *raw     = (const uint8_t *) w->raw;
+    const size_t   rb      = nb * BB;
+    const size_t   groups  = (n_out + GEMM_ROWS - 1) / GEMM_ROWS;
+
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+        for (size_t t = 0; t < m; t++) {
+            inv[t] = quantize_token(m, nb, x + t * n_in, xq + t * QK, neg_sum + t);
+        }
+        float *acc = accs_ws + team_id() * acc_elems;
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+        for (size_t g = 0; g < groups; g++) {
+            const size_t r0 = g * GEMM_ROWS;
+            const size_t nr = n_out - r0 < GEMM_ROWS ? n_out - r0 : GEMM_ROWS;
+            memset(acc, 0, nr * m * 8 * sizeof(float));
+            for (size_t b = 0; b < nb; b++) {
+                for (size_t r = 0; r < nr; r++) {
+                    block_tokens(m,
+                                 raw + (r0 + r) * rb + b * BB,
+                                 xq + b * m * QK,
+                                 neg_sum + b * m,
+                                 acc + r * m * 8);
+                }
+            }
+            for (size_t r = 0; r < nr; r++) {
+                for (size_t t = 0; t < m; t++) {
+                    y[t * n_out + r0 + r] = hsum8(acc + (r * m + t) * 8) * inv[t];
+                }
+            }
+        }
+    }
+}
+
+bool cpu_x86_linear_pq2_0_bind(struct geist_weight *w) {
     if (w == nullptr || w->dtype != GEIST_DTYPE_PQ2_0 || w->n_in <= 0 ||
         (size_t) w->n_in % QK != 0) {
         return false;
     }
     w->linear_m1 = cpu_x86_linear_pq2_0_m1;
+    w->linear_mN = cpu_x86_linear_pq2_0_mN;
     return true;
 }

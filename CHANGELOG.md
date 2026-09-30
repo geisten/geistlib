@@ -141,6 +141,19 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 prefills `PQ2_0` with a W2 x A8 GEMM** (`linear_pq2_0.c`), the
+  decode GEMV's arithmetic over many tokens, instead of the generic kernel
+  that dotted fp32-decoded weight rows. Every token's row is quantized to
+  int8 with its own absmax scale; a group of 4 weight rows walks the blocks,
+  extracts each block's codes once and dots them against every token, with
+  the accumulators in L1. At m = 64 on a 4-vCPU Xeon (Sapphire Rapids class)
+  a 17408 × 5120 FFN matrix takes 22.7 ms instead of 107.5 ms and the
+  5120 × 17408 one 20.3 ms instead of 204 ms. The synthetic
+  Ternary-Bonsai-2-27B prefills 64 tokens in 7.31 s instead of 37.7 s, 5.2
+  times as fast (-80.5 %, 95 % interval -80.8 to -78.9 %, 6 of 6 cycles; both
+  builds from scratch, `tools/bench_revision_ab.py`). Each token row gets the
+  same int8 activation as a decode step would. `test_pq2_0_unit` holds the
+  GEMM to the exact W2A8 model token by token.
 - **cpu_x86 decodes `PQ2_0` (Ternary-Bonsai) with a W2 x A8 GEMV**
   (`linear_pq2_0.c`) instead of the generic kernel, which turned every
   weight into fp32 one element at a time. It is cpu_neon's recipe in AVX2:
