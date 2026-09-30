@@ -71,7 +71,9 @@ jobs:
           D="$HOME/bench-cache/fork"
           for b in cuda vk; do
             echo "### fork $b"
-            "$D/build-$b/bin/llama-bench" -m "$HOME/bench-cache/$FILE" -ngl 99 -p 512 -n 64 -r "${{ inputs.repeats || 3 }}" -o md | tee "fork-$b.md"
+            # a crash must show: keep the exit code and stderr instead of letting tee hide them
+            "$D/build-$b/bin/llama-bench" -m "$HOME/bench-cache/$FILE" -ngl 99 -p 512 -n 64 -r "${{ inputs.repeats || 3 }}" -o md > "fork-$b.md" 2> "fork-$b.err"
+            echo "exit=$?"; cat "fork-$b.md"; tail -20 "fork-$b.err"
           done
 
       - uses: actions/upload-artifact@v4
@@ -81,3 +83,4 @@ jobs:
           path: |
             *.jsonl
             fork-*.md
+            fork-*.err
