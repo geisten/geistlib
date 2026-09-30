@@ -9,6 +9,16 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Per-model prefill knobs** (`src/archs/transformer/prefill_tuning.h`): the
+  prefill chunk `m_max` and the OpenMP spin policy resolve as default + delta +
+  override — the platform/backend default, a signed delta from a table row
+  keyed by arch family and weight bytes, then `GEIST_M_MAX` and the new
+  `GEIST_PREFILL_BLOCKTIME_MS` (absolute; -1 leaves the runtime alone). First
+  row: qwen35 hybrids from 4 GiB (Ternary-Bonsai-2-27B) get chunk 128 and
+  `KMP_BLOCKTIME=0`, measured on the M1 Max at pp512: +14 % and +21 % prefill
+  on their own, +28 % together, no decode loss at 27B. Smaller models keep the
+  runtime's spin (blocktime 0 costs a 0.8B 16 % decode for 8 % prefill). The
+  blocktime is one value per process, applied from the first model loaded.
 - Optional `geist_backend_resources_snapshot`: Metal device allocated bytes and
   unified-memory attribution, callable during inference without GPU synchronization.
   CPU providers explicitly return unsupported. Allocation is not physical residency.
