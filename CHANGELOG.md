@@ -141,6 +141,24 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 prefills `PQ2_0` on AMX-INT8** (`kernel_pq2_0_amx.c`) where the
+  host has it and Linux grants the tile data. The AVX2 GEMM ran at its floor,
+  four `maddubs` per block, row and token; one `TDPBSSD` does a 16 × 16 × 64
+  int8 product in 16 cycles. The weights enter as `code - 1` in tiles of 16
+  rows, extracted once per block and reused for every 16-token tile, against
+  the same int8 activations repacked per block; each block's exact int32 dots
+  are scaled into fp32 accumulators two steps after their tile store, since
+  a vector load can read a tile store only once it has committed. At m = 64
+  on a 4-vCPU Xeon (Sapphire Rapids class) a 17408 × 5120 FFN matrix takes
+  2.62 ms instead of 23.6 ms and the 5120 × 17408 one 2.66 ms instead of
+  21.3 ms. The synthetic Ternary-Bonsai-2-27B prefills 64 tokens in 1.58 s
+  instead of 7.21 s, 4.6 times as fast (-78.4 %, 95 % interval -79.1 to
+  -76.9 %, 6 of 6 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). Per-thread scratch sits a page apart: packed
+  side by side, the L2 prefetchers pulled the neighbour's lines across cores
+  and two threads ran 1.6 times slower per core. `GEIST_FORCE_ISA` below
+  `avx512_vnni` keeps the AVX2 GEMM; `test_pq2_0_unit` holds both to the
+  exact W2A8 model.
 - **cpu_x86 prefills `PQ2_0` with a W2 x A8 GEMM** (`linear_pq2_0.c`), the
   decode GEMV's arithmetic over many tokens, instead of the generic kernel
   that dotted fp32-decoded weight rows. Every token's row is quantized to

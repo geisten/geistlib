@@ -16,9 +16,15 @@
  *      fp32 within the A8 quantization error. Matching the A8 model and not
  *      the fp32 one is also what shows the int8 path, not the fp32
  *      trampoline or the generic kernel, was installed. cpu_x86's prefill
- *      GEMM is held to the same model token by token (each token row has
- *      its own scale); m = 7 runs its four-token steps and a tail, and
- *      n_out 37 / 38 / 39 leave its 4-row groups 1, 2 and 3 rows.
+ *      GEMMs are held to the same model token by token (each token row has
+ *      its own scale). The AVX2 one: m = 7 and 20 run its four-token steps
+ *      and a tail, and n_out 37 / 38 / 39 leave its 4-row groups 1, 2 and 3
+ *      rows. The AMX-INT8 one, where the host has it: m = 7 and 20 leave a
+ *      16-token tile short by 9 and 12 tokens, n_out 37 to 40 and 264 leave
+ *      a 16-row group short and 48 does not, n_in = 128 is a single block,
+ *      and m = 150 splits into two passes (80 + 70 tokens). The gate is
+ *      decided once per process, so the cpu_x86 checks also run in a child
+ *      with GEIST_FORCE_ISA=avx2, which must keep the AVX2 GEMM.
  *   4. Both SDOT layouts: n_out 40 installs the x8 interleaved repack
  *      (GEIST_W_LAYOUT_PQ2_0_X8_GEMV) — n_out 264 spans two full prefill
  *      tiles plus a remainder — n_out 37 to 39 cannot and keep the row
@@ -27,7 +33,7 @@
  *
  * Deterministic, no model needed.
  */
-#define _POSIX_C_SOURCE 200809L /* setenv */
+#define _POSIX_C_SOURCE 200809L /* setenv, fork, waitpid */
 #include "test_helpers.h"
 
 #include <geist_backend.h>
@@ -40,6 +46,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(GEIST_BACKEND_CPU_X86)
+#include <sys/wait.h>
+#include <unistd.h>
+
+#define GEIST_INTERNAL_BACKEND_LAYER
+#include "src/backends/cpu_x86/linear_pq2_0.h" /* which M>1 kernel the bind installs */
+#endif
 
 static uint32_t g_seed = 0x9E3779B9u;
 
@@ -196,6 +210,61 @@ static double rel_err(size_t n, const float *a, const float *b) {
     return d / fmax(m, 1e-30);
 }
 
+/* m > 1 token by token: cpu_x86 runs an int8 GEMM, held to the W2A8
+ * model; the other backends accumulate in fp32 (trampoline / scalar / x8
+ * SGEMM). */
+static int check_mN(const char                *name,
+                    size_t                     n_out,
+                    size_t                     n_in,
+                    size_t                     m,
+                    const uint8_t             *W,
+                    const float               *x,
+                    const struct geist_weight *w,
+                    struct geist_backend      *be) {
+    const bool x86   = strcmp(name, "cpu_x86") == 0;
+    int        fails = 0;
+    char       what[160];
+    float     *y  = xmalloc(m * n_out * sizeof(float));
+    float     *yf = xmalloc(n_out * sizeof(float));
+    float     *yq = xmalloc(n_out * sizeof(float));
+    w->linear_mN(m, x, w, be, y);
+    for (size_t t = 0; t < m; t++) {
+        ref_fp32(n_out, n_in, W, x + t * n_in, yf);
+#if defined(GEIST_BACKEND_CPU_X86)
+        if (x86) {
+            ref_w2a8(n_out, n_in, W, x + t * n_in, yq);
+            snprintf(what,
+                     sizeof what,
+                     "%s n_in=%zu n_out=%zu m=%zu: mN row %zu == W2A8 model",
+                     name,
+                     n_in,
+                     n_out,
+                     m,
+                     t);
+            fails += geist_expect(rel_err(n_out, y + t * n_out, yq) < 1e-5, what);
+            snprintf(what,
+                     sizeof what,
+                     "%s n_in=%zu n_out=%zu m=%zu: mN row %zu within A8 error of fp32",
+                     name,
+                     n_in,
+                     n_out,
+                     m,
+                     t);
+            fails += geist_expect(within_a8_bound(n_out, n_in, W, x + t * n_in, y + t * n_out, yf),
+                                  what);
+            continue;
+        }
+#endif
+        (void) x86;
+        snprintf(what, sizeof what, "%s n_in=%zu m=%zu: mN row %zu == fp32", name, n_in, m, t);
+        fails += geist_expect(rel_err(n_out, y + t * n_out, yf) < 1e-4, what);
+    }
+    free(y);
+    free(yf);
+    free(yq);
+    return fails;
+}
+
 static int check_backend(const char *name, bool x8_policy) {
     struct geist_backend *be = nullptr;
     if (geist_backend_create(name, nullptr, nullptr, &be) != GEIST_OK) {
@@ -209,10 +278,13 @@ static int check_backend(const char *name, bool x8_policy) {
     /* x8_policy states what the NEON resolver should install; the other
      * legs have no x8 layout to check. */
     (void) x8_policy;
-    int          fails     = 0;
-    const size_t n_ins[]   = {128, 5120, 17408};
-    const size_t n_outs[]  = {37, 38, 39, 40, 264};
-    const size_t m         = 7;
+    int          fails    = 0;
+    const size_t n_ins[]  = {128, 5120, 17408};
+    const size_t n_outs[] = {37, 38, 39, 40, 48, 264};
+    /* m = 20 gives cpu_x86's GEMMs a second, short token tile (n_in up to
+     * 5120: the references are what costs) */
+    const size_t ms[]      = {7, 20};
+    const size_t m         = ms[1]; /* rows of x */
     char         what[160] = {0};
     const size_t n_shapes  = sizeof n_outs / sizeof n_outs[0];
     for (size_t kk = 0; kk < n_shapes * sizeof n_ins / sizeof n_ins[0]; kk++) {
@@ -222,8 +294,8 @@ static int check_backend(const char *name, bool x8_policy) {
         size_t       bytes = 0;
         uint8_t     *W     = make_tensor(n_out, n_in, &bytes);
         float       *x     = xmalloc(m * n_in * sizeof(float));
-        float       *y     = xmalloc(m * n_out * sizeof(float));
-        float       *yf    = xmalloc(m * n_out * sizeof(float));
+        float       *y     = xmalloc(n_out * sizeof(float));
+        float       *yf    = xmalloc(n_out * sizeof(float));
         float       *yq    = xmalloc(n_out * sizeof(float));
         for (size_t i = 0; i < m * n_in; i++) {
             x[i] = frand();
@@ -280,29 +352,9 @@ static int check_backend(const char *name, bool x8_policy) {
             fails += geist_expect(rel_err(n_out, y, yf) < 1e-5, what);
         }
 
-        /* m > 1: cpu_x86 runs the int8 GEMM; the other backends accumulate
-         * in fp32 (trampoline / scalar / x8 SGEMM). */
-        w.linear_mN(m, x, &w, be, y);
-        for (size_t t = 0; t < m; t++) {
-            ref_fp32(n_out, n_in, W, x + t * n_in, yf);
-#if defined(GEIST_BACKEND_CPU_X86)
-            if (x86) {
-                ref_w2a8(n_out, n_in, W, x + t * n_in, yq);
-                snprintf(what, sizeof what, "%s n_in=%zu: mN row %zu == W2A8 model", name, n_in, t);
-                fails += geist_expect(rel_err(n_out, y + t * n_out, yq) < 1e-5, what);
-                snprintf(what,
-                         sizeof what,
-                         "%s n_in=%zu: mN row %zu within A8 error of fp32",
-                         name,
-                         n_in,
-                         t);
-                fails += geist_expect(
-                        within_a8_bound(n_out, n_in, W, x + t * n_in, y + t * n_out, yf), what);
-                continue;
-            }
-#endif
-            snprintf(what, sizeof what, "%s n_in=%zu: mN row %zu == fp32", name, n_in, t);
-            fails += geist_expect(rel_err(n_out, y + t * n_out, yf) < 1e-4, what);
+        const size_t n_ms = x86 && n_in <= 5120 ? 2 : 1;
+        for (size_t i = 0; i < n_ms; i++) {
+            fails += check_mN(name, n_out, n_in, ms[i], W, x, &w, be);
         }
         if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
             void *aux = (void *) w.aux_fp32;
@@ -400,16 +452,97 @@ static int check_pair(const char *name) {
     return fails;
 }
 
+#if defined(GEIST_BACKEND_CPU_X86)
+/* cpu_x86's M>1 over more than one pass of the AMX GEMM (m = 150: 80 + 70
+ * tokens), and the AVX2 GEMM on the same shapes. Token rows get different
+ * magnitudes so a row paired with another row's scale cannot pass. */
+static int check_passes(void) {
+    struct geist_backend *be = nullptr;
+    if (geist_backend_create("cpu_x86", nullptr, nullptr, &be) != GEIST_OK) {
+        printf("cpu_x86: not compiled in, skipped\n");
+        return 0;
+    }
+    int          fails    = 0;
+    const size_t m        = 150;
+    const size_t n_ins[]  = {256, 5120};
+    const size_t n_outs[] = {37, 48};
+    char         what[160];
+    for (size_t k = 0; k < sizeof n_ins / sizeof n_ins[0]; k++) {
+        for (size_t o = 0; o < sizeof n_outs / sizeof n_outs[0]; o++) {
+            const size_t n_in  = n_ins[k];
+            const size_t n_out = n_outs[o];
+            size_t       bytes = 0;
+            uint8_t     *W     = make_tensor(n_out, n_in, &bytes);
+            float       *x     = xmalloc(m * n_in * sizeof(float));
+            for (size_t i = 0; i < m * n_in; i++) {
+                x[i] = frand() * (float) (1 + (i / n_in) % 5);
+            }
+            struct geist_weight w = {.raw        = W,
+                                     .raw_nbytes = bytes,
+                                     .n_in       = (int32_t) n_in,
+                                     .n_out      = (int32_t) n_out,
+                                     .dtype      = GEIST_DTYPE_PQ2_0};
+            snprintf(what, sizeof what, "cpu_x86 passes n_in=%zu n_out=%zu: resolve", n_in, n_out);
+            fails += geist_expect(be->desc->vtbl->resolve_weight(be, &w) == GEIST_OK, what);
+            if (w.linear_mN != nullptr) {
+                fails += check_mN("cpu_x86", n_out, n_in, m, W, x, &w, be);
+            }
+            free(W);
+            free(x);
+        }
+    }
+    geist_backend_destroy(be);
+    return fails;
+}
+
+/* The cpu_x86 checks under the gate this process was started with. */
+static int check_x86(void) {
+    const bool amx = cpu_x86_linear_pq2_0_amx_usable();
+    printf("cpu_x86 M>1: %s GEMM (GEIST_FORCE_ISA=%s)\n",
+           amx ? "AMX-INT8" : "AVX2",
+           getenv("GEIST_FORCE_ISA") != nullptr ? getenv("GEIST_FORCE_ISA") : "<unset>");
+    int fails = 0;
+    if (getenv("GEIST_FORCE_ISA") != nullptr) {
+        fails += geist_expect(!amx, "GEIST_FORCE_ISA=avx2 keeps the AVX2 GEMM");
+    }
+    fails += check_backend("cpu_x86", false);
+    fails += check_pair("cpu_x86");
+    fails += check_passes();
+    return fails;
+}
+#endif
+
 int main(void) {
     int fails = 0;
+#if defined(GEIST_BACKEND_CPU_X86)
+    /* Nothing has probed the ISA yet: the child's clamp takes effect. */
+    fflush(stdout);
+    const pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return GEIST_TEST_ERROR;
+    }
+    if (pid == 0) {
+        setenv("GEIST_FORCE_ISA", "avx2", 1);
+        const int child_fails = check_x86();
+        fflush(stdout);
+        _exit(child_fails ? GEIST_TEST_FAIL : GEIST_TEST_PASS);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid) {
+        perror("waitpid");
+        return GEIST_TEST_ERROR;
+    }
+    fails += geist_expect(WIFEXITED(status) && WEXITSTATUS(status) == GEIST_TEST_PASS,
+                          "cpu_x86 checks with GEIST_FORCE_ISA=avx2");
+    fails += check_x86();
+#endif
     fails += check_layout();
     fails += check_backend("cpu_scalar", false);
     fails += check_backend("cpu_neon", true);
-    fails += check_backend("cpu_x86", false);
     /* The policy is read at backend create: a fresh backend sees it. */
     fails += check_pair("cpu_scalar");
     fails += check_pair("cpu_neon");
-    fails += check_pair("cpu_x86");
     setenv("GEIST_PQ2_0_X8_GEMV", "0", 1);
     fails += check_backend("cpu_neon", false);
     /* x8 off: the row kernel's pair_m1 must still hold. */

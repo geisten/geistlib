@@ -1,6 +1,6 @@
 /*
- * src/backends/cpu_x86/linear_pq2_0.c — cpu_x86 PQ2_0 decode: a W2 x A8 GEMV
- * (AVX2).
+ * src/backends/cpu_x86/linear_pq2_0.c — cpu_x86 PQ2_0 linear: a W2 x A8 GEMV
+ * and GEMM (AVX2).
  *
  * Layer: BACKEND (cpu_x86).
  *
@@ -50,15 +50,21 @@
  * compute-bound, not bandwidth-bound, and needs no prefetch.
  *
  * AVX2 is the backend's x86-64-v3 baseline, so this runs on every host
- * cpu_x86 does.
+ * cpu_x86 does. Where the host has AMX-INT8 and Linux grants the tile data
+ * (cpu_x86_linear_pq2_0_amx_usable, decided at bind), the GEMM runs on the
+ * tiles instead: the same int8 activations, repacked per block, against
+ * 16-row tiles of code - 1 (kernel_pq2_0_amx.c).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "linear_pq2_0.h"
 
 #include "backend_state.h"
+#include "kernel_pq2_0_amx.h"
+#include "kernel_w4a8.h" /* w4a8_dispatcher_tier: the ISA gate, GEIST_FORCE_ISA-clamped */
 
 #include "checked.h"
+#include "hw_probe.h"
 #include "linear_ref.h"
 #include "quant.h"
 
@@ -72,6 +78,11 @@
 
 #if defined(_OPENMP)
 #include <omp.h>
+#endif
+
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 constexpr size_t QK = PQ2_0_BLOCK_ELEMS; /* 128 */
@@ -341,6 +352,14 @@ static inline size_t team_id(void) {
 #endif
 }
 
+static inline size_t team_size(void) {
+#if defined(_OPENMP)
+    return (size_t) omp_get_num_threads();
+#else
+    return 1;
+#endif
+}
+
 /* M>1: all m rows quantized (in parallel, one token per iteration), then the
  * GEMM by groups of GEMM_ROWS weight rows, each thread with its own
  * accumulators. The workspace holds the int8 activations (mN_acts), the
@@ -410,12 +429,125 @@ static void cpu_x86_linear_pq2_0_mN(size_t                     m,
     }
 }
 
+/* Token tiles per pass of the AMX GEMM. Each pass streams the weights once
+ * and keeps the packed activations of its tokens (nb * tiles * 2 KB, 2.2 MB
+ * for 8 tiles at n_in = 17408) near L2: 256 tokens in two passes measured
+ * 12 % (17408 x 5120) and 17 % (5120 x 17408) faster than in one. */
+constexpr size_t AMX_PASS_TILES = 8;
+
+/* Per-thread scratch starts on its own page and a page apart from the
+ * next: the L2 prefetchers run on into the neighbouring page, and with the
+ * neighbour storing there every step the lines bounce between the cores.
+ * At m = 128 on 17408 x 5120, two threads ran at 0.31-0.35 instead of 0.20
+ * ns per block, row and token and core with the scratch packed, and page
+ * alignment without the gap did not help. */
+constexpr size_t AMX_PAGE = 4096;
+
+/* M>1 on AMX: the activations quantized as for the AVX2 GEMM (XQ[b][t],
+ * inv[t]), then per pass of up to AMX_PASS_TILES token tiles the pass's
+ * tokens packed into B tiles (block-parallel) and the GEMM over 16-row
+ * groups, one contiguous range per thread. mN_aux holds the packed tiles
+ * and the per-thread scratch. */
+static void cpu_x86_linear_pq2_0_mN_amx(size_t                     m,
+                                        const float               *x,
+                                        const struct geist_weight *w,
+                                        struct geist_backend      *be,
+                                        float                     *y) {
+    const size_t n_in    = (size_t) w->n_in;
+    const size_t n_out   = (size_t) w->n_out;
+    const size_t nb      = n_in / QK;
+    const size_t tiles   = (m + PQ2_0_AMX_TOKENS - 1) / PQ2_0_AMX_TOKENS;
+    const size_t passes  = (tiles + AMX_PASS_TILES - 1) / AMX_PASS_TILES;
+    const size_t pass_tn = (tiles + passes - 1) / passes; /* balanced */
+    const size_t pass_m  = pass_tn * PQ2_0_AMX_TOKENS;
+    /* scratch per thread, rounded to pages, plus the gap page */
+    const size_t scratch = PQ2_0_AMX_SCRATCH_FIXED + pass_tn * PQ2_0_AMX_SCRATCH_PER_TILE;
+    const size_t stride  = (scratch + AMX_PAGE - 1) / AMX_PAGE * AMX_PAGE + AMX_PAGE;
+    size_t       acts = 0, sums = 0, scales = 0, packed = 0, per_team = 0, aux = 0;
+    struct cpu_x86_workspace *ws = nullptr;
+    if (be != nullptr && be->state != nullptr && !ckd_mul(&acts, m, n_in) &&
+        !ckd_mul(&sums, m, nb * sizeof(int32_t)) && !ckd_mul(&scales, m, sizeof(float)) &&
+        !ckd_mul(&packed, nb, pass_tn * PQ2_0_AMX_TILE_BYTES) &&
+        !ckd_mul(&per_team, team_max(), stride) &&
+        /* the packed tiles, a page to align the scratch, a gap page */
+        !ckd_add(&aux, packed, 2 * AMX_PAGE) && !ckd_add(&aux, aux, per_team)) {
+        ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, acts, sums, scales, aux);
+    }
+    if (ws == nullptr) {
+        cpu_x86_linear_pq2_0_mN(m, x, w, be, y); /* smaller scratch, or the reference */
+        return;
+    }
+    int8_t         *xq      = ws->mN_acts;
+    int32_t        *neg_sum = ws->mN_sum_a; /* written by quantize_token, unused here */
+    float          *inv     = ws->mN_scale;
+    int32_t        *bt      = (int32_t *) (void *) ws->mN_aux;
+    const uintptr_t end     = (uintptr_t) (ws->mN_aux + packed) + AMX_PAGE;
+    uint8_t        *scr0 =
+            ws->mN_aux + ((end + AMX_PAGE - 1) / AMX_PAGE * AMX_PAGE - (uintptr_t) ws->mN_aux);
+    const uint8_t   *raw        = (const uint8_t *) w->raw;
+    const size_t     groups     = (n_out + PQ2_0_AMX_ROWS - 1) / PQ2_0_AMX_ROWS;
+    constexpr size_t TILE_WORDS = PQ2_0_AMX_TILE_BYTES / sizeof(int32_t);
+
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+        for (size_t t = 0; t < m; t++) {
+            inv[t] = quantize_token(m, nb, x + t * n_in, xq + t * QK, neg_sum + t);
+        }
+        const size_t tid = team_id();
+        const size_t nt  = team_size();
+        uint8_t     *own = scr0 + tid * stride;
+        const size_t g0  = groups * tid / nt;
+        const size_t g1  = groups * (tid + 1) / nt;
+        for (size_t t0 = 0; t0 < m; t0 += pass_m) {
+            const size_t mc = m - t0 < pass_m ? m - t0 : pass_m;
+            const size_t tn = (mc + PQ2_0_AMX_TOKENS - 1) / PQ2_0_AMX_TOKENS;
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+            for (size_t b = 0; b < nb; b++) {
+                pq2_0_amx_pack(tn, mc, xq + (b * m + t0) * QK, bt + b * tn * TILE_WORDS);
+            }
+            pq2_0_amx_gemm(nb, n_out, mc, tn, g0, g1, raw, bt, inv + t0, own, y + t0 * n_out);
+#if defined(_OPENMP)
+#pragma omp barrier /* the next pass repacks bt */
+#endif
+        }
+    }
+}
+
+/* Whether this host may run kernel_pq2_0_amx.c: the dispatcher tier (which
+ * honours GEIST_FORCE_ISA: anything below avx512_vnni keeps the AVX2 GEMM),
+ * AMX-INT8 and the AVX-512 subsets that TU is compiled for, and Linux's
+ * permission for the 8 KB of tile data per thread (arch_prctl
+ * ARCH_REQ_XCOMP_PERM, Linux 5.16+; process-wide and idempotent, so asking
+ * once per bind is harmless). Decided here, outside that TU — see
+ * mk/backend-cpu_x86.mk. */
+bool cpu_x86_linear_pq2_0_amx_usable(void) {
+#if defined(__linux__) && defined(SYS_arch_prctl)
+    struct geist_hw_probe hw;
+    geist_hw_probe_isa(&hw);
+    constexpr long ARCH_REQ_XCOMP_PERM = 0x1023;
+    constexpr long XFEATURE_XTILEDATA  = 18;
+    return w4a8_dispatcher_tier() >= W4A8_ISA_AVX512_VNNI && hw.has_amx_int8 &&
+           __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") &&
+           syscall(SYS_arch_prctl, ARCH_REQ_XCOMP_PERM, XFEATURE_XTILEDATA) == 0;
+#else
+    return false;
+#endif
+}
+
 bool cpu_x86_linear_pq2_0_bind(struct geist_weight *w) {
     if (w == nullptr || w->dtype != GEIST_DTYPE_PQ2_0 || w->n_in <= 0 ||
         (size_t) w->n_in % QK != 0) {
         return false;
     }
     w->linear_m1 = cpu_x86_linear_pq2_0_m1;
-    w->linear_mN = cpu_x86_linear_pq2_0_mN;
+    w->linear_mN = cpu_x86_linear_pq2_0_amx_usable() ? cpu_x86_linear_pq2_0_mN_amx
+                                                     : cpu_x86_linear_pq2_0_mN;
     return true;
 }
