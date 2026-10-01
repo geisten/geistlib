@@ -13,7 +13,13 @@
  *      the weight (compared against what cpu_scalar's resolver installs);
  *   2. the outputs match cpu_scalar for m = 1 (decode) and m > 1 (prefill),
  *      every element written (poisoned y, compared by bit pattern — this
- *      file builds with -ffast-math, see test_x86_kernel_no_alloc_unit.c).
+ *      file builds with -ffast-math, see test_x86_kernel_no_alloc_unit.c);
+ *   3. the M>1 kernel's blocks of 4 rows by 3 tokens leave no trace: each
+ *      token of an m = 16 call equals, bit for bit, the same token alone.
+ *
+ * 42 rows leave a block of 2, m = 2, 5, 7 and 16 tokens partial blocks of
+ * 1 and 2, and BF16 and F16 run again at n_in = 523 (not a multiple of 8,
+ * so the dots' scalar tails) on 7 rows.
  *
  * Both paths dequantize the same bits with the same row decoder; only the
  * dot differs (fp32 x 32 lanes here, double in the oracle), so the bound is
@@ -40,9 +46,10 @@ int main(void) {
 #include "heap.h"
 #include "quant.h"
 
-constexpr size_t N_IN  = 512; /* whole blocks for every format (256 / 128 / 32) */
-constexpr size_t N_OUT = 40;
-constexpr size_t M_MAX = 16;
+constexpr size_t N_IN     = 512; /* whole blocks for every format (256 / 128 / 32) */
+constexpr size_t N_OUT    = 42;
+constexpr size_t N_IN_ODD = 523; /* BF16 and F16 only: block size 1 */
+constexpr size_t M_MAX    = 16;
 /* fp32 vs double accumulation over 512 products: measured below 1e-6 of the
  * output rms. 1e-4 catches any real mistake (a wrong row, a dropped block)
  * by orders of magnitude. */
@@ -51,7 +58,7 @@ constexpr double TOL_REL = 1e-4;
 constexpr uint16_t F16_0_004 = 0x1C19; /* fp16(0.004) */
 constexpr uint16_t F16_0_002 = 0x1819; /* fp16(0.002) */
 
-static const size_t MS[] = {1, 2, 5, 16};
+static const size_t MS[] = {1, 2, 5, 7, 16};
 
 /* Block layout facts the test needs: size, and where the fp16 scales sit
  * (random bytes there could decode to NaN/Inf and make parity meaningless). */
@@ -103,15 +110,15 @@ static uint16_t to_f16(float v) {
     return (uint16_t) (sign | ((uint32_t) exp << 10) | ((b >> 13) & 0x3FFu));
 }
 
-static uint8_t *make_weight(const struct fmt *f, size_t *nbytes_out) {
-    const size_t n_blocks = N_IN / f->block_elems * N_OUT;
+static uint8_t *make_weight(size_t n_in, size_t n_out, const struct fmt *f, size_t *nbytes_out) {
+    const size_t n_blocks = n_in / f->block_elems * n_out;
     const size_t nbytes   = n_blocks * f->block_bytes;
     uint8_t     *raw      = heap_alloc_array_aligned(uint8_t, nbytes);
     if (raw == nullptr) {
         return nullptr;
     }
     if (f->dtype == GEIST_DTYPE_F16 || f->dtype == GEIST_DTYPE_BF16) {
-        for (size_t i = 0; i < N_IN * N_OUT; i++) {
+        for (size_t i = 0; i < n_in * n_out; i++) {
             const float v = 0.05f * next_unit();
             uint16_t    h;
             if (f->dtype == GEIST_DTYPE_F16) {
@@ -145,22 +152,24 @@ static void free_aux(struct geist_weight *w) {
     }
 }
 
-static int check_fmt(const struct fmt     *f,
+static int check_fmt(size_t                n_in,
+                     size_t                n_out,
+                     const struct fmt     *f,
                      struct geist_backend *be_ref,
                      struct geist_backend *be_x86,
                      const float          *x,
                      float                *y_ref,
                      float                *y) {
     size_t   nbytes = 0;
-    uint8_t *raw    = make_weight(f, &nbytes);
+    uint8_t *raw    = make_weight(n_in, n_out, f, &nbytes);
     if (raw == nullptr) {
         fprintf(stderr, "ERROR: weight allocation failed\n");
         return 1;
     }
     struct geist_weight w_ref = {.raw        = raw,
                                  .raw_nbytes = nbytes,
-                                 .n_in       = (int32_t) N_IN,
-                                 .n_out      = (int32_t) N_OUT,
+                                 .n_in       = (int32_t) n_in,
+                                 .n_out      = (int32_t) n_out,
                                  .dtype      = f->dtype};
     struct geist_weight w_x86 = w_ref;
     int                 fails = 0;
@@ -190,7 +199,7 @@ static int check_fmt(const struct fmt     *f,
         } else {
             w_ref.linear_mN(m, x, &w_ref, be_ref, y_ref);
         }
-        for (size_t i = 0; i < m * N_OUT; i++) {
+        for (size_t i = 0; i < m * n_out; i++) {
             y[i] = POISON;
         }
         if (m == 1) {
@@ -200,7 +209,7 @@ static int check_fmt(const struct fmt     *f,
         }
         size_t unwritten = 0;
         double max_abs = 0.0, sum_sq = 0.0;
-        for (size_t i = 0; i < m * N_OUT; i++) {
+        for (size_t i = 0; i < m * n_out; i++) {
             uint32_t bits;
             memcpy(&bits, &y[i], sizeof bits);
             if (bits == poison_bits) {
@@ -211,19 +220,36 @@ static int check_fmt(const struct fmt     *f,
             max_abs        = d > max_abs ? d : max_abs;
             sum_sq += (double) y_ref[i] * (double) y_ref[i];
         }
-        const double rms = sqrt(sum_sq / (double) (m * N_OUT));
+        const double rms = sqrt(sum_sq / (double) (m * n_out));
         const double rel = rms > 0.0 ? max_abs / rms : max_abs;
         if (unwritten != 0 || !(rel <= TOL_REL)) {
             fprintf(stderr,
-                    "FAIL: %s m=%zu: %zu unwritten, max|dy|/rms %.3g (tol %.0e)\n",
+                    "FAIL: %s n_in=%zu m=%zu: %zu unwritten, max|dy|/rms %.3g (tol %.0e)\n",
                     f->name,
+                    n_in,
                     m,
                     unwritten,
                     rel,
                     TOL_REL);
             fails++;
         } else {
-            printf("  %-6s m=%-2zu max|dy|/rms %.2e\n", f->name, m, rel);
+            printf("  %-6s n_in=%-3zu m=%-2zu max|dy|/rms %.2e\n", f->name, n_in, m, rel);
+        }
+        if (m == M_MAX) { /* 3: each token alone, against its row of y */
+            size_t differ = 0;
+            for (size_t t = 0; t < m; t++) {
+                w_x86.linear_mN(1, x + t * n_in, &w_x86, be_x86, y_ref);
+                differ += memcmp(y_ref, y + t * n_out, n_out * sizeof(float)) != 0;
+            }
+            if (differ != 0) {
+                fprintf(stderr,
+                        "FAIL: %s n_in=%zu: %zu of %zu tokens differ alone from in a block\n",
+                        f->name,
+                        n_in,
+                        differ,
+                        m);
+                fails++;
+            }
         }
     }
 out:
@@ -248,20 +274,23 @@ int main(void) {
         printf("SKIP: cpu_scalar backend did not register\n");
         return GEIST_TEST_SKIP;
     }
-    float *x     = heap_alloc_array_aligned(float, M_MAX *N_IN);
+    float *x     = heap_alloc_array_aligned(float, M_MAX *N_IN_ODD);
     float *y_ref = heap_alloc_array_aligned(float, M_MAX *N_OUT);
     float *y     = heap_alloc_array_aligned(float, M_MAX *N_OUT);
     if (x == nullptr || y_ref == nullptr || y == nullptr) {
         fprintf(stderr, "ERROR: activation allocation failed\n");
         return GEIST_TEST_ERROR;
     }
-    for (size_t i = 0; i < M_MAX * N_IN; i++) {
+    for (size_t i = 0; i < M_MAX * N_IN_ODD; i++) {
         x[i] = next_unit();
     }
 
     int fails = 0;
     for (size_t fi = 0; fi < sizeof FMTS / sizeof *FMTS; fi++) {
-        fails += check_fmt(&FMTS[fi], be_ref, be_x86, x, y_ref, y);
+        fails += check_fmt(N_IN, N_OUT, &FMTS[fi], be_ref, be_x86, x, y_ref, y);
+        if (FMTS[fi].block_elems == 1) {
+            fails += check_fmt(N_IN_ODD, 7, &FMTS[fi], be_ref, be_x86, x, y_ref, y);
+        }
     }
 
     safe_free((void **) &x);

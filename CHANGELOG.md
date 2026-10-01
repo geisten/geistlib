@@ -151,6 +151,23 @@ minor release.
 
 ### Changed
 
+- **cpu_x86's generic linear runs its prefill dots in register blocks**
+  (`cpu_x86/linear_generic.c`). The dtypes without a native x86 kernel
+  (Q4_0, Q4_1, Q3_K, Q5_K, the IQ formats, TQ2_0, BF16, F16 prefill)
+  dequantize a weight row and dotted it against each token in turn, two
+  loads per FMA, held back by the load ports. M>1 now takes 4 dequantized
+  rows against 3 tokens at a time, 12 accumulators, 7 loads per 12 FMAs.
+  Each dot keeps one fixed order (8 lanes, a fixed reduction, the scalar
+  tail), so a result depends neither on the block it lands in nor on the
+  thread count; it differs from the old order by float rounding. On a
+  4-vCPU Xeon a synthetic Llama 3.2 1B with a Q4_0 body prefills 64 tokens
+  in 782 ms instead of 1305 and 256 in 3.11 s instead of 5.16 (-39 %, 10 of
+  10 cycles; both builds from scratch, `tools/bench_revision_ab.py`); decode
+  is unchanged. The synthetic Ternary-Bonsai-2-27B's BF16 DeltaNet
+  projections take 76 ms of thread time per 64-token prefill instead of
+  101, below what its A/B resolves. `test_x86_generic_linear_unit` now
+  covers partial row and token blocks, the scalar tail, and a token alone
+  against the same token in a block, bit for bit.
 - **cpu_x86 splits Qwen3.5's query and gate, scales the query and gates the
   attention on the whole team** (`cpu_x86/elementwise.c`). The family's
   gated attention copied query and gate apart per head, scaled the query by

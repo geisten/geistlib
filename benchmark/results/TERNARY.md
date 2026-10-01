@@ -1104,6 +1104,20 @@ What is left on the calling thread there is the KV store's append and
 RoPE. The A/B, both builds from scratch with a control that read -1.7 %
 [-4.5, +3.3], does not resolve the 1 % the profile predicts.
 
+### The DeltaNet's BF16 projections
+
+The 48 DeltaNet layers project alpha and beta from the normed input
+through BF16 matrices of 48 rows, cpu_x86's generic linear. It dotted
+each dequantized row against one token at a time, two loads per FMA; it
+takes 4 rows against 3 tokens now, 7 loads per 12 FMAs (X86.md has the
+general case):
+
+| | before | after |
+| :-- | --: | --: |
+| one call, 48 × 5120, 64 tokens, 4 threads | 227 µs | 153 µs |
+| the projections in the model, thread time per prefill (`perf`) | 101 ms | 76 ms |
+| prefill, 64 tokens (A/B, 30 cycles) | 1.083 s | 1.081 s, +2.1 % [-2.0, +6.1]: noise |
+
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
   `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep

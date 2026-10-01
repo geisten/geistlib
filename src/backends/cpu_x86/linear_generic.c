@@ -14,15 +14,17 @@
  * This is the floor, not the goal: each OpenMP thread dequantizes its rows
  * with the format's own row decoder (quant.h) into a private row of the
  * calling thread's workspace (L1-resident for any realistic n_in), then dots
- * it in fp32 with AVX2/FMA. The M>1 path dequantizes each weight row once and
- * dots it against all m activation rows. No heap allocation once the
- * workspace has grown to the shape. A dtype that earns a native int8 kernel
+ * it in fp32 with AVX2/FMA. The M>1 path dequantizes each weight row once,
+ * four at a time, and dots them against all m activation rows in blocks of
+ * 4 rows by 3 tokens. No heap allocation once the workspace has grown to
+ * the shape. A dtype that earns a native int8 kernel
  * moves off this path; nothing else changes for it.
  *
- * Numerics: fp32 accumulation in a fixed per-row order (4 x 8 lanes, then a
- * fixed reduction), so a row's result does not depend on the thread count.
- * It differs from cpu_scalar's double accumulation by float rounding only —
- * the dequantized weights are the same bits.
+ * Numerics: fp32 accumulation in a fixed per-dot order — 4 x 8 lanes for one
+ * token, 1 x 8 lanes per dot for M>1 — then a fixed reduction, so a result
+ * depends neither on the thread count nor, for M>1, on the block it lands
+ * in. It differs from cpu_scalar's double accumulation by float rounding
+ * only — the dequantized weights are the same bits.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -150,9 +152,9 @@ static inline size_t team_id(void) {
 #endif
 }
 
-/* Everything a call needs, or false with nothing acquired. One dequantized
- * row per possible thread, each padded to a 64-byte multiple so no two
- * threads' rows share a cache line. */
+/* Everything a call needs, or false with nothing acquired. per_thread
+ * dequantized rows per possible thread, each padded to a 64-byte multiple
+ * so no two threads' rows share a cache line. */
 struct generic_plan {
     row_dequant_fn deq;
     size_t         row_bytes;
@@ -160,8 +162,10 @@ struct generic_plan {
     float         *rows;
 };
 
-[[nodiscard]] static bool
-plan_call(const struct geist_weight *w, struct geist_backend *be, struct generic_plan *p) {
+[[nodiscard]] static bool plan_call(size_t                     per_thread,
+                                    const struct geist_weight *w,
+                                    struct geist_backend      *be,
+                                    struct generic_plan       *p) {
     const size_t n_in = (size_t) w->n_in;
     p->deq            = row_dequant_for(w->dtype);
     if (p->deq == nullptr || be == nullptr || be->state == nullptr ||
@@ -170,7 +174,8 @@ plan_call(const struct geist_weight *w, struct geist_backend *be, struct generic
     }
     p->stride    = (n_in + 15u) & ~(size_t) 15u;
     size_t bytes = 0;
-    if (ckd_mul(&bytes, team_max(), p->stride) || ckd_mul(&bytes, bytes, sizeof(float))) {
+    if (ckd_mul(&bytes, team_max(), p->stride) || ckd_mul(&bytes, bytes, per_thread) ||
+        ckd_mul(&bytes, bytes, sizeof(float))) {
         return false;
     }
     struct cpu_x86_workspace *ws =
@@ -189,7 +194,7 @@ static void cpu_x86_linear_generic_m1(const float               *x,
     const size_t        n_in  = (size_t) w->n_in;
     const size_t        n_out = (size_t) w->n_out;
     struct generic_plan p;
-    if (!plan_call(w, be, &p)) {
+    if (!plan_call(1, w, be, &p)) {
         geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
     }
@@ -210,6 +215,109 @@ static void cpu_x86_linear_generic_m1(const float               *x,
     }
 }
 
+/* The M>1 dots, a block of MN_ROWS dequantized weight rows against
+ * MN_TOKENS activation rows at a time: 12 accumulators, and per 8
+ * elements 7 loads for 12 FMAs where a dot at a time loads twice per FMA
+ * and waits on the load ports. AVX2 has 16 ymm: 12 accumulators, the 3
+ * activation vectors, a weight vector. Each dot is one 8-lane accumulator
+ * in k order, reduced in a fixed order, then the scalar tail: its result
+ * does not depend on the block it lands in, nor on the thread count. */
+constexpr size_t MN_ROWS   = 4;
+constexpr size_t MN_TOKENS = 3;
+
+static inline float hsum8(__m256 v) {
+    __m128 s = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
+    s        = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    s        = _mm_add_ss(s, _mm_movehdup_ps(s));
+    return _mm_cvtss_f32(s);
+}
+
+/* y[t * n_out + r] = row r . x row t for r < nr <= MN_ROWS, t < nt <=
+ * MN_TOKENS; rows `stride` floats apart, x rows n apart. Inlined with
+ * constant nr and nt, so that the accumulators stay in registers. */
+[[gnu::always_inline]] static inline void dots_block(size_t       nr,
+                                                     size_t       nt,
+                                                     size_t       n,
+                                                     size_t       stride,
+                                                     const float *rows,
+                                                     const float *x,
+                                                     size_t       n_out,
+                                                     float       *y) {
+    __m256 acc[MN_ROWS][MN_TOKENS];
+    for (size_t r = 0; r < nr; r++) {
+        for (size_t t = 0; t < nt; t++) {
+            acc[r][t] = _mm256_setzero_ps();
+        }
+    }
+    size_t k = 0;
+    for (; k + 8 <= n; k += 8) {
+        __m256 xv[MN_TOKENS];
+        for (size_t t = 0; t < nt; t++) {
+            xv[t] = _mm256_loadu_ps(x + t * n + k);
+        }
+        for (size_t r = 0; r < nr; r++) {
+            const __m256 wv = _mm256_loadu_ps(rows + r * stride + k);
+            for (size_t t = 0; t < nt; t++) {
+                acc[r][t] = _mm256_fmadd_ps(xv[t], wv, acc[r][t]);
+            }
+        }
+    }
+    for (size_t r = 0; r < nr; r++) {
+        for (size_t t = 0; t < nt; t++) {
+            float s = hsum8(acc[r][t]);
+            for (size_t kk = k; kk < n; kk++) {
+                s += x[t * n + kk] * rows[r * stride + kk];
+            }
+            y[t * n_out + r] = s;
+        }
+    }
+}
+
+/* All m tokens against nr <= MN_ROWS rows: blocks of MN_TOKENS, then the
+ * tail. */
+static void dots_rows(size_t       nr,
+                      size_t       m,
+                      size_t       n,
+                      size_t       stride,
+                      const float *rows,
+                      const float *x,
+                      size_t       n_out,
+                      float       *y) {
+    size_t t = 0;
+    for (; t + MN_TOKENS <= m; t += MN_TOKENS) {
+        switch (nr) {
+        case 4:
+            dots_block(4, 3, n, stride, rows, x + t * n, n_out, y + t * n_out);
+            break;
+        case 3:
+            dots_block(3, 3, n, stride, rows, x + t * n, n_out, y + t * n_out);
+            break;
+        case 2:
+            dots_block(2, 3, n, stride, rows, x + t * n, n_out, y + t * n_out);
+            break;
+        default:
+            dots_block(1, 3, n, stride, rows, x + t * n, n_out, y + t * n_out);
+            break;
+        }
+    }
+    for (; t < m; t++) {
+        switch (nr) {
+        case 4:
+            dots_block(4, 1, n, stride, rows, x + t * n, n_out, y + t * n_out);
+            break;
+        case 3:
+            dots_block(3, 1, n, stride, rows, x + t * n, n_out, y + t * n_out);
+            break;
+        case 2:
+            dots_block(2, 1, n, stride, rows, x + t * n, n_out, y + t * n_out);
+            break;
+        default:
+            dots_block(1, 1, n, stride, rows, x + t * n, n_out, y + t * n_out);
+            break;
+        }
+    }
+}
+
 static void cpu_x86_linear_generic_mN(size_t                     m,
                                       const float               *x,
                                       const struct geist_weight *w,
@@ -218,25 +326,28 @@ static void cpu_x86_linear_generic_mN(size_t                     m,
     const size_t        n_in  = (size_t) w->n_in;
     const size_t        n_out = (size_t) w->n_out;
     struct generic_plan p;
-    if (!plan_call(w, be, &p)) {
+    if (!plan_call(MN_ROWS, w, be, &p)) {
         geist_linear_ref(m, x, w, y);
         return;
     }
-    const uint8_t *raw = (const uint8_t *) w->raw;
+    const uint8_t *raw    = (const uint8_t *) w->raw;
+    const size_t   blocks = (n_out + MN_ROWS - 1) / MN_ROWS;
 
 #if defined(_OPENMP)
 #pragma omp parallel
 #endif
     {
-        float *row = p.rows + team_id() * p.stride;
+        float *rows = p.rows + team_id() * MN_ROWS * p.stride;
 #if defined(_OPENMP)
 #pragma omp for schedule(static)
 #endif
-        for (size_t j = 0; j < n_out; j++) {
-            p.deq(n_in, raw + j * p.row_bytes, row);
-            for (size_t i = 0; i < m; i++) {
-                y[i * n_out + j] = dot_f32(n_in, x + i * n_in, row);
+        for (size_t b = 0; b < blocks; b++) {
+            const size_t j0 = b * MN_ROWS;
+            const size_t nr = n_out - j0 < MN_ROWS ? n_out - j0 : MN_ROWS;
+            for (size_t r = 0; r < nr; r++) {
+                p.deq(n_in, raw + (j0 + r) * p.row_bytes, rows + r * p.stride);
             }
+            dots_rows(nr, m, n_in, p.stride, rows, x, n_out, y + j0);
         }
     }
 }
