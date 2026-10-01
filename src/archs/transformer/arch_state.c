@@ -1714,6 +1714,11 @@ void transformer_session_free(struct transformer_arch_state   *state,
     sess->dn_prefill_ws        = nullptr;
     sess->dn_prefill_ws_floats = 0;
 
+    void *rows = sess->lookup_rows;
+    safe_free(&rows);
+    sess->lookup_rows        = nullptr;
+    sess->lookup_rows_floats = 0;
+
     if (state != nullptr && be != nullptr && sess->dn_conv_state != nullptr) {
         for (size_t li = 0; li < state->n_layers; li++) {
             if (sess->dn_conv_state[li] != nullptr)

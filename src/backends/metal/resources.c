@@ -198,6 +198,17 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
     }
 }
 
+/* Whether metal_submit_copy encodes this copy on the open sequence's
+ * compute encoder, ordered behind the dispatches already on it. */
+static bool metal_copies_in_sequence(const struct metal_state *st,
+                                     size_t                    src_offset,
+                                     size_t                    dst_offset,
+                                     size_t                    n_bytes) {
+    return st->sequence_active && st->sequence_compute_encoder != nullptr &&
+           st->copy_u32_pipeline != nullptr && (src_offset % 4u) == 0 && (dst_offset % 4u) == 0 &&
+           (n_bytes % 4u) == 0;
+}
+
 [[nodiscard]] static enum geist_status metal_submit_copy(struct metal_state *st,
                                                          void               *src,
                                                          size_t              src_offset,
@@ -221,9 +232,7 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
      * compute dispatch (not a blit encoder) avoids exhausting the per-command-
      * buffer encoder limit at long context. Requires 4-byte alignment; other
      * copies fall through to the standalone blit below. */
-    if (st->sequence_active && st->sequence_compute_encoder != nullptr &&
-        st->copy_u32_pipeline != nullptr && (src_offset % 4u) == 0 && (dst_offset % 4u) == 0 &&
-        (n_bytes % 4u) == 0) {
+    if (metal_copies_in_sequence(st, src_offset, dst_offset, n_bytes)) {
         void *enc = metal_sequence_encoder(st);
         struct {
             uint32_t so, dof, n;
@@ -484,14 +493,22 @@ metal_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t src[
     if (n_bytes == 0) {
         return GEIST_OK;
     }
-    metal_flush_if_referenced(buf->owner, buf->buffer);
-
-    if (buf->host_visible) {
-        memcpy(buf->mapped, src, n_bytes);
-        return GEIST_OK;
+    /* A buffer the open command sequence reads is written through staging
+     * and a copy on the sequence's encoder, behind those reads, instead of
+     * flushing the sequence first: the host gathers each prefill chunk's
+     * lookup rows into scratch the previous chunk still reads (#529). The
+     * command buffer keeps the staging buffer alive until it completes. */
+    struct metal_state *st     = buf->owner;
+    const bool          behind = metal_seq_references(st, buf->buffer) &&
+                                 metal_copies_in_sequence(st, 0, buf->base_off, n_bytes);
+    if (!behind) {
+        metal_flush_if_referenced(st, buf->buffer);
+        if (buf->host_visible) {
+            memcpy(buf->mapped, src, n_bytes);
+            return GEIST_OK;
+        }
     }
 
-    struct metal_state  *st      = buf->owner;
     struct geist_buffer *staging = nullptr;
     enum geist_status    s       = metal_new_buffer(
             st->backend, n_bytes, GEIST_BUFFER_STAGING, GEIST_MEMORY_HOST_VISIBLE, true, &staging);

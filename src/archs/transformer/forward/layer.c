@@ -17,6 +17,8 @@
 #include "../arch_state.h"
 #include "../forward.h"
 
+#include "checked.h"
+#include "heap.h"
 #include "quant.h"
 #include <geist.h>
 #include <geist_backend.h>
@@ -466,6 +468,58 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
     return rc;
 }
 
+/* The session's lookup_rows, grown to `floats`. nullptr if that allocation
+ * fails; the old staging is then kept. */
+static float *lookup_rows(struct transformer_arch_session *sess, size_t floats) {
+    if (floats <= sess->lookup_rows_floats) {
+        return sess->lookup_rows;
+    }
+    float *rows = heap_alloc_array_aligned(float, floats);
+    if (rows == nullptr) {
+        return nullptr;
+    }
+    void *old = sess->lookup_rows;
+    safe_free(&old);
+    sess->lookup_rows        = rows;
+    sess->lookup_rows_floats = floats;
+    return rows;
+}
+
+enum geist_status transformer_gather_rows(struct transformer_arch_session *sess,
+                                          const struct geist_tensor       *table,
+                                          size_t                           n,
+                                          const geist_token_t              ids[static n],
+                                          size_t                           row,
+                                          float                            scale,
+                                          struct geist_buffer             *dst) {
+    struct geist_backend            *be = sess->model->backend;
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    size_t                           floats;
+    if (ckd_mul(&floats, n, row)) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const bool staged = be->desc->caps.lookup_tables_on_host;
+    float     *rows   = staged ? lookup_rows(sess, floats) : (float *) v->buffer_map(dst);
+    if (rows == nullptr) {
+        return staged ? GEIST_E_OOM : GEIST_E_BACKEND;
+    }
+    enum geist_status s = GEIST_OK;
+    for (size_t t = 0; t < n && s == GEIST_OK; t++) {
+        s = dequant_one_row(be, table, (size_t) ids[t], rows + t * row);
+    }
+    if (s == GEIST_OK && scale != 1.0f) {
+        for (size_t i = 0; i < floats; i++) {
+            rows[i] *= scale;
+        }
+    }
+    if (!staged) {
+        v->buffer_unmap(dst);
+        return s;
+    }
+    return s != GEIST_OK ? s
+                         : v->buffer_upload(dst, floats * sizeof(float), (const uint8_t *) rows);
+}
+
 enum geist_status transformer_compute_per_layer_input(struct transformer_arch_session *sess,
                                                       geist_token_t                    token_id,
                                                       struct geist_buffer             *h_buf,
@@ -712,19 +766,16 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
         }
     }
     if (!gather_on_device) {
-        float *dst = (float *) v->buffer_map(sess->scratch_ple_lookup);
-        for (size_t t = 0; t < n; t++) {
-            enum geist_status s =
-                    dequant_one_row(be, &st->ple_table, (size_t) ple_ids[t], dst + t * PLE_OUT);
-            if (s != GEIST_OK) {
-                v->buffer_unmap(sess->scratch_ple_lookup);
-                return s;
-            }
+        const enum geist_status s = transformer_gather_rows(sess,
+                                                            &st->ple_table,
+                                                            n,
+                                                            ple_ids,
+                                                            PLE_OUT,
+                                                            st->config.ple_table_scale,
+                                                            sess->scratch_ple_lookup);
+        if (s != GEIST_OK) {
+            return s;
         }
-        for (size_t i = 0; i < n * PLE_OUT; i++) {
-            dst[i] *= st->config.ple_table_scale;
-        }
-        v->buffer_unmap(sess->scratch_ple_lookup);
     }
     plepre_add(PLEPRE_GATHER, t0);
 

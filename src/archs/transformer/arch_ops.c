@@ -269,8 +269,7 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
     if (vocab_ok != GEIST_OK) {
         return vocab_ok;
     }
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    struct geist_backend *be = st->backend;
 
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* sqrt(d_model) embedding scale is Gemma-3/4-specific; Llama / BitNet
@@ -328,22 +327,16 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
             }
         }
         if (!embed_on_device) {
-            float *h_dst = (float *) v->buffer_map(sess->scratch_h_a);
-            for (size_t t = 0; t < chunk; t++) {
-                enum geist_status s = dequant_one_row(
-                        be, &st->embed_table, (size_t) ids[off + t], h_dst + t * st->d_model);
-                if (s != GEIST_OK) {
-                    v->buffer_unmap(sess->scratch_h_a);
-                    return s;
-                }
+            const enum geist_status s = transformer_gather_rows(sess,
+                                                                &st->embed_table,
+                                                                chunk,
+                                                                ids + off,
+                                                                st->d_model,
+                                                                embed_scale,
+                                                                sess->scratch_h_a);
+            if (s != GEIST_OK) {
+                return s;
             }
-            if (embed_scale != 1.0f) {
-                const size_t n_floats = chunk * st->d_model;
-                for (size_t i = 0; i < n_floats; i++) {
-                    h_dst[i] *= embed_scale;
-                }
-            }
-            v->buffer_unmap(sess->scratch_h_a);
         }
 
         /* prism.hadamard: token_embd stores rotated rows. */

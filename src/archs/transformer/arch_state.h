@@ -370,6 +370,12 @@ struct transformer_arch_session {
      * a call. */
     float *dn_prefill_ws;
     size_t dn_prefill_ws_floats;
+    /* Host staging of lookup rows the host gathers for a prefill chunk on a
+     * backend with caps.lookup_tables_on_host (transformer_gather_rows,
+     * #529): the embedding or PLE rows of one chunk, uploaded from here.
+     * Grown on demand; nothing in it outlives a call. */
+    float *lookup_rows;
+    size_t lookup_rows_floats;
 
     /* Qwen3.5 MTP owns a cache independent from the target trunk. Target
      * batches feed it one-position-shifted hidden rows when GEIST_MTP=1.

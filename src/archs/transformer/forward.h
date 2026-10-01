@@ -164,4 +164,19 @@ transformer_embedding_accumulate(struct transformer_arch_session *sess, size_t k
 [[nodiscard]] enum geist_status
 dequant_one_row(struct geist_backend *be, const struct geist_tensor *t, size_t row_idx, float *dst);
 
+/* The host gather of a lookup-only table: rows ids[0..n) of `table`, each
+ * `row` floats, times `scale`, into dst. On a backend that reads lookup
+ * tables on the host (caps.lookup_tables_on_host) the rows go through the
+ * session's lookup_rows and buffer_upload, which a batched backend orders
+ * behind the work still reading dst; mapping dst there would flush that
+ * work once per prefill chunk (#529). Other backends write through
+ * buffer_map as before. */
+[[nodiscard]] enum geist_status transformer_gather_rows(struct transformer_arch_session *sess,
+                                                        const struct geist_tensor       *table,
+                                                        size_t                           n,
+                                                        const geist_token_t  ids[static n],
+                                                        size_t               row,
+                                                        float                scale,
+                                                        struct geist_buffer *dst);
+
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_FORWARD_H */
