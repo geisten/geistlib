@@ -570,6 +570,18 @@ static void apply_mmap_advice(void *map, size_t size) {
     (void) size;
 }
 
+/* MAP_SHARED on Apple: Metal wires a NoCopy weight buffer for write, and on
+ * a private mapping that copy-on-writes every page it makes resident — the
+ * whole model a second time, as anonymous memory (#541). PROT_READ over an
+ * O_RDONLY file either way, so nothing can write through it. Elsewhere no
+ * device wires the mapping, and MAP_PRIVATE keeps the Linux behaviour
+ * (file THP for the CPU backends) as it is. */
+#if defined(__APPLE__)
+static constexpr int gguf_map_flags = MAP_SHARED;
+#else
+static constexpr int gguf_map_flags = MAP_PRIVATE;
+#endif
+
 struct gguf_ctx *gguf_open(const char *path, const char **errmsg) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
@@ -585,7 +597,7 @@ struct gguf_ctx *gguf_open(const char *path, const char **errmsg) {
     }
     size_t fsize = (size_t) sb.st_size;
 
-    void *map = mmap(nullptr, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+    void *map = mmap(nullptr, fsize, PROT_READ, gguf_map_flags, fd, 0);
     if (map == MAP_FAILED) {
         close(fd);
         set_err(errmsg, "mmap() failed");
