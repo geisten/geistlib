@@ -151,6 +151,19 @@ minor release.
 
 ### Changed
 
+- **The layer-output scale is skipped when it is 1** (`layer_ple.c`). Only
+  Gemma 4 (PLE) loads a per-layer output scale; every other model gets 1,
+  and the step after each layer still multiplied the hidden state by it: a
+  pass on the calling thread on the CPU backends, a dispatch on Metal and
+  Vulkan. It now returns at once for a scale of 1, which changes no bit on
+  the CPU backends. On a 4-vCPU Xeon the step took 10.6 ms of a 64-token
+  prefill of the synthetic Ternary-Bonsai-2-27B and takes 0.05 ms now
+  (`GEIST_PROFILE_PREFILL`): 1 % of the prefill, below what a clean-build
+  A/B resolves on this host (-1.8 % [-5.9, +6.2] and +0.4 % [-5.9, +4.8] in
+  two runs). The dispatch it saves the GPU backends per layer is
+  unmeasured. `test_layer_scale_output_unit` checks that a scale of 1
+  neither maps the state nor calls `scale_f32`, and that any other scale
+  still applies on both paths.
 - **The Walsh-Hadamard transform vectorizes its first passes** (`fwht.c`).
   Its passes of len 1, 2 and 4 have inner loops of 1, 2 and 4 butterflies,
   too short for the compiler to vectorize, and they ran scalar. Each now

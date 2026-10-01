@@ -982,6 +982,18 @@ p = 3e-4), against a control, the baseline's binary again, that read +2.9 %
 [-0.4, +4.5] over the same cycles. That is the 55 ms the rotation's thread
 time predicts on 4 threads. Decode stayed within noise in every run.
 
+### The layer-output scale
+
+The step after each layer multiplied the hidden state by the layer's
+output scale, which only Gemma 4 loads; this model, like every other,
+gets 1. On cpu_x86 that was a pass over the 64 × 5120 floats on the
+calling thread while the others waited, 10.6 ms per prefill
+(`GEIST_PROFILE_PREFILL`). The step returns at once for a scale of 1 now,
+which changes no bit on the CPU backends, and the profiler puts it at
+0.05 ms. That is 1 % of the prefill, below what an A/B resolves on this
+host: two runs with both builds from scratch gave -1.8 % [-5.9, +6.2] in
+12 of 20 cycles and +0.4 % [-5.9, +4.8] in 14 of 30.
+
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
   `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep
