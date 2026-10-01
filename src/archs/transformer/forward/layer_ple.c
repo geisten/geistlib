@@ -183,6 +183,14 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
 }
 
 enum geist_status transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
+    /* Only Gemma 4 (PLE) carries a layer scale; every other model loads 1,
+     * and a pass over the hidden state that multiplies by 1 changes no bit
+     * on the CPU backends. It cost a serial 11 ms of a 1.1 s 64-token
+     * prefill of the synthetic Ternary-Bonsai-2-27B on cpu_x86, and the GPU
+     * backends a dispatch per layer. */
+    if (ctx->L->layer_scalar == 1.0f) {
+        return GEIST_OK;
+    }
     /* Bound once (#352): batched GPU backends keep the per-layer scale
      * on-device instead of flushing their pipeline for a host loop; the CPU
      * backends have no scale_f32 and take the host loop. This used to fall

@@ -10,6 +10,11 @@
  *   3. Outlier suppression:  a spiky vector's peak magnitude shrinks after
  *      rotation, so symmetric INT8 quant (scale = amax/127) wastes fewer
  *      levels on the outlier — the whole reason to rotate before quantizing.
+ *   4. The butterfly order, to the bit:  the passes of len 1, 2, 4, ... in
+ *      turn, the last one scaled by 1/sqrt(n). The Vulkan and Metal ports
+ *      run that order and their tests expect the host's bits; fwht.c
+ *      spells out the first passes to vectorize them, which must not move
+ *      a bit.
  *
  * Deterministic — fixed seed, no model needed.
  */
@@ -17,6 +22,7 @@
 #include "test_helpers.h"
 
 #include <math.h>
+#include <string.h>
 
 /* Deterministic N(0,1) via Box-Muller over a tiny LCG. */
 static float gauss(uint32_t *seed) {
@@ -100,10 +106,58 @@ static int test_outlier_suppressed(void) {
     return 0;
 }
 
+/* Property 4: the passes of a plain loop, in order, give the same bits.
+ * The scale s is the library's own: -ffast-math lets gcc take 1/sqrtf(n)
+ * through RSQRTSS and a Newton step, which two translation units need not
+ * round alike. */
+static void fwht_reference(size_t n, float s, float a[static n]) {
+    if (n < 2)
+        return;
+    const size_t half = n >> 1;
+    for (size_t len = 1; len < half; len <<= 1)
+        for (size_t i = 0; i < n; i += 2 * len)
+            for (size_t j = i; j < i + len; j++) {
+                const float x = a[j];
+                const float y = a[j + len];
+                a[j]          = x + y;
+                a[j + len]    = x - y;
+            }
+    for (size_t j = 0; j < half; j++) {
+        const float x = a[j];
+        const float y = a[j + half];
+        a[j]          = (x + y) * s;
+        a[j + half]   = (x - y) * s;
+    }
+}
+
+static int test_butterfly_order(void) {
+    enum { N_MAX = 8192 };
+    static float x[N_MAX], ref[N_MAX];
+    uint32_t     seed = 0xb17eu;
+    for (size_t n = 1; n <= N_MAX; n <<= 1) {
+        /* H e_0 is all ones before the scale, so every element is s. */
+        for (size_t i = 0; i < n; i++)
+            x[i] = i == 0 ? 1.0f : 0.0f;
+        fwht_orthonormal(n, x);
+        const float s = x[0];
+        for (size_t i = 0; i < n; i++)
+            x[i] = ref[i] = gauss(&seed);
+        fwht_orthonormal(n, x);
+        fwht_reference(n, s, ref);
+        if (memcmp(x, ref, n * sizeof x[0]) != 0) {
+            printf("butterfly order: n=%zu differs from the plain passes\n", n);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int main(void) {
     if (fwht_supported(256) && fwht_supported(128) && !fwht_supported(0) && !fwht_supported(96) &&
-        test_self_inverse() == 0 && test_dot_preserved() == 0 && test_outlier_suppressed() == 0) {
-        printf("PASS: FWHT is self-inverse, dot-preserving, and suppresses outliers\n");
+        test_self_inverse() == 0 && test_dot_preserved() == 0 && test_outlier_suppressed() == 0 &&
+        test_butterfly_order() == 0) {
+        printf("PASS: FWHT is self-inverse, dot-preserving, suppresses outliers, and runs the "
+               "plain passes' butterflies to the bit\n");
         return GEIST_TEST_PASS;
     }
     return GEIST_TEST_FAIL;
