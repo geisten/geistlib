@@ -18,6 +18,10 @@ minor release.
   residency every 500 ms until `GEIST_METAL_KEEP_ALIVE_S` seconds pass without
   a dispatch (default 180, as llama.cpp); `0` leaves the unwiring to macOS.
   Tables the host gathers (#529) never join the set.
+- **Signed build provenance for release assets.** The release workflow attests
+  every file in `SHA256SUMS` with `actions/attest-build-provenance` and refuses
+  to publish until `gh attestation verify` accepts each one. Consumers check a
+  download with `gh attestation verify <file> --repo geisten/geistlib`.
 - **Metal checks the GPU working set at load and session create** (#531).
   Everything a command buffer binds must be resident at once, so a model plus
   KV plus scratch above `recommendedMaxWorkingSetSize` used to fail or page in
