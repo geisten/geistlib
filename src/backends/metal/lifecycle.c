@@ -692,6 +692,8 @@ void metal_destroy(struct geist_backend *be) {
         return GEIST_E_UNSUPPORTED;
     }
     metal_msg_send_void0(st, st->device, "retain");
+    st->ws_budget = metal_msg_send_ulong0(st, st->device, "recommendedMaxWorkingSetSize");
+    st->ws_ignore = metal_env_enabled("GEIST_METAL_IGNORE_BUDGET");
 
     st->command_queue = metal_msg_send_id0(st, st->device, "newCommandQueue");
     if (st->command_queue == nullptr) {

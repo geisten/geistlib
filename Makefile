@@ -80,8 +80,10 @@ run: lib
 	@OMP_WAIT_POLICY=active examples/simple_generate $(ARGS)
 
 # Test runner — invokes mk/run-tests.sh against the test bin directory.
-# FILTER is an optional substring; e.g. `make test FILTER=q3k` runs only
-# tests whose binary name contains "q3k".
+# FILTER is an optional substring that narrows each suite to the binaries
+# whose name contains it (test-unit/-int/-e2e, bench-smoke): `make test
+# FILTER=q3k` runs only the unit and int tests with "q3k" in their name.
+# test-py ignores it.
 TEST_BIN_DIR := $(BIN_DIR)/tests
 # Run artifacts live OUTSIDE the repo so the working tree stays clean; override
 # with `make bench-small BENCH_OUT_DIR=...` to put them elsewhere.
@@ -214,13 +216,13 @@ fuzz-libfuzzer-run: $(LIB_FILE) $(FUZZ_BINS)
 	done
 
 test-unit: bin
-	@$(GGUF_ENV) mk/run-tests.sh $(TEST_BIN_DIR) "_unit"
+	@$(GGUF_ENV) mk/run-tests.sh $(TEST_BIN_DIR) "_unit" "$(FILTER)"
 
 test-int: bin $(MODEL_PREREQ)
-	@$(GGUF_ENV) mk/run-tests.sh $(TEST_BIN_DIR) "_int"
+	@$(GGUF_ENV) mk/run-tests.sh $(TEST_BIN_DIR) "_int" "$(FILTER)"
 
 test-e2e: bin $(MODEL_PREREQ)
-	@$(GGUF_ENV) mk/run-tests.sh $(TEST_BIN_DIR) "_e2e"
+	@$(GGUF_ENV) mk/run-tests.sh $(TEST_BIN_DIR) "_e2e" "$(FILTER)"
 
 # Python-side tests (algorithm reference impls — PTQTP, quantization tooling).
 # Hermetic: no GGUF, no network. Exit non-zero on any failure.
@@ -309,7 +311,7 @@ $(MODEL_PATH):
 # Benches are timing tools, not tests — separate target. Each bench prints
 # its own metrics; runner just reports run/skip/fail status.
 bench-smoke: bin
-	@$(GGUF_ENV) GEIST_INCLUDE_BENCH=1 mk/run-tests.sh $(TEST_BIN_DIR) "bench_"
+	@$(GGUF_ENV) GEIST_INCLUDE_BENCH=1 mk/run-tests.sh $(TEST_BIN_DIR) "bench_" "$(FILTER)"
 
 # ---- make bench: the reproducible benchmark ------------------------------
 # One command, one report, meant to be run by someone who does not trust the
