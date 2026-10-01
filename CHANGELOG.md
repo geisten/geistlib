@@ -151,6 +151,27 @@ minor release.
 
 ### Changed
 
+- **A reset marks the Gated-DeltaNet state fresh instead of clearing it**
+  (`forward/step.c`, `forward/layer_deltanet.c`). On the backends without a
+  `deltanet_mix` (cpu_x86, cpu_scalar, cpu_neon) a reset cleared every
+  DeltaNet layer's conv history and delta state S with memset on the
+  calling thread, ahead of the next conversation's prefill: 157 MB on
+  Qwen3.5-27B, 16.7 ms on a 4-vCPU Xeon. It now marks the layers fresh
+  (`dn_fresh`), as does a new session, and each layer's next forward reads
+  zeros for its state: the chunked prefill's first sub-chunk skips the two
+  GEMMs on S, 40 % of its multiply-adds, and writes S instead of adding to
+  it (`transformer_dn_head_chunk_fresh`); the token loop and a speculative
+  snapshot clear the buffers first. On the synthetic Ternary-Bonsai-2-27B
+  the reset takes 2 µs, the delta rule of a 64-token prefill 177 ms of
+  thread time instead of 333, and the prefill after a reset 988 ms instead
+  of 1025 (-4.4 % [-6.8, -1.5], 24 of 30 cycles, both builds from scratch;
+  `bench_perf_sweep` starts its clock after the reset); reset and prefill
+  together 986 ms instead of 1042 (-4.6 % [-8.4, -2.3], 16 of 20
+  alternating runs). Decode is unchanged. The logits are the same bit for
+  bit; `test_deltanet_reset_unit` fills the buffers with garbage after a
+  reset and checks logits and state against a clearing reset, prompt by
+  prompt, through decode and a speculative verify. Metal and Vulkan, whose
+  `deltanet_mix` reads the buffers on-device, keep clearing them.
 - **cpu_x86's generic linear runs its prefill dots in register blocks**
   (`cpu_x86/linear_generic.c`). The dtypes without a native x86 kernel
   (Q4_0, Q4_1, Q3_K, Q5_K, the IQ formats, TQ2_0, BF16, F16 prefill)

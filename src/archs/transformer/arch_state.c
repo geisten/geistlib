@@ -746,6 +746,17 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
                     return s;
                 }
             }
+            /* Only the host mixer reads the state as dn_fresh says; a
+             * backend's deltanet_mix gets buffers that hold the zeros. */
+            if (geist_backend_fused_tbl(be)->deltanet_mix == nullptr) {
+                sess->dn_fresh = heap_alloc_array_aligned(bool, stt->n_layers);
+                if (sess->dn_fresh == nullptr) {
+                    geist_backend_set_error(be, GEIST_E_OOM, "transformer: dn state alloc failed");
+                    return GEIST_E_OOM;
+                }
+                for (size_t li = 0; li < stt->n_layers; li++)
+                    sess->dn_fresh[li] = sess->dn_S[li] != nullptr;
+            }
             /* Speculative-decode transaction snapshot (#463): one backend
              * buffer per state kind, all n_dn layers concatenated, allocated
              * once here rather than lazily on the first verify. On-device
@@ -1726,6 +1737,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
         void *pb = sess->dn_S;
         safe_free(&pb);
     }
+    void *fresh = sess->dn_fresh;
+    safe_free(&fresh);
     void *txn_ids         = sess->dn_txn_ids;
     void *mtp_pending     = sess->mtp_pending_h;
     void *mtp_raw         = sess->mtp_target_raw;
@@ -1760,6 +1773,7 @@ void transformer_session_free(struct transformer_arch_state   *state,
     sess->qgate_gate         = nullptr;
     sess->dn_conv_state      = nullptr;
     sess->dn_S               = nullptr;
+    sess->dn_fresh           = nullptr;
     sess->dn_txn_conv_buf    = nullptr;
     sess->dn_txn_S_buf       = nullptr;
     sess->dn_txn_ids         = nullptr;
