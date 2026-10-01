@@ -493,6 +493,14 @@ struct metal_state {
     pthread_mutex_t res_lock;
     pthread_cond_t  res_wake;
 
+    /* #531: the device's recommendedMaxWorkingSetSize, read once at create.
+     * metal_budget_admit refuses an allocation past it unless
+     * GEIST_METAL_IGNORE_BUDGET=1 (ws_ignore). ws_warned: the 90 % notice is
+     * printed once. */
+    size_t ws_budget;
+    bool   ws_ignore;
+    bool   ws_warned;
+
     void *MTLCreateSystemDefaultDevice;
     void *objc_msgSend;
     void *sel_registerName;

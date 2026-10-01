@@ -2,12 +2,14 @@
 # mk/run-tests.sh — discover, run, and report on test binaries.
 #
 # Usage:
-#   mk/run-tests.sh <bin_dir> [filter]
+#   mk/run-tests.sh <bin_dir> [filter [substr]]
 #
 # Args:
 #   bin_dir    Directory containing test binaries (e.g. bin/mac/release/tests)
 #   filter     Optional substring; only binaries containing it are run.
 #              Empty / unset means run all.
+#   substr     Optional literal substring ANDed with filter; the Makefile
+#              passes FILTER here (`make test-unit FILTER=q3k`).
 #
 # Exit-code convention (per binary, automake-style):
 #   0    PASS
@@ -44,9 +46,10 @@ set -u
 
 BIN_DIR="${1:-}"
 FILTER="${2:-}"
+SUBSTR="${3:-}"
 
 if [ -z "$BIN_DIR" ]; then
-    echo "Usage: $0 <bin_dir> [filter]" >&2
+    echo "Usage: $0 <bin_dir> [filter [substr]]" >&2
     exit 99
 fi
 
@@ -89,12 +92,17 @@ while [ "$i" -lt "$n_candidates" ]; do
             *) continue ;;
         esac
     fi
+    # Quoted, so SUBSTR matches literally; empty matches everything.
+    case ${b##*/} in
+        *"$SUBSTR"*) ;;
+        *) continue ;;
+    esac
     set -- "$@" "$b"
 done
 
 if [ $# -eq 0 ]; then
-    if [ -n "$FILTER" ]; then
-        echo "No tests in '$BIN_DIR' match filter '$FILTER' (skipping)."
+    if [ -n "$FILTER$SUBSTR" ]; then
+        echo "No tests in '$BIN_DIR' match filter '$FILTER'${SUBSTR:+ and '$SUBSTR'} (skipping)."
     else
         echo "No tests built in '$BIN_DIR'. Run 'make bin' first."
         exit 2

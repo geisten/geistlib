@@ -79,6 +79,42 @@ struct geist_buffer *metal_buf_reg_find(struct metal_state *st, const void *p, s
     return nullptr;
 }
 
+/* #531: refuse an allocation that would take the device past its
+ * recommended working set. Everything a command buffer binds must be
+ * resident at once, so past that line a model fails or pages in the middle
+ * of a generation; refused here, at load or session create, the caller can
+ * still pick a smaller model or context. currentAllocatedSize counts every
+ * MTLBuffer of the device, NoCopy wrappers included, which is conservative
+ * for a lookup table the host gathers (#529): it is never made resident. */
+[[nodiscard]] static enum geist_status metal_budget_admit(struct metal_state *st, size_t bytes) {
+    if (st->ws_budget == 0 || st->ws_ignore) {
+        return GEIST_OK;
+    }
+    const size_t used = metal_msg_send_ulong0(st, st->device, "currentAllocatedSize");
+    if (bytes > st->ws_budget || used > st->ws_budget - bytes) {
+        const size_t mib   = (size_t) 1 << 20;
+        const size_t avail = used < st->ws_budget ? st->ws_budget - used : 0;
+        geist_backend_set_error(st->backend,
+                                GEIST_E_OOM,
+                                "metal: the GPU working set has %zu MiB free, this needs %zu MiB "
+                                "(%zu of %zu MiB in use); raise it with sudo sysctl "
+                                "iogpu.wired_limit_mb=<MiB> or set GEIST_METAL_IGNORE_BUDGET=1",
+                                avail / mib,
+                                (bytes + mib - 1) / mib,
+                                used / mib,
+                                st->ws_budget / mib);
+        return GEIST_E_OOM;
+    }
+    if (!st->ws_warned && used + bytes > st->ws_budget / 10 * 9) {
+        st->ws_warned = true;
+        fprintf(stderr,
+                "geist: metal: %zu of %zu MiB of the GPU working set in use\n",
+                (used + bytes) >> 20,
+                st->ws_budget >> 20);
+    }
+    return GEIST_OK;
+}
+
 [[nodiscard]] enum geist_status metal_new_buffer(struct geist_backend  *be,
                                                  size_t                 bytes,
                                                  enum geist_buffer_role role,
@@ -98,7 +134,11 @@ struct geist_buffer *metal_buf_reg_find(struct metal_state *st, const void *p, s
         return GEIST_E_INVALID_ARG;
     }
 
-    struct metal_state  *st  = be->state;
+    struct metal_state *st = be->state;
+    enum geist_status   bs = metal_budget_admit(st, bytes);
+    if (bs != GEIST_OK) {
+        return bs;
+    }
     struct geist_buffer *buf = geist_backend_alloc(be, sizeof(*buf), alignof(struct geist_buffer));
     if (buf == nullptr) {
         geist_backend_set_error(be, GEIST_E_OOM, "metal: failed to allocate buffer handle");
@@ -498,11 +538,17 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
         geist_backend_set_error(be, GEIST_E_OOM, "metal: failed to allocate buffer handle");
         return GEIST_E_OOM;
     }
-    uint8_t *base       = nullptr;
-    size_t   base_len   = 0;
-    size_t   base_off   = 0;
-    void    *mtl_buffer = nullptr;
-    if (metal_host_range_file_backed(host_ptr, n_bytes, &base, &base_len)) {
+    uint8_t   *base        = nullptr;
+    size_t     base_len    = 0;
+    size_t     base_off    = 0;
+    void      *mtl_buffer  = nullptr;
+    const bool file_backed = metal_host_range_file_backed(host_ptr, n_bytes, &base, &base_len);
+    enum geist_status bs   = metal_budget_admit(st, file_backed ? base_len : n_bytes);
+    if (bs != GEIST_OK) {
+        geist_backend_free(be, buf);
+        return bs;
+    }
+    if (file_backed) {
         mtl_buffer = metal_msg_send_id_ptr_size_uint_ptr(
                 st,
                 st->device,
