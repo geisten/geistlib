@@ -395,6 +395,12 @@ void metal_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
     if (n_bytes == 0) {
         return GEIST_OK;
     }
+    /* A range copied onto itself is a no-op. Return before the overlap path
+     * below, which stages through a temporary MTLBuffer: the layer loop seeds
+     * scratch_h_a from itself on every forward. */
+    if (dst->buffer == src->buffer && dst->base_off + dst_offset == src->base_off + src_offset) {
+        return GEIST_OK;
+    }
 
     struct metal_state *st = dst->owner;
     if (dst == src && metal_ranges_overlap(dst_offset, src_offset, n_bytes)) {
