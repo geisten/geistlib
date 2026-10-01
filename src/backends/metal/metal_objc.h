@@ -34,6 +34,48 @@ static inline void *metal_sel_register_name(struct metal_state *st, const char *
     return sel_register.fn(selector);
 }
 
+/* Autorelease pools. Plain C has no @autoreleasepool, so without these the
+ * autoreleased command buffers and encoders were never drained (#527:
+ * +7.2 KiB per decode token). Pools are per thread and LIFO: popping one
+ * also pops every pool pushed after it. */
+static inline void *metal_pool_push(struct metal_state *st) {
+    union {
+        void *raw;
+        void *(*fn)(void);
+    } push = {.raw = st->objc_autoreleasePoolPush};
+    return push.fn();
+}
+
+static inline void metal_pool_pop(struct metal_state *st, void *pool) {
+    union {
+        void *raw;
+        void (*fn)(void *);
+    } pop = {.raw = st->objc_autoreleasePoolPop};
+    pop.fn(pool);
+}
+
+/* Pool for a standalone submission (commandBuffer ... waitUntilCompleted),
+ * popped on every return path:
+ *
+ *     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+ *
+ * Inside a command sequence it pushes nothing: the sequence's pool covers
+ * the op, and a nested one would be popped from under it by a flush. */
+struct metal_pool {
+    struct metal_state *st;
+    void               *token;
+};
+
+static inline struct metal_pool metal_standalone_pool(struct metal_state *st) {
+    return (struct metal_pool) {st, st->sequence_active ? nullptr : metal_pool_push(st)};
+}
+
+static inline void metal_pool_end(struct metal_pool *pool) {
+    if (pool->token != nullptr) {
+        metal_pool_pop(pool->st, pool->token);
+    }
+}
+
 static inline void *
 metal_msg_send_id0(struct metal_state *st, void *receiver, const char *selector) {
     void *sel = metal_sel_register_name(st, selector);

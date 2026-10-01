@@ -9,6 +9,16 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Per-model prefill knobs** (`src/archs/transformer/prefill_tuning.h`): the
+  prefill chunk `m_max` and the OpenMP spin policy resolve as default + delta +
+  override — the platform/backend default, a signed delta from a table row
+  keyed by arch family and weight bytes, then `GEIST_M_MAX` and the new
+  `GEIST_PREFILL_BLOCKTIME_MS` (absolute; -1 leaves the runtime alone). First
+  row: qwen35 hybrids from 4 GiB (Ternary-Bonsai-2-27B) get chunk 128 and
+  `KMP_BLOCKTIME=0`, measured on the M1 Max at pp512: +14 % and +21 % prefill
+  on their own, +28 % together, no decode loss at 27B. Smaller models keep the
+  runtime's spin (blocktime 0 costs a 0.8B 16 % decode for 8 % prefill). The
+  blocktime is one value per process, applied from the first model loaded.
 - Optional `geist_backend_resources_snapshot`: Metal device allocated bytes and
   unified-memory attribution, callable during inference without GPU synchronization.
   CPU providers explicitly return unsupported. Allocation is not physical residency.
@@ -141,6 +151,138 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 runs RMSNorm and the residual add on the whole team in AVX2**
+  (`cpu_x86/elementwise.c`). Both were cpu_scalar's, on the calling thread
+  while the rest of the team waited: the two norms and two adds of each
+  layer took 47 ms of a 64-token prefill of the synthetic
+  Ternary-Bonsai-2-27B on a 4-vCPU Xeon (`perf`). The norm now spreads its
+  rows over the team and the add its 4 KB chunks; below 16384 floats, a
+  decode token's 5120 among them, the calling thread does them alone. The
+  sum of squares stays a double, so the norm differs from cpu_scalar's only
+  in the order of that sum, and the add is cpu_scalar's to the bit. A call
+  at 64 × 5120 takes 54 µs instead of 339 (norm) and 49 µs instead of 218
+  (add); in the model the calling thread spends 11 ms per prefill in them,
+  and the prefill takes 1.067 s instead of 1.145 s (-5.8 %, 95 % interval
+  -10.7 to -3.0 %, 24 of 30 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). `test_rmsnorm_add_x86_unit` holds the norm
+  to a double reference within 4 ulp and the add to cpu_scalar's bits.
+- **The layer-output scale is skipped when it is 1** (`layer_ple.c`). Only
+  Gemma 4 (PLE) loads a per-layer output scale; every other model gets 1,
+  and the step after each layer still multiplied the hidden state by it: a
+  pass on the calling thread on the CPU backends, a dispatch on Metal and
+  Vulkan. It now returns at once for a scale of 1, which changes no bit on
+  the CPU backends. On a 4-vCPU Xeon the step took 10.6 ms of a 64-token
+  prefill of the synthetic Ternary-Bonsai-2-27B and takes 0.05 ms now
+  (`GEIST_PROFILE_PREFILL`): 1 % of the prefill, below what a clean-build
+  A/B resolves on this host (-1.8 % [-5.9, +6.2] and +0.4 % [-5.9, +4.8] in
+  two runs). The dispatch it saves the GPU backends per layer is
+  unmeasured. `test_layer_scale_output_unit` checks that a scale of 1
+  neither maps the state nor calls `scale_f32`, and that any other scale
+  still applies on both paths.
+- **The Walsh-Hadamard transform vectorizes its first passes** (`fwht.c`).
+  Its passes of len 1, 2 and 4 have inner loops of 1, 2 and 4 butterflies,
+  too short for the compiler to vectorize, and they ran scalar. Each now
+  runs as one loop over the block, which vectorizes, with the same
+  butterflies in the same order, so the result does not move by a bit (the
+  Vulkan and Metal ports run that order). On a 4-vCPU Xeon a 1024-float
+  block takes 0.63 ns per float instead of 1.98; the `prism.hadamard`
+  rotation of the synthetic Ternary-Bonsai-2-27B takes 106 ms of thread time
+  per 64-token prefill instead of 324 ms, and the prefill is about 5 %
+  faster: over 40 cycles of three A/Bs (both builds from scratch,
+  `tools/bench_revision_ab.py`) the median change per cycle is -5.2 % (95 %
+  bootstrap interval -6.7 to -1.8 %), and 31 of the 40 cycles were faster.
+  `test_fwht_unit` now pins the butterfly order to the bit.
+- **The chunked DeltaNet prefill's conv vectorizes** (`layer_deltanet.c`).
+  Its channel loop chose the source of every tap per element, the old conv
+  state or the chunk's rows, and called silu's scalar `expf` beside it, so
+  none of it vectorized. `transformer_dn_conv_silu_row` now picks a token's
+  input rows before the channel loop, names the four taps of the kernel
+  every known variant uses, and gives silu a pass of its own, which
+  vectorizes where libm has a vector `expf` (glibc's libmvec). On a 4-vCPU
+  Xeon the region takes 50 ms of thread time per 64-token prefill of the
+  synthetic Ternary-Bonsai-2-27B instead of 427 ms, and the prefill takes
+  1.099 s instead of 1.201 s (-11.8 %, 95 % interval -16.4 to -3.2 %, 10 of
+  10 cycles; a second run gave -8.6 %, -11.9 to -0.1 %, 9 of 10; both builds
+  from scratch, `tools/bench_revision_ab.py`).
+  `test_deltanet_conv_unit` holds the row to a double-precision reference
+  and a chunked prefill to the sequential recurrence on a Qwen3.5-style
+  fixture, `test_deltanet_chunk_int`'s oracle without a model to fetch.
+- **The chunked DeltaNet prefill makes no denormals** (`layer_deltanet.c`).
+  The chunk scales by e^γ, γ the gating summed over up to 64 tokens. A
+  fast-forgetting head runs γ past -87, and then the decay factors and their
+  products are denormals, a microcode assist each on x86, in the chunk's
+  SGEMMs as much as in its loops. `transformer_dn_head_chunk` now takes a
+  factor below e^-60 as 0 (the attention kernels' floor), clamps the
+  argument so that libmvec's `expf` never takes its slow path, and skips the
+  forward substitution's entries below the floor. On the synthetic
+  Ternary-Bonsai-2-27B 3-5 % of the chunk's scaled K and Q were denormal.
+  On a 4-vCPU Xeon the head loop's thread time per 64-token prefill fell
+  from 1.25 s to 0.37 s, and the prefill takes 1.186 s instead of 1.431 s
+  (-15.9 %, 95 % interval -24.5 to -12.4 %, 10 of 10 cycles; both builds
+  from scratch, `tools/bench_revision_ab.py`). The chunked logits are
+  bit-identical to before. `test_deltanet_chunk_unit` now fails on any
+  denormal in the chunk's output, state or workspace.
+- **cpu_x86 runs SiLU, and SwiGLU's silu(gate) * up in one pass, in AVX2 on
+  all threads** (`elementwise.c`). Before, it used cpu_scalar's
+  single-threaded loop, a libm `expf` and a division per element, followed
+  by a second pass for the multiply. The exp is Cephes' in AVX2 (1.26 ulp),
+  floored at -87 so that it never takes libmvec's slow path. The fused
+  `silu_mul` matches `silu` then `mul` bit for bit, and the exec plan now
+  binds it on cpu_x86. On a 4-vCPU Xeon one call on a 64 × 17408 FFN gate
+  takes 226 µs instead of 1143 µs. The synthetic Ternary-Bonsai-2-27B
+  prefills 64 tokens in 1.507 s instead of 1.566 s (-3.9 %, 95 % interval
+  -12.3 to -1.2 %, 9 of 10 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). `test_silu_x86_unit` holds `silu` to 8 ulp
+  of a double reference and `silu_mul` to the bytes of `silu` then `mul`.
+- **cpu_x86 prefills `PQ2_0` on AMX-INT8** (`kernel_pq2_0_amx.c`) where the
+  host has it and Linux grants the tile data. The AVX2 GEMM ran at its floor,
+  four `maddubs` per block, row and token; one `TDPBSSD` does a 16 × 16 × 64
+  int8 product in 16 cycles. The weights enter as `code - 1` in tiles of 16
+  rows, extracted once per block and reused for every 16-token tile, against
+  the same int8 activations repacked per block; each block's exact int32 dots
+  are scaled into fp32 accumulators two steps after their tile store, since
+  a vector load can read a tile store only once it has committed. At m = 64
+  on a 4-vCPU Xeon (Sapphire Rapids class) a 17408 × 5120 FFN matrix takes
+  2.62 ms instead of 23.6 ms and the 5120 × 17408 one 2.66 ms instead of
+  21.3 ms. The synthetic Ternary-Bonsai-2-27B prefills 64 tokens in 1.58 s
+  instead of 7.21 s, 4.6 times as fast (-78.4 %, 95 % interval -79.1 to
+  -76.9 %, 6 of 6 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). Per-thread scratch sits a page apart: packed
+  side by side, the L2 prefetchers pulled the neighbour's lines across cores
+  and two threads ran 1.6 times slower per core. `GEIST_FORCE_ISA` below
+  `avx512_vnni` keeps the AVX2 GEMM; `test_pq2_0_unit` holds both to the
+  exact W2A8 model.
+- **cpu_x86 prefills `PQ2_0` with a W2 x A8 GEMM** (`linear_pq2_0.c`), the
+  decode GEMV's arithmetic over many tokens, instead of the generic kernel
+  that dotted fp32-decoded weight rows. Every token's row is quantized to
+  int8 with its own absmax scale; a group of 4 weight rows walks the blocks,
+  extracts each block's codes once and dots them against every token, with
+  the accumulators in L1. At m = 64 on a 4-vCPU Xeon (Sapphire Rapids class)
+  a 17408 × 5120 FFN matrix takes 22.7 ms instead of 107.5 ms and the
+  5120 × 17408 one 20.3 ms instead of 204 ms. The synthetic
+  Ternary-Bonsai-2-27B prefills 64 tokens in 7.31 s instead of 37.7 s, 5.2
+  times as fast (-80.5 %, 95 % interval -80.8 to -78.9 %, 6 of 6 cycles; both
+  builds from scratch, `tools/bench_revision_ab.py`). Each token row gets the
+  same int8 activation as a decode step would. `test_pq2_0_unit` holds the
+  GEMM to the exact W2A8 model token by token.
+- **cpu_x86 decodes `PQ2_0` (Ternary-Bonsai) with a W2 x A8 GEMV**
+  (`linear_pq2_0.c`) instead of the generic kernel, which turned every
+  weight into fp32 one element at a time. It is cpu_neon's recipe in AVX2:
+  the activation is quantized to int8 once per call and stored in the codes'
+  packing order, the raw 2-bit codes go into `maddubs`, and the +1 bias
+  leaves through each block's activation sum. The GGUF bytes are read as
+  they are; nothing is repacked. The dot outruns DRAM, so the loop prefetches
+  4 KB ahead: the hardware prefetchers alone held it to 18 GB/s on 4
+  threads. On a 4-vCPU Xeon (Sapphire Rapids class) one 17408 × 5120 FFN
+  matrix takes 0.56 ms instead of 25.5 ms (43 GB/s, the host's read
+  bandwidth). The synthetic Ternary-Bonsai-2-27B decodes a token in 0.200 s
+  instead of 7.70 s, 38 times as fast (-97.4 %, 95 % interval -97.6 to
+  -97.3 %, 6 of 6 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). Prefill of more than one token stays on the
+  generic kernel. The int8 activation is cpu_neon's, value for value: the
+  scheme `benchmark/results/TERNARY.md` checked against fp32 activations on
+  the real model. `test_pq2_0_unit` holds the kernel to an exact model of
+  that arithmetic.
 - **cpu_x86 runs the attention over the INT8 KV cache on AVX-512 VNNI**
   where the host has it (`attention_int8_avx512_vnni.c`; the dispatcher's
   tier, which `GEIST_FORCE_ISA=avx2` clamps, and cpuid decide, per call).
@@ -324,6 +466,16 @@ minor release.
 
 ### Fixed
 
+- **The metal backend no longer leaks a command buffer and an encoder per
+  submission** (#527). It drives Metal from plain C, where nothing drained the
+  autoreleased `commandBuffer` and `compute`/`blitCommandEncoder` results: a
+  decode loop's `phys_footprint` grew 7.3 KiB per token on qwen3.5-0.8B and
+  9.2 KiB on gemma4-e2b (M1 Max), 7 to 9 GB per million tokens in a
+  long-running server. Each command sequence (one prefill batch or decode step)
+  and each standalone submission now runs in its own autorelease pool; growth
+  is zero within noise and outputs are byte-identical.
+  `test_metal_autorelease_unit` (opt-in, `GEIST_TEST_METAL_AUTORELEASE=1`)
+  bounds it.
 - **A null array passed to the public session API returns
   `GEIST_E_INVALID_ARG` in release builds too.** `geist_session_tokenize`,
   `pin_prefix`, `decode_speculative`, `attach_audio`, `audio_push`,

@@ -7,15 +7,16 @@
  *   1. Struct-copy cpu_scalar's vtbl, prims and fused tables.
  *   2. Override vtbl .create / .destroy (the per-instance scratch the
  *      quantized kernels use), .resolve_weight (below) and, under OpenMP,
- *      .parallel_region_begin / _end (threads.c); prims .attention and
- *      .gelu_tanh; fused .gelu_tanh_mul and .gelu_tanh_mul_scaled.
+ *      .parallel_region_begin / _end (threads.c); prims .attention,
+ *      .gelu_tanh, .silu, .rmsnorm and .add; fused .gelu_tanh_mul,
+ *      .gelu_tanh_mul_scaled and .silu_mul.
  * Constructor runs before main, so the descriptor's tables are always
  * filled by the time the engine calls geist_backend_create.
  *
  * cpu_x86_resolve_weight starts from cpu_scalar's resolver (it validates
  * the weight and knows every dtype), then rebinds: native kernels for Q4_K,
- * Q6_K, Q8_0, I2_S, F16 decode and F32, and the generic multi-threaded kernels
- * (linear_generic.c) for every other dtype. cpu_scalar's own kernels — the
+ * Q6_K, Q8_0, I2_S, PQ2_0, F16 decode and F32, and the generic
+ * multi-threaded kernels (linear_generic.c) for every other dtype. cpu_scalar's own kernels — the
  * single-threaded correctness oracle — are never left bound for a dtype
  * cpu_x86 can serve.
  */
@@ -33,6 +34,7 @@
 #include "linear_q4k.h"
 #include "linear_q6k.h"
 #include "linear_q8_0.h"
+#include "linear_pq2_0.h"
 #include "threads.h"
 
 #include "geist_gemm.h"
@@ -439,8 +441,8 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
         return base;
     }
     /* Rebind per dtype. Q4_K → Q4_Kx8 GEMV/GEMM; Q6_K → native GEMV +
-     * W8x16 GEMM; Q8_0 → int8 Q8_0 x Q8_0; I2_S → VNNI x4; F16 → Q8 or F16C
-     * GEMV for M=1; F32 → W8A8.
+     * W8x16 GEMM; Q8_0 → int8 Q8_0 x Q8_0; PQ2_0 → W2 x A8 GEMV / GEMM;
+     * I2_S → VNNI x4; F16 → Q8 or F16C GEMV for M=1; F32 → W8A8.
      * Everything else — and Q4_K / Q6_K when their repack cannot be built —
      * takes the generic kernels, never cpu_scalar's single-threaded ones. */
     switch ((enum geist_dtype) w->dtype) {
@@ -458,6 +460,11 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
         break;
     case GEIST_DTYPE_Q8_0:
         if (!cpu_x86_linear_q8_0_bind(w)) {
+            (void) cpu_x86_linear_generic_bind(w);
+        }
+        break;
+    case GEIST_DTYPE_PQ2_0:
+        if (!cpu_x86_linear_pq2_0_bind(w)) {
             (void) cpu_x86_linear_generic_bind(w);
         }
         break;
@@ -497,10 +504,14 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
 }
 
 /* cpu_scalar's answers (the elementwise fusions, which cpu_x86 overrides
- * with the same geometry) plus the INT8-KV attention. */
+ * with the same geometry), plus SiLU x mul (any F32 geometry) and the
+ * INT8-KV attention. */
 static bool cpu_x86_fused_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
     if (q != nullptr && q->op == GEIST_FUSED_ATTN_KV_INT8) {
         return cpu_x86_attention_kv_int8_supported(q);
+    }
+    if (q != nullptr && q->op == GEIST_FUSED_SILU_MUL) {
+        return true;
     }
     return cpu_scalar_fused.supported(be, q);
 }
@@ -520,11 +531,15 @@ __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
 
     cpu_x86_prims           = cpu_scalar_prims;
     cpu_x86_prims.gelu_tanh = cpu_x86_gelu_tanh;
+    cpu_x86_prims.silu      = cpu_x86_silu;
+    cpu_x86_prims.rmsnorm   = cpu_x86_rmsnorm;
+    cpu_x86_prims.add       = cpu_x86_add;
     cpu_x86_prims.attention = cpu_x86_attention;
 
     cpu_x86_fused                      = cpu_scalar_fused;
     cpu_x86_fused.supported            = cpu_x86_fused_supported;
     cpu_x86_fused.gelu_tanh_mul        = cpu_x86_gelu_tanh_mul;
+    cpu_x86_fused.silu_mul             = cpu_x86_silu_mul;
     cpu_x86_fused.gelu_tanh_mul_scaled = cpu_x86_gelu_tanh_mul_scaled;
     cpu_x86_fused.attention_kv_int8    = cpu_x86_attention_kv_int8;
 }

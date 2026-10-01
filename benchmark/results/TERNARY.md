@@ -676,22 +676,24 @@ decode is up +22…27% on the fork, as before. The fork's numbers repeat the
 
 ## Ternary-Bonsai-2-27B on x86-64 (2026-09-30, synthetic weights)
 
-cpu_x86 has no `PQ2_0` kernel yet. The format runs through
-`linear_generic.c`, which decodes each weight row to fp32 with
-`dequant_pq2_0_row`, one element at a time, and dots it with AVX2 FMAs.
-
 Measured on `tools/gen_synth_gguf.py --preset bonsai2-27b-pq2_0`: the real
 file's geometry, formats and `prism.hadamard` keys (26.9 G parameters,
 7.20 GB) with random ternary weights. Kernel timings do not depend on the
 values. The host is an Intel Xeon (Sapphire Rapids) at 2.1 GHz, 4 vCPUs of a
-cloud VM, gcc 14, `OMP_WAIT_POLICY=active`, with 41.7 GB/s read bandwidth on
-4 threads.
+cloud VM with 260 MB of L3, gcc 14, `OMP_WAIT_POLICY=active`, with 41.7 GB/s
+read bandwidth on 4 threads.
 
-| | geist cpu_x86, generic path |
-| :-- | --: |
-| prefill, 64 tokens | 39.1 s, 1.64 t/s |
-| decode | 7.53 s a token, 0.13 t/s |
-| RSS | 7.1 GB (the mmap'd file, nothing repacked) |
+| | generic path | `PQ2_0` decode GEMV | and prefill GEMM | GEMM on AMX-INT8 | SwiGLU, DeltaNet floor and conv |
+| :-- | --: | --: | --: | --: | --: |
+| prefill, 64 tokens | 39.1 s, 1.64 t/s | 38.3 s, 1.67 t/s | 7.31 s, 8.75 t/s | 1.58 s, 40.5 t/s | **1.10 s, 58.3 t/s** |
+| decode | 7.53 s a token, 0.13 t/s | **0.200 s a token, 5.0 t/s** | the same | the same | the same |
+| RSS | 7.1 GB (the mmap'd file, nothing repacked) | 7.1 GB | 7.1 GB | 7.1 GB | 7.1 GB |
+
+### The generic path
+
+cpu_x86 had no `PQ2_0` kernel at first. The format ran through
+`linear_generic.c`, which decodes each weight row to fp32 with
+`dequant_pq2_0_row`, one element at a time, and dots it with AVX2 FMAs.
 
 The forward profiler (`GEIST_PROFILE_FORWARD=1`) splits the time into:
 
@@ -707,14 +709,348 @@ The forward profiler (`GEIST_PROFILE_FORWARD=1`) splits the time into:
 - prefill: 75 % in the FMA dot (64 activation rows against each decoded
   weight row), 18 % in the decoder.
 
-Decode reads 7.2 GB a token in 7.5 s, about 1 GB/s, or 2 % of the bandwidth.
-A W2A8 kernel on the raw rows would be bandwidth-bound instead: int8
-activations stored in the codes' order, as cpu_neon's kernel does. A repacked
-copy like cpu_neon's x8 layout would not fit next to the model in this host's
-15 GB.
+Decode read 7.2 GB a token in 7.5 s, about 1 GB/s, or 2 % of the bandwidth.
+A repacked copy like cpu_neon's x8 layout would not fit next to the model in
+this host's 15 GB.
+
+### The decode GEMV
+
+`src/backends/cpu_x86/linear_pq2_0.c` is cpu_neon's W2A8 recipe in AVX2.
+The activation is quantized to int8 once per call, with cpu_neon's scale and
+rounding, and stored in the order the codes are packed. The raw 2-bit codes
+go into `maddubs`, and the +1 bias leaves through each block's activation
+sum. The weights are the GGUF bytes, read as they are.
+
+One call on a 17408 × 5120 FFN matrix, 4 threads, 64 distinct copies of it
+(1.5 GB, past the L3); the median of 3 alternating rounds:
+
+| | time | weights read |
+| :-- | --: | --: |
+| generic path | 25.5 ms | 0.93 GB/s |
+| W2A8 GEMV, hardware prefetch only | 1.29 ms | 18.4 GB/s |
+| **W2A8 GEMV** | **0.556 ms** | **42.6 GB/s** |
+
+With the data in L2, the dot runs at about 12 GB/s per core, so four cores
+could take 48 GB/s. From DRAM, the hardware prefetchers set the limit. A
+software prefetch 4 KB ahead of the dot brings the kernel to the host's read
+bandwidth; 4-8 KB measured best, 2 KB was 15-20 % slower, 32 KB about 10 %.
+
+An AVX-512 VNNI block dot (`vpdpbusd`) is 20 % faster from L2. From DRAM it
+gained 2.6 % (median of 8 alternating rounds, 6 of them faster), so it is
+not in.
+
+End to end, both builds from scratch (`tools/bench_revision_ab.py`,
+6 cycles alternating with a control copy of the baseline; median of the
+per-cycle ratios, 95 % interval):
+
+| | generic path | `PQ2_0` decode GEMV | change |
+| :-- | --: | --: | --: |
+| decode, per token | 7.70 s | 0.200 s | -97.4 % [-97.6, -97.3], 6/6 |
+| one-token prefill | 7.63 s | 0.194 s | -97.4 % [-97.7, -97.2], 6/6 |
+
+A decode token now reads the 7.2 GB of weights at about 36 GB/s, 38 times as
+fast as before. The control, the baseline's binary run again, stayed within
+±6 %.
+
+### The prefill GEMM
+
+Prefill is the same arithmetic as a GEMM, in the same file. Every token's row
+is quantized with its own absmax scale, and the blocks of all tokens are laid
+out side by side. A group of 4 weight rows then walks the blocks: each
+block's codes are extracted once and dotted against every token, into
+per-(row, token) accumulators that stay in L1. The four `maddubs` per block
+and token are the floor of the loop, so it is compute-bound and needs no
+prefetch.
+
+One call at m = 64, 4 threads, the median of 3 alternating rounds:
+
+| matrix | generic path | W2A8 GEMM | |
+| :-- | --: | --: | --: |
+| 17408 × 5120 (FFN gate, up) | 107.5 ms | 22.7 ms | 4.7× |
+| 5120 × 17408 (FFN down) | 204 ms | 20.3 ms | 10× |
+
+The generic path dequantizes each weight row to fp32 once and then dots it
+against all 64 tokens: slower still for the down projection, whose
+17408-float row does not stay in L1. The GEMM runs at about 1.8 to 2.0 ns per
+block and token on each core. That is the AVX2 floor: four `maddubs`, one
+`madd`, one convert and one FMA per block and token, all on the same two
+ports. Other block orders (rows 2 to 8 per group, one to four tokens per
+step, one convert for 8 blocks after a transpose-reduce) measured within
+noise of this one or slower.
+
+End to end, both builds from scratch (`tools/bench_revision_ab.py`, 6 cycles
+with a control):
+
+| | decode GEMV only | and prefill GEMM | change |
+| :-- | --: | --: | --: |
+| prefill, 64 tokens | 37.7 s | 7.31 s | -80.5 % [-80.8, -78.9], 6/6 |
+
+On a host with AMX-INT8 the next section's kernel takes over; this one
+remains the path everywhere else.
+
+### The prefill GEMM on AMX-INT8
+
+The AVX2 GEMM runs at its floor, four `maddubs` per block, row and token.
+This host also has AMX-INT8. One `TDPBSSD` multiplies a 16 × 64 int8 tile by
+a 64 × 16 one into 16 × 16 int32 in 16 cycles, which is 16 rows by 16 tokens
+over half a block. `src/backends/cpu_x86/kernel_pq2_0_amx.c` runs the same
+W2A8 arithmetic on the tiles:
+
+- **A, the weights.** `code - 1` as s8, 16 weight rows per group, in the
+  activations' code order. A block's A is extracted once per group and
+  serves every token tile. The -1 takes the codes' bias out of the dot, so
+  no activation sums are needed.
+- **B, the activations.** The int8 rows the AVX2 path quantizes, repacked per
+  block into VNNI tiles: a 16 × 16 dword transpose per half block.
+- **C, the dots.** One C tile holds a block's exact int32 dots (two
+  `TDPBSSD`, one per half). They are scaled into fp32 accumulators,
+  `acc += d * C`, and y is the token's factor times acc.
+
+C leaves the tiles through memory, and a vector load of a tile store's bytes
+waits until the store commits, after the two `TDPBSSD` it depends on have
+retired. `TILEZERO`, the two dots, the store and a vector load of its bytes
+took about 140 cycles as a dependent chain. So the kernel post-processes
+each C two steps after its store, through a ring of four buffers. C
+alternates between two tiles and B between two pairs, the next block's A is
+extracted into the other half of a double buffer while this block's steps
+run, and the weight rows are prefetched four blocks ahead.
+
+TSC cycles per step (16 rows × 16 tokens × one block) in a microbenchmark of
+the tile loop alone:
+
+| | cycles |
+| :-- | --: |
+| two `TDPBSSD` | 32 |
+| with the B loads, the C store and the post right behind it | 75 |
+| the post two steps behind, ring of four C buffers | 46 |
+| and a new A every 4 steps | 50 |
+
+In the kernel a step costs about 105 cycles on one core with the weights in
+L3. Extracting A is about 20 % of that, and loading the B tiles from L2
+12-16 %.
+
+Per-thread scratch goes on pages of its own, with a page between threads.
+Packed side by side, each core's L2 prefetchers ran on into the neighbour's
+accumulators and C buffers, which the neighbour stores to every step, and
+the lines bounced between the cores. At m = 128 on 17408 × 5120, in ns per
+block, row and token and core:
+
+| per-thread scratch | 2 threads | 4 threads |
+| :-- | --: | --: |
+| packed, 64-byte aligned | 0.31-0.48 | 0.38-0.52 |
+| page-aligned, no gap | 0.31-0.33 | 0.38-0.42 |
+| page-aligned, a page between threads | 0.20-0.21 | 0.20-0.30 |
+
+One thread ran at 0.20, and two single-threaded processes did not slow each
+other down, which pointed at the shared address space rather than the
+hardware.
+
+A pass covers at most 128 tokens (8 token tiles), and the weights stream once
+per pass. At m = 256, two passes measured 12 % (17408 × 5120) and 17 %
+(5120 × 17408) faster than one, whose packed activations (4.4 MB at
+n_in = 17408) no longer fit in L2.
+
+One call at m = 64, 4 threads, 16 distinct copies of the matrix (380 MB, past
+the L3), the median of 3 alternating rounds:
+
+| matrix | AVX2 GEMM | AMX GEMM | |
+| :-- | --: | --: | --: |
+| 17408 × 5120 (FFN gate, up) | 23.6 ms | 2.62 ms | 9.0× |
+| 5120 × 17408 (FFN down) | 21.3 ms | 2.66 ms | 8.0× |
+
+End to end, both builds from scratch (`tools/bench_revision_ab.py`, 6 cycles
+with a control, which stayed within +0.2 % [-2.1, +1.0]):
+
+| | AVX2 GEMM | AMX GEMM | change |
+| :-- | --: | --: | --: |
+| prefill, 64 tokens | 7.21 s | 1.58 s | -78.4 % [-79.1, -76.9], 6/6 |
+
+The forward profiler puts the FFN at 0.76 s of a 1.61 s prefill (gate and
+up 0.40 s, down 0.19 s; they were 3.0 s and 1.4 s) and the 64 mixers at
+0.83 s, of which the 16 attention layers take 0.10 s. In a `perf` profile
+of five prefills (and their decode steps) the AMX GEMM has 41 % of the
+samples. Next come the DeltaNet recurrence's fp32 GEMMs (OpenBLAS `sgemm`,
+12 %), the Hadamard rotation of the activations (`fwht_orthonormal`, 4 %)
+and the rest of the DeltaNet chunk code (about 10 %).
+
+`cpu_x86_linear_pq2_0_amx_usable` decides at bind. It checks the dispatcher
+tier (so `GEIST_FORCE_ISA=avx2` keeps the AVX2 GEMM), cpuid for AMX-INT8,
+AVX-512F and AVX-512BW, and asks Linux for the tile data
+(`arch_prctl(ARCH_REQ_XCOMP_PERM)`, Linux 5.16 and later).
+
+### The SwiGLU activation
+
+With the projections on AMX, the FFN's activation became visible. cpu_x86
+took cpu_scalar's `silu`: a libm `expf` and a division per element on one
+thread (the branch between its two overflow-safe forms keeps gcc from
+vectorizing it), and then a separate `mul` pass. The forward profiler put them
+at 56 and 27 ms of the 1.6 s prefill.
+
+`src/backends/cpu_x86/elementwise.c` now does both in one pass on the whole
+team, eight lanes at a time:
+
+- The exp is Cephes' `expf` in AVX2 (1.26 ulp at worst). A vectorized libm
+  `expf` is libmvec, which only glibc has and which runs every lane below
+  -87.3 through a scalar slow path. The argument is floored at -87, where
+  2^n is still normal.
+- A masked tail runs the last lanes through the same instructions, so every
+  element takes the same path.
+- The fused `silu_mul` is `silu` then `mul` to the bit, as the fused table's
+  contract asks. The exec plan now binds it on cpu_x86, and the separate
+  `mul` pass is gone.
+
+One call on the FFN gate (m × 17408), 4 threads, best of 20:
+
+| m | cpu_scalar `silu` + `mul` | cpu_x86 `silu_mul` | |
+| :-- | --: | --: | --: |
+| 1 (decode) | 14.9 µs | 8.8 µs | 1.7× |
+| 64 | 1143 µs | 226 µs | 5.1× |
+
+End to end, both builds from scratch (`tools/bench_revision_ab.py`, 10 cycles
+with a control):
+
+| | before | after | change |
+| :-- | --: | --: | --: |
+| prefill, 64 tokens | 1.566 s | 1.507 s | -3.9 % [-12.3, -1.2], 9/10 |
+
+The control stayed within +1.8 % [-5.6, +10.1], and decode moved -0.8 %
+[-6.5, +5.2], inside it. The forward profiler puts the activation at 22 ms
+of the prefill, with no `mul` stage left.
+
+### Denormals in the DeltaNet chunk
+
+With SiLU off the list, a `perf` profile with call graphs, split by OpenMP
+region, put the prefill's thread time (4 threads, per 64-token prefill) at
+3.4 s for the AMX projections, 1.25 s for the DeltaNet chunk's head loop,
+0.48 s for its conv and gating and 0.36 s for the Hadamard rotation. The
+head loop's seven OpenBLAS SGEMMs per head took 414 µs per head chunk. The
+same seven calls, with the same shapes and strides, take 91 µs in isolation
+and 92 µs with four copies running at once. The difference was denormals:
+
+- The chunk scales by e^γ, γ the gating summed over the chunk. On the
+  synthetic model γ ends below -60 in 1488 of a prefill's 2304 head chunks
+  and below -87 in 672. 3-5 % of the scaled K and Q (`KCe`, `Qg`, the
+  decayed K) were denormal, and 0.4-0.5 % of the masks, each a microcode
+  assist. Nothing in the process flushes them: FTZ/DAZ are off.
+- With FTZ/DAZ forced on for the whole process (`LD_PRELOAD`), the head loop
+  fell to 437 ms and nothing else moved.
+
+`transformer_dn_head_chunk` now takes a decay factor below e^-60 as 0
+(`DN_EXP_FLOOR`, the attention kernels' floor), clamps the argument so that
+libmvec's `expf` never takes its slow path, and skips the forward
+substitution's entries below the floor, which carry e^(γ_i - γ_l). No
+denormal is left, and the chunked logits are bit-identical to before.
+
+| | before | after | change |
+| :-- | --: | --: | --: |
+| head loop, thread time per prefill (`perf`) | 1249 ms | 374 ms | 3.3× |
+| prefill, 64 tokens (A/B) | 1.431 s | 1.186 s | -15.9 % [-24.5, -12.4], 10/10 |
+
+The A/B is `tools/bench_revision_ab.py`, both builds from scratch, 10
+cycles with a control, which stayed within -7.2 % [-9.4, +5.3]; decode
+moved -1.5 % [-10.1, +5.7], inside it. The synthetic gating is steep: with
+`ssm_a` = -1 and random `ssm_alpha` rows, every head's γ ends a chunk below
+-10. A trained model's heads range from slow to fast forgetting, so its gain
+is likely smaller. That is not measured here.
+
+### The DeltaNet conv
+
+After the floor, the `perf` split put the chunk's first parallel region at
+427 ms of thread time per prefill. That region runs the causal conv over
+the old state and the chunk's rows, silu, the q/k norms and the gating. Its
+channel loop chose the source of every tap per element and called silu's
+scalar `expf` beside it, so none of it vectorized. Alone, at the model's
+sizes (64 × 10240, K = 4), it took 1.93 ms per layer on 4 threads; the norms
+and the gating were a few percent of that.
+
+`transformer_dn_conv_silu_row` picks a token's four input rows before the
+channel loop, names the taps so that a channel's weights load as one group,
+and gives silu a pass of its own, which vectorizes where glibc's libmvec
+has a vector `expf`:
+
+| | before | after | change |
+| :-- | --: | --: | --: |
+| the region alone, per layer | 1.93 ms | 0.24 ms | 7.9× |
+| the region in the model, thread time per prefill (`perf`) | 427 ms | 50 ms | 8.5× |
+| prefill, 64 tokens (A/B) | 1.201 s | 1.099 s | -11.8 % [-16.4, -3.2], 10/10 |
+| the same, a second run | 1.232 s | 1.133 s | -8.6 % [-11.9, -0.1], 9/10 |
+
+Each A/B is `tools/bench_revision_ab.py` with both builds from scratch and
+10 cycles with a control. The controls stayed within -0.6 % [-10.2, +12.8]
+and +2.9 % [-4.8, +19.1], and decode moved -1.6 % and -2.0 %, inside them.
+
+### The Hadamard rotation
+
+After the conv, the rotation of the activations (`prism.hadamard`, in
+1024-float blocks before the projections) was the next region: 324 ms of
+thread time per prefill. `fwht_orthonormal` ran its passes of len 1, 2 and
+4 scalar: their inner loops of 1, 2 and 4 butterflies are too short for the
+compiler to vectorize, and they cost more than the other seven passes of a
+1024-float block together. Each now runs as one loop over the block, which
+vectorizes. The butterflies and their order are the same, so the result
+does not move by a bit: the Vulkan and Metal ports run that order, and the
+Vulkan test expects the host's bits.
+
+| | before | after | change |
+| :-- | --: | --: | --: |
+| `fwht_orthonormal`, 1024-float blocks, one thread | 1.98 ns per float | 0.63 ns | 3.1× |
+| the rotation in the model, thread time per prefill (`perf`) | 324 ms | 106 ms | 3.1× |
+| prefill, 64 tokens (A/B, 40 cycles pooled) | 1.124 s | 1.095 s | -5.2 % [-6.7, -1.8], 31/40 |
+
+Three A/Bs, each with both builds from scratch and a control
+(`tools/bench_revision_ab.py`), gave -6.2 % [-14.5, -0.9] in 9 of 10
+cycles, -5.7 % [-10.6, +11.0] in 8 of 10 and, over 20 cycles, -2.9 % [-6.7,
++1.3] in 14 of 20. Each run on its own is close to its resolution. Pooled,
+the change per cycle has a median of -5.2 % (95 % bootstrap interval -6.7
+to -1.8 %) and 31 of the 40 cycles were faster (one-sided sign test
+p = 3e-4), against a control, the baseline's binary again, that read +2.9 %
+[-0.4, +4.5] over the same cycles. That is the 55 ms the rotation's thread
+time predicts on 4 threads. Decode stayed within noise in every run.
+
+### The layer-output scale
+
+The step after each layer multiplied the hidden state by the layer's
+output scale, which only Gemma 4 loads; this model, like every other,
+gets 1. On cpu_x86 that was a pass over the 64 × 5120 floats on the
+calling thread while the others waited, 10.6 ms per prefill
+(`GEIST_PROFILE_PREFILL`). The step returns at once for a scale of 1 now,
+which changes no bit on the CPU backends, and the profiler puts it at
+0.05 ms. That is 1 % of the prefill, below what an A/B resolves on this
+host: two runs with both builds from scratch gave -1.8 % [-5.9, +6.2] in
+12 of 20 cycles and +0.4 % [-5.9, +4.8] in 14 of 30.
+
+### RMSNorm and the residual add
+
+Each layer normalizes its input and the FFN's input, and adds the mixer's
+and the FFN's output to the residual stream. All four steps were
+cpu_scalar's, on the calling thread while the other three waited: 47 ms
+of a prefill in `perf`, 21 ms in the norms and 26 ms in the adds. cpu_x86
+now spreads the norm's rows and the add's 4 KB chunks over the team, in
+AVX2, with the sum of squares in double as before. On one thread the new
+kernels are within 10 % of cpu_scalar's; the gain is the team. Below
+16384 floats, as for a decode token, the calling thread does them alone.
+
+| | before | after | change |
+| :-- | --: | --: | --: |
+| rmsnorm, one call at 64 × 5120 (48 copies in turn, past the L2s) | 339 µs | 54 µs | 6.3× |
+| add, the same | 218 µs | 49 µs | 4.4× |
+| the FFN's norm in the model, per prefill (`GEIST_PROFILE_PREFILL`) | 11.1 ms | 3.0 ms | 3.7× |
+| the FFN's residual add, the same | 11.7 ms | 4.2 ms | 2.8× |
+| the norms and adds on the calling thread, per prefill (`perf`) | 47 ms | 11 ms | |
+| prefill, 64 tokens (A/B, 30 cycles) | 1.145 s | 1.067 s | -5.8 % [-10.7, -3.0], 24/30 |
+
+The profiler runs alternated the two builds three times. Besides the
+calling thread's 11 ms, `perf` finds 14 ms on each of the other three
+threads, at the same time, so the steps' wall time fell by about 33 ms,
+which the A/B's interval holds. The A/B built every revision from
+scratch and ran a copy of the baseline as a control, which read -0.3 %
+[-5.8, +4.3]; decode moved -1.8 % [-3.1, +1.3].
 
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
   `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep
   --gguf gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf --seq-lens 64 --decode-n 1 --warmup 0
-  --repeats 1` (and `--seq-lens 1 --decode-n 9` for decode)
+  --repeats 1` (and `--seq-lens 1 --decode-n 9` for decode); the A/B:
+  `tools/bench_revision_ab.py --rev base=<parent> --rev new=<commit>
+  --gguf gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf --seq-lens 1 --decode-n 4
+  --warmup 1 --cycles 6 --env OMP_WAIT_POLICY=active`

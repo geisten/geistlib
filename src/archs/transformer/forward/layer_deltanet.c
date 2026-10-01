@@ -156,13 +156,35 @@ void transformer_dn_head_step(float       *S,  /* [d_k, d_v] */
 #endif
 }
 
+/* No decay factor of the chunk is taken below e^DN_EXP_FLOOR: one below
+ * it is 0. A fast-forgetting head runs gamma past -87 within a 64-token
+ * chunk (a Mamba-style A of 16 and dt of 0.1 make -1.6 per token), and
+ * then e^gamma, e^(gamma_i - gamma_j) and their products with K, Q and
+ * the substitution's entries are denormals, each a microcode assist on
+ * x86, in the GEMMs as much as in the loops here. On the synthetic
+ * Ternary-Bonsai-2-27B 3-5 % of KCe, Qg and the decayed K were, and the
+ * head loop took about three times as long as at this floor, which
+ * leaves none. No result that matters moves: a factor below e^-60 =
+ * 8.8e-27 scales values of order 1, and e^-60 times anything above
+ * 1.3e-12 is a normal float. The argument is clamped as well, so a
+ * vectorized expf (libmvec) never sees one below -87.3, where it sends
+ * the lane down a scalar slow path. The attention kernels'
+ * ATTN_EXP_FLOOR is the same floor. */
+static constexpr float DN_EXP_FLOOR = -60.0f;
+
+/* e^x for x <= 0, and 0 below DN_EXP_FLOOR. */
+static inline float dn_decay(float x) {
+    return x < DN_EXP_FLOOR ? 0.0f : expf(fmaxf(x, DN_EXP_FLOOR));
+}
+
 /* Chunked delta-rule for C tokens of one v-head (#281 prefill phase).
  * Mathematically equivalent to C sequential dn_head_step calls — pinned
  * by test_deltanet_chunk_int against the sequential path. Formulation
  * per the HF/llama.cpp chunk recipe (issue #281 spec, section 5b), with
  * the (I - A_strict)^-1 forward substitution folded as (A + I) into the
  * single GEMM that consumes it. All exp arguments are <= 0 (g <= 0 and
- * gamma is non-increasing), so nothing overflows.
+ * gamma is non-increasing), so nothing overflows; none below
+ * DN_EXP_FLOOR is taken.
  *
  *   Q,K: [C, d_k] rows at stride sq/sk (already l2-normed; Q carries
  *   d_k^-1/2)   V: [C, d_v] rows at stride sv — strides let the rows
@@ -209,7 +231,7 @@ void transformer_dn_head_chunk(float       *S,
     for (size_t t = 0; t < C; t++) {
         acc += g[t * sbg];
         gamma[t] = acc;
-        eg[t]    = expf(acc);
+        eg[t]    = dn_decay(acc);
     }
     for (size_t t = 0; t < C; t++) {
         const float bt = beta[t * sbg];
@@ -222,7 +244,11 @@ void transformer_dn_head_chunk(float       *S,
             Vb[t * d_v + j] = bt * V[t * sv + j];
     }
 
-    /* A = -(Kb K^T) o D_strict, then forward-substitute (I-A)^-1 rows. */
+    /* A = -(Kb K^T) o D_strict, then forward-substitute (I-A)^-1 rows.
+     * Each path i > j > l through the substitution carries
+     * e^(gamma_i - gamma_l), the decays telescoping, so an entry whose
+     * own decay is below the floor is 0: computing it would only make
+     * denormals. */
     geist_sgemm(GEIST_OP_N,
                 GEIST_OP_T,
                 (int) C,
@@ -238,12 +264,16 @@ void transformer_dn_head_chunk(float       *S,
                 (int) C);
     for (size_t i = 0; i < C; i++) {
         for (size_t j = 0; j < C; j++) {
-            A[i * C + j] = (i > j) ? -A[i * C + j] * expf(gamma[i] - gamma[j]) : 0.0f;
+            A[i * C + j] = (i > j) ? -A[i * C + j] * dn_decay(gamma[i] - gamma[j]) : 0.0f;
         }
     }
     for (size_t i = 1; i < C; i++) {
         memcpy(rowt, A + i * C, i * sizeof(float));
         for (size_t l = 0; l < i; l++) {
+            if (gamma[i] - gamma[l] < DN_EXP_FLOOR) {
+                A[i * C + l] = 0.0f;
+                continue;
+            }
             float a = rowt[l];
             for (size_t j = l + 1; j < i; j++)
                 a += rowt[j] * A[j * C + l];
@@ -302,7 +332,7 @@ void transformer_dn_head_chunk(float       *S,
                 (int) C);
     for (size_t i = 0; i < C; i++)
         for (size_t j = 0; j < C; j++)
-            attn[i * C + j] = (i >= j) ? attn[i * C + j] * expf(gamma[i] - gamma[j]) : 0.0f;
+            attn[i * C + j] = (i >= j) ? attn[i * C + j] * dn_decay(gamma[i] - gamma[j]) : 0.0f;
 
     /* O = Qg S + attn v_new. */
     geist_sgemm(GEIST_OP_N,
@@ -336,11 +366,11 @@ void transformer_dn_head_chunk(float       *S,
      * Reuse Kb as the decayed-K staging. */
     const float glast = gamma[C - 1];
     for (size_t t = 0; t < C; t++) {
-        const float w = expf(glast - gamma[t]);
+        const float w = dn_decay(glast - gamma[t]);
         for (size_t i = 0; i < d_k; i++)
             Kb[t * d_k + i] = K[t * sk + i] * w;
     }
-    const float eglast = expf(glast);
+    const float eglast = dn_decay(glast);
     for (size_t i = 0; i < d_k * d_v; i++)
         S[i] *= eglast;
     geist_sgemm(GEIST_OP_T,
@@ -421,6 +451,50 @@ static float *dn_prefill_ws(struct transformer_arch_session *sess,
     return ws;
 }
 
+/* Row i of the conv input: the K - 1 = hist rows of old_cst, then qkv's. */
+static inline const float *
+dn_conv_row(size_t i, size_t hist, size_t convd, const float *old_cst, const float *qkv) {
+    return i < hist ? old_cst + i * convd : qkv + (i - hist) * convd;
+}
+
+/* The input rows are picked before the channel loop, so it has no branch
+ * and vectorizes. With the source of each tap chosen per element it did
+ * not, and with silu's scalar expf beside it a 64-token chunk at the
+ * synthetic Ternary-Bonsai-2-27B's sizes took 1.9 ms per layer on 4
+ * threads, against 0.24 ms now. K == 4, every known variant's kernel,
+ * names its taps, so the four weights of a channel load as one group;
+ * another K adds tap after tap into y_t. silu gets a pass of its own: it
+ * vectorizes only where libm has a vector expf (glibc's libmvec), and the
+ * conv should vectorize everywhere. */
+void transformer_dn_conv_silu_row(size_t       t,
+                                  size_t       K,
+                                  size_t       convd,
+                                  const float *old_cst,
+                                  const float *qkv,
+                                  const float *convw,
+                                  float        y_t[static convd]) {
+    const size_t hist = K - 1;
+    if (K == 4) {
+        const float *x0 = dn_conv_row(t, hist, convd, old_cst, qkv);
+        const float *x1 = dn_conv_row(t + 1, hist, convd, old_cst, qkv);
+        const float *x2 = dn_conv_row(t + 2, hist, convd, old_cst, qkv);
+        const float *x3 = dn_conv_row(t + 3, hist, convd, old_cst, qkv);
+        for (size_t c = 0; c < convd; c++)
+            y_t[c] = convw[c * 4] * x0[c] + convw[c * 4 + 1] * x1[c] + convw[c * 4 + 2] * x2[c] +
+                     convw[c * 4 + 3] * x3[c];
+    } else {
+        for (size_t c = 0; c < convd; c++)
+            y_t[c] = 0.0f;
+        for (size_t j = 0; j < K; j++) {
+            const float *x = dn_conv_row(t + j, hist, convd, old_cst, qkv);
+            for (size_t c = 0; c < convd; c++)
+                y_t[c] += convw[c * K + j] * x[c];
+        }
+    }
+    for (size_t c = 0; c < convd; c++)
+        y_t[c] = silu_f(y_t[c]);
+}
+
 /* Chunked prefill (#281 phase 3). The engine batches prefill at m_max
  * (= 64) tokens per forward call, so the whole call is ONE chunk of
  * C = seq — no chunk loop, no remainder. Conv + norms + gating run as
@@ -491,16 +565,7 @@ static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
 #endif
     for (size_t t = 0; t < seq; t++) {
         float *y_t = y + t * convd;
-        for (size_t c = 0; c < convd; c++) {
-            float acc = 0.0f;
-            for (size_t j = 0; j < K; j++) {
-                const ptrdiff_t src = (ptrdiff_t) (t + j) - (ptrdiff_t) hist_rows;
-                const float     xv =
-                        (src >= 0) ? qkv[(size_t) src * convd + c] : old_cst[(t + j) * convd + c];
-                acc += convw[c * K + j] * xv;
-            }
-            y_t[c] = silu_f(acc);
-        }
+        transformer_dn_conv_silu_row(t, K, convd, old_cst, qkv, convw, y_t);
         float *q = y_t;
         float *k = y_t + keyd;
         for (size_t h = 0; h < n_kh; h++) {
