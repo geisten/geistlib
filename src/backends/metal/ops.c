@@ -787,6 +787,8 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
         return GEIST_OK;
     }
 
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal F32 linear: command buffer failed");
@@ -875,6 +877,8 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -937,6 +941,8 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -992,6 +998,8 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -1047,6 +1055,8 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -1098,6 +1108,8 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -1152,6 +1164,8 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (enc == nullptr)
@@ -1267,6 +1281,8 @@ static void metal_encode_hadamard(struct metal_state                 *st,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (enc == nullptr) {
@@ -1318,6 +1334,8 @@ static void metal_encode_hadamard(struct metal_state                 *st,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (enc == nullptr)
@@ -1366,6 +1384,8 @@ metal_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct g
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -1414,6 +1434,8 @@ metal_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -1469,6 +1491,8 @@ metal_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -1524,6 +1548,8 @@ metal_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -1708,6 +1734,8 @@ metal_embedding_lookup_scaled(struct geist_backend      *be,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
@@ -1912,6 +1940,8 @@ metal_embedding_lookup(struct geist_backend      *be,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -1987,6 +2017,8 @@ metal_embedding_lookup(struct geist_backend      *be,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
@@ -2081,6 +2113,8 @@ metal_embedding_lookup(struct geist_backend      *be,
         return GEIST_OK;
     }
 
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal Q4_K matmul: command buffer failed");
@@ -2162,6 +2196,8 @@ metal_embedding_lookup(struct geist_backend      *be,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (enc == nullptr) {
@@ -2268,6 +2304,8 @@ metal_embedding_lookup(struct geist_backend      *be,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
@@ -2409,6 +2447,8 @@ metal_embedding_lookup(struct geist_backend      *be,
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -2424,6 +2464,39 @@ metal_embedding_lookup(struct geist_backend      *be,
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal rope_apply: command failed");
         return GEIST_E_BACKEND;
     }
+    return GEIST_OK;
+}
+
+/* The f32-KV fast paths below convert the live K/V rows into this f16
+ * staging on every call. It is sized for every row of the cache k views
+ * (the session's context), so a growing KV length never reallocates it
+ * mid-session (AGENT.md §3); sized at twice the live rows, it was
+ * reallocated each time the KV length doubled. A larger cache on this
+ * backend (another session or model) grows it once more. */
+[[nodiscard]] static enum geist_status metal_attn_kvf16_reserve(struct geist_backend      *be,
+                                                                struct metal_state        *st,
+                                                                const struct geist_tensor *k,
+                                                                size_t                     k_off) {
+    const size_t cap = (k->buffer->bytes / sizeof(float) - k_off) * sizeof(uint16_t);
+    if (st->attn_kvf16_capacity >= cap) {
+        return GEIST_OK;
+    }
+    metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
+    metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
+    st->attn_kf16_buffer    = nullptr;
+    st->attn_vf16_buffer    = nullptr;
+    st->attn_kvf16_capacity = 0;
+    enum geist_status s =
+            metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_kf16_buffer);
+    if (s == GEIST_OK) {
+        s = metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_vf16_buffer);
+    }
+    if (s != GEIST_OK) {
+        metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
+        st->attn_kf16_buffer = nullptr;
+        return s;
+    }
+    st->attn_kvf16_capacity = cap;
     return GEIST_OK;
 }
 
@@ -2451,27 +2524,13 @@ metal_embedding_lookup(struct geist_backend      *be,
                                                                 size_t out_off,
                                                                 bool   kv_native_f16) {
 
-    const size_t kv_out    = k_heads * head_dim;
-    const size_t elems     = k_rows * kv_out;
-    const size_t f16_bytes = elems * 2u;
-    if (!kv_native_f16 && st->attn_kvf16_capacity < f16_bytes) {
-        metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
-        metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
-        st->attn_kf16_buffer    = nullptr;
-        st->attn_vf16_buffer    = nullptr;
-        st->attn_kvf16_capacity = 0;
-        const size_t      cap   = f16_bytes * 2u; /* headroom: no regrow per chunk */
-        enum geist_status bs =
-                metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_kf16_buffer);
-        if (bs == GEIST_OK) {
-            bs = metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_vf16_buffer);
+    const size_t kv_out = k_heads * head_dim;
+    const size_t elems  = k_rows * kv_out;
+    if (!kv_native_f16) {
+        const enum geist_status rs = metal_attn_kvf16_reserve(be, st, k, k_off);
+        if (rs != GEIST_OK) {
+            return rs;
         }
-        if (bs != GEIST_OK) {
-            metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
-            st->attn_kf16_buffer = nullptr;
-            return bs;
-        }
-        st->attn_kvf16_capacity = cap;
     }
     struct {
         uint32_t elems, kv_out, k_offset, v_offset, k_cache_offset, v_cache_offset, q_position;
@@ -2494,6 +2553,8 @@ metal_embedding_lookup(struct geist_backend      *be,
 
     void *cmd = nullptr;
     void *enc = nullptr;
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     if (st->sequence_active) {
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
@@ -2574,27 +2635,13 @@ metal_embedding_lookup(struct geist_backend      *be,
                                                               size_t out_off,
                                                               bool   kv_native_f16) {
 
-    const size_t kv_out    = k_heads * head_dim;
-    const size_t elems     = k_rows * kv_out;
-    const size_t f16_bytes = elems * 2u;
-    if (!kv_native_f16 && st->attn_kvf16_capacity < f16_bytes) {
-        metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
-        metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
-        st->attn_kf16_buffer    = nullptr;
-        st->attn_vf16_buffer    = nullptr;
-        st->attn_kvf16_capacity = 0;
-        const size_t      cap   = f16_bytes * 2u;
-        enum geist_status bs =
-                metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_kf16_buffer);
-        if (bs == GEIST_OK) {
-            bs = metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_vf16_buffer);
+    const size_t kv_out = k_heads * head_dim;
+    const size_t elems  = k_rows * kv_out;
+    if (!kv_native_f16) {
+        const enum geist_status rs = metal_attn_kvf16_reserve(be, st, k, k_off);
+        if (rs != GEIST_OK) {
+            return rs;
         }
-        if (bs != GEIST_OK) {
-            metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
-            st->attn_kf16_buffer = nullptr;
-            return bs;
-        }
-        st->attn_kvf16_capacity = cap;
     }
     uint32_t window = (uint32_t) q_offset + 1u;
     if ((uint32_t) k_rows < window) {
@@ -2648,6 +2695,8 @@ metal_embedding_lookup(struct geist_backend      *be,
 
     void *cmd = nullptr;
     void *enc = nullptr;
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     if (st->sequence_active) {
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
@@ -2787,6 +2836,8 @@ metal_embedding_lookup(struct geist_backend      *be,
     };
     void *cmd = nullptr;
     void *enc = nullptr;
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     if (st->sequence_active) {
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
@@ -2876,6 +2927,8 @@ metal_embedding_lookup(struct geist_backend      *be,
     };
     void *cmd = nullptr;
     void *enc = nullptr;
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     if (st->sequence_active) {
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
@@ -3041,6 +3094,8 @@ metal_embedding_lookup(struct geist_backend      *be,
 
     void *cmd = nullptr;
     void *enc = nullptr;
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     if (st->sequence_active) {
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
@@ -3170,6 +3225,8 @@ metal_embedding_lookup(struct geist_backend      *be,
                  (uint32_t) g_stride};
     void *cmd = nullptr;
     void *enc = nullptr;
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     if (st->sequence_active) {
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
@@ -3258,6 +3315,8 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     } ap      = {(uint32_t) n, (uint32_t) x_off};
     void *cmd = nullptr;
     void *enc = nullptr;
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     if (st->sequence_active) {
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
@@ -3349,6 +3408,8 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
 
     void *cmd = nullptr;
     void *enc = nullptr;
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     if (st->sequence_active) {
         if (st->sequence_compute_encoder == nullptr) {
             return GEIST_E_BACKEND;
@@ -3575,6 +3636,8 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         st->sequence_has_work = true;
         return GEIST_OK;
     }
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
@@ -3951,6 +4014,8 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
                                                  .eps                = args->eps};
     void                              *cmd    = nullptr;
     void                              *enc    = nullptr;
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     if (st->sequence_active) {
         enc = metal_sequence_encoder(st);
     } else {

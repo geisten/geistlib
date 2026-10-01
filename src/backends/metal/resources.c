@@ -202,6 +202,8 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
         return GEIST_OK;
     }
 
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
         geist_backend_set_error(
@@ -393,6 +395,12 @@ void metal_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
         return GEIST_E_INVALID_ARG;
     }
     if (n_bytes == 0) {
+        return GEIST_OK;
+    }
+    /* A range copied onto itself is a no-op. Return before the overlap path
+     * below, which stages through a temporary MTLBuffer: the layer loop seeds
+     * scratch_h_a from itself on every forward. */
+    if (dst->buffer == src->buffer && dst->base_off + dst_offset == src->base_off + src_offset) {
         return GEIST_OK;
     }
 

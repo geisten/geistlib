@@ -140,7 +140,8 @@ jobs:
       # gate must not read as a green one. Registration, lifecycle, buffer
       # round-trip (probe) and linear parity vs cpu_scalar (every quant
       # format the test lists, decode and prefill shapes) all run on the
-      # real device.
+      # real device. The autorelease footprint bound (#527) runs from the
+      # release build only: under ASan it skips by design.
       - name: Metal device probe + linear parity (GPU, mandatory)
         if: matrix.apple_silicon
         run: |
@@ -148,6 +149,7 @@ jobs:
           ./bin/${{ matrix.target }}/release/tests/test_backend_metal_parity_unit
           GEIST_TEST_METAL_RESOURCES=1 ./bin/${{ matrix.target }}/release/tests/test_metal_resources_unit
           GEIST_TEST_METAL_RESOURCES=1 ./bin/${{ matrix.target }}/asan/tests/test_metal_resources_unit
+          GEIST_TEST_METAL_AUTORELEASE=1 ./bin/${{ matrix.target }}/release/tests/test_metal_autorelease_unit
 
       # Hermetic Python suite (algorithm reference impls). Part of `make test`,
       # so it must stay green — a suite nothing runs is a suite that rots (#146).
@@ -816,7 +818,7 @@ jobs:
       # log that ages out. (#184)
       - name: Upload AVX-512 diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: avx512-sde-diagnostics
           path: ci-diagnostics/
@@ -886,7 +888,7 @@ jobs:
           done
       - name: Upload Vulkan diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vulkan-lavapipe-diagnostics
           path: ci-diagnostics/
@@ -963,7 +965,7 @@ jobs:
           done
       - name: Upload Vulkan diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vulkan-gpu-diagnostics
           path: ci-diagnostics/
@@ -1211,7 +1213,7 @@ jobs:
             --baselines benchmark/coverage_baselines.json
       - name: Upload coverage artifacts
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report
           path: coverage/
