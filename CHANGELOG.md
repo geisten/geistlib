@@ -151,6 +151,89 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 runs RMSNorm and the residual add on the whole team in AVX2**
+  (`cpu_x86/elementwise.c`). Both were cpu_scalar's, on the calling thread
+  while the rest of the team waited: the two norms and two adds of each
+  layer took 47 ms of a 64-token prefill of the synthetic
+  Ternary-Bonsai-2-27B on a 4-vCPU Xeon (`perf`). The norm now spreads its
+  rows over the team and the add its 4 KB chunks; below 16384 floats, a
+  decode token's 5120 among them, the calling thread does them alone. The
+  sum of squares stays a double, so the norm differs from cpu_scalar's only
+  in the order of that sum, and the add is cpu_scalar's to the bit. A call
+  at 64 × 5120 takes 54 µs instead of 339 (norm) and 49 µs instead of 218
+  (add); in the model the calling thread spends 11 ms per prefill in them,
+  and the prefill takes 1.067 s instead of 1.145 s (-5.8 %, 95 % interval
+  -10.7 to -3.0 %, 24 of 30 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). `test_rmsnorm_add_x86_unit` holds the norm
+  to a double reference within 4 ulp and the add to cpu_scalar's bits.
+- **The layer-output scale is skipped when it is 1** (`layer_ple.c`). Only
+  Gemma 4 (PLE) loads a per-layer output scale; every other model gets 1,
+  and the step after each layer still multiplied the hidden state by it: a
+  pass on the calling thread on the CPU backends, a dispatch on Metal and
+  Vulkan. It now returns at once for a scale of 1, which changes no bit on
+  the CPU backends. On a 4-vCPU Xeon the step took 10.6 ms of a 64-token
+  prefill of the synthetic Ternary-Bonsai-2-27B and takes 0.05 ms now
+  (`GEIST_PROFILE_PREFILL`): 1 % of the prefill, below what a clean-build
+  A/B resolves on this host (-1.8 % [-5.9, +6.2] and +0.4 % [-5.9, +4.8] in
+  two runs). The dispatch it saves the GPU backends per layer is
+  unmeasured. `test_layer_scale_output_unit` checks that a scale of 1
+  neither maps the state nor calls `scale_f32`, and that any other scale
+  still applies on both paths.
+- **The Walsh-Hadamard transform vectorizes its first passes** (`fwht.c`).
+  Its passes of len 1, 2 and 4 have inner loops of 1, 2 and 4 butterflies,
+  too short for the compiler to vectorize, and they ran scalar. Each now
+  runs as one loop over the block, which vectorizes, with the same
+  butterflies in the same order, so the result does not move by a bit (the
+  Vulkan and Metal ports run that order). On a 4-vCPU Xeon a 1024-float
+  block takes 0.63 ns per float instead of 1.98; the `prism.hadamard`
+  rotation of the synthetic Ternary-Bonsai-2-27B takes 106 ms of thread time
+  per 64-token prefill instead of 324 ms, and the prefill is about 5 %
+  faster: over 40 cycles of three A/Bs (both builds from scratch,
+  `tools/bench_revision_ab.py`) the median change per cycle is -5.2 % (95 %
+  bootstrap interval -6.7 to -1.8 %), and 31 of the 40 cycles were faster.
+  `test_fwht_unit` now pins the butterfly order to the bit.
+- **The chunked DeltaNet prefill's conv vectorizes** (`layer_deltanet.c`).
+  Its channel loop chose the source of every tap per element, the old conv
+  state or the chunk's rows, and called silu's scalar `expf` beside it, so
+  none of it vectorized. `transformer_dn_conv_silu_row` now picks a token's
+  input rows before the channel loop, names the four taps of the kernel
+  every known variant uses, and gives silu a pass of its own, which
+  vectorizes where libm has a vector `expf` (glibc's libmvec). On a 4-vCPU
+  Xeon the region takes 50 ms of thread time per 64-token prefill of the
+  synthetic Ternary-Bonsai-2-27B instead of 427 ms, and the prefill takes
+  1.099 s instead of 1.201 s (-11.8 %, 95 % interval -16.4 to -3.2 %, 10 of
+  10 cycles; a second run gave -8.6 %, -11.9 to -0.1 %, 9 of 10; both builds
+  from scratch, `tools/bench_revision_ab.py`).
+  `test_deltanet_conv_unit` holds the row to a double-precision reference
+  and a chunked prefill to the sequential recurrence on a Qwen3.5-style
+  fixture, `test_deltanet_chunk_int`'s oracle without a model to fetch.
+- **The chunked DeltaNet prefill makes no denormals** (`layer_deltanet.c`).
+  The chunk scales by e^γ, γ the gating summed over up to 64 tokens. A
+  fast-forgetting head runs γ past -87, and then the decay factors and their
+  products are denormals, a microcode assist each on x86, in the chunk's
+  SGEMMs as much as in its loops. `transformer_dn_head_chunk` now takes a
+  factor below e^-60 as 0 (the attention kernels' floor), clamps the
+  argument so that libmvec's `expf` never takes its slow path, and skips the
+  forward substitution's entries below the floor. On the synthetic
+  Ternary-Bonsai-2-27B 3-5 % of the chunk's scaled K and Q were denormal.
+  On a 4-vCPU Xeon the head loop's thread time per 64-token prefill fell
+  from 1.25 s to 0.37 s, and the prefill takes 1.186 s instead of 1.431 s
+  (-15.9 %, 95 % interval -24.5 to -12.4 %, 10 of 10 cycles; both builds
+  from scratch, `tools/bench_revision_ab.py`). The chunked logits are
+  bit-identical to before. `test_deltanet_chunk_unit` now fails on any
+  denormal in the chunk's output, state or workspace.
+- **cpu_x86 runs SiLU, and SwiGLU's silu(gate) * up in one pass, in AVX2 on
+  all threads** (`elementwise.c`). Before, it used cpu_scalar's
+  single-threaded loop, a libm `expf` and a division per element, followed
+  by a second pass for the multiply. The exp is Cephes' in AVX2 (1.26 ulp),
+  floored at -87 so that it never takes libmvec's slow path. The fused
+  `silu_mul` matches `silu` then `mul` bit for bit, and the exec plan now
+  binds it on cpu_x86. On a 4-vCPU Xeon one call on a 64 × 17408 FFN gate
+  takes 226 µs instead of 1143 µs. The synthetic Ternary-Bonsai-2-27B
+  prefills 64 tokens in 1.507 s instead of 1.566 s (-3.9 %, 95 % interval
+  -12.3 to -1.2 %, 9 of 10 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). `test_silu_x86_unit` holds `silu` to 8 ulp
+  of a double reference and `silu_mul` to the bytes of `silu` then `mul`.
 - **cpu_x86 prefills `PQ2_0` on AMX-INT8** (`kernel_pq2_0_amx.c`) where the
   host has it and Linux grants the tile data. The AVX2 GEMM ran at its floor,
   four `maddubs` per block, row and token; one `TDPBSSD` does a 16 × 16 × 64
