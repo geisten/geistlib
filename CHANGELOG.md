@@ -18,6 +18,10 @@ minor release.
   page in: 104 of 98 560 pages after an 80-token prompt and 64 steps. Greedy
   tokens and logits are byte-identical on gemma4-e2b; tied tables stay on the
   device. New `geist_backend_caps` bit, off when zero-initialized.
+- **Signed build provenance for release assets.** The release workflow attests
+  every file in `SHA256SUMS` with `actions/attest-build-provenance` and refuses
+  to publish until `gh attestation verify` accepts each one. Consumers check a
+  download with `gh attestation verify <file> --repo geisten/geistlib`.
 - **Metal checks the GPU working set at load and session create** (#531).
   Everything a command buffer binds must be resident at once, so a model plus
   KV plus scratch above `recommendedMaxWorkingSetSize` used to fail or page in

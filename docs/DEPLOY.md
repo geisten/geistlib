@@ -35,7 +35,9 @@ flip, so match the libc you built against.
 
 Each release attaches `libgeist-<platform>.tar.gz` for `macos-arm64`,
 `linux-arm64` and `linux-x86_64`, holding `libgeist.a`, `include/*.h` and
-`LICENSE`. Digests are in `SHA256SUMS`.
+`LICENSE`. Digests are in `SHA256SUMS`; every asset also carries a signed
+build-provenance attestation, checked with
+`gh attestation verify <file> --repo geisten/geistlib`.
 
 The archive contains geist's objects, not its dependencies. **An `.a` is not a
 link:** the build is an OpenMP build, so a consumer supplies the OpenMP runtime
