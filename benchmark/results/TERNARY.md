@@ -1021,6 +1021,65 @@ which the A/B's interval holds. The A/B built every revision from
 scratch and ran a copy of the baseline as a control, which read -0.3 %
 [-5.8, +4.3]; decode moved -1.8 % [-3.1, +1.3].
 
+### What a step of the AMX GEMM costs
+
+After the norms the AMX GEMM is 73 % of the prefill's thread time, 3.4 s
+of 4.6 s, 2.86 s of it in the tile loop (`pq2_0_amx_gemm`). A step, 16
+weight rows by 16 tokens over one block, has two `TDPBSSD` at 16 cycles
+each. On one thread, at 10240 × 5120 and 64 tokens with per-block scales
+drawn at random, it takes 113 TSC cycles with the weights in L3 and 119
+streamed from DRAM. Each of the kernel's other jobs, left out on its own:
+
+| left out | TSC cycles per step, L3 | DRAM |
+| :-- | --: | --: |
+| nothing | 113 | 119 |
+| extracting the next block's A | 94 | 101 |
+| the post (`acc += d × C`) | 91 | 98 |
+| the post and the C tile store | 77 | 82 |
+| B from L2: every block reads block 0's 8 KB | 90 | 97 |
+| all four | 40 | 48 |
+
+The savings nearly add up (19 + 22 + 14 + 23 = 78 against 73): the four
+run beside the dots, not under them. B costs its 20 cycles by size: with
+the activations of 1, 2, 4, 8 and 40 blocks in turn (8 to 320 KB) a step
+took 90-91, 91-94, 99-100, 111-112 and 114-116 cycles; L1 holds 48 KB.
+
+Loop orders and knobs that moved the cost around without lowering it, on
+one thread in the same runs (cycles per step, L3):
+
+- loading the next step's B into the other tile pair right after the
+  dots: 117 against 108;
+- two row groups sharing each B load (no B or C double buffer): 113-115
+  against 108-110;
+- blocks outermost over chunks of 2, 4 or 8 row groups, so that a block's
+  B is read from L1 by all but the first: 104-110 against 107-113. At 4
+  threads the chunk of 4 gave -2 to -6 % per call in the median, rounds
+  from -12 to +3 %;
+- B held in the tiles across 1, 2 or 4 row groups (A reloaded per group):
+  109-122 against 110-112;
+- two blocks' C folded into one pass over acc, the same FMAs in the same
+  order: 115-116 against 107-108;
+- software prefetch of the next block's B, 16 or 32 lines a step:
+  116-126 against 111-112;
+- a branch-free extraction for full groups with one `vcvtph2ps` for the
+  16 scales: 125-127 against 110-113;
+- the post 1 or 3 steps behind, a ring of 8, weights prefetched 2 or 8
+  blocks ahead: none below the shipped 2, 4 and 4;
+- at 4 threads, groups handed out dynamically in chunks of 2 to 16
+  (tiles configured once per thread): medians within ±5 % of the static
+  split.
+
+The hardware is not shared between the threads: four single-threaded
+processes, one per vCPU, each ran the GEMM as fast as one alone, and one
+process with 4 threads ran it 3.6 times as fast as with 1 (1621 against
+5852 µs at 10240 × 5120).
+
+What would take the post and store off most steps is a C tile over more
+than one block, which needs consecutive blocks of a row to share their
+scale. The synthetic model's do, all of them (`gen_synth_gguf.py` writes
+one scale); the real model's are not known here, so the kernel does not
+assume it.
+
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
   `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep
