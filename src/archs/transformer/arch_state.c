@@ -15,6 +15,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "arch_state.h"
+#include "prefill_tuning.h"
 #include "arch_family.h"
 #include "exec_plan.h"
 #include "arch_ops.h"
@@ -1047,6 +1048,27 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     if (st->config.dn_n_v_heads > 0 && !st->m_max_from_env && st->m_max > 64 &&
         (be->desc == nullptr || !be->desc->caps.dn_subchunk)) {
         st->m_max = 64;
+    }
+
+    /* Per-model prefill knobs (prefill_tuning.h): the chunk gets the row's
+     * delta for this family and weight size, and the row's OpenMP spin
+     * policy becomes the process default — here, before weight packing
+     * runs the first parallel region. GEIST_M_MAX and
+     * GEIST_PREFILL_BLOCKTIME_MS still win. Weight bytes are the GGUF's
+     * tensor bytes, the size every model states. */
+    {
+        size_t weight_bytes = 0;
+        for (size_t i = 0; i < gguf_tensor_count(gguf); i++) {
+            weight_bytes += gguf_tensor_at(gguf, i)->nbytes;
+        }
+        const size_t cap = be->desc != nullptr ? be->desc->caps.max_m : 0;
+        const struct transformer_prefill_resolved pt = transformer_prefill_resolve(
+                st->config.family, weight_bytes, st->m_max, cap, nullptr);
+        if (!st->m_max_from_env) {
+            st->m_max = pt.m_max;
+        }
+        st->m_max_from_env |= pt.m_max_from_env;
+        transformer_prefill_apply_blocktime(&pt);
     }
 
     /* P1.4.c: heap-allocate the per-layer weight array sized to the
