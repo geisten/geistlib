@@ -160,9 +160,12 @@ jobs:
       # The BitNet embedding chain, executed rather than inspected. The unit
       # tests stop at scratch sizing and the converter test at the GGUF header,
       # so nothing else here would notice a file the loader cannot read.
-      - name: Embedding chain end-to-end (synthetic model)
+      # Called directly, not via `make test-embedding`, whose 77 is a benign
+      # skip without numpy: this leg installs numpy and Build made the tool,
+      # so a skip is a failure, as in the asan job's leak-detection step.
+      - name: Embedding chain end-to-end (synthetic model, a skip is a failure)
         if: matrix.target == 'linux'
-        run: make test-embedding TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
+        run: python3 tests/scripts/embedding_e2e_smoke.py bin/${{ matrix.target }}/release/tools/dump_geist_embedding
 
       # Contract enforcement, include half: every public header compiles on its
       # own as C23 and as C++17. A C++ consumer is not exotic (bindings, game
