@@ -175,11 +175,11 @@ jobs:
             OMP_WAIT_POLICY=active ./dist/geist-bitnet-linux-arm64 "The capital of France is" 8
           '
           tar -C dist -czf libgeist-linux-arm64.tar.gz libgeist-linux-arm64
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: libgeist-linux-arm64
           path: libgeist-linux-arm64.tar.gz
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: geist-cli-linux-arm64
           path: |
@@ -252,11 +252,11 @@ jobs:
             OMP_WAIT_POLICY=active ./dist/geist-bitnet-linux-x86_64 "The capital of France is" 8
           '
           tar -C dist -czf libgeist-linux-x86_64.tar.gz libgeist-linux-x86_64
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: libgeist-linux-x86_64
           path: libgeist-linux-x86_64.tar.gz
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: geist-cli-linux-x86_64
           path: |
@@ -303,7 +303,7 @@ jobs:
           cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" $link -o /tmp/agent_smoke
           /tmp/agent_smoke
           tar -C dist -czf libgeist-macos-arm64.tar.gz libgeist-macos-arm64
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: libgeist-macos-arm64
           path: libgeist-macos-arm64.tar.gz
