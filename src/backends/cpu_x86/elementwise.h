@@ -1,5 +1,6 @@
 /*
- * src/backends/cpu_x86/elementwise.h — cpu_x86 gelu_tanh and SiLU overrides.
+ * src/backends/cpu_x86/elementwise.h — cpu_x86 gelu_tanh, SiLU, RMSNorm and
+ * add overrides.
  *
  * Layer: BACKEND (cpu_x86, internal). See elementwise.c.
  */
@@ -35,5 +36,18 @@ cpu_x86_silu(struct geist_backend *be, const struct geist_tensor *x, struct geis
                                                  const struct geist_tensor *x,
                                                  const struct geist_tensor *z,
                                                  struct geist_tensor       *y);
+
+/* Rows spread over the team; the sum of squares in double, as cpu_scalar. */
+[[nodiscard]] enum geist_status cpu_x86_rmsnorm(struct geist_backend      *be,
+                                                const struct geist_tensor *x,
+                                                const struct geist_tensor *w,
+                                                float                      eps,
+                                                struct geist_tensor       *y);
+
+/* a + b, bit-identical to cpu_scalar_add. */
+[[nodiscard]] enum geist_status cpu_x86_add(struct geist_backend      *be,
+                                            const struct geist_tensor *a,
+                                            const struct geist_tensor *b,
+                                            struct geist_tensor       *y);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_ELEMENTWISE_H */

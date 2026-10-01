@@ -994,6 +994,33 @@ which changes no bit on the CPU backends, and the profiler puts it at
 host: two runs with both builds from scratch gave -1.8 % [-5.9, +6.2] in
 12 of 20 cycles and +0.4 % [-5.9, +4.8] in 14 of 30.
 
+### RMSNorm and the residual add
+
+Each layer normalizes its input and the FFN's input, and adds the mixer's
+and the FFN's output to the residual stream. All four steps were
+cpu_scalar's, on the calling thread while the other three waited: 47 ms
+of a prefill in `perf`, 21 ms in the norms and 26 ms in the adds. cpu_x86
+now spreads the norm's rows and the add's 4 KB chunks over the team, in
+AVX2, with the sum of squares in double as before. On one thread the new
+kernels are within 10 % of cpu_scalar's; the gain is the team. Below
+16384 floats, as for a decode token, the calling thread does them alone.
+
+| | before | after | change |
+| :-- | --: | --: | --: |
+| rmsnorm, one call at 64 × 5120 (48 copies in turn, past the L2s) | 339 µs | 54 µs | 6.3× |
+| add, the same | 218 µs | 49 µs | 4.4× |
+| the FFN's norm in the model, per prefill (`GEIST_PROFILE_PREFILL`) | 11.1 ms | 3.0 ms | 3.7× |
+| the FFN's residual add, the same | 11.7 ms | 4.2 ms | 2.8× |
+| the norms and adds on the calling thread, per prefill (`perf`) | 47 ms | 11 ms | |
+| prefill, 64 tokens (A/B, 30 cycles) | 1.145 s | 1.067 s | -5.8 % [-10.7, -3.0], 24/30 |
+
+The profiler runs alternated the two builds three times. Besides the
+calling thread's 11 ms, `perf` finds 14 ms on each of the other three
+threads, at the same time, so the steps' wall time fell by about 33 ms,
+which the A/B's interval holds. The A/B built every revision from
+scratch and ran a copy of the baseline as a control, which read -0.3 %
+[-5.8, +4.3]; decode moved -1.8 % [-3.1, +1.3].
+
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
   `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep

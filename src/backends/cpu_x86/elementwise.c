@@ -1,5 +1,6 @@
 /*
- * src/backends/cpu_x86/elementwise.c — cpu_x86 gelu_tanh overrides.
+ * src/backends/cpu_x86/elementwise.c — cpu_x86 gelu_tanh, SiLU, RMSNorm and
+ * add overrides.
  *
  * Layer: BACKEND (cpu_x86).
  *
@@ -12,8 +13,9 @@
  * precision) so e^2u can't overflow to inf. Same math as the scalar
  * reference within float epsilon; cross-checked in test_gelu_x86_unit.c.
  *
- * The rest of the elementwise vtable stays on cpu_scalar (add/mul/rmsnorm
- * are memory-bound and cheap), except SiLU and the fused SiLU x mul below.
+ * SiLU and the fused SiLU x mul, RMSNorm and the residual add follow below;
+ * mul stays on cpu_scalar (the fused silu_mul and gelu_tanh_mul take its
+ * place in the FFN).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -150,7 +152,7 @@ cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct
  * |v| > 17 on) or v * e^-87 instead of v * e^v (v < 0: both of magnitude
  * below 1e-35). */
 static constexpr float  SILU_EXP_FLOOR = -87.0f;
-static constexpr size_t SILU_CHUNK     = 1024; /* floats per work item, 4 KB */
+static constexpr size_t EW_CHUNK       = 1024; /* floats per work item of silu and add, 4 KB */
 
 /* exp(x) for x in [SILU_EXP_FLOOR, 0]. */
 static inline __m256 exp8_nonpos(__m256 x) {
@@ -207,11 +209,11 @@ static void silu_span(size_t n, const float *x, const float *z, float *y) {
 }
 
 static void silu_all(size_t n, const float *x, const float *z, float *y) {
-    const size_t chunks = (n + SILU_CHUNK - 1) / SILU_CHUNK;
+    const size_t chunks = (n + EW_CHUNK - 1) / EW_CHUNK;
 #pragma omp parallel for schedule(static)
     for (size_t c = 0; c < chunks; c++) {
-        const size_t i0  = c * SILU_CHUNK;
-        const size_t len = n - i0 < SILU_CHUNK ? n - i0 : SILU_CHUNK;
+        const size_t i0  = c * EW_CHUNK;
+        const size_t len = n - i0 < EW_CHUNK ? n - i0 : EW_CHUNK;
         silu_span(len, x + i0, z != nullptr ? z + i0 : nullptr, y + i0);
     }
 }
@@ -242,5 +244,153 @@ cpu_x86_silu(struct geist_backend *be, const struct geist_tensor *x, struct geis
         return GEIST_E_INVALID_ARG;
     }
     silu_all(nx, xp, zp, yp);
+    return GEIST_OK;
+}
+
+/* ---- RMSNorm and the residual add ----------------------------------------
+ *
+ * cpu_scalar's rmsnorm and add run on the calling thread while the team
+ * waits: two of each per layer, 47 ms of a 1.1 s 64-token prefill of the
+ * synthetic Ternary-Bonsai-2-27B. Here the rows of the norm, and 4 KB
+ * chunks of the add, are spread over the team. Below EW_PARALLEL_MIN
+ * floats, a decode token's 5120 among them, the calling thread does it
+ * alone: waking the team would cost more than it saves.
+ *
+ * The sum of squares is a double, as in cpu_scalar: a float's square is
+ * exact in double, and four accumulators keep the FMA latency from bounding
+ * the loop. The norm differs from cpu_scalar's by the order of that sum
+ * alone, and a row whose squares would overflow a float (|x| > 1.8e19)
+ * still normalizes. The add is exact float addition: cpu_scalar's bits. */
+static constexpr size_t EW_PARALLEL_MIN = 16384; /* floats */
+
+static double sumsq(size_t n, const float x[static n]) {
+    __m256d a0 = _mm256_setzero_pd(), a1 = a0, a2 = a0, a3 = a0;
+    size_t  i = 0;
+    for (; i + 16 <= n; i += 16) {
+        const __m256d v0 = _mm256_cvtps_pd(_mm_loadu_ps(x + i));
+        const __m256d v1 = _mm256_cvtps_pd(_mm_loadu_ps(x + i + 4));
+        const __m256d v2 = _mm256_cvtps_pd(_mm_loadu_ps(x + i + 8));
+        const __m256d v3 = _mm256_cvtps_pd(_mm_loadu_ps(x + i + 12));
+        a0               = _mm256_fmadd_pd(v0, v0, a0);
+        a1               = _mm256_fmadd_pd(v1, v1, a1);
+        a2               = _mm256_fmadd_pd(v2, v2, a2);
+        a3               = _mm256_fmadd_pd(v3, v3, a3);
+    }
+    const __m256d a = _mm256_add_pd(_mm256_add_pd(a0, a1), _mm256_add_pd(a2, a3));
+    const __m128d h = _mm_add_pd(_mm256_castpd256_pd128(a), _mm256_extractf128_pd(a, 1));
+    double        s = _mm_cvtsd_f64(_mm_add_sd(h, _mm_unpackhi_pd(h, h)));
+    for (; i < n; i++) {
+        s += (double) x[i] * (double) x[i];
+    }
+    return s;
+}
+
+/* y = x / sqrt(mean(x^2) + eps) * w over one row of n floats; y may be x. */
+static void rmsnorm_row(
+        size_t n, const float x[static n], const float w[static n], float eps, float y[static n]) {
+    const float  inv = (float) (1.0 / sqrt(sumsq(n, x) / (double) n + (double) eps));
+    const __m256 vi  = _mm256_set1_ps(inv);
+    size_t       i   = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 v = _mm256_mul_ps(_mm256_loadu_ps(x + i), vi);
+        _mm256_storeu_ps(y + i, _mm256_mul_ps(v, _mm256_loadu_ps(w + i)));
+    }
+    if (i < n) {
+        const __m256i m = lanes(n - i);
+        const __m256  v = _mm256_mul_ps(_mm256_maskload_ps(x + i, m), vi);
+        _mm256_maskstore_ps(y + i, m, _mm256_mul_ps(v, _mm256_maskload_ps(w + i, m)));
+    }
+}
+
+[[nodiscard]] enum geist_status cpu_x86_rmsnorm(struct geist_backend      *be,
+                                                const struct geist_tensor *x,
+                                                const struct geist_tensor *w,
+                                                float                      eps,
+                                                struct geist_tensor       *y) {
+    if (be == nullptr || x == nullptr || w == nullptr || y == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t       nx = 0, nw = 0, ny = 0;
+    const float *xp = gelu_f32_ptr(x, &nx);
+    const float *wp = gelu_f32_ptr(w, &nw);
+    float       *yp = gelu_f32_ptr(y, &ny);
+    if (xp == nullptr || wp == nullptr || yp == nullptr || nx != ny) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 rmsnorm: bad inputs");
+        return GEIST_E_INVALID_ARG;
+    }
+    /* ndim >= 1 and every dimension >= 1, or the view had been refused */
+    const size_t feat = (size_t) x->shape[x->ndim - 1];
+    if (nw != feat || nx % feat != 0) {
+        geist_backend_set_error(be,
+                                GEIST_E_INVALID_ARG,
+                                "cpu_x86 rmsnorm: feature size %zu mismatch (w=%zu)",
+                                feat,
+                                nw);
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t rows = nx / feat;
+    if (nx < EW_PARALLEL_MIN) {
+        for (size_t r = 0; r < rows; r++) {
+            rmsnorm_row(feat, xp + r * feat, wp, eps, yp + r * feat);
+        }
+        return GEIST_OK;
+    }
+#pragma omp parallel for schedule(static)
+    for (size_t r = 0; r < rows; r++) {
+        rmsnorm_row(feat, xp + r * feat, wp, eps, yp + r * feat);
+    }
+    return GEIST_OK;
+}
+
+/* y = a + b over n floats. */
+static void add_span(size_t n, const float *a, const float *b, float *y) {
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        _mm256_storeu_ps(y + i, _mm256_add_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i)));
+    }
+    if (i < n) {
+        const __m256i m = lanes(n - i);
+        _mm256_maskstore_ps(
+                y + i,
+                m,
+                _mm256_add_ps(_mm256_maskload_ps(a + i, m), _mm256_maskload_ps(b + i, m)));
+    }
+}
+
+[[nodiscard]] enum geist_status cpu_x86_add(struct geist_backend      *be,
+                                            const struct geist_tensor *a,
+                                            const struct geist_tensor *b,
+                                            struct geist_tensor       *y) {
+    if (be == nullptr || a == nullptr || b == nullptr || y == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t       na = 0, nb = 0, ny = 0;
+    const float *ap = gelu_f32_ptr(a, &na);
+    const float *bp = gelu_f32_ptr(b, &nb);
+    float       *yp = gelu_f32_ptr(y, &ny);
+    if (ap == nullptr || bp == nullptr || yp == nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_UNSUPPORTED, "cpu_x86 add: all tensors must be F32 DENSE");
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (na != nb || na != ny) {
+        geist_backend_set_error(be,
+                                GEIST_E_INVALID_ARG,
+                                "cpu_x86 add: shape mismatch (a=%zu b=%zu y=%zu)",
+                                na,
+                                nb,
+                                ny);
+        return GEIST_E_INVALID_ARG;
+    }
+    if (na < EW_PARALLEL_MIN) {
+        add_span(na, ap, bp, yp);
+        return GEIST_OK;
+    }
+    const size_t chunks = (na + EW_CHUNK - 1) / EW_CHUNK;
+#pragma omp parallel for schedule(static)
+    for (size_t c = 0; c < chunks; c++) {
+        const size_t i0 = c * EW_CHUNK;
+        add_span(na - i0 < EW_CHUNK ? na - i0 : EW_CHUNK, ap + i0, bp + i0, yp + i0);
+    }
     return GEIST_OK;
 }

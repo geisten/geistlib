@@ -151,6 +151,21 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 runs RMSNorm and the residual add on the whole team in AVX2**
+  (`cpu_x86/elementwise.c`). Both were cpu_scalar's, on the calling thread
+  while the rest of the team waited: the two norms and two adds of each
+  layer took 47 ms of a 64-token prefill of the synthetic
+  Ternary-Bonsai-2-27B on a 4-vCPU Xeon (`perf`). The norm now spreads its
+  rows over the team and the add its 4 KB chunks; below 16384 floats, a
+  decode token's 5120 among them, the calling thread does them alone. The
+  sum of squares stays a double, so the norm differs from cpu_scalar's only
+  in the order of that sum, and the add is cpu_scalar's to the bit. A call
+  at 64 × 5120 takes 54 µs instead of 339 (norm) and 49 µs instead of 218
+  (add); in the model the calling thread spends 11 ms per prefill in them,
+  and the prefill takes 1.067 s instead of 1.145 s (-5.8 %, 95 % interval
+  -10.7 to -3.0 %, 24 of 30 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). `test_rmsnorm_add_x86_unit` holds the norm
+  to a double reference within 4 ulp and the add to cpu_scalar's bits.
 - **The layer-output scale is skipped when it is 1** (`layer_ple.c`). Only
   Gemma 4 (PLE) loads a per-layer output scale; every other model gets 1,
   and the step after each layer still multiplied the hidden state by it: a

@@ -8,8 +8,8 @@
  *   2. Override vtbl .create / .destroy (the per-instance scratch the
  *      quantized kernels use), .resolve_weight (below) and, under OpenMP,
  *      .parallel_region_begin / _end (threads.c); prims .attention,
- *      .gelu_tanh and .silu; fused .gelu_tanh_mul, .gelu_tanh_mul_scaled
- *      and .silu_mul.
+ *      .gelu_tanh, .silu, .rmsnorm and .add; fused .gelu_tanh_mul,
+ *      .gelu_tanh_mul_scaled and .silu_mul.
  * Constructor runs before main, so the descriptor's tables are always
  * filled by the time the engine calls geist_backend_create.
  *
@@ -532,6 +532,8 @@ __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
     cpu_x86_prims           = cpu_scalar_prims;
     cpu_x86_prims.gelu_tanh = cpu_x86_gelu_tanh;
     cpu_x86_prims.silu      = cpu_x86_silu;
+    cpu_x86_prims.rmsnorm   = cpu_x86_rmsnorm;
+    cpu_x86_prims.add       = cpu_x86_add;
     cpu_x86_prims.attention = cpu_x86_attention;
 
     cpu_x86_fused                      = cpu_scalar_fused;
