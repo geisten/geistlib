@@ -441,6 +441,7 @@ struct metal_state {
     size_t               attn_dec_partials_capacity;
     void                *sequence_command_buffer;
     void                *sequence_compute_encoder;
+    void                *sequence_pool; /* autorelease pool, sequence begin..end */
     void                *capture_manager;
     bool                 capture_done;
     int                  capture_skipped;
@@ -472,10 +473,20 @@ struct metal_state {
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     char                      device_name[128];
 
+    /* #531: the device's recommendedMaxWorkingSetSize, read once at create.
+     * metal_budget_admit refuses an allocation past it unless
+     * GEIST_METAL_IGNORE_BUDGET=1 (ws_ignore). ws_warned: the 90 % notice is
+     * printed once. */
+    size_t ws_budget;
+    bool   ws_ignore;
+    bool   ws_warned;
+
     void *MTLCreateSystemDefaultDevice;
     void *objc_msgSend;
     void *sel_registerName;
     void *objc_getClass;
+    void *objc_autoreleasePoolPush;
+    void *objc_autoreleasePoolPop;
 };
 
 struct geist_buffer {

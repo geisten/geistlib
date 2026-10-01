@@ -140,7 +140,8 @@ jobs:
       # gate must not read as a green one. Registration, lifecycle, buffer
       # round-trip (probe) and linear parity vs cpu_scalar (every quant
       # format the test lists, decode and prefill shapes) all run on the
-      # real device.
+      # real device. The autorelease footprint bound (#527) runs from the
+      # release build only: under ASan it skips by design.
       - name: Metal device probe + linear parity (GPU, mandatory)
         if: matrix.apple_silicon
         run: |
@@ -148,6 +149,7 @@ jobs:
           ./bin/${{ matrix.target }}/release/tests/test_backend_metal_parity_unit
           GEIST_TEST_METAL_RESOURCES=1 ./bin/${{ matrix.target }}/release/tests/test_metal_resources_unit
           GEIST_TEST_METAL_RESOURCES=1 ./bin/${{ matrix.target }}/asan/tests/test_metal_resources_unit
+          GEIST_TEST_METAL_AUTORELEASE=1 ./bin/${{ matrix.target }}/release/tests/test_metal_autorelease_unit
 
       # Hermetic Python suite (algorithm reference impls). Part of `make test`,
       # so it must stay green — a suite nothing runs is a suite that rots (#146).
@@ -158,9 +160,12 @@ jobs:
       # The BitNet embedding chain, executed rather than inspected. The unit
       # tests stop at scratch sizing and the converter test at the GGUF header,
       # so nothing else here would notice a file the loader cannot read.
-      - name: Embedding chain end-to-end (synthetic model)
+      # Called directly, not via `make test-embedding`, whose 77 is a benign
+      # skip without numpy: this leg installs numpy and Build made the tool,
+      # so a skip is a failure, as in the asan job's leak-detection step.
+      - name: Embedding chain end-to-end (synthetic model, a skip is a failure)
         if: matrix.target == 'linux'
-        run: make test-embedding TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
+        run: python3 tests/scripts/embedding_e2e_smoke.py bin/${{ matrix.target }}/release/tools/dump_geist_embedding
 
       # Contract enforcement, include half: every public header compiles on its
       # own as C23 and as C++17. A C++ consumer is not exotic (bindings, game
@@ -816,7 +821,7 @@ jobs:
       # log that ages out. (#184)
       - name: Upload AVX-512 diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: avx512-sde-diagnostics
           path: ci-diagnostics/
@@ -886,7 +891,7 @@ jobs:
           done
       - name: Upload Vulkan diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vulkan-lavapipe-diagnostics
           path: ci-diagnostics/
@@ -963,7 +968,7 @@ jobs:
           done
       - name: Upload Vulkan diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vulkan-gpu-diagnostics
           path: ci-diagnostics/
@@ -992,7 +997,7 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache
+          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache python3-numpy
       - name: ASan/UBSan unit tests
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
@@ -1004,11 +1009,15 @@ jobs:
       # caught scratch_proj_in, allocated for the per-projection norms and
       # never freed — invisible to every other job because no other model
       # sets the flag.
-      - name: ASan embedding chain (leak detection on)
+      # Called directly, not via `make test-embedding`, whose 77 is a benign
+      # skip for a contributor without numpy: here numpy is installed and the
+      # unit step's `bin` built the tool, so a skip is a failure. Through make,
+      # a missing numpy left this gate a green no-op for its first month.
+      - name: ASan embedding chain (leak detection on, a skip is a failure)
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           ASAN_OPTIONS: detect_leaks=1
-        run: make MODE=asan test-embedding TARGET=linux CC="ccache gcc-14" AUTO_FETCH_MODEL=0
+        run: python3 tests/scripts/embedding_e2e_smoke.py bin/linux/asan/tools/dump_geist_embedding
 
   # The x86_64 leg of the same gate. The arm64 job above never compiles the
   # cpu_x86 kernels or their tests, so their sanitizer build went unchecked and
@@ -1211,7 +1220,7 @@ jobs:
             --baselines benchmark/coverage_baselines.json
       - name: Upload coverage artifacts
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report
           path: coverage/
