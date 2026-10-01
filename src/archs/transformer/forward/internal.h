@@ -435,6 +435,19 @@ void   transformer_dn_head_chunk(float       *S,
                                  float       *o,
                                  float       *ws);
 
+/* The causal depthwise conv of token t of a chunk, then silu
+ * (layer_deltanet.c), exported for test_deltanet_conv_unit:
+ *   y_t[c] = silu(sum_{j < K} convw[c * K + j] * x[t + j][c])
+ * where x is the K - 1 history rows of old_cst ([K - 1, convd]) followed
+ * by the chunk's rows of qkv ([seq, convd], t < seq). */
+void transformer_dn_conv_silu_row(size_t       t,
+                                  size_t       K,
+                                  size_t       convd,
+                                  const float *old_cst,
+                                  const float *qkv,
+                                  const float *convw,
+                                  float        y_t[static convd]);
+
 /* forward/layer.c — exported helper used across forward/. */
 [[nodiscard]] enum geist_status linear_w_or_legacy(struct geist_backend            *be,
                                                    const struct geist_backend_vtbl *v,

@@ -199,6 +199,11 @@ void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size
         return GEIST_E_INVALID_ARG;
     }
 
+    /* Everything the sequence autoreleases -- its command buffers (rotation
+     * included) and encoders -- drains when _end pops this pool. What must
+     * outlive it is retained explicitly: the current buffer and encoder
+     * below, the pipelined ones in seq_pending_cmds. */
+    void *pool = metal_pool_push(st);
     metal_capture_begin(st, kind);
 
     static int g_seq_created;
@@ -207,12 +212,14 @@ void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size
         fprintf(stderr, "[seqdbg] created=%d\n", g_seq_created);
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
+        metal_pool_pop(st, pool);
         geist_backend_set_error(
                 be, GEIST_E_BACKEND, "metal command sequence: command buffer failed");
         return GEIST_E_BACKEND;
     }
     void *enc = metal_msg_send_id0(st, cmd, "computeCommandEncoder");
     if (enc == nullptr) {
+        metal_pool_pop(st, pool);
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal command sequence: encoder failed");
         return GEIST_E_BACKEND;
     }
@@ -226,6 +233,7 @@ void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size
     st->sequence_kind            = kind;
     st->sequence_command_buffer  = cmd;
     st->sequence_compute_encoder = enc;
+    st->sequence_pool            = pool;
     st->sequence_active          = true;
     st->sequence_has_work        = false;
     st->seq_dispatch_count       = 0;
@@ -249,9 +257,11 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
 
     void      *cmd               = st->sequence_command_buffer;
     void      *enc               = st->sequence_compute_encoder;
+    void      *pool              = st->sequence_pool;
     const bool has_work          = st->sequence_has_work;
     st->sequence_compute_encoder = nullptr;
     st->sequence_command_buffer  = nullptr;
+    st->sequence_pool            = nullptr;
     st->sequence_active          = false;
     st->sequence_has_work        = false;
 
@@ -316,5 +326,6 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
 
     metal_msg_send_void0(st, enc, "release");
     metal_msg_send_void0(st, cmd, "release");
+    metal_pool_pop(st, pool);
     return out;
 }

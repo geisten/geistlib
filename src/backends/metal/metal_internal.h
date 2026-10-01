@@ -441,6 +441,7 @@ struct metal_state {
     size_t               attn_dec_partials_capacity;
     void                *sequence_command_buffer;
     void                *sequence_compute_encoder;
+    void                *sequence_pool; /* autorelease pool, sequence begin..end */
     void                *capture_manager;
     bool                 capture_done;
     int                  capture_skipped;
@@ -476,6 +477,8 @@ struct metal_state {
     void *objc_msgSend;
     void *sel_registerName;
     void *objc_getClass;
+    void *objc_autoreleasePoolPush;
+    void *objc_autoreleasePoolPop;
 };
 
 struct geist_buffer {
