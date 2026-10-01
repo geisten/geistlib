@@ -9,6 +9,16 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Metal checks the GPU working set at load and session create** (#531).
+  Everything a command buffer binds must be resident at once, so a model plus
+  KV plus scratch above `recommendedMaxWorkingSetSize` used to fail or page in
+  the middle of a generation. Metal now refuses the allocation that would cross
+  the budget, and loading or creating the session fails with `GEIST_E_OOM` and
+  a message naming the free and the needed MiB and `sudo sysctl
+  iogpu.wired_limit_mb`. A one-time notice is printed from 90 %.
+  `GEIST_METAL_IGNORE_BUDGET=1` lifts the check. The count is
+  `currentAllocatedSize`, which includes lookup tables the host gathers
+  (#529), so near the line it is conservative.
 - **Per-model prefill knobs** (`src/archs/transformer/prefill_tuning.h`): the
   prefill chunk `m_max` and the OpenMP spin policy resolve as default + delta +
   override — the platform/backend default, a signed delta from a table row
@@ -465,6 +475,13 @@ minor release.
   vtable.
 
 ### Fixed
+- **`geist_model_load` and `geist_model_load_from_memory` return the cause's
+  status.** Every architecture failure used to come back as `GEIST_E_IO`
+  (`GEIST_E_FORMAT` from memory), even when the cause was an out-of-memory or
+  an unsupported model. The architecture now hands its status up through the
+  create-time error slot: a GPU budget refusal is `GEIST_E_OOM`, and BitNet on
+  Metal (no `relu_squared`) is `GEIST_E_UNSUPPORTED`. The old code stays the
+  fallback when no layer names a cause (#531).
 
 - **The metal backend no longer leaks a command buffer and an encoder per
   submission** (#527). It drives Metal from plain C, where nothing drained the
