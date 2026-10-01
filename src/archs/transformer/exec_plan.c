@@ -245,14 +245,19 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
 
     /* ---- Model-level fusion decisions (lookup tables + greedy head). */
     {
-        struct geist_backend     *be          = st->backend;
-        struct geist_fusion_query q           = {.op = GEIST_FUSED_EMBEDDING_LOOKUP_SCALED, .m = 1};
+        struct geist_backend     *be = st->backend;
+        struct geist_fusion_query q  = {.op = GEIST_FUSED_EMBEDDING_LOOKUP_SCALED, .m = 1};
+        /* #529: a table read one row per token is resident whole once a
+         * device binds it; gathered on the host it stays demand-paged.
+         * token_embd only when untied — tied, the lm_head binds it anyway. */
+        const bool host_lookup                = be->desc->caps.lookup_tables_on_host;
+        const bool embed_only                 = st->output_table.buffer != st->embed_table.buffer;
         q.d_model                             = st->d_model;
         q.table_dtype                         = st->embed_table.dtype;
-        st->model_fusions.embed_lookup_scaled = probe(be, q);
+        st->model_fusions.embed_lookup_scaled = !(host_lookup && embed_only) && probe(be, q);
         q.d_model                             = st->ple_out;
         q.table_dtype                         = st->ple_table.dtype;
-        st->model_fusions.ple_lookup_scaled   = st->config.has_ple && probe(be, q);
+        st->model_fusions.ple_lookup_scaled   = st->config.has_ple && !host_lookup && probe(be, q);
         q                                     = (struct geist_fusion_query) {
                 .op = GEIST_FUSED_ARGMAX_F32, .m = 1, .d_model = st->vocab_size};
         st->model_fusions.argmax = probe(be, q);

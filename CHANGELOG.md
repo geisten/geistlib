@@ -9,6 +9,15 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Metal reads lookup-only tables on the host** (`caps.lookup_tables_on_host`,
+  #529). A Metal dispatch makes every buffer it binds resident in full. So the
+  Gemma 4 PLE table and an untied `token_embd` were paged in whole to read one
+  row per token: on gemma4-e2b, 1540 MiB (52 % of the file) were resident after
+  a 13-token prompt, cold cache. The host now dequantizes those rows straight
+  out of the mmap into the scratch the next op reads. Only the touched rows
+  page in: 104 of 98 560 pages after an 80-token prompt and 64 steps. Greedy
+  tokens and logits are byte-identical on gemma4-e2b; tied tables stay on the
+  device. New `geist_backend_caps` bit, off when zero-initialized.
 - **Per-model prefill knobs** (`src/archs/transformer/prefill_tuning.h`): the
   prefill chunk `m_max` and the OpenMP spin policy resolve as default + delta +
   override — the platform/backend default, a signed delta from a table row

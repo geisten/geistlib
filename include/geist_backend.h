@@ -750,6 +750,15 @@ struct geist_backend_caps {
      * meaningful together with weights_need_backend_arena. */
     bool weights_device_copy;
 
+    /* A dispatch makes every buffer it binds resident in full, and host
+     * writes land in memory the device reads in place (unified memory).
+     * A lookup-only table — the PLE table, an untied token_embd — then
+     * costs its whole size in RAM when looked up on the device, but only
+     * the rows a step reads when the host gathers them straight out of the
+     * mmap. Consumer: exec_plan's model-level lookup decisions. Set by
+     * metal (#529). */
+    bool lookup_tables_on_host;
+
     /* Bumped by the backend whenever kernel performance character
      * changes enough to invalidate measured calibrations without any
      * tunable being renamed (the "faster kernel, same knob" case).
