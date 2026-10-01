@@ -1080,6 +1080,30 @@ scale. The synthetic model's do, all of them (`gen_synth_gguf.py` writes
 one scale); the real model's are not known here, so the kernel does not
 assume it.
 
+### The attention's query, gate and scale
+
+Each of the 16 attention layers projects a query and a gate per head in
+one matrix. The arch then copied them apart head by head, scaled the
+query by 1/sqrt(256) after its norm and RoPE, and multiplied the
+attention's output by sigmoid(gate) with libm's `expf` per element: three
+loops on the calling thread while the other three waited. cpu_x86 now
+binds the backend ops the arch asks for (`attn_qgate_split`, `scale_f32`,
+`sigmoid_mul`), on the team from 16384 floats on, the sigmoid in AVX2
+through SiLU's exp. Per prefill, the profiler runs alternating the two
+builds three times:
+
+| | before | after |
+| :-- | --: | --: |
+| calling thread's serial time in the attention blocks (`perf`) | 26.8 ms | 7.8 ms |
+| `q_prep` (norms, RoPE, the scale) | 6.8 ms | 3.1 ms |
+| `post_core` (the gate) | 5.7 ms | 2.7 ms |
+| `qkv` (the projections and the split) | 65.5 ms | 60.8 ms |
+| prefill, 64 tokens (A/B, 30 cycles) | 1.142 s | 1.107 s, -2.4 % [-5.3, +0.2], 20/30 |
+
+What is left on the calling thread there is the KV store's append and
+RoPE. The A/B, both builds from scratch with a control that read -1.7 %
+[-4.5, +3.3], does not resolve the 1 % the profile predicts.
+
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
   `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep

@@ -192,8 +192,8 @@ enum geist_status transformer_layer_scale_output(struct transformer_layer_forwar
         return GEIST_OK;
     }
     /* Bound once (#352): batched GPU backends keep the per-layer scale
-     * on-device instead of flushing their pipeline for a host loop; the CPU
-     * backends have no scale_f32 and take the host loop. This used to fall
+     * on-device instead of flushing their pipeline for a host loop;
+     * cpu_scalar and cpu_neon have no scale_f32 and take the host loop. This used to fall
      * through to the host loop when the device op FAILED as well as when it
      * was absent — which scales twice if the op failed after writing. */
     if (ctx->st->model_fusions.prim_scale_f32) {

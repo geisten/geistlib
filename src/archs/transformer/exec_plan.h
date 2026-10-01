@@ -103,7 +103,7 @@ struct transformer_model_fusion_plan {
      * about exactly that hazard for `add`, while the `scale_f32` sites had
      * the same shape and no such guard. Probe true ⇒ must succeed
      * (geist_backend.h), so a failure is now returned, not papered over. */
-    bool prim_scale_f32; /* Metal + Vulkan; the CPU backends take the host loop */
+    bool prim_scale_f32; /* Metal, Vulkan, cpu_x86; cpu_scalar and cpu_neon loop */
     bool prim_silu;      /* every in-tree backend; gelu_tanh is the bound alternative */
 
     /* Same treatment for the one BACKEND vtable member that is optional and

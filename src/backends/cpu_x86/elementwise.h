@@ -1,6 +1,6 @@
 /*
- * src/backends/cpu_x86/elementwise.h — cpu_x86 gelu_tanh, SiLU, RMSNorm and
- * add overrides.
+ * src/backends/cpu_x86/elementwise.h — cpu_x86 gelu_tanh, SiLU, RMSNorm, add
+ * and attention-gate overrides.
  *
  * Layer: BACKEND (cpu_x86, internal). See elementwise.c.
  */
@@ -49,5 +49,25 @@ cpu_x86_silu(struct geist_backend *be, const struct geist_tensor *x, struct geis
                                             const struct geist_tensor *a,
                                             const struct geist_tensor *b,
                                             struct geist_tensor       *y);
+
+/* y = x * scale, bit-identical to the arch's host loop. */
+[[nodiscard]] enum geist_status cpu_x86_scale_f32(struct geist_backend      *be,
+                                                  const struct geist_tensor *x,
+                                                  float                      scale,
+                                                  struct geist_tensor       *y);
+
+/* y = x * sigmoid(gate); y may alias x. */
+[[nodiscard]] enum geist_status cpu_x86_sigmoid_mul(struct geist_backend      *be,
+                                                    const struct geist_tensor *x,
+                                                    const struct geist_tensor *gate,
+                                                    struct geist_tensor       *y);
+
+/* joint [rows, heads * 2 * head_dim] -> q, gate [rows, heads * head_dim]. */
+[[nodiscard]] enum geist_status cpu_x86_attn_qgate_split(struct geist_backend      *be,
+                                                         const struct geist_tensor *joint,
+                                                         size_t                     heads,
+                                                         size_t                     head_dim,
+                                                         struct geist_tensor       *q,
+                                                         struct geist_tensor       *gate);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_ELEMENTWISE_H */

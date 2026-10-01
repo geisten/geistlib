@@ -1,6 +1,6 @@
 /*
- * src/backends/cpu_x86/elementwise.c — cpu_x86 gelu_tanh, SiLU, RMSNorm and
- * add overrides.
+ * src/backends/cpu_x86/elementwise.c — cpu_x86 gelu_tanh, SiLU, RMSNorm, add
+ * and attention-gate overrides.
  *
  * Layer: BACKEND (cpu_x86).
  *
@@ -13,14 +13,16 @@
  * precision) so e^2u can't overflow to inf. Same math as the scalar
  * reference within float epsilon; cross-checked in test_gelu_x86_unit.c.
  *
- * SiLU and the fused SiLU x mul, RMSNorm and the residual add follow below;
- * mul stays on cpu_scalar (the fused silu_mul and gelu_tanh_mul take its
- * place in the FFN).
+ * SiLU and the fused SiLU x mul, RMSNorm and the residual add, and the
+ * attention's q/gate split, q scale and sigmoid gate follow below; mul
+ * stays on cpu_scalar (the fused silu_mul and gelu_tanh_mul take its place
+ * in the FFN).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "elementwise.h"
 #include "tensor_view.h"
+#include "checked.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -29,6 +31,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* CPU buffer layout, owned by cpu_scalar's buffer_create (cpu_x86 inherits
  * its buffer vtable). Mirrored here as cpu_neon does — geist.h keeps the
@@ -391,6 +394,152 @@ static void add_span(size_t n, const float *a, const float *b, float *y) {
     for (size_t c = 0; c < chunks; c++) {
         const size_t i0 = c * EW_CHUNK;
         add_span(na - i0 < EW_CHUNK ? na - i0 : EW_CHUNK, ap + i0, bp + i0, yp + i0);
+    }
+    return GEIST_OK;
+}
+
+/* ---- The attention's q/gate split, q scale and output gate ---------------
+ *
+ * Qwen3.5's attention projects a query and a gate per head in one matrix,
+ * splits them, scales the query by 1/sqrt(head_dim) and gates the
+ * attention's output with sigmoid(gate). Without these ops the arch does
+ * each in a loop on the calling thread, libm's expf per element of the
+ * gate. Here they run like the ops above: 4 KB chunks (or head rows) on
+ * the team from EW_PARALLEL_MIN floats on, a decode token on the calling
+ * thread. The split and the scale are copies and products, bit-identical
+ * to the arch's loops; scale_f32 also serves the arch's other scalings
+ * (the PLE products), which become the same products on the team. */
+
+/* y = x * scale over n floats. */
+static void scale_span(size_t n, const float *x, float scale, float *y) {
+    const __m256 s = _mm256_set1_ps(scale);
+    size_t       i = 0;
+    for (; i + 8 <= n; i += 8) {
+        _mm256_storeu_ps(y + i, _mm256_mul_ps(_mm256_loadu_ps(x + i), s));
+    }
+    if (i < n) {
+        const __m256i m = lanes(n - i);
+        _mm256_maskstore_ps(y + i, m, _mm256_mul_ps(_mm256_maskload_ps(x + i, m), s));
+    }
+}
+
+[[nodiscard]] enum geist_status cpu_x86_scale_f32(struct geist_backend      *be,
+                                                  const struct geist_tensor *x,
+                                                  float                      scale,
+                                                  struct geist_tensor       *y) {
+    if (be == nullptr || x == nullptr || y == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t       nx = 0, ny = 0;
+    const float *xp = gelu_f32_ptr(x, &nx);
+    float       *yp = gelu_f32_ptr(y, &ny);
+    if (xp == nullptr || yp == nullptr || nx != ny) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 scale_f32: bad inputs");
+        return GEIST_E_INVALID_ARG;
+    }
+    if (nx < EW_PARALLEL_MIN) {
+        scale_span(nx, xp, scale, yp);
+        return GEIST_OK;
+    }
+    const size_t chunks = (nx + EW_CHUNK - 1) / EW_CHUNK;
+#pragma omp parallel for schedule(static)
+    for (size_t c = 0; c < chunks; c++) {
+        const size_t i0 = c * EW_CHUNK;
+        scale_span(nx - i0 < EW_CHUNK ? nx - i0 : EW_CHUNK, xp + i0, scale, yp + i0);
+    }
+    return GEIST_OK;
+}
+
+/* sigmoid(g) = 1 / (1 + e^-g) as 1 / (1 + e) for g >= 0 and e / (1 + e)
+ * below, e = exp(-|g|) <= 1 through silu's exp and floor. The floor comes
+ * first in the max so that a NaN gate gives NaN. */
+static inline __m256 sigmoid8(__m256 g) {
+    const __m256 neg = _mm256_or_ps(g, _mm256_set1_ps(-0.0f)); /* -|g| */
+    const __m256 e   = exp8_nonpos(_mm256_max_ps(_mm256_set1_ps(SILU_EXP_FLOOR), neg));
+    const __m256 num = _mm256_blendv_ps(_mm256_set1_ps(1.0f), e, g); /* sign set: e */
+    return _mm256_div_ps(num, _mm256_add_ps(_mm256_set1_ps(1.0f), e));
+}
+
+/* y = x * sigmoid(g) over n floats; y may be x. */
+static void sigmoid_mul_span(size_t n, const float *x, const float *g, float *y) {
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 s = sigmoid8(_mm256_loadu_ps(g + i));
+        _mm256_storeu_ps(y + i, _mm256_mul_ps(_mm256_loadu_ps(x + i), s));
+    }
+    if (i < n) {
+        const __m256i m = lanes(n - i);
+        const __m256  s = sigmoid8(_mm256_maskload_ps(g + i, m));
+        _mm256_maskstore_ps(y + i, m, _mm256_mul_ps(_mm256_maskload_ps(x + i, m), s));
+    }
+}
+
+[[nodiscard]] enum geist_status cpu_x86_sigmoid_mul(struct geist_backend      *be,
+                                                    const struct geist_tensor *x,
+                                                    const struct geist_tensor *gate,
+                                                    struct geist_tensor       *y) {
+    if (be == nullptr || x == nullptr || gate == nullptr || y == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t       nx = 0, ng = 0, ny = 0;
+    const float *xp = gelu_f32_ptr(x, &nx);
+    const float *gp = gelu_f32_ptr(gate, &ng);
+    float       *yp = gelu_f32_ptr(y, &ny);
+    if (xp == nullptr || gp == nullptr || yp == nullptr || nx != ng || nx != ny) {
+        return GEIST_E_UNSUPPORTED; /* the arch's loop takes it */
+    }
+    if (nx < EW_PARALLEL_MIN) {
+        sigmoid_mul_span(nx, xp, gp, yp);
+        return GEIST_OK;
+    }
+    const size_t chunks = (nx + EW_CHUNK - 1) / EW_CHUNK;
+#pragma omp parallel for schedule(static)
+    for (size_t c = 0; c < chunks; c++) {
+        const size_t i0 = c * EW_CHUNK;
+        sigmoid_mul_span(nx - i0 < EW_CHUNK ? nx - i0 : EW_CHUNK, xp + i0, gp + i0, yp + i0);
+    }
+    return GEIST_OK;
+}
+
+/* Row-head hh of joint, [query (hd) | gate (hd)], to q and gate. */
+static inline void qgate_item(size_t hh, size_t hd, const float *joint, float *q, float *gate) {
+    const float *src = joint + hh * 2 * hd;
+    memcpy(q + hh * hd, src, hd * sizeof(float));
+    memcpy(gate + hh * hd, src + hd, hd * sizeof(float));
+}
+
+[[nodiscard]] enum geist_status cpu_x86_attn_qgate_split(struct geist_backend      *be,
+                                                         const struct geist_tensor *joint,
+                                                         size_t                     heads,
+                                                         size_t                     head_dim,
+                                                         struct geist_tensor       *q,
+                                                         struct geist_tensor       *gate) {
+    if (be == nullptr || joint == nullptr || q == nullptr || gate == nullptr || heads == 0 ||
+        head_dim == 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t       nj = 0, nq = 0, ng = 0, width = 0;
+    const float *jp = gelu_f32_ptr(joint, &nj);
+    float       *qp = gelu_f32_ptr(q, &nq);
+    float       *gp = gelu_f32_ptr(gate, &ng);
+    /* [rows, heads * 2 * head_dim] into two [rows, heads * head_dim] */
+    if (jp == nullptr || qp == nullptr || gp == nullptr || ckd_mul(&width, heads, head_dim) ||
+        nq != ng || nq > nj / 2 || nj - nq != nq || nq % width != 0 ||
+        (size_t) joint->shape[joint->ndim - 1] / 2 != width ||
+        (size_t) joint->shape[joint->ndim - 1] % 2 != 0 ||
+        (size_t) q->shape[q->ndim - 1] != width || (size_t) gate->shape[gate->ndim - 1] != width) {
+        return GEIST_E_UNSUPPORTED; /* the arch's loop takes it */
+    }
+    const size_t items = nq / head_dim; /* rows * heads */
+    if (nj < EW_PARALLEL_MIN) {
+        for (size_t hh = 0; hh < items; hh++) {
+            qgate_item(hh, head_dim, jp, qp, gp);
+        }
+        return GEIST_OK;
+    }
+#pragma omp parallel for schedule(static)
+    for (size_t hh = 0; hh < items; hh++) {
+        qgate_item(hh, head_dim, jp, qp, gp);
     }
     return GEIST_OK;
 }

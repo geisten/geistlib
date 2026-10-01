@@ -151,6 +151,23 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 splits Qwen3.5's query and gate, scales the query and gates the
+  attention on the whole team** (`cpu_x86/elementwise.c`). The family's
+  gated attention copied query and gate apart per head, scaled the query by
+  1/sqrt(head_dim) and multiplied the attention's output by sigmoid(gate),
+  each in a loop of the arch on the calling thread, the gate through libm's
+  `expf` per element. cpu_x86 now binds the backend ops the arch asks for
+  (`attn_qgate_split`, `scale_f32`, `sigmoid_mul`): from 16384 floats on
+  they run on the team, in AVX2, the sigmoid through SiLU's exp. The split
+  and the scale are the arch's copies and products to the bit, the gate
+  within 8 ulp of a double reference; `scale_f32` also takes over Gemma
+  4's PLE scalings on cpu_x86, as the same products. On a 4-vCPU Xeon the
+  calling thread's serial time in the 16 attention blocks of a 64-token
+  prefill of the synthetic Ternary-Bonsai-2-27B fell from 26.8 ms to
+  7.8 ms (`perf`), about 1 % of the prefill and below what a clean-build
+  A/B resolves on this host (-2.4 %, 95 % interval -5.3 to +0.2 %, 20 of
+  30 cycles). `test_attn_gate_x86_unit` checks the three ops and, end to
+  end, a Qwen3.5-style fixture against cpu_scalar.
 - **cpu_x86 runs RMSNorm and the residual add on the whole team in AVX2**
   (`cpu_x86/elementwise.c`). Both were cpu_scalar's, on the calling thread
   while the rest of the team waited: the two norms and two adds of each
