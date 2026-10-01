@@ -608,11 +608,14 @@ void metal_destroy(struct geist_backend *be) {
 
     st->MTLCreateSystemDefaultDevice =
             metal_dlsym(st->metal_handle, "MTLCreateSystemDefaultDevice");
-    st->objc_msgSend     = metal_dlsym(st->objc_handle, "objc_msgSend");
-    st->sel_registerName = metal_dlsym(st->objc_handle, "sel_registerName");
-    st->objc_getClass    = metal_dlsym(st->objc_handle, "objc_getClass");
+    st->objc_msgSend             = metal_dlsym(st->objc_handle, "objc_msgSend");
+    st->sel_registerName         = metal_dlsym(st->objc_handle, "sel_registerName");
+    st->objc_getClass            = metal_dlsym(st->objc_handle, "objc_getClass");
+    st->objc_autoreleasePoolPush = metal_dlsym(st->objc_handle, "objc_autoreleasePoolPush");
+    st->objc_autoreleasePoolPop  = metal_dlsym(st->objc_handle, "objc_autoreleasePoolPop");
     if (st->MTLCreateSystemDefaultDevice == nullptr || st->objc_msgSend == nullptr ||
-        st->sel_registerName == nullptr || st->objc_getClass == nullptr) {
+        st->sel_registerName == nullptr || st->objc_getClass == nullptr ||
+        st->objc_autoreleasePoolPush == nullptr || st->objc_autoreleasePoolPop == nullptr) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal: runtime symbols are incomplete");
         return GEIST_E_BACKEND;
     }
