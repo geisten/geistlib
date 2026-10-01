@@ -658,9 +658,9 @@ values. The host is an Intel Xeon (Sapphire Rapids) at 2.1 GHz, 4 vCPUs of a
 cloud VM with 260 MB of L3, gcc 14, `OMP_WAIT_POLICY=active`, with 41.7 GB/s
 read bandwidth on 4 threads.
 
-| | generic path | `PQ2_0` decode GEMV | and prefill GEMM | GEMM on AMX-INT8 | SwiGLU, DeltaNet floor |
+| | generic path | `PQ2_0` decode GEMV | and prefill GEMM | GEMM on AMX-INT8 | SwiGLU, DeltaNet floor and conv |
 | :-- | --: | --: | --: | --: | --: |
-| prefill, 64 tokens | 39.1 s, 1.64 t/s | 38.3 s, 1.67 t/s | 7.31 s, 8.75 t/s | 1.58 s, 40.5 t/s | **1.19 s, 54.0 t/s** |
+| prefill, 64 tokens | 39.1 s, 1.64 t/s | 38.3 s, 1.67 t/s | 7.31 s, 8.75 t/s | 1.58 s, 40.5 t/s | **1.10 s, 58.3 t/s** |
 | decode | 7.53 s a token, 0.13 t/s | **0.200 s a token, 5.0 t/s** | the same | the same | the same |
 | RSS | 7.1 GB (the mmap'd file, nothing repacked) | 7.1 GB | 7.1 GB | 7.1 GB | 7.1 GB |
 
@@ -927,6 +927,32 @@ moved -1.5 % [-10.1, +5.7], inside it. The synthetic gating is steep: with
 `ssm_a` = -1 and random `ssm_alpha` rows, every head's γ ends a chunk below
 -10. A trained model's heads range from slow to fast forgetting, so its gain
 is likely smaller. That is not measured here.
+
+### The DeltaNet conv
+
+After the floor, the `perf` split put the chunk's first parallel region at
+427 ms of thread time per prefill. That region runs the causal conv over
+the old state and the chunk's rows, silu, the q/k norms and the gating. Its
+channel loop chose the source of every tap per element and called silu's
+scalar `expf` beside it, so none of it vectorized. Alone, at the model's
+sizes (64 × 10240, K = 4), it took 1.93 ms per layer on 4 threads; the norms
+and the gating were a few percent of that.
+
+`transformer_dn_conv_silu_row` picks a token's four input rows before the
+channel loop, names the taps so that a channel's weights load as one group,
+and gives silu a pass of its own, which vectorizes where glibc's libmvec
+has a vector `expf`:
+
+| | before | after | change |
+| :-- | --: | --: | --: |
+| the region alone, per layer | 1.93 ms | 0.24 ms | 7.9× |
+| the region in the model, thread time per prefill (`perf`) | 427 ms | 50 ms | 8.5× |
+| prefill, 64 tokens (A/B) | 1.201 s | 1.099 s | -11.8 % [-16.4, -3.2], 10/10 |
+| the same, a second run | 1.232 s | 1.133 s | -8.6 % [-11.9, -0.1], 9/10 |
+
+Each A/B is `tools/bench_revision_ab.py` with both builds from scratch and
+10 cycles with a control. The controls stayed within -0.6 % [-10.2, +12.8]
+and +2.9 % [-4.8, +19.1], and decode moved -1.6 % and -2.0 %, inside them.
 
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then

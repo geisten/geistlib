@@ -451,6 +451,50 @@ static float *dn_prefill_ws(struct transformer_arch_session *sess,
     return ws;
 }
 
+/* Row i of the conv input: the K - 1 = hist rows of old_cst, then qkv's. */
+static inline const float *
+dn_conv_row(size_t i, size_t hist, size_t convd, const float *old_cst, const float *qkv) {
+    return i < hist ? old_cst + i * convd : qkv + (i - hist) * convd;
+}
+
+/* The input rows are picked before the channel loop, so it has no branch
+ * and vectorizes. With the source of each tap chosen per element it did
+ * not, and with silu's scalar expf beside it a 64-token chunk at the
+ * synthetic Ternary-Bonsai-2-27B's sizes took 1.9 ms per layer on 4
+ * threads, against 0.24 ms now. K == 4, every known variant's kernel,
+ * names its taps, so the four weights of a channel load as one group;
+ * another K adds tap after tap into y_t. silu gets a pass of its own: it
+ * vectorizes only where libm has a vector expf (glibc's libmvec), and the
+ * conv should vectorize everywhere. */
+void transformer_dn_conv_silu_row(size_t       t,
+                                  size_t       K,
+                                  size_t       convd,
+                                  const float *old_cst,
+                                  const float *qkv,
+                                  const float *convw,
+                                  float        y_t[static convd]) {
+    const size_t hist = K - 1;
+    if (K == 4) {
+        const float *x0 = dn_conv_row(t, hist, convd, old_cst, qkv);
+        const float *x1 = dn_conv_row(t + 1, hist, convd, old_cst, qkv);
+        const float *x2 = dn_conv_row(t + 2, hist, convd, old_cst, qkv);
+        const float *x3 = dn_conv_row(t + 3, hist, convd, old_cst, qkv);
+        for (size_t c = 0; c < convd; c++)
+            y_t[c] = convw[c * 4] * x0[c] + convw[c * 4 + 1] * x1[c] + convw[c * 4 + 2] * x2[c] +
+                     convw[c * 4 + 3] * x3[c];
+    } else {
+        for (size_t c = 0; c < convd; c++)
+            y_t[c] = 0.0f;
+        for (size_t j = 0; j < K; j++) {
+            const float *x = dn_conv_row(t + j, hist, convd, old_cst, qkv);
+            for (size_t c = 0; c < convd; c++)
+                y_t[c] += convw[c * K + j] * x[c];
+        }
+    }
+    for (size_t c = 0; c < convd; c++)
+        y_t[c] = silu_f(y_t[c]);
+}
+
 /* Chunked prefill (#281 phase 3). The engine batches prefill at m_max
  * (= 64) tokens per forward call, so the whole call is ONE chunk of
  * C = seq — no chunk loop, no remainder. Conv + norms + gating run as
@@ -521,16 +565,7 @@ static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
 #endif
     for (size_t t = 0; t < seq; t++) {
         float *y_t = y + t * convd;
-        for (size_t c = 0; c < convd; c++) {
-            float acc = 0.0f;
-            for (size_t j = 0; j < K; j++) {
-                const ptrdiff_t src = (ptrdiff_t) (t + j) - (ptrdiff_t) hist_rows;
-                const float     xv =
-                        (src >= 0) ? qkv[(size_t) src * convd + c] : old_cst[(t + j) * convd + c];
-                acc += convw[c * K + j] * xv;
-            }
-            y_t[c] = silu_f(acc);
-        }
+        transformer_dn_conv_silu_row(t, K, convd, old_cst, qkv, convw, y_t);
         float *q = y_t;
         float *k = y_t + keyd;
         for (size_t h = 0; h < n_kh; h++) {

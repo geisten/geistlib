@@ -151,6 +151,21 @@ minor release.
 
 ### Changed
 
+- **The chunked DeltaNet prefill's conv vectorizes** (`layer_deltanet.c`).
+  Its channel loop chose the source of every tap per element, the old conv
+  state or the chunk's rows, and called silu's scalar `expf` beside it, so
+  none of it vectorized. `transformer_dn_conv_silu_row` now picks a token's
+  input rows before the channel loop, names the four taps of the kernel
+  every known variant uses, and gives silu a pass of its own, which
+  vectorizes where libm has a vector `expf` (glibc's libmvec). On a 4-vCPU
+  Xeon the region takes 50 ms of thread time per 64-token prefill of the
+  synthetic Ternary-Bonsai-2-27B instead of 427 ms, and the prefill takes
+  1.099 s instead of 1.201 s (-11.8 %, 95 % interval -16.4 to -3.2 %, 10 of
+  10 cycles; a second run gave -8.6 %, -11.9 to -0.1 %, 9 of 10; both builds
+  from scratch, `tools/bench_revision_ab.py`).
+  `test_deltanet_conv_unit` holds the row to a double-precision reference
+  and a chunked prefill to the sequential recurrence on a Qwen3.5-style
+  fixture, `test_deltanet_chunk_int`'s oracle without a model to fetch.
 - **The chunked DeltaNet prefill makes no denormals** (`layer_deltanet.c`).
   The chunk scales by e^γ, γ the gating summed over up to 64 tokens. A
   fast-forgetting head runs γ past -87, and then the decay factors and their
