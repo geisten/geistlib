@@ -202,6 +202,8 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
         return GEIST_OK;
     }
 
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
         geist_backend_set_error(
