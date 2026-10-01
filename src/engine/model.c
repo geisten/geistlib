@@ -267,7 +267,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
                                         "malformed, or out of memory?)",
                                         path);
         }
-        return GEIST_E_IO;
+        return geist_create_error_code() != GEIST_OK ? geist_create_error_code() : GEIST_E_IO;
     }
 
     struct geist_model *m = heap_alloc_aligned(sizeof(*m), alignof(struct geist_model));
@@ -462,14 +462,17 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
      * (for an embedded blob it lives in .rodata, i.e. forever). No aux files
      * (tokenizer.bin / vision / audio safetensors) are searched: a memory blob
      * has no directory. The GGUF must carry its own tokenizer. */
+    geist_error_clear_create_time();
     void *arch_state = desc->decoder_ops->state_create_from_memory(be, data, size, nullptr);
     if (arch_state == nullptr) {
         model_load_undo(nullptr, gguf_tok, arch_copy);
-        geist_error_set_create_time(GEIST_E_FORMAT,
-                                    "geist_model_load_from_memory",
-                                    "decoder state_create_from_memory failed "
-                                    "(malformed GGUF or out of memory?)");
-        return GEIST_E_FORMAT;
+        if (!geist_have_create_error()) {
+            geist_error_set_create_time(GEIST_E_FORMAT,
+                                        "geist_model_load_from_memory",
+                                        "decoder state_create_from_memory failed "
+                                        "(malformed GGUF or out of memory?)");
+        }
+        return geist_create_error_code() != GEIST_OK ? geist_create_error_code() : GEIST_E_FORMAT;
     }
 
     struct geist_model *m = heap_alloc_aligned(sizeof(*m), alignof(struct geist_model));

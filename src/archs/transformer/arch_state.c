@@ -507,8 +507,10 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
                                       GEIST_BUFFER_SCRATCH,
                                       GEIST_MEMORY_MAPPED,
                                       &sess->scratch_pool_buf);
-    sess->scratch_pool_base =
-            s == GEIST_OK ? be->desc->vtbl->buffer_map(sess->scratch_pool_buf) : nullptr;
+    if (s != GEIST_OK) {
+        return s; /* the backend said why (a GPU budget, #531) */
+    }
+    sess->scratch_pool_base = be->desc->vtbl->buffer_map(sess->scratch_pool_buf);
     if (sess->scratch_pool_base == nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_OOM,
