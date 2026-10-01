@@ -2,15 +2,19 @@
  * test_decode_no_alloc_unit — steady-state decode steps and prefill calls
  * allocate nothing (AGENT.md §3: no heap allocation per token, per layer,
  * per block), checked through the public session API for every KV-cache
- * mode on every CPU backend in the build.
+ * mode on every CPU backend in the build, and on Metal.
  *
- * heap.h counts successful allocations (heap_alloc_count), so the test
- * counts across 16 decode steps and one 8-token prefill after a warm-up
+ * heap.h counts successful allocations (heap_alloc_count), and a Metal
+ * buffer counts once, through its handle (geist_backend_alloc). The test
+ * counts across 16 decode steps and one 32-token prefill after a warm-up
  * that pays for lazily sized workspaces, with greedy and with sampling
- * (temperature, top-k, top-p). The models are built in memory with F32
- * weights (model_fixtures.h): a two-layer GQA llama, and a Qwen3.5-style
- * hybrid of three gated-DeltaNet blocks and an attention block.
- * Quantized-weight kernels have their own tests
+ * (temperature, top-k, top-p). The prompt is 32 tokens because Metal's
+ * attention takes its fast paths from 32 KV rows on (metal_attention,
+ * ops.c); with 8, the measured decode steps ran the fallback kernel that
+ * production leaves behind after 31 tokens. The models are built in
+ * memory with F32 weights (model_fixtures.h): a two-layer GQA llama, and a
+ * Qwen3.5-style hybrid of three gated-DeltaNet blocks and an attention
+ * block. Quantized-weight kernels have their own tests
  * (test_x86_kernel_no_alloc_unit and the cpu_neon sibling).
  *
  * It is a ratchet. Each KV mode has a ceiling of allocations per attention
@@ -23,6 +27,10 @@
  * DeltaNet block staged its chunked prefill in a heap buffer per call
  * (dn_run_prefill_chunked, layer_deltanet.c); the session keeps that
  * staging now, sized by its first chunked prefill (the warm-up here).
+ * On Metal, every forward staged the layer loop's self-copy through a
+ * temporary buffer (metal_buffer_copy), and the FP32 cache's f16 attention
+ * staging grew with the KV length (ops.c); the copy is skipped now, and
+ * the staging is sized for the whole cache by its first use.
  */
 #include "test_helpers.h"
 #include "heap.h"
@@ -36,7 +44,7 @@
 #include <stdlib.h>
 
 constexpr int    STEPS   = 16;
-constexpr size_t PREFILL = 8;
+constexpr size_t PREFILL = 32;
 
 static const struct {
     enum geist_kv_mode kv;
@@ -49,10 +57,9 @@ static const struct {
         {GEIST_KV_FP32, "FP32", 0},
 };
 
-/* cpu_neon is held to these by reading its code, not by running it here
- * (no arm64 host); its attention is the same online-softmax row as
- * cpu_x86's. */
-static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
+/* One the build lacks, or Metal without a device, fails
+ * geist_backend_create and is skipped. */
+static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar", "metal"};
 
 /* DeltaNet blocks' allocations per prefill call, at most. */
 constexpr uint64_t DN_PER_PREFILL = 0;
@@ -105,9 +112,12 @@ static int run_session(const struct model   *md,
         fprintf(stderr, "FAIL: %s KV %s: session_create\n", backend, MODES[mode].name);
         return 1;
     }
-    const geist_token_t prompt[PREFILL] = {1, 5, 9, 13, 17, 21, 25, 29};
-    geist_token_t       tok             = 0;
-    bool                ok = geist_session_prefill_tokens(s, PREFILL, prompt) == GEIST_OK;
+    geist_token_t prompt[PREFILL];
+    for (size_t i = 0; i < PREFILL; i++) {
+        prompt[i] = (geist_token_t) (1 + 4 * (i % 8)); /* in both vocabularies */
+    }
+    geist_token_t tok = 0;
+    bool          ok  = geist_session_prefill_tokens(s, PREFILL, prompt) == GEIST_OK;
     for (int i = 0; ok && i < 2; i++) { /* warm-up: lazily sized workspaces */
         ok = geist_session_decode_step(s, &tok) == GEIST_OK;
     }
@@ -140,7 +150,7 @@ static int run_session(const struct model   *md,
                  backend,
                  MODES[mode].name,
                  sampling,
-                 "an 8-token prefill");
+                 "a 32-token prefill");
 }
 
 int main(void) {
@@ -207,7 +217,7 @@ int main(void) {
     }
     tf_free_vocab(&v);
     if (ran == 0 && fails == 0) {
-        printf("SKIP: no CPU backend in this build\n");
+        printf("SKIP: none of these backends in this build\n");
         return GEIST_TEST_SKIP;
     }
     if (fails > 0) {
