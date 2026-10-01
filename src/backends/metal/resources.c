@@ -151,11 +151,184 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
         be = st->backend;
     }
     if (st != nullptr && st->objc_msgSend != nullptr && st->sel_registerName != nullptr) {
+        /* The residency set keeps a member alive: drop the MTLBuffer from
+         * it with its last handle (views share one). */
+        bool shared = false;
+        for (size_t i = 0; i < st->buf_reg_count && !shared; i++) {
+            shared = st->buf_reg[i].buf->buffer == buf->buffer;
+        }
+        if (!shared) {
+            metal_residency_forget(st, buf->buffer);
+        }
         metal_msg_send_void0(st, buf->buffer, "release");
     }
     if (be != nullptr) {
         geist_backend_free(be, buf);
     }
+}
+
+/* ---- Residency set (#530) --------------------------------------------- */
+
+static size_t metal_res_home(const void *buf, size_t mask) {
+    return (size_t) ((((uint64_t) (uintptr_t) buf >> 4) * 0x9e3779b97f4a7c15u) >> 40) & mask;
+}
+
+static bool metal_responds(struct metal_state *st, void *obj, const char *selector) {
+    union {
+        void *raw;
+        bool (*fn)(void *, void *, void *);
+    } send = {.raw = st->objc_msgSend};
+    return obj != nullptr && send.fn(obj,
+                                     metal_sel_register_name(st, "respondsToSelector:"),
+                                     metal_sel_register_name(st, selector));
+}
+
+/* res_thread: commits the buffers that joined since its last beat and
+ * requests the set's residency, every 500 ms until res_keep_s pass without
+ * a dispatch, then sleeps until the next one wakes it (metal_residency_note).
+ * res_parked and res_used are sequentially consistent: one of the two sides
+ * sees the other's store, so a dispatch either finds the thread parked and
+ * signals it, or the thread finds the dispatch and does not park. */
+static void *metal_residency_keep_alive(void *arg) {
+    struct metal_state *st = arg;
+    pthread_setname_np("geist-metal-residency");
+    uint64_t last = metal_now_ns();
+    pthread_mutex_lock(&st->res_lock);
+    while (!st->res_stop) {
+        const uint64_t now = metal_now_ns();
+        if (atomic_exchange(&st->res_used, false)) {
+            last = now;
+        }
+        if ((now - last) / 1000000000u < st->res_keep_s) {
+            void *pool = metal_pool_push(st);
+            if (st->res_dirty) {
+                metal_msg_send_void0(st, st->residency_set, "commit");
+                st->res_dirty = false;
+            }
+            metal_msg_send_void0(st, st->residency_set, "requestResidency");
+            metal_pool_pop(st, pool);
+            const struct timespec beat = {.tv_nsec = 500 * 1000 * 1000};
+            (void) pthread_cond_timedwait_relative_np(&st->res_wake, &st->res_lock, &beat);
+            continue;
+        }
+        atomic_store(&st->res_parked, true);
+        if (!atomic_load(&st->res_used)) {
+            pthread_cond_wait(&st->res_wake, &st->res_lock);
+        }
+        atomic_store(&st->res_parked, false);
+    }
+    pthread_mutex_unlock(&st->res_lock);
+    return nullptr;
+}
+
+void metal_residency_create(struct metal_state *st, uint64_t keep_alive_s) {
+    void *cls = metal_objc_get_class(st, "MTLResidencySetDescriptor");
+    if (cls == nullptr || !metal_responds(st, st->device, "newResidencySetWithDescriptor:error:") ||
+        !metal_responds(st, st->command_queue, "addResidencySet:")) {
+        return; /* before macOS 15: every command buffer makes its own resident */
+    }
+    void *desc = metal_msg_send_id0(st, cls, "new");
+    if (desc == nullptr) {
+        return;
+    }
+    metal_msg_send_void_ulong(st, desc, "setInitialCapacity:", 1024);
+    void *err = nullptr;
+    void *set = metal_msg_send_id_id_err(
+            st, st->device, "newResidencySetWithDescriptor:error:", desc, &err);
+    metal_msg_send_void0(st, desc, "release");
+    if (set == nullptr) {
+        return;
+    }
+    (void) metal_msg_send_id_id(st, st->command_queue, "addResidencySet:", set);
+    st->residency_set = set;
+    st->res_keep_s    = keep_alive_s;
+    st->res_lock      = (pthread_mutex_t) PTHREAD_MUTEX_INITIALIZER;
+    st->res_wake      = (pthread_cond_t) PTHREAD_COND_INITIALIZER;
+    if (pthread_create(&st->res_thread, nullptr, metal_residency_keep_alive, st) != 0) {
+        /* Without the keep-alive the set changes nothing measurable. */
+        (void) metal_msg_send_id_id(st, st->command_queue, "removeResidencySet:", set);
+        metal_msg_send_void0(st, set, "release");
+        st->residency_set = nullptr;
+    }
+}
+
+void metal_residency_destroy(struct metal_state *st) {
+    if (st->residency_set == nullptr) {
+        return;
+    }
+    pthread_mutex_lock(&st->res_lock);
+    st->res_stop = true;
+    pthread_cond_signal(&st->res_wake);
+    pthread_mutex_unlock(&st->res_lock);
+    pthread_join(st->res_thread, nullptr);
+    pthread_cond_destroy(&st->res_wake);
+    pthread_mutex_destroy(&st->res_lock);
+    metal_msg_send_void0(st, st->residency_set, "removeAllAllocations");
+    metal_msg_send_void0(st, st->residency_set, "commit");
+    metal_msg_send_void0(st, st->residency_set, "endResidency");
+    (void) metal_msg_send_id_id(st, st->command_queue, "removeResidencySet:", st->residency_set);
+    metal_msg_send_void0(st, st->residency_set, "release");
+    st->residency_set = nullptr;
+}
+
+void metal_residency_note(struct metal_state *st, void *mtl_buf) {
+    if (st == nullptr || st->residency_set == nullptr || mtl_buf == nullptr) {
+        return;
+    }
+    if (!atomic_load_explicit(&st->res_used, memory_order_relaxed) &&
+        !atomic_exchange(&st->res_used, true) && atomic_load(&st->res_parked)) {
+        pthread_mutex_lock(&st->res_lock);
+        pthread_cond_signal(&st->res_wake);
+        pthread_mutex_unlock(&st->res_lock);
+    }
+    const size_t mask = sizeof(st->res_bufs) / sizeof(st->res_bufs[0]) - 1u;
+    for (size_t i = metal_res_home(mtl_buf, mask);; i = (i + 1) & mask) {
+        if (st->res_bufs[i] == mtl_buf) {
+            return;
+        }
+        if (st->res_bufs[i] == nullptr) {
+            if (st->res_count >= mask / 2) {
+                return; /* full: the buffer stays resident per command buffer */
+            }
+            st->res_bufs[i] = mtl_buf;
+            st->res_count++;
+            pthread_mutex_lock(&st->res_lock);
+            (void) metal_msg_send_id_id(st, st->residency_set, "addAllocation:", mtl_buf);
+            st->res_dirty = true;
+            pthread_mutex_unlock(&st->res_lock);
+            return;
+        }
+    }
+}
+
+void metal_residency_forget(struct metal_state *st, void *mtl_buf) {
+    if (st == nullptr || st->residency_set == nullptr || mtl_buf == nullptr) {
+        return;
+    }
+    const size_t mask = sizeof(st->res_bufs) / sizeof(st->res_bufs[0]) - 1u;
+    size_t       i    = metal_res_home(mtl_buf, mask);
+    while (st->res_bufs[i] != mtl_buf) {
+        if (st->res_bufs[i] == nullptr) {
+            return; /* never bound */
+        }
+        i = (i + 1) & mask;
+    }
+    /* Backward-shift deletion: pull every later entry of the probe run whose
+     * home is not cyclically after the hole into it, so lookups still end
+     * at the first empty slot. */
+    for (size_t j = (i + 1) & mask; st->res_bufs[j] != nullptr; j = (j + 1) & mask) {
+        const size_t home = metal_res_home(st->res_bufs[j], mask);
+        if (((j - home) & mask) >= ((j - i) & mask)) {
+            st->res_bufs[i] = st->res_bufs[j];
+            i               = j;
+        }
+    }
+    st->res_bufs[i] = nullptr;
+    st->res_count--;
+    pthread_mutex_lock(&st->res_lock);
+    (void) metal_msg_send_id_id(st, st->residency_set, "removeAllocation:", mtl_buf);
+    metal_msg_send_void0(st, st->residency_set, "commit");
+    pthread_mutex_unlock(&st->res_lock);
 }
 
 [[nodiscard]] static enum geist_status metal_submit_copy(struct metal_state *st,

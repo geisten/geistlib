@@ -271,10 +271,15 @@ static inline void metal_msg_send_copy_buffer(struct metal_state *st,
 /* Defined in sequence.c (non-static since the module split). */
 void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf);
 
+/* Defined in resources.c: the first bind of an MTLBuffer adds it to the
+ * residency set (#530). */
+void metal_residency_note(struct metal_state *st, void *mtl_buf);
+
 static inline void metal_msg_send_set_buffer(
         struct metal_state *st, void *receiver, void *buffer, size_t offset, size_t index) {
     void *sel = metal_sel_register_name(st, "setBuffer:offset:atIndex:");
     metal_seq_mark_buffer(st, buffer);
+    metal_residency_note(st, buffer);
     union {
         void *raw;
         void (*fn)(void *, void *, void *, size_t, size_t);

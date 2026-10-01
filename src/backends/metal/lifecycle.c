@@ -11,6 +11,9 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         return;
     }
     metal_profile_print_summary(st);
+    /* First: the set keeps its members alive, the raw buffers below among
+     * them. */
+    metal_residency_destroy(st);
     free(st->buf_reg);
     st->buf_reg       = nullptr;
     st->buf_reg_count = 0;
@@ -698,6 +701,15 @@ void metal_destroy(struct geist_backend *be) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal: failed to create command queue");
         metal_destroy_state(be, st);
         return GEIST_E_BACKEND;
+    }
+
+    /* #530: keep what the GPU binds wired while the backend is in use.
+     * GEIST_METAL_KEEP_ALIVE_S=n: for n s after the last dispatch (default
+     * 180, as llama.cpp); 0 leaves the unwiring to macOS. */
+    const char *keep_alive = getenv("GEIST_METAL_KEEP_ALIVE_S");
+    const long  keep_s     = keep_alive != nullptr ? strtol(keep_alive, nullptr, 10) : 180;
+    if (keep_s > 0) {
+        metal_residency_create(st, (uint64_t) keep_s);
     }
 
     void       *name = metal_msg_send_id0(st, st->device, "name");

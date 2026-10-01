@@ -9,6 +9,15 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Metal keeps a model wired between requests** (#530). macOS unwires what a
+  command buffer made resident about 2 s after the GPU goes idle, so the first
+  token after any pause paid to wire the model again (300-360 ms instead of
+  67 ms on qwen3.8-27B), and to read it from the SSD as well once memory
+  pressure had evicted the file pages (5.8 s). Metal now keeps an
+  `MTLResidencySet` of the buffers the GPU binds (macOS 15+) and requests its
+  residency every 500 ms until `GEIST_METAL_KEEP_ALIVE_S` seconds pass without
+  a dispatch (default 180, as llama.cpp); `0` leaves the unwiring to macOS.
+  Tables the host gathers (#529) never join the set.
 - **Per-model prefill knobs** (`src/archs/transformer/prefill_tuning.h`): the
   prefill chunk `m_max` and the OpenMP spin policy resolve as default + delta +
   override — the platform/backend default, a signed delta from a table row

@@ -30,6 +30,11 @@ end-to-end on a gemma model. Ledger:
 and [`../benchmark/results/METAL.md`](../benchmark/results/METAL.md)
 (the 2026-07 gemma program).
 
+The GPU reads the weights from the GGUF mapping in place. What it binds stays
+wired for `GEIST_METAL_KEEP_ALIVE_S` seconds after the last token (default
+180), so the next request does not pay to wire it again; `0` leaves that to
+macOS, which unwires about 2 s after the GPU goes idle.
+
 ## Vulkan (Linux GPU, experimental)
 
 Build with `BACKENDS="vulkan cpu_x86 cpu_scalar"` — `libvulkan` is dlopen'd at
