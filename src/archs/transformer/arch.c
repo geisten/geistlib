@@ -18,10 +18,30 @@
 #include "heap.h"
 
 #include <geist.h>
+#include "error.h"
 #include <geist_backend.h>
 
 #include <math.h>
 #include <stddef.h>
+
+/* state_create returns void*, so hand the status and the backend's message
+ * up through the create-time slot: geist_model_load then reports, say, a
+ * GPU working set that is too small (#531) as GEIST_E_OOM with its numbers
+ * instead of a guessed GEIST_E_IO. A lower layer that already named the
+ * cause keeps it. */
+static void record_create_failure(struct geist_backend *be, enum geist_status s) {
+    if (geist_have_create_error()) {
+        return;
+    }
+    if (geist_backend_errcode(be) == s) { /* the backend's message is about this failure */
+        geist_error_set_create_time(s, "transformer_state_create", "%s", geist_backend_errmsg(be));
+    } else {
+        geist_error_set_create_time(s,
+                                    "transformer_state_create",
+                                    "state create failed: %s",
+                                    geist_status_to_string(s));
+    }
+}
 
 static void *op_state_create(struct geist_backend            *be,
                              const char                      *gguf_path,
@@ -32,6 +52,7 @@ static void *op_state_create(struct geist_backend            *be,
     struct transformer_arch_state *st = nullptr;
     enum geist_status              s  = transformer_state_create(be, gguf_path, opts, &st);
     if (s != GEIST_OK) {
+        record_create_failure(be, s);
         return nullptr;
     }
     return st;
@@ -47,6 +68,7 @@ static void *op_state_create_from_memory(struct geist_backend            *be,
     struct transformer_arch_state *st = nullptr;
     enum geist_status s = transformer_state_create_from_memory(be, data, size, opts, &st);
     if (s != GEIST_OK) {
+        record_create_failure(be, s);
         return nullptr;
     }
     return st;

@@ -84,6 +84,10 @@ bool geist_have_create_error(void) {
     return t_create_error.message[0] != '\0';
 }
 
+enum geist_status geist_create_error_code(void) {
+    return t_create_error.code;
+}
+
 const char *geist_last_create_error(void) {
     if (t_create_error.message[0] == '\0') {
         return "(no error)";
