@@ -594,6 +594,12 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
     if (dst == nullptr || src == nullptr || n_bytes == 0) {
         return GEIST_E_INVALID_ARG;
     }
+    /* A range copied onto itself is a no-op (the layer loop seeds
+     * scratch_h_a from itself), and vkCmdCopyBuffer forbids overlapping
+     * source and destination regions. */
+    if (dst == src && dst_offset == src_offset) {
+        return GEIST_OK;
+    }
     struct vk_state *st = dst->owner;
     if (dst->buf != VK_NULL_HANDLE && src->buf != VK_NULL_HANDLE) {
         /* On-device copy appended to the sequence — keeps KV appends from

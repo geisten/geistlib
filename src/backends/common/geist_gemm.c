@@ -100,17 +100,28 @@ extern void cblas_sgemv(int          order,
  * spawn/sync overhead dominates. Pin BLAS to 1 thread once (measured +9% on
  * Gemma 4 prefill). OpenBLAS-only: the symbol doesn't exist under Accelerate
  * (which manages its own threading) and a weak undefined symbol is a hard
- * link error on Mach-O — so gate it on the openblas provider macro. */
+ * link error on Mach-O — so gate it on the openblas provider macro.
+ *
+ * pthread_once, not a first-use flag: the first cblas call of a process can
+ * come from every thread of an omp team at once (the chunked DeltaNet prefill
+ * calls geist_sgemm per v-head). A plain flag lets several threads call
+ * openblas_set_num_threads concurrently, and lets a thread that sees it set
+ * enter cblas before the pin has taken effect — a multithreaded BLAS call
+ * inside an omp region. pthread_once runs the pin once and returns to every
+ * caller only after it has completed. */
 #if defined(GEIST_GEMM_OPENBLAS)
+#include <pthread.h>
+
 extern void openblas_set_num_threads(int);
 
-static void geist_blas_pin_single_thread(void) {
-    static int done = 0;
-    if (done) {
-        return;
-    }
-    done = 1;
+static pthread_once_t g_blas_pin_once = PTHREAD_ONCE_INIT;
+
+static void geist_blas_pin_init(void) {
     openblas_set_num_threads(1);
+}
+
+static void geist_blas_pin_single_thread(void) {
+    (void) pthread_once(&g_blas_pin_once, geist_blas_pin_init);
 }
 #else
 static void geist_blas_pin_single_thread(void) {

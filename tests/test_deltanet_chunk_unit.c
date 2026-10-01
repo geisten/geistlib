@@ -13,12 +13,22 @@
  * Shapes cover C = 1 (degenerate chunk), C = 2 (< conv kernel, the
  * tiny-batch edge), an odd C, and C = 64 (the m_max chunk); strides
  * exercise the direct-from-y-buffer row layout.
+ *
+ * The chunk must also leave no denormal in its output, its state or its
+ * workspace: each one costs a microcode assist on x86, and the decay
+ * factors made them by the percent (DN_EXP_FLOOR). g in [-3, 0) takes
+ * gamma to about -96 over 64 tokens; the fast-forgetting case, g in
+ * [-8, 0), takes it past the floor within the first 16. A head that only
+ * forgets (beta = 0, g = -1.5) ends on S * e^-96, a denormal factor
+ * that the state's last GEMM would otherwise hide.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "src/archs/transformer/forward/internal.h"
 
 #include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +48,21 @@ static float              frand(void) {
     return (float) ((double) (r >> 11) / (double) (1ull << 53)) * 2.0f - 1.0f;
 }
 
-static int run_case(size_t C, size_t d_k, size_t d_v) {
+/* Denormals among n floats, by bit pattern: -ffast-math folds the
+ * classification macros. */
+static size_t count_denormals(size_t n, const float x[static n]) {
+    size_t c = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t u;
+        memcpy(&u, &x[i], sizeof u);
+        c += (u & 0x7f800000u) == 0 && (u & 0x007fffffu) != 0;
+    }
+    return c;
+}
+
+/* g per token in [-2 g_scale, 0); with forget_only, beta = 0 and
+ * g = -g_scale, so the chunk writes nothing and S only decays. */
+static int run_case(size_t C, size_t d_k, size_t d_v, float g_scale, bool forget_only) {
     const size_t sq = d_k + STRIDE, sk = d_k + STRIDE, sv = d_v + STRIDE;
     const size_t sbg = 3;
 
@@ -57,7 +81,11 @@ static int run_case(size_t C, size_t d_k, size_t d_v) {
         for (size_t j = 0; j < d_v; j++)
             V[t * sv + j] = frand();
         beta[t * sbg] = 1.0f / (1.0f + expf(-2.0f * frand())); /* (0,1) */
-        g[t * sbg]    = -1.5f * (frand() + 1.0f);              /* [-3, 0) */
+        g[t * sbg]    = -g_scale * (frand() + 1.0f);
+        if (forget_only) {
+            beta[t * sbg] = 0.0f;
+            g[t * sbg]    = -g_scale;
+        }
     }
     for (size_t i = 0; i < d_k * d_v; i++) {
         S_seq[i]   = frand() * 0.3f;
@@ -87,7 +115,10 @@ static int run_case(size_t C, size_t d_k, size_t d_v) {
         return 1;
     }
     transformer_dn_head_chunk(S_chunk, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o_chunk, ws);
+    const size_t den_ws = count_denormals(ws_f, ws);
     free(ws);
+    const size_t den_o = count_denormals(C * d_v, o_chunk);
+    const size_t den_s = count_denormals(d_k * d_v, S_chunk);
 
     /* Compare outputs and final state, relative to the value scale. */
     float scale = 1e-3f;
@@ -106,14 +137,24 @@ static int run_case(size_t C, size_t d_k, size_t d_v) {
             ms = d;
     }
     const float rel_o = mo / scale, rel_s = ms / scale;
-    printf("C=%2zu d_k=%2zu d_v=%2zu: rel|do|=%.2e rel|dS|=%.2e\n",
+    printf("C=%2zu d_k=%2zu d_v=%2zu g>=%5.1f%s: rel|do|=%.2e rel|dS|=%.2e\n",
            C,
            d_k,
            d_v,
+           (double) (forget_only ? -g_scale : -2.0f * g_scale),
+           forget_only ? " forget-only" : "",
            (double) rel_o,
            (double) rel_s);
     if (rel_o > TOL || rel_s > TOL) {
         fprintf(stderr, "FAIL: chunk kernel != sequential (tol %.0e)\n", (double) TOL);
+        return 1;
+    }
+    if (den_ws != 0 || den_o != 0 || den_s != 0) {
+        fprintf(stderr,
+                "FAIL: chunk left denormals: %zu in ws, %zu in o, %zu in S\n",
+                den_ws,
+                den_o,
+                den_s);
         return 1;
     }
     return 0;
@@ -121,13 +162,15 @@ static int run_case(size_t C, size_t d_k, size_t d_v) {
 
 int main(void) {
     int rc = 0;
-    rc |= run_case(1, 8, 8);  /* degenerate single-token chunk */
-    rc |= run_case(2, 8, 16); /* below conv-kernel length */
-    rc |= run_case(5, 16, 8); /* odd C, d_k > d_v */
-    rc |= run_case(37, 32, 32);
-    rc |= run_case(64, 32, 64); /* full m_max chunk, d_k != d_v */
-    rc |= run_case(64, 64, 64);
+    rc |= run_case(1, 8, 8, 1.5f, false);  /* degenerate single-token chunk */
+    rc |= run_case(2, 8, 16, 1.5f, false); /* below conv-kernel length */
+    rc |= run_case(5, 16, 8, 1.5f, false); /* odd C, d_k > d_v */
+    rc |= run_case(37, 32, 32, 1.5f, false);
+    rc |= run_case(64, 32, 64, 1.5f, false); /* full m_max chunk, d_k != d_v */
+    rc |= run_case(64, 64, 64, 1.5f, false);
+    rc |= run_case(64, 64, 64, 4.0f, false); /* fast-forgetting head */
+    rc |= run_case(64, 64, 64, 1.5f, true);  /* forgets only: S ends on e^-96 */
     if (rc == 0)
-        printf("OK: dn_head_chunk == dn_head_step on all shapes\n");
+        printf("OK: dn_head_chunk == dn_head_step on all shapes, no denormals\n");
     return rc;
 }
