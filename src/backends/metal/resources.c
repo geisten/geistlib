@@ -266,25 +266,21 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
     }
     const uintptr_t hi = ((uintptr_t) p + n + page - 1u) & ~(page - 1u);
 
-    mach_vm_address_t              addr  = lo;
-    mach_vm_size_t                 size  = 0;
-    vm_region_extended_info_data_t info  = {0};
-    mach_msg_type_number_t         count = VM_REGION_EXTENDED_INFO_COUNT;
-    mach_port_t                    obj   = MACH_PORT_NULL;
-    if (mach_vm_region(mach_task_self(),
-                       &addr,
-                       &size,
-                       VM_REGION_EXTENDED_INFO,
-                       (vm_region_info_t) &info,
-                       &count,
-                       &obj) != KERN_SUCCESS) {
+    /* The short submap flavor reads the map entry alone. VM_REGION_EXTENDED_INFO
+     * walks every page of the entry, which is the whole GGUF mapping: 84 ms
+     * per tensor on a 16 GB model, a minute per load (#555). */
+    mach_vm_address_t                     addr  = lo;
+    mach_vm_size_t                        size  = 0;
+    natural_t                             depth = 0;
+    vm_region_submap_short_info_data_64_t info  = {0};
+    mach_msg_type_number_t                count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+    if (mach_vm_region_recurse(
+                mach_task_self(), &addr, &size, &depth, (vm_region_recurse_info_t) &info, &count) !=
+        KERN_SUCCESS) {
         return false;
     }
-    if (obj != MACH_PORT_NULL) {
-        mach_port_deallocate(mach_task_self(), obj);
-    }
-    /* mach_vm_region returns the first region at or after `addr`: a start
-     * past `lo` means `lo` itself is unmapped. */
+    /* mach_vm_region_recurse returns the first region at or after `addr`: a
+     * start past `lo` means `lo` itself is unmapped. */
     if (addr > lo || size < hi - addr || !info.external_pager) {
         return false;
     }

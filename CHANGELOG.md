@@ -465,6 +465,13 @@ minor release.
   vtable.
 
 ### Fixed
+- **Metal loads a model in milliseconds instead of up to a minute** (#555).
+  The check whether a weight lives in a file mapping asked `mach_vm_region`
+  for `VM_REGION_EXTENDED_INFO`, which walks every page of the whole GGUF
+  mapping, once per tensor: 84 ms per tensor on a 16 GB model, and
+  qwen3.8-27B took 68-75 s to load. The short submap flavor answers from the
+  map entry alone; the 27B now loads in about 60 ms, qwen3.5-4B in 75 ms
+  instead of 3.4 s.
 
 - **The metal backend no longer leaks a command buffer and an encoder per
   submission** (#527). It drives Metal from plain C, where nothing drained the
