@@ -313,6 +313,12 @@ jobs:
     needs: [version-guard, linux-arm64, linux-x86_64, macos-arm64]
     runs-on: ubuntu-latest
     environment: release
+    # A job-level block replaces the workflow one, so contents: write repeats.
+    # id-token + attestations sign the provenance through Sigstore.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -321,12 +327,7 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
-      - name: Create, verify and publish the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_SHA: ${{ needs.version-guard.outputs.sha }}
-          RELEASE_TAG: ${{ needs.version-guard.outputs.tag }}
-          RELEASE_VERSION: ${{ needs.version-guard.outputs.version }}
+      - name: Checksum the assets and verify the set
         run: |
           set -eu
           find dist \( -name '*.tar.gz' -o -name 'geist-*' \) -type f -exec sha256sum {} \; | \
@@ -346,7 +347,20 @@ jobs:
             -exec basename {} \; | sort > /tmp/built-assets
           { printf '%s\n' SHA256SUMS; cat /tmp/built-assets; } | sort > /tmp/all-built-assets
           diff -u /tmp/expected-assets /tmp/all-built-assets
-
+      # Provenance for every file SHA256SUMS names, signed before the draft
+      # exists, so nothing is published without it. Consumers check an asset
+      # with `gh attestation verify <file> --repo geisten/geistlib`.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: SHA256SUMS
+      - name: Create, verify and publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.version-guard.outputs.sha }}
+          RELEASE_TAG: ${{ needs.version-guard.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.version-guard.outputs.version }}
+        run: |
+          set -eu
           awk -v version="$RELEASE_VERSION" '
             $0 ~ "^## \\[" version "\\] — " { found=1; next }
             found && /^## \[[0-9]/ { exit }
@@ -367,6 +381,13 @@ jobs:
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[].name' | sort > /tmp/uploaded-assets
           diff -u /tmp/expected-assets /tmp/uploaded-assets
+
+          # The attestation must resolve for every binary before the release
+          # goes public; SHA256SUMS itself is the subject list, not a subject.
+          for f in $(cat /tmp/built-assets); do
+            gh attestation verify "$(find dist -name "$f" -type f)" \
+              --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" >/dev/null
+          done
 
           draft_target=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json targetCommitish --jq .targetCommitish)

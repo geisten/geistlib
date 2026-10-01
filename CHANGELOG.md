@@ -9,6 +9,10 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Signed build provenance for release assets.** The release workflow attests
+  every file in `SHA256SUMS` with `actions/attest-build-provenance` and refuses
+  to publish until `gh attestation verify` accepts each one. Consumers check a
+  download with `gh attestation verify <file> --repo geisten/geistlib`.
 - **Per-model prefill knobs** (`src/archs/transformer/prefill_tuning.h`): the
   prefill chunk `m_max` and the OpenMP spin policy resolve as default + delta +
   override — the platform/backend default, a signed delta from a table row
