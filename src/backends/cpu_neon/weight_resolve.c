@@ -1109,9 +1109,9 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
                 continue;
             }
             dequant_tile(w, r0, tr, tile);
-            /* Force OpenBLAS to use 1 thread inside the parallel region
-             * to avoid 4×4 = 16-way oversubscription. Set once per call
-             * via openblas_set_num_threads — cheap. */
+            /* OpenBLAS runs 1 thread inside the parallel region, which
+             * avoids 4×4 = 16-way oversubscription: geist_sgemv pins it
+             * once per process, before any thread reaches cblas. */
             geist_sgemv(GEIST_OP_N,
                         (int) tr,
                         (int) n_in,
