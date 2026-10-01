@@ -151,6 +151,21 @@ minor release.
 
 ### Changed
 
+- **The chunked DeltaNet prefill makes no denormals** (`layer_deltanet.c`).
+  The chunk scales by e^γ, γ the gating summed over up to 64 tokens. A
+  fast-forgetting head runs γ past -87, and then the decay factors and their
+  products are denormals, a microcode assist each on x86, in the chunk's
+  SGEMMs as much as in its loops. `transformer_dn_head_chunk` now takes a
+  factor below e^-60 as 0 (the attention kernels' floor), clamps the
+  argument so that libmvec's `expf` never takes its slow path, and skips the
+  forward substitution's entries below the floor. On the synthetic
+  Ternary-Bonsai-2-27B 3-5 % of the chunk's scaled K and Q were denormal.
+  On a 4-vCPU Xeon the head loop's thread time per 64-token prefill fell
+  from 1.25 s to 0.37 s, and the prefill takes 1.186 s instead of 1.431 s
+  (-15.9 %, 95 % interval -24.5 to -12.4 %, 10 of 10 cycles; both builds
+  from scratch, `tools/bench_revision_ab.py`). The chunked logits are
+  bit-identical to before. `test_deltanet_chunk_unit` now fails on any
+  denormal in the chunk's output, state or workspace.
 - **cpu_x86 runs SiLU, and SwiGLU's silu(gate) * up in one pass, in AVX2 on
   all threads** (`elementwise.c`). Before, it used cpu_scalar's
   single-threaded loop, a libm `expf` and a division per element, followed

@@ -658,11 +658,11 @@ values. The host is an Intel Xeon (Sapphire Rapids) at 2.1 GHz, 4 vCPUs of a
 cloud VM with 260 MB of L3, gcc 14, `OMP_WAIT_POLICY=active`, with 41.7 GB/s
 read bandwidth on 4 threads.
 
-| | generic path | `PQ2_0` decode GEMV | and prefill GEMM | GEMM on AMX-INT8 |
-| :-- | --: | --: | --: | --: |
-| prefill, 64 tokens | 39.1 s, 1.64 t/s | 38.3 s, 1.67 t/s | 7.31 s, 8.75 t/s | **1.58 s, 40.5 t/s** |
-| decode | 7.53 s a token, 0.13 t/s | **0.200 s a token, 5.0 t/s** | the same | the same |
-| RSS | 7.1 GB (the mmap'd file, nothing repacked) | 7.1 GB | 7.1 GB | 7.1 GB |
+| | generic path | `PQ2_0` decode GEMV | and prefill GEMM | GEMM on AMX-INT8 | SwiGLU, DeltaNet floor |
+| :-- | --: | --: | --: | --: | --: |
+| prefill, 64 tokens | 39.1 s, 1.64 t/s | 38.3 s, 1.67 t/s | 7.31 s, 8.75 t/s | 1.58 s, 40.5 t/s | **1.19 s, 54.0 t/s** |
+| decode | 7.53 s a token, 0.13 t/s | **0.200 s a token, 5.0 t/s** | the same | the same | the same |
+| RSS | 7.1 GB (the mmap'd file, nothing repacked) | 7.1 GB | 7.1 GB | 7.1 GB | 7.1 GB |
 
 ### The generic path
 
@@ -891,6 +891,42 @@ with a control):
 The control stayed within +1.8 % [-5.6, +10.1], and decode moved -0.8 %
 [-6.5, +5.2], inside it. The forward profiler puts the activation at 22 ms
 of the prefill, with no `mul` stage left.
+
+### Denormals in the DeltaNet chunk
+
+With SiLU off the list, a `perf` profile with call graphs, split by OpenMP
+region, put the prefill's thread time (4 threads, per 64-token prefill) at
+3.4 s for the AMX projections, 1.25 s for the DeltaNet chunk's head loop,
+0.48 s for its conv and gating and 0.36 s for the Hadamard rotation. The
+head loop's seven OpenBLAS SGEMMs per head took 414 µs per head chunk. The
+same seven calls, with the same shapes and strides, take 91 µs in isolation
+and 92 µs with four copies running at once. The difference was denormals:
+
+- The chunk scales by e^γ, γ the gating summed over the chunk. On the
+  synthetic model γ ends below -60 in 1488 of a prefill's 2304 head chunks
+  and below -87 in 672. 3-5 % of the scaled K and Q (`KCe`, `Qg`, the
+  decayed K) were denormal, and 0.4-0.5 % of the masks, each a microcode
+  assist. Nothing in the process flushes them: FTZ/DAZ are off.
+- With FTZ/DAZ forced on for the whole process (`LD_PRELOAD`), the head loop
+  fell to 437 ms and nothing else moved.
+
+`transformer_dn_head_chunk` now takes a decay factor below e^-60 as 0
+(`DN_EXP_FLOOR`, the attention kernels' floor), clamps the argument so that
+libmvec's `expf` never takes its slow path, and skips the forward
+substitution's entries below the floor, which carry e^(γ_i - γ_l). No
+denormal is left, and the chunked logits are bit-identical to before.
+
+| | before | after | change |
+| :-- | --: | --: | --: |
+| head loop, thread time per prefill (`perf`) | 1249 ms | 374 ms | 3.3× |
+| prefill, 64 tokens (A/B) | 1.431 s | 1.186 s | -15.9 % [-24.5, -12.4], 10/10 |
+
+The A/B is `tools/bench_revision_ab.py`, both builds from scratch, 10
+cycles with a control, which stayed within -7.2 % [-9.4, +5.3]; decode
+moved -1.5 % [-10.1, +5.7], inside it. The synthetic gating is steep: with
+`ssm_a` = -1 and random `ssm_alpha` rows, every head's γ ends a chunk below
+-10. A trained model's heads range from slow to fast forgetting, so its gain
+is likely smaller. That is not measured here.
 
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
