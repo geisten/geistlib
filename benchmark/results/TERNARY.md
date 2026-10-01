@@ -1105,6 +1105,39 @@ scale. The synthetic model's do, all of them (`gen_synth_gguf.py` writes
 one scale); the real model's are not known here, so the kernel does not
 assume it.
 
+### The reset between conversations
+
+A new conversation starts with `geist_session_reset`. For the 48 DeltaNet
+layers it cleared the conv history and the delta state S, 157 MB, with
+memset on the calling thread before the prefill could begin. The reset
+now marks the layers fresh, and each layer's next forward reads zeros
+where it read the buffers. The prefill's first 64 tokens then run without
+the two GEMMs on S (KCe·S and Qg·S are zero: 2 of the chunk's 7 GEMMs,
+40 % of its multiply-adds at d_k = d_v = 128) and write S instead of
+decaying it and adding to it. Per 64-token prompt after a reset:
+
+| | before | after |
+| :-- | --: | --: |
+| `geist_session_reset` | 16.7 ms | 0.002 ms |
+| the delta rule, thread time per prefill (`perf`, three runs each) | 333 ms | 177 ms |
+| the chunked mixer around it, the same | 467 ms | 318 ms |
+| prefill after the reset (A/B, 30 cycles) | 1.025 s | 0.988 s, -4.4 % [-6.8, -1.5], 24/30 |
+| reset and prefill (20 runs per build, alternating) | 1.042 s | 0.986 s, -4.6 % [-8.4, -2.3], 16/20 |
+| decode (A/B) | 181.2 ms | 181.5 ms, noise |
+
+The controls, the baseline's binary run again, read +0.3 % [-2.8, +3.5]
+in the A/B and +0.0 % [-0.7, +2.7] in the alternating runs, which time
+`geist_session_reset` and the prefill after it in one process, eight
+rounds per run.
+
+The logits are the same bit for bit: an FNV hash over the vocabulary
+after a fresh session's 64 tokens and three decode steps, and after
+resets with prompts of 100, 300, 2 and 1 tokens, matched before and after
+on cpu_x86, and on an 8-layer cut of the same geometry also with
+`GEIST_DN_SEQ_PREFILL=1` and on cpu_scalar.
+`bench_perf_sweep` starts its clock after the reset, so its prefill rows
+see the GEMMs saved, not the reset.
+
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
   `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep

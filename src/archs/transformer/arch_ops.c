@@ -175,12 +175,22 @@ deltanet_txn_begin(struct transformer_arch_session *sess, size_t k, const geist_
     for (size_t li = 0; li < sess->model->n_layers; li++) {
         if (sess->model->layers[li].mixer != GEIST_MIXER_DELTANET)
             continue;
-        enum geist_status rs = dn_txn_copy(be,
-                                           sess->dn_txn_conv_buf,
-                                           dn * conv_n * sizeof(float),
-                                           sess->dn_conv_state[li],
-                                           0,
-                                           conv_n * sizeof(float));
+        enum geist_status rs = GEIST_OK;
+        /* The snapshot copies the buffers: a fresh state gets its zeros. */
+        if (sess->dn_fresh != nullptr && sess->dn_fresh[li]) {
+            rs = transformer_dn_state_zero(be, sess->dn_conv_state[li], conv_n * sizeof(float));
+            if (rs == GEIST_OK)
+                rs = transformer_dn_state_zero(be, sess->dn_S[li], s_n * sizeof(float));
+            if (rs == GEIST_OK)
+                sess->dn_fresh[li] = false;
+        }
+        if (rs == GEIST_OK)
+            rs = dn_txn_copy(be,
+                             sess->dn_txn_conv_buf,
+                             dn * conv_n * sizeof(float),
+                             sess->dn_conv_state[li],
+                             0,
+                             conv_n * sizeof(float));
         if (rs == GEIST_OK) {
             rs = dn_txn_copy(be,
                              sess->dn_txn_S_buf,

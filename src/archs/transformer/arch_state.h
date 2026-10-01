@@ -340,11 +340,20 @@ struct transformer_arch_session {
 
     /* ---- Gated-DeltaNet recurrent state (#281/#296). Backend buffers,
      * allocated at session_alloc only for layers with mixer == DELTANET;
-     * nullptr slots otherwise. Zeroed on session reset.
+     * nullptr slots otherwise. Zeroed on session reset, or marked fresh.
      *   dn_conv_state[li]: [(kernel-1) * conv_dim]  rolling pre-conv qkv
      *   dn_S[li]:          [n_v_heads * head_k * head_v]  delta state */
     struct geist_buffer **dn_conv_state;
     struct geist_buffer **dn_S;
+    /* dn_fresh[li]: layer li's state is the empty sequence's, all zeros,
+     * whatever its two buffers hold. A reset sets it where it used to
+     * clear them (157 MB on Qwen3.5-27B, on the calling thread), the
+     * layer's next forward clears it: the chunked prefill reads zeros for
+     * the state and skips the GEMMs on S of its first sub-chunk, the token
+     * loop and a speculative snapshot zero the buffers first. nullptr, and
+     * a reset clears the buffers as before, when the backend has a
+     * deltanet_mix that may read them on-device. */
+    bool *dn_fresh;
     /* verify_forward mutates DeltaNet state in place. A single checkpoint,
      * allocated once at session_alloc (n_dn * conv_n / n_dn * s_n floats,
      * independent of the speculative width, which matters for

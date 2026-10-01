@@ -511,8 +511,14 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
     transformer_mtp_reset(sess);
     /* Gated-DeltaNet layers carry recurrent state with no rewind — a
      * reset clears it to the empty sequence (#281). pin_prefix refuses a
-     * prefix for this family, so prefix_length stays 0. */
-    if (sess->dn_conv_state != nullptr || sess->dn_S != nullptr) {
+     * prefix for this family, so prefix_length stays 0. On the host mixer
+     * it only marks the state fresh: clearing it was a serial 17 ms of
+     * memset on the synthetic Ternary-Bonsai-2-27B, ahead of every new
+     * conversation's prefill. */
+    if (sess->dn_fresh != nullptr) {
+        for (size_t li = 0; li < sess->model->n_layers; li++)
+            sess->dn_fresh[li] = sess->dn_S[li] != nullptr;
+    } else if (sess->dn_conv_state != nullptr || sess->dn_S != nullptr) {
         const struct transformer_arch_state *st = sess->model;
         const size_t key_dim                    = st->config.dn_n_k_heads * st->config.dn_head_k;
         const size_t value_dim                  = st->config.dn_n_v_heads * st->config.dn_head_v;
