@@ -9,9 +9,32 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Per-model prefill knobs** (`src/archs/transformer/prefill_tuning.h`): the
+  prefill chunk `m_max` and the OpenMP spin policy resolve as default + delta +
+  override — the platform/backend default, a signed delta from a table row
+  keyed by arch family and weight bytes, then `GEIST_M_MAX` and the new
+  `GEIST_PREFILL_BLOCKTIME_MS` (absolute; -1 leaves the runtime alone). First
+  row: qwen35 hybrids from 4 GiB (Ternary-Bonsai-2-27B) get chunk 128 and
+  `KMP_BLOCKTIME=0`, measured on the M1 Max at pp512: +14 % and +21 % prefill
+  on their own, +28 % together, no decode loss at 27B. Smaller models keep the
+  runtime's spin (blocktime 0 costs a 0.8B 16 % decode for 8 % prefill). The
+  blocktime is one value per process, applied from the first model loaded.
 - Optional `geist_backend_resources_snapshot`: Metal device allocated bytes and
   unified-memory attribution, callable during inference without GPU synchronization.
   CPU providers explicitly return unsupported. Allocation is not physical residency.
+- **`tools/gen_synth_gguf.py --preset bonsai2-27b-pq2_0`**: a synthetic
+  Ternary-Bonsai-2-27B, the real file's geometry, tensor formats (`PQ2_0`, BF16
+  DeltaNet alpha/beta) and `prism.hadamard` keys to the byte (7.2 GB), so the
+  27B ternary path can be timed without the download. `benchmark/results/
+  TERNARY.md` has the first x86 numbers taken with it.
+- **`tools/bench_revision_ab.py`: end-to-end A/B of git revisions, each built
+  from scratch.** Every revision gets a git worktree of its own;
+  `bench_perf_sweep` runs on the binaries in rotating order, next to a copy of
+  the baseline binary as a control; each row reports the median per-cycle
+  change with a distribution-free 95 % interval (the sign test's). An
+  incrementally built tree differs from a clean build in code layout, which
+  on x86-64 moved single prefill stages by 2-3 % on its own, and the control
+  shows how far the host moves while it runs (`benchmark/METHODOLOGY.md`).
 
 
 ### Added
@@ -111,8 +134,8 @@ minor release.
   times both). End to end (synthetic weights, both builds from scratch) at
   2048 positions, prefill -11 % and decode -11 % in the Llama 3.2 1B
   geometry (Q4_K), -24 % and -23 % in SmolLM2-360M's (Q8_0); at 512, the
-  same within the noise in Llama 3.2 1B's, -10 % and -20 % in
-  SmolLM2-360M's.
+  same within the noise in Llama 3.2 1B's, and in SmolLM2-360M's prefill
+  -8 % (15 of 16 runs) and decode within the noise.
 - **Attention over the packed INT4 KV cache is a backend op too**
   (`fused->attention_kv_int4`, `GEIST_FUSED_ATTN_KV_INT4`,
   `struct geist_attention_kv_int4_args`, `<geist_backend.h>`): K and V are
@@ -128,6 +151,55 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 prefills `PQ2_0` on AMX-INT8** (`kernel_pq2_0_amx.c`) where the
+  host has it and Linux grants the tile data. The AVX2 GEMM ran at its floor,
+  four `maddubs` per block, row and token; one `TDPBSSD` does a 16 × 16 × 64
+  int8 product in 16 cycles. The weights enter as `code - 1` in tiles of 16
+  rows, extracted once per block and reused for every 16-token tile, against
+  the same int8 activations repacked per block; each block's exact int32 dots
+  are scaled into fp32 accumulators two steps after their tile store, since
+  a vector load can read a tile store only once it has committed. At m = 64
+  on a 4-vCPU Xeon (Sapphire Rapids class) a 17408 × 5120 FFN matrix takes
+  2.62 ms instead of 23.6 ms and the 5120 × 17408 one 2.66 ms instead of
+  21.3 ms. The synthetic Ternary-Bonsai-2-27B prefills 64 tokens in 1.58 s
+  instead of 7.21 s, 4.6 times as fast (-78.4 %, 95 % interval -79.1 to
+  -76.9 %, 6 of 6 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). Per-thread scratch sits a page apart: packed
+  side by side, the L2 prefetchers pulled the neighbour's lines across cores
+  and two threads ran 1.6 times slower per core. `GEIST_FORCE_ISA` below
+  `avx512_vnni` keeps the AVX2 GEMM; `test_pq2_0_unit` holds both to the
+  exact W2A8 model.
+- **cpu_x86 prefills `PQ2_0` with a W2 x A8 GEMM** (`linear_pq2_0.c`), the
+  decode GEMV's arithmetic over many tokens, instead of the generic kernel
+  that dotted fp32-decoded weight rows. Every token's row is quantized to
+  int8 with its own absmax scale; a group of 4 weight rows walks the blocks,
+  extracts each block's codes once and dots them against every token, with
+  the accumulators in L1. At m = 64 on a 4-vCPU Xeon (Sapphire Rapids class)
+  a 17408 × 5120 FFN matrix takes 22.7 ms instead of 107.5 ms and the
+  5120 × 17408 one 20.3 ms instead of 204 ms. The synthetic
+  Ternary-Bonsai-2-27B prefills 64 tokens in 7.31 s instead of 37.7 s, 5.2
+  times as fast (-80.5 %, 95 % interval -80.8 to -78.9 %, 6 of 6 cycles; both
+  builds from scratch, `tools/bench_revision_ab.py`). Each token row gets the
+  same int8 activation as a decode step would. `test_pq2_0_unit` holds the
+  GEMM to the exact W2A8 model token by token.
+- **cpu_x86 decodes `PQ2_0` (Ternary-Bonsai) with a W2 x A8 GEMV**
+  (`linear_pq2_0.c`) instead of the generic kernel, which turned every
+  weight into fp32 one element at a time. It is cpu_neon's recipe in AVX2:
+  the activation is quantized to int8 once per call and stored in the codes'
+  packing order, the raw 2-bit codes go into `maddubs`, and the +1 bias
+  leaves through each block's activation sum. The GGUF bytes are read as
+  they are; nothing is repacked. The dot outruns DRAM, so the loop prefetches
+  4 KB ahead: the hardware prefetchers alone held it to 18 GB/s on 4
+  threads. On a 4-vCPU Xeon (Sapphire Rapids class) one 17408 × 5120 FFN
+  matrix takes 0.56 ms instead of 25.5 ms (43 GB/s, the host's read
+  bandwidth). The synthetic Ternary-Bonsai-2-27B decodes a token in 0.200 s
+  instead of 7.70 s, 38 times as fast (-97.4 %, 95 % interval -97.6 to
+  -97.3 %, 6 of 6 cycles; both builds from scratch,
+  `tools/bench_revision_ab.py`). Prefill of more than one token stays on the
+  generic kernel. The int8 activation is cpu_neon's, value for value: the
+  scheme `benchmark/results/TERNARY.md` checked against fp32 activations on
+  the real model. `test_pq2_0_unit` holds the kernel to an exact model of
+  that arithmetic.
 - **cpu_x86 runs the attention over the INT8 KV cache on AVX-512 VNNI**
   where the host has it (`attention_int8_avx512_vnni.c`; the dispatcher's
   tier, which `GEIST_FORCE_ISA=avx2` clamps, and cpuid decide, per call).

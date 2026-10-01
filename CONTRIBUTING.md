@@ -89,6 +89,11 @@ See [benchmark/METHODOLOGY.md](benchmark/METHODOLOGY.md) for methodology and the
 quality/compare-ref procedures. **Never hand-edit recorded benchmark numbers** —
 regenerate them on the relevant hardware.
 
+Before/after numbers for a change come from `tools/bench_revision_ab.py`,
+which builds both revisions from scratch and measures them against a control
+run of the baseline: an incrementally built tree differs from a clean build in
+code layout, and that alone moves timings by a few percent.
+
 ## Formatting
 
 ```sh
