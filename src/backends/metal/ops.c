@@ -2467,6 +2467,87 @@ metal_embedding_lookup(struct geist_backend      *be,
     return GEIST_OK;
 }
 
+/* #534: RoPE for rows in the GGUF's interleaved pair order (llama family) on
+ * the device. Without it the arch permuted q and k on the host every layer,
+ * and mapping q, which the projection had just written, flushed the batch
+ * once per layer per token. Same arithmetic as the host permute followed by
+ * rope_rows. Full rotation only, as the plan binds it. */
+[[nodiscard]] static enum geist_status
+metal_rope_apply_interleaved(struct geist_backend      *be,
+                             struct geist_tensor       *x,
+                             const struct geist_tensor *cos,
+                             const struct geist_tensor *sin) {
+    if (be == nullptr || be->state == nullptr || x == nullptr || cos == nullptr || sin == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t rows = 0, heads = 0, head_dim = 0, x_offset = 0;
+    size_t cos_rows = 0, cos_cols = 0, cos_offset = 0, cos_stride = 0;
+    size_t sin_rows = 0, sin_cols = 0, sin_offset = 0, sin_stride = 0;
+    if (!metal_tensor_is_f32_3d(x, &rows, &heads, &head_dim, &x_offset) ||
+        !metal_tensor_is_f32_matrix(cos, &cos_rows, &cos_cols, &cos_offset, &cos_stride) ||
+        !metal_tensor_is_f32_matrix(sin, &sin_rows, &sin_cols, &sin_offset, &sin_stride) ||
+        head_dim == 0 || (head_dim % 2u) != 0 || head_dim > 512u || cos_rows != rows ||
+        sin_rows != rows || cos_cols != head_dim || sin_cols != head_dim) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (rows > UINT32_MAX || heads > UINT32_MAX / head_dim || x_offset > UINT32_MAX ||
+        cos_offset > UINT32_MAX || sin_offset > UINT32_MAX || x->buffer->owner != be->state ||
+        cos->buffer->owner != be->state || sin->buffer->owner != be->state) {
+        return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status s = metal_ensure_attention_pipeline(be);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct metal_state            *st     = be->state;
+    const struct metal_rope_params params = {
+            .rows            = (uint32_t) rows,
+            .heads           = (uint32_t) heads,
+            .head_dim        = (uint32_t) head_dim,
+            .x_offset        = (uint32_t) x_offset,
+            .cos_offset      = (uint32_t) cos_offset,
+            .sin_offset      = (uint32_t) sin_offset,
+            .x_row_stride    = (uint32_t) (heads * head_dim),
+            .rope_row_stride = (uint32_t) cos_stride,
+            .rope_row_offset = 0,
+    };
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    void                                              *cmd  = nullptr;
+    void                                              *enc  = nullptr;
+    if (st->sequence_active) {
+        enc = metal_sequence_encoder(st);
+    } else {
+        cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+        enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
+    }
+    if (enc == nullptr) {
+        geist_backend_set_error(be, GEIST_E_BACKEND, "metal rope_apply_interleaved: no encoder");
+        return GEIST_E_BACKEND;
+    }
+    metal_msg_send_set_pipeline(st, enc, st->rope_rows_il_pipeline);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, cos->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, sin->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, &params, sizeof(params), 3);
+    const struct metal_size groups  = {heads, rows, 1};
+    const struct metal_size threads = {128, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ROPE_ROWS, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+    if (st->sequence_active) {
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    metal_msg_send_void0(st, enc, "endEncoding");
+    metal_msg_send_void0(st, cmd, "commit");
+    metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    if (metal_msg_send_id0(st, cmd, "error") != nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_BACKEND, "metal rope_apply_interleaved: command failed");
+        return GEIST_E_BACKEND;
+    }
+    return GEIST_OK;
+}
+
 /* The f32-KV fast paths below convert the live K/V rows into this f16
  * staging on every call. It is sized for every row of the cache k views
  * (the session's context), so a growing KV length never reallocates it
@@ -4210,6 +4291,10 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
          * block the arch passes. Pipeline creation failure at run time
          * is a real device error, not capability negotiation. */
         return true;
+    case GEIST_FUSED_ROPE_INTERLEAVED:
+        /* Mirrors metal_rope_apply_interleaved: one staged head per
+         * threadgroup (sx[512]). */
+        return q->head_dim > 0 && (q->head_dim % 2u) == 0 && q->head_dim <= 512u;
     case GEIST_FUSED_ATTN_QKV_PREP:
         /* Half-split RoPE per-head norm kernel: any row count, head_dim
          * must be even (mirrors metal_attn_qkv_prep's hd % 2 check). */
@@ -4273,6 +4358,7 @@ static const struct geist_backend_fused metal_fused = {
         .attn_qgate_split             = metal_attn_qgate_split,
         .sigmoid_mul                  = metal_sigmoid_mul,
         .hadamard_rotate              = metal_hadamard_rotate,
+        .rope_apply_interleaved       = metal_rope_apply_interleaved,
 };
 
 /* The immutable device belongs to this live backend. This getter intentionally

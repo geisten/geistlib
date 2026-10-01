@@ -1254,8 +1254,9 @@
         st->v_norm_append_rows_f16_pipeline != nullptr &&
         st->kv_norm_append_rows_pipeline != nullptr &&
         st->kv_norm_append_rows_f16_pipeline != nullptr && st->rope_rows_pipeline != nullptr &&
-        st->kv_append_rows_pipeline != nullptr && st->kv_append_rows_f16_pipeline != nullptr &&
-        st->attention_rows_pipeline != nullptr && st->attention_rows_f16_pipeline != nullptr) {
+        st->rope_rows_il_pipeline != nullptr && st->kv_append_rows_pipeline != nullptr &&
+        st->kv_append_rows_f16_pipeline != nullptr && st->attention_rows_pipeline != nullptr &&
+        st->attention_rows_f16_pipeline != nullptr) {
         return GEIST_OK;
     }
 
@@ -1417,7 +1418,18 @@
                                         &st->kv_norm_append_rows_f16_pipeline);
     }
     if (s == GEIST_OK) {
-        source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_attn_source);
+        /* two literals concatenated at init (C99 4095-char literal limit) */
+        const size_t at_a   = strlen(metal_attn_source);
+        const size_t at_b   = strlen(metal_attn_rope_il_source);
+        char        *at_src = malloc(at_a + at_b + 1u);
+        if (at_src == nullptr) {
+            geist_backend_set_error(be, GEIST_E_OOM, "metal: attention shader source alloc failed");
+            return GEIST_E_OOM;
+        }
+        memcpy(at_src, metal_attn_source, at_a);
+        memcpy(at_src + at_a, metal_attn_rope_il_source, at_b + 1u);
+        source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", at_src);
+        free(at_src);
         if (source == nullptr) {
             geist_backend_set_error(
                     be, GEIST_E_BACKEND, "metal: failed to create attention shader source");
@@ -1443,6 +1455,14 @@
                                         "rope_rows",
                                         &st->rope_rows_function,
                                         &st->rope_rows_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->attn_library,
+                                        ns_string,
+                                        "rope_rows_il",
+                                        &st->rope_rows_il_function,
+                                        &st->rope_rows_il_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,

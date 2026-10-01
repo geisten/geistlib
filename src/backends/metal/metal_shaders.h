@@ -1757,6 +1757,27 @@ static const char metal_attn_source[] =
         "=a1*inv;\n"
         "}\n";
 
+/* #534 (second literal of the attention library — 4095-char literal limit;
+ * pipelines.c appends it to metal_attn_source, whose Rope struct it uses). */
+static const char metal_attn_rope_il_source[] =
+        /* rope_rows for rows in the GGUF's interleaved pair order (the
+         * llama family). The host's permute (x[2i],x[2i+1]) -> (x[i],x[i+hd/2])
+         * and rope_rows in one pass, same arithmetic. The output layout differs
+         * from the input, so one threadgroup stages its (row, head) first. Full
+         * rotation only: rope_row_stride == head_dim <= 512. */
+        "kernel void rope_rows_il(device float*x[[buffer(0)]],device const "
+        "float*c[[buffer(1)]],device const float*s[[buffer(2)]],constant Rope&p[[buffer(3)]],uint2 "
+        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){\n"
+        " threadgroup float sx[512];uint h=tg.x,r=tg.y,hd=p.head_dim,hd2=hd/2u;"
+        "if(r>=p.rows||h>=p.heads||hd>512u){return;}uint "
+        "base=p.x_offset+r*p.x_row_stride+h*hd;uint ro=p.rope_row_offset+r;"
+        "for(uint i=lid;i<hd;i+=128u)sx[i]=x[base+i];"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint i=lid;i<hd2;i+=128u){float x0=sx[2u*i],x1=sx[2u*i+1u];float "
+        "co=c[p.cos_offset+ro*p.rope_row_stride+i],si=s[p.sin_offset+ro*p.rope_row_stride+i];x["
+        "base+i]=x0*co-x1*si;x[base+i+hd2]=x0*si+x1*co;}\n"
+        "}\n";
+
 static const char metal_q4k_gate_up_n4_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"

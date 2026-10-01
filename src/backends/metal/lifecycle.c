@@ -120,6 +120,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->kv_append_rows_f16_function, "release");
         metal_msg_send_void0(st, st->rope_rows_pipeline, "release");
         metal_msg_send_void0(st, st->rope_rows_function, "release");
+        metal_msg_send_void0(st, st->rope_rows_il_pipeline, "release");
+        metal_msg_send_void0(st, st->rope_rows_il_function, "release");
         metal_msg_send_void0(st, st->v_norm_append_rows_pipeline, "release");
         metal_msg_send_void0(st, st->v_norm_append_rows_function, "release");
         metal_msg_send_void0(st, st->v_norm_append_rows_f16_pipeline, "release");
@@ -488,6 +490,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->argmax_result_capacity                = 0;
     st->rope_rows_pipeline                    = nullptr;
     st->rope_rows_function                    = nullptr;
+    st->rope_rows_il_pipeline                 = nullptr;
+    st->rope_rows_il_function                 = nullptr;
     st->kv_append_rows_pipeline               = nullptr;
     st->kv_append_rows_function               = nullptr;
     st->copy_u32_pipeline                     = nullptr;

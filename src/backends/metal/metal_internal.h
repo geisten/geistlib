@@ -381,6 +381,8 @@ struct metal_state {
     uint32_t argmax_result_capacity;
     void    *rope_rows_function;
     void    *rope_rows_pipeline;
+    void    *rope_rows_il_function;
+    void    *rope_rows_il_pipeline;
     void    *kv_append_rows_function;
     void    *kv_append_rows_pipeline;
     void    *copy_u32_function;

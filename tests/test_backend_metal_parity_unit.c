@@ -450,6 +450,79 @@ static void run_qwen35_attention_ops(struct geist_backend *mt) {
     v->buffer_destroy(mt, bg);
 }
 
+/* #534: rope_apply_interleaved against the host path it replaces — permute
+ * (x[2i], x[2i+1]) -> (x[i], x[i + hd/2]), then rope_rows' rotation. Odd
+ * rows and heads, a head narrower than a threadgroup and one that loops,
+ * and cos/sin read at a row offset as the arch reads them. */
+static void run_rope_interleaved(struct geist_backend *mt, size_t rows, size_t heads, size_t hd) {
+    const struct geist_backend_vtbl  *v   = mt->desc->vtbl;
+    const struct geist_backend_fused *f   = geist_backend_fused_tbl(mt);
+    const size_t                      off = 2; /* first cos/sin row used */
+    const size_t                      n   = rows * heads * hd;
+    struct geist_buffer              *bx = nullptr, *bc = nullptr, *bs = nullptr;
+    float                            *x    = dev_alloc(mt, n * sizeof(float), &bx);
+    float                            *c    = dev_alloc(mt, (off + rows) * hd * sizeof(float), &bc);
+    float                            *sn   = dev_alloc(mt, (off + rows) * hd * sizeof(float), &bs);
+    float                            *want = malloc(n * sizeof(float));
+    float                            *got  = malloc(n * sizeof(float));
+    check(x != nullptr && c != nullptr && sn != nullptr && want != nullptr && got != nullptr,
+          "rope_il buffers");
+    if (x == nullptr || c == nullptr || sn == nullptr || want == nullptr || got == nullptr)
+        return;
+    for (size_t i = 0; i < n; i++)
+        x[i] = (float) ((i * 37u) % 101u) * 0.03f - 1.5f;
+    for (size_t r = 0; r < off + rows; r++)
+        for (size_t i = 0; i < hd; i++) {
+            const float a  = (float) r * 0.3f + (float) (i % (hd / 2)) * 0.11f;
+            c[r * hd + i]  = cosf(a);
+            sn[r * hd + i] = sinf(a);
+        }
+    const size_t half = hd / 2;
+    for (size_t r = 0; r < rows; r++)
+        for (size_t h = 0; h < heads; h++)
+            for (size_t i = 0; i < half; i++) {
+                const float *xh = x + (r * heads + h) * hd;
+                const float  x0 = xh[2 * i], x1 = xh[2 * i + 1];
+                const float  co = c[(off + r) * hd + i], si = sn[(off + r) * hd + i];
+                want[(r * heads + h) * hd + i]        = x0 * co - x1 * si;
+                want[(r * heads + h) * hd + i + half] = x0 * si + x1 * co;
+            }
+    struct geist_tensor tx = {.buffer = bx,
+                              .dtype  = GEIST_DTYPE_F32,
+                              .layout = GEIST_LAYOUT_DENSE,
+                              .ndim   = 3,
+                              .shape  = {(int64_t) rows, (int64_t) heads, (int64_t) hd},
+                              .stride = {(int64_t) (heads * hd), (int64_t) hd, 1}};
+    struct geist_tensor tc = {.buffer = bc,
+                              .offset = off * hd * sizeof(float),
+                              .dtype  = GEIST_DTYPE_F32,
+                              .layout = GEIST_LAYOUT_DENSE,
+                              .ndim   = 2,
+                              .shape  = {(int64_t) rows, (int64_t) hd},
+                              .stride = {(int64_t) hd, 1}};
+    struct geist_tensor ts = tc;
+    ts.buffer              = bs;
+    check(f->rope_apply_interleaved != nullptr, "rope_apply_interleaved installed");
+    const bool ran = f->rope_apply_interleaved != nullptr &&
+                     f->rope_apply_interleaved(mt, &tx, &tc, &ts) == GEIST_OK;
+    check(ran, "rope_apply_interleaved dispatch");
+    check(v->buffer_download(n * sizeof(float), (uint8_t *) got, bx) == GEIST_OK,
+          "rope_il download");
+    const double err = ran ? max_abs(got, want, n) : 1.0;
+    check(err < 1e-6, "rope_apply_interleaved parity");
+    printf("  rope_il rows=%zu heads=%zu hd=%zu max_abs %.2e %s\n",
+           rows,
+           heads,
+           hd,
+           err,
+           err < 1e-6 ? "OK" : "FAIL");
+    free(want);
+    free(got);
+    v->buffer_destroy(mt, bx);
+    v->buffer_destroy(mt, bc);
+    v->buffer_destroy(mt, bs);
+}
+
 int main(void) {
     struct geist_backend *mt = nullptr;
     enum geist_status     ms = geist_backend_create("metal", nullptr, nullptr, &mt);
@@ -544,6 +617,8 @@ int main(void) {
     run_embedding_case(mt, GEIST_DTYPE_Q8_0, "Q8_0");
     run_embedding_case(mt, GEIST_DTYPE_PQ2_0, "PQ2_0");
     run_qwen35_attention_ops(mt);
+    run_rope_interleaved(mt, 3, 5, 6);
+    run_rope_interleaved(mt, 2, 3, 384);
 
     geist_backend_destroy(mt);
     geist_backend_destroy(ref);
