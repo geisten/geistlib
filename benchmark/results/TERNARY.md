@@ -954,6 +954,34 @@ Each A/B is `tools/bench_revision_ab.py` with both builds from scratch and
 10 cycles with a control. The controls stayed within -0.6 % [-10.2, +12.8]
 and +2.9 % [-4.8, +19.1], and decode moved -1.6 % and -2.0 %, inside them.
 
+### The Hadamard rotation
+
+After the conv, the rotation of the activations (`prism.hadamard`, in
+1024-float blocks before the projections) was the next region: 324 ms of
+thread time per prefill. `fwht_orthonormal` ran its passes of len 1, 2 and
+4 scalar: their inner loops of 1, 2 and 4 butterflies are too short for the
+compiler to vectorize, and they cost more than the other seven passes of a
+1024-float block together. Each now runs as one loop over the block, which
+vectorizes. The butterflies and their order are the same, so the result
+does not move by a bit: the Vulkan and Metal ports run that order, and the
+Vulkan test expects the host's bits.
+
+| | before | after | change |
+| :-- | --: | --: | --: |
+| `fwht_orthonormal`, 1024-float blocks, one thread | 1.98 ns per float | 0.63 ns | 3.1× |
+| the rotation in the model, thread time per prefill (`perf`) | 324 ms | 106 ms | 3.1× |
+| prefill, 64 tokens (A/B, 40 cycles pooled) | 1.124 s | 1.095 s | -5.2 % [-6.7, -1.8], 31/40 |
+
+Three A/Bs, each with both builds from scratch and a control
+(`tools/bench_revision_ab.py`), gave -6.2 % [-14.5, -0.9] in 9 of 10
+cycles, -5.7 % [-10.6, +11.0] in 8 of 10 and, over 20 cycles, -2.9 % [-6.7,
++1.3] in 14 of 20. Each run on its own is close to its resolution. Pooled,
+the change per cycle has a median of -5.2 % (95 % bootstrap interval -6.7
+to -1.8 %) and 31 of the 40 cycles were faster (one-sided sign test
+p = 3e-4), against a control, the baseline's binary again, that read +2.9 %
+[-0.4, +4.5] over the same cycles. That is the 55 ms the rotation's thread
+time predicts on 4 threads. Decode stayed within noise in every run.
+
 - reproduce:
   `make gguf_artifacts/synth/bonsai2-27b-pq2_0.gguf`, then
   `GEIST_PROFILE_FORWARD=1 OMP_WAIT_POLICY=active bin/linux/release/tests/bench_perf_sweep

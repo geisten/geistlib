@@ -151,6 +151,19 @@ minor release.
 
 ### Changed
 
+- **The Walsh-Hadamard transform vectorizes its first passes** (`fwht.c`).
+  Its passes of len 1, 2 and 4 have inner loops of 1, 2 and 4 butterflies,
+  too short for the compiler to vectorize, and they ran scalar. Each now
+  runs as one loop over the block, which vectorizes, with the same
+  butterflies in the same order, so the result does not move by a bit (the
+  Vulkan and Metal ports run that order). On a 4-vCPU Xeon a 1024-float
+  block takes 0.63 ns per float instead of 1.98; the `prism.hadamard`
+  rotation of the synthetic Ternary-Bonsai-2-27B takes 106 ms of thread time
+  per 64-token prefill instead of 324 ms, and the prefill is about 5 %
+  faster: over 40 cycles of three A/Bs (both builds from scratch,
+  `tools/bench_revision_ab.py`) the median change per cycle is -5.2 % (95 %
+  bootstrap interval -6.7 to -1.8 %), and 31 of the 40 cycles were faster.
+  `test_fwht_unit` now pins the butterfly order to the bit.
 - **The chunked DeltaNet prefill's conv vectorizes** (`layer_deltanet.c`).
   Its channel loop chose the source of every tap per element, the old conv
   state or the chunk's rows, and called silu's scalar `expf` beside it, so
