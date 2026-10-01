@@ -2427,6 +2427,39 @@ metal_embedding_lookup(struct geist_backend      *be,
     return GEIST_OK;
 }
 
+/* The f32-KV fast paths below convert the live K/V rows into this f16
+ * staging on every call. It is sized for every row of the cache k views
+ * (the session's context), so a growing KV length never reallocates it
+ * mid-session (AGENT.md §3); sized at twice the live rows, it was
+ * reallocated each time the KV length doubled. A larger cache on this
+ * backend (another session or model) grows it once more. */
+[[nodiscard]] static enum geist_status metal_attn_kvf16_reserve(struct geist_backend      *be,
+                                                                struct metal_state        *st,
+                                                                const struct geist_tensor *k,
+                                                                size_t                     k_off) {
+    const size_t cap = (k->buffer->bytes / sizeof(float) - k_off) * sizeof(uint16_t);
+    if (st->attn_kvf16_capacity >= cap) {
+        return GEIST_OK;
+    }
+    metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
+    metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
+    st->attn_kf16_buffer    = nullptr;
+    st->attn_vf16_buffer    = nullptr;
+    st->attn_kvf16_capacity = 0;
+    enum geist_status s =
+            metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_kf16_buffer);
+    if (s == GEIST_OK) {
+        s = metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_vf16_buffer);
+    }
+    if (s != GEIST_OK) {
+        metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
+        st->attn_kf16_buffer = nullptr;
+        return s;
+    }
+    st->attn_kvf16_capacity = cap;
+    return GEIST_OK;
+}
+
 /* rows>1 f32-KV fast path: convert K/V to persistent f16 staging (one
  * kv_append_rows_f16 dispatch) and run the no-norm simdgroup flash kernel.
  * The scalar f32 kernel this replaces is the dominant prefill cost; the
@@ -2451,27 +2484,13 @@ metal_embedding_lookup(struct geist_backend      *be,
                                                                 size_t out_off,
                                                                 bool   kv_native_f16) {
 
-    const size_t kv_out    = k_heads * head_dim;
-    const size_t elems     = k_rows * kv_out;
-    const size_t f16_bytes = elems * 2u;
-    if (!kv_native_f16 && st->attn_kvf16_capacity < f16_bytes) {
-        metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
-        metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
-        st->attn_kf16_buffer    = nullptr;
-        st->attn_vf16_buffer    = nullptr;
-        st->attn_kvf16_capacity = 0;
-        const size_t      cap   = f16_bytes * 2u; /* headroom: no regrow per chunk */
-        enum geist_status bs =
-                metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_kf16_buffer);
-        if (bs == GEIST_OK) {
-            bs = metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_vf16_buffer);
+    const size_t kv_out = k_heads * head_dim;
+    const size_t elems  = k_rows * kv_out;
+    if (!kv_native_f16) {
+        const enum geist_status rs = metal_attn_kvf16_reserve(be, st, k, k_off);
+        if (rs != GEIST_OK) {
+            return rs;
         }
-        if (bs != GEIST_OK) {
-            metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
-            st->attn_kf16_buffer = nullptr;
-            return bs;
-        }
-        st->attn_kvf16_capacity = cap;
     }
     struct {
         uint32_t elems, kv_out, k_offset, v_offset, k_cache_offset, v_cache_offset, q_position;
@@ -2574,27 +2593,13 @@ metal_embedding_lookup(struct geist_backend      *be,
                                                               size_t out_off,
                                                               bool   kv_native_f16) {
 
-    const size_t kv_out    = k_heads * head_dim;
-    const size_t elems     = k_rows * kv_out;
-    const size_t f16_bytes = elems * 2u;
-    if (!kv_native_f16 && st->attn_kvf16_capacity < f16_bytes) {
-        metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
-        metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
-        st->attn_kf16_buffer    = nullptr;
-        st->attn_vf16_buffer    = nullptr;
-        st->attn_kvf16_capacity = 0;
-        const size_t      cap   = f16_bytes * 2u;
-        enum geist_status bs =
-                metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_kf16_buffer);
-        if (bs == GEIST_OK) {
-            bs = metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_vf16_buffer);
+    const size_t kv_out = k_heads * head_dim;
+    const size_t elems  = k_rows * kv_out;
+    if (!kv_native_f16) {
+        const enum geist_status rs = metal_attn_kvf16_reserve(be, st, k, k_off);
+        if (rs != GEIST_OK) {
+            return rs;
         }
-        if (bs != GEIST_OK) {
-            metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
-            st->attn_kf16_buffer = nullptr;
-            return bs;
-        }
-        st->attn_kvf16_capacity = cap;
     }
     uint32_t window = (uint32_t) q_offset + 1u;
     if ((uint32_t) k_rows < window) {
