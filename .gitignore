@@ -53,9 +53,11 @@ audio_test_data/smoke.wav
 /examples/agent_contract_smoke
 /examples/geist_calibrate
 
-# Shared library examples/ffi/README.md builds at the repo root.
+# Outputs of the examples/ffi build instructions (README.md, generate.rs).
 /libgeist.dylib
 /libgeist.so
+/generate_rs
+/examples/ffi/generate_rs
 
 # Local symlink to the audio bench assets; never a tracked path (dangling in CI).
 /audio_bench
