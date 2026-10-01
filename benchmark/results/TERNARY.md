@@ -649,6 +649,31 @@ that gate).
   --protocol benchmark/cross_engine_gpu_protocol.json
   --host-profile nvidia_2080ti_vulkan --model bonsai2-27b-pq2`
 
+### Same cell, dispatched (2026-09-30, geist `6629c0b`)
+
+The first run of this cell through `cross-engine-campaign.yml` rather than
+by hand: `llama_repo=PrismML-Eng/llama.cpp llama_pin=adfffbe41b2c` builds
+the fork on the box (its pin `01ae597` segfaults on Vulkan there; `adfffbe4`
+is the one every fork number on this page used). Four days of Vulkan work
+on main since the row above (#493 prefill tiles, #487 tensor-core PQ2_0 GEMM):
+
+| Seq/depth | geist pp tok/s | llama.cpp pp tok/s | geist vs llama | geist tg tok/s | llama.cpp tg tok/s | geist vs llama |
+| --: | --: | --: | --: | --: | --: | --: |
+| 128 | 553.28 ± 2.04 | 516.17 ± 5.24 | +7.19% | 36.68 ± 0.04 | 28.97 ± 0.11 | +26.60% |
+| 256 | 545.83 ± 0.62 | 533.74 ± 4.75 | +2.27% | 36.55 ± 0.05 | 29.02 ± 0.15 | +25.94% |
+| 512 | 535.56 ± 2.00 | 546.84 ± 5.54 | -2.06% | 36.22 ± 0.08 | 29.53 ± 0.13 | +22.64% |
+| 1024 | 521.11 ± 0.71 | 540.87 ± 4.97 | -3.65% | 35.78 ± 0.11 | 29.38 ± 0.15 | +21.77% |
+
+The prefill gap at depth closed from -12% to -4% (pp1024 478 → 521 t/s);
+decode is up +22…27% on the fork, as before. The fork's numbers repeat the
+09-26 row within MAD, which is the check that the two runs share a protocol.
+
+- raw samples:
+  [`raw/2026-09-30T122539Z_geist_llama_gpu_bonsai2-27b-pq2_nvidia_2080ti_vulkan.jsonl`](raw/2026-09-30T122539Z_geist_llama_gpu_bonsai2-27b-pq2_nvidia_2080ti_vulkan.jsonl)
+- reproduce: Actions → cross-engine-campaign → `protocol=gpu
+  host_profile=nvidia_2080ti_vulkan model=bonsai2-27b-pq2
+  llama_repo=PrismML-Eng/llama.cpp llama_pin=adfffbe41b2cabcd51fff326ab045662265062bb`
+
 ## Ternary-Bonsai-2-27B on x86-64 (2026-09-30, synthetic weights)
 
 Measured on `tools/gen_synth_gguf.py --preset bonsai2-27b-pq2_0`: the real
