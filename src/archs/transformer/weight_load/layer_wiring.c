@@ -157,7 +157,7 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
                 (dm.dtype == GEIST_DTYPE_F16 || dm.dtype == GEIST_DTYPE_BF16) &&
                 n_out * n_in <= widen_max_elems) {
                 struct geist_buffer *buf32 = nullptr;
-                s = load_norm_to_f32_buffer(st, gguf, name, n_out * n_in, &buf32);
+                s = load_f32_buffer_rope_il(st, gguf, name, n_out * n_in, rope_il_head_dim, &buf32);
                 if (s != GEIST_OK) {
                     return s;
                 }

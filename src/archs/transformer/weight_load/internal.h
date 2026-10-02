@@ -107,6 +107,24 @@ static inline void *arena_alloc(struct transformer_arch_state *st, size_t bytes,
                                                         size_t                expected_elems,
                                                         struct geist_buffer **out_buf);
 
+/* Copy n_rows rows of row_bytes from src to dst, each head of head_dim rows
+ * reordered from interleaved to half-split RoPE pairs: row 2i to i, row
+ * 2i + 1 to i + head_dim/2. head_dim is even and divides n_rows; src and
+ * dst do not overlap. */
+void permute_rope_rows(
+        size_t n_rows, size_t row_bytes, size_t head_dim, const uint8_t *src, uint8_t *dst);
+
+/* load_norm_to_f32_buffer for a 2D tensor, with the rows of a llama-family
+ * attn_q / attn_k permuted as load_tensor_to_buffer_rope_il does when
+ * rope_il_head_dim > 0: the F32-widened q/k of a backend without a
+ * half-precision linear (#464). */
+[[nodiscard]] enum geist_status load_f32_buffer_rope_il(struct transformer_arch_state *st,
+                                                        struct gguf_ctx               *gguf,
+                                                        const char                    *name,
+                                                        size_t                expected_elems,
+                                                        size_t                rope_il_head_dim,
+                                                        struct geist_buffer **out_buf);
+
 /* As load_tensor_to_buffer, with the rows of a llama-family attn_q /
  * attn_k reordered from interleaved to half-split RoPE pairs, head by head,
  * when rope_il_head_dim > 0 (#464). */

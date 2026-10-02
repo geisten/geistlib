@@ -174,7 +174,10 @@ minor release.
   Llama3-8B-1.58 TQ2_0 on cpu_scalar/cpu_neon/metal, both weight modes).
   Metal no longer flushes once per layer on llama: decode 1.45x on
   llama-3.2-3B, 2.6x on smollm2-360M (M1 Max). In mmap-alias mode the permuted
-  q/k rows live in a backend buffer instead of the file mapping.
+  q/k rows live in a backend buffer instead of the file mapping; on a
+  `weights_device_copy` backend (Vulkan) in one host allocation the backend
+  uploads from, so they stay out of the BAR window. An F16/BF16 q/k that a
+  backend widens to F32 at load is permuted too.
   **Removed (EXPERIMENTAL API):** `fused->rope_apply_interleaved` and
   `GEIST_FUSED_ROPE_INTERLEAVED` from `geist_backend.h`; the enumerators after
   it shift by one.
