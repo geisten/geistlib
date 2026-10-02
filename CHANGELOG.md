@@ -92,9 +92,9 @@ minor release.
   a 21 GiB RADV iGPU; RTX 2080 Ti for the smaller ones). The DeltaNet state is
   zeroed and snapshotted through `buffer_upload`/`buffer_download`, so it lives
   in unmappable VRAM and `session_reset` really clears it.
-  `interleaved RoPE` (llama family) is a device op (`fused->rope_apply_interleaved`):
-  llama-3.2-3B Q4_K_M prefill at pp1024 went from 37 to 1024 t/s — the host
-  permutation was reading the query/key rows back over PCIe on every layer.
+  Interleaved RoPE (llama family) no longer reads the query/key rows back to
+  the host on every layer: llama-3.2-3B Q4_K_M prefill at pp1024 went from 37
+  to 1024 t/s (the weights are permuted at load since #464).
 - **BitNet prefill on Vulkan**: `relu_squared` and the BitNet int8 activation
   fake-quant (`fused->bitnet_act_quant`) run on the device instead of as host
   loops over mapped memory, one flush plus a PCIe round trip per layer. TQ2_0
@@ -164,6 +164,20 @@ minor release.
   `GEIST_KV_INT8_FUSED=0` keeps both host loops.
 
 ### Changed
+
+- **Llama-family Q/K rows are permuted once at load** (#464). GGUFs store
+  `attn_q` / `attn_k` rows in interleaved RoPE pair order; the forward pass
+  used to permute the q/k activations on every layer and token, on the host
+  or through a per-backend fused op. The loader now reorders the weight rows
+  head by head, so every family rotates half-split pairs and no backend needs
+  an interleaved kernel. Logits are byte-identical (llama-3.2-3B Q4_K_M and
+  Llama3-8B-1.58 TQ2_0 on cpu_scalar/cpu_neon/metal, both weight modes).
+  Metal no longer flushes once per layer on llama: decode 1.45x on
+  llama-3.2-3B, 2.6x on smollm2-360M (M1 Max). In mmap-alias mode the permuted
+  q/k rows live in a backend buffer instead of the file mapping.
+  **Removed (EXPERIMENTAL API):** `fused->rope_apply_interleaved` and
+  `GEIST_FUSED_ROPE_INTERLEAVED` from `geist_backend.h`; the enumerators after
+  it shift by one.
 
 - **cpu_x86 runs RMSNorm and the residual add on the whole team in AVX2**
   (`cpu_x86/elementwise.c`). Both were cpu_scalar's, on the calling thread
