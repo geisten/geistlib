@@ -107,6 +107,17 @@ static inline void *arena_alloc(struct transformer_arch_state *st, size_t bytes,
                                                         size_t                expected_elems,
                                                         struct geist_buffer **out_buf);
 
+/* As load_tensor_to_buffer, with the rows of a llama-family attn_q /
+ * attn_k reordered from interleaved to half-split RoPE pairs, head by head,
+ * when rope_il_head_dim > 0 (#464). */
+[[nodiscard]] enum geist_status load_tensor_to_buffer_rope_il(struct transformer_arch_state *st,
+                                                              struct gguf_ctx               *gguf,
+                                                              const char                    *name,
+                                                              size_t expected_elems,
+                                                              size_t rope_il_head_dim,
+                                                              const struct gguf_tensor_t **out_t,
+                                                              struct geist_buffer        **out_buf);
+
 [[nodiscard]] enum geist_status load_tensor_to_buffer(struct transformer_arch_state *st,
                                                       struct gguf_ctx               *gguf,
                                                       const char                    *name,

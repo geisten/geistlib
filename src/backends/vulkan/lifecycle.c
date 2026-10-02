@@ -472,7 +472,6 @@ void vk_destroy(struct geist_backend *be) {
                     [VK_PIPE_RMSNORM]          = "rmsnorm",
                     [VK_PIPE_RMSNORM_ADD]      = "rmsnorm_add",
                     [VK_PIPE_ROPE]             = "rope",
-                    [VK_PIPE_ROPE_IL]          = "rope_il",
                     [VK_PIPE_ATTENTION]        = "attention",
                     [VK_PIPE_ARGMAX]           = "argmax",
                     [VK_PIPE_EMBED]            = "embed",

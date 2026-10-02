@@ -69,21 +69,25 @@ static int global_track_buf(struct transformer_arch_state *st, struct geist_buff
     return GEIST_OK;
 }
 
-/* Load a per-layer 2D projection. dtype may be quantized or F32. */
+/* Load a per-layer 2D projection. dtype may be quantized or F32.
+ * rope_il_head_dim > 0 reorders the rows from interleaved to half-split
+ * RoPE pairs (llama attn_q / attn_k, #464). */
 [[nodiscard]] static enum geist_status
-load_layer_proj(struct transformer_arch_state    *st,
-                struct gguf_ctx                  *gguf,
-                struct transformer_layer_weights *L,
-                const char                       *name,
-                size_t                            n_out,
-                size_t                            n_in,
-                struct geist_tensor              *out_view,
-                struct geist_weight              *out_weight /* nullable */) {
+load_layer_proj_rope_il(struct transformer_arch_state    *st,
+                        struct gguf_ctx                  *gguf,
+                        struct transformer_layer_weights *L,
+                        const char                       *name,
+                        size_t                            n_out,
+                        size_t                            n_in,
+                        size_t                            rope_il_head_dim,
+                        struct geist_tensor              *out_view,
+                        struct geist_weight              *out_weight /* nullable */) {
 
     struct geist_backend       *be  = st->backend;
     const struct gguf_tensor_t *t   = nullptr;
     struct geist_buffer        *buf = nullptr;
-    enum geist_status           s   = load_tensor_to_buffer(st, gguf, name, n_out * n_in, &t, &buf);
+    enum geist_status           s =
+            load_tensor_to_buffer_rope_il(st, gguf, name, n_out * n_in, rope_il_head_dim, &t, &buf);
     if (s != GEIST_OK) {
         return s;
     }
@@ -192,6 +196,18 @@ load_layer_proj(struct transformer_arch_state    *st,
         }
     }
     return GEIST_OK;
+}
+
+[[nodiscard]] static enum geist_status
+load_layer_proj(struct transformer_arch_state    *st,
+                struct gguf_ctx                  *gguf,
+                struct transformer_layer_weights *L,
+                const char                       *name,
+                size_t                            n_out,
+                size_t                            n_in,
+                struct geist_tensor              *out_view,
+                struct geist_weight              *out_weight /* nullable */) {
+    return load_layer_proj_rope_il(st, gguf, L, name, n_out, n_in, 0, out_view, out_weight);
 }
 
 /* Read the layer's per-layer output scalar (1-element F32 tensor). The
@@ -388,7 +404,12 @@ load_layer_proj(struct transformer_arch_state    *st,
     /* qwen35: q_proj jointly produces query+gate — 2x rows, per-head
      * [query(hd) | gate(hd)] (#281). */
     const size_t q_rows = st->config.has_attn_output_gate ? 2 * L->q_out : L->q_out;
-    s = load_layer_proj(st, gguf, L, path, q_rows, st->d_model, &L->q_proj, &L->q_proj_w);
+    /* Llama GGUFs store q/k rows in interleaved RoPE pair order; reorder
+     * them once here so the forward pass rotates half-split pairs like
+     * every other family (#464). */
+    const size_t rope_il_hd = st->config.rope_interleaved ? L->head_dim : 0;
+    s                       = load_layer_proj_rope_il(
+            st, gguf, L, path, q_rows, st->d_model, rope_il_hd, &L->q_proj, &L->q_proj_w);
     if (s != GEIST_OK) {
         return s;
     }
@@ -460,7 +481,8 @@ load_layer_proj(struct transformer_arch_state    *st,
 
     if (!L->is_kv_shared) {
         LP("attn_k.weight");
-        s = load_layer_proj(st, gguf, L, path, L->kv_out, st->d_model, &L->k_proj, &L->k_proj_w);
+        s = load_layer_proj_rope_il(
+                st, gguf, L, path, L->kv_out, st->d_model, rope_il_hd, &L->k_proj, &L->k_proj_w);
         if (s != GEIST_OK) {
             return s;
         }

@@ -294,7 +294,6 @@ enum geist_fused_op {
     GEIST_FUSED_PLE_BLOCK,
     GEIST_FUSED_EMBEDDING_LOOKUP_SCALED,
     GEIST_FUSED_ARGMAX_F32,
-    GEIST_FUSED_ROPE_INTERLEAVED,
     GEIST_FUSED_BITNET_ACT_QUANT,
     GEIST_FUSED_ATTN_KV_INT8,
     GEIST_FUSED_ATTN_KV_INT4,
@@ -566,16 +565,6 @@ struct geist_backend_fused {
      * q / scale (HF 1bitLLM utils_quant.py). x [rows, n] F32 DENSE. nullptr =
      * the arch runs the same loop on the host. */
     enum geist_status (*bitnet_act_quant)(struct geist_backend *be, struct geist_tensor *x);
-
-    /* RoPE for rows in the GGUF's interleaved pair order (llama family):
-     * exactly "permute (x[2i], x[2i+1]) -> (x[i], x[i + hd/2]) in place, then
-     * prims->rope_apply" in one pass, so a device-resident row never crosses
-     * to the host. x [seq, heads, head_dim] F32; cos/sin [seq, head_dim] (full
-     * rotation only). nullptr = the arch permutes on the host. */
-    enum geist_status (*rope_apply_interleaved)(struct geist_backend      *be,
-                                                struct geist_tensor       *x,
-                                                const struct geist_tensor *cos,
-                                                const struct geist_tensor *sin);
 
     /* Fused FFN gate+up matvec with GeGLU epilogue:
      *   y = gelu_tanh(x · gate_w^T) * (x · up_w^T)
