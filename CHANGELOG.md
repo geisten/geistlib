@@ -194,6 +194,19 @@ minor release.
 
 ### Changed
 
+- **Native TQ2_0 linear on cpu_x86** (#410). Ternary TQ2_0 ran the generic
+  path, which decodes every trit to fp32 before the dot. It now stays in int8:
+  the activations are quantized once per call with one scale per 256
+  elements (as llama.cpp's Q8_K for this format), the 2-bit codes go straight
+  into maddubs, and the -1 offset comes from each activation block's integer
+  sum. The weights are read from the GGUF bytes, with no repack and no extra
+  memory, and prefill tiles four tokens per weight-row pass. On a synthetic
+  bitnet-large-geometry TQ2_0 model (4-core Xeon, `tools/bench_revision_ab.py`,
+  6 cycles), decode takes 79-82 % less time and prefill at 128 and 512 tokens
+  66-68 % less. `tools/gen_synth_gguf.py` writes TQ2_0 (`--wtype tq2_0`).
+  Outputs move by int8 activation rounding, within the bound that
+  `test_x86_tq2_0_unit` derives.
+
 - **Native Q4_0 and Q4_1 linear on cpu_x86** (#410). Both ran the generic
   path, which dequantizes every weight to fp32 before the dot. They now stay
   in int8 like Q8_0 (#512): the activations are quantized to Q8_0 blocks once

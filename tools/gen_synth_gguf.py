@@ -54,6 +54,7 @@ QTYPES = {
     "q6_k": (14, 256, 210, (208,)),  # d sits at the tail
     "bf16": (30, 1, 2, ()),
     "pq2_0": (142, 128, 34, (0,)),  # PrismML's ternary format, d first
+    "tq2_0": (35, 256, 66, (64,)),  # ternary BitNet, d at the tail
 }
 SCALES = (0.004, 0.002)  # d, then dmin where a format has one
 
