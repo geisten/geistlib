@@ -333,6 +333,22 @@ static void run_silu_case(struct geist_backend *mt) {
         check(max_abs < 2e-6, "Metal SiLU parity");
         printf("  SiLU   n=%zu  max_abs %.2e %s\n", n, max_abs, max_abs < 2e-6 ? "OK" : "FAIL");
     }
+    /* relu_squared (BitNet b1.58 2B-4T FFN, #560): exact, it is one max and
+     * one multiply in F32 like relu_squared_fp32. */
+    check(mt->desc->prims->relu_squared != nullptr, "Metal relu_squared primitive installed");
+    if (mt->desc->prims->relu_squared != nullptr) {
+        check(mt->desc->prims->relu_squared(mt, &tx, &ty) == GEIST_OK,
+              "Metal relu_squared dispatch");
+        check(v->buffer_download(n * sizeof(float), (uint8_t *) dl, by) == GEIST_OK,
+              "Metal relu_squared download");
+        size_t bad = 0;
+        for (size_t i = 0; i < n; i++) {
+            const float r = x[i] > 0.0f ? x[i] : 0.0f;
+            bad += dl[i] != r * r;
+        }
+        check(bad == 0, "Metal relu_squared parity");
+        printf("  relu2  n=%zu  mismatches %zu %s\n", n, bad, bad == 0 ? "OK" : "FAIL");
+    }
     v->buffer_destroy(mt, bx);
     v->buffer_destroy(mt, by);
     free(dl);

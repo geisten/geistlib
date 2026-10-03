@@ -257,13 +257,13 @@
         st->q6k_n4_pipeline != nullptr && st->q6k_matmul_m8_pipeline != nullptr &&
         st->q6k_matmul_m16_pipeline != nullptr && st->rmsnorm_rows_pipeline != nullptr &&
         st->rmsnorm_rows_simd_pipeline != nullptr && st->gelu_rows_pipeline != nullptr &&
-        st->silu_rows_pipeline != nullptr && st->mul_rows_pipeline != nullptr &&
-        st->gelu_mul_rows_pipeline != nullptr && st->add_rows_pipeline != nullptr &&
-        st->scale_rows_pipeline != nullptr && st->rmsnorm_add_rows_pipeline != nullptr &&
-        st->rmsnorm_add_rows_simd_pipeline != nullptr && st->qgate_split_pipeline != nullptr &&
-        st->sigmoid_mul_pipeline != nullptr && st->embed_lookup_scaled_pipeline != nullptr &&
-        st->f32_matmul_pipeline != nullptr && st->f32_ple_gate_pipeline != nullptr &&
-        st->f32_ple_proj_norm_pipeline != nullptr) {
+        st->silu_rows_pipeline != nullptr && st->relu2_rows_pipeline != nullptr &&
+        st->mul_rows_pipeline != nullptr && st->gelu_mul_rows_pipeline != nullptr &&
+        st->add_rows_pipeline != nullptr && st->scale_rows_pipeline != nullptr &&
+        st->rmsnorm_add_rows_pipeline != nullptr && st->rmsnorm_add_rows_simd_pipeline != nullptr &&
+        st->qgate_split_pipeline != nullptr && st->sigmoid_mul_pipeline != nullptr &&
+        st->embed_lookup_scaled_pipeline != nullptr && st->f32_matmul_pipeline != nullptr &&
+        st->f32_ple_gate_pipeline != nullptr && st->f32_ple_proj_norm_pipeline != nullptr) {
         return GEIST_OK;
     }
 
@@ -1109,6 +1109,14 @@
                                         "silu_rows",
                                         &st->silu_rows_function,
                                         &st->silu_rows_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->silu_library,
+                                        ns_string,
+                                        "relu2_rows",
+                                        &st->relu2_rows_function,
+                                        &st->relu2_rows_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,
