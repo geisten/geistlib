@@ -113,12 +113,12 @@ static void vk_linear_run(const float               *x,
     struct vk_qinfo      qi;
     /* Only dtypes vk_resolve_weight installed these kernels for get here. */
     const bool known = vk_qinfo_for((enum geist_dtype) w->dtype, &qi);
-    if (known && m > 1 && st->subgroup_size != 32u) {
+    if (known && m > 1 && !st->gemm_sg32) {
         /* The register-tiled GEMM shaders hard-assume 32-lane subgroups;
-         * on e.g. lavapipe (8 lanes) they compute garbage — the lavapipe
-         * CI leg caught exactly that on its first run. The matvec kernels
-         * are subgroup-size-agnostic, so loop them: correct everywhere,
-         * and the software tier is a correctness gate, not a benchmark. */
+         * on a device that can neither run nor pin them at 32 (lavapipe:
+         * 8 lanes only) they compute garbage — the lavapipe CI leg caught
+         * exactly that on its first run. The matvec kernels are
+         * subgroup-size-agnostic, so loop them: correct everywhere. */
         for (size_t r = 0; r < m; r++) {
             vk_linear_run(x + r * n_in, w, 1, be, y + r * n_out);
         }
@@ -571,6 +571,11 @@ void vk_linear_cm_route(struct vk_state *st,
                         uint32_t         n_out,
                         uint32_t        *gx,
                         uint32_t        *gy) {
+    /* The tensor-core tiles keep the native subgroup size (only the tiled
+     * GEMMs are pinned to 32), and they were written for 32 lanes. */
+    if (st->subgroup_size != 32u) {
+        return;
+    }
     enum vk_pipe cm;
     if (*pipe == VK_PIPE_MATMUL_Q4K) {
         cm = VK_PIPE_MM_Q4K_CM;
@@ -1497,11 +1502,10 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
                                      .y_offset       = yo,
                                      .x_stride       = x_stride,
                                      .y_stride       = y_stride};
-    if (m > 1 && st->subgroup_size != 32u) {
+    if (m > 1 && !st->gemm_sg32) {
         /* The register-tiled GEMMs assume 32-lane subgroups (see
          * vk_linear_run). Elsewhere run the size-agnostic matvec once per
-         * batch row: correct on any device, and those devices are a
-         * correctness tier here, not a benchmark. */
+         * batch row: correct on any device. */
         for (size_t r = 0; r < m; ++r) {
             struct vk_push row             = push;
             row.rows                       = 1;

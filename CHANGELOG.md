@@ -194,6 +194,17 @@ minor release.
 
 ### Changed
 
+- **Vulkan prefill GEMMs run on GPUs whose subgroups are not 32 lanes**
+  (#471). The register-tiled GEMMs assume one 32-lane subgroup per output
+  row. On any other subgroup size, every batched linear fell back to one
+  matvec dispatch per token. That covers RADV (wave64) and lavapipe (8
+  lanes). Intel compiles each shader at 8, 16 or 32 lanes. Where the device
+  allows it (`subgroupSizeControl`, `computeFullSubgroups`, 32 within its
+  size range), these pipelines are now created with a required subgroup size
+  of 32 and full subgroups, and the tiled GEMM runs. The tensor-core GEMMs
+  keep the native size and are still used only on 32-lane devices. Devices
+  that cannot pin 32, lavapipe among them, keep the matvec loop.
+  `GEIST_VK_VERBOSE=1` reports the pin.
 - **A DeltaNet model that a backend can run neither on the device nor on
   the host is refused at load** (#470, `geist_backend.h`, experimental). On
   Vulkan, a qwen35-family model whose DeltaNet heads exceed the shaders'
