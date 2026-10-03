@@ -42,6 +42,40 @@ static void *observe(void *arg) {
     }
     return nullptr;
 }
+/* #555: a slice of a file mapping, private or shared, is wrapped in place
+ * (NoCopy over its pages, base_off at the bytes); anonymous memory is
+ * copied. */
+static bool aliasing(struct geist_backend *be) {
+    struct metal_state *st     = be->state;
+    const size_t        page   = (size_t) sysconf(_SC_PAGESIZE);
+    char                path[] = "/tmp/geist_metal_alias_XXXXXX";
+    const int           fd     = mkstemp(path);
+    if (fd < 0 || ftruncate(fd, (off_t) (page * 4)) != 0)
+        return false;
+    uint8_t *maps[3] = {
+            mmap(nullptr, page * 4, PROT_READ, MAP_PRIVATE, fd, 0),
+            mmap(nullptr, page * 4, PROT_READ, MAP_SHARED, fd, 0),
+            mmap(nullptr, page * 4, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0),
+    };
+    close(fd);
+    unlink(path);
+    bool ok = true;
+    for (unsigned i = 0; i < 3; i++) {
+        struct geist_buffer *buf = nullptr;
+        ok = ok && maps[i] != MAP_FAILED &&
+             metal_buffer_create_aliased(be, maps[i] + page + 64, 256, GEIST_BUFFER_WEIGHT, &buf) ==
+                     GEIST_OK;
+        const bool wrapped = ok &&
+                             metal_msg_send_id0(st, buf->buffer, "contents") == maps[i] + page &&
+                             buf->base_off == 64;
+        ok                 = ok && wrapped == (i < 2);
+        metal_buffer_destroy(be, buf);
+        if (maps[i] != MAP_FAILED)
+            munmap(maps[i], page * 4);
+    }
+    printf("{\"phase\":\"aliasing\",\"ok\":%s}\n", ok ? "true" : "false");
+    return ok;
+}
 /* #528: a range inside a live Metal buffer aliases as a view of it — its
  * MTLBuffer, no new allocation — and the GPU honours the view's offset,
  * also when copying between two overlapping views of one buffer. In an open
@@ -284,6 +318,7 @@ int main(void) {
     metal_msg_send_void0(st, heap_buffer, "release");
     metal_msg_send_void0(st, heap, "release");
     metal_msg_send_void0(st, desc, "release");
+    ok = aliasing(be) && ok;
     ok = sample(be, "released") && ok;
     geist_backend_destroy(be);
     be = nullptr;
