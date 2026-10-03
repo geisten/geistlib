@@ -781,7 +781,7 @@ struct geist_backend_caps {
      * they take 1/n_kv_heads of the cache sets, and K and V in buffers of
      * their own, which start at the same offset in a page, took the same
      * ones. Needs buffer_create_aliased to share the bytes of a
-     * GEIST_MEMORY_MAPPED buffer (metal copies them). Consumer: session
+     * GEIST_MEMORY_MAPPED buffer. Consumer: session
      * allocation. Opt-in after measuring: cpu_x86. */
     bool kv_q8_block;
 
