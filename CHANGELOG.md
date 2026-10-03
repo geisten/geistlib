@@ -202,6 +202,61 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 Q3_K runs a native int8 kernel on the GGUF bytes: decode about
+  29x, prefill about 3.5x faster** (#410). Q3_K used to fall back to the
+  generic dequantize-and-dot path. The Q6_K raw kernels (decode GEMV and
+  prefill GEMM) now also read Q3_K, which has the same shape (16 int8-scaled
+  sub-blocks, unsigned codes with a uniform offset), with no predecoded copy
+  of the weights. On a 1B synthetic Q3_K model (4-core Xeon) decode drops
+  96 % and prefill 63-72 %, at both the AVX2 and the VNNI tier; Q6_K is
+  unchanged.
+
+- **cpu_x86 Q5_K runs a native int8 kernel on the GGUF bytes: prefill about
+  2.2x, decode about 3.4x faster** (#410). Q5_K used to fall back to the
+  generic dequantize-and-dot path. The Q4_K raw kernel is now generic over
+  the block format, so Q5_K reads its fifth bit from `qh` and shares the
+  maddubs/madd pipeline, with no predecoded copy of the weights. On a 1B
+  synthetic Q5_K model (4-core Xeon) prefill drops 53-56 % and decode 70 %
+  at both the AVX2 and the VNNI tier.
+
+- **cpu_x86 Q4_0, Q4_1 and TQ2_0 prefill run AVX-512 VNNI register tiles:
+  about twice as fast** (#410). On VNNI hosts M>1 now walks 4 output rows x
+  4 tokens per tile in zmm registers with one VPDPBUSD per block pair (Q4_0
+  / Q4_1) or four per 256-element block (TQ2_0), the pattern Q8_0 already
+  used. The integer block sums are the AVX2 kernels' own, so results agree
+  to float rounding. On a synthetic Llama-3.2-1B-geometry model, prefill of
+  64 and 256 tokens drops 46 % for Q4_0 and 48-51 % for TQ2_0
+  (`tools/bench_revision_ab.py`, 6 cycles, 6/6 faster); decode is
+  unchanged. AVX2 hosts, and `GEIST_FORCE_ISA=avx2`, keep the AVX2 kernels.
+- **cpu_x86 Q6_K prefill reads the GGUF bytes below AVX-512 VNNI: 7x faster,
+  one copy of the weights** (#577). Q6_K prefill used to read a W8A8
+  predecode (1.5 bytes per weight next to the 0.82 of the GGUF bytes) whose
+  only vector kernel is AVX-512 VNNI; everywhere else its dot ran scalar.
+  Below VNNI (AVX2 hosts, e.g. the Steam Deck) prefill now runs the native
+  Q6_K kernel the decode path already used, tiled four tokens per weight
+  row, and no predecode is built. On a synthetic Llama-3.2-1B-geometry
+  all-Q6_K model at the AVX2 tier, prefill of 64 and 256 tokens is 86 %
+  faster (`tools/bench_revision_ab.py`, 6 cycles, 6/6 faster), decode is
+  within noise, and peak RSS drops from 2.33 to 0.95 GiB. VNNI hosts keep the
+  predecode, which prefills about twice as fast there; `GEIST_Q6K_RAW=1`
+  takes the raw kernel on any host, `=0` keeps the predecode.
+  `test_x86_q6k_raw_unit` checks it against cpu_scalar under a derived
+  activation-rounding bound and bit for bit against the decode kernel.
+- **cpu_x86 keeps one copy of the Q4_K weights below AVX-512** (#577). Every
+  Q4_K weight was repacked into a Q4_Kx8 or W4A8 blob about as large as the
+  GGUF bytes, which stay resident too: with `load_from_memory` they are the
+  caller's buffer, with `load(path)` the file's pages. The repack only pays
+  off where the AVX-512 Q4_Kx8 prefill panels run; below them (AVX2 hosts,
+  e.g. the Steam Deck) a new kernel now reads the GGUF block layout directly,
+  with no repack. On a synthetic Llama-3.2-1B-geometry Q4_K model (small
+  vocabulary) at the AVX2 tier, peak RSS after a prompt and 8 tokens drops
+  from 1.31 to 0.68 GiB, loaded from memory or from the file, and
+  decode and prefill are within noise of the repack (`tools/bench_revision_ab.py`,
+  6 cycles). AVX-512 hosts keep the repack, which prefills about twice as
+  fast there; `GEIST_Q4K_RAW=1` takes the raw kernel on any host, `=0` keeps
+  the repack. `test_x86_q4k_raw_unit` checks the kernel against cpu_scalar
+  under a derived activation-rounding bound.
+
 - **Native TQ2_0 linear on cpu_x86** (#410). Ternary TQ2_0 ran the generic
   path, which decodes every trit to fp32 before the dot. It now stays in int8:
   the activations are quantized once per call with one scale per 256

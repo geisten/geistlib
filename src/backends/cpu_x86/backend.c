@@ -14,8 +14,8 @@
  * filled by the time the engine calls geist_backend_create.
  *
  * cpu_x86_resolve_weight starts from cpu_scalar's resolver (it validates
- * the weight and knows every dtype), then rebinds: native kernels for Q4_K,
- * Q6_K, Q4_0, Q4_1, Q8_0, TQ2_0, I2_S, PQ2_0, F16 decode and F32, and the
+ * the weight and knows every dtype), then rebinds: native kernels for Q3_K, Q4_K,
+ * Q5_K, Q6_K, Q4_0, Q4_1, Q8_0, TQ2_0, I2_S, PQ2_0, F16 decode and F32, and the
  * generic multi-threaded kernels (linear_generic.c) for every other dtype.
  * cpu_scalar's own kernels — the single-threaded correctness oracle — are
  * never left bound for a dtype cpu_x86 can serve.
@@ -31,7 +31,9 @@
 #include "kernel_i2s.h"
 #include "linear_f32q.h"
 #include "linear_generic.h"
+#include "kernel_q4kx8_gemm.h" /* q4kx8_avx512_usable */
 #include "linear_q4k.h"
+#include "linear_q4k_raw.h"
 #include "linear_q6k.h"
 #include "linear_q4_0.h"
 #include "linear_q8_0.h"
@@ -434,6 +436,19 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
     return true;
 }
 
+/* Q4_K reads the GGUF bytes (linear_q4k_raw.c) unless the AVX-512 Q4_Kx8
+ * prefill panels can run: below them the repack is as fast as the raw
+ * kernel and only doubles the weights' resident memory (#577).
+ * GEIST_Q4K_RAW=1 takes the raw kernel on any host (half the Q4_K memory,
+ * about half the prefill speed on AVX-512); =0 keeps the repack. */
+static bool q4k_reads_raw(void) {
+    const char *e = getenv("GEIST_Q4K_RAW");
+    if (e != nullptr && e[0] != '\0') {
+        return e[0] != '0';
+    }
+    return !q4kx8_avx512_usable();
+}
+
 [[nodiscard]] static enum geist_status cpu_x86_resolve_weight(struct geist_backend *be,
                                                               struct geist_weight  *w) {
     /* Start from the cpu_scalar mapping: covers every dtype + sets m1/_mN
@@ -443,18 +458,32 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
         return base;
     }
     /* Rebind per dtype. Q4_K → Q4_Kx8 GEMV/GEMM; Q6_K → native GEMV +
-     * W8x16 GEMM; Q4_0 / Q4_1 → nibbles x Q8_0; TQ2_0 → trits x int8; Q8_0 → int8 Q8_0 x Q8_0;
-     * PQ2_0 → W2 x A8 GEMV / GEMM; I2_S → VNNI x4; F16 → Q8 or F16C GEMV for M=1; F32 → W8A8.
-     * Everything else — and Q4_K / Q6_K when their repack cannot be built — takes the generic
-     * kernels, never cpu_scalar's single-threaded ones. */
+     * W8x16 GEMM; Q3_K / Q5_K → native GEMV / GEMM on the GGUF bytes; Q4_0 / Q4_1 → nibbles x Q8_0;
+     * TQ2_0 → trits x int8; Q8_0 → int8 Q8_0 x Q8_0; PQ2_0 → W2 x A8 GEMV / GEMM; I2_S → VNNI x4;
+     * F16 → Q8 or F16C GEMV for M=1; F32 → W8A8. Everything else — and Q4_K / Q6_K when their
+     * repack cannot be built — takes the generic kernels, never cpu_scalar's single-threaded ones.
+     */
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_K: {
         struct cpu_x86_state *st = (struct cpu_x86_state *) be->state;
+        if (q4k_reads_raw() && cpu_x86_linear_q4k_raw_bind(w)) {
+            break;
+        }
         if (cpu_x86_linear_q4k_resolve(st, w) != GEIST_OK) {
             (void) cpu_x86_linear_generic_bind(w);
         }
         break;
     }
+    case GEIST_DTYPE_Q3_K:
+        if (!cpu_x86_linear_q3k_bind(w)) {
+            (void) cpu_x86_linear_generic_bind(w);
+        }
+        break;
+    case GEIST_DTYPE_Q5_K:
+        if (!cpu_x86_linear_q5k_bind(w)) {
+            (void) cpu_x86_linear_generic_bind(w);
+        }
+        break;
     case GEIST_DTYPE_Q6_K:
         if (cpu_x86_linear_q6k_resolve(w) != GEIST_OK) {
             (void) cpu_x86_linear_generic_bind(w);

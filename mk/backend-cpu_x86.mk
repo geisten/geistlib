@@ -20,6 +20,7 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/kernel_w4a8_avx512_vnni.c \
     src/backends/cpu_x86/q4k_to_w4a8.c \
     src/backends/cpu_x86/linear_q4k.c \
+    src/backends/cpu_x86/linear_q4k_raw.c \
     src/backends/cpu_x86/linear_q6k.c \
     src/backends/cpu_x86/linear_f32q.c \
     src/backends/cpu_x86/linear_generic.c \
@@ -29,6 +30,8 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/linear_pq2_0.c \
     src/backends/cpu_x86/kernel_pq2_0_amx.c \
     src/backends/cpu_x86/kernel_q8_0_avx512_vnni.c \
+    src/backends/cpu_x86/kernel_q4_0_avx512_vnni.c \
+    src/backends/cpu_x86/kernel_tq2_0_avx512_vnni.c \
     src/backends/cpu_x86/kernel_w8a8.c \
     src/backends/cpu_x86/kernel_w8a8_scalar.c \
     src/backends/cpu_x86/kernel_w8a8_avx512_vnni.c \
@@ -61,6 +64,10 @@ $(BUILD_DIR)/src/backends/cpu_x86/kernel_w8a8_avx512_vnni.o: CFLAGS_STRICT += \
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_i2s_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_q8_0_avx512_vnni.o: CFLAGS_STRICT += \
+    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
+$(BUILD_DIR)/src/backends/cpu_x86/kernel_q4_0_avx512_vnni.o: CFLAGS_STRICT += \
+    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
+$(BUILD_DIR)/src/backends/cpu_x86/kernel_tq2_0_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
 $(BUILD_DIR)/src/backends/cpu_x86/attention_int8_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
