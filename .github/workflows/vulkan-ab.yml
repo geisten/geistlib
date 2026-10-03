@@ -1,8 +1,10 @@
 name: vulkan-ab
 
 # End-to-end A/B of two revisions on one Vulkan device of the self-hosted
-# geist-vulkan box (docs/CI_SELF_HOSTED.md), with tools/bench_revision_ab.py on
-# a synthetic model (tools/gen_synth_gguf.py), so no model download is needed.
+# geist-vulkan box (docs/CI_SELF_HOSTED.md), with tools/bench_revision_ab.py
+# on a synthetic model (tools/gen_synth_gguf.py), so no model download is
+# needed. The box is a Ryzen 9 9950X, so `backend: cpu_x86` measures its
+# Zen 5 CPU instead.
 # The box enumerates the discrete GPU (NVIDIA), the Ryzen iGPU (RADV, AMD's
 # wave64 hardware) and llvmpipe; `driver` picks one by its vulkaninfo
 # driverID, so a vendor-specific path can be measured on the device it is
@@ -24,8 +26,12 @@ on:
         description: "revision to compare"
         type: string
         default: origin/main
+      backend:
+        description: "GEIST_BENCH_BACKEND: vulkan, or a CPU backend (cpu_x86) to measure the box's Zen 5 CPU"
+        type: string
+        default: vulkan
       driver:
-        description: "vulkaninfo driverID substring of the device to measure (RADV, NVIDIA, ...)"
+        description: "vulkan only: vulkaninfo driverID substring of the device to measure (RADV, NVIDIA, ...)"
         type: string
         default: RADV
       preset:
@@ -46,7 +52,7 @@ on:
 
 jobs:
   ab:
-    name: Vulkan A/B (${{ inputs.driver || 'RADV' }})
+    name: A/B on geist-vulkan (${{ inputs.backend || 'vulkan' }} ${{ inputs.driver || 'RADV' }})
     # Same self-hosted guard as ci.yml's vulkan leg: never for fork PRs.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, geist-vulkan]
@@ -54,6 +60,7 @@ jobs:
     env:
       BASE: ${{ inputs.base || 'fcb6f68f33feee19006d5952f288a1f06f74d097' }}
       NEW: ${{ inputs.new || github.event.pull_request.head.sha || 'origin/main' }}
+      BACKEND: ${{ inputs.backend || 'vulkan' }}
       DRIVER: ${{ inputs.driver || 'RADV' }}
       PRESET: ${{ inputs.preset || 'llama32-1b-q4_k' }}
       SEQ_LENS: ${{ inputs.seq_lens || '64,256' }}
@@ -63,6 +70,7 @@ jobs:
         with:
           fetch-depth: 0 # bench_revision_ab.py builds each revision in a worktree
       - name: Pick the device
+        if: env.BACKEND == 'vulkan'
         run: |
           set -eo pipefail
           mkdir -p ab-out
@@ -78,16 +86,18 @@ jobs:
       - name: A/B
         run: |
           set -eo pipefail
+          mkdir -p ab-out
           git fetch origin main
           python3 tools/bench_revision_ab.py \
             --rev "base=$BASE" --rev "new=$NEW" \
             --gguf "$RUNNER_TEMP/synth.gguf" --seq-lens "$SEQ_LENS" \
             --decode-n 16 --repeats 1 --warmup 1 --cycles "$CYCLES" \
-            --env GEIST_BENCH_BACKEND=vulkan --env "GEIST_VK_DEVICE=$GEIST_VK_DEVICE" \
+            --env "GEIST_BENCH_BACKEND=$BACKEND" --env "GEIST_VK_DEVICE=${GEIST_VK_DEVICE:-0}" \
             --make-arg TARGET=linux --make-arg "BACKENDS=vulkan cpu_x86 cpu_scalar" \
             --make-arg GEMM_PROVIDER=native \
             --out-dir ab-out | tee ab-out/report.txt
       - name: Device line of each build
+        if: env.BACKEND == 'vulkan'
         # GEIST_VK_VERBOSE names the device, its subgroup size and whether
         # the tiled GEMMs are pinned to 32 lanes.
         run: |
