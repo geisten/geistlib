@@ -15,12 +15,6 @@
 #include <arm_neon.h>
 #endif
 
-struct block_q4_0_t {
-    uint16_t d;
-    uint8_t  qs[16];
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q4_0_t) == 18, "struct block_q4_0_t size");
-
 void dequant_q4_0_row(size_t n_elems, const void *blocks, float out[static n_elems]) {
     const struct block_q4_0_t *b  = (const struct block_q4_0_t *) blocks;
     size_t                     nb = n_elems / Q4_0_BLOCK_ELEMS;

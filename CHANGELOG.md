@@ -194,6 +194,18 @@ minor release.
 
 ### Changed
 
+- **Native Q4_0 and Q4_1 linear on cpu_x86** (#410). Both ran the generic
+  path, which dequantizes every weight to fp32 before the dot. They now stay
+  in int8 like Q8_0 (#512): the activations are quantized to Q8_0 blocks once
+  per call, and the raw nibbles go straight into maddubs, with the format's
+  offset (Q4_0's -8, Q4_1's min) taken from each activation block's integer
+  sum. The weights are read from the GGUF bytes, with no repack and no extra
+  memory. Prefill tiles four tokens per pass over a weight row. On a synthetic
+  Llama-3.2-1B-geometry Q4_0 model (4-core Xeon, `tools/bench_revision_ab.py`,
+  6 cycles), decode takes 85 % less time and prefill at 128 and 512 tokens 46 %
+  less. Outputs move by int8 activation rounding, within the bound that
+  `test_x86_q4_0_unit` derives.
+
 - **Vulkan prefill GEMMs run on GPUs whose subgroups are not 32 lanes**
   (#471). The register-tiled GEMMs assume one 32-lane subgroup per output
   row. On any other subgroup size, every batched linear fell back to one
