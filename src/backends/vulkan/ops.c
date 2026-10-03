@@ -615,20 +615,22 @@ void vk_linear_cm_route(struct vk_state *st,
 /* GPU-first attempt for the 3-buffer elementwise family (add, mul, gelu_mul,
  * silu_mul, sigmoid_mul):
  * push {n, a_off, b_off, y_off, cols, a_stride, b_stride, y_stride};
- * cols == 0 → all-contiguous fast path in the shader. */
-static bool vk_try_ew3(struct geist_backend      *be,
-                       enum vk_pipe               pipe,
-                       const struct geist_tensor *a,
-                       const struct geist_tensor *b,
-                       const struct geist_tensor *y) {
+ * cols == 0 → all-contiguous fast path in the shader.
+ * GEIST_E_UNSUPPORTED: the shader does not apply (take the host path);
+ * any other error is a failed dispatch the caller returns (#474). */
+[[nodiscard]] static enum geist_status vk_try_ew3(struct geist_backend      *be,
+                                                  enum vk_pipe               pipe,
+                                                  const struct geist_tensor *a,
+                                                  const struct geist_tensor *b,
+                                                  const struct geist_tensor *y) {
     const size_t n = vk_t_n(a);
     if (n == 0 || n != vk_t_n(b) || n != vk_t_n(y)) {
-        return false;
+        return GEIST_E_UNSUPPORTED;
     }
     size_t ra, ca, sa, rb, cb, sb, ry, cy, sy;
     if (!vk_t_geom(a, &ra, &ca, &sa) || !vk_t_geom(b, &rb, &cb, &sb) ||
         !vk_t_geom(y, &ry, &cy, &sy)) {
-        return false;
+        return GEIST_E_UNSUPPORTED;
     }
     uint32_t cols = 0;
     if (sa != ca || sb != cb || sy != cy) {
@@ -636,7 +638,7 @@ static bool vk_try_ew3(struct geist_backend      *be,
         cols = (uint32_t) (sa != ca ? ca : (sb != cb ? cb : cy));
         if ((sa != ca && ca != cols) || (sb != cb && cb != cols) || (sy != cy && cy != cols) ||
             n % cols != 0) {
-            return false;
+            return GEIST_E_UNSUPPORTED;
         }
         if (sa == ca) {
             sa = cols;
@@ -652,7 +654,7 @@ static bool vk_try_ew3(struct geist_backend      *be,
     uint32_t               off[3];
     if (!vk_tensor_gpu(a, &bi[0], &off[0]) || !vk_tensor_gpu(b, &bi[1], &off[1]) ||
         !vk_tensor_gpu(y, &bi[2], &off[2])) {
-        return false;
+        return GEIST_E_UNSUPPORTED;
     }
     const uint32_t         push[8] = {(uint32_t) n,
                                       off[0],
@@ -664,27 +666,26 @@ static bool vk_try_ew3(struct geist_backend      *be,
                                       (uint32_t) sy};
     const struct vk_access acc[3]  = {
             vk_acc_tensor(a, false), vk_acc_tensor(b, false), vk_acc_tensor(y, true)};
-    return vk_seq_dispatch_acc(be, pipe, bi, acc, push, sizeof(push), vk_groups(n), 1, 1) ==
-           GEIST_OK;
+    return vk_seq_dispatch_acc(be, pipe, bi, acc, push, sizeof(push), vk_groups(n), 1, 1);
 }
 
 /* GPU-first attempt for the unary elementwise family (gelu_tanh, silu,
- * relu_squared): push {n, x_off, y_off, 0}; in place is fine. */
-static bool vk_try_ew2(struct geist_backend      *be,
-                       enum vk_pipe               pipe,
-                       const struct geist_tensor *x,
-                       const struct geist_tensor *y) {
+ * relu_squared): push {n, x_off, y_off, 0}; in place is fine. Results as
+ * vk_try_ew3. */
+[[nodiscard]] static enum geist_status vk_try_ew2(struct geist_backend      *be,
+                                                  enum vk_pipe               pipe,
+                                                  const struct geist_tensor *x,
+                                                  const struct geist_tensor *y) {
     const size_t           n = vk_t_n(x);
     VkDescriptorBufferInfo bi[2];
     uint32_t               off[2];
     if (n == 0 || n != vk_t_n(y) || !vk_tensor_gpu(x, &bi[0], &off[0]) ||
         !vk_tensor_gpu(y, &bi[1], &off[1])) {
-        return false;
+        return GEIST_E_UNSUPPORTED;
     }
     const uint32_t         push[4] = {(uint32_t) n, off[0], off[1], 0};
     const struct vk_access acc[2]  = {vk_acc_tensor(x, false), vk_acc_tensor(y, true)};
-    return vk_seq_dispatch_acc(be, pipe, bi, acc, push, sizeof(push), vk_groups(n), 1, 1) ==
-           GEIST_OK;
+    return vk_seq_dispatch_acc(be, pipe, bi, acc, push, sizeof(push), vk_groups(n), 1, 1);
 }
 
 /* The 3-buffer elementwise ops (vk_try_ew3 above, vk_ew3_cpu below). */
@@ -758,8 +759,9 @@ enum vk_ew3_op { EW3_ADD, EW3_MUL, EW3_GELU_MUL, EW3_SILU_MUL, EW3_SIGMOID_MUL }
                                               const struct geist_tensor *a,
                                               const struct geist_tensor *b,
                                               struct geist_tensor       *y) {
-    if (vk_try_ew3(be, VK_PIPE_ADD, a, b, y)) {
-        return GEIST_OK;
+    const enum geist_status gs = vk_try_ew3(be, VK_PIPE_ADD, a, b, y);
+    if (gs != GEIST_E_UNSUPPORTED) {
+        return gs;
     }
     return vk_ew3_cpu(be, EW3_ADD, a, b, y, "add");
 }
@@ -768,8 +770,9 @@ enum vk_ew3_op { EW3_ADD, EW3_MUL, EW3_GELU_MUL, EW3_SILU_MUL, EW3_SIGMOID_MUL }
                                               const struct geist_tensor *a,
                                               const struct geist_tensor *b,
                                               struct geist_tensor       *y) {
-    if (vk_try_ew3(be, VK_PIPE_MUL, a, b, y)) {
-        return GEIST_OK;
+    const enum geist_status gs = vk_try_ew3(be, VK_PIPE_MUL, a, b, y);
+    if (gs != GEIST_E_UNSUPPORTED) {
+        return gs;
     }
     return vk_ew3_cpu(be, EW3_MUL, a, b, y, "mul");
 }
@@ -797,8 +800,9 @@ static constexpr float VK_GELU_K1 = 0.044715f;
 
 [[nodiscard]] static enum geist_status
 vk_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
-    if (vk_try_ew2(be, VK_PIPE_GELU, x, y)) {
-        return GEIST_OK;
+    const enum geist_status gs = vk_try_ew2(be, VK_PIPE_GELU, x, y);
+    if (gs != GEIST_E_UNSUPPORTED) {
+        return gs;
     }
     return vk_ew2_cpu(be, "gelu_tanh", gelu_tanh_fp32, x, y);
 }
@@ -807,8 +811,9 @@ vk_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geis
                                                         const struct geist_tensor *x,
                                                         const struct geist_tensor *z,
                                                         struct geist_tensor       *y) {
-    if (vk_try_ew3(be, VK_PIPE_GELU_MUL, x, z, y)) {
-        return GEIST_OK;
+    const enum geist_status gs = vk_try_ew3(be, VK_PIPE_GELU_MUL, x, z, y);
+    if (gs != GEIST_E_UNSUPPORTED) {
+        return gs;
     }
     return vk_ew3_cpu(be, EW3_GELU_MUL, x, z, y, "gelu_tanh_mul");
 }
@@ -848,16 +853,18 @@ vk_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geis
 
 [[nodiscard]] static enum geist_status
 vk_relu_squared(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
-    if (vk_try_ew2(be, VK_PIPE_RELU2, x, y)) {
-        return GEIST_OK;
+    const enum geist_status gs = vk_try_ew2(be, VK_PIPE_RELU2, x, y);
+    if (gs != GEIST_E_UNSUPPORTED) {
+        return gs;
     }
     return vk_ew2_cpu(be, "relu_squared", relu_squared_fp32, x, y);
 }
 
 [[nodiscard]] static enum geist_status
 vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
-    if (vk_try_ew2(be, VK_PIPE_SILU, x, y)) {
-        return GEIST_OK;
+    const enum geist_status gs = vk_try_ew2(be, VK_PIPE_SILU, x, y);
+    if (gs != GEIST_E_UNSUPPORTED) {
+        return gs;
     }
     return vk_ew2_cpu(be, "silu", silu_fp32_ooo, x, y);
 }
@@ -866,8 +873,9 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
                                                    const struct geist_tensor *x,
                                                    const struct geist_tensor *z,
                                                    struct geist_tensor       *y) {
-    if (vk_try_ew3(be, VK_PIPE_SILU_MUL, x, z, y)) {
-        return GEIST_OK;
+    const enum geist_status gs = vk_try_ew3(be, VK_PIPE_SILU_MUL, x, z, y);
+    if (gs != GEIST_E_UNSUPPORTED) {
+        return gs;
     }
     return vk_ew3_cpu(be, EW3_SILU_MUL, x, z, y, "silu_mul");
 }
@@ -876,8 +884,9 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
                                                       const struct geist_tensor *x,
                                                       const struct geist_tensor *gate,
                                                       struct geist_tensor       *y) {
-    if (vk_try_ew3(be, VK_PIPE_SIGMOID_MUL, x, gate, y)) {
-        return GEIST_OK;
+    const enum geist_status gs = vk_try_ew3(be, VK_PIPE_SIGMOID_MUL, x, gate, y);
+    if (gs != GEIST_E_UNSUPPORTED) {
+        return gs;
     }
     return vk_ew3_cpu(be, EW3_SIGMOID_MUL, x, gate, y, "sigmoid_mul");
 }
@@ -943,17 +952,8 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
             } push = {(uint32_t) (n / feat), (uint32_t) feat, off[0], off[1], off[2], eps};
             const struct vk_access acc[3] = {
                     vk_acc_tensor(x, false), vk_acc_tensor(w, false), vk_acc_tensor(y, true)};
-            if (vk_seq_dispatch_acc(be,
-                                    VK_PIPE_RMSNORM,
-                                    bi,
-                                    acc,
-                                    &push,
-                                    sizeof(push),
-                                    (uint32_t) (n / feat),
-                                    1,
-                                    1) == GEIST_OK) {
-                return GEIST_OK;
-            }
+            return vk_seq_dispatch_acc(
+                    be, VK_PIPE_RMSNORM, bi, acc, &push, sizeof(push), (uint32_t) (n / feat), 1, 1);
         }
     }
     size_t       nx = 0, nw = 0, ny = 0;
@@ -1012,11 +1012,8 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
                                               (uint32_t) rot};
             const struct vk_access acc[3]  = {
                     vk_acc_tensor(x, true), vk_acc_tensor(cos, false), vk_acc_tensor(sin, false)};
-            if (vk_seq_dispatch_acc(
-                        be, VK_PIPE_ROPE, bi, acc, push, sizeof(push), vk_groups(pairs), 1, 1) ==
-                GEIST_OK) {
-                return GEIST_OK;
-            }
+            return vk_seq_dispatch_acc(
+                    be, VK_PIPE_ROPE, bi, acc, push, sizeof(push), vk_groups(pairs), 1, 1);
         }
     }
     size_t       nx = 0, nc = 0, ns = 0;
@@ -1111,17 +1108,15 @@ enum { VK_HADAMARD_MAX_BLOCK = 1024 };
                                          has_signs ? vk_acc_tensor(args->signs, false)
                                                    : vk_acc_tensor(args->x, false),
                                          vk_acc_tensor(args->y, true)};
-        if (vk_seq_dispatch_acc(be,
-                                VK_PIPE_HADAMARD,
-                                bi,
-                                acc,
-                                push,
-                                sizeof(push),
-                                (uint32_t) (rows * (width / block)),
-                                1,
-                                1) == GEIST_OK) {
-            return GEIST_OK;
-        }
+        return vk_seq_dispatch_acc(be,
+                                   VK_PIPE_HADAMARD,
+                                   bi,
+                                   acc,
+                                   push,
+                                   sizeof(push),
+                                   (uint32_t) (rows * (width / block)),
+                                   1,
+                                   1);
     }
     size_t                  nx = 0, ns = 0, ny = 0;
     const float            *xp = vk_tensor_host(args->x, &nx);
@@ -1225,10 +1220,8 @@ enum { VK_HADAMARD_MAX_BLOCK = 1024 };
         const struct vk_access acc2[2]  = {vk_acc(stt->xring_used, part_bytes, false),
                                            vk_acc_tensor(out, true)};
         stt->xring_used                 = (stt->xring_used + part_bytes + 63u) & ~(size_t) 63u;
-        if (vk_seq_dispatch_acc(be, VK_PIPE_ATTN_COMB, bi2, acc2, push2, sizeof(push2), qh, 1, 1) ==
-            GEIST_OK) {
-            return GEIST_OK;
-        }
+        return vk_seq_dispatch_acc(
+                be, VK_PIPE_ATTN_COMB, bi2, acc2, push2, sizeof(push2), qh, 1, 1);
     }
 attn_generic:;
     {
@@ -1274,29 +1267,26 @@ attn_generic:;
              * full-attention shape). Same push layout and bindings as
              * VK_PIPE_ATTENTION_F16, just a 16-row dispatch. */
             if (kv16 && n_q > 1 && sliding_window == 0 && hd == 256 && stt->attn_cm &&
-                stt->pipes[VK_PIPE_ATTENTION_F16_CM] != VK_NULL_HANDLE &&
-                vk_seq_dispatch_acc(be,
-                                    VK_PIPE_ATTENTION_F16_CM,
-                                    bi,
-                                    acc,
-                                    push,
-                                    sizeof(push),
-                                    (n_q + 15u) / 16u,
-                                    qh,
-                                    1) == GEIST_OK) {
-                return GEIST_OK;
+                stt->pipes[VK_PIPE_ATTENTION_F16_CM] != VK_NULL_HANDLE) {
+                return vk_seq_dispatch_acc(be,
+                                           VK_PIPE_ATTENTION_F16_CM,
+                                           bi,
+                                           acc,
+                                           push,
+                                           sizeof(push),
+                                           (n_q + 15u) / 16u,
+                                           qh,
+                                           1);
             }
-            if (vk_seq_dispatch_acc(be,
-                                    kv16 ? VK_PIPE_ATTENTION_F16 : VK_PIPE_ATTENTION,
-                                    bi,
-                                    acc,
-                                    push,
-                                    sizeof(push),
-                                    n_q,
-                                    qh,
-                                    1) == GEIST_OK) {
-                return GEIST_OK;
-            }
+            return vk_seq_dispatch_acc(be,
+                                       kv16 ? VK_PIPE_ATTENTION_F16 : VK_PIPE_ATTENTION,
+                                       bi,
+                                       acc,
+                                       push,
+                                       sizeof(push),
+                                       n_q,
+                                       qh,
+                                       1);
         }
     }
     size_t       nq = 0, nk = 0, nv = 0, no = 0;
@@ -1347,17 +1337,15 @@ attn_generic:;
                                              vk_acc_tensor(w, false),
                                              vk_acc_tensor(res, false),
                                              vk_acc_tensor(y, true)};
-            if (vk_seq_dispatch_acc(be,
-                                    VK_PIPE_RMSNORM_ADD,
-                                    bi,
-                                    acc,
-                                    &push,
-                                    sizeof(push),
-                                    (uint32_t) (n / feat),
-                                    1,
-                                    1) == GEIST_OK) {
-                return GEIST_OK;
-            }
+            return vk_seq_dispatch_acc(be,
+                                       VK_PIPE_RMSNORM_ADD,
+                                       bi,
+                                       acc,
+                                       &push,
+                                       sizeof(push),
+                                       (uint32_t) (n / feat),
+                                       1,
+                                       1);
         }
     }
     /* CPU fallback: y = res + rmsnorm(x) * w */
@@ -1402,11 +1390,8 @@ attn_generic:;
                 float    scale;
             } push                        = {(uint32_t) n, off[0], off[1], scale};
             const struct vk_access acc[2] = {vk_acc_tensor(x, false), vk_acc_tensor(y, true)};
-            if (vk_seq_dispatch_acc(
-                        be, VK_PIPE_SCALE, bi, acc, &push, sizeof(push), vk_groups(n), 1, 1) ==
-                GEIST_OK) {
-                return GEIST_OK;
-            }
+            return vk_seq_dispatch_acc(
+                    be, VK_PIPE_SCALE, bi, acc, &push, sizeof(push), vk_groups(n), 1, 1);
         }
     }
     size_t       nx = 0, ny = 0;
