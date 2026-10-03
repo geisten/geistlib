@@ -72,7 +72,7 @@ static bool aliasing(struct geist_backend *be) {
         const bool wrapped = ok &&
                              metal_msg_send_id0(st, buf->buffer, "contents") == maps[i] + page &&
                              buf->base_off == 64;
-        ok = ok && wrapped == expect_wrapped[i];
+        ok                 = ok && wrapped == expect_wrapped[i];
         metal_buffer_destroy(be, buf);
         if (maps[i] != MAP_FAILED)
             munmap(maps[i], page * 4);
