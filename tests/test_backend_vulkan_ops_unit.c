@@ -336,6 +336,61 @@ static void test_elementwise(size_t rows, size_t cols) {
     free(ref);
 }
 
+/* rmsnorm and rmsnorm_add on VRAM-only buffers, against a double-precision
+ * host reference. Both shaders reduce with one shared slot per subgroup:
+ * sized for 32-lane subgroups, the 8-lane llvmpipe (and Intel's 8/16) wrote
+ * past the array and every row came back wrong. */
+static void test_rmsnorm(size_t rows, size_t feat) {
+    const size_t n = rows * feat;
+    float       *x = fill(n, 0.13f, 4.0f), *r = fill(n, 0.07f, 2.0f), *w = fill(feat, 0.05f, 1.5f);
+    float       *got = malloc(n * sizeof(float)), *ref = malloc(n * sizeof(float));
+    const float  eps = 1e-6f;
+    for (size_t row = 0; row < rows; row++) {
+        double ss = 0.0;
+        for (size_t i = 0; i < feat; i++) {
+            ss += (double) x[row * feat + i] * (double) x[row * feat + i];
+        }
+        const double inv = 1.0 / sqrt(ss / (double) feat + (double) eps);
+        for (size_t i = 0; i < feat; i++) {
+            ref[row * feat + i] = (float) ((double) x[row * feat + i] * inv * (double) w[i]);
+        }
+    }
+    struct geist_buffer *bx = dev_buf(x, n), *br = dev_buf(r, n), *bw = dev_buf(w, feat),
+                        *by = dev_buf(nullptr, n);
+    check(bx && br && bw && by, "rmsnorm buffers");
+    struct geist_tensor tx = view(bx, 2, (int64_t) rows, (int64_t) feat, 0),
+                        tr = view(br, 2, (int64_t) rows, (int64_t) feat, 0),
+                        tw = view(bw, 1, (int64_t) feat, 0, 0),
+                        ty = view(by, 2, (int64_t) rows, (int64_t) feat, 0);
+
+    check(g_be->desc->prims->rmsnorm(g_be, &tx, &tw, eps, &ty) == GEIST_OK, "rmsnorm dispatch");
+    check(download(by, got, n), "rmsnorm download");
+    double e = max_abs(got, ref, n);
+    printf("  rmsnorm     %zux%zu  max_abs %.2e\n", rows, feat, e);
+    check(e < 1e-5, "rmsnorm");
+
+    const struct geist_backend_fused *f = geist_backend_fused_tbl(g_be);
+    check(f->rmsnorm_add != nullptr, "rmsnorm_add present");
+    for (size_t i = 0; i < n; i++) {
+        ref[i] += r[i];
+    }
+    check(f->rmsnorm_add(g_be, &tr, &tx, &tw, eps, &ty) == GEIST_OK, "rmsnorm_add dispatch");
+    check(download(by, got, n), "rmsnorm_add download");
+    e = max_abs(got, ref, n);
+    printf("  rmsnorm_add %zux%zu  max_abs %.2e\n", rows, feat, e);
+    check(e < 1e-5, "rmsnorm_add");
+
+    g_be->desc->vtbl->buffer_destroy(g_be, bx);
+    g_be->desc->vtbl->buffer_destroy(g_be, br);
+    g_be->desc->vtbl->buffer_destroy(g_be, bw);
+    g_be->desc->vtbl->buffer_destroy(g_be, by);
+    free(x);
+    free(r);
+    free(w);
+    free(got);
+    free(ref);
+}
+
 static void test_qgate(size_t rows, size_t heads, size_t hd) {
     const size_t q_out = heads * hd;
     float       *joint = fill(rows * 2 * q_out, 0.07f, 2.0f);
@@ -440,6 +495,8 @@ int main(void) {
     test_act_quant(1, 4096);
     test_act_quant(9, 100);
     test_elementwise(7, 129);
+    test_rmsnorm(3, 2048);
+    test_rmsnorm(1, 1000);
     test_elementwise(1, 4096);
     test_qgate(5, 4, 64);
     test_qgate(1, 24, 256);
@@ -452,7 +509,7 @@ int main(void) {
     if (g_fail == 0) {
         printf("PASS: Vulkan qwen35 ops (partial and interleaved rope, hadamard, PQ2_0 embed, "
                "relu2, "
-               "act_quant, silu, "
+               "act_quant, rmsnorm, rmsnorm_add, silu, "
                "silu_mul, "
                "sigmoid_mul, "
                "qgate_split)\n");

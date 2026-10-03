@@ -31,8 +31,10 @@ layout(push_constant) uniform Push {
 } pc;
 
 /* two-level reduce: subgroupAdd per warp + one tiny shared pass — the
- * 14-barrier tree was most of this kernel's ~9 us on the decode chain */
-shared float partial[8];
+ * 14-barrier tree was most of this kernel's ~9 us on the decode chain.
+ * One slot per subgroup, sized for the smallest subgroup Vulkan allows:
+ * llvmpipe runs 8 lanes, Intel 8 or 16, so 256 / 32 slots overflowed. */
+shared float partial[256];
 
 void main() {
     uint row = gl_WorkGroupID.x;
@@ -48,7 +50,7 @@ void main() {
     }
     barrier();
     float total = 0.0;
-    for (uint i = 0; i < 256u / gl_SubgroupSize; i++) {
+    for (uint i = 0; i < gl_NumSubgroups; i++) {
         total += partial[i];
     }
 
