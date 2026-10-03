@@ -19,6 +19,9 @@
  *     on zeroed buffers; no for a head_dim past 512, for query heads that
  *     are not a multiple of the KV heads and (INT4) for an odd head_dim →
  *     GEIST_E_UNSUPPORTED.
+ *   - attn_qkv_prep and the decode gate/up front (#474): bound with no
+ *     fallback, so the probe must not say yes to a head_dim or a weight
+ *     geometry the kernel refuses.
  *   - hadamard_rotate (#495): the model loader refuses a rotated model
  *     unless the probe says yes, so the probe must answer exactly what the
  *     kernel runs. Each geometry runs the kernel and compares: yes →
@@ -134,6 +137,121 @@ static int kv_quant_agreement(struct geist_backend *be,
         fails += geist_expect(s == (yes ? GEIST_OK : GEIST_E_UNSUPPORTED), msg);
     }
     for (size_t i = 0; i < 6; i++) {
+        if (all[i]->buffer != nullptr) {
+            be->desc->vtbl->buffer_destroy(be, all[i]->buffer);
+        }
+    }
+    return fails;
+}
+
+/* attn_qkv_prep, q only, over [1, 2, head_dim]: the probe must answer
+ * `want` (-1 = backend-dependent) and the kernel must succeed when it
+ * says yes and refuse when it says no. The plan binds the kernel with no
+ * fallback, so a yes the kernel refuses fails the layer (#474). */
+static int qkv_prep_agreement(struct geist_backend *be, size_t head_dim, int want) {
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    const struct geist_fusion_query   q     = {.op         = GEIST_FUSED_ATTN_QKV_PREP,
+                                               .m          = 1,
+                                               .head_dim   = head_dim,
+                                               .n_q_heads  = 2,
+                                               .n_kv_heads = 1};
+    const bool                        yes = fused->supported != nullptr && fused->supported(be, &q);
+    int                               fails = 0;
+    char                              msg[96];
+    if (want >= 0) {
+        snprintf(msg, sizeof msg, "attn_qkv_prep head_dim %zu: the probe's answer", head_dim);
+        fails += geist_expect(yes == (want == 1), msg);
+    }
+    const int64_t        hd = (int64_t) head_dim;
+    struct geist_tensor  tq = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 3, (int64_t[]) {1, 2, hd});
+    struct geist_tensor  tw = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 1, (int64_t[]) {hd});
+    struct geist_tensor  tc = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, (int64_t[]) {1, hd});
+    struct geist_tensor  ts = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, (int64_t[]) {1, hd});
+    struct geist_tensor *all[] = {&tq, &tw, &tc, &ts};
+    bool                 made  = true;
+    for (size_t i = 0; i < 4; i++) {
+        made = made && all[i]->buffer != nullptr;
+    }
+    if (!made) {
+        fails += geist_expect(false, "attn_qkv_prep: buffers");
+    } else {
+        const enum geist_status s = fused->attn_qkv_prep(be,
+                                                         &tq,
+                                                         nullptr,
+                                                         nullptr,
+                                                         &tw,
+                                                         nullptr,
+                                                         nullptr,
+                                                         &tc,
+                                                         &ts,
+                                                         1e-6f,
+                                                         0,
+                                                         nullptr,
+                                                         nullptr);
+        snprintf(msg,
+                 sizeof msg,
+                 yes ? "probe said yes: attn_qkv_prep head_dim %zu must return GEIST_OK"
+                     : "probe said no: attn_qkv_prep head_dim %zu must refuse",
+                 head_dim);
+        fails += geist_expect(yes ? s == GEIST_OK : s != GEIST_OK, msg);
+    }
+    for (size_t i = 0; i < 4; i++) {
+        if (all[i]->buffer != nullptr) {
+            be->desc->vtbl->buffer_destroy(be, all[i]->buffer);
+        }
+    }
+    return fails;
+}
+
+/* Decode gate/up front, plain and with the folded norm, at a geometry no
+ * backend runs (`n_in` not a whole Q4_K block, or `n_out` not a multiple
+ * of the norm kernel's 8-row tile): the probe must say no and the entry
+ * must refuse before it reads a weight byte. */
+static int
+ffn_gate_up_refusal(struct geist_backend *be, bool with_norm, int64_t n_in, int64_t n_out) {
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    if (with_norm ? fused->ffn_norm_gate_up == nullptr : fused->ffn_gate_up == nullptr) {
+        return 0;
+    }
+    const struct geist_weight w = {
+            .dtype = GEIST_DTYPE_Q4_K, .n_in = (int32_t) n_in, .n_out = (int32_t) n_out};
+    const struct geist_fusion_query q  = {.op      = with_norm ? GEIST_FUSED_FFN_NORM_GATE_UP
+                                                               : GEIST_FUSED_FFN_GATE_UP,
+                                          .m       = 1,
+                                          .d_model = (size_t) n_in,
+                                          .inter   = (size_t) n_out,
+                                          .gate_w  = &w,
+                                          .up_w    = &w};
+    const char *const               op = with_norm ? "ffn_norm_gate_up" : "ffn_gate_up";
+    char                            msg[96];
+    snprintf(msg,
+             sizeof msg,
+             "%s %lldx%lld: the probe says no",
+             op,
+             (long long) n_out,
+             (long long) n_in);
+    int fails = geist_expect(fused->supported == nullptr || !fused->supported(be, &q), msg);
+    struct geist_tensor  tx = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, (int64_t[]) {1, n_in});
+    struct geist_tensor  tn = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 1, (int64_t[]) {n_in});
+    struct geist_tensor  tg = zeroed(be, GEIST_DTYPE_Q4_K, 1, 2, (int64_t[]) {n_out, n_in});
+    struct geist_tensor  tu = zeroed(be, GEIST_DTYPE_Q4_K, 1, 2, (int64_t[]) {n_out, n_in});
+    struct geist_tensor  ty = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, (int64_t[]) {1, n_out});
+    struct geist_tensor *all[] = {&tx, &tn, &tg, &tu, &ty};
+    bool                 made  = true;
+    for (size_t i = 0; i < 5; i++) {
+        made = made && all[i]->buffer != nullptr;
+    }
+    if (!made) {
+        snprintf(msg, sizeof msg, "%s: buffers", op);
+        fails += geist_expect(false, msg);
+    } else {
+        const enum geist_status s =
+                with_norm ? fused->ffn_norm_gate_up(be, &tx, &tn, 1e-6f, &tg, &tu, &ty)
+                          : fused->ffn_gate_up(be, &tx, &tg, &tu, &ty);
+        snprintf(msg, sizeof msg, "probe said no: %s must refuse", op);
+        fails += geist_expect(s != GEIST_OK, msg);
+    }
+    for (size_t i = 0; i < 5; i++) {
         if (all[i]->buffer != nullptr) {
             be->desc->vtbl->buffer_destroy(be, all[i]->buffer);
         }
@@ -407,6 +525,43 @@ static int check_backend(const char *name) {
         fails += kv_quant_agreement(be, true, 1, 2, 1, 63, false);
     }
 
+    /* ---- attn_qkv_prep: an even head_dim the kernels run, one past the
+     * Vulkan kernel's 512-float shared row, and an odd one. */
+    if (fused->attn_qkv_prep != nullptr) {
+        fails += qkv_prep_agreement(be, 64, 1);
+        fails += qkv_prep_agreement(be, 520, -1);
+        fails += qkv_prep_agreement(be, 63, 0);
+    }
+
+    /* ---- Decode gate/up front: refused geometries. */
+    fails += ffn_gate_up_refusal(be, false, 100, 64);
+    fails += ffn_gate_up_refusal(be, true, 256, 60);
+
+    /* ---- gelu_tanh_mul_scaled: yes -> the kernel runs [2, 64]. */
+    {
+        struct geist_fusion_query sq = {
+                .op = GEIST_FUSED_GELU_TANH_MUL_SCALED, .m = 2, .d_model = 64, .inter = 64};
+        if (fused->supported != nullptr && fused->supported(be, &sq)) {
+            struct geist_tensor tx =
+                    zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, (int64_t[]) {2, 64});
+            struct geist_tensor tz =
+                    zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, (int64_t[]) {2, 64});
+            float scale[64];
+            for (size_t i = 0; i < 64; i++) {
+                scale[i] = 1.0f;
+            }
+            if (tx.buffer != nullptr && tz.buffer != nullptr) {
+                fails += geist_expect(fused->gelu_tanh_mul_scaled(be, &tx, &tz, scale, &tx) ==
+                                              GEIST_OK,
+                                      "probe said yes: gelu_tanh_mul_scaled must return GEIST_OK");
+            }
+            if (tx.buffer != nullptr)
+                v->buffer_destroy(be, tx.buffer);
+            if (tz.buffer != nullptr)
+                v->buffer_destroy(be, tz.buffer);
+        }
+    }
+
     /* ---- hadamard_rotate: plain and grouped-value forward, the inverse,
      * a permuted inverse and a permutation that does not multiply out to
      * the width (no backend runs those), and blocks at the edges of
@@ -438,6 +593,7 @@ int main(void) {
     fails += check_backend("cpu_neon");
     fails += check_backend("cpu_scalar");
     fails += check_backend("metal");
+    fails += check_backend("vulkan");
     if (fails > 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
