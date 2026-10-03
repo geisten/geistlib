@@ -1154,7 +1154,9 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
      * per decode token — the 1.93 GB `per_layer_token_embd` PLE table is
      * lookup-only (one row/token). β-mode copies that 1.93 GB resident,
      * pushing RSS to ~3.7 GB on a 4 GB Pi 5 → thrash. mmap-alias leaves it
-     * disk-backed, paging only touched rows.
+     * disk-backed, paging only touched rows — as long as nothing binds the
+     * table on a device: Metal pages in a bound buffer whole, so there the
+     * host gathers lookup-only tables (caps.lookup_tables_on_host, #529).
      *
      * GEIST_WEIGHT_MMAP=0 forces legacy β-mode (single backend arena, full
      * copy, mmap dropped post-load — full backend ownership, no retained
@@ -1714,6 +1716,11 @@ void transformer_session_free(struct transformer_arch_state   *state,
     safe_free(&dn_ws);
     sess->dn_prefill_ws        = nullptr;
     sess->dn_prefill_ws_floats = 0;
+
+    void *rows = sess->lookup_rows;
+    safe_free(&rows);
+    sess->lookup_rows        = nullptr;
+    sess->lookup_rows_floats = 0;
 
     if (state != nullptr && be != nullptr && sess->dn_conv_state != nullptr) {
         for (size_t li = 0; li < state->n_layers; li++) {

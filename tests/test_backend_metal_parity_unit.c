@@ -32,6 +32,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef GEIST_BACKEND_METAL
+#include "../src/backends/metal/metal_internal.h"
+#endif
+
 static int g_fail = 0;
 #define check(ok, what) (g_fail |= geist_expect((ok), (what)))
 
@@ -395,6 +399,47 @@ static void run_embedding_case(struct geist_backend *mt, int dtype, const char *
     free(expected);
 }
 
+#ifdef GEIST_BACKEND_METAL
+/* #529: an upload into a buffer the open command sequence reads is staged
+ * behind those reads. The sequence is not flushed; a copy encoded before
+ * the upload sees the old bytes and one encoded after it the new. */
+static void run_staged_upload(struct geist_backend *mt) {
+    const struct geist_backend_vtbl *v  = mt->desc->vtbl;
+    const struct metal_state        *st = mt->state;
+    float                            old[64], neu[64], got[64];
+    for (size_t i = 0; i < 64; i++) {
+        old[i] = (float) i;
+        neu[i] = 1000.0f + (float) i;
+    }
+    struct geist_buffer *x = nullptr, *y = nullptr, *z = nullptr;
+    const bool           ok = dev_alloc(mt, sizeof old, &x) != nullptr &&
+                              dev_alloc(mt, sizeof old, &y) != nullptr &&
+                              dev_alloc(mt, sizeof old, &z) != nullptr &&
+                              metal_ensure_attention_pipeline(mt) == GEIST_OK &&
+                              v->buffer_upload(x, sizeof old, (const uint8_t *) old) == GEIST_OK;
+    check(ok, "staged upload: buffers");
+    if (ok) {
+        const int tok = v->parallel_region_begin(mt, GEIST_REGION_PREFILL_BATCH);
+        check(v->buffer_copy(y, 0, x, 0, sizeof old) == GEIST_OK, "staged upload: copy before");
+        const int seq = st->sequence_token;
+        check(v->buffer_upload(x, sizeof neu, (const uint8_t *) neu) == GEIST_OK,
+              "staged upload: upload");
+        check(st->sequence_token == seq, "staged upload: the sequence is not flushed");
+        check(v->buffer_copy(z, 0, x, 0, sizeof neu) == GEIST_OK, "staged upload: copy after");
+        v->parallel_region_end(mt, tok);
+        check(v->buffer_download(sizeof got, (uint8_t *) got, y) == GEIST_OK &&
+                      memcmp(got, old, sizeof got) == 0,
+              "staged upload: the earlier copy sees the old bytes");
+        check(v->buffer_download(sizeof got, (uint8_t *) got, z) == GEIST_OK &&
+                      memcmp(got, neu, sizeof got) == 0,
+              "staged upload: the later copy sees the new bytes");
+    }
+    v->buffer_destroy(mt, x);
+    v->buffer_destroy(mt, y);
+    v->buffer_destroy(mt, z);
+}
+#endif
+
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
     enum { ROWS = 3, HEADS = 2, HD = 5, QOUT = HEADS * HD };
     const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
@@ -544,6 +589,9 @@ int main(void) {
     run_embedding_case(mt, GEIST_DTYPE_Q8_0, "Q8_0");
     run_embedding_case(mt, GEIST_DTYPE_PQ2_0, "PQ2_0");
     run_qwen35_attention_ops(mt);
+#ifdef GEIST_BACKEND_METAL
+    run_staged_upload(mt);
+#endif
 
     geist_backend_destroy(mt);
     geist_backend_destroy(ref);
