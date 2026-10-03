@@ -492,6 +492,13 @@ struct transformer_arch_state {
      * GPU-bindable. nullptr in mmap-alias mode or on heap fallback. */
     struct geist_buffer *weight_arena_buf;
     size_t               weight_arena_capacity;
+    /* Permuted llama attn_q / attn_k rows (#464) on a weights_device_copy
+     * backend, which keeps those matrices out of the arena: the file's pages
+     * are read-only. One allocation sized on first use; released in
+     * transformer_state_destroy. */
+    void  *rope_il_rows;
+    size_t rope_il_rows_used;
+    size_t rope_il_rows_capacity;
 
     /* ---- Per-layer weight blocks, heap-sized to st->n_layers. */
     struct transformer_layer_weights     *layers;

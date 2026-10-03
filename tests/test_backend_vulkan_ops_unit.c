@@ -91,43 +91,6 @@ static float silu_ref(float v) {
     return v >= 0.0f ? v / (1.0f + e) : (v * e) / (1.0f + e);
 }
 
-/* Interleaved (llama) rows: the fused op must equal "permute pairs to the
- * split-half order, then rope_apply" — the arch's host fallback. */
-static void test_rope_interleaved(size_t seq, size_t heads, size_t hd, const char *name) {
-    const size_t n   = seq * heads * hd;
-    float       *x   = fill(n, 0.21f, 1.0f);
-    float       *cs  = fill(seq * hd, 0.13f, 1.0f);
-    float       *sn  = fill(seq * hd, 0.17f, 1.0f);
-    float       *ref = malloc(n * sizeof(float));
-    float       *got = malloc(n * sizeof(float));
-    for (size_t r = 0; r < seq * heads; r++) {
-        for (size_t i = 0; i < hd / 2; i++) {
-            ref[r * hd + i]          = x[r * hd + 2 * i];
-            ref[r * hd + hd / 2 + i] = x[r * hd + 2 * i + 1];
-        }
-    }
-    rope_apply(seq, heads, hd, hd, ref, cs, sn);
-
-    struct geist_buffer *bx = dev_buf(x, n), *bc = dev_buf(cs, seq * hd),
-                        *bs = dev_buf(sn, seq * hd);
-    check(bx && bc && bs, "rope_il buffers");
-    struct geist_tensor tx = view(bx, 3, (int64_t) seq, (int64_t) heads, (int64_t) hd);
-    struct geist_tensor tc = view(bc, 2, (int64_t) seq, (int64_t) hd, 0);
-    struct geist_tensor ts = view(bs, 2, (int64_t) seq, (int64_t) hd, 0);
-    check(g_be->desc->fused->rope_apply_interleaved != nullptr, "rope_il entry");
-    const enum geist_status st = g_be->desc->fused->rope_apply_interleaved(g_be, &tx, &tc, &ts);
-    check(st == GEIST_OK, "rope_il dispatch");
-    check(download(bx, got, n), "rope_il download");
-    const double e = max_abs(got, ref, n);
-    printf("  rope_il %-19s max_abs %.2e\n", name, e);
-    check(e < 2e-6, name);
-    free(x);
-    free(cs);
-    free(sn);
-    free(ref);
-    free(got);
-}
-
 /* relu(x)^2 on the device, in place (VRAM-only buffer: a host fallback fails). */
 static void test_relu2(size_t n) {
     float *x   = fill(n, 0.37f, 3.0f);
@@ -462,9 +425,6 @@ int main(void) {
     test_rope(5, 3, 256, 64, "partial 64/256");
     test_rope(4, 2, 128, 128, "full 128/128");
     test_rope(3, 2, 96, 32, "partial 32/96");
-    test_rope_interleaved(5, 3, 128, "interleaved 128");
-    test_rope_interleaved(3, 2, 256, "interleaved 256");
-    test_rope_interleaved(4, 2, 64, "interleaved 64");
     test_embed_pq2_0(37, 384, 0);
     test_embed_pq2_0(37, 384, 36);
     test_embed_pq2_0(64, 1024, 17);

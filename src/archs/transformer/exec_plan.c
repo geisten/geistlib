@@ -76,9 +76,6 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_ARGMAX_F32:
         have = fused->argmax_f32 != nullptr;
         break;
-    case GEIST_FUSED_ROPE_INTERLEAVED:
-        have = fused->rope_apply_interleaved != nullptr;
-        break;
     case GEIST_FUSED_BITNET_ACT_QUANT:
         have = fused->bitnet_act_quant != nullptr;
         break;
@@ -117,10 +114,9 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         /* Per-projection input norms subsume SubLN: two of the seven are
          * the SubLN slots, loaded into the same fields, so the same
          * forward code applies them. */
-        P->apply_sub_ln     = st->config.has_sub_ln || st->config.has_projection_input_norms;
-        P->apply_ple        = st->config.has_ple;
-        P->rope_interleaved = st->config.rope_interleaved;
-        P->ffn_activation   = st->config.ffn_activation;
+        P->apply_sub_ln   = st->config.has_sub_ln || st->config.has_projection_input_norms;
+        P->apply_ple      = st->config.has_ple;
+        P->ffn_activation = st->config.ffn_activation;
 
         /* ---- FFN-front fusion binding (see exec_plan.h). Prefill is
          * probed at the largest m any session may use, so the answer
@@ -179,11 +175,6 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         P->fuse_gelu_mul = probe(be, q);
 
         q                        = base;
-        q.op                     = GEIST_FUSED_ROPE_INTERLEAVED;
-        q.head_dim               = L->head_dim;
-        P->fuse_rope_interleaved = P->rope_interleaved && probe(be, q);
-
-        q                        = base;
         q.op                     = GEIST_FUSED_BITNET_ACT_QUANT;
         P->fuse_bitnet_act_quant = P->apply_sub_ln && probe(be, q);
 
@@ -218,7 +209,7 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         q.head_dim            = L->head_dim;
         q.n_q_heads           = st->n_q_heads;
         q.n_kv_heads          = st->n_kv_heads;
-        P->fuse_attn_qkv_prep = P->apply_gemma_attn_norms && !P->rope_interleaved && probe(be, q);
+        P->fuse_attn_qkv_prep = P->apply_gemma_attn_norms && probe(be, q);
 
         /* Any m: decode and every prefill chunk take the same kernel. */
         q                    = (struct geist_fusion_query) {.op         = GEIST_FUSED_ATTN_KV_INT8,
