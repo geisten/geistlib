@@ -313,6 +313,8 @@ struct metal_state {
     void *gelu_rows_pipeline;
     void *silu_rows_function;
     void *silu_rows_pipeline;
+    void *relu2_rows_function;
+    void *relu2_rows_pipeline;
     void *silu_mul_rows_function;
     void *silu_mul_rows_pipeline;
     void *deltanet_mix_function;
