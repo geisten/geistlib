@@ -47,72 +47,6 @@ static struct transformer_forward_profile g_attn_profile = {
         .calls       = g_attn_profile_calls,
 };
 
-/* Upper bound on head_dim for the stack scratch in
- * permute_interleaved_rope_inplace. Every transformer family loaded so
- * far uses head_dim ≤ 256 (Gemma 4 = 256); we leave generous head-room
- * but enforce the bound explicitly because the helper would otherwise
- * silently smash the caller's stack on a future arch with larger heads.
- * Architectures that need more must provide workspace; this hot path cannot
- * allocate from the heap. */
-enum { PERMUTE_ROPE_MAX_HEAD_DIM = 1024 };
-
-static enum geist_status permute_interleaved_rope_inplace(const struct geist_backend_vtbl *v,
-                                                          struct geist_buffer             *buf,
-                                                          size_t                           seq,
-                                                          size_t                           n_heads,
-                                                          size_t head_dim) {
-
-    /* Both bounds, once per call and outside the loops. The evenness check
-     * is redundant with the load-time rejection in allocate_runtime_rope and
-     * deliberately so: this helper writes only 2*(head_dim/2) entries of
-     * `tmp` and then copies head_dim of them, so an odd head_dim reaching
-     * here would copy a stack slot nobody wrote. */
-    if (head_dim > PERMUTE_ROPE_MAX_HEAD_DIM || !rope_head_dim_supported(head_dim)) {
-        return GEIST_E_INVALID_ARG;
-    }
-    float *x = (float *) v->buffer_map(buf);
-    if (x == nullptr) {
-        return GEIST_E_BACKEND;
-    }
-    const size_t half = head_dim / 2;
-    for (size_t t = 0; t < seq; t++) {
-        for (size_t h = 0; h < n_heads; h++) {
-            float *xh = x + (t * n_heads + h) * head_dim;
-            float  tmp[PERMUTE_ROPE_MAX_HEAD_DIM];
-            for (size_t i = 0; i < half; i++) {
-                tmp[i]        = xh[2 * i];
-                tmp[i + half] = xh[2 * i + 1];
-            }
-            memcpy(xh, tmp, head_dim * sizeof(float));
-        }
-    }
-    v->buffer_unmap(buf);
-    return GEIST_OK;
-}
-
-/* RoPE on one q or k projection. Interleaved (llama) rows are permuted to the
- * half-split order first: on the device in one pass when the plan bound the
- * fused op (fuse_il), else on the host. */
-static enum geist_status rope_rows(const struct transformer_layer_forward_ctx *ctx,
-                                   struct geist_buffer                        *buf,
-                                   struct geist_tensor                        *t_3d,
-                                   size_t                                      n_heads,
-                                   const struct geist_tensor                  *t_cos,
-                                   const struct geist_tensor                  *t_sin,
-                                   bool                                        fuse_il) {
-    if (fuse_il && ctx->fused->rope_apply_interleaved(ctx->be, t_3d, t_cos, t_sin) == GEIST_OK) {
-        return GEIST_OK;
-    }
-    if (ctx->rope_interleaved) {
-        const enum geist_status s =
-                permute_interleaved_rope_inplace(ctx->v, buf, ctx->seq, n_heads, ctx->hd);
-        if (s != GEIST_OK) {
-            return s;
-        }
-    }
-    return ctx->prims->rope_apply(ctx->be, t_3d, t_cos, t_sin);
-}
-
 enum geist_status transformer_layer_run_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
     struct transformer_arch_state         *st    = ctx->st;
@@ -353,9 +287,6 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
      * two dispatches. Covers the gemma half-split-RoPE path on the plain
      * (f32/f16) cache; anything else falls back to the decomposed ops. */
     bool fused_qkv_prep = false;
-    /* Interleaved (llama) rows: permute + RoPE on the device when the plan
-     * bound the fused op and the whole head rotates. */
-    const bool fuse_il = ctx->P != nullptr && ctx->P->fuse_rope_interleaved && n_rot == ctx->hd;
     if (ctx->P != nullptr && ctx->P->fuse_attn_qkv_prep && !ctx->kv_kivi_enabled &&
         !ctx->kv_int8_enabled) {
         struct geist_tensor t_q_norm_w = view_1d(L->q_norm.buffer, (int64_t) ctx->hd);
@@ -428,7 +359,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
                 return s;
             }
         }
-        s = rope_rows(ctx, sess->scratch_q, &t_q_3d, st->n_q_heads, &t_cos, &t_sin, fuse_il);
+        s = prims->rope_apply(be, &t_q_3d, &t_cos, &t_sin);
         if (s != GEIST_OK) {
             return s;
         }
@@ -476,7 +407,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
                 return s;
             }
         }
-        s = rope_rows(ctx, sess->scratch_k, &t_k_3d, st->n_kv_heads, &t_cos, &t_sin, fuse_il);
+        s = prims->rope_apply(be, &t_k_3d, &t_cos, &t_sin);
         if (s != GEIST_OK) {
             return s;
         }

@@ -62,7 +62,6 @@ struct transformer_layer_forward_ctx {
     bool apply_sub_ln;
     bool apply_gemma_attn_norms;
     bool apply_qk_norms;
-    bool rope_interleaved;
     bool apply_ple;
     /* Whether the PLE stage will actually run this layer: apply_ple AND a
      * per-layer input to run it on. TWO stages branch on this — the FFN
