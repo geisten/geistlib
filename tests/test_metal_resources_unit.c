@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #ifdef GEIST_BACKEND_METAL
 #include "../src/backends/metal/metal_internal.h"
+#include "model_fixtures.h"
+#include <geist_util.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -39,6 +41,67 @@ static void *observe(void *arg) {
             atomic_store(&o->failed, true);
     }
     return nullptr;
+}
+/* #541: a model loaded from a file runs on Metal without its weight pages
+ * becoming private copies — on a MAP_PRIVATE mapping, wiring a NoCopy
+ * buffer copy-on-writes every page it makes resident. */
+static bool weights_not_copied(void) {
+    char          path[]  = "/tmp/geist_metal_map_XXXXXX";
+    const int     fd      = mkstemp(path);
+    struct tf_buf g       = mf_llama_gguf(&(struct mf_llama) {.layers   = 2,
+                                                              .d_model  = 128,
+                                                              .heads    = 4,
+                                                              .kv_heads = 2,
+                                                              .ffn      = 256,
+                                                              .vocab    = 64,
+                                                              .context  = 64,
+                                                              .seed     = 7});
+    const bool    written = fd >= 0 && write(fd, g.b, g.n) == (ssize_t) g.n;
+    if (fd >= 0)
+        close(fd);
+    free(g.b);
+    struct geist_backend *be     = nullptr;
+    struct geist_model   *m      = nullptr;
+    struct geist_session *s      = nullptr;
+    const geist_token_t   ids[4] = {1, 2, 3, 4};
+    geist_token_t         t      = 0;
+    bool   ok    = written && geist_backend_create("metal", nullptr, nullptr, &be) == GEIST_OK &&
+                   geist_model_load(path, be, &m) == GEIST_OK &&
+                   geist_session_create(m, be, nullptr, &s) == GEIST_OK &&
+                   geist_session_prefill_tokens(s, 4, ids) == GEIST_OK &&
+                   geist_session_decode_step(s, &t) == GEIST_OK;
+    size_t pages = 0, copied = 0;
+    if (ok) {
+        const struct metal_state *st = be->state;
+        const size_t              pg = (size_t) getpagesize();
+        for (size_t i = 0; i < st->buf_reg_count; i++) {
+            const struct geist_buffer *w = st->buf_reg[i].buf;
+            if (w->role != GEIST_BUFFER_WEIGHT || !(w->memory_flags & GEIST_MEMORY_ALIASED))
+                continue;
+            const uintptr_t lo = (uintptr_t) w->mapped & ~(pg - 1);
+            const uintptr_t hi = ((uintptr_t) w->mapped + w->bytes + pg - 1) & ~(pg - 1);
+            char            vec[256];
+            for (uintptr_t a = lo; a < hi; a += pg * sizeof vec) {
+                const size_t len = hi - a < pg * sizeof vec ? hi - a : pg * sizeof vec;
+                if (mincore((void *) a, len, vec) != 0)
+                    return false;
+                for (size_t k = 0; k < len / pg; k++) {
+                    pages += 1;
+                    copied += (vec[k] & (MINCORE_COPIED | MINCORE_ANONYMOUS)) != 0;
+                }
+            }
+        }
+    }
+    geist_session_destroy(s);
+    geist_model_destroy(m);
+    geist_backend_destroy(be);
+    unlink(path);
+    ok = ok && pages > 0 && copied == 0;
+    printf("{\"phase\":\"weights-not-copied\",\"pages\":%zu,\"copied\":%zu,\"ok\":%s}\n",
+           pages,
+           copied,
+           ok ? "true" : "false");
+    return ok;
 }
 /* #530: a buffer joins the residency set when a dispatch first binds it and
  * leaves with its handle; a buffer nothing binds never joins. No set exists
@@ -94,6 +157,7 @@ int main(void) {
         return GEIST_TEST_ERROR;
     struct metal_state *st = be->state;
     bool                ok = sample(be, "initial");
+    ok                     = weights_not_copied() && ok;
     ok                     = residency(be) && ok;
     size_t size            = 16 * 1024 * 1024;
     void  *shared =
