@@ -429,6 +429,7 @@ static void cpu_x86_linear_pq2_0_mN(size_t                     m,
     }
 }
 
+#ifndef GEIST_NO_AMX /* the assembler knows AMX; mk/backend-cpu_x86.mk */
 /* Token tiles per pass of the AMX GEMM. Each pass streams the weights once
  * and keeps the packed activations of its tokens (nb * tiles * 2 KB, 2.2 MB
  * for 8 tiles at n_in = 17408) near L2: 256 tokens in two passes measured
@@ -519,6 +520,7 @@ static void cpu_x86_linear_pq2_0_mN_amx(size_t                     m,
         }
     }
 }
+#endif /* GEIST_NO_AMX */
 
 /* Whether this host may run kernel_pq2_0_amx.c: the dispatcher tier (which
  * honours GEIST_FORCE_ISA: anything below avx512_vnni keeps the AVX2 GEMM),
@@ -528,7 +530,7 @@ static void cpu_x86_linear_pq2_0_mN_amx(size_t                     m,
  * once per bind is harmless). Decided here, outside that TU — see
  * mk/backend-cpu_x86.mk. */
 bool cpu_x86_linear_pq2_0_amx_usable(void) {
-#if defined(__linux__) && defined(SYS_arch_prctl)
+#if defined(__linux__) && defined(SYS_arch_prctl) && !defined(GEIST_NO_AMX)
     struct geist_hw_probe hw;
     geist_hw_probe_isa(&hw);
     constexpr long ARCH_REQ_XCOMP_PERM = 0x1023;
@@ -547,7 +549,11 @@ bool cpu_x86_linear_pq2_0_bind(struct geist_weight *w) {
         return false;
     }
     w->linear_m1 = cpu_x86_linear_pq2_0_m1;
+#ifndef GEIST_NO_AMX
     w->linear_mN = cpu_x86_linear_pq2_0_amx_usable() ? cpu_x86_linear_pq2_0_mN_amx
                                                      : cpu_x86_linear_pq2_0_mN;
+#else
+    w->linear_mN = cpu_x86_linear_pq2_0_mN;
+#endif
     return true;
 }
