@@ -194,6 +194,21 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 keeps one copy of the Q4_K weights below AVX-512** (#577). Every
+  Q4_K weight was repacked into a Q4_Kx8 or W4A8 blob about as large as the
+  GGUF bytes, which stay resident too: with `load_from_memory` they are the
+  caller's buffer, with `load(path)` the file's pages. The repack only pays
+  off where the AVX-512 Q4_Kx8 prefill panels run; below them (AVX2 hosts,
+  e.g. the Steam Deck) a new kernel now reads the GGUF block layout directly,
+  with no repack. On a synthetic Llama-3.2-1B-geometry Q4_K model (small
+  vocabulary) at the AVX2 tier, peak RSS after a prompt and 8 tokens drops
+  from 1.31 to 0.68 GiB, loaded from memory or from the file, and
+  decode and prefill are within noise of the repack (`tools/bench_revision_ab.py`,
+  6 cycles). AVX-512 hosts keep the repack, which prefills about twice as
+  fast there; `GEIST_Q4K_RAW=1` takes the raw kernel on any host, `=0` keeps
+  the repack. `test_x86_q4k_raw_unit` checks the kernel against cpu_scalar
+  under a derived activation-rounding bound.
+
 - **Native TQ2_0 linear on cpu_x86** (#410). Ternary TQ2_0 ran the generic
   path, which decodes every trit to fp32 before the dot. It now stays in int8:
   the activations are quantized once per call with one scale per 256

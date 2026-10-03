@@ -39,6 +39,12 @@ void q4kx8_gemm_scalar(size_t                     M,
                        const struct block_q4_Kx8 *W,
                        float                      Y[static M * N]);
 
+/* Whether q4kx8_gemm_avx512 runs its AVX-512 panels on this host: the
+ * dispatcher tier (GEIST_FORCE_ISA-clamped) and AVX-512F/BW/DQ/VL. Below
+ * that it falls back to the AVX2 GEMV, and the Q4_Kx8 repack buys no
+ * speed over reading the GGUF bytes (linear_q4k_raw.c). */
+bool q4kx8_avx512_usable(void);
+
 /* Public entry (kernel_q4kx8_gemm_avx512.c, built without -mavx512*).
  * Checks the CPU once, then runs the AVX-512 16x16 bulk below on the rows
  * it covers (M rounded down to 16, N a multiple of 16) and the AVX2 GEMV on

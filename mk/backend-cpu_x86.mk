@@ -20,6 +20,7 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/kernel_w4a8_avx512_vnni.c \
     src/backends/cpu_x86/q4k_to_w4a8.c \
     src/backends/cpu_x86/linear_q4k.c \
+    src/backends/cpu_x86/linear_q4k_raw.c \
     src/backends/cpu_x86/linear_q6k.c \
     src/backends/cpu_x86/linear_f32q.c \
     src/backends/cpu_x86/linear_generic.c \
