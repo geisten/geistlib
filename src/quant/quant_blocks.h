@@ -72,6 +72,19 @@ struct block_q6_K_t {
 } __attribute__((packed));
 _Static_assert(sizeof(struct block_q6_K_t) == 210, "struct block_q6_K_t size");
 
+struct block_q4_0_t {
+    uint16_t d;      /* scale (fp16) */
+    uint8_t  qs[16]; /* element j in the low nibble of qs[j], j + 16 in the high */
+} __attribute__((packed));
+_Static_assert(sizeof(struct block_q4_0_t) == Q4_0_BLOCK_BYTES, "struct block_q4_0_t size");
+
+struct block_q4_1_t {
+    uint16_t d; /* scale (fp16) */
+    uint16_t m; /* min   (fp16) */
+    uint8_t  qs[16];
+} __attribute__((packed));
+_Static_assert(sizeof(struct block_q4_1_t) == Q4_1_BLOCK_BYTES, "struct block_q4_1_t size");
+
 struct block_q8_0_t {
     uint16_t d;
     int8_t   qs[32];

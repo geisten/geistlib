@@ -2,9 +2,9 @@
  * test_x86_generic_linear_unit — cpu_x86 binds its own kernels for every
  * dtype without a native x86 one, and they match the cpu_scalar oracle.
  *
- * Those dtypes (Q4_0, Q4_1, Q3_K, Q5_K, the IQ formats, TQ2_0, BF16 and F16
- * prefill; Q8_0 and PQ2_0 until they got native kernels, test_x86_q8_0_unit
- * and test_pq2_0_unit) used
+ * Those dtypes (Q3_K, Q5_K, the IQ formats, TQ2_0, BF16 and F16 prefill;
+ * Q8_0, PQ2_0, Q4_0 and Q4_1 until they got native kernels,
+ * test_x86_q8_0_unit, test_pq2_0_unit and test_x86_q4_0_unit) used
  * to stay bound to cpu_scalar's own kernels — the
  * single-threaded, heap-allocating reference — on the default x86 backend.
  * Two checks per dtype:
@@ -66,8 +66,6 @@ struct fmt {
 };
 
 static const struct fmt FMTS[] = {
-        {"Q4_0", GEIST_DTYPE_Q4_0, Q4_0_BLOCK_ELEMS, Q4_0_BLOCK_BYTES, 1, {0, 0}, false},
-        {"Q4_1", GEIST_DTYPE_Q4_1, Q4_1_BLOCK_ELEMS, Q4_1_BLOCK_BYTES, 2, {0, 2}, false},
         {"Q3_K", GEIST_DTYPE_Q3_K, Q3_K_BLOCK_ELEMS, Q3_K_BLOCK_BYTES, 1, {108, 0}, false},
         {"Q5_K", GEIST_DTYPE_Q5_K, Q5_K_BLOCK_ELEMS, Q5_K_BLOCK_BYTES, 2, {0, 2}, false},
         {"IQ2_S", GEIST_DTYPE_IQ2_S, IQ2_S_BLOCK_ELEMS, IQ2_S_BLOCK_BYTES, 1, {0, 0}, false},
