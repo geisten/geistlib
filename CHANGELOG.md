@@ -479,6 +479,15 @@ minor release.
   vtable.
 
 ### Fixed
+- **Metal loads models with small F16/BF16 matrices under
+  `GEIST_WEIGHT_MMAP=0`** (#561). The weight arena counted the second staged
+  copy and the F32 copy of a widened half-precision matrix only on a backend
+  with `weights_need_backend_arena`, but Metal widens without that cap:
+  Ternary-Bonsai-2-27B ran out of arena at `blk.63`, llama-3.2-3B with F16
+  `attn_k` ~500 MB early at `blk.22`. Both load now, and their logits match
+  mmap-alias byte for byte. A backend that resolves such a matrix natively
+  gets an arena larger by that surcharge.
+
 - **`geist_model_load` and `geist_model_load_from_memory` return the cause's
   status.** Every architecture failure used to come back as `GEIST_E_IO`
   (`GEIST_E_FORMAT` from memory), even when the cause was an out-of-memory or
