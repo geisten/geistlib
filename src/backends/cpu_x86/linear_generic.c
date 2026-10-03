@@ -4,7 +4,7 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * These dtypes (Q3_K, the IQ formats, PQ2_0,
+ * These dtypes (the IQ formats, PQ2_0,
  * BF16, and F16 prefill) used to stay on cpu_scalar's resolver: the
  * correctness oracle, which allocates a row buffer on the heap per call,
  * dequantizes into it and dots in double, on one thread. On x86 that was the
