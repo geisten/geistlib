@@ -3,7 +3,8 @@
 Build with `make DECISION=1`. Default builds (`DECISION=0`) retain linkable
 symbols but return `GEIST_E_UNSUPPORTED` from create/reset/score; capability
 queries return false/0. Switching the flag rebuilds the implementation and
-relinks consumers, including `1 -> 0`, without `make clean`.
+relinks consumers, including `1 -> 0`, without `make clean`. Flag transitions
+force compile/archive/link even with one-second build timestamps.
 `make test-decision` verifies both modes in the same output directory;
 `make MODE=asan test-decision` repeats that gate with sanitizers. The runtime query
 `geist_decision_available()` describes the linked library, not the caller's

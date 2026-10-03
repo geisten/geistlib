@@ -334,6 +334,15 @@ $(error DECISION must be 0 or 1)
 endif
 endif
 
+# Darwin make/archive timestamps can have one-second resolution. A flag
+# transition must force compilation, archiving and linking even when all
+# three outputs share the same timestamp. No extra work for an unchanged flag.
+DECISION_PREVIOUS := $(shell cat $(BUILD_DIR)/decision-config 2>/dev/null)
+ifneq ($(DECISION),$(DECISION_PREVIOUS))
+.PHONY: force-decision-transition
+$(BUILD_DIR)/src/engine/decision.o $(LIB_FILE) $(BIN_TARGETS): force-decision-transition
+endif
+
 # A content stamp makes 0 -> 1 -> 0 reliable without make clean. Only this
 # translation unit depends on the flag; callers query the linked capability.
 .PHONY: force-decision-config
@@ -380,7 +389,7 @@ $(STB_OBJ): third_party/stb/stb_impl.c
 # Static library
 $(LIB_FILE): $(LIB_OBJS)
 	@mkdir -p $(@D)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@ $(LIB_OBJS)
 
 # Preprocessed-assembly rule (.S). The engine ships no .S source today; the
 # rule stays because a consumer building in-tree may add one, and because
