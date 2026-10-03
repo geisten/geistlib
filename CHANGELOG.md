@@ -531,6 +531,12 @@ minor release.
   vtable.
 
 ### Fixed
+- **Vulkan DeltaNet and RMSNorm on GPUs with subgroups narrower than 32
+  lanes.** Their reductions kept one shared slot per subgroup, sized for 32
+  lanes, so on llvmpipe (8 lanes) and Intel (8 or 16) the extra subgroups wrote
+  past the array. The DeltaNet mixer returned NaN, so qwen35-family models ran
+  wrong on those devices. The slots now fit any subgroup size, and the
+  DeltaNet parity test runs in both Vulkan CI jobs.
 - **An F16/BF16 model that Metal cannot run fails at load, not at the first
   prefill** (#564). Metal has no half-precision linear. The loader widens a
   matrix of at most 4M elements to F32, but a larger one used to load and
