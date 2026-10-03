@@ -42,6 +42,58 @@ static void *observe(void *arg) {
     }
     return nullptr;
 }
+/* #528: a range inside a live Metal buffer aliases as a view of it — its
+ * MTLBuffer, no new allocation — and the GPU honours the view's offset,
+ * also when copying between two overlapping views of one buffer. In an open
+ * batch a view is referenced by its own binds, not by a sibling's. */
+static bool views(struct geist_backend *be) {
+    struct metal_state              *st  = be->state;
+    const struct geist_backend_vtbl *v   = be->desc->vtbl;
+    const size_t                     off = 3 * 16384 + 64;
+    struct geist_buffer *pool = nullptr, *src = nullptr, *a = nullptr, *b = nullptr, *c = nullptr;
+    if (v->buffer_create(be, 1u << 20, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_MAPPED, &pool) !=
+                GEIST_OK ||
+        v->buffer_create(be, 64, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_MAPPED, &src) != GEIST_OK)
+        return false;
+    uint8_t *pm = v->buffer_map(pool);
+    for (size_t i = 0; i < (1u << 20); i++)
+        pm[i] = (uint8_t) (i * 7u);
+    memset(v->buffer_map(src), 0xc3, 64);
+    const unsigned long before = metal_msg_send_ulong0(st, st->device, "currentAllocatedSize");
+    bool ok = v->buffer_create_aliased(be, pm + off, 4096, GEIST_BUFFER_SCRATCH, &a) == GEIST_OK &&
+              v->buffer_create_aliased(be, pm + off + 256, 4096, GEIST_BUFFER_SCRATCH, &b) ==
+                      GEIST_OK &&
+              v->buffer_create_aliased(be, pm + off + 8192, 4096, GEIST_BUFFER_SCRATCH, &c) ==
+                      GEIST_OK;
+    ok      = ok && a->buffer == pool->buffer && b->buffer == pool->buffer &&
+              v->buffer_map(a) == pm + off &&
+              metal_msg_send_ulong0(st, st->device, "currentAllocatedSize") == before;
+    /* A GPU write through the view lands at its offset and nowhere else. */
+    ok = ok && v->buffer_copy(a, 16, src, 0, 64) == GEIST_OK &&
+         pm[off + 15] == (uint8_t) ((off + 15) * 7u) && pm[off + 16] == 0xc3 &&
+         pm[off + 79] == 0xc3 && pm[off + 80] == (uint8_t) ((off + 80) * 7u);
+    /* Overlapping views of one MTLBuffer copy like memmove. */
+    uint8_t want[768];
+    memcpy(want, pm + off, sizeof want);
+    memmove(want + 256, want, 512);
+    ok            = ok && v->buffer_copy(b, 0, a, 0, 512) == GEIST_OK &&
+                    memcmp(pm + off, want, sizeof want) == 0;
+    ok            = ok && metal_ensure_attention_pipeline(be) == GEIST_OK;
+    const int tok = ok ? v->parallel_region_begin(be, GEIST_REGION_DECODE_STEP) : 0;
+    ok            = ok && tok != 0 && v->buffer_copy(a, 0, src, 0, 64) == GEIST_OK &&
+                    metal_seq_references(st, a->buffer, a->base_off, a->bytes) &&
+                    !metal_seq_references(st, c->buffer, c->base_off, c->bytes);
+    v->parallel_region_end(be, tok);
+    /* A view keeps its bytes alive past the parent's handle. */
+    v->buffer_destroy(be, pool);
+    ok = ok && ((const uint8_t *) v->buffer_map(a))[16] == 0xc3;
+    v->buffer_destroy(be, a);
+    v->buffer_destroy(be, b);
+    v->buffer_destroy(be, c);
+    v->buffer_destroy(be, src);
+    printf("{\"phase\":\"views\",\"ok\":%s}\n", ok ? "true" : "false");
+    return ok;
+}
 /* #541: a model loaded from a file runs on Metal without its weight pages
  * becoming private copies — on a MAP_PRIVATE mapping, wiring a NoCopy
  * buffer copy-on-writes every page it makes resident. */
@@ -157,6 +209,7 @@ int main(void) {
         return GEIST_TEST_ERROR;
     struct metal_state *st = be->state;
     bool                ok = sample(be, "initial");
+    ok                     = views(be) && ok;
     ok                     = weights_not_copied() && ok;
     ok                     = residency(be) && ok;
     size_t size            = 16 * 1024 * 1024;
