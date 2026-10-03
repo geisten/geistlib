@@ -125,6 +125,26 @@ either way — this is a spelling, not an API change, and consumers need no
 `make check-headers` compiles each public header standalone as C23 and as
 C++17 with `-pedantic-errors`, per PR, so this cannot quietly regress.
 
+## Context length: model cap and session cap (experimental)
+
+Two values bound how many tokens a session can hold:
+
+- **The model cap** is set once, at load. `geist_model_load_with_opts` and
+  `geist_model_load_from_memory_with_opts` read `opts->max_seq_len`; with
+  nullptr options or 0, the cap is 4096. The model sizes the buffers it owns
+  from it (RoPE tables and the default session's scratch), so a larger cap
+  costs memory up front. The cap does not follow the GGUF's
+  `<arch>.context_length`.
+- **The session cap** is `geist_session_opts.max_seq_len` at
+  `geist_session_create`, at most the model cap. A session that asks for more
+  is refused. 0 means the model cap. Several sessions on one model may each
+  take a smaller cap; their KV caches are sized from it.
+
+`geist_model_load` and `geist_model_load_from_memory` are the nullptr-options
+forms and keep the 4096 cap. A consumer that needs a longer context (a server
+taking 8k-token prompts, say) passes the same `max_seq_len` at load and at
+session create.
+
 ## Optional backend resources (experimental)
 
 `geist_backend_resources_snapshot` is an additive, observational API. Its output

@@ -212,6 +212,17 @@ enum geist_status geist_model_load_from_memory(const void           *data,
                                                struct geist_backend *be,
                                                struct geist_model  **out);
 
+/* @stability EXPERIMENTAL
+ * geist_model_load_from_memory with load-time options, the in-memory twin of
+ * geist_model_load_with_opts: `opts->max_seq_len` sets the model's sequence
+ * cap (0 or nullptr opts: 4096), which bounds every session created on it.
+ * The same aliasing rule applies: `data` must outlive the model. */
+enum geist_status geist_model_load_from_memory_with_opts(const void                      *data,
+                                                         size_t                           size,
+                                                         struct geist_backend            *be,
+                                                         const struct geist_session_opts *opts,
+                                                         struct geist_model             **out);
+
 void        geist_model_destroy(struct geist_model *m);
 const char *geist_model_errmsg(const struct geist_model *m);
 

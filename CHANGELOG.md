@@ -9,6 +9,11 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **`geist_model_load_from_memory_with_opts`** (EXPERIMENTAL, #428). The
+  in-memory twin of `geist_model_load_with_opts`: `opts->max_seq_len` sets the
+  model's sequence cap, which bounds every session. An embedded model was
+  stuck at the 4096 default before, whatever its consumer needed.
+  `docs/API_CONTRACT.md` now describes the model cap and the session cap.
 - **Metal reads lookup-only tables on the host** (`caps.lookup_tables_on_host`,
   #529). A Metal dispatch makes every buffer it binds resident in full. So the
   Gemma 4 PLE table and an untied `token_embd` were paged in whole to read one
