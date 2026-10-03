@@ -80,8 +80,10 @@ struct transformer_layer_exec_plan {
  * greedy head. Filled by transformer_exec_plan_build alongside the
  * per-layer plans. */
 struct transformer_model_fusion_plan {
-    bool embed_lookup_scaled; /* embed_table on-device lookup+scale */
-    bool ple_lookup_scaled;   /* ple_table on-device lookup+scale */
+    bool embed_lookup_scaled; /* embed_table on-device lookup+scale; false
+                               * also when the host gathers an untied table
+                               * (caps.lookup_tables_on_host) */
+    bool ple_lookup_scaled;   /* ple_table on-device lookup+scale; same */
     bool argmax;              /* device argmax over [1, vocab] logits */
 
     /* ---- Probe-and-bind for the OPTIONAL primitives (#352). Same

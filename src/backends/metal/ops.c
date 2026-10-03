@@ -4300,6 +4300,8 @@ const struct geist_backend_descriptor geist_backend_metal = {
         .tunables           = metal_tunables,
         .caps               = {.kv_f16_attention = true,
                                .batched_submit   = true,
+                               /* Binding pages a buffer in whole (#529). */
+                               .lookup_tables_on_host = true,
                                /* deltanet_mix encodes 64-token sub-chunks internally
                                 * (#322), so DN models keep preferred_m_max. */
                  .dn_subchunk = true,
