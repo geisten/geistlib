@@ -251,6 +251,10 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->q3k_n4_function, "release");
         metal_msg_send_void0(st, st->q3k_mm_pipeline, "release");
         metal_msg_send_void0(st, st->q3k_mm_function, "release");
+        metal_msg_send_void0(st, st->tq2_n4_pipeline, "release");
+        metal_msg_send_void0(st, st->tq2_n4_function, "release");
+        metal_msg_send_void0(st, st->tq2_mm_pipeline, "release");
+        metal_msg_send_void0(st, st->tq2_mm_function, "release");
         metal_msg_send_void0(st, st->iq3s_n4_pipeline, "release");
         metal_msg_send_void0(st, st->iq3s_n4_function, "release");
         metal_msg_send_void0(st, st->iq3s_mm_pipeline, "release");
@@ -358,6 +362,10 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->q3k_n4_function                       = nullptr;
     st->q3k_mm_pipeline                       = nullptr;
     st->q3k_mm_function                       = nullptr;
+    st->tq2_n4_pipeline                       = nullptr;
+    st->tq2_n4_function                       = nullptr;
+    st->tq2_mm_pipeline                       = nullptr;
+    st->tq2_mm_function                       = nullptr;
     st->iq3s_n4_pipeline                      = nullptr;
     st->iq3s_n4_function                      = nullptr;
     st->iq3s_mm_pipeline                      = nullptr;
