@@ -20,6 +20,14 @@
  * quantizes all m activation rows once (in parallel) and keeps each weight
  * row in L1 while it is dotted against every one of them.
  *
+ * Q4_0 (#410) runs the same kernels: a block is the same 32 elements under
+ * one fp16 scale, with the codes as nibbles (element i in the low nibble of
+ * byte i, element 16 + i in the high one, value q - 8). Unpacked into one
+ * ymm of int8 in [-8, 7], the block goes through the same maddubs + madd —
+ * again exact — so Q4_0 decode reads 18 bytes per block instead of 34 and
+ * never builds a Q8_0 copy. M>1 stays on the AVX2 kernel for Q4_0; the
+ * VNNI tiles read Q8_0 blocks.
+ *
  * AVX2 is the backend's x86-64-v3 baseline, so this runs on every host
  * cpu_x86 does (the AVX2-only ones included). On AVX-512 VNNI hosts M>1
  * binds kernel_q8_0_avx512_vnni.c's register tiles instead (same bits,
@@ -93,11 +101,14 @@ static void quantize_row_q8_0(size_t nb, const float *x, int8_t *qx, float *dx) 
 }
 
 /* Exact int32 sum of one block's 32 products, as 8 fp32 lanes. */
-static inline __m256 block_products(const int8_t *wq, const int8_t *xq) {
-    const __m256i w   = _mm256_loadu_si256((const __m256i *) wq);
+static inline __m256 block_products_w(__m256i w, const int8_t *xq) {
     const __m256i x   = _mm256_loadu_si256((const __m256i *) xq);
     const __m256i p16 = _mm256_maddubs_epi16(_mm256_sign_epi8(w, w), _mm256_sign_epi8(x, w));
     return _mm256_cvtepi32_ps(_mm256_madd_epi16(p16, _mm256_set1_epi16(1)));
+}
+
+static inline __m256 block_products(const int8_t *wq, const int8_t *xq) {
+    return block_products_w(_mm256_loadu_si256((const __m256i *) wq), xq);
 }
 
 /* One weight row against one quantized activation row. Two accumulators
@@ -127,6 +138,57 @@ dot_row(size_t nb, const struct block_q8_0_t *w, const int8_t *qx, const float *
     return _mm_cvtss_f32(s4);
 }
 
+/* Q4_0's 16 code bytes as 32 int8 in element order: low nibbles are
+ * elements 0..15, high nibbles 16..31, both minus 8. */
+static inline __m256i q4_0_codes(const uint8_t *qs) {
+    const __m128i b  = _mm_loadu_si128((const __m128i *) qs);
+    const __m128i lo = _mm_and_si128(b, _mm_set1_epi8(0x0F));
+    const __m128i hi = _mm_and_si128(_mm_srli_epi16(b, 4), _mm_set1_epi8(0x0F));
+    return _mm256_sub_epi8(_mm256_set_m128i(hi, lo), _mm256_set1_epi8(8));
+}
+
+static inline float q4_0_d(const uint8_t *blk) {
+    uint16_t d;
+    memcpy(&d, blk, sizeof d);
+    return _cvtsh_ss(d);
+}
+
+/* dot_row for one Q4_0 weight row (Q4_0_BLOCK_BYTES per block). */
+static inline float dot_row_q4_0(size_t nb, const uint8_t *w, const int8_t *qx, const float *dx) {
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    size_t b    = 0;
+    for (; b + 2 <= nb; b += 2) {
+        const uint8_t *b0 = w + b * Q4_0_BLOCK_BYTES;
+        const uint8_t *b1 = b0 + Q4_0_BLOCK_BYTES;
+        acc0              = _mm256_fmadd_ps(_mm256_set1_ps(q4_0_d(b0) * dx[b]),
+                                            block_products_w(q4_0_codes(b0 + 2), qx + b * QK),
+                                            acc0);
+        acc1              = _mm256_fmadd_ps(_mm256_set1_ps(q4_0_d(b1) * dx[b + 1]),
+                                            block_products_w(q4_0_codes(b1 + 2), qx + (b + 1) * QK),
+                                            acc1);
+    }
+    if (b < nb) {
+        const uint8_t *b0 = w + b * Q4_0_BLOCK_BYTES;
+        acc0              = _mm256_fmadd_ps(_mm256_set1_ps(q4_0_d(b0) * dx[b]),
+                                            block_products_w(q4_0_codes(b0 + 2), qx + b * QK),
+                                            acc0);
+    }
+    const __m256 s  = _mm256_add_ps(acc0, acc1);
+    __m128       s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
+    s4              = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
+    s4              = _mm_add_ss(s4, _mm_movehdup_ps(s4));
+    return _mm_cvtss_f32(s4);
+}
+
+/* One weight row of either format; `q4` is a constant at every call site,
+ * so the inlined drivers below specialize per format. */
+[[gnu::always_inline]] static inline float
+dot_any(bool q4, size_t nb, const uint8_t *row, const int8_t *qx, const float *dx) {
+    return q4 ? dot_row_q4_0(nb, row, qx, dx)
+              : dot_row(nb, (const struct block_q8_0_t *) row, qx, dx);
+}
+
 /* The calling thread's workspace with room for m quantized activation rows
  * (int8 values + one fp32 scale per block), or nullptr. */
 static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m, size_t n_in) {
@@ -138,10 +200,8 @@ static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m
     return cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, acts_bytes, 0, scale_bytes, 0);
 }
 
-static void cpu_x86_linear_q8_0_m1(const float               *x,
-                                   const struct geist_weight *w,
-                                   struct geist_backend      *be,
-                                   float                     *y) {
+[[gnu::always_inline]] static inline void linear_m1(
+        bool q4, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
@@ -154,20 +214,36 @@ static void cpu_x86_linear_q8_0_m1(const float               *x,
     float  *dx = ws->mN_scale;
     quantize_row_q8_0(nb, x, qx, dx);
 
-    const struct block_q8_0_t *wb = (const struct block_q8_0_t *) w->raw;
+    const uint8_t *wb = (const uint8_t *) w->raw;
+    const size_t   rb = nb * (q4 ? Q4_0_BLOCK_BYTES : Q8_0_BLOCK_BYTES);
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
     for (size_t j = 0; j < n_out; j++) {
-        y[j] = dot_row(nb, wb + j * nb, qx, dx);
+        y[j] = dot_any(q4, nb, wb + j * rb, qx, dx);
     }
 }
 
-static void cpu_x86_linear_q8_0_mN(size_t                     m,
-                                   const float               *x,
+static void cpu_x86_linear_q8_0_m1(const float               *x,
                                    const struct geist_weight *w,
                                    struct geist_backend      *be,
                                    float                     *y) {
+    linear_m1(false, x, w, be, y);
+}
+
+static void cpu_x86_linear_q4_0_m1(const float               *x,
+                                   const struct geist_weight *w,
+                                   struct geist_backend      *be,
+                                   float                     *y) {
+    linear_m1(true, x, w, be, y);
+}
+
+[[gnu::always_inline]] static inline void linear_mN(bool                       q4,
+                                                    size_t                     m,
+                                                    const float               *x,
+                                                    const struct geist_weight *w,
+                                                    struct geist_backend      *be,
+                                                    float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
@@ -176,9 +252,10 @@ static void cpu_x86_linear_q8_0_mN(size_t                     m,
         geist_linear_ref(m, x, w, y);
         return;
     }
-    int8_t                    *qx = ws->mN_acts;
-    float                     *dx = ws->mN_scale;
-    const struct block_q8_0_t *wb = (const struct block_q8_0_t *) w->raw;
+    int8_t        *qx = ws->mN_acts;
+    float         *dx = ws->mN_scale;
+    const uint8_t *wb = (const uint8_t *) w->raw;
+    const size_t   rb = nb * (q4 ? Q4_0_BLOCK_BYTES : Q8_0_BLOCK_BYTES);
 
     /* One team: quantize the m rows, then the GEMM (implicit barrier
      * between the two worksharing loops). */
@@ -196,12 +273,28 @@ static void cpu_x86_linear_q8_0_mN(size_t                     m,
 #pragma omp for schedule(static)
 #endif
         for (size_t j = 0; j < n_out; j++) {
-            const struct block_q8_0_t *wr = wb + j * nb;
+            const uint8_t *wr = wb + j * rb;
             for (size_t i = 0; i < m; i++) {
-                y[i * n_out + j] = dot_row(nb, wr, qx + i * n_in, dx + i * nb);
+                y[i * n_out + j] = dot_any(q4, nb, wr, qx + i * n_in, dx + i * nb);
             }
         }
     }
+}
+
+static void cpu_x86_linear_q8_0_mN(size_t                     m,
+                                   const float               *x,
+                                   const struct geist_weight *w,
+                                   struct geist_backend      *be,
+                                   float                     *y) {
+    linear_mN(false, m, x, w, be, y);
+}
+
+static void cpu_x86_linear_q4_0_mN(size_t                     m,
+                                   const float               *x,
+                                   const struct geist_weight *w,
+                                   struct geist_backend      *be,
+                                   float                     *y) {
+    linear_mN(true, m, x, w, be, y);
 }
 
 /* M>1 on AVX-512 VNNI hosts: the same quantization, then 4-row x 4-token
@@ -262,5 +355,15 @@ bool cpu_x86_linear_q8_0_bind(struct geist_weight *w) {
     }
     w->linear_m1 = cpu_x86_linear_q8_0_m1;
     w->linear_mN = vnni_tiles_usable() ? cpu_x86_linear_q8_0_mN_vnni : cpu_x86_linear_q8_0_mN;
+    return true;
+}
+
+bool cpu_x86_linear_q4_0_bind(struct geist_weight *w) {
+    if (w == nullptr || w->dtype != GEIST_DTYPE_Q4_0 || w->n_in <= 0 ||
+        (size_t) w->n_in % QK != 0) {
+        return false;
+    }
+    w->linear_m1 = cpu_x86_linear_q4_0_m1;
+    w->linear_mN = cpu_x86_linear_q4_0_mN;
     return true;
 }

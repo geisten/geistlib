@@ -20,4 +20,8 @@
  * M>1 takes the AVX-512 VNNI tiles where the ISA gate allows them. */
 [[nodiscard]] bool cpu_x86_linear_q8_0_bind(struct geist_weight *w);
 
+/* The same for Q4_0 weights (nibble codes unpacked to int8 per block,
+ * straight from the GGUF bytes). M>1 runs the AVX2 kernel on every host. */
+[[nodiscard]] bool cpu_x86_linear_q4_0_bind(struct geist_weight *w);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_LINEAR_Q8_0_H */

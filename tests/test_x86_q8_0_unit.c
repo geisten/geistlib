@@ -25,6 +25,9 @@
  * whole matrix runs twice: in a child with GEIST_FORCE_ISA=avx2, then with
  * the default dispatch. On a host without VNNI both runs take the AVX2
  * kernel; the CI SDE leg (-spr) covers the tiles there.
+ *
+ * Q4_0 (#410) runs the same kernels with nibble codes, so every shape is
+ * checked for it too, under the same bound (its codes are just narrower).
  */
 #define _POSIX_C_SOURCE 200809L /* fork, setenv, waitpid */
 
@@ -72,6 +75,22 @@ static uint32_t next_u32(void) {
     return g_rng;
 }
 
+/* The weight format under test, and its block geometry and codes. */
+static enum geist_dtype g_dtype = GEIST_DTYPE_Q8_0;
+
+static size_t block_bytes(void) {
+    return g_dtype == GEIST_DTYPE_Q4_0 ? Q4_0_BLOCK_BYTES : Q8_0_BLOCK_BYTES;
+}
+
+/* Code k of a block: Q8_0 stores int8, Q4_0 element k < 16 in the low
+ * nibble of byte k and element 16 + i in the high nibble of byte i. */
+static int block_code(const uint8_t *blk, size_t k) {
+    if (g_dtype == GEIST_DTYPE_Q8_0) {
+        return (int8_t) blk[2 + k];
+    }
+    return k < 16 ? (blk[2 + k] & 0x0F) - 8 : (blk[2 + k - 16] >> 4) - 8;
+}
+
 struct shape_result {
     size_t unwritten;
     size_t over_bound;
@@ -101,7 +120,7 @@ static void check_outputs(size_t               n_in,
             }
             double bound = 0.0, mag = 0.0;
             for (size_t b = 0; b < nb; b++) {
-                const uint8_t *blk = raw + (j * nb + b) * Q8_0_BLOCK_BYTES;
+                const uint8_t *blk = raw + (j * nb + b) * block_bytes();
                 uint16_t       d_bits;
                 memcpy(&d_bits, blk, sizeof d_bits);
                 float dw = 0.0f;
@@ -116,7 +135,7 @@ static void check_outputs(size_t               n_in,
                 }
                 const double half_dx = (double) amax / 127.0 / 2.0;
                 for (size_t k = 0; k < Q8_0_BLOCK_ELEMS; k++) {
-                    const double wv = (double) dw * (double) (int8_t) blk[2 + k];
+                    const double wv = (double) dw * (double) block_code(blk, k);
                     bound += fabs(wv) * half_dx;
                     mag += fabs(wv * (double) xi[b * Q8_0_BLOCK_ELEMS + k]);
                 }
@@ -140,25 +159,25 @@ static int check_shape(size_t                n_in,
                        float                *y_ref,
                        float                *y) {
     const size_t nb     = n_in / Q8_0_BLOCK_ELEMS;
-    const size_t nbytes = n_out * nb * Q8_0_BLOCK_BYTES;
+    const size_t nbytes = n_out * nb * block_bytes();
     uint8_t     *raw    = heap_alloc_array_aligned(uint8_t, nbytes);
     if (raw == nullptr) {
         fprintf(stderr, "ERROR: weight allocation failed\n");
         return 1;
     }
     for (size_t b = 0; b < n_out * nb; b++) {
-        uint8_t       *blk = raw + b * Q8_0_BLOCK_BYTES;
+        uint8_t       *blk = raw + b * block_bytes();
         const uint16_t d   = D_BITS[next_u32() % (sizeof D_BITS / sizeof *D_BITS)];
         memcpy(blk, &d, sizeof d);
-        for (size_t k = 0; k < Q8_0_BLOCK_ELEMS; k++) {
-            blk[2 + k] = (uint8_t) next_u32(); /* full int8 range, -128 included */
+        for (size_t k = 2; k < block_bytes(); k++) {
+            blk[k] = (uint8_t) next_u32(); /* every code, Q8_0's -128 included */
         }
     }
     struct geist_weight w_ref = {.raw        = raw,
                                  .raw_nbytes = nbytes,
                                  .n_in       = (int32_t) n_in,
                                  .n_out      = (int32_t) n_out,
-                                 .dtype      = GEIST_DTYPE_Q8_0};
+                                 .dtype      = (uint16_t) g_dtype};
     struct geist_weight w_x86 = w_ref;
     int                 fails = 0;
     if (be_ref->desc->vtbl->resolve_weight(be_ref, &w_ref) != GEIST_OK ||
@@ -168,7 +187,7 @@ static int check_shape(size_t                n_in,
         goto out;
     }
     if (w_x86.linear_m1 == w_ref.linear_m1 || w_x86.linear_mN == w_ref.linear_mN) {
-        fprintf(stderr, "FAIL: cpu_x86 left cpu_scalar's Q8_0 kernel bound\n");
+        fprintf(stderr, "FAIL: cpu_x86 left cpu_scalar's kernel bound\n");
         fails = 1;
         goto out;
     }
@@ -191,7 +210,8 @@ static int check_shape(size_t                n_in,
         check_outputs(n_in, n_out, m, raw, x, y_ref, y, &r);
         if (r.unwritten != 0 || r.over_bound != 0) {
             fprintf(stderr,
-                    "FAIL: n_in=%zu n_out=%zu m=%zu: %zu unwritten, %zu past the bound\n",
+                    "FAIL: %s n_in=%zu n_out=%zu m=%zu: %zu unwritten, %zu past the bound\n",
+                    g_dtype == GEIST_DTYPE_Q4_0 ? "Q4_0" : "Q8_0",
                     n_in,
                     n_out,
                     m,
@@ -199,7 +219,8 @@ static int check_shape(size_t                n_in,
                     r.over_bound);
             fails++;
         } else {
-            printf("  n_in=%-4zu n_out=%-2zu m=%-2zu worst |dy|/bound %.3f\n",
+            printf("  %s n_in=%-4zu n_out=%-2zu m=%-2zu worst |dy|/bound %.3f\n",
+                   g_dtype == GEIST_DTYPE_Q4_0 ? "Q4_0" : "Q8_0",
                    n_in,
                    n_out,
                    m,
@@ -260,6 +281,9 @@ static int run_all(void) {
             x[k] = 0.0f;
         }
         for (size_t b = 0; b < sizeof N_OUTS / sizeof *N_OUTS; b++) {
+            g_dtype = GEIST_DTYPE_Q8_0;
+            fails += check_shape(n_in, N_OUTS[b], be_ref, be_x86, x, y_ref, y);
+            g_dtype = GEIST_DTYPE_Q4_0;
             fails += check_shape(n_in, N_OUTS[b], be_ref, be_x86, x, y_ref, y);
         }
     }
@@ -307,7 +331,7 @@ int main(void) {
         fprintf(stderr, "FAIL: forced-avx2 run %d, default run %d\n", forced, native);
         return GEIST_TEST_FAIL;
     }
-    printf("PASS: cpu_x86 Q8_0 within the activation-rounding bound on every shape, "
+    printf("PASS: cpu_x86 Q8_0 and Q4_0 within the activation-rounding bound on every shape, "
            "both M>1 kernels\n");
     return GEIST_TEST_PASS;
 }

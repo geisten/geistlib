@@ -441,7 +441,7 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
         return base;
     }
     /* Rebind per dtype. Q4_K → Q4_Kx8 GEMV/GEMM; Q6_K → native GEMV +
-     * W8x16 GEMM; Q8_0 → int8 Q8_0 x Q8_0; PQ2_0 → W2 x A8 GEMV / GEMM;
+     * W8x16 GEMM; Q8_0 / Q4_0 → int8 x Q8_0 activations; PQ2_0 → W2 x A8 GEMV / GEMM;
      * I2_S → VNNI x4; F16 → Q8 or F16C GEMV for M=1; F32 → W8A8.
      * Everything else — and Q4_K / Q6_K when their repack cannot be built —
      * takes the generic kernels, never cpu_scalar's single-threaded ones. */
@@ -460,6 +460,11 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
         break;
     case GEIST_DTYPE_Q8_0:
         if (!cpu_x86_linear_q8_0_bind(w)) {
+            (void) cpu_x86_linear_generic_bind(w);
+        }
+        break;
+    case GEIST_DTYPE_Q4_0:
+        if (!cpu_x86_linear_q4_0_bind(w)) {
             (void) cpu_x86_linear_generic_bind(w);
         }
         break;
