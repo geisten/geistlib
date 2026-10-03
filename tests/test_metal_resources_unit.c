@@ -10,6 +10,8 @@
 #include "../src/backends/metal/metal_internal.h"
 #include "model_fixtures.h"
 #include <geist_util.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -43,8 +45,8 @@ static void *observe(void *arg) {
     return nullptr;
 }
 /* #555: a slice of a file mapping, private or shared, is wrapped in place
- * (NoCopy over its pages, base_off at the bytes); anonymous memory is
- * copied. */
+ * (NoCopy over its pages, base_off at the bytes); so is read-only anonymous
+ * memory (#577). Writable anonymous memory is copied. */
 static bool aliasing(struct geist_backend *be) {
     struct metal_state *st     = be->state;
     const size_t        page   = (size_t) sysconf(_SC_PAGESIZE);
@@ -52,15 +54,17 @@ static bool aliasing(struct geist_backend *be) {
     const int           fd     = mkstemp(path);
     if (fd < 0 || ftruncate(fd, (off_t) (page * 4)) != 0)
         return false;
-    uint8_t *maps[3] = {
+    uint8_t *maps[4] = {
             mmap(nullptr, page * 4, PROT_READ, MAP_PRIVATE, fd, 0),
             mmap(nullptr, page * 4, PROT_READ, MAP_SHARED, fd, 0),
             mmap(nullptr, page * 4, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0),
+            mmap(nullptr, page * 4, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0),
     };
+    const bool expect_wrapped[4] = {true, true, false, true};
     close(fd);
     unlink(path);
-    bool ok = true;
-    for (unsigned i = 0; i < 3; i++) {
+    bool ok = maps[3] != MAP_FAILED && mprotect(maps[3], page * 4, PROT_READ) == 0;
+    for (unsigned i = 0; i < 4; i++) {
         struct geist_buffer *buf = nullptr;
         ok = ok && maps[i] != MAP_FAILED &&
              metal_buffer_create_aliased(be, maps[i] + page + 64, 256, GEIST_BUFFER_WEIGHT, &buf) ==
@@ -68,12 +72,54 @@ static bool aliasing(struct geist_backend *be) {
         const bool wrapped = ok &&
                              metal_msg_send_id0(st, buf->buffer, "contents") == maps[i] + page &&
                              buf->base_off == 64;
-        ok                 = ok && wrapped == (i < 2);
+        ok = ok && wrapped == expect_wrapped[i];
         metal_buffer_destroy(be, buf);
         if (maps[i] != MAP_FAILED)
             munmap(maps[i], page * 4);
     }
     printf("{\"phase\":\"aliasing\",\"ok\":%s}\n", ok ? "true" : "false");
+    return ok;
+}
+/* #577: the kernel splits a large anonymous mapping into several VM entries
+ * (128 MiB each on current macOS). A read-only range that crosses such a seam
+ * is still wrapped in place, not copied; Gemma 4 E4B's 1.9 GB per-layer
+ * embedding table is one such tensor. */
+static bool aliasing_across_entries(struct geist_backend *be) {
+    struct metal_state *st    = be->state;
+    const size_t        page  = (size_t) sysconf(_SC_PAGESIZE);
+    const size_t        bytes = (size_t) 384 << 20;
+    uint8_t *map = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (map == MAP_FAILED)
+        return false;
+    /* Find the first entry boundary inside the mapping. */
+    mach_vm_address_t                     addr  = (mach_vm_address_t) map;
+    mach_vm_size_t                        size  = 0;
+    natural_t                             depth = 0;
+    vm_region_submap_short_info_data_64_t info  = {0};
+    mach_msg_type_number_t                count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+    bool            ok   = mprotect(map, bytes, PROT_READ) == 0 &&
+                           mach_vm_region_recurse(mach_task_self(),
+                                                  &addr,
+                                                  &size,
+                                                  &depth,
+                                                  (vm_region_recurse_info_t) &info,
+                                                  &count) == KERN_SUCCESS;
+    const uintptr_t seam = (uintptr_t) (addr + size);
+    const bool split = ok && seam > (uintptr_t) map + page && seam < (uintptr_t) map + bytes - page;
+    /* Straddle the seam when there is one; otherwise the whole mapping is one
+     * entry and the range still has to wrap. */
+    uint8_t             *p   = split ? (uint8_t *) seam - page - 64 : map + page + 64;
+    struct geist_buffer *buf = nullptr;
+    ok = ok && metal_buffer_create_aliased(be, p, page * 3, GEIST_BUFFER_WEIGHT, &buf) == GEIST_OK;
+    ok = ok &&
+         metal_msg_send_id0(st, buf->buffer, "contents") ==
+                 (void *) ((uintptr_t) p & ~(page - 1)) &&
+         buf->base_off == ((uintptr_t) p & (page - 1));
+    metal_buffer_destroy(be, buf);
+    munmap(map, bytes);
+    printf("{\"phase\":\"aliasing-across-entries\",\"split\":%s,\"ok\":%s}\n",
+           split ? "true" : "false",
+           ok ? "true" : "false");
     return ok;
 }
 /* #528: a range inside a live Metal buffer aliases as a view of it — its
@@ -319,6 +365,7 @@ int main(void) {
     metal_msg_send_void0(st, heap, "release");
     metal_msg_send_void0(st, desc, "release");
     ok = aliasing(be) && ok;
+    ok = aliasing_across_entries(be) && ok;
     ok = sample(be, "released") && ok;
     geist_backend_destroy(be);
     be = nullptr;
