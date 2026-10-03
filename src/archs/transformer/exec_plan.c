@@ -85,6 +85,9 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_ATTN_KV_INT4:
         have = fused->attention_kv_int4 != nullptr;
         break;
+    case GEIST_FUSED_HADAMARD_ROTATE: /* probed by rotation.c at load */
+        have = fused->hadamard_rotate != nullptr;
+        break;
     }
     return have && fused->supported != nullptr && fused->supported(be, &q);
 }

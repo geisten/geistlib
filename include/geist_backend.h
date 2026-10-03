@@ -297,6 +297,7 @@ enum geist_fused_op {
     GEIST_FUSED_BITNET_ACT_QUANT,
     GEIST_FUSED_ATTN_KV_INT8,
     GEIST_FUSED_ATTN_KV_INT4,
+    GEIST_FUSED_HADAMARD_ROTATE,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -318,6 +319,14 @@ struct geist_fusion_query {
     const struct geist_weight *gate_w;
     const struct geist_weight *up_w;
     const struct geist_weight *down_w;
+    /* hadamard_rotate: the geist_hadamard_args geometry of one call shape
+     * (rows are `m`). */
+    size_t width;
+    size_t block;
+    size_t perm_hd;
+    size_t perm_nk;
+    size_t perm_rep;
+    bool   inverse;
 };
 
 /* Complete Gated-DeltaNet mixer after its four input projections. All
@@ -429,7 +438,7 @@ struct geist_hadamard_args {
  * non-null slot may still return GEIST_E_UNSUPPORTED for geometries its
  * kernel doesn't cover, and the caller falls back. The one exception is
  * hadamard_rotate (see its comment): a model that needs it refuses to load
- * where it is null, rather than running a host round-trip per call.
+ * where the probe says no, rather than running a host round-trip per call.
  *
  * Probe-and-bind: call sites migrate from per-call negotiation to
  * consulting `supported` once at plan-build time (the FFN front is
@@ -682,8 +691,11 @@ struct geist_backend_fused {
     /* Blockwise Walsh-Hadamard activation transform for models whose
      * weights were stored in a rotated basis (prism.hadamard GGUF keys).
      * See geist_hadamard_args. The one slot without a decomposed
-     * fallback: a model that needs it refuses to load on a backend that
-     * leaves it nullptr, instead of running a host round-trip per call. */
+     * fallback: a model that needs it refuses to load unless `supported`
+     * answers yes for GEIST_FUSED_HADAMARD_ROTATE at every rotated width,
+     * instead of running a host round-trip per call. The probe covers
+     * geometry only: a kernel that fails to build on the device (a Metal
+     * shader compile error) still surfaces at the first call. */
     enum geist_status (*hadamard_rotate)(struct geist_backend             *be,
                                          const struct geist_hadamard_args *args);
 

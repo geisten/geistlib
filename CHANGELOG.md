@@ -188,6 +188,18 @@ minor release.
 
 ### Changed
 
+- **A rotated model loads only where the backend promises its Hadamard
+  geometry** (#495, `geist_backend.h`, experimental). `hadamard_rotate` now
+  joins probe-and-bind: new `GEIST_FUSED_HADAMARD_ROTATE` and the
+  `geist_fusion_query` fields `width`, `block`, `perm_hd`/`perm_nk`/`perm_rep`
+  and `inverse`. The loader asks `supported()` for every rotated width
+  instead of testing the slot for null. A `prism.hadamard.block_size` past
+  4096 used to load on Metal and fail on the first token; it is now refused
+  at load. Backends that install `hadamard_rotate` must answer the new op in
+  `supported()`, or rotated models no longer load on them. The probe checks
+  geometry only: a Metal shader that fails to compile still surfaces at the
+  first call.
+
 - **Llama-family Q/K rows are permuted once at load** (#464). GGUFs store
   `attn_q` / `attn_k` rows in interleaved RoPE pair order; the forward pass
   used to permute the q/k activations on every layer and token, on the host

@@ -18,6 +18,7 @@
 #include <geist.h>
 #include <geist_backend.h>
 
+#include "hadamard.h"
 #include "heap.h"
 #include "quant.h"
 
@@ -186,15 +187,24 @@ const struct geist_backend_vtbl cpu_scalar_vtbl = {
         .resolve_weight        = cpu_scalar_resolve_weight,
 };
 
-/* Elementwise F32 fusions hold for any geometry and any m; nothing else
- * is implemented. */
+/* Elementwise F32 fusions hold for any geometry and any m; the Hadamard
+ * rotation for the geometry the shared host transform accepts. Nothing
+ * else is implemented. */
 static bool cpu_scalar_fused_supported(struct geist_backend            *be,
                                        const struct geist_fusion_query *q) {
     (void) be;
     if (q == nullptr) {
         return false;
     }
-    return q->op == GEIST_FUSED_GELU_TANH_MUL || q->op == GEIST_FUSED_GELU_TANH_MUL_SCALED;
+    switch (q->op) {
+    case GEIST_FUSED_GELU_TANH_MUL:
+    case GEIST_FUSED_GELU_TANH_MUL_SCALED:
+        return true;
+    case GEIST_FUSED_HADAMARD_ROTATE:
+        return geist_hadamard_query_ok(q);
+    default:
+        return false;
+    }
 }
 
 /* Exported like the vtbl: cpu_x86 struct-copies these as its Phase-0
