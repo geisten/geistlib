@@ -85,6 +85,14 @@ struct block_q4_1_t {
 } __attribute__((packed));
 _Static_assert(sizeof(struct block_q4_1_t) == Q4_1_BLOCK_BYTES, "struct block_q4_1_t size");
 
+/* Element (h * 128 + l * 32 + k) is bits 2l..2l+1 of qs[h * 32 + k], h < 2,
+ * l < 4, k < 32; the trit is that value minus 1. */
+struct block_tq2_0_t {
+    uint8_t qs[64];
+    uint8_t d[2]; /* fp16, little-endian */
+};
+static_assert(sizeof(struct block_tq2_0_t) == TQ2_0_BLOCK_BYTES, "struct block_tq2_0_t size");
+
 struct block_q8_0_t {
     uint16_t d;
     int8_t   qs[32];

@@ -25,6 +25,7 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/linear_generic.c \
     src/backends/cpu_x86/linear_q4_0.c \
     src/backends/cpu_x86/linear_q8_0.c \
+    src/backends/cpu_x86/linear_tq2_0.c \
     src/backends/cpu_x86/linear_pq2_0.c \
     src/backends/cpu_x86/kernel_pq2_0_amx.c \
     src/backends/cpu_x86/kernel_q8_0_avx512_vnni.c \
