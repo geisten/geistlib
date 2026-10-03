@@ -14,8 +14,8 @@
  * filled by the time the engine calls geist_backend_create.
  *
  * cpu_x86_resolve_weight starts from cpu_scalar's resolver (it validates
- * the weight and knows every dtype), then rebinds: native kernels for Q4_K,
- * Q6_K, Q4_0, Q4_1, Q8_0, TQ2_0, I2_S, PQ2_0, F16 decode and F32, and the
+ * the weight and knows every dtype), then rebinds: native kernels for Q3_K, Q4_K,
+ * Q5_K, Q6_K, Q4_0, Q4_1, Q8_0, TQ2_0, I2_S, PQ2_0, F16 decode and F32, and the
  * generic multi-threaded kernels (linear_generic.c) for every other dtype.
  * cpu_scalar's own kernels — the single-threaded correctness oracle — are
  * never left bound for a dtype cpu_x86 can serve.
@@ -458,10 +458,11 @@ static bool q4k_reads_raw(void) {
         return base;
     }
     /* Rebind per dtype. Q4_K → Q4_Kx8 GEMV/GEMM; Q6_K → native GEMV +
-     * W8x16 GEMM; Q4_0 / Q4_1 → nibbles x Q8_0; TQ2_0 → trits x int8; Q8_0 → int8 Q8_0 x Q8_0;
-     * PQ2_0 → W2 x A8 GEMV / GEMM; I2_S → VNNI x4; F16 → Q8 or F16C GEMV for M=1; F32 → W8A8.
-     * Everything else — and Q4_K / Q6_K when their repack cannot be built — takes the generic
-     * kernels, never cpu_scalar's single-threaded ones. */
+     * W8x16 GEMM; Q3_K / Q5_K → native GEMV / GEMM on the GGUF bytes; Q4_0 / Q4_1 → nibbles x Q8_0;
+     * TQ2_0 → trits x int8; Q8_0 → int8 Q8_0 x Q8_0; PQ2_0 → W2 x A8 GEMV / GEMM; I2_S → VNNI x4;
+     * F16 → Q8 or F16C GEMV for M=1; F32 → W8A8. Everything else — and Q4_K / Q6_K when their
+     * repack cannot be built — takes the generic kernels, never cpu_scalar's single-threaded ones.
+     */
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_K: {
         struct cpu_x86_state *st = (struct cpu_x86_state *) be->state;
@@ -473,6 +474,11 @@ static bool q4k_reads_raw(void) {
         }
         break;
     }
+    case GEIST_DTYPE_Q3_K:
+        if (!cpu_x86_linear_q3k_bind(w)) {
+            (void) cpu_x86_linear_generic_bind(w);
+        }
+        break;
     case GEIST_DTYPE_Q5_K:
         if (!cpu_x86_linear_q5k_bind(w)) {
             (void) cpu_x86_linear_generic_bind(w);

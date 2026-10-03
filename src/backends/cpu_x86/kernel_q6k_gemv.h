@@ -1,5 +1,5 @@
 /*
- * src/backends/cpu_x86/kernel_q6k_gemv.h — native Q6_K decode GEMV.
+ * src/backends/cpu_x86/kernel_q6k_gemv.h — native Q6_K and Q3_K GEMV / GEMM.
  *
  * Layer: BACKEND (cpu_x86, internal). See kernel_q6k_gemv.c.
  */
@@ -28,6 +28,18 @@ void   q6k_gemm(size_t         M,
                 size_t         K,
                 const float   *x,
                 const uint8_t *q6k_raw,
+                void          *scratch,
+                float         *y);
+
+/* The same two entry points over native Q3_K weights (N rows x K/256
+ * block_q3_K_t), with the same contracts. */
+void   q3k_gemv_m1(size_t N, size_t K, const float *x, const uint8_t *q3k_raw, float y[static N]);
+size_t q3k_gemm_scratch_bytes(size_t M, size_t K);
+void   q3k_gemm(size_t         M,
+                size_t         N,
+                size_t         K,
+                const float   *x,
+                const uint8_t *q3k_raw,
                 void          *scratch,
                 float         *y);
 
