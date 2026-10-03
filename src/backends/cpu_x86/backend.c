@@ -473,6 +473,11 @@ static bool q4k_reads_raw(void) {
         }
         break;
     }
+    case GEIST_DTYPE_Q5_K:
+        if (!cpu_x86_linear_q5k_bind(w)) {
+            (void) cpu_x86_linear_generic_bind(w);
+        }
+        break;
     case GEIST_DTYPE_Q6_K:
         if (cpu_x86_linear_q6k_resolve(w) != GEIST_OK) {
             (void) cpu_x86_linear_generic_bind(w);
