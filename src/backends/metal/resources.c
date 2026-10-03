@@ -191,11 +191,184 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
         be = st->backend;
     }
     if (st != nullptr && st->objc_msgSend != nullptr && st->sel_registerName != nullptr) {
+        /* The residency set keeps a member alive: drop the MTLBuffer from
+         * it with its last handle (views share one). */
+        bool shared = false;
+        for (size_t i = 0; i < st->buf_reg_count && !shared; i++) {
+            shared = st->buf_reg[i].buf->buffer == buf->buffer;
+        }
+        if (!shared) {
+            metal_residency_forget(st, buf->buffer);
+        }
         metal_msg_send_void0(st, buf->buffer, "release");
     }
     if (be != nullptr) {
         geist_backend_free(be, buf);
     }
+}
+
+/* ---- Residency set (#530) --------------------------------------------- */
+
+static size_t metal_res_home(const void *buf, size_t mask) {
+    return (size_t) ((((uint64_t) (uintptr_t) buf >> 4) * 0x9e3779b97f4a7c15u) >> 40) & mask;
+}
+
+static bool metal_responds(struct metal_state *st, void *obj, const char *selector) {
+    union {
+        void *raw;
+        bool (*fn)(void *, void *, void *);
+    } send = {.raw = st->objc_msgSend};
+    return obj != nullptr && send.fn(obj,
+                                     metal_sel_register_name(st, "respondsToSelector:"),
+                                     metal_sel_register_name(st, selector));
+}
+
+/* res_thread: commits the buffers that joined since its last beat and
+ * requests the set's residency, every 500 ms until res_keep_s pass without
+ * a dispatch, then sleeps until the next one wakes it (metal_residency_note).
+ * res_parked and res_used are sequentially consistent: one of the two sides
+ * sees the other's store, so a dispatch either finds the thread parked and
+ * signals it, or the thread finds the dispatch and does not park. */
+static void *metal_residency_keep_alive(void *arg) {
+    struct metal_state *st = arg;
+    pthread_setname_np("geist-metal-residency");
+    uint64_t last = metal_now_ns();
+    pthread_mutex_lock(&st->res_lock);
+    while (!st->res_stop) {
+        const uint64_t now = metal_now_ns();
+        if (atomic_exchange(&st->res_used, false)) {
+            last = now;
+        }
+        if ((now - last) / 1000000000u < st->res_keep_s) {
+            void *pool = metal_pool_push(st);
+            if (st->res_dirty) {
+                metal_msg_send_void0(st, st->residency_set, "commit");
+                st->res_dirty = false;
+            }
+            metal_msg_send_void0(st, st->residency_set, "requestResidency");
+            metal_pool_pop(st, pool);
+            const struct timespec beat = {.tv_nsec = 500 * 1000 * 1000};
+            (void) pthread_cond_timedwait_relative_np(&st->res_wake, &st->res_lock, &beat);
+            continue;
+        }
+        atomic_store(&st->res_parked, true);
+        if (!atomic_load(&st->res_used)) {
+            pthread_cond_wait(&st->res_wake, &st->res_lock);
+        }
+        atomic_store(&st->res_parked, false);
+    }
+    pthread_mutex_unlock(&st->res_lock);
+    return nullptr;
+}
+
+void metal_residency_create(struct metal_state *st, uint64_t keep_alive_s) {
+    void *cls = metal_objc_get_class(st, "MTLResidencySetDescriptor");
+    if (cls == nullptr || !metal_responds(st, st->device, "newResidencySetWithDescriptor:error:") ||
+        !metal_responds(st, st->command_queue, "addResidencySet:")) {
+        return; /* before macOS 15: every command buffer makes its own resident */
+    }
+    void *desc = metal_msg_send_id0(st, cls, "new");
+    if (desc == nullptr) {
+        return;
+    }
+    metal_msg_send_void_ulong(st, desc, "setInitialCapacity:", 1024);
+    void *err = nullptr;
+    void *set = metal_msg_send_id_id_err(
+            st, st->device, "newResidencySetWithDescriptor:error:", desc, &err);
+    metal_msg_send_void0(st, desc, "release");
+    if (set == nullptr) {
+        return;
+    }
+    (void) metal_msg_send_id_id(st, st->command_queue, "addResidencySet:", set);
+    st->residency_set = set;
+    st->res_keep_s    = keep_alive_s;
+    st->res_lock      = (pthread_mutex_t) PTHREAD_MUTEX_INITIALIZER;
+    st->res_wake      = (pthread_cond_t) PTHREAD_COND_INITIALIZER;
+    if (pthread_create(&st->res_thread, nullptr, metal_residency_keep_alive, st) != 0) {
+        /* Without the keep-alive the set changes nothing measurable. */
+        (void) metal_msg_send_id_id(st, st->command_queue, "removeResidencySet:", set);
+        metal_msg_send_void0(st, set, "release");
+        st->residency_set = nullptr;
+    }
+}
+
+void metal_residency_destroy(struct metal_state *st) {
+    if (st->residency_set == nullptr) {
+        return;
+    }
+    pthread_mutex_lock(&st->res_lock);
+    st->res_stop = true;
+    pthread_cond_signal(&st->res_wake);
+    pthread_mutex_unlock(&st->res_lock);
+    pthread_join(st->res_thread, nullptr);
+    pthread_cond_destroy(&st->res_wake);
+    pthread_mutex_destroy(&st->res_lock);
+    metal_msg_send_void0(st, st->residency_set, "removeAllAllocations");
+    metal_msg_send_void0(st, st->residency_set, "commit");
+    metal_msg_send_void0(st, st->residency_set, "endResidency");
+    (void) metal_msg_send_id_id(st, st->command_queue, "removeResidencySet:", st->residency_set);
+    metal_msg_send_void0(st, st->residency_set, "release");
+    st->residency_set = nullptr;
+}
+
+void metal_residency_note(struct metal_state *st, void *mtl_buf) {
+    if (st == nullptr || st->residency_set == nullptr || mtl_buf == nullptr) {
+        return;
+    }
+    if (!atomic_load_explicit(&st->res_used, memory_order_relaxed) &&
+        !atomic_exchange(&st->res_used, true) && atomic_load(&st->res_parked)) {
+        pthread_mutex_lock(&st->res_lock);
+        pthread_cond_signal(&st->res_wake);
+        pthread_mutex_unlock(&st->res_lock);
+    }
+    const size_t mask = sizeof(st->res_bufs) / sizeof(st->res_bufs[0]) - 1u;
+    for (size_t i = metal_res_home(mtl_buf, mask);; i = (i + 1) & mask) {
+        if (st->res_bufs[i] == mtl_buf) {
+            return;
+        }
+        if (st->res_bufs[i] == nullptr) {
+            if (st->res_count >= mask / 2) {
+                return; /* full: the buffer stays resident per command buffer */
+            }
+            st->res_bufs[i] = mtl_buf;
+            st->res_count++;
+            pthread_mutex_lock(&st->res_lock);
+            (void) metal_msg_send_id_id(st, st->residency_set, "addAllocation:", mtl_buf);
+            st->res_dirty = true;
+            pthread_mutex_unlock(&st->res_lock);
+            return;
+        }
+    }
+}
+
+void metal_residency_forget(struct metal_state *st, void *mtl_buf) {
+    if (st == nullptr || st->residency_set == nullptr || mtl_buf == nullptr) {
+        return;
+    }
+    const size_t mask = sizeof(st->res_bufs) / sizeof(st->res_bufs[0]) - 1u;
+    size_t       i    = metal_res_home(mtl_buf, mask);
+    while (st->res_bufs[i] != mtl_buf) {
+        if (st->res_bufs[i] == nullptr) {
+            return; /* never bound */
+        }
+        i = (i + 1) & mask;
+    }
+    /* Backward-shift deletion: pull every later entry of the probe run whose
+     * home is not cyclically after the hole into it, so lookups still end
+     * at the first empty slot. */
+    for (size_t j = (i + 1) & mask; st->res_bufs[j] != nullptr; j = (j + 1) & mask) {
+        const size_t home = metal_res_home(st->res_bufs[j], mask);
+        if (((j - home) & mask) >= ((j - i) & mask)) {
+            st->res_bufs[i] = st->res_bufs[j];
+            i               = j;
+        }
+    }
+    st->res_bufs[i] = nullptr;
+    st->res_count--;
+    pthread_mutex_lock(&st->res_lock);
+    (void) metal_msg_send_id_id(st, st->residency_set, "removeAllocation:", mtl_buf);
+    metal_msg_send_void0(st, st->residency_set, "commit");
+    pthread_mutex_unlock(&st->res_lock);
 }
 
 [[nodiscard]] static enum geist_status metal_submit_copy(struct metal_state *st,
@@ -225,14 +398,14 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
         st->copy_u32_pipeline != nullptr && (src_offset % 4u) == 0 && (dst_offset % 4u) == 0 &&
         (n_bytes % 4u) == 0) {
         void *enc = metal_sequence_encoder(st);
+        /* Bound at the copy's own offsets, not at 0: the batch's reference
+         * set tells views of one MTLBuffer apart by bind offset (#528). */
         struct {
             uint32_t so, dof, n;
-        } cp = {(uint32_t) (src_offset / 4u),
-                (uint32_t) (dst_offset / 4u),
-                (uint32_t) (n_bytes / 4u)};
+        } cp = {0u, 0u, (uint32_t) (n_bytes / 4u)};
         metal_msg_send_set_pipeline(st, enc, st->copy_u32_pipeline);
-        metal_msg_send_set_buffer(st, enc, src, 0, 0);
-        metal_msg_send_set_buffer(st, enc, dst, 0, 1);
+        metal_msg_send_set_buffer(st, enc, src, src_offset, 0);
+        metal_msg_send_set_buffer(st, enc, dst, dst_offset, 1);
         metal_msg_send_set_bytes(st, enc, &cp, sizeof(cp), 2);
         const struct metal_size groups  = {(cp.n + 255u) / 256u, 1, 1};
         const struct metal_size threads = {256, 1, 1};
@@ -294,9 +467,9 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
  * aligned, so the wrapper covers whole pages and the caller keeps the
  * in-page offset. Neighbouring wrappers overlap on a boundary page; that is
  * fine for read-only file pages (llama.cpp's Metal backend does the same).
- * A heap pointer — load-from-memory, an arena slice — fails the region
- * check and takes the copy path, the only one safe for memory whose extent
- * the backend does not know. */
+ * A heap pointer (load-from-memory) fails the region check and takes the
+ * copy path, the only one safe for memory whose extent the backend does not
+ * know. */
 static bool
 metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t *len_out) {
     const uintptr_t page = (uintptr_t) vm_page_size;
@@ -306,25 +479,21 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
     }
     const uintptr_t hi = ((uintptr_t) p + n + page - 1u) & ~(page - 1u);
 
-    mach_vm_address_t              addr  = lo;
-    mach_vm_size_t                 size  = 0;
-    vm_region_extended_info_data_t info  = {0};
-    mach_msg_type_number_t         count = VM_REGION_EXTENDED_INFO_COUNT;
-    mach_port_t                    obj   = MACH_PORT_NULL;
-    if (mach_vm_region(mach_task_self(),
-                       &addr,
-                       &size,
-                       VM_REGION_EXTENDED_INFO,
-                       (vm_region_info_t) &info,
-                       &count,
-                       &obj) != KERN_SUCCESS) {
+    /* The short submap flavor reads the map entry alone. VM_REGION_EXTENDED_INFO
+     * walks every page of the entry, which is the whole GGUF mapping: 84 ms
+     * per tensor on a 16 GB model, a minute per load (#555). */
+    mach_vm_address_t                     addr  = lo;
+    mach_vm_size_t                        size  = 0;
+    natural_t                             depth = 0;
+    vm_region_submap_short_info_data_64_t info  = {0};
+    mach_msg_type_number_t                count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+    if (mach_vm_region_recurse(
+                mach_task_self(), &addr, &size, &depth, (vm_region_recurse_info_t) &info, &count) !=
+        KERN_SUCCESS) {
         return false;
     }
-    if (obj != MACH_PORT_NULL) {
-        mach_port_deallocate(mach_task_self(), obj);
-    }
-    /* mach_vm_region returns the first region at or after `addr`: a start
-     * past `lo` means `lo` itself is unmapped. */
+    /* mach_vm_region_recurse returns the first region at or after `addr`: a
+     * start past `lo` means `lo` itself is unmapped. */
     if (addr > lo || size < hi - addr || !info.external_pager) {
         return false;
     }
@@ -334,14 +503,18 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
 }
 
 /* Alias a host-resident region (mmap'd weight or an arena sub-range) as a
- * device buffer. A region that lives in a file-backed mapping is wrapped in
- * place (newBufferWithBytesNoCopy over its page range, base_off pointing at
- * the bytes) — the model is then resident once, as file pages, instead of
- * once as file pages and once more as device copies (#357). Anything else
- * arrives as an arbitrary 64-byte-aligned sub-pointer that NoCopy cannot
- * wrap, and is copied into a SHARED MTLBuffer (unified memory, host+GPU
- * coherent). Weights are read-only; arena scratch is always accessed via
- * this handle, so a per-buffer copy stays coherent. */
+ * device buffer, without a copy wherever the memory allows one:
+ *  - inside a live Metal buffer (a scratch-pool slice, a weight-arena
+ *    tensor): a view of that buffer — its MTLBuffer, retained, at the
+ *    absolute base_off (#528). A copy left the pool as dead memory beside
+ *    per-slice duplicates. Views share their parent's MTLBuffer, and the
+ *    open batch tracks references per MTLBuffer, so mapping one slice
+ *    flushes while a sibling is bound — conservative, never unsafe;
+ *  - in a file-backed mapping: wrapped in place (newBufferWithBytesNoCopy
+ *    over its page range, base_off pointing at the bytes), so the model is
+ *    resident once, as file pages (#357);
+ *  - anything else (a heap pointer NoCopy cannot wrap) is copied into a
+ *    SHARED MTLBuffer and always accessed through this handle. */
 [[nodiscard]] enum geist_status metal_buffer_create_aliased(struct geist_backend  *be,
                                                             void                  *host_ptr,
                                                             size_t                 n_bytes,
@@ -365,17 +538,27 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
         geist_backend_set_error(be, GEIST_E_OOM, "metal: failed to allocate buffer handle");
         return GEIST_E_OOM;
     }
-    uint8_t   *base        = nullptr;
-    size_t     base_len    = 0;
-    size_t     base_off    = 0;
-    void      *mtl_buffer  = nullptr;
-    const bool file_backed = metal_host_range_file_backed(host_ptr, n_bytes, &base, &base_len);
-    enum geist_status bs   = metal_budget_admit(st, file_backed ? base_len : n_bytes);
+    uint8_t             *base       = nullptr;
+    size_t               base_len   = 0;
+    size_t               base_off   = 0;
+    void                *mtl_buffer = nullptr;
+    struct geist_buffer *parent     = metal_buf_reg_find(st, host_ptr, &base_off);
+    const bool           view       = parent != nullptr && n_bytes <= parent->bytes - base_off;
+    const bool           file_backed =
+            !view && metal_host_range_file_backed(host_ptr, n_bytes, &base, &base_len);
+    /* A view allocates nothing; every new MTLBuffer is admitted against the
+     * working-set budget (#531). */
+    const enum geist_status bs =
+            view ? GEIST_OK : metal_budget_admit(st, file_backed ? base_len : n_bytes);
     if (bs != GEIST_OK) {
         geist_backend_free(be, buf);
         return bs;
     }
-    if (file_backed) {
+    if (view) {
+        mtl_buffer = parent->buffer;
+        metal_msg_send_void0(st, mtl_buffer, "retain");
+        base_off += parent->base_off;
+    } else if (file_backed) {
         mtl_buffer = metal_msg_send_id_ptr_size_uint_ptr(
                 st,
                 st->device,
@@ -451,7 +634,10 @@ void metal_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
     }
 
     struct metal_state *st = dst->owner;
-    if (dst == src && metal_ranges_overlap(dst_offset, src_offset, n_bytes)) {
+    /* Views (#528) put distinct handles on one MTLBuffer: overlap is a
+     * property of the absolute ranges, not of handle identity. */
+    if (dst->buffer == src->buffer &&
+        metal_ranges_overlap(dst->base_off + dst_offset, src->base_off + src_offset, n_bytes)) {
         struct geist_buffer *tmp = nullptr;
         enum geist_status    s   = metal_new_buffer(
                 st->backend, n_bytes, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, false, &tmp);
@@ -484,7 +670,7 @@ metal_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t src[
     if (n_bytes == 0) {
         return GEIST_OK;
     }
-    metal_flush_if_referenced(buf->owner, buf->buffer);
+    metal_flush_if_referenced(buf->owner, buf->buffer, buf->base_off, buf->bytes);
 
     if (buf->host_visible) {
         memcpy(buf->mapped, src, n_bytes);
@@ -513,7 +699,7 @@ metal_buffer_download(size_t n_bytes, uint8_t dst[static n_bytes], const struct 
     if (n_bytes == 0) {
         return GEIST_OK;
     }
-    metal_flush_if_referenced(buf->owner, buf->buffer);
+    metal_flush_if_referenced(buf->owner, buf->buffer, buf->base_off, buf->bytes);
 
     if (buf->host_visible) {
         memcpy(dst, buf->mapped, n_bytes);
@@ -544,7 +730,7 @@ void *metal_buffer_map(struct geist_buffer *buf) {
      * visible; write: encoded ops must not observe the new contents). */
     {
         struct metal_state *st = buf->owner;
-        if (metal_seq_references(st, buf->buffer)) {
+        if (metal_seq_references(st, buf->buffer, buf->base_off, buf->bytes)) {
             if (metal_env_enabled("GEIST_METAL_STRICT_BATCH")) {
                 geist_backend_set_error(st->backend,
                                         GEIST_E_BACKEND,

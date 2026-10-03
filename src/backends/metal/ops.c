@@ -3340,7 +3340,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     if (st->sequence_active) {
         st->sequence_has_work = true;
         /* The 4-byte result read is the token's only host sync point. */
-        metal_flush_if_referenced(st, st->argmax_result_buffer);
+        metal_flush_if_referenced(st, st->argmax_result_buffer, 0, SIZE_MAX);
     } else {
         metal_msg_send_void0(st, enc, "endEncoding");
         metal_msg_send_void0(st, cmd, "commit");
@@ -4049,6 +4049,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         if (scr_bytes > (size_t) 1u << 31) {
             chunked = false;
         } else if (st->dn_scratch_bytes < scr_bytes) {
+            metal_residency_forget(st, st->dn_scratch);
             metal_msg_send_void0(st, st->dn_scratch, "release");
             st->dn_scratch       = metal_msg_send_id_size_uint(st,
                                                                st->device,

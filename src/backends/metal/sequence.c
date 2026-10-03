@@ -81,25 +81,37 @@ void metal_release_sequence_objects(struct metal_state *st) {
     st->sequence_has_work        = false;
 }
 
+/* Empties only the occupied slots: a flush-heavy batch (a host fallback per
+ * layer) clears the set once per flush. */
 void metal_seq_ref_clear(struct metal_state *st) {
-    memset(st->seq_ref, 0, sizeof(st->seq_ref));
+    for (size_t i = 0; i < st->seq_ref_count; i++) {
+        st->seq_ref[st->seq_ref_used[i]] = (struct metal_seq_ref) {0};
+    }
     st->seq_ref_count    = 0;
     st->seq_ref_overflow = false;
 }
 
-void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf) {
+/* Slot hash of a (MTLBuffer, bind offset) pair. */
+static size_t metal_seq_ref_hash(const void *buf, size_t off, size_t mask) {
+    const uint64_t x = ((uint64_t) (uintptr_t) buf >> 4) ^ ((uint64_t) off * 0x9e3779b97f4a7c15u);
+    return (size_t) (x ^ (x >> 29)) & mask;
+}
+
+void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf, size_t off) {
     if (st == nullptr || !st->sequence_active || mtl_buf == nullptr) {
         return;
     }
     const size_t mask = (sizeof(st->seq_ref) / sizeof(st->seq_ref[0])) - 1u;
-    size_t       h    = ((uintptr_t) mtl_buf >> 4) & mask;
+    const size_t h    = metal_seq_ref_hash(mtl_buf, off, mask);
     for (size_t i = 0; i <= mask; i++) {
-        const size_t slot = (h + i) & mask;
-        if (st->seq_ref[slot] == mtl_buf) {
+        const size_t          slot = (h + i) & mask;
+        struct metal_seq_ref *e    = &st->seq_ref[slot];
+        if (e->buf == mtl_buf && e->off == off) {
             return;
         }
-        if (st->seq_ref[slot] == nullptr) {
-            st->seq_ref[slot] = mtl_buf;
+        if (e->buf == nullptr) {
+            *e = (struct metal_seq_ref) {.buf = mtl_buf, .off = off};
+            st->seq_ref_used[st->seq_ref_count] = (uint16_t) slot;
             if (++st->seq_ref_count > mask - 256u) {
                 st->seq_ref_overflow = true;
             }
@@ -109,25 +121,27 @@ void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf) {
     st->seq_ref_overflow = true;
 }
 
-bool metal_seq_references(struct metal_state *st, const void *mtl_buf) {
+/* A scan of the occupied slots, not a probe — the question is about a range
+ * of offsets — and it runs only on a host map/upload/download, never per
+ * dispatch. Every handle binds at its own base_off (tensor offsets travel
+ * in the kernel params), so a bind offset inside the range means a handle
+ * there was bound. That is exact while no bound handle starts before a
+ * queried view and runs into it: views of one buffer are disjoint slices
+ * (#528), and the buffer they are cut from is never bound itself. */
+bool metal_seq_references(struct metal_state *st, const void *mtl_buf, size_t off, size_t n) {
     if (st == nullptr || !st->sequence_active || mtl_buf == nullptr) {
         return false;
     }
     if (st->seq_ref_overflow) {
         return true;
     }
-    const size_t mask = (sizeof(st->seq_ref) / sizeof(st->seq_ref[0])) - 1u;
-    size_t       h    = ((uintptr_t) mtl_buf >> 4) & mask;
-    for (size_t i = 0; i <= mask; i++) {
-        const size_t slot = (h + i) & mask;
-        if (st->seq_ref[slot] == mtl_buf) {
+    for (size_t i = 0; i < st->seq_ref_count; i++) {
+        const struct metal_seq_ref *e = &st->seq_ref[st->seq_ref_used[i]];
+        if (e->buf == mtl_buf && e->off >= off && e->off - off < n) {
             return true;
         }
-        if (st->seq_ref[slot] == nullptr) {
-            return false;
-        }
     }
-    return true;
+    return false;
 }
 
 /* Submit the open batch and start a fresh one of the same kind. Called
@@ -144,8 +158,8 @@ void metal_batch_flush(struct metal_state *st) {
     (void) metal_command_sequence_begin(be, kind, &tok);
 }
 
-void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf) {
-    if (metal_seq_references(st, mtl_buf)) {
+void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size_t off, size_t n) {
+    if (metal_seq_references(st, mtl_buf, off, n)) {
         static _Atomic int dbg = -1;
         if (dbg < 0) {
             const char *e = getenv("GEIST_SEQ_COUNT");

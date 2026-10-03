@@ -9,6 +9,15 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Metal keeps a model wired between requests** (#530). macOS unwires what a
+  command buffer made resident about 2 s after the GPU goes idle, so the first
+  token after any pause paid to wire the model again (300-360 ms instead of
+  67 ms on qwen3.8-27B), and to read it from the SSD as well once memory
+  pressure had evicted the file pages (5.8 s). Metal now keeps an
+  `MTLResidencySet` of the buffers the GPU binds (macOS 15+) and requests its
+  residency every 500 ms until `GEIST_METAL_KEEP_ALIVE_S` seconds pass without
+  a dispatch (default 180, as llama.cpp); `0` leaves the unwiring to macOS.
+  Tables the host gathers (#529) never join the set.
 - **Signed build provenance for release assets.** The release workflow attests
   every file in `SHA256SUMS` with `actions/attest-build-provenance` and refuses
   to publish until `gh attestation verify` accepts each one. Consumers check a
@@ -504,6 +513,14 @@ minor release.
   `attn_k` ~500 MB early at `blk.22`. Both load now, and their logits match
   mmap-alias byte for byte. A backend that resolves such a matrix natively
   gets an arena larger by that surcharge.
+
+- **Metal loads a model in milliseconds instead of up to a minute** (#555).
+  The check whether a weight lives in a file mapping asked `mach_vm_region`
+  for `VM_REGION_EXTENDED_INFO`, which walks every page of the whole GGUF
+  mapping, once per tensor: 84 ms per tensor on a 16 GB model, and
+  qwen3.8-27B took 68-75 s to load. The short submap flavor answers from the
+  map entry alone; the 27B now loads in about 60 ms, qwen3.5-4B in 75 ms
+  instead of 3.4 s.
 
 - **`geist_model_load` and `geist_model_load_from_memory` return the cause's
   status.** Every architecture failure used to come back as `GEIST_E_IO`
