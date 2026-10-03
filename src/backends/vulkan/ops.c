@@ -1678,6 +1678,22 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
             be, VK_PIPE_EMBED, bi, acc, &push, sizeof(push), vk_groups((size_t) d), 1, 1);
 }
 
+/* Geometry the decode gate/up kernels run, shared by the probe and both
+ * entries: Q4_K gate and up of one shape, whole 256-element blocks, sizes
+ * that fit the push constants; the norm variant tiles 8 outputs per
+ * workgroup. */
+static bool vk_ffn_gate_up_geometry_ok(bool             with_norm,
+                                       enum geist_dtype gate_dtype,
+                                       enum geist_dtype up_dtype,
+                                       int64_t          n_in,
+                                       int64_t          n_out,
+                                       int64_t          up_n_in,
+                                       int64_t          up_n_out) {
+    return gate_dtype == GEIST_DTYPE_Q4_K && up_dtype == GEIST_DTYPE_Q4_K && n_in > 0 &&
+           n_out > 0 && n_in <= UINT32_MAX && n_out <= UINT32_MAX && n_in % 256 == 0 &&
+           (!with_norm || n_out % 8 == 0) && up_n_in == n_in && up_n_out == n_out;
+}
+
 /* Fused decode FFN front (m == 1, both weights Q4_K): one dispatch for
  * gelu(x.gate^T) * (x.up^T) — replaces two matvecs + gelu_mul. */
 [[nodiscard]] static enum geist_status vk_ffn_gate_up(struct geist_backend      *be,
@@ -1686,19 +1702,21 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
                                                       const struct geist_tensor *up_w,
                                                       struct geist_tensor       *y) {
     struct vk_state *st = be->state;
-    if (gate_w == nullptr || up_w == nullptr || t_x == nullptr ||
-        gate_w->dtype != GEIST_DTYPE_Q4_K || up_w->dtype != GEIST_DTYPE_Q4_K || gate_w->ndim != 2 ||
-        t_x->shape[0] != 1) {
+    if (gate_w == nullptr || up_w == nullptr || t_x == nullptr || gate_w->ndim != 2 ||
+        up_w->ndim != 2 || t_x->shape[0] != 1 ||
+        !vk_ffn_gate_up_geometry_ok(false,
+                                    gate_w->dtype,
+                                    up_w->dtype,
+                                    gate_w->shape[1],
+                                    gate_w->shape[0],
+                                    up_w->shape[1],
+                                    up_w->shape[0])) {
         return GEIST_E_UNSUPPORTED;
     }
-    const uint32_t n_out = (uint32_t) gate_w->shape[0];
-    const uint32_t n_in  = (uint32_t) gate_w->shape[1];
-    if (n_in % 256u != 0u || up_w->shape[0] != gate_w->shape[0] ||
-        up_w->shape[1] != gate_w->shape[1]) {
-        return GEIST_E_UNSUPPORTED;
-    }
-    struct geist_buffer   *gbuf = vk_weight_of(st, gate_w);
-    struct geist_buffer   *ubuf = vk_weight_of(st, up_w);
+    const uint32_t         n_out = (uint32_t) gate_w->shape[0];
+    const uint32_t         n_in  = (uint32_t) gate_w->shape[1];
+    struct geist_buffer   *gbuf  = vk_weight_of(st, gate_w);
+    struct geist_buffer   *ubuf  = vk_weight_of(st, up_w);
     VkDescriptorBufferInfo bi[4];
     uint32_t               xo, yo;
     if (gbuf == nullptr || ubuf == nullptr || vk_t_n(y) < n_out || !vk_tensor_gpu(y, &bi[3], &yo)) {
@@ -1744,14 +1762,19 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
                                                            struct geist_tensor       *y) {
     struct vk_state *st = be->state;
     if (gate_w == nullptr || up_w == nullptr || t_x == nullptr || norm_w == nullptr ||
-        gate_w->dtype != GEIST_DTYPE_Q4_K || up_w->dtype != GEIST_DTYPE_Q4_K || gate_w->ndim != 2 ||
-        t_x->shape[0] != 1) {
+        gate_w->ndim != 2 || up_w->ndim != 2 || t_x->shape[0] != 1 ||
+        !vk_ffn_gate_up_geometry_ok(true,
+                                    gate_w->dtype,
+                                    up_w->dtype,
+                                    gate_w->shape[1],
+                                    gate_w->shape[0],
+                                    up_w->shape[1],
+                                    up_w->shape[0])) {
         return GEIST_E_UNSUPPORTED;
     }
     const uint32_t n_out = (uint32_t) gate_w->shape[0];
     const uint32_t n_in  = (uint32_t) gate_w->shape[1];
-    if (n_in % 256u != 0u || n_out % 8u != 0u || up_w->shape[0] != gate_w->shape[0] ||
-        up_w->shape[1] != gate_w->shape[1] || vk_t_n(norm_w) != n_in) {
+    if (vk_t_n(norm_w) != n_in) {
         return GEIST_E_UNSUPPORTED;
     }
     struct geist_buffer   *gbuf = vk_weight_of(st, gate_w);
@@ -1857,6 +1880,9 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     return vk_rmsnorm_add(be, res, proj_scratch, norm_w, eps, y);
 }
 
+/* sh[512] in qkv_prep_f{16,32}.comp: one head row in shared memory. */
+static constexpr uint32_t VK_QKV_PREP_MAX_HEAD_DIM = 512;
+
 /* Fused q/k/v prep: per-head norms + rope + F32 cache append in ONE
  * dispatch (which-axis on WorkGroupID.z). Falls back (UNSUPPORTED) when
  * the tensors don't share the expected pool/arena buffers. */
@@ -1887,7 +1913,7 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     const uint32_t seq = (uint32_t) q->shape[0];
     const uint32_t qh  = (uint32_t) q->shape[1];
     const uint32_t hd  = (uint32_t) q->shape[2];
-    if (hd > 512u || vk_t_n(q) == 0) {
+    if (hd == 0u || (hd % 2u) != 0u || hd > VK_QKV_PREP_MAX_HEAD_DIM || vk_t_n(q) == 0) {
         return GEIST_E_UNSUPPORTED;
     }
     VkDescriptorBufferInfo bi[6];
@@ -2137,9 +2163,10 @@ static const struct geist_backend_vtbl vk_vtbl = {
         .fast_host_bytes       = vk_fast_host_bytes,
 };
 
-/* Probe pairing for the fused table below. Mirrors the entry checks of
- * vk_ffn_gate_up / vk_ffn_norm_gate_up (decode-only matvec kernels,
- * Q4_K weights, GPU-resident via vk_weight_lookup). */
+/* Probe pairing for the fused table below: a yes means the bound entry
+ * runs on the GPU and succeeds. Geometry comes from the same predicate the
+ * entry checks (vk_ffn_gate_up_geometry_ok, vk_deltanet_geometry_ok); a
+ * host-only op answers no. */
 static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
     if (q == nullptr || be == nullptr || be->state == nullptr) {
         return false;
@@ -2147,19 +2174,25 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     struct vk_state *st = be->state;
     switch (q->op) {
     case GEIST_FUSED_GELU_TANH_MUL:
-    case GEIST_FUSED_GELU_TANH_MUL_SCALED:
         return true;
+    case GEIST_FUSED_GELU_TANH_MUL_SCALED:
+        /* vk_gelu_tanh_mul_scaled is a host loop over mapped buffers (a
+         * flush per layer): the plan takes the GPU gelu_mul instead. */
+        return false;
     case GEIST_FUSED_SILU_MUL:
     case GEIST_FUSED_BITNET_ACT_QUANT:
         return true;
     case GEIST_FUSED_FFN_GATE_UP:
     case GEIST_FUSED_FFN_NORM_GATE_UP: {
         if (q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr ||
-            q->gate_w->dtype != GEIST_DTYPE_Q4_K || q->up_w->dtype != GEIST_DTYPE_Q4_K ||
-            q->d_model % 256u != 0u ||
-            (q->op == GEIST_FUSED_FFN_NORM_GATE_UP && q->inter % 8u != 0u) ||
-            (size_t) q->gate_w->n_in != q->d_model || (size_t) q->up_w->n_in != q->d_model ||
-            q->gate_w->n_out != q->up_w->n_out) {
+            (size_t) q->gate_w->n_in != q->d_model ||
+            !vk_ffn_gate_up_geometry_ok(q->op == GEIST_FUSED_FFN_NORM_GATE_UP,
+                                        (enum geist_dtype) q->gate_w->dtype,
+                                        (enum geist_dtype) q->up_w->dtype,
+                                        q->gate_w->n_in,
+                                        q->gate_w->n_out,
+                                        q->up_w->n_in,
+                                        q->up_w->n_out)) {
             return false;
         }
         /* Residency: both weights must be registered GPU buffers. */
@@ -2183,7 +2216,8 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
          * geometry the host transform accepts runs on mapped memory. */
         return geist_hadamard_query_ok(q);
     case GEIST_FUSED_ATTN_QKV_PREP:
-        return q->head_dim > 0 && (q->head_dim % 2u) == 0u;
+        return q->head_dim > 0 && (q->head_dim % 2u) == 0u &&
+               q->head_dim <= VK_QKV_PREP_MAX_HEAD_DIM;
     case GEIST_FUSED_PLE_BLOCK:
         /* vk_ple_block is a decode-only (rows == 1) kernel over F32
          * gate/proj matrices. */

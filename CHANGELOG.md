@@ -553,6 +553,15 @@ minor release.
   past the array. The DeltaNet mixer returned NaN, so qwen35-family models ran
   wrong on those devices. The slots now fit any subgroup size, and the
   DeltaNet parity test runs in both Vulkan CI jobs.
+- **Vulkan fusion probes answer what the kernels run** (#474, item 3). The
+  plan binds a fused kernel when the probe says yes and then treats a refusal
+  as a layer error. The q/k/v prep probe accepted any even `head_dim`, but the
+  kernel stops at 512, so a model with a wider head failed its first forward.
+  The probe now applies the same limit. The gate/up probe and both gate/up
+  kernels now share one geometry check, which also bounds the sizes to the
+  32-bit push constants. `GELU_TANH_MUL_SCALED` probes no, because the Vulkan
+  op is a host loop. `test_fused_probe_agreement_unit` now covers Vulkan and
+  runs in both Vulkan CI jobs.
 - **An F16/BF16 matrix no backend kernel covers fails at load, not at the
   first prefill** (#564). A backend that refuses a half-precision matrix gets
   it widened to F32 when it has at most 4M elements. A larger one used to load
