@@ -655,6 +655,43 @@ static const char metal_qsg_mm_pq2_source[] = GEIST_METAL_MM_SG_KERNEL("pq2", "b
 static const char metal_qsg_mm_pq2_fast_source[] =
         GEIST_METAL_MM_SG_FAST_KERNEL("pq2", "bpq2", "dqpq2", "8");
 
+/* TQ2_0 (BitNet ternary, #559): 256-element blocks of [64 bytes of 2-bit
+ * codes][half d], value (code - 1) * d. Element e of a block sits in byte
+ * (e/128)*32 + e%32 at bits 2*((e%128)/32) — dequant_tq2_0_row. dqtq2
+ * serves the shared GEMM template (QK_NL 16). The decode GEMV follows
+ * q3k_n4: 2 rows per simdgroup, a thread owns one 8-element run of every
+ * block, so its 8 codes share one shift; the -1 bias folds into sumy. */
+static const char metal_qsg_tq2_source[] =
+        "struct btq2{uchar qs[64];half d;};\n"
+        "static inline void dqtq2(device const btq2*xb,short il,thread half4x4&r){"
+        "half d=xb->d;device const uchar*q=xb->qs+(il/8)*32+(il&1)*16;"
+        "short sh=((il&7)/2)*2;"
+        "FOR_UNROLL(short i=0;i<16;i++){r[i/4][i%4]=d*half(short((q[i]>>sh)&3)-1);}}\n"
+        "kernel void matvec_tq2_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>8u,t=uint(ti);"
+        "uint qo=(t>>4u)*32u+(t&3u)*8u;uint sh=((t>>2u)&3u)*2u;"
+        "device const float*yb=x+p.xo+b*p.xs+t*8u;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=0u;ib<nb;ib++){"
+        "float yl[8];float sumy=0.0f;"
+        "for(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i];}"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*66u;"
+        "float acc=0.0f;"
+        "for(uint i=0u;i<8u;i++)acc+=yl[i]*float((uint(w[bo+qo+i])>>sh)&3u);"
+        "float d=float(*((device const half*)(w+bo+64u)));"
+        "if(rr==0u)s0+=d*(acc-sumy);else s1+=d*(acc-sumy);}"
+        "yb+=256u;}"
+        "float a0=simd_sum(s0),a1=simd_sum(s1);"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+static const char metal_qsg_mm_tq2_source[] =
+        GEIST_METAL_MM_SG_KERNEL("tq2", "btq2", "dqtq2", "16");
+
 static const char metal_qsg_mm_iq4nl_source[] =
         GEIST_METAL_MM_SG_KERNEL("iq4nl", "biq4nl", "dqiq4nl", "2");
 static const char metal_qsg_mm_iq4xs_source[] =

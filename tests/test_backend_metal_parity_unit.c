@@ -76,6 +76,9 @@ static void block_geom(int dtype, size_t *elems, size_t *bytes) {
     case GEIST_DTYPE_PQ2_0:
         *elems = PQ2_0_BLOCK_ELEMS, *bytes = PQ2_BB;
         return;
+    case GEIST_DTYPE_TQ2_0:
+        *elems = TQ2_0_BLOCK_ELEMS, *bytes = TQ2_0_BLOCK_BYTES;
+        return;
     case GEIST_DTYPE_Q4_0:
         *elems = 32u, *bytes = Q40_BB;
         return;
@@ -126,6 +129,10 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
                  * 3 = +2 included. */
                 blk[0] = 0x00;
                 blk[1] = (uint8_t) (0x38u + 4u * (rng_u8() & 3u));
+            } else if (dtype == GEIST_DTYPE_TQ2_0) {
+                /* trailing d in {0.5, 1, 2, 4}, as for PQ2_0 */
+                blk[64] = 0x00;
+                blk[65] = (uint8_t) (0x38u + 4u * (rng_u8() & 3u));
             } else if (dtype == GEIST_DTYPE_Q3_K) {
                 blk[108] = 0x00; /* d = fp16(1.0), trailing field */
                 blk[109] = 0x3C;
@@ -580,6 +587,13 @@ int main(void) {
      * gemm_only formats have no naive kernel under it, so before the
      * GEMM was widened to take it they dispatched a nil pipeline. */
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2tiny", 512, 3, 1);
+    /* TQ2_0 (#559): GEMV with an odd row tail, GEMM bounded and full
+     * tiles, and n_out < 4, which the GEMM takes at rows == 1. */
+    run_case(mt, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 384, 32);
+    run_case(mt, ref, GEIST_DTYPE_TQ2_0, "TQ2tiny", 768, 3, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XStiny", 512, 1, 1);
     run_case(mt, ref, GEIST_DTYPE_Q3_K, "Q3Ktiny", 512, 2, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_NL, "IQ4NLtiny", 512, 3, 1);

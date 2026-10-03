@@ -200,6 +200,11 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .mm        = st->q3k_mm_pipeline,
                                            .n4_tile   = 4u,
                                            .gemm_only = true};
+    case GEIST_DTYPE_TQ2_0:
+        return (struct metal_quant_pipes) {.n4        = st->tq2_n4_pipeline,
+                                           .mm        = st->tq2_mm_pipeline,
+                                           .n4_tile   = 4u,
+                                           .gemm_only = true};
     case GEIST_DTYPE_IQ3_S:
         return (struct metal_quant_pipes) {.n4        = st->iq3s_n4_pipeline,
                                            .mm        = st->iq3s_mm_pipeline,
@@ -3775,6 +3780,7 @@ static void metal_linear_mN(size_t                     m,
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_TQ2_0:
         s = metal_q40_q80_linear(be, &tx, &tw, &ty, (enum geist_dtype) w->dtype, true);
         break;
     case GEIST_DTYPE_Q4_K:
@@ -3862,6 +3868,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
         case GEIST_DTYPE_Q3_K:
         case GEIST_DTYPE_IQ3_S:
         case GEIST_DTYPE_PQ2_0:
+        case GEIST_DTYPE_TQ2_0:
             return metal_q40_q80_linear(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
         case GEIST_DTYPE_Q4_K:
             return metal_matvec_q4k(be, &x1, t_w, &y1);
@@ -3884,6 +3891,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_TQ2_0:
         return metal_q40_q80_linear(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
     case GEIST_DTYPE_Q4_K:
         return metal_matmul_q4k(be, x, t_w, y);
@@ -3925,6 +3933,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_TQ2_0:
     case GEIST_DTYPE_F32:
         w->linear_m1 = metal_linear_m1;
         w->linear_mN = metal_linear_mN;

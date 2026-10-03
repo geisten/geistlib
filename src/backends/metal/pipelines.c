@@ -250,6 +250,7 @@
         st->pq2_n4_pipeline != nullptr && st->pq2_mm_pipeline != nullptr &&
         st->pq2_mm_fast_pipeline != nullptr && st->pq2_n8_pipeline != nullptr &&
         st->iq4xs_mm_pipeline != nullptr && st->q3k_mm_pipeline != nullptr &&
+        st->tq2_n4_pipeline != nullptr && st->tq2_mm_pipeline != nullptr &&
         st->iq3s_mm_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
         st->q4k_matmul_m8_pipeline != nullptr && st->q4k_matmul_m16_pipeline != nullptr &&
         st->q4k_matmul_m16_n2_pipeline != nullptr &&
@@ -313,7 +314,8 @@
                 metal_qsg_mm_q5k_fast_source, metal_qsg_mm_iq4xs_fast_source,
                 metal_qsg_pq2_dq_source,      metal_qsg_pq2_source,
                 metal_qsg_pq2_n8_source,      metal_qsg_mm_pq2_source,
-                metal_qsg_mm_pq2_fast_source};
+                metal_qsg_mm_pq2_fast_source, metal_qsg_tq2_source,
+                metal_qsg_mm_tq2_source};
         const size_t n_parts = sizeof parts / sizeof parts[0];
         size_t       total   = 0;
         for (size_t i = 0; i < n_parts; i++) {
@@ -913,6 +915,22 @@
                                         "matmul_q3k_mm_sg",
                                         &st->q3k_mm_function,
                                         &st->q3k_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matvec_tq2_n4",
+                                        &st->tq2_n4_function,
+                                        &st->tq2_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_tq2_mm_sg",
+                                        &st->tq2_mm_function,
+                                        &st->tq2_mm_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,

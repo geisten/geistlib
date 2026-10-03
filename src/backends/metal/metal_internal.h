@@ -251,6 +251,10 @@ struct metal_state {
     void *q3k_n4_pipeline;
     void *q3k_mm_function;
     void *q3k_mm_pipeline;
+    void *tq2_n4_function;
+    void *tq2_n4_pipeline;
+    void *tq2_mm_function;
+    void *tq2_mm_pipeline;
     void *iq3s_n4_function;
     void *iq3s_n4_pipeline;
     void *iq3s_mm_function;
@@ -559,6 +563,8 @@ enum {
     METAL_IQ3S_BLOCK_BYTES              = 110u,
     METAL_PQ2_BLOCK_ELEMS               = (unsigned) PQ2_0_BLOCK_ELEMS,
     METAL_PQ2_BLOCK_BYTES               = (unsigned) PQ2_0_BLOCK_BYTES,
+    METAL_TQ2_BLOCK_ELEMS               = (unsigned) TQ2_0_BLOCK_ELEMS,
+    METAL_TQ2_BLOCK_BYTES               = (unsigned) TQ2_0_BLOCK_BYTES,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,
@@ -583,6 +589,8 @@ static inline size_t metal_quant_block_elems(enum geist_dtype dtype) {
         return METAL_IQ4XS_BLOCK_ELEMS;
     case GEIST_DTYPE_PQ2_0:
         return METAL_PQ2_BLOCK_ELEMS;
+    case GEIST_DTYPE_TQ2_0:
+        return METAL_TQ2_BLOCK_ELEMS;
     default:
         return METAL_Q40_Q80_BLOCK_ELEMS;
     }
