@@ -514,6 +514,15 @@ minor release.
   vtable.
 
 ### Fixed
+- **Metal loads models with small F16/BF16 matrices under
+  `GEIST_WEIGHT_MMAP=0`** (#561). The weight arena counted the second staged
+  copy and the F32 copy of a widened half-precision matrix only on a backend
+  with `weights_need_backend_arena`, but Metal widens without that cap:
+  Ternary-Bonsai-2-27B ran out of arena at `blk.63`, llama-3.2-3B with F16
+  `attn_k` ~500 MB early at `blk.22`. Both load now, and their logits match
+  mmap-alias byte for byte. A backend that resolves such a matrix natively
+  gets an arena larger by that surcharge.
+
 - **Metal loads a model in milliseconds instead of up to a minute** (#555).
   The check whether a weight lives in a file mapping asked `mach_vm_region`
   for `VM_REGION_EXTENDED_INFO`, which walks every page of the whole GGUF
@@ -521,6 +530,7 @@ minor release.
   qwen3.8-27B took 68-75 s to load. The short submap flavor answers from the
   map entry alone; the 27B now loads in about 60 ms, qwen3.5-4B in 75 ms
   instead of 3.4 s.
+
 - **`geist_model_load` and `geist_model_load_from_memory` return the cause's
   status.** Every architecture failure used to come back as `GEIST_E_IO`
   (`GEIST_E_FORMAT` from memory), even when the cause was an out-of-memory or

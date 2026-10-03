@@ -47,13 +47,18 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
             continue;
         const size_t aligned = (t->nbytes + 63u) & ~((size_t) 63u);
         total += aligned;
-        /* A small half-precision matrix a GPU backend refuses to resolve is
+        /* A small half-precision matrix a backend refuses to resolve is
          * widened to F32 (load_layer_proj): load_norm_to_f32_buffer stages the
          * source in the arena a second time and adds the F32 copy — the bump
-         * allocator frees nothing. Bonsai: 96 BF16 ssm_alpha/ssm_beta. */
+         * allocator frees nothing. Bonsai: 96 BF16 ssm_alpha/ssm_beta.
+         * Counted whatever the caps say: the refusal comes from
+         * resolve_weight, not from a cap, and metal (no
+         * weights_need_backend_arena) widens too once GEIST_WEIGHT_MMAP=0
+         * forces the arena (#561). A backend that resolves the matrix
+         * natively leaves the surcharge unused. */
         const size_t elems = gguf_tensor_elem_count(t);
-        if (be->desc->caps.weights_need_backend_arena && t->n_dims == 2 &&
-            (t->dtype == GGUF_TYPE_F16 || t->dtype == GGUF_TYPE_BF16) && elems <= (4u << 20)) {
+        if (t->n_dims == 2 && (t->dtype == GGUF_TYPE_F16 || t->dtype == GGUF_TYPE_BF16) &&
+            elems <= (4u << 20)) {
             total += aligned + ((elems * sizeof(float) + 63u) & ~((size_t) 63u));
         }
     }
