@@ -115,7 +115,9 @@ thing to copy when you embed the library.
 
 Every [release](https://github.com/geisten/geistlib/releases/latest) ships
 `libgeist-<platform>.tar.gz` — `libgeist.a`, `include/*.h` and `LICENSE`, for
-`macos-arm64`, `linux-arm64` and `linux-x86_64`. Verify against `SHA256SUMS`,
+`macos-arm64`, `linux-arm64` and `linux-x86_64`. Verify against `SHA256SUMS`
+and, to prove the file was built by this repository's release workflow, with
+`gh attestation verify libgeist-linux-arm64.tar.gz --repo geisten/geistlib`,
 then link:
 
 ```bash
