@@ -1,6 +1,6 @@
 /*
- * src/backends/cpu_x86/linear_q4k_raw.c — cpu_x86 Q4_K linear on the GGUF
- * bytes (AVX2), no repack.
+ * src/backends/cpu_x86/linear_q4k_raw.c — cpu_x86 Q4_K and Q5_K linear on the
+ * GGUF bytes (AVX2), no repack.
  *
  * Layer: BACKEND (cpu_x86).
  *
@@ -19,6 +19,12 @@
  * madd with sc_j (<= 63) makes int32 lanes, and the sum over j stays exact
  * in int32. Rows split across OpenMP threads; M>1 tiles NR tokens per pass
  * over a weight row so each block's nibbles are unpacked once per tile.
+ *
+ * Q5_K is the same superblock with a fifth bit per q from 32 qh bytes (bit
+ * 2j for the low nibbles of sub-block pair j, 2j + 1 for the high ones), q
+ * in 0..31: the kernels OR it in after the nibble unpack and are otherwise
+ * shared. Q5_K had no x86 kernel at all before; it ran the generic
+ * dequantize-to-fp32 path (#410).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -41,7 +47,8 @@
 
 constexpr size_t QK  = Q4_K_BLOCK_ELEMS; /* 256 */
 constexpr size_t NSB = QK / 32;          /* sub-blocks per superblock */
-static_assert(Q4_K_BLOCK_ELEMS == 256, "eight 32-element sub-blocks per superblock");
+static_assert(Q4_K_BLOCK_ELEMS == 256 && Q5_K_BLOCK_ELEMS == 256,
+              "eight 32-element sub-blocks per superblock");
 
 /* Activation tile height of the M>1 kernel. */
 constexpr size_t NR = 4;
@@ -118,16 +125,55 @@ static inline float hsum_ps(__m256 s) {
     return _mm_cvtss_f32(s4);
 }
 
-/* sum_j sc_j P_j of one superblock against one activation block, as eight
- * exact int32 lanes. */
-static inline __m256i
-superblock_sumi(const struct block_q4_K_t *w, const uint8_t sc[static 8], const int8_t *xq) {
+/* One superblock format: Q4_K (4-bit q) or Q5_K (q gets a fifth bit from
+ * qh). Both share d, dmin and the 12 packed scale bytes at the front. */
+struct fmt {
+    size_t stride; /* bytes per superblock */
+    size_t qs;     /* offset of the 128 nibble bytes */
+    size_t qh;     /* offset of the 32 high-bit bytes (Q5_K only) */
+    bool   q5;
+};
+static constexpr struct fmt FMT_Q4_K = {sizeof(struct block_q4_K_t), 16, 0, false};
+static constexpr struct fmt FMT_Q5_K = {sizeof(struct block_q5_K_t), 48, 16, true};
+static_assert(sizeof(struct block_q4_K_t) == 144 && sizeof(struct block_q5_K_t) == 176,
+              "Q4_K / Q5_K superblock sizes");
+
+static inline float blk_h(const uint8_t *p) {
+    uint16_t h;
+    memcpy(&h, p, sizeof h);
+    return _cvtsh_ss(h);
+}
+
+/* Bit p of each qh byte, moved to bit 4 (value 16) or 0. Masking first
+ * keeps the 16-bit shifts inside each byte. */
+static inline __m256i q5_bit(__m256i hb, int p) {
+    const __m256i m = _mm256_and_si256(hb, _mm256_set1_epi8((char) (1 << p)));
+    return p <= 4 ? _mm256_slli_epi16(m, 4 - p) : _mm256_srli_epi16(m, p - 4);
+}
+
+/* The 64 q values of sub-blocks 2j and 2j + 1 (0..15, or 0..31 for Q5_K). */
+[[gnu::always_inline]] static inline void
+unpack_pair(struct fmt f, const uint8_t *blk, size_t j, __m256i *lo, __m256i *hi) {
     const __m256i mask = _mm256_set1_epi8(0x0F);
-    __m256i       acc  = _mm256_setzero_si256();
+    const __m256i q    = _mm256_loadu_si256((const __m256i *) (blk + f.qs + j * 32));
+    *lo                = _mm256_and_si256(q, mask);
+    *hi                = _mm256_and_si256(_mm256_srli_epi16(q, 4), mask);
+    if (f.q5) {
+        const __m256i hb = _mm256_loadu_si256((const __m256i *) (blk + f.qh));
+        *lo              = _mm256_or_si256(*lo, q5_bit(hb, (int) (2 * j)));
+        *hi              = _mm256_or_si256(*hi, q5_bit(hb, (int) (2 * j + 1)));
+    }
+}
+
+/* sum_j sc_j P_j of one superblock against one activation block, as eight
+ * exact int32 lanes (Q5_K pairs reach 2 * 31 * 127 = 7874, still no int16
+ * saturation). */
+[[gnu::always_inline]] static inline __m256i
+superblock_sumi(struct fmt f, const uint8_t *blk, const uint8_t sc[static 8], const int8_t *xq) {
+    __m256i acc = _mm256_setzero_si256();
     for (size_t j = 0; j < 4; j++) {
-        const __m256i q  = _mm256_loadu_si256((const __m256i *) (w->qs + j * 32));
-        const __m256i lo = _mm256_and_si256(q, mask);
-        const __m256i hi = _mm256_and_si256(_mm256_srli_epi16(q, 4), mask);
+        __m256i lo, hi;
+        unpack_pair(f, blk, j, &lo, &hi);
         const __m256i x0 = _mm256_loadu_si256((const __m256i *) (xq + j * 64));
         const __m256i x1 = _mm256_loadu_si256((const __m256i *) (xq + j * 64 + 32));
         acc              = _mm256_add_epi32(
@@ -150,52 +196,53 @@ static inline int32_t min_term(const uint8_t mn[static 8], const int32_t sx[stat
 /* One weight row against one activation row; the min term accumulates in a
  * scalar; fixed order. One fp32 FMA per 256 elements, so a single
  * accumulator is not the bottleneck. */
-static float dot_row(size_t                     nb,
-                     const struct block_q4_K_t *w,
-                     const int8_t              *qx,
-                     const float               *dx,
-                     const int32_t             *sx) {
+[[gnu::always_inline]] static inline float dot_row(struct fmt     f,
+                                                   size_t         nb,
+                                                   const uint8_t *w,
+                                                   const int8_t  *qx,
+                                                   const float   *dx,
+                                                   const int32_t *sx) {
     __m256 acc  = _mm256_setzero_ps();
     float  mins = 0.0f;
     for (size_t b = 0; b < nb; b++) {
-        uint8_t sc[8], mn[8];
-        unpack_scales(w[b].scales, sc, mn);
-        const __m256i sumi = superblock_sumi(&w[b], sc, qx + b * QK);
-        acc                = _mm256_fmadd_ps(
-                _mm256_set1_ps(_cvtsh_ss(w[b].d) * dx[b]), _mm256_cvtepi32_ps(sumi), acc);
-        mins += _cvtsh_ss(w[b].dmin) * dx[b] * (float) min_term(mn, sx + b * NSB);
+        const uint8_t *blk = w + b * f.stride;
+        uint8_t        sc[8], mn[8];
+        unpack_scales(blk + 4, sc, mn);
+        const __m256i sumi = superblock_sumi(f, blk, sc, qx + b * QK);
+        acc = _mm256_fmadd_ps(_mm256_set1_ps(blk_h(blk) * dx[b]), _mm256_cvtepi32_ps(sumi), acc);
+        mins += blk_h(blk + 2) * dx[b] * (float) min_term(mn, sx + b * NSB);
     }
     return hsum_ps(acc) - mins;
 }
 
-/* NR activation rows against one weight row: each superblock's nibbles and
+/* NR activation rows against one weight row: each superblock's q values and
  * scales unpacked once per tile. */
-static void dot_rows(size_t                     nb,
-                     size_t                     n_in,
-                     const struct block_q4_K_t *w,
-                     const int8_t              *qx,
-                     const float               *dx,
-                     const int32_t             *sx,
-                     float                      out[static NR]) {
-    const __m256i mask = _mm256_set1_epi8(0x0F);
-    __m256        acc[NR];
-    float         mins[NR];
+[[gnu::always_inline]] static inline void dot_rows(struct fmt     f,
+                                                   size_t         nb,
+                                                   size_t         n_in,
+                                                   const uint8_t *w,
+                                                   const int8_t  *qx,
+                                                   const float   *dx,
+                                                   const int32_t *sx,
+                                                   float          out[static NR]) {
+    __m256 acc[NR];
+    float  mins[NR];
     for (size_t r = 0; r < NR; r++) {
         acc[r]  = _mm256_setzero_ps();
         mins[r] = 0.0f;
     }
     const size_t nsx = n_in / 32;
     for (size_t b = 0; b < nb; b++) {
-        uint8_t sc[8], mn[8];
-        unpack_scales(w[b].scales, sc, mn);
+        const uint8_t *blk = w + b * f.stride;
+        uint8_t        sc[8], mn[8];
+        unpack_scales(blk + 4, sc, mn);
         __m256i sumi[NR];
         for (size_t r = 0; r < NR; r++) {
             sumi[r] = _mm256_setzero_si256();
         }
         for (size_t j = 0; j < 4; j++) {
-            const __m256i q   = _mm256_loadu_si256((const __m256i *) (w[b].qs + j * 32));
-            const __m256i lo  = _mm256_and_si256(q, mask);
-            const __m256i hi  = _mm256_and_si256(_mm256_srli_epi16(q, 4), mask);
+            __m256i lo, hi;
+            unpack_pair(f, blk, j, &lo, &hi);
             const __m256i sl  = _mm256_set1_epi16(sc[2 * j]);
             const __m256i sh  = _mm256_set1_epi16(sc[2 * j + 1]);
             const size_t  off = b * QK + j * 64;
@@ -209,8 +256,8 @@ static void dot_rows(size_t                     nb,
                                            _mm256_madd_epi16(_mm256_maddubs_epi16(hi, x1), sh));
             }
         }
-        const float d    = _cvtsh_ss(w[b].d);
-        const float dmin = _cvtsh_ss(w[b].dmin);
+        const float d    = blk_h(blk);
+        const float dmin = blk_h(blk + 2);
         for (size_t r = 0; r < NR; r++) {
             const float dxr = dx[r * nb + b];
             acc[r] = _mm256_fmadd_ps(_mm256_set1_ps(d * dxr), _mm256_cvtepi32_ps(sumi[r]), acc[r]);
@@ -236,10 +283,11 @@ static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m
             (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, 0);
 }
 
-static void cpu_x86_linear_q4k_raw_m1(const float               *x,
-                                      const struct geist_weight *w,
-                                      struct geist_backend      *be,
-                                      float                     *y) {
+[[gnu::always_inline]] static inline void linear_m1(struct fmt                 f,
+                                                    const float               *x,
+                                                    const struct geist_weight *w,
+                                                    struct geist_backend      *be,
+                                                    float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
@@ -249,23 +297,24 @@ static void cpu_x86_linear_q4k_raw_m1(const float               *x,
         return;
     }
     quantize_row_q8_k(nb, x, ws->mN_acts, ws->mN_scale, ws->mN_sum_a);
-    const int8_t              *qx = ws->mN_acts;
-    const float               *dx = ws->mN_scale;
-    const int32_t             *sx = ws->mN_sum_a;
-    const struct block_q4_K_t *wb = (const struct block_q4_K_t *) w->raw;
+    const int8_t  *qx = ws->mN_acts;
+    const float   *dx = ws->mN_scale;
+    const int32_t *sx = ws->mN_sum_a;
+    const uint8_t *wb = (const uint8_t *) w->raw;
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
     for (size_t j = 0; j < n_out; j++) {
-        y[j] = dot_row(nb, wb + j * nb, qx, dx, sx);
+        y[j] = dot_row(f, nb, wb + j * nb * f.stride, qx, dx, sx);
     }
 }
 
-static void cpu_x86_linear_q4k_raw_mN(size_t                     m,
-                                      const float               *x,
-                                      const struct geist_weight *w,
-                                      struct geist_backend      *be,
-                                      float                     *y) {
+[[gnu::always_inline]] static inline void linear_mN(struct fmt                 f,
+                                                    size_t                     m,
+                                                    const float               *x,
+                                                    const struct geist_weight *w,
+                                                    struct geist_backend      *be,
+                                                    float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
@@ -275,11 +324,11 @@ static void cpu_x86_linear_q4k_raw_mN(size_t                     m,
         geist_linear_ref(m, x, w, y);
         return;
     }
-    int8_t                    *qx    = ws->mN_acts;
-    float                     *dx    = ws->mN_scale;
-    int32_t                   *sx    = ws->mN_sum_a;
-    const struct block_q4_K_t *wb    = (const struct block_q4_K_t *) w->raw;
-    const size_t               m_til = m - m % NR;
+    int8_t        *qx    = ws->mN_acts;
+    float         *dx    = ws->mN_scale;
+    int32_t       *sx    = ws->mN_sum_a;
+    const uint8_t *wb    = (const uint8_t *) w->raw;
+    const size_t   m_til = m - m % NR;
 
 #if defined(_OPENMP)
 #pragma omp parallel
@@ -295,19 +344,49 @@ static void cpu_x86_linear_q4k_raw_mN(size_t                     m,
 #pragma omp for schedule(static)
 #endif
         for (size_t j = 0; j < n_out; j++) {
-            const struct block_q4_K_t *wr = wb + j * nb;
-            float                      out[NR];
+            const uint8_t *wr = wb + j * nb * f.stride;
+            float          out[NR];
             for (size_t i = 0; i < m_til; i += NR) {
-                dot_rows(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nsx, out);
+                dot_rows(f, nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nsx, out);
                 for (size_t r = 0; r < NR; r++) {
                     y[(i + r) * n_out + j] = out[r];
                 }
             }
             for (size_t i = m_til; i < m; i++) {
-                y[i * n_out + j] = dot_row(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nsx);
+                y[i * n_out + j] = dot_row(f, nb, wr, qx + i * n_in, dx + i * nb, sx + i * nsx);
             }
         }
     }
+}
+
+static void cpu_x86_linear_q4k_raw_m1(const float               *x,
+                                      const struct geist_weight *w,
+                                      struct geist_backend      *be,
+                                      float                     *y) {
+    linear_m1(FMT_Q4_K, x, w, be, y);
+}
+
+static void cpu_x86_linear_q4k_raw_mN(size_t                     m,
+                                      const float               *x,
+                                      const struct geist_weight *w,
+                                      struct geist_backend      *be,
+                                      float                     *y) {
+    linear_mN(FMT_Q4_K, m, x, w, be, y);
+}
+
+static void cpu_x86_linear_q5k_m1(const float               *x,
+                                  const struct geist_weight *w,
+                                  struct geist_backend      *be,
+                                  float                     *y) {
+    linear_m1(FMT_Q5_K, x, w, be, y);
+}
+
+static void cpu_x86_linear_q5k_mN(size_t                     m,
+                                  const float               *x,
+                                  const struct geist_weight *w,
+                                  struct geist_backend      *be,
+                                  float                     *y) {
+    linear_mN(FMT_Q5_K, m, x, w, be, y);
 }
 
 bool cpu_x86_linear_q4k_raw_bind(struct geist_weight *w) {
@@ -317,5 +396,15 @@ bool cpu_x86_linear_q4k_raw_bind(struct geist_weight *w) {
     }
     w->linear_m1 = cpu_x86_linear_q4k_raw_m1;
     w->linear_mN = cpu_x86_linear_q4k_raw_mN;
+    return true;
+}
+
+bool cpu_x86_linear_q5k_bind(struct geist_weight *w) {
+    if (w == nullptr || w->dtype != GEIST_DTYPE_Q5_K || w->n_in <= 0 ||
+        (size_t) w->n_in % QK != 0) {
+        return false;
+    }
+    w->linear_m1 = cpu_x86_linear_q5k_m1;
+    w->linear_mN = cpu_x86_linear_q5k_mN;
     return true;
 }

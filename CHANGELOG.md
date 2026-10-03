@@ -194,6 +194,14 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 Q5_K runs a native int8 kernel on the GGUF bytes: prefill about
+  2.2x, decode about 3.4x faster** (#410). Q5_K used to fall back to the
+  generic dequantize-and-dot path. The Q4_K raw kernel is now generic over
+  the block format, so Q5_K reads its fifth bit from `qh` and shares the
+  maddubs/madd pipeline, with no predecoded copy of the weights. On a 1B
+  synthetic Q5_K model (4-core Xeon) prefill drops 53-56 % and decode 70 %
+  at both the AVX2 and the VNNI tier.
+
 - **cpu_x86 Q4_0, Q4_1 and TQ2_0 prefill run AVX-512 VNNI register tiles:
   about twice as fast** (#410). On VNNI hosts M>1 now walks 4 output rows x
   4 tokens per tile in zmm registers with one VPDPBUSD per block pair (Q4_0
