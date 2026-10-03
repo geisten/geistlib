@@ -255,6 +255,10 @@ struct metal_state {
     void *tq2_n4_pipeline;
     void *tq2_mm_function;
     void *tq2_mm_pipeline;
+    void *i2s_n4_function;
+    void *i2s_n4_pipeline;
+    void *i2s_mm_function;
+    void *i2s_mm_pipeline;
     void *iq3s_n4_function;
     void *iq3s_n4_pipeline;
     void *iq3s_mm_function;
@@ -377,6 +381,14 @@ struct metal_state {
     void    *embed_lookup_scaled_rows_function;
     void    *embed_lookup_scaled_rows_pipeline;
     void    *f32_library;
+    void    *f16w_matmul_function;
+    void    *f16w_matmul_pipeline;
+    void    *f16w_matmul_sg_function;
+    void    *f16w_matmul_sg_pipeline;
+    void    *bf16w_matmul_function;
+    void    *bf16w_matmul_pipeline;
+    void    *bf16w_matmul_sg_function;
+    void    *bf16w_matmul_sg_pipeline;
     void    *f32_matmul_function;
     void    *f32_matmul_pipeline;
     void    *f32_matmul_sg_function;
@@ -565,6 +577,8 @@ enum {
     METAL_PQ2_BLOCK_BYTES               = (unsigned) PQ2_0_BLOCK_BYTES,
     METAL_TQ2_BLOCK_ELEMS               = (unsigned) TQ2_0_BLOCK_ELEMS,
     METAL_TQ2_BLOCK_BYTES               = (unsigned) TQ2_0_BLOCK_BYTES,
+    METAL_I2S_BLOCK_ELEMS               = (unsigned) I2_S_BLOCK_ELEMS,
+    METAL_I2S_BLOCK_BYTES               = (unsigned) I2_S_BLOCK_BYTES,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,
@@ -591,6 +605,8 @@ static inline size_t metal_quant_block_elems(enum geist_dtype dtype) {
         return METAL_PQ2_BLOCK_ELEMS;
     case GEIST_DTYPE_TQ2_0:
         return METAL_TQ2_BLOCK_ELEMS;
+    case GEIST_DTYPE_I2_S:
+        return METAL_I2S_BLOCK_ELEMS;
     default:
         return METAL_Q40_Q80_BLOCK_ELEMS;
     }

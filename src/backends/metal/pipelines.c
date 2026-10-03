@@ -251,6 +251,7 @@
         st->pq2_mm_fast_pipeline != nullptr && st->pq2_n8_pipeline != nullptr &&
         st->iq4xs_mm_pipeline != nullptr && st->q3k_mm_pipeline != nullptr &&
         st->tq2_n4_pipeline != nullptr && st->tq2_mm_pipeline != nullptr &&
+        st->i2s_n4_pipeline != nullptr && st->i2s_mm_pipeline != nullptr &&
         st->iq3s_mm_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
         st->q4k_matmul_m8_pipeline != nullptr && st->q4k_matmul_m16_pipeline != nullptr &&
         st->q4k_matmul_m16_n2_pipeline != nullptr &&
@@ -264,6 +265,8 @@
         st->rmsnorm_add_rows_pipeline != nullptr && st->rmsnorm_add_rows_simd_pipeline != nullptr &&
         st->qgate_split_pipeline != nullptr && st->sigmoid_mul_pipeline != nullptr &&
         st->embed_lookup_scaled_pipeline != nullptr && st->f32_matmul_pipeline != nullptr &&
+        st->f16w_matmul_pipeline != nullptr && st->f16w_matmul_sg_pipeline != nullptr &&
+        st->bf16w_matmul_pipeline != nullptr && st->bf16w_matmul_sg_pipeline != nullptr &&
         st->f32_ple_gate_pipeline != nullptr && st->f32_ple_proj_norm_pipeline != nullptr) {
         return GEIST_OK;
     }
@@ -315,7 +318,8 @@
                 metal_qsg_pq2_dq_source,      metal_qsg_pq2_source,
                 metal_qsg_pq2_n8_source,      metal_qsg_mm_pq2_source,
                 metal_qsg_mm_pq2_fast_source, metal_qsg_tq2_source,
-                metal_qsg_mm_tq2_source};
+                metal_qsg_mm_tq2_source,      metal_qsg_i2s_source,
+                metal_qsg_mm_i2s_source};
         const size_t n_parts = sizeof parts / sizeof parts[0];
         size_t       total   = 0;
         for (size_t i = 0; i < n_parts; i++) {
@@ -391,16 +395,22 @@
     }
     void *f32_source = nullptr;
     {
-        /* two literals concatenated at init (C99 4095-char literal limit) */
-        const size_t f32_len_a = strlen(metal_f32_source);
-        const size_t f32_len_b = strlen(metal_f32_mm_source);
-        char        *f32_src   = malloc(f32_len_a + f32_len_b + 1u);
+        /* literals concatenated at init (C99 4095-char literal limit) */
+        const char *const f32_parts[] = {
+                metal_f32_source, metal_f32_mm_source, metal_f16_w_source, metal_bf16_w_source};
+        size_t f32_len = 1u;
+        for (size_t i = 0; i < sizeof f32_parts / sizeof f32_parts[0]; i++) {
+            f32_len += strlen(f32_parts[i]);
+        }
+        char *f32_src = malloc(f32_len);
         if (f32_src == nullptr) {
             geist_backend_set_error(be, GEIST_E_OOM, "metal: f32 shader source alloc failed");
             return GEIST_E_OOM;
         }
-        memcpy(f32_src, metal_f32_source, f32_len_a);
-        memcpy(f32_src + f32_len_a, metal_f32_mm_source, f32_len_b + 1u);
+        f32_src[0] = '\0';
+        for (size_t i = 0; i < sizeof f32_parts / sizeof f32_parts[0]; i++) {
+            strcat(f32_src, f32_parts[i]);
+        }
         f32_source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", f32_src);
         free(f32_src);
     }
@@ -936,6 +946,22 @@
         s = metal_create_named_pipeline(be,
                                         st->quant_sg_library,
                                         ns_string,
+                                        "matvec_i2s_n4",
+                                        &st->i2s_n4_function,
+                                        &st->i2s_n4_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
+                                        "matmul_i2s_mm_sg",
+                                        &st->i2s_mm_function,
+                                        &st->i2s_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->quant_sg_library,
+                                        ns_string,
                                         "matvec_iq3s_n4",
                                         &st->iq3s_n4_function,
                                         &st->iq3s_n4_pipeline);
@@ -1247,6 +1273,38 @@
                                         "matmul_f32_mm_sg",
                                         &st->f32_matmul_mm_function,
                                         &st->f32_matmul_mm_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->f32_library,
+                                        ns_string,
+                                        "matmul_f16w",
+                                        &st->f16w_matmul_function,
+                                        &st->f16w_matmul_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->f32_library,
+                                        ns_string,
+                                        "matmul_f16w_sg",
+                                        &st->f16w_matmul_sg_function,
+                                        &st->f16w_matmul_sg_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->f32_library,
+                                        ns_string,
+                                        "matmul_bf16w",
+                                        &st->bf16w_matmul_function,
+                                        &st->bf16w_matmul_pipeline);
+    }
+    if (s == GEIST_OK) {
+        s = metal_create_named_pipeline(be,
+                                        st->f32_library,
+                                        ns_string,
+                                        "matmul_bf16w_sg",
+                                        &st->bf16w_matmul_sg_function,
+                                        &st->bf16w_matmul_sg_pipeline);
     }
     if (s == GEIST_OK) {
         s = metal_create_named_pipeline(be,
