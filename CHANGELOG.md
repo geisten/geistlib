@@ -194,6 +194,20 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 Q6_K prefill reads the GGUF bytes below AVX-512 VNNI: 7x faster,
+  one copy of the weights** (#577). Q6_K prefill used to read a W8A8
+  predecode (1.5 bytes per weight next to the 0.82 of the GGUF bytes) whose
+  only vector kernel is AVX-512 VNNI; everywhere else its dot ran scalar.
+  Below VNNI (AVX2 hosts, e.g. the Steam Deck) prefill now runs the native
+  Q6_K kernel the decode path already used, tiled four tokens per weight
+  row, and no predecode is built. On a synthetic Llama-3.2-1B-geometry
+  all-Q6_K model at the AVX2 tier, prefill of 64 and 256 tokens is 86 %
+  faster (`tools/bench_revision_ab.py`, 6 cycles, 6/6 faster), decode is
+  within noise, and peak RSS drops from 2.33 to 0.95 GiB. VNNI hosts keep the
+  predecode, which prefills about twice as fast there; `GEIST_Q6K_RAW=1`
+  takes the raw kernel on any host, `=0` keeps the predecode.
+  `test_x86_q6k_raw_unit` checks it against cpu_scalar under a derived
+  activation-rounding bound and bit for bit against the decode kernel.
 - **cpu_x86 keeps one copy of the Q4_K weights below AVX-512** (#577). Every
   Q4_K weight was repacked into a Q4_Kx8 or W4A8 blob about as large as the
   GGUF bytes, which stay resident too: with `load_from_memory` they are the

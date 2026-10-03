@@ -18,4 +18,17 @@
  * K); y is the fp32 output (length N). K % 256 == 0, any length. AVX2. */
 void q6k_gemv_m1(size_t N, size_t K, const float *x, const uint8_t *q6k_raw, float y[static N]);
 
+/* Prefill (M>1) over the same native Q6_K weights: y[M][N] = x[M][K] W^T.
+ * scratch holds the M quantized activation rows,
+ * q6k_gemm_scratch_bytes(M, K) bytes, 4-byte aligned. Bit-identical per
+ * output to q6k_gemv_m1 for K <= 16384. AVX2. */
+size_t q6k_gemm_scratch_bytes(size_t M, size_t K);
+void   q6k_gemm(size_t         M,
+                size_t         N,
+                size_t         K,
+                const float   *x,
+                const uint8_t *q6k_raw,
+                void          *scratch,
+                float         *y);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_Q6K_GEMV_H */
