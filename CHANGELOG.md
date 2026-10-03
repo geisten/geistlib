@@ -188,6 +188,16 @@ minor release.
 
 ### Changed
 
+- **A DeltaNet model that a backend can run neither on the device nor on
+  the host is refused at load** (#470, `geist_backend.h`, experimental). On
+  Vulkan, a qwen35-family model whose DeltaNet heads exceed the shaders'
+  limits (`head_k` > 256, `head_v` > 128, a conv outside 2..8) used to load
+  and then fail the first prefill. The host fallback cannot map the recurrent
+  state, which Vulkan keeps in VRAM. The load now fails and names the
+  geometry. New `GEIST_FUSED_DELTANET_MIX` with the `dn_*` query fields;
+  Vulkan's probe and kernel share one geometry check. Backends whose state is
+  host-mappable (CPU, Metal) are unaffected.
+
 - **A rotated model loads only where the backend promises its Hadamard
   geometry** (#495, `geist_backend.h`, experimental). `hadamard_rotate` now
   joins probe-and-bind: new `GEIST_FUSED_HADAMARD_ROTATE` and the

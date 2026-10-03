@@ -298,6 +298,7 @@ enum geist_fused_op {
     GEIST_FUSED_ATTN_KV_INT8,
     GEIST_FUSED_ATTN_KV_INT4,
     GEIST_FUSED_HADAMARD_ROTATE,
+    GEIST_FUSED_DELTANET_MIX,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -327,6 +328,14 @@ struct geist_fusion_query {
     size_t perm_nk;
     size_t perm_rep;
     bool   inverse;
+    /* deltanet_mix: the geist_deltanet_mix_args head geometry (rows are
+     * `m`). Probed at load; where the answer is no and the session state
+     * is not host-mappable, the model refuses to load. */
+    size_t dn_n_k_heads;
+    size_t dn_n_v_heads;
+    size_t dn_head_k;
+    size_t dn_head_v;
+    size_t dn_conv_kernel;
 };
 
 /* Complete Gated-DeltaNet mixer after its four input projections. All

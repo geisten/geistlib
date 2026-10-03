@@ -88,8 +88,71 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_HADAMARD_ROTATE: /* probed by rotation.c at load */
         have = fused->hadamard_rotate != nullptr;
         break;
+    case GEIST_FUSED_DELTANET_MIX:
+        have = fused->deltanet_mix != nullptr;
+        break;
     }
     return have && fused->supported != nullptr && fused->supported(be, &q);
+}
+
+/* Whether a session's DeltaNet state (KV_CACHE role, as arch_state.c
+ * creates it) is host-mappable on this backend: the host oracle in
+ * layer_deltanet.c maps it. */
+static bool dn_state_host_mappable(struct geist_backend *be) {
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    struct geist_buffer             *b = nullptr;
+    if (v->buffer_create(be, sizeof(float), GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &b) !=
+                GEIST_OK ||
+        b == nullptr) {
+        return false;
+    }
+    const bool mapped = v->buffer_map(b) != nullptr;
+    if (mapped) {
+        v->buffer_unmap(b);
+    }
+    v->buffer_destroy(be, b);
+    return mapped;
+}
+
+/* #470: the DeltaNet mixer runs either on the backend (fused->deltanet_mix)
+ * or in the host oracle, which maps the session's recurrent state. Where
+ * the backend's kernel does not cover this model's head geometry and the
+ * state lives in device-only memory (Vulkan VRAM), neither can run, so
+ * the model is refused here, naming the limit, rather than at the first
+ * prefill. */
+[[nodiscard]] static enum geist_status check_deltanet_mixer(struct transformer_arch_state *st,
+                                                            size_t                         m_cap) {
+    bool any = false;
+    for (size_t i = 0; i < st->n_layers && !any; i++) {
+        any = st->layers[i].mixer == GEIST_MIXER_DELTANET;
+    }
+    struct geist_backend *be = st->backend;
+    if (!any) {
+        return GEIST_OK;
+    }
+    const struct geist_fusion_query q = {.op             = GEIST_FUSED_DELTANET_MIX,
+                                         .m              = m_cap,
+                                         .dn_n_k_heads   = st->config.dn_n_k_heads,
+                                         .dn_n_v_heads   = st->config.dn_n_v_heads,
+                                         .dn_head_k      = st->config.dn_head_k,
+                                         .dn_head_v      = st->config.dn_head_v,
+                                         .dn_conv_kernel = st->config.dn_conv_kernel};
+    if (probe(be, q) || dn_state_host_mappable(be)) {
+        return GEIST_OK;
+    }
+    geist_error_set_create_time(GEIST_E_UNSUPPORTED,
+                                "transformer_exec_plan_build",
+                                "backend '%s' has no DeltaNet kernel for this model (head_k=%zu, "
+                                "head_v=%zu, k_heads=%zu, v_heads=%zu, conv_kernel=%zu) and keeps "
+                                "the recurrent state in device memory the host fallback cannot "
+                                "map; use a CPU backend",
+                                geist_backend_name(be),
+                                st->config.dn_head_k,
+                                st->config.dn_head_v,
+                                st->config.dn_n_k_heads,
+                                st->config.dn_n_v_heads,
+                                st->config.dn_conv_kernel);
+    return GEIST_E_UNSUPPORTED;
 }
 
 enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st) {
@@ -283,7 +346,10 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
             return GEIST_E_UNSUPPORTED;
         }
     }
-    return GEIST_OK;
+    const struct geist_backend *be = st->backend;
+    return check_deltanet_mixer(
+            st,
+            (be->desc != nullptr && be->desc->caps.max_m > 0) ? be->desc->caps.max_m : st->m_max);
 }
 
 void transformer_exec_plan_destroy(struct transformer_arch_state *st) {

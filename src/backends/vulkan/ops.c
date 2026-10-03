@@ -2016,6 +2016,22 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
  * exactly once per input row. UNSUPPORTED (before anything was dispatched)
  * lets the architecture take its host path — which cannot see VRAM-resident
  * state, so the geometry limits below cover every published qwen35 variant. */
+/* The geometry vk_deltanet_mix runs: the shaders cover d_k <= 256 (q/k
+ * staging), d_v <= 128 (one thread per value column) and a conv of 2..8
+ * taps, with every row index in uint32. The probe and the op both ask
+ * this (#470). */
+static bool
+vk_deltanet_geometry_ok(size_t seq, size_t n_kh, size_t n_vh, size_t dk, size_t dv, size_t K) {
+    if (seq == 0 || n_kh == 0 || n_vh == 0 || n_vh % n_kh != 0 || dk == 0 || dk > 256 || dv == 0 ||
+        dv > 128 || K < 2 || K > 8) {
+        return false;
+    }
+    size_t keyd = 0, vald = 0, convd = 0;
+    return !ckd_mul(&keyd, n_kh, dk) && !ckd_mul(&vald, n_vh, dv) && !ckd_mul(&convd, keyd, 2) &&
+           !ckd_add(&convd, convd, vald) && convd <= UINT32_MAX / 4u &&
+           seq <= UINT32_MAX / (convd + 1u);
+}
+
 [[nodiscard]] static enum geist_status vk_deltanet_mix(struct geist_backend                 *be,
                                                        const struct geist_deltanet_mix_args *a) {
     if (a == nullptr || a->qkv == nullptr || a->z == nullptr || a->beta == nullptr ||
@@ -2026,16 +2042,12 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
     }
     const size_t seq = a->seq, n_kh = a->n_k_heads, n_vh = a->n_v_heads;
     const size_t dk = a->head_k, dv = a->head_v, K = a->conv_kernel;
-    if (seq == 0 || n_kh == 0 || n_vh % n_kh != 0 || dk == 0 || dk > 256 || dv == 0 || dv > 128 ||
-        K < 2 || K > 8) {
+    if (!vk_deltanet_geometry_ok(seq, n_kh, n_vh, dk, dv, K)) {
         return GEIST_E_UNSUPPORTED;
     }
     const size_t keyd  = n_kh * dk;
     const size_t vald  = n_vh * dv;
     const size_t convd = 2 * keyd + vald;
-    if (convd > UINT32_MAX / 4u || seq > UINT32_MAX / (convd + 1u)) {
-        return GEIST_E_UNSUPPORTED;
-    }
     /* Row-major contiguous views only — the shaders index rows by convd/vald. */
     if (vk_t_n(a->qkv) != seq * convd || vk_t_n(a->z) < seq * vald ||
         vk_t_n(a->beta) < seq * n_vh || vk_t_n(a->alpha) < seq * n_vh ||
@@ -2159,6 +2171,13 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
         return true;
     case GEIST_FUSED_ARGMAX_F32:
         return true;
+    case GEIST_FUSED_DELTANET_MIX:
+        return vk_deltanet_geometry_ok(q->m,
+                                       q->dn_n_k_heads,
+                                       q->dn_n_v_heads,
+                                       q->dn_head_k,
+                                       q->dn_head_v,
+                                       q->dn_conv_kernel);
     case GEIST_FUSED_HADAMARD_ROTATE:
         /* The shader covers block <= VK_HADAMARD_MAX_BLOCK; every other
          * geometry the host transform accepts runs on mapped memory. */
