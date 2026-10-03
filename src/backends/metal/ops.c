@@ -4049,6 +4049,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         if (scr_bytes > (size_t) 1u << 31) {
             chunked = false;
         } else if (st->dn_scratch_bytes < scr_bytes) {
+            metal_residency_forget(st, st->dn_scratch);
             metal_msg_send_void0(st, st->dn_scratch, "release");
             st->dn_scratch       = metal_msg_send_id_size_uint(st,
                                                                st->device,

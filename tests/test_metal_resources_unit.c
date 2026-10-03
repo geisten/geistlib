@@ -92,6 +92,42 @@ static bool views(struct geist_backend *be) {
     printf("{\"phase\":\"views\",\"ok\":%s}\n", ok ? "true" : "false");
     return ok;
 }
+/* #530: a buffer joins the residency set when a dispatch first binds it and
+ * leaves with its handle; a buffer nothing binds never joins. No set exists
+ * before macOS 15 or with GEIST_METAL_KEEP_ALIVE_S=0. */
+static bool residency(struct geist_backend *be) {
+    struct metal_state *st = be->state;
+    if (st->residency_set == nullptr) {
+        printf("{\"phase\":\"residency\",\"set\":false}\n");
+        return true;
+    }
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    struct geist_buffer             *a = nullptr, *b = nullptr, *c = nullptr;
+    if (v->buffer_create(be, 64, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_MAPPED, &a) != GEIST_OK ||
+        v->buffer_create(be, 64, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_MAPPED, &b) != GEIST_OK ||
+        v->buffer_create(be, 64, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_MAPPED, &c) != GEIST_OK ||
+        metal_ensure_attention_pipeline(be) != GEIST_OK)
+        return false;
+    const unsigned long n0  = metal_msg_send_ulong0(st, st->residency_set, "allocationCount");
+    const int           tok = v->parallel_region_begin(be, GEIST_REGION_DECODE_STEP);
+    bool ok = tok != 0 && v->buffer_copy(b, 0, a, 0, 64) == GEIST_OK; /* binds a and b */
+    v->parallel_region_end(be, tok);
+    ok = ok && metal_msg_send_ulong0(st, st->residency_set, "allocationCount") == n0 + 2;
+    v->buffer_destroy(be, a);
+    ok = ok && metal_msg_send_ulong0(st, st->residency_set, "allocationCount") == n0 + 1;
+    v->buffer_destroy(be, b);
+    v->buffer_destroy(be, c);
+    ok = ok && metal_msg_send_ulong0(st, st->residency_set, "allocationCount") == n0;
+    ok = ok && st->res_keep_s == 180; /* the default keep-alive */
+    setenv("GEIST_METAL_KEEP_ALIVE_S", "0", 1);
+    struct geist_backend *off = nullptr;
+    ok = ok && geist_backend_create("metal", nullptr, nullptr, &off) == GEIST_OK &&
+         ((struct metal_state *) off->state)->residency_set == nullptr;
+    geist_backend_destroy(off);
+    unsetenv("GEIST_METAL_KEEP_ALIVE_S");
+    printf("{\"phase\":\"residency\",\"set\":true,\"ok\":%s}\n", ok ? "true" : "false");
+    return ok;
+}
 #endif
 int main(void) {
 #ifndef GEIST_BACKEND_METAL
@@ -111,6 +147,7 @@ int main(void) {
     struct metal_state *st = be->state;
     bool                ok = sample(be, "initial");
     ok                     = views(be) && ok;
+    ok                     = residency(be) && ok;
     size_t size            = 16 * 1024 * 1024;
     void  *shared =
             metal_msg_send_id_size_uint(st, st->device, "newBufferWithLength:options:", size, 0);

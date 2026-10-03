@@ -32,6 +32,7 @@ enum geist_command_sequence_kind {
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -473,6 +474,33 @@ struct metal_state {
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     char                      device_name[128];
 
+    /* #530: an MTLResidencySet on the command queue (macOS 15+; null there
+     * otherwise, or with GEIST_METAL_KEEP_ALIVE_S=0). macOS unwires what a
+     * command buffer made resident about 2 s after the GPU goes idle, and
+     * the next submission wires it again: +250 ms on the first token after
+     * a pause on qwen3.8-27B. res_thread requests the set's residency every
+     * 500 ms until res_keep_s pass without a dispatch (res_used), which
+     * keeps the members wired across such pauses; then it sleeps
+     * (res_parked) until the next dispatch.
+     * A buffer joins the set the first time a dispatch binds it, so what
+     * stays wired is what the GPU uses and never a table the host gathers
+     * (#529). res_bufs holds the members: open addressing, linear probing,
+     * backward-shift deletion; at half full it stops adding. A join marks
+     * res_dirty and res_thread commits it with its next request; a leave
+     * commits at once, because the set keeps its members alive until then.
+     * res_lock guards the set's calls and res_dirty against res_thread. */
+    void           *residency_set;
+    void           *res_bufs[8192];
+    size_t          res_count;
+    bool            res_dirty;
+    bool            res_stop;
+    atomic_bool     res_used;
+    atomic_bool     res_parked;
+    uint64_t        res_keep_s;
+    pthread_t       res_thread;
+    pthread_mutex_t res_lock;
+    pthread_cond_t  res_wake;
+
     /* #531: the device's recommendedMaxWorkingSetSize, read once at create.
      * metal_budget_admit refuses an allocation past it unless
      * GEIST_METAL_IGNORE_BUDGET=1 (ws_ignore). ws_warned: the 90 % notice is
@@ -872,6 +900,12 @@ struct geist_buffer *metal_buf_reg_find(struct metal_state *st, const void *p, s
                                                  struct geist_buffer  **out);
 
 void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer *buf);
+
+void metal_residency_create(struct metal_state *st, uint64_t keep_alive_s);
+
+void metal_residency_destroy(struct metal_state *st);
+
+void metal_residency_forget(struct metal_state *st, void *mtl_buf);
 
 /* tuning.c: fold an applied calibration blob into the crossovers, once,
  * at the first weight resolve -- the engine closes the apply window just
