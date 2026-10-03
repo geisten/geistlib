@@ -885,7 +885,8 @@ jobs:
           set -eo pipefail
           for t in test_backend_vulkan_registry_unit \
                    test_backend_vulkan_buffer_unit \
-                   test_backend_vulkan_linear_parity; do
+                   test_backend_vulkan_linear_parity \
+                   test_backend_vulkan_deltanet_unit; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
           done
@@ -944,7 +945,8 @@ jobs:
           set -eo pipefail
           for t in test_backend_vulkan_registry_unit \
                    test_backend_vulkan_buffer_unit \
-                   test_backend_vulkan_linear_parity; do
+                   test_backend_vulkan_linear_parity \
+                   test_backend_vulkan_deltanet_unit; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
           done

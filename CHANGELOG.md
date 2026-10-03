@@ -154,7 +154,13 @@ minor release.
   DeltaNet on qwen35 models (logits byte-equal to before at m_max 64 and
   128). The default stays 64.
 - **Dense F16/BF16 projections a backend cannot resolve** are widened to F32
-  at load (metal has no half-precision dense linear).
+  at load (Vulkan has no half-precision dense linear).
+- **Metal runs F16/BF16 and I2_S linears** (#569; #564, #560). Half-precision
+  weights get F16/BF16 variants of the F32 decode and GEMM kernels, so an
+  all-F16 or all-BF16 model of any size now runs on Metal. Bonsai-27B logits
+  are bit-identical to before, and the F32 widen copy is gone on Metal. I2_S
+  gets a decode GEMV and a GEMM kernel: BitNet-2B-4T now runs end to end on
+  Metal, with the same top-1 token as cpu_scalar (logit correlation 0.99993).
 - **cpu_x86 runs the attention over the INT8 KV cache, its default, in its
   own AVX2 kernel.** It was the architecture's portable loop, vectorized by
   the compiler alone; the backend's AVX2 attention served only the F32
@@ -187,6 +193,16 @@ minor release.
   `GEIST_KV_INT8_FUSED=0` keeps both host loops.
 
 ### Changed
+
+- **A DeltaNet model that a backend can run neither on the device nor on
+  the host is refused at load** (#470, `geist_backend.h`, experimental). On
+  Vulkan, a qwen35-family model whose DeltaNet heads exceed the shaders'
+  limits (`head_k` > 256, `head_v` > 128, a conv outside 2..8) used to load
+  and then fail the first prefill. The host fallback cannot map the recurrent
+  state, which Vulkan keeps in VRAM. The load now fails and names the
+  geometry. New `GEIST_FUSED_DELTANET_MIX` with the `dn_*` query fields;
+  Vulkan's probe and kernel share one geometry check. Backends whose state is
+  host-mappable (CPU, Metal) are unaffected.
 
 - **A rotated model loads only where the backend promises its Hadamard
   geometry** (#495, `geist_backend.h`, experimental). `hadamard_rotate` now
@@ -531,12 +547,19 @@ minor release.
   vtable.
 
 ### Fixed
-- **An F16/BF16 model that Metal cannot run fails at load, not at the first
-  prefill** (#564). Metal has no half-precision linear. The loader widens a
-  matrix of at most 4M elements to F32, but a larger one used to load and
-  then fail the first prefill with "resolver installed no kernel". The load
-  now returns `GEIST_E_UNSUPPORTED`, and the message names the tensor, its
-  dtype and its shape. Quantized GGUFs and the CPU backends are unaffected.
+- **Vulkan DeltaNet and RMSNorm on GPUs with subgroups narrower than 32
+  lanes.** Their reductions kept one shared slot per subgroup, sized for 32
+  lanes, so on llvmpipe (8 lanes) and Intel (8 or 16) the extra subgroups wrote
+  past the array. The DeltaNet mixer returned NaN, so qwen35-family models ran
+  wrong on those devices. The slots now fit any subgroup size, and the
+  DeltaNet parity test runs in both Vulkan CI jobs.
+- **An F16/BF16 matrix no backend kernel covers fails at load, not at the
+  first prefill** (#564). A backend that refuses a half-precision matrix gets
+  it widened to F32 when it has at most 4M elements. A larger one used to load
+  and then fail the first prefill with "resolver installed no kernel". The
+  load now returns `GEIST_E_UNSUPPORTED`, and the message names the tensor,
+  its dtype and its shape. Metal has run F16/BF16 natively since #569, so
+  this is now a safety net.
 
 - **Metal loads models with small F16/BF16 matrices under
   `GEIST_WEIGHT_MMAP=0`** (#561). The weight arena counted the second staged

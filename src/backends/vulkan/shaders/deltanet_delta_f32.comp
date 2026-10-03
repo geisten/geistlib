@@ -22,8 +22,8 @@
  * subgroupAdd + one tiny shared pass (rmsnorm_f32.comp's pattern, #475):
  * the naive 128-wide shared-memory tree was 7 barriers per call, called
  * twice per token on this kernel's serial per-token critical path.
- * Parametrized by gl_SubgroupSize, not hardcoded to 32: correct on any
- * subgroup size, just fewer live partials to sum on a 64-lane one (RADV).
+ * Parametrized by the subgroup count, not hardcoded to 32 lanes: correct
+ * on any subgroup size (8 on llvmpipe, 8/16 on Intel, 64 on RADV).
  * Limits (host-checked): d_v <= 128, d_k <= 256. Threads j >= d_v idle but
  * still take part in every barrier.
  *
@@ -63,7 +63,7 @@ layout(push_constant) uniform Push {
 
 shared float qs[256];
 shared float ks[256];
-shared vec2  reduce_partial[4]; /* <= 128 / 32: worst case (smallest subgroup) */
+shared vec2  reduce_partial[128]; /* one per subgroup; a subgroup can be 1 lane */
 
 float silu(float v) {
     float e = exp(-abs(v));
@@ -82,7 +82,7 @@ void reduce2(inout float a, inout float b, uint tid) {
     }
     barrier();
     vec2 total = vec2(0.0);
-    for (uint i = 0u; i < 128u / gl_SubgroupSize; i++) {
+    for (uint i = 0u; i < gl_NumSubgroups; i++) {
         total += reduce_partial[i];
     }
     a = total.x;
