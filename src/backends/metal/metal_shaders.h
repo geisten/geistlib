@@ -1297,6 +1297,11 @@ static const char metal_silu_source[] =
         "float*y[[buffer(1)]],constant Sc&p[[buffer(2)]],uint gid[[thread_position_in_grid]]){uint "
         "total=p.rows*p.cols;if(gid>=total)return;uint r=gid/p.cols,c=gid-r*p.cols;float "
         "v=x[p.x_offset+r*p.x_row_stride+c];y[p.y_offset+r*p.y_row_stride+c]=v/(1.0f+exp(-v));}\n"
+        /* BitNet b1.58 2B-4T FFN activation, max(x, 0)^2 — relu_squared_fp32. */
+        "kernel void relu2_rows(device const float*x[[buffer(0)]],device "
+        "float*y[[buffer(1)]],constant Sc&p[[buffer(2)]],uint gid[[thread_position_in_grid]]){uint "
+        "total=p.rows*p.cols;if(gid>=total)return;uint r=gid/p.cols,c=gid-r*p.cols;float "
+        "v=max(x[p.x_offset+r*p.x_row_stride+c],0.0f);y[p.y_offset+r*p.y_row_stride+c]=v*v;}\n"
         /* Fused SwiGLU epilogue (#322 step 3b): silu(a)*b in one pass,
          * exact same silu formula as silu_rows above so the fused path
          * is bit-identical to silu+mul. Field layout matches struct Bin

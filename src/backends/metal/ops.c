@@ -546,12 +546,15 @@ static void metal_encode_gelu_rows(struct metal_state                   *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
-static void metal_encode_silu_rows(struct metal_state                   *st,
-                                   void                                 *enc,
-                                   const struct geist_tensor            *x,
-                                   const struct geist_tensor            *y,
-                                   const struct metal_scale_rows_params *params) {
-    metal_msg_send_set_pipeline(st, enc, st->silu_rows_pipeline);
+/* One-input elementwise rows (silu_rows, relu2_rows): same buffers and
+ * params, the pipeline picks the function. */
+static void metal_encode_unary_rows(struct metal_state                   *st,
+                                    void                                 *enc,
+                                    void                                 *pipeline,
+                                    const struct geist_tensor            *x,
+                                    const struct geist_tensor            *y,
+                                    const struct metal_scale_rows_params *params) {
+    metal_msg_send_set_pipeline(st, enc, pipeline);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 1);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 2);
@@ -1398,8 +1401,10 @@ metal_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct g
     return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
 }
 
-[[nodiscard]] static enum geist_status
-metal_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
+[[nodiscard]] static enum geist_status metal_unary_rows(struct geist_backend      *be,
+                                                        const struct geist_tensor *x,
+                                                        struct geist_tensor       *y,
+                                                        bool                       relu2) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -1429,8 +1434,9 @@ metal_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_
             .y_row_stride = (uint32_t) y_stride,
             .scale        = 0.0f,
     };
+    void *pipeline = relu2 ? st->relu2_rows_pipeline : st->silu_rows_pipeline;
     if (st->sequence_active) {
-        metal_encode_silu_rows(st, metal_sequence_encoder(st), x, y, &params);
+        metal_encode_unary_rows(st, metal_sequence_encoder(st), pipeline, x, y, &params);
         st->sequence_has_work = true;
         return GEIST_OK;
     }
@@ -1441,11 +1447,21 @@ metal_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_
     if (cmd == nullptr || enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_encode_silu_rows(st, enc, x, y, &params);
+    metal_encode_unary_rows(st, enc, pipeline, x, y, &params);
     metal_msg_send_void0(st, enc, "endEncoding");
     metal_msg_send_void0(st, cmd, "commit");
     metal_msg_send_void0(st, cmd, "waitUntilCompleted");
     return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
+}
+
+[[nodiscard]] static enum geist_status
+metal_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
+    return metal_unary_rows(be, x, y, false);
+}
+
+[[nodiscard]] static enum geist_status
+metal_relu_squared(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
+    return metal_unary_rows(be, x, y, true);
 }
 
 [[nodiscard]] static enum geist_status metal_gelu_tanh_mul(struct geist_backend      *be,
@@ -4249,7 +4265,7 @@ static const struct geist_backend_primitives metal_prims = {
         .mul              = metal_mul,
         .gelu_tanh        = metal_gelu_tanh,
         .silu             = metal_silu,
-        .relu_squared     = nullptr,
+        .relu_squared     = metal_relu_squared,
         .rope_apply       = metal_rope_apply,
         .embedding_lookup = metal_embedding_lookup,
         .attention        = metal_attention,
