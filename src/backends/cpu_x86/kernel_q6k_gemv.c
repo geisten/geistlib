@@ -192,3 +192,144 @@ void q6k_gemv_m1(size_t N, size_t K, const float *x, const uint8_t *q6k_raw, flo
         }
     }
 }
+
+/* Activation tile height of the M>1 kernel. */
+constexpr size_t Q6K_NR = 4;
+
+/* Q6K_NR activation rows against one weight row: each super-block's 6-bit
+ * weights and scales unpacked once per tile, then the same sequence of
+ * integer ops as dot_q6k_q8k per row (bit-identical per output). */
+static void dot_q6k_q8k_rows(size_t                     n_super,
+                             const struct block_q6_K_t *x,
+                             const struct q8k_act      *y,
+                             float                      out[static Q6K_NR]) {
+    const __m256i m3  = _mm256_set1_epi8(3);
+    const __m256i m15 = _mm256_set1_epi8(15);
+    __m256        acc[Q6K_NR];
+    for (size_t r = 0; r < Q6K_NR; r++) {
+        acc[r] = _mm256_setzero_ps();
+    }
+
+    for (size_t i = 0; i < n_super; i++) {
+        const float    dw = fp16_to_fp32(x[i].d);
+        const uint8_t *q4 = x[i].ql;
+        const uint8_t *qh = x[i].qh;
+
+        const __m128i scales   = _mm_loadu_si128((const __m128i *) x[i].scales);
+        const __m256i scales16 = _mm256_cvtepi8_epi16(scales);
+
+        __m256i sumi[Q6K_NR];
+        for (size_t r = 0; r < Q6K_NR; r++) {
+            sumi[r] = _mm256_setzero_si256();
+        }
+        int is = 0;
+        for (size_t j = 0; j < 2; j++) { /* QK_K/128 = 2 */
+            const __m256i q4bits1 = _mm256_loadu_si256((const __m256i *) q4);
+            const __m256i q4bits2 = _mm256_loadu_si256((const __m256i *) (q4 + 32));
+            const __m256i q4bitsH = _mm256_loadu_si256((const __m256i *) qh);
+            q4 += 64;
+            qh += 32;
+
+            const __m256i q4h_0 = _mm256_slli_epi16(_mm256_and_si256(q4bitsH, m3), 4);
+            const __m256i q4h_1 =
+                    _mm256_slli_epi16(_mm256_and_si256(q4bitsH, _mm256_set1_epi8(12)), 2);
+            const __m256i q4h_2 = _mm256_and_si256(q4bitsH, _mm256_set1_epi8(48));
+            const __m256i q4h_3 =
+                    _mm256_srli_epi16(_mm256_and_si256(q4bitsH, _mm256_set1_epi8((char) -64)), 2);
+
+            const __m256i q4_0 = _mm256_or_si256(_mm256_and_si256(q4bits1, m15), q4h_0);
+            const __m256i q4_1 = _mm256_or_si256(_mm256_and_si256(q4bits2, m15), q4h_1);
+            const __m256i q4_2 =
+                    _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(q4bits1, 4), m15), q4h_2);
+            const __m256i q4_3 =
+                    _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(q4bits2, 4), m15), q4h_3);
+
+            const __m256i s0 =
+                    _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales, scale_shuffle(is + 0)));
+            const __m256i s1 =
+                    _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales, scale_shuffle(is + 1)));
+            const __m256i s2 =
+                    _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales, scale_shuffle(is + 2)));
+            const __m256i s3 =
+                    _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales, scale_shuffle(is + 3)));
+            is += 4;
+
+            for (size_t r = 0; r < Q6K_NR; r++) {
+                const int8_t *q8    = y[r * n_super + i].qs + j * 128;
+                const __m256i p16_0 = _mm256_madd_epi16(
+                        s0, _mm256_maddubs_epi16(q4_0, _mm256_loadu_si256((const __m256i *) q8)));
+                const __m256i p16_1 = _mm256_madd_epi16(
+                        s1,
+                        _mm256_maddubs_epi16(q4_1,
+                                             _mm256_loadu_si256((const __m256i *) (q8 + 32))));
+                const __m256i p16_2 = _mm256_madd_epi16(
+                        s2,
+                        _mm256_maddubs_epi16(q4_2,
+                                             _mm256_loadu_si256((const __m256i *) (q8 + 64))));
+                const __m256i p16_3 = _mm256_madd_epi16(
+                        s3,
+                        _mm256_maddubs_epi16(q4_3,
+                                             _mm256_loadu_si256((const __m256i *) (q8 + 96))));
+                sumi[r] = _mm256_add_epi32(sumi[r], _mm256_add_epi32(p16_0, p16_1));
+                sumi[r] = _mm256_add_epi32(sumi[r], _mm256_add_epi32(p16_2, p16_3));
+            }
+        }
+        for (size_t r = 0; r < Q6K_NR; r++) {
+            const struct q8k_act *a      = &y[r * n_super + i];
+            const __m256i         q8sums = _mm256_loadu_si256((const __m256i *) a->bsums);
+            const __m256i         sub = _mm256_slli_epi32(_mm256_madd_epi16(q8sums, scales16), 5);
+            const float           d   = a->d * dw;
+            acc[r] = _mm256_fmadd_ps(_mm256_broadcast_ss(&d),
+                                     _mm256_cvtepi32_ps(_mm256_sub_epi32(sumi[r], sub)),
+                                     acc[r]);
+        }
+    }
+    for (size_t r = 0; r < Q6K_NR; r++) {
+        out[r] = hsum_ps_avx(acc[r]);
+    }
+}
+
+size_t q6k_gemm_scratch_bytes(size_t M, size_t K) {
+    return M * (K / 256) * sizeof(struct q8k_act);
+}
+
+void q6k_gemm(size_t         M,
+              size_t         N,
+              size_t         K,
+              const float   *x,
+              const uint8_t *q6k_raw,
+              void          *scratch,
+              float         *y) {
+    const size_t          n_super   = K / 256;
+    const size_t          row_bytes = n_super * sizeof(struct block_q6_K_t);
+    struct q8k_act *const a         = scratch;
+    const size_t          m_til     = M - M % Q6K_NR;
+
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+        for (size_t i = 0; i < M; i++) {
+            quantize_q8k_act(n_super, x + i * K, a + i * n_super);
+        }
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+        for (size_t r = 0; r < N; r++) {
+            const struct block_q6_K_t *wr = (const struct block_q6_K_t *) (q6k_raw + r * row_bytes);
+            float                      out[Q6K_NR];
+            for (size_t i = 0; i < m_til; i += Q6K_NR) {
+                dot_q6k_q8k_rows(n_super, wr, a + i * n_super, out);
+                for (size_t t = 0; t < Q6K_NR; t++) {
+                    y[(i + t) * N + r] = out[t];
+                }
+            }
+            for (size_t i = m_til; i < M; i++) {
+                y[i * N + r] = dot_q6k_q8k(n_super, wr, a + i * n_super);
+            }
+        }
+    }
+}

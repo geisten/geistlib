@@ -4,7 +4,8 @@
  * Layer: BACKEND (cpu_x86).
  *
  * Decode (M=1) reads the native Q6_K bytes (w->raw) through
- * q6k_gemv_m1. Prefill (M>1) reads a W8A8 predecode (1 byte / weight +
+ * q6k_gemv_m1. Prefill (M>1) reads them too (q6k_gemm) below AVX-512
+ * VNNI; on VNNI it reads a W8A8 predecode (1 byte / weight +
  * per-16-element scale and offset, 1.5 B/wt), in one of two layouts:
  *   - the lane-parallel W8x8 / W8x16 interleave, on a VNNI host with
  *     n_out % 8 == 0 (w8x8_gemm / w8x16_gemm);
@@ -33,6 +34,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h> /* getenv */
 
 /* SoA layout in the heap blob (allocated once per Q6_K weight at
  * resolve_weight): weights | w_scales | w_offsets, row-major or
@@ -69,6 +71,40 @@ static inline bool q6k_use_w8x8(size_t n_out) {
     return (n_out % W8X8_NROWS == 0) && w8a8_isa_is_vnni();
 }
 
+/* Prefill straight from the GGUF bytes (q6k_gemm) keeps one copy of the
+ * weights (#577). The W8A8 predecode only has a vector kernel on AVX-512
+ * VNNI, where it prefills about twice as fast as q6k_gemm; below that its
+ * dot is scalar, about seven times slower. So raw is the default below
+ * VNNI; GEIST_Q6K_RAW=1 or 0 overrides it. */
+static bool q6k_reads_raw(void) {
+    const char *e = getenv("GEIST_Q6K_RAW");
+    if (e != nullptr && e[0] != '\0') {
+        return e[0] != '0';
+    }
+    return !w8a8_isa_is_vnni();
+}
+
+static void cpu_x86_linear_q6k_raw_mN(size_t                     m,
+                                      const float               *x,
+                                      const struct geist_weight *w,
+                                      struct geist_backend      *be,
+                                      float                     *y) {
+    const size_t              n_in  = (size_t) w->n_in;
+    const size_t              n_out = (size_t) w->n_out;
+    struct cpu_x86_workspace *ws    = nullptr;
+    if (be != nullptr && be->state != nullptr) {
+        ws = cpu_x86_ws_acquire_mN(
+                (struct cpu_x86_state *) be->state, q6k_gemm_scratch_bytes(m, n_in), 0, 0, 0);
+    }
+    if (ws == nullptr) {
+        for (size_t row = 0; row < m; row++) {
+            cpu_x86_linear_q6k_m1(x + row * n_in, w, be, y + row * n_out);
+        }
+        return;
+    }
+    q6k_gemm(m, n_out, n_in, x, (const uint8_t *) w->raw, ws->mN_acts, y);
+}
+
 /* x86-64 transparent huge page: blobs this large are allocated aligned to
  * it so THP backs all of them (see linear_q4k.c, which measured why). */
 constexpr size_t THP_BYTES = 2u << 20;
@@ -81,6 +117,11 @@ constexpr size_t THP_BYTES = 2u << 20;
     const size_t n_out = (size_t) w->n_out;
     if (n_in % Q6_K_BLOCK_ELEMS != 0) {
         return GEIST_E_INVALID_ARG;
+    }
+    if (q6k_reads_raw()) {
+        w->linear_m1 = cpu_x86_linear_q6k_m1;
+        w->linear_mN = cpu_x86_linear_q6k_raw_mN;
+        return GEIST_OK;
     }
 
     const size_t weights_total = n_out * weights_bytes_per_row(n_in);
