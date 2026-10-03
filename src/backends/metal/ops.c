@@ -200,6 +200,11 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .mm        = st->q3k_mm_pipeline,
                                            .n4_tile   = 4u,
                                            .gemm_only = true};
+    case GEIST_DTYPE_I2_S:
+        return (struct metal_quant_pipes) {.n4        = st->i2s_n4_pipeline,
+                                           .mm        = st->i2s_mm_pipeline,
+                                           .n4_tile   = 4u,
+                                           .gemm_only = true};
     case GEIST_DTYPE_TQ2_0:
         return (struct metal_quant_pipes) {.n4        = st->tq2_n4_pipeline,
                                            .mm        = st->tq2_mm_pipeline,
@@ -667,11 +672,22 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
                                     const struct geist_tensor     *w,
                                     const struct geist_tensor     *y,
                                     const struct metal_f32_params *params) {
+    /* F16/BF16 weights (#564) take the same two kernels with the weight
+     * converted on load; the 64x32 GEMM stays F32-only. */
+    void *base_pipe = st->f32_matmul_pipeline, *sg_pipe = st->f32_matmul_sg_pipeline;
+    if (w->dtype == GEIST_DTYPE_F16) {
+        base_pipe = st->f16w_matmul_pipeline;
+        sg_pipe   = st->f16w_matmul_sg_pipeline;
+    } else if (w->dtype == GEIST_DTYPE_BF16) {
+        base_pipe = st->bf16w_matmul_pipeline;
+        sg_pipe   = st->bf16w_matmul_sg_pipeline;
+    }
     /* Multi-row (prefill): full-tile shapes take the 64x32 4-simdgroup GEMM
      * (mm_sg structure, f32 staging = bit-identical to the 8x8 kernel);
      * others the 8x8 simdgroup GEMM. Single-row keeps the reduction kernel. */
-    const bool use_sg = params->rows > 1u && st->f32_matmul_sg_pipeline != nullptr;
-    const bool use_mm = use_sg && st->f32_matmul_mm_pipeline != nullptr &&
+    const bool use_sg = params->rows > 1u && sg_pipe != nullptr;
+    const bool use_mm = use_sg && w->dtype == GEIST_DTYPE_F32 &&
+                        st->f32_matmul_mm_pipeline != nullptr &&
                         !metal_env_disabled("GEIST_METAL_F32_MM") && (params->rows % 32u) == 0u &&
                         (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
                         (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u &&
@@ -679,8 +695,8 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
     metal_msg_send_set_pipeline(st,
                                 enc,
                                 use_mm   ? st->f32_matmul_mm_pipeline
-                                : use_sg ? st->f32_matmul_sg_pipeline
-                                         : st->f32_matmul_pipeline);
+                                : use_sg ? sg_pipe
+                                         : base_pipe);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
@@ -711,6 +727,37 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
     };
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_F32_MATMUL, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
+}
+
+/* A dense, contiguous F16 or BF16 [rows, cols] matrix inside its buffer;
+ * the offset comes back in elements. */
+static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
+                                        size_t                    *out_rows,
+                                        size_t                    *out_cols,
+                                        size_t                    *out_offset_elems) {
+    if (t == nullptr || t->buffer == nullptr ||
+        (t->dtype != GEIST_DTYPE_F16 && t->dtype != GEIST_DTYPE_BF16) || t->ndim != 2 ||
+        t->shape[0] <= 0 || t->shape[1] <= 0 || t->offset % sizeof(uint16_t) != 0) {
+        return false;
+    }
+    /* Resolved weights arrive as BLOCK_QUANTIZED views without strides; a
+     * DENSE view must be contiguous. */
+    if (t->layout == GEIST_LAYOUT_DENSE && (t->stride[0] != t->shape[1] || t->stride[1] != 1)) {
+        return false;
+    }
+    const size_t rows = (size_t) t->shape[0];
+    const size_t cols = (size_t) t->shape[1];
+    if (rows > SIZE_MAX / cols) {
+        return false;
+    }
+    const size_t elems = rows * cols;
+    if (t->offset > t->buffer->bytes || elems > (t->buffer->bytes - t->offset) / sizeof(uint16_t)) {
+        return false;
+    }
+    *out_rows         = rows;
+    *out_cols         = cols;
+    *out_offset_elems = t->offset / sizeof(uint16_t);
+    return true;
 }
 
 [[nodiscard]] static enum geist_status metal_f32_linear(struct geist_backend      *be,
@@ -746,8 +793,15 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
         x_row_stride = n_in;
         y_row_stride = y_cols;
     }
-    ok = ok && metal_tensor_is_f32_matrix(w, &w_rows, &w_cols, &w_offset, &w_row_stride) &&
-         w_row_stride == w_cols && w_cols == n_in && y_cols == w_rows && y_rows == rows;
+    if (w != nullptr && (w->dtype == GEIST_DTYPE_F16 || w->dtype == GEIST_DTYPE_BF16)) {
+        /* Dense half-precision weights (#564): w_offset in elements, like
+         * the F32 path's. */
+        ok = ok && metal_tensor_is_half_matrix(w, &w_rows, &w_cols, &w_offset) && w_cols == n_in &&
+             y_cols == w_rows && y_rows == rows;
+    } else {
+        ok = ok && metal_tensor_is_f32_matrix(w, &w_rows, &w_cols, &w_offset, &w_row_stride) &&
+             w_row_stride == w_cols && w_cols == n_in && y_cols == w_rows && y_rows == rows;
+    }
     if (!ok) {
         geist_backend_set_error(
                 be,
@@ -3709,6 +3763,19 @@ static void metal_linear_mN(size_t                     m,
             case GEIST_DTYPE_F32:
                 memcpy(row, base + j * n_in * sizeof(float), n_in * sizeof(float));
                 break;
+            case GEIST_DTYPE_F16:
+            case GEIST_DTYPE_BF16:
+                for (size_t k = 0; k < n_in; k++) {
+                    uint16_t h;
+                    memcpy(&h, base + (j * n_in + k) * sizeof h, sizeof h);
+                    if (w->dtype == GEIST_DTYPE_F16) {
+                        row[k] = fp16_to_fp32(h);
+                    } else {
+                        const uint32_t u = (uint32_t) h << 16;
+                        memcpy(&row[k], &u, sizeof u);
+                    }
+                }
+                break;
             case GEIST_DTYPE_Q4_K:
                 dequant_q4_K_row(n_in, base + j * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, row);
                 break;
@@ -3781,6 +3848,7 @@ static void metal_linear_mN(size_t                     m,
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
         s = metal_q40_q80_linear(be, &tx, &tw, &ty, (enum geist_dtype) w->dtype, true);
         break;
     case GEIST_DTYPE_Q4_K:
@@ -3792,6 +3860,8 @@ static void metal_linear_mN(size_t                     m,
     case GEIST_DTYPE_Q6_K:
         s = metal_matmul_q6k(be, &tx, &tw, &ty);
         break;
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
     case GEIST_DTYPE_F32:
         tw.layout    = GEIST_LAYOUT_DENSE;
         tw.stride[0] = (int64_t) n_in;
@@ -3869,6 +3939,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
         case GEIST_DTYPE_IQ3_S:
         case GEIST_DTYPE_PQ2_0:
         case GEIST_DTYPE_TQ2_0:
+        case GEIST_DTYPE_I2_S:
             return metal_q40_q80_linear(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
         case GEIST_DTYPE_Q4_K:
             return metal_matvec_q4k(be, &x1, t_w, &y1);
@@ -3876,6 +3947,8 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
             return metal_matvec_q5k(be, &x1, t_w, &y1);
         case GEIST_DTYPE_Q6_K:
             return metal_matvec_q6k(be, &x1, t_w, &y1);
+        case GEIST_DTYPE_F16:
+        case GEIST_DTYPE_BF16:
         case GEIST_DTYPE_F32:
             return metal_matvec_f32_dense(be, &x1, t_w, &y1);
         default:
@@ -3892,6 +3965,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
         return metal_q40_q80_linear(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
     case GEIST_DTYPE_Q4_K:
         return metal_matmul_q4k(be, x, t_w, y);
@@ -3899,6 +3973,8 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
         return metal_matmul_q5k(be, x, t_w, y);
     case GEIST_DTYPE_Q6_K:
         return metal_matmul_q6k(be, x, t_w, y);
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
     case GEIST_DTYPE_F32:
         return metal_matmul_f32_dense(be, x, t_w, y);
     default:
@@ -3934,6 +4010,9 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
     case GEIST_DTYPE_F32:
         w->linear_m1 = metal_linear_m1;
         w->linear_mN = metal_linear_mN;

@@ -79,6 +79,9 @@ static void block_geom(int dtype, size_t *elems, size_t *bytes) {
     case GEIST_DTYPE_TQ2_0:
         *elems = TQ2_0_BLOCK_ELEMS, *bytes = TQ2_0_BLOCK_BYTES;
         return;
+    case GEIST_DTYPE_I2_S:
+        *elems = I2_S_BLOCK_ELEMS, *bytes = I2_S_BLOCK_BYTES;
+        return;
     case GEIST_DTYPE_Q4_0:
         *elems = 32u, *bytes = Q40_BB;
         return;
@@ -110,6 +113,18 @@ static void block_geom(int dtype, size_t *elems, size_t *bytes) {
         *elems = K_BLOCK, *bytes = Q6K_BB;
         return;
     }
+}
+
+/* F16 bits of a normal value exactly representable in half (the dense
+ * cases' weights: odd multiples of 1/128 below 2). */
+static uint16_t half_bits_exact(float v) {
+    if (v == 0.0f) {
+        return 0;
+    }
+    int         e;
+    const float m = frexpf(fabsf(v), &e); /* |v| = m * 2^e, m in [0.5, 1) */
+    return (uint16_t) ((v < 0.0f ? 0x8000u : 0u) | ((unsigned) (e + 14) << 10) |
+                       (unsigned) ((m * 2.0f - 1.0f) * 1024.0f));
 }
 
 /* Random-but-finite quant blob: random bytes, f16 scale fields pinned. */
@@ -221,10 +236,15 @@ static void run_case(struct geist_backend *mt,
     size_t       w_bytes;
     if (dtype == GEIST_DTYPE_F32) {
         w_bytes = n_in * n_out * sizeof(float);
+    } else if (dtype == GEIST_DTYPE_F16 || dtype == GEIST_DTYPE_BF16) {
+        w_bytes = n_in * n_out * sizeof(uint16_t);
     } else {
         size_t block = 0, bb = 0;
         block_geom(dtype, &block, &bb);
         w_bytes = n_out * (n_in / block) * bb;
+        if (dtype == GEIST_DTYPE_I2_S) {
+            w_bytes += sizeof(float); /* per-tensor scale after the blocks */
+        }
     }
     const struct geist_backend_vtbl *v = mt->desc->vtbl;
 
@@ -243,8 +263,21 @@ static void run_case(struct geist_backend *mt,
         for (size_t i = 0; i < n_in * n_out; i++) {
             wf[i] = ((float) rng_u8() - 127.5f) / 64.0f;
         }
+    } else if (dtype == GEIST_DTYPE_F16 || dtype == GEIST_DTYPE_BF16) {
+        /* (u8 - 127.5) / 64 is exact in both: 8 significant bits. */
+        uint16_t *wh = (uint16_t *) blob;
+        for (size_t i = 0; i < n_in * n_out; i++) {
+            const float v = ((float) rng_u8() - 127.5f) / 64.0f;
+            uint32_t    u;
+            memcpy(&u, &v, sizeof u);
+            wh[i] = dtype == GEIST_DTYPE_BF16 ? (uint16_t) (u >> 16) : half_bits_exact(v);
+        }
     } else {
         fill_blob(blob, n_in, n_out, dtype);
+        if (dtype == GEIST_DTYPE_I2_S) {
+            const float scale = 0.75f; /* not 1, so a dropped scale shows */
+            memcpy(blob + i2_s_scale_offset(n_in * n_out), &scale, sizeof scale);
+        }
     }
     for (size_t i = 0; i < m * n_in; i++) {
         x[i] = ((float) rng_u8() - 127.5f) / 32.0f;
@@ -594,6 +627,17 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 384, 32);
     run_case(mt, ref, GEIST_DTYPE_TQ2_0, "TQ2tiny", 768, 3, 1);
+    /* F16 / BF16 (#564): decode, a bounded GEMM tile and an odd n_out. */
+    run_case(mt, ref, GEIST_DTYPE_F16, "F16", 520, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_F16, "F16", 520, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_BF16, "BF16", 520, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_BF16, "BF16", 520, 383, 33);
+    /* I2_S (#560): the same shapes; its scale is the tensor's tail. */
+    run_case(mt, ref, GEIST_DTYPE_I2_S, "I2_S", 768, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_I2_S, "I2_S", 768, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_I2_S, "I2_S", 768, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_I2_S, "I2_S", 768, 384, 32);
+    run_case(mt, ref, GEIST_DTYPE_I2_S, "I2Stiny", 768, 3, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XStiny", 512, 1, 1);
     run_case(mt, ref, GEIST_DTYPE_Q3_K, "Q3Ktiny", 512, 2, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_NL, "IQ4NLtiny", 512, 3, 1);
