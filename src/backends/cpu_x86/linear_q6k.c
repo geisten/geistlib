@@ -14,6 +14,9 @@
  * row-major copy next to the interleave on every VNNI host, read by
  * nothing once the interleave was built: 394 MB for Llama-3.2-1B's
  * tied Q6_K output matrix.
+ *
+ * Q3_K shares the kernels (kernel_q6k_gemv.c reads both formats) and has no
+ * predecode: decode and prefill both read its GGUF bytes (#410).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -27,7 +30,7 @@
 #include "q6k_to_w8a8.h"
 
 #include "heap.h"
-#include "quant.h" /* Q6_K_BLOCK_ELEMS / Q6_K_BLOCK_BYTES */
+#include "quant.h" /* Q3_K / Q6_K block sizes */
 
 #include <geist_backend.h>
 
@@ -318,4 +321,43 @@ void cpu_x86_linear_q6k_mN(size_t                     m,
         w8a8_gemm(
                 m, n_out, n_blocks_per_row, weights, w_scales, w_offsets, acts, sum_a, scale_x, y);
     }
+}
+
+static void cpu_x86_linear_q3k_m1(const float               *x,
+                                  const struct geist_weight *w,
+                                  struct geist_backend      *be,
+                                  float                     *y) {
+    (void) be;
+    q3k_gemv_m1((size_t) w->n_out, (size_t) w->n_in, x, (const uint8_t *) w->raw, y);
+}
+
+static void cpu_x86_linear_q3k_mN(size_t                     m,
+                                  const float               *x,
+                                  const struct geist_weight *w,
+                                  struct geist_backend      *be,
+                                  float                     *y) {
+    const size_t              n_in  = (size_t) w->n_in;
+    const size_t              n_out = (size_t) w->n_out;
+    struct cpu_x86_workspace *ws    = nullptr;
+    if (be != nullptr && be->state != nullptr) {
+        ws = cpu_x86_ws_acquire_mN(
+                (struct cpu_x86_state *) be->state, q3k_gemm_scratch_bytes(m, n_in), 0, 0, 0);
+    }
+    if (ws == nullptr) {
+        for (size_t row = 0; row < m; row++) {
+            cpu_x86_linear_q3k_m1(x + row * n_in, w, be, y + row * n_out);
+        }
+        return;
+    }
+    q3k_gemm(m, n_out, n_in, x, (const uint8_t *) w->raw, ws->mN_acts, y);
+}
+
+bool cpu_x86_linear_q3k_bind(struct geist_weight *w) {
+    if (w == nullptr || w->dtype != GEIST_DTYPE_Q3_K || w->raw == nullptr || w->n_in <= 0 ||
+        w->n_out <= 0 || (size_t) w->n_in % Q3_K_BLOCK_ELEMS != 0) {
+        return false;
+    }
+    w->linear_m1 = cpu_x86_linear_q3k_m1;
+    w->linear_mN = cpu_x86_linear_q3k_mN;
+    return true;
 }

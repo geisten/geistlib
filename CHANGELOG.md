@@ -215,6 +215,15 @@ minor release.
   formats do. Gemma 4 E4B, M1 Max: a 275-token prompt in 64-token chunks
   2.9 -> 1.2 s, 2 rows 301 -> 52 ms; HELIO's prefill P95 halves, outputs
   identical.
+- **cpu_x86 Q3_K runs a native int8 kernel on the GGUF bytes: decode about
+  29x, prefill about 3.5x faster** (#410). Q3_K used to fall back to the
+  generic dequantize-and-dot path. The Q6_K raw kernels (decode GEMV and
+  prefill GEMM) now also read Q3_K, which has the same shape (16 int8-scaled
+  sub-blocks, unsigned codes with a uniform offset), with no predecoded copy
+  of the weights. On a 1B synthetic Q3_K model (4-core Xeon) decode drops
+  96 % and prefill 63-72 %, at both the AVX2 and the VNNI tier; Q6_K is
+  unchanged.
+
 - **cpu_x86 Q5_K runs a native int8 kernel on the GGUF bytes: prefill about
   2.2x, decode about 3.4x faster** (#410). Q5_K used to fall back to the
   generic dequantize-and-dot path. The Q4_K raw kernel is now generic over
