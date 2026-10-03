@@ -12,8 +12,9 @@ name: vulkan-ab
 # artifact.
 #
 # On demand only. The pull_request trigger fires only when this file changes,
-# so a PR that edits it measures itself once: its defaults are #471's case
-# (RADV, main before and after the subgroup-pinning merge #574).
+# so a PR that edits it measures itself once: its defaults are #504's case
+# (the Zen 5 CPU on a Q8_0 model, main before the native Q8_0 kernels of
+# #512 against main now).
 
 on:
   workflow_dispatch:
@@ -21,7 +22,7 @@ on:
       base:
         description: "baseline revision"
         type: string
-        default: fcb6f68f33feee19006d5952f288a1f06f74d097
+        default: 7a0b4217568697f7787634d7f519c989b571897a
       new:
         description: "revision to compare"
         type: string
@@ -29,7 +30,7 @@ on:
       backend:
         description: "GEIST_BENCH_BACKEND: vulkan, or a CPU backend (cpu_x86) to measure the box's Zen 5 CPU"
         type: string
-        default: vulkan
+        default: cpu_x86
       driver:
         description: "vulkan only: vulkaninfo driverID substring of the device to measure (RADV, NVIDIA, ...)"
         type: string
@@ -37,11 +38,11 @@ on:
       preset:
         description: "gen_synth_gguf.py preset"
         type: string
-        default: llama32-1b-q4_k
+        default: smollm2-360m-q8_0
       seq_lens:
         description: "prefill lengths"
         type: string
-        default: "64,256"
+        default: "128,512"
       cycles:
         description: "A/B cycles (>= 6)"
         type: string
@@ -52,18 +53,18 @@ on:
 
 jobs:
   ab:
-    name: A/B on geist-vulkan (${{ inputs.backend || 'vulkan' }} ${{ inputs.driver || 'RADV' }})
+    name: A/B on geist-vulkan (${{ inputs.backend || 'cpu_x86' }} ${{ inputs.driver || 'RADV' }})
     # Same self-hosted guard as ci.yml's vulkan leg: never for fork PRs.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, geist-vulkan]
     timeout-minutes: 180
     env:
-      BASE: ${{ inputs.base || 'fcb6f68f33feee19006d5952f288a1f06f74d097' }}
+      BASE: ${{ inputs.base || '7a0b4217568697f7787634d7f519c989b571897a' }}
       NEW: ${{ inputs.new || github.event.pull_request.head.sha || 'origin/main' }}
-      BACKEND: ${{ inputs.backend || 'vulkan' }}
+      BACKEND: ${{ inputs.backend || 'cpu_x86' }}
       DRIVER: ${{ inputs.driver || 'RADV' }}
-      PRESET: ${{ inputs.preset || 'llama32-1b-q4_k' }}
-      SEQ_LENS: ${{ inputs.seq_lens || '64,256' }}
+      PRESET: ${{ inputs.preset || 'smollm2-360m-q8_0' }}
+      SEQ_LENS: ${{ inputs.seq_lens || '128,512' }}
       CYCLES: ${{ inputs.cycles || '6' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
