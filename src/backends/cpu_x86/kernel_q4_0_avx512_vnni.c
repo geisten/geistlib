@@ -75,10 +75,10 @@ static inline __m512 halves(float lo, float hi) {
 /* lane 0 = lo, lane 8 = hi, zeros elsewhere. */
 static inline __m512i lanes0_8_epi32(int32_t lo, int32_t hi) {
     return _mm512_inserti32x4(
-            _mm512_castsi128_si512(_mm_cvtsi32_si128(lo)), _mm_cvtsi32_si128(hi), 2);
+            _mm512_zextsi128_si512(_mm_cvtsi32_si128(lo)), _mm_cvtsi32_si128(hi), 2);
 }
 static inline __m512 lanes0_8_ps(float lo, float hi) {
-    return _mm512_insertf32x4(_mm512_castps128_ps512(_mm_set_ss(lo)), _mm_set_ss(hi), 2);
+    return _mm512_insertf32x4(_mm512_zextps128_ps512(_mm_set_ss(lo)), _mm_set_ss(hi), 2);
 }
 
 /* Halves, then 8 -> 4 -> 2 -> 1. */

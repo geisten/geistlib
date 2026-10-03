@@ -78,7 +78,7 @@ static inline float reduce(__m512 v) {
         __m512i bias[TILE_TOKENS];
         float   dx[TILE_TOKENS];
         for (size_t t = 0; t < tokens; t++) {
-            bias[t] = _mm512_castsi128_si512(_mm_cvtsi32_si128(-s_x[t * nb + b]));
+            bias[t] = _mm512_zextsi128_si512(_mm_cvtsi32_si128(-s_x[t * nb + b]));
             dx[t]   = d_x[t * nb + b];
         }
         for (size_t r = 0; r < rows; r++) {
