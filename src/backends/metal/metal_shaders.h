@@ -692,6 +692,46 @@ static const char metal_qsg_tq2_source[] =
 static const char metal_qsg_mm_tq2_source[] =
         GEIST_METAL_MM_SG_KERNEL("tq2", "btq2", "dqtq2", "16");
 
+/* I2_S (bitnet.cpp's BitNet b1.58 format, #560): TQ2_0's element layout
+ * with the four fields of a byte in reverse order (shift 6 - 2g), 64-byte
+ * blocks and no block scale — one f32 per tensor right after the packed
+ * bytes (i2_s_scale_offset). The GEMM template hands its dequant only the
+ * block pointer, so dqi2s_t is a macro that reads the scale through the
+ * kernel's own `w` and `p`; both kernels therefore need the view to start
+ * at the tensor (metal_tensor_is_q40_q80_matrix checks the tail fits). */
+static const char metal_qsg_i2s_source[] =
+        "struct bi2s{uchar qs[64];};\n"
+        "static inline void dqi2s(device const bi2s*xb,short il,thread half4x4&r,float s){"
+        "half hs=half(s);device const uchar*q=xb->qs+(il/8)*32+(il&1)*16;"
+        "short sh=6-((il&7)/2)*2;"
+        "FOR_UNROLL(short i=0;i<16;i++){r[i/4][i%4]=hs*half(short((q[i]>>sh)&3)-1);}}\n"
+        "#define dqi2s_t(xb,il,r) "
+        "dqi2s(xb,il,r,*((device const float*)(w+p.wo+p.no*p.bpr*64u)))\n"
+        "kernel void matvec_i2s_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){"
+        "uint b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>8u,t=uint(ti);"
+        "float d=*((device const float*)(w+p.wo+p.no*p.bpr*64u));"
+        "uint qo=(t>>4u)*32u+(t&3u)*8u;uint sh=6u-((t>>2u)&3u)*2u;"
+        "device const float*yb=x+p.xo+b*p.xs+t*8u;"
+        "float s0=0.0f,s1=0.0f;"
+        "for(uint ib=0u;ib<nb;ib++){"
+        "float yl[8];float sumy=0.0f;"
+        "for(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i];}"
+        "for(uint rr=0u;rr<2u;rr++){uint row=fr+rr;if(row>=p.no)break;"
+        "uint bo=p.wo+(row*p.bpr+ib)*64u;"
+        "float acc=0.0f;"
+        "for(uint i=0u;i<8u;i++)acc+=yl[i]*float((uint(w[bo+qo+i])>>sh)&3u);"
+        "if(rr==0u)s0+=acc-sumy;else s1+=acc-sumy;}"
+        "yb+=256u;}"
+        "float a0=simd_sum(s0)*d,a1=simd_sum(s1)*d;"
+        "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+static const char metal_qsg_mm_i2s_source[] =
+        GEIST_METAL_MM_SG_KERNEL("i2s", "bi2s", "dqi2s_t", "16");
+
 static const char metal_qsg_mm_iq4nl_source[] =
         GEIST_METAL_MM_SG_KERNEL("iq4nl", "biq4nl", "dqiq4nl", "2");
 static const char metal_qsg_mm_iq4xs_source[] =
@@ -1518,6 +1558,45 @@ static const char metal_f32_source[] =
         "mem_threadgroup);}float inv=rsqrt(part[0]/float(p.no)+p.eps);for(uint "
         "c=lid;c<p.no;c+=256u){float "
         "v=y[p.yo+b*p.ys+c]*inv*nw[p.nwo+c];y[p.yo+b*p.ys+c]=res[p.ro+b*p.rs+c]+v;}}\n";
+
+/* matmul_f32 and matmul_f32_sg over F16 / BF16 weights (#564): the same
+ * kernels, with each weight converted to float as it is loaded. F16 and
+ * BF16 are exact in float, so the result is bit-identical to running the
+ * F32 kernels on the matrix widened to F32 — what the loader did for small
+ * half-precision matrices before — without the doubled bytes. NAME is the
+ * suffix, WT the stored element type, CV the conversion of `v`. */
+#define GEIST_METAL_HALF_W_KERNELS(NAME, WT, CV)                                               \
+    "kernel void matmul_" NAME "(device const float*x[[buffer(0)]],device const " WT           \
+    "*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "             \
+    "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint3 "        \
+    "nt3[[threads_per_threadgroup]],uint sg[[simdgroup_index_in_threadgroup]],uint "           \
+    "sl[[thread_index_in_simdgroup]]){threadgroup "                                            \
+    "float part[32];uint nt=nt3.x;uint row=tg.x,b=tg.y;if(row>=p.no||b>=p.rows)return;"        \
+    "if(lid<32u)part[lid]=0.0f;threadgroup_barrier(mem_flags::mem_threadgroup);"               \
+    "float s=0.0f;for(uint "                                                                   \
+    "k=lid;k<p.ni;k+=nt){" WT " v=w[p.wo+row*p.ni+k];s+=x[p.xo+b*p.xs+k]*(" CV ");}"           \
+    "float r=simd_sum(s);if(sl==0u)part[sg]=r;threadgroup_"                                    \
+    "barrier(mem_flags::mem_threadgroup);"                                                     \
+    "if(lid==0u){float t=0.0f;for(uint i=0u;i<nt/32u;i++)t+=part[i];y[p.yo+b*p.ys+row]=t;}}\n" \
+    "kernel void matmul_" NAME "_sg(device const float*x[[buffer(0)]],device const " WT        \
+    "*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "             \
+    "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup " \
+    "float as[64];threadgroup float bs[64];threadgroup float cs[64];uint "                     \
+    "b0=tg.y*8u,o0=tg.x*8u;simdgroup_float8x8 "                                                \
+    "acc=make_filled_simdgroup_matrix<float,8>(0.0f);for(uint k0=0u;k0<p.ni;k0+=8u){for(uint " \
+    "i=lid;i<64u;i+=32u){uint "                                                                \
+    "r=i/8u,c=i%8u;as[i]=(b0+r<p.rows&&k0+c<p.ni)?x[p.xo+(b0+r)*p.xs+k0+c]:0.0f;}for(uint "    \
+    "i=lid;i<64u;i+=32u){uint kk=i/8u,c=i%8u;float wv=0.0f;if(o0+c<p.no&&k0+kk<p.ni){" WT      \
+    " v=w[p.wo+(o0+c)*p.ni+k0+kk];wv=" CV ";}bs[i]=wv;}threadgroup_"                           \
+    "barrier(mem_flags::mem_threadgroup);simdgroup_float8x8 "                                  \
+    "ma,mb;simdgroup_load(ma,as,8);simdgroup_load(mb,bs,8);simdgroup_multiply_accumulate(acc," \
+    "ma,mb,acc);threadgroup_barrier(mem_flags::mem_threadgroup);}simdgroup_store(acc,cs,8);"   \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint i=lid;i<64u;i+=32u){uint "       \
+    "r=i/8u,c=i%8u;if(b0+r<p.rows&&o0+c<p.no)y[p.yo+(b0+r)*p.ys+o0+c]=cs[i];}}\n"
+
+static const char metal_f16_w_source[] = GEIST_METAL_HALF_W_KERNELS("f16w", "half", "float(v)");
+static const char metal_bf16_w_source[] =
+        GEIST_METAL_HALF_W_KERNELS("bf16w", "ushort", "as_type<float>(uint(v)<<16u)");
 
 /* llama-mm_sg-structured f32 GEMM (64-out x 32-row tile, 4 simdgroups,
  * f32 threadgroup staging so the per-element summation order matches

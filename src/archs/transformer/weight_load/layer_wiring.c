@@ -143,7 +143,7 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
             }
             /* On UNSUPPORTED, linear_m1 / linear_mN stay null — that's
              * the "use legacy" signal. */
-            /* A backend without a half-precision dense linear (metal) gets
+            /* A backend without a half-precision dense linear (vulkan) gets
              * a SMALL tensor widened to F32 once, the same way norm gammas
              * are: Ternary-Bonsai keeps its DeltaNet alpha/beta projections
              * (48 x 5120, 1 MB widened) in BF16. Widening doubles the

@@ -83,6 +83,14 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->embed_lookup_scaled_function, "release");
         metal_msg_send_void0(st, st->embed_lookup_scaled_rows_pipeline, "release");
         metal_msg_send_void0(st, st->embed_lookup_scaled_rows_function, "release");
+        metal_msg_send_void0(st, st->f16w_matmul_pipeline, "release");
+        metal_msg_send_void0(st, st->f16w_matmul_function, "release");
+        metal_msg_send_void0(st, st->f16w_matmul_sg_pipeline, "release");
+        metal_msg_send_void0(st, st->f16w_matmul_sg_function, "release");
+        metal_msg_send_void0(st, st->bf16w_matmul_pipeline, "release");
+        metal_msg_send_void0(st, st->bf16w_matmul_function, "release");
+        metal_msg_send_void0(st, st->bf16w_matmul_sg_pipeline, "release");
+        metal_msg_send_void0(st, st->bf16w_matmul_sg_function, "release");
         metal_msg_send_void0(st, st->f32_matmul_pipeline, "release");
         metal_msg_send_void0(st, st->f32_matmul_function, "release");
     }
@@ -255,6 +263,10 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->tq2_n4_function, "release");
         metal_msg_send_void0(st, st->tq2_mm_pipeline, "release");
         metal_msg_send_void0(st, st->tq2_mm_function, "release");
+        metal_msg_send_void0(st, st->i2s_n4_pipeline, "release");
+        metal_msg_send_void0(st, st->i2s_n4_function, "release");
+        metal_msg_send_void0(st, st->i2s_mm_pipeline, "release");
+        metal_msg_send_void0(st, st->i2s_mm_function, "release");
         metal_msg_send_void0(st, st->iq3s_n4_pipeline, "release");
         metal_msg_send_void0(st, st->iq3s_n4_function, "release");
         metal_msg_send_void0(st, st->iq3s_mm_pipeline, "release");
@@ -366,6 +378,10 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->tq2_n4_function                       = nullptr;
     st->tq2_mm_pipeline                       = nullptr;
     st->tq2_mm_function                       = nullptr;
+    st->i2s_n4_pipeline                       = nullptr;
+    st->i2s_n4_function                       = nullptr;
+    st->i2s_mm_pipeline                       = nullptr;
+    st->i2s_mm_function                       = nullptr;
     st->iq3s_n4_pipeline                      = nullptr;
     st->iq3s_n4_function                      = nullptr;
     st->iq3s_mm_pipeline                      = nullptr;
@@ -479,6 +495,14 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->embed_lookup_scaled_function          = nullptr;
     st->embed_lookup_scaled_rows_pipeline     = nullptr;
     st->embed_lookup_scaled_rows_function     = nullptr;
+    st->f16w_matmul_pipeline                  = nullptr;
+    st->f16w_matmul_function                  = nullptr;
+    st->f16w_matmul_sg_pipeline               = nullptr;
+    st->f16w_matmul_sg_function               = nullptr;
+    st->bf16w_matmul_pipeline                 = nullptr;
+    st->bf16w_matmul_function                 = nullptr;
+    st->bf16w_matmul_sg_pipeline              = nullptr;
+    st->bf16w_matmul_sg_function              = nullptr;
     st->f32_matmul_pipeline                   = nullptr;
     st->f32_matmul_function                   = nullptr;
     st->f32_matmul_sg_pipeline                = nullptr;
