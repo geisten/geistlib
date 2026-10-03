@@ -32,7 +32,7 @@ static void metal_sequence_drain_pending(struct metal_state *st, bool *out_faile
  * boundaries — never mid-op, an op's local `enc` must stay valid across
  * its own dispatches. Returns the current encoder (possibly fresh). */
 void *metal_sequence_encoder(struct metal_state *st) {
-    if (st == nullptr || !st->sequence_active) {
+    if (st == nullptr || !metal_seq_mine(st)) {
         return nullptr;
     }
     if (st->seq_rotate_every == 0u || st->sequence_compute_encoder == nullptr ||
@@ -79,6 +79,7 @@ void metal_release_sequence_objects(struct metal_state *st) {
     st->sequence_command_buffer  = nullptr;
     st->sequence_active          = false;
     st->sequence_has_work        = false;
+    atomic_store_explicit(&st->seq_owner, (uintptr_t) 0, memory_order_relaxed);
 }
 
 /* Empties only the occupied slots: a flush-heavy batch (a host fallback per
@@ -98,7 +99,7 @@ static size_t metal_seq_ref_hash(const void *buf, size_t off, size_t mask) {
 }
 
 void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf, size_t off) {
-    if (st == nullptr || !st->sequence_active || mtl_buf == nullptr) {
+    if (st == nullptr || !metal_seq_mine(st) || mtl_buf == nullptr) {
         return;
     }
     const size_t mask = (sizeof(st->seq_ref) / sizeof(st->seq_ref[0])) - 1u;
@@ -129,7 +130,7 @@ void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf, size_t off) {
  * queried view and runs into it: views of one buffer are disjoint slices
  * (#528), and the buffer they are cut from is never bound itself. */
 bool metal_seq_references(struct metal_state *st, const void *mtl_buf, size_t off, size_t n) {
-    if (st == nullptr || !st->sequence_active || mtl_buf == nullptr) {
+    if (st == nullptr || !metal_seq_mine(st) || mtl_buf == nullptr) {
         return false;
     }
     if (st->seq_ref_overflow) {
@@ -147,7 +148,7 @@ bool metal_seq_references(struct metal_state *st, const void *mtl_buf, size_t of
 /* Submit the open batch and start a fresh one of the same kind. Called
  * whenever the host is about to read or overwrite GPU-referenced memory. */
 void metal_batch_flush(struct metal_state *st) {
-    if (st == nullptr || !st->sequence_active || !st->sequence_has_work) {
+    if (st == nullptr || !metal_seq_mine(st) || !st->sequence_has_work) {
         return;
     }
     struct geist_backend                  *be   = st->backend;
@@ -236,10 +237,11 @@ void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size
     st->sequence_pool            = pool;
     st->sequence_active          = true;
     st->sequence_has_work        = false;
-    st->seq_dispatch_count       = 0;
-    st->seq_disp_at_rotate       = 0;
-    st->seq_begin_ns             = metal_now_ns();
-    *out_token                   = st->sequence_token;
+    atomic_store_explicit(&st->seq_owner, (uintptr_t) pthread_self(), memory_order_relaxed);
+    st->seq_dispatch_count = 0;
+    st->seq_disp_at_rotate = 0;
+    st->seq_begin_ns       = metal_now_ns();
+    *out_token             = st->sequence_token;
     return GEIST_OK;
 }
 
@@ -264,6 +266,7 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
     st->sequence_pool            = nullptr;
     st->sequence_active          = false;
     st->sequence_has_work        = false;
+    atomic_store_explicit(&st->seq_owner, (uintptr_t) 0, memory_order_relaxed);
 
     metal_msg_send_void0(st, enc, "endEncoding");
     enum geist_status out = GEIST_OK;

@@ -115,10 +115,14 @@ int main(void) {
      * twice on the TSan leg: it is the backend whose per-thread workspace
      * this test gates, and the scalar fallback it silently took before was
      * both blind to that code and slow enough to blow the job timeout. */
-    enum geist_status s = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
-    if (s != GEIST_OK)
+    /* GEIST_BACKEND picks one explicitly, e.g. metal (#544). */
+    const char       *pin = getenv("GEIST_BACKEND");
+    enum geist_status s   = pin != nullptr && pin[0] != '\0'
+                                    ? geist_backend_create(pin, nullptr, nullptr, &be)
+                                    : geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    if (s != GEIST_OK && (pin == nullptr || pin[0] == '\0'))
         s = geist_backend_create("cpu_x86", nullptr, nullptr, &be);
-    if (s != GEIST_OK)
+    if (s != GEIST_OK && (pin == nullptr || pin[0] == '\0'))
         s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
     if (s != GEIST_OK) {
         fprintf(stderr, "backend create failed: %s\n", geist_last_create_error());

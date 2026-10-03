@@ -480,14 +480,23 @@ struct metal_state {
     int                              sequence_token;
     enum geist_command_sequence_kind sequence_kind;
     bool                             sequence_active;
-    bool                             sequence_has_work;
-    bool                             use_ple_block;
-    bool                             use_q4k_n4;
-    bool                             use_q4k_m16_n2;
-    bool                             use_q4k_mm_sg;
-    bool                             use_rmsnorm_simd;
-    bool                             use_q6k_n4;
-    bool                             profile_enabled;
+    /* One command sequence per backend, shared by every session of the
+     * model (#544). seq_lock (recursive) is held by the thread that opened
+     * the sequence from region begin to region end, and by each standalone
+     * submission, so sessions on other threads wait instead of encoding
+     * into a sequence they do not own. seq_owner is that thread while the
+     * sequence is open, else 0; only the owner writes its own id, so a
+     * thread reading its own id back is never wrong (metal_seq_mine). */
+    pthread_mutex_t           seq_lock;
+    _Atomic(uintptr_t)        seq_owner;
+    bool                      sequence_has_work;
+    bool                      use_ple_block;
+    bool                      use_q4k_n4;
+    bool                      use_q4k_m16_n2;
+    bool                      use_q4k_mm_sg;
+    bool                      use_rmsnorm_simd;
+    bool                      use_q6k_n4;
+    bool                      profile_enabled;
     bool                      skip_next_dispatch; /* subtractive profiler: drop the next dispatch */
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     char                      device_name[128];

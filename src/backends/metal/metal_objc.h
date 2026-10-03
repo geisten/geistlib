@@ -66,14 +66,24 @@ struct metal_pool {
     void               *token;
 };
 
+/* Whether the calling thread has the backend's command sequence open
+ * (#544): another session's open sequence is not one to encode into. */
+static inline bool metal_seq_mine(const struct metal_state *st) {
+    return atomic_load_explicit(&st->seq_owner, memory_order_relaxed) == (uintptr_t) pthread_self();
+}
+
+/* Also takes seq_lock for the submission, so it waits out a sequence
+ * another thread has open (recursive: free inside the caller's own). */
 static inline struct metal_pool metal_standalone_pool(struct metal_state *st) {
-    return (struct metal_pool) {st, st->sequence_active ? nullptr : metal_pool_push(st)};
+    pthread_mutex_lock(&st->seq_lock);
+    return (struct metal_pool) {st, metal_seq_mine(st) ? nullptr : metal_pool_push(st)};
 }
 
 static inline void metal_pool_end(struct metal_pool *pool) {
     if (pool->token != nullptr) {
         metal_pool_pop(pool->st, pool->token);
     }
+    pthread_mutex_unlock(&pool->st->seq_lock);
 }
 
 static inline void *
