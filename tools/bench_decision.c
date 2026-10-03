@@ -13,12 +13,13 @@
 #include <string.h>
 #include <time.h>
 
-static uint64_t now_ns(void) {
+[[nodiscard]] static uint64_t now_ns(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t) t.tv_sec * 1000000000ULL + (uint64_t) t.tv_nsec;
 }
-static bool number(const char *text, size_t *out) {
+[[nodiscard]] static bool number(size_t *out, const char *text) {
+    *out = 0;
     if (*text == '\0' || *text == '-') {
         return false;
     }
@@ -31,7 +32,7 @@ static bool number(const char *text, size_t *out) {
     *out = (size_t) value;
     return true;
 }
-static bool read_ids(size_t n, size_t vocab, geist_token_t ids[static n]) {
+[[nodiscard]] static bool read_ids(size_t n, size_t vocab, geist_token_t ids[static n]) {
     for (size_t i = 0; i < n; i++) {
         int64_t id;
         if (scanf("%" SCNd64, &id) != 1 || id < 0 || (uint64_t) id >= vocab || id > INT32_MAX) {
@@ -43,12 +44,12 @@ static bool read_ids(size_t n, size_t vocab, geist_token_t ids[static n]) {
 }
 /* Independent candidate reference, adapted from eval_geist's SCOREALT path.
  * Conditional normalization (not the full-vocabulary log_p emitted there). */
-static bool reference(struct geist_session *s,
-                      size_t                n,
-                      const geist_token_t   ids[static n],
-                      float                 logits[static n],
-                      double                probabilities[static n],
-                      size_t               *best) {
+[[nodiscard]] static bool reference(struct geist_session *s,
+                                    size_t                n,
+                                    const geist_token_t   ids[static n],
+                                    float                 logits[static n],
+                                    double                probabilities[static n],
+                                    size_t               *best) {
     size_t       vocab = 0;
     const float *p     = geist_session_peek_logits(&vocab, s);
     if (p == nullptr) {
@@ -79,8 +80,8 @@ static bool reference(struct geist_session *s,
 
 int main(int argc, char **argv) {
     size_t prompt_cap, candidate_cap, decode_n, warmup, repeats;
-    if (argc != 8 || !number(argv[3], &prompt_cap) || !number(argv[4], &candidate_cap) ||
-        !number(argv[5], &decode_n) || !number(argv[6], &warmup) || !number(argv[7], &repeats) ||
+    if (argc != 8 || !number(&prompt_cap, argv[3]) || !number(&candidate_cap, argv[4]) ||
+        !number(&decode_n, argv[5]) || !number(&warmup, argv[6]) || !number(&repeats, argv[7]) ||
         prompt_cap == 0 || candidate_cap == 0 || decode_n < 2 || repeats == 0 ||
         prompt_cap > 1048576 || candidate_cap > 1048576 || decode_n > 4096 || warmup > 1000 ||
         repeats > 10000) {

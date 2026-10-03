@@ -371,7 +371,7 @@ static void op_session_free(void *arch_state, void *session) {
     transformer_session_free(arch_state, session);
 }
 
-static size_t op_logits_vocab_size(const void *arch_state) {
+[[nodiscard]] static size_t op_logits_vocab_size(const void *arch_state) {
     const struct transformer_arch_state *st = arch_state;
     if (st == nullptr || geist_pooling_is_embedding(st->config.pooling)) {
         return 0;
