@@ -26,6 +26,12 @@ static void clear_result(struct geist_decision_result *out) {
 
 #if GEIST_ENABLE_DECISION
 
+/* The public contract rejects non-finite selected logits. Fail compilation
+ * rather than silently lose that check in a custom build with fast math. */
+#if defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__
+#error "decision scoring requires -fno-finite-math-only"
+#endif
+
 struct geist_decision {
     struct geist_session *session;
     size_t                max_prompt, max_candidates, vocab, seen_cap, seen_bytes;

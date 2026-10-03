@@ -343,7 +343,10 @@ $(BUILD_DIR)/decision-config: force-decision-config
 	    printf '%s\n' '$(DECISION)' > $@; \
 	fi
 $(BUILD_DIR)/src/engine/decision.o: $(BUILD_DIR)/decision-config
-$(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(DECISION)
+# GCC's target-wide -ffast-math otherwise folds isfinite to true. These
+# numeric API guards must observe NaN/Inf; leave the inference kernels alone.
+$(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(DECISION) -fno-finite-math-only
+$(BUILD_DIR)/tools/bench_decision.o $(BUILD_DIR)/tests/test_decision_errors_unit.o: CFLAGS += -fno-finite-math-only
 
 # Object compilation. -MMD -MP generates .d files for header tracking.
 # src/*.c uses CFLAGS_STRICT (adds -Wshadow -Wundef); the tools/ demos

@@ -51,7 +51,9 @@ is cleared on every failure (count 0, null pointers, best index `SIZE_MAX`).
 Null/invalid/duplicate IDs and candidate overflow return `GEIST_E_INVALID_ARG`;
 prompt overflow returns `GEIST_E_TOO_MANY_TOKENS`. Selected NaN/Inf logits or
 missing runtime logits return `GEIST_E_BACKEND`. Non-selected logits do not
-enter normalization. A failed prefill propagates its status, and the next
+enter normalization. The numerical API and its adversarial/reference checks
+compile with `-fno-finite-math-only`, so target-wide GCC fast-math cannot remove
+NaN/Inf validation. Inference kernel flags are unaffected. A failed prefill propagates its status, and the next
 valid query resets again. No partially filled result escapes.
 
 Setup/teardown are serialized with every other operation on the model.
