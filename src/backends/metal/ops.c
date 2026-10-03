@@ -8,6 +8,7 @@
 #include "metal_internal.h"
 
 #include "checked.h"
+#include "hadamard.h"
 
 static void metal_encode_q4k_linear(struct metal_state            *st,
                                     void                          *enc,
@@ -1266,6 +1267,17 @@ static void metal_encode_hadamard(struct metal_state                 *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
+/* The geometry metal_hadamard_rotate runs: the shared contract
+ * (hadamard.h) within the kernel's block range. Threadgroup memory holds
+ * one block; 4096 floats is 16 KB, and setThreadgroupMemoryLength wants a
+ * multiple of 16 bytes, so four floats is the floor. The probe and the
+ * kernel both ask this, so they cannot drift apart. */
+static bool metal_hadamard_geometry_ok(
+        size_t width, size_t block, size_t perm_hd, size_t perm_nk, size_t perm_rep, bool inverse) {
+    return block >= 4 && block <= 4096 && width <= UINT32_MAX &&
+           geist_hadamard_geometry_ok(width, block, perm_hd, perm_nk, perm_rep, inverse);
+}
+
 /* fused->hadamard_rotate. Same contract as the CPU slot (hadamard.h). */
 [[nodiscard]] static enum geist_status metal_hadamard_rotate(struct geist_backend             *be,
                                                              const struct geist_hadamard_args *a) {
@@ -1281,19 +1293,9 @@ static void metal_encode_hadamard(struct metal_state                 *st,
         return GEIST_E_INVALID_ARG;
     }
     const bool perm = a->perm_rep > 1;
-    /* The permutation geometry is GGUF config, so the product is checked
-     * the way the CPU twin checks it (hadamard.c). */
-    size_t pcells = 0;
-    if (perm &&
-        (ckd_mul(&pcells, a->perm_hd, a->perm_nk) || ckd_mul(&pcells, pcells, a->perm_rep))) {
-        return GEIST_E_INVALID_ARG;
-    }
-    /* Threadgroup memory holds one block; 4096 floats is 16 KB, and
-     * setThreadgroupMemoryLength wants a multiple of 16 bytes, so four
-     * floats is the floor. */
-    if (a->block < 4 || (a->block & (a->block - 1)) != 0 || a->block > 4096 ||
-        cols % a->block != 0 ||
-        (perm && (a->inverse || pcells != cols || a->x->buffer == a->y->buffer))) {
+    if (!metal_hadamard_geometry_ok(
+                cols, a->block, a->perm_hd, a->perm_nk, a->perm_rep, a->inverse) ||
+        (perm && a->x->buffer == a->y->buffer)) {
         return GEIST_E_INVALID_ARG;
     }
     if (rows > UINT32_MAX || cols > UINT32_MAX || xo > UINT32_MAX || xs > UINT32_MAX ||
@@ -4315,6 +4317,12 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
          * block the arch passes. Pipeline creation failure at run time
          * is a real device error, not capability negotiation. */
         return true;
+    case GEIST_FUSED_HADAMARD_ROTATE:
+        /* Geometry only: the pipeline is still built at the first call,
+         * so a shader compile failure surfaces there (#495). */
+        return q->m <= UINT32_MAX &&
+               metal_hadamard_geometry_ok(
+                       q->width, q->block, q->perm_hd, q->perm_nk, q->perm_rep, q->inverse);
     case GEIST_FUSED_ATTN_QKV_PREP:
         /* Half-split RoPE per-head norm kernel: any row count, head_dim
          * must be even (mirrors metal_attn_qkv_prep's hd % 2 check). */

@@ -2159,6 +2159,10 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
         return true;
     case GEIST_FUSED_ARGMAX_F32:
         return true;
+    case GEIST_FUSED_HADAMARD_ROTATE:
+        /* The shader covers block <= VK_HADAMARD_MAX_BLOCK; every other
+         * geometry the host transform accepts runs on mapped memory. */
+        return geist_hadamard_query_ok(q);
     case GEIST_FUSED_ATTN_QKV_PREP:
         return q->head_dim > 0 && (q->head_dim % 2u) == 0u;
     case GEIST_FUSED_PLE_BLOCK:

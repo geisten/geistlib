@@ -13,8 +13,9 @@
 #include <geist.h>
 #include <geist_backend.h>
 
-#include "quant.h"
+#include "hadamard.h"
 #include "heap.h"
+#include "quant.h"
 
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -346,6 +347,8 @@ static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geis
     case GEIST_FUSED_GELU_TANH_MUL:
     case GEIST_FUSED_GELU_TANH_MUL_SCALED:
         return true; /* F32 elementwise, any geometry, any m */
+    case GEIST_FUSED_HADAMARD_ROTATE:
+        return geist_hadamard_query_ok(q); /* the shared host transform */
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
     case GEIST_FUSED_ATTN_KV_INT8:
         return cpu_neon_attention_kv_int8_supported(q);

@@ -17,6 +17,20 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* The geometry geist_hadamard_rows accepts: block a power of two dividing
+ * width, and a permutation (perm_rep > 1) only on the forward transform,
+ * with perm_hd * perm_nk * perm_rep == width. Backends answer
+ * GEIST_FUSED_HADAMARD_ROTATE probes with this, plus their kernel's own
+ * bounds. */
+[[nodiscard]] bool geist_hadamard_geometry_ok(
+        size_t width, size_t block, size_t perm_hd, size_t perm_nk, size_t perm_rep, bool inverse);
+
+/* The same answer for a probe query. */
+[[nodiscard]] static inline bool geist_hadamard_query_ok(const struct geist_fusion_query *q) {
+    return geist_hadamard_geometry_ok(
+            q->width, q->block, q->perm_hd, q->perm_nk, q->perm_rep, q->inverse);
+}
+
 /* Transform `rows` rows of `width` floats from x into y. Parameters mirror
  * struct geist_hadamard_args. y may equal x when perm_rep <= 1; any other
  * overlap between x and y is rejected. signs is nullable (all +1).

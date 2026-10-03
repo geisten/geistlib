@@ -293,15 +293,51 @@ static struct geist_buffer *signs_for(const struct transformer_arch_state *st, s
     return nullptr;
 }
 
-/* Every rotated input width is a whole number of blocks and, in explicit
- * mode, has its sign vector. */
-[[nodiscard]] static enum geist_status
-check_width(struct transformer_arch_state *st, size_t width, bool explicit_signs) {
+/* Probe-and-bind for the one fused slot with no decomposed twin: the
+ * backend must promise hadamard_rotate for this call shape at any row
+ * count a forward pass passes, or the model does not load (#495). A
+ * null probe or slot answers no. */
+static bool backend_rotates(const struct transformer_arch_state *st,
+                            size_t                               width,
+                            bool                                 grouped_v,
+                            bool                                 inverse) {
+    struct geist_backend             *be    = st->backend;
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    if (fused->supported == nullptr || fused->hadamard_rotate == nullptr) {
+        return false;
+    }
+    const size_t                    nk = st->config.dn_n_k_heads;
+    const struct geist_fusion_query q  = {
+            .op       = GEIST_FUSED_HADAMARD_ROTATE,
+            .m        = (be->desc->caps.max_m > 0) ? be->desc->caps.max_m : st->m_max,
+            .width    = width,
+            .block    = st->rotation.block,
+            .perm_hd  = grouped_v ? st->config.dn_head_v : 0,
+            .perm_nk  = grouped_v ? nk : 0,
+            .perm_rep = grouped_v ? st->config.dn_n_v_heads / nk : 0,
+            .inverse  = inverse,
+    };
+    return fused->supported(be, &q);
+}
+
+/* Every rotated input width is a whole number of blocks, in explicit
+ * mode has its sign vector, and is one the backend rotates. */
+[[nodiscard]] static enum geist_status check_width(struct transformer_arch_state *st,
+                                                   size_t                         width,
+                                                   bool                           explicit_signs,
+                                                   bool                           grouped_v,
+                                                   bool                           inverse) {
     if (width == 0 || width % st->rotation.block != 0) {
         return fail(st, GEIST_E_FORMAT, "block size does not divide an input width", nullptr);
     }
     if (explicit_signs && signs_for(st, width) == nullptr) {
         return fail(st, GEIST_E_FORMAT, "no sign vector for an input width", nullptr);
+    }
+    if (!backend_rotates(st, width, grouped_v, inverse)) {
+        return fail(st,
+                    GEIST_E_UNSUPPORTED,
+                    "backend cannot rotate this geometry",
+                    st->backend->desc->name);
     }
     return GEIST_OK;
 }
@@ -324,10 +360,6 @@ enum geist_status transformer_rotation_load(struct transformer_arch_state *st) {
     }
     if (st->output_table.buffer == st->embed_table.buffer) {
         return fail(st, GEIST_E_UNSUPPORTED, "tied lm_head", nullptr);
-    }
-    if (geist_backend_fused_tbl(st->backend)->hadamard_rotate == nullptr) {
-        return fail(
-                st, GEIST_E_UNSUPPORTED, "backend has no hadamard_rotate", st->backend->desc->name);
     }
     if (!meta_str_is(g, "prism.hadamard.transform", "normalized-sylvester-walsh-hadamard")) {
         return fail(st, GEIST_E_UNSUPPORTED, "unsupported transform", nullptr);
@@ -362,19 +394,24 @@ enum geist_status transformer_rotation_load(struct transformer_arch_state *st) {
     /* Widths: the residual stream (every normed input, the lm_head input,
      * the embedding rows) and each layer's mixer-output and FFN widths. */
     if (s == GEIST_OK) {
-        s = check_width(st, st->d_model, explicit_signs);
+        s = check_width(st, st->d_model, explicit_signs, false, false);
+    }
+    if (s == GEIST_OK && st->rotation.embed_inverse) {
+        s = check_width(st, st->d_model, explicit_signs, false, true);
     }
     for (size_t l = 0; s == GEIST_OK && l < st->n_layers; l++) {
         const struct transformer_layer_weights *L = &st->layers[l];
         for (size_t k = 0; s == GEIST_OK && k < (size_t) ROT_KIND_COUNT; k++) {
             if (kind_on_layer(k, L->mixer)) {
-                s = check_width(st, (size_t) kind_weight(L, k)->n_in, explicit_signs);
+                s = check_width(st, (size_t) kind_weight(L, k)->n_in, explicit_signs, false, false);
             }
         }
         if (s == GEIST_OK && grouped && L->mixer == GEIST_MIXER_DELTANET) {
             const size_t nk = st->config.dn_n_k_heads, nv = st->config.dn_n_v_heads;
             if (nk == 0 || nv % nk != 0 || (size_t) L->dn_out_w.n_in != nv * st->config.dn_head_v) {
                 s = fail(st, GEIST_E_FORMAT, "bad grouped-value head geometry", nullptr);
+            } else {
+                s = check_width(st, (size_t) L->dn_out_w.n_in, explicit_signs, true, false);
             }
         }
     }
