@@ -194,6 +194,11 @@ struct geist_arch_ops_decoder {
                                       geist_token_t  seed,
                                       geist_token_t *out_tokens,
                                       size_t        *n_out);
+    /* Optional model-level capability for numeric decisions. The next-token
+     * logits vocabulary, or 0 for an embedding-only/unsupported model.
+     * Allows the engine to validate all input IDs before a forward pass.
+     * Appended: existing vtable field offsets remain unchanged. */
+    size_t (*logits_vocab_size)(const void *arch_state);
 };
 
 /* ====================================================================== */

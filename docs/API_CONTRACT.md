@@ -98,6 +98,17 @@ CPU-only design.
 `EXPERIMENTAL`. They are useful and supported, but an agent runtime must not
 build its core loop on them expecting release-boundary stability.
 
+### Optional decision API (experimental)
+
+All declarations in `include/geist_decision.h` remain EXPERIMENTAL and outside
+the agent-runtime stability contract. The default-off `DECISION=1` feature
+adds independent numeric scoring handles; disabled libraries retain symbols
+with explicit unsupported stubs. It preserves the existing generation,
+embedding and logits APIs. Lifetime, reset, conditional-score semantics,
+capabilities and benchmark protocol are specified in [DECISION.md](DECISION.md).
+The optional decoder `logits_vocab_size` hook is appended to the experimental
+architecture vtable without changing existing field offsets.
+
 ## Consuming this contract
 
 Pin a minimum version and check it at compile time:

@@ -156,6 +156,7 @@ LIB_SOURCES := \
     src/engine/model.c \
     src/engine/sampler.c \
     src/engine/session.c \
+    src/engine/decision.c \
     src/engine/sp_bpe_tokenizer.c \
     src/engine/gguf_tokenizer.c \
     src/engine/version.c \
@@ -254,7 +255,7 @@ STB_OBJ := $(BUILD_DIR)/third_party/stb/stb_impl.o
 # path under bin/ (tests/test_foo -> bin/.../tests/test_foo; tools/eval_geist ->
 # bin/.../tools/eval_geist).
 TEST_SOURCES := $(wildcard tests/test_*.c tests/bench_*.c)
-DEMO_SOURCES := tools/eval_geist.c tools/dump_geist_logits.c tools/dump_geist_embedding.c tools/zo_tune.c
+DEMO_SOURCES := tools/bench_decision.c tools/eval_geist.c tools/dump_geist_logits.c tools/dump_geist_embedding.c tools/zo_tune.c
 
 # These tests call cblas_* directly as an independent reference to validate
 # geist's own kernels. They can't link under GEMM_PROVIDER=native (no cblas to
@@ -324,6 +325,25 @@ BIN_TARGETS := $(patsubst %.c,$(BIN_DIR)/%,$(BIN_SOURCES))
 DEPS := $(LIB_OBJS:.o=.d) $(BIN_OBJS:.o=.d)
 
 # ---- Rules ---------------------------------------------------------------
+
+# Optional decision API. Always link its symbols; disabled builds use stubs.
+DECISION ?= 0
+ifneq ($(DECISION),0)
+ifneq ($(DECISION),1)
+$(error DECISION must be 0 or 1)
+endif
+endif
+
+# A content stamp makes 0 -> 1 -> 0 reliable without make clean. Only this
+# translation unit depends on the flag; callers query the linked capability.
+.PHONY: force-decision-config
+$(BUILD_DIR)/decision-config: force-decision-config
+	@mkdir -p $(@D)
+	@if [ "$(DECISION)" != "$$(cat $@ 2>/dev/null)" ]; then \
+	    printf '%s\n' '$(DECISION)' > $@; \
+	fi
+$(BUILD_DIR)/src/engine/decision.o: $(BUILD_DIR)/decision-config
+$(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(DECISION)
 
 # Object compilation. -MMD -MP generates .d files for header tracking.
 # src/*.c uses CFLAGS_STRICT (adds -Wshadow -Wundef); the tools/ demos

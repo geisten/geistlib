@@ -9,6 +9,14 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Optional numeric decision API** (`include/geist_decision.h`, EXPERIMENTAL,
+  #585). `DECISION=1` enables independent resettable scoring sessions over
+  distinct single-token candidates. DENSE uses existing model-conformant
+  logits and returns logits plus candidate-conditional probabilities; these
+  are not calibrated confidence. Default builds retain unsupported stubs.
+  `tools/bench_decision.py` records hashes, raw timings, candidate quality and
+  warm p50/p95 against dense scoring, one-token and longer generation paths.
+  See `docs/DECISION.md` for limits and the reproducible protocol.
 - **`geist_model_load_from_memory_with_opts`** (EXPERIMENTAL, #428). The
   in-memory twin of `geist_model_load_with_opts`: `opts->max_seq_len` sets the
   model's sequence cap, which bounds every session. An embedded model was
