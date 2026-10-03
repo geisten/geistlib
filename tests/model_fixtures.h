@@ -32,6 +32,9 @@ struct mf_llama {
     const struct tf_vocab *tok;
     const char            *tok_model;
     bool                   tok_merges;
+    /* attn_q stored as F16 instead of F32 (backends that widen or refuse
+     * half-precision projections). */
+    bool f16_q;
 };
 
 /* Qwen3.5 geometry (qwen35.* keys). Block i is attention when
@@ -73,6 +76,7 @@ struct mf_tensor {
     char         name[48];
     uint64_t     ne0, ne1; /* ne1 0: one dimension */
     enum mf_fill fill;
+    bool         f16; /* stored as F16; F32 otherwise */
 };
 
 struct mf_tensors {
@@ -98,11 +102,12 @@ mf_add(struct mf_tensors *ts, uint64_t ne0, uint64_t ne1, enum mf_fill fill, con
     t->ne0  = ne0;
     t->ne1  = ne1;
     t->fill = fill;
+    t->f16  = false;
 }
 
-/* The tensor infos, then the data, after the metadata: F32, each tensor
- * 32-byte aligned, MF_RAND values drawn in tensor order from `seed`. Frees
- * the list. */
+/* The tensor infos, then the data, after the metadata: F32 (F16 where the
+ * tensor says so), each tensor 32-byte aligned, MF_RAND values drawn in
+ * tensor order from `seed`. Frees the list. */
 static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uint64_t seed) {
     uint64_t off = 0;
     for (size_t i = 0; i < ts->n; i++) {
@@ -113,9 +118,9 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         if (t->ne1 != 0) {
             tf_u64(o, t->ne1);
         }
-        tf_u32(o, 0); /* F32 */
+        tf_u32(o, t->f16 ? 1 : 0); /* F16 : F32 */
         tf_u64(o, off);
-        off += (t->ne0 * (t->ne1 != 0 ? t->ne1 : 1) * 4 + 31) / 32 * 32;
+        off += (t->ne0 * (t->ne1 != 0 ? t->ne1 : 1) * (t->f16 ? 2 : 4) + 31) / 32 * 32;
     }
     uint64_t s = seed;
     for (size_t i = 0; i < ts->n; i++) {
@@ -125,7 +130,13 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         }
         const float c = t->fill == MF_ONE ? 1.0f : t->fill == MF_NEG_ONE ? -1.0f : 0.0f;
         for (uint64_t e = 0; e < t->ne0 * (t->ne1 != 0 ? t->ne1 : 1); e++) {
-            tf_f32(o, t->fill == MF_RAND ? mf_weight(&s) : c);
+            const float v = t->fill == MF_RAND ? mf_weight(&s) : c;
+            if (t->f16) {
+                const _Float16 h = (_Float16) v;
+                tf_put(o, &h, 2);
+            } else {
+                tf_f32(o, v);
+            }
         }
     }
     free(ts->t);
@@ -142,6 +153,7 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
     for (uint32_t l = 0; l < c->layers; l++) {
         mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.attn_norm.weight", l);
         mf_add(&ts, c->d_model, c->heads * hd, MF_RAND, "blk.%u.attn_q.weight", l);
+        ts.t[ts.n - 1].f16 = c->f16_q;
         mf_add(&ts, c->d_model, c->kv_heads * hd, MF_RAND, "blk.%u.attn_k.weight", l);
         mf_add(&ts, c->d_model, c->kv_heads * hd, MF_RAND, "blk.%u.attn_v.weight", l);
         mf_add(&ts, c->heads * hd, c->d_model, MF_RAND, "blk.%u.attn_output.weight", l);

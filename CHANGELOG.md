@@ -514,6 +514,13 @@ minor release.
   vtable.
 
 ### Fixed
+- **An F16/BF16 model that Metal cannot run fails at load, not at the first
+  prefill** (#564). Metal has no half-precision linear. The loader widens a
+  matrix of at most 4M elements to F32, but a larger one used to load and
+  then fail the first prefill with "resolver installed no kernel". The load
+  now returns `GEIST_E_UNSUPPORTED`, and the message names the tensor, its
+  dtype and its shape. Quantized GGUFs and the CPU backends are unaffected.
+
 - **Metal loads models with small F16/BF16 matrices under
   `GEIST_WEIGHT_MMAP=0`** (#561). The weight arena counted the second staged
   copy and the F32 copy of a widened half-precision matrix only on a backend
