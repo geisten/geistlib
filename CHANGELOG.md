@@ -194,6 +194,15 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 Q4_0, Q4_1 and TQ2_0 prefill run AVX-512 VNNI register tiles:
+  about twice as fast** (#410). On VNNI hosts M>1 now walks 4 output rows x
+  4 tokens per tile in zmm registers with one VPDPBUSD per block pair (Q4_0
+  / Q4_1) or four per 256-element block (TQ2_0), the pattern Q8_0 already
+  used. The integer block sums are the AVX2 kernels' own, so results agree
+  to float rounding. On a synthetic Llama-3.2-1B-geometry model, prefill of
+  64 and 256 tokens drops 46 % for Q4_0 and 48-51 % for TQ2_0
+  (`tools/bench_revision_ab.py`, 6 cycles, 6/6 faster); decode is
+  unchanged. AVX2 hosts, and `GEIST_FORCE_ISA=avx2`, keep the AVX2 kernels.
 - **cpu_x86 Q6_K prefill reads the GGUF bytes below AVX-512 VNNI: 7x faster,
   one copy of the weights** (#577). Q6_K prefill used to read a W8A8
   predecode (1.5 bytes per weight next to the 0.82 of the GGUF bytes) whose
