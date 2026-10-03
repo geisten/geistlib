@@ -34,11 +34,11 @@ class RunTestsTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_it(self, **env) -> subprocess.CompletedProcess:
+    def run_it(self, *args, **env) -> subprocess.CompletedProcess:
         full = {**os.environ, **env}
         full.pop("GITHUB_STEP_SUMMARY", None)
         full.update(env)
-        return subprocess.run(["sh", str(RUNNER), str(self.bin)], capture_output=True, text=True, env=full)
+        return subprocess.run(["sh", str(RUNNER), str(self.bin), *args], capture_output=True, text=True, env=full)
 
     def test_skips_pass_without_an_allowlist(self):
         r = self.run_it()
@@ -61,6 +61,17 @@ class RunTestsTest(unittest.TestCase):
         self.assertNotIn("test_attention_int8_unit", r.stdout)  # a unit test, whatever its name
         r = subprocess.run(["sh", str(RUNNER), str(self.bin), "int8"], capture_output=True, text=True)
         self.assertIn("test_attention_int8_unit", r.stdout)  # a user substring still works
+
+    def test_third_argument_narrows_within_the_suite(self):
+        # The shapes `make test-unit|test-int FILTER=...` pass.
+        fake_bin(self.bin, "test_decode_no_alloc_unit", 0, "no alloc")
+        r = self.run_it("_unit", "no_alloc")
+        self.assertIn("Ran 1 test(s)", r.stdout)
+        self.assertIn("test_decode_no_alloc_unit", r.stdout)
+        self.assertIn("Ran 4 test(s)", self.run_it("_unit", "").stdout)  # FILTER unset: the whole suite
+        r = self.run_it("_int", "nonexistent")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("match filter '_int' and 'nonexistent'", r.stdout)
 
     def test_missing_allowlist_is_a_harness_error(self):
         r = self.run_it(GEIST_EXPECTED_SKIPS=str(self.allow) + ".nope")

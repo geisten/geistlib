@@ -65,23 +65,113 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
     return GEIST_OK;
 }
 
+/* Reorder the rows of a llama-family attn_q / attn_k from the GGUF's
+ * interleaved RoPE pair order to the half-split order the runtime rotates:
+ * within each head, output row i comes from row 2i and row half + i from
+ * row 2i + 1. That is the permutation the forward pass used to apply to the
+ * q/k activations on every layer and token; applied to the weight rows it
+ * yields the same activations, bit for bit, since every output row is its
+ * own dot product. Quantized blocks never straddle rows, so a row is a
+ * plain byte range for every dtype. */
+void permute_rope_rows(
+        size_t n_rows, size_t row_bytes, size_t head_dim, const uint8_t *src, uint8_t *dst) {
+    const size_t half = head_dim / 2;
+    for (size_t h = 0; h < n_rows; h += head_dim) {
+        for (size_t i = 0; i < half; i++) {
+            memcpy(dst + (h + i) * row_bytes, src + (h + 2 * i) * row_bytes, row_bytes);
+            memcpy(dst + (h + half + i) * row_bytes, src + (h + 2 * i + 1) * row_bytes, row_bytes);
+        }
+    }
+}
+
+/* Bytes every attn_q / attn_k of the file takes, 64-byte aligned each: the
+ * one host allocation for permuted rows outside the arena. */
+static size_t rope_il_rows_capacity(struct gguf_ctx *gguf) {
+    static const char *const suffixes[] = {".attn_q.weight", ".attn_k.weight"};
+    size_t                   total      = 0;
+    const size_t             n          = gguf_tensor_count(gguf);
+    for (size_t i = 0; i < n; i++) {
+        const struct gguf_tensor_t *t = gguf_tensor_at(gguf, i);
+        if (t == nullptr) {
+            continue;
+        }
+        const size_t len = strlen(t->name);
+        for (size_t k = 0; k < sizeof suffixes / sizeof suffixes[0]; k++) {
+            const size_t sl = strlen(suffixes[k]);
+            if (len >= sl && memcmp(t->name + len - sl, suffixes[k], sl) == 0) {
+                total += (t->nbytes + 63u) & ~((size_t) 63u);
+            }
+        }
+    }
+    return total;
+}
+
+/* A 64-byte-aligned slice of st->rope_il_rows, allocated on first use;
+ * nullptr when it cannot be allocated or is exhausted. */
+static void *
+rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, size_t bytes) {
+    if (st->rope_il_rows == nullptr) {
+        const size_t cap = rope_il_rows_capacity(gguf);
+        st->rope_il_rows = cap > 0 ? heap_alloc_aligned(cap, 64) : nullptr;
+        if (st->rope_il_rows == nullptr) {
+            return nullptr;
+        }
+        st->rope_il_rows_capacity = cap;
+        st->rope_il_rows_used     = 0;
+    }
+    const size_t need = (bytes + 63u) & ~((size_t) 63u); /* as the capacity counts it */
+    if (need > st->rope_il_rows_capacity - st->rope_il_rows_used) {
+        return nullptr;
+    }
+    void *p = (uint8_t *) st->rope_il_rows + st->rope_il_rows_used;
+    st->rope_il_rows_used += need;
+    return p;
+}
+
 [[nodiscard]] enum geist_status load_norm_to_f32_buffer(struct transformer_arch_state *st,
                                                         struct gguf_ctx               *gguf,
                                                         const char                    *name,
                                                         size_t                expected_elems,
                                                         struct geist_buffer **out_buf) {
+    return load_f32_buffer_rope_il(st, gguf, name, expected_elems, 0, out_buf);
+}
+
+[[nodiscard]] enum geist_status load_f32_buffer_rope_il(struct transformer_arch_state *st,
+                                                        struct gguf_ctx               *gguf,
+                                                        const char                    *name,
+                                                        size_t                expected_elems,
+                                                        size_t                rope_il_head_dim,
+                                                        struct geist_buffer **out_buf) {
     struct geist_backend *be = st->backend;
     *out_buf                 = nullptr;
 
+    /* Only an F32 tensor keeps its staged buffer, so only that one is staged
+     * permuted; a narrower one is permuted after widening, below. */
+    const struct gguf_tensor_t *t0  = gguf_get_tensor(gguf, name);
+    const bool                  f32 = t0 != nullptr && t0->dtype == GGUF_TYPE_F32;
     const struct gguf_tensor_t *t   = nullptr;
     struct geist_buffer        *buf = nullptr;
-    enum geist_status           s = load_tensor_to_buffer(st, gguf, name, expected_elems, &t, &buf);
+    enum geist_status           s   = load_tensor_to_buffer_rope_il(
+            st, gguf, name, expected_elems, f32 ? rope_il_head_dim : 0, &t, &buf);
     if (s != GEIST_OK) {
         return s;
     }
     if (t->dtype == GGUF_TYPE_F32) {
         *out_buf = buf;
         return GEIST_OK;
+    }
+    const size_t n_rows = t->n_dims == 2 ? (size_t) t->dims[1] : 0;
+    if (rope_il_head_dim > 0 &&
+        (rope_il_head_dim % 2 != 0 || n_rows == 0 || n_rows % rope_il_head_dim != 0)) {
+        be->desc->vtbl->buffer_destroy(be, buf);
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: '%s' cannot be permuted for RoPE "
+                                "(%zu rows, head_dim %zu)",
+                                name,
+                                n_rows,
+                                rope_il_head_dim);
+        return GEIST_E_FORMAT;
     }
 
     /* Not F32 in the file. Every kernel that consumes a norm gamma reads
@@ -103,6 +193,24 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
         return GEIST_E_FORMAT;
     }
     const size_t bytes = expected_elems * sizeof(float);
+    if (rope_il_head_dim > 0) {
+        float *permuted = heap_alloc_aligned(bytes, 64);
+        if (permuted == nullptr) {
+            void *p = fp32;
+            safe_free(&p);
+            geist_backend_set_error(
+                    be, GEIST_E_OOM, "transformer: no memory to permute '%s'", name);
+            return GEIST_E_OOM;
+        }
+        permute_rope_rows(n_rows,
+                          bytes / n_rows,
+                          rope_il_head_dim,
+                          (const uint8_t *) fp32,
+                          (uint8_t *) permuted);
+        void *p = fp32;
+        safe_free(&p);
+        fp32 = permuted;
+    }
     if (st->weight_arena != nullptr) {
         void *arena_ptr = arena_alloc(st, bytes, 64);
         if (arena_ptr == nullptr) {
@@ -140,6 +248,16 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
                                                       size_t                         expected_elems,
                                                       const struct gguf_tensor_t   **out_t,
                                                       struct geist_buffer          **out_buf) {
+    return load_tensor_to_buffer_rope_il(st, gguf, name, expected_elems, 0, out_t, out_buf);
+}
+
+[[nodiscard]] enum geist_status load_tensor_to_buffer_rope_il(struct transformer_arch_state *st,
+                                                              struct gguf_ctx               *gguf,
+                                                              const char                    *name,
+                                                              size_t expected_elems,
+                                                              size_t rope_il_head_dim,
+                                                              const struct gguf_tensor_t **out_t,
+                                                              struct geist_buffer **out_buf) {
 
     struct geist_backend *be = st->backend;
 
@@ -183,6 +301,66 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
     enum geist_status                s;
     const struct geist_backend_vtbl *v = be->desc->vtbl;
     void                            *raw_ptr;
+
+    /* Interleaved-RoPE rows (rope_il_head_dim > 0): the permuted copy needs
+     * storage of its own, since the mmap is read-only: the arena slot in
+     * β mode; on a weights_device_copy backend a slice of st->rope_il_rows,
+     * host memory aliased like the mmap pages it replaces, so the backend
+     * uploads it at resolve_weight and none of it lands in a device heap
+     * the backend budgets for scratch (Vulkan's BAR window); else a
+     * backend-owned buffer. */
+    const size_t n_rows = t->n_dims == 2 ? (size_t) t->dims[1] : 0;
+    if (rope_il_head_dim > 0) {
+        if (rope_il_head_dim % 2 != 0 || n_rows == 0 || n_rows % rope_il_head_dim != 0 ||
+            t->nbytes % n_rows != 0) {
+            geist_backend_set_error(be,
+                                    GEIST_E_FORMAT,
+                                    "transformer: '%s' cannot be permuted for RoPE "
+                                    "(%zu rows, head_dim %zu)",
+                                    name,
+                                    n_rows,
+                                    rope_il_head_dim);
+            return GEIST_E_FORMAT;
+        }
+        if (st->weight_arena == nullptr || weight_skips_arena(be, t)) {
+            const size_t row_bytes = t->nbytes / n_rows;
+            if (be->desc->caps.weights_device_copy) {
+                void *rows = rope_il_rows_alloc(st, gguf, t->nbytes);
+                if (rows == nullptr) {
+                    geist_backend_set_error(
+                            be, GEIST_E_OOM, "transformer: no memory to permute '%s'", name);
+                    return GEIST_E_OOM;
+                }
+                permute_rope_rows(
+                        n_rows, row_bytes, rope_il_head_dim, (const uint8_t *) t->data, rows);
+                s = v->buffer_create_aliased(be, rows, t->nbytes, GEIST_BUFFER_WEIGHT, &buf);
+            } else {
+                void *tmp = heap_alloc_aligned(t->nbytes, 64);
+                if (tmp == nullptr) {
+                    geist_backend_set_error(
+                            be, GEIST_E_OOM, "transformer: no memory to permute '%s'", name);
+                    return GEIST_E_OOM;
+                }
+                permute_rope_rows(
+                        n_rows, row_bytes, rope_il_head_dim, (const uint8_t *) t->data, tmp);
+                s = v->buffer_create(be, t->nbytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_AUTO, &buf);
+                if (s == GEIST_OK) {
+                    s = v->buffer_upload(buf, t->nbytes, (const uint8_t *) tmp);
+                    if (s != GEIST_OK) {
+                        v->buffer_destroy(be, buf);
+                        buf = nullptr;
+                    }
+                }
+                safe_free(&tmp);
+            }
+            if (s != GEIST_OK) {
+                return s;
+            }
+            *out_t   = t;
+            *out_buf = buf;
+            return GEIST_OK;
+        }
+    }
     if (st->weight_arena != nullptr && !weight_skips_arena(be, t)) {
         /* β: bump-allocate + memcpy. */
         raw_ptr = arena_alloc(st, t->nbytes, 64);
@@ -197,7 +375,15 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
                                     t->nbytes);
             return GEIST_E_OOM;
         }
-        memcpy(raw_ptr, t->data, t->nbytes);
+        if (rope_il_head_dim > 0) {
+            permute_rope_rows(n_rows,
+                              t->nbytes / n_rows,
+                              rope_il_head_dim,
+                              (const uint8_t *) t->data,
+                              (uint8_t *) raw_ptr);
+        } else {
+            memcpy(raw_ptr, t->data, t->nbytes);
+        }
     } else {
         /* mmap-alias: zero-copy; gguf mmap retained by caller. */
         raw_ptr = (void *) t->data;

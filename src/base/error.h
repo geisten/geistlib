@@ -51,4 +51,8 @@ void geist_error_clear_create_time(void);
  * failed and would otherwise report GEIST_E_IO for every cause. */
 [[nodiscard]] bool geist_have_create_error(void);
 
+/* The status the create-time slot holds (GEIST_OK when empty), so that
+ * outer frame can return the cause's status, not only print it. */
+[[nodiscard]] enum geist_status geist_create_error_code(void);
+
 #endif /* GEIST_INTERNAL_ERROR_H */

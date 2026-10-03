@@ -9,6 +9,20 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Signed build provenance for release assets.** The release workflow attests
+  every file in `SHA256SUMS` with `actions/attest-build-provenance` and refuses
+  to publish until `gh attestation verify` accepts each one. Consumers check a
+  download with `gh attestation verify <file> --repo geisten/geistlib`.
+- **Metal checks the GPU working set at load and session create** (#531).
+  Everything a command buffer binds must be resident at once, so a model plus
+  KV plus scratch above `recommendedMaxWorkingSetSize` used to fail or page in
+  the middle of a generation. Metal now refuses the allocation that would cross
+  the budget, and loading or creating the session fails with `GEIST_E_OOM` and
+  a message naming the free and the needed MiB and `sudo sysctl
+  iogpu.wired_limit_mb`. A one-time notice is printed from 90 %.
+  `GEIST_METAL_IGNORE_BUDGET=1` lifts the check. The count is
+  `currentAllocatedSize`, which includes lookup tables the host gathers
+  (#529), so near the line it is conservative.
 - **Per-model prefill knobs** (`src/archs/transformer/prefill_tuning.h`): the
   prefill chunk `m_max` and the OpenMP spin policy resolve as default + delta +
   override — the platform/backend default, a signed delta from a table row
@@ -78,9 +92,9 @@ minor release.
   a 21 GiB RADV iGPU; RTX 2080 Ti for the smaller ones). The DeltaNet state is
   zeroed and snapshotted through `buffer_upload`/`buffer_download`, so it lives
   in unmappable VRAM and `session_reset` really clears it.
-  `interleaved RoPE` (llama family) is a device op (`fused->rope_apply_interleaved`):
-  llama-3.2-3B Q4_K_M prefill at pp1024 went from 37 to 1024 t/s — the host
-  permutation was reading the query/key rows back over PCIe on every layer.
+  Interleaved RoPE (llama family) no longer reads the query/key rows back to
+  the host on every layer: llama-3.2-3B Q4_K_M prefill at pp1024 went from 37
+  to 1024 t/s (the weights are permuted at load since #464).
 - **BitNet prefill on Vulkan**: `relu_squared` and the BitNet int8 activation
   fake-quant (`fused->bitnet_act_quant`) run on the device instead of as host
   loops over mapped memory, one flush plus a PCIe round trip per layer. TQ2_0
@@ -150,6 +164,23 @@ minor release.
   `GEIST_KV_INT8_FUSED=0` keeps both host loops.
 
 ### Changed
+
+- **Llama-family Q/K rows are permuted once at load** (#464). GGUFs store
+  `attn_q` / `attn_k` rows in interleaved RoPE pair order; the forward pass
+  used to permute the q/k activations on every layer and token, on the host
+  or through a per-backend fused op. The loader now reorders the weight rows
+  head by head, so every family rotates half-split pairs and no backend needs
+  an interleaved kernel. Logits are byte-identical (llama-3.2-3B Q4_K_M and
+  Llama3-8B-1.58 TQ2_0 on cpu_scalar/cpu_neon/metal, both weight modes).
+  Metal no longer flushes once per layer on llama: decode 1.45x on
+  llama-3.2-3B, 2.6x on smollm2-360M (M1 Max). In mmap-alias mode the permuted
+  q/k rows live in a backend buffer instead of the file mapping; on a
+  `weights_device_copy` backend (Vulkan) in one host allocation the backend
+  uploads from, so they stay out of the BAR window. An F16/BF16 q/k that a
+  backend widens to F32 at load is permuted too.
+  **Removed (EXPERIMENTAL API):** `fused->rope_apply_interleaved` and
+  `GEIST_FUSED_ROPE_INTERLEAVED` from `geist_backend.h`; the enumerators after
+  it shift by one.
 
 - **cpu_x86 runs RMSNorm and the residual add on the whole team in AVX2**
   (`cpu_x86/elementwise.c`). Both were cpu_scalar's, on the calling thread
@@ -465,6 +496,13 @@ minor release.
   vtable.
 
 ### Fixed
+- **`geist_model_load` and `geist_model_load_from_memory` return the cause's
+  status.** Every architecture failure used to come back as `GEIST_E_IO`
+  (`GEIST_E_FORMAT` from memory), even when the cause was an out-of-memory or
+  an unsupported model. The architecture now hands its status up through the
+  create-time error slot: a GPU budget refusal is `GEIST_E_OOM`, and BitNet on
+  Metal (no `relu_squared`) is `GEIST_E_UNSUPPORTED`. The old code stays the
+  fallback when no layer names a cause (#531).
 
 - **The metal backend no longer leaks a command buffer and an encoder per
   submission** (#527). It drives Metal from plain C, where nothing drained the

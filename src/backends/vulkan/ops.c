@@ -1131,31 +1131,6 @@ enum { VK_HADAMARD_MAX_BLOCK = 1024 };
     return s;
 }
 
-/* Head sizes the interleaved-rope shader stages in shared memory. */
-enum { VK_ROPE_IL_MAX_HEAD_DIM = 256 };
-
-[[nodiscard]] static enum geist_status vk_rope_apply_interleaved(struct geist_backend      *be,
-                                                                 struct geist_tensor       *x,
-                                                                 const struct geist_tensor *cos,
-                                                                 const struct geist_tensor *sin) {
-    VkDescriptorBufferInfo bi[3];
-    uint32_t               off[3];
-    if (x == nullptr || cos == nullptr || sin == nullptr || x->ndim != 3 || vk_t_n(x) == 0 ||
-        (size_t) cos->shape[cos->ndim - 1] != (size_t) x->shape[2] ||
-        (size_t) x->shape[2] > VK_ROPE_IL_MAX_HEAD_DIM || x->shape[2] % 2 != 0 ||
-        !vk_tensor_gpu(x, &bi[0], &off[0]) || !vk_tensor_gpu(cos, &bi[1], &off[1]) ||
-        !vk_tensor_gpu(sin, &bi[2], &off[2])) {
-        return GEIST_E_UNSUPPORTED;
-    }
-    const size_t   seq     = (size_t) x->shape[0];
-    const size_t   heads   = (size_t) x->shape[1];
-    const uint32_t push[5] = {(uint32_t) heads, (uint32_t) x->shape[2], off[0], off[1], off[2]};
-    const struct vk_access acc[3] = {
-            vk_acc_tensor(x, true), vk_acc_tensor(cos, false), vk_acc_tensor(sin, false)};
-    return vk_seq_dispatch_acc(
-            be, VK_PIPE_ROPE_IL, bi, acc, push, sizeof(push), (uint32_t) (seq * heads), 1, 1);
-}
-
 [[nodiscard]] static enum geist_status vk_embedding_lookup(struct geist_backend      *be,
                                                            const struct geist_tensor *embed_table,
                                                            geist_token_t              token_id,
@@ -2165,8 +2140,6 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     case GEIST_FUSED_SILU_MUL:
     case GEIST_FUSED_BITNET_ACT_QUANT:
         return true;
-    case GEIST_FUSED_ROPE_INTERLEAVED:
-        return q->head_dim % 2 == 0 && q->head_dim <= VK_ROPE_IL_MAX_HEAD_DIM;
     case GEIST_FUSED_FFN_GATE_UP:
     case GEIST_FUSED_FFN_NORM_GATE_UP: {
         if (q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr ||
@@ -2247,7 +2220,6 @@ static const struct geist_backend_fused vk_fused = {
         .attn_qgate_split        = vk_attn_qgate_split,
         .sigmoid_mul             = vk_sigmoid_mul,
         .silu_mul                = vk_silu_mul,
-        .rope_apply_interleaved  = vk_rope_apply_interleaved,
         .bitnet_act_quant        = vk_bitnet_act_quant,
         .hadamard_rotate         = vk_hadamard_rotate,
 };

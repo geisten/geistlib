@@ -507,8 +507,10 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
                                       GEIST_BUFFER_SCRATCH,
                                       GEIST_MEMORY_MAPPED,
                                       &sess->scratch_pool_buf);
-    sess->scratch_pool_base =
-            s == GEIST_OK ? be->desc->vtbl->buffer_map(sess->scratch_pool_buf) : nullptr;
+    if (s != GEIST_OK) {
+        return s; /* the backend said why (a GPU budget, #531) */
+    }
+    sess->scratch_pool_base = be->desc->vtbl->buffer_map(sess->scratch_pool_buf);
     if (sess->scratch_pool_base == nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_OOM,
@@ -1424,6 +1426,9 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         st->weight_arena_capacity = 0;
         st->weight_arena_used     = 0;
     }
+    safe_free(&st->rope_il_rows); /* same lifetime as the arena slices */
+    st->rope_il_rows_capacity = 0;
+    st->rope_il_rows_used     = 0;
     transformer_exec_plan_destroy(st);
     /* P1.4.c: release the heap-allocated per-layer weight array. */
     if (st->layers != nullptr) {
