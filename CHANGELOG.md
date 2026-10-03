@@ -564,6 +564,15 @@ minor release.
   past the array. The DeltaNet mixer returned NaN, so qwen35-family models ran
   wrong on those devices. The slots now fit any subgroup size, and the
   DeltaNet parity test runs in both Vulkan CI jobs.
+- **A failed Vulkan dispatch is an error, not a silent host rerun** (#474,
+  item 2). The elementwise ops, RMSNorm (plain and with residual), RoPE,
+  scale, attention and the Hadamard rotation try the GPU first and keep a
+  host loop for shapes the shaders do not cover. "Not applicable" and "the
+  dispatch failed" were one answer, so a command-buffer or descriptor failure
+  (device lost, out of memory) re-ran the op on the host and returned
+  `GEIST_OK`. Only a shape the shaders do not cover takes the host loop now;
+  a failed dispatch returns its error. `test_backend_vulkan_dispatch_fail_unit`
+  makes `vkBeginCommandBuffer` fail and checks every such op.
 - **Vulkan fusion probes answer what the kernels run** (#474, item 3). The
   plan binds a fused kernel when the probe says yes and then treats a refusal
   as a layer error. The q/k/v prep probe accepted any even `head_dim`, but the
