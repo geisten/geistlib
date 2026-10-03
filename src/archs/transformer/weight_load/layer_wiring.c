@@ -147,15 +147,28 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
              * a SMALL tensor widened to F32 once, the same way norm gammas
              * are: Ternary-Bonsai keeps its DeltaNet alpha/beta projections
              * (48 x 5120, 1 MB widened) in BF16. Widening doubles the
-             * resident bytes, so a model's main matrices stay out of it —
-             * past the cap the resolver's refusal stands and the caller
-             * falls back to the legacy path, as it did before this existed.
-             * The half-precision copy stays tracked (a few MB on
-             * a 27B); untrack it if that ever matters. */
+             * resident bytes, so a model's main matrices stay out of it.
+             * Past the cap nothing can run the matrix: the legacy
+             * v->linear() fallback is gone (P2.e) and no tensor path takes
+             * a half-precision weight its resolver refused, so the load
+             * fails here, naming the tensor, instead of at the first
+             * prefill (#564). The half-precision copy stays tracked (a few
+             * MB on a 27B); untrack it if that ever matters. */
             constexpr size_t widen_max_elems = 4u << 20; /* 16 MB as F32 */
-            if (rs == GEIST_E_UNSUPPORTED &&
-                (dm.dtype == GEIST_DTYPE_F16 || dm.dtype == GEIST_DTYPE_BF16) &&
-                n_out * n_in <= widen_max_elems) {
+            const bool       half = dm.dtype == GEIST_DTYPE_F16 || dm.dtype == GEIST_DTYPE_BF16;
+            if (rs == GEIST_E_UNSUPPORTED && half && n_out * n_in > widen_max_elems) {
+                geist_backend_set_error(be,
+                                        GEIST_E_UNSUPPORTED,
+                                        "transformer: %s has no %s linear for '%s' (%zux%zu); "
+                                        "use a quantized GGUF or a CPU backend",
+                                        be->desc->name,
+                                        gguf_dtype_name(t->dtype),
+                                        name,
+                                        n_out,
+                                        n_in);
+                return GEIST_E_UNSUPPORTED;
+            }
+            if (rs == GEIST_E_UNSUPPORTED && half) {
                 struct geist_buffer *buf32 = nullptr;
                 s = load_f32_buffer_rope_il(st, gguf, name, n_out * n_in, rope_il_head_dim, &buf32);
                 if (s != GEIST_OK) {
