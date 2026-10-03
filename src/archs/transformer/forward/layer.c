@@ -213,21 +213,20 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
             st->config.has_projection_input_norms && sess->scratch_proj_in != nullptr;
     ctx->apply_gemma_attn_norms =
             P != nullptr ? P->apply_gemma_attn_norms : st->config.has_gemma_attn_norms;
-    ctx->apply_qk_norms   = P != nullptr ? P->apply_qk_norms : st->config.has_qk_norms;
-    ctx->rope_interleaved = P != nullptr ? P->rope_interleaved : st->config.rope_interleaved;
-    ctx->apply_ple        = P != nullptr ? P->apply_ple : st->config.has_ple;
-    ctx->run_ple          = ctx->apply_ple && per_layer_input_buf != nullptr;
-    ctx->kv_int8_enabled  = sess->kv_int8_enabled;
-    ctx->kv_kivi_enabled  = sess->kv_kivi_enabled;
-    ctx->kv_f16_enabled   = sess->kv_f16_enabled;
-    ctx->ffn_activation   = P != nullptr ? P->ffn_activation : st->config.ffn_activation;
-    ctx->eps              = st->config.rms_eps;
-    ctx->hd               = L->head_dim;
-    ctx->q_out            = L->q_out;
-    ctx->kv_out           = L->kv_out;
-    ctx->inter            = L->intermediate;
-    ctx->SEQ              = (int64_t) seq;
-    ctx->kv_len_now       = q_position + seq;
+    ctx->apply_qk_norms  = P != nullptr ? P->apply_qk_norms : st->config.has_qk_norms;
+    ctx->apply_ple       = P != nullptr ? P->apply_ple : st->config.has_ple;
+    ctx->run_ple         = ctx->apply_ple && per_layer_input_buf != nullptr;
+    ctx->kv_int8_enabled = sess->kv_int8_enabled;
+    ctx->kv_kivi_enabled = sess->kv_kivi_enabled;
+    ctx->kv_f16_enabled  = sess->kv_f16_enabled;
+    ctx->ffn_activation  = P != nullptr ? P->ffn_activation : st->config.ffn_activation;
+    ctx->eps             = st->config.rms_eps;
+    ctx->hd              = L->head_dim;
+    ctx->q_out           = L->q_out;
+    ctx->kv_out          = L->kv_out;
+    ctx->inter           = L->intermediate;
+    ctx->SEQ             = (int64_t) seq;
+    ctx->kv_len_now      = q_position + seq;
     transformer_layer_bind_kv_buffers(ctx);
 }
 
@@ -324,7 +323,6 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
     ctx.apply_projection_input_norms = false;
     ctx.apply_gemma_attn_norms       = false;
     ctx.apply_qk_norms               = true;
-    ctx.rope_interleaved             = sess->model->config.rope_interleaved;
     ctx.apply_ple                    = false;
     ctx.run_ple                      = false;
     ctx.kv_int8_enabled              = false;

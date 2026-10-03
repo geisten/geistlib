@@ -1426,6 +1426,9 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         st->weight_arena_capacity = 0;
         st->weight_arena_used     = 0;
     }
+    safe_free(&st->rope_il_rows); /* same lifetime as the arena slices */
+    st->rope_il_rows_capacity = 0;
+    st->rope_il_rows_used     = 0;
     transformer_exec_plan_destroy(st);
     /* P1.4.c: release the heap-allocated per-layer weight array. */
     if (st->layers != nullptr) {

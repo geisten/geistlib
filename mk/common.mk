@@ -372,5 +372,12 @@ $(BIN_DIR)/%: $(BUILD_DIR)/%.o $(LIB_FILE)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)
 
+# Keep the binaries' objects. On a fresh tree there are no .d files yet, so the
+# chained rule above makes the objects intermediate and make deletes them after
+# linking; the next call reads the .d files, sees missing explicit targets, and
+# recompiles them and relinks every binary. .NOTINTERMEDIATE needs make 4.4;
+# macOS ships 3.81.
+.SECONDARY: $(BIN_OBJS)
+
 # Include generated dependency files (silent if missing).
 -include $(DEPS)

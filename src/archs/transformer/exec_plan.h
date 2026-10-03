@@ -38,7 +38,6 @@ struct transformer_layer_exec_plan {
     bool                           apply_qk_norms;
     bool                           apply_sub_ln;
     bool                           apply_ple;
-    bool                           rope_interleaved;
     enum geist_ffn_activation_kind ffn_activation;
 
     /* ---- Probe-and-bind: FFN-front fusion decisions, made once here
@@ -61,9 +60,6 @@ struct transformer_layer_exec_plan {
                                     * (sess->kv_*_enabled is the session
                                     * overlay) */
     bool fuse_bitnet_act_quant;    /* BitNet activation fake-quant on the device */
-    bool fuse_rope_interleaved;    /* permute + RoPE of interleaved rows in one
-                                    * device pass (full rotation only: the call
-                                    * site also checks n_rot == head_dim) */
     bool fuse_ple_block_m1;        /* fused PLE block, decode */
     bool fuse_ple_block_mN;        /* fused PLE block, prefill */
 
