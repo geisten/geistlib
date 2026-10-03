@@ -45,3 +45,8 @@ test_qwen35_vulkan_e2e_int
 test_gains_int
 test_iq_kernel_int
 test_prefill_q3k_int
+
+# Optional numeric decisions are off in the default integration build.
+# test-decision exercises enabled/disabled public consumers in CI; this
+# real-GGUF parity check runs when DECISION=1 (including the local baseline).
+test_decision_int
