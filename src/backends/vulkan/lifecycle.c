@@ -228,13 +228,19 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     }
     st->phys = devs[pick];
     st->fn.GetPhysicalDeviceMemoryProperties(st->phys, &st->mem_props);
+    VkPhysicalDeviceVulkan13Properties p13 = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
     VkPhysicalDeviceSubgroupProperties sgp = {
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES, .pNext = &p13};
     VkPhysicalDeviceProperties2 pprops = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                           .pNext = &sgp};
     st->fn.GetPhysicalDeviceProperties2(st->phys, &pprops);
     st->ts_period_ns  = pprops.properties.limits.timestampPeriod;
     st->subgroup_size = sgp.subgroupSize;
+    /* Range half of the 32-lane pin; vk_create_device adds the features. */
+    st->sg32_pinnable = p13.minSubgroupSize <= 32u && p13.maxSubgroupSize >= 32u &&
+                        (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0u &&
+                        p13.maxComputeWorkgroupSubgroups * 32u >= 256u;
     return GEIST_OK;
 }
 
@@ -301,6 +307,11 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     st->has_int8_dot =
             have13.shaderIntegerDotProduct && have12.shaderInt8 && have12.storageBuffer8BitAccess;
     st->has_coopmat = coop_ext && coop_have.cooperativeMatrix && st->has_fp16;
+    /* #471: pin the tiled GEMMs to full 32-lane subgroups where the device
+     * allows it (RADV wave64, Intel SIMD8/16), instead of looping matvecs. */
+    st->sg32_pinnable =
+            st->sg32_pinnable && have13.subgroupSizeControl && have13.computeFullSubgroups;
+    st->gemm_sg32 = st->sg32_pinnable || st->subgroup_size == 32u;
 
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop_want = {
             .sType             = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
@@ -310,7 +321,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             .pNext                   = st->has_coopmat ? &coop_want : nullptr,
             .shaderIntegerDotProduct = have13.shaderIntegerDotProduct,
             .synchronization2        = have13.synchronization2,
-            .maintenance4            = have13.maintenance4};
+            .maintenance4            = have13.maintenance4,
+            .subgroupSizeControl     = st->sg32_pinnable,
+            .computeFullSubgroups    = st->sg32_pinnable};
     VkPhysicalDeviceVulkan12Features want12 = {
             .sType                   = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
             .pNext                   = &want13,
@@ -428,11 +441,13 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
 
     if (getenv("GEIST_VK_VERBOSE") != nullptr) {
         fprintf(stderr,
-                "geist vulkan: %s (fp16 %d, int8-dot %d, coopmat %d)\n",
+                "geist vulkan: %s (fp16 %d, int8-dot %d, coopmat %d, subgroup %u%s)\n",
                 st->device_name,
                 st->has_fp16,
                 st->has_int8_dot,
-                st->has_coopmat);
+                st->has_coopmat,
+                st->subgroup_size,
+                st->sg32_pinnable ? ", GEMMs pinned to 32" : "");
     }
     be->state = st;
     return GEIST_OK;

@@ -65,11 +65,30 @@
 /* Compute pipelines                                                       */
 /* ====================================================================== */
 
+/* local_size_x of a compute module (OpExecutionMode LocalSize), 0 when the
+ * module does not state a literal one. */
+static uint32_t vk_spirv_local_size_x(size_t n_words, const uint32_t code[static n_words]) {
+    static constexpr uint32_t OP_EXECUTION_MODE = 16;
+    static constexpr uint32_t MODE_LOCAL_SIZE   = 17;
+    for (size_t i = 5; i < n_words;) {
+        const uint32_t n_op = code[i] >> 16, op = code[i] & 0xffffu;
+        if (n_op == 0 || n_op > n_words - i) {
+            return 0;
+        }
+        if (op == OP_EXECUTION_MODE && n_op >= 6 && code[i + 2] == MODE_LOCAL_SIZE) {
+            return code[i + 3];
+        }
+        i += n_op;
+    }
+    return 0;
+}
+
 [[nodiscard]] static enum geist_status vk_make_pipeline(struct geist_backend *be,
                                                         struct vk_state      *st,
                                                         const uint32_t       *code,
                                                         size_t                code_bytes,
                                                         VkPipelineLayout      layout,
+                                                        bool                  pin_sg32,
                                                         VkPipeline           *out) {
     VkShaderModuleCreateInfo minfo = {.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                       .codeSize = code_bytes,
@@ -79,12 +98,18 @@
         geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: shader module creation failed");
         return GEIST_E_BACKEND;
     }
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sg32 = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+            .requiredSubgroupSize = 32};
     VkComputePipelineCreateInfo pinfo = {
-            .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-            .stage  = {.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                       .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
-                       .module = mod,
-                       .pName  = "main"},
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                      .pNext = pin_sg32 ? &sg32 : nullptr,
+                      .flags = pin_sg32 ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT
+                                        : 0u,
+                      .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                      .module = mod,
+                      .pName  = "main"},
             .layout = layout};
     VkResult r = st->fn.CreateComputePipelines(st->device, VK_NULL_HANDLE, 1, &pinfo, nullptr, out);
     st->fn.DestroyShaderModule(st->device, mod, nullptr);
@@ -249,11 +274,24 @@
         if (vk_pipe_needs_coopmat(i) && !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */
         }
+        /* Full subgroups need local_size_x to be a multiple of 32; every
+         * tiled GEMM is 128 or 256 wide, so a miss is a shader edit that
+         * broke the assumption: fail loudly rather than loop matvecs. */
+        const bool pin = st->sg32_pinnable && vk_pipe_is_tiled_gemm(i);
+        if (pin && vk_spirv_local_size_x(blobs[i].bytes / 4u, blobs[i].code) % 32u != 0u) {
+            geist_backend_set_error(be,
+                                    GEIST_E_INTERNAL,
+                                    "vulkan: pipeline %d is not a whole number of 32-lane "
+                                    "subgroups",
+                                    i);
+            return GEIST_E_INTERNAL;
+        }
         enum geist_status s = vk_make_pipeline(be,
                                                st,
                                                blobs[i].code,
                                                blobs[i].bytes,
                                                st->seq_playouts[vk_pipe_nbind[i] - 2],
+                                               pin,
                                                &st->pipes[i]);
         if (s != GEIST_OK) {
             if (vk_pipe_needs_coopmat(i)) {

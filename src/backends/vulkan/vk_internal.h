@@ -166,6 +166,16 @@ static inline bool vk_pipe_needs_coopmat(int pipe) {
            pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM;
 }
 
+/* The register-tiled GEMMs: one output row per 32-lane subgroup
+ * (mm_legacy.glsl and its siblings). The tensor-core variants are not on
+ * this list; they keep the native subgroup size. */
+static inline bool vk_pipe_is_tiled_gemm(int pipe) {
+    return pipe == VK_PIPE_MATMUL_Q4K || pipe == VK_PIPE_MATMUL_Q6K || pipe == VK_PIPE_MATMUL_F32 ||
+           pipe == VK_PIPE_MATMUL_Q4_0 || pipe == VK_PIPE_MATMUL_Q4_1 ||
+           pipe == VK_PIPE_MATMUL_Q8_0 || pipe == VK_PIPE_MATMUL_Q5K ||
+           pipe == VK_PIPE_MATMUL_TQ2_0 || pipe == VK_PIPE_MATMUL_PQ2_0;
+}
+
 struct vk_push {
     uint32_t n_in, n_out, blocks_per_row, rows;
     uint32_t x_offset, w_offset, y_offset, x_stride, y_stride;
@@ -238,9 +248,15 @@ struct vk_state {
     char device_name[256];
 
     /* From VkPhysicalDeviceSubgroupProperties. The register-tiled GEMM
-     * shaders assume 32 lanes (2080-Ti-first); on any other size the mN
-     * dispatch loops the (size-agnostic) matvec kernels instead. */
+     * shaders assume 32 lanes (2080-Ti-first). */
     uint32_t subgroup_size;
+    /* The device can pin a compute pipeline to full 32-lane subgroups
+     * (subgroupSizeControl + computeFullSubgroups, 32 in its range). */
+    bool sg32_pinnable;
+    /* The tiled GEMMs run on 32-lane subgroups: pinned at pipeline
+     * creation, or the native size is 32. When false the mN dispatch
+     * loops the (size-agnostic) matvec kernels instead (#471). */
+    bool gemm_sg32;
 
     /* Feature probes for the Phase-2 kernels. */
     bool has_fp16;     /* shaderFloat16 + 16-bit storage */
