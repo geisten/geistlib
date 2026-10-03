@@ -31,7 +31,9 @@
 #include "kernel_i2s.h"
 #include "linear_f32q.h"
 #include "linear_generic.h"
+#include "kernel_q4kx8_gemm.h" /* q4kx8_avx512_usable */
 #include "linear_q4k.h"
+#include "linear_q4k_raw.h"
 #include "linear_q6k.h"
 #include "linear_q4_0.h"
 #include "linear_q8_0.h"
@@ -434,6 +436,19 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
     return true;
 }
 
+/* Q4_K reads the GGUF bytes (linear_q4k_raw.c) unless the AVX-512 Q4_Kx8
+ * prefill panels can run: below them the repack is as fast as the raw
+ * kernel and only doubles the weights' resident memory (#577).
+ * GEIST_Q4K_RAW=1 takes the raw kernel on any host (half the Q4_K memory,
+ * about half the prefill speed on AVX-512); =0 keeps the repack. */
+static bool q4k_reads_raw(void) {
+    const char *e = getenv("GEIST_Q4K_RAW");
+    if (e != nullptr && e[0] != '\0') {
+        return e[0] != '0';
+    }
+    return !q4kx8_avx512_usable();
+}
+
 [[nodiscard]] static enum geist_status cpu_x86_resolve_weight(struct geist_backend *be,
                                                               struct geist_weight  *w) {
     /* Start from the cpu_scalar mapping: covers every dtype + sets m1/_mN
@@ -450,6 +465,9 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
     switch ((enum geist_dtype) w->dtype) {
     case GEIST_DTYPE_Q4_K: {
         struct cpu_x86_state *st = (struct cpu_x86_state *) be->state;
+        if (q4k_reads_raw() && cpu_x86_linear_q4k_raw_bind(w)) {
+            break;
+        }
         if (cpu_x86_linear_q4k_resolve(st, w) != GEIST_OK) {
             (void) cpu_x86_linear_generic_bind(w);
         }

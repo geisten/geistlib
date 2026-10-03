@@ -457,20 +457,26 @@ void q4kx8_gemv_m1(
  * seq 60: 12.9 ms/token vs seq 64: 6.9). Only the M - M16 tail rows take
  * it now.
  */
+bool q4kx8_avx512_usable(void) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    return w4a8_dispatcher_tier() >= W4A8_ISA_AVX512 && __builtin_cpu_supports("avx512f") &&
+           __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512dq") &&
+           __builtin_cpu_supports("avx512vl");
+#else
+    return false;
+#endif
+}
+
 void q4kx8_gemm_avx512(size_t                     M,
                        size_t                     N,
                        size_t                     K,
                        const struct block_q8_Kx4 *X,
                        const struct block_q4_Kx8 *W,
                        float                      Y[static M * N]) {
-#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
-    if (w4a8_dispatcher_tier() < W4A8_ISA_AVX512 || !__builtin_cpu_supports("avx512f") ||
-        !__builtin_cpu_supports("avx512bw") || !__builtin_cpu_supports("avx512dq") ||
-        !__builtin_cpu_supports("avx512vl")) {
+    if (!q4kx8_avx512_usable()) {
         q4kx8_gemv_avx2_fallback(M, N, K, X, W, Y);
         return;
     }
-#endif
     const size_t M16 = M / 16 * 16;
     if (M16 == 0 || N < 16 || (N % 16) != 0) {
         /* No 16x16 panel — let the AVX2 GEMV handle everything. */
