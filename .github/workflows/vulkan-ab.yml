@@ -1,0 +1,108 @@
+name: vulkan-ab
+
+# End-to-end A/B of two revisions on one Vulkan device of the self-hosted
+# geist-vulkan box (docs/CI_SELF_HOSTED.md), with tools/bench_revision_ab.py on
+# a synthetic model (tools/gen_synth_gguf.py), so no model download is needed.
+# The box enumerates the discrete GPU (NVIDIA), the Ryzen iGPU (RADV, AMD's
+# wave64 hardware) and llvmpipe; `driver` picks one by its vulkaninfo
+# driverID, so a vendor-specific path can be measured on the device it is
+# for. The report goes to the job summary and, with the raw runs, to an
+# artifact.
+#
+# On demand only. The pull_request trigger fires only when this file changes,
+# so a PR that edits it measures itself once: its defaults are #471's case
+# (RADV, main before and after the subgroup-pinning merge #574).
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "baseline revision"
+        type: string
+        default: fcb6f68f33feee19006d5952f288a1f06f74d097
+      new:
+        description: "revision to compare"
+        type: string
+        default: origin/main
+      driver:
+        description: "vulkaninfo driverID substring of the device to measure (RADV, NVIDIA, ...)"
+        type: string
+        default: RADV
+      preset:
+        description: "gen_synth_gguf.py preset"
+        type: string
+        default: llama32-1b-q4_k
+      seq_lens:
+        description: "prefill lengths"
+        type: string
+        default: "64,256"
+      cycles:
+        description: "A/B cycles (>= 6)"
+        type: string
+        default: "6"
+  pull_request:
+    paths:
+      - .github/workflows/vulkan-ab.yml
+
+jobs:
+  ab:
+    name: Vulkan A/B (${{ inputs.driver || 'RADV' }})
+    # Same self-hosted guard as ci.yml's vulkan leg: never for fork PRs.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, geist-vulkan]
+    timeout-minutes: 180
+    env:
+      BASE: ${{ inputs.base || 'fcb6f68f33feee19006d5952f288a1f06f74d097' }}
+      NEW: ${{ inputs.new || github.event.pull_request.head.sha || 'origin/main' }}
+      DRIVER: ${{ inputs.driver || 'RADV' }}
+      PRESET: ${{ inputs.preset || 'llama32-1b-q4_k' }}
+      SEQ_LENS: ${{ inputs.seq_lens || '64,256' }}
+      CYCLES: ${{ inputs.cycles || '6' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # bench_revision_ab.py builds each revision in a worktree
+      - name: Pick the device
+        run: |
+          set -eo pipefail
+          mkdir -p ab-out
+          vulkaninfo --summary 2>&1 | tee ab-out/vulkan-env.txt
+          # "GPUn:" opens a device block; take the first whose driverID matches.
+          IDX=$(awk -v want="$DRIVER" '/^GPU[0-9]+:/ {gpu = substr($1, 4, length($1) - 4)}
+                 /driverID/ && index($0, want) && gpu != "" {print gpu; exit}' ab-out/vulkan-env.txt)
+          [ -n "$IDX" ] || { echo "no device with driverID matching '$DRIVER'"; exit 1; }
+          echo "measuring GPU$IDX ($DRIVER)"
+          echo "GEIST_VK_DEVICE=$IDX" >> "$GITHUB_ENV"
+      - name: Synthetic model
+        run: python3 tools/gen_synth_gguf.py "$RUNNER_TEMP/synth.gguf" --preset "$PRESET"
+      - name: A/B
+        run: |
+          set -eo pipefail
+          git fetch origin main
+          python3 tools/bench_revision_ab.py \
+            --rev "base=$BASE" --rev "new=$NEW" \
+            --gguf "$RUNNER_TEMP/synth.gguf" --seq-lens "$SEQ_LENS" \
+            --decode-n 16 --repeats 1 --warmup 1 --cycles "$CYCLES" \
+            --env GEIST_BENCH_BACKEND=vulkan --env "GEIST_VK_DEVICE=$GEIST_VK_DEVICE" \
+            --make-arg TARGET=linux --make-arg "BACKENDS=vulkan cpu_x86 cpu_scalar" \
+            --make-arg GEMM_PROVIDER=native \
+            --out-dir ab-out | tee ab-out/report.txt
+      - name: Device line of each build
+        # GEIST_VK_VERBOSE names the device, its subgroup size and whether
+        # the tiled GEMMs are pinned to 32 lanes.
+        run: |
+          for b in ab-out/*/bench_perf_sweep_*; do
+            echo "== $(basename "$b")"
+            GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 "$b" --gguf "$RUNNER_TEMP/synth.gguf" \
+              --seq-lens 16 --decode-n 1 --repeats 1 --warmup 0 2>&1 | grep -m1 "geist vulkan" || true
+          done | tee -a ab-out/report.txt
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; cat ab-out/report.txt 2>/dev/null || echo "no report"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: vulkan-ab
+          path: ab-out/
+          if-no-files-found: warn
