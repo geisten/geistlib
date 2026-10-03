@@ -11,11 +11,20 @@
  * 1:1 head ratio, the 27B-style 1:3 k/v-head sharing (tiled hk = hv % n_kh),
  * 128-wide heads, odd sizes, and conv kernels other than 4.
  *
+ * Load-time geometry (#470): the probe answers exactly the shader limits
+ * (d_k <= 256, d_v <= 128, conv 2..8), and an in-memory qwen35 hybrid
+ * whose head_k is past them is refused at load, naming the limit, because
+ * the host fallback cannot map this backend's VRAM state. Before, it
+ * loaded and failed the first prefill. One within the limits loads and
+ * prefills.
+ *
  * SKIPs (exit 77) when no Vulkan runtime/device is present. */
+#include "model_fixtures.h"
 #include "test_helpers.h"
 
 #include <geist.h>
 #include <geist_backend.h>
+#include <geist_util.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -305,6 +314,71 @@ static bool run_geom(struct geist_backend *be, const struct geom *g) {
     return ok;
 }
 
+static bool probe_says(struct geist_backend *be, size_t dk, size_t dv, size_t K) {
+    const struct geist_fusion_query q = {.op             = GEIST_FUSED_DELTANET_MIX,
+                                         .m              = 64,
+                                         .dn_n_k_heads   = 2,
+                                         .dn_n_v_heads   = 4,
+                                         .dn_head_k      = dk,
+                                         .dn_head_v      = dv,
+                                         .dn_conv_kernel = K};
+    return geist_backend_fused_tbl(be)->supported(be, &q);
+}
+
+/* An in-memory qwen35 hybrid (3 DeltaNet layers, 1 attention) with the
+ * given DeltaNet head_k: loads and prefills, or is refused at load. */
+static bool load_case(struct geist_backend *be, uint32_t head_k, bool want_load) {
+    struct tf_vocab     v  = tf_make_vocab("\xc4\xa0", false);
+    struct tf_buf       g  = mf_qwen35_gguf(&(struct mf_qwen35) {.layers     = 4,
+                                                                 .interval   = 4,
+                                                                 .d_model    = 64,
+                                                                 .heads      = 4,
+                                                                 .kv_heads   = 2,
+                                                                 .head_dim   = 16,
+                                                                 .rope_dims  = 8,
+                                                                 .ffn        = 128,
+                                                                 .dn_k_heads = 2,
+                                                                 .dn_v_heads = 4,
+                                                                 .dn_head_k  = head_k,
+                                                                 .dn_head_v  = 16,
+                                                                 .dn_conv    = 4,
+                                                                 .seed       = 7,
+                                                                 .tok        = &v});
+    struct geist_model *m  = nullptr;
+    const bool          ld = geist_model_load_from_memory(g.b, g.n, be, &m) == GEIST_OK;
+    bool                ok = ld == want_load;
+    bool                pf = false;
+    if (ld) {
+        struct geist_session           *s      = nullptr;
+        const struct geist_session_opts o      = {.top_p = 1.0f, .m_max = 4};
+        const int32_t                   ids[6] = {1, 2, 3, 4, 5, 6};
+        size_t                          n      = 0;
+        pf = geist_session_create(m, be, &o, &s) == GEIST_OK &&
+             geist_session_prefill_tokens(s, 6, ids) == GEIST_OK &&
+             geist_session_peek_logits(&n, s) != nullptr;
+        ok = ok && pf;
+        geist_session_destroy(s);
+        geist_model_destroy(m);
+    } else {
+        const char *err = geist_last_create_error();
+        ok              = ok && err != nullptr && strstr(err, "head_k=") != nullptr;
+        if (!ok) {
+            fprintf(stderr, "  refusal message: %s\n", err != nullptr ? err : "(none)");
+        }
+    }
+    printf("  load qwen35 head_k=%-4u %s\n",
+           head_k,
+           !ld  ? "refused at load"
+           : pf ? "loads, prefills"
+                : "loads, prefill fails");
+    if (!ok) {
+        fprintf(stderr, "FAIL [load head_k=%u]\n", head_k);
+    }
+    free(g.b);
+    tf_free_vocab(&v);
+    return ok;
+}
+
 int main(void) {
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("vulkan", nullptr, nullptr, &be);
@@ -330,6 +404,12 @@ int main(void) {
     for (size_t i = 0; i < sizeof geoms / sizeof geoms[0]; i++) {
         ok = run_geom(be, &geoms[i]) && ok;
     }
+    ok = geist_expect(probe_says(be, 128, 128, 4), "probe: d_k 128, d_v 128, conv 4") == 0 && ok;
+    ok = geist_expect(!probe_says(be, 320, 128, 4), "probe: d_k 320 is past the shader") == 0 && ok;
+    ok = geist_expect(!probe_says(be, 128, 160, 4), "probe: d_v 160 is past the shader") == 0 && ok;
+    ok = geist_expect(!probe_says(be, 128, 128, 9), "probe: conv 9 is past the shader") == 0 && ok;
+    ok = load_case(be, 16, true) && ok;
+    ok = load_case(be, 320, false) && ok;
     geist_backend_destroy(be);
     if (ok) {
         printf("PASS: Vulkan DeltaNet prefill and stateful decode parity\n");
