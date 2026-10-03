@@ -212,6 +212,9 @@ enum geist_status geist_model_load_from_memory(const void           *data,
                                                struct geist_backend *be,
                                                struct geist_model  **out);
 
+void        geist_model_destroy(struct geist_model *m);
+const char *geist_model_errmsg(const struct geist_model *m);
+
 /* @stability EXPERIMENTAL
  * geist_model_load_from_memory with load-time options, the in-memory twin of
  * geist_model_load_with_opts: `opts->max_seq_len` sets the model's sequence
@@ -222,9 +225,6 @@ enum geist_status geist_model_load_from_memory_with_opts(const void             
                                                          struct geist_backend            *be,
                                                          const struct geist_session_opts *opts,
                                                          struct geist_model             **out);
-
-void        geist_model_destroy(struct geist_model *m);
-const char *geist_model_errmsg(const struct geist_model *m);
 
 /* @stability STABLE since 0.9.0 — agent-runtime contract (docs/API_CONTRACT.md).
  * The GGUF's general.architecture string ("gemma4", "bitnet-b1.58", "llama", …),
