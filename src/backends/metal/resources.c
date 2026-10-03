@@ -377,7 +377,7 @@ static bool metal_copies_in_sequence(const struct metal_state *st,
                                      size_t                    src_offset,
                                      size_t                    dst_offset,
                                      size_t                    n_bytes) {
-    return st->sequence_active && st->sequence_compute_encoder != nullptr &&
+    return metal_seq_mine(st) && st->sequence_compute_encoder != nullptr &&
            st->copy_u32_pipeline != nullptr && (src_offset % 4u) == 0 && (dst_offset % 4u) == 0 &&
            (n_bytes % 4u) == 0;
 }

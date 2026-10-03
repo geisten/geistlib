@@ -596,6 +596,7 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         dlclose(st->objc_handle);
         st->objc_handle = nullptr;
     }
+    pthread_mutex_destroy(&st->seq_lock);
     geist_backend_free(be, st);
 }
 
@@ -677,8 +678,13 @@ void metal_destroy(struct geist_backend *be) {
                 be, GEIST_E_OOM, "metal: failed to allocate %zu-byte state", sizeof(*st));
         return GEIST_E_OOM;
     }
-    *st                    = (struct metal_state) {0};
-    st->backend            = be;
+    *st         = (struct metal_state) {0};
+    st->backend = be;
+    pthread_mutexattr_t seq_lock_attr;
+    pthread_mutexattr_init(&seq_lock_attr);
+    pthread_mutexattr_settype(&seq_lock_attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&st->seq_lock, &seq_lock_attr);
+    pthread_mutexattr_destroy(&seq_lock_attr);
     const char *ple_block  = getenv("GEIST_METAL_PLE_BLOCK");
     st->use_ple_block      = ple_block == nullptr || strcmp(ple_block, "0") != 0;
     const char *q4k_n4     = getenv("GEIST_METAL_Q4K_N4");
@@ -772,7 +778,11 @@ int metal_parallel_region_begin(struct geist_backend *be, enum geist_parallel_re
         return 0;
     }
     struct metal_state *st = be->state;
-    if (st->sequence_active) {
+    /* Held until region_end: another session's region waits here instead
+     * of mistaking this one for an outer region (#544). */
+    pthread_mutex_lock(&st->seq_lock);
+    if (metal_seq_mine(st)) {
+        pthread_mutex_unlock(&st->seq_lock);
         return 0; /* nested region: leave the outer batch in charge */
     }
     const enum geist_command_sequence_kind kind =
@@ -780,6 +790,7 @@ int metal_parallel_region_begin(struct geist_backend *be, enum geist_parallel_re
                                                  : GEIST_COMMAND_SEQUENCE_DECODE_LAYER_LOOP;
     int tok = 0;
     if (metal_command_sequence_begin(be, kind, &tok) != GEIST_OK) {
+        pthread_mutex_unlock(&st->seq_lock);
         return 0;
     }
     metal_seq_ref_clear(st);
@@ -791,9 +802,10 @@ void metal_parallel_region_end(struct geist_backend *be, int token) {
         return;
     }
     struct metal_state *st = be->state;
-    if (!st->sequence_active) {
+    if (!metal_seq_mine(st)) {
         return;
     }
     (void) metal_command_sequence_end(be, st->sequence_token, true);
     metal_seq_ref_clear(st);
+    pthread_mutex_unlock(&st->seq_lock);
 }
