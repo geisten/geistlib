@@ -17,7 +17,9 @@
  *             bad grouped-value geometry;
  *   UNSUPPORTED: other versions / transforms / axes / sign modes, another
  *             family, MTP layers, a tied lm_head, a backend without
- *             fused->hadamard_rotate.
+ *             fused->hadamard_rotate, and a backend whose probe refuses
+ *             the block size, the inverse or the grouped-value
+ *             permutation (#495: probe-and-bind, not a null test).
  *
  * Every refusal must also leave no sign buffers behind.
  */
@@ -298,6 +300,40 @@ static void                            tw_no_slot(struct model *m) {
     g_be->desc                                   = &g_no_slot_desc;
 }
 
+/* cpu_scalar with a probe that refuses one GEIST_FUSED_HADAMARD_ROTATE
+ * call shape, the way metal refuses a block past 4096. */
+static struct geist_backend_descriptor g_probe_desc;
+static struct geist_backend_fused      g_probe_fused;
+static bool (*g_refuse)(const struct geist_fusion_query *q);
+static const struct geist_backend_descriptor *g_real_desc;
+
+static bool refusing_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
+    if (q->op == GEIST_FUSED_HADAMARD_ROTATE && g_refuse(q)) {
+        return false;
+    }
+    return g_real_desc->fused->supported(be, q);
+}
+static void use_refusing_probe(bool (*refuse)(const struct geist_fusion_query *q)) {
+    g_refuse                = refuse;
+    g_probe_desc            = *g_real_desc;
+    g_probe_fused           = *g_real_desc->fused;
+    g_probe_fused.supported = refusing_supported;
+    g_probe_desc.fused      = &g_probe_fused;
+}
+static bool refuse_block_over_32(const struct geist_fusion_query *q) {
+    return q->block > 32;
+}
+static bool refuse_inverse(const struct geist_fusion_query *q) {
+    return q->inverse;
+}
+static bool refuse_permutation(const struct geist_fusion_query *q) {
+    return q->perm_rep > 1;
+}
+static void tw_probe(struct model *m) {
+    (void) m;
+    g_be->desc = &g_probe_desc;
+}
+
 int main(void) {
     GEIST_SKIP_IF(geist_backend_create("cpu_scalar", nullptr, nullptr, &g_be) != GEIST_OK,
                   "cpu_scalar backend not compiled in");
@@ -421,8 +457,24 @@ int main(void) {
     model_free(expect("MTP layers", &s, GEIST_E_UNSUPPORTED, tw_mtp));
     model_free(expect("tied lm_head", &s, GEIST_E_UNSUPPORTED, tw_tied));
     const struct geist_backend_descriptor *real = g_be->desc;
+    g_real_desc                                 = real;
     model_free(expect("backend without the slot", &s, GEIST_E_UNSUPPORTED, tw_no_slot));
     g_be->desc = real;
+    use_refusing_probe(refuse_block_over_32);
+    model_free(expect("probe refuses the block size", &s, GEIST_E_UNSUPPORTED, tw_probe));
+    g_be->desc = real;
+    use_refusing_probe(refuse_inverse);
+    model_free(expect("probe refuses the inverse", &s, GEIST_E_UNSUPPORTED, tw_probe));
+    g_be->desc = real;
+    use_refusing_probe(refuse_permutation);
+    model_free(expect("probe refuses the permutation", &s, GEIST_E_UNSUPPORTED, tw_probe));
+    g_be->desc = real;
+    /* The same refusals are moot where the model does not ask for them. */
+    s.grouped = false;
+    use_refusing_probe(refuse_permutation);
+    model_free(expect("permutation refused, values not grouped", &s, GEIST_OK, tw_probe));
+    g_be->desc = real;
+    s          = base();
 
     geist_backend_destroy(g_be);
     if (g_fails == 0) {

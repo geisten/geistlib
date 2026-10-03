@@ -1477,6 +1477,15 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     return GEIST_KV_FP32;
 }
 
+/* A session refused before its slot arrays exist: the handle and the
+ * embedding accumulator are all it owns. */
+static void session_free_shell(struct transformer_arch_session *sess) {
+    void *acc = sess->embedding_acc;
+    safe_free(&acc);
+    void *p = sess;
+    safe_free(&p);
+}
+
 struct transformer_arch_session *transformer_session_alloc(struct transformer_arch_state   *state,
                                                            const struct geist_session_opts *opts) {
     if (state == nullptr) {
@@ -1537,8 +1546,7 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
                 "transformer_session_alloc: m_max=%zu outside supported range 1..%zu",
                 sess->m_max,
                 m_cap);
-        void *p_sess = sess;
-        safe_free(&p_sess);
+        session_free_shell(sess);
         return nullptr;
     }
 
@@ -1558,8 +1566,7 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
                                 "a larger max_seq_len)",
                                 req_seq,
                                 state->max_seq_len);
-        void *p_sess = sess;
-        safe_free(&p_sess);
+        session_free_shell(sess);
         return nullptr;
     }
     sess->max_seq_len = req_seq;
@@ -1579,8 +1586,7 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
                                 "alloc failed (%zu × %zu bytes)",
                                 kv_slots,
                                 n_layers * sizeof(struct geist_buffer *));
-        void *p_sess = sess;
-        safe_free(&p_sess);
+        session_free_shell(sess);
         return nullptr;
     }
     memset(kv_block, 0, kv_bytes);

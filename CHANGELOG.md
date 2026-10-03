@@ -9,6 +9,11 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **`geist_model_load_from_memory_with_opts`** (EXPERIMENTAL, #428). The
+  in-memory twin of `geist_model_load_with_opts`: `opts->max_seq_len` sets the
+  model's sequence cap, which bounds every session. An embedded model was
+  stuck at the 4096 default before, whatever its consumer needed.
+  `docs/API_CONTRACT.md` now describes the model cap and the session cap.
 - **Metal reads lookup-only tables on the host** (`caps.lookup_tables_on_host`,
   #529). A Metal dispatch makes every buffer it binds resident in full. So the
   Gemma 4 PLE table and an untied `token_embd` were paged in whole to read one
@@ -182,6 +187,18 @@ minor release.
   `GEIST_KV_INT8_FUSED=0` keeps both host loops.
 
 ### Changed
+
+- **A rotated model loads only where the backend promises its Hadamard
+  geometry** (#495, `geist_backend.h`, experimental). `hadamard_rotate` now
+  joins probe-and-bind: new `GEIST_FUSED_HADAMARD_ROTATE` and the
+  `geist_fusion_query` fields `width`, `block`, `perm_hd`/`perm_nk`/`perm_rep`
+  and `inverse`. The loader asks `supported()` for every rotated width
+  instead of testing the slot for null. A `prism.hadamard.block_size` past
+  4096 used to load on Metal and fail on the first token; it is now refused
+  at load. Backends that install `hadamard_rotate` must answer the new op in
+  `supported()`, or rotated models no longer load on them. The probe checks
+  geometry only: a Metal shader that fails to compile still surfaces at the
+  first call.
 
 - **Llama-family Q/K rows are permuted once at load** (#464). GGUFs store
   `attn_q` / `attn_k` rows in interleaved RoPE pair order; the forward pass

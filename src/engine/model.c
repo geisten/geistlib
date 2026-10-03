@@ -404,6 +404,16 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
                                                              size_t                size,
                                                              struct geist_backend *be,
                                                              struct geist_model  **out) {
+    return geist_model_load_from_memory_with_opts(data, size, be, nullptr, out);
+}
+
+/* As with the file path, the create-time messages keep the name callers know. */
+[[nodiscard]] enum geist_status
+geist_model_load_from_memory_with_opts(const void                      *data,
+                                       size_t                           size,
+                                       struct geist_backend            *be,
+                                       const struct geist_session_opts *opts,
+                                       struct geist_model             **out) {
     if (out == nullptr) {
         geist_error_set_create_time(
                 GEIST_E_INVALID_ARG, "geist_model_load_from_memory", "out is null");
@@ -463,7 +473,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
      * (tokenizer.bin / vision / audio safetensors) are searched: a memory blob
      * has no directory. The GGUF must carry its own tokenizer. */
     geist_error_clear_create_time();
-    void *arch_state = desc->decoder_ops->state_create_from_memory(be, data, size, nullptr);
+    void *arch_state = desc->decoder_ops->state_create_from_memory(be, data, size, opts);
     if (arch_state == nullptr) {
         model_load_undo(nullptr, gguf_tok, arch_copy);
         if (!geist_have_create_error()) {

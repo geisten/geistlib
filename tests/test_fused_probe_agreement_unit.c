@@ -19,6 +19,12 @@
  *     on zeroed buffers; no for a head_dim past 512, for query heads that
  *     are not a multiple of the KV heads and (INT4) for an odd head_dim →
  *     GEIST_E_UNSUPPORTED.
+ *   - hadamard_rotate (#495): the model loader refuses a rotated model
+ *     unless the probe says yes, so the probe must answer exactly what the
+ *     kernel runs. Each geometry runs the kernel and compares: yes →
+ *     GEIST_OK, no → an error (the kernel's geometry checks answer
+ *     GEIST_E_INVALID_ARG, not GEIST_E_UNSUPPORTED). Blocks of 2 and 8192
+ *     sit outside metal's 4..4096 kernel range but inside the CPU's.
  *
  * The positive GEGLU case (real Q4_K/Q6_K weights) is covered end-to-end
  * by running the decode suite with GEIST_FFN_TILE_FUSION=1 — the plan
@@ -131,6 +137,70 @@ static int kv_quant_agreement(struct geist_backend *be,
         if (all[i]->buffer != nullptr) {
             be->desc->vtbl->buffer_destroy(be, all[i]->buffer);
         }
+    }
+    return fails;
+}
+
+/* hadamard_rotate over [2, width] rows: the probe's answer must match the
+ * kernel's. `want` is the answer every backend gives; -1 = backend-
+ * dependent (only the agreement is checked). */
+static int hadamard_agreement(struct geist_backend *be,
+                              size_t                width,
+                              size_t                block,
+                              size_t                perm_hd,
+                              size_t                perm_nk,
+                              size_t                perm_rep,
+                              bool                  inverse,
+                              int                   want) {
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    const struct geist_fusion_query   q     = {.op       = GEIST_FUSED_HADAMARD_ROTATE,
+                                               .m        = 2,
+                                               .width    = width,
+                                               .block    = block,
+                                               .perm_hd  = perm_hd,
+                                               .perm_nk  = perm_nk,
+                                               .perm_rep = perm_rep,
+                                               .inverse  = inverse};
+    const bool                        yes = fused->supported != nullptr && fused->supported(be, &q);
+    char                              msg[128];
+    int                               fails = 0;
+    if (want >= 0) {
+        snprintf(msg,
+                 sizeof msg,
+                 "hadamard_rotate width %zu block %zu rep %zu%s: the probe's answer",
+                 width,
+                 block,
+                 perm_rep,
+                 inverse ? " inverse" : "");
+        fails += geist_expect(yes == (want == 1), msg);
+    }
+    const int64_t       shape[2] = {2, (int64_t) width};
+    struct geist_tensor tx       = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, shape);
+    struct geist_tensor ty       = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, shape);
+    if (tx.buffer == nullptr || ty.buffer == nullptr) {
+        fails += geist_expect(false, "hadamard_rotate: buffers");
+    } else {
+        const struct geist_hadamard_args args = {.x        = &tx,
+                                                 .y        = &ty,
+                                                 .block    = block,
+                                                 .perm_hd  = perm_hd,
+                                                 .perm_nk  = perm_nk,
+                                                 .perm_rep = perm_rep,
+                                                 .inverse  = inverse};
+        const enum geist_status          s    = fused->hadamard_rotate(be, &args);
+        snprintf(msg,
+                 sizeof msg,
+                 yes ? "probe said yes: hadamard_rotate (width %zu block %zu) must return OK"
+                     : "probe said no: hadamard_rotate (width %zu block %zu) must refuse",
+                 width,
+                 block);
+        fails += geist_expect(yes ? s == GEIST_OK : s != GEIST_OK, msg);
+    }
+    if (tx.buffer != nullptr) {
+        be->desc->vtbl->buffer_destroy(be, tx.buffer);
+    }
+    if (ty.buffer != nullptr) {
+        be->desc->vtbl->buffer_destroy(be, ty.buffer);
     }
     return fails;
 }
@@ -335,6 +405,26 @@ static int check_backend(const char *name) {
         fails += kv_quant_agreement(be, true, 1, 2, 1, 520, false);
         fails += kv_quant_agreement(be, true, 1, 3, 2, 64, false);
         fails += kv_quant_agreement(be, true, 1, 2, 1, 63, false);
+    }
+
+    /* ---- hadamard_rotate: plain and grouped-value forward, the inverse,
+     * a permuted inverse and a permutation that does not multiply out to
+     * the width (no backend runs those), and blocks at the edges of
+     * metal's kernel range. */
+    if (fused->hadamard_rotate != nullptr) {
+        fails += hadamard_agreement(be, 64, 16, 0, 0, 0, false, 1);
+        fails += hadamard_agreement(be, 64, 16, 8, 2, 4, false, 1);
+        fails += hadamard_agreement(be, 64, 64, 0, 0, 0, true, 1);
+        fails += hadamard_agreement(be, 64, 16, 8, 2, 4, true, 0);
+        fails += hadamard_agreement(be, 64, 16, 8, 2, 3, false, 0);
+        fails += hadamard_agreement(be, 64, 12, 0, 0, 0, false, 0);
+        fails += hadamard_agreement(be, 64, 2, 0, 0, 0, false, -1);
+        fails += hadamard_agreement(be, 8192, 8192, 0, 0, 0, false, -1);
+    } else {
+        struct geist_fusion_query hq = {
+                .op = GEIST_FUSED_HADAMARD_ROTATE, .m = 1, .width = 64, .block = 16};
+        fails += geist_expect(fused->supported == nullptr || !fused->supported(be, &hq),
+                              "no hadamard_rotate slot, but the probe says yes");
     }
 
     printf("  %s: probe/kernel agreement ok\n", name);

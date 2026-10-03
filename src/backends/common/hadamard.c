@@ -30,6 +30,18 @@ static bool ranges_overlap(const float *a, const float *b, size_t n) {
     return pa < pb + nb && pb < pa + nb;
 }
 
+bool geist_hadamard_geometry_ok(
+        size_t width, size_t block, size_t perm_hd, size_t perm_nk, size_t perm_rep, bool inverse) {
+    if (!fwht_supported(block) || width == 0 || width % block != 0) {
+        return false;
+    }
+    if (perm_rep <= 1) {
+        return true;
+    }
+    size_t n = 0;
+    return !inverse && !ckd_mul(&n, perm_hd, perm_nk) && !ckd_mul(&n, n, perm_rep) && n == width;
+}
+
 enum geist_status geist_hadamard_rows(size_t       rows,
                                       size_t       width,
                                       size_t       block,
@@ -41,14 +53,8 @@ enum geist_status geist_hadamard_rows(size_t       rows,
                                       const float *signs,
                                       float       *y) {
     const bool permute = perm_rep > 1;
-    if (!fwht_supported(block) || width == 0 || width % block != 0) {
+    if (!geist_hadamard_geometry_ok(width, block, perm_hd, perm_nk, perm_rep, inverse)) {
         return GEIST_E_INVALID_ARG;
-    }
-    if (permute) {
-        size_t n = 0;
-        if (inverse || ckd_mul(&n, perm_hd, perm_nk) || ckd_mul(&n, n, perm_rep) || n != width) {
-            return GEIST_E_INVALID_ARG;
-        }
     }
     if (rows == 0) {
         return GEIST_OK;
