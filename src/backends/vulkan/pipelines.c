@@ -56,7 +56,6 @@
 #include "shaders/rmsnorm_add_f32_spv.h"
 #include "shaders/rmsnorm_f32_spv.h"
 #include "shaders/rope_f32_spv.h"
-#include "shaders/rope_interleaved_f32_spv.h"
 #include "shaders/scale_f32_spv.h"
 #include "shaders/sigmoid_mul_f32_spv.h"
 #include "shaders/silu_f32_spv.h"
@@ -192,7 +191,6 @@
             [VK_PIPE_RMSNORM]       = {rmsnorm_f32_spv, sizeof(rmsnorm_f32_spv)},
             [VK_PIPE_RMSNORM_ADD]   = {rmsnorm_add_f32_spv, sizeof(rmsnorm_add_f32_spv)},
             [VK_PIPE_ROPE]          = {rope_f32_spv, sizeof(rope_f32_spv)},
-            [VK_PIPE_ROPE_IL]       = {rope_interleaved_f32_spv, sizeof(rope_interleaved_f32_spv)},
             [VK_PIPE_ATTENTION]     = {attention_f32_spv, sizeof(attention_f32_spv)},
             [VK_PIPE_ARGMAX]        = {argmax_f32_spv, sizeof(argmax_f32_spv)},
             [VK_PIPE_EMBED]         = {embed_lookup_scaled_spv, sizeof(embed_lookup_scaled_spv)},
