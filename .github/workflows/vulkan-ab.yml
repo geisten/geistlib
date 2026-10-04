@@ -70,7 +70,7 @@ jobs:
       PRESET: ${{ inputs.preset || 'llama32-1b-q4_k' }}
       SEQ_LENS: ${{ inputs.seq_lens || '128,512' }}
       CYCLES: ${{ inputs.cycles || '6' }}
-      EXTRA_ENV: ${{ inputs.extra_env || 'GEIST_VK_SCRATCH_DEVICE=1 GEIST_M_MAX=128' }}
+      EXTRA_ENV: ${{ inputs.extra_env || 'GEIST_VK_SCRATCH_DEVICE=1 GEIST_M_MAX=256' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
