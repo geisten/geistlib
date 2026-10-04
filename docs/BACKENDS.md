@@ -71,6 +71,23 @@ back to per-row matvecs for prefill (#471). Details and the side-by-side
 profile: `benchmark/results/TERNARY.md`. Phase-by-phase lab log:
 [`../benchmark/results/VULKAN.md`](../benchmark/results/VULKAN.md).
 
+Work that leaves the GPU is counted per site: a fused op the shaders decline
+(the arch then runs it on the host), a host loop over mapped memory, a host
+buffer copy, and weights whose dtype or row length has no GPU kernel (Q3_K, a
+large F16/BF16 matrix, a row that is not a whole number of blocks), which run
+on a host row-dequant path. `GEIST_VK_VERBOSE=1` prints the counters at
+destroy, and the first host-path linear prints how many weights and MiB took
+that path. `GEIST_VK_STRICT=1` turns each of these into an error naming the
+site (a host-path weight is refused at load), so a coverage gap fails loudly
+instead of showing up only as a slowdown.
+
+A batch whose submit fails (device lost, out of memory) is reported at the
+next host access: `buffer_map` returns nullptr with `GEIST_E_BACKEND` as the
+backend error, and argmax, downloads and host views return `GEIST_E_BACKEND`.
+Sizes and offsets that do not fit the shaders' 32-bit indices make the op
+return `GEIST_E_INVALID_ARG`, and a weight whose `n_in` would not fit the
+192 MB activation ring at the 512-row batch limit fails the load.
+
 ## Resident memory per backend
 
 What stays in RAM once a model is loaded: the weights in one or more layouts,

@@ -38,12 +38,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
+enum geist_status transformer_kivi_drain_full(struct transformer_arch_session *sess) {
     struct transformer_arch_state *st = sess->model;
     if (!sess->kv_kivi_enabled)
-        return;
+        return GEIST_OK;
     if (sess->kivi_residual_count < KIVI_K_GROUP_SIZE)
-        return;
+        return GEIST_OK;
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
     const size_t                     R  = KIVI_K_GROUP_SIZE;
@@ -61,6 +61,11 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
             float       *k_zeros  = (float *) v->buffer_map(sess->k_kivi_zeros[li]);
             float       *v_scales = (float *) v->buffer_map(sess->v_kivi_scales[li]);
             float       *v_zeros  = (float *) v->buffer_map(sess->v_kivi_zeros[li]);
+            if (k_res == nullptr || v_res == nullptr || k_q4 == nullptr || v_q4 == nullptr ||
+                k_scales == nullptr || k_zeros == nullptr || v_scales == nullptr ||
+                v_zeros == nullptr) {
+                return GEIST_E_BACKEND; /* the backend said why */
+            }
             kivi_drain_one_layer(sess->kivi_drained_count,
                                  sess->kivi_residual_count,
                                  R,
@@ -86,6 +91,7 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
         sess->kivi_drained_count += R;
         sess->kivi_residual_count -= R;
     }
+    return GEIST_OK;
 }
 
 /* A pinned prefix that is no whole number of groups keeps its last
@@ -94,7 +100,8 @@ void transformer_kivi_drain_full(struct transformer_arch_session *sess) {
  * moves later tokens over their rows, but a reset to the prefix reads them
  * from those rows again. So pinning copies them out, and reset writes them
  * back: the prefix is then the ring and groups it was at pin time. */
-static void kivi_pin_copy(struct transformer_arch_session *sess, bool save) {
+[[nodiscard]] static enum geist_status kivi_pin_copy(struct transformer_arch_session *sess,
+                                                     bool                             save) {
     const struct transformer_arch_state *st   = sess->model;
     const struct geist_backend_vtbl     *v    = st->backend->desc->vtbl;
     float                               *tail = sess->kivi_pin_tail;
@@ -106,11 +113,15 @@ static void kivi_pin_copy(struct transformer_arch_session *sess, bool save) {
         struct geist_buffer *ring[2] = {sess->k_residual[li], sess->v_residual[li]};
         for (size_t i = 0; i < 2; i++) {
             float *rows = (float *) v->buffer_map(ring[i]);
+            if (rows == nullptr) {
+                return GEIST_E_BACKEND; /* the backend said why */
+            }
             memcpy(save ? tail : rows, save ? rows : tail, len * sizeof *tail);
             v->buffer_unmap(ring[i]);
             tail += len;
         }
     }
+    return GEIST_OK;
 }
 
 enum geist_status transformer_kivi_pin_save(struct transformer_arch_session *sess) {
@@ -140,15 +151,16 @@ enum geist_status transformer_kivi_pin_save(struct transformer_arch_session *ses
         return GEIST_E_OOM;
     }
     sess->kivi_pin_rows = rows;
-    kivi_pin_copy(sess, true);
-    return GEIST_OK;
+    return kivi_pin_copy(sess, true);
 }
 
 void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
     /* Reset has put the counters back to the prefix: exactly the rows the
      * pin copied are residual again. Anything else is not that prefix. */
     if (sess->kivi_pin_rows != 0 && sess->kivi_pin_rows == sess->kivi_residual_count) {
-        kivi_pin_copy(sess, false);
+        /* Reset has no status: an unmappable ring leaves the rows as they
+         * are, and the next drain or attention map reports the backend. */
+        (void) kivi_pin_copy(sess, false);
     }
 }
 
@@ -194,6 +206,9 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
         } else {
             const uint8_t *src = (const uint8_t *) v->buffer_map(initial_h_buf);
             uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_h_a);
+            if (src == nullptr || dst == nullptr) {
+                return GEIST_E_BACKEND; /* the backend said why */
+            }
             memcpy(dst, src, seq * row_bytes_h);
             v->buffer_unmap(initial_h_buf);
             v->buffer_unmap(sess->scratch_h_a);
@@ -234,6 +249,9 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
             } else {
                 const uint8_t *src = (const uint8_t *) v->buffer_map(per_layer_input_buf);
                 uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_ple_lookup);
+                if (src == nullptr || dst == nullptr) {
+                    return GEIST_E_BACKEND; /* the backend said why */
+                }
                 for (size_t t = 0; t < seq; t++) {
                     memcpy(dst + t * row_bytes_ple,
                            src + t * row_bytes_per_tok_ple + li * row_bytes_ple,
@@ -274,6 +292,9 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
         } else {
             const uint8_t *src = (const uint8_t *) v->buffer_map(h_in);
             uint8_t       *dst = (uint8_t *) v->buffer_map(out_h_buf);
+            if (src == nullptr || dst == nullptr) {
+                return GEIST_E_BACKEND; /* the backend said why */
+            }
             memcpy(dst, src, seq * row_bytes_h);
             v->buffer_unmap(h_in);
             v->buffer_unmap(out_h_buf);
@@ -316,8 +337,11 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
                        : GEIST_OK;
     }
 
-    float            *dst = (float *) v->buffer_map(out_h_buf);
-    enum geist_status s   = dequant_one_row(be, &st->embed_table, (size_t) token_id, dst);
+    float *dst = (float *) v->buffer_map(out_h_buf);
+    if (dst == nullptr) {
+        return GEIST_E_BACKEND; /* the backend said why */
+    }
+    enum geist_status s = dequant_one_row(be, &st->embed_table, (size_t) token_id, dst);
     if (s != GEIST_OK) {
         v->buffer_unmap(out_h_buf);
         return s;
@@ -393,7 +417,10 @@ transformer_run_one_step(struct transformer_arch_session *sess,
     sess->kv_len = q_position + 1;
     if (sess->kv_kivi_enabled) {
         sess->kivi_residual_count += 1;
-        transformer_kivi_drain_full(sess);
+        s = transformer_kivi_drain_full(sess);
+        if (s != GEIST_OK) {
+            return s;
+        }
     }
     sess->next_token_pending = best_id;
     sess->logits_valid       = true;
@@ -443,6 +470,9 @@ enum geist_status transformer_advance_audio_token(struct transformer_arch_sessio
     {
         const size_t bytes = (size_t) st->d_model * sizeof(float);
         uint8_t     *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
+        if (dst == nullptr) {
+            return GEIST_E_BACKEND; /* the backend said why */
+        }
         memcpy(dst, h_in_host, bytes);
         v->buffer_unmap(sess->scratch_h_a);
     }

@@ -87,6 +87,9 @@ static struct transformer_forward_profile g_head_profile = {
         } else {
             const uint8_t *src = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
             uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_h_a);
+            if (src == nullptr || dst == nullptr) {
+                return GEIST_E_BACKEND; /* the backend said why */
+            }
             memcpy(dst, src + row_idx * bytes, bytes);
             v->buffer_unmap(sess->scratch_h_b);
             v->buffer_unmap(sess->scratch_h_a);
@@ -170,8 +173,11 @@ static struct transformer_forward_profile g_head_profile = {
      * ~262 144 × tanhf calls per token (~5% of decode on Gemma 4). */
     const bool sampler_needs_softcap = sess->temperature > 0.0f;
     if (st->config.logit_softcap > 0.0f && sampler_needs_softcap) {
-        t0            = profile ? transformer_profile_now_ns() : 0;
-        float      *p = (float *) v->buffer_map(sess->scratch_logits);
+        t0       = profile ? transformer_profile_now_ns() : 0;
+        float *p = (float *) v->buffer_map(sess->scratch_logits);
+        if (p == nullptr) {
+            return GEIST_E_BACKEND; /* the backend said why */
+        }
         const float c = st->config.logit_softcap;
         for (size_t i = 0; i < (size_t) st->vocab_size; i++) {
             p[i] = tanhf(p[i] / c) * c;
@@ -261,6 +267,9 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
         const size_t   bytes = k * st->d_model * sizeof(float);
         const uint8_t *src   = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
         uint8_t       *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
+        if (src == nullptr || dst == nullptr) {
+            return GEIST_E_BACKEND; /* the backend said why */
+        }
         memcpy(dst, src, bytes);
         v->buffer_unmap(sess->scratch_h_b);
         v->buffer_unmap(sess->scratch_h_a);
