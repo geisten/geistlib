@@ -690,6 +690,18 @@ minor release.
   vtable.
 
 ### Fixed
+- **Vulkan: a failed submit no longer hands out stale results; sizes past
+  32 bits fail instead of wrapping** (#474). After a dropped batch,
+  `buffer_map` returns nullptr with `GEIST_E_BACKEND` as the backend error
+  (and the host-path linear, a host buffer copy and a download report the
+  failure); every transformer caller that maps a buffer now turns nullptr into
+  an error instead of dereferencing it. The push constants, dispatch sizes and
+  offsets in `ops.c` go through a checked narrowing (`vk_ckd_u32`), so a value
+  the shaders cannot index makes the op return `GEIST_E_INVALID_ARG`. The x
+  ring is checked against `max_m` x `n_in` at weight resolve (a weight that
+  could not be staged now fails the load rather than running as a silent host
+  linear) and is created there, with the argmax word, instead of on the first
+  decode.
 - **Models with IQ4_NL or IQ4_XS token embeddings failed prefill** with
   `GEIST_E_UNSUPPORTED` ("unsupported dtype for row dequant"): the embedding
   row lookup had no case for either format. It now decodes them with the
