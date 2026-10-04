@@ -51,8 +51,10 @@ kernels, with logits bit-identical to `cpu_scalar` on an FP32 KV cache (the CPU
 backends default to an INT8 KV cache, Vulkan to F16 — pin `GEIST_KV_INT8=0
 GEIST_KV_F16=0` when comparing). The 27B Q4_0 (16 GB) needs a device that
 holds it: it runs on a 21 GiB integrated GPU (RADV, `GEIST_VK_DEVICE=1`); an
-11 GiB card fails the load with an out-of-memory error — there is no spill to
-host memory yet. Weight matrices are read from the GGUF mmap and uploaded once
+11 GiB card fails the load with an out-of-memory error that names the MiB the
+failing allocation needs, the MiB in use and the device limit — there is no
+spill to host memory yet (#466). `GEIST_VK_VRAM_BUDGET` (bytes, K/M/G suffix)
+lowers that limit, to reproduce a smaller card. Weight matrices are read from the GGUF mmap and uploaded once
 (`caps.weights_device_copy`), so a model no longer needs its size twice in
 memory. Llama-family rows (interleaved RoPE) rotate on the device.
 

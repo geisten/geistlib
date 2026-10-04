@@ -22,6 +22,39 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
     return UINT32_MAX;
 }
 
+/* The device-memory limit for a device-local allocation from `mem_type`:
+ * its heap, lowered by GEIST_VK_VRAM_BUDGET. */
+static size_t vk_vram_limit(const struct vk_state *st, uint32_t mem_type) {
+    const uint32_t heap = st->mem_props.memoryTypes[mem_type].heapIndex;
+    const size_t   size = (size_t) st->mem_props.memoryHeaps[heap].size;
+    return st->vram_budget != 0 && st->vram_budget < size ? st->vram_budget : size;
+}
+
+[[nodiscard]] static bool vk_vram_fits(const struct vk_state *st, uint32_t mem_type, size_t n) {
+    const size_t limit = vk_vram_limit(st, mem_type);
+    return st->vram_used <= limit && n <= limit - st->vram_used;
+}
+
+/* The error of a device-local allocation that does not fit: what it needs,
+ * what is in use and the limit, so a model larger than the device fails
+ * with numbers instead of a bare driver status. There is no host spill. */
+static void vk_vram_exhausted(struct geist_backend  *be,
+                              uint32_t               mem_type,
+                              size_t                 n,
+                              enum geist_buffer_role role) {
+    const struct vk_state *st = be->state;
+    geist_backend_set_error(be,
+                            GEIST_E_OOM,
+                            "vulkan: out of device memory: a %s buffer needs %zu MiB, %zu of "
+                            "%zu MiB are in use%s (the model does not fit; there is no "
+                            "spill to host memory)",
+                            role == GEIST_BUFFER_KV_CACHE ? "KV-cache" : "device",
+                            (n + (1u << 20) - 1) >> 20,
+                            st->vram_used >> 20,
+                            vk_vram_limit(st, mem_type) >> 20,
+                            st->vram_budget != 0 ? " (GEIST_VK_VRAM_BUDGET)" : "");
+}
+
 [[nodiscard]] enum geist_status vk_buffer_create(struct geist_backend  *be,
                                                  size_t                 bytes,
                                                  enum geist_buffer_role role,
@@ -108,7 +141,15 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
     VkMemoryAllocateInfo minfo = {.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                   .allocationSize  = req.size,
                                   .memoryTypeIndex = mem_type};
-    VkResult             r     = st->fn.AllocateMemory(st->device, &minfo, nullptr, &buf->mem);
+    const bool           vram = device_local && (st->mem_props.memoryTypes[mem_type].propertyFlags &
+                                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    if (vram && !vk_vram_fits(st, mem_type, (size_t) req.size)) {
+        st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
+        geist_backend_free(be, buf);
+        vk_vram_exhausted(be, mem_type, (size_t) req.size, role);
+        return GEIST_E_OOM;
+    }
+    VkResult r = st->fn.AllocateMemory(st->device, &minfo, nullptr, &buf->mem);
     if (r != VK_SUCCESS && !device_local) {
         /* BAR heap exhausted (it is only 256 MB) — fall back to plain
          * host-visible system memory. */
@@ -134,9 +175,17 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
         }
         st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
         geist_backend_free(be, buf);
-        geist_backend_set_error(
-                be, GEIST_E_OOM, "vulkan: allocating %zu bytes failed (%d)", bytes, (int) r);
+        if (vram && r == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            vk_vram_exhausted(be, mem_type, (size_t) req.size, role);
+        } else {
+            geist_backend_set_error(
+                    be, GEIST_E_OOM, "vulkan: allocating %zu bytes failed (%d)", bytes, (int) r);
+        }
         return GEIST_E_OOM;
+    }
+    if (vram) {
+        buf->vram_bytes = (size_t) minfo.allocationSize;
+        st->vram_used += buf->vram_bytes;
     }
     buf->device_mem = (st->mem_props.memoryTypes[mem_type].propertyFlags &
                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
@@ -245,6 +294,7 @@ void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
         st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
         st->fn.FreeMemory(st->device, buf->mem, nullptr);
         st->bar_used -= buf->bar_bytes;
+        st->vram_used -= buf->vram_bytes;
     }
     geist_backend_free(be, buf);
 }

@@ -9,6 +9,11 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Vulkan device-memory budget** (#466). Device-local allocations (weight
+  copies, KV cache, x ring) are checked against the heap before they are made;
+  a model that does not fit fails with the MiB the allocation needs, the MiB in
+  use and the limit instead of a bare driver status. `GEIST_VK_VRAM_BUDGET`
+  lowers the limit for tests. There is still no spill to host memory.
 - **Apple selected-row decision heads** (EXPERIMENTAL, #586).
   `GEIST_DECISION_SELECTED_ROWS` skips the vocabulary head and sampler while
   preserving candidate logits, output normalization, gains, softcaps and Bonsai
