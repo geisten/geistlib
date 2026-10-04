@@ -209,10 +209,27 @@ struct geist_arch_ops_decoder {
     bool (*decision_rows_supported)(const void *arch_state);
     enum geist_status (*decision_rows_create)(void *session, size_t max_candidates, void **out);
     void (*decision_rows_destroy)(void *readout);
-    enum geist_status (*prefill_rows)(size_t *projected_rows, size_t *readback_bytes, uint64_t *head_ns,
-                                     void *readout, size_t n_prompt, size_t n_candidates,
-                                     const geist_token_t *prompt_ids,
-                                     const geist_token_t *candidate_ids, float *out);
+    enum geist_status (*prefill_rows)(size_t              *projected_rows,
+                                      size_t              *readback_bytes,
+                                      uint64_t            *head_ns,
+                                      void                *readout,
+                                      size_t               n_prompt,
+                                      size_t               n_candidates,
+                                      const geist_token_t *prompt_ids,
+                                      const geist_token_t *candidate_ids,
+                                      float               *out);
+
+    /* Optional: session snapshot / restore (geist_session_snapshot). An
+     * image of the session's complete decoding state that restore puts
+     * back into any session of the same loaded model. snapshot_size reports
+     * the bytes snapshot needs now; snapshot writes them to buf[capacity]
+     * and their count to *out_bytes; neither changes the session's state.
+     * restore replaces the session's state with an image, GEIST_E_FORMAT
+     * if it is not one that fits. nullptr when the architecture cannot.
+     * Appended: existing vtable field offsets remain unchanged. */
+    enum geist_status (*snapshot_size)(size_t *out_bytes, const void *session);
+    enum geist_status (*snapshot)(size_t *out_bytes, size_t capacity, void *buf, void *session);
+    enum geist_status (*restore)(size_t n_bytes, const void *buf, void *session);
 };
 
 /* ====================================================================== */
