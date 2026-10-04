@@ -9,6 +9,15 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Apple selected-row decision heads** (EXPERIMENTAL, #586).
+  `GEIST_DECISION_SELECTED_ROWS` skips the vocabulary head and sampler while
+  preserving candidate logits, output normalization, gains, softcaps and Bonsai
+  Hadamard/PQ2 arithmetic. CPU Scalar/NEON and Metal reuse supported native row
+  tiles; capability queries and creation reject unsupported combinations
+  explicitly. DENSE stays the default reference behind `DECISION=1`, which
+  remains off by default. Result metadata and the paired benchmark expose
+  projected rows, logical staging bytes and head time; no Jev speedup or
+  representative quality claim is implied.
 - **Optional numeric decision API** (`include/geist_decision.h`, EXPERIMENTAL,
   #585). `DECISION=1` enables independent resettable scoring sessions over
   distinct single-token candidates. DENSE uses existing model-conformant

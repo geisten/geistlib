@@ -54,15 +54,13 @@ static struct transformer_forward_profile g_head_profile = {
         .calls       = g_head_profile_calls,
 };
 
-[[nodiscard]] enum geist_status finalize_logits_one_row(struct transformer_arch_session *sess,
-                                                        size_t                           row_idx,
-                                                        geist_token_t *out_token) {
+[[nodiscard]] enum geist_status transformer_head_prepare(struct transformer_arch_session *sess,
+                                                         size_t                           row_idx) {
     struct transformer_arch_state *st = sess->model;
 
     struct geist_backend                  *be    = st->backend;
     const struct geist_backend_vtbl       *v     = be->desc->vtbl;
     const struct geist_backend_primitives *prims = be->desc->prims;
-    const struct geist_backend_fused      *fused = geist_backend_fused_tbl(be);
     enum geist_status                      s;
     const bool                             profile = transformer_profile_enabled(&g_head_profile);
     uint64_t                               t0      = profile ? transformer_profile_now_ns() : 0;
@@ -112,6 +110,21 @@ static struct transformer_forward_profile g_head_profile = {
         return s;
     }
 
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status finalize_logits_one_row(struct transformer_arch_session *sess,
+                                                        size_t                           row_idx,
+                                                        geist_token_t *out_token) {
+    struct transformer_arch_state    *st    = sess->model;
+    struct geist_backend             *be    = st->backend;
+    const struct geist_backend_vtbl  *v     = be->desc->vtbl;
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    enum geist_status                 s     = transformer_head_prepare(sess, row_idx);
+    if (s != GEIST_OK)
+        return s;
+    const bool profile = transformer_profile_enabled(&g_head_profile);
+    uint64_t   t0;
     /* Speculative i8-sketch fast path (GEIST_SPEC_HEAD=1). Handles the whole
      * projection + greedy argmax when eligible; otherwise falls through to the
      * exact dense lm_head below. Reads the normalized hidden from scratch_h_a. */

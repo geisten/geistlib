@@ -43,6 +43,7 @@
 
 #include "linear_ref.h"
 #include "quant.h"
+#include "selected_rows.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -115,7 +116,6 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
 
 [[nodiscard]] enum geist_status cpu_scalar_resolve_weight(struct geist_backend *be,
                                                           struct geist_weight  *w) {
-    (void) be;
     if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
     }
@@ -124,15 +124,38 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
     if (!quant_weight_extent_ok(w)) {
         return GEIST_E_FORMAT;
     }
+    /* cpu_x86 borrows this resolver before replacing its kernels. A row
+     * capability belongs to the resolved kernel and backend, not merely
+     * to the source dtype. Wrappers must resolve their own row readout. */
+    w->linear_rows         = nullptr;
+    w->linear_rows_tile    = 0;
+    w->linear_rows_prepare = nullptr;
+    /* Use the registry's unique backend ID. Taking the exported resolver's
+     * address here would add a non-PIC text relocation to static archives
+     * subsequently linked into the Linux FFI shared library. */
+    const bool native_rows = be != nullptr && be->desc != nullptr && be->desc->name != nullptr &&
+                             strcmp(be->desc->name, "cpu_scalar") == 0;
     if (w->dtype == GEIST_DTYPE_F32) {
         w->linear_m1 = cpu_scalar_w_f32_m1;
         w->linear_mN = cpu_scalar_w_f32_mN;
+        size_t block, bytes, tail;
+        if (native_rows && quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) &&
+            tail == 0) {
+            w->linear_rows      = geist_cpu_selected_rows;
+            w->linear_rows_tile = 1;
+        }
         return GEIST_OK;
     }
     /* Everything the reference decodes; its list is the one list. */
     if (geist_linear_ref_decodes(w->dtype)) {
         w->linear_m1 = cpu_scalar_w_quant_m1;
         w->linear_mN = cpu_scalar_w_quant_mN;
+        size_t block, bytes, tail;
+        if (native_rows && quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) &&
+            tail == 0) {
+            w->linear_rows      = geist_cpu_selected_rows;
+            w->linear_rows_tile = 1;
+        }
         return GEIST_OK;
     }
     return GEIST_E_UNSUPPORTED;
