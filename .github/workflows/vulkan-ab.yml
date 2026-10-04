@@ -57,20 +57,20 @@ on:
 
 jobs:
   ab:
-    name: A/B on geist-vulkan (${{ inputs.backend || 'cpu_x86' }} ${{ inputs.driver || 'RADV' }})
+    name: A/B on geist-vulkan (${{ inputs.backend || 'vulkan' }} ${{ inputs.driver || 'NVIDIA' }})
     # Same self-hosted guard as ci.yml's vulkan leg: never for fork PRs.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, geist-vulkan]
     timeout-minutes: 180
     env:
-      BASE: ${{ inputs.base || '7a0b4217568697f7787634d7f519c989b571897a' }}
-      NEW: ${{ inputs.new || github.event.pull_request.head.sha || 'origin/main' }}
-      BACKEND: ${{ inputs.backend || 'cpu_x86' }}
-      DRIVER: ${{ inputs.driver || 'RADV' }}
-      PRESET: ${{ inputs.preset || 'smollm2-360m-q8_0' }}
+      BASE: ${{ inputs.base || '8cbfb0e59b66a967c8e31c0797b1d8319e9ce4c0' }}
+      NEW: ${{ inputs.new || '01cfce82c387b478c81de629d932a36565c62efd' }}
+      BACKEND: ${{ inputs.backend || 'vulkan' }}
+      DRIVER: ${{ inputs.driver || 'NVIDIA' }}
+      PRESET: ${{ inputs.preset || 'llama32-1b-q4_k' }}
       SEQ_LENS: ${{ inputs.seq_lens || '128,512' }}
       CYCLES: ${{ inputs.cycles || '6' }}
-      EXTRA_ENV: ${{ inputs.extra_env || '' }}
+      EXTRA_ENV: ${{ inputs.extra_env || 'GEIST_VK_SCRATCH_DEVICE=1 GEIST_M_MAX=128' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
