@@ -688,6 +688,9 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     }
     {
         float *p = (float *) be->desc->vtbl->buffer_map(sess->scratch_ones_headdim_max);
+        if (p == nullptr) {
+            return GEIST_E_BACKEND; /* the backend said why */
+        }
         for (size_t i = 0; i < head_dim_max; i++) {
             p[i] = 1.0f;
         }

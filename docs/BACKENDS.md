@@ -79,6 +79,13 @@ that path. `GEIST_VK_STRICT=1` turns each of these into an error naming the
 site (a host-path weight is refused at load), so a coverage gap fails loudly
 instead of showing up only as a slowdown.
 
+A batch whose submit fails (device lost, out of memory) is reported at the
+next host access: `buffer_map` returns nullptr with `GEIST_E_BACKEND` as the
+backend error, and argmax, downloads and host views return `GEIST_E_BACKEND`.
+Sizes and offsets that do not fit the shaders' 32-bit indices make the op
+return `GEIST_E_INVALID_ARG`, and a weight whose `n_in` would not fit the
+192 MB activation ring at the 512-row batch limit fails the load.
+
 ## GPU numbers at a glance
 
 | model | platform | metric | **geistlib** | baseline |

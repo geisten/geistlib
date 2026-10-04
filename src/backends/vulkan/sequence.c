@@ -99,6 +99,14 @@ const char *vk_fallback_name(enum vk_fb site) {
     return GEIST_E_BACKEND;
 }
 
+[[nodiscard]] enum geist_status vk_too_wide(struct geist_backend *be, const char *op) {
+    geist_backend_set_error(be,
+                            GEIST_E_INVALID_ARG,
+                            "vulkan %s: a size or offset exceeds the shader's 32-bit range",
+                            op);
+    return GEIST_E_INVALID_ARG;
+}
+
 [[nodiscard]] enum geist_status vk_seq_open_cmd(struct vk_state *st) {
     if (st->seq_open) {
         return GEIST_OK;

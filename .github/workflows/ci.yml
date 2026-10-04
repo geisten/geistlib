@@ -895,7 +895,8 @@ jobs:
                    test_backend_vulkan_deltanet_unit \
                    test_fused_probe_agreement_unit \
                    test_backend_vulkan_dispatch_fail_unit \
-                   test_backend_vulkan_fallback_unit; do
+                   test_backend_vulkan_fallback_unit \
+                   test_backend_vulkan_narrowing_unit; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
           done
@@ -958,7 +959,8 @@ jobs:
                    test_backend_vulkan_deltanet_unit \
                    test_fused_probe_agreement_unit \
                    test_backend_vulkan_dispatch_fail_unit \
-                   test_backend_vulkan_fallback_unit; do
+                   test_backend_vulkan_fallback_unit \
+                   test_backend_vulkan_narrowing_unit; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
           done
