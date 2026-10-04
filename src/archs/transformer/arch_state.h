@@ -271,9 +271,10 @@ struct transformer_arch_session {
     size_t                kv_len;        /* valid prefix across all caches */
     size_t                prefix_length; /* pinned prefix; reset truncates here */
     size_t                m_max;         /* prefill chunk size for this session */
-    size_t                max_seq_len;   /* KV-cache capacity in rows — the state
-                                          * max_seq_len at alloc time; forward paths
-                                          * reject writes past this */
+    size_t                max_seq_len;   /* KV-cache capacity in rows — the
+                                          * session cap (≤ the state's); the KV
+                                          * caches are sized from it and forward
+                                          * paths reject writes past it */
     /* A pinned prefix's rows in the KIVI residual ring (prefix_length mod
      * R of them), copied at pin time for reset to write back: the drains
      * of later turns move other rows over them. Host memory, per layer
