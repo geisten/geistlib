@@ -20,7 +20,13 @@ small development pilot first on Apple CPU/Metal. These choices are saved in
 exploratory quality and runtime evidence, not held-out acceptance.
 
 Overlap handling and the bounded generation/pilot policy are the remaining
-downstream decisions. No campaign result is attached to this plan yet.
+downstream decisions. Tokenizer-only planning of the proposed eight-question
+subset finds 399–695 prompttokens and validates all 96 candidate boundaries.
+At the saved planning rates, both trials of all eight arms with a 512-token
+generation cap would take approximately 18–26 minutes on Metal and 88–124
+minutes on CPU if every reasoning output reaches the cap. These spans exclude
+setup and host load; they are not measured campaign timings. No quality result
+is attached to this plan yet.
 
 ## Data and prompt construction
 

@@ -63,7 +63,8 @@
       ]
     },
     "formula_seconds": "128*mean_prompt_tokens/prefill_rate + 16*generated_tokens/decode_rate",
-    "minutes_if_all_16_generations_reach_cap512": {
+    "limits": "Planning spans, not confidence intervals or a measured campaign. Prompt lengths come from the expressly hypothetical tokenizer-only audit; EOS distribution is unmeasured. Excludes preparation/setup and external load; longer contexts can lower rates.",
+    "earlier_uniform_1000_token_scenario_minutes": {
       "cpu_neon": [
         147,
         210
@@ -73,6 +74,103 @@
         39
       ]
     },
-    "limits": "Planning spans, not confidence intervals. Actual pilot prompt lengths and EOS distribution are not measured yet. Excludes preparation/setup and external load; longer contexts can lower rates."
+    "actual_hypothetical_prompt_tokens_across_128_queries": 71360,
+    "formula_for_hypothetical_cases_seconds": "71360/prefill_rate + 8192/decode_rate (all 16 generations reach cap512)",
+    "minutes_for_hypothetical_cases_if_all_generations_reach_cap512": {
+      "cpu_neon": [
+        88,
+        124
+      ],
+      "metal": [
+        18,
+        26
+      ]
+    }
+  },
+  "hypothetical_prompt_audit": {
+    "conditions": "Unconfirmed exclude, per_subject1, subject_limit8; development only, five fixed dev shots, rotation0; template date2026-10-04, xhigh",
+    "records": [
+      {
+        "subject": "clinical_knowledge",
+        "source_validation_index": 62,
+        "chat_direct_tokens": 436,
+        "chat_reasoning_tokens": 476,
+        "cloze_tokens": 399
+      },
+      {
+        "subject": "electrical_engineering",
+        "source_validation_index": 223,
+        "chat_direct_tokens": 487,
+        "chat_reasoning_tokens": 527,
+        "cloze_tokens": 450
+      },
+      {
+        "subject": "high_school_biology",
+        "source_validation_index": 319,
+        "chat_direct_tokens": 585,
+        "chat_reasoning_tokens": 625,
+        "cloze_tokens": 548
+      },
+      {
+        "subject": "high_school_physics",
+        "source_validation_index": 528,
+        "chat_direct_tokens": 622,
+        "chat_reasoning_tokens": 662,
+        "cloze_tokens": 585
+      },
+      {
+        "subject": "international_law",
+        "source_validation_index": 702,
+        "chat_direct_tokens": 631,
+        "chat_reasoning_tokens": 671,
+        "cloze_tokens": 594
+      },
+      {
+        "subject": "moral_disputes",
+        "source_validation_index": 886,
+        "chat_direct_tokens": 514,
+        "chat_reasoning_tokens": 554,
+        "cloze_tokens": 477
+      },
+      {
+        "subject": "nutrition",
+        "source_validation_index": 1019,
+        "chat_direct_tokens": 655,
+        "chat_reasoning_tokens": 695,
+        "cloze_tokens": 618
+      },
+      {
+        "subject": "professional_psychology",
+        "source_validation_index": 1358,
+        "chat_direct_tokens": 601,
+        "chat_reasoning_tokens": 641,
+        "cloze_tokens": 564
+      }
+    ],
+    "candidate_ids": {
+      "chat": [
+        32,
+        33,
+        34,
+        35
+      ],
+      "cloze": [
+        357,
+        417,
+        351,
+        414
+      ]
+    },
+    "prefix_plus_exactly_one_token_checks_passed": 96,
+    "add_bos": false,
+    "commands": {
+      "BOS": 1,
+      "TOK": 120,
+      "QUIT": 1,
+      "SCORE": 0,
+      "GEN": 0,
+      "decision": 0
+    },
+    "quality_or_timing_result": false
   }
 }
