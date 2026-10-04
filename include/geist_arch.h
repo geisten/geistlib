@@ -199,6 +199,18 @@ struct geist_arch_ops_decoder {
      * Allows the engine to validate all input IDs before a forward pass.
      * Appended: existing vtable field offsets remain unchanged. */
     size_t (*logits_vocab_size)(const void *arch_state);
+
+    /* Optional: session snapshot / restore (geist_session_snapshot). An
+     * image of the session's complete decoding state that restore puts
+     * back into any session of the same loaded model. snapshot_size reports
+     * the bytes snapshot needs now; snapshot writes them to buf[capacity]
+     * and their count to *out_bytes; neither changes the session's state.
+     * restore replaces the session's state with an image, GEIST_E_FORMAT
+     * if it is not one that fits. nullptr when the architecture cannot.
+     * Appended: existing vtable field offsets remain unchanged. */
+    enum geist_status (*snapshot_size)(size_t *out_bytes, const void *session);
+    enum geist_status (*snapshot)(size_t *out_bytes, size_t capacity, void *buf, void *session);
+    enum geist_status (*restore)(size_t n_bytes, const void *buf, void *session);
 };
 
 /* ====================================================================== */

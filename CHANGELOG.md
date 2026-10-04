@@ -9,6 +9,18 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Session snapshot / restore** (`geist_session_snapshot_size`,
+  `geist_session_snapshot`, `geist_session_restore`, EXPERIMENTAL, #548). A
+  session's complete decoding state (used KV rows, every Gated-DeltaNet
+  layer's recurrent state, the pending logits, a still-owed decode step and
+  the sampler RNG) as a caller-owned byte image, restorable into the same or
+  another session of the same loaded model. This is the reusable prefix
+  `pin_prefix` cannot give Qwen3.5's hybrid: prefill the constant context
+  once, then restore + prefill only the new tokens per request. Restored
+  sessions continue bit-identically (tokens and logits), across FP32, F16,
+  INT8 and INT4 KV caches; KIVI, an enabled MTP drafter and embedding models
+  return `GEIST_E_UNSUPPORTED`. In-process format only, bound to the model
+  handle.
 - **Optional numeric decision API** (`include/geist_decision.h`, EXPERIMENTAL,
   #585). `DECISION=1` enables independent resettable scoring sessions over
   distinct single-token candidates. DENSE uses existing model-conformant

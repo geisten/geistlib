@@ -361,6 +361,30 @@ static size_t op_kv_len(const void *session) {
     return sess != nullptr ? sess->kv_len + (sess->advance_deferred ? 1 : 0) : 0;
 }
 
+/* Snapshot / restore (#548, snapshot.c). No settle: a decode_step whose
+ * forward is still owed is part of the state the image records, so taking
+ * one costs no forward pass. */
+static enum geist_status op_snapshot_size(size_t *out_bytes, const void *session) {
+    if (out_bytes == nullptr || session == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return transformer_snapshot_size(out_bytes, session);
+}
+
+static enum geist_status op_snapshot(size_t *out_bytes, size_t capacity, void *buf, void *session) {
+    if (out_bytes == nullptr || session == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return transformer_snapshot_save(out_bytes, capacity, buf, session);
+}
+
+static enum geist_status op_restore(size_t n_bytes, const void *buf, void *session) {
+    if (session == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return transformer_snapshot_restore(n_bytes, buf, session);
+}
+
 /* ---- Session lifecycle vtable hooks (P1.2.f) -------------------------- */
 
 static void *op_session_alloc(void *arch_state, const struct geist_session_opts *opts) {
@@ -403,4 +427,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .session_alloc            = op_session_alloc,
         .session_free             = op_session_free,
         .logits_vocab_size        = op_logits_vocab_size,
+        .snapshot_size            = op_snapshot_size,
+        .snapshot                 = op_snapshot,
+        .restore                  = op_restore,
 };
