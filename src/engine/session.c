@@ -1342,6 +1342,79 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
     return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "pin_prefix");
 }
 
+/* The decoder ops for a snapshot call, or nullptr after recording why
+ * there are none (the architecture has no snapshot) or why not now (an
+ * audio stream is feeding the session). */
+static const struct geist_arch_ops_decoder *snapshot_ops(struct geist_session_full *sf,
+                                                         const char                *what) {
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    if (ops == nullptr || ops->snapshot_size == nullptr || ops->snapshot == nullptr ||
+        ops->restore == nullptr) {
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "%s: active architecture does not support session snapshots",
+                 what);
+        sf->err_code = GEIST_E_UNSUPPORTED;
+        return nullptr;
+    }
+    if (sf->audio_streaming) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "%s: an audio stream is open", what);
+        sf->err_code = GEIST_E_INVALID_STATE;
+        return nullptr;
+    }
+    return ops;
+}
+
+[[nodiscard]] enum geist_status geist_session_snapshot_size(size_t               *out_bytes,
+                                                            struct geist_session *s) {
+    if (out_bytes == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out_bytes = 0;
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = snapshot_ops(sf, "snapshot_size");
+    if (ops == nullptr) {
+        return sf->err_code;
+    }
+    const enum geist_status ss = ops->snapshot_size(out_bytes, arch_sess(sf));
+    return ss == GEIST_OK ? GEIST_OK : session_op_failed(sf, ss, "snapshot_size");
+}
+
+[[nodiscard]] enum geist_status
+geist_session_snapshot(size_t *out_bytes, size_t capacity, void *buf, struct geist_session *s) {
+    if (out_bytes == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out_bytes = 0;
+    if (s == nullptr || buf == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = snapshot_ops(sf, "snapshot");
+    if (ops == nullptr) {
+        return sf->err_code;
+    }
+    const enum geist_status ss = ops->snapshot(out_bytes, capacity, buf, arch_sess(sf));
+    return ss == GEIST_OK ? GEIST_OK : session_op_failed(sf, ss, "snapshot");
+}
+
+[[nodiscard]] enum geist_status
+geist_session_restore(size_t n_bytes, const void *buf, struct geist_session *s) {
+    if (s == nullptr || buf == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = snapshot_ops(sf, "restore");
+    if (ops == nullptr) {
+        return sf->err_code;
+    }
+    const enum geist_status rs = ops->restore(n_bytes, buf, arch_sess(sf));
+    return rs == GEIST_OK ? GEIST_OK : session_op_failed(sf, rs, "restore");
+}
+
 [[nodiscard]] enum geist_status geist_session_get_stats(const struct geist_session *s,
                                                         struct geist_session_stats *out) {
     if (s == nullptr || out == nullptr) {
