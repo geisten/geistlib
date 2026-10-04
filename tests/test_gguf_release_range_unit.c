@@ -8,16 +8,16 @@
  * twice. gguf_release_range drops them. Checked here:
  *
  *   - gguf_release_range on a file-backed context drops the touched pages
- *     (RssFile falls) and the bytes still read back unchanged; a range
- *     outside the mapping, a null or empty range and a context over caller
- *     memory leave the bytes as they are;
+ *     (the mapping's Rss falls, counted per path: on tmpfs the pages are
+ *     shmem and never show as RssFile) and the bytes still read back
+ *     unchanged; a range outside the mapping, a null or empty range and a
+ *     context over caller memory leave the bytes as they are;
  *   - loading a model from a file on Vulkan drops the file pages of the
  *     matrices uploaded straight from the mapping, and the model decodes
  *     the same tokens as the same GGUF loaded from memory (where nothing is
  *     released).
  *
- * The residency checks read /proc/self/status and /proc/self/smaps and run
- * on Linux only.
+ * The residency checks read /proc/self/smaps and run on Linux only.
  */
 #include "test_helpers.h"
 #include "model_fixtures.h"
@@ -32,23 +32,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-/* RssFile of this process in KiB, or -1 where /proc is not there. */
-static long rss_file_kib(void) {
-    FILE *f = fopen("/proc/self/status", "r");
-    if (f == nullptr) {
-        return -1;
-    }
-    char line[256];
-    long kib = -1;
-    while (fgets(line, sizeof line, f) != nullptr) {
-        if (sscanf(line, "RssFile: %ld kB", &kib) == 1) {
-            break;
-        }
-    }
-    fclose(f);
-    return kib;
-}
 
 /* Resident KiB of this process's mappings of the file at `path` (summed
  * over /proc/self/smaps), or -1 where /proc is not there. */
@@ -127,14 +110,14 @@ static int check_release(const struct tf_buf *g, const char *path) {
     const uint8_t *p   = big->data;
     const size_t   n   = big->nbytes;
     const uint64_t ref = touch(n, p);
-    const long     in  = rss_file_kib();
+    const long     in  = rss_of_path_kib(path);
     gguf_release_range(ctx, p, n);
-    const long out = rss_file_kib();
+    const long out = rss_of_path_kib(path);
     char       msg[192];
 #if defined(__linux__)
     snprintf(msg,
              sizeof msg,
-             "releasing %zu KiB drops the file pages (RssFile %ld -> %ld KiB)",
+             "releasing %zu KiB drops the file pages (resident %ld -> %ld KiB)",
              n >> 10,
              in,
              out);
