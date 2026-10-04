@@ -141,6 +141,13 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
                  * checks linear_m1 nullness and falls back. */
                 return rs;
             }
+            /* The backend holds its own device copy of a matrix that
+             * skipped the arena: the GGUF pages behind it need not stay
+             * resident (#468). A host fallback that still reads them faults
+             * them back in from the file. */
+            if (rs == GEIST_OK && weight_skips_arena(be, t)) {
+                gguf_release_range(gguf, out_weight->raw, out_weight->raw_nbytes);
+            }
             /* On UNSUPPORTED, linear_m1 / linear_mN stay null — that's
              * the "use legacy" signal. */
             /* A backend without a half-precision dense linear (vulkan) gets
