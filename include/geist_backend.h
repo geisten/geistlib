@@ -101,6 +101,26 @@ struct geist_backend_vtbl {
                                                enum geist_buffer_role role,
                                                struct geist_buffer  **out);
 
+    /* Create a buffer that views bytes [offset, offset + n_bytes) of
+     * `parent`, a buffer from buffer_create on this backend, WITHOUT a host
+     * pointer: buffer_create_aliased can only slice a parent the host can
+     * map, and a device-local (GEIST_MEMORY_DEVICE) parent has no host
+     * address. The view shares the parent's storage and placement:
+     * buffer_map returns parent's mapping + offset when the parent is
+     * mappable and nullptr when it is not; buffer_upload / buffer_download /
+     * buffer_copy address the view's bytes. buffer_destroy releases only the
+     * view handle. The parent must outlive every view of it. Fails with
+     * GEIST_E_INVALID_ARG when the range is empty or leaves the parent.
+     * Consumer: transformer_session_alloc's device-local scratch pool
+     * (#488). nullable: the arch keeps its host-visible pool and slices it
+     * with buffer_create_aliased. */
+    enum geist_status (*buffer_create_view)(struct geist_backend  *be,
+                                            struct geist_buffer   *parent,
+                                            size_t                 offset,
+                                            size_t                 n_bytes,
+                                            enum geist_buffer_role role,
+                                            struct geist_buffer  **out);
+
     /* Copy host bytes into the buffer. Caller-provided source array. */
     enum geist_status (*buffer_upload)(struct geist_buffer *buf,
                                        size_t               n_bytes,
