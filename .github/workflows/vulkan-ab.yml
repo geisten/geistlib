@@ -47,6 +47,10 @@ on:
         description: "A/B cycles (>= 6)"
         type: string
         default: "6"
+      extra_env:
+        description: "extra VAR=VALUE pairs for both revisions, space-separated"
+        type: string
+        default: ""
   pull_request:
     paths:
       - .github/workflows/vulkan-ab.yml
@@ -66,6 +70,7 @@ jobs:
       PRESET: ${{ inputs.preset || 'smollm2-360m-q8_0' }}
       SEQ_LENS: ${{ inputs.seq_lens || '128,512' }}
       CYCLES: ${{ inputs.cycles || '6' }}
+      EXTRA_ENV: ${{ inputs.extra_env || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,11 +94,13 @@ jobs:
           set -eo pipefail
           mkdir -p ab-out
           git fetch origin main
+          EXTRA=()
+          for kv in $EXTRA_ENV; do EXTRA+=(--env "$kv"); done
           python3 tools/bench_revision_ab.py \
             --rev "base=$BASE" --rev "new=$NEW" \
             --gguf "$RUNNER_TEMP/synth.gguf" --seq-lens "$SEQ_LENS" \
             --decode-n 16 --repeats 1 --warmup 1 --cycles "$CYCLES" \
-            --env "GEIST_BENCH_BACKEND=$BACKEND" --env "GEIST_VK_DEVICE=${GEIST_VK_DEVICE:-0}" \
+            --env "GEIST_BENCH_BACKEND=$BACKEND" --env "GEIST_VK_DEVICE=${GEIST_VK_DEVICE:-0}" "${EXTRA[@]}" \
             --make-arg TARGET=linux --make-arg "BACKENDS=vulkan cpu_x86 cpu_scalar" \
             --make-arg GEMM_PROVIDER=native \
             --out-dir ab-out | tee ab-out/report.txt
