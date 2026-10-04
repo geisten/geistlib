@@ -211,6 +211,11 @@ minor release.
 
 ### Changed
 
+- **Vulkan weight lookup is a hash index** (#469, #474 item 8). The host
+  pointer → device buffer registry consulted on every `linear_t` and
+  embedding call is indexed by an open-addressed table instead of scanned:
+  75 000 lookups over a 300-weight registry take 0.2 ms instead of 4.8 ms
+  (x86_64 release, about 16 µs saved per 250-linear decode token).
 - **cpu_x86 IQ4_NL and IQ4_XS run native int8 kernels on the GGUF bytes:
   decode about 4-5x, prefill about 1.7-1.9x faster** (#410). Both used to
   fall back to the generic dequantize-and-dot path. They now share the Q4_0
