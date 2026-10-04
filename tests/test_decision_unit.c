@@ -13,7 +13,7 @@ static int empty_result(enum geist_status                   got,
                         "failure has expected status and clears the complete result");
 }
 
-static int run(const struct tf_buf *g, const char *backend) {
+static int run(const struct tf_buf *g, const char *backend, enum geist_decision_mode mode) {
     struct geist_backend *be = nullptr;
     if (geist_backend_create(backend, nullptr, nullptr, &be) != GEIST_OK) {
         return 0; /* not linked / no device */
@@ -22,7 +22,7 @@ static int run(const struct tf_buf *g, const char *backend) {
     struct geist_session            *ref = nullptr;
     struct geist_decision           *a = nullptr, *b = nullptr;
     const struct geist_session_opts  so = {.max_seq_len = 64, .kv_mode = GEIST_KV_FP32, .m_max = 8};
-    const struct geist_decision_opts o  = {.mode              = GEIST_DECISION_DENSE,
+    const struct geist_decision_opts o  = {.mode              = mode,
                                            .max_prompt_tokens = 64,
                                            .max_candidates    = 4,
                                            .kv_mode           = GEIST_KV_FP32,
@@ -35,6 +35,16 @@ static int run(const struct tf_buf *g, const char *backend) {
     }
     fails +=
             geist_expect(geist_decision_supported(m), "loaded generative model supports decisions");
+    if (strcmp(backend, "cpu_x86") == 0) {
+        fails += geist_expect(!geist_decision_mode_supported(m, GEIST_DECISION_SELECTED_ROWS),
+                              "x86 wrapper cannot inherit Scalar row capability");
+    }
+    if (!geist_decision_mode_supported(m, mode)) {
+        fails += geist_expect(geist_decision_create(m, be, &o, &a) == GEIST_E_UNSUPPORTED &&
+                                      a == nullptr,
+                              "unsupported mode fails explicitly");
+        goto done;
+    }
     if (geist_decision_create(m, be, &o, &a) != GEIST_OK ||
         geist_decision_create(m, be, &o, &b) != GEIST_OK) {
         fails += geist_expect(false, "two independent decision instances create");
@@ -196,7 +206,8 @@ int main(void) {
     const char *backends[] = {"cpu_scalar", "cpu_neon", "cpu_x86", "metal"};
     for (size_t i = 0; i < 2; i++) {
         for (size_t j = 0; j < 4; j++) {
-            fails += run(&models[i], backends[j]);
+            fails += run(&models[i], backends[j], GEIST_DECISION_DENSE);
+            fails += run(&models[i], backends[j], GEIST_DECISION_SELECTED_ROWS);
         }
         free(models[i].b);
     }

@@ -14,8 +14,10 @@ struct geist_decision;
 
 /* @stability EXPERIMENTAL — explicit per-instance execution mode.
  * DENSE uses the model's ordinary prefill and model-conformant peek_logits.
- * No trained classifier head, calibration or selected-row optimization. */
-enum geist_decision_mode { GEIST_DECISION_DENSE = 0 };
+ * SELECTED_ROWS reuses the backbone but projects only requested row tiles.
+ * Unsupported model/backend pairs fail explicitly; no automatic fallback.
+ * Neither mode supplies a trained classifier head or calibration. */
+enum geist_decision_mode { GEIST_DECISION_DENSE = 0, GEIST_DECISION_SELECTED_ROWS = 1 };
 
 /* @stability EXPERIMENTAL — zero initialization selects the defaults.
  * These limits size the private session/workspace at creation. */
@@ -34,10 +36,15 @@ struct geist_decision_opts {
  * Ties select the first maximum. Arrays are valid until the next score/reset
  * call (even a failed call) or destruction of THIS handle. */
 struct geist_decision_result {
-    size_t        n_candidates;
-    const float  *logits;
-    const double *probabilities;
-    size_t        best_index;
+    size_t                   n_candidates;
+    const float             *logits;
+    const double            *probabilities;
+    size_t                   best_index;
+    enum geist_decision_mode mode;
+    size_t                   projected_rows; /* includes aligned neighbor rows in backend tiles */
+    size_t                   logit_readback_bytes; /* row tiles only in SELECTED_ROWS */
+    uint64_t head_ns; /* SELECTED_ROWS final-stage elapsed, including pending device work; 0 for
+                         DENSE */
 };
 
 /* @stability EXPERIMENTAL — build capability; false in DECISION=0 builds. */
@@ -47,6 +54,11 @@ struct geist_decision_result {
  * generative logits vocabulary. False for embedding-only/legacy archs.
  * Backend failures can still occur during creation/scoring. */
 [[nodiscard]] bool geist_decision_supported(const struct geist_model *m);
+
+/* @stability EXPERIMENTAL — specific mode capability for this loaded pair.
+ * false for unknown modes or feature-off builds. */
+[[nodiscard]] bool geist_decision_mode_supported(const struct geist_model *m,
+                                                 enum geist_decision_mode  mode);
 
 /* @stability EXPERIMENTAL
  * Owns an independent session and candidate workspace, shares model weights.

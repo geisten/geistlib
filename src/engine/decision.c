@@ -33,12 +33,15 @@ static void clear_result(struct geist_decision_result *out) {
 #endif
 
 struct geist_decision {
-    struct geist_session *session;
-    size_t                max_prompt, max_candidates, vocab, seen_cap, seen_bytes;
-    geist_token_t        *seen;
-    float                *logits;
-    double               *probabilities;
-    char                  error[256];
+    struct geist_session                *session;
+    const struct geist_arch_ops_decoder *ops;
+    void                                *readout;
+    enum geist_decision_mode             mode;
+    size_t         max_prompt, max_candidates, vocab, seen_cap, seen_bytes, dense_readback_bytes;
+    geist_token_t *seen;
+    float         *logits;
+    double        *probabilities;
+    char           error[256];
 };
 
 [[nodiscard]] static enum geist_status
@@ -60,6 +63,17 @@ bool geist_decision_supported(const struct geist_model *m) {
            ops->state_reset != nullptr && ops->prefill != nullptr && ops->peek_logits != nullptr &&
            ops->logits_vocab_size != nullptr &&
            ops->logits_vocab_size(m->text_decoder.arch_meta) > 0;
+}
+
+bool geist_decision_mode_supported(const struct geist_model *m, enum geist_decision_mode mode) {
+    if (!geist_decision_supported(m))
+        return false;
+    if (mode == GEIST_DECISION_DENSE)
+        return true;
+    const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;
+    return mode == GEIST_DECISION_SELECTED_ROWS && ops->decision_rows_supported != nullptr &&
+           ops->decision_rows_create != nullptr && ops->decision_rows_destroy != nullptr &&
+           ops->prefill_rows != nullptr && ops->decision_rows_supported(m->text_decoder.arch_meta);
 }
 
 [[nodiscard]] enum geist_status geist_decision_create(struct geist_model               *m,
@@ -86,18 +100,25 @@ bool geist_decision_supported(const struct geist_model *m) {
     const size_t prompt_cap            = o.max_prompt_tokens != 0 ? o.max_prompt_tokens : 512;
     const size_t candidates            = o.max_candidates != 0 ? o.max_candidates : 16;
     const size_t vocab = m->text_decoder.arch_ops->logits_vocab_size(m->text_decoder.arch_meta);
-    size_t       slots, seen_bytes, logits_bytes, probability_bytes, prompt_bytes;
+    size_t       slots, seen_bytes, logits_bytes, probability_bytes, prompt_bytes, vocab_bytes;
     /* Bounds precede allocation and indexing, per AGENT.md. The hash table
      * is <= half full; its empty sentinel is an invalid token (-1). */
-    if (o.mode != GEIST_DECISION_DENSE || o.kv_mode < GEIST_KV_AUTO || o.kv_mode > GEIST_KV_INT4 ||
-        candidates > vocab || ckd_mul(&prompt_bytes, prompt_cap, sizeof(geist_token_t)) ||
-        prompt_bytes > PTRDIFF_MAX || ckd_mul(&slots, candidates, 2) ||
-        ckd_mul(&logits_bytes, candidates, sizeof(float)) ||
+    if ((o.mode != GEIST_DECISION_DENSE && o.mode != GEIST_DECISION_SELECTED_ROWS) ||
+        o.kv_mode < GEIST_KV_AUTO || o.kv_mode > GEIST_KV_INT4 || candidates > vocab ||
+        vocab > INT32_MAX || ckd_mul(&vocab_bytes, vocab, sizeof(float)) ||
+        ckd_mul(&prompt_bytes, prompt_cap, sizeof(geist_token_t)) || prompt_bytes > PTRDIFF_MAX ||
+        ckd_mul(&slots, candidates, 2) || ckd_mul(&logits_bytes, candidates, sizeof(float)) ||
         ckd_mul(&probability_bytes, candidates, sizeof(double))) {
         geist_error_set_create_time(GEIST_E_INVALID_ARG,
                                     "geist_decision_create",
                                     "invalid mode or decision capacities");
         return GEIST_E_INVALID_ARG;
+    }
+    if (!geist_decision_mode_supported(m, o.mode)) {
+        geist_error_set_create_time(GEIST_E_UNSUPPORTED,
+                                    "geist_decision_create",
+                                    "selected rows unavailable for this model/backend pair");
+        return GEIST_E_UNSUPPORTED;
     }
     size_t seen_cap = 1;
     while (seen_cap < slots) {
@@ -119,14 +140,17 @@ bool geist_decision_supported(const struct geist_model *m) {
                 GEIST_E_OOM, "geist_decision_create", "decision allocation failed");
         return GEIST_E_OOM;
     }
-    d->max_prompt     = prompt_cap;
-    d->max_candidates = candidates;
-    d->vocab          = vocab;
-    d->seen_cap       = seen_cap;
-    d->seen_bytes     = seen_bytes;
-    d->seen           = heap_alloc_aligned(seen_bytes, alignof(geist_token_t));
-    d->logits         = heap_alloc_aligned(logits_bytes, alignof(float));
-    d->probabilities  = heap_alloc_aligned(probability_bytes, alignof(double));
+    d->ops                  = m->text_decoder.arch_ops;
+    d->mode                 = o.mode;
+    d->max_prompt           = prompt_cap;
+    d->max_candidates       = candidates;
+    d->vocab                = vocab;
+    d->dense_readback_bytes = vocab_bytes;
+    d->seen_cap             = seen_cap;
+    d->seen_bytes           = seen_bytes;
+    d->seen                 = heap_alloc_aligned(seen_bytes, alignof(geist_token_t));
+    d->logits               = heap_alloc_aligned(logits_bytes, alignof(float));
+    d->probabilities        = heap_alloc_aligned(probability_bytes, alignof(double));
     if (d->seen == nullptr || d->logits == nullptr || d->probabilities == nullptr) {
         geist_decision_destroy(d);
         geist_error_set_create_time(
@@ -144,6 +168,16 @@ bool geist_decision_supported(const struct geist_model *m) {
         geist_decision_destroy(d);
         return status;
     }
+    if (d->mode == GEIST_DECISION_SELECTED_ROWS) {
+        const enum geist_status rs = d->ops->decision_rows_create(
+                geist_session_internal_arch_session(d->session), candidates, &d->readout);
+        if (rs != GEIST_OK) {
+            geist_decision_destroy(d);
+            geist_error_set_create_time(
+                    rs, "geist_decision_create", "selected-row workspace failed");
+            return rs;
+        }
+    }
     *out = d;
     return GEIST_OK;
 }
@@ -152,6 +186,8 @@ void geist_decision_destroy(struct geist_decision *d) {
     if (d == nullptr) {
         return;
     }
+    if (d->readout != nullptr)
+        d->ops->decision_rows_destroy(d->readout);
     geist_session_destroy(d->session);
     safe_free((void **) &d->seen);
     safe_free((void **) &d->logits);
@@ -214,22 +250,44 @@ const char *geist_decision_errmsg(const struct geist_decision *d) {
         }
         d->seen[slot] = id;
     }
-    enum geist_status status = geist_decision_reset(d);
+    size_t            projected_rows = d->vocab;
+    size_t            readback_bytes = d->dense_readback_bytes;
+    uint64_t          head_ns        = 0;
+    enum geist_status status         = geist_decision_reset(d);
     if (status == GEIST_OK) {
-        status = geist_session_prefill_tokens(d->session, n_prompt, prompt_ids);
+        if (d->mode == GEIST_DECISION_SELECTED_ROWS) {
+            status = d->ops->prefill_rows(&projected_rows,
+                                          &readback_bytes,
+                                          &head_ns,
+                                          d->readout,
+                                          n_prompt,
+                                          n_candidates,
+                                          prompt_ids,
+                                          candidate_ids,
+                                          d->logits);
+        } else {
+            status = geist_session_prefill_tokens(d->session, n_prompt, prompt_ids);
+        }
     }
     if (status != GEIST_OK) {
-        return fail(d, status, geist_session_errmsg(d->session));
+        return fail(d,
+                    status,
+                    d->mode == GEIST_DECISION_SELECTED_ROWS ? "selected-row prefill/readout failed"
+                                                            : geist_session_errmsg(d->session));
     }
-    size_t       n_logits = 0;
-    const float *logits   = geist_session_peek_logits(&n_logits, d->session);
-    if (logits == nullptr || n_logits != d->vocab) {
-        return fail(d, GEIST_E_BACKEND, "backend did not expose the declared logits vocabulary");
+    const float *logits = nullptr;
+    if (d->mode == GEIST_DECISION_DENSE) {
+        size_t n_logits = 0;
+        logits          = geist_session_peek_logits(&n_logits, d->session);
+        if (logits == nullptr || n_logits != d->vocab) {
+            return fail(
+                    d, GEIST_E_BACKEND, "backend did not expose the declared logits vocabulary");
+        }
     }
     double maximum = -INFINITY;
     size_t best    = 0;
     for (size_t i = 0; i < n_candidates; i++) {
-        const float v = logits[candidate_ids[i]];
+        const float v = d->mode == GEIST_DECISION_DENSE ? logits[candidate_ids[i]] : d->logits[i];
         if (!isfinite(v)) {
             return fail(d, GEIST_E_BACKEND, "non-finite selected logit");
         }
@@ -250,10 +308,14 @@ const char *geist_decision_errmsg(const struct geist_decision *d) {
         d->probabilities[i] /= sum;
     }
     *out = (struct geist_decision_result) {
-            .n_candidates  = n_candidates,
-            .logits        = d->logits,
-            .probabilities = d->probabilities,
-            .best_index    = best,
+            .n_candidates         = n_candidates,
+            .logits               = d->logits,
+            .probabilities        = d->probabilities,
+            .mode                 = d->mode,
+            .projected_rows       = projected_rows,
+            .logit_readback_bytes = readback_bytes,
+            .head_ns              = head_ns,
+            .best_index           = best,
     };
     return GEIST_OK;
 }
@@ -265,6 +327,12 @@ bool geist_decision_available(void) {
 }
 bool geist_decision_supported(const struct geist_model *m) {
     (void) m;
+    return false;
+}
+
+bool geist_decision_mode_supported(const struct geist_model *m, enum geist_decision_mode mode) {
+    (void) m;
+    (void) mode;
     return false;
 }
 

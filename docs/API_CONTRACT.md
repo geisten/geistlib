@@ -108,7 +108,12 @@ with explicit unsupported stubs. It preserves the existing generation,
 embedding and logits APIs. Lifetime, reset, conditional-score semantics,
 capabilities and benchmark protocol are specified in [DECISION.md](DECISION.md).
 The optional decoder `logits_vocab_size` hook is appended to the experimental
-architecture vtable without changing existing field offsets.
+architecture vtable without changing existing field offsets. The optional
+selected-row readout hooks and `geist_weight` row-tile callbacks are also
+EXPERIMENTAL additions. `GEIST_DECISION_SELECTED_ROWS` requires explicit mode
+selection and a supported loaded model/backend pair; its result metadata reports
+row work, logical staging bytes and selected-head time. Unsupported modes never
+silently fall back to another execution path.
 
 ## Consuming this contract
 
