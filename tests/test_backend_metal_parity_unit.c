@@ -39,16 +39,6 @@
 static int g_fail = 0;
 #define check(ok, what) (g_fail |= geist_expect((ok), (what)))
 
-static double max_abs(const float *a, const float *b, size_t n) {
-    double out = 0.0;
-    for (size_t i = 0; i < n; i++) {
-        const double d = fabs((double) a[i] - b[i]);
-        if (d > out)
-            out = d;
-    }
-    return out;
-}
-
 enum {
     Q40_BB   = 18,
     Q41_BB   = 20,
@@ -541,7 +531,7 @@ static void run_qwen35_attention_ops(struct geist_backend *mt) {
             }
         }
     }
-    const double err = max_abs(got, expected, ROWS * QOUT);
+    const double err = geist_test_max_abs(ROWS * QOUT, got, expected);
     check(err < 2e-6, "qwen35 attention ops parity");
     printf("  qgate split + qscale + sigmoid_mul max_abs %.2e %s\n",
            err,
