@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
@@ -1013,6 +1014,9 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
 
 /* ---- Public entry points ---------------------------------------------- */
 
+/* Source of transformer_arch_state.snapshot_id. */
+static _Atomic uint64_t next_snapshot_id;
+
 /* Shared body: takes ownership of an already-open `gguf` (closes it on error,
  * and on success either keeps it open for zero-copy weight aliasing or closes
  * it after copying, depending on mmap_alias_mode). The path/from-memory entry
@@ -1039,6 +1043,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
     memset(st, 0, sizeof(*st));
     st->backend       = be;
+    st->snapshot_id   = atomic_fetch_add(&next_snapshot_id, 1) + 1;
     st->gguf          = (struct gguf_ctx *) gguf;
     st->runtime_flags = transformer_runtime_flags_from_env();
     /* Structural dims start at ZERO — every family populator fills them
