@@ -240,7 +240,14 @@ struct vk_state {
     uint32_t         queue_family;
 
     VkPhysicalDeviceMemoryProperties mem_props;
-    size_t          bar_used; /* live host-visible + device-local bytes (the BAR window) */
+    size_t bar_used; /* live host-visible + device-local bytes (the BAR window) */
+    /* Device memory taken by device-local requests (weight copies, KV
+     * cache, x ring), checked against vram_budget before each allocation
+     * so an oversized model fails with needed vs. available bytes instead
+     * of a bare driver error (#466). vram_budget is GEIST_VK_VRAM_BUDGET
+     * (bytes, K/M/G suffix) or 0: the heap size of the memory type. */
+    size_t          vram_used;
+    size_t          vram_budget;
     VkCommandPool   cmd_pool;
     VkCommandBuffer xfer_cmd;
     VkFence         xfer_fence;
@@ -432,7 +439,8 @@ struct geist_buffer {
     bool                   host_visible;
     bool                   device_mem; /* memory type has DEVICE_LOCAL */
     bool                   borrowed;   /* buf/mem owned by a parent buffer */
-    size_t bar_bytes; /* counted in vk_state.bar_used (host-visible + device-local) */
+    size_t bar_bytes;  /* counted in vk_state.bar_used (host-visible + device-local) */
+    size_t vram_bytes; /* counted in vk_state.vram_used */
 };
 
 /* ---- Cross-module prototypes ------------------------------------------ */
