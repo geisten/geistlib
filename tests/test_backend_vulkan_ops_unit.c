@@ -43,57 +43,13 @@ static struct geist_buffer *dev_buf(const float *src, size_t n) {
     return b;
 }
 
-static struct geist_tensor
-view(struct geist_buffer *b, int nd, int64_t d0, int64_t d1, int64_t d2) {
-    struct geist_tensor t = {.buffer = b, .dtype = GEIST_DTYPE_F32, .layout = GEIST_LAYOUT_DENSE};
-    t.ndim                = nd;
-    t.shape[0]            = d0;
-    t.shape[1]            = d1;
-    t.shape[2]            = d2;
-    if (nd == 1) {
-        t.stride[0] = 1;
-    } else if (nd == 2) {
-        t.stride[0] = d1;
-        t.stride[1] = 1;
-    } else {
-        t.stride[0] = d1 * d2;
-        t.stride[1] = d2;
-        t.stride[2] = 1;
-    }
-    return t;
-}
-
-static float *fill(size_t n, float freq, float amp) {
-    float *p = malloc(n * sizeof(float));
-    for (size_t i = 0; i < n; i++) {
-        p[i] = sinf((float) i * freq + 0.3f) * amp;
-    }
-    return p;
-}
-
-static double max_abs(const float *a, const float *b, size_t n) {
-    double m = 0.0;
-    for (size_t i = 0; i < n; i++) {
-        const double d = fabs((double) a[i] - (double) b[i]);
-        if (d > m) {
-            m = d;
-        }
-    }
-    return m;
-}
-
 static bool download(struct geist_buffer *b, float *dst, size_t n) {
     return g_be->desc->vtbl->buffer_download(n * sizeof(float), (uint8_t *) dst, b) == GEIST_OK;
 }
 
-static float silu_ref(float v) {
-    const float e = expf(-fabsf(v));
-    return v >= 0.0f ? v / (1.0f + e) : (v * e) / (1.0f + e);
-}
-
 /* relu(x)^2 on the device, in place (VRAM-only buffer: a host fallback fails). */
 static void test_relu2(size_t n) {
-    float *x   = fill(n, 0.37f, 3.0f);
+    float *x   = geist_test_fill(n, 0.37f, 0.3f, 3.0f, 0.0f);
     float *ref = malloc(n * sizeof(float));
     float *got = malloc(n * sizeof(float));
     for (size_t i = 0; i < n; i++) {
@@ -102,10 +58,10 @@ static void test_relu2(size_t n) {
     }
     struct geist_buffer *bx = dev_buf(x, n);
     check(bx != nullptr, "relu2 buffer");
-    struct geist_tensor tx = view(bx, 1, (int64_t) n, 0, 0);
+    struct geist_tensor tx = geist_test_tensor_f32(bx, 1, (int64_t) n, 0, 0);
     check(g_be->desc->prims->relu_squared(g_be, &tx, &tx) == GEIST_OK, "relu2 dispatch");
     check(download(bx, got, n), "relu2 download");
-    const double e = max_abs(got, ref, n);
+    const double e = geist_test_max_abs(n, got, ref);
     printf("  relu2 n=%-6zu max_abs %.2e\n", n, e);
     check(e < 1e-6, "relu2");
     free(x);
@@ -118,7 +74,7 @@ static void test_relu2(size_t n) {
  * sitting exactly on a rounding boundary by one quantum — so the bound is one
  * quantum (absmax/127) and flips must be rare. */
 static void test_act_quant(size_t rows, size_t n) {
-    float *x   = fill(rows * n, 0.29f, 2.0f);
+    float *x   = geist_test_fill(rows * n, 0.29f, 0.3f, 2.0f, 0.0f);
     float *ref = malloc(rows * n * sizeof(float));
     float *got = malloc(rows * n * sizeof(float));
     memcpy(ref, x, rows * n * sizeof(float));
@@ -139,7 +95,7 @@ static void test_act_quant(size_t rows, size_t n) {
     }
     struct geist_buffer *bx = dev_buf(x, rows * n);
     check(bx != nullptr, "act_quant buffer");
-    struct geist_tensor tx = view(bx, 2, (int64_t) rows, (int64_t) n, 0);
+    struct geist_tensor tx = geist_test_tensor_f32(bx, 2, (int64_t) rows, (int64_t) n, 0);
     check(g_be->desc->fused->bitnet_act_quant != nullptr, "act_quant entry");
     check(g_be->desc->fused->bitnet_act_quant(g_be, &tx) == GEIST_OK, "act_quant dispatch");
     check(download(bx, got, rows * n), "act_quant download");
@@ -147,7 +103,7 @@ static void test_act_quant(size_t rows, size_t n) {
     for (size_t i = 0; i < rows * n; i++) {
         flips += got[i] != ref[i];
     }
-    const double e = max_abs(got, ref, rows * n);
+    const double e = geist_test_max_abs(rows * n, got, ref);
     printf("  act_quant %zux%zu max_abs %.2e (quantum %.2e) flips %zu\n",
            rows,
            n,
@@ -184,17 +140,17 @@ static void test_embed_pq2_0(size_t vocab, size_t d, int32_t token) {
     check(g_be->desc->vtbl->buffer_create_aliased(
                   g_be, blob, vocab * row_bytes, GEIST_BUFFER_WEIGHT, &tb) == GEIST_OK,
           "embed table buffer");
-    struct geist_tensor table = view(tb, 2, (int64_t) vocab, (int64_t) d, 0);
+    struct geist_tensor table = geist_test_tensor_f32(tb, 2, (int64_t) vocab, (int64_t) d, 0);
     table.dtype               = GEIST_DTYPE_PQ2_0;
     table.layout              = GEIST_LAYOUT_BLOCK_QUANTIZED;
     struct geist_buffer *bo   = dev_buf(nullptr, d);
     check(bo != nullptr, "embed out buffer");
-    struct geist_tensor out = view(bo, 1, (int64_t) d, 0, 0);
+    struct geist_tensor out = geist_test_tensor_f32(bo, 1, (int64_t) d, 0, 0);
     check(g_be->desc->fused->embedding_lookup_scaled != nullptr, "embed entry");
     check(g_be->desc->fused->embedding_lookup_scaled(g_be, &table, token, scale, &out) == GEIST_OK,
           "embed dispatch");
     check(download(bo, got, d), "embed download");
-    const double e = max_abs(got, ref, d);
+    const double e = geist_test_max_abs(d, got, ref);
     printf("  embed pq2_0 %zux%zu tok %d max_abs %.2e\n", vocab, d, (int) token, e);
     check(e < 1e-6, "embed pq2_0");
     free(blob);
@@ -216,7 +172,7 @@ static void test_hadamard(size_t      rows,
                           bool        in_place,
                           const char *name) {
     const size_t n   = rows * width;
-    float       *x   = fill(n, 0.23f, 1.5f);
+    float       *x   = geist_test_fill(n, 0.23f, 0.3f, 1.5f, 0.0f);
     float       *sg  = malloc(width * sizeof(float));
     float       *ref = malloc(n * sizeof(float));
     float       *got = malloc(n * sizeof(float));
@@ -230,9 +186,9 @@ static void test_hadamard(size_t      rows,
     struct geist_buffer *bx = dev_buf(x, n), *bs = signed_ ? dev_buf(sg, width) : nullptr,
                         *by = in_place ? bx : dev_buf(nullptr, n);
     check(bx && by && (!signed_ || bs), "hadamard buffers");
-    struct geist_tensor              tx   = view(bx, 2, (int64_t) rows, (int64_t) width, 0),
-                                     ty   = view(by, 2, (int64_t) rows, (int64_t) width, 0),
-                                     ts   = view(bs, 1, (int64_t) width, 0, 0);
+    struct geist_tensor tx = geist_test_tensor_f32(bx, 2, (int64_t) rows, (int64_t) width, 0),
+                        ty = geist_test_tensor_f32(by, 2, (int64_t) rows, (int64_t) width, 0),
+                        ts = geist_test_tensor_f32(bs, 1, (int64_t) width, 0, 0);
     const struct geist_hadamard_args args = {.x        = &tx,
                                              .signs    = signed_ ? &ts : nullptr,
                                              .y        = &ty,
@@ -244,7 +200,7 @@ static void test_hadamard(size_t      rows,
     check(g_be->desc->fused->hadamard_rotate != nullptr, "hadamard entry");
     check(g_be->desc->fused->hadamard_rotate(g_be, &args) == GEIST_OK, "hadamard dispatch");
     check(download(by, got, n), "hadamard download");
-    const double e = max_abs(got, ref, n);
+    const double e = geist_test_max_abs(n, got, ref);
     printf("  hadamard %-26s max_abs %.2e\n", name, e);
     check(e == 0.0, name);
     free(x);
@@ -254,9 +210,9 @@ static void test_hadamard(size_t      rows,
 }
 
 static void test_rope(size_t seq, size_t heads, size_t hd, size_t rot, const char *name) {
-    float *x   = fill(seq * heads * hd, 0.21f, 1.0f);
-    float *cs  = fill(seq * rot, 0.13f, 1.0f);
-    float *sn  = fill(seq * rot, 0.17f, 1.0f);
+    float *x   = geist_test_fill(seq * heads * hd, 0.21f, 0.3f, 1.0f, 0.0f);
+    float *cs  = geist_test_fill(seq * rot, 0.13f, 0.3f, 1.0f, 0.0f);
+    float *sn  = geist_test_fill(seq * rot, 0.17f, 0.3f, 1.0f, 0.0f);
     float *ref = malloc(seq * heads * hd * sizeof(float));
     float *got = malloc(seq * heads * hd * sizeof(float));
     memcpy(ref, x, seq * heads * hd * sizeof(float));
@@ -265,13 +221,14 @@ static void test_rope(size_t seq, size_t heads, size_t hd, size_t rot, const cha
     struct geist_buffer *bx = dev_buf(x, seq * heads * hd), *bc = dev_buf(cs, seq * rot),
                         *bs = dev_buf(sn, seq * rot);
     check(bx && bc && bs, "rope buffers");
-    struct geist_tensor     tx = view(bx, 3, (int64_t) seq, (int64_t) heads, (int64_t) hd);
-    struct geist_tensor     tc = view(bc, 2, (int64_t) seq, (int64_t) rot, 0);
-    struct geist_tensor     ts = view(bs, 2, (int64_t) seq, (int64_t) rot, 0);
+    struct geist_tensor tx =
+            geist_test_tensor_f32(bx, 3, (int64_t) seq, (int64_t) heads, (int64_t) hd);
+    struct geist_tensor     tc = geist_test_tensor_f32(bc, 2, (int64_t) seq, (int64_t) rot, 0);
+    struct geist_tensor     ts = geist_test_tensor_f32(bs, 2, (int64_t) seq, (int64_t) rot, 0);
     const enum geist_status s  = g_be->desc->prims->rope_apply(g_be, &tx, &tc, &ts);
     check(s == GEIST_OK, "rope_apply dispatch");
     check(download(bx, got, seq * heads * hd), "rope download");
-    const double e = max_abs(got, ref, seq * heads * hd);
+    const double e = geist_test_max_abs(seq * heads * hd, got, ref);
     printf("  rope %-22s max_abs %.2e\n", name, e);
     check(e < 2e-6, name);
     free(x);
@@ -283,22 +240,23 @@ static void test_rope(size_t seq, size_t heads, size_t hd, size_t rot, const cha
 
 static void test_elementwise(size_t rows, size_t cols) {
     const size_t n = rows * cols;
-    float *a = fill(n, 0.19f, 6.0f), *b = fill(n, 0.11f, 3.0f), *got = malloc(n * sizeof(float));
+    float       *a = geist_test_fill(n, 0.19f, 0.3f, 6.0f, 0.0f),
+          *b = geist_test_fill(n, 0.11f, 0.3f, 3.0f, 0.0f), *got = malloc(n * sizeof(float));
     float *ref = malloc(n * sizeof(float));
 
     struct geist_buffer *ba = dev_buf(a, n), *bb = dev_buf(b, n), *by = dev_buf(nullptr, n);
     check(ba && bb && by, "ew buffers");
-    struct geist_tensor ta = view(ba, 2, (int64_t) rows, (int64_t) cols, 0),
-                        tb = view(bb, 2, (int64_t) rows, (int64_t) cols, 0),
-                        ty = view(by, 2, (int64_t) rows, (int64_t) cols, 0);
+    struct geist_tensor ta = geist_test_tensor_f32(ba, 2, (int64_t) rows, (int64_t) cols, 0),
+                        tb = geist_test_tensor_f32(bb, 2, (int64_t) rows, (int64_t) cols, 0),
+                        ty = geist_test_tensor_f32(by, 2, (int64_t) rows, (int64_t) cols, 0);
 
     /* silu (out of place) */
     for (size_t i = 0; i < n; i++) {
-        ref[i] = silu_ref(a[i]);
+        ref[i] = geist_test_silu(a[i]);
     }
     check(g_be->desc->prims->silu(g_be, &ta, &ty) == GEIST_OK, "silu dispatch");
     check(download(by, got, n), "silu download");
-    double e = max_abs(got, ref, n);
+    double e = geist_test_max_abs(n, got, ref);
     printf("  silu        %zux%zu  max_abs %.2e\n", rows, cols, e);
     check(e < 2e-6, "silu");
 
@@ -306,11 +264,11 @@ static void test_elementwise(size_t rows, size_t cols) {
     const struct geist_backend_fused *f = geist_backend_fused_tbl(g_be);
     check(f->silu_mul != nullptr, "silu_mul present");
     for (size_t i = 0; i < n; i++) {
-        ref[i] = silu_ref(a[i]) * b[i];
+        ref[i] = geist_test_silu(a[i]) * b[i];
     }
     check(f->silu_mul(g_be, &ta, &tb, &ta) == GEIST_OK, "silu_mul dispatch");
     check(download(ba, got, n), "silu_mul download");
-    e = max_abs(got, ref, n);
+    e = geist_test_max_abs(n, got, ref);
     printf("  silu_mul    %zux%zu  max_abs %.2e (in place)\n", rows, cols, e);
     check(e < 2e-5, "silu_mul");
 
@@ -323,7 +281,7 @@ static void test_elementwise(size_t rows, size_t cols) {
     }
     check(f->sigmoid_mul(g_be, &ta, &tb, &ta) == GEIST_OK, "sigmoid_mul dispatch");
     check(download(ba, got, n), "sigmoid_mul download");
-    e = max_abs(got, ref, n);
+    e = geist_test_max_abs(n, got, ref);
     printf("  sigmoid_mul %zux%zu  max_abs %.2e (in place)\n", rows, cols, e);
     check(e < 2e-6, "sigmoid_mul");
 
@@ -341,10 +299,12 @@ static void test_elementwise(size_t rows, size_t cols) {
  * sized for 32-lane subgroups, the 8-lane llvmpipe (and Intel's 8/16) wrote
  * past the array and every row came back wrong. */
 static void test_rmsnorm(size_t rows, size_t feat) {
-    const size_t n = rows * feat;
-    float       *x = fill(n, 0.13f, 4.0f), *r = fill(n, 0.07f, 2.0f), *w = fill(feat, 0.05f, 1.5f);
-    float       *got = malloc(n * sizeof(float)), *ref = malloc(n * sizeof(float));
-    const float  eps = 1e-6f;
+    const size_t n  = rows * feat;
+    float       *x  = geist_test_fill(n, 0.13f, 0.3f, 4.0f, 0.0f),
+          *r        = geist_test_fill(n, 0.07f, 0.3f, 2.0f, 0.0f),
+          *w        = geist_test_fill(feat, 0.05f, 0.3f, 1.5f, 0.0f);
+    float      *got = malloc(n * sizeof(float)), *ref = malloc(n * sizeof(float));
+    const float eps = 1e-6f;
     for (size_t row = 0; row < rows; row++) {
         double ss = 0.0;
         for (size_t i = 0; i < feat; i++) {
@@ -358,14 +318,14 @@ static void test_rmsnorm(size_t rows, size_t feat) {
     struct geist_buffer *bx = dev_buf(x, n), *br = dev_buf(r, n), *bw = dev_buf(w, feat),
                         *by = dev_buf(nullptr, n);
     check(bx && br && bw && by, "rmsnorm buffers");
-    struct geist_tensor tx = view(bx, 2, (int64_t) rows, (int64_t) feat, 0),
-                        tr = view(br, 2, (int64_t) rows, (int64_t) feat, 0),
-                        tw = view(bw, 1, (int64_t) feat, 0, 0),
-                        ty = view(by, 2, (int64_t) rows, (int64_t) feat, 0);
+    struct geist_tensor tx = geist_test_tensor_f32(bx, 2, (int64_t) rows, (int64_t) feat, 0),
+                        tr = geist_test_tensor_f32(br, 2, (int64_t) rows, (int64_t) feat, 0),
+                        tw = geist_test_tensor_f32(bw, 1, (int64_t) feat, 0, 0),
+                        ty = geist_test_tensor_f32(by, 2, (int64_t) rows, (int64_t) feat, 0);
 
     check(g_be->desc->prims->rmsnorm(g_be, &tx, &tw, eps, &ty) == GEIST_OK, "rmsnorm dispatch");
     check(download(by, got, n), "rmsnorm download");
-    double e = max_abs(got, ref, n);
+    double e = geist_test_max_abs(n, got, ref);
     printf("  rmsnorm     %zux%zu  max_abs %.2e\n", rows, feat, e);
     check(e < 1e-5, "rmsnorm");
 
@@ -376,7 +336,7 @@ static void test_rmsnorm(size_t rows, size_t feat) {
     }
     check(f->rmsnorm_add(g_be, &tr, &tx, &tw, eps, &ty) == GEIST_OK, "rmsnorm_add dispatch");
     check(download(by, got, n), "rmsnorm_add download");
-    e = max_abs(got, ref, n);
+    e = geist_test_max_abs(n, got, ref);
     printf("  rmsnorm_add %zux%zu  max_abs %.2e\n", rows, feat, e);
     check(e < 1e-5, "rmsnorm_add");
 
@@ -393,7 +353,7 @@ static void test_rmsnorm(size_t rows, size_t feat) {
 
 static void test_qgate(size_t rows, size_t heads, size_t hd) {
     const size_t q_out = heads * hd;
-    float       *joint = fill(rows * 2 * q_out, 0.07f, 2.0f);
+    float       *joint = geist_test_fill(rows * 2 * q_out, 0.07f, 0.3f, 2.0f, 0.0f);
     float       *q_ref = malloc(rows * q_out * sizeof(float)),
           *g_ref       = malloc(rows * q_out * sizeof(float));
     float *q_got       = malloc(rows * q_out * sizeof(float)),
@@ -408,14 +368,15 @@ static void test_qgate(size_t rows, size_t heads, size_t hd) {
     struct geist_buffer *bj = dev_buf(joint, rows * 2 * q_out),
                         *bq = dev_buf(nullptr, rows * q_out), *bg = dev_buf(nullptr, rows * q_out);
     check(bj && bq && bg, "qgate buffers");
-    struct geist_tensor               tj = view(bj, 2, (int64_t) rows, (int64_t) (2 * q_out), 0);
-    struct geist_tensor               tq = view(bq, 2, (int64_t) rows, (int64_t) q_out, 0);
-    struct geist_tensor               tg = view(bg, 2, (int64_t) rows, (int64_t) q_out, 0);
-    const struct geist_backend_fused *f  = geist_backend_fused_tbl(g_be);
+    struct geist_tensor tj = geist_test_tensor_f32(bj, 2, (int64_t) rows, (int64_t) (2 * q_out), 0);
+    struct geist_tensor tq = geist_test_tensor_f32(bq, 2, (int64_t) rows, (int64_t) q_out, 0);
+    struct geist_tensor tg = geist_test_tensor_f32(bg, 2, (int64_t) rows, (int64_t) q_out, 0);
+    const struct geist_backend_fused *f = geist_backend_fused_tbl(g_be);
     check(f->attn_qgate_split != nullptr, "attn_qgate_split present");
     check(f->attn_qgate_split(g_be, &tj, heads, hd, &tq, &tg) == GEIST_OK, "qgate dispatch");
     check(download(bq, q_got, rows * q_out) && download(bg, g_got, rows * q_out), "qgate download");
-    const double eq = max_abs(q_got, q_ref, rows * q_out), eg = max_abs(g_got, g_ref, rows * q_out);
+    const double eq = geist_test_max_abs(rows * q_out, q_got, q_ref),
+                 eg = geist_test_max_abs(rows * q_out, g_got, g_ref);
     printf("  qgate_split %zu rows x %zu heads x %zu  q %.2e gate %.2e\n", rows, heads, hd, eq, eg);
     check(eq == 0.0 && eg == 0.0, "qgate_split is an exact copy");
     g_be->desc->vtbl->buffer_destroy(g_be, bj);
@@ -439,22 +400,27 @@ static void test_attention(size_t      n_q,
                            size_t      hd,
                            size_t      sliding,
                            const char *name) {
-    float *q = fill(n_q * qh * hd, 0.031f, 0.6f), *k = fill(n_kv * kvh * hd, 0.023f, 0.6f);
-    float *v   = fill(n_kv * kvh * hd, 0.017f, 1.0f);
+    float *q   = geist_test_fill(n_q * qh * hd, 0.031f, 0.3f, 0.6f, 0.0f),
+          *k   = geist_test_fill(n_kv * kvh * hd, 0.023f, 0.3f, 0.6f, 0.0f);
+    float *v   = geist_test_fill(n_kv * kvh * hd, 0.017f, 0.3f, 1.0f, 0.0f);
     float *ref = malloc(n_q * qh * hd * sizeof(float)),
           *got = malloc(n_q * qh * hd * sizeof(float));
     attention_mqa_causal_kv(n_q, n_kv, q_off, qh, kvh, hd, sliding, q, k, v, ref);
     struct geist_buffer *bq = dev_buf(q, n_q * qh * hd), *bk = dev_buf(k, n_kv * kvh * hd),
                         *bv = dev_buf(v, n_kv * kvh * hd), *bo = dev_buf(nullptr, n_q * qh * hd);
     check(bq && bk && bv && bo, "attention buffers");
-    struct geist_tensor tq = view(bq, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
-    struct geist_tensor tk = view(bk, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
-    struct geist_tensor tv = view(bv, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
-    struct geist_tensor to = view(bo, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
+    struct geist_tensor tq =
+            geist_test_tensor_f32(bq, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
+    struct geist_tensor tk =
+            geist_test_tensor_f32(bk, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
+    struct geist_tensor tv =
+            geist_test_tensor_f32(bv, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
+    struct geist_tensor to =
+            geist_test_tensor_f32(bo, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
     check(g_be->desc->prims->attention(g_be, &tq, &tk, &tv, q_off, sliding, &to) == GEIST_OK,
           "attention dispatch");
     check(download(bo, got, n_q * qh * hd), "attention download");
-    const double e = max_abs(got, ref, n_q * qh * hd);
+    const double e = geist_test_max_abs(n_q * qh * hd, got, ref);
     printf("  attention %-28s max_abs %.2e\n", name, e);
     check(e < 1e-4, name);
     g_be->desc->vtbl->buffer_destroy(g_be, bq);

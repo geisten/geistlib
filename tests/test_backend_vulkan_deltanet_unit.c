@@ -19,6 +19,7 @@
  * prefills.
  *
  * SKIPs (exit 77) when no Vulkan runtime/device is present. */
+#include "deltanet_ref.h"
 #include "model_fixtures.h"
 #include "test_helpers.h"
 
@@ -37,110 +38,6 @@ struct geom {
     double      tol;
 };
 
-static float silu_ref(float x) {
-    const float e = expf(-fabsf(x));
-    return x >= 0.0f ? x / (1.0f + e) : x * e / (1.0f + e);
-}
-
-/* Scalar oracle: advances qkv (conv + norm in place), z (output), cs, state. */
-static void mix_ref(const struct geom *g,
-                    size_t             seq,
-                    float             *qkv,
-                    float             *z,
-                    const float       *beta,
-                    const float       *alpha,
-                    const float       *cw,
-                    const float       *aw,
-                    const float       *dt,
-                    const float       *nw,
-                    float             *cs,
-                    float             *state) {
-    const float  eps  = 1e-6f;
-    const size_t keyd = g->nkh * g->dk, vd = g->nvh * g->dv, cd = 2 * keyd + vd;
-    float       *y   = malloc(cd * sizeof(float));
-    float       *out = malloc(g->dv * sizeof(float));
-    for (size_t t = 0; t < seq; t++) {
-        for (size_t c = 0; c < cd; c++) {
-            float acc = 0.0f;
-            for (size_t r = 0; r < g->K; r++) {
-                const float x = r + 1 < g->K ? cs[r * cd + c] : qkv[t * cd + c];
-                acc += cw[c * g->K + r] * x;
-            }
-            y[c] = silu_ref(acc);
-        }
-        memmove(cs, cs + cd, (g->K - 2) * cd * sizeof(float));
-        memcpy(cs + (g->K - 2) * cd, qkv + t * cd, cd * sizeof(float));
-        memcpy(qkv + t * cd, y, cd * sizeof(float));
-
-        for (size_t h = 0; h < g->nkh; h++) {
-            double qss = 0.0, kss = 0.0;
-            for (size_t i = 0; i < g->dk; i++) {
-                qss += (double) y[h * g->dk + i] * y[h * g->dk + i];
-                kss += (double) y[keyd + h * g->dk + i] * y[keyd + h * g->dk + i];
-            }
-            const float qi = (float) (1.0 / sqrt(qss + eps)) / sqrtf((float) g->dk);
-            const float ki = (float) (1.0 / sqrt(kss + eps));
-            for (size_t i = 0; i < g->dk; i++) {
-                qkv[t * cd + h * g->dk + i] *= qi;
-                qkv[t * cd + keyd + h * g->dk + i] *= ki;
-            }
-        }
-        for (size_t h = 0; h < g->nvh; h++) {
-            const size_t hk    = h % g->nkh;
-            const float  b     = 1.0f / (1.0f + expf(-beta[t * g->nvh + h]));
-            const float  decay = expf(aw[h] * log1pf(expf(alpha[t * g->nvh + h] + dt[h])));
-            for (size_t j = 0; j < g->dv; j++) {
-                out[j] = 0.0f;
-            }
-            for (size_t j = 0; j < g->dv; j++) {
-                float mem = 0.0f;
-                for (size_t i = 0; i < g->dk; i++) {
-                    float *s = state + (h * g->dk + i) * g->dv + j;
-                    *s *= decay;
-                    mem += *s * qkv[t * cd + keyd + hk * g->dk + i];
-                }
-                const float d = (qkv[t * cd + 2 * keyd + h * g->dv + j] - mem) * b;
-                for (size_t i = 0; i < g->dk; i++) {
-                    float *s = state + (h * g->dk + i) * g->dv + j;
-                    *s += qkv[t * cd + keyd + hk * g->dk + i] * d;
-                    out[j] += *s * qkv[t * cd + hk * g->dk + i];
-                }
-            }
-            double ss = 0.0;
-            for (size_t j = 0; j < g->dv; j++) {
-                ss += (double) out[j] * out[j];
-            }
-            const float inv = (float) (1.0 / sqrt(ss / (double) g->dv + eps));
-            for (size_t j = 0; j < g->dv; j++) {
-                z[t * vd + h * g->dv + j] =
-                        out[j] * inv * nw[j] * silu_ref(z[t * vd + h * g->dv + j]);
-            }
-        }
-    }
-    free(y);
-    free(out);
-}
-
-static struct geist_tensor
-tensor_nd(struct geist_buffer *b, int nd, int64_t d0, int64_t d1, int64_t d2) {
-    struct geist_tensor t = {.buffer = b, .dtype = GEIST_DTYPE_F32, .layout = GEIST_LAYOUT_DENSE};
-    t.ndim                = nd;
-    t.shape[0]            = d0;
-    t.shape[1]            = d1;
-    t.shape[2]            = d2;
-    if (nd == 1) {
-        t.stride[0] = 1;
-    } else if (nd == 2) {
-        t.stride[0] = d1;
-        t.stride[1] = 1;
-    } else {
-        t.stride[0] = d1 * d2;
-        t.stride[1] = d2;
-        t.stride[2] = 1;
-    }
-    return t;
-}
-
 static bool make_buf(struct geist_backend  *be,
                      struct geist_buffer  **out,
                      enum geist_buffer_role role,
@@ -151,25 +48,6 @@ static bool make_buf(struct geist_backend  *be,
            v->buffer_upload(*out, n * sizeof(float), (const uint8_t *) src) == GEIST_OK;
 }
 
-static double max_abs(const float *a, const float *b, size_t n) {
-    double m = 0.0;
-    for (size_t i = 0; i < n; i++) {
-        const double d = fabs((double) a[i] - (double) b[i]);
-        if (d > m) {
-            m = d;
-        }
-    }
-    return m;
-}
-
-static float *fill(size_t n, float freq, float amp, float bias) {
-    float *p = malloc(n * sizeof(float));
-    for (size_t i = 0; i < n; i++) {
-        p[i] = sinf((float) i * freq) * amp + bias;
-    }
-    return p;
-}
-
 static bool run_geom(struct geist_backend *be, const struct geom *g) {
     const struct geist_backend_fused *f    = geist_backend_fused_tbl(be);
     const struct geist_backend_vtbl  *v    = be->desc->vtbl;
@@ -177,12 +55,16 @@ static bool run_geom(struct geist_backend *be, const struct geom *g) {
     const size_t                      cd = 2 * keyd + vd, cn = (g->K - 1) * cd;
     const size_t                      sn = g->nvh * g->dk * g->dv;
 
-    float *qkv = fill(g->seq * cd, 0.17f, 0.4f, 0.0f), *z = fill(g->seq * vd, 0.11f, 0.3f, 0.0f);
-    float *beta  = fill(g->seq * g->nvh, 0.13f, 0.6f, -0.1f);
-    float *alpha = fill(g->seq * g->nvh, 0.07f, 0.5f, -0.2f);
-    float *cw = fill(cd * g->K, 0.09f, 0.2f, 0.0f), *aw = malloc(g->nvh * sizeof(float));
-    float *dt = malloc(g->nvh * sizeof(float)), *nw = fill(g->dv, 0.31f, 0.1f, 0.9f);
-    float *cs = fill(cn, 0.05f, 0.1f, 0.0f), *st = fill(sn, 0.03f, 0.05f, 0.0f);
+    float *qkv   = geist_test_fill(g->seq * cd, 0.17f, 0.0f, 0.4f, 0.0f),
+          *z     = geist_test_fill(g->seq * vd, 0.11f, 0.0f, 0.3f, 0.0f);
+    float *beta  = geist_test_fill(g->seq * g->nvh, 0.13f, 0.0f, 0.6f, -0.1f);
+    float *alpha = geist_test_fill(g->seq * g->nvh, 0.07f, 0.0f, 0.5f, -0.2f);
+    float *cw    = geist_test_fill(cd * g->K, 0.09f, 0.0f, 0.2f, 0.0f),
+          *aw    = malloc(g->nvh * sizeof(float));
+    float *dt    = malloc(g->nvh * sizeof(float)),
+          *nw    = geist_test_fill(g->dv, 0.31f, 0.0f, 0.1f, 0.9f);
+    float *cs    = geist_test_fill(cn, 0.05f, 0.0f, 0.1f, 0.0f),
+          *st    = geist_test_fill(sn, 0.03f, 0.0f, 0.05f, 0.0f);
     for (size_t i = 0; i < g->nvh; i++) {
         aw[i] = -0.5f - (float) i * 0.1f;
         dt[i] = 0.1f + (float) i * 0.03f;
@@ -194,7 +76,23 @@ static bool run_geom(struct geist_backend *be, const struct geom *g) {
     memcpy(z_ref, z, g->seq * vd * sizeof(float));
     memcpy(cs_ref, cs, cn * sizeof(float));
     memcpy(s_ref, st, sn * sizeof(float));
-    mix_ref(g, g->seq, q_ref, z_ref, beta, alpha, cw, aw, dt, nw, cs_ref, s_ref);
+    deltanet_mix_ref(g->seq,
+                     g->nkh,
+                     g->nvh,
+                     g->dk,
+                     g->dv,
+                     g->K,
+                     1e-6f,
+                     beta,
+                     alpha,
+                     cw,
+                     aw,
+                     dt,
+                     nw,
+                     q_ref,
+                     z_ref,
+                     cs_ref,
+                     s_ref);
 
     struct geist_buffer *bq = nullptr, *bz = nullptr, *bb = nullptr, *ba = nullptr, *bw = nullptr,
                         *bA = nullptr, *bd = nullptr, *bn = nullptr, *bc = nullptr, *bs = nullptr;
@@ -212,16 +110,17 @@ static bool run_geom(struct geist_backend *be, const struct geom *g) {
         fprintf(stderr, "FAIL [%s]: buffer setup\n", g->name);
         return false;
     }
-    struct geist_tensor tq = tensor_nd(bq, 2, (int64_t) g->seq, (int64_t) cd, 0);
-    struct geist_tensor tz = tensor_nd(bz, 2, (int64_t) g->seq, (int64_t) vd, 0);
-    struct geist_tensor tb = tensor_nd(bb, 2, (int64_t) g->seq, (int64_t) g->nvh, 0);
-    struct geist_tensor ta = tensor_nd(ba, 2, (int64_t) g->seq, (int64_t) g->nvh, 0);
-    struct geist_tensor tw = tensor_nd(bw, 2, (int64_t) cd, (int64_t) g->K, 0);
-    struct geist_tensor tA = tensor_nd(bA, 1, (int64_t) g->nvh, 0, 0);
-    struct geist_tensor td = tensor_nd(bd, 1, (int64_t) g->nvh, 0, 0);
-    struct geist_tensor tn = tensor_nd(bn, 1, (int64_t) g->dv, 0, 0);
-    struct geist_tensor tc = tensor_nd(bc, 2, (int64_t) (g->K - 1), (int64_t) cd, 0);
-    struct geist_tensor ts = tensor_nd(bs, 3, (int64_t) g->nvh, (int64_t) g->dk, (int64_t) g->dv);
+    struct geist_tensor tq = geist_test_tensor_f32(bq, 2, (int64_t) g->seq, (int64_t) cd, 0);
+    struct geist_tensor tz = geist_test_tensor_f32(bz, 2, (int64_t) g->seq, (int64_t) vd, 0);
+    struct geist_tensor tb = geist_test_tensor_f32(bb, 2, (int64_t) g->seq, (int64_t) g->nvh, 0);
+    struct geist_tensor ta = geist_test_tensor_f32(ba, 2, (int64_t) g->seq, (int64_t) g->nvh, 0);
+    struct geist_tensor tw = geist_test_tensor_f32(bw, 2, (int64_t) cd, (int64_t) g->K, 0);
+    struct geist_tensor tA = geist_test_tensor_f32(bA, 1, (int64_t) g->nvh, 0, 0);
+    struct geist_tensor td = geist_test_tensor_f32(bd, 1, (int64_t) g->nvh, 0, 0);
+    struct geist_tensor tn = geist_test_tensor_f32(bn, 1, (int64_t) g->dv, 0, 0);
+    struct geist_tensor tc = geist_test_tensor_f32(bc, 2, (int64_t) (g->K - 1), (int64_t) cd, 0);
+    struct geist_tensor ts =
+            geist_test_tensor_f32(bs, 3, (int64_t) g->nvh, (int64_t) g->dk, (int64_t) g->dv);
 
     struct geist_deltanet_mix_args args = {.qkv         = &tq,
                                            .z           = &tz,
@@ -254,8 +153,9 @@ static bool run_geom(struct geist_backend *be, const struct geom *g) {
     ok = v->buffer_download(g->seq * vd * sizeof(float), (uint8_t *) z_got, bz) == GEIST_OK &&
          v->buffer_download(cn * sizeof(float), (uint8_t *) cs_got, bc) == GEIST_OK &&
          v->buffer_download(sn * sizeof(float), (uint8_t *) s_got, bs) == GEIST_OK;
-    const double ze = max_abs(z_got, z_ref, g->seq * vd), ce = max_abs(cs_got, cs_ref, cn);
-    const double se = max_abs(s_got, s_ref, sn);
+    const double ze = geist_test_max_abs(g->seq * vd, z_got, z_ref),
+                 ce = geist_test_max_abs(cn, cs_got, cs_ref);
+    const double se = geist_test_max_abs(sn, s_got, s_ref);
     printf("  %-22s prefill seq=%-3zu  z %.2e  conv-state %.2e  delta-state %.2e\n",
            g->name,
            g->seq,
@@ -265,7 +165,8 @@ static bool run_geom(struct geist_backend *be, const struct geom *g) {
     ok = ok && ze < g->tol && ce < 1e-6 && se < g->tol;
 
     /* One decode row continuing from the advanced state. */
-    float *qd = fill(cd, 0.19f, 0.35f, 0.0f), *zd = fill(vd, 0.23f, 0.25f, 0.0f);
+    float *qd  = geist_test_fill(cd, 0.19f, 0.0f, 0.35f, 0.0f),
+          *zd  = geist_test_fill(vd, 0.23f, 0.0f, 0.25f, 0.0f);
     float *bd1 = malloc(g->nvh * sizeof(float)), *ad1 = malloc(g->nvh * sizeof(float));
     for (size_t i = 0; i < g->nvh; i++) {
         bd1[i] = 0.2f - (float) i * 0.3f;
@@ -274,23 +175,40 @@ static bool run_geom(struct geist_backend *be, const struct geom *g) {
     float *qd_ref = malloc(cd * sizeof(float)), *zd_ref = malloc(vd * sizeof(float));
     memcpy(qd_ref, qd, cd * sizeof(float));
     memcpy(zd_ref, zd, vd * sizeof(float));
-    mix_ref(g, 1, qd_ref, zd_ref, bd1, ad1, cw, aw, dt, nw, cs_ref, s_ref);
+    deltanet_mix_ref(1,
+                     g->nkh,
+                     g->nvh,
+                     g->dk,
+                     g->dv,
+                     g->K,
+                     1e-6f,
+                     bd1,
+                     ad1,
+                     cw,
+                     aw,
+                     dt,
+                     nw,
+                     qd_ref,
+                     zd_ref,
+                     cs_ref,
+                     s_ref);
     ok       = ok && v->buffer_upload(bq, cd * sizeof(float), (const uint8_t *) qd) == GEIST_OK &&
                v->buffer_upload(bz, vd * sizeof(float), (const uint8_t *) zd) == GEIST_OK &&
                v->buffer_upload(bb, g->nvh * sizeof(float), (const uint8_t *) bd1) == GEIST_OK &&
                v->buffer_upload(ba, g->nvh * sizeof(float), (const uint8_t *) ad1) == GEIST_OK;
-    tq       = tensor_nd(bq, 2, 1, (int64_t) cd, 0);
-    tz       = tensor_nd(bz, 2, 1, (int64_t) vd, 0);
-    tb       = tensor_nd(bb, 2, 1, (int64_t) g->nvh, 0);
-    ta       = tensor_nd(ba, 2, 1, (int64_t) g->nvh, 0);
+    tq       = geist_test_tensor_f32(bq, 2, 1, (int64_t) cd, 0);
+    tz       = geist_test_tensor_f32(bz, 2, 1, (int64_t) vd, 0);
+    tb       = geist_test_tensor_f32(bb, 2, 1, (int64_t) g->nvh, 0);
+    ta       = geist_test_tensor_f32(ba, 2, 1, (int64_t) g->nvh, 0);
     args.seq = 1;
     ok       = ok && f->deltanet_mix(be, &args) == GEIST_OK;
     float *zd_got = malloc(vd * sizeof(float));
     ok = ok && v->buffer_download(vd * sizeof(float), (uint8_t *) zd_got, bz) == GEIST_OK &&
          v->buffer_download(cn * sizeof(float), (uint8_t *) cs_got, bc) == GEIST_OK &&
          v->buffer_download(sn * sizeof(float), (uint8_t *) s_got, bs) == GEIST_OK;
-    const double dze = max_abs(zd_got, zd_ref, vd), dce = max_abs(cs_got, cs_ref, cn);
-    const double dse = max_abs(s_got, s_ref, sn);
+    const double dze = geist_test_max_abs(vd, zd_got, zd_ref),
+                 dce = geist_test_max_abs(cn, cs_got, cs_ref);
+    const double dse = geist_test_max_abs(sn, s_got, s_ref);
     printf("  %-22s decode  seq=1    z %.2e  conv-state %.2e  delta-state %.2e\n",
            g->name,
            dze,
