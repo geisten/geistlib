@@ -648,8 +648,9 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 8);
     /* The prefill kernels m = 1 and 8 do not reach. Appended here so every
      * case above keeps the random data it has always had.
-     * Q4_K m=33: the m16 kernel (rows >= 16 but off the simdgroup guard, as
-     * a prompt's last chunk usually is), last tile partial.
+     * Q4_K m=33 x n_out=383: n_out off the 64-column tile and an unaligned
+     * y row stride keep the simdgroup GEMM out: the m16 kernel, last tile
+     * partial.
      * Q4_K m=32 x n_out=384: full 32x64 tiles -> the simdgroup GEMM's _fast
      * variant, which a Q4_K prefill chunk with rows % 32 == 0 and
      * n_out % 64 == 0 takes by default.
@@ -658,6 +659,22 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 384, 32);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 64);
+    /* #578: a ragged batch splits into whole tiles on the _fast GEMM and a
+     * tail at the y/x offset of its first row; up to 9 rows go row by row
+     * through the matvec kernel, more through the bounded GEMM.
+     * Q4_K m=34: 32 fast + 2 matvec. m=65: 64 fast + 1 matvec. m=45: 32
+     * fast + 13 bounded. m=5: matvec only. m=12 x n_out=383: an unaligned
+     * y row stride keeps the bounded GEMM's float4 epilogue out (m16).
+     * Q6_K m=70: 64 fast + 6 matvec. m=80: 64 fast + 16 bounded. m=3:
+     * matvec only. */
+    run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 384, 34);
+    run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 384, 65);
+    run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 384, 45);
+    run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 384, 5);
+    run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 12);
+    run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 70);
+    run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 80);
+    run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 3);
     run_silu_case(mt);
     run_embedding_case(mt, GEIST_DTYPE_Q4_0, "Q4_0");
     run_embedding_case(mt, GEIST_DTYPE_Q8_0, "Q8_0");

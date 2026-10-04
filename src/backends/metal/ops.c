@@ -10,6 +10,12 @@
 #include "checked.h"
 #include "hadamard.h"
 
+/* Below this many rows a quantized linear reads the weights once per row
+ * through the matvec kernel instead of one pass of a tiled GEMM. Measured on
+ * an M1 Max with Gemma 4 E4B Q4_K_M: a whole-model pass costs ~20 ms per
+ * row as matvec and ~195 ms as a bounded GEMM tile for any count up to 32,
+ * so the two meet at ~10 rows (#578). */
+#define METAL_MATVEC_MAX_ROWS 9u
 static void metal_encode_q4k_linear(struct metal_state            *st,
                                     void                          *enc,
                                     const struct geist_tensor     *x,
@@ -17,15 +23,51 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
                                     const struct geist_tensor     *y,
                                     const struct metal_q4k_params *params,
                                     bool                           m_tile8) {
+    /* #578: split a ragged batch so its whole 32-row tiles take the interior
+     * fast kernel and only the tail takes a bounded one. Left whole, one
+     * ragged row sent every tile of the matrix through the bounded path.
+     * The two dispatches write disjoint rows of y. */
+    if (m_tile8 && params->rows > 32u && (params->rows % 32u) != 0u) {
+        struct metal_q4k_params head = *params;
+        struct metal_q4k_params tail = *params;
+        head.rows                    = params->rows & ~31u;
+        tail.rows                    = params->rows - head.rows;
+        tail.x_offset += head.rows * params->x_row_stride;
+        tail.y_offset += head.rows * params->y_row_stride;
+        metal_encode_q4k_linear(st, enc, x, w, y, &head, true);
+        metal_encode_q4k_linear(st, enc, x, w, y, &tail, true);
+        return;
+    }
+    /* A few rows (a ragged tail, a short appended turn) go row by row
+     * through the matvec kernel: the m8 tile kernel took as long as a full
+     * 64-row GEMM for any row count (#578). */
+    if (m_tile8 && params->rows <= METAL_MATVEC_MAX_ROWS && st->use_q4k_n4 && params->n_out >= 4u) {
+        for (uint32_t r = 0; r < params->rows; r++) {
+            struct metal_q4k_params one = *params;
+            one.rows                    = 1u;
+            one.x_offset += r * params->x_row_stride;
+            one.y_offset += r * params->y_row_stride;
+            metal_encode_q4k_linear(st, enc, x, w, y, &one, false);
+        }
+        return;
+    }
     const bool m_tile16    = m_tile8 && params->rows >= METAL_Q4K_M16_TILE;
     const bool m_tile16_n2 = m_tile16 && st->use_q4k_m16_n2 &&
                              st->q4k_matmul_m16_n2_pipeline != nullptr && params->n_out >= 2u;
-    const bool m_tile_sg   = m_tile8 && st->use_q4k_mm_sg && st->q4k_mm_sg_pipeline != nullptr &&
-                             params->rows >= 32u && params->n_out >= 64u &&
-                             (params->rows % 32u) == 0u && (params->n_out % 64u) == 0u;
+    /* The bounded kernel clamps its row and column indices and copies a
+     * partial tile out through threadgroup memory, so any rows >= 8 shape
+     * takes it, as the other formats' GEMMs do. Gated on rows%32, a ragged
+     * tail went through the m16 kernel, which on Gemma 4 E4B cost more than
+     * the four full 64-row chunks before it (#578). The partial-tile
+     * epilogue stores float4s, so y rows must start 16-byte aligned. */
+    const bool full_tiles = (params->rows % 32u) == 0u && (params->n_out % 64u) == 0u;
+    const bool m_tile_sg =
+            m_tile8 && st->use_q4k_mm_sg && st->q4k_mm_sg_pipeline != nullptr &&
+            params->rows >= 8u && params->n_out >= 64u &&
+            (full_tiles || ((params->y_offset % 4u) == 0u && (params->y_row_stride % 4u) == 0u));
     /* interior fast variant: no bounds checks, vectorized activation
-     * staging (needs n_in%32 and 8-float-aligned x rows). */
-    const bool m_tile_sg_fast = m_tile_sg && st->q4k_mm_sg_fast_pipeline != nullptr &&
+     * staging (needs full tiles, n_in%32 and 8-float-aligned x rows). */
+    const bool m_tile_sg_fast = m_tile_sg && full_tiles && st->q4k_mm_sg_fast_pipeline != nullptr &&
                                 (params->n_in % 32u) == 0u && (params->x_offset % 8u) == 0u &&
                                 (params->x_row_stride % 8u) == 0u;
     const bool m_tile8_active = m_tile8 && !m_tile16;
@@ -78,6 +120,30 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
                                     const struct geist_tensor     *y,
                                     const struct metal_q4k_params *params,
                                     bool                           m_tile8) {
+    /* #578: as for Q4_K, whole 64-row tiles take the fast kernel and only a
+     * ragged tail the bounded one. */
+    if (m_tile8 && params->rows > 64u && (params->rows % 64u) != 0u) {
+        struct metal_q4k_params head = *params;
+        struct metal_q4k_params tail = *params;
+        head.rows                    = params->rows & ~63u;
+        tail.rows                    = params->rows - head.rows;
+        tail.x_offset += head.rows * params->x_row_stride;
+        tail.y_offset += head.rows * params->y_row_stride;
+        metal_encode_q6k_linear(st, enc, x, w, y, &head, true);
+        metal_encode_q6k_linear(st, enc, x, w, y, &tail, true);
+        return;
+    }
+    if (m_tile8 && params->rows > 1u && params->rows <= METAL_MATVEC_MAX_ROWS && st->use_q6k_n4 &&
+        params->n_out >= 4u) {
+        for (uint32_t r = 0; r < params->rows; r++) {
+            struct metal_q4k_params one = *params;
+            one.rows                    = 1u;
+            one.x_offset += r * params->x_row_stride;
+            one.y_offset += r * params->y_row_stride;
+            metal_encode_q6k_linear(st, enc, x, w, y, &one, false);
+        }
+        return;
+    }
     /* rows==1 always takes the matvec kernel — the 64-row GEMM tile is a
      * waste for a single row, and n4 (llama mul_mv structure) wins at any
      * n_out that fills at least one threadgroup. */

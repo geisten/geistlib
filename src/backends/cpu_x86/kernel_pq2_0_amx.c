@@ -43,6 +43,8 @@
 
 #include "kernel_pq2_0_amx.h"
 
+#ifndef GEIST_NO_AMX /* the assembler knows AMX; mk/backend-cpu_x86.mk */
+
 #include "quant.h"
 
 #include <immintrin.h>
@@ -320,3 +322,4 @@ void pq2_0_amx_gemm(size_t         nb,
     }
     _tile_release();
 }
+#endif /* GEIST_NO_AMX */
