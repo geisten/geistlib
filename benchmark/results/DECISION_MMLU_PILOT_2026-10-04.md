@@ -72,6 +72,12 @@ Full campaign time includes setup/validation and all reference arms/repeats. The
 
 No own builds or other owned model benchmarks overlapped these runs. The shared desktop was not thermally isolated or continuously audited for external load. There was no cache eviction; first calls are post-setup, not cold cache. Peak process RSS includes retained handles and does not capture all Metal resource memory. Sequential QPS is a reciprocal-latency estimate. Additive preprocessing/surface/parse estimates in the raw reports are not measured service end-to-end latency. There is no abstention/fallback route.
 
+The measurements apply to the frozen source revision above. The remote branch
+subsequently integrated main changes to session KV sizing, device-copied weight
+residency and session snapshots. This is a record of the measured binary, not
+a performance measurement of that later merged tree. A new acceptance campaign
+must bind and measure the then-current binary again.
+
 ## Raw evidence and next evaluation boundary
 
 - [Compact machine-readable result](DECISION_MMLU_PILOT_2026-10-04.json), including canonical per-question predictions and generated-token/stop summaries.
