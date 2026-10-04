@@ -71,10 +71,10 @@ def percentile(values: list[float], fraction: float) -> float:
     return values[low] + (values[high] - values[low]) * (index - low)
 
 
-def summarize(samples: list[dict], cases: list[dict]) -> dict:
+def summarize(samples: list[dict], cases: list[dict], modes=MODES) -> dict:
     groups = {}
     for case_index, case in enumerate(cases):
-        for mode in MODES:
+        for mode in modes:
             rows = [s for s in samples if s["case_index"] == case_index and s["mode"] == mode and s["phase"] == "warm"]
             if not rows:
                 raise ValueError(f"missing warm samples: {case['id']} / {mode}")
@@ -90,14 +90,14 @@ def summarize(samples: list[dict], cases: list[dict]) -> dict:
     for case in cases:
         decision = groups[f"{case['id']}/decision_dense"]["p50_ms"]
         ratios[case["id"]] = {mode: groups[f"{case['id']}/{mode}"]["p50_ms"] / decision
-                              for mode in MODES if mode != "decision_dense"}
+                              for mode in modes if mode != "decision_dense"}
     return {"by_case_and_mode": groups, "p50_latency_ratio_over_decision": ratios,
             "quality_scope": "Candidate argmax accuracy for scores; first emitted token label accuracy for generation. Longer output correctness requires a downstream evaluator. Repeats are not independent quality examples.",
             "warning": "Latency ratios are workload-specific. They are not Jev parity or quality-matched reasoning speedups."}
 
 
-def enrich_and_check(samples: list[dict], cases: list[dict], warmup: int, repeats: int) -> None:
-    expected = {(i, mode, trial) for i in range(len(cases)) for mode in MODES
+def enrich_and_check(samples: list[dict], cases: list[dict], warmup: int, repeats: int, modes=MODES) -> None:
+    expected = {(i, mode, trial) for i in range(len(cases)) for mode in modes
                 for trial in range(1 + warmup + repeats)}
     got = set()
     reference = {}
@@ -115,7 +115,7 @@ def enrich_and_check(samples: list[dict], cases: list[dict], warmup: int, repeat
             raise ValueError("runtime changed input geometry")
         sample["case_id"] = case["id"]
         target = case.get("target_index")
-        if sample["mode"] in MODES[:2]:
+        if sample["mode"] in (*MODES[:2], "decision_selected"):
             best = sample["best_index"]
             scores = sample["logits"]
             probabilities = sample["conditional_probabilities"]
@@ -141,6 +141,17 @@ def enrich_and_check(samples: list[dict], cases: list[dict], warmup: int, repeat
             output = sample["generated_ids"]
             predicted = case["candidate_ids"].index(output[0]) if output and output[0] in case["candidate_ids"] else None
         sample["correct"] = predicted == target if target is not None else None
+    dense = {(s["case_index"], s["trial"]): s for s in samples if s["mode"] == "decision_dense"}
+    for sample in samples:
+        if sample["mode"] == "decision_selected":
+            previous = dense[(sample["case_index"], sample["trial"])]
+            if (sample["logits"] != previous["logits"] or sample["best_index"] != previous["best_index"]
+                    or any(abs(a-b) > 1e-12 for a,b in zip(sample["conditional_probabilities"], previous["conditional_probabilities"]))):
+                raise ValueError("selected rows and dense reference disagree exactly")
+            if (type(sample.get("projected_rows")) is not int or sample["projected_rows"] < sample["candidate_count"]
+                    or sample.get("logit_readback_bytes", 0) < sample["projected_rows"] * 4
+                    or sample.get("head_ns", 0) <= 0):
+                raise ValueError("missing selected-row instrumentation")
     if got != expected:
         raise ValueError("benchmark output is incomplete")
 
@@ -156,6 +167,7 @@ def main() -> None:
     parser.add_argument("--cases", type=Path, required=True)
     parser.add_argument("--binary", type=Path, default=ROOT / "bin/mac-omp/release/tools/bench_decision")
     parser.add_argument("--backend", default="cpu_neon")
+    parser.add_argument("--selected", action="store_true", help="also run explicit selected-row mode; unsupported pairs fail")
     parser.add_argument("--tokenization", required=True, help="tokenizer revision, template, BOS policy, candidate construction")
     parser.add_argument("--out-dir", type=Path, required=True, help="new directory; existing results are never overwritten")
     parser.add_argument("--decode-n", type=int, default=32)
@@ -172,6 +184,9 @@ def main() -> None:
     env.setdefault("OMP_WAIT_POLICY", "active")
     command = [str(args.binary.resolve()), str(args.model.resolve()), args.backend,
                str(prompt_cap), str(candidate_cap), str(args.decode_n), str(args.warmup), str(args.repeats)]
+    modes = (*MODES, "decision_selected") if args.selected else MODES
+    if args.selected:
+        command.append("--selected")
     args.out_dir.mkdir(parents=True, exist_ok=False)
     started = datetime.now(timezone.utc).isoformat()
     process = subprocess.run(command, input=wire_input(cases), env=env, capture_output=True, text=True)
@@ -184,7 +199,7 @@ def main() -> None:
     if len(runtimes) != 1:
         raise ValueError("missing/duplicate runtime metadata")
     samples = [r for r in records if r.get("kind") == "sample"]
-    enrich_and_check(samples, cases, args.warmup, args.repeats)
+    enrich_and_check(samples, cases, args.warmup, args.repeats, modes)
     # Hash AFTER inference: reading the model for its hash would warm the
     # page cache before the very first sample. No cache eviction is claimed.
     metadata = {
@@ -200,7 +215,7 @@ def main() -> None:
         "cache": "No forced page/device-cache eviction. First mode calls after model/session setup are recorded separately; modes share backend/page caches. Warm samples follow the configured warmups.",
         "environment": {k: v for k, v in env.items() if k.startswith(("GEIST_", "OMP_", "KMP_", "VECLIB_", "OPENBLAS_"))},
     }
-    for name, data in (("metadata.json", metadata), ("cases.json", cases), ("summary.json", summarize(samples, cases))):
+    for name, data in (("metadata.json", metadata), ("cases.json", cases), ("summary.json", summarize(samples, cases, modes))):
         (args.out_dir / name).write_text(json.dumps(data, indent=2, allow_nan=False) + "\n")
     (args.out_dir / "samples.jsonl").write_text("".join(json.dumps(s, allow_nan=False) + "\n" for s in samples))
     print(args.out_dir / "summary.json")

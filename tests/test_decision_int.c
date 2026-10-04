@@ -59,6 +59,29 @@ int main(void) {
                                       1e-12,
                               "real model candidate probability matches independent normalization");
     }
+    if (geist_decision_mode_supported(m, GEIST_DECISION_SELECTED_ROWS)) {
+        struct geist_decision_opts selected = o;
+        selected.mode                       = GEIST_DECISION_SELECTED_ROWS;
+        struct geist_decision *fast         = nullptr;
+        fails += geist_expect(geist_decision_create(m, be, &selected, &fast) == GEIST_OK,
+                              "real model selected handle creates");
+        if (fast != nullptr) {
+            fails += geist_expect(geist_decision_score(fast, np, 4, prompt, ids, &out) == GEIST_OK,
+                                  "real model selected scoring succeeds");
+            for (size_t i = 0; out.logits != nullptr && i < 4; i++) {
+                fails += geist_expect(out.logits[i] == p[ids[i]],
+                                      "selected real-model logit exactly dense");
+            }
+            fails += geist_expect(
+                    out.mode == GEIST_DECISION_SELECTED_ROWS && out.projected_rows >= 4 &&
+                            out.projected_rows <= 64 && out.projected_rows < vocab &&
+                            out.logit_readback_bytes <= 64 * sizeof(float) && out.head_ns > 0,
+                    "full vocabulary projection/readback skipped");
+            geist_decision_destroy(fast);
+        }
+    } else {
+        printf("selected rows: explicitly unsupported for %s/model pair\n", geist_backend_name(be));
+    }
     geist_token_t generated;
     fails += geist_expect(geist_session_decode_step(s, &generated) == GEIST_OK,
                           "ordinary greedy generation contract preserved");

@@ -55,6 +55,20 @@ class DecisionBenchmarkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "disagree"):
             bench.enrich_and_check(rows, cases, 0, 2)
 
+    def test_selected_rows_require_exact_logits_and_instrumentation(self):
+        cases = [{"id": "a", "prompt_ids": [1], "candidate_ids": [3, 4]}]
+        rows = self.samples()
+        for row in list(rows):
+            if row["mode"] == "decision_dense":
+                rows.append({**row, "mode": "decision_selected", "projected_rows": 2,
+                             "logit_readback_bytes": 8, "head_ns": 10})
+        modes = (*bench.MODES, "decision_selected")
+        bench.enrich_and_check(rows, cases, 0, 2, modes)
+        self.assertIn("a/decision_selected", bench.summarize(rows, cases, modes)["by_case_and_mode"])
+        rows[-1]["logits"] = [2.0000001, 1.]
+        with self.assertRaisesRegex(ValueError, "disagree exactly"):
+            bench.enrich_and_check(rows, cases, 0, 2, modes)
+
     def test_unlabelled_quality_is_unknown(self):
         cases = [{"id": "a", "prompt_ids": [1], "candidate_ids": [3, 4]}]
         rows = self.samples()

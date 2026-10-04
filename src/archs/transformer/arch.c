@@ -403,4 +403,8 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .session_alloc            = op_session_alloc,
         .session_free             = op_session_free,
         .logits_vocab_size        = op_logits_vocab_size,
+        .decision_rows_supported  = transformer_decision_supported,
+        .decision_rows_create     = transformer_decision_create,
+        .decision_rows_destroy    = transformer_decision_destroy,
+        .prefill_rows             = transformer_decision_prefill,
 };

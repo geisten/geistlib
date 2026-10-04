@@ -43,6 +43,7 @@
 
 #include "linear_ref.h"
 #include "quant.h"
+#include "selected_rows.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -127,12 +128,22 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
     if (w->dtype == GEIST_DTYPE_F32) {
         w->linear_m1 = cpu_scalar_w_f32_m1;
         w->linear_mN = cpu_scalar_w_f32_mN;
+        size_t block, bytes, tail;
+        if (quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) && tail == 0) {
+            w->linear_rows      = geist_cpu_selected_rows;
+            w->linear_rows_tile = 1;
+        }
         return GEIST_OK;
     }
     /* Everything the reference decodes; its list is the one list. */
     if (geist_linear_ref_decodes(w->dtype)) {
         w->linear_m1 = cpu_scalar_w_quant_m1;
         w->linear_mN = cpu_scalar_w_quant_mN;
+        size_t block, bytes, tail;
+        if (quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) && tail == 0) {
+            w->linear_rows      = geist_cpu_selected_rows;
+            w->linear_rows_tile = 1;
+        }
         return GEIST_OK;
     }
     return GEIST_E_UNSUPPORTED;

@@ -3984,6 +3984,168 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     }
 }
 
+[[nodiscard]] static enum geist_status metal_selected_prepare(const struct geist_weight *w,
+                                                              struct geist_backend      *be) {
+    const enum geist_status s = metal_ensure_q4k_pipeline(be);
+    if (s != GEIST_OK)
+        return s;
+    const struct metal_state *st    = be->state;
+    const enum geist_dtype    dtype = (enum geist_dtype) w->dtype;
+    if (dtype == GEIST_DTYPE_F32 || dtype == GEIST_DTYPE_F16 || dtype == GEIST_DTYPE_BF16)
+        return GEIST_OK;
+    if (dtype == GEIST_DTYPE_Q4_K)
+        return (w->linear_rows_tile > 1 ? st->q4k_n4_pipeline : st->q4k_pipeline) != nullptr
+                       ? GEIST_OK
+                       : GEIST_E_UNSUPPORTED;
+    if (dtype == GEIST_DTYPE_Q6_K)
+        return (w->linear_rows_tile > 1 ? st->q6k_n4_pipeline : st->q6k_pipeline) != nullptr
+                       ? GEIST_OK
+                       : GEIST_E_UNSUPPORTED;
+    const struct metal_quant_pipes p = metal_quant_pipes_for(st, dtype, (uint32_t) w->n_out);
+    return (w->linear_rows_tile > 1 ? p.n4 : p.base) != nullptr ? GEIST_OK : GEIST_E_UNSUPPORTED;
+}
+
+/* Encode the original dense kernel on aligned, bounded row tiles. In
+ * particular PQ2's n8/n4 choice uses the ORIGINAL output shape. */
+[[nodiscard]] static enum geist_status metal_selected_rows(size_t              n_tiles,
+                                                           const geist_token_t ids[static n_tiles],
+                                                           const struct geist_tensor *x,
+                                                           const struct geist_weight *w,
+                                                           const struct geist_tensor *t_w,
+                                                           struct geist_tensor       *y,
+                                                           struct geist_backend      *be) {
+    if (be == nullptr || be->state == nullptr || w == nullptr || x == nullptr || y == nullptr ||
+        t_w == nullptr || x->buffer == nullptr || y->buffer == nullptr || t_w->buffer == nullptr ||
+        w->n_in <= 0 || w->n_out <= 0 || n_tiles == 0)
+        return GEIST_E_INVALID_ARG;
+    struct metal_state *st   = be->state;
+    const size_t        tile = w->linear_rows_tile;
+    size_t              nx, xo, yr, yc, y_off, ys;
+    if (!metal_tensor_is_f32_vector(x, &nx, &xo) ||
+        !metal_tensor_is_f32_matrix(y, &yr, &yc, &y_off, &ys) || nx != (size_t) w->n_in ||
+        yr != n_tiles || yc != tile || ys != tile || xo > UINT32_MAX || t_w->ndim != 2 ||
+        t_w->dtype != w->dtype || t_w->shape[0] != w->n_out || t_w->shape[1] != w->n_in)
+        return GEIST_E_INVALID_ARG;
+    size_t stride, out_n, out_bytes, x_bytes;
+    if (tile == 0 || quant_raw_bytes((enum geist_dtype) w->dtype, (size_t) w->n_in, &stride) ||
+        ckd_mul(&out_n, n_tiles, tile) || ckd_mul(&out_bytes, out_n, sizeof(float)) ||
+        ckd_mul(&x_bytes, (size_t) w->n_in, sizeof(float)) || x->offset > x->buffer->bytes ||
+        x_bytes > x->buffer->bytes - x->offset || y->offset > y->buffer->bytes ||
+        out_bytes > y->buffer->bytes - y->offset || t_w->offset > t_w->buffer->bytes ||
+        w->raw_nbytes > t_w->buffer->bytes - t_w->offset || x->offset % sizeof(float) != 0 ||
+        y->offset % sizeof(float) != 0 || x->buffer->owner != st || y->buffer->owner != st ||
+        t_w->buffer->owner != st || out_n > UINT32_MAX || w->n_in <= 0)
+        return GEIST_E_INVALID_ARG;
+    /* Validate every tile/offset before encoding any GPU work. */
+    for (size_t i = 0; i < n_tiles; i++) {
+        size_t wo, yo, bytes;
+        if (ids[i] < 0 || (size_t) ids[i] >= (size_t) w->n_out || (size_t) ids[i] % tile != 0 ||
+            ckd_mul(&wo, (size_t) ids[i], stride) || ckd_add(&wo, wo, t_w->offset) ||
+            ckd_mul(&yo, i, tile) || ckd_mul(&yo, yo, sizeof(float)) ||
+            ckd_add(&yo, yo, y->offset) || wo > UINT32_MAX || yo / sizeof(float) > UINT32_MAX ||
+            ckd_mul(&bytes,
+                    (size_t) w->n_out - (size_t) ids[i] < tile ? (size_t) w->n_out - (size_t) ids[i]
+                                                               : tile,
+                    stride) ||
+            wo > t_w->buffer->bytes || bytes > t_w->buffer->bytes - wo)
+            return GEIST_E_INVALID_ARG;
+    }
+    const enum geist_status s = metal_ensure_q4k_pipeline(be);
+    if (s != GEIST_OK)
+        return s;
+    const bool                                         sequenced = metal_seq_mine(st);
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool      = metal_standalone_pool(st);
+    void *cmd = sequenced ? nullptr : metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    void *enc = sequenced        ? metal_sequence_encoder(st)
+                : cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder")
+                                 : nullptr;
+    if (enc == nullptr)
+        return GEIST_E_BACKEND;
+    const enum geist_dtype         dtype = (enum geist_dtype) w->dtype;
+    const struct metal_quant_pipes pipes = metal_quant_pipes_for(st, dtype, (uint32_t) w->n_out);
+    for (size_t i = 0; i < n_tiles; i++) {
+        const size_t n  = (size_t) w->n_out - (size_t) ids[i] < tile
+                                  ? (size_t) w->n_out - (size_t) ids[i]
+                                  : tile;
+        const size_t wo = t_w->offset + (size_t) ids[i] * stride;
+        const size_t yo = y->offset / sizeof(float) + i * tile;
+        if (dtype == GEIST_DTYPE_F32 || dtype == GEIST_DTYPE_F16 || dtype == GEIST_DTYPE_BF16) {
+            const struct metal_f32_params params = {
+                    .n_in         = (uint32_t) w->n_in,
+                    .n_out        = (uint32_t) n,
+                    .rows         = 1,
+                    .x_offset     = (uint32_t) (x->offset / sizeof(float)),
+                    .w_offset     = (uint32_t) (wo / (dtype == GEIST_DTYPE_F32 ? sizeof(float)
+                                                                               : sizeof(uint16_t))),
+                    .y_offset     = (uint32_t) yo,
+                    .x_row_stride = (uint32_t) w->n_in,
+                    .y_row_stride = (uint32_t) n,
+            };
+            metal_encode_f32_matmul(st, enc, x, t_w, y, &params);
+        } else {
+            const struct metal_q4k_params params = {
+                    .n_in  = (uint32_t) w->n_in,
+                    .n_out = (uint32_t) n,
+                    .rows  = 1,
+                    .blocks_per_row =
+                            (uint32_t) ((size_t) w->n_in /
+                                        (dtype == GEIST_DTYPE_Q6_K || dtype == GEIST_DTYPE_Q4_K
+                                                 ? 256
+                                                 : metal_quant_block_elems(dtype))),
+                    .x_offset      = (uint32_t) (x->offset / sizeof(float)),
+                    .w_byte_offset = (uint32_t) wo,
+                    .y_offset      = (uint32_t) yo,
+                    .x_row_stride  = (uint32_t) w->n_in,
+                    .y_row_stride  = (uint32_t) n,
+            };
+            if (dtype == GEIST_DTYPE_Q4_K) {
+                metal_encode_q4k_linear(st, enc, x, t_w, y, &params, false);
+            } else if (dtype == GEIST_DTYPE_Q6_K && tile == 4) {
+                /* The tail must retain n4 even when fewer than four valid
+                 * rows remain. The shader bounds-checks individual lanes. */
+                metal_msg_send_set_pipeline(st, enc, st->q6k_n4_pipeline);
+                metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+                metal_msg_send_set_buffer(st, enc, t_w->buffer->buffer, t_w->buffer->base_off, 1);
+                metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+                metal_msg_send_set_bytes(st, enc, &params, sizeof params, 3);
+                const struct metal_size groups  = {.width = 1, .height = 1, .depth = 1};
+                const struct metal_size threads = {
+                        .width = METAL_Q4K_N4_THREADS, .height = 1, .depth = 1};
+                metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4, groups);
+                metal_msg_send_dispatch(st, enc, groups, threads);
+            } else if (dtype == GEIST_DTYPE_Q6_K) {
+                metal_encode_q6k_linear(st, enc, x, t_w, y, &params, false);
+            } else if (tile > 1) {
+                metal_msg_send_set_pipeline(st, enc, pipes.n4);
+                metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+                metal_msg_send_set_buffer(st, enc, t_w->buffer->buffer, t_w->buffer->base_off, 1);
+                metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+                metal_msg_send_set_bytes(st, enc, &params, sizeof params, 3);
+                if (dtype == GEIST_DTYPE_PQ2_0)
+                    metal_msg_send_set_threadgroup_memory(st, enc, 256u * 8u, 0u);
+                const struct metal_size groups  = {.width  = ((uint32_t) n + pipes.n4_tile - 1u) /
+                                                             pipes.n4_tile,
+                                                   .height = 1,
+                                                   .depth  = 1};
+                const struct metal_size threads = {
+                        .width = METAL_Q4K_N4_THREADS, .height = 1, .depth = 1};
+                metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4, groups);
+                metal_msg_send_dispatch(st, enc, groups, threads);
+            } else {
+                metal_encode_q40_q80_linear(st, enc, x, t_w, y, &params, dtype);
+            }
+        }
+    }
+    if (sequenced) {
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    metal_msg_send_void0(st, enc, "endEncoding");
+    metal_msg_send_void0(st, cmd, "commit");
+    metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
+}
+
 [[nodiscard]] static enum geist_status metal_resolve_weight(struct geist_backend *be,
                                                             struct geist_weight  *w) {
     if (be == nullptr || be->state == nullptr || w == nullptr || w->raw == nullptr ||
@@ -4016,8 +4178,34 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_F16:
     case GEIST_DTYPE_BF16:
     case GEIST_DTYPE_F32:
-        w->linear_m1 = metal_linear_m1;
-        w->linear_mN = metal_linear_mN;
+        w->linear_m1                   = metal_linear_m1;
+        w->linear_mN                   = metal_linear_mN;
+        const struct metal_state *st   = be->state;
+        size_t                    tile = 0;
+        if (w->dtype == GEIST_DTYPE_F32 || w->dtype == GEIST_DTYPE_F16 ||
+            w->dtype == GEIST_DTYPE_BF16) {
+            tile = 1;
+        } else if (w->dtype == GEIST_DTYPE_Q4_K) {
+            tile = st->use_q4k_n4 ? 4 : 1;
+        } else if (w->dtype == GEIST_DTYPE_Q6_K) {
+            tile = st->use_q6k_n4 && w->n_out >= 4 ? 4 : 1;
+        } else {
+            const struct metal_quant_pipes p =
+                    metal_quant_pipes_for(st, (enum geist_dtype) w->dtype, (uint32_t) w->n_out);
+            if (w->n_out >= 4 && (st->use_q4k_n4 || p.gemm_only)) {
+                tile = w->dtype == GEIST_DTYPE_PQ2_0 && st->use_pq2_n8 &&
+                                       (uint32_t) w->n_out >= st->tuning.pq2_n8_min_n_out
+                               ? 16
+                               : p.n4_tile;
+            } else if (!p.gemm_only) {
+                tile = 1;
+            }
+        }
+        if (tile != 0 && w->dtype != GEIST_DTYPE_I2_S) {
+            w->linear_rows         = metal_selected_rows;
+            w->linear_rows_tile    = tile;
+            w->linear_rows_prepare = metal_selected_prepare;
+        }
         return GEIST_OK;
     default:
         /* Callers fall back per weight (linear_m1 stays null). */

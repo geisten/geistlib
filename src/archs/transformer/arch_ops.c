@@ -251,9 +251,10 @@ static enum geist_status deltanet_txn_restore(struct transformer_arch_session *s
 
 /* ---- Batched text prefill -------------------------------------------- */
 
-static enum geist_status prefill_text_batch_inner(struct transformer_arch_session *sess,
-                                                  size_t                           n,
-                                                  const geist_token_t             *ids) {
+static enum geist_status prefill_text_batch_inner(struct transformer_arch_session     *sess,
+                                                  size_t                               n,
+                                                  const geist_token_t                 *ids,
+                                                  struct transformer_decision_readout *readout) {
     struct transformer_arch_state *st = sess->model;
     if (st == nullptr || (n > 0 && ids == nullptr)) {
         return GEIST_E_INVALID_ARG;
@@ -399,7 +400,8 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
             } else if (geist_pooling_is_embedding(st->config.pooling)) {
                 s = finalize_embedding_last_row(sess, chunk);
             } else {
-                s = finalize_logits_last_row(sess, chunk);
+                s = readout != nullptr ? transformer_decision_finish(readout, chunk - 1)
+                                       : finalize_logits_last_row(sess, chunk);
             }
             if (s != GEIST_OK) {
                 return s;
@@ -423,10 +425,25 @@ enum geist_status transformer_prefill_text_batch(struct transformer_arch_session
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
     const int                        region_tok =
             v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
-    const enum geist_status s = prefill_text_batch_inner(sess, n, ids);
+    const enum geist_status s = prefill_text_batch_inner(sess, n, ids, nullptr);
     if (v->parallel_region_end) {
         v->parallel_region_end(be, region_tok);
     }
+    return s;
+}
+
+enum geist_status transformer_prefill_rows(struct transformer_arch_session     *sess,
+                                           size_t                               n,
+                                           const geist_token_t                 *ids,
+                                           struct transformer_decision_readout *r) {
+    transformer_recurrent_txn_commit(sess);
+    struct geist_backend            *be = sess->model->backend;
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    const int                        region =
+            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
+    const enum geist_status s = prefill_text_batch_inner(sess, n, ids, r);
+    if (v->parallel_region_end)
+        v->parallel_region_end(be, region);
     return s;
 }
 

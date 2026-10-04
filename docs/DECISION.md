@@ -66,11 +66,79 @@ the duplicate-detection table are sized with checked arithmetic at creation;
 scoring allocates no candidate workspace. Existing architecture/backend
 high-water scratch may warm on first use, as with ordinary prefill.
 
+## Selected-row execution on Apple Silicon (#586)
+
+Set `opts.mode = GEIST_DECISION_SELECTED_ROWS` explicitly and query
+`geist_decision_mode_supported(model, opts.mode)` for the loaded model/backend
+pair. The zero-initialized default remains `GEIST_DECISION_DENSE`. Unsupported
+pairs return `GEIST_E_UNSUPPORTED`; the library never silently changes modes.
+Consumers may deliberately create a DENSE handle instead.
+
+The transformer reuses the ordinary chunked prompt backbone. At its final
+hidden row it applies the same output normalization and Bonsai Hadamard
+rotation, then invokes a backend-resolved row kernel instead of the vocabulary
+projection, sampler and `peek_logits`. Head gains and final-logit softcaps
+retain their existing semantics. Generation retains its original head path.
+
+Each readout preallocates a bounded result buffer, tile map and hash table.
+Candidates sharing a tile reuse one projection. Source CPU rows normally use
+one-row views of the same resolved kernel. NEON's Bonsai PQ2_0 repack uses
+complete eight-row groups without changing the stored weights or activation
+quantization. Metal preserves the original dense pipeline selection: for
+example PQ2 n8 remains n8 even for four candidates. Native tiles can include
+neighboring output rows; they are discarded before conditional normalization.
+The borrowed result still has exactly the requested candidates in input order.
+
+Initial capability boundaries:
+
+| Backend | Selected-row support |
+| --- | --- |
+| CPU Scalar | Resolved, row-separable source formats, including F32/F16/Q8/PQ2 |
+| Apple NEON | Native source-row kernels, including F16/Q8, and PQ2_0 x8 |
+| Metal | Supported dense and quantized head pipelines, including Q8/Q6/PQ2 n4/n8 |
+| Other backends | Explicitly unsupported for this mode; DENSE remains available |
+
+NEON F32 is excluded because changing BLAS matrix geometry changes rounding.
+NEON repacks other than PQ2_0 x8 are currently excluded rather than reinterpreted
+as source rows. I2_S **output heads** have a shared tensor scale and are excluded;
+this does not exclude models with an I2_S backbone and a supported F16 head.
+Backend errors and capacity failures remain explicit.
+
+Results report `mode`, actual `projected_rows` (including valid neighboring
+rows), `logit_readback_bytes` (the staged tile buffer, including tail padding)
+and `head_ns` for elapsed time from final normalization through result access.
+On asynchronous backends that interval can include pending backbone device
+work; it is not an exclusive GPU head timer. Use the standalone head
+microbenchmark to isolate projection cost.
+DENSE reports its vocabulary size and logical logit-buffer byte count, with
+`head_ns = 0`. Byte counts describe logical staging, not physical bus traffic
+on unified memory. Private sessions still reserve the architecture's ordinary
+scratch buffers; this change does not claim to remove their dense-logit storage.
+Existing backend thread-local high-water buffers may grow on their first use;
+repeated selected kernel calls are checked for zero geist heap allocations.
+CPU tiles run the same row kernels with one OpenMP thread to avoid repeatedly
+launching teams for a handful of rows; the caller's task setting is restored
+on success and failure.
+
+For a paired benchmark use `tools/bench_decision.py --selected` with the usual
+arguments below. It adds `decision_selected`, requires exact float-logit parity
+with the paired DENSE trial, and records the instrumentation and process peak
+RSS. `tests/test_selected_rows_unit` compares dense and selected backend tiles
+bit for bit, including PQ2 n8, source/repacked CPU layouts and tail rows. Set
+`GEIST_BENCH_SELECTED_ROWS=1` to also measure synthetic, model-sized Qwen/Bonsai
+head geometries. These are head microbenchmarks, not model quality evaluations.
+
+The rollout order is Apple Silicon CPU/Metal, followed by other backends.
+Ticket #587 starts with MMLU and must define its quality baseline and acceptance
+margin before evaluation. Head speedup and end-to-end speedup are different:
+the backbone still processes every prompt token, so neither head timing nor
+short-label latency establishes Jev parity or a quality-matched reasoning win.
+
 ## Score semantics and model suitability
 
 DENSE uses ordinary prefill followed by `geist_session_peek_logits`, including
-model-specific final-logit softcaps. It computes the full LM head. This is the
-reference path for #586; it does not yet save work in the output projection.
+model-specific final-logit softcaps. It computes the full LM head. This remains the
+reference for SELECTED_ROWS and does not save work in the output projection.
 It avoids generating an answer after the prompt, but still runs the model's
 entire prompt forward pass.
 

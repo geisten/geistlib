@@ -199,6 +199,20 @@ struct geist_arch_ops_decoder {
      * Allows the engine to validate all input IDs before a forward pass.
      * Appended: existing vtable field offsets remain unchanged. */
     size_t (*logits_vocab_size)(const void *arch_state);
+
+    /* Optional independent decision readout. Capability is resolved at
+     * creation; unsupported pairs return GEIST_E_UNSUPPORTED, never dense.
+     * The readout owns bounded workspace and borrows its private session.
+     * prefill_rows skips ordinary logits finalization and returns only the
+     * requested model-conformant logits. Outputs are zero on failure.
+     * Appended EXPERIMENTAL hooks; ordinary prefill/decode are unchanged. */
+    bool (*decision_rows_supported)(const void *arch_state);
+    enum geist_status (*decision_rows_create)(void *session, size_t max_candidates, void **out);
+    void (*decision_rows_destroy)(void *readout);
+    enum geist_status (*prefill_rows)(size_t *projected_rows, size_t *readback_bytes, uint64_t *head_ns,
+                                     void *readout, size_t n_prompt, size_t n_candidates,
+                                     const geist_token_t *prompt_ids,
+                                     const geist_token_t *candidate_ids, float *out);
 };
 
 /* ====================================================================== */

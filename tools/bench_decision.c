@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/resource.h>
 
 [[nodiscard]] static uint64_t now_ns(void) {
     struct timespec t;
@@ -80,14 +81,15 @@
 
 int main(int argc, char **argv) {
     size_t prompt_cap, candidate_cap, decode_n, warmup, repeats;
-    if (argc != 8 || !number(&prompt_cap, argv[3]) || !number(&candidate_cap, argv[4]) ||
+    if ((argc != 8 && argc != 9) || (argc == 9 && strcmp(argv[8], "--selected") != 0) ||
+        !number(&prompt_cap, argv[3]) || !number(&candidate_cap, argv[4]) ||
         !number(&decode_n, argv[5]) || !number(&warmup, argv[6]) || !number(&repeats, argv[7]) ||
         prompt_cap == 0 || candidate_cap == 0 || decode_n < 2 || repeats == 0 ||
         prompt_cap > 1048576 || candidate_cap > 1048576 || decode_n > 4096 || warmup > 1000 ||
         repeats > 10000) {
         fprintf(stderr,
                 "usage: bench_decision model.gguf backend prompt_cap candidate_cap decode_n warmup "
-                "repeats\n");
+                "repeats [--selected]\n");
         return 2;
     }
     if (!geist_decision_available()) {
@@ -97,8 +99,9 @@ int main(int argc, char **argv) {
     struct geist_backend           *be = nullptr;
     struct geist_model             *m  = nullptr;
     struct geist_session           *s  = nullptr;
-    struct geist_decision          *d  = nullptr;
-    const struct geist_backend_opts bo = {.log_level_max = GEIST_LOG_ERROR};
+    struct geist_decision          *d = nullptr, *selected = nullptr;
+    const bool                      include_selected = argc == 9;
+    const struct geist_backend_opts bo               = {.log_level_max = GEIST_LOG_ERROR};
     /* Bounds above make this sum/product safe, even on 32-bit hosts. */
     const struct geist_session_opts so = {
             .max_seq_len = prompt_cap + decode_n, .top_p = 1.0f, .kv_mode = GEIST_KV_FP32};
@@ -120,14 +123,24 @@ int main(int argc, char **argv) {
         fprintf(stderr, "setup: %s\n", geist_last_create_error());
         goto done;
     }
+    if (include_selected) {
+        struct geist_decision_opts fast = o;
+        fast.mode                       = GEIST_DECISION_SELECTED_ROWS;
+        if (geist_decision_create(m, be, &fast, &selected) != GEIST_OK) {
+            fprintf(stderr, "selected rows: %s\n", geist_last_create_error());
+            goto done;
+        }
+    }
     printf("{\"kind\":\"runtime\",\"version\":\"%s\",\"backend\":\"%s\",\"vocab\":%zu,\"kv_mode\":"
            "\"fp32\"}\n",
            geist_version_string(),
            geist_backend_name(be),
            geist_decision_vocab_size(d));
-    const char *modes[]    = {"decision_dense", "scorealt_dense", "generate_1", "generate_long"};
-    size_t      case_index = 0, np, nc;
-    int         read;
+    const char *modes[] = {
+            "decision_dense", "scorealt_dense", "generate_1", "generate_long", "decision_selected"};
+    const size_t n_modes    = include_selected ? 5 : 4;
+    size_t       case_index = 0, np, nc;
+    int          read;
     while ((read = scanf("%zu %zu", &np, &nc)) == 2) {
         if (np == 0 || np > prompt_cap || nc == 0 || nc > candidate_cap ||
             !read_ids(np, geist_decision_vocab_size(d), prompt) ||
@@ -137,14 +150,15 @@ int main(int argc, char **argv) {
         }
         for (size_t trial = 0; trial < 1 + warmup + repeats; trial++) {
             const char *phase = trial == 0 ? "first" : trial <= warmup ? "warmup" : "warm";
-            for (size_t position = 0; position < 4; position++) {
-                const size_t                 mode   = (position + trial + case_index) % 4;
+            for (size_t position = 0; position < n_modes; position++) {
+                const size_t                 mode   = (position + trial + case_index) % n_modes;
                 struct geist_decision_result result = {0};
                 size_t                       best = 0, n_generated = 0;
                 enum geist_status            status = GEIST_OK;
                 const uint64_t               start  = now_ns();
-                if (mode == 0) {
-                    status = geist_decision_score(d, np, nc, prompt, candidates, &result);
+                if (mode == 0 || mode == 4) {
+                    status = geist_decision_score(
+                            mode == 4 ? selected : d, np, nc, prompt, candidates, &result);
                     if (status == GEIST_OK) {
                         best = result.best_index;
                     }
@@ -178,7 +192,9 @@ int main(int argc, char **argv) {
                             case_index,
                             modes[mode],
                             geist_status_to_string(status),
-                            mode == 0 ? geist_decision_errmsg(d) : geist_session_errmsg(s));
+                            (mode == 0 || mode == 4)
+                                    ? geist_decision_errmsg(mode == 4 ? selected : d)
+                                    : geist_session_errmsg(s));
                     goto done;
                 }
                 printf("{\"kind\":\"sample\",\"case_index\":%zu,\"mode\":\"%s\",\"phase\":\"%s\","
@@ -196,18 +212,39 @@ int main(int argc, char **argv) {
                     printf("%s%d", i ? "," : "", generated[i]);
                 }
                 printf("],\"best_index\":");
-                if (mode < 2) {
+                if (mode < 2 || mode == 4) {
                     printf("%zu,\"logits\":[", best);
                     for (size_t i = 0; i < nc; i++) {
-                        printf("%s%.9g", i ? "," : "", mode == 0 ? result.logits[i] : logits[i]);
+                        printf("%s%.9g",
+                               i ? "," : "",
+                               (mode == 0 || mode == 4) ? result.logits[i] : logits[i]);
                     }
                     printf("],\"conditional_probabilities\":[");
                     for (size_t i = 0; i < nc; i++) {
                         printf("%s%.17g",
                                i ? "," : "",
-                               mode == 0 ? result.probabilities[i] : probabilities[i]);
+                               (mode == 0 || mode == 4) ? result.probabilities[i]
+                                                        : probabilities[i]);
                     }
-                    printf("]}");
+                    printf("]");
+                    if (mode == 0 || mode == 4) {
+                        printf(",\"projected_rows\":%zu,\"logit_readback_bytes\":%zu,\"head_ns\":"
+                               "%" PRIu64,
+                               result.projected_rows,
+                               result.logit_readback_bytes,
+                               result.head_ns);
+                    }
+                    struct rusage usage;
+                    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+#ifdef __APPLE__
+                        printf(",\"process_peak_rss_bytes\":%llu",
+                               (unsigned long long) usage.ru_maxrss);
+#else
+                        printf(",\"process_peak_rss_bytes\":%llu",
+                               (unsigned long long) usage.ru_maxrss * 1024ULL);
+#endif
+                    }
+                    putchar('}');
                 } else {
                     printf("null}");
                 }
@@ -227,6 +264,7 @@ done:
     free(generated);
     free(logits);
     free(probabilities);
+    geist_decision_destroy(selected);
     geist_decision_destroy(d);
     geist_session_destroy(s);
     geist_model_destroy(m);
