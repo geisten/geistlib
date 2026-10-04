@@ -371,6 +371,14 @@ static void op_session_free(void *arch_state, void *session) {
     transformer_session_free(arch_state, session);
 }
 
+[[nodiscard]] static size_t op_logits_vocab_size(const void *arch_state) {
+    const struct transformer_arch_state *st = arch_state;
+    if (st == nullptr || geist_pooling_is_embedding(st->config.pooling)) {
+        return 0;
+    }
+    return (size_t) st->vocab_size;
+}
+
 const struct geist_arch_ops_decoder geist_arch_transformer = {
         .name                     = "transformer",
         .state_create             = op_state_create,
@@ -394,4 +402,5 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .kv_len                   = op_kv_len,
         .session_alloc            = op_session_alloc,
         .session_free             = op_session_free,
+        .logits_vocab_size        = op_logits_vocab_size,
 };

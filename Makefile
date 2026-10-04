@@ -7,6 +7,7 @@
 #   make MODE=asan TARGET=pi5  # combinations
 #   make test                  # unit + integration + python suites
 #   make bench                 # reproducible benchmark vs llama.cpp / bitnet.cpp
+#   make DECISION=1            # optional numeric decision API
 #   make help                  # show all options
 #
 # Output layout (per-target, per-mode segregated):
@@ -45,6 +46,17 @@ include mk/common.mk
 lib: $(LIB_FILE)
 
 bin: $(BIN_TARGETS)
+
+# Exercise the same output directories in both feature modes. An environment
+# witness makes stale enabled/disabled objects a failure instead of a skip.
+.PHONY: test-decision
+DECISION_TESTS := $(BIN_DIR)/tests/test_decision_unit $(BIN_DIR)/tests/test_decision_errors_unit
+test-decision:
+	@for feature in 1 0; do \
+	    $(MAKE) DECISION=$$feature $(DECISION_TESTS) || exit $$?; \
+	    GEIST_EXPECT_DECISION=$$feature $(BIN_DIR)/tests/test_decision_unit || exit $$?; \
+	    $(BIN_DIR)/tests/test_decision_errors_unit || exit $$?; \
+	done
 
 # Agent-runtime API contract (docs/API_CONTRACT.md). An out-of-tree agent
 # runtime links these symbols across a release boundary, so a signature change
@@ -560,12 +572,14 @@ help:
 	"  make                       lib + dev binaries for this TARGET/MODE" \
 	"  make run ARGS='m.gguf \"hi\"'      build + run examples/simple_generate" \
 	"  make lib | bin             only the static lib | only the binaries" \
+	"  make DECISION=1            enable experimental numeric candidate scoring" \
 	"  make MODE=debug|asan|tsan|cov|perf   gdb | ASan+UBSan | TSan races | coverage | -O3+g profiling" \
 	"  make clean | distclean     remove current TARGET/MODE | remove everything" \
 	"" \
 	"Test:" \
 	"  make test                  unit + int + py  (auto-fetches model; AUTO_FETCH_MODEL=0 to skip)" \
 	"  make test-unit|test-int|test-e2e|test-all   [FILTER=substr]" \
+	"  make [MODE=asan] test-decision            check feature on/off without cleaning" \
 	"  make fetch-model [HF_TOKEN=..]              download reference GGUF (~3.1 GB, SHA-pinned)" \
 	"  make fetch-llama-model                      download SmolLM2 fixture (~369 MB, SHA-pinned)" \
 	"  make fetch-qwen3-model                      download Qwen3-0.6B fixture (~609 MB, SHA-pinned)" \
