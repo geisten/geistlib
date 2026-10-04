@@ -1,7 +1,7 @@
 {
   "protocol": "geist-decision-campaign-plan-v1",
   "tracking_issue": 587,
-  "status": "awaiting_overlap_and_generation_policy",
+  "status": "approved_for_development_pilot",
   "user_confirmed_date": "2026-10-04",
   "confirmed": {
     "platforms": [
@@ -16,29 +16,27 @@
     "noninferiority_margin_pp": 2.0,
     "confidence": 0.95,
     "first_campaign": "small development pilot; not a held-out acceptance run",
-    "quality_sample_unit": "unique canonical question; not a timing repeat or label rotation"
+    "quality_sample_unit": "unique canonical question; not a timing repeat or label rotation",
+    "pilot": {
+      "overlap_policy": "exclude",
+      "split": "development",
+      "per_subject": 1,
+      "subject_limit": 8,
+      "rotations": 1,
+      "backend_order": [
+        "metal",
+        "cpu_neon"
+      ],
+      "decode_cap": 512,
+      "warmup": 0,
+      "repeats": 1,
+      "total_trials_per_arm": 2,
+      "queries_per_backend": 128,
+      "population": "explicitly reported cleaned MMLU subset"
+    }
   },
-  "pending": [
-    "explicit overlap policy for cleaned versus original MMLU population",
-    "reasoning token cap and bounded pilot size after runtime audit"
-  ],
+  "pending": [],
   "no_quality_result": true,
-  "proposed_not_confirmed": {
-    "overlap_policy": "exclude; explicitly report cleaned subset",
-    "split": "development",
-    "per_subject": 1,
-    "subject_limit": 8,
-    "rotations": 1,
-    "backend_order": [
-      "metal",
-      "cpu_neon"
-    ],
-    "decode_cap": 512,
-    "warmup": 0,
-    "repeats": 1,
-    "total_trials_per_arm": 2,
-    "queries_per_backend": 128
-  },
   "budget_planning_only": {
     "source": "benchmark/results/DECISION_SELECTED_ROWS_2026-10-04.json; benchmark/results/TERNARY.md",
     "assumed_mean_prompt_tokens_per_profile": 1000,
@@ -88,7 +86,7 @@
     }
   },
   "hypothetical_prompt_audit": {
-    "conditions": "Unconfirmed exclude, per_subject1, subject_limit8; development only, five fixed dev shots, rotation0; template date2026-10-04, xhigh",
+    "conditions": "Tokenizer-only preview performed before approval; selected conditions are now approved: exclude, per_subject1, subject_limit8; development only, five fixed dev shots, rotation0; template date2026-10-04, xhigh",
     "records": [
       {
         "subject": "clinical_knowledge",

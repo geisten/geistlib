@@ -19,8 +19,10 @@ small development pilot first on Apple CPU/Metal. These choices are saved in
 [DECISION_CAMPAIGN_PLAN.json](DECISION_CAMPAIGN_PLAN.json). The pilot supplies
 exploratory quality and runtime evidence, not held-out acceptance.
 
-Overlap handling and the bounded generation/pilot policy are the remaining
-downstream decisions. Tokenizer-only planning of the proposed eight-question
+The user also approved explicit overlap exclusion and the bounded pilot:
+eight development questions from eight deterministic subjects, cap512,
+`--warmup 0 --repeats 1` (two total trials), Metal first and CPU afterwards.
+The full held-out population is reported as a cleaned subset, not stock MMLU. Tokenizer-only planning of the proposed eight-question
 subset finds 399–695 prompttokens and validates all 96 candidate boundaries.
 At the saved planning rates, both trials of all eight arms with a 512-token
 generation cap would take approximately 18–26 minutes on Metal and 88–124
