@@ -24,6 +24,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <geist_types.h>
+
 /* Checked fixture I/O. glibc marks fread/fwrite warn_unused_result under
  * _FORTIFY_SOURCE (Ubuntu CI), so an ignored return is a -Werror=unused-result
  * build failure. These wrappers also make a broken fixture fail loudly (abort)
@@ -167,6 +169,33 @@ static inline const char *geist_test_find_gguf(void) {
     return nullptr;
 }
 
+/* Returns a path to the pinned Qwen3.5-0.8B Q8_0 fixture
+ * (`make fetch-qwen35-model`), or nullptr if not found. Search order:
+ *   1. $GEIST_QWEN35_GGUF_PATH env-var (if set and non-empty; not probed)
+ *   2. gguf_artifacts/qwen3.5-0.8b-q8_0.gguf
+ *   3. ./qwen3.5-0.8b-q8_0.gguf
+ *
+ * Caller does NOT free the returned pointer (it is either env or static). */
+static inline const char *geist_test_find_qwen35_gguf(void) {
+    const char *env = getenv("GEIST_QWEN35_GGUF_PATH");
+    if (env != nullptr && env[0] != '\0') {
+        return env;
+    }
+    static const char *candidates[] = {
+            "gguf_artifacts/qwen3.5-0.8b-q8_0.gguf",
+            "./qwen3.5-0.8b-q8_0.gguf",
+            nullptr,
+    };
+    for (size_t i = 0; candidates[i] != nullptr; i++) {
+        FILE *f = fopen(candidates[i], "rb");
+        if (f != nullptr) {
+            fclose(f);
+            return candidates[i];
+        }
+    }
+    return nullptr;
+}
+
 /* clang-tidy: bugprone-macro-parentheses doesn't understand that `varname` here is a
  * declaration identifier — wrapping it in parens would yield invalid C. Suppress. */
 #define GEIST_REQUIRE_GGUF(varname) /* NOLINT(bugprone-macro-parentheses) */                   \
@@ -226,6 +255,62 @@ geist_fp32_close_array(const float *a, const float *b, size_t n, float rtol, flo
         }
     }
     return -1;
+}
+
+/* Largest |a[i] - b[i]| over n elements, computed in double. 0 for n == 0. */
+static inline double geist_test_max_abs(size_t n, const float *a, const float *b) {
+    double m = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        const double d = fabs((double) a[i] - (double) b[i]);
+        if (d > m) {
+            m = d;
+        }
+    }
+    return m;
+}
+
+/* ---- Reference math ----------------------------------------------------- */
+
+/* x * sigmoid(x), written so neither branch overflows expf. */
+static inline float geist_test_silu(float x) {
+    const float e = expf(-fabsf(x));
+    return x >= 0.0f ? x / (1.0f + e) : x * e / (1.0f + e);
+}
+
+/* ---- Deterministic inputs ----------------------------------------------- */
+
+/* A fresh xmalloc'd array of n floats, p[i] = sinf(i * freq + phase) * amp +
+ * bias. Smooth, signed, reproducible test data; the caller frees it. */
+static inline float *geist_test_fill(size_t n, float freq, float phase, float amp, float bias) {
+    float *p = xmalloc(n * sizeof(float));
+    for (size_t i = 0; i < n; i++) {
+        p[i] = sinf((float) i * freq + phase) * amp + bias;
+    }
+    return p;
+}
+
+/* ---- Backend tensors ---------------------------------------------------- */
+
+/* A dense, row-major F32 tensor over buffer b with nd (1..3) dimensions
+ * d0[, d1[, d2]]; unused trailing dimensions are ignored. */
+static inline struct geist_tensor
+geist_test_tensor_f32(struct geist_buffer *b, int nd, int64_t d0, int64_t d1, int64_t d2) {
+    struct geist_tensor t = {.buffer = b, .dtype = GEIST_DTYPE_F32, .layout = GEIST_LAYOUT_DENSE};
+    t.ndim                = nd;
+    t.shape[0]            = d0;
+    t.shape[1]            = d1;
+    t.shape[2]            = d2;
+    if (nd == 1) {
+        t.stride[0] = 1;
+    } else if (nd == 2) {
+        t.stride[0] = d1;
+        t.stride[1] = 1;
+    } else {
+        t.stride[0] = d1 * d2;
+        t.stride[1] = d2;
+        t.stride[2] = 1;
+    }
+    return t;
 }
 
 #endif /* GEIST_TEST_HELPERS_H */

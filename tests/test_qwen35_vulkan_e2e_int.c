@@ -35,26 +35,6 @@
  * the logits, so the whole greedy continuation must match. */
 enum { N_GEN = 12 };
 
-static const char *resolve_path(void) {
-    const char *env = getenv("GEIST_QWEN35_GGUF_PATH");
-    if (env != nullptr && env[0] != '\0') {
-        return env;
-    }
-    static const char *candidates[] = {
-            "gguf_artifacts/qwen3.5-0.8b-q8_0.gguf",
-            "./qwen3.5-0.8b-q8_0.gguf",
-            nullptr,
-    };
-    for (size_t i = 0; candidates[i] != nullptr; i++) {
-        FILE *f = fopen(candidates[i], "rb");
-        if (f != nullptr) {
-            fclose(f);
-            return candidates[i];
-        }
-    }
-    return nullptr;
-}
-
 struct run {
     geist_token_t tok[N_GEN];
     int           n;
@@ -159,7 +139,7 @@ int main(void) {
     /* Comparable numerics: FP32 KV cache on every backend (see above). */
     setenv("GEIST_KV_INT8", "0", 1);
     setenv("GEIST_KV_F16", "0", 1);
-    const char *path = resolve_path();
+    const char *path = geist_test_find_qwen35_gguf();
     if (path == nullptr) {
         GEIST_SKIP_FIXTURE("no qwen35 GGUF. Run `make fetch-qwen35-model`, or set "
                            "GEIST_QWEN35_GGUF_PATH");
