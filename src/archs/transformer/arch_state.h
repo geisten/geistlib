@@ -271,9 +271,10 @@ struct transformer_arch_session {
     size_t                kv_len;        /* valid prefix across all caches */
     size_t                prefix_length; /* pinned prefix; reset truncates here */
     size_t                m_max;         /* prefill chunk size for this session */
-    size_t                max_seq_len;   /* KV-cache capacity in rows — the state
-                                          * max_seq_len at alloc time; forward paths
-                                          * reject writes past this */
+    size_t                max_seq_len;   /* KV-cache capacity in rows — the
+                                          * session cap (≤ the state's); the KV
+                                          * caches are sized from it and forward
+                                          * paths reject writes past it */
     /* A pinned prefix's rows in the KIVI residual ring (prefix_length mod
      * R of them), copied at pin time for reset to write back: the drains
      * of later turns move other rows over them. Host memory, per layer
@@ -458,6 +459,9 @@ struct transformer_runtime_flags {
 
 struct transformer_arch_state {
     struct geist_backend *backend; /* not owned */
+    /* Unique per loaded model in this process (never 0): binds a session
+     * snapshot to the model it was taken on (snapshot.c). */
+    uint64_t snapshot_id;
 
     /* GGUF source (kept open while the state lives: weight buffers reuploaded
      * could be re-fetched but for simplicity we just retain the handle for
@@ -756,6 +760,28 @@ transformer_advance_audio_token(struct transformer_arch_session *sess, const flo
  * Returns GEIST_OK on success; GEIST_E_INVALID_ARG if state is null. */
 [[nodiscard]] enum geist_status
 transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const geist_token_t *ids);
+
+/* Session snapshot / restore (#548, snapshot.c). The image holds the used
+ * KV rows, every DeltaNet layer's state, the pending logits and the
+ * position/sampler bookkeeping; it restores into any session of the same
+ * loaded model with the same KV cache mode. GEIST_E_UNSUPPORTED for KIVI,
+ * an enabled MTP drafter and embedding models.
+ *
+ * transformer_snapshot_size: bytes snapshot_save needs right now.
+ * transformer_snapshot_save: writes the image to buf[capacity] and its size
+ *   to *out_bytes (0 on failure). Does not change the session's state.
+ * transformer_snapshot_restore: replaces the session's state with the
+ *   image. GEIST_E_FORMAT for anything that is not a matching image, with
+ *   the session untouched; a failed transfer after that leaves it reset. */
+[[nodiscard]] enum geist_status
+transformer_snapshot_size(size_t *out_bytes, const struct transformer_arch_session *sess);
+[[nodiscard]] enum geist_status transformer_snapshot_save(size_t *out_bytes,
+                                                          size_t  capacity,
+                                                          void   *buf,
+                                                          struct transformer_arch_session *sess);
+[[nodiscard]] enum geist_status transformer_snapshot_restore(size_t      n_bytes,
+                                                             const void *buf,
+                                                             struct transformer_arch_session *sess);
 
 /* Speculative-decode primitives.
  *

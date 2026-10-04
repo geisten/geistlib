@@ -186,6 +186,7 @@ LIB_SOURCES := \
     src/archs/transformer/weight_load/tensor_views.c \
     src/archs/transformer/weight_load/layer_wiring.c \
     src/archs/transformer/arch_ops.c \
+    src/archs/transformer/snapshot.c \
     src/archs/audio_conformer/arch.c \
     src/archs/audio_conformer/audio_encoder.c \
     src/archs/audio_conformer/encoder_weights.c \

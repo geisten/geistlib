@@ -202,10 +202,57 @@ enum geist_status geist_session_attach_video(struct geist_session *s,
  * `ids` may be nullptr when `n` is 0. Returns GEIST_E_UNSUPPORTED if the
  * active architecture does not implement prefix pinning, and for a
  * non-empty prefix on a model with recurrent (DeltaNet) layers such as
- * Qwen3.5: a reset cannot return their state to a prefix. n = 0 empties
+ * Qwen3.5: a reset cannot return their state to a prefix (use
+ * geist_session_snapshot / geist_session_restore there). n = 0 empties
  * the session and unpins. */
 enum geist_status
 geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t *ids);
+
+/* @stability EXPERIMENTAL — session snapshot / restore (#548).
+ *
+ * Save a session's complete decoding state into a caller buffer and put it
+ * back later, into the same session or into another session of the SAME
+ * loaded model (a fork). After a restore the session continues exactly as
+ * the source did at snapshot time: the same pending logits, the same next
+ * decode_step token (sampling included: the RNG state is part of the
+ * image), and prefills append after the same positions.
+ *
+ * This is the reusable prefix that pin_prefix cannot give a model with
+ * recurrent layers (Qwen3.5's Gated DeltaNet): prefill the constant part
+ * once, snapshot, and restore before each request instead of re-prefilling.
+ * It works for attention-only models too, and also captures a pinned
+ * prefix (a reset after the restore truncates to it).
+ *
+ * The image holds the used KV rows, every recurrent layer's state, the
+ * pending logits and a small header; its size grows with the cached
+ * positions. It is an in-process format: valid only for the model handle
+ * it was taken on, in a session with the same KV-cache mode (kv_mode, and
+ * the GEIST_KV_* experiment env vars) and a max_seq_len that holds its
+ * positions. No on-disk or cross-version stability.
+ *
+ *   geist_session_snapshot_size  writes the bytes a snapshot needs now.
+ *   geist_session_snapshot       writes the image into buf[capacity] and
+ *                                its size to *out_bytes. Neither call
+ *                                changes the session's state or runs a
+ *                                forward pass.
+ *   geist_session_restore        replaces the session's state with the
+ *                                image of n_bytes.
+ *
+ * *out_bytes is 0 on every failure. GEIST_E_INVALID_ARG when capacity is
+ * smaller than the image; GEIST_E_FORMAT when restore is handed anything
+ * that is not a complete image for this model and session (the session is
+ * then untouched); GEIST_E_UNSUPPORTED for the KIVI KV cache, an enabled
+ * MTP drafter (GEIST_MTP=1), embedding models and architectures without
+ * snapshots; GEIST_E_INVALID_STATE while an audio stream is open. A
+ * backend transfer that fails during restore leaves the session reset. */
+[[nodiscard]] enum geist_status geist_session_snapshot_size(size_t               *out_bytes,
+                                                            struct geist_session *s);
+[[nodiscard]] enum geist_status geist_session_snapshot(size_t               *out_bytes,
+                                                       size_t                capacity,
+                                                       void                 *buf,
+                                                       struct geist_session *s);
+[[nodiscard]] enum geist_status
+geist_session_restore(size_t n_bytes, const void *buf, struct geist_session *s);
 
 /* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *

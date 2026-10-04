@@ -9,6 +9,11 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Vulkan device-memory budget** (#466). Device-local allocations (weight
+  copies, KV cache, x ring) are checked against the heap before they are made;
+  a model that does not fit fails with the MiB the allocation needs, the MiB in
+  use and the limit instead of a bare driver status. `GEIST_VK_VRAM_BUDGET`
+  lowers the limit for tests. There is still no spill to host memory.
 - **Apple selected-row decision heads** (EXPERIMENTAL, #586).
   `GEIST_DECISION_SELECTED_ROWS` skips the vocabulary head and sampler while
   preserving candidate logits, output normalization, gains, softcaps and Bonsai
@@ -18,6 +23,18 @@ minor release.
   remains off by default. Result metadata and the paired benchmark expose
   projected rows, logical staging bytes and head time; no Jev speedup or
   representative quality claim is implied.
+- **Session snapshot / restore** (`geist_session_snapshot_size`,
+  `geist_session_snapshot`, `geist_session_restore`, EXPERIMENTAL, #548). A
+  session's complete decoding state (used KV rows, every Gated-DeltaNet
+  layer's recurrent state, the pending logits, a still-owed decode step and
+  the sampler RNG) as a caller-owned byte image, restorable into the same or
+  another session of the same loaded model. This is the reusable prefix
+  `pin_prefix` cannot give Qwen3.5's hybrid: prefill the constant context
+  once, then restore + prefill only the new tokens per request. Restored
+  sessions continue bit-identically (tokens and logits), across FP32, F16,
+  INT8 and INT4 KV caches; KIVI, an enabled MTP drafter and embedding models
+  return `GEIST_E_UNSUPPORTED`. In-process format only, bound to the model
+  handle.
 - **Optional numeric decision API** (`include/geist_decision.h`, EXPERIMENTAL,
   #585). `DECISION=1` enables independent resettable scoring sessions over
   distinct single-token candidates. DENSE uses existing model-conformant
@@ -211,6 +228,17 @@ minor release.
 
 ### Changed
 
+- **Vulkan weight lookup is a hash index** (#469, #474 item 8). The host
+  pointer → device buffer registry consulted on every `linear_t` and
+  embedding call is indexed by an open-addressed table instead of scanned:
+  75 000 lookups over a 300-weight registry take 0.2 ms instead of 4.8 ms
+  (x86_64 release, about 16 µs saved per 250-linear decode token).
+- **Vulkan: GGUF pages behind uploaded weights are released** (#468). A
+  matrix the backend copied to the device no longer keeps its file pages
+  resident (`gguf_release_range`, MADV_DONTNEED on the read-only mapping);
+  a host fallback that still reads them faults them back in. On a
+  unified-memory GPU this stops the model from being resident twice; a
+  2-layer fixture's mapping drops from 18.5 MiB to 6 MiB resident after load.
 - **cpu_x86 IQ4_NL and IQ4_XS run native int8 kernels on the GGUF bytes:
   decode about 4-5x, prefill about 1.7-1.9x faster** (#410). Both used to
   fall back to the generic dequantize-and-dot path. They now share the Q4_0
@@ -683,6 +711,13 @@ minor release.
   vtable.
 
 ### Fixed
+- **A session's KV cache ignored its own `max_seq_len`** (#577). It was sized
+  from the model's cap, so on a model loaded with a 32768-token cap a
+  64-token session still held 32768 rows of KV (64 MiB in FP32 for a
+  two-layer test model). It is now sized from the session cap, as
+  `docs/API_CONTRACT.md` promises. `docs/BACKENDS.md` gains a "Resident
+  memory per backend" section: which backends keep repacked weight copies,
+  the switch for each, and the per-session KV formula.
 - **Models with IQ4_NL or IQ4_XS token embeddings failed prefill** with
   `GEIST_E_UNSUPPORTED` ("unsupported dtype for row dequant"): the embedding
   row lookup had no case for either format. It now decodes them with the
