@@ -255,7 +255,14 @@ struct vk_state {
     uint32_t         queue_family;
 
     VkPhysicalDeviceMemoryProperties mem_props;
-    size_t          bar_used; /* live host-visible + device-local bytes (the BAR window) */
+    size_t bar_used; /* live host-visible + device-local bytes (the BAR window) */
+    /* Device memory taken by device-local requests (weight copies, KV
+     * cache, x ring), checked against vram_budget before each allocation
+     * so an oversized model fails with needed vs. available bytes instead
+     * of a bare driver error (#466). vram_budget is GEIST_VK_VRAM_BUDGET
+     * (bytes, K/M/G suffix) or 0: the heap size of the memory type. */
+    size_t          vram_used;
+    size_t          vram_budget;
     VkCommandPool   cmd_pool;
     VkCommandBuffer xfer_cmd;
     VkFence         xfer_fence;
@@ -322,11 +329,16 @@ struct vk_state {
     VkPipeline pipes[VK_PIPE_COUNT];
 
     /* Weight registry: host pointer → VRAM buffer, filled by resolve_weight.
-     * Linear search — a model has a few hundred weights; the lookup is one
-     * pointer compare per entry once per linear call. */
+     * `weights` is the dense list (teardown); `weight_index` an open-
+     * addressed table of entry index + 1 (0 = empty), a power of two at
+     * most half full, so the lookup on every linear_t / embedding call is
+     * one or two probes instead of a scan of a few hundred entries (#469).
+     * Entries are never removed, only replaced in place. */
     struct vk_weight_entry *weights;
     size_t                  n_weights;
     size_t                  cap_weights;
+    uint32_t               *weight_index;
+    size_t                  cap_weight_index;
 
     /* Persistent host-visible activation staging (x up / y down) for the
      * synchronous host-pointer linear kernels (parity tests, CPU-dtype
@@ -454,7 +466,8 @@ struct geist_buffer {
     bool                   host_visible;
     bool                   device_mem; /* memory type has DEVICE_LOCAL */
     bool                   borrowed;   /* buf/mem owned by a parent buffer */
-    size_t bar_bytes; /* counted in vk_state.bar_used (host-visible + device-local) */
+    size_t bar_bytes;  /* counted in vk_state.bar_used (host-visible + device-local) */
+    size_t vram_bytes; /* counted in vk_state.vram_used */
 };
 
 /* ---- Cross-module prototypes ------------------------------------------ */
@@ -495,9 +508,14 @@ void vk_buffer_unmap(struct geist_buffer *buf);
 [[nodiscard]] enum geist_status
 vk_stage_reserve(struct geist_backend *be, struct geist_buffer **slot, size_t bytes);
 
-struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host);
-struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor *t);
-size_t               vk_fast_host_bytes(struct geist_backend *be);
+struct geist_buffer *vk_weight_lookup(const struct vk_state *st, const void *host);
+/* The registry entry for `host`, or nullptr. */
+struct vk_weight_entry *vk_weight_entry_of(const struct vk_state *st, const void *host);
+/* Index weights[idx] (just appended) by its host pointer; GEIST_E_OOM when
+ * the table cannot grow. */
+[[nodiscard]] enum geist_status vk_weight_index_add(struct geist_backend *be, size_t idx);
+struct geist_buffer            *vk_weight_of(struct vk_state *st, const struct geist_tensor *t);
+size_t                          vk_fast_host_bytes(struct geist_backend *be);
 
 struct vk_access vk_acc(uint64_t lo_bytes, uint64_t n_bytes, bool write);
 

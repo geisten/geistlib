@@ -608,6 +608,34 @@ struct gguf_ctx *gguf_open(const char *path, const char **errmsg) {
     return gguf_parse(map, fsize, fd, /*owns_map=*/true, errmsg);
 }
 
+void gguf_release_range(const struct gguf_ctx *ctx, const void *p, size_t n) {
+#if defined(__linux__) && defined(MADV_DONTNEED)
+    if (ctx == nullptr || !ctx->owns_map || p == nullptr || n == 0) {
+        return;
+    }
+    const uintptr_t base = (uintptr_t) ctx->map;
+    const uintptr_t lo   = (uintptr_t) p;
+    /* Inside the mapping, checked by subtraction. */
+    if (lo < base || lo - base > ctx->map_size || n > ctx->map_size - (lo - base)) {
+        return;
+    }
+    const long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) {
+        return;
+    }
+    const uintptr_t mask  = (uintptr_t) page - 1;
+    const uintptr_t first = (lo + mask) & ~mask; /* whole pages inside the range */
+    const uintptr_t last  = (lo + n) & ~mask;
+    if (first < last) {
+        (void) madvise((void *) first, last - first, MADV_DONTNEED);
+    }
+#else
+    (void) ctx;
+    (void) p;
+    (void) n;
+#endif
+}
+
 struct gguf_ctx *gguf_open_memory(const void *data, size_t size, const char **errmsg) {
     if (data == nullptr || size < 8) {
         set_err(errmsg, "gguf_open_memory: null or too-small buffer");

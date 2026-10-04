@@ -525,14 +525,9 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
      * after a model reload (or a freed+remalloc'd test blob) — the latest
      * resolve is authoritative. Tied weights resolving twice re-upload the
      * same bytes once more at load time; harmless. */
-    struct vk_weight_entry *slot = nullptr;
-    for (size_t i = 0; i < st->n_weights; ++i) {
-        if (st->weights[i].host == w->raw) {
-            slot = &st->weights[i];
-            break;
-        }
-    }
-    if (slot == nullptr) {
+    struct vk_weight_entry *slot  = vk_weight_entry_of(st, w->raw);
+    const bool              fresh = slot == nullptr;
+    if (fresh) {
         if (st->n_weights == st->cap_weights) {
             const size_t            cap = st->cap_weights == 0 ? 64 : st->cap_weights * 2;
             struct vk_weight_entry *nw =
@@ -574,7 +569,7 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         if (gpu != nullptr) {
             vk_buffer_destroy(be, gpu);
         }
-        if (slot->gpu == nullptr) {
+        if (fresh) {
             st->n_weights--; /* fresh slot never got a buffer — roll back */
         }
         return s;
@@ -582,7 +577,16 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
     if (slot->gpu != nullptr) {
         vk_buffer_destroy(be, slot->gpu);
     }
-    *slot        = (struct vk_weight_entry) {.host = w->raw, .gpu = gpu};
+    *slot = (struct vk_weight_entry) {.host = w->raw, .gpu = gpu};
+    if (fresh) {
+        s = vk_weight_index_add(be, (size_t) (slot - st->weights));
+        if (s != GEIST_OK) {
+            vk_buffer_destroy(be, gpu);
+            st->n_weights--; /* unindexed: never reachable, roll back */
+            geist_backend_set_error(be, GEIST_E_OOM, "vulkan: weight index alloc failed");
+            return s;
+        }
+    }
     w->linear_m1 = vk_w_m1;
     w->linear_mN = vk_w_mN;
     return GEIST_OK;
