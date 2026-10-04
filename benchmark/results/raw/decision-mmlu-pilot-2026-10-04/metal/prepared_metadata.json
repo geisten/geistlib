@@ -1,0 +1,48 @@
+{
+  "protocol": "geist-decision-mmlu-cases-v1",
+  "dataset": "cais/mmlu",
+  "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+  "dataset_files_sha256": {
+    "dev": "2b19bde1ed8ca6b482fb283abc90e8e0d9d228947029c0b91795d64b28b3bc3f",
+    "validation": "66cdf0b090ccb657d18d13cd81e31fdc55c3467da9642ffb178653268a97c8ef",
+    "test": "74a41822ce7d3def56e1682f958469c04642a5336a5ce912fa375fdb90fb25d7"
+  },
+  "dataset_subset": true,
+  "split_audit_sha256": "7744caf2f70ea72db9fd48e35458b752f3734134144e9ac2fa0804c1ddbab142",
+  "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+  "model_size_bytes": 7206168928,
+  "tokenizer_binary_sha256": "e39ecc4d6374048656de0fbb682fa86f5d1fa825f534edbc2cfbd00c04ec6d39",
+  "tokenizer_startup_ms": 8001.875250018202,
+  "gguf_metadata": {
+    "template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+    "architecture": "qwen35",
+    "add_bos_token": false,
+    "bos_token_id": 248044,
+    "eos_token_id": 248046
+  },
+  "versions": {
+    "gguf": "0.18.0",
+    "transformers": "5.7.0",
+    "jinja2": "3.1.6",
+    "pyarrow": "24.0.0"
+  },
+  "prompt_policy": "classic-mmlu-fixed-subject-exemplars-chat-final-letter-xhigh-v1",
+  "snapshot_path": "/Users/germar/.cache/huggingface/hub/datasets--cais--mmlu/snapshots/c30699e8356da336a370243923dbaf21066bb9fe",
+  "shots": 5,
+  "rotations": 1,
+  "per_subject": 1,
+  "subject_limit": 8,
+  "template_date": "2026-10-04",
+  "counts": {
+    "development": {
+      "questions": 8,
+      "records": 8,
+      "sha256": "155c794c5aa689054ed7373915ee7c447ef7dbbe48c08e0057977ae0f06417ee"
+    }
+  },
+  "label_policy": "Cloze uses spaced letters; chat uses bare letters. Every complete prompt+label tokenization must extend the actual prefix by exactly one distinct token.",
+  "preprocessing": "Render and TOK timings retained separately from boundary validation and dataset preparation. Tokenizer model startup/checksums are setup costs. No forced cache eviction.",
+  "quality": "Preparation supplies no accuracy or speedup evidence. Development/calibration/test identities are disjoint; test labels do not choose prompts or temperature.",
+  "preparation_wall_ms": 22028.980000002775,
+  "tokenizer_calls_including_boundary_validation": 120
+}

@@ -1,0 +1,1639 @@
+{
+  "protocol": "geist-decision-mmlu-pilot-result-v1",
+  "purpose": "exploratory_development_pilot",
+  "date": "2026-10-04",
+  "tracking_issue": 587,
+  "pull_request": 608,
+  "model": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+  "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+  "dataset": "cais/mmlu",
+  "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+  "population": "cleaned classic MMLU development subset, one question from each of eight deterministic subjects",
+  "quality_n": 8,
+  "shots": 5,
+  "rotations": 1,
+  "decode_cap": 512,
+  "warmup": 0,
+  "repeats": 1,
+  "concurrency": 1,
+  "backend_order": [
+    "metal",
+    "cpu_neon"
+  ],
+  "threads": 6,
+  "host": {
+    "cpu": "Apple M1 Max",
+    "ram_bytes": 68719476736,
+    "os": "macOS-27.0-arm64-arm-64bit-Mach-O"
+  },
+  "margin_pp": 2,
+  "confidence": 0.95,
+  "calibration_fitted": false,
+  "quality_matched_speedup_established": false,
+  "held_out_acceptance_run": false,
+  "external_prism_parity_established": false,
+  "jev_equivalence_established": false,
+  "preparation_wall_ms": 22028.980000002775,
+  "tokenizer_calls": 120,
+  "backends": {
+    "metal": {
+      "started_utc": "2026-10-04T14:51:32.895061+00:00",
+      "source_revision": "13261ac73fb2841ef565bcabda5473eacd1e8ce0",
+      "source_status": "",
+      "binding": {
+        "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+        "binary_sha256": "63f56ff7def18aa503474cf983c9b54b5ce11b9dcad94f5ba8352d70092f419a",
+        "tokenizer_binary_sha256": "e39ecc4d6374048656de0fbb682fa86f5d1fa825f534edbc2cfbd00c04ec6d39",
+        "backend": "metal",
+        "host": "MBP-Germar.local",
+        "os": "macOS-27.0-arm64-arm-64bit-Mach-O",
+        "machine": "arm64",
+        "threads": 6,
+        "kv_mode": "fp32",
+        "environment": {
+          "OMP_NUM_THREADS": "6",
+          "OMP_WAIT_POLICY": "passive"
+        },
+        "template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+        "gguf_metadata": {
+          "template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+          "architecture": "qwen35",
+          "add_bos_token": false,
+          "bos_token_id": 248044,
+          "eos_token_id": 248046
+        },
+        "prompt_policy": "classic-mmlu-fixed-subject-exemplars-chat-final-letter-xhigh-v1",
+        "shots": 5,
+        "template_date": "2026-10-04",
+        "label_policy": "Cloze uses spaced letters; chat uses bare letters. Every complete prompt+label tokenization must extend the actual prefix by exactly one distinct token.",
+        "profile": "chat_direct"
+      },
+      "raw_samples": 128,
+      "exact_selected_dense_paired_trials": 32,
+      "all_repeat_stability_checks_passed": true,
+      "reasoning_eos_questions": 4,
+      "reasoning_limit_questions": 4,
+      "campaign_wall_ms": 2415902.5968749775,
+      "profile_wall_ms": {
+        "chat_direct": 1151624.2574579665,
+        "cloze": 600088.6286660098,
+        "chat_reasoning": 658917.4289160292
+      },
+      "profiles": {
+        "chat_direct": {
+          "decision_dense": {
+            "n": 8,
+            "correct": 4,
+            "accuracy": 0.5,
+            "latency": {
+              "warm_sample_p50_ms": 16256.1685,
+              "warm_sample_p95_ms": 22953.472649999996,
+              "question_median_p50_ms": 16256.1685,
+              "question_median_p95_ms": 22953.472649999996,
+              "mean_question_median_ms": 17295.31075,
+              "first_call_median_ms": 17569.737500000003,
+              "sequential_rate_estimate_qps": 0.0578191403701723
+            },
+            "peak_process_rss_bytes": 2169503744,
+            "log_loss": 1.0942050740677067,
+            "brier_sum_over_classes": 0.6313197226724145,
+            "temperature": 1.0,
+            "ece_equal_width": 0.49163407446572716,
+            "projected_rows": [
+              248320
+            ],
+            "logit_readback_bytes": [
+              993280
+            ]
+          },
+          "decision_selected": {
+            "n": 8,
+            "correct": 4,
+            "accuracy": 0.5,
+            "latency": {
+              "warm_sample_p50_ms": 17196.9935,
+              "warm_sample_p95_ms": 24928.590799999998,
+              "question_median_p50_ms": 17196.9935,
+              "question_median_p95_ms": 24928.590799999998,
+              "mean_question_median_ms": 18666.320625,
+              "first_call_median_ms": 16777.412,
+              "sequential_rate_estimate_qps": 0.053572421694111985
+            },
+            "peak_process_rss_bytes": 2169503744,
+            "log_loss": 1.0942050740677067,
+            "brier_sum_over_classes": 0.6313197226724145,
+            "temperature": 1.0,
+            "ece_equal_width": 0.49163407446572716,
+            "projected_rows": [
+              16
+            ],
+            "logit_readback_bytes": [
+              64
+            ]
+          },
+          "scorealt_dense": {
+            "n": 8,
+            "correct": 4,
+            "accuracy": 0.5,
+            "latency": {
+              "warm_sample_p50_ms": 17839.149,
+              "warm_sample_p95_ms": 23070.9603,
+              "question_median_p50_ms": 17839.149,
+              "question_median_p95_ms": 23070.9603,
+              "mean_question_median_ms": 17865.97525,
+              "first_call_median_ms": 17687.124499999998,
+              "sequential_rate_estimate_qps": 0.05597231530923564
+            },
+            "peak_process_rss_bytes": 2169503744,
+            "log_loss": 1.0942050740677067,
+            "brier_sum_over_classes": 0.6313197226724145,
+            "temperature": 1.0,
+            "ece_equal_width": 0.49163407446572716,
+            "projected_rows": [
+              248320
+            ],
+            "logit_readback_bytes": [
+              993280
+            ]
+          },
+          "generate_1": {
+            "n": 8,
+            "correct": 2,
+            "accuracy": 0.25,
+            "latency": {
+              "warm_sample_p50_ms": 17889.818,
+              "warm_sample_p95_ms": 23880.4981,
+              "question_median_p50_ms": 17889.818,
+              "question_median_p95_ms": 23880.4981,
+              "mean_question_median_ms": 18771.045875,
+              "first_call_median_ms": 17107.746,
+              "sequential_rate_estimate_qps": 0.05327353662972176
+            },
+            "peak_process_rss_bytes": 2169503744,
+            "invalid_answers": 5,
+            "invalid_reasons": {
+              "invalid_final_answer": 5
+            },
+            "capped_outputs": 8,
+            "generated_tokens": {
+              "min": 1,
+              "max": 1,
+              "mean": 1
+            }
+          }
+        },
+        "cloze": {
+          "decision_dense": {
+            "n": 8,
+            "correct": 6,
+            "accuracy": 0.75,
+            "latency": {
+              "warm_sample_p50_ms": 12757.622,
+              "warm_sample_p95_ms": 16441.6851,
+              "question_median_p50_ms": 12757.622,
+              "question_median_p95_ms": 16441.6851,
+              "mean_question_median_ms": 12817.99425,
+              "first_call_median_ms": 13418.9945,
+              "sequential_rate_estimate_qps": 0.0780153259937685
+            },
+            "peak_process_rss_bytes": 2178924544,
+            "log_loss": 1.4419506831294846,
+            "brier_sum_over_classes": 0.6143339705258669,
+            "temperature": 1.0,
+            "ece_equal_width": 0.44032506104867153,
+            "projected_rows": [
+              248320
+            ],
+            "logit_readback_bytes": [
+              993280
+            ]
+          },
+          "decision_selected": {
+            "n": 8,
+            "correct": 6,
+            "accuracy": 0.75,
+            "latency": {
+              "warm_sample_p50_ms": 12614.315999999999,
+              "warm_sample_p95_ms": 14717.13725,
+              "question_median_p50_ms": 12614.315999999999,
+              "question_median_p95_ms": 14717.13725,
+              "mean_question_median_ms": 11966.324375,
+              "first_call_median_ms": 12609.217,
+              "sequential_rate_estimate_qps": 0.0835678499647892
+            },
+            "peak_process_rss_bytes": 2178924544,
+            "log_loss": 1.4419506831294846,
+            "brier_sum_over_classes": 0.6143339705258669,
+            "temperature": 1.0,
+            "ece_equal_width": 0.44032506104867153,
+            "projected_rows": [
+              64
+            ],
+            "logit_readback_bytes": [
+              256
+            ]
+          },
+          "scorealt_dense": {
+            "n": 8,
+            "correct": 6,
+            "accuracy": 0.75,
+            "latency": {
+              "warm_sample_p50_ms": 12699.336500000001,
+              "warm_sample_p95_ms": 14707.3974,
+              "question_median_p50_ms": 12699.336500000001,
+              "question_median_p95_ms": 14707.3974,
+              "mean_question_median_ms": 11867.933375,
+              "first_call_median_ms": 13334.7275,
+              "sequential_rate_estimate_qps": 0.08426066850918768
+            },
+            "peak_process_rss_bytes": 2178924544,
+            "log_loss": 1.4419506831294846,
+            "brier_sum_over_classes": 0.6143339705258669,
+            "temperature": 1.0,
+            "ece_equal_width": 0.44032506104867153,
+            "projected_rows": [
+              248320
+            ],
+            "logit_readback_bytes": [
+              993280
+            ]
+          }
+        },
+        "chat_reasoning": {
+          "generate_long": {
+            "n": 8,
+            "correct": 4,
+            "accuracy": 0.5,
+            "latency": {
+              "warm_sample_p50_ms": 44147.278,
+              "warm_sample_p95_ms": 59638.34994999999,
+              "question_median_p50_ms": 44147.278,
+              "question_median_p95_ms": 59638.34994999999,
+              "mean_question_median_ms": 40466.1345,
+              "first_call_median_ms": 43727.287,
+              "sequential_rate_estimate_qps": 0.024712021851259352
+            },
+            "peak_process_rss_bytes": 1479311360,
+            "invalid_answers": 4,
+            "invalid_reasons": {
+              "invalid_final_answer": 4
+            },
+            "capped_outputs": 4,
+            "generated_tokens": {
+              "min": 109,
+              "max": 512,
+              "mean": 338
+            }
+          }
+        }
+      },
+      "comparison": {
+        "paired_quality": {
+          "n": 8,
+          "gains": 1,
+          "losses": 1,
+          "direct_accuracy": 0.5,
+          "baseline_accuracy": 0.5,
+          "difference_pp": 0.0,
+          "confidence": 0.95,
+          "interval_pp": [
+            -57.38789073322237,
+            57.38789073322237
+          ],
+          "margin_pp": 2.0,
+          "noninferior": false,
+          "interval_method": "paired gain/loss exact binomial intervals with Bonferroni joint coverage; conservative",
+          "assumptions": "Independent questions from the target population. A small subject-stratified pilot is exploratory; repeated timings and label rotations are not additional quality samples.",
+          "inference_p50_ms_ratio_reasoning_over_selected": 2.1678688217646536,
+          "additive_component_estimate_ms_ratio_reasoning_over_selected": 2.1677371440887843
+        },
+        "quality_matched_speedup_eligible": false,
+        "blockers": [
+          "not a complete held-out quality run",
+          "declared noninferiority margin not established",
+          "reasoning baseline contains invalid or capped answers"
+        ],
+        "scope": "Same questions, greedy FP32 geist policies. Additive preprocessing/surface/parse costs are estimates, not measured service latency. No claim of published Bonsai or Jev parity."
+      }
+    },
+    "cpu_neon": {
+      "started_utc": "2026-10-04T15:32:27.041231+00:00",
+      "source_revision": "13261ac73fb2841ef565bcabda5473eacd1e8ce0",
+      "source_status": "",
+      "binding": {
+        "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+        "binary_sha256": "63f56ff7def18aa503474cf983c9b54b5ce11b9dcad94f5ba8352d70092f419a",
+        "tokenizer_binary_sha256": "e39ecc4d6374048656de0fbb682fa86f5d1fa825f534edbc2cfbd00c04ec6d39",
+        "backend": "cpu_neon",
+        "host": "MBP-Germar.local",
+        "os": "macOS-27.0-arm64-arm-64bit-Mach-O",
+        "machine": "arm64",
+        "threads": 6,
+        "kv_mode": "fp32",
+        "environment": {
+          "OMP_NUM_THREADS": "6",
+          "OMP_WAIT_POLICY": "passive"
+        },
+        "template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+        "gguf_metadata": {
+          "template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+          "architecture": "qwen35",
+          "add_bos_token": false,
+          "bos_token_id": 248044,
+          "eos_token_id": 248046
+        },
+        "prompt_policy": "classic-mmlu-fixed-subject-exemplars-chat-final-letter-xhigh-v1",
+        "shots": 5,
+        "template_date": "2026-10-04",
+        "label_policy": "Cloze uses spaced letters; chat uses bare letters. Every complete prompt+label tokenization must extend the actual prefix by exactly one distinct token.",
+        "profile": "chat_direct"
+      },
+      "raw_samples": 128,
+      "exact_selected_dense_paired_trials": 32,
+      "all_repeat_stability_checks_passed": true,
+      "reasoning_eos_questions": 4,
+      "reasoning_limit_questions": 4,
+      "campaign_wall_ms": 5953444.554250047,
+      "profile_wall_ms": {
+        "chat_direct": 2594230.269749998,
+        "cloze": 1838847.0209999941,
+        "chat_reasoning": 1516452.5395840174
+      },
+      "profiles": {
+        "chat_direct": {
+          "decision_dense": {
+            "n": 8,
+            "correct": 4,
+            "accuracy": 0.5,
+            "latency": {
+              "warm_sample_p50_ms": 40247.2615,
+              "warm_sample_p95_ms": 46130.6639,
+              "question_median_p50_ms": 40247.2615,
+              "question_median_p95_ms": 46130.6639,
+              "mean_question_median_ms": 40171.704625,
+              "first_call_median_ms": 40612.475999999995,
+              "sequential_rate_estimate_qps": 0.02489314330409747
+            },
+            "peak_process_rss_bytes": 14986067968,
+            "log_loss": 1.0939859641009435,
+            "brier_sum_over_classes": 0.6307460369780842,
+            "temperature": 1.0,
+            "ece_equal_width": 0.49171001668786674,
+            "projected_rows": [
+              248320
+            ],
+            "logit_readback_bytes": [
+              993280
+            ]
+          },
+          "decision_selected": {
+            "n": 8,
+            "correct": 4,
+            "accuracy": 0.5,
+            "latency": {
+              "warm_sample_p50_ms": 41319.364499999996,
+              "warm_sample_p95_ms": 48122.341,
+              "question_median_p50_ms": 41319.364499999996,
+              "question_median_p95_ms": 48122.341,
+              "mean_question_median_ms": 40477.6285,
+              "first_call_median_ms": 41036.5565,
+              "sequential_rate_estimate_qps": 0.02470500464225566
+            },
+            "peak_process_rss_bytes": 14986067968,
+            "log_loss": 1.0939859641009435,
+            "brier_sum_over_classes": 0.6307460369780842,
+            "temperature": 1.0,
+            "ece_equal_width": 0.49171001668786674,
+            "projected_rows": [
+              8
+            ],
+            "logit_readback_bytes": [
+              32
+            ]
+          },
+          "scorealt_dense": {
+            "n": 8,
+            "correct": 4,
+            "accuracy": 0.5,
+            "latency": {
+              "warm_sample_p50_ms": 42130.354999999996,
+              "warm_sample_p95_ms": 46618.75345,
+              "question_median_p50_ms": 42130.354999999996,
+              "question_median_p95_ms": 46618.75345,
+              "mean_question_median_ms": 40435.34775,
+              "first_call_median_ms": 41470.354999999996,
+              "sequential_rate_estimate_qps": 0.024730837142361413
+            },
+            "peak_process_rss_bytes": 14986067968,
+            "log_loss": 1.0939859641009435,
+            "brier_sum_over_classes": 0.6307460369780842,
+            "temperature": 1.0,
+            "ece_equal_width": 0.49171001668786674,
+            "projected_rows": [
+              248320
+            ],
+            "logit_readback_bytes": [
+              993280
+            ]
+          },
+          "generate_1": {
+            "n": 8,
+            "correct": 2,
+            "accuracy": 0.25,
+            "latency": {
+              "warm_sample_p50_ms": 41624.173,
+              "warm_sample_p95_ms": 47352.53445,
+              "question_median_p50_ms": 41624.173,
+              "question_median_p95_ms": 47352.53445,
+              "mean_question_median_ms": 40299.62825,
+              "first_call_median_ms": 40383.6235,
+              "sequential_rate_estimate_qps": 0.024814124681162536
+            },
+            "peak_process_rss_bytes": 14986067968,
+            "invalid_answers": 5,
+            "invalid_reasons": {
+              "invalid_final_answer": 5
+            },
+            "capped_outputs": 8,
+            "generated_tokens": {
+              "min": 1,
+              "max": 1,
+              "mean": 1
+            }
+          }
+        },
+        "cloze": {
+          "decision_dense": {
+            "n": 8,
+            "correct": 6,
+            "accuracy": 0.75,
+            "latency": {
+              "warm_sample_p50_ms": 38881.302500000005,
+              "warm_sample_p95_ms": 44253.6611,
+              "question_median_p50_ms": 38881.302500000005,
+              "question_median_p95_ms": 44253.6611,
+              "mean_question_median_ms": 37617.1565,
+              "first_call_median_ms": 38726.447,
+              "sequential_rate_estimate_qps": 0.026583614846061
+            },
+            "peak_process_rss_bytes": 15732850688,
+            "log_loss": 1.4434614076896821,
+            "brier_sum_over_classes": 0.6146207735898134,
+            "temperature": 1.0,
+            "ece_equal_width": 0.440302289460825,
+            "projected_rows": [
+              248320
+            ],
+            "logit_readback_bytes": [
+              993280
+            ]
+          },
+          "decision_selected": {
+            "n": 8,
+            "correct": 6,
+            "accuracy": 0.75,
+            "latency": {
+              "warm_sample_p50_ms": 38765.508499999996,
+              "warm_sample_p95_ms": 45517.0626,
+              "question_median_p50_ms": 38765.508499999996,
+              "question_median_p95_ms": 45517.0626,
+              "mean_question_median_ms": 38242.81975,
+              "first_call_median_ms": 39380.6665,
+              "sequential_rate_estimate_qps": 0.026148699456190073
+            },
+            "peak_process_rss_bytes": 15732850688,
+            "log_loss": 1.4434614076896821,
+            "brier_sum_over_classes": 0.6146207735898134,
+            "temperature": 1.0,
+            "ece_equal_width": 0.440302289460825,
+            "projected_rows": [
+              32
+            ],
+            "logit_readback_bytes": [
+              128
+            ]
+          },
+          "scorealt_dense": {
+            "n": 8,
+            "correct": 6,
+            "accuracy": 0.75,
+            "latency": {
+              "warm_sample_p50_ms": 39441.669,
+              "warm_sample_p95_ms": 43438.939600000005,
+              "question_median_p50_ms": 39441.669,
+              "question_median_p95_ms": 43438.939600000005,
+              "mean_question_median_ms": 38770.09225,
+              "first_call_median_ms": 39663.729,
+              "sequential_rate_estimate_qps": 0.025793077652529958
+            },
+            "peak_process_rss_bytes": 15732850688,
+            "log_loss": 1.4434614076896821,
+            "brier_sum_over_classes": 0.6146207735898134,
+            "temperature": 1.0,
+            "ece_equal_width": 0.440302289460825,
+            "projected_rows": [
+              248320
+            ],
+            "logit_readback_bytes": [
+              993280
+            ]
+          }
+        },
+        "chat_reasoning": {
+          "generate_long": {
+            "n": 8,
+            "correct": 4,
+            "accuracy": 0.5,
+            "latency": {
+              "warm_sample_p50_ms": 98937.187,
+              "warm_sample_p95_ms": 127428.28315,
+              "question_median_p50_ms": 98937.187,
+              "question_median_p95_ms": 127428.28315,
+              "mean_question_median_ms": 94214.7905,
+              "first_call_median_ms": 99485.24900000001,
+              "sequential_rate_estimate_qps": 0.010614044723689112
+            },
+            "peak_process_rss_bytes": 15151349760,
+            "invalid_answers": 4,
+            "invalid_reasons": {
+              "invalid_final_answer": 4
+            },
+            "capped_outputs": 4,
+            "generated_tokens": {
+              "min": 105,
+              "max": 512,
+              "mean": 340.125
+            }
+          }
+        }
+      },
+      "comparison": {
+        "paired_quality": {
+          "n": 8,
+          "gains": 1,
+          "losses": 1,
+          "direct_accuracy": 0.5,
+          "baseline_accuracy": 0.5,
+          "difference_pp": 0.0,
+          "confidence": 0.95,
+          "interval_pp": [
+            -57.38789073322237,
+            57.38789073322237
+          ],
+          "margin_pp": 2.0,
+          "noninferior": false,
+          "interval_method": "paired gain/loss exact binomial intervals with Bonferroni joint coverage; conservative",
+          "assumptions": "Independent questions from the target population. A small subject-stratified pilot is exploratory; repeated timings and label rotations are not additional quality samples.",
+          "inference_p50_ms_ratio_reasoning_over_selected": 2.3275768366716445,
+          "additive_component_estimate_ms_ratio_reasoning_over_selected": 2.3275065880415373
+        },
+        "quality_matched_speedup_eligible": false,
+        "blockers": [
+          "not a complete held-out quality run",
+          "declared noninferiority margin not established",
+          "reasoning baseline contains invalid or capped answers"
+        ],
+        "scope": "Same questions, greedy FP32 geist policies. Additive preprocessing/surface/parse costs are estimates, not measured service latency. No claim of published Bonsai or Jev parity."
+      }
+    }
+  },
+  "cross_backend_predictions": {
+    "chat_direct": {
+      "same_predictions": 8,
+      "n": 8
+    },
+    "cloze": {
+      "same_predictions": 8,
+      "n": 8
+    },
+    "generate_1": {
+      "same_predictions": 8,
+      "n": 8
+    },
+    "generate_long": {
+      "same_predictions": 8,
+      "n": 8
+    }
+  },
+  "questions": [
+    {
+      "question_id": "d7ee7e9ab4d98643425f163fa6700970420cf952b6dc4784f26c59d38a47b590",
+      "subject": "clinical_knowledge",
+      "source_validation_index": 62,
+      "gold": "B",
+      "prompt_tokens": {
+        "chat_direct": 436,
+        "chat_reasoning": 476,
+        "cloze": 399
+      },
+      "results": {
+        "metal": {
+          "generate_1": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 13814.807
+          },
+          "chat_direct": {
+            "prediction": "B",
+            "correct": true,
+            "logits": [
+              16.7110977,
+              16.7604485,
+              16.3509369,
+              16.4301491
+            ],
+            "conditional_probabilities": [
+              0.2854516691110296,
+              0.2998923173984451,
+              0.19912084506597233,
+              0.21553516842455298
+            ],
+            "inference_ms": 13940.306
+          },
+          "cloze": {
+            "prediction": "B",
+            "correct": true,
+            "logits": [
+              12.3215389,
+              13.5893755,
+              11.389164,
+              12.2311735
+            ],
+            "conditional_probabilities": [
+              0.170637623173813,
+              0.6063023056637414,
+              0.06716600160117493,
+              0.1558940695612707
+            ],
+            "inference_ms": 8590.758
+          },
+          "generate_long": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 512,
+            "inference_ms": 64750.22
+          }
+        },
+        "cpu_neon": {
+          "generate_1": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 30772.259
+          },
+          "chat_direct": {
+            "prediction": "B",
+            "correct": true,
+            "logits": [
+              16.7354679,
+              16.7769794,
+              16.3827705,
+              16.46315
+            ],
+            "conditional_probabilities": [
+              0.2851613051764154,
+              0.29724792024100116,
+              0.2004084694013089,
+              0.21718230518127452
+            ],
+            "inference_ms": 31176.284
+          },
+          "cloze": {
+            "prediction": "B",
+            "correct": true,
+            "logits": [
+              12.3247938,
+              13.6028633,
+              11.4031601,
+              12.2517376
+            ],
+            "conditional_probabilities": [
+              0.16900113086539306,
+              0.6066638827791782,
+              0.0672402271017032,
+              0.15709475925372565
+            ],
+            "inference_ms": 31438.623
+          },
+          "generate_long": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 512,
+            "inference_ms": 108502.265
+          }
+        }
+      }
+    },
+    {
+      "question_id": "80082c84368db43e84b16d7129eff9d238d8be7175f45a5a3adf5674572480d9",
+      "subject": "electrical_engineering",
+      "source_validation_index": 223,
+      "gold": "C",
+      "prompt_tokens": {
+        "chat_direct": 487,
+        "chat_reasoning": 527,
+        "cloze": 450
+      },
+      "results": {
+        "metal": {
+          "generate_1": {
+            "predicted_index": 2,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 17184.39
+          },
+          "chat_direct": {
+            "prediction": "C",
+            "correct": true,
+            "logits": [
+              15.560586,
+              11.3306227,
+              17.1695595,
+              16.4596291
+            ],
+            "conditional_probabilities": [
+              0.11807097503979212,
+              0.001718277996368162,
+              0.5900807725448792,
+              0.29012997441896043
+            ],
+            "inference_ms": 16187.22
+          },
+          "cloze": {
+            "prediction": "C",
+            "correct": true,
+            "logits": [
+              9.7414465,
+              10.8304482,
+              14.732235,
+              9.43860912
+            ],
+            "conditional_probabilities": [
+              0.00658924965731497,
+              0.019578678388849618,
+              0.9689644665657734,
+              0.0048676053880619885
+            ],
+            "inference_ms": 8974.969
+          },
+          "generate_long": {
+            "predicted_index": 2,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": false,
+            "stop": "eos",
+            "generated_tokens": 109,
+            "inference_ms": 29429.891
+          }
+        },
+        "cpu_neon": {
+          "generate_1": {
+            "predicted_index": 2,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 31505.731
+          },
+          "chat_direct": {
+            "prediction": "C",
+            "correct": true,
+            "logits": [
+              15.580802,
+              11.3220472,
+              17.1777668,
+              16.4566441
+            ],
+            "conditional_probabilities": [
+              0.1197166344499312,
+              0.0016927811725089056,
+              0.5911633687459181,
+              0.28742721563164175
+            ],
+            "inference_ms": 32763.691
+          },
+          "cloze": {
+            "prediction": "C",
+            "correct": true,
+            "logits": [
+              9.75624847,
+              10.8605061,
+              14.7360468,
+              9.44584942
+            ],
+            "conditional_probabilities": [
+              0.006658003139668258,
+              0.020087087472682685,
+              0.9683735655660511,
+              0.004881343821597822
+            ],
+            "inference_ms": 31117.853
+          },
+          "generate_long": {
+            "predicted_index": 2,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": false,
+            "stop": "eos",
+            "generated_tokens": 105,
+            "inference_ms": 54413.6
+          }
+        }
+      }
+    },
+    {
+      "question_id": "5039b706f70f85f47695b23cdb87d7c66597ab6b3f1a436986c7ce2604c6eb8f",
+      "subject": "high_school_biology",
+      "source_validation_index": 319,
+      "gold": "D",
+      "prompt_tokens": {
+        "chat_direct": 585,
+        "chat_reasoning": 625,
+        "cloze": 548
+      },
+      "results": {
+        "metal": {
+          "chat_direct": {
+            "prediction": "A",
+            "correct": false,
+            "logits": [
+              15.4685278,
+              11.5976105,
+              14.9788141,
+              15.2518597
+            ],
+            "conditional_probabilities": [
+              0.41003129688280443,
+              0.008544742404830661,
+              0.25126793045509516,
+              0.3301560302572698
+            ],
+            "inference_ms": 15568.098
+          },
+          "generate_1": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 16005.293
+          },
+          "cloze": {
+            "prediction": "D",
+            "correct": true,
+            "logits": [
+              9.55418015,
+              8.01663589,
+              8.51483536,
+              10.2104836
+            ],
+            "conditional_probabilities": [
+              0.2860209037491114,
+              0.061468241784816476,
+              0.10116168825120812,
+              0.5513491662148641
+            ],
+            "inference_ms": 13103.496
+          },
+          "generate_long": {
+            "predicted_index": 3,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": false,
+            "stop": "eos",
+            "generated_tokens": 263,
+            "inference_ms": 44481.207
+          }
+        },
+        "cpu_neon": {
+          "chat_direct": {
+            "prediction": "A",
+            "correct": false,
+            "logits": [
+              15.4655037,
+              11.5925951,
+              14.9950666,
+              15.2703066
+            ],
+            "conditional_probabilities": [
+              0.40515364368161166,
+              0.00842630002570344,
+              0.25311129986714465,
+              0.33330875642554036
+            ],
+            "inference_ms": 38984.782
+          },
+          "generate_1": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 39833.961
+          },
+          "cloze": {
+            "prediction": "D",
+            "correct": true,
+            "logits": [
+              9.55374432,
+              8.01446056,
+              8.52070141,
+              10.2298784
+            ],
+            "conditional_probabilities": [
+              0.28274796495333954,
+              0.06065925163812107,
+              0.10063629822370956,
+              0.5559564851848299
+            ],
+            "inference_ms": 37766.505
+          },
+          "generate_long": {
+            "predicted_index": 3,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": false,
+            "stop": "eos",
+            "generated_tokens": 284,
+            "inference_ms": 89372.109
+          }
+        }
+      }
+    },
+    {
+      "question_id": "6a1b7f9dba7e96b9abc4c43b14ebf9dfad27340ccb7c2342a20009daf550deae",
+      "subject": "high_school_physics",
+      "source_validation_index": 528,
+      "gold": "C",
+      "prompt_tokens": {
+        "chat_direct": 622,
+        "chat_reasoning": 662,
+        "cloze": 585
+      },
+      "results": {
+        "metal": {
+          "generate_1": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 23577.875
+          },
+          "chat_direct": {
+            "prediction": "D",
+            "correct": false,
+            "logits": [
+              12.432024,
+              11.3759804,
+              12.216383,
+              14.8270912
+            ],
+            "conditional_probabilities": [
+              0.07620331236553758,
+              0.02650573981242854,
+              0.061421744007005404,
+              0.8358692038150286
+            ],
+            "inference_ms": 25972.687
+          },
+          "cloze": {
+            "prediction": "D",
+            "correct": false,
+            "logits": [
+              11.1175508,
+              10.8486814,
+              10.1177139,
+              15.1463451
+            ],
+            "conditional_probabilities": [
+              0.01714521822453859,
+              0.013103114027529037,
+              0.0063084019788472966,
+              0.9634432657690851
+            ],
+            "inference_ms": 10665.287
+          },
+          "generate_long": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 512,
+            "inference_ms": 44455.429
+          }
+        },
+        "cpu_neon": {
+          "generate_1": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 43414.385
+          },
+          "chat_direct": {
+            "prediction": "D",
+            "correct": false,
+            "logits": [
+              12.4586468,
+              11.3846092,
+              12.2291088,
+              14.834074
+            ],
+            "conditional_probabilities": [
+              0.07756667338090477,
+              0.026498822984356737,
+              0.06165780999135519,
+              0.8342766936433834
+            ],
+            "inference_ms": 43653.947
+          },
+          "cloze": {
+            "prediction": "D",
+            "correct": false,
+            "logits": [
+              11.0856037,
+              10.8396196,
+              10.095314,
+              15.1440687
+            ],
+            "conditional_probabilities": [
+              0.016655897866159293,
+              0.013023824088431023,
+              0.006187150811446145,
+              0.9641331272339635
+            ],
+            "inference_ms": 39764.512
+          },
+          "generate_long": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 512,
+            "inference_ms": 125022.444
+          }
+        }
+      }
+    },
+    {
+      "question_id": "b958dec14c7da1e0bae2d83c2f3de65e1f90950b1a5034bf7eacdd29cf126b49",
+      "subject": "international_law",
+      "source_validation_index": 702,
+      "gold": "C",
+      "prompt_tokens": {
+        "chat_direct": 631,
+        "chat_reasoning": 671,
+        "cloze": 594
+      },
+      "results": {
+        "metal": {
+          "generate_1": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 24043.449
+          },
+          "chat_direct": {
+            "prediction": "A",
+            "correct": false,
+            "logits": [
+              16.3551598,
+              14.625885,
+              16.299324,
+              15.2110882
+            ],
+            "conditional_probabilities": [
+              0.40956296578605705,
+              0.0726618076236156,
+              0.38732143519983714,
+              0.1304537913904902
+            ],
+            "inference_ms": 22989.555
+          },
+          "cloze": {
+            "prediction": "C",
+            "correct": true,
+            "logits": [
+              14.0914116,
+              12.9197598,
+              15.2209415,
+              9.72435188
+            ],
+            "conditional_probabilities": [
+              0.22641108287162517,
+              0.0701545354132507,
+              0.7005615661267728,
+              0.002872815588351327
+            ],
+            "inference_ms": 14139.024
+          },
+          "generate_long": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 512,
+            "inference_ms": 43839.127
+          }
+        },
+        "cpu_neon": {
+          "generate_1": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 47135.147
+          },
+          "chat_direct": {
+            "prediction": "A",
+            "correct": false,
+            "logits": [
+              16.3741932,
+              14.6542444,
+              16.3262348,
+              15.2278605
+            ],
+            "conditional_probabilities": [
+              0.40815512298346507,
+              0.07309051005508149,
+              0.38904263202675066,
+              0.12971173493470298
+            ],
+            "inference_ms": 46433.521
+          },
+          "cloze": {
+            "prediction": "C",
+            "correct": true,
+            "logits": [
+              14.0973501,
+              12.9282951,
+              15.2170315,
+              9.72088528
+            ],
+            "conditional_probabilities": [
+              0.22794060017277526,
+              0.0708121137627092,
+              0.6983821374372469,
+              0.0028651486272686915
+            ],
+            "inference_ms": 41354.27
+          },
+          "generate_long": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 512,
+            "inference_ms": 128723.735
+          }
+        }
+      }
+    },
+    {
+      "question_id": "a0449b1cd6db3eb81198700eedb774cf3475c64f91b7f0530403ded2dc35ae28",
+      "subject": "moral_disputes",
+      "source_validation_index": 886,
+      "gold": "A",
+      "prompt_tokens": {
+        "chat_direct": 514,
+        "chat_reasoning": 554,
+        "cloze": 477
+      },
+      "results": {
+        "metal": {
+          "generate_1": {
+            "predicted_index": 2,
+            "correct": false,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 18339.265
+          },
+          "chat_direct": {
+            "prediction": "C",
+            "correct": false,
+            "logits": [
+              16.7626495,
+              14.3416405,
+              17.2643108,
+              16.5474052
+            ],
+            "conditional_probabilities": [
+              0.2819570918117204,
+              0.02504679409107256,
+              0.4656415831527187,
+              0.22735453094448832
+            ],
+            "inference_ms": 17917.519
+          },
+          "cloze": {
+            "prediction": "A",
+            "correct": true,
+            "logits": [
+              7.69561863,
+              6.20783138,
+              7.45566225,
+              4.50935459
+            ],
+            "conditional_probabilities": [
+              0.4868880909777394,
+              0.10997433906145365,
+              0.3830164448047585,
+              0.020121125156048577
+            ],
+            "inference_ms": 12277.384
+          },
+          "generate_long": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 512,
+            "inference_ms": 50144.877
+          }
+        },
+        "cpu_neon": {
+          "generate_1": {
+            "predicted_index": 2,
+            "correct": false,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 35119.734
+          },
+          "chat_direct": {
+            "prediction": "C",
+            "correct": false,
+            "logits": [
+              16.7669525,
+              14.3349695,
+              17.2636204,
+              16.5519066
+            ],
+            "conditional_probabilities": [
+              0.2826772439599822,
+              0.024836709289312416,
+              0.46450560644572764,
+              0.22798044030497766
+            ],
+            "inference_ms": 34925.339
+          },
+          "cloze": {
+            "prediction": "A",
+            "correct": true,
+            "logits": [
+              7.68599987,
+              6.20591974,
+              7.4611454,
+              4.50887394
+            ],
+            "conditional_probabilities": [
+              0.48356899482536164,
+              0.1100697081684478,
+              0.38619388423435547,
+              0.020167412771835053
+            ],
+            "inference_ms": 34289.103
+          },
+          "generate_long": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 512,
+            "inference_ms": 111311.638
+          }
+        }
+      }
+    },
+    {
+      "question_id": "8056751559261f1f795407eca054da90f0494c0339b6d8a6f460d92624aaa969",
+      "subject": "nutrition",
+      "source_validation_index": 1019,
+      "gold": "A",
+      "prompt_tokens": {
+        "chat_direct": 655,
+        "chat_reasoning": 695,
+        "cloze": 618
+      },
+      "results": {
+        "metal": {
+          "chat_direct": {
+            "prediction": "A",
+            "correct": true,
+            "logits": [
+              17.1523762,
+              15.6709595,
+              13.5780888,
+              13.2030487
+            ],
+            "conditional_probabilities": [
+              0.7845484909032309,
+              0.17833997119935238,
+              0.021995127838233375,
+              0.015116410059183244
+            ],
+            "inference_ms": 16476.468
+          },
+          "generate_1": {
+            "predicted_index": 0,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 17440.371
+          },
+          "cloze": {
+            "prediction": "A",
+            "correct": true,
+            "logits": [
+              11.3539324,
+              7.89480925,
+              6.0847621,
+              5.00653267
+            ],
+            "conditional_probabilities": [
+              0.9630603664382001,
+              0.03029531139290082,
+              0.004957719274894217,
+              0.0016866028940047686
+            ],
+            "inference_ms": 15028.429
+          },
+          "generate_long": {
+            "predicted_index": 0,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": false,
+            "stop": "eos",
+            "generated_tokens": 160,
+            "inference_ms": 22881.991
+          }
+        },
+        "cpu_neon": {
+          "chat_direct": {
+            "prediction": "A",
+            "correct": true,
+            "logits": [
+              17.1348209,
+              15.6932182,
+              13.5894699,
+              13.1923389
+            ],
+            "conditional_probabilities": [
+              0.7783271190594168,
+              0.18411198570092285,
+              0.0224613458339188,
+              0.015099549405741588
+            ],
+            "inference_ms": 48543.762
+          },
+          "generate_1": {
+            "predicted_index": 0,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 47456.671
+          },
+          "cloze": {
+            "prediction": "A",
+            "correct": true,
+            "logits": [
+              11.3405781,
+              7.89969063,
+              6.07946587,
+              4.99064064
+            ],
+            "conditional_probabilities": [
+              0.9624892638033654,
+              0.030834539081691818,
+              0.004994866567222548,
+              0.0016813305477199093
+            ],
+            "inference_ms": 43735.124
+          },
+          "generate_long": {
+            "predicted_index": 0,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": false,
+            "stop": "eos",
+            "generated_tokens": 160,
+            "inference_ms": 78059.411
+          }
+        }
+      }
+    },
+    {
+      "question_id": "56387957d290b514028572d1a632cf2ff472ba7f09060f97a3af3e6f0700b19c",
+      "subject": "professional_psychology",
+      "source_validation_index": 1358,
+      "gold": "B",
+      "prompt_tokens": {
+        "chat_direct": 601,
+        "chat_reasoning": 641,
+        "cloze": 564
+      },
+      "results": {
+        "metal": {
+          "generate_1": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 19762.917
+          },
+          "chat_direct": {
+            "prediction": "B",
+            "correct": true,
+            "logits": [
+              13.6450663,
+              16.3828545,
+              12.7352257,
+              16.2280846
+            ],
+            "conditional_probabilities": [
+              0.03323099456977291,
+              0.5135108774851747,
+              0.013378412868801126,
+              0.43987971507625134
+            ],
+            "inference_ms": 20278.712
+          },
+          "cloze": {
+            "prediction": "C",
+            "correct": false,
+            "logits": [
+              7.26700211,
+              7.49199152,
+              11.6930408,
+              5.26638079
+            ],
+            "conditional_probabilities": [
+              0.011629643141762283,
+              0.014563912116376676,
+              0.9722335212839385,
+              0.0015729234579225312
+            ],
+            "inference_ms": 12951.248
+          },
+          "generate_long": {
+            "predicted_index": 1,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": false,
+            "stop": "eos",
+            "generated_tokens": 124,
+            "inference_ms": 23746.334
+          }
+        },
+        "cpu_neon": {
+          "generate_1": {
+            "predicted_index": null,
+            "correct": false,
+            "valid": false,
+            "invalid_reason": "invalid_final_answer",
+            "truncated": true,
+            "stop": "limit",
+            "generated_tokens": 1,
+            "inference_ms": 47159.138
+          },
+          "chat_direct": {
+            "prediction": "B",
+            "correct": true,
+            "logits": [
+              13.6424589,
+              16.3729649,
+              12.736681,
+              16.2254372
+            ],
+            "conditional_probabilities": [
+              0.03335404067704048,
+              0.511672549178078,
+              0.01348261386438785,
+              0.4414907962804935
+            ],
+            "inference_ms": 47339.702
+          },
+          "cloze": {
+            "prediction": "C",
+            "correct": false,
+            "logits": [
+              7.26177502,
+              7.4883585,
+              11.6795979,
+              5.257411
+            ],
+            "conditional_probabilities": [
+              0.011722694318385655,
+              0.014703861247783931,
+              0.9719938586750084,
+              0.0015795857588219368
+            ],
+            "inference_ms": 46476.568
+          },
+          "generate_long": {
+            "predicted_index": 1,
+            "correct": true,
+            "valid": true,
+            "invalid_reason": null,
+            "truncated": false,
+            "stop": "eos",
+            "generated_tokens": 124,
+            "inference_ms": 58313.122
+          }
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "Eight stratified development questions cannot establish the two-percentage-point quality target.",
+    "The cap512 reasoning baseline has incomplete answers; ratios are descriptive capped-policy timings.",
+    "No calibration or held-out test inference was run. Conditional option confidence is uncalibrated (T=1).",
+    "Profiles and backends ran serially on a shared desktop; host load/thermals are not independently controlled.",
+    "No cache eviction. Post-setup first calls do not measure cold-cache behavior.",
+    "One warm trial per arm/question: p95 and apparent arm differences are exploratory.",
+    "Sequential QPS is a reciprocal-latency estimate, not concurrent service throughput.",
+    "RSS includes the model and all retained handles; Metal resource memory is not fully represented by RSS.",
+    "Additive preprocessing/surface/parse costs are estimates, not measured end-to-end service latency.",
+    "Exact duplicate exclusion does not detect semantic near-duplicates or model pretraining contamination."
+  ],
+  "raw_evidence": {
+    "directory": "benchmark/results/raw/decision-mmlu-pilot-2026-10-04",
+    "sha256_index": "benchmark/results/raw/decision-mmlu-pilot-2026-10-04/SHA256SUMS",
+    "sha256_index_digest": "dbf330c7083b981bdf7a489803c2c138b0b3056685117fd87cef1df333499c88",
+    "files_covered": 44,
+    "bytes_covered": 874086
+  }
+}

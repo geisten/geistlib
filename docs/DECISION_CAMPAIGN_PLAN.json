@@ -1,7 +1,7 @@
 {
   "protocol": "geist-decision-campaign-plan-v1",
   "tracking_issue": 587,
-  "status": "approved_for_development_pilot",
+  "status": "completed_development_pilot",
   "user_confirmed_date": "2026-10-04",
   "confirmed": {
     "platforms": [
@@ -36,7 +36,7 @@
     }
   },
   "pending": [],
-  "no_quality_result": true,
+  "no_quality_result": false,
   "budget_planning_only": {
     "source": "benchmark/results/DECISION_SELECTED_ROWS_2026-10-04.json; benchmark/results/TERNARY.md",
     "assumed_mean_prompt_tokens_per_profile": 1000,
@@ -170,5 +170,18 @@
       "decision": 0
     },
     "quality_or_timing_result": false
+  },
+  "no_held_out_acceptance_result": true,
+  "pilot_evidence": {
+    "result": "benchmark/results/DECISION_MMLU_PILOT_2026-10-04.json",
+    "writeup": "benchmark/results/DECISION_MMLU_PILOT_2026-10-04.md",
+    "raw_bundle": "benchmark/results/raw/decision-mmlu-pilot-2026-10-04",
+    "measured_source_revision": "13261ac73fb2841ef565bcabda5473eacd1e8ce0",
+    "queries_per_backend": 128,
+    "quality_n": 8,
+    "quality_matched_speedup_established": false,
+    "noninferiority_established": false,
+    "external_prism_parity_established": false,
+    "jev_equivalence_established": false
   }
 }

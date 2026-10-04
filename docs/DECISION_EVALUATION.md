@@ -1,8 +1,9 @@
 # Offline decision evaluation on Apple Silicon (#587)
 
-This is evaluation infrastructure, not a Bonsai accuracy result or a Jev
-speedup claim. It builds on `docs/DECISION.md` and leaves the default build
-flag off. The first adapter supports **classic `cais/mmlu`, four choices and
+This is evaluation infrastructure and its protocol. The completed development
+pilot supplies exploratory Bonsai evidence; it does not establish a
+quality-matched speedup or Jev equivalence. It builds on `docs/DECISION.md`
+and leaves the default build flag off. The first adapter supports **classic `cais/mmlu`, four choices and
 one integer gold label**. It does not implement MMLU-Redux's corrected and
 multiple-answer annotations.
 
@@ -22,13 +23,24 @@ exploratory quality and runtime evidence, not held-out acceptance.
 The user also approved explicit overlap exclusion and the bounded pilot:
 eight development questions from eight deterministic subjects, cap512,
 `--warmup 0 --repeats 1` (two total trials), Metal first and CPU afterwards.
-The full held-out population is reported as a cleaned subset, not stock MMLU. Tokenizer-only planning of the proposed eight-question
-subset finds 399–695 prompttokens and validates all 96 candidate boundaries.
+The full held-out population is reported as a cleaned subset, not stock MMLU.
+Tokenizer-only planning of the eight-question subset finds 399–695 prompt
+tokens and validates all 96 candidate boundaries.
 At the saved planning rates, both trials of all eight arms with a 512-token
 generation cap would take approximately 18–26 minutes on Metal and 88–124
 minutes on CPU if every reasoning output reaches the cap. These spans exclude
-setup and host load; they are not measured campaign timings. No quality result
-is attached to this plan yet.
+setup and host load; they are not measured campaign timings.
+
+The approved pilot is complete on both backends: 128 model calls each, all
+exact selected/DENSE pairs and deterministic-repeat checks passed. Direct chat
+scoring and the capped reasoning baseline each answer 4/8 correctly; cloze
+scoring answers 6/8. Both reasoning baselines have four invalid answers at the
+512-token cap. Descriptive reasoning/selected time ratios are 2.168 on Metal
+and 2.328 on CPU; neither passes the quality gate. Campaign wall times were
+40.265 and 99.224 minutes respectively.
+[The result and raw evidence](../benchmark/results/DECISION_MMLU_PILOT_2026-10-04.md)
+retain provenance, uncertainty and measurement limits. This is an eight-question
+development result, not held-out acceptance.
 
 ## Data and prompt construction
 
@@ -205,9 +217,10 @@ recurrent state reset. REST top-k alternatives with missing candidate scores
 are not sufficient. Keep this separate from free-running accuracy comparison.
 
 Actual calibration/test runs, representative ambiguous/negative controls,
-external parity, agreed quality margins and the resulting decision on whether
-classifier training is justified remain outstanding. No claim follows from
-synthetic CPU/Metal wire-protocol smoke tests alone.
+external parity, evidence that the declared quality margin holds, and the
+resulting decision on whether classifier training is justified remain
+outstanding. The development pilot and synthetic CPU/Metal wire-protocol
+checks do not establish these requirements.
 
 Bonsai's published 89.09 PQ2_0 score is **zero-shot MMLU-Redux 2.0 with
 thinking**, up to 32,768 generated tokens and sampled decoding (T=1, top-p=.95,
