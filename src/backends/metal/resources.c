@@ -469,18 +469,21 @@ static bool metal_copies_in_sequence(const struct metal_state *st,
     return metal_new_buffer(be, bytes, role, memory_flags, host_visible, out);
 }
 
-/* #357: is [p, p+n) inside one file-backed VM region, and what is the
+/* #357: is [p, p+n) inside file-backed VM regions, and what is the
  * enclosing page range? A weight aliased straight out of the loader's mmap
  * needs no copy — unified memory lets the GPU read the file pages in place.
  * The mmap is page-granular but the tensor inside it is only 32-byte
  * aligned, so the wrapper covers whole pages and the caller keeps the
  * in-page offset. Neighbouring wrappers overlap on a boundary page; that is
  * fine for read-only file pages (llama.cpp's Metal backend does the same).
- * A heap pointer (load-from-memory) fails the region check and takes the
- * copy path, the only one safe for memory whose extent the backend does not
- * know. */
+ * Read-only anonymous memory qualifies as well (#577): a caller that verifies
+ * the GGUF into its own mapping and then seals it with mprotect(PROT_READ)
+ * hands load_from_memory bytes that nobody can write, and that API already
+ * requires them to outlive the model. Copying them doubled the resident
+ * weights on unified memory. A writable heap pointer still fails the check and
+ * takes the copy path, the only one safe for memory whose owner may reuse it. */
 static bool
-metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t *len_out) {
+metal_host_range_wrappable(const void *p, size_t n, uint8_t **base_out, size_t *len_out) {
     const uintptr_t page = (uintptr_t) vm_page_size;
     const uintptr_t lo   = (uintptr_t) p & ~(page - 1u);
     if (n > UINTPTR_MAX - (uintptr_t) p - page) {
@@ -490,21 +493,31 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
 
     /* The short submap flavor reads the map entry alone. VM_REGION_EXTENDED_INFO
      * walks every page of the entry, which is the whole GGUF mapping: 84 ms
-     * per tensor on a 16 GB model, a minute per load (#555). */
-    mach_vm_address_t                     addr  = lo;
-    mach_vm_size_t                        size  = 0;
-    natural_t                             depth = 0;
-    vm_region_submap_short_info_data_64_t info  = {0};
-    mach_msg_type_number_t                count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
-    if (mach_vm_region_recurse(
-                mach_task_self(), &addr, &size, &depth, (vm_region_recurse_info_t) &info, &count) !=
-        KERN_SUCCESS) {
-        return false;
-    }
-    /* mach_vm_region_recurse returns the first region at or after `addr`: a
-     * start past `lo` means `lo` itself is unmapped. */
-    if (addr > lo || size < hi - addr || !info.external_pager) {
-        return false;
+     * per tensor on a 16 GB model, a minute per load (#555). The kernel splits
+     * a large anonymous mapping into 128 MiB entries, so a tensor that crosses
+     * one of those seams spans several entries: walk them, each must start
+     * where the last ended and qualify on its own. */
+    for (uintptr_t cursor = lo; cursor < hi;) {
+        mach_vm_address_t                     addr  = cursor;
+        mach_vm_size_t                        size  = 0;
+        natural_t                             depth = 0;
+        vm_region_submap_short_info_data_64_t info  = {0};
+        mach_msg_type_number_t                count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+        if (mach_vm_region_recurse(mach_task_self(),
+                                   &addr,
+                                   &size,
+                                   &depth,
+                                   (vm_region_recurse_info_t) &info,
+                                   &count) != KERN_SUCCESS) {
+            return false;
+        }
+        /* mach_vm_region_recurse returns the first region at or after `addr`:
+         * a start past `cursor` means `cursor` itself is unmapped. */
+        const bool read_only = (info.protection & VM_PROT_WRITE) == 0;
+        if (addr > cursor || size == 0 || !(info.external_pager || read_only)) {
+            return false;
+        }
+        cursor = (uintptr_t) (addr + size);
     }
     *base_out = (uint8_t *) lo;
     *len_out  = (size_t) (hi - lo);
@@ -519,9 +532,9 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
  *    per-slice duplicates. Views share their parent's MTLBuffer, and the
  *    open batch tracks references per MTLBuffer, so mapping one slice
  *    flushes while a sibling is bound — conservative, never unsafe;
- *  - in a file-backed mapping: wrapped in place (newBufferWithBytesNoCopy
- *    over its page range, base_off pointing at the bytes), so the model is
- *    resident once, as file pages (#357);
+ *  - in a file-backed or read-only mapping: wrapped in place
+ *    (newBufferWithBytesNoCopy over its page range, base_off pointing at the
+ *    bytes), so the model is resident once (#357, #577);
  *  - anything else (a heap pointer NoCopy cannot wrap) is copied into a
  *    SHARED MTLBuffer and always accessed through this handle. */
 [[nodiscard]] enum geist_status metal_buffer_create_aliased(struct geist_backend  *be,
@@ -553,12 +566,11 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
     void                *mtl_buffer = nullptr;
     struct geist_buffer *parent     = metal_buf_reg_find(st, host_ptr, &base_off);
     const bool           view       = parent != nullptr && n_bytes <= parent->bytes - base_off;
-    const bool           file_backed =
-            !view && metal_host_range_file_backed(host_ptr, n_bytes, &base, &base_len);
+    const bool wrappable = !view && metal_host_range_wrappable(host_ptr, n_bytes, &base, &base_len);
     /* A view allocates nothing; every new MTLBuffer is admitted against the
      * working-set budget (#531). */
     const enum geist_status bs =
-            view ? GEIST_OK : metal_budget_admit(st, file_backed ? base_len : n_bytes);
+            view ? GEIST_OK : metal_budget_admit(st, wrappable ? base_len : n_bytes);
     if (bs != GEIST_OK) {
         geist_backend_free(be, buf);
         return bs;
@@ -567,7 +579,7 @@ metal_host_range_file_backed(const void *p, size_t n, uint8_t **base_out, size_t
         mtl_buffer = parent->buffer;
         metal_msg_send_void0(st, mtl_buffer, "retain");
         base_off += parent->base_off;
-    } else if (file_backed) {
+    } else if (wrappable) {
         mtl_buffer = metal_msg_send_id_ptr_size_uint_ptr(
                 st,
                 st->device,
