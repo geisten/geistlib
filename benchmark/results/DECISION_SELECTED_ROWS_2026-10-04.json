@@ -1,6 +1,6 @@
 {
   "purpose": "Selected-row performance and same-backend arithmetic checks on Apple Silicon. Raw synthetic inputs have no quality labels; this is not MMLU, calibration, or a quality-matched Jev comparison.",
-  "source_note": "Timed Apple implementation is commit 69d0be5e1ca1670e78310d922d2fd2992ba5926a; samples were collected while that implementation was being committed. Metadata captures the observed HEAD/status and exact binary hash. The subsequent Scalar-resolver delegation guard fixes unsupported x86 capability only; measured NEON/Metal row arithmetic is unchanged.",
+  "source_note": "Timed Apple implementation is commit 69d0be5e1ca1670e78310d922d2fd2992ba5926a; samples were collected while that implementation was being committed. Metadata captures the observed HEAD/status and exact binary hash. The subsequent Scalar-resolver delegation guard fixes unsupported x86 capability only; measured NEON/Metal row arithmetic is unchanged. The final Scalar registry-name guard removes an exported resolver-address relocation for Linux FFI without changing the timed Apple kernels.",
   "host": {
     "cpu": "Apple M1 Max",
     "memory_bytes": 68719476736,
@@ -3971,6 +3971,7 @@
     "headers": "7 public headers in C23/C++17; 18 stable API contract symbols",
     "real_models": "Qwen and Bonsai CPU/Metal exact logits; Gemma real softcap Metal release/ASan; full ordinary logits and 8 generated token IDs before/after byte-identical on all three models, both backends",
     "allocations": "Every timed warm selected row kernel has zero geist heap allocations; private candidate/tile workspace is allocated at creation. Existing backbone high-water buffers can warm on first use.",
-    "memory": "Reported decision process RSS includes its model and concurrent retained generation/DENSE/selected handles. It is not per-handle or complete GPU memory usage. Dense architecture scratch remains reserved."
+    "memory": "Reported decision process RSS includes its model and concurrent retained generation/DENSE/selected handles. It is not per-handle or complete GPU memory usage. Dense architecture scratch remains reserved.",
+    "linux_ffi": "Linux ARM64, GCC 14.4.0, native GEMM, -fPIE matching Ubuntu compiler defaults: decision API/error and selected-tile fixtures pass; whole-archive shared-library link and Python ctypes load/decision availability pass. Cached offline Docker container."
   }
 }

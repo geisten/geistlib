@@ -130,8 +130,11 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
     w->linear_rows         = nullptr;
     w->linear_rows_tile    = 0;
     w->linear_rows_prepare = nullptr;
-    const bool native_rows = be != nullptr && be->desc != nullptr && be->desc->vtbl != nullptr &&
-                             be->desc->vtbl->resolve_weight == cpu_scalar_resolve_weight;
+    /* Use the registry's unique backend ID. Taking the exported resolver's
+     * address here would add a non-PIC text relocation to static archives
+     * subsequently linked into the Linux FFI shared library. */
+    const bool native_rows = be != nullptr && be->desc != nullptr && be->desc->name != nullptr &&
+                             strcmp(be->desc->name, "cpu_scalar") == 0;
     if (w->dtype == GEIST_DTYPE_F32) {
         w->linear_m1 = cpu_scalar_w_f32_m1;
         w->linear_mN = cpu_scalar_w_f32_mN;

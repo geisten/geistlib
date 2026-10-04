@@ -23,6 +23,7 @@ static enum geist_status (*borrowed_resolver)(struct geist_backend *, struct gei
     borrowed_resolver                       = v.resolve_weight;
     v.resolve_weight                        = forwarding_resolver;
     desc.vtbl                               = &v;
+    desc.name                               = "test_borrowed_scalar";
     wrapper.desc                            = &desc;
     const float         raw[8]              = {1, 2, 3, 4, 5, 6, 7, 8};
     struct geist_weight w                   = {
