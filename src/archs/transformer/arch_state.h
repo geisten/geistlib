@@ -328,6 +328,15 @@ struct transformer_arch_session {
      * bind aliased slices directly; scratch_pool_base == buffer_map(buf).
      * CPU backends malloc under the hood — behavior unchanged. */
     struct geist_buffer *scratch_pool_buf;
+    /* #488: the device-local part of the pool, when the session runs with
+     * one (scratch_device; see scratch_device_wanted in arch_state.c). Every
+     * slot but h_a, h_b and logits — the ones the host maps — is then a
+     * buffer_create_view slice of it, and scratch_pool_buf holds only those
+     * three. nullptr otherwise. */
+    struct geist_buffer *scratch_dev_pool_buf;
+    size_t               scratch_dev_pool_bytes;
+    size_t               scratch_dev_pool_used;
+    bool                 scratch_device;
 
     /* ---- Gated-DeltaNet recurrent state (#281/#296). Backend buffers,
      * allocated at session_alloc only for layers with mixer == DELTANET;

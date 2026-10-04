@@ -454,6 +454,9 @@ static size_t vk_parse_bytes(const char *v) {
      * escape hatch back to the scalar kernel. */
     const char *attn_cm_env = getenv("GEIST_VK_ATTN_CM");
     st->attn_cm             = attn_cm_env == nullptr || strcmp(attn_cm_env, "0") != 0;
+    /* Opt-in (#488): device-local scratch pool; see vk_buffer_create_api. */
+    const char *scratch_env = getenv("GEIST_VK_SCRATCH_DEVICE");
+    st->scratch_device      = scratch_env != nullptr && strcmp(scratch_env, "1") == 0;
 
     enum geist_status s = vk_load_runtime(be, st);
     if (s != GEIST_OK) {
@@ -525,6 +528,16 @@ void vk_destroy(struct geist_backend *be) {
                     (unsigned long long) st->stat_dset_hits,
                     (unsigned long long) st->stat_dset_miss,
                     (double) st->stat_wait_ns / 1e6);
+            fprintf(stderr,
+                    "geist vulkan scratch: device-local %llu (%llu MiB), BAR %llu (%llu MiB), "
+                    "host %llu (%llu MiB); device-local host views refused %llu\n",
+                    (unsigned long long) st->stat_scratch_n[VK_PLACEMENT_DEVICE],
+                    (unsigned long long) (st->stat_scratch_bytes[VK_PLACEMENT_DEVICE] >> 20),
+                    (unsigned long long) st->stat_scratch_n[VK_PLACEMENT_BAR],
+                    (unsigned long long) (st->stat_scratch_bytes[VK_PLACEMENT_BAR] >> 20),
+                    (unsigned long long) st->stat_scratch_n[VK_PLACEMENT_HOST],
+                    (unsigned long long) (st->stat_scratch_bytes[VK_PLACEMENT_HOST] >> 20),
+                    (unsigned long long) st->stat_host_denied);
         }
         if (st->profile_enabled) {
             static const char *const names[VK_PIPE_COUNT + 1] = {

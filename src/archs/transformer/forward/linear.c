@@ -107,6 +107,19 @@ static inline void weight_path_record(const struct geist_weight *w, bool multi_r
 }
 #endif
 
+/* The host kernels below need host pointers; a buffer the backend cannot map
+ * (a device-local scratch slot, #488) makes the call fail here, naming why,
+ * rather than read the bytes some slower way. */
+[[nodiscard]] static enum geist_status host_kernel_unmapped(struct geist_backend      *be,
+                                                            const struct geist_weight *w) {
+    geist_backend_set_error(be,
+                            GEIST_E_BACKEND,
+                            "linear_w: the backend has no device kernel for this dtype=%u weight "
+                            "and its host kernel cannot read device-local activations",
+                            (unsigned) w->dtype);
+    return GEIST_E_BACKEND;
+}
+
 enum geist_status linear_w_or_legacy(struct geist_backend            *be,
                                      const struct geist_backend_vtbl *v,
                                      struct geist_buffer             *x_buf,
@@ -143,7 +156,13 @@ enum geist_status linear_w_or_legacy(struct geist_backend            *be,
     const float *xp = (const float *) v->buffer_map(x_buf);
     float       *yp = (float *) v->buffer_map(y_buf);
     if (xp == nullptr || yp == nullptr) {
-        return GEIST_E_BACKEND;
+        if (xp != nullptr) {
+            v->buffer_unmap(x_buf);
+        }
+        if (yp != nullptr) {
+            v->buffer_unmap(y_buf);
+        }
+        return host_kernel_unmapped(be, w);
     }
     /* Pass `be` so the kernel can reach its backend's workspace
      * (cpu_neon q8a scratch, etc.) without consulting file-scope TLS.
@@ -230,7 +249,7 @@ enum geist_status linear_w_pair_or_legacy(struct geist_backend            *be,
         if (y1p != nullptr) {
             v->buffer_unmap(y1_buf);
         }
-        return GEIST_E_BACKEND;
+        return host_kernel_unmapped(be, w0);
     }
     if (seq == 1) {
         if (w0->linear_pair_m1 != nullptr && w0->linear_pair_m1 == w1->linear_pair_m1 &&
@@ -336,7 +355,7 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
         if (y2p != nullptr) {
             v->buffer_unmap(y2_buf);
         }
-        return GEIST_E_BACKEND;
+        return host_kernel_unmapped(be, w0);
     }
 
     if (seq == 1) {
