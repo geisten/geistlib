@@ -1,0 +1,57 @@
+name: gpu-debug
+
+# One-shot: why does the PrismML fork's Vulkan llama-bench segfault on the RTX 2080 Ti
+# with Bonsai-27B PQ2_0? Runs on the self-hosted GPU desktop (docs/CI_SELF_HOSTED.md).
+
+on:
+  push:
+    branches: [debug/fork-vk-segfault]  # one-shot: dispatch needs the file on main
+
+env:
+  FILE: Ternary-Bonsai-2-27B-PQ2_0.gguf
+  FORK_REV: 01ae597e3f7d4742909e1e831abb12fe3d24b2cf
+
+jobs:
+  debug:
+    runs-on: [self-hosted, linux, x64, geist-vulkan]
+    timeout-minutes: 60
+    steps:
+      - name: Environment
+        run: |
+          nvidia-smi --query-gpu=name,driver_version,memory.total,memory.used --format=csv
+          vulkaninfo --summary 2>&1 | grep -E "deviceName|deviceType|driverName|apiVersion|driverInfo" || true
+          which gdb valgrind || true
+          ls -l "$HOME/bench-cache/$FILE"
+          uptime
+
+      - name: Build fork Vulkan with symbols
+        run: |
+          D="$HOME/bench-cache/fork"
+          [ -d "$HOME/bench-cache/spirv" ] || git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers "$HOME/bench-cache/spirv"
+          git -C "$D" checkout -q "$FORK_REV"
+          cmake -S "$D" -B "$D/build-vkdbg" -DGGML_VULKAN=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-I$HOME/bench-cache/spirv/include -fno-omit-frame-pointer"
+          cmake --build "$D/build-vkdbg" --target llama-bench -j"$(nproc)"
+
+      - name: Variants
+        run: |
+          B="$HOME/bench-cache/fork/build-vkdbg/bin/llama-bench"; M="$HOME/bench-cache/$FILE"
+          run() { echo; echo "### $1"; shift; ( "$@" 2>&1 | grep -vE "^\s*$" | tail -12 ) ; echo "exit=${PIPESTATUS[0]}"; }
+          set +e
+          run "baseline: device 0, ngl 99, pp512"      env GGML_VK_VISIBLE_DEVICES=0 "$B" -m "$M" -ngl 99 -p 512 -n 0 -r 1
+          run "tiny prompt pp16"                       env GGML_VK_VISIBLE_DEVICES=0 "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1
+          run "decode only tg16"                       env GGML_VK_VISIBLE_DEVICES=0 "$B" -m "$M" -ngl 99 -p 0 -n 16 -r 1
+          run "ngl 0 (CPU path sanity)"                env GGML_VK_VISIBLE_DEVICES=0 "$B" -m "$M" -ngl 0 -p 16 -n 0 -r 1
+          run "ngl 20"                                 env GGML_VK_VISIBLE_DEVICES=0 "$B" -m "$M" -ngl 20 -p 16 -n 0 -r 1
+          run "coopmat disabled"                       env GGML_VK_VISIBLE_DEVICES=0 GGML_VK_DISABLE_COOPMAT=1 GGML_VK_DISABLE_COOPMAT2=1 "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1
+          run "fp16 disabled"                          env GGML_VK_VISIBLE_DEVICES=0 GGML_VK_DISABLE_F16=1 "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1
+          run "no host-visible/ suballocation"         env GGML_VK_VISIBLE_DEVICES=0 GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1 "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1
+          run "both devices (as in the failing run)"   "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1
+
+      - name: Backtrace
+        if: always()
+        run: |
+          B="$HOME/bench-cache/fork/build-vkdbg/bin/llama-bench"; M="$HOME/bench-cache/$FILE"
+          if command -v gdb >/dev/null; then
+            GGML_VK_VISIBLE_DEVICES=0 gdb -batch -ex run -ex "bt 25" -ex "info registers rip" --args "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1 2>&1 | tail -45
+          else echo "gdb not installed on the runner"; fi
