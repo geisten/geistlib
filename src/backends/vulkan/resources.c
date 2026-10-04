@@ -210,7 +210,9 @@ static void vk_vram_exhausted(struct geist_backend  *be,
             struct geist_buffer **nb =
                     geist_backend_alloc(be, cap * sizeof(*nb), alignof(struct geist_buffer *));
             if (nb != nullptr) {
-                memcpy(nb, st->hostbufs, st->n_hostbufs * sizeof(*nb));
+                if (st->n_hostbufs > 0) { /* hostbufs is nullptr before the first grow */
+                    memcpy(nb, st->hostbufs, st->n_hostbufs * sizeof(*nb));
+                }
                 geist_backend_free(be, st->hostbufs);
                 st->hostbufs     = nb;
                 st->cap_hostbufs = cap;
@@ -454,10 +456,17 @@ void *vk_buffer_map(struct geist_buffer *buf) {
         return nullptr;
     }
     vk_seq_flush(buf->owner); /* host is about to read/write — drain the batch */
-    if (buf->host_alias != nullptr) {
-        return buf->host_alias;
+    void *p = buf->host_alias != nullptr ? buf->host_alias : buf->mapped;
+    if (p == nullptr) {
+        return nullptr; /* device-local — caller falls back (download reports a failure) */
     }
-    return buf->mapped; /* nullptr for device-local — caller must fall back */
+    /* A dropped batch leaves the mapping holding whatever was there before:
+     * hand out no pointer rather than stale results. buffer_map has no status,
+     * so the failure is the backend error and the caller's nullptr check. */
+    if (vk_seq_take_failure(buf->owner) != GEIST_OK) {
+        return nullptr;
+    }
+    return p;
 }
 
 void vk_buffer_unmap(struct geist_buffer *buf) {
@@ -603,17 +612,18 @@ struct vk_access vk_acc_tensor(const struct geist_tensor *t, bool write) {
 }
 
 /* GPU view of a tensor: VkBuffer + f32 element offset. False when the
- * tensor's buffer has no VkBuffer behind it (e.g. GGUF-mmap aliases). */
+ * tensor's buffer has no VkBuffer behind it (e.g. GGUF-mmap aliases), or
+ * when the offset does not fit the shaders' uint32 element index. */
 bool vk_tensor_gpu(const struct geist_tensor *t, VkDescriptorBufferInfo *out, uint32_t *elem_off) {
     if (t == nullptr || t->buffer == nullptr || t->buffer->buf == VK_NULL_HANDLE) {
         return false;
     }
-    const size_t byte_off = t->buffer->base_off + t->offset;
-    if (byte_off % 4 != 0) {
+    size_t byte_off;
+    if (ckd_add(&byte_off, t->buffer->base_off, t->offset) || byte_off % 4 != 0 ||
+        vk_ckd_u32(byte_off / 4, elem_off)) {
         return false;
     }
-    *out      = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
-    *elem_off = (uint32_t) (byte_off / 4);
+    *out = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
     return true;
 }
 
@@ -624,12 +634,12 @@ bool vk_tensor_gpu_f16(const struct geist_tensor *t,
     if (t == nullptr || t->buffer == nullptr || t->buffer->buf == VK_NULL_HANDLE) {
         return false;
     }
-    const size_t byte_off = t->buffer->base_off + t->offset;
-    if (byte_off % 2 != 0) {
+    size_t byte_off;
+    if (ckd_add(&byte_off, t->buffer->base_off, t->offset) || byte_off % 2 != 0 ||
+        vk_ckd_u32(byte_off / 2, elem_off)) {
         return false;
     }
-    *out      = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
-    *elem_off = (uint32_t) (byte_off / 2);
+    *out = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
     return true;
 }
 
@@ -672,6 +682,9 @@ void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
         return nullptr; /* device-local — CPU ops can't touch it */
     }
     t->buffer->owner->stat_cpu_falls++;
+    if (vk_fallback(t->buffer->owner, VK_FB_HOST_VIEW) != GEIST_E_UNSUPPORTED) {
+        return nullptr; /* GEIST_VK_STRICT: the error names the site */
+    }
     vk_seq_flush(t->buffer->owner); /* host access — drain pending GPU work */
     if (vk_seq_take_failure(t->buffer->owner) != GEIST_OK) {
         return nullptr;
@@ -738,12 +751,19 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
         return GEIST_OK;
     }
     /* Host fallback. */
-    vk_seq_flush(st);
     uint8_t       *d  = dst->host_alias != nullptr ? dst->host_alias : dst->mapped;
     const uint8_t *sp = src->host_alias != nullptr ? src->host_alias : src->mapped;
     if (d == nullptr || sp == nullptr || dst_offset + n_bytes > dst->bytes ||
         src_offset + n_bytes > src->bytes) {
         return GEIST_E_UNSUPPORTED;
+    }
+    const enum geist_status fs = vk_fallback(st, VK_FB_HOST_COPY);
+    if (fs != GEIST_E_UNSUPPORTED) {
+        return fs;
+    }
+    vk_seq_flush(st);
+    if (vk_seq_take_failure(st) != GEIST_OK) {
+        return GEIST_E_BACKEND; /* the source holds no results of the dropped batch */
     }
     memcpy(d + dst_offset, sp + src_offset, n_bytes);
     return GEIST_OK;
@@ -762,19 +782,23 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
     if (!vk_tensor_gpu(t_x, &src_bi, &src_elem)) {
         return false;
     }
-    const size_t bytes = m * n_in * sizeof(float);
+    size_t bytes;
+    if (ckd_mul(&bytes, m, n_in) || ckd_mul(&bytes, bytes, sizeof(float))) {
+        return false;
+    }
     if (st->xring == nullptr &&
         vk_buffer_create(be, VK_XRING_CAP, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &st->xring) !=
                 GEIST_OK) {
         return false;
     }
     if (bytes > st->xring->bytes) {
-        return false;
+        return false; /* resolve_weight refuses an n_in whose max_m batch would not fit */
     }
     if (st->xring_used + bytes > st->xring->bytes) {
         vk_seq_flush(st); /* drains the batch and resets the ring */
     }
-    if (vk_seq_open_cmd(st) != GEIST_OK) {
+    uint32_t elem_off; /* < VK_XRING_CAP / 4; checked all the same */
+    if (vk_ckd_u32(st->xring_used / sizeof(float), &elem_off) || vk_seq_open_cmd(st) != GEIST_OK) {
         return false;
     }
     {
@@ -807,7 +831,7 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
     st->seq_dispatches++;
     st->seq_in_cmd++;
     vk_prof_stamp(st, VK_PIPE_COUNT);
-    *out_elem_off  = (uint32_t) (st->xring_used / sizeof(float));
+    *out_elem_off  = elem_off;
     st->xring_used = (st->xring_used + bytes + 63) & ~(size_t) 63;
     return true;
 }

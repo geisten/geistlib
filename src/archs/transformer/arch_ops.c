@@ -377,7 +377,10 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
         sess->kv_len += chunk;
         if (sess->kv_kivi_enabled) {
             sess->kivi_residual_count += chunk;
-            transformer_kivi_drain_full(sess);
+            s = transformer_kivi_drain_full(sess);
+            if (s != GEIST_OK) {
+                return s;
+            }
         }
 
         /* 5. Mean pooling is the one finish that spans chunks: every
@@ -482,6 +485,9 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     /* 1. Embed all k tokens into scratch_h_a [k, HIDDEN]. */
     {
         float *h_dst = (float *) v->buffer_map(sess->scratch_h_a);
+        if (h_dst == nullptr) {
+            return GEIST_E_BACKEND; /* the backend said why */
+        }
         for (size_t t = 0; t < k; t++) {
             enum geist_status s =
                     dequant_one_row(be, &st->embed_table, (size_t) ids[t], h_dst + t * st->d_model);
@@ -642,7 +648,10 @@ enum geist_status transformer_kv_truncate(struct transformer_arch_session *sess,
         }
         /* Truncate may settle residual into commit-safe territory
          * (verify_forward burst → accept → truncate at kv_len_old + a). */
-        transformer_kivi_drain_full(sess);
+        const enum geist_status ds = transformer_kivi_drain_full(sess);
+        if (ds != GEIST_OK) {
+            return ds;
+        }
     }
     if (!keep_pending) {
         sess->logits_valid       = false;
@@ -713,6 +722,10 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
         {
             const size_t bytes = chunk * st->d_model * sizeof(float);
             uint8_t     *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
+            if (dst == nullptr) {
+                rc = GEIST_E_BACKEND; /* the backend said why */
+                goto cleanup;
+            }
             memcpy(dst, (const uint8_t *) (soft_tokens + off * st->d_model), bytes);
             v->buffer_unmap(sess->scratch_h_a);
         }
@@ -739,7 +752,10 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
         sess->kv_len += chunk;
         if (sess->kv_kivi_enabled) {
             sess->kivi_residual_count += chunk;
-            transformer_kivi_drain_full(sess);
+            rc = transformer_kivi_drain_full(sess);
+            if (rc != GEIST_OK) {
+                goto cleanup;
+            }
         }
 
         if (off + chunk == n) {
@@ -855,6 +871,10 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
                 goto cleanup;
             }
             float *g = (float *) v->buffer_map(L->attn_norm.buffer);
+            if (g == nullptr) {
+                rc = GEIST_E_BACKEND; /* the backend said why */
+                goto cleanup;
+            }
             for (size_t j = 0; j < st->d_model; j++)
                 g[j] /= s[j];
             v->buffer_unmap(L->attn_norm.buffer);
@@ -875,6 +895,10 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
                 goto cleanup;
             }
             float *g = (float *) v->buffer_map(L->ffn_norm.buffer);
+            if (g == nullptr) {
+                rc = GEIST_E_BACKEND; /* the backend said why */
+                goto cleanup;
+            }
             for (size_t j = 0; j < st->d_model; j++)
                 g[j] /= s[j];
             v->buffer_unmap(L->ffn_norm.buffer);

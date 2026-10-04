@@ -558,7 +558,10 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
         }
         if (!on_device) {
             float *dst = (float *) v->buffer_map(sess->scratch_ple_lookup);
-            s          = dequant_one_row(be, &st->ple_table, (size_t) token_id, dst);
+            if (dst == nullptr) {
+                return GEIST_E_BACKEND; /* the backend said why */
+            }
+            s = dequant_one_row(be, &st->ple_table, (size_t) token_id, dst);
             if (s != GEIST_OK) {
                 v->buffer_unmap(sess->scratch_ple_lookup);
                 return s;
@@ -600,6 +603,9 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
             }
         } else {
             float *p = (float *) v->buffer_map(per_layer_input_buf);
+            if (p == nullptr) {
+                return GEIST_E_BACKEND; /* the backend said why */
+            }
             for (size_t i = 0; i < (size_t) st->ple_out; i++) {
                 p[i] *= st->config.ple_model_proj_scale;
             }
@@ -632,6 +638,9 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
             }
         } else {
             float *p = (float *) v->buffer_map(per_layer_input_buf);
+            if (p == nullptr) {
+                return GEIST_E_BACKEND; /* the backend said why */
+            }
             for (size_t i = 0; i < (size_t) st->ple_out; i++) {
                 p[i] *= st->config.ple_input_scale;
             }
@@ -806,6 +815,9 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
         }
     } else {
         float *p = (float *) v->buffer_map(out_buf);
+        if (p == nullptr) {
+            return GEIST_E_BACKEND; /* the backend said why */
+        }
         for (size_t i = 0; i < n * PLE_OUT; i++) {
             p[i] *= st->config.ple_model_proj_scale;
         }

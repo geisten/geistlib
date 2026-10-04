@@ -74,7 +74,7 @@ transformer_check_kv_room(struct transformer_arch_session *sess, size_t n_new) {
 
 /* Drain the per-session KIVI residual ring across all non-shared layers,
  * if KIVI mode is enabled and residual_count >= R. No-op otherwise. */
-void transformer_kivi_drain_full(struct transformer_arch_session *sess);
+[[nodiscard]] enum geist_status transformer_kivi_drain_full(struct transformer_arch_session *sess);
 
 /* Copy the residual rows of a just-pinned prefix (kivi_pin_tail), for
  * transformer_kivi_pin_restore to write back when a reset returns to it.

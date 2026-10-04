@@ -446,6 +446,8 @@ static size_t vk_parse_bytes(const char *v) {
     st->backend         = be;
     st->profile_enabled = getenv("GEIST_VK_PROFILE") != nullptr;
     st->pq2_f32_acc     = getenv("GEIST_VK_PQ2_F32_ACC") != nullptr;
+    const char *strict  = getenv("GEIST_VK_STRICT");
+    st->strict          = strict != nullptr && strcmp(strict, "0") != 0;
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
     /* Default on since #501's rollout validated cleanly (two models,
      * two GPUs, several misaligned chunk sizes); GEIST_VK_ATTN_CM=0 is the
@@ -510,6 +512,14 @@ void vk_destroy(struct geist_backend *be) {
                     (unsigned long long) st->stat_cpu_falls,
                     (unsigned long long) st->stat_barriers,
                     (unsigned long long) st->stat_barriers_elided);
+            for (size_t i = 0; i < VK_FB_COUNT; i++) {
+                if (st->fallbacks[i] != 0) {
+                    fprintf(stderr,
+                            "geist vulkan fallback: %s %llu\n",
+                            vk_fallback_name((enum vk_fb) i),
+                            (unsigned long long) st->fallbacks[i]);
+                }
+            }
             fprintf(stderr,
                     "geist vulkan dset cache: %llu hits, %llu misses; submit+wait %.1f ms\n",
                     (unsigned long long) st->stat_dset_hits,
