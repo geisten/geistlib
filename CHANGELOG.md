@@ -9,6 +9,13 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Vulkan fallback accounting and strict mode** (#474). Every place work
+  leaves the GPU (a declined fused op, a host view or copy of mapped memory, a
+  host-path weight) is counted per site and printed under `GEIST_VK_VERBOSE`;
+  the first host-path linear names how many weights and bytes run there.
+  `GEIST_VK_STRICT=1` makes each of them an error that names the site. A
+  failed argmax dispatch now returns the dispatch error instead of sending the
+  arch to a host scan of logits the GPU never wrote.
 - **Vulkan device-memory budget** (#466). Device-local allocations (weight
   copies, KV cache, x ring) are checked against the heap before they are made;
   a model that does not fit fails with the MiB the allocation needs, the MiB in
@@ -711,6 +718,18 @@ minor release.
   vtable.
 
 ### Fixed
+- **Vulkan: a failed submit no longer hands out stale results; sizes past
+  32 bits fail instead of wrapping** (#474). After a dropped batch,
+  `buffer_map` returns nullptr with `GEIST_E_BACKEND` as the backend error
+  (and the host-path linear, a host buffer copy and a download report the
+  failure); every transformer caller that maps a buffer now turns nullptr into
+  an error instead of dereferencing it. The push constants, dispatch sizes and
+  offsets in `ops.c` go through a checked narrowing (`vk_ckd_u32`), so a value
+  the shaders cannot index makes the op return `GEIST_E_INVALID_ARG`. The x
+  ring is checked against `max_m` x `n_in` at weight resolve (a weight that
+  could not be staged now fails the load rather than running as a silent host
+  linear) and is created there, with the argmax word, instead of on the first
+  decode.
 - **A session's KV cache ignored its own `max_seq_len`** (#577). It was sized
   from the model's cap, so on a model loaded with a 32768-token cap a
   64-token session still held 32768 rows of KV (64 MiB in FP32 for a

@@ -90,9 +90,15 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
 
     const float *k_src = (const float *) v->buffer_map(sess->scratch_k);
     const float *v_src = (const float *) v->buffer_map(sess->scratch_v);
+    if (k_src == nullptr || v_src == nullptr) {
+        return GEIST_E_BACKEND; /* the backend said why */
+    }
     if (ctx->kv_kivi_enabled) {
-        float       *k_res     = (float *) v->buffer_map(ctx->k_residual_buf);
-        float       *v_res     = (float *) v->buffer_map(ctx->v_residual_buf);
+        float *k_res = (float *) v->buffer_map(ctx->k_residual_buf);
+        float *v_res = (float *) v->buffer_map(ctx->v_residual_buf);
+        if (k_res == nullptr || v_res == nullptr) {
+            return GEIST_E_BACKEND;
+        }
         const size_t row_elems = kv_out;
         for (size_t t = 0; t < seq; t++) {
             const size_t res_idx = (q_position + t) - sess->kivi_drained_count;
@@ -105,10 +111,13 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
         /* Packed 4-bit: 2 values/byte into the half-size int8 slots. Same
          * per-token per-head scale + optional rotation as INT8. denom 7 →
          * scale = amax/7, values in [-7,7]. */
-        uint8_t     *k_dst          = (uint8_t *) v->buffer_map(ctx->k_cache_q8_buf);
-        uint8_t     *v_dst          = (uint8_t *) v->buffer_map(ctx->v_cache_q8_buf);
-        float       *k_sca          = (float *) v->buffer_map(ctx->k_cache_scale_buf);
-        float       *v_sca          = (float *) v->buffer_map(ctx->v_cache_scale_buf);
+        uint8_t *k_dst = (uint8_t *) v->buffer_map(ctx->k_cache_q8_buf);
+        uint8_t *v_dst = (uint8_t *) v->buffer_map(ctx->v_cache_q8_buf);
+        float   *k_sca = (float *) v->buffer_map(ctx->k_cache_scale_buf);
+        float   *v_sca = (float *) v->buffer_map(ctx->v_cache_scale_buf);
+        if (k_dst == nullptr || v_dst == nullptr || k_sca == nullptr || v_sca == nullptr) {
+            return GEIST_E_BACKEND;
+        }
         const size_t row_elems      = kv_out;
         const size_t scales_per_row = st->n_kv_heads;
         const bool   rot            = sess->kv_rot_enabled && fwht_supported(hd) && hd <= 512;
@@ -145,10 +154,13 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
         v->buffer_unmap(ctx->k_cache_scale_buf);
         v->buffer_unmap(ctx->v_cache_scale_buf);
     } else if (ctx->kv_int8_enabled) {
-        int8_t      *k_dst          = (int8_t *) v->buffer_map(ctx->k_cache_q8_buf);
-        int8_t      *v_dst          = (int8_t *) v->buffer_map(ctx->v_cache_q8_buf);
-        float       *k_sca          = (float *) v->buffer_map(ctx->k_cache_scale_buf);
-        float       *v_sca          = (float *) v->buffer_map(ctx->v_cache_scale_buf);
+        int8_t *k_dst = (int8_t *) v->buffer_map(ctx->k_cache_q8_buf);
+        int8_t *v_dst = (int8_t *) v->buffer_map(ctx->v_cache_q8_buf);
+        float  *k_sca = (float *) v->buffer_map(ctx->k_cache_scale_buf);
+        float  *v_sca = (float *) v->buffer_map(ctx->v_cache_scale_buf);
+        if (k_dst == nullptr || v_dst == nullptr || k_sca == nullptr || v_sca == nullptr) {
+            return GEIST_E_BACKEND;
+        }
         const size_t row_elems      = kv_out;
         const size_t scales_per_row = st->n_kv_heads;
         /* Issue #61: rotate each K/V head row before quantizing. Q is
@@ -202,8 +214,11 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
         v->buffer_unmap(ctx->k_cache_scale_buf);
         v->buffer_unmap(ctx->v_cache_scale_buf);
     } else {
-        uint8_t     *k_dst      = (uint8_t *) v->buffer_map(ctx->k_cache_buf);
-        uint8_t     *v_dst      = (uint8_t *) v->buffer_map(ctx->v_cache_buf);
+        uint8_t *k_dst = (uint8_t *) v->buffer_map(ctx->k_cache_buf);
+        uint8_t *v_dst = (uint8_t *) v->buffer_map(ctx->v_cache_buf);
+        if (k_dst == nullptr || v_dst == nullptr) {
+            return GEIST_E_BACKEND;
+        }
         const size_t row_bytes  = kv_out * sizeof(float);
         const size_t span_bytes = seq * row_bytes;
         memcpy(k_dst + q_position * row_bytes, (const uint8_t *) k_src, span_bytes);
@@ -219,15 +234,19 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
 /* fwht_orthonormal on each of the first n_rows rows (hd floats) of `b`:
  * Q before a backend's attention kernel and its output after, where the
  * cache holds rotated rows (GEIST_KV_ROT). H is its own inverse. */
-static void kv_rotate_rows(const struct geist_backend_vtbl *v,
-                           size_t                           n_rows,
-                           size_t                           hd,
-                           struct geist_buffer             *b) {
+[[nodiscard]] static enum geist_status kv_rotate_rows(const struct geist_backend_vtbl *v,
+                                                      size_t                           n_rows,
+                                                      size_t                           hd,
+                                                      struct geist_buffer             *b) {
     float *p = (float *) v->buffer_map(b);
+    if (p == nullptr) {
+        return GEIST_E_BACKEND; /* the backend said why */
+    }
     for (size_t r = 0; r < n_rows; r++) {
         fwht_orthonormal(hd, p + r * hd);
     }
     v->buffer_unmap(b);
+    return GEIST_OK;
 }
 
 enum geist_status transformer_kv_store_attention(struct transformer_layer_forward_ctx *ctx,
@@ -253,7 +272,12 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         const float   *krp  = (const float *) v->buffer_map(ctx->k_residual_buf);
         const float   *vrp  = (const float *) v->buffer_map(ctx->v_residual_buf);
         float         *outp = (float *) v->buffer_map(sess->scratch_attn);
-        float         *scores =
+        if (qp == nullptr || kqp == nullptr || vqp == nullptr || kscp == nullptr ||
+            kzep == nullptr || vscp == nullptr || vzep == nullptr || krp == nullptr ||
+            vrp == nullptr || outp == nullptr) {
+            return GEIST_E_BACKEND; /* the backend said why */
+        }
+        float *scores =
                 (float *) frame_arena_alloc(&sess->scratch_arena, kv_len_now * sizeof(float), 16);
         if (scores == nullptr) {
             geist_backend_set_error(be,
@@ -299,7 +323,10 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
         const size_t n_rows = ctx->seq * st->n_q_heads;
         if (rot) {
-            kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_q);
+            const enum geist_status rs = kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_q);
+            if (rs != GEIST_OK) {
+                return rs;
+            }
         }
         const int64_t       n_kv   = (int64_t) kv_len_now;
         const int64_t       n_kh   = st->n_kv_heads;
@@ -321,7 +348,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
             return s;
         }
         if (rot) {
-            kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_attn);
+            return kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_attn);
         }
     } else if (sess->kv_int4_packed_enabled) {
         float         *qp       = (float *) v->buffer_map(sess->scratch_q);
@@ -330,8 +357,12 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         const float   *k_scalep = (const float *) v->buffer_map(ctx->k_cache_scale_buf);
         const float   *v_scalep = (const float *) v->buffer_map(ctx->v_cache_scale_buf);
         float         *outp     = (float *) v->buffer_map(sess->scratch_attn);
-        const bool     rot      = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
-        const size_t   n_rows   = ctx->seq * st->n_q_heads;
+        if (qp == nullptr || k_q4p == nullptr || v_q4p == nullptr || k_scalep == nullptr ||
+            v_scalep == nullptr || outp == nullptr) {
+            return GEIST_E_BACKEND; /* the backend said why */
+        }
+        const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
+        const size_t n_rows = ctx->seq * st->n_q_heads;
         if (rot) {
             for (size_t r = 0; r < n_rows; r++) {
                 fwht_orthonormal(ctx->hd, qp + r * ctx->hd);
@@ -367,7 +398,10 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
         const size_t n_rows = ctx->seq * st->n_q_heads;
         if (rot) {
-            kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_q);
+            const enum geist_status rs = kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_q);
+            if (rs != GEIST_OK) {
+                return rs;
+            }
         }
         const int64_t       n_kv = (int64_t) kv_len_now;
         const int64_t       n_kh = st->n_kv_heads;
@@ -388,7 +422,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
             return s;
         }
         if (rot) {
-            kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_attn);
+            return kv_rotate_rows(v, n_rows, ctx->hd, sess->scratch_attn);
         }
     } else if (ctx->kv_int8_enabled) {
         float        *qp       = (float *) v->buffer_map(sess->scratch_q);
@@ -397,6 +431,10 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         const float  *k_scalep = (const float *) v->buffer_map(ctx->k_cache_scale_buf);
         const float  *v_scalep = (const float *) v->buffer_map(ctx->v_cache_scale_buf);
         float        *outp     = (float *) v->buffer_map(sess->scratch_attn);
+        if (qp == nullptr || k_q8p == nullptr || v_q8p == nullptr || k_scalep == nullptr ||
+            v_scalep == nullptr || outp == nullptr) {
+            return GEIST_E_BACKEND; /* the backend said why */
+        }
         /* Issue #61: rotate Q by the same H used on K/V so QK scores are
          * unchanged; the kernel then quantizes rotated Q, and we rotate the
          * (V-rotated) output back below. H is its own inverse. */
