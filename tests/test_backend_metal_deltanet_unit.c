@@ -1,6 +1,7 @@
 /* Metal Gated-DeltaNet prefill/decode parity (#296). Exercises the fused
  * backend contract directly with non-zero recurrent state, then compares
  * mixer output plus both advanced states against a scalar reference. */
+#include "deltanet_ref.h"
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -26,80 +27,6 @@ enum {
     CD   = 2 * KEYD + VD
 };
 
-static float silu_ref(float x) {
-    const float e = expf(-fabsf(x));
-    return x >= 0.0f ? x / (1.0f + e) : x * e / (1.0f + e);
-}
-
-static void mix_ref(size_t       seq,
-                    float       *qkv,
-                    float       *z,
-                    const float *beta,
-                    const float *alpha,
-                    const float  cw[CD * K],
-                    const float  aw[NH],
-                    const float  dt[NH],
-                    const float  nw[DV],
-                    float        cs[(K - 1) * CD],
-                    float        state[NH * DK * DV]) {
-    const float eps = 1e-6f;
-    for (size_t t = 0; t < seq; t++) {
-        float y[CD];
-        for (size_t c = 0; c < CD; c++) {
-            float acc = 0.0f;
-            for (size_t r = 0; r < K; r++) {
-                const float x = r + 1 < K ? cs[r * CD + c] : qkv[t * CD + c];
-                acc += cw[c * K + r] * x;
-            }
-            y[c] = silu_ref(acc);
-        }
-        memmove(cs, cs + CD, (K - 2) * CD * sizeof(float));
-        memcpy(cs + (K - 2) * CD, qkv + t * CD, CD * sizeof(float));
-        memcpy(qkv + t * CD, y, CD * sizeof(float));
-
-        for (size_t h = 0; h < NKH; h++) {
-            double qss = 0.0, kss = 0.0;
-            for (size_t i = 0; i < DK; i++) {
-                qss += (double) y[h * DK + i] * y[h * DK + i];
-                kss += (double) y[KEYD + h * DK + i] * y[KEYD + h * DK + i];
-            }
-            const float qi = (float) (1.0 / sqrt(qss + eps)) / sqrtf((float) DK);
-            const float ki = (float) (1.0 / sqrt(kss + eps));
-            for (size_t i = 0; i < DK; i++) {
-                qkv[t * CD + h * DK + i] *= qi;
-                qkv[t * CD + KEYD + h * DK + i] *= ki;
-            }
-        }
-
-        for (size_t h = 0; h < NH; h++) {
-            const size_t hk      = h % NKH;
-            const float  b       = 1.0f / (1.0f + expf(-beta[t * NH + h]));
-            const float  decay   = expf(aw[h] * log1pf(expf(alpha[t * NH + h] + dt[h])));
-            float        out[DV] = {0};
-            for (size_t j = 0; j < DV; j++) {
-                float mem = 0.0f;
-                for (size_t i = 0; i < DK; i++) {
-                    float *s = state + (h * DK + i) * DV + j;
-                    *s *= decay;
-                    mem += *s * qkv[t * CD + KEYD + hk * DK + i];
-                }
-                const float d = (qkv[t * CD + 2 * KEYD + h * DV + j] - mem) * b;
-                for (size_t i = 0; i < DK; i++) {
-                    float *s = state + (h * DK + i) * DV + j;
-                    *s += qkv[t * CD + KEYD + hk * DK + i] * d;
-                    out[j] += *s * qkv[t * CD + hk * DK + i];
-                }
-            }
-            double ss = 0.0;
-            for (size_t j = 0; j < DV; j++)
-                ss += (double) out[j] * out[j];
-            const float inv = (float) (1.0 / sqrt(ss / DV + eps));
-            for (size_t j = 0; j < DV; j++)
-                z[t * VD + h * DV + j] = out[j] * inv * nw[j] * silu_ref(z[t * VD + h * DV + j]);
-        }
-    }
-}
-
 static struct geist_tensor matrix(struct geist_buffer *b, size_t rows, size_t cols) {
     return (struct geist_tensor) {.buffer = b,
                                   .dtype  = GEIST_DTYPE_F32,
@@ -123,16 +50,6 @@ static int upload(struct geist_backend *be, struct geist_buffer **out, const flo
     return v->buffer_create(be, n * sizeof(float), GEIST_BUFFER_SCRATCH, GEIST_MEMORY_AUTO, out) ==
                    GEIST_OK &&
            v->buffer_upload(*out, n * sizeof(float), (const uint8_t *) src) == GEIST_OK;
-}
-
-static double max_abs(const float *a, const float *b, size_t n) {
-    double m = 0.0;
-    for (size_t i = 0; i < n; i++) {
-        const double d = fabs((double) a[i] - b[i]);
-        if (d > m)
-            m = d;
-    }
-    return m;
 }
 
 int main(void) {
@@ -179,7 +96,23 @@ int main(void) {
     memcpy(z_ref, z, sizeof z);
     memcpy(cs_ref, cs, sizeof cs);
     memcpy(s_ref, state, sizeof state);
-    mix_ref(SEQ, q_ref, z_ref, beta, alpha, cw, aw, dt, nw, cs_ref, s_ref);
+    deltanet_mix_ref(SEQ,
+                     NKH,
+                     NH,
+                     DK,
+                     DV,
+                     K,
+                     1e-6f,
+                     beta,
+                     alpha,
+                     cw,
+                     aw,
+                     dt,
+                     nw,
+                     q_ref,
+                     z_ref,
+                     cs_ref,
+                     s_ref);
 
     struct geist_buffer *buf[10] = {0};
     const float         *src[10] = {qkv, z, beta, alpha, cw, aw, dt, nw, cs, state};
@@ -230,10 +163,10 @@ int main(void) {
     ok &= v->buffer_download(sizeof z_got, (uint8_t *) z_got, buf[1]) == GEIST_OK;
     ok &= v->buffer_download(sizeof cs_got, (uint8_t *) cs_got, buf[8]) == GEIST_OK;
     ok &= v->buffer_download(sizeof s_got, (uint8_t *) s_got, buf[9]) == GEIST_OK;
-    const double qe = max_abs(q_got, q_ref, SEQ * CD);
-    const double ze = max_abs(z_got, z_ref, SEQ * VD);
-    const double ce = max_abs(cs_got, cs_ref, (K - 1) * CD);
-    const double se = max_abs(s_got, s_ref, NH * DK * DV);
+    const double qe = geist_test_max_abs(SEQ * CD, q_got, q_ref);
+    const double ze = geist_test_max_abs(SEQ * VD, z_got, z_ref);
+    const double ce = geist_test_max_abs((K - 1) * CD, cs_got, cs_ref);
+    const double se = geist_test_max_abs(NH * DK * DV, s_got, s_ref);
     printf("prefill max_abs: qkv %.2e (informational), z %.2e, conv-state %.2e, "
            "delta-state %.2e\n",
            qe,
@@ -260,7 +193,8 @@ int main(void) {
     float qd_ref[CD], zd_ref[VD];
     memcpy(qd_ref, qd, sizeof qd);
     memcpy(zd_ref, zd, sizeof zd);
-    mix_ref(1, qd_ref, zd_ref, bd, ad, cw, aw, dt, nw, cs_ref, s_ref);
+    deltanet_mix_ref(
+            1, NKH, NH, DK, DV, K, 1e-6f, bd, ad, cw, aw, dt, nw, qd_ref, zd_ref, cs_ref, s_ref);
     ok &= v->buffer_upload(buf[0], sizeof qd, (const uint8_t *) qd) == GEIST_OK;
     ok &= v->buffer_upload(buf[1], sizeof zd, (const uint8_t *) zd) == GEIST_OK;
     ok &= v->buffer_upload(buf[2], sizeof bd, (const uint8_t *) bd) == GEIST_OK;
@@ -280,10 +214,10 @@ int main(void) {
     ok &= v->buffer_download(sizeof zd_got, (uint8_t *) zd_got, buf[1]) == GEIST_OK;
     ok &= v->buffer_download(sizeof cs_got, (uint8_t *) cs_got, buf[8]) == GEIST_OK;
     ok &= v->buffer_download(sizeof s_got, (uint8_t *) s_got, buf[9]) == GEIST_OK;
-    const double dqe = max_abs(qd_got, qd_ref, CD);
-    const double dze = max_abs(zd_got, zd_ref, VD);
-    const double dce = max_abs(cs_got, cs_ref, (K - 1) * CD);
-    const double dse = max_abs(s_got, s_ref, NH * DK * DV);
+    const double dqe = geist_test_max_abs(CD, qd_got, qd_ref);
+    const double dze = geist_test_max_abs(VD, zd_got, zd_ref);
+    const double dce = geist_test_max_abs((K - 1) * CD, cs_got, cs_ref);
+    const double dse = geist_test_max_abs(NH * DK * DV, s_got, s_ref);
     printf("decode  max_abs: qkv %.2e, z %.2e, conv-state %.2e, delta-state %.2e\n",
            dqe,
            dze,

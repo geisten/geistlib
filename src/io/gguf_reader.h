@@ -99,6 +99,15 @@ struct gguf_ctx *gguf_open_memory(const void *data, size_t size, const char **er
 
 void gguf_close(struct gguf_ctx *ctx);
 
+/* Drop this process's pages of [p, p + n) when they lie in a file mapping
+ * (#468): the whole pages inside the range get MADV_DONTNEED. The mapping is
+ * read-only, so the bytes stay readable; a later read faults them back in
+ * from the file. Meant for weights a backend has copied to its device, whose
+ * file pages would otherwise stay resident beside the copy (on unified
+ * memory, the model twice). No-op for a context over caller memory, for
+ * bytes outside the mapping and off Linux. */
+void gguf_release_range(const struct gguf_ctx *ctx, const void *p, size_t n);
+
 size_t                      gguf_tensor_count(const struct gguf_ctx *ctx);
 const struct gguf_tensor_t *gguf_tensor_at(const struct gguf_ctx *ctx, size_t idx);
 const struct gguf_tensor_t *gguf_get_tensor(const struct gguf_ctx *ctx, const char *name);

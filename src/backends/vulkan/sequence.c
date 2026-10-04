@@ -73,6 +73,40 @@ void vk_seq_flush(struct vk_state *st) {
     return GEIST_E_BACKEND;
 }
 
+const char *vk_fallback_name(enum vk_fb site) {
+    static const char *const names[VK_FB_COUNT] = {
+            [VK_FB_HOST_VIEW]   = "host_view",
+            [VK_FB_HOST_LINEAR] = "host_linear",
+            [VK_FB_HOST_COPY]   = "host_copy",
+            [VK_FB_LINEAR_T]    = "linear_t",
+            [VK_FB_ARGMAX]      = "argmax",
+            [VK_FB_EMBED]       = "embedding_lookup",
+            [VK_FB_KV_APPEND]   = "kv_append_f16",
+            [VK_FB_QGATE]       = "attn_qgate_split",
+    };
+    return (unsigned) site < VK_FB_COUNT ? names[site] : "?";
+}
+
+[[nodiscard]] enum geist_status vk_fallback(struct vk_state *st, enum vk_fb site) {
+    st->fallbacks[site]++;
+    if (!st->strict) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    geist_backend_set_error(st->backend,
+                            GEIST_E_BACKEND,
+                            "vulkan: GEIST_VK_STRICT=1 and %s would leave the GPU",
+                            vk_fallback_name(site));
+    return GEIST_E_BACKEND;
+}
+
+[[nodiscard]] enum geist_status vk_too_wide(struct geist_backend *be, const char *op) {
+    geist_backend_set_error(be,
+                            GEIST_E_INVALID_ARG,
+                            "vulkan %s: a size or offset exceeds the shader's 32-bit range",
+                            op);
+    return GEIST_E_INVALID_ARG;
+}
+
 [[nodiscard]] enum geist_status vk_seq_open_cmd(struct vk_state *st) {
     if (st->seq_open) {
         return GEIST_OK;

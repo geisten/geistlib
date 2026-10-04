@@ -17,6 +17,7 @@
 #include <geist_types.h>
 #include <geist_weight.h>
 
+#include "checked.h"        /* ckd_* size arithmetic (AGENT.md §3) */
 #include "gemma4_kernels.h" /* shared reference rope/attention kernels */
 #include "heap.h"
 #include "quant.h" /* CPU dequant helpers for the non-GPU dtype fallback */
@@ -207,6 +208,7 @@ struct vk_dirty {
 
 enum {
     VK_XRING_CAP   = 192u << 20, /* a full prefill chunk stages ~124 MB */
+    VK_MAX_M       = 512,        /* caps.max_m; resolve_weight checks it x n_in fits the ring */
     VK_DIRTY_CAP   = 96,
     VK_DSET_CACHE  = 4096,
     VK_SEQ_CMDBUFS = 64, /* rolling submission ring */
@@ -228,6 +230,19 @@ enum {
     VK_PUSH_RANGE       = 128,  /* one push range covers every shader block */
 };
 
+/* Where work can leave the GPU (vk_fallback). */
+enum vk_fb {
+    VK_FB_HOST_VIEW,   /* a host loop over a mapped tensor (vk_tensor_host) */
+    VK_FB_HOST_LINEAR, /* a linear on the host row-dequant path (vk_w_cpu_mN) */
+    VK_FB_HOST_COPY,   /* vk_buffer_copy through mapped memory */
+    VK_FB_LINEAR_T,    /* linear_t / linear_t_pair declined: arch host linear */
+    VK_FB_ARGMAX,      /* argmax declined: arch scans on the host */
+    VK_FB_EMBED,       /* embedding lookup declined: arch gathers on the host */
+    VK_FB_KV_APPEND,   /* kv_append_f16 declined */
+    VK_FB_QGATE,       /* attn_qgate_split declined */
+    VK_FB_COUNT
+};
+
 struct vk_state {
     struct geist_backend *backend;
     void                 *lib; /* dlopen handle, may be nullptr after create */
@@ -240,7 +255,14 @@ struct vk_state {
     uint32_t         queue_family;
 
     VkPhysicalDeviceMemoryProperties mem_props;
-    size_t          bar_used; /* live host-visible + device-local bytes (the BAR window) */
+    size_t bar_used; /* live host-visible + device-local bytes (the BAR window) */
+    /* Device memory taken by device-local requests (weight copies, KV
+     * cache, x ring), checked against vram_budget before each allocation
+     * so an oversized model fails with needed vs. available bytes instead
+     * of a bare driver error (#466). vram_budget is GEIST_VK_VRAM_BUDGET
+     * (bytes, K/M/G suffix) or 0: the heap size of the memory type. */
+    size_t          vram_used;
+    size_t          vram_budget;
     VkCommandPool   cmd_pool;
     VkCommandBuffer xfer_cmd;
     VkFence         xfer_fence;
@@ -296,6 +318,18 @@ struct vk_state {
     uint64_t stat_scratch_n[3];
     uint64_t stat_scratch_bytes[3];
 
+    /* Work that left the GPU (#474 item 4), counted per site by
+     * vk_fallback: a coverage gap otherwise shows up only as a slowdown.
+     * GEIST_VK_STRICT=1 (strict) turns every such fallback into an error,
+     * and refuses host-path weights at resolve. Weights resolved onto the
+     * host row-dequant path are summed at resolve and reported once, when
+     * the first of them runs. */
+    uint64_t fallbacks[VK_FB_COUNT];
+    bool     strict;
+    bool     host_weights_noted;
+    size_t   host_weights;
+    size_t   host_weight_bytes;
+
     /* GEIST_VK_PROFILE=1: GPU timestamps per dispatch, attributed by
      * pipeline (copies land in the extra slot). Execution is serialized by
      * the per-dispatch barriers, so consecutive deltas are exact. */
@@ -311,11 +345,16 @@ struct vk_state {
     VkPipeline pipes[VK_PIPE_COUNT];
 
     /* Weight registry: host pointer → VRAM buffer, filled by resolve_weight.
-     * Linear search — a model has a few hundred weights; the lookup is one
-     * pointer compare per entry once per linear call. */
+     * `weights` is the dense list (teardown); `weight_index` an open-
+     * addressed table of entry index + 1 (0 = empty), a power of two at
+     * most half full, so the lookup on every linear_t / embedding call is
+     * one or two probes instead of a scan of a few hundred entries (#469).
+     * Entries are never removed, only replaced in place. */
     struct vk_weight_entry *weights;
     size_t                  n_weights;
     size_t                  cap_weights;
+    uint32_t               *weight_index;
+    size_t                  cap_weight_index;
 
     /* Persistent host-visible activation staging (x up / y down) for the
      * synchronous host-pointer linear kernels (parity tests, CPU-dtype
@@ -444,7 +483,8 @@ struct geist_buffer {
     bool                   device_mem; /* memory type has DEVICE_LOCAL */
     bool                   borrowed;   /* buf/mem owned by a parent buffer */
     bool                   view;       /* buffer_create_view slice of a parent */
-    size_t bar_bytes; /* counted in vk_state.bar_used (host-visible + device-local) */
+    size_t bar_bytes;  /* counted in vk_state.bar_used (host-visible + device-local) */
+    size_t vram_bytes; /* counted in vk_state.vram_used */
 };
 
 /* ---- Cross-module prototypes ------------------------------------------ */
@@ -509,9 +549,14 @@ void vk_buffer_unmap(struct geist_buffer *buf);
 [[nodiscard]] enum geist_status
 vk_stage_reserve(struct geist_backend *be, struct geist_buffer **slot, size_t bytes);
 
-struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host);
-struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor *t);
-size_t               vk_fast_host_bytes(struct geist_backend *be);
+struct geist_buffer *vk_weight_lookup(const struct vk_state *st, const void *host);
+/* The registry entry for `host`, or nullptr. */
+struct vk_weight_entry *vk_weight_entry_of(const struct vk_state *st, const void *host);
+/* Index weights[idx] (just appended) by its host pointer; GEIST_E_OOM when
+ * the table cannot grow. */
+[[nodiscard]] enum geist_status vk_weight_index_add(struct geist_backend *be, size_t idx);
+struct geist_buffer            *vk_weight_of(struct vk_state *st, const struct geist_tensor *t);
+size_t                          vk_fast_host_bytes(struct geist_backend *be);
 
 struct vk_access vk_acc(uint64_t lo_bytes, uint64_t n_bytes, bool write);
 
@@ -551,6 +596,28 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
 
 void                            vk_seq_flush(struct vk_state *st);
 [[nodiscard]] enum geist_status vk_seq_take_failure(struct vk_state *st);
+
+/* Record that the work at `site` leaves the GPU. Returns the status the
+ * caller hands on: GEIST_E_UNSUPPORTED (take the documented fallback), or
+ * under GEIST_VK_STRICT=1 GEIST_E_BACKEND with an error naming the site. */
+[[nodiscard]] enum geist_status vk_fallback(struct vk_state *st, enum vk_fb site);
+const char                     *vk_fallback_name(enum vk_fb site);
+
+/* Checked size -> uint32_t narrowing for push constants, dispatch sizes and
+ * element offsets: the shaders index in uint32, so a value that does not fit
+ * fails the op instead of wrapping (AGENT.md §3/§5, #474). checked.h's
+ * convention: true when `v` does not fit; *out is written only when it does. */
+[[nodiscard]] static inline bool vk_ckd_u32(size_t v, uint32_t *out) {
+    if (v > UINT32_MAX) {
+        return true;
+    }
+    *out = (uint32_t) v;
+    return false;
+}
+
+/* What an op returns when vk_ckd_u32 refused one of its values:
+ * GEIST_E_INVALID_ARG, with an error naming the op. */
+[[nodiscard]] enum geist_status vk_too_wide(struct geist_backend *be, const char *op);
 
 [[nodiscard]] enum geist_status vk_seq_open_cmd(struct vk_state *st);
 

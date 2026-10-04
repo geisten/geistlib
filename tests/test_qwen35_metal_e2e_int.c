@@ -18,26 +18,6 @@
 
 enum { N_TOKENS = 5 };
 
-static const char *resolve_path(void) {
-    const char *env = getenv("GEIST_QWEN35_GGUF_PATH");
-    if (env != nullptr && env[0] != '\0') {
-        return env;
-    }
-    static const char *candidates[] = {
-            "gguf_artifacts/qwen3.5-0.8b-q8_0.gguf",
-            "./qwen3.5-0.8b-q8_0.gguf",
-            nullptr,
-    };
-    for (size_t i = 0; candidates[i] != nullptr; i++) {
-        FILE *f = fopen(candidates[i], "rb");
-        if (f != nullptr) {
-            fclose(f);
-            return candidates[i];
-        }
-    }
-    return nullptr;
-}
-
 static enum geist_status run_once(const char   *path,
                                   const char   *backend_name,
                                   geist_token_t tokens[N_TOKENS],
@@ -107,7 +87,7 @@ static enum geist_status run_once(const char   *path,
 }
 
 int main(void) {
-    const char *path = resolve_path();
+    const char *path = geist_test_find_qwen35_gguf();
     if (path == nullptr) {
         GEIST_SKIP_FIXTURE("no qwen35 GGUF. Run `make fetch-qwen35-model`, or set "
                            "GEIST_QWEN35_GGUF_PATH");

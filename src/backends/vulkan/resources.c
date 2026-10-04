@@ -5,6 +5,7 @@
  */
 #include "vk_internal.h"
 
+#include "checked.h"
 #include "tensor_view.h" /* geist_tensor_elems: checked element count */
 
 /* ====================================================================== */
@@ -20,6 +21,39 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
         }
     }
     return UINT32_MAX;
+}
+
+/* The device-memory limit for a device-local allocation from `mem_type`:
+ * its heap, lowered by GEIST_VK_VRAM_BUDGET. */
+static size_t vk_vram_limit(const struct vk_state *st, uint32_t mem_type) {
+    const uint32_t heap = st->mem_props.memoryTypes[mem_type].heapIndex;
+    const size_t   size = (size_t) st->mem_props.memoryHeaps[heap].size;
+    return st->vram_budget != 0 && st->vram_budget < size ? st->vram_budget : size;
+}
+
+[[nodiscard]] static bool vk_vram_fits(const struct vk_state *st, uint32_t mem_type, size_t n) {
+    const size_t limit = vk_vram_limit(st, mem_type);
+    return st->vram_used <= limit && n <= limit - st->vram_used;
+}
+
+/* The error of a device-local allocation that does not fit: what it needs,
+ * what is in use and the limit, so a model larger than the device fails
+ * with numbers instead of a bare driver status. There is no host spill. */
+static void vk_vram_exhausted(struct geist_backend  *be,
+                              uint32_t               mem_type,
+                              size_t                 n,
+                              enum geist_buffer_role role) {
+    const struct vk_state *st = be->state;
+    geist_backend_set_error(be,
+                            GEIST_E_OOM,
+                            "vulkan: out of device memory: a %s buffer needs %zu MiB, %zu of "
+                            "%zu MiB are in use%s (the model does not fit; there is no "
+                            "spill to host memory)",
+                            role == GEIST_BUFFER_KV_CACHE ? "KV-cache" : "device",
+                            (n + (1u << 20) - 1) >> 20,
+                            st->vram_used >> 20,
+                            vk_vram_limit(st, mem_type) >> 20,
+                            st->vram_budget != 0 ? " (GEIST_VK_VRAM_BUDGET)" : "");
 }
 
 [[nodiscard]] enum geist_status vk_buffer_create(struct geist_backend  *be,
@@ -108,7 +142,15 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
     VkMemoryAllocateInfo minfo = {.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                   .allocationSize  = req.size,
                                   .memoryTypeIndex = mem_type};
-    VkResult             r     = st->fn.AllocateMemory(st->device, &minfo, nullptr, &buf->mem);
+    const bool           vram = device_local && (st->mem_props.memoryTypes[mem_type].propertyFlags &
+                                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    if (vram && !vk_vram_fits(st, mem_type, (size_t) req.size)) {
+        st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
+        geist_backend_free(be, buf);
+        vk_vram_exhausted(be, mem_type, (size_t) req.size, role);
+        return GEIST_E_OOM;
+    }
+    VkResult r = st->fn.AllocateMemory(st->device, &minfo, nullptr, &buf->mem);
     if (r != VK_SUCCESS && !device_local) {
         /* BAR heap exhausted (it is only 256 MB) — fall back to plain
          * host-visible system memory. */
@@ -134,9 +176,17 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
         }
         st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
         geist_backend_free(be, buf);
-        geist_backend_set_error(
-                be, GEIST_E_OOM, "vulkan: allocating %zu bytes failed (%d)", bytes, (int) r);
+        if (vram && r == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            vk_vram_exhausted(be, mem_type, (size_t) req.size, role);
+        } else {
+            geist_backend_set_error(
+                    be, GEIST_E_OOM, "vulkan: allocating %zu bytes failed (%d)", bytes, (int) r);
+        }
         return GEIST_E_OOM;
+    }
+    if (vram) {
+        buf->vram_bytes = (size_t) minfo.allocationSize;
+        st->vram_used += buf->vram_bytes;
     }
     buf->device_mem = (st->mem_props.memoryTypes[mem_type].propertyFlags &
                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
@@ -172,7 +222,9 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
             struct geist_buffer **nb =
                     geist_backend_alloc(be, cap * sizeof(*nb), alignof(struct geist_buffer *));
             if (nb != nullptr) {
-                memcpy(nb, st->hostbufs, st->n_hostbufs * sizeof(*nb));
+                if (st->n_hostbufs > 0) { /* hostbufs is nullptr before the first grow */
+                    memcpy(nb, st->hostbufs, st->n_hostbufs * sizeof(*nb));
+                }
                 geist_backend_free(be, st->hostbufs);
                 st->hostbufs     = nb;
                 st->cap_hostbufs = cap;
@@ -327,6 +379,7 @@ void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
         st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
         st->fn.FreeMemory(st->device, buf->mem, nullptr);
         st->bar_used -= buf->bar_bytes;
+        st->vram_used -= buf->vram_bytes;
     }
     geist_backend_free(be, buf);
 }
@@ -488,10 +541,17 @@ void *vk_buffer_map(struct geist_buffer *buf) {
         return nullptr;
     }
     vk_seq_flush(buf->owner); /* host is about to read/write — drain the batch */
-    if (buf->host_alias != nullptr) {
-        return buf->host_alias;
+    void *p = buf->host_alias != nullptr ? buf->host_alias : buf->mapped;
+    if (p == nullptr) {
+        return nullptr; /* device-local — caller falls back (download reports a failure) */
     }
-    return buf->mapped; /* nullptr for device-local — caller must fall back */
+    /* A dropped batch leaves the mapping holding whatever was there before:
+     * hand out no pointer rather than stale results. buffer_map has no status,
+     * so the failure is the backend error and the caller's nullptr check. */
+    if (vk_seq_take_failure(buf->owner) != GEIST_OK) {
+        return nullptr;
+    }
+    return p;
 }
 
 void vk_buffer_unmap(struct geist_buffer *buf) {
@@ -540,13 +600,78 @@ struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor
     return vk_weight_lookup(st, (const uint8_t *) t->buffer->host_alias + t->offset);
 }
 
-struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host) {
-    for (size_t i = 0; i < st->n_weights; ++i) {
-        if (st->weights[i].host == host) {
-            return st->weights[i].gpu;
+/* Home slot of `host` in a table of `cap` (a power of two) slots:
+ * Fibonacci hashing of the pointer bits above the 16-byte alignment. */
+static size_t vk_weight_slot(const void *host, size_t cap) {
+    const uint64_t h = ((uint64_t) (uintptr_t) host >> 4) * 0x9E3779B97F4A7C15ull;
+    return (size_t) (h >> 32) & (cap - 1);
+}
+
+struct vk_weight_entry *vk_weight_entry_of(const struct vk_state *st, const void *host) {
+    if (st->cap_weight_index == 0) {
+        return nullptr;
+    }
+    const size_t mask = st->cap_weight_index - 1;
+    for (size_t i = vk_weight_slot(host, st->cap_weight_index);; i = (i + 1) & mask) {
+        const uint32_t e = st->weight_index[i];
+        if (e == 0) {
+            return nullptr; /* the table is at most half full: always ends */
+        }
+        if (st->weights[e - 1].host == host) {
+            return &st->weights[e - 1];
         }
     }
-    return nullptr;
+}
+
+struct geist_buffer *vk_weight_lookup(const struct vk_state *st, const void *host) {
+    const struct vk_weight_entry *e = vk_weight_entry_of(st, host);
+    return e != nullptr ? e->gpu : nullptr;
+}
+
+static void vk_weight_index_put(uint32_t *table, size_t cap, const void *host, size_t idx) {
+    size_t i = vk_weight_slot(host, cap);
+    while (table[i] != 0) {
+        i = (i + 1) & (cap - 1);
+    }
+    table[i] = (uint32_t) idx + 1;
+}
+
+[[nodiscard]] enum geist_status vk_weight_index_add(struct geist_backend *be, size_t idx) {
+    struct vk_state *st = be->state;
+    if (idx >= UINT32_MAX) {
+        return GEIST_E_OOM;
+    }
+    size_t need = 0;
+    if (ckd_mul(&need, st->n_weights, (size_t) 2)) {
+        return GEIST_E_OOM;
+    }
+    if (need > st->cap_weight_index) {
+        size_t cap = st->cap_weight_index == 0 ? 128 : st->cap_weight_index;
+        while (cap < need) {
+            if (ckd_mul(&cap, cap, (size_t) 2)) {
+                return GEIST_E_OOM;
+            }
+        }
+        size_t bytes = 0;
+        if (ckd_mul(&bytes, cap, sizeof(uint32_t))) {
+            return GEIST_E_OOM;
+        }
+        uint32_t *table = geist_backend_alloc(be, bytes, alignof(uint32_t));
+        if (table == nullptr) {
+            return GEIST_E_OOM;
+        }
+        memset(table, 0, bytes);
+        for (size_t i = 0; i < st->n_weights; ++i) {
+            if (i != idx) {
+                vk_weight_index_put(table, cap, st->weights[i].host, i);
+            }
+        }
+        geist_backend_free(be, st->weight_index);
+        st->weight_index     = table;
+        st->cap_weight_index = cap;
+    }
+    vk_weight_index_put(st->weight_index, st->cap_weight_index, st->weights[idx].host, idx);
+    return GEIST_OK;
 }
 
 /* Access-range helpers: byte spans inside the bound VkBuffer. */
@@ -572,17 +697,18 @@ struct vk_access vk_acc_tensor(const struct geist_tensor *t, bool write) {
 }
 
 /* GPU view of a tensor: VkBuffer + f32 element offset. False when the
- * tensor's buffer has no VkBuffer behind it (e.g. GGUF-mmap aliases). */
+ * tensor's buffer has no VkBuffer behind it (e.g. GGUF-mmap aliases), or
+ * when the offset does not fit the shaders' uint32 element index. */
 bool vk_tensor_gpu(const struct geist_tensor *t, VkDescriptorBufferInfo *out, uint32_t *elem_off) {
     if (t == nullptr || t->buffer == nullptr || t->buffer->buf == VK_NULL_HANDLE) {
         return false;
     }
-    const size_t byte_off = t->buffer->base_off + t->offset;
-    if (byte_off % 4 != 0) {
+    size_t byte_off;
+    if (ckd_add(&byte_off, t->buffer->base_off, t->offset) || byte_off % 4 != 0 ||
+        vk_ckd_u32(byte_off / 4, elem_off)) {
         return false;
     }
-    *out      = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
-    *elem_off = (uint32_t) (byte_off / 4);
+    *out = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
     return true;
 }
 
@@ -593,12 +719,12 @@ bool vk_tensor_gpu_f16(const struct geist_tensor *t,
     if (t == nullptr || t->buffer == nullptr || t->buffer->buf == VK_NULL_HANDLE) {
         return false;
     }
-    const size_t byte_off = t->buffer->base_off + t->offset;
-    if (byte_off % 2 != 0) {
+    size_t byte_off;
+    if (ckd_add(&byte_off, t->buffer->base_off, t->offset) || byte_off % 2 != 0 ||
+        vk_ckd_u32(byte_off / 2, elem_off)) {
         return false;
     }
-    *out      = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
-    *elem_off = (uint32_t) (byte_off / 2);
+    *out = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
     return true;
 }
 
@@ -654,6 +780,9 @@ void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
         return nullptr;
     }
     t->buffer->owner->stat_cpu_falls++;
+    if (vk_fallback(t->buffer->owner, VK_FB_HOST_VIEW) != GEIST_E_UNSUPPORTED) {
+        return nullptr; /* GEIST_VK_STRICT: the error names the site */
+    }
     vk_seq_flush(t->buffer->owner); /* host access — drain pending GPU work */
     if (vk_seq_take_failure(t->buffer->owner) != GEIST_OK) {
         return nullptr;
@@ -720,12 +849,19 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
         return GEIST_OK;
     }
     /* Host fallback. */
-    vk_seq_flush(st);
     uint8_t       *d  = dst->host_alias != nullptr ? dst->host_alias : dst->mapped;
     const uint8_t *sp = src->host_alias != nullptr ? src->host_alias : src->mapped;
     if (d == nullptr || sp == nullptr || dst_offset + n_bytes > dst->bytes ||
         src_offset + n_bytes > src->bytes) {
         return GEIST_E_UNSUPPORTED;
+    }
+    const enum geist_status fs = vk_fallback(st, VK_FB_HOST_COPY);
+    if (fs != GEIST_E_UNSUPPORTED) {
+        return fs;
+    }
+    vk_seq_flush(st);
+    if (vk_seq_take_failure(st) != GEIST_OK) {
+        return GEIST_E_BACKEND; /* the source holds no results of the dropped batch */
     }
     memcpy(d + dst_offset, sp + src_offset, n_bytes);
     return GEIST_OK;
@@ -744,19 +880,23 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
     if (!vk_tensor_gpu(t_x, &src_bi, &src_elem)) {
         return false;
     }
-    const size_t bytes = m * n_in * sizeof(float);
+    size_t bytes;
+    if (ckd_mul(&bytes, m, n_in) || ckd_mul(&bytes, bytes, sizeof(float))) {
+        return false;
+    }
     if (st->xring == nullptr &&
         vk_buffer_create(be, VK_XRING_CAP, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &st->xring) !=
                 GEIST_OK) {
         return false;
     }
     if (bytes > st->xring->bytes) {
-        return false;
+        return false; /* resolve_weight refuses an n_in whose max_m batch would not fit */
     }
     if (st->xring_used + bytes > st->xring->bytes) {
         vk_seq_flush(st); /* drains the batch and resets the ring */
     }
-    if (vk_seq_open_cmd(st) != GEIST_OK) {
+    uint32_t elem_off; /* < VK_XRING_CAP / 4; checked all the same */
+    if (vk_ckd_u32(st->xring_used / sizeof(float), &elem_off) || vk_seq_open_cmd(st) != GEIST_OK) {
         return false;
     }
     {
@@ -789,7 +929,7 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
     st->seq_dispatches++;
     st->seq_in_cmd++;
     vk_prof_stamp(st, VK_PIPE_COUNT);
-    *out_elem_off  = (uint32_t) (st->xring_used / sizeof(float));
+    *out_elem_off  = elem_off;
     st->xring_used = (st->xring_used + bytes + 63) & ~(size_t) 63;
     return true;
 }

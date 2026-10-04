@@ -25,25 +25,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char *resolve_path(void) {
-    const char *env = getenv("GEIST_QWEN35_GGUF_PATH");
-    if (env != nullptr && env[0] != '\0')
-        return env;
-    static const char *candidates[] = {
-            "gguf_artifacts/qwen3.5-0.8b-q8_0.gguf",
-            "./qwen3.5-0.8b-q8_0.gguf",
-            nullptr,
-    };
-    for (size_t i = 0; candidates[i] != nullptr; i++) {
-        FILE *f = fopen(candidates[i], "rb");
-        if (f != nullptr) {
-            fclose(f);
-            return candidates[i];
-        }
-    }
-    return nullptr;
-}
-
 struct parity_case {
     const char    *text;
     const int32_t *ids;
@@ -66,7 +47,7 @@ CASE(c8, 26623, 157305, 50203, 91603, 571, 238976);
 CASE(c9, 87, 52033, 127, 123, 33041, 3656);
 
 int main(void) {
-    const char *path = resolve_path();
+    const char *path = geist_test_find_qwen35_gguf();
     if (path == nullptr) {
         GEIST_SKIP_FIXTURE("no qwen35 GGUF. Run `make fetch-qwen35-model`, or set "
                            "GEIST_QWEN35_GGUF_PATH");
