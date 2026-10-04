@@ -135,7 +135,13 @@ class DecisionEvaluationTests(unittest.TestCase):
                             sample["best_index"] = None
                         stdout.write(json.dumps(sample) + "\n")
                 return subprocess.CompletedProcess(command, 0)
-            with patch.object(eval_tool.platform, "platform", return_value="test-os"), patch.object(eval_tool.bench, "command_output", return_value="test"), patch.object(eval_tool.subprocess, "run", side_effect=driver):
+            with (
+                patch.object(eval_tool.platform, "system", return_value="Linux"),
+                patch.object(eval_tool.platform, "processor", return_value="test-cpu"),
+                patch.object(eval_tool.platform, "platform", return_value="test-os"),
+                patch.object(eval_tool.bench, "command_output", return_value="test"),
+                patch.object(eval_tool.subprocess, "run", side_effect=driver),
+            ):
                 eval_tool.run(args)
             report = eval_tool.read_json(args.out_dir / "report.json")
             self.assertEqual(report["profiles"]["chat_reasoning"]["modes"]["generate_long"]["quality"]["accuracy"], 1.)
@@ -147,7 +153,13 @@ class DecisionEvaluationTests(unittest.TestCase):
             def failed(command, **kwargs):
                 kwargs["stdout"].write("partial output\n")
                 return subprocess.CompletedProcess(command, 1)
-            with patch.object(eval_tool.platform, "platform", return_value="test-os"), patch.object(eval_tool.bench, "command_output", return_value="test"), patch.object(eval_tool.subprocess, "run", side_effect=failed):
+            with (
+                patch.object(eval_tool.platform, "system", return_value="Linux"),
+                patch.object(eval_tool.platform, "processor", return_value="test-cpu"),
+                patch.object(eval_tool.platform, "platform", return_value="test-os"),
+                patch.object(eval_tool.bench, "command_output", return_value="test"),
+                patch.object(eval_tool.subprocess, "run", side_effect=failed),
+            ):
                 with self.assertRaisesRegex(RuntimeError, "raw partial outputs retained"):
                     eval_tool.run(args)
             self.assertTrue((args.out_dir / "manifest.json").exists())
