@@ -30,6 +30,11 @@ struct transformer_scratch_plan {
     size_t proj_in; /* 0 unless the family has per-projection input norms */
     size_t pool_align_slack;
     size_t pool_bytes;
+    /* The slots the host maps (h_a, h_b, logits) with their alignment: all a
+     * session keeps host-visible when the rest of the pool is device-local
+     * (#488); the device-local part is then pool_bytes - host_bytes, its
+     * alignment covered by the pool's slack. */
+    size_t host_bytes;
 };
 
 /* Sizes scratch for one session; m_max is the session's prefill chunk

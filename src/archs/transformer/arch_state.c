@@ -118,6 +118,30 @@ alloc_scratch(struct geist_backend *be, size_t bytes, struct geist_buffer **out)
     return GEIST_OK;
 }
 
+/* #488: a slot of the device-local pool — a buffer_create_view slice, no
+ * host pointer. The pool was zeroed when it was created. */
+[[nodiscard]] static enum geist_status alloc_device_slice(struct transformer_arch_session *sess,
+                                                          size_t                           bytes,
+                                                          struct geist_buffer **out_buf) {
+    struct geist_backend *be      = sess->model->backend;
+    const size_t          cap     = sess->scratch_dev_pool_bytes;
+    size_t                aligned = 0;
+    if (geist_ckd_round_up_pow2(sess->scratch_dev_pool_used, 64, &aligned) || aligned > cap ||
+        bytes > cap - aligned) {
+        geist_backend_set_error(be,
+                                GEIST_E_OOM,
+                                "transformer: device scratch pool exhausted "
+                                "(used %zu, need %zu, capacity %zu)",
+                                sess->scratch_dev_pool_used,
+                                bytes,
+                                cap);
+        return GEIST_E_OOM;
+    }
+    sess->scratch_dev_pool_used = aligned + bytes;
+    return be->desc->vtbl->buffer_create_view(
+            be, sess->scratch_dev_pool_buf, aligned, bytes, GEIST_BUFFER_SCRATCH, out_buf);
+}
+
 /* P1.2.c: bump-allocate from the per-state scratch pool and wrap the
  * slice in an aliased buffer. Pool is allocated once at create-time
  * with capacity = sum of all scratch slot sizes; the helper aligns
@@ -129,11 +153,19 @@ alloc_scratch(struct geist_backend *be, size_t bytes, struct geist_buffer **out)
  * by the backend allocator and destroyed normally via
  * buffer_destroy; the underlying bytes belong to the pool and are
  * released exactly once when transformer_state_destroy frees
- * scratch_pool_base. */
+ * scratch_pool_base.
+ *
+ * `host_mapped`: the host maps this slot (h_a, h_b, logits), so it stays in
+ * the host-visible pool even when the session has a device-local one (#488);
+ * every other slot then comes from alloc_device_slice. */
 [[nodiscard]] static enum geist_status alloc_pool_buffer(struct transformer_arch_session *sess,
                                                          size_t                           bytes,
-                                                         struct geist_buffer            **out_buf) {
+                                                         bool                  host_mapped,
+                                                         struct geist_buffer **out_buf) {
 
+    if (sess->scratch_dev_pool_buf != nullptr && !host_mapped) {
+        return alloc_device_slice(sess, bytes, out_buf);
+    }
     struct geist_backend *be      = sess->model->backend;
     const size_t          align   = 64;
     const size_t          mask    = align - 1;
@@ -152,6 +184,63 @@ alloc_scratch(struct geist_backend *be, size_t bytes, struct geist_buffer **out)
     memset(p, 0, bytes);
     sess->scratch_pool_used = aligned + bytes;
     return be->desc->vtbl->buffer_create_aliased(be, p, bytes, GEIST_BUFFER_SCRATCH, out_buf);
+}
+
+/* Zero `bytes` of a buffer the host cannot map, through views of it: a
+ * staged upload per chunk keeps the host block small however large the
+ * pool. Session setup only. */
+[[nodiscard]] static enum geist_status
+zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) {
+    const struct geist_backend_vtbl *v     = be->desc->vtbl;
+    constexpr size_t                 CHUNK = 4u << 20;
+    uint8_t                         *zeros = heap_calloc_aligned(CHUNK, 1, 64);
+    if (zeros == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "transformer: scratch zero block failed");
+        return GEIST_E_OOM;
+    }
+    enum geist_status s = GEIST_OK;
+    for (size_t off = 0; off < bytes && s == GEIST_OK; off += CHUNK) {
+        const size_t         n    = bytes - off < CHUNK ? bytes - off : CHUNK;
+        struct geist_buffer *view = nullptr;
+        s = v->buffer_create_view(be, buf, off, n, GEIST_BUFFER_SCRATCH, &view);
+        if (s == GEIST_OK) {
+            s = v->buffer_upload(view, n, zeros);
+            v->buffer_destroy(be, view);
+        }
+    }
+    safe_free((void **) &zeros);
+    return s;
+}
+
+/* #488: the device-local part of the scratch pool. The backend may still
+ * hand back mappable memory (Vulkan without GEIST_VK_SCRATCH_DEVICE=1, or no
+ * device-local type left): the buffer is then released and the session keeps
+ * one host-visible pool, as before — scratch_dev_pool_buf stays nullptr. */
+[[nodiscard]] static enum geist_status alloc_device_pool(struct transformer_arch_session *sess,
+                                                         size_t                           bytes) {
+    struct geist_backend            *be  = sess->model->backend;
+    const struct geist_backend_vtbl *v   = be->desc->vtbl;
+    struct geist_buffer             *buf = nullptr;
+    enum geist_status                s =
+            v->buffer_create(be, bytes, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &buf);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    if (v->buffer_map(buf) != nullptr) {
+        v->buffer_unmap(buf);
+        v->buffer_destroy(be, buf);
+        sess->scratch_device = false;
+        return GEIST_OK;
+    }
+    s = zero_unmapped(be, bytes, buf);
+    if (s != GEIST_OK) {
+        v->buffer_destroy(be, buf);
+        return s;
+    }
+    sess->scratch_dev_pool_buf   = buf;
+    sess->scratch_dev_pool_bytes = bytes;
+    sess->scratch_dev_pool_used  = 0;
+    return GEIST_OK;
 }
 
 /* Layer li's K and V data, `bytes` each, in one zeroed buffer, kv_data[li],
@@ -499,6 +588,15 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     transformer_scratch_plan_build(st, sess->m_max, &scratch_plan);
     const size_t head_dim_max = TRANSFORMER_HEAD_DIM_MAX;
     sess->scratch_pool_bytes  = scratch_plan.pool_bytes;
+    if (sess->scratch_device) {
+        s = alloc_device_pool(sess, scratch_plan.pool_bytes - scratch_plan.host_bytes);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        if (sess->scratch_dev_pool_buf != nullptr) {
+            sess->scratch_pool_bytes = scratch_plan.host_bytes;
+        }
+    }
     /* Route the pool through the backend so GPU backends hand out memory
      * they can bind (host-visible VkBuffer / shared MTLBuffer); CPU
      * backends malloc. Slices still wrap via buffer_create_aliased. */
@@ -521,69 +619,69 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     memset(sess->scratch_pool_base, 0, sess->scratch_pool_bytes);
     sess->scratch_pool_used = 0;
 
-    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_normed);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, false, &sess->scratch_normed);
     if (s != GEIST_OK) {
         return s;
     }
     /* Only families with per-projection input norms get this slice;
      * scratch_plan.proj_in is 0 otherwise and the buffer stays null. */
     if (scratch_plan.proj_in > 0) {
-        s = alloc_pool_buffer(sess, scratch_plan.proj_in, &sess->scratch_proj_in);
+        s = alloc_pool_buffer(sess, scratch_plan.proj_in, false, &sess->scratch_proj_in);
         if (s != GEIST_OK) {
             return s;
         }
     } else {
         sess->scratch_proj_in = nullptr;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.q_out, &sess->scratch_q);
+    s = alloc_pool_buffer(sess, scratch_plan.q_out, false, &sess->scratch_q);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.kv_out, &sess->scratch_k);
+    s = alloc_pool_buffer(sess, scratch_plan.kv_out, false, &sess->scratch_k);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.kv_out, &sess->scratch_v);
+    s = alloc_pool_buffer(sess, scratch_plan.kv_out, false, &sess->scratch_v);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.q_out, &sess->scratch_attn);
+    s = alloc_pool_buffer(sess, scratch_plan.q_out, false, &sess->scratch_attn);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_o);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, false, &sess->scratch_o);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_post_attn);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, false, &sess->scratch_post_attn);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_h_post_attn);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, false, &sess->scratch_h_post_attn);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_pre_ff);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, false, &sess->scratch_pre_ff);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.inter, &sess->scratch_gate);
+    s = alloc_pool_buffer(sess, scratch_plan.inter, false, &sess->scratch_gate);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.inter, &sess->scratch_up);
+    s = alloc_pool_buffer(sess, scratch_plan.inter, false, &sess->scratch_up);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_ffn_out);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, false, &sess->scratch_ffn_out);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_post_ff);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, false, &sess->scratch_post_ff);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_h_post_ff);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, false, &sess->scratch_h_post_ff);
     if (s != GEIST_OK) {
         return s;
     }
@@ -595,11 +693,11 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
      * guards (P1.5.b) leave these pointers null and the PLE block
      * never executes. */
     if (st->config.has_ple) {
-        s = alloc_pool_buffer(sess, scratch_plan.hidden_per, &sess->scratch_gate_ple);
+        s = alloc_pool_buffer(sess, scratch_plan.hidden_per, false, &sess->scratch_gate_ple);
         if (s != GEIST_OK) {
             return s;
         }
-        s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_proj_ple);
+        s = alloc_pool_buffer(sess, scratch_plan.hidden, false, &sess->scratch_proj_ple);
         if (s != GEIST_OK) {
             return s;
         }
@@ -607,11 +705,11 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
          * batched compute_per_layer_inputs, and (b) the [seq, HIDDEN_PER_LAYER]
          * per-layer-input slice during the layer loop. The larger of the
          * two is (a) at m_max * PLE_OUT. */
-        s = alloc_pool_buffer(sess, scratch_plan.ple_out, &sess->scratch_ple_lookup);
+        s = alloc_pool_buffer(sess, scratch_plan.ple_out, false, &sess->scratch_ple_lookup);
         if (s != GEIST_OK) {
             return s;
         }
-        s = alloc_pool_buffer(sess, scratch_plan.ple_out, &sess->scratch_per_layer_input);
+        s = alloc_pool_buffer(sess, scratch_plan.ple_out, false, &sess->scratch_per_layer_input);
         if (s != GEIST_OK) {
             return s;
         }
@@ -621,11 +719,11 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
         sess->scratch_ple_lookup      = nullptr;
         sess->scratch_per_layer_input = nullptr;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_h_a);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, true, &sess->scratch_h_a);
     if (s != GEIST_OK) {
         return s;
     }
-    s = alloc_pool_buffer(sess, scratch_plan.hidden, &sess->scratch_h_b);
+    s = alloc_pool_buffer(sess, scratch_plan.hidden, true, &sess->scratch_h_b);
     if (s != GEIST_OK) {
         return s;
     }
@@ -633,7 +731,7 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
      * so verify_forward can do ONE batched lm_head per call (the lm_head is
      * the dominant cost on Pi 5; M>1 IQ kernels amortize the 262K-wide weight
      * stream over k columns). Lives in the scratch pool. */
-    s = alloc_pool_buffer(sess, scratch_plan.vocab, &sess->scratch_logits);
+    s = alloc_pool_buffer(sess, scratch_plan.vocab, true, &sess->scratch_logits);
     if (s != GEIST_OK) {
         return s;
     }
@@ -682,16 +780,29 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     }
     frame_arena_init(&sess->scratch_arena, sess->scratch_arena_base, sess->scratch_arena_bytes);
 
-    s = alloc_pool_buffer(sess, scratch_plan.ones, &sess->scratch_ones_headdim_max);
+    s = alloc_pool_buffer(sess, scratch_plan.ones, false, &sess->scratch_ones_headdim_max);
     if (s != GEIST_OK) {
         return s;
     }
     {
         float *p = (float *) be->desc->vtbl->buffer_map(sess->scratch_ones_headdim_max);
-        for (size_t i = 0; i < head_dim_max; i++) {
-            p[i] = 1.0f;
+        if (p != nullptr) {
+            for (size_t i = 0; i < head_dim_max; i++) {
+                p[i] = 1.0f;
+            }
+            be->desc->vtbl->buffer_unmap(sess->scratch_ones_headdim_max);
+        } else {
+            /* A device-local slot (#488): stage the ones in. */
+            float ones[TRANSFORMER_HEAD_DIM_MAX];
+            for (size_t i = 0; i < head_dim_max; i++) {
+                ones[i] = 1.0f;
+            }
+            s = be->desc->vtbl->buffer_upload(
+                    sess->scratch_ones_headdim_max, sizeof ones, (const uint8_t *) ones);
+            if (s != GEIST_OK) {
+                return s;
+            }
         }
-        be->desc->vtbl->buffer_unmap(sess->scratch_ones_headdim_max);
     }
 
     /* ---- Gated-DeltaNet recurrent state (#281/#296): backend buffers per DELTANET
@@ -1477,6 +1588,71 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     return GEIST_KV_FP32;
 }
 
+/* Whether this backend serves a SCRATCH buffer asked for device-local as
+ * memory the host cannot map (#488) and can slice one by offset. Vulkan
+ * does only under GEIST_VK_SCRATCH_DEVICE=1; every other backend either
+ * has no buffer_create_view or maps everything. A one-float probe, as
+ * exec_plan.c's dn_state_host_mappable. */
+static bool backend_scratch_unmappable(struct geist_backend *be) {
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    struct geist_buffer             *b = nullptr;
+    if (v->buffer_create_view == nullptr ||
+        v->buffer_create(be, sizeof(float), GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &b) !=
+                GEIST_OK ||
+        b == nullptr) {
+        return false;
+    }
+    const bool mapped = v->buffer_map(b) != nullptr;
+    if (mapped) {
+        v->buffer_unmap(b);
+    }
+    v->buffer_destroy(be, b);
+    return !mapped;
+}
+
+/* #488: whether this session puts its scratch pool, all but h_a, h_b and
+ * logits, in device-local memory. Only where no host path maps one of
+ * those slots: every op the forward runs on them must be the backend's, and
+ * a host fallback the analysis missed must fail (buffer_map returns
+ * nullptr; the Vulkan host views count a refusal) rather than read the
+ * bytes over the bus. So, conservatively, not with:
+ *   - a quantized or KIVI KV cache, or a rotated one: kv_store.c quantizes
+ *     scratch_k / scratch_v and the INT8 attention reads scratch_q on the
+ *     host;
+ *   - per-layer embeddings, DeltaNet mixers, an attention output gate, MTP
+ *     heads, BitNet SubLN or per-projection norms, AWQ scales: each has a
+ *     host loop over pool slots (layer.c, layer_deltanet.c, layer_attn.c,
+ *     mtp.c, internal.h). A prism.hadamard rotation is fine: it only runs
+ *     as the backend's hadamard_rotate (the model does not load otherwise);
+ *   - a backend without device buffer_copy or scale_f32, whose bound
+ *     fallbacks are host memcpy / host loops (exec_plan.h);
+ *   - the whole-FFN tile kernel, which takes host pointers.
+ * Then the backend decides (backend_scratch_unmappable). */
+static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
+    const struct transformer_arch_state *st = sess->model;
+    if (st->backend == nullptr || st->backend->desc == nullptr) {
+        return false;
+    }
+    if (sess->kv_kivi_enabled || sess->kv_int8_enabled || sess->kv_rot_enabled ||
+        sess->mtp_enabled) {
+        return false;
+    }
+    if (st->config.has_ple || st->config.has_sub_ln || st->config.has_projection_input_norms ||
+        st->config.has_attn_output_gate || !st->model_fusions.backend_buffer_copy ||
+        !st->model_fusions.prim_scale_f32) {
+        return false;
+    }
+    for (size_t li = 0; li < st->n_layers; li++) {
+        const struct transformer_layer_weights *L = &st->layers[li];
+        if (L->mixer != GEIST_MIXER_ATTN || L->o_awq_inv_scale != nullptr ||
+            L->down_awq_inv_scale != nullptr ||
+            (st->layer_plans != nullptr && st->layer_plans[li].fuse_ffn_geglu_tile_mN)) {
+            return false;
+        }
+    }
+    return backend_scratch_unmappable(st->backend);
+}
+
 /* A session refused before its slot arrays exist: the handle and the
  * embedding accumulator are all it owns. */
 static void session_free_shell(struct transformer_arch_session *sess) {
@@ -1517,39 +1693,6 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     sess->model       = state;
     sess->mtp_enabled = state->n_mtp_layers > 0 && env_flag_enabled("GEIST_MTP", false);
     sess->m_max       = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
-    /* caps.max_m is the backend's per-call row limit (CPU quant kernels
-     * size stack arrays from it; batched-submit GPUs allow larger
-     * batches). 0 = uncapped. */
-    const size_t m_cap =
-            (be->desc != nullptr && be->desc->caps.max_m > 0) ? be->desc->caps.max_m : SIZE_MAX;
-    /* Default chunk only (opts / GEIST_M_MAX win): a pool that does not fit the
-     * backend's fast host-visible window lands in system memory and every
-     * activation op then runs over PCIe (Bonsai 27B at m 128 without resizable
-     * BAR: 3x slower prefill), so shrink to what fits, never below 64. */
-    if (opts == nullptr || opts->m_max == 0) {
-        if (!state->m_max_from_env && be->desc != nullptr &&
-            be->desc->vtbl->fast_host_bytes != nullptr) {
-            const size_t                    fast = be->desc->vtbl->fast_host_bytes(be);
-            struct transformer_scratch_plan fit;
-            transformer_scratch_plan_build(state, sess->m_max, &fit);
-            /* slack for the per-session slabs outside the pool (DeltaNet, q gate) */
-            while (sess->m_max > 64 && fit.pool_bytes + fit.pool_bytes / 4 > fast) {
-                sess->m_max = sess->m_max / 2 < 64 ? 64 : sess->m_max / 2;
-                transformer_scratch_plan_build(state, sess->m_max, &fit);
-            }
-        }
-    }
-    if (sess->m_max == 0 || sess->m_max > m_cap) {
-        geist_backend_set_error(
-                be,
-                GEIST_E_INVALID_ARG,
-                "transformer_session_alloc: m_max=%zu outside supported range 1..%zu",
-                sess->m_max,
-                m_cap);
-        session_free_shell(sess);
-        return nullptr;
-    }
-
     /* Honor opts->max_seq_len up to the model's frozen bound. Sessions
      * may run SMALLER windows (their KV caches are sized to req_seq);
      * larger is rejected — the shared RoPE tables and geometry are
@@ -1688,6 +1831,45 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     sess->top_k       = 0;
     sess->sampler_ws  = (struct geist_sampler_workspace) {0};
     geist_rng_seed(&sess->rng, 0xCAFEBABE1234ULL);
+
+    /* After the KV mode: whether the scratch pool can be device-local
+     * depends on it (scratch_device_wanted). */
+    sess->scratch_device = scratch_device_wanted(sess);
+    /* caps.max_m is the backend's per-call row limit (CPU quant kernels
+     * size stack arrays from it; batched-submit GPUs allow larger
+     * batches). 0 = uncapped. */
+    const size_t m_cap =
+            (be->desc != nullptr && be->desc->caps.max_m > 0) ? be->desc->caps.max_m : SIZE_MAX;
+    /* Default chunk only (opts / GEIST_M_MAX win): a pool that does not fit the
+     * backend's fast host-visible window lands in system memory and every
+     * activation op then runs over PCIe (Bonsai 27B at m 128 without resizable
+     * BAR: 3x slower prefill), so shrink to what fits, never below 64. With a
+     * device-local pool only its host-mapped slots need the window. */
+    if (opts == nullptr || opts->m_max == 0) {
+        if (!state->m_max_from_env && be->desc != nullptr &&
+            be->desc->vtbl->fast_host_bytes != nullptr) {
+            const size_t                    fast = be->desc->vtbl->fast_host_bytes(be);
+            struct transformer_scratch_plan fit;
+            transformer_scratch_plan_build(state, sess->m_max, &fit);
+            size_t need = sess->scratch_device ? fit.host_bytes : fit.pool_bytes;
+            /* slack for the per-session slabs outside the pool (DeltaNet, q gate) */
+            while (sess->m_max > 64 && need + need / 4 > fast) {
+                sess->m_max = sess->m_max / 2 < 64 ? 64 : sess->m_max / 2;
+                transformer_scratch_plan_build(state, sess->m_max, &fit);
+                need = sess->scratch_device ? fit.host_bytes : fit.pool_bytes;
+            }
+        }
+    }
+    if (sess->m_max == 0 || sess->m_max > m_cap) {
+        geist_backend_set_error(
+                be,
+                GEIST_E_INVALID_ARG,
+                "transformer_session_alloc: m_max=%zu outside supported range 1..%zu",
+                sess->m_max,
+                m_cap);
+        transformer_session_free(state, sess);
+        return nullptr;
+    }
 
     enum geist_status s = allocate_runtime_session(sess);
     if (s == GEIST_OK && !transformer_spec_session_scratch_alloc(sess)) {
@@ -1864,6 +2046,12 @@ void transformer_session_free(struct transformer_arch_state   *state,
         sess->scratch_arena       = (struct frame_arena) {0};
     }
     /* Scratch pool backing store — a backend buffer since P3. */
+    if (sess->scratch_dev_pool_buf != nullptr) {
+        be->desc->vtbl->buffer_destroy(be, sess->scratch_dev_pool_buf);
+        sess->scratch_dev_pool_buf   = nullptr;
+        sess->scratch_dev_pool_bytes = 0;
+        sess->scratch_dev_pool_used  = 0;
+    }
     if (sess->scratch_pool_buf != nullptr) {
         be->desc->vtbl->buffer_destroy(be, sess->scratch_pool_buf);
         sess->scratch_pool_buf   = nullptr;

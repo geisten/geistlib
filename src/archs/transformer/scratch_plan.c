@@ -49,4 +49,5 @@ void transformer_scratch_plan_build(const struct transformer_arch_state *st,
                       + out->inter * 2 /*gate, up*/ + out->hidden_per /*gate_ple*/ +
                       out->ple_out * 2 /*ple_lookup, per_layer_input*/ + out->vocab /*logits*/ +
                       out->ones /*ones_headdim_max*/ + out->pool_align_slack;
+    out->host_bytes = out->hidden * 2 /*h_a, h_b*/ + out->vocab /*logits*/ + 3u * 64u;
 }

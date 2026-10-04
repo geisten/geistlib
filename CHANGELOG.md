@@ -9,6 +9,23 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Device-local scratch pool on Vulkan** (opt-in, EXPERIMENTAL, #488).
+  `GEIST_VK_SCRATCH_DEVICE=1` keeps a session's activation scratch in
+  device-local VRAM instead of the 256 MB BAR window, where a large pool
+  (an explicit `GEIST_M_MAX` of 128 or more on a 27B) spilled into system
+  memory and every GPU op on it crossed PCIe. Only `h_a`, `h_b` and the
+  logits rows, which the host reads, stay host-visible. The arch takes it only
+  for sessions with no host loop over the other slots (dense KV; no PLE,
+  DeltaNet, attention output gate, MTP, SubLN or AWQ); a CPU
+  fallback that would still need a device-local slot fails with an error
+  instead of reading over the bus. New nullable core vtable entry
+  `buffer_create_view` in `include/geist_backend.h` (EXPERIMENTAL) slices a
+  backend buffer by offset without a host pointer; Vulkan implements it, the
+  other backends leave it null and keep slicing with `buffer_create_aliased`.
+  `GEIST_VK_VERBOSE=1` notes every scratch buffer that lands in host memory
+  and reports scratch placement counts at teardown. Correctness checked on
+  lavapipe (`test_backend_vulkan_scratch_placement_unit`); the prefill speed-up
+  is unmeasured — lavapipe has no BAR heap.
 - **Apple selected-row decision heads** (EXPERIMENTAL, #586).
   `GEIST_DECISION_SELECTED_ROWS` skips the vocabulary head and sampler while
   preserving candidate logits, output normalization, gains, softcaps and Bonsai

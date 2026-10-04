@@ -2140,9 +2140,10 @@ vk_deltanet_geometry_ok(size_t seq, size_t n_kh, size_t n_vh, size_t dk, size_t 
 static const struct geist_backend_vtbl vk_vtbl = {
         .create                = vk_create,
         .destroy               = vk_destroy,
-        .buffer_create         = vk_buffer_create,
+        .buffer_create         = vk_buffer_create_api,
         .buffer_destroy        = vk_buffer_destroy,
         .buffer_create_aliased = vk_buffer_create_aliased,
+        .buffer_create_view    = vk_buffer_create_view,
         .buffer_upload         = vk_buffer_upload,
         .buffer_download       = vk_buffer_download,
         .buffer_map            = vk_buffer_map,

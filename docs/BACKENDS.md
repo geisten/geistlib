@@ -69,6 +69,29 @@ back to per-row matvecs for prefill (#471). Details and the side-by-side
 profile: `benchmark/results/TERNARY.md`. Phase-by-phase lab log:
 [`../benchmark/results/VULKAN.md`](../benchmark/results/VULKAN.md).
 
+**Scratch placement (#488).** A session's activation scratch is one pool,
+host-visible by default so the arch can map it. It goes into the BAR window
+(device-local and mappable) while that has room; past it — 256 MB without
+resizable BAR, e.g. an explicit `GEIST_M_MAX` of 128 or more on a 27B — it
+lands in system memory and every GPU op on it crosses the bus (prefill drops
+3×). `GEIST_VK_SCRATCH_DEVICE=1` (opt-in, experimental) puts every slot the host
+never maps into ordinary device-local VRAM instead, sliced with
+`buffer_create_view` (offset, no host pointer); only `h_a`, `h_b` and the logits
+rows stay host-visible, and the default chunk is then sized to those alone. The
+arch takes the device-local pool only for sessions with no host loop over those
+slots: dense (FP32/F16) KV, no PLE, DeltaNet, attention output gate, MTP,
+SubLN/projection norms or AWQ scales (a `prism.hadamard` rotation is fine — it
+runs on the device) — anything else
+keeps the mapped pool. A CPU fallback that would still need a device-local slot
+fails with an error (the Vulkan host view returns nullptr and counts the
+refusal; the arch's host linear returns `GEIST_E_BACKEND` naming it) rather than
+reading the bytes over the bus. A model with a weight dtype that has no Vulkan
+kernel therefore fails its first prefill under the opt-in. `GEIST_VK_VERBOSE=1`
+prints a note for every scratch buffer that lands in host memory and, at
+teardown, how many scratch buffers went to device-local memory, the BAR and the
+host. `test_backend_vulkan_scratch_placement_unit` checks the placement and
+that decoding gives the same tokens and logits either way.
+
 ## GPU numbers at a glance
 
 | model | platform | metric | **geistlib** | baseline |

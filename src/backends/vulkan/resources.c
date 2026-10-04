@@ -144,12 +144,24 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
         buf->bar_bytes = (size_t) minfo.allocationSize;
         st->bar_used += buf->bar_bytes;
     }
-    if (getenv("GEIST_VK_VERBOSE") != nullptr && buf->host_visible) {
+    const bool verbose = getenv("GEIST_VK_VERBOSE") != nullptr;
+    if (verbose && buf->host_visible) {
         fprintf(stderr,
                 "  buffer %zu KiB role=%d bar=%d\n",
                 bytes >> 10,
                 (int) role,
                 buf->device_mem);
+    }
+    if (role == GEIST_BUFFER_SCRATCH) {
+        const enum vk_placement where = vk_buffer_placement(buf);
+        st->stat_scratch_n[where]++;
+        st->stat_scratch_bytes[where] += bytes;
+        if (verbose && where == VK_PLACEMENT_HOST) {
+            fprintf(stderr,
+                    "geist vulkan: scratch buffer of %zu KiB is in host memory, outside "
+                    "device-local memory; GPU ops on it read over the bus (#488)\n",
+                    bytes >> 10);
+        }
     }
     /* Register mapped buffers for the alias-containment lookup (arch pools
      * hand out slices of these; buffer_create_aliased resolves them back
@@ -172,6 +184,76 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
     }
     *out = buf;
     return GEIST_OK;
+}
+
+/* The vtable's buffer_create. One policy on top of vk_buffer_create: the
+ * arch asks for its scratch pool device-local (SCRATCH role, DEVICE flag, no
+ * host flag) when its host paths never map the pool (#488). That is opt-in
+ * while the arch's safety decision is new, GEIST_VK_SCRATCH_DEVICE=1; without
+ * it the request is served host-visible, as every scratch pool was before,
+ * and the arch keeps its mapped pool. Internal callers (the x ring, weight
+ * copies) call vk_buffer_create and are not affected. */
+[[nodiscard]] enum geist_status vk_buffer_create_api(struct geist_backend  *be,
+                                                     size_t                 bytes,
+                                                     enum geist_buffer_role role,
+                                                     unsigned int           memory_flags,
+                                                     struct geist_buffer  **out) {
+    const struct vk_state *st = be->state;
+    const unsigned int     host_req =
+            GEIST_MEMORY_HOST | GEIST_MEMORY_HOST_VISIBLE | GEIST_MEMORY_MAPPED;
+    if (role == GEIST_BUFFER_SCRATCH && (memory_flags & GEIST_MEMORY_DEVICE) != 0 &&
+        (memory_flags & host_req) == 0 && !st->scratch_device) {
+        memory_flags &= ~(unsigned int) GEIST_MEMORY_DEVICE;
+    }
+    return vk_buffer_create(be, bytes, role, memory_flags, out);
+}
+
+/* A slice of a buffer_create buffer by offset (vtbl buffer_create_view): the
+ * same borrowed handle buffer_create_aliased hands out for a mapped parent,
+ * found by (parent, offset) instead of by host address, so it works for a
+ * device-local parent as well. */
+[[nodiscard]] enum geist_status vk_buffer_create_view(struct geist_backend  *be,
+                                                      struct geist_buffer   *parent,
+                                                      size_t                 offset,
+                                                      size_t                 n_bytes,
+                                                      enum geist_buffer_role role,
+                                                      struct geist_buffer  **out) {
+    struct vk_state *st = be->state;
+    if (parent == nullptr || out == nullptr || parent->owner != st ||
+        parent->buf == VK_NULL_HANDLE || n_bytes == 0 || offset > parent->bytes ||
+        n_bytes > parent->bytes - offset) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan: bad buffer view args");
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_buffer *buf = geist_backend_alloc(be, sizeof(*buf), alignof(struct geist_buffer));
+    if (buf == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "vulkan: view handle alloc failed");
+        return GEIST_E_OOM;
+    }
+    uint8_t *host = parent->host_alias != nullptr ? parent->host_alias : parent->mapped;
+    *buf          = (struct geist_buffer) {.owner        = st,
+                                           .buf          = parent->buf,
+                                           .host_alias   = host != nullptr ? host + offset : nullptr,
+                                           .bytes        = n_bytes,
+                                           .base_off     = parent->base_off + offset,
+                                           .role         = role,
+                                           .memory_flags = GEIST_MEMORY_ALIASED,
+                                           .host_visible = parent->host_visible,
+                                           .device_mem   = parent->device_mem,
+                                           .borrowed     = true,
+                                           .view         = true};
+    *out          = buf;
+    return GEIST_OK;
+}
+
+enum vk_placement vk_buffer_placement(const struct geist_buffer *buf) {
+    if (buf == nullptr || buf->buf == VK_NULL_HANDLE) {
+        return VK_PLACEMENT_NONE;
+    }
+    if (!buf->device_mem) {
+        return VK_PLACEMENT_HOST;
+    }
+    return buf->host_visible ? VK_PLACEMENT_BAR : VK_PLACEMENT_DEVICE;
 }
 
 [[nodiscard]] enum geist_status vk_buffer_create_aliased(struct geist_backend  *be,
@@ -320,9 +402,12 @@ vk_staged_copy(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src, uin
         memcpy(mapped, src, n_bytes);
     }
 
-    VkCommandBufferBeginInfo begin  = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    VkBufferCopy             region = {.size = n_bytes};
+    VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    /* A view (buffer_create_view) starts base_off bytes into its VkBuffer. */
+    const VkBufferCopy region = {.srcOffset = src != nullptr ? 0 : buf->base_off,
+                                 .dstOffset = src != nullptr ? buf->base_off : 0,
+                                 .size      = n_bytes};
     if (st->fn.BeginCommandBuffer(st->xfer_cmd, &begin) != VK_SUCCESS) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: begin transfer cmd failed");
         goto out;
@@ -553,7 +638,20 @@ void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
     }
     uint8_t *base = t->buffer->host_alias != nullptr ? t->buffer->host_alias : t->buffer->mapped;
     if (base == nullptr) {
-        return nullptr; /* device-local — CPU ops can't touch it */
+        /* Device-local (#488): a CPU fallback cannot touch it, and the op
+         * fails rather than read the bytes over the bus. Counted so a test
+         * can tell this refusal from any other bad input. */
+        if (t->buffer->buf != VK_NULL_HANDLE) {
+            t->buffer->owner->stat_host_denied++;
+            if (getenv("GEIST_VK_VERBOSE") != nullptr) {
+                fprintf(stderr,
+                        "geist vulkan: a CPU fallback needs a device-local buffer (%zu KiB, "
+                        "role %d); failing the op\n",
+                        t->buffer->bytes >> 10,
+                        (int) t->buffer->role);
+            }
+        }
+        return nullptr;
     }
     t->buffer->owner->stat_cpu_falls++;
     vk_seq_flush(t->buffer->owner); /* host access — drain pending GPU work */

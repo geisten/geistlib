@@ -265,6 +265,11 @@ struct vk_state {
     bool pq2_f32_acc;  /* GEIST_VK_PQ2_F32_ACC: exact f32-accumulate PQ2_0 tensor-core GEMM */
     bool attn_cm; /* tensor-core attention (#475 follow-up), default on; GEIST_VK_ATTN_CM=0 disables
                    */
+    /* GEIST_VK_SCRATCH_DEVICE=1 (#488): a SCRATCH-role buffer_create that asks
+     * for GEIST_MEMORY_DEVICE gets device-local, unmappable memory. Off by
+     * default: such a request is served host-visible, as before, and the
+     * arch keeps its mapped pool. See vk_buffer_create_api. */
+    bool scratch_device;
 
     /* Set when a sequence flush failed (submit / wait / end); the next host
      * readback (argmax, download, host view) reports it as GEIST_E_BACKEND and
@@ -279,6 +284,17 @@ struct vk_state {
     uint64_t stat_flushes;
     uint64_t stat_dispatches;
     uint64_t stat_cpu_falls;
+    /* Host views refused because the buffer is device-local (vk_tensor_host):
+     * a CPU fallback that would have needed the bytes, reported as an error
+     * instead of a read over PCIe. */
+    uint64_t stat_host_denied;
+    /* Where SCRATCH-role memory landed (#488), per buffer_create: device-local
+     * and unmappable, the BAR window (device-local + host-visible), or host
+     * memory the GPU reads over the bus. Indexed by enum vk_placement;
+     * cumulative over the backend's life (destroys do not decrement). One
+     * buffer's placement: vk_buffer_placement. */
+    uint64_t stat_scratch_n[3];
+    uint64_t stat_scratch_bytes[3];
 
     /* GEIST_VK_PROFILE=1: GPU timestamps per dispatch, attributed by
      * pipeline (copies land in the extra slot). Execution is serialized by
@@ -427,6 +443,7 @@ struct geist_buffer {
     bool                   host_visible;
     bool                   device_mem; /* memory type has DEVICE_LOCAL */
     bool                   borrowed;   /* buf/mem owned by a parent buffer */
+    bool                   view;       /* buffer_create_view slice of a parent */
     size_t bar_bytes; /* counted in vk_state.bar_used (host-visible + device-local) */
 };
 
@@ -447,6 +464,30 @@ void vk_destroy(struct geist_backend *be);
                                                          size_t                 n_bytes,
                                                          enum geist_buffer_role role,
                                                          struct geist_buffer  **out);
+
+[[nodiscard]] enum geist_status vk_buffer_create_api(struct geist_backend  *be,
+                                                     size_t                 bytes,
+                                                     enum geist_buffer_role role,
+                                                     unsigned int           memory_flags,
+                                                     struct geist_buffer  **out);
+
+[[nodiscard]] enum geist_status vk_buffer_create_view(struct geist_backend  *be,
+                                                      struct geist_buffer   *parent,
+                                                      size_t                 offset,
+                                                      size_t                 n_bytes,
+                                                      enum geist_buffer_role role,
+                                                      struct geist_buffer  **out);
+
+/* Where a buffer's bytes live (#488). NONE: a bookkeeping alias with no
+ * VkBuffer behind it (GGUF mmap). */
+enum vk_placement {
+    VK_PLACEMENT_DEVICE = 0, /* device-local, not host-visible */
+    VK_PLACEMENT_BAR    = 1, /* device-local and host-visible */
+    VK_PLACEMENT_HOST   = 2, /* host memory, read by the GPU over the bus */
+    VK_PLACEMENT_NONE   = 3,
+};
+
+[[nodiscard]] enum vk_placement vk_buffer_placement(const struct geist_buffer *buf);
 
 void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf);
 
