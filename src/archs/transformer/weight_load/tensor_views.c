@@ -288,12 +288,14 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
 
     /* Two storage modes, picked at state-create time:
      *
-     *   β mode (default, post-P1.1.f): weight bytes are copied from
-     *   the GGUF mmap into a backend-owned arena via bump-allocation;
+     *   β mode (the default where caps.weights_need_backend_arena is
+     *   set, i.e. Vulkan; GEIST_WEIGHT_MMAP=0 elsewhere): weight bytes
+     *   are copied from the GGUF mmap into a backend-owned arena via
+     *   bump-allocation;
      *   gguf_close runs after all loads. Backend has full ownership.
      *   Cost: 2.8 GB upfront disk read + memcpy on Pi 5 IQ2_M.
      *
-     *   mmap-alias mode (GEIST_WEIGHT_MMAP=1): weight bytes are NOT
+     *   mmap-alias mode (the CPU and Metal default): weight bytes are NOT
      *   copied; we wrap the mmap pointer in an aliased buffer (the
      *   P0.3 path). gguf_ctx is retained for state lifetime; kernels
      *   read directly from mmap pages. Disk reads happen on demand
