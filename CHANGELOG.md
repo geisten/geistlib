@@ -202,6 +202,27 @@ minor release.
 
 ### Changed
 
+- **Metal wraps read-only `load_from_memory` bytes in place: one copy of the
+  weights** (#577). Only file-backed memory was wrapped with
+  `newBufferWithBytesNoCopy`; anything else was copied into a Metal buffer. A
+  caller that verifies the GGUF into its own mapping and seals it with
+  `mprotect(PROT_READ)` therefore held the weights twice on unified memory.
+  Read-only anonymous memory now qualifies too (`load_from_memory` already
+  requires the bytes to outlive the model), and the region check walks the
+  128 MiB entries macOS splits a large mapping into, so a tensor across such a
+  seam (Gemma 4 E4B's 1.9 GB per-layer table) is no longer copied either.
+  HELIO with Gemma 4 E4B Q4_K_M on an M1 Max: peak RSS 9.9 -> 5.3 GiB, outputs
+  identical. Writable heap memory keeps the copy.
+- **Metal Q4_K/Q6_K prefill keeps ragged batches on the fast GEMM** (#578).
+  A batch whose row count was not a multiple of the GEMM tile (32 rows for
+  Q4_K, 64 for Q6_K) sent every tile of the matrix through a slower kernel,
+  and a batch of 2-31 rows through the m8/m16 kernels, which cost as much as
+  a full 64-row pass. Whole tiles now take the interior fast kernel and only
+  the tail a bounded one; up to 9 rows go row by row through the matvec
+  kernel; Q4_K takes the bounded simdgroup GEMM for 10-31 rows as the other
+  formats do. Gemma 4 E4B, M1 Max: a 275-token prompt in 64-token chunks
+  2.9 -> 1.2 s, 2 rows 301 -> 52 ms; HELIO's prefill P95 halves, outputs
+  identical.
 - **cpu_x86 Q3_K runs a native int8 kernel on the GGUF bytes: decode about
   29x, prefill about 3.5x faster** (#410). Q3_K used to fall back to the
   generic dequantize-and-dot path. The Q6_K raw kernels (decode GEMV and

@@ -76,3 +76,12 @@ $(BUILD_DIR)/src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.o: CFLAGS_STRICT
 # linear_pq2_0.c's amx_usable() also checks the kernel granted the tile data.
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_pq2_0_amx.o: CFLAGS_STRICT += \
     -mamx-tile -mamx-int8 -mavx512f -mavx512bw
+# The AMX instructions need binutils 2.36. Older toolchains (Debian 11, the
+# Steam Runtime 3 "sniper" SDK: 2.35) accept -mamx-* but cannot assemble the
+# result: build the AVX2 GEMM alone there (GEIST_NO_AMX), amx_usable() false.
+GEIST_AMX_AS := $(shell printf 'void f(void){__asm__ volatile("tilerelease");}' | \
+    $(CC) -x c -c -o /dev/null - 2>/dev/null && echo yes)
+ifneq ($(GEIST_AMX_AS),yes)
+$(BUILD_DIR)/src/backends/cpu_x86/kernel_pq2_0_amx.o \
+$(BUILD_DIR)/src/backends/cpu_x86/linear_pq2_0.o: CFLAGS_STRICT += -DGEIST_NO_AMX
+endif
