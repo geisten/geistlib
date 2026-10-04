@@ -65,7 +65,9 @@ Pi 5 result:
   what makes a 4 GB board roomy instead of impossible.
 - **Zero-copy weights.** The GGUF is mmapped (or, in `geist-bitnet`, aliased
   straight out of the binary's read-only data) and demand-paged — weights cost
-  disk, not RAM, and loading is near-instant.
+  disk, not RAM, and loading is near-instant. Some CPU kernels keep a repacked
+  copy of a dtype for speed; [`docs/BACKENDS.md`](docs/BACKENDS.md#resident-memory-per-backend)
+  lists them and the switch for each.
 
 The deeper tour — three layers, load-time kernel binding, why C —
 is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

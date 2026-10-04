@@ -5,6 +5,7 @@
  */
 #include "vk_internal.h"
 
+#include "checked.h"
 #include "tensor_view.h" /* geist_tensor_elems: checked element count */
 
 /* ====================================================================== */
@@ -20,6 +21,39 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
         }
     }
     return UINT32_MAX;
+}
+
+/* The device-memory limit for a device-local allocation from `mem_type`:
+ * its heap, lowered by GEIST_VK_VRAM_BUDGET. */
+static size_t vk_vram_limit(const struct vk_state *st, uint32_t mem_type) {
+    const uint32_t heap = st->mem_props.memoryTypes[mem_type].heapIndex;
+    const size_t   size = (size_t) st->mem_props.memoryHeaps[heap].size;
+    return st->vram_budget != 0 && st->vram_budget < size ? st->vram_budget : size;
+}
+
+[[nodiscard]] static bool vk_vram_fits(const struct vk_state *st, uint32_t mem_type, size_t n) {
+    const size_t limit = vk_vram_limit(st, mem_type);
+    return st->vram_used <= limit && n <= limit - st->vram_used;
+}
+
+/* The error of a device-local allocation that does not fit: what it needs,
+ * what is in use and the limit, so a model larger than the device fails
+ * with numbers instead of a bare driver status. There is no host spill. */
+static void vk_vram_exhausted(struct geist_backend  *be,
+                              uint32_t               mem_type,
+                              size_t                 n,
+                              enum geist_buffer_role role) {
+    const struct vk_state *st = be->state;
+    geist_backend_set_error(be,
+                            GEIST_E_OOM,
+                            "vulkan: out of device memory: a %s buffer needs %zu MiB, %zu of "
+                            "%zu MiB are in use%s (the model does not fit; there is no "
+                            "spill to host memory)",
+                            role == GEIST_BUFFER_KV_CACHE ? "KV-cache" : "device",
+                            (n + (1u << 20) - 1) >> 20,
+                            st->vram_used >> 20,
+                            vk_vram_limit(st, mem_type) >> 20,
+                            st->vram_budget != 0 ? " (GEIST_VK_VRAM_BUDGET)" : "");
 }
 
 [[nodiscard]] enum geist_status vk_buffer_create(struct geist_backend  *be,
@@ -108,7 +142,15 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
     VkMemoryAllocateInfo minfo = {.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                   .allocationSize  = req.size,
                                   .memoryTypeIndex = mem_type};
-    VkResult             r     = st->fn.AllocateMemory(st->device, &minfo, nullptr, &buf->mem);
+    const bool           vram = device_local && (st->mem_props.memoryTypes[mem_type].propertyFlags &
+                                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    if (vram && !vk_vram_fits(st, mem_type, (size_t) req.size)) {
+        st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
+        geist_backend_free(be, buf);
+        vk_vram_exhausted(be, mem_type, (size_t) req.size, role);
+        return GEIST_E_OOM;
+    }
+    VkResult r = st->fn.AllocateMemory(st->device, &minfo, nullptr, &buf->mem);
     if (r != VK_SUCCESS && !device_local) {
         /* BAR heap exhausted (it is only 256 MB) — fall back to plain
          * host-visible system memory. */
@@ -134,9 +176,17 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
         }
         st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
         geist_backend_free(be, buf);
-        geist_backend_set_error(
-                be, GEIST_E_OOM, "vulkan: allocating %zu bytes failed (%d)", bytes, (int) r);
+        if (vram && r == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            vk_vram_exhausted(be, mem_type, (size_t) req.size, role);
+        } else {
+            geist_backend_set_error(
+                    be, GEIST_E_OOM, "vulkan: allocating %zu bytes failed (%d)", bytes, (int) r);
+        }
         return GEIST_E_OOM;
+    }
+    if (vram) {
+        buf->vram_bytes = (size_t) minfo.allocationSize;
+        st->vram_used += buf->vram_bytes;
     }
     buf->device_mem = (st->mem_props.memoryTypes[mem_type].propertyFlags &
                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
@@ -245,6 +295,7 @@ void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
         st->fn.DestroyBuffer(st->device, buf->buf, nullptr);
         st->fn.FreeMemory(st->device, buf->mem, nullptr);
         st->bar_used -= buf->bar_bytes;
+        st->vram_used -= buf->vram_bytes;
     }
     geist_backend_free(be, buf);
 }
@@ -455,13 +506,78 @@ struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor
     return vk_weight_lookup(st, (const uint8_t *) t->buffer->host_alias + t->offset);
 }
 
-struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host) {
-    for (size_t i = 0; i < st->n_weights; ++i) {
-        if (st->weights[i].host == host) {
-            return st->weights[i].gpu;
+/* Home slot of `host` in a table of `cap` (a power of two) slots:
+ * Fibonacci hashing of the pointer bits above the 16-byte alignment. */
+static size_t vk_weight_slot(const void *host, size_t cap) {
+    const uint64_t h = ((uint64_t) (uintptr_t) host >> 4) * 0x9E3779B97F4A7C15ull;
+    return (size_t) (h >> 32) & (cap - 1);
+}
+
+struct vk_weight_entry *vk_weight_entry_of(const struct vk_state *st, const void *host) {
+    if (st->cap_weight_index == 0) {
+        return nullptr;
+    }
+    const size_t mask = st->cap_weight_index - 1;
+    for (size_t i = vk_weight_slot(host, st->cap_weight_index);; i = (i + 1) & mask) {
+        const uint32_t e = st->weight_index[i];
+        if (e == 0) {
+            return nullptr; /* the table is at most half full: always ends */
+        }
+        if (st->weights[e - 1].host == host) {
+            return &st->weights[e - 1];
         }
     }
-    return nullptr;
+}
+
+struct geist_buffer *vk_weight_lookup(const struct vk_state *st, const void *host) {
+    const struct vk_weight_entry *e = vk_weight_entry_of(st, host);
+    return e != nullptr ? e->gpu : nullptr;
+}
+
+static void vk_weight_index_put(uint32_t *table, size_t cap, const void *host, size_t idx) {
+    size_t i = vk_weight_slot(host, cap);
+    while (table[i] != 0) {
+        i = (i + 1) & (cap - 1);
+    }
+    table[i] = (uint32_t) idx + 1;
+}
+
+[[nodiscard]] enum geist_status vk_weight_index_add(struct geist_backend *be, size_t idx) {
+    struct vk_state *st = be->state;
+    if (idx >= UINT32_MAX) {
+        return GEIST_E_OOM;
+    }
+    size_t need = 0;
+    if (ckd_mul(&need, st->n_weights, (size_t) 2)) {
+        return GEIST_E_OOM;
+    }
+    if (need > st->cap_weight_index) {
+        size_t cap = st->cap_weight_index == 0 ? 128 : st->cap_weight_index;
+        while (cap < need) {
+            if (ckd_mul(&cap, cap, (size_t) 2)) {
+                return GEIST_E_OOM;
+            }
+        }
+        size_t bytes = 0;
+        if (ckd_mul(&bytes, cap, sizeof(uint32_t))) {
+            return GEIST_E_OOM;
+        }
+        uint32_t *table = geist_backend_alloc(be, bytes, alignof(uint32_t));
+        if (table == nullptr) {
+            return GEIST_E_OOM;
+        }
+        memset(table, 0, bytes);
+        for (size_t i = 0; i < st->n_weights; ++i) {
+            if (i != idx) {
+                vk_weight_index_put(table, cap, st->weights[i].host, i);
+            }
+        }
+        geist_backend_free(be, st->weight_index);
+        st->weight_index     = table;
+        st->cap_weight_index = cap;
+    }
+    vk_weight_index_put(st->weight_index, st->cap_weight_index, st->weights[idx].host, idx);
+    return GEIST_OK;
 }
 
 /* Access-range helpers: byte spans inside the bound VkBuffer. */
