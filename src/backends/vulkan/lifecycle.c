@@ -5,6 +5,10 @@
  */
 #include "vk_internal.h"
 
+#include "checked.h"
+
+#include <errno.h>
+
 /* ====================================================================== */
 /* Create / destroy                                                        */
 /* ====================================================================== */
@@ -128,6 +132,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             vk_buffer_destroy(be, st->weights[i].gpu);
         }
         geist_backend_free(be, st->weights);
+        geist_backend_free(be, st->weight_index);
         geist_backend_free(be, st->cpu_row);
         if (st->x_stage != nullptr) {
             vk_buffer_destroy(be, st->x_stage);
@@ -390,6 +395,45 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     return GEIST_OK;
 }
 
+/* GEIST_VK_VRAM_BUDGET: bytes with an optional K, M or G suffix (powers of
+ * 1024). 0 (no limit beyond the heap) when unset, malformed or overflowing. */
+static size_t vk_parse_bytes(const char *v) {
+    if (v == nullptr || *v < '0' || *v > '9') {
+        return 0; /* also refuses the sign and blanks strtoull would take */
+    }
+    char *end                  = nullptr;
+    errno                      = 0;
+    const unsigned long long n = strtoull(v, &end, 10);
+    if (errno == ERANGE) {
+        return 0;
+    }
+    size_t mul = 1;
+    switch (*end) {
+    case 'K':
+    case 'k':
+        mul = (size_t) 1 << 10;
+        end++;
+        break;
+    case 'M':
+    case 'm':
+        mul = (size_t) 1 << 20;
+        end++;
+        break;
+    case 'G':
+    case 'g':
+        mul = (size_t) 1 << 30;
+        end++;
+        break;
+    default:
+        break;
+    }
+    size_t bytes = 0;
+    if (end == v || *end != '\0' || n > SIZE_MAX || ckd_mul(&bytes, (size_t) n, mul)) {
+        return 0;
+    }
+    return bytes;
+}
+
 [[nodiscard]] enum geist_status vk_create(struct geist_backend            *be,
                                           const struct geist_backend_opts *opts) {
     (void) opts;
@@ -402,6 +446,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     st->backend         = be;
     st->profile_enabled = getenv("GEIST_VK_PROFILE") != nullptr;
     st->pq2_f32_acc     = getenv("GEIST_VK_PQ2_F32_ACC") != nullptr;
+    st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
     /* Default on since #501's rollout validated cleanly (two models,
      * two GPUs, several misaligned chunk sizes); GEIST_VK_ATTN_CM=0 is the
      * escape hatch back to the scalar kernel. */
