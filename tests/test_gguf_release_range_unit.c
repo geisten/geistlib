@@ -113,8 +113,8 @@ static int check_release(const struct tf_buf *g, const char *path) {
     const long     in  = rss_of_path_kib(path);
     gguf_release_range(ctx, p, n);
     const long out = rss_of_path_kib(path);
-    char       msg[192];
 #if defined(__linux__)
+    char msg[192];
     snprintf(msg,
              sizeof msg,
              "releasing %zu KiB drops the file pages (resident %ld -> %ld KiB)",
@@ -181,8 +181,8 @@ static int check_vulkan_load(const struct tf_buf *g, const char *path, size_t bi
         fails += geist_expect(false, "vulkan: load from file");
     }
     const long resident = rss_of_path_kib(path);
-    char       msg[192];
 #if defined(__linux__)
+    char msg[192];
     snprintf(msg,
              sizeof msg,
              "vulkan: %zu KiB of uploaded matrices, %ld KiB of the file resident",
