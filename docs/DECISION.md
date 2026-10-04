@@ -219,6 +219,52 @@ test, and the same quality criterion for any product speedup claim. A latency
 ratio versus 32 emitted tokens is workload-specific and is not evidence of
 Jev parity or a quality-matched reasoning speedup.
 
+## Selected-row measurements (2026-10-04)
+
+[Full protocol, hashes, samples and sweeps](../benchmark/results/DECISION_SELECTED_ROWS_2026-10-04.json)
+record M1 Max / 64 GiB, six threads, passive OpenMP waits and concurrency one.
+The cases use raw synthetic integer prompts of 5/32 tokens and 4/16 spread
+candidates, with one warmup and three warm repeats per case. They carry no
+quality labels. This shared desktop has no CPU pinning or thermal control.
+
+Standalone model-shaped projection means (ten warm repeats, four tiles):
+
+| Shape / backend | Dense head | Selected head | Mean ratio | Projected rows |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen Q8 / cpu_neon | 1671.9 µs | 10.1 µs | 165.5x | 4 |
+| Bonsai PQ2 / cpu_neon | 3359.3 µs | 19.4 µs | 173.2x | 32 |
+| Qwen Q8 / metal | 762.4 µs | 272.7 µs | 2.8x | 32 |
+| Bonsai PQ2 / metal | 1939.4 µs | 412.7 µs | 4.7x | 64 |
+
+Whole-query example: five prompt tokens, four candidates; p50 in milliseconds:
+
+| Model / backend | DENSE | Selected | Up to 16 generated tokens | Dense / selected |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3 0.6B Q8_0 / metal | 20.64 | 20.14 | 102.36 | 1.025x |
+| Bonsai 2 27B PQ2_0 / metal | 496.47 | 509.10 | 1388.41 | 0.975x |
+| Qwen3 0.6B Q8_0 / cpu_neon | 73.67 | 72.17 | 282.77 | 1.021x |
+| Bonsai 2 27B PQ2_0 / cpu_neon | 2297.42 | 2285.64 | 4535.12 | 1.005x |
+
+Across the four geometries, Qwen gains about 1–6% versus DENSE. Bonsai is
+essentially flat and can be a few percent slower; this matrix demonstrates
+no reliable Bonsai end-to-end gain. Its backbone dominates query latency.
+The large head-only ratios therefore do not describe an LLM-wide speedup.
+Keep mode selection explicit and measure the consumer's workload.
+
+Every paired candidate logit is exact. Selected kernels report zero warm
+geist heap allocations. For four spread Bonsai candidates, NEON stages 128
+bytes (32 rows), Metal 256 bytes (64 rows), against the logical dense
+993,280-byte vocabulary buffer. Private sessions still reserve ordinary
+dense scratch; process peak RSS is recorded, not a per-handle/GPU memory saving.
+
+Normal generation is covered by the 32/128-token prefill/decode sweep and a
+five-repeat confirmation at length 32 in reverse process order. Raw samples
+show substantial run-to-run drift and do not support fine-grained speedup
+claims. Full logits and eight generated token IDs remain byte-identical
+before/after on Qwen, Bonsai and Gemma, CPU and Metal. Extraction of the shared
+head preparation adds 20 glue instructions on arm64; projection arithmetic
+is unchanged. MMLU quality and calibration remain the next stage in #587.
+
 ## Initial protocol smoke baseline
 
 [Raw baseline, 2026-10-03](../benchmark/results/DECISION_REFERENCE_2026-10-03.json)
