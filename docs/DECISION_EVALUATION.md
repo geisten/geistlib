@@ -11,6 +11,17 @@ loss, run scope and generation cap. The CLI deliberately requires the cap,
 margin and purpose. `manifest.json` freezes these and the precise commands
 before inference. An existing output directory is never overwritten.
 
+## Confirmed campaign choices (2026-10-04)
+
+The user selected classic MMLU with five fixed subject-specific examples,
+a maximum two-percentage-point accuracy loss (paired 95% interval), and a
+small development pilot first on Apple CPU/Metal. These choices are saved in
+[DECISION_CAMPAIGN_PLAN.json](DECISION_CAMPAIGN_PLAN.json). The pilot supplies
+exploratory quality and runtime evidence, not held-out acceptance.
+
+Overlap handling and the bounded generation/pilot policy are the remaining
+downstream decisions. No campaign result is attached to this plan yet.
+
 ## Data and prompt construction
 
 `tools/prepare_decision_eval.py` reads an existing immutable HF snapshot
@@ -55,7 +66,10 @@ token. Standalone tokenization or truncating a multi-token label is insufficient
 Text exceeding the TOK protocol's lossless extent fails before tokenization.
 
 `--per-subject N` deterministically samples a development pilot independently
-of labels. `0` retains the whole prepared population. `--rotations 4` adds
+of labels. `0` retains the whole prepared population. `--subject-limit N`
+selects a bounded set of subjects by a separate deterministic hash, also
+independent of labels. For example `--per-subject 1 --subject-limit 8` prepares
+eight pilot questions when at least eight subjects are available. `--rotations 4` adds
 cyclic option permutations with a correctly remapped gold label; primary quality
 uses only variant 0. Rotations and timing repeats never increase quality N.
 
@@ -110,7 +124,7 @@ For temperature fitting use `--split calibration --purpose calibration` with
 the same bound configuration and a separate output directory. It runs the
 three numeric arms on `chat_direct` and saves `calibration.json`. A subsequent
 `--split test --purpose quality --calibration /path/calibration.json` requires
-all declared test questions (`--per-subject 0`), an identical checkpoint,
+all declared test questions (`--per-subject 0 --subject-limit 0`), an identical checkpoint,
 binary, tokenizer, device/backend/KV/environment, shots, template date and
 prompt policy, and disjoint calibration IDs. The runner rejects a pilot bundle
 masquerading as a complete test.

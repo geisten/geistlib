@@ -155,7 +155,7 @@ def prepare(args):
         for split in args.splits.split(","):
             if split not in splits or split in counts:
                 raise ValueError("split must be a unique development/calibration/test name")
-            rows = data.select_per_subject(splits[split], args.per_subject)
+            rows = data.select_per_subject(splits[split], args.per_subject, subject_limit=args.subject_limit)
             path = args.out_dir / f"{split}.jsonl"
             count = 0
             with path.open("w") as output:
@@ -198,6 +198,7 @@ def prepare(args):
                 "prompt_policy": "classic-mmlu-fixed-subject-exemplars-chat-final-letter-xhigh-v1",
                 "snapshot_path": str(args.snapshot.resolve()),
                 "shots": args.shots, "rotations": args.rotations, "per_subject": args.per_subject,
+                "subject_limit": args.subject_limit,
                 "template_date": args.template_date, "counts": counts,
                 "label_policy": "Cloze uses spaced letters; chat uses bare letters. Every complete prompt+label tokenization must extend the actual prefix by exactly one distinct token.",
                 "preprocessing": "Render and TOK timings retained separately from boundary validation and dataset preparation. Tokenizer model startup/checksums are setup costs. No forced cache eviction.",
@@ -219,10 +220,11 @@ def main():
     p.add_argument("--splits", default="development,calibration,test")
     p.add_argument("--shots", type=int, default=5)
     p.add_argument("--per-subject", type=int, default=0, help="0 = all; positive count is an explicitly reported pilot")
+    p.add_argument("--subject-limit", type=int, default=0, help="0 = all subjects; positive count is a deterministic bounded pilot")
     p.add_argument("--rotations", type=int, choices=(1, 4), default=1)
     p.add_argument("--template-date", default=datetime.now(timezone.utc).date().isoformat())
     args = p.parse_args()
-    if not 0 <= args.shots <= 5 or args.per_subject < 0:
+    if not 0 <= args.shots <= 5 or args.per_subject < 0 or args.subject_limit < 0:
         p.error("invalid shots/per-subject bounds")
     prepare(args)
 

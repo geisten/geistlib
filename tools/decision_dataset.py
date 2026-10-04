@@ -91,14 +91,19 @@ def partition(sources, overlap_policy="reject", seed="geist-decision-v1"):
         "scope": "Exact question/option matches, including option permutations; not semantic near-duplicate detection"}
 
 
-def select_per_subject(rows, count, seed="geist-decision-pilot-v1"):
-    if type(count) is not int or count < 0:
-        raise ValueError("nonnegative per-subject count required")
+def select_per_subject(rows, count, seed="geist-decision-pilot-v1", subject_limit=0):
+    if (type(count) is not int or count < 0
+            or type(subject_limit) is not int or subject_limit < 0):
+        raise ValueError("nonnegative per-subject count and subject limit required")
     grouped = defaultdict(list)
     for row in rows:
         grouped[row["subject"]].append(row)
     selected = []
+    subjects = sorted(grouped, key=lambda s: digest([seed, "subject", s]))
+    chosen = set(subjects[:subject_limit] if subject_limit else subjects)
     for subject, group in sorted(grouped.items()):
+        if subject not in chosen:
+            continue
         group.sort(key=lambda r: digest([seed, r["question_id"]]))
         selected.extend(group[:count] if count else group)
     return selected

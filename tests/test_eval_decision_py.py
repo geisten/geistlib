@@ -81,6 +81,12 @@ class DecisionEvaluationTests(unittest.TestCase):
             self.assertEqual(len(eval_tool.load_cases(directory, "test", "quality")[1]), 1)
             with self.assertRaisesRegex(ValueError, "development"):
                 eval_tool.load_cases(directory, "test", "pilot")
+            self.bundle(directory)
+            meta = eval_tool.read_json(directory / "metadata.json")
+            meta["subject_limit"] = 1
+            eval_tool.write_json(directory / "metadata.json", meta)
+            with self.assertRaisesRegex(ValueError, "complete"):
+                eval_tool.load_cases(directory, "test", "quality")
             self.bundle(directory, per_subject=1)
             with self.assertRaisesRegex(ValueError, "complete"):
                 eval_tool.load_cases(directory, "test", "quality")

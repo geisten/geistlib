@@ -84,6 +84,7 @@ def load_cases(directory, split, purpose):
             or len(rows) != n * meta["rotations"]):
         raise ValueError("incomplete canonical questions/rotations")
     if purpose == "quality" and (split != "test" or meta["per_subject"] != 0
+                                  or meta.get("subject_limit", 0) != 0
                                   or n != audit["prepared_counts"]["test"]):
         raise ValueError("quality requires the complete declared held-out test population")
     if purpose == "pilot" and split != "development":
@@ -287,6 +288,7 @@ def run(args):
                 "cases_sha256": meta["counts"][args.split]["sha256"], "binding": bound,
                 "dataset": meta["dataset"], "dataset_revision": meta["dataset_revision"],
                 "dataset_subset": meta["dataset_subset"], "shots": meta["shots"], "rotations": meta["rotations"],
+                "subject_limit": meta.get("subject_limit", 0), "per_subject": meta["per_subject"],
                 "source_revision": bench.command_output(["git", "rev-parse", "HEAD"]),
                 "source_status": bench.command_output(["git", "status", "--porcelain"]),
                 "host": platform.node(), "os": platform.platform(), "machine": platform.machine(),

@@ -48,6 +48,20 @@ class DecisionDatasetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "few-shot"):
             dataset.partition(source, "exclude")
 
+    def test_bounded_pilot_subjects_do_not_depend_on_order_or_labels(self):
+        rows = [{**self.row(f"q{i}-{j}"), "subject": f"subject{i}", "question_id": f"q{i}-{j}"}
+                for i in range(10) for j in range(3)]
+        chosen = dataset.select_per_subject(rows, 1, subject_limit=4)
+        self.assertEqual(len(chosen), 4)
+        self.assertEqual(len({r["subject"] for r in chosen}), 4)
+        changed = [{**r, "answer": (r["answer"] + 1) % 4} for r in reversed(rows)]
+        self.assertEqual([r["question_id"] for r in chosen],
+                         [r["question_id"] for r in dataset.select_per_subject(changed, 1, subject_limit=4)])
+        self.assertEqual(len(dataset.select_per_subject(rows, 0)), 30)
+        for bound in (-1, True):
+            with self.assertRaises(ValueError):
+                dataset.select_per_subject(rows, 1, subject_limit=bound)
+
     def test_rotation_keeps_semantic_gold_and_question_identity(self):
         row = {**self.row("q"), "id": "q", "question_id": "identity"}
         for shift in range(4):

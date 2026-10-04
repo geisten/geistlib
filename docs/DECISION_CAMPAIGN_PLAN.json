@@ -1,0 +1,78 @@
+{
+  "protocol": "geist-decision-campaign-plan-v1",
+  "tracking_issue": 587,
+  "status": "awaiting_overlap_and_generation_policy",
+  "user_confirmed_date": "2026-10-04",
+  "confirmed": {
+    "platforms": [
+      "Apple Silicon CPU NEON",
+      "Metal"
+    ],
+    "checkpoint": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+    "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+    "dataset": "cais/mmlu",
+    "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+    "shots": 5,
+    "noninferiority_margin_pp": 2.0,
+    "confidence": 0.95,
+    "first_campaign": "small development pilot; not a held-out acceptance run",
+    "quality_sample_unit": "unique canonical question; not a timing repeat or label rotation"
+  },
+  "pending": [
+    "explicit overlap policy for cleaned versus original MMLU population",
+    "reasoning token cap and bounded pilot size after runtime audit"
+  ],
+  "no_quality_result": true,
+  "proposed_not_confirmed": {
+    "overlap_policy": "exclude; explicitly report cleaned subset",
+    "split": "development",
+    "per_subject": 1,
+    "subject_limit": 8,
+    "rotations": 1,
+    "backend_order": [
+      "metal",
+      "cpu_neon"
+    ],
+    "decode_cap": 512,
+    "warmup": 0,
+    "repeats": 1,
+    "total_trials_per_arm": 2,
+    "queries_per_backend": 128
+  },
+  "budget_planning_only": {
+    "source": "benchmark/results/DECISION_SELECTED_ROWS_2026-10-04.json; benchmark/results/TERNARY.md",
+    "assumed_mean_prompt_tokens_per_profile": 1000,
+    "prefill_rate_tokens_per_second": {
+      "cpu_neon": [
+        11,
+        16
+      ],
+      "metal": [
+        72,
+        111
+      ]
+    },
+    "decode_rate_tokens_per_second": {
+      "cpu_neon": [
+        9,
+        10
+      ],
+      "metal": [
+        15.5,
+        20
+      ]
+    },
+    "formula_seconds": "128*mean_prompt_tokens/prefill_rate + 16*generated_tokens/decode_rate",
+    "minutes_if_all_16_generations_reach_cap512": {
+      "cpu_neon": [
+        147,
+        210
+      ],
+      "metal": [
+        26,
+        39
+      ]
+    },
+    "limits": "Planning spans, not confidence intervals. Actual pilot prompt lengths and EOS distribution are not measured yet. Excludes preparation/setup and external load; longer contexts can lower rates."
+  }
+}
