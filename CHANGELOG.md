@@ -228,6 +228,12 @@ minor release.
   embedding call is indexed by an open-addressed table instead of scanned:
   75 000 lookups over a 300-weight registry take 0.2 ms instead of 4.8 ms
   (x86_64 release, about 16 µs saved per 250-linear decode token).
+- **Vulkan: GGUF pages behind uploaded weights are released** (#468). A
+  matrix the backend copied to the device no longer keeps its file pages
+  resident (`gguf_release_range`, MADV_DONTNEED on the read-only mapping);
+  a host fallback that still reads them faults them back in. On a
+  unified-memory GPU this stops the model from being resident twice; a
+  2-layer fixture's mapping drops from 18.5 MiB to 6 MiB resident after load.
 - **cpu_x86 IQ4_NL and IQ4_XS run native int8 kernels on the GGUF bytes:
   decode about 4-5x, prefill about 1.7-1.9x faster** (#410). Both used to
   fall back to the generic dequantize-and-dot path. They now share the Q4_0
@@ -700,6 +706,13 @@ minor release.
   vtable.
 
 ### Fixed
+- **A session's KV cache ignored its own `max_seq_len`** (#577). It was sized
+  from the model's cap, so on a model loaded with a 32768-token cap a
+  64-token session still held 32768 rows of KV (64 MiB in FP32 for a
+  two-layer test model). It is now sized from the session cap, as
+  `docs/API_CONTRACT.md` promises. `docs/BACKENDS.md` gains a "Resident
+  memory per backend" section: which backends keep repacked weight copies,
+  the switch for each, and the per-session KV formula.
 - **Models with IQ4_NL or IQ4_XS token embeddings failed prefill** with
   `GEIST_E_UNSUPPORTED` ("unsupported dtype for row dequant"): the embedding
   row lookup had no case for either format. It now decodes them with the
