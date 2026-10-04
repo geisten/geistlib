@@ -156,6 +156,7 @@ LIB_SOURCES := \
     src/engine/model.c \
     src/engine/sampler.c \
     src/engine/session.c \
+    src/engine/decision.c \
     src/engine/sp_bpe_tokenizer.c \
     src/engine/gguf_tokenizer.c \
     src/engine/version.c \
@@ -178,12 +179,14 @@ LIB_SOURCES := \
     src/archs/transformer/forward/probes.c \
     src/archs/transformer/forward/step.c \
     src/archs/transformer/forward/head.c \
+    src/archs/transformer/forward/decision_rows.c \
     src/archs/transformer/forward/mtp.c \
     src/archs/transformer/forward/spec_head.c \
     src/archs/transformer/weight_load/dtype_map.c \
     src/archs/transformer/weight_load/tensor_views.c \
     src/archs/transformer/weight_load/layer_wiring.c \
     src/archs/transformer/arch_ops.c \
+    src/archs/transformer/snapshot.c \
     src/archs/audio_conformer/arch.c \
     src/archs/audio_conformer/audio_encoder.c \
     src/archs/audio_conformer/encoder_weights.c \
@@ -254,7 +257,7 @@ STB_OBJ := $(BUILD_DIR)/third_party/stb/stb_impl.o
 # path under bin/ (tests/test_foo -> bin/.../tests/test_foo; tools/eval_geist ->
 # bin/.../tools/eval_geist).
 TEST_SOURCES := $(wildcard tests/test_*.c tests/bench_*.c)
-DEMO_SOURCES := tools/eval_geist.c tools/dump_geist_logits.c tools/dump_geist_embedding.c tools/zo_tune.c
+DEMO_SOURCES := tools/bench_decision.c tools/eval_geist.c tools/dump_geist_logits.c tools/dump_geist_embedding.c tools/zo_tune.c
 
 # These tests call cblas_* directly as an independent reference to validate
 # geist's own kernels. They can't link under GEMM_PROVIDER=native (no cblas to
@@ -325,6 +328,37 @@ DEPS := $(LIB_OBJS:.o=.d) $(BIN_OBJS:.o=.d)
 
 # ---- Rules ---------------------------------------------------------------
 
+# Optional decision API. Always link its symbols; disabled builds use stubs.
+DECISION ?= 0
+ifneq ($(DECISION),0)
+ifneq ($(DECISION),1)
+$(error DECISION must be 0 or 1)
+endif
+endif
+
+# Darwin make/archive timestamps can have one-second resolution. A flag
+# transition must force compilation, archiving and linking even when all
+# three outputs share the same timestamp. No extra work for an unchanged flag.
+DECISION_PREVIOUS := $(shell cat $(BUILD_DIR)/decision-config 2>/dev/null)
+ifneq ($(DECISION),$(DECISION_PREVIOUS))
+.PHONY: force-decision-transition
+$(BUILD_DIR)/src/engine/decision.o $(LIB_FILE) $(BIN_TARGETS): force-decision-transition
+endif
+
+# A content stamp makes 0 -> 1 -> 0 reliable without make clean. Only this
+# translation unit depends on the flag; callers query the linked capability.
+.PHONY: force-decision-config
+$(BUILD_DIR)/decision-config: force-decision-config
+	@mkdir -p $(@D)
+	@if [ "$(DECISION)" != "$$(cat $@ 2>/dev/null)" ]; then \
+	    printf '%s\n' '$(DECISION)' > $@; \
+	fi
+$(BUILD_DIR)/src/engine/decision.o: $(BUILD_DIR)/decision-config
+# GCC's target-wide -ffast-math otherwise folds isfinite to true. These
+# numeric API guards must observe NaN/Inf; leave the inference kernels alone.
+$(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(DECISION) -fno-finite-math-only
+$(BUILD_DIR)/tools/bench_decision.o $(BUILD_DIR)/tests/test_decision_errors_unit.o: CFLAGS += -fno-finite-math-only
+
 # Object compilation. -MMD -MP generates .d files for header tracking.
 # src/*.c uses CFLAGS_STRICT (adds -Wshadow -Wundef); the tools/ demos
 # (geist, eval_geist) and tests/ use the slightly more relaxed
@@ -357,7 +391,7 @@ $(STB_OBJ): third_party/stb/stb_impl.c
 # Static library
 $(LIB_FILE): $(LIB_OBJS)
 	@mkdir -p $(@D)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@ $(LIB_OBJS)
 
 # Preprocessed-assembly rule (.S). The engine ships no .S source today; the
 # rule stays because a consumer building in-tree may add one, and because

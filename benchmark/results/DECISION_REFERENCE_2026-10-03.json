@@ -1,0 +1,1694 @@
+{
+  "purpose": "Protocol smoke baseline on a single arithmetic completion, not a representative quality or Jev benchmark.",
+  "source_note": "Measured from the working implementation in this change before commit; metadata records base revision, dirty status and exact runtime binary hash.",
+  "runs": [
+    {
+      "model": "Qwen3 0.6B Q8_0",
+      "metadata": {
+        "protocol": "geist-decision-v1",
+        "started_utc": "2026-10-03T20:24:12.916604+00:00",
+        "command": [
+          "/Users/germar/.codex/worktrees/decision-inference/geistlib/bin/mac-omp/release/tools/bench_decision",
+          "/Users/germar/workspace/geistlib/gguf_artifacts/qwen3-0.6b-q8_0.gguf",
+          "cpu_neon",
+          "5",
+          "4",
+          "16",
+          "1",
+          "5"
+        ],
+        "model_sha256": "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
+        "runtime_binary_sha256": "6a99bbe2ae6562569e610dadb4368c48779c447f626bbc9330940eb83f571234",
+        "dataset_sha256": "8ed0bc2a70c36370bb936008ffd8333ff5cd739ba647db1dfe2a0ae448acaf32",
+        "tokenization": "Embedded GGUF tokenizer via eval_geist TOK; raw completion 2 + 2 =; no BOS or chat wrapper; single-token labels 1,2,3,4; smoke only, not representative quality",
+        "source_revision": "d2641c98f68dc46568fc06caff90d76fdf057a26",
+        "source_status": "M .github/workflows/ci.yml\n M CHANGELOG.md\n M Makefile\n M docs/API_CONTRACT.md\n M include/geist_arch.h\n M mk/common.mk\n M src/archs/transformer/arch.c\n?? docs/DECISION.md\n?? include/geist_decision.h\n?? src/engine/decision.c\n?? tests/test_bench_decision_py.py\n?? tests/test_decision_errors_unit.c\n?? tests/test_decision_int.c\n?? tests/test_decision_unit.c\n?? tools/bench_decision.c\n?? tools/bench_decision.py",
+        "host": "MBP-Germar.local",
+        "os": "macOS-27.0-arm64-arm-64bit-Mach-O",
+        "machine": "arm64",
+        "cpu": "Apple M1 Max",
+        "runtime": {
+          "kind": "runtime",
+          "version": "0.11.0",
+          "backend": "cpu_neon",
+          "vocab": 151936,
+          "kv_mode": "fp32"
+        },
+        "concurrency": 1,
+        "threads": 6,
+        "warmup": 1,
+        "repeats": 5,
+        "decode_cap": 16,
+        "cache": "No forced page/device-cache eviction. First mode calls after model/session setup are recorded separately; modes share backend/page caches. Warm samples follow the configured warmups.",
+        "environment": {
+          "OMP_NUM_THREADS": "6",
+          "OMP_WAIT_POLICY": "active"
+        }
+      },
+      "cases": [
+        {
+          "id": "arithmetic-smoke",
+          "prompt_ids": [
+            17,
+            488,
+            220,
+            17,
+            284
+          ],
+          "candidate_ids": [
+            16,
+            17,
+            18,
+            19
+          ],
+          "target_index": 3
+        }
+      ],
+      "summary": {
+        "by_case_and_mode": {
+          "arithmetic-smoke/decision_dense": {
+            "n": 5,
+            "p50_ms": 117.547,
+            "p95_ms": 147.9224,
+            "min_ms": 104.283,
+            "max_ms": 148.208,
+            "first_token_label_accuracy": 1.0,
+            "actual_generated_tokens": [
+              0
+            ]
+          },
+          "arithmetic-smoke/scorealt_dense": {
+            "n": 5,
+            "p50_ms": 119.763,
+            "p95_ms": 133.96640000000002,
+            "min_ms": 103.451,
+            "max_ms": 134.639,
+            "first_token_label_accuracy": 1.0,
+            "actual_generated_tokens": [
+              0
+            ]
+          },
+          "arithmetic-smoke/generate_1": {
+            "n": 5,
+            "p50_ms": 119.299,
+            "p95_ms": 161.743,
+            "min_ms": 94.56,
+            "max_ms": 168.736,
+            "first_token_label_accuracy": 0.0,
+            "actual_generated_tokens": [
+              1
+            ]
+          },
+          "arithmetic-smoke/generate_long": {
+            "n": 5,
+            "p50_ms": 297.369,
+            "p95_ms": 319.0218,
+            "min_ms": 238.813,
+            "max_ms": 320.221,
+            "first_token_label_accuracy": 0.0,
+            "actual_generated_tokens": [
+              16
+            ]
+          }
+        },
+        "p50_latency_ratio_over_decision": {
+          "arithmetic-smoke": {
+            "scorealt_dense": 1.0188520336546234,
+            "generate_1": 1.0149046764273015,
+            "generate_long": 2.529788084766094
+          }
+        },
+        "quality_scope": "Candidate argmax accuracy for scores; first emitted token label accuracy for generation. Longer output correctness requires a downstream evaluator. Repeats are not independent quality examples.",
+        "warning": "Latency ratios are workload-specific. They are not Jev parity or quality-matched reasoning speedups."
+      },
+      "samples": [
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "first",
+          "trial": 0,
+          "order": 0,
+          "elapsed_ms": 477.668,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "first",
+          "trial": 0,
+          "order": 1,
+          "elapsed_ms": 72.576,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "first",
+          "trial": 0,
+          "order": 2,
+          "elapsed_ms": 70.018,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "first",
+          "trial": 0,
+          "order": 3,
+          "elapsed_ms": 204.858,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            11,
+            773,
+            279,
+            2629,
+            374,
+            220,
+            19,
+            382,
+            3983,
+            3783,
+            11,
+            279,
+            3491,
+            2727
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warmup",
+          "trial": 1,
+          "order": 0,
+          "elapsed_ms": 76.054,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warmup",
+          "trial": 1,
+          "order": 1,
+          "elapsed_ms": 78.745,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warmup",
+          "trial": 1,
+          "order": 2,
+          "elapsed_ms": 225.623,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            11,
+            773,
+            279,
+            2629,
+            374,
+            220,
+            19,
+            382,
+            3983,
+            3783,
+            11,
+            279,
+            3491,
+            2727
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warmup",
+          "trial": 1,
+          "order": 3,
+          "elapsed_ms": 92.962,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warm",
+          "trial": 2,
+          "order": 0,
+          "elapsed_ms": 94.56,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warm",
+          "trial": 2,
+          "order": 1,
+          "elapsed_ms": 238.813,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            11,
+            773,
+            279,
+            2629,
+            374,
+            220,
+            19,
+            382,
+            3983,
+            3783,
+            11,
+            279,
+            3491,
+            2727
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warm",
+          "trial": 2,
+          "order": 2,
+          "elapsed_ms": 104.283,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warm",
+          "trial": 2,
+          "order": 3,
+          "elapsed_ms": 103.451,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warm",
+          "trial": 3,
+          "order": 0,
+          "elapsed_ms": 243.658,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            11,
+            773,
+            279,
+            2629,
+            374,
+            220,
+            19,
+            382,
+            3983,
+            3783,
+            11,
+            279,
+            3491,
+            2727
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warm",
+          "trial": 3,
+          "order": 1,
+          "elapsed_ms": 117.547,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warm",
+          "trial": 3,
+          "order": 2,
+          "elapsed_ms": 113.538,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warm",
+          "trial": 3,
+          "order": 3,
+          "elapsed_ms": 115.364,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warm",
+          "trial": 4,
+          "order": 0,
+          "elapsed_ms": 116.821,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warm",
+          "trial": 4,
+          "order": 1,
+          "elapsed_ms": 119.763,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warm",
+          "trial": 4,
+          "order": 2,
+          "elapsed_ms": 119.299,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warm",
+          "trial": 4,
+          "order": 3,
+          "elapsed_ms": 297.369,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            11,
+            773,
+            279,
+            2629,
+            374,
+            220,
+            19,
+            382,
+            3983,
+            3783,
+            11,
+            279,
+            3491,
+            2727
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warm",
+          "trial": 5,
+          "order": 0,
+          "elapsed_ms": 131.276,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warm",
+          "trial": 5,
+          "order": 1,
+          "elapsed_ms": 133.771,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warm",
+          "trial": 5,
+          "order": 2,
+          "elapsed_ms": 320.221,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            11,
+            773,
+            279,
+            2629,
+            374,
+            220,
+            19,
+            382,
+            3983,
+            3783,
+            11,
+            279,
+            3491,
+            2727
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warm",
+          "trial": 5,
+          "order": 3,
+          "elapsed_ms": 146.78,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warm",
+          "trial": 6,
+          "order": 0,
+          "elapsed_ms": 168.736,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warm",
+          "trial": 6,
+          "order": 1,
+          "elapsed_ms": 314.225,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            11,
+            773,
+            279,
+            2629,
+            374,
+            220,
+            19,
+            382,
+            3983,
+            3783,
+            11,
+            279,
+            3491,
+            2727
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warm",
+          "trial": 6,
+          "order": 2,
+          "elapsed_ms": 148.208,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warm",
+          "trial": 6,
+          "order": 3,
+          "elapsed_ms": 134.639,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            10.1299677,
+            9.72735786,
+            9.8348217,
+            10.3287621
+          ],
+          "conditional_probabilities": [
+            0.2752601497632867,
+            0.18403147899970163,
+            0.20490995959533984,
+            0.33579841164167185
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        }
+      ],
+      "driver_stderr": ""
+    },
+    {
+      "model": "Bonsai 2 27B PQ2_0",
+      "metadata": {
+        "protocol": "geist-decision-v1",
+        "started_utc": "2026-10-03T20:25:19.024791+00:00",
+        "command": [
+          "/Users/germar/.codex/worktrees/decision-inference/geistlib/bin/mac-omp/release/tools/bench_decision",
+          "/Users/germar/workspace/geistlib/gguf_artifacts/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+          "cpu_neon",
+          "5",
+          "4",
+          "16",
+          "1",
+          "5"
+        ],
+        "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+        "runtime_binary_sha256": "6a99bbe2ae6562569e610dadb4368c48779c447f626bbc9330940eb83f571234",
+        "dataset_sha256": "b59bfb05a5e929abfefb275b8ca517109d569790b0f4a7fc03d45dd40f2a87a5",
+        "tokenization": "Embedded Bonsai GGUF tokenizer via public geist_session_tokenize; raw completion 2 + 2 =; no BOS or chat wrapper; single-token labels 1,2,3,4; smoke only, not representative quality",
+        "source_revision": "d2641c98f68dc46568fc06caff90d76fdf057a26",
+        "source_status": "M .github/workflows/ci.yml\n M CHANGELOG.md\n M Makefile\n M docs/API_CONTRACT.md\n M include/geist_arch.h\n M mk/common.mk\n M src/archs/transformer/arch.c\n?? docs/DECISION.md\n?? include/geist_decision.h\n?? src/engine/decision.c\n?? tests/test_bench_decision_py.py\n?? tests/test_decision_errors_unit.c\n?? tests/test_decision_int.c\n?? tests/test_decision_unit.c\n?? tools/bench_decision.c\n?? tools/bench_decision.py",
+        "host": "MBP-Germar.local",
+        "os": "macOS-27.0-arm64-arm-64bit-Mach-O",
+        "machine": "arm64",
+        "cpu": "Apple M1 Max",
+        "runtime": {
+          "kind": "runtime",
+          "version": "0.11.0",
+          "backend": "cpu_neon",
+          "vocab": 248320,
+          "kv_mode": "fp32"
+        },
+        "concurrency": 1,
+        "threads": 6,
+        "warmup": 1,
+        "repeats": 5,
+        "decode_cap": 16,
+        "cache": "No forced page/device-cache eviction. First mode calls after model/session setup are recorded separately; modes share backend/page caches. Warm samples follow the configured warmups.",
+        "environment": {
+          "OMP_NUM_THREADS": "6",
+          "OMP_WAIT_POLICY": "active"
+        }
+      },
+      "cases": [
+        {
+          "id": "arithmetic-smoke",
+          "prompt_ids": [
+            17,
+            478,
+            220,
+            17,
+            283
+          ],
+          "candidate_ids": [
+            16,
+            17,
+            18,
+            19
+          ],
+          "target_index": 3
+        }
+      ],
+      "summary": {
+        "by_case_and_mode": {
+          "arithmetic-smoke/decision_dense": {
+            "n": 5,
+            "p50_ms": 2974.13,
+            "p95_ms": 3023.5384,
+            "min_ms": 2781.121,
+            "max_ms": 3028.598,
+            "first_token_label_accuracy": 1.0,
+            "actual_generated_tokens": [
+              0
+            ]
+          },
+          "arithmetic-smoke/scorealt_dense": {
+            "n": 5,
+            "p50_ms": 2925.225,
+            "p95_ms": 3186.4656,
+            "min_ms": 2694.791,
+            "max_ms": 3234.799,
+            "first_token_label_accuracy": 1.0,
+            "actual_generated_tokens": [
+              0
+            ]
+          },
+          "arithmetic-smoke/generate_1": {
+            "n": 5,
+            "p50_ms": 2880.102,
+            "p95_ms": 3118.523,
+            "min_ms": 2611.627,
+            "max_ms": 3131.608,
+            "first_token_label_accuracy": 0.0,
+            "actual_generated_tokens": [
+              1
+            ]
+          },
+          "arithmetic-smoke/generate_long": {
+            "n": 5,
+            "p50_ms": 5641.526,
+            "p95_ms": 6064.0554,
+            "min_ms": 5199.104,
+            "max_ms": 6125.869,
+            "first_token_label_accuracy": 0.0,
+            "actual_generated_tokens": [
+              16
+            ]
+          }
+        },
+        "p50_latency_ratio_over_decision": {
+          "arithmetic-smoke": {
+            "scorealt_dense": 0.9835565358609072,
+            "generate_1": 0.9683847040983413,
+            "generate_long": 1.8968659742512934
+          }
+        },
+        "quality_scope": "Candidate argmax accuracy for scores; first emitted token label accuracy for generation. Longer output correctness requires a downstream evaluator. Repeats are not independent quality examples.",
+        "warning": "Latency ratios are workload-specific. They are not Jev parity or quality-matched reasoning speedups."
+      },
+      "samples": [
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "first",
+          "trial": 0,
+          "order": 0,
+          "elapsed_ms": 2490.04,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "first",
+          "trial": 0,
+          "order": 1,
+          "elapsed_ms": 2662.039,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "first",
+          "trial": 0,
+          "order": 2,
+          "elapsed_ms": 2645.291,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "first",
+          "trial": 0,
+          "order": 3,
+          "elapsed_ms": 5180.23,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283,
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warmup",
+          "trial": 1,
+          "order": 0,
+          "elapsed_ms": 2811.665,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warmup",
+          "trial": 1,
+          "order": 1,
+          "elapsed_ms": 2762.482,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warmup",
+          "trial": 1,
+          "order": 2,
+          "elapsed_ms": 5295.426,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283,
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warmup",
+          "trial": 1,
+          "order": 3,
+          "elapsed_ms": 2618.743,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warm",
+          "trial": 2,
+          "order": 0,
+          "elapsed_ms": 2611.627,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warm",
+          "trial": 2,
+          "order": 1,
+          "elapsed_ms": 5641.526,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283,
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warm",
+          "trial": 2,
+          "order": 2,
+          "elapsed_ms": 2880.74,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warm",
+          "trial": 2,
+          "order": 3,
+          "elapsed_ms": 2885.423,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warm",
+          "trial": 3,
+          "order": 0,
+          "elapsed_ms": 6125.869,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283,
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warm",
+          "trial": 3,
+          "order": 1,
+          "elapsed_ms": 3028.598,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warm",
+          "trial": 3,
+          "order": 2,
+          "elapsed_ms": 2993.132,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warm",
+          "trial": 3,
+          "order": 3,
+          "elapsed_ms": 3131.608,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warm",
+          "trial": 4,
+          "order": 0,
+          "elapsed_ms": 3003.3,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warm",
+          "trial": 4,
+          "order": 1,
+          "elapsed_ms": 2925.225,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warm",
+          "trial": 4,
+          "order": 2,
+          "elapsed_ms": 3066.183,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warm",
+          "trial": 4,
+          "order": 3,
+          "elapsed_ms": 5816.801,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283,
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warm",
+          "trial": 5,
+          "order": 0,
+          "elapsed_ms": 3234.799,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warm",
+          "trial": 5,
+          "order": 1,
+          "elapsed_ms": 2880.102,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warm",
+          "trial": 5,
+          "order": 2,
+          "elapsed_ms": 5503.477,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283,
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warm",
+          "trial": 5,
+          "order": 3,
+          "elapsed_ms": 2974.13,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_1",
+          "phase": "warm",
+          "trial": 6,
+          "order": 0,
+          "elapsed_ms": 2641.531,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "generate_long",
+          "phase": "warm",
+          "trial": 6,
+          "order": 1,
+          "elapsed_ms": 5199.104,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283,
+            220,
+            19,
+            198,
+            17,
+            478,
+            220,
+            17,
+            283
+          ],
+          "best_index": null,
+          "case_id": "arithmetic-smoke",
+          "correct": false
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "decision_dense",
+          "phase": "warm",
+          "trial": 6,
+          "order": 2,
+          "elapsed_ms": 2781.121,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        },
+        {
+          "kind": "sample",
+          "case_index": 0,
+          "mode": "scorealt_dense",
+          "phase": "warm",
+          "trial": 6,
+          "order": 3,
+          "elapsed_ms": 2694.791,
+          "prompt_tokens": 5,
+          "candidate_count": 4,
+          "generated_ids": [],
+          "best_index": 3,
+          "logits": [
+            4.89155531,
+            4.77536869,
+            4.66737127,
+            6.97555208
+          ],
+          "conditional_probabilities": [
+            0.09323138225864333,
+            0.08300474424344755,
+            0.07450754148677523,
+            0.7492563320111338
+          ],
+          "case_id": "arithmetic-smoke",
+          "correct": true
+        }
+      ],
+      "driver_stderr": ""
+    }
+  ]
+}

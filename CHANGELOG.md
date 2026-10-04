@@ -9,6 +9,35 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Apple selected-row decision heads** (EXPERIMENTAL, #586).
+  `GEIST_DECISION_SELECTED_ROWS` skips the vocabulary head and sampler while
+  preserving candidate logits, output normalization, gains, softcaps and Bonsai
+  Hadamard/PQ2 arithmetic. CPU Scalar/NEON and Metal reuse supported native row
+  tiles; capability queries and creation reject unsupported combinations
+  explicitly. DENSE stays the default reference behind `DECISION=1`, which
+  remains off by default. Result metadata and the paired benchmark expose
+  projected rows, logical staging bytes and head time; no Jev speedup or
+  representative quality claim is implied.
+- **Session snapshot / restore** (`geist_session_snapshot_size`,
+  `geist_session_snapshot`, `geist_session_restore`, EXPERIMENTAL, #548). A
+  session's complete decoding state (used KV rows, every Gated-DeltaNet
+  layer's recurrent state, the pending logits, a still-owed decode step and
+  the sampler RNG) as a caller-owned byte image, restorable into the same or
+  another session of the same loaded model. This is the reusable prefix
+  `pin_prefix` cannot give Qwen3.5's hybrid: prefill the constant context
+  once, then restore + prefill only the new tokens per request. Restored
+  sessions continue bit-identically (tokens and logits), across FP32, F16,
+  INT8 and INT4 KV caches; KIVI, an enabled MTP drafter and embedding models
+  return `GEIST_E_UNSUPPORTED`. In-process format only, bound to the model
+  handle.
+- **Optional numeric decision API** (`include/geist_decision.h`, EXPERIMENTAL,
+  #585). `DECISION=1` enables independent resettable scoring sessions over
+  distinct single-token candidates. DENSE uses existing model-conformant
+  logits and returns logits plus candidate-conditional probabilities; these
+  are not calibrated confidence. Default builds retain unsupported stubs.
+  `tools/bench_decision.py` records hashes, raw timings, candidate quality and
+  warm p50/p95 against dense scoring, one-token and longer generation paths.
+  See `docs/DECISION.md` for limits and the reproducible protocol.
 - **`geist_model_load_from_memory_with_opts`** (EXPERIMENTAL, #428). The
   in-memory twin of `geist_model_load_with_opts`: `opts->max_seq_len` sets the
   model's sequence cap, which bounds every session. An embedded model was

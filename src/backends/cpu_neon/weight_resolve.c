@@ -28,6 +28,7 @@
 
 #include "linear_ref.h"
 #include "quant.h"
+#include "selected_rows.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -1915,6 +1916,16 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
             w->backend_layout = GEIST_W_LAYOUT_SOURCE;
         }
         apply_resolver_post_hooks(w, &policy);
+        if (w->backend_layout == GEIST_W_LAYOUT_PQ2_0_X8_GEMV) {
+            w->linear_rows      = geist_cpu_selected_rows;
+            w->linear_rows_tile = 8;
+        } else if (w->backend_layout == GEIST_W_LAYOUT_SOURCE &&
+                   (w->flags & GEIST_W_AUX_BACKEND_REPACK) == 0 &&
+                   w->linear_m1 != cpu_neon_w_dequant_trampoline_m1 &&
+                   w->dtype != GEIST_DTYPE_F32 && w->dtype != GEIST_DTYPE_I2_S) {
+            w->linear_rows      = geist_cpu_selected_rows;
+            w->linear_rows_tile = 1;
+        }
         return GEIST_OK;
     }
     /* No row matched: either the dtype is unknown to cpu_neon

@@ -94,9 +94,26 @@ CPU-only design.
 
 `geist_model_modalities`, `geist_session_attach_audio` / `attach_image` /
 `attach_video`, the `geist_session_audio_*` streaming family,
-`geist_session_decode_speculative`, and the `geist_session_stats` family remain
+`geist_session_decode_speculative`, the `geist_session_snapshot` / `restore`
+family, and the `geist_session_stats` family remain
 `EXPERIMENTAL`. They are useful and supported, but an agent runtime must not
 build its core loop on them expecting release-boundary stability.
+
+### Optional decision API (experimental)
+
+All declarations in `include/geist_decision.h` remain EXPERIMENTAL and outside
+the agent-runtime stability contract. The default-off `DECISION=1` feature
+adds independent numeric scoring handles; disabled libraries retain symbols
+with explicit unsupported stubs. It preserves the existing generation,
+embedding and logits APIs. Lifetime, reset, conditional-score semantics,
+capabilities and benchmark protocol are specified in [DECISION.md](DECISION.md).
+The optional decoder `logits_vocab_size` hook is appended to the experimental
+architecture vtable without changing existing field offsets. The optional
+selected-row readout hooks and `geist_weight` row-tile callbacks are also
+EXPERIMENTAL additions. `GEIST_DECISION_SELECTED_ROWS` requires explicit mode
+selection and a supported loaded model/backend pair; its result metadata reports
+row work, logical staging bytes and selected-head time. Unsupported modes never
+silently fall back to another execution path.
 
 ## Consuming this contract
 

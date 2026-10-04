@@ -167,6 +167,25 @@ struct geist_weight {
      * GEIST_TUNE and one compiled without agree on the struct layout;
      * only the *use* in the dispatcher is #ifdef'd. */
     const float *gain_slot;
+
+    /* Optional exact output-row tiles, resolved with the ordinary kernel.
+     * ids are aligned source row indices (one per distinct tile). x is one
+     * F32 hidden row; y is contiguous F32 [n_tiles, linear_rows_tile].
+     * Each tile retains the dense kernel's arithmetic and storage basis.
+     * Caller validates ids and preallocates y. No heap allocation here.
+     * nullptr/0 = unsupported; no dense or dequantized fallback allowed.
+     * Appended EXPERIMENTAL fields preserve existing field offsets. */
+    enum geist_status (*linear_rows)(size_t n_tiles,
+                                    const geist_token_t ids[GEIST_AT_LEAST(n_tiles)],
+                                    const struct geist_tensor *x,
+                                    const struct geist_weight *w,
+                                    const struct geist_tensor *t_w,
+                                    struct geist_tensor *y,
+                                    struct geist_backend *be);
+    size_t linear_rows_tile;
+    /* Optional setup only preparation (e.g. compile the chosen GPU pipeline).
+     * Called once when creating a readout, serialized with model operations. */
+    enum geist_status (*linear_rows_prepare)(const struct geist_weight *w, struct geist_backend *be);
 };
 
 #ifdef __cplusplus
