@@ -223,6 +223,12 @@ minor release.
 
 ### Changed
 
+- **Vulkan: GGUF pages behind uploaded weights are released** (#468). A
+  matrix the backend copied to the device no longer keeps its file pages
+  resident (`gguf_release_range`, MADV_DONTNEED on the read-only mapping);
+  a host fallback that still reads them faults them back in. On a
+  unified-memory GPU this stops the model from being resident twice; a
+  2-layer fixture's mapping drops from 18.5 MiB to 6 MiB resident after load.
 - **cpu_x86 IQ4_NL and IQ4_XS run native int8 kernels on the GGUF bytes:
   decode about 4-5x, prefill about 1.7-1.9x faster** (#410). Both used to
   fall back to the generic dequantize-and-dot path. They now share the Q4_0
