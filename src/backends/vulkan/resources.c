@@ -556,6 +556,9 @@ void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
         return nullptr; /* device-local — CPU ops can't touch it */
     }
     t->buffer->owner->stat_cpu_falls++;
+    if (vk_fallback(t->buffer->owner, VK_FB_HOST_VIEW) != GEIST_E_UNSUPPORTED) {
+        return nullptr; /* GEIST_VK_STRICT: the error names the site */
+    }
     vk_seq_flush(t->buffer->owner); /* host access — drain pending GPU work */
     if (vk_seq_take_failure(t->buffer->owner) != GEIST_OK) {
         return nullptr;
@@ -622,13 +625,17 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
         return GEIST_OK;
     }
     /* Host fallback. */
-    vk_seq_flush(st);
     uint8_t       *d  = dst->host_alias != nullptr ? dst->host_alias : dst->mapped;
     const uint8_t *sp = src->host_alias != nullptr ? src->host_alias : src->mapped;
     if (d == nullptr || sp == nullptr || dst_offset + n_bytes > dst->bytes ||
         src_offset + n_bytes > src->bytes) {
         return GEIST_E_UNSUPPORTED;
     }
+    const enum geist_status fs = vk_fallback(st, VK_FB_HOST_COPY);
+    if (fs != GEIST_E_UNSUPPORTED) {
+        return fs;
+    }
+    vk_seq_flush(st);
     memcpy(d + dst_offset, sp + src_offset, n_bytes);
     return GEIST_OK;
 }

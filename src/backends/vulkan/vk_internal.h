@@ -228,6 +228,19 @@ enum {
     VK_PUSH_RANGE       = 128,  /* one push range covers every shader block */
 };
 
+/* Where work can leave the GPU (vk_fallback). */
+enum vk_fb {
+    VK_FB_HOST_VIEW,   /* a host loop over a mapped tensor (vk_tensor_host) */
+    VK_FB_HOST_LINEAR, /* a linear on the host row-dequant path (vk_w_cpu_mN) */
+    VK_FB_HOST_COPY,   /* vk_buffer_copy through mapped memory */
+    VK_FB_LINEAR_T,    /* linear_t / linear_t_pair declined: arch host linear */
+    VK_FB_ARGMAX,      /* argmax declined: arch scans on the host */
+    VK_FB_EMBED,       /* embedding lookup declined: arch gathers on the host */
+    VK_FB_KV_APPEND,   /* kv_append_f16 declined */
+    VK_FB_QGATE,       /* attn_qgate_split declined */
+    VK_FB_COUNT
+};
+
 struct vk_state {
     struct geist_backend *backend;
     void                 *lib; /* dlopen handle, may be nullptr after create */
@@ -279,6 +292,18 @@ struct vk_state {
     uint64_t stat_flushes;
     uint64_t stat_dispatches;
     uint64_t stat_cpu_falls;
+
+    /* Work that left the GPU (#474 item 4), counted per site by
+     * vk_fallback: a coverage gap otherwise shows up only as a slowdown.
+     * GEIST_VK_STRICT=1 (strict) turns every such fallback into an error,
+     * and refuses host-path weights at resolve. Weights resolved onto the
+     * host row-dequant path are summed at resolve and reported once, when
+     * the first of them runs. */
+    uint64_t fallbacks[VK_FB_COUNT];
+    bool     strict;
+    bool     host_weights_noted;
+    size_t   host_weights;
+    size_t   host_weight_bytes;
 
     /* GEIST_VK_PROFILE=1: GPU timestamps per dispatch, attributed by
      * pipeline (copies land in the extra slot). Execution is serialized by
@@ -510,6 +535,12 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
 
 void                            vk_seq_flush(struct vk_state *st);
 [[nodiscard]] enum geist_status vk_seq_take_failure(struct vk_state *st);
+
+/* Record that the work at `site` leaves the GPU. Returns the status the
+ * caller hands on: GEIST_E_UNSUPPORTED (take the documented fallback), or
+ * under GEIST_VK_STRICT=1 GEIST_E_BACKEND with an error naming the site. */
+[[nodiscard]] enum geist_status vk_fallback(struct vk_state *st, enum vk_fb site);
+const char                     *vk_fallback_name(enum vk_fb site);
 
 [[nodiscard]] enum geist_status vk_seq_open_cmd(struct vk_state *st);
 

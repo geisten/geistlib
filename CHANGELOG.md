@@ -9,6 +9,13 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Vulkan fallback accounting and strict mode** (#474). Every place work
+  leaves the GPU (a declined fused op, a host view or copy of mapped memory, a
+  host-path weight) is counted per site and printed under `GEIST_VK_VERBOSE`;
+  the first host-path linear names how many weights and bytes run there.
+  `GEIST_VK_STRICT=1` makes each of them an error that names the site. A
+  failed argmax dispatch now returns the dispatch error instead of sending the
+  arch to a host scan of logits the GPU never wrote.
 - **Apple selected-row decision heads** (EXPERIMENTAL, #586).
   `GEIST_DECISION_SELECTED_ROWS` skips the vocabulary head and sampler while
   preserving candidate logits, output normalization, gains, softcaps and Bonsai

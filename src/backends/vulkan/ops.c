@@ -208,6 +208,15 @@ static void vk_w_cpu_mN(size_t                     m,
     struct vk_state *st    = be->state;
     const size_t     n_in  = (size_t) w->n_in;
     const size_t     n_out = (size_t) w->n_out;
+    st->fallbacks[VK_FB_HOST_LINEAR]++;
+    if (!st->host_weights_noted) {
+        st->host_weights_noted = true;
+        fprintf(stderr,
+                "geist vulkan: %zu weight(s), %zu MiB, run on the host row-dequant path "
+                "(no GPU kernel for their dtype or row length)\n",
+                st->host_weights,
+                st->host_weight_bytes >> 20);
+    }
     /* Row scratch lives in the backend state (grown on demand, freed at
      * destroy): the resolved kernels are allocation-free in steady state, and
      * a failed grow zeroes y and says why instead of leaving it unwritten. */
@@ -243,6 +252,29 @@ static void vk_w_cpu_mN(size_t                     m,
 static void
 vk_w_cpu_m1(const float *x, const struct geist_weight *w, struct geist_backend *be, float *y) {
     vk_w_cpu_mN(1, x, w, be, y);
+}
+
+/* Install the host row-dequant kernels on `w`, or refuse them under
+ * GEIST_VK_STRICT=1. Counted so the first host linear can say how much of
+ * the model left the GPU (#474 item 9). */
+[[nodiscard]] static enum geist_status vk_resolve_host(struct geist_backend *be,
+                                                       struct geist_weight  *w) {
+    struct vk_state *st = be->state;
+    if (st->strict) {
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "vulkan: GEIST_VK_STRICT=1 and weight dtype %u (%dx%d) has no "
+                                "GPU kernel",
+                                (unsigned) w->dtype,
+                                (int) w->n_out,
+                                (int) w->n_in);
+        return GEIST_E_BACKEND;
+    }
+    st->host_weights++;
+    st->host_weight_bytes += w->raw_nbytes;
+    w->linear_m1 = vk_w_cpu_m1;
+    w->linear_mN = vk_w_cpu_mN;
+    return GEIST_OK;
 }
 
 /* ---- resolve_weight: upload GPU-supported dtypes to VRAM, register,     */
@@ -423,9 +455,7 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
             }
             [[fallthrough]];
         case GEIST_DTYPE_Q3_K:
-            w->linear_m1 = vk_w_cpu_m1;
-            w->linear_mN = vk_w_cpu_mN;
-            return GEIST_OK;
+            return vk_resolve_host(be, w);
         default:
             geist_backend_set_error(be,
                                     GEIST_E_UNSUPPORTED,
@@ -441,9 +471,7 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
          * by block. Every dtype but the two native k-quants has a CPU dequant
          * row (vk_dequant_row) and keeps working through it. */
         if (w->dtype != GEIST_DTYPE_Q4_K && w->dtype != GEIST_DTYPE_Q6_K) {
-            w->linear_m1 = vk_w_cpu_m1;
-            w->linear_mN = vk_w_cpu_mN;
-            return GEIST_OK;
+            return vk_resolve_host(be, w);
         }
         return GEIST_E_UNSUPPORTED;
     }
@@ -1428,7 +1456,7 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
     enum geist_status      s =
             vk_seq_dispatch_acc(be, VK_PIPE_ARGMAX, bi, acc, push, sizeof(push), 1, 1, 1);
     if (s != GEIST_OK) {
-        return GEIST_E_UNSUPPORTED;
+        return s; /* a failed dispatch is an error, not a host scan */
     }
     vk_seq_flush(st); /* the one intended sync point per decoded token */
     if (vk_seq_take_failure(st) != GEIST_OK) {
@@ -1609,9 +1637,13 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
                     ? (const uint8_t *) embed_table->buffer->host_alias + embed_table->offset
                     : nullptr;
     struct geist_buffer *wbuf = host != nullptr ? vk_weight_lookup(st, host) : nullptr;
-    if (wbuf == nullptr && host != nullptr && embed_table->buffer->bytes > embed_table->offset) {
+    struct vk_qinfo      eqi;
+    if (wbuf == nullptr && host != nullptr && embed_table->buffer->bytes > embed_table->offset &&
+        vk_qinfo_for((enum geist_dtype) embed_table->dtype, &eqi)) {
         /* An untied table (separate output.weight) is never resolved by the
-         * arch layer: register it now, so the repacked dtypes can be read. */
+         * arch layer: register it now, so the repacked dtypes can be read.
+         * Only dtypes with a GPU copy: a host-path table is not a weight
+         * that left the GPU, and strict mode must not refuse it here. */
         struct geist_weight ew = {.raw        = host,
                                   .raw_nbytes = embed_table->buffer->bytes - embed_table->offset,
                                   .n_in       = (int32_t) d,
@@ -2234,6 +2266,71 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     }
 }
 
+/* ---- Fused-op entry points: a decline is a fallback (#474 item 4).     */
+/* The arch takes the host path on GEIST_E_UNSUPPORTED; vk_fallback counts */
+/* it per site and, under GEIST_VK_STRICT=1, turns it into an error.      */
+
+static enum geist_status
+vk_declined(struct geist_backend *be, enum geist_status s, enum vk_fb site) {
+    return s == GEIST_E_UNSUPPORTED ? vk_fallback(be->state, site) : s;
+}
+
+[[nodiscard]] static enum geist_status vk_fb_linear_t(struct geist_backend      *be,
+                                                      const struct geist_tensor *t_x,
+                                                      const struct geist_weight *w,
+                                                      const struct geist_tensor *t_w,
+                                                      size_t                     m,
+                                                      struct geist_tensor       *t_y) {
+    return vk_declined(be, vk_linear_t(be, t_x, w, t_w, m, t_y), VK_FB_LINEAR_T);
+}
+
+[[nodiscard]] static enum geist_status vk_fb_linear_t_pair(struct geist_backend      *be,
+                                                           const struct geist_tensor *t_x,
+                                                           const struct geist_weight *w0,
+                                                           const struct geist_tensor *t_w0,
+                                                           const struct geist_weight *w1,
+                                                           const struct geist_tensor *t_w1,
+                                                           size_t                     m,
+                                                           struct geist_tensor       *t_y0,
+                                                           struct geist_tensor       *t_y1) {
+    return vk_declined(
+            be, vk_linear_t_pair(be, t_x, w0, t_w0, w1, t_w1, m, t_y0, t_y1), VK_FB_LINEAR_T);
+}
+
+[[nodiscard]] static enum geist_status
+vk_fb_embedding_lookup_scaled(struct geist_backend      *be,
+                              const struct geist_tensor *embed_table,
+                              geist_token_t              token_id,
+                              float                      scale,
+                              struct geist_tensor       *out) {
+    return vk_declined(
+            be, vk_embedding_lookup_scaled(be, embed_table, token_id, scale, out), VK_FB_EMBED);
+}
+
+[[nodiscard]] static enum geist_status
+vk_fb_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32_t *out_index) {
+    return vk_declined(be, vk_argmax_f32(be, logits, out_index), VK_FB_ARGMAX);
+}
+
+[[nodiscard]] static enum geist_status vk_fb_kv_append_f16(struct geist_backend      *be,
+                                                           const struct geist_tensor *k_src,
+                                                           const struct geist_tensor *v_src,
+                                                           size_t                     q_position,
+                                                           struct geist_tensor       *k_cache,
+                                                           struct geist_tensor       *v_cache) {
+    return vk_declined(
+            be, vk_kv_append_f16(be, k_src, v_src, q_position, k_cache, v_cache), VK_FB_KV_APPEND);
+}
+
+[[nodiscard]] static enum geist_status vk_fb_attn_qgate_split(struct geist_backend      *be,
+                                                              const struct geist_tensor *joint,
+                                                              size_t                     heads,
+                                                              size_t                     head_dim,
+                                                              struct geist_tensor       *q,
+                                                              struct geist_tensor       *gate) {
+    return vk_declined(be, vk_attn_qgate_split(be, joint, heads, head_dim, q, gate), VK_FB_QGATE);
+}
+
 static const struct geist_backend_primitives vk_prims = {
         .rmsnorm          = vk_rmsnorm,
         .add              = vk_add,
@@ -2252,18 +2349,18 @@ static const struct geist_backend_fused vk_fused = {
         .gelu_tanh_mul        = vk_gelu_tanh_mul,
         .gelu_tanh_mul_scaled = vk_gelu_tanh_mul_scaled,
         /* Batched-submit paths: one flush per token (argmax). */
-        .linear_t                = vk_linear_t,
-        .linear_t_pair           = vk_linear_t_pair,
+        .linear_t                = vk_fb_linear_t,
+        .linear_t_pair           = vk_fb_linear_t_pair,
         .rmsnorm_add             = vk_rmsnorm_add,
-        .embedding_lookup_scaled = vk_embedding_lookup_scaled,
-        .argmax_f32              = vk_argmax_f32,
+        .embedding_lookup_scaled = vk_fb_embedding_lookup_scaled,
+        .argmax_f32              = vk_fb_argmax_f32,
         .ffn_gate_up             = vk_ffn_gate_up,
         .ffn_norm_gate_up        = vk_ffn_norm_gate_up,
         .ple_block               = vk_ple_block,
         .attn_qkv_prep           = vk_attn_qkv_prep,
-        .kv_append_f16           = vk_kv_append_f16,
+        .kv_append_f16           = vk_fb_kv_append_f16,
         .deltanet_mix            = vk_deltanet_mix,
-        .attn_qgate_split        = vk_attn_qgate_split,
+        .attn_qgate_split        = vk_fb_attn_qgate_split,
         .sigmoid_mul             = vk_sigmoid_mul,
         .silu_mul                = vk_silu_mul,
         .bitnet_act_quant        = vk_bitnet_act_quant,

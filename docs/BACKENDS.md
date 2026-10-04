@@ -69,6 +69,16 @@ back to per-row matvecs for prefill (#471). Details and the side-by-side
 profile: `benchmark/results/TERNARY.md`. Phase-by-phase lab log:
 [`../benchmark/results/VULKAN.md`](../benchmark/results/VULKAN.md).
 
+Work that leaves the GPU is counted per site: a fused op the shaders decline
+(the arch then runs it on the host), a host loop over mapped memory, a host
+buffer copy, and weights whose dtype or row length has no GPU kernel (Q3_K, a
+large F16/BF16 matrix, a row that is not a whole number of blocks), which run
+on a host row-dequant path. `GEIST_VK_VERBOSE=1` prints the counters at
+destroy, and the first host-path linear prints how many weights and MiB took
+that path. `GEIST_VK_STRICT=1` turns each of these into an error naming the
+site (a host-path weight is refused at load), so a coverage gap fails loudly
+instead of showing up only as a slowdown.
+
 ## GPU numbers at a glance
 
 | model | platform | metric | **geistlib** | baseline |
