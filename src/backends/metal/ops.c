@@ -4050,7 +4050,9 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
             wo > t_w->buffer->bytes || bytes > t_w->buffer->bytes - wo)
             return GEIST_E_INVALID_ARG;
     }
-    const enum geist_status s = metal_ensure_q4k_pipeline(be);
+    /* Fail closed before encoding: an encoder whose pipeline is missing
+     * dispatches nothing and would leave the previous query's values in y. */
+    const enum geist_status s = metal_selected_prepare(w, be);
     if (s != GEIST_OK)
         return s;
     const bool                                         sequenced = metal_seq_mine(st);
