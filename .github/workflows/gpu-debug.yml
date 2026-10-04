@@ -33,25 +33,20 @@ jobs:
             -DCMAKE_CXX_FLAGS="-I$HOME/bench-cache/spirv/include -fno-omit-frame-pointer"
           cmake --build "$D/build-vkdbg" --target llama-bench -j"$(nproc)"
 
-      - name: Variants
+      - name: Which tensor, which CPU flags (gdb)
         run: |
           B="$HOME/bench-cache/fork/build-vkdbg/bin/llama-bench"; M="$HOME/bench-cache/$FILE"
-          run() { echo; echo "### $1"; shift; ( "$@" 2>&1 | grep -vE "^\s*$" | tail -12 ) ; echo "exit=${PIPESTATUS[0]}"; }
-          set +e
-          run "baseline: device 0, ngl 99, pp512"      env GGML_VK_VISIBLE_DEVICES=0 "$B" -m "$M" -ngl 99 -p 512 -n 0 -r 1
-          run "tiny prompt pp16"                       env GGML_VK_VISIBLE_DEVICES=0 "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1
-          run "decode only tg16"                       env GGML_VK_VISIBLE_DEVICES=0 "$B" -m "$M" -ngl 99 -p 0 -n 16 -r 1
-          run "ngl 0 (CPU path sanity)"                env GGML_VK_VISIBLE_DEVICES=0 "$B" -m "$M" -ngl 0 -p 16 -n 0 -r 1
-          run "ngl 20"                                 env GGML_VK_VISIBLE_DEVICES=0 "$B" -m "$M" -ngl 20 -p 16 -n 0 -r 1
-          run "coopmat disabled"                       env GGML_VK_VISIBLE_DEVICES=0 GGML_VK_DISABLE_COOPMAT=1 GGML_VK_DISABLE_COOPMAT2=1 "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1
-          run "fp16 disabled"                          env GGML_VK_VISIBLE_DEVICES=0 GGML_VK_DISABLE_F16=1 "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1
-          run "no host-visible/ suballocation"         env GGML_VK_VISIBLE_DEVICES=0 GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1 "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1
-          run "both devices (as in the failing run)"   "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1
+          grep -m1 -o -w -E "avx512f|avx512_vnni|avx512vnni" /proc/cpuinfo | sort -u || true
+          GGML_VK_VISIBLE_DEVICES=0 gdb -batch -ex run \
+            -ex "frame 0" -ex "p tensor->name" -ex "p tensor->type" -ex "p tensor->ne" -ex "p tensor->extra" \
+            -ex "p ggml_cpu_has_avx512()" -ex "p ggml_cpu_has_avx512_vnni()" \
+            --args "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1 2>&1 | tail -14
 
-      - name: Backtrace
-        if: always()
+      - name: Workaround, fork built with GGML_CPU_REPACK=OFF
         run: |
-          B="$HOME/bench-cache/fork/build-vkdbg/bin/llama-bench"; M="$HOME/bench-cache/$FILE"
-          if command -v gdb >/dev/null; then
-            GGML_VK_VISIBLE_DEVICES=0 gdb -batch -ex run -ex "bt 25" -ex "info registers rip" --args "$B" -m "$M" -ngl 99 -p 16 -n 0 -r 1 2>&1 | tail -45
-          else echo "gdb not installed on the runner"; fi
+          D="$HOME/bench-cache/fork"
+          cmake -S "$D" -B "$D/build-vknr" -DGGML_VULKAN=ON -DGGML_CPU_REPACK=OFF -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-I$HOME/bench-cache/spirv/include"
+          cmake --build "$D/build-vknr" --target llama-bench -j"$(nproc)"
+          GGML_VK_VISIBLE_DEVICES=0 "$D/build-vknr/bin/llama-bench" -m "$HOME/bench-cache/$FILE" -ngl 99 -p 512 -n 64 -r 3 -o md
+          echo "exit=$?"
