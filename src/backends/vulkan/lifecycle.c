@@ -128,6 +128,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             vk_buffer_destroy(be, st->weights[i].gpu);
         }
         geist_backend_free(be, st->weights);
+        geist_backend_free(be, st->weight_index);
         geist_backend_free(be, st->cpu_row);
         if (st->x_stage != nullptr) {
             vk_buffer_destroy(be, st->x_stage);

@@ -223,6 +223,11 @@ minor release.
 
 ### Changed
 
+- **Vulkan weight lookup is a hash index** (#469, #474 item 8). The host
+  pointer → device buffer registry consulted on every `linear_t` and
+  embedding call is indexed by an open-addressed table instead of scanned:
+  75 000 lookups over a 300-weight registry take 0.2 ms instead of 4.8 ms
+  (x86_64 release, about 16 µs saved per 250-linear decode token).
 - **Vulkan: GGUF pages behind uploaded weights are released** (#468). A
   matrix the backend copied to the device no longer keeps its file pages
   resident (`gguf_release_range`, MADV_DONTNEED on the read-only mapping);

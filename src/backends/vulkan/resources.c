@@ -5,6 +5,7 @@
  */
 #include "vk_internal.h"
 
+#include "checked.h"
 #include "tensor_view.h" /* geist_tensor_elems: checked element count */
 
 /* ====================================================================== */
@@ -455,13 +456,78 @@ struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor
     return vk_weight_lookup(st, (const uint8_t *) t->buffer->host_alias + t->offset);
 }
 
-struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host) {
-    for (size_t i = 0; i < st->n_weights; ++i) {
-        if (st->weights[i].host == host) {
-            return st->weights[i].gpu;
+/* Home slot of `host` in a table of `cap` (a power of two) slots:
+ * Fibonacci hashing of the pointer bits above the 16-byte alignment. */
+static size_t vk_weight_slot(const void *host, size_t cap) {
+    const uint64_t h = ((uint64_t) (uintptr_t) host >> 4) * 0x9E3779B97F4A7C15ull;
+    return (size_t) (h >> 32) & (cap - 1);
+}
+
+struct vk_weight_entry *vk_weight_entry_of(const struct vk_state *st, const void *host) {
+    if (st->cap_weight_index == 0) {
+        return nullptr;
+    }
+    const size_t mask = st->cap_weight_index - 1;
+    for (size_t i = vk_weight_slot(host, st->cap_weight_index);; i = (i + 1) & mask) {
+        const uint32_t e = st->weight_index[i];
+        if (e == 0) {
+            return nullptr; /* the table is at most half full: always ends */
+        }
+        if (st->weights[e - 1].host == host) {
+            return &st->weights[e - 1];
         }
     }
-    return nullptr;
+}
+
+struct geist_buffer *vk_weight_lookup(const struct vk_state *st, const void *host) {
+    const struct vk_weight_entry *e = vk_weight_entry_of(st, host);
+    return e != nullptr ? e->gpu : nullptr;
+}
+
+static void vk_weight_index_put(uint32_t *table, size_t cap, const void *host, size_t idx) {
+    size_t i = vk_weight_slot(host, cap);
+    while (table[i] != 0) {
+        i = (i + 1) & (cap - 1);
+    }
+    table[i] = (uint32_t) idx + 1;
+}
+
+[[nodiscard]] enum geist_status vk_weight_index_add(struct geist_backend *be, size_t idx) {
+    struct vk_state *st = be->state;
+    if (idx >= UINT32_MAX) {
+        return GEIST_E_OOM;
+    }
+    size_t need = 0;
+    if (ckd_mul(&need, st->n_weights, (size_t) 2)) {
+        return GEIST_E_OOM;
+    }
+    if (need > st->cap_weight_index) {
+        size_t cap = st->cap_weight_index == 0 ? 128 : st->cap_weight_index;
+        while (cap < need) {
+            if (ckd_mul(&cap, cap, (size_t) 2)) {
+                return GEIST_E_OOM;
+            }
+        }
+        size_t bytes = 0;
+        if (ckd_mul(&bytes, cap, sizeof(uint32_t))) {
+            return GEIST_E_OOM;
+        }
+        uint32_t *table = geist_backend_alloc(be, bytes, alignof(uint32_t));
+        if (table == nullptr) {
+            return GEIST_E_OOM;
+        }
+        memset(table, 0, bytes);
+        for (size_t i = 0; i < st->n_weights; ++i) {
+            if (i != idx) {
+                vk_weight_index_put(table, cap, st->weights[i].host, i);
+            }
+        }
+        geist_backend_free(be, st->weight_index);
+        st->weight_index     = table;
+        st->cap_weight_index = cap;
+    }
+    vk_weight_index_put(st->weight_index, st->cap_weight_index, st->weights[idx].host, idx);
+    return GEIST_OK;
 }
 
 /* Access-range helpers: byte spans inside the bound VkBuffer. */

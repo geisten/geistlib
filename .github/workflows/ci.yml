@@ -895,6 +895,7 @@ jobs:
                    test_backend_vulkan_deltanet_unit \
                    test_fused_probe_agreement_unit \
                    test_backend_vulkan_dispatch_fail_unit \
+                   test_backend_vulkan_weight_index_unit \
                    test_gguf_release_range_unit; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
@@ -958,6 +959,7 @@ jobs:
                    test_backend_vulkan_deltanet_unit \
                    test_fused_probe_agreement_unit \
                    test_backend_vulkan_dispatch_fail_unit \
+                   test_backend_vulkan_weight_index_unit \
                    test_gguf_release_range_unit; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
