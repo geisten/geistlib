@@ -302,11 +302,16 @@ struct vk_state {
     VkPipeline pipes[VK_PIPE_COUNT];
 
     /* Weight registry: host pointer → VRAM buffer, filled by resolve_weight.
-     * Linear search — a model has a few hundred weights; the lookup is one
-     * pointer compare per entry once per linear call. */
+     * `weights` is the dense list (teardown); `weight_index` an open-
+     * addressed table of entry index + 1 (0 = empty), a power of two at
+     * most half full, so the lookup on every linear_t / embedding call is
+     * one or two probes instead of a scan of a few hundred entries (#469).
+     * Entries are never removed, only replaced in place. */
     struct vk_weight_entry *weights;
     size_t                  n_weights;
     size_t                  cap_weights;
+    uint32_t               *weight_index;
+    size_t                  cap_weight_index;
 
     /* Persistent host-visible activation staging (x up / y down) for the
      * synchronous host-pointer linear kernels (parity tests, CPU-dtype
@@ -476,9 +481,14 @@ void vk_buffer_unmap(struct geist_buffer *buf);
 [[nodiscard]] enum geist_status
 vk_stage_reserve(struct geist_backend *be, struct geist_buffer **slot, size_t bytes);
 
-struct geist_buffer *vk_weight_lookup(struct vk_state *st, const void *host);
-struct geist_buffer *vk_weight_of(struct vk_state *st, const struct geist_tensor *t);
-size_t               vk_fast_host_bytes(struct geist_backend *be);
+struct geist_buffer *vk_weight_lookup(const struct vk_state *st, const void *host);
+/* The registry entry for `host`, or nullptr. */
+struct vk_weight_entry *vk_weight_entry_of(const struct vk_state *st, const void *host);
+/* Index weights[idx] (just appended) by its host pointer; GEIST_E_OOM when
+ * the table cannot grow. */
+[[nodiscard]] enum geist_status vk_weight_index_add(struct geist_backend *be, size_t idx);
+struct geist_buffer            *vk_weight_of(struct vk_state *st, const struct geist_tensor *t);
+size_t                          vk_fast_host_bytes(struct geist_backend *be);
 
 struct vk_access vk_acc(uint64_t lo_bytes, uint64_t n_bytes, bool write);
 
