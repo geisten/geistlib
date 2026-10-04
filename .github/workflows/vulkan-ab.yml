@@ -68,9 +68,13 @@ jobs:
       BACKEND: ${{ inputs.backend || 'vulkan' }}
       DRIVER: ${{ inputs.driver || 'NVIDIA' }}
       PRESET: ${{ inputs.preset || 'llama32-1b-q4_k' }}
-      SEQ_LENS: ${{ inputs.seq_lens || '128,512' }}
+      SEQ_LENS: ${{ inputs.seq_lens || '512' }}
       CYCLES: ${{ inputs.cycles || '6' }}
-      EXTRA_ENV: ${{ inputs.extra_env || 'GEIST_VK_SCRATCH_DEVICE=1 GEIST_M_MAX=256' }}
+      EXTRA_ENV: ${{ inputs.extra_env || 'GEIST_VK_SCRATCH_DEVICE=1 GEIST_M_MAX=512' }}
+      # gen_synth_gguf.py geometry overrides on top of the preset. Scratch does
+      # not depend on depth: 8 layers of a 5120-wide dense Llama put a 512-row
+      # pool at about 290 MB, past the 256 MB BAR window.
+      SYNTH_ARGS: --layers 8 --d-model 5120 --heads 40 --kv-heads 8 --ffn 17408 --vocab 32000
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,7 +92,7 @@ jobs:
           echo "measuring GPU$IDX ($DRIVER)"
           echo "GEIST_VK_DEVICE=$IDX" >> "$GITHUB_ENV"
       - name: Synthetic model
-        run: python3 tools/gen_synth_gguf.py "$RUNNER_TEMP/synth.gguf" --preset "$PRESET"
+        run: python3 tools/gen_synth_gguf.py "$RUNNER_TEMP/synth.gguf" --preset "$PRESET" $SYNTH_ARGS
       - name: A/B
         run: |
           set -eo pipefail
@@ -111,8 +115,8 @@ jobs:
         run: |
           for b in ab-out/*/bench_perf_sweep_*; do
             echo "== $(basename "$b")"
-            GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 "$b" --gguf "$RUNNER_TEMP/synth.gguf" \
-              --seq-lens 16 --decode-n 1 --repeats 1 --warmup 0 2>&1 | grep -m1 "geist vulkan" || true
+            env $EXTRA_ENV GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 "$b" --gguf "$RUNNER_TEMP/synth.gguf" \
+              --seq-lens 16 --decode-n 1 --repeats 1 --warmup 0 2>&1 | grep -iE "geist vulkan|scratch" | head -20 || true
           done | tee -a ab-out/report.txt
       - name: Job summary
         if: always()
