@@ -8,6 +8,33 @@
 #include <omp.h>
 #endif
 
+static enum geist_status (*borrowed_resolver)(struct geist_backend *, struct geist_weight *);
+[[nodiscard]] static enum geist_status forwarding_resolver(struct geist_backend *be,
+                                                           struct geist_weight  *w) {
+    return borrowed_resolver(be, w);
+}
+
+[[nodiscard]] static int borrowed_capability(struct geist_backend *be) {
+    /* Reproduce cpu_x86's resolver delegation on every host, even when
+     * the host cannot run x86 code. Borrowed kernels are later rebound. */
+    struct geist_backend_vtbl       v       = *be->desc->vtbl;
+    struct geist_backend_descriptor desc    = *be->desc;
+    struct geist_backend            wrapper = *be;
+    borrowed_resolver                       = v.resolve_weight;
+    v.resolve_weight                        = forwarding_resolver;
+    desc.vtbl                               = &v;
+    wrapper.desc                            = &desc;
+    const float         raw[8]              = {1, 2, 3, 4, 5, 6, 7, 8};
+    struct geist_weight w                   = {
+            .raw = raw, .raw_nbytes = sizeof raw, .n_in = 4, .n_out = 2, .dtype = GEIST_DTYPE_F32};
+    int fails = geist_expect(borrowed_resolver(be, &w) == GEIST_OK && w.linear_rows != nullptr,
+                             "native Scalar rows available");
+    fails += geist_expect(v.resolve_weight(&wrapper, &w) == GEIST_OK && w.linear_rows == nullptr &&
+                                  w.linear_rows_tile == 0 && w.linear_rows_prepare == nullptr,
+                          "delegating backend cannot inherit stale Scalar row capability");
+    return fails;
+}
+
 static uint32_t rng = 42;
 static uint8_t  byte(void) {
     rng = rng * 1664525u + 1013904223u;
@@ -265,6 +292,8 @@ int main(void) {
         struct geist_backend *be = nullptr;
         if (geist_backend_create(backends[b], nullptr, nullptr, &be) != GEIST_OK)
             continue;
+        if (strcmp(backends[b], "cpu_scalar") == 0)
+            fails += borrowed_capability(be);
         for (size_t d = 0; d < 6; d++) {
             fails += run(be, dtypes[d], 512, 384);
             fails += run(be, dtypes[d], 1024, 387);

@@ -116,7 +116,6 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
 
 [[nodiscard]] enum geist_status cpu_scalar_resolve_weight(struct geist_backend *be,
                                                           struct geist_weight  *w) {
-    (void) be;
     if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
     }
@@ -125,11 +124,20 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
     if (!quant_weight_extent_ok(w)) {
         return GEIST_E_FORMAT;
     }
+    /* cpu_x86 borrows this resolver before replacing its kernels. A row
+     * capability belongs to the resolved kernel and backend, not merely
+     * to the source dtype. Wrappers must resolve their own row readout. */
+    w->linear_rows         = nullptr;
+    w->linear_rows_tile    = 0;
+    w->linear_rows_prepare = nullptr;
+    const bool native_rows = be != nullptr && be->desc != nullptr && be->desc->vtbl != nullptr &&
+                             be->desc->vtbl->resolve_weight == cpu_scalar_resolve_weight;
     if (w->dtype == GEIST_DTYPE_F32) {
         w->linear_m1 = cpu_scalar_w_f32_m1;
         w->linear_mN = cpu_scalar_w_f32_mN;
         size_t block, bytes, tail;
-        if (quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) && tail == 0) {
+        if (native_rows && quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) &&
+            tail == 0) {
             w->linear_rows      = geist_cpu_selected_rows;
             w->linear_rows_tile = 1;
         }
@@ -140,7 +148,8 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
         w->linear_m1 = cpu_scalar_w_quant_m1;
         w->linear_mN = cpu_scalar_w_quant_mN;
         size_t block, bytes, tail;
-        if (quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) && tail == 0) {
+        if (native_rows && quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) &&
+            tail == 0) {
             w->linear_rows      = geist_cpu_selected_rows;
             w->linear_rows_tile = 1;
         }

@@ -35,6 +35,10 @@ static int run(const struct tf_buf *g, const char *backend, enum geist_decision_
     }
     fails +=
             geist_expect(geist_decision_supported(m), "loaded generative model supports decisions");
+    if (strcmp(backend, "cpu_x86") == 0) {
+        fails += geist_expect(!geist_decision_mode_supported(m, GEIST_DECISION_SELECTED_ROWS),
+                              "x86 wrapper cannot inherit Scalar row capability");
+    }
     if (!geist_decision_mode_supported(m, mode)) {
         fails += geist_expect(geist_decision_create(m, be, &o, &a) == GEIST_E_UNSUPPORTED &&
                                       a == nullptr,
