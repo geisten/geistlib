@@ -343,8 +343,8 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
                        * state instead (dn_conv_state / dn_S, #281) */
         }
         const size_t hd       = st->layers[li].head_dim;
-        const size_t n_elems  = st->max_seq_len * st->n_kv_heads * hd;
-        const size_t n_scales = st->max_seq_len * st->n_kv_heads;
+        const size_t n_elems  = sess->max_seq_len * st->n_kv_heads * hd;
+        const size_t n_scales = sess->max_seq_len * st->n_kv_heads;
         if (sess->kv_kivi_enabled) {
             /* Drained region packs at 2 bits per element (4 vals/byte).
              * Per-channel K scales/zeros: one fp32 per (group, channel).
@@ -352,9 +352,9 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
              * Residual is (R + m_max) fp32 K/V rows so a verify_forward
              * burst of m_max tokens never overflows. */
             const size_t R              = KIVI_K_GROUP_SIZE;
-            const size_t n_drain_groups = (st->max_seq_len + R - 1) / R;
+            const size_t n_drain_groups = (sess->max_seq_len + R - 1) / R;
             const size_t k_scales_elems = n_drain_groups * st->n_kv_heads * hd;
-            const size_t v_scales_elems = st->max_seq_len * st->n_kv_heads;
+            const size_t v_scales_elems = sess->max_seq_len * st->n_kv_heads;
             const size_t residual_slots = R + sess->m_max;
             const size_t residual_elems = residual_slots * st->n_kv_heads * hd;
             s                           = alloc_scratch(be, n_elems / 4, &sess->k_kivi_q[li]);

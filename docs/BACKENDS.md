@@ -69,6 +69,45 @@ back to per-row matvecs for prefill (#471). Details and the side-by-side
 profile: `benchmark/results/TERNARY.md`. Phase-by-phase lab log:
 [`../benchmark/results/VULKAN.md`](../benchmark/results/VULKAN.md).
 
+## Resident memory per backend
+
+What stays in RAM once a model is loaded: the weights in one or more layouts,
+plus what each session allocates. Measure with the process's RSS; on Metal,
+`geist_backend_resources_snapshot` reports the GPU side (do not add the two).
+
+**How the weights are held.** `geist_model_load(path)` maps the GGUF read-only
+and demand-pages it. `geist_model_load_from_memory` aliases the caller's bytes
+the same way, never copying or freeing them; those pages are the caller's and
+count once whatever the backend does. On top of that:
+
+| Backend | Weights | Extra copies at load | Knobs |
+| :-- | :-- | :-- | :-- |
+| `cpu_scalar` | read in place from the mapping | none | — |
+| `cpu_x86` | in place, except the layouts on the right | **Q4_K** → Q4_Kx8 (+1× Q4_K bytes) only where the AVX-512 prefill panels run; **Q6_K** → W8A8 (≈ +1.8× Q6_K bytes) only with AVX-512 VNNI; **I2_S** x4 + t5 blobs (≈ +0.45 B/weight) with VNNI; a tied F16 `lm_head` → int8 rows (≈ +1 B/weight); F32 matrices → W8A8 (+1.5 or +3 B/weight) | `GEIST_Q4K_RAW=1`, `GEIST_Q6K_RAW=1`, `GEIST_I2S_T5=0`, `GEIST_Q8_LMHEAD=0` keep the source layout (slower prefill) |
+| `cpu_neon` | in place, except the layouts on the right | Q4_0 and PQ2_0 x8 GEMV panels (≈ +1×, any SDOT core); on Apple also Q4_K predecode (≈ +2×), Q6_K x8 for the vocabulary head and Q6_K ntile4 for FFN-down | `GEIST_Q4_0_X8_GEMV=0`, `GEIST_PQ2_0_X8_GEMV=0`, `GEIST_Q4K_PREDECODE=0`, `GEIST_Q6K_X8_GEMV=0`, `GEIST_Q6K_NTILE_PREFILL=0` |
+| `metal` | wrapped in place (`newBufferWithBytesNoCopy`) when the range is file-backed or read-only | a **writable** `load_from_memory` buffer is copied into a Metal buffer (2×); `mprotect` it read-only to avoid that. Lookup-only tables (PLE, untied `token_embd`) stay on the host | `GEIST_METAL_KEEP_ALIVE_S` |
+| `vulkan` | uploaded once to device memory | small tensors (< 1 MiB) are also copied into a host arena; the mapping stays open, so the pages read for the upload stay resident until evicted; Llama `attn_q`/`attn_k` keep a host copy for the row permutation | `GEIST_WEIGHT_MMAP` |
+
+The repacked CPU layouts replace the source in the hot path, but the source
+pages were read once while repacking. With `load(path)` they are clean file
+pages the kernel can evict under pressure, so RSS shows them until it does;
+with `load_from_memory` they belong to the caller and stay. All backends also
+widen non-F32 norm gammas and small F16/BF16 matrices to F32, and Gemma's
+`per_layer_model_proj` is dequantized to F32 (≈ 52 MB).
+
+`GEIST_WEIGHT_MMAP=0` copies every tensor into one backend arena and closes
+the mapping instead (the Vulkan default); on the CPU that is a full heap copy.
+
+**Per session.** Each session holds its KV cache, sized from its own
+`max_seq_len` (S) and allocated in full at create: per attention layer with
+E = S × n_kv_heads × head_dim it is 8·E bytes in FP32, 4·E in F16, about
+2·E in INT8 (plus 8·S·n_kv_heads of scales), about E in INT4 and about E/2 in
+KIVI. Shared-KV and DeltaNet layers hold none. The CPU backends default to
+INT8 (FP32 on Apple), Metal and Vulkan to F16. The model's default session is
+sized from the model cap (`geist_model_load_with_opts`, 4096 without options).
+The scratch pool grows with the prefill chunk (`GEIST_M_MAX`; 64 on the CPU,
+256 on Metal, 128 on Vulkan) and the vocabulary.
+
 ## GPU numbers at a glance
 
 | model | platform | metric | **geistlib** | baseline |

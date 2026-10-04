@@ -683,6 +683,13 @@ minor release.
   vtable.
 
 ### Fixed
+- **A session's KV cache ignored its own `max_seq_len`** (#577). It was sized
+  from the model's cap, so on a model loaded with a 32768-token cap a
+  64-token session still held 32768 rows of KV (64 MiB in FP32 for a
+  two-layer test model). It is now sized from the session cap, as
+  `docs/API_CONTRACT.md` promises. `docs/BACKENDS.md` gains a "Resident
+  memory per backend" section: which backends keep repacked weight copies,
+  the switch for each, and the per-session KV formula.
 - **Models with IQ4_NL or IQ4_XS token embeddings failed prefill** with
   `GEIST_E_UNSUPPORTED` ("unsupported dtype for row dequant"): the embedding
   row lookup had no case for either format. It now decodes them with the
