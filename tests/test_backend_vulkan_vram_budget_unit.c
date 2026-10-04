@@ -34,6 +34,9 @@
 #include "src/backends/vulkan/vk_internal.h"
 
 constexpr size_t MIB = (size_t) 1 << 20;
+/* Session rows: the KV cache is sized from the session's max_seq_len, and
+ * 4096 rows of F16 KV (8 MiB here) are enough to tell the budgets apart. */
+constexpr size_t CTX = 4096;
 
 /* A Vulkan backend created under GEIST_VK_VRAM_BUDGET=v (unset: nullptr). */
 static struct geist_backend *backend_with(const char *v) {
@@ -253,7 +256,7 @@ int main(void) {
                                                           .context  = 4096,
                                                           .seed     = 3});
     struct usage  use = {0};
-    fails += run_model(&g, nullptr, 64, RUNS, &use);
+    fails += run_model(&g, nullptr, CTX, RUNS, &use);
     char msg[160];
     snprintf(msg,
              sizeof msg,
@@ -261,15 +264,14 @@ int main(void) {
              use.load,
              use.session - use.load);
     fails += geist_expect(use.load >= 4 * MIB && use.session - use.load >= 4 * MIB, msg);
-    fails += run_model(&g, "1M", 64, LOAD_FAILS, nullptr);
-    /* Room for the weights and half the KV cache (sized by the model's
-     * context at load): the load works, the session does not. Room for
-     * both: it runs. */
+    fails += run_model(&g, "1M", CTX, LOAD_FAILS, nullptr);
+    /* Room for the weights and half the KV cache: the load works, the
+     * session does not. Room for both: it runs. */
     char budget[32];
     snprintf(budget, sizeof budget, "%zuK", (use.load + (use.session - use.load) / 2) >> 10);
-    fails += run_model(&g, budget, 64, SESSION_FAILS, nullptr);
+    fails += run_model(&g, budget, CTX, SESSION_FAILS, nullptr);
     snprintf(budget, sizeof budget, "%zuK", (use.session + MIB) >> 10);
-    fails += run_model(&g, budget, 64, RUNS, nullptr);
+    fails += run_model(&g, budget, CTX, RUNS, nullptr);
     free(g.b);
 
     if (fails > 0) {
