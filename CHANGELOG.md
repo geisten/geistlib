@@ -202,6 +202,13 @@ minor release.
 
 ### Changed
 
+- **cpu_x86 IQ4_NL and IQ4_XS run native int8 kernels on the GGUF bytes:
+  decode about 4-5x, prefill about 1.7-1.9x faster** (#410). Both used to
+  fall back to the generic dequantize-and-dot path. They now share the Q4_0
+  kernels' Q8_0 activation quantizer and tiling, look the nibbles up in the
+  non-linear table with one VPSHUFB per block, and sum with the sign trick;
+  IQ4_XS adds its 6-bit sub-block scale. On 1B synthetic models (4-core
+  Xeon) decode drops 77-84 % and prefill 39-48 %.
 - **Metal wraps read-only `load_from_memory` bytes in place: one copy of the
   weights** (#577). Only file-backed memory was wrapped with
   `newBufferWithBytesNoCopy`; anything else was copied into a Metal buffer. A
@@ -667,6 +674,10 @@ minor release.
   vtable.
 
 ### Fixed
+- **Models with IQ4_NL or IQ4_XS token embeddings failed prefill** with
+  `GEIST_E_UNSUPPORTED` ("unsupported dtype for row dequant"): the embedding
+  row lookup had no case for either format. It now decodes them with the
+  formats' own row decoders.
 - **Vulkan DeltaNet and RMSNorm on GPUs with subgroups narrower than 32
   lanes.** Their reductions kept one shared slot per subgroup, sized for 32
   lanes, so on llvmpipe (8 lanes) and Intel (8 or 16) the extra subgroups wrote

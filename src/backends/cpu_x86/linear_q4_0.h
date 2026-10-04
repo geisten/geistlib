@@ -1,5 +1,6 @@
 /*
- * src/backends/cpu_x86/linear_q4_0.h — cpu_x86 native Q4_0 / Q4_1 linear.
+ * src/backends/cpu_x86/linear_q4_0.h — cpu_x86 native Q4_0 / Q4_1 / IQ4_NL /
+ * IQ4_XS linear.
  *
  * Layer: BACKEND (cpu_x86, internal). See linear_q4_0.c.
  */
@@ -19,5 +20,10 @@
  * Q4_1 with n_in a whole number of 32-element blocks. No repack, no aux
  * memory. */
 [[nodiscard]] bool cpu_x86_linear_q4_0_bind(struct geist_weight *w);
+
+/* The same for IQ4_NL (n_in a whole number of 32-element blocks) and IQ4_XS
+ * (256-element super-blocks). Returns false and leaves `w` untouched for any
+ * other dtype or shape. */
+[[nodiscard]] bool cpu_x86_linear_iq4_bind(struct geist_weight *w);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_LINEAR_Q4_0_H */

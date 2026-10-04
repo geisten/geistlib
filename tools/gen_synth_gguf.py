@@ -54,6 +54,8 @@ QTYPES = {
     "q4_k": (12, 256, 144, (0, 2)),  # d, dmin
     "q5_k": (13, 256, 176, (0, 2)),  # d, dmin
     "q6_k": (14, 256, 210, (208,)),  # d sits at the tail
+    "iq4_nl": (20, 32, 18, (0,)),
+    "iq4_xs": (23, 256, 136, (0,)),
     "bf16": (30, 1, 2, ()),
     "pq2_0": (142, 128, 34, (0,)),  # PrismML's ternary format, d first
     "tq2_0": (35, 256, 66, (64,)),  # ternary BitNet, d at the tail
