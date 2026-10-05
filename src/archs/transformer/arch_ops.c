@@ -41,31 +41,27 @@
 
 /* ---- Recurrent-state buffer access ----------------------------------- */
 
-/* One transfer: map + memcpy when the buffer is host-mappable, else the
- * upload/download entry (device-local state, e.g. Vulkan). `host` is read
- * (to_device) or written (!to_device). */
-static enum geist_status dn_state_xfer(struct geist_backend *be,
-                                       struct geist_buffer  *buf,
-                                       size_t                bytes,
-                                       void                 *host,
-                                       bool                  to_device) {
+enum geist_status transformer_buffer_xfer(
+        struct geist_backend *be, struct geist_buffer *buf, size_t n, void *host, bool to_device) {
+    if (n == 0) {
+        return GEIST_OK;
+    }
     const struct geist_backend_vtbl *v = be->desc->vtbl;
     void                            *p = v->buffer_map(buf);
     if (p != nullptr) {
         if (to_device) {
-            memcpy(p, host, bytes);
+            memcpy(p, host, n);
         } else {
-            memcpy(host, p, bytes);
+            memcpy(host, p, n);
         }
         v->buffer_unmap(buf);
         return GEIST_OK;
     }
     if (to_device ? v->buffer_upload == nullptr : v->buffer_download == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_UNSUPPORTED, "transformer: recurrent state not mappable");
+        geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "transformer: buffer not mappable");
         return GEIST_E_UNSUPPORTED;
     }
-    return to_device ? v->buffer_upload(buf, bytes, host) : v->buffer_download(bytes, host, buf);
+    return to_device ? v->buffer_upload(buf, n, host) : v->buffer_download(n, host, buf);
 }
 
 enum geist_status
@@ -82,7 +78,7 @@ transformer_dn_state_zero(struct geist_backend *be, struct geist_buffer *buf, si
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: recurrent state zero alloc failed");
         return GEIST_E_OOM;
     }
-    const enum geist_status s = dn_state_xfer(be, buf, bytes, zeros, true);
+    const enum geist_status s = transformer_buffer_xfer(be, buf, bytes, zeros, true);
     safe_free((void **) &zeros);
     return s;
 }

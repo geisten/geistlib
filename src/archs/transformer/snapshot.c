@@ -145,32 +145,6 @@ snap_bytes(const struct transformer_arch_session *sess, size_t kv_len, bool logi
     return false;
 }
 
-/* The first `n` bytes of `buf` to or from host memory: map + memcpy where
- * the buffer is host-mappable, else the backend's upload/download (device-
- * local memory, e.g. Vulkan). */
-[[nodiscard]] static enum geist_status
-xfer(struct geist_backend *be, struct geist_buffer *buf, size_t n, void *host, bool to_device) {
-    if (n == 0) {
-        return GEIST_OK;
-    }
-    const struct geist_backend_vtbl *v = be->desc->vtbl;
-    void                            *p = v->buffer_map(buf);
-    if (p != nullptr) {
-        if (to_device) {
-            memcpy(p, host, n);
-        } else {
-            memcpy(host, p, n);
-        }
-        v->buffer_unmap(buf);
-        return GEIST_OK;
-    }
-    if (to_device ? v->buffer_upload == nullptr : v->buffer_download == nullptr) {
-        geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "session snapshot: buffer not mappable");
-        return GEIST_E_UNSUPPORTED;
-    }
-    return to_device ? v->buffer_upload(buf, n, host) : v->buffer_download(n, host, buf);
-}
-
 /* Walk the payload in its fixed order (per layer: K, V, K scales, V
  * scales, or conv, S; then the logits), moving each part between the
  * session's buffers and `p`, which has room for all of it. */
@@ -195,10 +169,11 @@ xfer(struct geist_backend *be, struct geist_buffer *buf, size_t n, void *host, b
                 p += (conv_n + s_n) * sizeof(float);
                 continue;
             }
-            s = xfer(be, sess->dn_conv_state[li], conv_n * sizeof(float), p, to_device);
+            s = transformer_buffer_xfer(
+                    be, sess->dn_conv_state[li], conv_n * sizeof(float), p, to_device);
             p += conv_n * sizeof(float);
             if (s == GEIST_OK) {
-                s = xfer(be, sess->dn_S[li], s_n * sizeof(float), p, to_device);
+                s = transformer_buffer_xfer(be, sess->dn_S[li], s_n * sizeof(float), p, to_device);
                 p += s_n * sizeof(float);
             }
             if (s == GEIST_OK && to_device && fresh != nullptr) {
@@ -221,12 +196,13 @@ xfer(struct geist_backend *be, struct geist_buffer *buf, size_t n, void *host, b
             if (rows[b] == 0) {
                 continue;
             }
-            s = xfer(be, bufs[b], kv_len * rows[b], p, to_device);
+            s = transformer_buffer_xfer(be, bufs[b], kv_len * rows[b], p, to_device);
             p += kv_len * rows[b];
         }
     }
     if (s == GEIST_OK && logits) {
-        s = xfer(be, sess->scratch_logits, st->vocab_size * sizeof(float), p, to_device);
+        s = transformer_buffer_xfer(
+                be, sess->scratch_logits, st->vocab_size * sizeof(float), p, to_device);
     }
     return s;
 }
