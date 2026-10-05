@@ -57,37 +57,8 @@ static_assert(Q8_0_BLOCK_ELEMS == 32, "the kernels below load one Q8_0 block per
  * rounded to nearest-even, so |q| <= 127 (the bound the sign trick needs).
  * Same packing as the reference engines' quantize_row_q8_0. */
 static void quantize_row_q8_0(size_t nb, const float *x, int8_t *qx, float *dx) {
-    const __m256  abs_mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
-    const __m256i perm     = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
     for (size_t b = 0; b < nb; b++) {
-        const float *xb = x + b * QK;
-        const __m256 v0 = _mm256_loadu_ps(xb);
-        const __m256 v1 = _mm256_loadu_ps(xb + 8);
-        const __m256 v2 = _mm256_loadu_ps(xb + 16);
-        const __m256 v3 = _mm256_loadu_ps(xb + 24);
-        __m256       m  = _mm256_max_ps(
-                _mm256_max_ps(_mm256_and_ps(v0, abs_mask), _mm256_and_ps(v1, abs_mask)),
-                _mm256_max_ps(_mm256_and_ps(v2, abs_mask), _mm256_and_ps(v3, abs_mask)));
-        __m128 m4        = _mm_max_ps(_mm256_extractf128_ps(m, 1), _mm256_castps256_ps128(m));
-        m4               = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
-        m4               = _mm_max_ss(m4, _mm_movehdup_ps(m4));
-        const float amax = _mm_cvtss_f32(m4);
-
-        dx[b]              = amax / 127.0f;
-        const __m256 scale = _mm256_set1_ps(amax > 0.0f ? 127.0f / amax : 0.0f);
-        __m256i      i0    = _mm256_cvtps_epi32(_mm256_round_ps(
-                _mm256_mul_ps(v0, scale), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        __m256i      i1    = _mm256_cvtps_epi32(_mm256_round_ps(
-                _mm256_mul_ps(v1, scale), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        __m256i      i2    = _mm256_cvtps_epi32(_mm256_round_ps(
-                _mm256_mul_ps(v2, scale), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        __m256i      i3    = _mm256_cvtps_epi32(_mm256_round_ps(
-                _mm256_mul_ps(v3, scale), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        /* The packs interleave 128-bit lanes; the permute restores order. */
-        i0 = _mm256_packs_epi32(i0, i1);
-        i2 = _mm256_packs_epi32(i2, i3);
-        i0 = _mm256_packs_epi16(i0, i2);
-        _mm256_storeu_si256((__m256i *) (qx + b * QK), _mm256_permutevar8x32_epi32(i0, perm));
+        _mm256_storeu_si256((__m256i *) (qx + b * QK), quant_block_q8_0(x + b * QK, &dx[b]));
     }
 }
 

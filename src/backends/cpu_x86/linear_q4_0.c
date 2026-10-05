@@ -72,45 +72,10 @@ constexpr size_t NR = 4;
 /* One activation row to Q8_0 blocks (d = amax / 127, q rounded to nearest-
  * even, as in linear_q8_0.c) plus each block's integer sum S. */
 static void quantize_row_q8_0_sum(size_t nb, const float *x, int8_t *qx, float *dx, int32_t *sx) {
-    const __m256  abs_mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
-    const __m256i perm     = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
-    const __m256i ones_u8  = _mm256_set1_epi8(1);
-    const __m256i ones_16  = _mm256_set1_epi16(1);
     for (size_t b = 0; b < nb; b++) {
-        const float *xb = x + b * QK;
-        const __m256 v0 = _mm256_loadu_ps(xb);
-        const __m256 v1 = _mm256_loadu_ps(xb + 8);
-        const __m256 v2 = _mm256_loadu_ps(xb + 16);
-        const __m256 v3 = _mm256_loadu_ps(xb + 24);
-        __m256       m  = _mm256_max_ps(
-                _mm256_max_ps(_mm256_and_ps(v0, abs_mask), _mm256_and_ps(v1, abs_mask)),
-                _mm256_max_ps(_mm256_and_ps(v2, abs_mask), _mm256_and_ps(v3, abs_mask)));
-        __m128 m4        = _mm_max_ps(_mm256_extractf128_ps(m, 1), _mm256_castps256_ps128(m));
-        m4               = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
-        m4               = _mm_max_ss(m4, _mm_movehdup_ps(m4));
-        const float amax = _mm_cvtss_f32(m4);
-
-        dx[b]              = amax / 127.0f;
-        const __m256 scale = _mm256_set1_ps(amax > 0.0f ? 127.0f / amax : 0.0f);
-        __m256i      i0    = _mm256_cvtps_epi32(_mm256_round_ps(
-                _mm256_mul_ps(v0, scale), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        __m256i      i1    = _mm256_cvtps_epi32(_mm256_round_ps(
-                _mm256_mul_ps(v1, scale), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        __m256i      i2    = _mm256_cvtps_epi32(_mm256_round_ps(
-                _mm256_mul_ps(v2, scale), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        __m256i      i3    = _mm256_cvtps_epi32(_mm256_round_ps(
-                _mm256_mul_ps(v3, scale), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        i0                 = _mm256_packs_epi32(i0, i1);
-        i2                 = _mm256_packs_epi32(i2, i3);
-        i0                 = _mm256_permutevar8x32_epi32(_mm256_packs_epi16(i0, i2), perm);
-        _mm256_storeu_si256((__m256i *) (qx + b * QK), i0);
-
-        /* S: maddubs(1, q) pairs into s16, madd to s32, horizontal sum. */
-        const __m256i s32 = _mm256_madd_epi16(_mm256_maddubs_epi16(ones_u8, i0), ones_16);
-        __m128i s4 = _mm_add_epi32(_mm256_castsi256_si128(s32), _mm256_extracti128_si256(s32, 1));
-        s4         = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, _MM_SHUFFLE(1, 0, 3, 2)));
-        s4         = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, _MM_SHUFFLE(2, 3, 0, 1)));
-        sx[b]      = _mm_cvtsi128_si32(s4);
+        const __m256i q = quant_block_q8_0(x + b * QK, &dx[b]);
+        _mm256_storeu_si256((__m256i *) (qx + b * QK), q);
+        sx[b] = hsum_epi32(sum_i8(q));
     }
 }
 

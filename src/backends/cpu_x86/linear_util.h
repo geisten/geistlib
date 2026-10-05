@@ -60,6 +60,86 @@ static inline float hsum512_ps(__m512 v) {
 }
 #endif
 
+/* Max of 8 lanes, the same 8 -> 4 -> 2 -> 1 tree as hsum_ps. */
+static inline float hmax_ps(__m256 m) {
+    __m128 m4 = _mm_max_ps(_mm256_extractf128_ps(m, 1), _mm256_castps256_ps128(m));
+    m4        = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
+    m4        = _mm_max_ss(m4, _mm_movehdup_ps(m4));
+    return _mm_cvtss_f32(m4);
+}
+
+static inline __m256 abs_ps(__m256 v) {
+    return _mm256_and_ps(v, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
+}
+
+/* Sum of 8 int32 lanes. */
+static inline int32_t hsum_epi32(__m256i s32) {
+    __m128i s4 = _mm_add_epi32(_mm256_castsi256_si128(s32), _mm256_extracti128_si256(s32, 1));
+    s4         = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, _MM_SHUFFLE(1, 0, 3, 2)));
+    s4         = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, _MM_SHUFFLE(2, 3, 0, 1)));
+    return _mm_cvtsi128_si32(s4);
+}
+
+/* The 32 int8 values of q, summed pairwise into 8 int32 lanes:
+ * maddubs(1, q) pairs into s16, madd to s32. */
+static inline __m256i sum_i8(__m256i q) {
+    return _mm256_madd_epi16(_mm256_maddubs_epi16(_mm256_set1_epi8(1), q), _mm256_set1_epi16(1));
+}
+
+/* The factor that maps a block with max |x| = amax onto int8: 127 / amax,
+ * 0 for an all-zero block. Its d is amax / 127. */
+static inline __m256 q8_scale(float amax) {
+    return _mm256_set1_ps(amax > 0.0f ? 127.0f / amax : 0.0f);
+}
+
+/* 32 floats (v0..v3) times scale, rounded to nearest-even, as 32 int8 in
+ * element order. |q| <= 127 when scale = q8_scale(max |v|). */
+static inline __m256i quant32_v(__m256 v0, __m256 v1, __m256 v2, __m256 v3, __m256 scale) {
+    __m256i i0 = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(v0, scale),
+                                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+    __m256i i1 = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(v1, scale),
+                                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+    __m256i i2 = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(v2, scale),
+                                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+    __m256i i3 = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(v3, scale),
+                                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+    /* The packs interleave 128-bit lanes; the permute restores order. */
+    i0 = _mm256_packs_epi32(i0, i1);
+    i2 = _mm256_packs_epi32(i2, i3);
+    return _mm256_permutevar8x32_epi32(_mm256_packs_epi16(i0, i2),
+                                       _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7));
+}
+
+static inline __m256i quant32(const float *x, __m256 scale) {
+    return quant32_v(_mm256_loadu_ps(x),
+                     _mm256_loadu_ps(x + 8),
+                     _mm256_loadu_ps(x + 16),
+                     _mm256_loadu_ps(x + 24),
+                     scale);
+}
+
+/* One 32-element Q8_0 activation block: *d = amax / 127 and the 32 int8
+ * values, as the reference engines' quantize_row_q8_0 packs them. */
+static inline __m256i quant_block_q8_0(const float *x, float *d) {
+    const __m256 v0   = _mm256_loadu_ps(x);
+    const __m256 v1   = _mm256_loadu_ps(x + 8);
+    const __m256 v2   = _mm256_loadu_ps(x + 16);
+    const __m256 v3   = _mm256_loadu_ps(x + 24);
+    const float  amax = hmax_ps(_mm256_max_ps(_mm256_max_ps(abs_ps(v0), abs_ps(v1)),
+                                              _mm256_max_ps(abs_ps(v2), abs_ps(v3))));
+    *d                = amax / 127.0f;
+    return quant32_v(v0, v1, v2, v3, q8_scale(amax));
+}
+
+/* max |x| over n floats, n a multiple of 8. */
+static inline float amax_ps(size_t n, const float *x) {
+    __m256 m = _mm256_setzero_ps();
+    for (size_t i = 0; i < n; i += 8) {
+        m = _mm256_max_ps(m, abs_ps(_mm256_loadu_ps(x + i)));
+    }
+    return hmax_ps(m);
+}
+
 /* The calling thread's workspace with room for m quantized activation rows
  * of n_in: int8 values, one fp32 scale per scale_block elements and, unless
  * sum_block is 0, one int32 sum per sum_block elements. nullptr when the
