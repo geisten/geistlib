@@ -31,7 +31,7 @@ jobs:
     timeout-minutes: 60
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
-      BASE: ${{ inputs.base || '' }}
+      BASE: ${{ inputs.base || 'f76d29fe99468e4d5d671487f085bf507d633e8a' }}
       # The same llama.cpp pin the cross-engine campaign uses.
       LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
     steps:
