@@ -60,8 +60,16 @@ def main() -> int:
     ap.add_argument("--min-decode-ratio", type=float, default=0.5)
     args = ap.parse_args()
 
-    md, rp, rd = report(geist_tps(args.geist), llama_tps(args.llama))
+    g, l = geist_tps(args.geist), llama_tps(args.llama)
+    md, rp, rd = report(g, l)
     print(md)
+    # The numbers as a check-run annotation too: the step summary and the
+    # raw log are not readable through the checks API, an annotation is, so
+    # a red nightly names its own ratios wherever it is looked at.
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::notice title=geist vs llama.cpp::prefill {g[0]:.1f}/{l[0]:.1f} tok/s = {rp:.2f}x"
+              f" (floor {args.min_prefill_ratio}), decode {g[1]:.1f}/{l[1]:.1f} tok/s = {rd:.2f}x"
+              f" (floor {args.min_decode_ratio})")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as fh:

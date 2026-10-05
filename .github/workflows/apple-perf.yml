@@ -9,6 +9,16 @@ on:
   schedule:
     - cron: "23 4 * * 0"
   workflow_dispatch:
+    inputs:
+      base:
+        description: "optional: also measure this revision in the same job (A/B against a red run)"
+        type: string
+        default: ""
+  # A PR that edits this file runs it once, the route to an A/B for a caller
+  # that cannot dispatch (set BASE below in that PR; do not merge it set).
+  pull_request:
+    paths:
+      - .github/workflows/apple-perf.yml
 
 concurrency:
   group: apple-perf-${{ github.ref }}
@@ -19,7 +29,9 @@ jobs:
     name: Apple CPU Q4_K regression guard
     runs-on: macos-15
     timeout-minutes: 60
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
+      BASE: ${{ inputs.base || '' }}
       # The same llama.cpp pin the cross-engine campaign uses.
       LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
     steps:
@@ -64,6 +76,22 @@ jobs:
             --suite detailed --target mac-omp --mode release \
             --bin-dir bin/mac-omp/release/tests --out-dir bench-artifacts
 
+      # The same protocol on BASE, built from its own tree with its own tools,
+      # right after HEAD on the same runner: a ratio cliff between a green
+      # and a red Sunday is then one job's A/B, not two runners' weather.
+      - name: Detailed protocol (geist at BASE)
+        if: env.BASE != ''
+        env:
+          BENCH_GGUF: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+          OMP_WAIT_POLICY: active
+        run: |
+          git fetch -q origin "$BASE"
+          git worktree add -q base FETCH_HEAD
+          make -C base -j3 TARGET=mac-omp CC=clang BACKENDS="cpu_neon cpu_scalar" bin/mac-omp/release/tests/bench_perf_sweep
+          (cd base && python3 tools/bench_quality_perf.py \
+            --suite detailed --target mac-omp --mode release \
+            --bin-dir bin/mac-omp/release/tests --out-dir "$GITHUB_WORKSPACE/bench-base")
+
       # The reference engine, CPU + Accelerate like the geist build above
       # (no Metal: this is the CPU guard). One static binary, cached by pin.
       - name: Cache llama-bench
@@ -88,24 +116,42 @@ jobs:
             -p 512 -n 64 -r 10 -t "$BENCH_THREADS" -o json > bench-artifacts/llama-bench.json
           cat bench-artifacts/llama-bench.json
 
+      - name: Ratio gate (BASE, informational)
+        if: env.BASE != ''
+        run: |
+          python3 benchmark/perf_ratio_gate.py \
+            --geist bench-base/*_mac-omp_detailed.jsonl \
+            --llama bench-artifacts/llama-bench.json \
+            --min-prefill-ratio 0.18 --min-decode-ratio 0.25 | sed "s/::notice title=geist vs llama.cpp::/::notice title=BASE $BASE vs llama.cpp::/" || true
+
       # Cliff floors on the ratio. The first run of this gate measured geist
       # at 0.40x prefill / 0.50x decode of llama.cpp on this runner (26.4 vs
       # 66.8 and 9.3 vs 18.8 tok/s, 3 threads) — nowhere near the M1 Max
       # numbers in the README, and an open question (#456). The floors sit
       # under what is measured today and above a scalar-fallback cliff; they
       # are raised when #456 moves the ratio, not before. The numbers land in
-      # the step summary either way.
+      # the step summary and as an annotation either way.
+      #
+      # Lowered to 0.18 / 0.25 after #602: on 2026-10-05 identical main code
+      # measured 0.25x, 0.32x and 0.36x prefill (decode 0.34x-0.57x) in three
+      # jobs, and ten revisions from the last green Sunday to main, run back
+      # to back in ONE job (#616), spread from 24.8 to 33.0 tok/s prefill
+      # with no step anywhere, the green base at the low end. The old 0.25
+      # floor sat inside that spread; a scalar or -O0 cliff is still well
+      # below the new one.
       - name: Ratio gate
         run: |
           python3 benchmark/perf_ratio_gate.py \
             --geist bench-artifacts/*_mac-omp_detailed.jsonl \
             --llama bench-artifacts/llama-bench.json \
-            --min-prefill-ratio 0.25 --min-decode-ratio 0.3
+            --min-prefill-ratio 0.18 --min-decode-ratio 0.25
 
       - name: Upload raw samples and provenance
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: apple-cpu-q4km-${{ github.sha }}
-          path: bench-artifacts
+          path: |
+            bench-artifacts
+            bench-base
           if-no-files-found: error
