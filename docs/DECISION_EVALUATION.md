@@ -231,3 +231,10 @@ not the acceptance target. Pin the source rather than conflating variants:
 - [Pinned Bonsai whitepaper](https://github.com/PrismML-Eng/Bonsai-demo/blob/bfaea577522626b883f755236878e4583f3d6e68/bonsai-2-27b-whitepaper.pdf)
 - [Pinned classic MMLU snapshot](https://huggingface.co/datasets/cais/mmlu/tree/c30699e8356da336a370243923dbaf21066bb9fe)
 - [Original MMLU evaluator](https://github.com/hendrycks/test/blob/master/evaluate.py)
+
+## Optional pretrained encoder comparison
+
+[ModernBERT and Laya reference adapters](DECISION_ENCODERS.md) supply an
+explicitly enabled, offline comparison before classifier training. They reuse
+the split/exclusion/identity protocol but have encoder-specific prompts and
+tokenizers. They are Python reference runtimes, not native geist C backends.
