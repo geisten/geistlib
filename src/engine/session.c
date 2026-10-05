@@ -1342,6 +1342,48 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
     return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "pin_prefix");
 }
 
+size_t geist_session_length(const struct geist_session *s) {
+    if (s == nullptr) {
+        return 0;
+    }
+    const struct geist_session_full     *sf  = (const struct geist_session_full *) s;
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    return ops != nullptr && ops->kv_len != nullptr ? ops->kv_len(arch_sess(sf)) : 0;
+}
+
+[[nodiscard]] enum geist_status geist_session_truncate(struct geist_session *s, size_t n) {
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    if (ops == nullptr || ops->truncate == nullptr) {
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "truncate: the active architecture cannot truncate");
+        sf->err_code = GEIST_E_UNSUPPORTED;
+        return GEIST_E_UNSUPPORTED;
+    }
+    const enum geist_status ts = ops->truncate(arch_sess(sf), n);
+    return ts == GEIST_OK ? GEIST_OK : session_op_failed(sf, ts, "truncate");
+}
+
+[[nodiscard]] enum geist_status geist_session_kv_bytes_per_token(const struct geist_session *s,
+                                                                 size_t *out_bytes) {
+    if (out_bytes != nullptr) {
+        *out_bytes = 0;
+    }
+    if (s == nullptr || out_bytes == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const struct geist_session_full     *sf  = (const struct geist_session_full *) s;
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    if (ops == nullptr || ops->kv_bytes_per_token == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    return ops->kv_bytes_per_token(out_bytes, arch_sess(sf));
+}
+
 /* The decoder ops for a snapshot call, or nullptr after recording why
  * there are none (the architecture has no snapshot) or why not now (an
  * audio stream is feeding the session). */

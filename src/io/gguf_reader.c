@@ -673,24 +673,54 @@ static const struct gguf_meta_kv_t *meta_find(const struct gguf_ctx *ctx, const 
     return nullptr;
 }
 
-const char *gguf_get_meta_string(const struct gguf_ctx *ctx, const char *key, size_t *out_len) {
-    const struct gguf_meta_kv_t *kv = meta_find(ctx, key);
-    if (!kv || kv->vt != GGUF_VT_STRING || kv->vlen < 8) {
-        if (out_len)
-            *out_len = 0;
+size_t gguf_meta_count(const struct gguf_ctx *ctx) {
+    return ctx != nullptr && ctx->meta_kvs != nullptr ? (size_t) ctx->metadata_kv_count : 0;
+}
+
+/* The string value of kv, or nullptr when it is not a well-formed string. */
+static const char *meta_string(const struct gguf_meta_kv_t *kv, size_t *out_len) {
+    *out_len = 0;
+    if (kv == nullptr || kv->vt != GGUF_VT_STRING || kv->vlen < 8) {
         return nullptr;
     }
     /* String layout: u64 length + bytes. */
     uint64_t slen;
     memcpy(&slen, kv->vp, 8);
-    if (8 + slen > kv->vlen) {
-        if (out_len)
-            *out_len = 0;
+    if (slen > kv->vlen - 8) {
         return nullptr;
     }
-    if (out_len)
-        *out_len = (size_t) slen;
+    *out_len = (size_t) slen;
     return (const char *) (kv->vp + 8);
+}
+
+bool gguf_meta_string_at(const struct gguf_ctx *ctx,
+                         size_t                 i,
+                         const char           **out_key,
+                         const char           **out_val,
+                         size_t                *out_len) {
+    *out_key = nullptr;
+    *out_val = nullptr;
+    *out_len = 0;
+    if (i >= gguf_meta_count(ctx)) {
+        return false;
+    }
+    const char *val = meta_string(&ctx->meta_kvs[i], out_len);
+    if (val == nullptr) {
+        return false;
+    }
+    *out_key = ctx->meta_kvs[i].key;
+    *out_val = val;
+    return true;
+}
+
+const char *gguf_get_meta_string(const struct gguf_ctx *ctx, const char *key, size_t *out_len) {
+    /* Through meta_string: its bound is a subtraction, so a length near
+     * UINT64_MAX cannot wrap past the check (8 + slen did). */
+    size_t      len = 0;
+    const char *val = meta_string(meta_find(ctx, key), &len);
+    if (out_len)
+        *out_len = len;
+    return val;
 }
 
 bool gguf_get_meta_u32(const struct gguf_ctx *ctx, const char *key, uint32_t *out) {

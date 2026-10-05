@@ -230,6 +230,20 @@ struct geist_arch_ops_decoder {
     enum geist_status (*snapshot_size)(size_t *out_bytes, const void *session);
     enum geist_status (*snapshot)(size_t *out_bytes, size_t capacity, void *buf, void *session);
     enum geist_status (*restore)(size_t n_bytes, const void *buf, void *session);
+
+    /* Optional (#622): geist_session_truncate. Drop the session's state after
+     * its first n positions, so the next prefill continues at n; pending
+     * logits are invalid afterwards. GEIST_E_INVALID_ARG past the session's
+     * length or below a pinned prefix; GEIST_E_UNSUPPORTED where the state
+     * cannot return to n (recurrent layers, an already compressed KV region),
+     * never a silently wrong state.
+     * kv_bytes_per_token: the KV-cache bytes one more position costs in
+     * this session, for its resolved KV mode; fixed buffers and recurrent
+     * state, which do not grow with the length, are not included.
+     * nullptr when the architecture cannot.
+     * Appended: existing vtable field offsets remain unchanged. */
+    enum geist_status (*truncate)(void *session, size_t n);
+    enum geist_status (*kv_bytes_per_token)(size_t *out_bytes, const void *session);
 };
 
 /* ====================================================================== */
