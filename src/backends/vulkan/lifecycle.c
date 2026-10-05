@@ -503,11 +503,10 @@ void vk_destroy(struct geist_backend *be) {
         struct vk_state *st = be->state;
         if (getenv("GEIST_VK_VERBOSE") != nullptr || st->profile_enabled) {
             fprintf(stderr,
-                    "geist vulkan stats: dispatches %llu, flushes %llu, host-op accesses "
-                    "%llu, barriers %llu (elided %llu)\n",
+                    "geist vulkan stats: dispatches %llu, flushes %llu, barriers %llu "
+                    "(elided %llu)\n",
                     (unsigned long long) st->stat_dispatches,
                     (unsigned long long) st->stat_flushes,
-                    (unsigned long long) st->stat_cpu_falls,
                     (unsigned long long) st->stat_barriers,
                     (unsigned long long) st->stat_barriers_elided);
             for (size_t i = 0; i < VK_FB_COUNT; i++) {

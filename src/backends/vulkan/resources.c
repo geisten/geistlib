@@ -779,7 +779,6 @@ void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
         }
         return nullptr;
     }
-    t->buffer->owner->stat_cpu_falls++;
     if (vk_fallback(t->buffer->owner, VK_FB_HOST_VIEW) != GEIST_E_UNSUPPORTED) {
         return nullptr; /* GEIST_VK_STRICT: the error names the site */
     }

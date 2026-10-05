@@ -303,7 +303,6 @@ struct vk_state {
     /* GEIST_VK_VERBOSE stats. */
     uint64_t stat_flushes;
     uint64_t stat_dispatches;
-    uint64_t stat_cpu_falls;
     /* Host views refused because the buffer is device-local (vk_tensor_host):
      * a CPU fallback that would have needed the bytes, reported as an error
      * instead of a read over PCIe. */
