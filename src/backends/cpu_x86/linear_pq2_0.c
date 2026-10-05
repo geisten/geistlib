@@ -543,11 +543,7 @@ bool cpu_x86_linear_pq2_0_amx_usable(void) {
 #endif
 }
 
-bool cpu_x86_linear_pq2_0_bind(struct geist_weight *w) {
-    if (w == nullptr || w->dtype != GEIST_DTYPE_PQ2_0 || w->n_in <= 0 ||
-        (size_t) w->n_in % QK != 0) {
-        return false;
-    }
+void cpu_x86_linear_pq2_0_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_pq2_0_m1;
 #ifndef GEIST_NO_AMX
     w->linear_mN = cpu_x86_linear_pq2_0_amx_usable() ? cpu_x86_linear_pq2_0_mN_amx
@@ -555,5 +551,4 @@ bool cpu_x86_linear_pq2_0_bind(struct geist_weight *w) {
 #else
     w->linear_mN = cpu_x86_linear_pq2_0_mN;
 #endif
-    return true;
 }

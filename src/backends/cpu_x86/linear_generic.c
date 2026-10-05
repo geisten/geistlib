@@ -4,8 +4,8 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * These dtypes (IQ2_S, IQ3_S, PQ2_0,
- * BF16, and F16 prefill) used to stay on cpu_scalar's resolver: the
+ * These dtypes (IQ2_S, IQ3_S, BF16, F16 prefill, and Q4_K / Q6_K when
+ * their repack cannot be built) used to stay on cpu_scalar's resolver: the
  * correctness oracle, which allocates a row buffer on the heap per call,
  * dequantizes into it and dots in double, on one thread. On x86 that was the
  * production path — 225 heap allocations and no thread scaling per decoded
@@ -70,32 +70,14 @@ static void bf16_row(size_t n, const void *src, float *out) {
 
 static row_dequant_fn row_dequant_for(uint16_t dtype) {
     switch ((enum geist_dtype) dtype) {
-    case GEIST_DTYPE_Q4_0:
-        return dequant_q4_0_row;
-    case GEIST_DTYPE_Q4_1:
-        return dequant_q4_1_row;
-    case GEIST_DTYPE_Q8_0:
-        return dequant_q8_0_row;
-    case GEIST_DTYPE_Q3_K:
-        return dequant_q3_K_row;
     case GEIST_DTYPE_Q4_K:
         return dequant_q4_K_row;
-    case GEIST_DTYPE_Q5_K:
-        return dequant_q5_K_row;
     case GEIST_DTYPE_Q6_K:
         return dequant_q6_K_row;
     case GEIST_DTYPE_IQ2_S:
         return dequant_iq2_s_row;
     case GEIST_DTYPE_IQ3_S:
         return dequant_iq3_s_row;
-    case GEIST_DTYPE_IQ4_NL:
-        return dequant_iq4_nl_row;
-    case GEIST_DTYPE_IQ4_XS:
-        return dequant_iq4_xs_row;
-    case GEIST_DTYPE_TQ2_0:
-        return dequant_tq2_0_row;
-    case GEIST_DTYPE_PQ2_0:
-        return dequant_pq2_0_row;
     case GEIST_DTYPE_F16:
         return f16_row;
     case GEIST_DTYPE_BF16:

@@ -341,12 +341,7 @@ static bool vnni_tiles_usable(void) {
            __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512vnni");
 }
 
-bool cpu_x86_linear_tq2_0_bind(struct geist_weight *w) {
-    if (w == nullptr || w->dtype != GEIST_DTYPE_TQ2_0 || w->n_in <= 0 ||
-        (size_t) w->n_in % QK != 0) {
-        return false;
-    }
+void cpu_x86_linear_tq2_0_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_tq2_0_m1;
     w->linear_mN = vnni_tiles_usable() ? cpu_x86_linear_tq2_0_mN_vnni : cpu_x86_linear_tq2_0_mN;
-    return true;
 }

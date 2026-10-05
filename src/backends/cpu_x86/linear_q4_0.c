@@ -615,27 +615,12 @@ static bool vnni_tiles_usable(void) {
            __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512vnni");
 }
 
-bool cpu_x86_linear_q4_0_bind(struct geist_weight *w) {
-    if (w == nullptr || (w->dtype != GEIST_DTYPE_Q4_0 && w->dtype != GEIST_DTYPE_Q4_1) ||
-        w->n_in <= 0 || (size_t) w->n_in % QK != 0) {
-        return false;
-    }
+void cpu_x86_linear_q4_0_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_q4_0_m1;
     w->linear_mN = vnni_tiles_usable() ? cpu_x86_linear_q4_0_mN_vnni : cpu_x86_linear_q4_0_mN;
-    return true;
 }
 
-bool cpu_x86_linear_iq4_bind(struct geist_weight *w) {
-    if (w == nullptr || w->raw == nullptr || w->n_in <= 0) {
-        return false;
-    }
-    const size_t blk = w->dtype == GEIST_DTYPE_IQ4_NL   ? IQ4_NL_BLOCK_ELEMS
-                       : w->dtype == GEIST_DTYPE_IQ4_XS ? IQ4_XS_BLOCK_ELEMS
-                                                        : 0;
-    if (blk == 0 || (size_t) w->n_in % blk != 0) {
-        return false;
-    }
+void cpu_x86_linear_iq4_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_iq4_m1;
     w->linear_mN = cpu_x86_linear_iq4_mN;
-    return true;
 }

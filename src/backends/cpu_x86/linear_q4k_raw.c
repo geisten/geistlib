@@ -389,22 +389,12 @@ static void cpu_x86_linear_q5k_mN(size_t                     m,
     linear_mN(FMT_Q5_K, m, x, w, be, y);
 }
 
-bool cpu_x86_linear_q4k_raw_bind(struct geist_weight *w) {
-    if (w == nullptr || w->dtype != GEIST_DTYPE_Q4_K || w->n_in <= 0 ||
-        (size_t) w->n_in % QK != 0) {
-        return false;
-    }
+void cpu_x86_linear_q4k_raw_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_q4k_raw_m1;
     w->linear_mN = cpu_x86_linear_q4k_raw_mN;
-    return true;
 }
 
-bool cpu_x86_linear_q5k_bind(struct geist_weight *w) {
-    if (w == nullptr || w->dtype != GEIST_DTYPE_Q5_K || w->n_in <= 0 ||
-        (size_t) w->n_in % QK != 0) {
-        return false;
-    }
+void cpu_x86_linear_q5k_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_q5k_m1;
     w->linear_mN = cpu_x86_linear_q5k_mN;
-    return true;
 }
