@@ -22,7 +22,6 @@
 
 #include <geist_types.h>
 
-#include <stdalign.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -50,12 +49,13 @@ constexpr int GEIST_TENSOR_MAX_DIMS = 8;
     return false;
 }
 
-/* Validate a contiguous F32 DENSE view against `host` / `host_bytes` and
- * return the pointer to its first element, or nullptr if anything about
- * the view does not hold: wrong dtype or layout, bad ndim, a non-positive
+/* Validate a contiguous DENSE view of `ndim` dimensions (exactly) and
+ * `dtype`, whose elements are `elem` bytes, against `host` / `host_bytes`
+ * and return the pointer to its first element, or nullptr if anything
+ * about the view does not hold: wrong dtype, layout or ndim, a non-positive
  * or unrepresentable dimension, an element count that overflows, a byte
  * range that runs past the buffer, or a start address that is not aligned
- * for a float.
+ * to `elem`.
  *
  * `host_bytes` is the buffer's own size, so this catches a view that is
  * internally consistent but larger than the memory behind it.
@@ -63,31 +63,6 @@ constexpr int GEIST_TENSOR_MAX_DIMS = 8;
  * Call once per op, outside the element loop: for the tensors these ops
  * run on (thousands of elements) the cost is not measurable, and the
  * alternative is per-element bounds checking or none at all. */
-[[nodiscard]] static inline float *
-geist_tensor_f32_dense(const struct geist_tensor *t, void *host, size_t host_bytes, size_t *out_n) {
-    if (t == nullptr || host == nullptr || t->dtype != GEIST_DTYPE_F32 ||
-        t->layout != GEIST_LAYOUT_DENSE) {
-        return nullptr;
-    }
-    size_t n = 0;
-    if (geist_tensor_elems(t, &n)) {
-        return nullptr;
-    }
-    size_t bytes = 0;
-    size_t end   = 0;
-    if (ckd_mul(&bytes, n, sizeof(float)) || ckd_add(&end, t->offset, bytes) || end > host_bytes) {
-        return nullptr;
-    }
-    uint8_t *p = (uint8_t *) host + t->offset;
-    if (((uintptr_t) p % alignof(float)) != 0u) {
-        return nullptr;
-    }
-    *out_n = n;
-    return (float *) p;
-}
-
-/* As geist_tensor_f32_dense for a view of `ndim` dimensions (exactly) and
- * `dtype`, whose elements are `elem` bytes and aligned to them. */
 [[nodiscard]] static inline void *geist_tensor_dense(const struct geist_tensor *t,
                                                      enum geist_dtype           dtype,
                                                      size_t                     elem,
@@ -110,4 +85,13 @@ geist_tensor_f32_dense(const struct geist_tensor *t, void *host, size_t host_byt
     }
     *out_n = n;
     return p;
+}
+
+/* geist_tensor_dense for an F32 view of any rank. */
+[[nodiscard]] static inline float *
+geist_tensor_f32_dense(const struct geist_tensor *t, void *host, size_t host_bytes, size_t *out_n) {
+    return t == nullptr
+                   ? nullptr
+                   : (float *) geist_tensor_dense(
+                             t, GEIST_DTYPE_F32, sizeof(float), t->ndim, host, host_bytes, out_n);
 }
