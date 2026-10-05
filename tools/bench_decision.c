@@ -79,17 +79,64 @@
     return true;
 }
 
+/* Filter benchmark arms without changing the default paired protocol. */
+[[nodiscard]] static bool parse_modes(const char *text, bool enabled[static 5]) {
+    const char *names[] = {
+            "decision_dense", "scorealt_dense", "generate_1", "generate_long", "decision_selected"};
+    for (size_t i = 0; i < 5; i++)
+        enabled[i] = false;
+    const char *cursor = text;
+    while (*cursor) {
+        const size_t length = strcspn(cursor, ",");
+        bool         found  = false;
+        for (size_t i = 0; i < 5; i++) {
+            if (strlen(names[i]) == length && strncmp(cursor, names[i], length) == 0) {
+                if (enabled[i])
+                    return false;
+                enabled[i] = true;
+                found      = true;
+                break;
+            }
+        }
+        if (!found)
+            return false;
+        cursor += length;
+        if (*cursor == ',') {
+            cursor++;
+            if (*cursor == '\0')
+                return false;
+        }
+    }
+    return cursor != text;
+}
+
 int main(int argc, char **argv) {
-    size_t prompt_cap, candidate_cap, decode_n, warmup, repeats;
-    if ((argc != 8 && argc != 9) || (argc == 9 && strcmp(argv[8], "--selected") != 0) ||
+    size_t      prompt_cap, candidate_cap, decode_n, warmup, repeats;
+    bool        include_selected = false, include_text = false;
+    const char *mode_filter     = nullptr;
+    bool        arguments_valid = argc >= 8;
+    for (int i = 8; i < argc && arguments_valid; i++) {
+        if (strcmp(argv[i], "--selected") == 0 && !include_selected)
+            include_selected = true;
+        else if (strcmp(argv[i], "--text") == 0 && !include_text)
+            include_text = true;
+        else if (strcmp(argv[i], "--modes") == 0 && mode_filter == nullptr && i + 1 < argc)
+            mode_filter = argv[++i];
+        else
+            arguments_valid = false;
+    }
+    bool enabled[5] = {true, true, true, true, include_selected};
+    if (mode_filter != nullptr)
+        arguments_valid = arguments_valid && parse_modes(mode_filter, enabled);
+    if ((enabled[4] && (!include_selected || !enabled[0])) || !arguments_valid ||
         !number(&prompt_cap, argv[3]) || !number(&candidate_cap, argv[4]) ||
         !number(&decode_n, argv[5]) || !number(&warmup, argv[6]) || !number(&repeats, argv[7]) ||
         prompt_cap == 0 || candidate_cap == 0 || decode_n < 2 || repeats == 0 ||
-        prompt_cap > 1048576 || candidate_cap > 1048576 || decode_n > 4096 || warmup > 1000 ||
+        prompt_cap > 1048576 || candidate_cap > 1048576 || decode_n > 32768 || warmup > 1000 ||
         repeats > 10000) {
         fprintf(stderr,
                 "usage: bench_decision model.gguf backend prompt_cap candidate_cap decode_n warmup "
-                "repeats [--selected]\n");
+                "repeats [--selected] [--modes comma,separated,names] [--text]\n");
         return 2;
     }
     if (!geist_decision_available()) {
@@ -100,8 +147,7 @@ int main(int argc, char **argv) {
     struct geist_model             *m  = nullptr;
     struct geist_session           *s  = nullptr;
     struct geist_decision          *d = nullptr, *selected = nullptr;
-    const bool                      include_selected = argc == 9;
-    const struct geist_backend_opts bo               = {.log_level_max = GEIST_LOG_ERROR};
+    const struct geist_backend_opts bo = {.log_level_max = GEIST_LOG_ERROR};
     /* Bounds above make this sum/product safe, even on 32-bit hosts. */
     const struct geist_session_opts so = {
             .max_seq_len = prompt_cap + decode_n, .top_p = 1.0f, .kv_mode = GEIST_KV_FP32};
@@ -138,9 +184,12 @@ int main(int argc, char **argv) {
            geist_decision_vocab_size(d));
     const char *modes[] = {
             "decision_dense", "scorealt_dense", "generate_1", "generate_long", "decision_selected"};
-    const size_t n_modes    = include_selected ? 5 : 4;
-    size_t       case_index = 0, np, nc;
-    int          read;
+    size_t active[5], n_modes = 0;
+    for (size_t i = 0; i < 5; i++)
+        if (enabled[i])
+            active[n_modes++] = i;
+    size_t case_index = 0, np, nc;
+    int    read;
     while ((read = scanf("%zu %zu", &np, &nc)) == 2) {
         if (np == 0 || np > prompt_cap || nc == 0 || nc > candidate_cap ||
             !read_ids(np, geist_decision_vocab_size(d), prompt) ||
@@ -151,7 +200,7 @@ int main(int argc, char **argv) {
         for (size_t trial = 0; trial < 1 + warmup + repeats; trial++) {
             const char *phase = trial == 0 ? "first" : trial <= warmup ? "warmup" : "warm";
             for (size_t position = 0; position < n_modes; position++) {
-                const size_t                 mode   = (position + trial + case_index) % n_modes;
+                const size_t mode = active[(position + trial + case_index) % n_modes];
                 struct geist_decision_result result = {0};
                 size_t                       best = 0, n_generated = 0;
                 enum geist_status            status = GEIST_OK;
@@ -234,21 +283,47 @@ int main(int argc, char **argv) {
                                result.logit_readback_bytes,
                                result.head_ns);
                     }
-                    struct rusage usage;
-                    if (getrusage(RUSAGE_SELF, &usage) == 0) {
-#ifdef __APPLE__
-                        printf(",\"process_peak_rss_bytes\":%llu",
-                               (unsigned long long) usage.ru_maxrss);
-#else
-                        printf(",\"process_peak_rss_bytes\":%llu",
-                               (unsigned long long) usage.ru_maxrss * 1024ULL);
-#endif
-                    }
-                    putchar('}');
                 } else {
-                    printf("null}");
+                    printf("null");
                 }
+                printf(",\"generation_stop\":\"%s\"",
+                       mode == 2 || mode == 3 ? (n_generated > 0 && generated[n_generated - 1] ==
+                                                                            geist_model_eos_token(m)
+                                                         ? "eos"
+                                                         : "limit")
+                                              : "not_generated");
+                if (include_text && (mode == 2 || mode == 3)) {
+                    const uint64_t surface_start = now_ns();
+                    bool           complete      = true;
+                    printf(",\"generated_utf8_hex\":\"");
+                    for (size_t i = 0; i < n_generated; i++) {
+                        if (generated[i] == geist_model_eos_token(m))
+                            continue;
+                        const char *piece = geist_session_token_to_str(s, generated[i]);
+                        if (piece == nullptr || *piece == '\0') {
+                            complete = false;
+                            continue;
+                        }
+                        for (const unsigned char *c = (const unsigned char *) piece; *c; c++)
+                            printf("%02x", (unsigned) *c);
+                    }
+                    printf("\",\"generated_text_complete\":%s,\"surface_decode_ms\":%.9f",
+                           complete ? "true" : "false",
+                           (double) (now_ns() - surface_start) / 1e6);
+                }
+                struct rusage usage;
+                if (getrusage(RUSAGE_SELF, &usage) == 0) {
+#ifdef __APPLE__
+                    printf(",\"process_peak_rss_bytes\":%llu",
+                           (unsigned long long) usage.ru_maxrss);
+#else
+                    printf(",\"process_peak_rss_bytes\":%llu",
+                           (unsigned long long) usage.ru_maxrss * 1024ULL);
+#endif
+                }
+                putchar('}');
                 putchar('\n');
+                fflush(stdout);
             }
         }
         case_index++;

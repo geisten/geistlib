@@ -1,0 +1,161 @@
+=== tests/test_bench_cross_engine_py.py ===
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.002s
+
+OK
+=== tests/test_bench_decision_py.py ===
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.004s
+
+OK
+=== tests/test_bench_tools_py.py ===
+PERF REGRESSION vs last green run:
+  seq 32 decode_tps: 15.00 -> 14.00 (-6.7 %, limit -3 %)
+  seq 512 decode_tps: 15.00 -> 14.00 (-6.7 %, limit -3 %)
+.......  waiting for quiet host: load 1.00 (0.10/core)
+  cooldown 60s
+.................
+----------------------------------------------------------------------
+Ran 24 tests in 0.064s
+
+OK
+bench_compare: run not comparable — spread above 5 % says the board was busy (seq 512: ±15.4 %); not judged, not promoted
+## bench vs last green
+
+| seq | metric | last green (aaa) | now (bbb) | Δ |
+| --: | :-- | --: | --: | --: |
+| 32 | prefill_tps | 45.00 | 45.00 | +0.0 % |
+| 32 | decode_tps | 15.00 | 14.00 | -6.7 % **REGRESSION** |
+| 512 | prefill_tps | 45.00 | 45.00 | +0.0 % |
+| 512 | decode_tps | 15.00 | 14.00 | -6.7 % **REGRESSION** |
+=== tests/test_bitnet_embedding_convert_py.py ===
+warning: /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmphbyln3x7/1_Pooling/config.json missing; assuming mean pooling
+warning: /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmplqrcik2b/1_Pooling/config.json missing; assuming mean pooling
+warning: /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmp4l6ea_x8/1_Pooling/config.json missing; assuming mean pooling
+=== BitNet embedding converter: I2_S packing ===
+  PASS  packing is byte-identical to the C pack_i2_s
+  PASS  pack -> unpack recovers every trit
+  PASS  stored scale is mean(|w|), not its reciprocal
+  PASS  in-features not divisible by 256 is refused
+  PASS  qwen3 tensor names map correctly (LM head dropped)
+  PASS  gemma3 post_attention_layernorm keeps its own semantics
+  PASS  all seven per-projection norms map to the loader's names
+  PASS  f16 overflow fails instead of writing inf
+wrote /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmphbyln3x7/mini-i2_s.gguf — 38 tensors (14 I2_S), arch=qwen3
+  PASS  the mini model has all 23 norms
+  PASS  every 1-D norm is F32
+  PASS  output_norm is F32
+  PASS  token_embd stays F16
+  PASS  projections are still I2_S
+wrote /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmplqrcik2b/mini-f16.gguf — 38 tensors (0 I2_S), arch=qwen3
+  PASS  norms stay F32 in --outtype f16 too
+  PASS  no I2_S tensors in f16 mode
+wrote /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmp4l6ea_x8/mini-i2_s.gguf — 38 tensors (14 I2_S), arch=qwen3
+  PASS  GGUF magic and version are v3
+  PASS  lm_head is dropped, everything else kept
+  PASS  metadata is non-empty
+  PASS  file is larger than its header
+all checks passed
+=== tests/test_coverage_gate_py.py ===
+coverage-gate control:
+  ✓ on-baseline passes
+  ✓ dip inside 0.5pp tolerance passes
+  ✓ regression beyond tolerance FAILS
+  ✓ empty scope FAILS (not 100%)
+  ✓ unset baseline FAILS and demands a commit
+  ✓ hard floor fires independently of a satisfied ratchet
+PASS: coverage gate fires when it must and only then
+=== tests/test_decision_dataset_py.py ===
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.001s
+
+OK
+=== tests/test_decision_encoders_py.py ===
+............
+----------------------------------------------------------------------
+Ran 12 tests in 0.193s
+
+OK
+=== tests/test_decision_metrics_py.py ===
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.003s
+
+OK
+=== tests/test_embedding_fidelity_py.py ===
+=== embedding fidelity gate ===
+  PASS  identical inputs pass
+  PASS  float-noise-sized drift passes
+  PASS  one wrong row fails
+  PASS  shape mismatch fails rather than comparing a prefix
+  PASS  uniform rescaling does not move the cosine
+  PASS  a zero row fails instead of producing nan
+selftest: PASS
+  PASS  the gate's own selftest passes
+  PASS  a .gemb round-trips to the same shape
+  PASS  a .gemb round-trips to the same values
+  PASS  rejects wrong magic
+  PASS  rejects future version
+  PASS  rejects count larger than payload
+  PASS  rejects dim larger than payload
+  PASS  rejects truncated header
+  PASS  a 0.6 cosine fails the default floor
+  PASS  the same pair passes a 0.5 floor
+all checks passed
+=== tests/test_eval_decision_py.py ===
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.035s
+
+OK
+/var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmp5lsaibj0/run/report.json
+=== tests/test_eval_wer_py.py ===
+eval_audio_wer normalization:
+  ✓ 'Schön groß, weiß!' -> ['schön', 'groß', 'weiß']
+  ✓ "It's an A-B test." -> ["it's", 'an', 'a', 'b', 'test']
+  ✓ 'Ärzte über Straße' -> ['ärzte', 'über', 'straße']
+  ✓ '  double  spaces\tand\nlines ' -> ['double', 'spaces', 'and', 'lines']
+  ✓ edit distance counts umlaut words as whole words
+PASS
+=== tests/test_gen_synth_gguf_py.py ===
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 2.531s
+
+OK
+wrote /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmpdmxj3sso/0.gguf: 11 tensors, 0.7 M params, layers=1 d=256 heads=4/2 ffn=512 w=q4_k embd=q8_0
+wrote /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmpdmxj3sso/1.gguf: 11 tensors, 0.7 M params, layers=1 d=256 heads=4/2 ffn=512 w=q4_k embd=q8_0
+wrote /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmpdmxj3sso/2.gguf: 11 tensors, 0.7 M params, layers=1 d=256 heads=4/2 ffn=512 w=q4_k embd=q8_0
+wrote /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmppdc9o15g/tok.gguf: 11 tensors, 0.7 M params, layers=1 d=256 heads=4/2 ffn=512 w=q4_k embd=q8_0
+wrote /var/folders/2m/czpxflhd6l7b7_sh7nxt9wpw0000gp/T/tmpg8olnc90/tiny.gguf: 11 tensors, 0.7 M params, layers=1 d=256 heads=4/2 ffn=512 w=q4_k embd=q8_0
+=== tests/test_prepare_decision_eval_py.py ===
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.001s
+
+OK
+=== tests/test_ptqtp_p0_paper_parity.py ===
+[P0] PTQTP paper-parity gate
+  algorithm version: ptqtp-1.0.0
+  fixture: shape=(1024, 1024), std=0.02, seed=0
+  generated weights: mean=+0.000018 std=0.020016 max|w|=0.1000
+
+[P0.1] cos sim ≥ 0.95
+  ✓ cos sim = 0.985484  (threshold 0.95)
+    rel_mse        = 0.028822
+    mean |alpha|   = 0.020365
+
+[P0.2] deterministic re-run produces bit-identical output
+  ✓ {'T1_equal': True, 'T2_equal': True, 'alpha_equal': True}
+
+PASS — P0 gate satisfied.
+=== tests/test_run_tests_py.py ===
+......
+----------------------------------------------------------------------
+Ran 6 tests in 1.671s
+
+OK
+test-py: PASS

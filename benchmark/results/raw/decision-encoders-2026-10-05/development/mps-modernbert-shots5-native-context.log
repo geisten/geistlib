@@ -1,0 +1,14 @@
+Loading weights:   0%|          | 0/173 [00:00<?, ?it/s]Loading weights: 100%|██████████| 173/173 [00:00<00:00, 2236.09it/s]
+50/778 cases
+100/778 cases
+150/778 cases
+200/778 cases
+250/778 cases
+300/778 cases
+350/778 cases
+400/778 cases
+450/778 cases
+500/778 cases
+550/778 cases
+600/778 cases
+encoder evaluation failed: MPS backend out of memory (MPS allocated: 3.02 GiB, other allocations: 85.11 GiB, max allowed: 88.13 GiB). Tried to allocate 6.65 MiB on shared pool. Use PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 to disable upper limit for memory allocations (may cause system failure).

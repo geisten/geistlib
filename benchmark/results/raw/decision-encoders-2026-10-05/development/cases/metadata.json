@@ -1,0 +1,22 @@
+{
+  "protocol": "geist-decision-encoder-cases-v1",
+  "dataset": "cais/mmlu",
+  "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+  "dataset_subset": true,
+  "dataset_files_sha256": {
+    "dev": "2b19bde1ed8ca6b482fb283abc90e8e0d9d228947029c0b91795d64b28b3bc3f",
+    "validation": "66cdf0b090ccb657d18d13cd81e31fdc55c3467da9642ffb178653268a97c8ef",
+    "test": "74a41822ce7d3def56e1682f958469c04642a5336a5ce912fa375fdb90fb25d7"
+  },
+  "split": "development",
+  "shots_available": 5,
+  "rotations": 1,
+  "per_subject": 0,
+  "subject_limit": 0,
+  "questions": 778,
+  "records": 778,
+  "cases_sha256": "4ba20e3a221793178f68747b699bbdd0da68aa7e642ffd046839d995b4fda8d8",
+  "split_audit_sha256": "7744caf2f70ea72db9fd48e35458b752f3734134144e9ac2fa0804c1ddbab142",
+  "preparation_wall_ms": 913.8447910081595,
+  "scope": "Token-independent cases; model-specific prompts and token IDs recorded by each adapter. Exact-overlap exclusion changes the population; no semantic deduplication."
+}

@@ -1,0 +1,52 @@
+{
+  "scope": "development pilot; no quality acceptance",
+  "questions": 8,
+  "policies": [
+    {
+      "device": "mps",
+      "adapter": "modernbert",
+      "shots": 0
+    },
+    {
+      "device": "mps",
+      "adapter": "modernbert",
+      "shots": 5
+    },
+    {
+      "device": "mps",
+      "adapter": "laya",
+      "shots": 0
+    },
+    {
+      "device": "mps",
+      "adapter": "laya",
+      "shots": 5
+    },
+    {
+      "device": "cpu",
+      "adapter": "modernbert",
+      "shots": 0
+    },
+    {
+      "device": "cpu",
+      "adapter": "modernbert",
+      "shots": 5
+    },
+    {
+      "device": "cpu",
+      "adapter": "laya",
+      "shots": 0
+    },
+    {
+      "device": "cpu",
+      "adapter": "laya",
+      "shots": 5
+    }
+  ],
+  "dtype": "float32",
+  "warmup": 1,
+  "repeats": 1,
+  "margin_pp": 2,
+  "threads": 6,
+  "concurrency": 1
+}

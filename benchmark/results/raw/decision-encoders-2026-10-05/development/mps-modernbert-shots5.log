@@ -1,0 +1,17 @@
+Loading weights:   0%|          | 0/173 [00:00<?, ?it/s]Loading weights: 100%|██████████| 173/173 [00:00<00:00, 2144.75it/s]
+50/778 cases
+100/778 cases
+150/778 cases
+200/778 cases
+250/778 cases
+300/778 cases
+350/778 cases
+400/778 cases
+450/778 cases
+500/778 cases
+550/778 cases
+600/778 cases
+650/778 cases
+700/778 cases
+750/778 cases
+{"questions": 778, "scored": 629, "correct": 278, "rejected": 149, "warm_request_p50_ms": 210.20904200850055, "predictions_stable": true}

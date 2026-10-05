@@ -1,0 +1,214 @@
+{
+  "questions": 8,
+  "scored": 8,
+  "correct": 6,
+  "rejected": 0,
+  "coverage": 1.0,
+  "accuracy_rejections_count_incorrect": 0.75,
+  "quality_on_scored_only": {
+    "n": 8,
+    "accuracy": 0.75,
+    "log_loss": 1.0153972224085444,
+    "brier_sum_over_classes": 0.5020199616721003,
+    "temperature": 1.0,
+    "ece_equal_width": 0.2514967531121113,
+    "reliability": [
+      {
+        "lower": 0.0,
+        "upper": 0.1,
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      },
+      {
+        "lower": 0.1,
+        "upper": 0.2,
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      },
+      {
+        "lower": 0.2,
+        "upper": 0.3,
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      },
+      {
+        "lower": 0.3,
+        "upper": 0.4,
+        "n": 2,
+        "mean_confidence": 0.3559404870326779,
+        "accuracy": 0.5
+      },
+      {
+        "lower": 0.4,
+        "upper": 0.5,
+        "n": 1,
+        "mean_confidence": 0.40019324147050966,
+        "accuracy": 1
+      },
+      {
+        "lower": 0.5,
+        "upper": 0.6,
+        "n": 1,
+        "mean_confidence": 0.5317417566903387,
+        "accuracy": 1
+      },
+      {
+        "lower": 0.6,
+        "upper": 0.7,
+        "n": 2,
+        "mean_confidence": 0.6380896133715248,
+        "accuracy": 0.5
+      },
+      {
+        "lower": 0.7,
+        "upper": 0.8,
+        "n": 1,
+        "mean_confidence": 0.7551082624647608,
+        "accuracy": 1
+      },
+      {
+        "lower": 0.8,
+        "upper": 0.9,
+        "n": 1,
+        "mean_confidence": 0.8652809671551945,
+        "accuracy": 1
+      },
+      {
+        "lower": 0.9,
+        "upper": 1.0,
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      }
+    ],
+    "by_subject": {
+      "clinical_knowledge": {
+        "n": 1,
+        "accuracy": 1
+      },
+      "electrical_engineering": {
+        "n": 1,
+        "accuracy": 1
+      },
+      "high_school_biology": {
+        "n": 1,
+        "accuracy": 1
+      },
+      "high_school_physics": {
+        "n": 1,
+        "accuracy": 0
+      },
+      "international_law": {
+        "n": 1,
+        "accuracy": 1
+      },
+      "moral_disputes": {
+        "n": 1,
+        "accuracy": 0
+      },
+      "nutrition": {
+        "n": 1,
+        "accuracy": 1
+      },
+      "professional_psychology": {
+        "n": 1,
+        "accuracy": 1
+      }
+    }
+  },
+  "predictions_stable": true,
+  "max_repeat_logit_abs_drift": 0.0,
+  "warm_request_p50_ms": 216.64387499913573,
+  "warm_request_mean_ms": 211.5639271287364,
+  "warm_forward_p50_ms": 212.7691464847885,
+  "per_question_timings": [
+    {
+      "question_id": "d7ee7e9ab4d98643425f163fa6700970420cf952b6dc4784f26c59d38a47b590",
+      "request_p50_ms": 156.83183301007375,
+      "forward_p50_ms": 153.36845797719434,
+      "prepare_p50_ms": 2.669874986167997,
+      "tokens": 456
+    },
+    {
+      "question_id": "80082c84368db43e84b16d7129eff9d238d8be7175f45a5a3adf5674572480d9",
+      "request_p50_ms": 176.68245901586488,
+      "forward_p50_ms": 173.72120899381116,
+      "prepare_p50_ms": 2.2566249826923013,
+      "tokens": 488
+    },
+    {
+      "question_id": "5039b706f70f85f47695b23cdb87d7c66597ab6b3f1a436986c7ce2604c6eb8f",
+      "request_p50_ms": 215.88800003519282,
+      "forward_p50_ms": 212.20858400920406,
+      "prepare_p50_ms": 2.8875420102849603,
+      "tokens": 629
+    },
+    {
+      "question_id": "6a1b7f9dba7e96b9abc4c43b14ebf9dfad27340ccb7c2342a20009daf550deae",
+      "request_p50_ms": 239.2446660087444,
+      "forward_p50_ms": 234.3613330158405,
+      "prepare_p50_ms": 4.068583017215133,
+      "tokens": 637
+    },
+    {
+      "question_id": "b958dec14c7da1e0bae2d83c2f3de65e1f90950b1a5034bf7eacdd29cf126b49",
+      "request_p50_ms": 288.79137500189245,
+      "forward_p50_ms": 284.5967499888502,
+      "prepare_p50_ms": 3.377624962013215,
+      "tokens": 686
+    },
+    {
+      "question_id": "a0449b1cd6db3eb81198700eedb774cf3475c64f91b7f0530403ded2dc35ae28",
+      "request_p50_ms": 172.7781249792315,
+      "forward_p50_ms": 168.85808296501637,
+      "prepare_p50_ms": 3.0418329988606274,
+      "tokens": 570
+    },
+    {
+      "question_id": "8056751559261f1f795407eca054da90f0494c0339b6d8a6f460d92624aaa969",
+      "request_p50_ms": 224.89520901581272,
+      "forward_p50_ms": 220.98341601667926,
+      "prepare_p50_ms": 3.029917017556727,
+      "tokens": 658
+    },
+    {
+      "question_id": "56387957d290b514028572d1a632cf2ff472ba7f09060f97a3af3e6f0700b19c",
+      "request_p50_ms": 217.39974996307865,
+      "forward_p50_ms": 213.32970896037295,
+      "prepare_p50_ms": 3.250958980061114,
+      "tokens": 649
+    }
+  ],
+  "rejections": [],
+  "calibrated_correctness_established": false,
+  "quality_matched_speedup_established": false,
+  "limits": "Independent encoder prompts/dtype/runtime; not identical Bonsai token streams. Only canonical questions count in quality N. Rejected inputs are incorrect in population accuracy; probability metrics cover scored cases only.",
+  "protocol": "geist-decision-encoder-report-v1",
+  "adapter": {
+    "adapter": "modernbert",
+    "device": "mps",
+    "dtype": "float32",
+    "attention": "sdpa",
+    "reference_compile": false,
+    "max_tokens": 1024,
+    "native_context": 8192,
+    "capabilities": [
+      "choice"
+    ],
+    "calibration": "none; candidate-conditional softmax",
+    "prompt_policy": "modernbert-instruct-mask-choice-v1"
+  },
+  "setup_ms": 2168.244040978607,
+  "campaign_wall_ms": 6061.253249994479,
+  "host_load_end": [
+    7.01123046875,
+    5.64404296875,
+    9.34228515625
+  ],
+  "manifest_sha256": "ef26a49eb0eeafe1235a229f5c0e526766f6366606172b3af90f7aa6a8d27c82",
+  "samples_sha256": "3b0fe35cdf4161b8e45726a95bf8a8d593fdc793300105f9acfa2481f12b4d34",
+  "peak_process_rss_bytes": 2794422272
+}

@@ -1,0 +1,82 @@
+{
+  "validated_source_revision": "f0335bc9541f7532cff5da459fd2a9ff59110e02",
+  "checks": [
+    {
+      "name": "format",
+      "command": [
+        "make",
+        "format-check"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 2.996926708961837
+    },
+    {
+      "name": "python",
+      "command": [
+        "make",
+        "test-py"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 13.043544375046622
+    },
+    {
+      "name": "release",
+      "command": [
+        "make",
+        "-j6",
+        "test-unit",
+        "MODE=release",
+        "DECISION=1",
+        "BACKENDS=cpu_neon cpu_scalar metal",
+        "BUILD_DIR=/private/tmp/decision-encoder-validation-2026-10-05/release/build",
+        "LIB_DIR=/private/tmp/decision-encoder-validation-2026-10-05/release/lib",
+        "BIN_DIR=/private/tmp/decision-encoder-validation-2026-10-05/release/bin"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 68.49804641597439
+    },
+    {
+      "name": "asan",
+      "command": [
+        "make",
+        "-j6",
+        "MODE=asan",
+        "test-unit",
+        "DECISION=1",
+        "BACKENDS=cpu_neon cpu_scalar metal",
+        "BUILD_DIR=/private/tmp/decision-encoder-validation-2026-10-05/asan/build",
+        "LIB_DIR=/private/tmp/decision-encoder-validation-2026-10-05/asan/lib",
+        "BIN_DIR=/private/tmp/decision-encoder-validation-2026-10-05/asan/bin"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 129.22741204098566
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.017750333005096763
+    }
+  ],
+  "format_checked_C_files": 477,
+  "encoder_regression_tests": 12,
+  "release": {
+    "passed": 76,
+    "skipped": 47,
+    "failed": 0,
+    "errors": 0
+  },
+  "asan_ubsan": {
+    "passed": 76,
+    "skipped": 47,
+    "failed": 0,
+    "errors": 0
+  },
+  "C_files_changed_this_iteration": [],
+  "GCC_new_C_compile": "not applicable; no C changes this iteration",
+  "validation_after_measurements": true
+}

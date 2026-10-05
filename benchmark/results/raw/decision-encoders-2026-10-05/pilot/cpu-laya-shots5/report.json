@@ -1,0 +1,218 @@
+{
+  "questions": 8,
+  "scored": 8,
+  "correct": 1,
+  "rejected": 0,
+  "coverage": 1.0,
+  "accuracy_rejections_count_incorrect": 0.125,
+  "quality_on_scored_only": {
+    "n": 8,
+    "accuracy": 0.125,
+    "log_loss": 1.670569938160782,
+    "brier_sum_over_classes": 0.8986534869915529,
+    "temperature": 1.0,
+    "ece_equal_width": 0.280648430655233,
+    "reliability": [
+      {
+        "lower": 0.0,
+        "upper": 0.1,
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      },
+      {
+        "lower": 0.1,
+        "upper": 0.2,
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      },
+      {
+        "lower": 0.2,
+        "upper": 0.3,
+        "n": 1,
+        "mean_confidence": 0.2765820368986525,
+        "accuracy": 0
+      },
+      {
+        "lower": 0.3,
+        "upper": 0.4,
+        "n": 3,
+        "mean_confidence": 0.3292730671802235,
+        "accuracy": 0.3333333333333333
+      },
+      {
+        "lower": 0.4,
+        "upper": 0.5,
+        "n": 3,
+        "mean_confidence": 0.4368543607976416,
+        "accuracy": 0
+      },
+      {
+        "lower": 0.5,
+        "upper": 0.6,
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      },
+      {
+        "lower": 0.6,
+        "upper": 0.7,
+        "n": 1,
+        "mean_confidence": 0.6458615274909569,
+        "accuracy": 0
+      },
+      {
+        "lower": 0.7,
+        "upper": 0.8,
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      },
+      {
+        "lower": 0.8,
+        "upper": 0.9,
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      },
+      {
+        "lower": 0.9,
+        "upper": 1.0,
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      }
+    ],
+    "by_subject": {
+      "clinical_knowledge": {
+        "n": 1,
+        "accuracy": 0
+      },
+      "electrical_engineering": {
+        "n": 1,
+        "accuracy": 0
+      },
+      "high_school_biology": {
+        "n": 1,
+        "accuracy": 1
+      },
+      "high_school_physics": {
+        "n": 1,
+        "accuracy": 0
+      },
+      "international_law": {
+        "n": 1,
+        "accuracy": 0
+      },
+      "moral_disputes": {
+        "n": 1,
+        "accuracy": 0
+      },
+      "nutrition": {
+        "n": 1,
+        "accuracy": 0
+      },
+      "professional_psychology": {
+        "n": 1,
+        "accuracy": 0
+      }
+    }
+  },
+  "predictions_stable": true,
+  "max_repeat_logit_abs_drift": 0.0,
+  "warm_request_p50_ms": 546.655042009661,
+  "warm_request_mean_ms": 506.20696876285365,
+  "warm_forward_p50_ms": 544.0163960156497,
+  "per_question_timings": [
+    {
+      "question_id": "d7ee7e9ab4d98643425f163fa6700970420cf952b6dc4784f26c59d38a47b590",
+      "request_p50_ms": 357.3942920193076,
+      "forward_p50_ms": 355.6295839953236,
+      "prepare_p50_ms": 1.7170000355690718,
+      "tokens": 444
+    },
+    {
+      "question_id": "80082c84368db43e84b16d7129eff9d238d8be7175f45a5a3adf5674572480d9",
+      "request_p50_ms": 378.69100004900247,
+      "forward_p50_ms": 376.8287500133738,
+      "prepare_p50_ms": 1.8186250235885382,
+      "tokens": 476
+    },
+    {
+      "question_id": "5039b706f70f85f47695b23cdb87d7c66597ab6b3f1a436986c7ce2604c6eb8f",
+      "request_p50_ms": 558.6561670061201,
+      "forward_p50_ms": 556.0998750152066,
+      "prepare_p50_ms": 2.508250006940216,
+      "tokens": 617
+    },
+    {
+      "question_id": "6a1b7f9dba7e96b9abc4c43b14ebf9dfad27340ccb7c2342a20009daf550deae",
+      "request_p50_ms": 563.1226660334505,
+      "forward_p50_ms": 560.7562499935739,
+      "prepare_p50_ms": 2.319416031241417,
+      "tokens": 625
+    },
+    {
+      "question_id": "b958dec14c7da1e0bae2d83c2f3de65e1f90950b1a5034bf7eacdd29cf126b49",
+      "request_p50_ms": 621.0049159708433,
+      "forward_p50_ms": 618.3520419872366,
+      "prepare_p50_ms": 2.6048329891636968,
+      "tokens": 674
+    },
+    {
+      "question_id": "a0449b1cd6db3eb81198700eedb774cf3475c64f91b7f0530403ded2dc35ae28",
+      "request_p50_ms": 452.78958400012925,
+      "forward_p50_ms": 450.4672080511227,
+      "prepare_p50_ms": 2.283542009536177,
+      "tokens": 558
+    },
+    {
+      "question_id": "8056751559261f1f795407eca054da90f0494c0339b6d8a6f460d92624aaa969",
+      "request_p50_ms": 583.3432080107741,
+      "forward_p50_ms": 580.7755829882808,
+      "prepare_p50_ms": 2.526374999433756,
+      "tokens": 646
+    },
+    {
+      "question_id": "56387957d290b514028572d1a632cf2ff472ba7f09060f97a3af3e6f0700b19c",
+      "request_p50_ms": 534.6539170132019,
+      "forward_p50_ms": 531.9329170160927,
+      "prepare_p50_ms": 2.67837499268353,
+      "tokens": 637
+    }
+  ],
+  "rejections": [],
+  "calibrated_correctness_established": false,
+  "quality_matched_speedup_established": false,
+  "limits": "Independent encoder prompts/dtype/runtime; not identical Bonsai token streams. Only canonical questions count in quality N. Rejected inputs are incorrect in population accuracy; probability metrics cover scored cases only.",
+  "protocol": "geist-decision-encoder-report-v1",
+  "adapter": {
+    "adapter": "laya",
+    "device": "cpu",
+    "dtype": "float32",
+    "attention": "sdpa",
+    "compile": false,
+    "max_tokens": 1024,
+    "native_context": 1024,
+    "head_max_tokens": 256,
+    "capabilities": [
+      "choice",
+      "score",
+      "noul"
+    ],
+    "prompt_policy": "laya-native-lossless-choice-v1",
+    "calibration": "checkpoint temperatures with SDK bounds; not fitted or validated on MMLU",
+    "sdk_policy": "native builder/model; no SDK fallback or input truncation"
+  },
+  "setup_ms": 1984.0233749710023,
+  "campaign_wall_ms": 10135.782916971948,
+  "host_load_end": [
+    4.6767578125,
+    5.2255859375,
+    8.95361328125
+  ],
+  "manifest_sha256": "e261b2d540b1383f6caed0a0bb009bf0a18ef436eeb6363598d4bd6ab48a4503",
+  "samples_sha256": "d33e952d002181a92ccd35630de01fead7aebe799a53b636a908ffdedcb3b6a6",
+  "peak_process_rss_bytes": 2949726208
+}

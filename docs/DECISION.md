@@ -287,3 +287,8 @@ are retained but their final-answer quality has not been evaluated. This is
 one smoke example, not independent evidence of task accuracy, reasoning
 quality, calibrated confidence, or Jev parity. #586 optimizes the head; #587
 must establish quality and latency on representative held-out tasks.
+
+For the offline MMLU preparation, final-answer parsing, calibration and paired
+quality gates added under #587, see [DECISION_EVALUATION.md](DECISION_EVALUATION.md).
+That framework retains separate exploratory and held-out runs; it supplies no
+MMLU quality evidence until its declared campaign is actually executed.

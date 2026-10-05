@@ -1,0 +1,244 @@
+{
+  "protocol": "geist-decision-campaign-plan-v1",
+  "tracking_issue": 587,
+  "status": "completed_development_pilot",
+  "user_confirmed_date": "2026-10-04",
+  "confirmed": {
+    "platforms": [
+      "Apple Silicon CPU NEON",
+      "Metal"
+    ],
+    "checkpoint": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+    "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+    "dataset": "cais/mmlu",
+    "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+    "shots": 5,
+    "noninferiority_margin_pp": 2.0,
+    "confidence": 0.95,
+    "first_campaign": "small development pilot; not a held-out acceptance run",
+    "quality_sample_unit": "unique canonical question; not a timing repeat or label rotation",
+    "pilot": {
+      "overlap_policy": "exclude",
+      "split": "development",
+      "per_subject": 1,
+      "subject_limit": 8,
+      "rotations": 1,
+      "backend_order": [
+        "metal",
+        "cpu_neon"
+      ],
+      "decode_cap": 512,
+      "warmup": 0,
+      "repeats": 1,
+      "total_trials_per_arm": 2,
+      "queries_per_backend": 128,
+      "population": "explicitly reported cleaned MMLU subset"
+    }
+  },
+  "pending": [],
+  "no_quality_result": false,
+  "budget_planning_only": {
+    "source": "benchmark/results/DECISION_SELECTED_ROWS_2026-10-04.json; benchmark/results/TERNARY.md",
+    "assumed_mean_prompt_tokens_per_profile": 1000,
+    "prefill_rate_tokens_per_second": {
+      "cpu_neon": [
+        11,
+        16
+      ],
+      "metal": [
+        72,
+        111
+      ]
+    },
+    "decode_rate_tokens_per_second": {
+      "cpu_neon": [
+        9,
+        10
+      ],
+      "metal": [
+        15.5,
+        20
+      ]
+    },
+    "formula_seconds": "128*mean_prompt_tokens/prefill_rate + 16*generated_tokens/decode_rate",
+    "limits": "Planning spans, not confidence intervals or a measured campaign. Prompt lengths come from the expressly hypothetical tokenizer-only audit; EOS distribution is unmeasured. Excludes preparation/setup and external load; longer contexts can lower rates.",
+    "earlier_uniform_1000_token_scenario_minutes": {
+      "cpu_neon": [
+        147,
+        210
+      ],
+      "metal": [
+        26,
+        39
+      ]
+    },
+    "actual_hypothetical_prompt_tokens_across_128_queries": 71360,
+    "formula_for_hypothetical_cases_seconds": "71360/prefill_rate + 8192/decode_rate (all 16 generations reach cap512)",
+    "minutes_for_hypothetical_cases_if_all_generations_reach_cap512": {
+      "cpu_neon": [
+        88,
+        124
+      ],
+      "metal": [
+        18,
+        26
+      ]
+    }
+  },
+  "hypothetical_prompt_audit": {
+    "conditions": "Tokenizer-only preview performed before approval; selected conditions are now approved: exclude, per_subject1, subject_limit8; development only, five fixed dev shots, rotation0; template date2026-10-04, xhigh",
+    "records": [
+      {
+        "subject": "clinical_knowledge",
+        "source_validation_index": 62,
+        "chat_direct_tokens": 436,
+        "chat_reasoning_tokens": 476,
+        "cloze_tokens": 399
+      },
+      {
+        "subject": "electrical_engineering",
+        "source_validation_index": 223,
+        "chat_direct_tokens": 487,
+        "chat_reasoning_tokens": 527,
+        "cloze_tokens": 450
+      },
+      {
+        "subject": "high_school_biology",
+        "source_validation_index": 319,
+        "chat_direct_tokens": 585,
+        "chat_reasoning_tokens": 625,
+        "cloze_tokens": 548
+      },
+      {
+        "subject": "high_school_physics",
+        "source_validation_index": 528,
+        "chat_direct_tokens": 622,
+        "chat_reasoning_tokens": 662,
+        "cloze_tokens": 585
+      },
+      {
+        "subject": "international_law",
+        "source_validation_index": 702,
+        "chat_direct_tokens": 631,
+        "chat_reasoning_tokens": 671,
+        "cloze_tokens": 594
+      },
+      {
+        "subject": "moral_disputes",
+        "source_validation_index": 886,
+        "chat_direct_tokens": 514,
+        "chat_reasoning_tokens": 554,
+        "cloze_tokens": 477
+      },
+      {
+        "subject": "nutrition",
+        "source_validation_index": 1019,
+        "chat_direct_tokens": 655,
+        "chat_reasoning_tokens": 695,
+        "cloze_tokens": 618
+      },
+      {
+        "subject": "professional_psychology",
+        "source_validation_index": 1358,
+        "chat_direct_tokens": 601,
+        "chat_reasoning_tokens": 641,
+        "cloze_tokens": 564
+      }
+    ],
+    "candidate_ids": {
+      "chat": [
+        32,
+        33,
+        34,
+        35
+      ],
+      "cloze": [
+        357,
+        417,
+        351,
+        414
+      ]
+    },
+    "prefix_plus_exactly_one_token_checks_passed": 96,
+    "add_bos": false,
+    "commands": {
+      "BOS": 1,
+      "TOK": 120,
+      "QUIT": 1,
+      "SCORE": 0,
+      "GEN": 0,
+      "decision": 0
+    },
+    "quality_or_timing_result": false
+  },
+  "no_held_out_acceptance_result": true,
+  "pilot_evidence": {
+    "result": "benchmark/results/DECISION_MMLU_PILOT_2026-10-04.json",
+    "writeup": "benchmark/results/DECISION_MMLU_PILOT_2026-10-04.md",
+    "raw_bundle": "benchmark/results/raw/decision-mmlu-pilot-2026-10-04",
+    "measured_source_revision": "13261ac73fb2841ef565bcabda5473eacd1e8ce0",
+    "queries_per_backend": 128,
+    "quality_n": 8,
+    "quality_matched_speedup_established": false,
+    "noninferiority_established": false,
+    "external_prism_parity_established": false,
+    "jev_equivalence_established": false
+  },
+  "pretrained_encoder_baselines": {
+    "status": "completed_development_reference_comparison",
+    "date": "2026-10-05",
+    "tracking_issue": 587,
+    "native_geist_c_encoder_backend_implemented": false,
+    "feature_opt_in": "--enable-encoder-backends / create_backend(enabled=True)",
+    "default_enabled": false,
+    "platforms": [
+      "PyTorch CPU",
+      "PyTorch MPS on Apple Silicon"
+    ],
+    "models": [
+      {
+        "repo": "answerdotai/ModernBERT-Large-Instruct",
+        "revision": "9943452941e79c8c35ede72e78a38a8175a79bb5"
+      },
+      {
+        "repo": "convaiinnovations/laya",
+        "subfolder": "typed-decisions",
+        "revision": "7b928d828b7b0e022f929d9bd2e44165aa270148"
+      }
+    ],
+    "initial_policies": {
+      "shots": [
+        0,
+        5
+      ],
+      "max_tokens": 1024,
+      "dtype": "float32",
+      "threads": 6,
+      "warmup": 1,
+      "repeats": 1,
+      "rotations": 1
+    },
+    "pilot_questions": 8,
+    "development_questions": 778,
+    "calibration_or_test_model_calls": 0,
+    "post_initial_geometry_exploration": {
+      "adapter": "modernbert",
+      "shots": 5,
+      "max_tokens": 8192,
+      "continuous_run_succeeded": false,
+      "explicit_process_restart_count": 1,
+      "disjoint_question_counts": [
+        614,
+        164
+      ]
+    },
+    "quality_matched_speedup_established": false,
+    "jev_equivalence_established": false,
+    "result": "benchmark/results/DECISION_ENCODERS_2026-10-05.json",
+    "writeup": "benchmark/results/DECISION_ENCODERS_2026-10-05.md",
+    "raw_bundle": "benchmark/results/raw/decision-encoders-2026-10-05",
+    "training_jobs": 0,
+    "paid_compute_jobs": 0,
+    "training_issue_588_still_gated": true
+  }
+}

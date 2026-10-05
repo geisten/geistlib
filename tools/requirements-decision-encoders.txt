@@ -1,0 +1,8 @@
+# Optional reference evaluation only; never part of the geist build.
+torch==2.12.0
+transformers==5.7.0
+laya==0.3.26
+numpy==2.4.4
+pyarrow==24.0.0
+safetensors==0.7.0
+huggingface-hub==1.13.0

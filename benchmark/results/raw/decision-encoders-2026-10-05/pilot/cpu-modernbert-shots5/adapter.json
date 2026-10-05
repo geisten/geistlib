@@ -1,0 +1,14 @@
+{
+  "adapter": "modernbert",
+  "device": "cpu",
+  "dtype": "float32",
+  "attention": "sdpa",
+  "reference_compile": false,
+  "max_tokens": 1024,
+  "native_context": 8192,
+  "capabilities": [
+    "choice"
+  ],
+  "calibration": "none; candidate-conditional softmax",
+  "prompt_policy": "modernbert-instruct-mask-choice-v1"
+}
