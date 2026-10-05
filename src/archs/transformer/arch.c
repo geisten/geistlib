@@ -365,6 +365,19 @@ static size_t op_kv_len(const void *session) {
     return sess != nullptr ? sess->kv_len + (sess->advance_deferred ? 1 : 0) : 0;
 }
 
+/* #622: a deferred advance is part of the length, so settle it first. */
+static enum geist_status op_truncate(void *session, size_t n) {
+    const enum geist_status s = settle(session);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    return transformer_session_truncate((struct transformer_arch_session *) session, n);
+}
+
+static enum geist_status op_kv_bytes_per_token(size_t *out_bytes, const void *session) {
+    return transformer_kv_bytes_per_token(out_bytes, session);
+}
+
 /* Snapshot / restore (#548, snapshot.c). No settle: a decode_step whose
  * forward is still owed is part of the state the image records, so taking
  * one costs no forward pass. */
@@ -428,6 +441,8 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .verify_forward           = op_verify_forward,
         .kv_truncate              = op_kv_truncate,
         .kv_len                   = op_kv_len,
+        .truncate                 = op_truncate,
+        .kv_bytes_per_token       = op_kv_bytes_per_token,
         .session_alloc            = op_session_alloc,
         .session_free             = op_session_free,
         .logits_vocab_size        = op_logits_vocab_size,

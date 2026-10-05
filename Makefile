@@ -24,7 +24,7 @@ TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
 # Phony targets — do not match files.
-.PHONY: all lib bin fuzz fuzz-libfuzzer fuzz-libfuzzer-run run agent-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-synth bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
+.PHONY: all lib bin fuzz fuzz-libfuzzer fuzz-libfuzzer-run run agent-contract-smoke runtime-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-synth bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -81,6 +81,14 @@ AGENT_CONTRACT_SMOKE := $(BIN_DIR)/examples/agent_contract_smoke
 agent-contract-smoke: $(AGENT_CONTRACT_SMOKE)
 	@$(AGENT_CONTRACT_SMOKE)
 $(AGENT_CONTRACT_SMOKE): examples/agent_contract_smoke.c $(LIB_FILE) include/geist.h include/geist_util.h
+	@mkdir -p $(@D)
+	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -Iinclude $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)
+
+# The API geist-runtime builds on (#622), enforced the same way.
+RUNTIME_CONTRACT_SMOKE := $(BIN_DIR)/examples/runtime_contract_smoke
+runtime-contract-smoke: $(RUNTIME_CONTRACT_SMOKE)
+	@$(RUNTIME_CONTRACT_SMOKE)
+$(RUNTIME_CONTRACT_SMOKE): examples/runtime_contract_smoke.c $(LIB_FILE) include/geist.h include/geist_util.h
 	@mkdir -p $(@D)
 	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -Iinclude $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)
 

@@ -530,6 +530,62 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
     }
 }
 
+enum geist_status transformer_session_truncate(struct transformer_arch_session *sess, size_t n) {
+    if (sess == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_backend *be = sess->model->backend;
+    if (n > sess->kv_len || n < sess->prefix_length) {
+        geist_backend_set_error(be,
+                                GEIST_E_INVALID_ARG,
+                                "truncate: %zu is outside [%zu, %zu] (the pinned prefix and "
+                                "the session's length)",
+                                n,
+                                sess->prefix_length,
+                                sess->kv_len);
+        return GEIST_E_INVALID_ARG;
+    }
+    if (n == sess->kv_len) {
+        return GEIST_OK; /* nothing to drop; pending logits stay valid */
+    }
+    if (n == 0) {
+        transformer_session_reset(sess); /* prefix_length is 0 here */
+        return GEIST_OK;
+    }
+    /* Gated-DeltaNet state has no way back to a position (#281): only to
+     * empty, or through a snapshot. */
+    if (sess->dn_conv_state != nullptr || sess->dn_S != nullptr) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "truncate: the model has recurrent (DeltaNet) layers; use "
+                                "geist_session_snapshot / geist_session_restore");
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* The MTP draft head keeps its own cache in step with the target. */
+    if (sess->mtp_enabled) {
+        geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "truncate: MTP drafting is enabled");
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* KIVI groups below kivi_drained_count are 2-bit committed and cannot be
+     * un-quantized; the speculative rewind clamps there, this refuses. */
+    if (sess->kv_kivi_enabled && n < sess->kivi_drained_count) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "truncate: positions below %zu are in the compressed KIVI region",
+                                sess->kivi_drained_count);
+        return GEIST_E_UNSUPPORTED;
+    }
+    transformer_recurrent_txn_commit(sess);
+    sess->kv_len = n;
+    if (sess->kv_kivi_enabled) {
+        sess->kivi_residual_count = n - sess->kivi_drained_count;
+    }
+    sess->logits_valid       = false;
+    sess->next_token_pending = 0;
+    sess->advance_deferred   = false;
+    return GEIST_OK;
+}
+
 enum geist_status transformer_session_apply_opts(struct transformer_arch_session *sess,
                                                  const struct geist_session_opts *opts) {
     if (sess == nullptr || opts == nullptr) {

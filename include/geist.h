@@ -184,7 +184,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
  * list's scope — a different type from the one defined below. */
 struct geist_session_opts;
 
-/* @stability EXPERIMENTAL
+/* @stability STABLE since 0.12.0 — geist-runtime contract (#622).
  * Like geist_model_load, but the load-time options also size the buffers the
  * model owns — RoPE tables and the default session's scratch. geist_model_load
  * passes nullptr here, which keeps the architecture's own defaults: for a
@@ -215,7 +215,7 @@ enum geist_status geist_model_load_from_memory(const void           *data,
 void        geist_model_destroy(struct geist_model *m);
 const char *geist_model_errmsg(const struct geist_model *m);
 
-/* @stability EXPERIMENTAL
+/* @stability STABLE since 0.12.0 — geist-runtime contract (#622).
  * geist_model_load_from_memory with load-time options, the in-memory twin of
  * geist_model_load_with_opts: `opts->max_seq_len` sets the model's sequence
  * cap (0 or nullptr opts: 4096), which bounds every session created on it.
@@ -234,6 +234,23 @@ enum geist_status geist_model_load_from_memory_with_opts(const void             
  * mapping the engine can supply. The returned pointer is owned by the model and
  * stays valid until geist_model_destroy. */
 const char *geist_model_arch(const struct geist_model *m);
+
+/* @stability EXPERIMENTAL (#622)
+ * A string entry of the model's GGUF metadata ("tokenizer.chat_template",
+ * "general.name", …), kept from load. nullptr if the key is absent or its
+ * value is not a string. The value is NUL-terminated and owned by the model
+ * until geist_model_destroy; GGUF strings may contain NUL bytes, so
+ * *out_len (when out_len is not nullptr) gives the full length. One parser
+ * for the file: a runtime need not read the GGUF a second time, which a
+ * model loaded from memory would not even allow. */
+const char *geist_model_metadata_str(const struct geist_model *m, const char *key, size_t *out_len);
+
+/* @stability EXPERIMENTAL (#622)
+ * The context length the model was trained for (<arch>.context_length), or
+ * 0 if the GGUF does not say. Independent of the max_seq_len a model or
+ * session was created with: that is the caller's choice, this is the
+ * model's own limit. */
+[[nodiscard]] size_t geist_model_context_length(const struct geist_model *m);
 
 /* ====================================================================== */
 /* Session                                                                 */

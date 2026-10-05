@@ -132,6 +132,18 @@ bool        gguf_get_meta_u32(const struct gguf_ctx *ctx, const char *key, uint3
 bool        gguf_get_meta_f32(const struct gguf_ctx *ctx, const char *key, float *out);
 bool        gguf_get_meta_bool(const struct gguf_ctx *ctx, const char *key, bool *out);
 
+/* Metadata entries by position, in file order (#622: the model keeps its
+ * string entries after the ctx closes). gguf_meta_string_at writes entry i's
+ * key and string value (length-prefixed in GGUF, so *out_len, and not
+ * NUL-terminated) and returns true; false, with the outputs nullptr / 0, when
+ * i is out of range or entry i is not a string. */
+size_t gguf_meta_count(const struct gguf_ctx *ctx);
+bool   gguf_meta_string_at(const struct gguf_ctx *ctx,
+                           size_t                 i,
+                           const char           **out_key,
+                           const char           **out_val,
+                           size_t                *out_len);
+
 /* Array access (P1.5.f). Returns false when the key is missing or the
  * value type isn't ARRAY. Caller receives the GGUF element type code
  * (GGUF_VT_*), element count, and a pointer at the first element's
