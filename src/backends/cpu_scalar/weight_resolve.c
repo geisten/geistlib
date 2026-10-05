@@ -138,25 +138,18 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
     if (w->dtype == GEIST_DTYPE_F32) {
         w->linear_m1 = cpu_scalar_w_f32_m1;
         w->linear_mN = cpu_scalar_w_f32_mN;
-        size_t block, bytes, tail;
-        if (native_rows && quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) &&
-            tail == 0) {
-            w->linear_rows      = geist_cpu_selected_rows;
-            w->linear_rows_tile = 1;
-        }
-        return GEIST_OK;
-    }
-    /* Everything the reference decodes; its list is the one list. */
-    if (geist_linear_ref_decodes(w->dtype)) {
+    } else if (geist_linear_ref_decodes(w->dtype)) {
+        /* Everything the reference decodes; its list is the one list. */
         w->linear_m1 = cpu_scalar_w_quant_m1;
         w->linear_mN = cpu_scalar_w_quant_mN;
-        size_t block, bytes, tail;
-        if (native_rows && quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) &&
-            tail == 0) {
-            w->linear_rows      = geist_cpu_selected_rows;
-            w->linear_rows_tile = 1;
-        }
-        return GEIST_OK;
+    } else {
+        return GEIST_E_UNSUPPORTED;
     }
-    return GEIST_E_UNSUPPORTED;
+    size_t block, bytes, tail;
+    if (native_rows && quant_block_layout((enum geist_dtype) w->dtype, &block, &bytes, &tail) &&
+        tail == 0) {
+        w->linear_rows      = geist_cpu_selected_rows;
+        w->linear_rows_tile = 1;
+    }
+    return GEIST_OK;
 }
