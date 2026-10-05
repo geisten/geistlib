@@ -49,9 +49,8 @@
 
 #include "backend_state.h"
 #include "kernel_q4_0_avx512_vnni.h"
-#include "kernel_w4a8.h" /* w4a8_dispatcher_tier: the ISA gate, GEIST_FORCE_ISA-clamped */
+#include "linear_util.h"
 
-#include "checked.h"
 #include "linear_ref.h"
 #include "quant.h"
 #include "quant_blocks.h"
@@ -127,13 +126,6 @@ static inline __m256i unpack_nibbles(const uint8_t qs[static 16]) {
 static inline __m256i block_p(__m256i q, const int8_t *xq) {
     const __m256i x = _mm256_loadu_si256((const __m256i *) xq);
     return _mm256_madd_epi16(_mm256_maddubs_epi16(q, x), _mm256_set1_epi16(1));
-}
-
-static inline float hsum_ps(__m256 s) {
-    __m128 s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
-    s4        = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
-    s4        = _mm_add_ss(s4, _mm_movehdup_ps(s4));
-    return _mm_cvtss_f32(s4);
 }
 
 /* acc + d dx (P - 8 S) for one Q4_0 block. -8 S goes into lane 0 of the
@@ -357,19 +349,6 @@ static void dot_rows_iq4_xs(size_t         nb,
     dot_rows_iq4(true, nb, n_in, row, qx, dx, out);
 }
 
-/* The calling thread's workspace with room for m quantized activation rows
- * (int8 values, one fp32 scale and one int32 sum per block), or nullptr. */
-static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m, size_t n_in) {
-    size_t acts_bytes = 0, n_blocks = 0, scale_bytes = 0, sum_bytes = 0;
-    if (be == nullptr || be->state == nullptr || ckd_mul(&acts_bytes, m, n_in) ||
-        ckd_mul(&n_blocks, m, n_in / QK) || ckd_mul(&scale_bytes, n_blocks, sizeof(float)) ||
-        ckd_mul(&sum_bytes, n_blocks, sizeof(int32_t))) {
-        return nullptr;
-    }
-    return cpu_x86_ws_acquire_mN(
-            (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, 0);
-}
-
 static void cpu_x86_linear_q4_0_m1(const float               *x,
                                    const struct geist_weight *w,
                                    struct geist_backend      *be,
@@ -377,7 +356,7 @@ static void cpu_x86_linear_q4_0_m1(const float               *x,
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, 1, n_in);
+    struct cpu_x86_workspace *ws    = acquire_acts(be, 1, n_in, QK, QK);
     if (ws == nullptr) {
         geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
@@ -414,7 +393,7 @@ static void cpu_x86_linear_q4_0_mN(size_t                     m,
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in);
+    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, QK);
     if (ws == nullptr) {
         geist_linear_ref(m, x, w, y);
         return;
@@ -482,7 +461,7 @@ static void cpu_x86_linear_q4_0_mN_vnni(size_t                     m,
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in);
+    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, QK);
     if (ws == nullptr) {
         geist_linear_ref(m, x, w, y);
         return;
@@ -534,7 +513,7 @@ static void cpu_x86_linear_iq4_m1(const float               *x,
     const bool                xs    = w->dtype == GEIST_DTYPE_IQ4_XS;
     const size_t              row_b = iq4_row_bytes(xs, n_in);
     const uint8_t            *raw   = (const uint8_t *) w->raw;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, 1, n_in);
+    struct cpu_x86_workspace *ws    = acquire_acts(be, 1, n_in, QK, QK);
     if (ws == nullptr) {
         geist_linear_ref(1, x, w, y);
         return;
@@ -562,7 +541,7 @@ static void cpu_x86_linear_iq4_mN(size_t                     m,
     const bool                xs    = w->dtype == GEIST_DTYPE_IQ4_XS;
     const size_t              row_b = iq4_row_bytes(xs, n_in);
     const uint8_t            *raw   = (const uint8_t *) w->raw;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in);
+    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, QK);
     if (ws == nullptr) {
         geist_linear_ref(m, x, w, y);
         return;
@@ -604,15 +583,6 @@ static void cpu_x86_linear_iq4_mN(size_t                     m,
             }
         }
     }
-}
-
-/* Whether this host may run kernel_q4_0_avx512_vnni.c: the dispatcher tier
- * (which honours GEIST_FORCE_ISA) and every AVX-512 subset that TU is
- * compiled for. Decided here, outside that TU — see mk/backend-cpu_x86.mk. */
-static bool vnni_tiles_usable(void) {
-    return w4a8_dispatcher_tier() >= W4A8_ISA_AVX512_VNNI && __builtin_cpu_supports("avx512f") &&
-           __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512dq") &&
-           __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512vnni");
 }
 
 void cpu_x86_linear_q4_0_bind(struct geist_weight *w) {

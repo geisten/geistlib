@@ -30,9 +30,8 @@
 
 #include "linear_q4k_raw.h"
 
-#include "backend_state.h"
+#include "linear_util.h"
 
-#include "checked.h"
 #include "linear_ref.h"
 #include "quant.h"
 #include "quant_blocks.h"
@@ -116,13 +115,6 @@ unpack_scales(const uint8_t packed[static 12], uint8_t sc[static 8], uint8_t mn[
     memcpy(sc + 4, &s1, 4);
     memcpy(mn, &m0, 4);
     memcpy(mn + 4, &m1, 4);
-}
-
-static inline float hsum_ps(__m256 s) {
-    __m128 s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
-    s4        = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
-    s4        = _mm_add_ss(s4, _mm_movehdup_ps(s4));
-    return _mm_cvtss_f32(s4);
 }
 
 /* One superblock format: Q4_K (4-bit q) or Q5_K (q gets a fifth bit from
@@ -269,20 +261,6 @@ static inline int32_t min_term(const uint8_t mn[static 8], const int32_t sx[stat
     }
 }
 
-/* The calling thread's workspace with room for m quantized activation rows
- * (int8 values, one fp32 scale per 256 and one int32 sum per 32), or
- * nullptr. */
-static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m, size_t n_in) {
-    size_t acts_bytes = 0, n_blocks = 0, scale_bytes = 0, n_sums = 0, sum_bytes = 0;
-    if (be == nullptr || be->state == nullptr || ckd_mul(&acts_bytes, m, n_in) ||
-        ckd_mul(&n_blocks, m, n_in / QK) || ckd_mul(&scale_bytes, n_blocks, sizeof(float)) ||
-        ckd_mul(&n_sums, m, n_in / 32) || ckd_mul(&sum_bytes, n_sums, sizeof(int32_t))) {
-        return nullptr;
-    }
-    return cpu_x86_ws_acquire_mN(
-            (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, 0);
-}
-
 [[gnu::always_inline]] static inline void linear_m1(struct fmt                 f,
                                                     const float               *x,
                                                     const struct geist_weight *w,
@@ -291,7 +269,8 @@ static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, 1, n_in);
+    struct cpu_x86_workspace *ws =
+            acquire_acts(be, 1, n_in, QK, 32); /* a scale per 256, a sum per 32 */
     if (ws == nullptr) {
         geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
@@ -319,7 +298,7 @@ static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
     const size_t              nsx   = n_in / 32;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in);
+    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, 32);
     if (ws == nullptr) {
         geist_linear_ref(m, x, w, y);
         return;

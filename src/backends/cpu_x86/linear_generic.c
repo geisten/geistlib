@@ -29,6 +29,7 @@
 #include "linear_generic.h"
 
 #include "backend_state.h"
+#include "linear_util.h"
 
 #include "checked.h"
 #include "linear_ref.h"
@@ -105,31 +106,11 @@ static inline float dot_f32(size_t n, const float *restrict x, const float *rest
     for (; i + 8 <= n; i += 8) {
         s0 = _mm256_fmadd_ps(_mm256_loadu_ps(x + i), _mm256_loadu_ps(row + i), s0);
     }
-    const __m256 s  = _mm256_add_ps(_mm256_add_ps(s0, s1), _mm256_add_ps(s2, s3));
-    __m128       s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
-    s4              = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
-    s4              = _mm_add_ss(s4, _mm_movehdup_ps(s4));
-    float acc       = _mm_cvtss_f32(s4);
+    float acc = hsum_ps(_mm256_add_ps(_mm256_add_ps(s0, s1), _mm256_add_ps(s2, s3)));
     for (; i < n; i++) {
         acc += x[i] * row[i];
     }
     return acc;
-}
-
-static inline size_t team_max(void) {
-#if defined(_OPENMP)
-    return (size_t) omp_get_max_threads();
-#else
-    return 1;
-#endif
-}
-
-static inline size_t team_id(void) {
-#if defined(_OPENMP)
-    return (size_t) omp_get_thread_num();
-#else
-    return 0;
-#endif
 }
 
 /* Everything a call needs, or false with nothing acquired. One dequantized
