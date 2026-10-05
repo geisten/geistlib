@@ -412,6 +412,51 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
     return s;
 }
 
+/* The per-position share of the caches allocate_runtime_session creates
+ * below (#622), branch for branch: keep the two in step. Fixed parts (the
+ * KIVI residual ring, block alignment, scratch, DeltaNet state) do not grow
+ * with the length and are left out; the KIVI per-channel K scales and zeros,
+ * one row per KIVI_K_GROUP_SIZE positions, are counted per position,
+ * rounded up. */
+enum geist_status transformer_kv_bytes_per_token(size_t                                *out_bytes,
+                                                 const struct transformer_arch_session *sess) {
+    if (out_bytes == nullptr || sess == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out_bytes                                 = 0;
+    const struct transformer_arch_state *st    = sess->model;
+    const size_t                         kv    = st->n_kv_heads;
+    size_t                               total = 0;
+    for (size_t li = 0; li < (size_t) st->n_layers; li++) {
+        if (st->layers[li].is_kv_shared || st->layers[li].mixer == GEIST_MIXER_DELTANET) {
+            continue;
+        }
+        const size_t row = kv * st->layers[li].head_dim; /* K (or V) elements per position */
+        size_t       per = 0;
+        if (sess->kv_kivi_enabled) {
+            const size_t R      = KIVI_K_GROUP_SIZE;
+            const size_t k_rows = (2 * row * sizeof(float) + R - 1) / R; /* K scales + zeros */
+            per                 = 2 * (row / 4) + 2 * kv * sizeof(float) + k_rows;
+        } else if (sess->kv_int8_enabled) {
+            const size_t data = sess->kv_int4_packed_enabled ? row / 2 : row * sizeof(int8_t);
+            per               = 2 * data + 2 * kv * sizeof(float); /* + K, V scales */
+        } else {
+            per = 2 * row * (sess->kv_f16_enabled ? 2u : sizeof(float));
+        }
+        if (ckd_add(&total, total, per)) {
+            return GEIST_E_INVALID_ARG;
+        }
+    }
+    if (st->n_mtp_layers > 0) { /* the draft head's own dense FP32 cache */
+        const size_t row = kv * st->mtp_layers[0].block.head_dim;
+        if (ckd_add(&total, total, 2 * row * sizeof(float))) {
+            return GEIST_E_INVALID_ARG;
+        }
+    }
+    *out_bytes = total;
+    return GEIST_OK;
+}
+
 /* P1.2.f: session-owned runtime allocs — KV caches + scratch pool +
  * per-forward arena + ones-row scratch. Operates on the session currently
  * installed at st->sess; caller must install the target session before

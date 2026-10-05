@@ -40,8 +40,8 @@ extern "C" {
 geist_token_t geist_model_eos_token(const struct geist_model *m);
 geist_token_t geist_model_bos_token(const struct geist_model *m);
 
-/* @stability EXPERIMENTAL — the tokenizer's own add_bos_token /
- * add_eos_token metadata.
+/* @stability STABLE since 0.12.0 — the tokenizer's own add_bos_token /
+ * add_eos_token metadata (geist-runtime contract, #622).
  *
  * geist_session_tokenize returns CONTENT tokens only, by design: the caller
  * decides what to wrap them in. These two say what the model was trained to
@@ -208,6 +208,35 @@ enum geist_status geist_session_attach_video(struct geist_session *s,
 enum geist_status
 geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t *ids);
 
+/* @stability EXPERIMENTAL (#622) — going back in a conversation.
+ *
+ * geist_session_length: the positions in the session's state now (prefilled
+ * and decoded tokens; a token decode_step returned counts), 0 if unknown.
+ *
+ * geist_session_truncate: keep the first n positions and drop the rest, so
+ * the next prefill continues at n — a chat runtime rewinds to an earlier
+ * message without processing the kept part again. The pending logits are
+ * gone: prefill before the next decode_step. n equal to the length changes
+ * nothing; n = 0 empties the session like geist_session_reset.
+ *   GEIST_E_INVALID_ARG  n is past the length or below a pinned prefix.
+ *   GEIST_E_UNSUPPORTED  the state cannot return to n: recurrent (DeltaNet)
+ *                        layers such as Qwen3.5 (only n = 0 or n = length;
+ *                        use geist_session_snapshot / _restore), positions
+ *                        in the compressed KIVI region, MTP drafting, an
+ *                        architecture without truncation. The session is
+ *                        unchanged; the caller can reset and prefill again.
+ *
+ * geist_session_kv_bytes_per_token: the KV-cache bytes one more position
+ * costs in this session, for its resolved KV mode (kv_mode, the
+ * GEIST_KV_* env and the backend decide it at session_create). Buffers that
+ * do not grow with the length (scratch, recurrent state, the KIVI residual
+ * ring) are not included. With the weights' size this lets a caller choose
+ * the longest max_seq_len that fits into memory. */
+size_t                          geist_session_length(const struct geist_session *s);
+[[nodiscard]] enum geist_status geist_session_truncate(struct geist_session *s, size_t n);
+[[nodiscard]] enum geist_status geist_session_kv_bytes_per_token(const struct geist_session *s,
+                                                                 size_t *out_bytes);
+
 /* @stability EXPERIMENTAL — session snapshot / restore (#548).
  *
  * Save a session's complete decoding state into a caller buffer and put it
@@ -247,10 +276,8 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
  * backend transfer that fails during restore leaves the session reset. */
 [[nodiscard]] enum geist_status geist_session_snapshot_size(size_t               *out_bytes,
                                                             struct geist_session *s);
-[[nodiscard]] enum geist_status geist_session_snapshot(size_t               *out_bytes,
-                                                       size_t                capacity,
-                                                       void                 *buf,
-                                                       struct geist_session *s);
+[[nodiscard]] enum geist_status
+geist_session_snapshot(size_t *out_bytes, size_t capacity, void *buf, struct geist_session *s);
 [[nodiscard]] enum geist_status
 geist_session_restore(size_t n_bytes, const void *buf, struct geist_session *s);
 

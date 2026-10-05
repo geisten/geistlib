@@ -115,6 +115,38 @@ selection and a supported loaded model/backend pair; its result metadata reports
 row work, logical staging bytes and selected-head time. Unsupported modes never
 silently fall back to another execution path.
 
+## The geist-runtime contract
+
+[geist-runtime](https://github.com/geisten/geist-runtime) is the chat layer over
+libgeist: templates, streaming text, a conversation it can rewind, a context
+window chosen to fit into memory. `examples/runtime_contract_smoke.c` binds
+every symbol it calls to a typed function pointer (`make
+runtime-contract-smoke`, in CI and in every release job), as the agent gate
+does.
+
+STABLE: the backend, model and session lifecycle above, plus
+`geist_backend_name`, `geist_backend_errmsg`, `geist_model_errmsg`,
+`geist_session_errmsg` and, promoted for this contract in 0.12.0:
+
+| Symbol | Why the runtime needs it |
+| :-- | :-- |
+| `geist_model_load_with_opts`, `geist_model_load_from_memory_with_opts` | loading with the window it chose (`max_seq_len`) |
+| `geist_model_add_bos`, `geist_model_add_eos` | wrapping the rendered prompt the way the model was trained |
+
+EXPERIMENTAL (#622), part of the gate so that a change cannot go unnoticed:
+
+| Symbol | Why the runtime needs it |
+| :-- | :-- |
+| `geist_model_metadata_str` | the chat template and other string metadata, without a second GGUF parser (and for models loaded from memory) |
+| `geist_model_context_length` | the trained window, the upper bound of the one it chooses |
+| `geist_session_length`, `geist_session_truncate` | rewinding a conversation without processing the kept part again |
+| `geist_session_kv_bytes_per_token` | choosing the longest window that fits into memory |
+
+`geist_session_truncate` refuses (GEIST_E_UNSUPPORTED, the session unchanged)
+where the state cannot return to a position: recurrent (DeltaNet) layers, the
+compressed KIVI region, MTP drafting. The runtime then resets and prefills
+the kept tokens again; for recurrent models, snapshots are the faster route.
+
 ## Consuming this contract
 
 Pin a minimum version and check it at compile time:
@@ -151,7 +183,11 @@ Two values bound how many tokens a session can hold:
   nullptr options or 0, the cap is 4096. The model sizes the buffers it owns
   from it (RoPE tables and the default session's scratch), so a larger cap
   costs memory up front. The cap does not follow the GGUF's
-  `<arch>.context_length`.
+  `<arch>.context_length`; `geist_model_context_length` reports that value,
+  so a caller can choose a cap up to it (#622).
+- **What a position costs**: `geist_session_kv_bytes_per_token` gives a
+  session's KV-cache bytes per position for its resolved KV mode, so a
+  caller can pick the longest cap that fits into the memory it has.
 - **The session cap** is `geist_session_opts.max_seq_len` at
   `geist_session_create`, at most the model cap. A session that asks for more
   is refused. 0 means the model cap. Several sessions on one model may each

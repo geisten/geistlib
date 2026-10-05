@@ -35,6 +35,10 @@ struct mf_llama {
     /* attn_q stored as F16 instead of F32 (backends that widen or refuse
      * half-precision projections). */
     bool f16_q;
+    /* tokenizer.chat_template when set; its length in chat_template_len, so
+     * a template may contain NUL bytes (0: strlen). */
+    const char *chat_template;
+    size_t      chat_template_len;
 };
 
 /* Qwen3.5 geometry (qwen35.* keys). Block i is attention when
@@ -181,9 +185,17 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
     tf_put(&o, "GGUF", 4);
     tf_u32(&o, 3);
     tf_u64(&o, ts.n);
-    tf_u64(&o, 1 + n_u32 + 2 + (c->tok != nullptr ? TF_TOKENIZER_KEYS : 0));
+    tf_u64(&o,
+           1 + n_u32 + 2 + (c->tok != nullptr ? TF_TOKENIZER_KEYS : 0) +
+                   (c->chat_template != nullptr ? 1 : 0));
     mf_key(&o, "general.architecture", TF_GGUF_STRING);
     tf_gstr(&o, "llama", 5);
+    if (c->chat_template != nullptr) {
+        mf_key(&o, "tokenizer.chat_template", TF_GGUF_STRING);
+        tf_gstr(&o,
+                c->chat_template,
+                c->chat_template_len ? c->chat_template_len : strlen(c->chat_template));
+    }
     for (size_t i = 0; i < n_u32; i++) {
         mf_key(&o, u32[i].key, TF_GGUF_UINT32);
         tf_u32(&o, u32[i].v);
