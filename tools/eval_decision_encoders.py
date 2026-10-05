@@ -34,7 +34,10 @@ def load_cases(directory, split, purpose):
             or encoders.sha256(path) != meta["cases_sha256"]
             or encoders.sha256(audit_path) != meta["split_audit_sha256"]):
         raise ValueError("case/audit integrity mismatch")
-    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    # JSONL records are separated by LF, not Unicode paragraph separators
+    # which can legitimately occur inside a quoted MMLU question.
+    with path.open(encoding="utf-8") as stream:
+        rows = [json.loads(line) for line in stream if line.strip()]
     seen, examples, variants = set(), set(), defaultdict(set)
     for row in rows:
         data.validate_question(row)

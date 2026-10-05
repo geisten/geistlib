@@ -104,6 +104,20 @@ assert not ({'torch', 'transformers', 'laya'} & set(sys.modules))
         (directory / "metadata.json").write_text(json.dumps(meta))
         return records, meta
 
+    def test_jsonl_does_not_split_unicode_inside_a_question(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            rows, meta = self.bundle(directory)
+            rows[0]["question"] += "\u2028another paragraph"
+            rows[0]["question_id"] = data.question_key(rows[0])
+            path = directory / "development.jsonl"
+            path.write_text(json.dumps(rows[0], ensure_ascii=False) + "\n")
+            meta["cases_sha256"] = encoders.sha256(path)
+            (directory / "metadata.json").write_text(json.dumps(meta))
+            loaded = evaluation.load_cases(directory, "development", "pilot")[1]
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0]["question"], rows[0]["question"])
+
     def test_population_integrity_and_purpose_guards(self):
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder)
