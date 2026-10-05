@@ -210,7 +210,7 @@ class LayaBackend(TorchBackend):
                          "max_tokens": max_tokens, "native_context": native,
                          "head_max_tokens": self.cfg["head_max_len"], "capabilities": list(self.capabilities),
                          "prompt_policy": "laya-native-lossless-choice-v1",
-                         "calibration": "checkpoint temperatures; not fitted or validated on MMLU",
+                         "calibration": "checkpoint temperatures with SDK bounds; not fitted or validated on MMLU",
                          "sdk_policy": "native builder/model; no SDK fallback or input truncation"}
 
     @staticmethod
@@ -281,6 +281,7 @@ class LayaBackend(TorchBackend):
             validate_scores(logits, len(item["markers"]))
             temperature = self.cfg.get("temperature_by_options", {}).get(
                 self.common.temp_bucket(item["qtype"], len(logits)), self.cfg["temperature"][item["qtype"]])
+            temperature = self.common.clamp_temperature(temperature)
             p = probabilities(logits, temperature)
             answer = {"type": q["t"], "logits": logits, "probabilities": p, "temperature": temperature,
                       "answer_confidence": max(p), "input_ids": item["ids"],

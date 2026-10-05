@@ -83,7 +83,9 @@ Laya loads its full decision model with strict state-dict matching and uses
 SDK `build_sequence`, `collate_items` and `DecisionModel.forward`. Its adapter
 also exposes `decide(state, questions)` for typed `choice`, `score` and `noul`
 questions. No SDK CPU/AMP fallback is invoked. Its checkpoint temperature
-tables are retained; they are not calibration fitted or verified on MMLU.
+tables use the SDK's temperature bounds; they are not calibration fitted or
+verified on MMLU. The supplied `choice:11+` value is below the SDK minimum
+and is clamped; four-option MMLU uses a different, valid table entry.
 The act/escalate head is not used to route requests.
 
 The native Laya builder limits each option description to 48 tokens, may
