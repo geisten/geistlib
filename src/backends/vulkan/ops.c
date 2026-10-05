@@ -901,9 +901,6 @@ enum vk_ew3_op { EW3_ADD, EW3_MUL, EW3_GELU_MUL, EW3_SILU_MUL, EW3_SIGMOID_MUL }
     return GEIST_OK;
 }
 
-static constexpr float VK_GELU_K0 = 0.7978845608028654f; /* sqrt(2/pi) */
-static constexpr float VK_GELU_K1 = 0.044715f;
-
 [[nodiscard]] static enum geist_status
 vk_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
     const enum geist_status gs = vk_try_ew2(be, VK_PIPE_GELU, x, y);
@@ -922,39 +919,6 @@ vk_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geis
         return gs;
     }
     return vk_ew3_cpu(be, EW3_GELU_MUL, x, z, y, "gelu_tanh_mul");
-}
-
-[[nodiscard]] static enum geist_status vk_gelu_tanh_mul_scaled(struct geist_backend      *be,
-                                                               const struct geist_tensor *x,
-                                                               const struct geist_tensor *z,
-                                                               const float               *scale,
-                                                               struct geist_tensor       *y) {
-    size_t       nx = 0, nz = 0, ny = 0;
-    const float *xp = vk_tensor_host(x, &nx);
-    const float *zp = vk_tensor_host(z, &nz);
-    float       *yp = vk_tensor_host(y, &ny);
-    if (xp == nullptr || zp == nullptr || yp == nullptr || scale == nullptr || nx != nz ||
-        nx != ny || y->ndim < 1) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan gelu_tanh_mul_scaled: bad inputs");
-        return GEIST_E_INVALID_ARG;
-    }
-    const size_t feat = (size_t) y->shape[y->ndim - 1];
-    if (feat == 0 || nx % feat != 0) {
-        geist_backend_set_error(
-                be, GEIST_E_INVALID_ARG, "vulkan gelu_tanh_mul_scaled: feature mismatch");
-        return GEIST_E_INVALID_ARG;
-    }
-    const size_t rows = nx / feat;
-    for (size_t r = 0; r < rows; r++) {
-        const size_t base = r * feat;
-        for (size_t j = 0; j < feat; j++) {
-            const size_t i = base + j;
-            const float  v = xp[i];
-            const float  u = VK_GELU_K0 * (v + VK_GELU_K1 * v * v * v);
-            yp[i]          = (0.5f * v * (1.0f + tanhf(u))) * zp[i] * scale[j];
-        }
-    }
-    return GEIST_OK;
 }
 
 [[nodiscard]] static enum geist_status
@@ -2263,10 +2227,6 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     switch (q->op) {
     case GEIST_FUSED_GELU_TANH_MUL:
         return true;
-    case GEIST_FUSED_GELU_TANH_MUL_SCALED:
-        /* vk_gelu_tanh_mul_scaled is a host loop over mapped buffers (a
-         * flush per layer): the plan takes the GPU gelu_mul instead. */
-        return false;
     case GEIST_FUSED_SILU_MUL:
     case GEIST_FUSED_BITNET_ACT_QUANT:
         return true;
@@ -2399,9 +2359,8 @@ static const struct geist_backend_primitives vk_prims = {
 };
 
 static const struct geist_backend_fused vk_fused = {
-        .supported            = vk_fused_supported,
-        .gelu_tanh_mul        = vk_gelu_tanh_mul,
-        .gelu_tanh_mul_scaled = vk_gelu_tanh_mul_scaled,
+        .supported     = vk_fused_supported,
+        .gelu_tanh_mul = vk_gelu_tanh_mul,
         /* Batched-submit paths: one flush per token (argmax). */
         .linear_t                = vk_fb_linear_t,
         .linear_t_pair           = vk_fb_linear_t_pair,
