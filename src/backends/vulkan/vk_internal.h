@@ -285,8 +285,6 @@ struct vk_state {
     bool has_int8_dot; /* shaderIntegerDotProduct + 8-bit storage */
     bool has_coopmat;  /* VK_KHR_cooperative_matrix */
     bool pq2_f32_acc;  /* GEIST_VK_PQ2_F32_ACC: exact f32-accumulate PQ2_0 tensor-core GEMM */
-    bool attn_cm; /* tensor-core attention (#475 follow-up), default on; GEIST_VK_ATTN_CM=0 disables
-                   */
     /* GEIST_VK_SCRATCH_DEVICE=1 (#488): a SCRATCH-role buffer_create that asks
      * for GEIST_MEMORY_DEVICE gets device-local, unmappable memory. Off by
      * default: such a request is served host-visible, as before, and the
