@@ -38,18 +38,12 @@
 #include <geist_backend.h>
 #include <geist_weight.h>
 
-#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
 #include <arm_neon.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 /* Σ (code_i) * xq_i over one 128-element block, codes still biased by +1. */
 static inline int32_t pq2_0_block_dot_raw(const uint8_t *qs, const int8_t *xb) {
@@ -152,32 +146,6 @@ pq2_0_prep(struct cpu_neon_workspace *ws, size_t n_in, const float *x, float *in
     return true;
 }
 
-/* Dispatch exactly as cpu_neon_w_tq2_0_q8a_m1. */
-static void pq2_0_parallel_for(size_t n, void (*body)(size_t, void *), void *ctx) {
-    static _Atomic int pp_enabled = -1;
-    if (pp_enabled < 0) {
-        const char *e = getenv("GEIST_PP");
-        pp_enabled    = (e && e[0] == '1') ? 1 : 0;
-    }
-    if (pp_enabled) {
-        geist_pp_parallel_for(n, body, ctx);
-    }
-#ifdef _OPENMP
-    else if (omp_in_parallel()) {
-#pragma omp for schedule(static) nowait
-        for (size_t i = 0; i < n; i++)
-            body(i, ctx);
-    }
-#endif
-    else {
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (size_t i = 0; i < n; i++)
-            body(i, ctx);
-    }
-}
-
 void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
                              const struct geist_weight *w,
                              struct geist_backend      *be,
@@ -199,7 +167,7 @@ void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
             .row_bytes      = n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES,
             .blocks_per_row = n_in / PQ2_0_BLOCK_ELEMS,
     };
-    pq2_0_parallel_for(n_out, pq2_0_m1_row_body, &ctx);
+    cpu_neon_parallel_rows(n_out, pq2_0_m1_row_body, &ctx);
 }
 
 /* Two projections over one x (FFN gate/up, attention q/k/v): the int8
@@ -255,7 +223,7 @@ void cpu_neon_w_pq2_0_q8a_pair_m1(const float               *x,
                        .blocks_per_row = bp},
             .a_rows = n0,
     };
-    pq2_0_parallel_for(n0 + n1, pq2_0_m1_pair_body, &pc);
+    cpu_neon_parallel_rows(n0 + n1, pq2_0_m1_pair_body, &pc);
 }
 
 /* ---- x8: eight rows interleaved (decode) ---------------------------------
@@ -408,7 +376,7 @@ void cpu_neon_w_pq2_0_x8_m1(const float               *x,
             .inv_act_scale  = inv,
             .blocks_per_row = n_in / PQ2_0_BLOCK_ELEMS,
     };
-    pq2_0_parallel_for(n_out / 8, pq2_0_x8_tile_body, &ctx);
+    cpu_neon_parallel_rows(n_out / 8, pq2_0_x8_tile_body, &ctx);
 }
 
 /* The x8 twin of cpu_neon_w_pq2_0_q8a_pair_m1. */
@@ -458,7 +426,7 @@ void cpu_neon_w_pq2_0_x8_pair_m1(const float               *x,
                         .blocks_per_row = bp},
             .a_tiles = n0 / 8,
     };
-    pq2_0_parallel_for(n0 / 8 + n1 / 8, pq2_0_x8_pair_body, &pc);
+    cpu_neon_parallel_rows(n0 / 8 + n1 / 8, pq2_0_x8_pair_body, &pc);
 }
 
 /* ---- x8 prefill: dequant straight from the x8 copy + SGEMM ---------------
