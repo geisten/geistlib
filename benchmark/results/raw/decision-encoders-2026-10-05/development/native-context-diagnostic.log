@@ -1,0 +1,24 @@
+Loading weights:   0%|          | 0/173 [00:00<?, ?it/s]Loading weights:   3%|▎         | 5/173 [00:00<00:03, 46.25it/s]Loading weights:  71%|███████   | 123/173 [00:00<00:00, 670.80it/s]Loading weights: 100%|██████████| 173/173 [00:00<00:00, 611.06it/s]
+{
+  "protocol": "geist-encoder-context-diagnostic-v1",
+  "quality_result": false,
+  "context_cap": 8192,
+  "completed_questions_before_failure": 614,
+  "failed_case_id": "validation/professional_law/1165/rotation0",
+  "failed_question_id": "4d98f21aeb274362dd5f855dba9b234025609eca7f81c5fb1d859a94e6404865",
+  "failed_prompt_tokens": 1703,
+  "max_preceding_prompt_tokens": 3013,
+  "max_population_prompt_tokens": 3013,
+  "population_questions": 778,
+  "fresh_process_memory_after_load": {
+    "current_allocated_bytes": 1583527680,
+    "driver_allocated_bytes": 2156281856,
+    "recommended_max_bytes": 55662788608
+  },
+  "isolated_request_succeeded": true,
+  "fresh_process_memory_after_request": {
+    "current_allocated_bytes": 1583527680,
+    "driver_allocated_bytes": 3096412160,
+    "recommended_max_bytes": 55662788608
+  }
+}

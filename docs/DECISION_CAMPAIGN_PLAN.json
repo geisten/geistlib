@@ -183,5 +183,62 @@
     "noninferiority_established": false,
     "external_prism_parity_established": false,
     "jev_equivalence_established": false
+  },
+  "pretrained_encoder_baselines": {
+    "status": "completed_development_reference_comparison",
+    "date": "2026-10-05",
+    "tracking_issue": 587,
+    "native_geist_c_encoder_backend_implemented": false,
+    "feature_opt_in": "--enable-encoder-backends / create_backend(enabled=True)",
+    "default_enabled": false,
+    "platforms": [
+      "PyTorch CPU",
+      "PyTorch MPS on Apple Silicon"
+    ],
+    "models": [
+      {
+        "repo": "answerdotai/ModernBERT-Large-Instruct",
+        "revision": "9943452941e79c8c35ede72e78a38a8175a79bb5"
+      },
+      {
+        "repo": "convaiinnovations/laya",
+        "subfolder": "typed-decisions",
+        "revision": "7b928d828b7b0e022f929d9bd2e44165aa270148"
+      }
+    ],
+    "initial_policies": {
+      "shots": [
+        0,
+        5
+      ],
+      "max_tokens": 1024,
+      "dtype": "float32",
+      "threads": 6,
+      "warmup": 1,
+      "repeats": 1,
+      "rotations": 1
+    },
+    "pilot_questions": 8,
+    "development_questions": 778,
+    "calibration_or_test_model_calls": 0,
+    "post_initial_geometry_exploration": {
+      "adapter": "modernbert",
+      "shots": 5,
+      "max_tokens": 8192,
+      "continuous_run_succeeded": false,
+      "explicit_process_restart_count": 1,
+      "disjoint_question_counts": [
+        614,
+        164
+      ]
+    },
+    "quality_matched_speedup_established": false,
+    "jev_equivalence_established": false,
+    "result": "benchmark/results/DECISION_ENCODERS_2026-10-05.json",
+    "writeup": "benchmark/results/DECISION_ENCODERS_2026-10-05.md",
+    "raw_bundle": "benchmark/results/raw/decision-encoders-2026-10-05",
+    "training_jobs": 0,
+    "paid_compute_jobs": 0,
+    "training_issue_588_still_gated": true
   }
 }

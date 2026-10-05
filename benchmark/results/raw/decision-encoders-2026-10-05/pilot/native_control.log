@@ -1,0 +1,5 @@
+Loading weights:   0%|          | 0/173 [00:00<?, ?it/s]Loading weights: 100%|██████████| 173/173 [00:00<00:00, 1993.00it/s]
+ModernBERT native candidate parity passed
+/private/tmp/decision-encoder-pilot-2026-10-05/native_control.py:53: RuntimeWarning: laya: this checkpoint ships invalid temperatures or values outside [0.5, 5]; using choice:11+=0.10058280825614929 -> 0.5. Treat confidence from the affected entries as uncalibrated.
+  native = Agent(str(clone), device="mps", fast=False, compile=False)
+Laya native SDK choice/probability parity passed

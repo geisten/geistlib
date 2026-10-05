@@ -1,0 +1,5 @@
+{
+  "error": "RuntimeError",
+  "message": "MPS backend out of memory (MPS allocated: 3.02 GiB, other allocations: 85.11 GiB, max allowed: 88.13 GiB). Tried to allocate 6.65 MiB on shared pool. Use PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 to disable upper limit for memory allocations (may cause system failure).",
+  "completed_sample_records": 1228
+}

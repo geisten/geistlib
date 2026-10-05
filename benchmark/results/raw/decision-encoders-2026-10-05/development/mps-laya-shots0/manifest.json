@@ -1,0 +1,136 @@
+{
+  "protocol": "geist-decision-encoder-run-v1",
+  "dataset": {
+    "protocol": "geist-decision-encoder-cases-v1",
+    "dataset": "cais/mmlu",
+    "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+    "dataset_subset": true,
+    "dataset_files_sha256": {
+      "dev": "2b19bde1ed8ca6b482fb283abc90e8e0d9d228947029c0b91795d64b28b3bc3f",
+      "validation": "66cdf0b090ccb657d18d13cd81e31fdc55c3467da9642ffb178653268a97c8ef",
+      "test": "74a41822ce7d3def56e1682f958469c04642a5336a5ce912fa375fdb90fb25d7"
+    },
+    "split": "development",
+    "shots_available": 5,
+    "rotations": 1,
+    "per_subject": 0,
+    "subject_limit": 0,
+    "questions": 778,
+    "records": 778,
+    "cases_sha256": "4ba20e3a221793178f68747b699bbdd0da68aa7e642ffd046839d995b4fda8d8",
+    "split_audit_sha256": "7744caf2f70ea72db9fd48e35458b752f3734134144e9ac2fa0804c1ddbab142",
+    "preparation_wall_ms": 913.8447910081595,
+    "scope": "Token-independent cases; model-specific prompts and token IDs recorded by each adapter. Exact-overlap exclusion changes the population; no semantic deduplication."
+  },
+  "hardware": {
+    "hw.model": "MacBookPro18,4",
+    "hw.memsize": "68719476736",
+    "hw.ncpu": "10",
+    "machdep.cpu.brand_string": "Apple M1 Max"
+  },
+  "host_load_start": [
+    18.0546875,
+    8.73681640625,
+    7.83447265625
+  ],
+  "purpose": "pilot",
+  "adapter": "laya",
+  "model_repo": "convaiinnovations/laya",
+  "model_revision": "7b928d828b7b0e022f929d9bd2e44165aa270148",
+  "model_files": {
+    "encoder/config.json": {
+      "sha256": "5268d24ad3b77c8151de5dcb0762ba4391619aad9ab0bda33e36fb083cfeae6d",
+      "bytes": 2084
+    },
+    "model.safetensors": {
+      "sha256": "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e",
+      "bytes": 842609220
+    },
+    "rl_agent_config.json": {
+      "sha256": "ebf0cd524d92342a6be5e48e9fca3d7c2babfb5a56ccd79d2171ef5d8c7f7be8",
+      "bytes": 847
+    },
+    "tokenizer/tokenizer.json": {
+      "sha256": "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+      "bytes": 3583228
+    },
+    "tokenizer/tokenizer_config.json": {
+      "sha256": "08d4cf3ac4dca381759441b85b91a6d40e688471dcd33d15d6649eb0a9a854d1",
+      "bytes": 337
+    }
+  },
+  "model_dir": "/private/tmp/decision-encoder-models/laya/typed-decisions",
+  "device": "mps",
+  "dtype": "float32",
+  "max_tokens": 1024,
+  "threads": 6,
+  "shots": 0,
+  "warmup": 1,
+  "repeats": 1,
+  "margin_pp": 2.0,
+  "versions": {
+    "torch": "2.12.0",
+    "transformers": "5.7.0",
+    "laya": "0.3.26",
+    "numpy": "2.4.4",
+    "safetensors": "0.7.0"
+  },
+  "python": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]",
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "environment": {
+    "OMP_WAIT_POLICY": "PASSIVE",
+    "OMP_NUM_THREADS": "6",
+    "MKL_NUM_THREADS": null,
+    "VECLIB_MAXIMUM_THREADS": "6",
+    "PYTORCH_ENABLE_MPS_FALLBACK": "0",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "USE_TF": "0"
+  },
+  "command": [
+    "/Users/germar/.codex/worktrees/decision-inference/geistlib/tools/eval_decision_encoders.py",
+    "--enable-encoder-backends",
+    "--cases-dir",
+    "/private/tmp/decision-encoder-development-2026-10-05/cases",
+    "--split",
+    "development",
+    "--purpose",
+    "pilot",
+    "--adapter",
+    "laya",
+    "--model-dir",
+    "/private/tmp/decision-encoder-models/laya/typed-decisions",
+    "--model-repo",
+    "convaiinnovations/laya",
+    "--revision",
+    "7b928d828b7b0e022f929d9bd2e44165aa270148",
+    "--device",
+    "mps",
+    "--dtype",
+    "float32",
+    "--max-tokens",
+    "1024",
+    "--threads",
+    "6",
+    "--shots",
+    "0",
+    "--warmup",
+    "1",
+    "--repeats",
+    "1",
+    "--margin-pp",
+    "2",
+    "--out-dir",
+    "/private/tmp/decision-encoder-development-2026-10-05/mps-laya-shots0"
+  ],
+  "source_sha256": {
+    "eval_decision_encoders.py": "f8fa0679310c7ddea99439cbf8c8a9dccb5269ee66b0c5e3232bf076db80cc0d",
+    "decision_encoders.py": "495b7f27f7bd34ac94b549a9a6be3982a1e2b9a4244125b75f5a2f0ed549150d",
+    "decision_dataset.py": "e132829ec81031e4709af5c2964aa98f5a254494f6ba6ed8d2f9ed92f1318149",
+    "decision_metrics.py": "9edbfafa4cc8cd4ddfd53f74cf2aec5e7459a6c20188c7f904f6eaf94f2c3eb3"
+  },
+  "comparison": "Exploratory encoder baseline. No trained head added to geist C. No same-token Bonsai parity, Jev equivalence or deployment acceptance.",
+  "source_revision": "23e43426e7c68d5b037d18b4d501fe001642ddad",
+  "source_status": []
+}

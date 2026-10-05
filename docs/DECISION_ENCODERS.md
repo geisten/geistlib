@@ -67,7 +67,9 @@ Run each model/device/prompt policy serially in its own new output directory.
 Use `--shots 5` for the second frozen policy and `--device cpu` for the CPU
 comparison. Laya's `--model-dir` points to the local `typed-decisions/`
 directory, `--model-repo` is `convaiinnovations/laya`, and its revision is the
-second one above. No automatic downloads happen during inference.
+second one above. No automatic downloads happen during inference. The factory
+also rejects incomplete local layouts and other encoder architectures before
+importing optional packages.
 
 ## Adapter semantics and validation
 
@@ -136,3 +138,13 @@ Sources:
 - [ModernBERT technical report](https://arxiv.org/abs/2502.03793)
 - [Laya model family and limits](https://huggingface.co/convaiinnovations/laya)
 - [Laya reference implementation](https://github.com/NandhaKishorM/laya)
+
+## Completed Apple development comparison
+
+The [2026-10-05 results](../benchmark/results/DECISION_ENCODERS_2026-10-05.md)
+include the eight-question CPU/MPS pilot, all 778 cleaned development questions,
+and the recorded MPS memory failure and explicit continuation of the larger
+ModernBERT context experiment. ModernBERT zero-shot reaches 42.42% population
+accuracy at 42.53ms median; the recovered five-shot result is 42.93% at 223.56ms
+excluding restart costs. Laya zero-shot reaches 34.70% at 59.88ms. These are
+development results and do not establish Bonsai-equivalent quality.

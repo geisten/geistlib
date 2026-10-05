@@ -1,0 +1,30 @@
+{
+  "protocol": "geist-decision-encoder-cases-v1",
+  "dataset": "cais/mmlu",
+  "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+  "dataset_subset": true,
+  "dataset_files_sha256": {
+    "dev": "2b19bde1ed8ca6b482fb283abc90e8e0d9d228947029c0b91795d64b28b3bc3f",
+    "validation": "66cdf0b090ccb657d18d13cd81e31fdc55c3467da9642ffb178653268a97c8ef",
+    "test": "74a41822ce7d3def56e1682f958469c04642a5336a5ce912fa375fdb90fb25d7"
+  },
+  "split": "development",
+  "shots_available": 5,
+  "rotations": 1,
+  "per_subject": 0,
+  "subject_limit": 0,
+  "questions": 164,
+  "records": 164,
+  "cases_sha256": "e3f4618463834575471b5086d0380bc8610d4efad61614e889216ee789b2e9ff",
+  "split_audit_sha256": "7744caf2f70ea72db9fd48e35458b752f3734134144e9ac2fa0804c1ddbab142",
+  "preparation_wall_ms": 913.8447910081595,
+  "scope": "Token-independent cases; model-specific prompts and token IDs recorded by each adapter. Exact-overlap exclusion changes the population; no semantic deduplication.",
+  "recovery": {
+    "original_population_questions": 778,
+    "completed_questions": 614,
+    "failed_manifest_sha256": "d53d4d860d3d4ac831602d648c7ee8dda30436fa90ad7eb7b798baf5229b0ace",
+    "failed_samples_sha256": "ba343807be0a1815da862d7d45bd82cb290c2718cef9df93ed2c244ac2502270",
+    "selection": "only questions with no completed trials, original order",
+    "reason": "explicit fresh-process continuation after MPS OOM; no automatic fallback"
+  }
+}

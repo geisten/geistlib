@@ -1,0 +1,2 @@
+Loading weights:   0%|          | 0/173 [00:00<?, ?it/s]Loading weights: 100%|██████████| 173/173 [00:00<00:00, 2258.10it/s]
+{"questions": 8, "scored": 8, "correct": 6, "rejected": 0, "warm_request_p50_ms": 216.64387499913573, "predictions_stable": true}

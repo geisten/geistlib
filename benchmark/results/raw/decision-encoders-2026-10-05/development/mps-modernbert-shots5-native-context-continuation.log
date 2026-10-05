@@ -1,0 +1,5 @@
+Loading weights:   0%|          | 0/173 [00:00<?, ?it/s]Loading weights: 100%|██████████| 173/173 [00:00<00:00, 2229.75it/s]
+50/164 cases
+100/164 cases
+150/164 cases
+{"questions": 164, "scored": 164, "correct": 72, "rejected": 0, "warm_request_p50_ms": 508.4829789993819, "predictions_stable": true}

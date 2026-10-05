@@ -238,3 +238,7 @@ not the acceptance target. Pin the source rather than conflating variants:
 explicitly enabled, offline comparison before classifier training. They reuse
 the split/exclusion/identity protocol but have encoder-specific prompts and
 tokenizers. They are Python reference runtimes, not native geist C backends.
+
+The [2026-10-05 encoder results](../benchmark/results/DECISION_ENCODERS_2026-10-05.md)
+retain the development CPU/MPS comparison and the native-context MPS failure
+with an explicit disjoint continuation. They do not satisfy the held-out gate.

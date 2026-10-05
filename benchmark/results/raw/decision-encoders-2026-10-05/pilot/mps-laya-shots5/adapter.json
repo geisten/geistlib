@@ -1,0 +1,18 @@
+{
+  "adapter": "laya",
+  "device": "mps",
+  "dtype": "float32",
+  "attention": "sdpa",
+  "compile": false,
+  "max_tokens": 1024,
+  "native_context": 1024,
+  "head_max_tokens": 256,
+  "capabilities": [
+    "choice",
+    "score",
+    "noul"
+  ],
+  "prompt_policy": "laya-native-lossless-choice-v1",
+  "calibration": "checkpoint temperatures with SDK bounds; not fitted or validated on MMLU",
+  "sdk_policy": "native builder/model; no SDK fallback or input truncation"
+}
