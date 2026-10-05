@@ -187,11 +187,22 @@ xfer(struct geist_backend *be, struct geist_buffer *buf, size_t n, void *host, b
     for (size_t li = 0; li < st->n_layers && s == GEIST_OK; li++) {
         const struct transformer_layer_weights *L = &st->layers[li];
         if (L->mixer == GEIST_MIXER_DELTANET) {
+            /* A fresh layer's state is zeros whatever its buffers hold
+             * (dn_fresh): save writes the zeros, a restore unmarks it. */
+            bool *fresh = sess->dn_fresh != nullptr ? &sess->dn_fresh[li] : nullptr;
+            if (!to_device && fresh != nullptr && *fresh) {
+                memset(p, 0, (conv_n + s_n) * sizeof(float));
+                p += (conv_n + s_n) * sizeof(float);
+                continue;
+            }
             s = xfer(be, sess->dn_conv_state[li], conv_n * sizeof(float), p, to_device);
             p += conv_n * sizeof(float);
             if (s == GEIST_OK) {
                 s = xfer(be, sess->dn_S[li], s_n * sizeof(float), p, to_device);
                 p += s_n * sizeof(float);
+            }
+            if (s == GEIST_OK && to_device && fresh != nullptr) {
+                *fresh = false;
             }
             continue;
         }

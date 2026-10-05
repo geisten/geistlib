@@ -318,6 +318,19 @@ static int check_empty_and_pin(const struct run *r) {
     free(img);
     img = nullptr;
 
+    /* A reset session's image is an empty one: the recurrent state the reset
+     * only marked fresh stays out of it. */
+    ok  = geist_session_reset(a) == GEIST_OK;
+    img = ok ? take(a, &n) : nullptr;
+    ok  = img != nullptr && geist_session_prefill_tokens(b, PROMPT, P1) == GEIST_OK &&
+          geist_session_restore(n, img, b) == GEIST_OK &&
+          geist_session_prefill_tokens(b, TURN2, P2) == GEIST_OK && peek(r, b, l1);
+    fails += expect(r,
+                    ok && memcmp(l1, l2, r->vocab * sizeof(float)) == 0,
+                    "a reset session's image restores as an empty one");
+    free(img);
+    img = nullptr;
+
     if (r->recurrent) {
         goto out; /* pin_prefix refuses a prefix on the hybrid */
     }
