@@ -17,6 +17,7 @@ import sys
 import time
 
 import decision_dataset as data
+from bench_decision import percentile
 import decision_encoders as encoders
 import decision_metrics as metrics
 
@@ -124,6 +125,7 @@ def summarize(samples, rows, warmup):
             "quality_checkpoint_scaled_on_scored_only": metrics.quality(scored, temperature) if scored else None,
             "predictions_stable": stable, "max_repeat_logit_abs_drift": drift,
             "warm_request_p50_ms": median(t["request_p50_ms"] for t in timings) if timings else None,
+            "warm_request_p95_ms": percentile([t["request_p50_ms"] for t in timings], .95) if timings else None,
             "warm_request_mean_ms": mean(t["request_p50_ms"] for t in timings) if timings else None,
             "warm_forward_p50_ms": median(t["forward_p50_ms"] for t in timings) if timings else None,
             "per_question_timings": timings,
@@ -186,15 +188,20 @@ def run(args):
     except (OSError, subprocess.CalledProcessError):
         manifest["source_revision"] = None
     write_json(args.out_dir / "manifest.json", manifest)
-    import torch
-    torch.set_num_threads(args.threads)
-    torch.set_num_interop_threads(1)
-    start = time.perf_counter()
-    load_start = time.perf_counter()
-    backend = encoders.create_backend(args.adapter, args.model_dir, enabled=True,
-                                     device=args.device, dtype=args.dtype, max_tokens=args.max_tokens)
-    setup_ms = (time.perf_counter() - load_start) * 1000
-    write_json(args.out_dir / "adapter.json", backend.metadata)
+    try:
+        import torch
+        torch.set_num_threads(args.threads)
+        torch.set_num_interop_threads(1)
+        start = time.perf_counter()
+        load_start = time.perf_counter()
+        backend = encoders.create_backend(args.adapter, args.model_dir, enabled=True,
+                                         device=args.device, dtype=args.dtype, max_tokens=args.max_tokens)
+        setup_ms = (time.perf_counter() - load_start) * 1000
+        write_json(args.out_dir / "adapter.json", backend.metadata)
+    except Exception as exc:
+        write_json(args.out_dir / "failure.json", {"error": type(exc).__name__, "message": str(exc),
+                                                  "phase": "setup", "completed_sample_records": 0})
+        raise
     samples = []
     try:
         with (args.out_dir / "samples.jsonl").open("w") as stream:

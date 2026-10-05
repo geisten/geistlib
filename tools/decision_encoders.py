@@ -311,4 +311,16 @@ def create_backend(name, directory, *, enabled=False, device="cpu", dtype="float
     classes = {"modernbert": ModernBertBackend, "laya": LayaBackend}
     if name not in classes:
         raise ValueError("unknown encoder backend")
+    # In particular, Laya's builder accepts Hub IDs as well as directories.
+    # Reject incomplete local layouts before importing its optional SDK.
+    directory = Path(directory).expanduser().resolve(strict=True)
+    config_path = "config.json" if name == "modernbert" else "encoder/config.json"
+    required = ("model.safetensors", config_path, "tokenizer.json", "tokenizer_config.json")
+    if name == "laya":
+        required = ("model.safetensors", config_path, "rl_agent_config.json",
+                    "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json")
+    if not directory.is_dir() or any(not (directory / p).is_file() for p in required):
+        raise ValueError("complete local checkpoint, encoder config and tokenizer required")
+    if read_json(directory / config_path).get("model_type") != "modernbert":
+        raise ValueError("these reference adapters require a ModernBERT encoder")
     return classes[name](directory, device, dtype, max_tokens)

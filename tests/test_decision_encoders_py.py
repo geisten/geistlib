@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import Mock
+from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import decision_dataset as data
@@ -37,6 +39,39 @@ assert not ({'torch', 'transformers', 'laya'} & set(sys.modules))
             with self.subTest(values=values), self.assertRaises(ValueError):
                 encoders.validate_scores(values, 2)
         self.assertAlmostEqual(sum(encoders.probabilities([1000., 999.])), 1.)
+
+    def test_incomplete_local_checkpoint_fails_before_optional_imports(self):
+        with tempfile.TemporaryDirectory() as folder:
+            script = """import sys; import decision_encoders as e
+for name in ('modernbert','laya'):
+    try: e.create_backend(name, sys.argv[1], enabled=True)
+    except ValueError: pass
+    else: raise AssertionError('incomplete checkpoint accepted')
+assert not ({'torch','transformers','laya'} & set(sys.modules))
+"""
+            subprocess.run([sys.executable, "-c", script, folder],
+                           cwd=Path(encoders.__file__).parent, check=True)
+
+    def test_setup_failure_preserves_manifest_and_failure_record(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            self.bundle(directory)
+            model = directory / "model"
+            model.mkdir()
+            (model / "model.safetensors").write_bytes(b"fixture")
+            args = SimpleNamespace(enable_encoder_backends=True, threads=1, warmup=1, repeats=1,
+                margin_pp=2., cases_dir=directory, split="development", purpose="pilot", shots=0,
+                revision="a"*40, model_dir=model, out_dir=directory/"output", adapter="modernbert",
+                model_repo="fixture", device="cpu", dtype="float32", max_tokens=1024)
+            with patch.dict(sys.modules, {"torch": Mock()}), \
+                    patch.dict(evaluation.os.environ, {"PYTORCH_ENABLE_MPS_FALLBACK": "0"}), \
+                    patch.object(encoders, "create_backend", side_effect=RuntimeError("cannot load")):
+                with self.assertRaisesRegex(RuntimeError, "cannot load"):
+                    evaluation.run(args)
+            self.assertTrue((args.out_dir / "manifest.json").is_file())
+            failure = encoders.read_json(args.out_dir / "failure.json")
+            self.assertEqual((failure["phase"], failure["completed_sample_records"]), ("setup", 0))
+            self.assertFalse((args.out_dir / "report.json").exists())
 
     def test_request_keys_and_controls_are_not_silently_changed(self):
         request = encoders.ChoiceRequest("Text", "Choose", {"A": "one", "B": "two"})
