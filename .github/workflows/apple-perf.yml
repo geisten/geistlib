@@ -28,10 +28,10 @@ jobs:
   apple-cpu-q4km:
     name: Apple CPU Q4_K regression guard
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 100
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
-      BASE: ${{ inputs.base || 'f76d29fe99468e4d5d671487f085bf507d633e8a' }}
+      BASE: ${{ inputs.base || '' }}
       # The same llama.cpp pin the cross-engine campaign uses.
       LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
     steps:
@@ -75,6 +75,33 @@ jobs:
           BENCH_THREADS=$(sysctl -n hw.ncpu) python3 tools/bench_quality_perf.py \
             --suite detailed --target mac-omp --mode release \
             --bin-dir bin/mac-omp/release/tests --out-dir bench-artifacts
+
+      # [measurement] the guard's protocol on the first-parent revisions
+      # between the last green Sunday and main, one job, one runner.
+      - name: Bisect points (measurement)
+        env:
+          BENCH_GGUF: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+          OMP_WAIT_POLICY: active
+          REVS: "f76d29f 1eb97a8 ec1f203 992bf9f 74d3643 ebeaf32 f2b8a59 c0f534d 67fe9f6 1980686 f76d29f"
+        run: |
+          git fetch -q --unshallow origin main || git fetch -q origin main
+          i=0
+          for r in $REVS; do
+            i=$((i+1)); d="rev$i"
+            git worktree add -q "$d" "$r"
+            make -C "$d" -j3 TARGET=mac-omp CC=clang BACKENDS="cpu_neon cpu_scalar" bin/mac-omp/release/tests/bench_perf_sweep >/dev/null
+            (cd "$d" && python3 tools/bench_quality_perf.py --suite detailed --target mac-omp --mode release \
+              --bin-dir bin/mac-omp/release/tests --out-dir "$GITHUB_WORKSPACE/bisect/$i-$r") >/dev/null 2>&1 || echo "::warning::$r bench failed"
+            python3 - "$i" "$r" <<'PY'
+          import json, pathlib, sys
+          i, r = sys.argv[1], sys.argv[2]
+          f = sorted(pathlib.Path(f"bisect/{i}-{r}").glob("*_mac-omp_detailed.jsonl"))
+          line = [l for l in f[0].read_text().splitlines() if l.strip().startswith("{")][-1] if f else "{}"
+          d = json.loads(line); d = d.get("measurement", d)
+          print(f"::notice title=bisect {i} {r}::prefill {d.get('prefill_tps', 0):.1f} decode {d.get('decode_tps', 0):.1f} tok/s")
+          PY
+            git worktree remove --force "$d"
+          done
 
       # The same protocol on BASE, built from its own tree with its own tools,
       # right after HEAD on the same runner: a ratio cliff between a green
