@@ -54,7 +54,9 @@ bool geist_decision_available(void) {
     return true;
 }
 
-bool geist_decision_supported(const struct geist_model *m) {
+/* Every mode needs independent sessions, reset and a generative logits
+ * vocabulary. */
+static bool decision_supported(const struct geist_model *m) {
     if (m == nullptr || m->text_decoder.arch_meta == nullptr) {
         return false;
     }
@@ -66,7 +68,7 @@ bool geist_decision_supported(const struct geist_model *m) {
 }
 
 bool geist_decision_mode_supported(const struct geist_model *m, enum geist_decision_mode mode) {
-    if (!geist_decision_supported(m))
+    if (!decision_supported(m))
         return false;
     if (mode == GEIST_DECISION_DENSE)
         return true;
@@ -90,7 +92,7 @@ bool geist_decision_mode_supported(const struct geist_model *m, enum geist_decis
                                     "model/backend is null or backend does not match model");
         return GEIST_E_INVALID_ARG;
     }
-    if (!geist_decision_supported(m)) {
+    if (!decision_supported(m)) {
         geist_error_set_create_time(GEIST_E_UNSUPPORTED,
                                     "geist_decision_create",
                                     "architecture lacks isolated resettable logits sessions");
@@ -195,11 +197,9 @@ void geist_decision_destroy(struct geist_decision *d) {
     safe_free((void **) &d);
 }
 
-[[nodiscard]] enum geist_status geist_decision_reset(struct geist_decision *d) {
-    if (d == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    d->error[0]                    = '\0';
+/* Invalidates borrowed results and empties the KV/SSM state, before every
+ * query. */
+[[nodiscard]] static enum geist_status decision_reset(struct geist_decision *d) {
     const enum geist_status status = geist_session_reset(d->session);
     return status == GEIST_OK ? GEIST_OK : fail(d, status, geist_session_errmsg(d->session));
 }
@@ -253,7 +253,7 @@ const char *geist_decision_errmsg(const struct geist_decision *d) {
     size_t            projected_rows = d->vocab;
     size_t            readback_bytes = d->dense_readback_bytes;
     uint64_t          head_ns        = 0;
-    enum geist_status status         = geist_decision_reset(d);
+    enum geist_status status         = decision_reset(d);
     if (status == GEIST_OK) {
         if (d->mode == GEIST_DECISION_SELECTED_ROWS) {
             status = d->ops->prefill_rows(&projected_rows,
@@ -325,11 +325,6 @@ const char *geist_decision_errmsg(const struct geist_decision *d) {
 bool geist_decision_available(void) {
     return false;
 }
-bool geist_decision_supported(const struct geist_model *m) {
-    (void) m;
-    return false;
-}
-
 bool geist_decision_mode_supported(const struct geist_model *m, enum geist_decision_mode mode) {
     (void) m;
     (void) mode;
@@ -352,10 +347,6 @@ bool geist_decision_mode_supported(const struct geist_model *m, enum geist_decis
 }
 void geist_decision_destroy(struct geist_decision *d) {
     (void) d;
-}
-[[nodiscard]] enum geist_status geist_decision_reset(struct geist_decision *d) {
-    (void) d;
-    return GEIST_E_UNSUPPORTED;
 }
 size_t geist_decision_vocab_size(const struct geist_decision *d) {
     (void) d;

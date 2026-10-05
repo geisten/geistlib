@@ -1,7 +1,7 @@
 # Optional numeric decisions (experimental)
 
 Build with `make DECISION=1`. Default builds (`DECISION=0`) retain linkable
-symbols but return `GEIST_E_UNSUPPORTED` from create/reset/score; capability
+symbols but return `GEIST_E_UNSUPPORTED` from create/score; capability
 queries return false/0. Switching the flag rebuilds the implementation and
 relinks consumers, including `1 -> 0`, without `make clean`. Flag transitions
 force compile/archive/link even with one-second build timestamps.
@@ -46,7 +46,7 @@ if (status == GEIST_OK) {
 ```
 
 Each score starts from empty attention/recurrence state. Results preserve
-candidate order. Score/reset, including failed calls, invalidate borrowed
+candidate order. Score, including failed calls, invalidates borrowed
 results on that handle; operations on other handles do not. The result struct
 is cleared on every failure (count 0, null pointers, best index `SIZE_MAX`).
 Null/invalid/duplicate IDs and candidate overflow return `GEIST_E_INVALID_ARG`;
