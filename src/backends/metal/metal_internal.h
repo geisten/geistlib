@@ -214,7 +214,6 @@ struct metal_state {
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
         uint32_t pq2_n8_min_n_out;
-        uint32_t wide_rows_min_cols;
         /* Cleared once the calibration blob has been folded in; see
          * metal_tuning_resolve. */
         bool resolved;
