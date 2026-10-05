@@ -660,6 +660,96 @@ geist_model_metadata_str(const struct geist_model *m, const char *key, size_t *o
     return nullptr;
 }
 
+/* geist_model_plan / _from_memory (#625): the metadata the model would keep,
+ * the arch gate, then the architecture's plan on the open GGUF. */
+static enum geist_status model_plan(const char                      *fn,
+                                    struct gguf_ctx                 *tg,
+                                    struct geist_backend            *be,
+                                    const struct geist_session_opts *opts,
+                                    struct geist_model_plan         *out) {
+    struct model_meta                  *meta = model_meta_copy(tg);
+    const struct geist_arch_descriptor *desc =
+            model_arch_gate(fn, meta != nullptr ? meta->arch : nullptr);
+    enum geist_status s = GEIST_E_UNSUPPORTED;
+    if (desc != nullptr && (desc->decoder_ops == nullptr || desc->decoder_ops->plan == nullptr)) {
+        geist_error_set_create_time(
+                GEIST_E_UNSUPPORTED, fn, "the %s architecture cannot plan", desc->name);
+    } else if (desc != nullptr) {
+        s = desc->decoder_ops->plan(
+                be, tg, opts, &out->kv_bytes_per_token, &out->model_bytes_per_token);
+        if (s != GEIST_OK) {
+            geist_error_set_create_time(s, fn, "%s", geist_backend_errmsg(be));
+        }
+    }
+    size_t weights = 0;
+    for (size_t i = 0; s == GEIST_OK && i < gguf_tensor_count(tg); i++) {
+        if (ckd_add(&weights, weights, gguf_tensor_at(tg, i)->nbytes)) {
+            s = GEIST_E_FORMAT;
+            geist_error_set_create_time(s, fn, "tensor bytes overflow");
+        }
+    }
+    if (s == GEIST_OK) {
+        out->context_length = meta->context_length;
+        out->weight_bytes   = weights;
+    } else {
+        *out = (struct geist_model_plan) {};
+    }
+    if (meta != nullptr) {
+        safe_free((void **) &meta);
+    }
+    return s;
+}
+
+enum geist_status geist_model_plan(const char                      *path,
+                                   struct geist_backend            *be,
+                                   const struct geist_session_opts *opts,
+                                   struct geist_model_plan         *out) {
+    if (out != nullptr) {
+        *out = (struct geist_model_plan) {};
+    }
+    if (path == nullptr || be == nullptr || out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const char      *terr = nullptr;
+    struct gguf_ctx *tg   = gguf_open(path, &terr);
+    if (tg == nullptr) {
+        geist_error_set_create_time(GEIST_E_IO,
+                                    "geist_model_plan",
+                                    "gguf_open(%s): %s",
+                                    path,
+                                    terr != nullptr ? terr : "unknown error");
+        return GEIST_E_IO;
+    }
+    const enum geist_status s = model_plan("geist_model_plan", tg, be, opts, out);
+    gguf_close(tg);
+    return s;
+}
+
+enum geist_status geist_model_plan_from_memory(const void                      *data,
+                                               size_t                           size,
+                                               struct geist_backend            *be,
+                                               const struct geist_session_opts *opts,
+                                               struct geist_model_plan         *out) {
+    if (out != nullptr) {
+        *out = (struct geist_model_plan) {};
+    }
+    if (data == nullptr || size == 0 || be == nullptr || out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const char      *terr = nullptr;
+    struct gguf_ctx *tg   = gguf_open_memory(data, size, &terr);
+    if (tg == nullptr) {
+        geist_error_set_create_time(GEIST_E_FORMAT,
+                                    "geist_model_plan_from_memory",
+                                    "gguf_open_memory: %s",
+                                    terr != nullptr ? terr : "unknown error");
+        return GEIST_E_FORMAT;
+    }
+    const enum geist_status s = model_plan("geist_model_plan_from_memory", tg, be, opts, out);
+    gguf_close(tg);
+    return s;
+}
+
 size_t geist_model_context_length(const struct geist_model *m) {
     const struct model_engine_state *eng = model_engine(m);
     return eng != nullptr && eng->meta != nullptr ? eng->meta->context_length : 0;

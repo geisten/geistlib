@@ -49,6 +49,8 @@ extern "C" {
  * never called from two threads at once. Encoder ops (audio/vision) and
  * the engine's tokenizers are NOT covered by this guarantee — serialize
  * them externally. */
+struct gguf_ctx; /* the engine's GGUF reader, opaque here (#625) */
+
 struct geist_arch_ops_decoder {
     const char *name;
 
@@ -244,6 +246,18 @@ struct geist_arch_ops_decoder {
      * Appended: existing vtable field offsets remain unchanged. */
     enum geist_status (*truncate)(void *session, size_t n);
     enum geist_status (*kv_bytes_per_token)(size_t *out_bytes, const void *session);
+
+    /* Optional (#625): geist_model_plan. From an open GGUF (metadata and
+     * tensor table; no weight read, nothing allocated on be): the KV bytes
+     * per position a session created with opts would report through
+     * kv_bytes_per_token, and the model's bytes per position of
+     * max_seq_len. nullptr when the architecture cannot plan.
+     * Appended: existing vtable field offsets remain unchanged. */
+    enum geist_status (*plan)(struct geist_backend            *be,
+                              struct gguf_ctx                 *gguf,
+                              const struct geist_session_opts *opts,
+                              size_t                          *kv_bytes_per_token,
+                              size_t                          *model_bytes_per_token);
 };
 
 /* ====================================================================== */

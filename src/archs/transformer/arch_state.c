@@ -308,6 +308,38 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
  * one set across all layers. We pick the largest-stride layer of each
  * (is_full=true / false) so a single table covers every layer that
  * indexes into it. */
+/* A representative sliding-attn and full-attn layer for the RoPE tables.
+ * Families without sliding (BitNet / Llama / Mistral) fall back to layer 0's
+ * params for the sliding table too — the table won't be indexed at runtime
+ * since is_full is always true. */
+static void rope_layers(const struct transformer_arch_state *st, int *sliding_idx, int *full_idx) {
+    *sliding_idx = -1;
+    *full_idx    = -1;
+    for (size_t i = 0; i < st->n_layers; i++) {
+        if (*full_idx == -1 && st->layers[i].is_full)
+            *full_idx = (int) i;
+        if (*sliding_idx == -1 && !st->layers[i].is_full)
+            *sliding_idx = (int) i;
+    }
+    if (*full_idx == -1)
+        *full_idx = 0;
+    if (*sliding_idx == -1)
+        *sliding_idx = *full_idx;
+}
+
+/* Floats per position of the sliding and the full RoPE table rows (#625:
+ * allocate_runtime_rope sizes the tables by them, the plan reports them). */
+static void
+rope_row_widths(const struct transformer_arch_state *st, size_t *sl_width, size_t *fl_width) {
+    int sl = 0, fl = 0;
+    rope_layers(st, &sl, &fl);
+    const bool pblock = st->config.rope_partial_block;
+    *sl_width         = rope_table_width(
+            st->layers[sl].head_dim, (size_t) st->layers[sl].n_rotated_dims, pblock);
+    *fl_width = rope_table_width(
+            st->layers[fl].head_dim, (size_t) st->layers[fl].n_rotated_dims, pblock);
+}
+
 [[nodiscard]] static enum geist_status allocate_runtime_rope(struct transformer_arch_state *st) {
 
     struct geist_backend *be = st->backend;
@@ -329,21 +361,8 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
         }
     }
 
-    /* Find a representative sliding-attn and full-attn layer. Families
-     * without sliding (BitNet / Llama / Mistral) fall back to layer 0's
-     * params for the sliding table too — the table won't be indexed at
-     * runtime since is_full is always true. */
-    int sliding_idx = -1, full_idx = -1;
-    for (size_t i = 0; i < st->n_layers; i++) {
-        if (full_idx == -1 && st->layers[i].is_full)
-            full_idx = (int) i;
-        if (sliding_idx == -1 && !st->layers[i].is_full)
-            sliding_idx = (int) i;
-    }
-    if (full_idx == -1)
-        full_idx = 0;
-    if (sliding_idx == -1)
-        sliding_idx = full_idx;
+    int sliding_idx = 0, full_idx = 0;
+    rope_layers(st, &sliding_idx, &full_idx);
 
     /* Rotary is pairwise, so an odd head_dim has a channel with no partner
      * (see rope_head_dim_supported). head_dim comes from model metadata —
@@ -372,9 +391,9 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
     const float  full_th     = st->layers[full_idx].rope_theta;
     /* The row width is the width the kernels rotate over; which one that
      * is depends on the family's partial-rotary layout (arch_config.h). */
-    const bool   pblock      = st->config.rope_partial_block;
-    const size_t sl_width    = rope_table_width(sliding_hd, sliding_rot, pblock);
-    const size_t fl_width    = rope_table_width(full_hd, full_rot, pblock);
+    const bool pblock   = st->config.rope_partial_block;
+    size_t     sl_width = 0, fl_width = 0;
+    rope_row_widths(st, &sl_width, &fl_width);
     const size_t n_sl_floats = st->max_seq_len * sl_width;
     const size_t n_fl_floats = st->max_seq_len * fl_width;
 
@@ -418,30 +437,30 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
  * with the length and are left out; the KIVI per-channel K scales and zeros,
  * one row per KIVI_K_GROUP_SIZE positions, are counted per position,
  * rounded up. */
-enum geist_status transformer_kv_bytes_per_token(size_t                                *out_bytes,
-                                                 const struct transformer_arch_session *sess) {
-    if (out_bytes == nullptr || sess == nullptr) {
+enum geist_status transformer_kv_bytes_for(size_t                              *out_bytes,
+                                           const struct transformer_arch_state *st,
+                                           const struct transformer_kv_layout  *kl) {
+    if (out_bytes == nullptr || st == nullptr || kl == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    *out_bytes                                 = 0;
-    const struct transformer_arch_state *st    = sess->model;
-    const size_t                         kv    = st->n_kv_heads;
-    size_t                               total = 0;
+    *out_bytes         = 0;
+    const size_t kv    = st->n_kv_heads;
+    size_t       total = 0;
     for (size_t li = 0; li < (size_t) st->n_layers; li++) {
         if (st->layers[li].is_kv_shared || st->layers[li].mixer == GEIST_MIXER_DELTANET) {
             continue;
         }
         const size_t row = kv * st->layers[li].head_dim; /* K (or V) elements per position */
         size_t       per = 0;
-        if (sess->kv_kivi_enabled) {
+        if (kl->kivi) {
             const size_t R      = KIVI_K_GROUP_SIZE;
             const size_t k_rows = (2 * row * sizeof(float) + R - 1) / R; /* K scales + zeros */
             per                 = 2 * (row / 4) + 2 * kv * sizeof(float) + k_rows;
-        } else if (sess->kv_int8_enabled) {
-            const size_t data = sess->kv_int4_packed_enabled ? row / 2 : row * sizeof(int8_t);
+        } else if (kl->int8) {
+            const size_t data = kl->int4_packed ? row / 2 : row * sizeof(int8_t);
             per               = 2 * data + 2 * kv * sizeof(float); /* + K, V scales */
         } else {
-            per = 2 * row * (sess->kv_f16_enabled ? 2u : sizeof(float));
+            per = 2 * row * (kl->f16 ? 2u : sizeof(float));
         }
         if (ckd_add(&total, total, per)) {
             return GEIST_E_INVALID_ARG;
@@ -455,6 +474,18 @@ enum geist_status transformer_kv_bytes_per_token(size_t                         
     }
     *out_bytes = total;
     return GEIST_OK;
+}
+
+enum geist_status transformer_kv_bytes_per_token(size_t                                *out_bytes,
+                                                 const struct transformer_arch_session *sess) {
+    if (out_bytes == nullptr || sess == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const struct transformer_kv_layout kl = {.kivi        = sess->kv_kivi_enabled,
+                                             .int8        = sess->kv_int8_enabled,
+                                             .int4_packed = sess->kv_int4_packed_enabled,
+                                             .f16         = sess->kv_f16_enabled};
+    return transformer_kv_bytes_for(out_bytes, sess->model, &kl);
 }
 
 /* P1.2.f: session-owned runtime allocs — KV caches + scratch pool +
@@ -1068,6 +1099,147 @@ static _Atomic uint64_t next_snapshot_id;
  * and on success either keeps it open for zero-copy weight aliasing or closes
  * it after copying, depending on mmap_alias_mode). The path/from-memory entry
  * points below just open the gguf and delegate here. */
+/* The model's geometry from its GGUF metadata alone (#625): the family's
+ * config populator and the checks on it. No weight is read, nothing is
+ * allocated on the backend; on failure the error is set on be and the
+ * caller cleans up. Shared by state_create and transformer_plan. */
+[[nodiscard]] static enum geist_status
+geometry_from_metadata(struct geist_backend             *be,
+                       struct gguf_ctx                  *gguf,
+                       struct transformer_arch_state    *st,
+                       const struct transformer_family **out_fam) {
+    *out_fam = nullptr;
+    /* NEUTRAL family config: every feature off, every scale zero. A
+     * family populator declares only what it HAS (Gemma: PLE + norms +
+     * softcap; BitNet: SubLN; qwen3: QK-norms) instead of every other
+     * family stripping Gemma defaults. rms_eps carries the one value
+     * all families share as a fallback when the meta key is absent. */
+    st->config = (struct geist_arch_config) {
+            .family         = "?",
+            .rms_eps        = 1e-6f,
+            .kv_sliding_src = -1,
+            .kv_full_src    = -1,
+            .ffn_activation = GEIST_FFN_SWIGLU,
+    };
+
+    /* P1.5: dispatch to the per-family populator selected by
+     * `general.architecture`. Unknown / missing arch fails closed —
+     * the engine gate (model.c) rejects such GGUFs before we get here,
+     * so this branch only fires for callers bypassing the engine. */
+    const struct transformer_family *fam = transformer_family_select(gguf);
+    *out_fam                             = fam;
+    if (fam == nullptr) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer: unsupported or missing "
+                                "general.architecture in GGUF");
+        return GEIST_E_UNSUPPORTED;
+    }
+    st->config.family = fam->name;
+    fam->populate(gguf, st);
+    if (st->n_layers == 0) {
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: invalid layer metadata for %s "
+                                "(autoregressive=%zu, mtp=%zu)",
+                                fam->name,
+                                st->n_layers,
+                                st->n_mtp_layers);
+        return GEIST_E_FORMAT;
+    }
+    /* Head counts are metadata too. Every attention path maps query head h
+     * to KV head h / (n_q_heads / n_kv_heads): more KV heads than query
+     * heads divides by zero there, and a KV count that does not divide the
+     * query count sends the last query heads to a KV head that does not
+     * exist. */
+    if (st->n_q_heads == 0 || st->n_kv_heads == 0 || st->n_q_heads % st->n_kv_heads != 0) {
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: %s head counts %zu (query) and %zu (KV): the KV "
+                                "count must divide the query count",
+                                fam->name,
+                                st->n_q_heads,
+                                st->n_kv_heads);
+        return GEIST_E_FORMAT;
+    }
+    return GEIST_OK;
+}
+
+/* The per-layer geometry (#625): the layer arrays (host memory) and the
+ * family's layer populator, with the head_dim bound. On failure the arrays
+ * stay in st for the caller to free. */
+[[nodiscard]] static enum geist_status geometry_layers(struct geist_backend            *be,
+                                                       struct transformer_arch_state   *st,
+                                                       const struct transformer_family *fam) {
+    /* P1.4.c: heap-allocate the per-layer weight array sized to the
+     * model's actual layer count. (Was a compile-time `[NUM_LAYERS]`
+     * field; freed in state_destroy below.) */
+    st->layers = heap_alloc_aligned(st->n_layers * sizeof(*st->layers),
+                                    alignof(struct transformer_layer_weights));
+    if (st->layers == nullptr) {
+        geist_backend_set_error(be,
+                                GEIST_E_OOM,
+                                "transformer: layer array alloc failed "
+                                "(%zu layers × %zu bytes)",
+                                st->n_layers,
+                                sizeof(*st->layers));
+        return GEIST_E_OOM;
+    }
+    memset(st->layers, 0, st->n_layers * sizeof(*st->layers));
+    if (st->n_mtp_layers > 0) {
+        st->mtp_layers = heap_alloc_aligned(st->n_mtp_layers * sizeof(*st->mtp_layers),
+                                            alignof(struct transformer_mtp_layer_weights));
+        if (st->mtp_layers == nullptr) {
+            geist_backend_set_error(be,
+                                    GEIST_E_OOM,
+                                    "transformer: MTP layer array alloc failed (%zu layers)",
+                                    st->n_mtp_layers);
+            return GEIST_E_OOM;
+        }
+        memset(st->mtp_layers, 0, st->n_mtp_layers * sizeof(*st->mtp_layers));
+    }
+
+    /* P1.5.c: fill per-layer geometry. The family populator decides
+     * the attention pattern (Gemma: sliding/full mix + KV sharing from
+     * GGUF metadata; Llama: uniform full-attn, no sharing).
+     * weight_load.c::load_one_layer reads these pre-filled fields
+     * instead of deriving them. Fails when the metadata doesn't pin
+     * the geometry — a named error beats a downstream wiring one
+     * (#258). */
+    if (!fam->populate_layers(st)) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer: %s geometry not derivable from GGUF metadata "
+                                "(n_layers=%zu, d_model=%zu — missing/inconsistent "
+                                "%s.attention.sliding_window_pattern or shared_kv_layers?)",
+                                fam->name,
+                                st->n_layers,
+                                st->d_model,
+                                fam->name);
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* head_dim is metadata: a layer asking for more than the forward pass
+     * holds (TRANSFORMER_HEAD_DIM_MAX) is refused here — it used to load
+     * and then overflow the per-head stack arrays of the attention kernels
+     * on the first prefill. */
+    for (size_t i = 0; i < st->n_layers + st->n_mtp_layers; i++) {
+        const size_t hd = i < st->n_layers ? st->layers[i].head_dim
+                                           : st->mtp_layers[i - st->n_layers].block.head_dim;
+        if (hd > TRANSFORMER_HEAD_DIM_MAX) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: %s layer %zu head_dim %zu exceeds the "
+                                    "supported maximum %zu",
+                                    fam->name,
+                                    i,
+                                    hd,
+                                    TRANSFORMER_HEAD_DIM_MAX);
+            return GEIST_E_UNSUPPORTED;
+        }
+    }
+    return GEIST_OK;
+}
+
 enum geist_status transformer_state_create_from_gguf(struct geist_backend            *be,
                                                      struct gguf_ctx                 *gguf,
                                                      const struct geist_session_opts *opts,
@@ -1138,66 +1310,13 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         }
     }
 
-    /* NEUTRAL family config: every feature off, every scale zero. A
-     * family populator declares only what it HAS (Gemma: PLE + norms +
-     * softcap; BitNet: SubLN; qwen3: QK-norms) instead of every other
-     * family stripping Gemma defaults. rms_eps carries the one value
-     * all families share as a fallback when the meta key is absent. */
-    st->config = (struct geist_arch_config) {
-            .family         = "?",
-            .rms_eps        = 1e-6f,
-            .kv_sliding_src = -1,
-            .kv_full_src    = -1,
-            .ffn_activation = GEIST_FFN_SWIGLU,
-    };
-
-    /* P1.5: dispatch to the per-family populator selected by
-     * `general.architecture`. Unknown / missing arch fails closed —
-     * the engine gate (model.c) rejects such GGUFs before we get here,
-     * so this branch only fires for callers bypassing the engine. */
-    const struct transformer_family *fam = transformer_family_select(gguf);
-    if (fam == nullptr) {
+    const struct transformer_family *fam = nullptr;
+    enum geist_status                gs  = geometry_from_metadata(be, gguf, st, &fam);
+    if (gs != GEIST_OK) {
         void *p = st;
         safe_free(&p);
         gguf_close(gguf);
-        geist_backend_set_error(be,
-                                GEIST_E_UNSUPPORTED,
-                                "transformer: unsupported or missing "
-                                "general.architecture in GGUF");
-        return GEIST_E_UNSUPPORTED;
-    }
-    st->config.family = fam->name;
-    fam->populate(gguf, st);
-    if (st->n_layers == 0) {
-        geist_backend_set_error(be,
-                                GEIST_E_FORMAT,
-                                "transformer: invalid layer metadata for %s "
-                                "(autoregressive=%zu, mtp=%zu)",
-                                fam->name,
-                                st->n_layers,
-                                st->n_mtp_layers);
-        void *p = st;
-        safe_free(&p);
-        gguf_close(gguf);
-        return GEIST_E_FORMAT;
-    }
-    /* Head counts are metadata too. Every attention path maps query head h
-     * to KV head h / (n_q_heads / n_kv_heads): more KV heads than query
-     * heads divides by zero there, and a KV count that does not divide the
-     * query count sends the last query heads to a KV head that does not
-     * exist. */
-    if (st->n_q_heads == 0 || st->n_kv_heads == 0 || st->n_q_heads % st->n_kv_heads != 0) {
-        geist_backend_set_error(be,
-                                GEIST_E_FORMAT,
-                                "transformer: %s head counts %zu (query) and %zu (KV): the KV "
-                                "count must divide the query count",
-                                fam->name,
-                                st->n_q_heads,
-                                st->n_kv_heads);
-        void *p = st;
-        safe_free(&p);
-        gguf_close(gguf);
-        return GEIST_E_FORMAT;
+        return gs;
     }
 
     /* DeltaNet hybrids prefer SMALL prefill chunks: the chunked
@@ -1236,77 +1355,10 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         transformer_prefill_apply_blocktime(&pt);
     }
 
-    /* P1.4.c: heap-allocate the per-layer weight array sized to the
-     * model's actual layer count. (Was a compile-time `[NUM_LAYERS]`
-     * field; freed in state_destroy below.) */
-    st->layers = heap_alloc_aligned(st->n_layers * sizeof(*st->layers),
-                                    alignof(struct transformer_layer_weights));
-    if (st->layers == nullptr) {
-        void *p = st;
-        safe_free(&p);
-        gguf_close(gguf);
-        geist_backend_set_error(be,
-                                GEIST_E_OOM,
-                                "transformer: layer array alloc failed "
-                                "(%zu layers × %zu bytes)",
-                                st->n_layers,
-                                sizeof(*st->layers));
-        return GEIST_E_OOM;
-    }
-    memset(st->layers, 0, st->n_layers * sizeof(*st->layers));
-    if (st->n_mtp_layers > 0) {
-        st->mtp_layers = heap_alloc_aligned(st->n_mtp_layers * sizeof(*st->mtp_layers),
-                                            alignof(struct transformer_mtp_layer_weights));
-        if (st->mtp_layers == nullptr) {
-            geist_backend_set_error(be,
-                                    GEIST_E_OOM,
-                                    "transformer: MTP layer array alloc failed (%zu layers)",
-                                    st->n_mtp_layers);
-            transformer_state_destroy(st);
-            return GEIST_E_OOM;
-        }
-        memset(st->mtp_layers, 0, st->n_mtp_layers * sizeof(*st->mtp_layers));
-    }
-
-    /* P1.5.c: fill per-layer geometry. The family populator decides
-     * the attention pattern (Gemma: sliding/full mix + KV sharing from
-     * GGUF metadata; Llama: uniform full-attn, no sharing).
-     * weight_load.c::load_one_layer reads these pre-filled fields
-     * instead of deriving them. Fails when the metadata doesn't pin
-     * the geometry — a named error beats a downstream wiring one
-     * (#258). */
-    if (!fam->populate_layers(st)) {
-        geist_backend_set_error(be,
-                                GEIST_E_UNSUPPORTED,
-                                "transformer: %s geometry not derivable from GGUF metadata "
-                                "(n_layers=%zu, d_model=%zu — missing/inconsistent "
-                                "%s.attention.sliding_window_pattern or shared_kv_layers?)",
-                                fam->name,
-                                st->n_layers,
-                                st->d_model,
-                                fam->name);
+    gs = geometry_layers(be, st, fam);
+    if (gs != GEIST_OK) {
         transformer_state_destroy(st);
-        return GEIST_E_UNSUPPORTED;
-    }
-    /* head_dim is metadata: a layer asking for more than the forward pass
-     * holds (TRANSFORMER_HEAD_DIM_MAX) is refused here — it used to load
-     * and then overflow the per-head stack arrays of the attention kernels
-     * on the first prefill. */
-    for (size_t i = 0; i < st->n_layers + st->n_mtp_layers; i++) {
-        const size_t hd = i < st->n_layers ? st->layers[i].head_dim
-                                           : st->mtp_layers[i - st->n_layers].block.head_dim;
-        if (hd > TRANSFORMER_HEAD_DIM_MAX) {
-            geist_backend_set_error(be,
-                                    GEIST_E_UNSUPPORTED,
-                                    "transformer: %s layer %zu head_dim %zu exceeds the "
-                                    "supported maximum %zu",
-                                    fam->name,
-                                    i,
-                                    hd,
-                                    TRANSFORMER_HEAD_DIM_MAX);
-            transformer_state_destroy(st);
-            return GEIST_E_UNSUPPORTED;
-        }
+        return gs;
     }
 
     /* Storage mode (mmap-alias default vs β-mode override). mmap-alias
@@ -1456,6 +1508,55 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     return GEIST_OK;
 }
 
+enum geist_status transformer_plan(struct geist_backend            *be,
+                                   struct gguf_ctx                 *gguf,
+                                   const struct geist_session_opts *opts,
+                                   size_t                          *kv_bytes_per_token,
+                                   size_t                          *model_bytes_per_token) {
+    if (be == nullptr || gguf == nullptr || kv_bytes_per_token == nullptr ||
+        model_bytes_per_token == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *kv_bytes_per_token    = 0;
+    *model_bytes_per_token = 0;
+    /* A host-only stand-in for the state: the geometry state_create derives,
+     * without the weights, the RoPE tables or any backend buffer. */
+    struct transformer_arch_state *st =
+            heap_alloc_aligned(sizeof(*st), alignof(struct transformer_arch_state));
+    if (st == nullptr) {
+        return GEIST_E_OOM;
+    }
+    memset(st, 0, sizeof(*st));
+    st->backend = be;
+    st->gguf    = gguf; /* the populators read metadata through it, as in state_create;
+                         * borrowed: the caller closes it */
+    const struct transformer_family *fam = nullptr;
+    enum geist_status                s   = geometry_from_metadata(be, gguf, st, &fam);
+    if (s == GEIST_OK) {
+        s = geometry_layers(be, st, fam);
+    }
+    if (s == GEIST_OK) {
+        const struct transformer_kv_layout kl = transformer_kv_layout_resolve(st, opts);
+        s = transformer_kv_bytes_for(kv_bytes_per_token, st, &kl);
+    }
+    if (s == GEIST_OK) {
+        /* allocate_runtime_rope: cos and sin, for the sliding and the full rows. */
+        size_t sl = 0, fl = 0, row = 0;
+        rope_row_widths(st, &sl, &fl);
+        if (ckd_add(&row, sl, fl) || ckd_mul(model_bytes_per_token, row, 2 * sizeof(float))) {
+            s = GEIST_E_INVALID_ARG;
+        }
+    }
+    if (s != GEIST_OK) {
+        *kv_bytes_per_token    = 0;
+        *model_bytes_per_token = 0;
+    }
+    safe_free((void **) &st->layers);
+    safe_free((void **) &st->mtp_layers);
+    safe_free((void **) &st);
+    return s;
+}
+
 enum geist_status transformer_state_create(struct geist_backend            *be,
                                            const char                      *gguf_path,
                                            const struct geist_session_opts *opts,
@@ -1519,7 +1620,8 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     }
 
     if (be != nullptr) {
-        for (size_t l = 0; l < (size_t) st->n_layers; l++) {
+        /* The layer array may be missing: its allocation failed (#625). */
+        for (size_t l = 0; st->layers != nullptr && l < (size_t) st->n_layers; l++) {
             struct transformer_layer_weights *L = &st->layers[l];
             release_layer_weight_aux(L);
             for (size_t b = 0; b < L->n_bufs; b++) {
@@ -1645,6 +1747,71 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
  * does only under GEIST_VK_SCRATCH_DEVICE=1; every other backend either
  * has no buffer_create_view or maps everything. A one-float probe, as
  * exec_plan.c's dn_state_host_mappable. */
+/* The KV cache layout a session gets: kv_mode, the GEIST_KV_* env and the
+ * backend decide it (#622, #625: shared by session_alloc and the plan, so
+ * the two cannot disagree). */
+struct transformer_kv_layout
+transformer_kv_layout_resolve(const struct transformer_arch_state *state,
+                              const struct geist_session_opts     *opts) {
+    struct transformer_kv_layout kl = {};
+    /* KV-mode resolution: opts override > env > backend/platform default. */
+    const enum geist_kv_mode mode = resolve_kv_mode(state->backend, opts);
+    kl.kivi                       = (mode == GEIST_KV_KIVI);
+    kl.int8                       = (mode == GEIST_KV_INT8);
+    /* Issue #61: packed 4-bit KV rides the INT8 storage path (buffer alloc +
+     * ctx wiring), with half-size data buffers holding 2 values/byte. */
+    kl.int4_packed = (mode == GEIST_KV_INT4);
+    if (kl.int4_packed) {
+        kl.int8 = true;
+    }
+    /* Issue #61: low-bit quality-sim reuses the INT8 storage path with an
+     * N-bit quant grid (no packing, no memory win). GEIST_KV_QBITS=N (2..8)
+     * forces INT8 storage on. Resolve before the rot flag so rotation sees
+     * it. Ignored under the real packed-INT4 mode. */
+    {
+        int         qbits     = 0;
+        const char *env_qbits = getenv("GEIST_KV_QBITS");
+        if (!kl.int4_packed && env_qbits != nullptr) {
+            const int q = atoi(env_qbits);
+            if (q >= 2 && q <= 8) {
+                qbits = (q == 8) ? 0 : q; /* 8-bit is the native path */
+            }
+        }
+        kl.sim_qbits = qbits;
+        if (qbits != 0) {
+            kl.int8 = true;
+            kl.kivi = false;
+        }
+    }
+    /* Issue #61: Hadamard rotation, only meaningful on the INT8 storage path.
+     * Packed INT4 rotates by DEFAULT (INT4-without-rotation is a real quality
+     * cliff and the rotation is ~free / a net win at long context); plain
+     * INT8 stays opt-in. GEIST_KV_ROT=0 opts out, =1 forces on. */
+    {
+        const char *env_rot     = getenv("GEIST_KV_ROT");
+        const bool  rot_default = kl.int4_packed;
+        const bool  rot_on      = (env_rot != nullptr) ? (env_rot[0] == '1') : rot_default;
+        kl.rot                  = kl.int8 && rot_on;
+    }
+    /* F16 cache: explicit request, or AUTO-resolved FP32 upgraded when the
+     * backend's attention reads F16 K/V (caps.kv_f16_attention) and the
+     * fused converting append exists (env GEIST_KV_F16=0 forces FP32,
+     * =1 requests it under AUTO). Otherwise F16 silently degrades to
+     * FP32 — no host-side half-float path exists. */
+    {
+        const bool  slot_ok = state->backend != nullptr &&
+                              state->backend->desc->caps.kv_f16_attention &&
+                              geist_backend_fused_tbl(state->backend)->kv_append_f16 != nullptr;
+        const char *env_f16 = getenv("GEIST_KV_F16");
+        bool        want    = mode == GEIST_KV_F16;
+        if (mode == GEIST_KV_FP32 && (opts == nullptr || opts->kv_mode == GEIST_KV_AUTO)) {
+            want = env_f16 == nullptr || env_f16[0] != '0';
+        }
+        kl.f16 = want && slot_ok && !(env_f16 != nullptr && env_f16[0] == '0');
+    }
+    return kl;
+}
+
 static bool backend_scratch_unmappable(struct geist_backend *be) {
     const struct geist_backend_vtbl *v = be->desc->vtbl;
     struct geist_buffer             *b = nullptr;
@@ -1802,44 +1969,13 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     sess->kv_data       = kv_block + 14 * n_layers;
 
     /* KV-mode resolution: opts override > env > backend/platform default. */
-    const enum geist_kv_mode mode = resolve_kv_mode(be, opts);
-    sess->kv_kivi_enabled         = (mode == GEIST_KV_KIVI);
-    sess->kv_int8_enabled         = (mode == GEIST_KV_INT8);
-    /* Issue #61: packed 4-bit KV rides the INT8 storage path (buffer alloc +
-     * ctx wiring), with half-size data buffers holding 2 values/byte. */
-    sess->kv_int4_packed_enabled = (mode == GEIST_KV_INT4);
-    if (sess->kv_int4_packed_enabled) {
-        sess->kv_int8_enabled = true;
-    }
-    /* Issue #61: low-bit quality-sim reuses the INT8 storage path with an
-     * N-bit quant grid (no packing, no memory win). GEIST_KV_QBITS=N (2..8)
-     * forces INT8 storage on. Resolve before the rot flag so rotation sees
-     * it. Ignored under the real packed-INT4 mode. */
-    {
-        int         qbits     = 0;
-        const char *env_qbits = getenv("GEIST_KV_QBITS");
-        if (!sess->kv_int4_packed_enabled && env_qbits != nullptr) {
-            const int q = atoi(env_qbits);
-            if (q >= 2 && q <= 8) {
-                qbits = (q == 8) ? 0 : q; /* 8-bit is the native path */
-            }
-        }
-        sess->kv_sim_qbits = qbits;
-        if (qbits != 0) {
-            sess->kv_int8_enabled = true;
-            sess->kv_kivi_enabled = false;
-        }
-    }
-    /* Issue #61: Hadamard rotation, only meaningful on the INT8 storage path.
-     * Packed INT4 rotates by DEFAULT (INT4-without-rotation is a real quality
-     * cliff and the rotation is ~free / a net win at long context); plain
-     * INT8 stays opt-in. GEIST_KV_ROT=0 opts out, =1 forces on. */
-    {
-        const char *env_rot     = getenv("GEIST_KV_ROT");
-        const bool  rot_default = sess->kv_int4_packed_enabled;
-        const bool  rot_on      = (env_rot != nullptr) ? (env_rot[0] == '1') : rot_default;
-        sess->kv_rot_enabled    = sess->kv_int8_enabled && rot_on;
-    }
+    const struct transformer_kv_layout kl = transformer_kv_layout_resolve(state, opts);
+    sess->kv_kivi_enabled                 = kl.kivi;
+    sess->kv_int8_enabled                 = kl.int8;
+    sess->kv_int4_packed_enabled          = kl.int4_packed;
+    sess->kv_sim_qbits                    = kl.sim_qbits;
+    sess->kv_rot_enabled                  = kl.rot;
+    sess->kv_f16_enabled                  = kl.f16;
     /* Issue #70: the rotation silently no-ops on a head_dim the FWHT can't
      * handle (non-power-of-two, or > 512) — packing/quant still run, so you
      * get the unrotated (worse) cache with no signal. Warn once so a
@@ -1857,22 +1993,6 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
                 break;
             }
         }
-    }
-    /* F16 cache: explicit request, or AUTO-resolved FP32 upgraded when the
-     * backend's attention reads F16 K/V (caps.kv_f16_attention) and the
-     * fused converting append exists (env GEIST_KV_F16=0 forces FP32,
-     * =1 requests it under AUTO). Otherwise F16 silently degrades to
-     * FP32 — no host-side half-float path exists. */
-    {
-        const bool  slot_ok = state->backend != nullptr &&
-                              state->backend->desc->caps.kv_f16_attention &&
-                              geist_backend_fused_tbl(state->backend)->kv_append_f16 != nullptr;
-        const char *env_f16 = getenv("GEIST_KV_F16");
-        bool        want    = mode == GEIST_KV_F16;
-        if (mode == GEIST_KV_FP32 && (opts == nullptr || opts->kv_mode == GEIST_KV_AUTO)) {
-            want = env_f16 == nullptr || env_f16[0] != '0';
-        }
-        sess->kv_f16_enabled = want && slot_ok && !(env_f16 != nullptr && env_f16[0] == '0');
     }
     sess->kivi_residual_count = 0;
     sess->kivi_drained_count  = 0;
