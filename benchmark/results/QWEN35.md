@@ -220,7 +220,8 @@ The 0.8B paths are ASan-clean. The controlled 27B five-prompt sweep was:
 Absolute rates varied with machine state versus PR 5, but the within-run
 result is unambiguous. Saving the redundant prefill does not compensate for
 the lower n-gram acceptance caused by deferring the correction token. The
-default cadence is therefore unchanged. llama.cpp's earlier controlled
+default cadence is therefore unchanged, and the opt-in switch was later
+removed from the engine (#631). llama.cpp's earlier controlled
 4.76 tok/s result remains ahead of both geist modes; this PR narrows the next
 optimization target to the three model-math stages above rather than token
 bookkeeping.
