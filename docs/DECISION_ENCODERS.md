@@ -110,7 +110,9 @@ record; it does not become a successful report.
 One warmup and one measured call **per case** give two trials. Repeats and
 rotations never inflate quality N. Population accuracy counts rejected inputs
 as incorrect and reports coverage separately; probability metrics and latency
-cover accepted cases only. First-trial predictions supply quality; repeat
+cover accepted cases only. Raw-logit metrics (temperature 1) and the
+checkpoint-temperature probability metrics are explicitly separate. Neither
+implies calibrated correctness on this dataset. First-trial predictions supply quality; repeat
 prediction and logit drift are separately recorded. A rejection-heavy fast
 model is not a quality-matched speedup.
 

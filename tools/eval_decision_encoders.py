@@ -91,11 +91,13 @@ def summarize(samples, rows, warmup):
     canonical = [row for row in rows if row["variant"] == 0]
     scored, correct, stable, timings = [], 0, True, []
     drift = 0.0
+    temperatures = set()
     for row in canonical:
         trials = grouped.get(row["id"], [])
         if not trials:
             continue
         first = trials[0]
+        temperatures.add(first.get("temperature", 1.0))
         correct += first["choice"] == "ABCD"[row["target_index"]]
         stable &= all(s["choice"] == first["choice"] for s in trials)
         drift = max(drift, max(abs(a - b) for s in trials for a, b in zip(first["logits"], s["logits"])))
@@ -108,10 +110,15 @@ def summarize(samples, rows, warmup):
                         "forward_p50_ms": median(s["forward_ms"] for s in warmed),
                         "prepare_p50_ms": median(s["prepare_ms"] for s in warmed),
                         "tokens": len(first["input_ids"])})
+    if len(temperatures) > 1:
+        raise ValueError("one fixed temperature policy required for four-option MMLU")
+    temperature = next(iter(temperatures), 1.0)
     return {"questions": len(canonical), "scored": len(scored), "correct": correct,
             "rejected": len(canonical) - len(scored), "coverage": len(scored) / len(canonical),
             "accuracy_rejections_count_incorrect": correct / len(canonical),
             "quality_on_scored_only": metrics.quality(scored) if scored else None,
+            "quality_on_scored_only_policy": "raw candidate logits at temperature 1; excludes rejections",
+            "quality_checkpoint_scaled_on_scored_only": metrics.quality(scored, temperature) if scored else None,
             "predictions_stable": stable, "max_repeat_logit_abs_drift": drift,
             "warm_request_p50_ms": median(t["request_p50_ms"] for t in timings) if timings else None,
             "warm_request_mean_ms": mean(t["request_p50_ms"] for t in timings) if timings else None,

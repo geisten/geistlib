@@ -139,6 +139,16 @@ assert not ({'torch', 'transformers', 'laya'} & set(sys.modules))
         self.assertEqual(result["quality_on_scored_only"]["n"], 1)
         self.assertFalse(result["quality_matched_speedup_established"])
 
+    def test_checkpoint_probabilities_are_distinct_from_raw_logit_metrics(self):
+        row = {"id": "a", "question_id": "q", "variant": 0, "subject": "s", "split": "development", "target_index": 0}
+        sample = {"status": "scored", "case_id": "a", "choice": "A", "logits": [2., 0., 0., 0.],
+                  "temperature": 2., "trial": 1, "request_ms": 2., "forward_ms": 1., "prepare_ms": .5, "input_ids": [1]}
+        result = evaluation.summarize([sample], [row], 1)
+        self.assertEqual(result["quality_on_scored_only"]["temperature"], 1.)
+        scaled = result["quality_checkpoint_scaled_on_scored_only"]
+        self.assertEqual(scaled["temperature"], 2.)
+        self.assertGreater(scaled["log_loss"], result["quality_on_scored_only"]["log_loss"])
+
     def test_repeat_prediction_drift_is_exposed(self):
         row = {"id": "a", "question_id": "q", "variant": 0, "subject": "s", "split": "development", "target_index": 0}
         sample = {"status": "scored", "case_id": "a", "choice": "A", "logits": [1., 0., 0., 0.],
