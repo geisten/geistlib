@@ -346,7 +346,8 @@ void metal_release_pipeline_tables(struct metal_state *st) {
                 metal_qsg_pq2_dq_source,      metal_qsg_pq2_source,
                 metal_qsg_pq2_n8_source,      metal_qsg_mm_pq2_source,
                 metal_qsg_mm_pq2_fast_source, metal_qsg_tq2_source,
-                metal_qsg_mm_tq2_source,      metal_qsg_i2s_source,
+                metal_qsg_tq2_n4_source,      metal_qsg_mm_tq2_source,
+                metal_qsg_i2s_source,         metal_qsg_i2s_n4_source,
                 metal_qsg_mm_i2s_source};
         const size_t n_parts = sizeof parts / sizeof parts[0];
         size_t       total   = 0;
