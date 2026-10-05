@@ -442,6 +442,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .kv_truncate              = op_kv_truncate,
         .kv_len                   = op_kv_len,
         .truncate                 = op_truncate,
+        .plan                     = transformer_plan,
         .kv_bytes_per_token       = op_kv_bytes_per_token,
         .session_alloc            = op_session_alloc,
         .session_free             = op_session_free,

@@ -96,6 +96,17 @@ static enum geist_status (*const c_truncate)(struct geist_session *,
 static enum geist_status (*const c_kv_bytes)(const struct geist_session *,
                                              size_t *) = geist_session_kv_bytes_per_token;
 
+static enum geist_status (*const c_plan)(const char *,
+                                         struct geist_backend *,
+                                         const struct geist_session_opts *,
+                                         struct geist_model_plan *) = geist_model_plan;
+static enum geist_status (*const c_plan_from_memory)(const void *,
+                                                     size_t,
+                                                     struct geist_backend *,
+                                                     const struct geist_session_opts *,
+                                                     struct geist_model_plan *) =
+        geist_model_plan_from_memory;
+
 static const struct {
     const char *name;
     const void *fn;
@@ -128,6 +139,8 @@ static const struct {
         {"geist_session_length", (const void *) &c_session_length},
         {"geist_session_truncate", (const void *) &c_truncate},
         {"geist_session_kv_bytes_per_token", (const void *) &c_kv_bytes},
+        {"geist_model_plan", (const void *) &c_plan},
+        {"geist_model_plan_from_memory", (const void *) &c_plan_from_memory},
 };
 
 int main(void) {
