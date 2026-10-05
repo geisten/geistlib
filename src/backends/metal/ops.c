@@ -222,8 +222,7 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
          * shapes at the M1 Max seed of 6144: ffn gate/up 0.138 -> 0.121
          * ms, lm_head 1.68 -> 1.35, while attn kv (1024 rows) would go
          * 0.030 -> 0.044. */
-        const bool n8 = st->use_pq2_n8 && n_out >= st->tuning.pq2_n8_min_n_out &&
-                        st->pq2_n8_pipeline != nullptr;
+        const bool n8 = n_out >= st->tuning.pq2_n8_min_n_out && st->pq2_n8_pipeline != nullptr;
         return (struct metal_quant_pipes) {.n4 = n8 ? st->pq2_n8_pipeline : st->pq2_n4_pipeline,
                                            .mm = st->pq2_mm_pipeline,
                                            .mm_fast   = st->pq2_mm_fast_pipeline,
@@ -4261,7 +4260,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
             const struct metal_quant_pipes p =
                     metal_quant_pipes_for(st, (enum geist_dtype) w->dtype, (uint32_t) w->n_out);
             if (w->n_out >= 4 && (st->use_q4k_n4 || p.gemm_only)) {
-                tile = w->dtype == GEIST_DTYPE_PQ2_0 && st->use_pq2_n8 &&
+                tile = w->dtype == GEIST_DTYPE_PQ2_0 &&
                                        (uint32_t) w->n_out >= st->tuning.pq2_n8_min_n_out
                                ? 16
                                : p.n4_tile;
@@ -4488,8 +4487,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_WIDE, g_tv);
             metal_msg_send_dispatch(st, enc, g_tv, t256);
         }
-    } else if (args->seq == 1 && st->dn_dec_v_pipeline != nullptr && 4u * args->head_v <= 1024u &&
-               st->use_dn_dec) {
+    } else if (args->seq == 1 && st->dn_dec_v_pipeline != nullptr && 4u * args->head_v <= 1024u) {
         /* Decode: q/k prep per k-head, then the state update spread over
          * v-heads x 4 row groups (dn_dec_v). */
         metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);

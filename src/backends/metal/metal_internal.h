@@ -210,9 +210,6 @@ struct metal_state {
     void  *pq2_mm_pipeline;
     void  *pq2_mm_fast_function;
     void  *pq2_mm_fast_pipeline;
-    /* matvec_pq2_n8: 8 rows per simdgroup instead of 4.
-     * GEIST_METAL_PQ2_N8=0 pins the 4-row kernel for A/B. */
-    bool use_pq2_n8;
     /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
@@ -222,9 +219,6 @@ struct metal_state {
          * metal_tuning_resolve. */
         bool resolved;
     } tuning;
-    /* Parallel single-token DeltaNet; GEIST_METAL_DN_SERIAL_DECODE=1 takes
-     * the serial path. Cached here: the decode path asks per layer. */
-    bool  use_dn_dec;
     void *pq2_n8_function;
     void *pq2_n8_pipeline;
     void *iq4nl_n4_function;
@@ -581,7 +575,7 @@ enum {
     METAL_Q4K_M_TILE                    = 8u,
     METAL_Q4K_M16_TILE                  = 16u,
     METAL_ELEM_THREADS                  = 256u,
-    METAL_QNORM_ATTENTION_MAX_HEAD_DIM = 512u,
+    METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
 };
 
 /* Elements per block of the formats metal_q40_q80_linear serves. */
