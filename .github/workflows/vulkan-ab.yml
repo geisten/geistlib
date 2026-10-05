@@ -11,10 +11,8 @@ name: vulkan-ab
 # for. The report goes to the job summary and, with the raw runs, to an
 # artifact.
 #
-# On demand only. The pull_request trigger fires only when this file changes,
-# so a PR that edits it measures itself once: its defaults are #504's case
-# (the Zen 5 CPU on a Q8_0 model, main before the native Q8_0 kernels of
-# #512 against main now).
+# On demand only. The defaults are #504's case (the Zen 5 CPU on a Q8_0
+# model, main before the native Q8_0 kernels of #512 against main now).
 
 on:
   workflow_dispatch:
@@ -47,25 +45,20 @@ on:
         description: "A/B cycles (>= 6)"
         type: string
         default: "6"
-  pull_request:
-    paths:
-      - .github/workflows/vulkan-ab.yml
 
 jobs:
   ab:
-    name: A/B on geist-vulkan (${{ inputs.backend || 'cpu_x86' }} ${{ inputs.driver || 'RADV' }})
-    # Same self-hosted guard as ci.yml's vulkan leg: never for fork PRs.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: A/B on geist-vulkan (${{ inputs.backend }} ${{ inputs.driver }})
     runs-on: [self-hosted, linux, x64, geist-vulkan]
     timeout-minutes: 180
     env:
-      BASE: ${{ inputs.base || '7a0b4217568697f7787634d7f519c989b571897a' }}
-      NEW: ${{ inputs.new || github.event.pull_request.head.sha || 'origin/main' }}
-      BACKEND: ${{ inputs.backend || 'cpu_x86' }}
-      DRIVER: ${{ inputs.driver || 'RADV' }}
-      PRESET: ${{ inputs.preset || 'smollm2-360m-q8_0' }}
-      SEQ_LENS: ${{ inputs.seq_lens || '128,512' }}
-      CYCLES: ${{ inputs.cycles || '6' }}
+      BASE: ${{ inputs.base }}
+      NEW: ${{ inputs.new }}
+      BACKEND: ${{ inputs.backend }}
+      DRIVER: ${{ inputs.driver }}
+      PRESET: ${{ inputs.preset }}
+      SEQ_LENS: ${{ inputs.seq_lens }}
+      CYCLES: ${{ inputs.cycles }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
