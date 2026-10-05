@@ -8,7 +8,7 @@
  *     length), absent or non-string keys give nullptr, the trained length;
  *   - geist_session_length counts prefilled and decoded positions;
  *   - geist_session_truncate: prefill A + B, truncate to A, prefill C gives
- *     bit for bit the logits and tokens of prefilling A + C; truncating to
+ *     bit for bit the logits and tokens of prefilling A, then C; truncating to
  *     the length keeps the pending logits; refusals past the length and
  *     below a pinned prefix (INVALID_ARG), on the recurrent hybrid for any
  *     n but 0 and the length, and inside the compressed KIVI region
@@ -104,10 +104,11 @@ static int truncation(const char *backend, struct geist_model *m, struct geist_b
         fails += geist_expect(false, what);
         goto out;
     }
-    geist_token_t ac[10];
-    memcpy(ac, A, sizeof A);
-    memcpy(ac + 6, C, sizeof C);
-    bool ok = geist_session_prefill_tokens(ref, 10, ac) == GEIST_OK && run(ref, VOCAB, want, lw);
+    /* The reference prefills A, then C, in two calls as the truncated session
+     * does: the same batch split, so bit for bit is a fair demand (one prefill
+     * of A + C may tile its GEMMs differently). */
+    bool ok = geist_session_prefill_tokens(ref, 6, A) == GEIST_OK &&
+              geist_session_prefill_tokens(ref, 4, C) == GEIST_OK && run(ref, VOCAB, want, lw);
 
     ok = ok && geist_session_prefill_tokens(s, 6, A) == GEIST_OK && geist_session_length(s) == 6 &&
          geist_session_prefill_tokens(s, 5, B) == GEIST_OK && geist_session_length(s) == 11;
@@ -128,7 +129,10 @@ static int truncation(const char *backend, struct geist_model *m, struct geist_b
     fails += geist_expect(ok && geist_session_decode_step(s, &t) != GEIST_OK, what);
 
     ok = geist_session_prefill_tokens(s, 4, C) == GEIST_OK && run(s, VOCAB, got, lg);
-    snprintf(what, sizeof what, "%s: A + B, truncate to A, + C equals A + C bit for bit", backend);
+    snprintf(what,
+             sizeof what,
+             "%s: A + B, truncate to A, + C equals A then C bit for bit",
+             backend);
     fails += geist_expect(ok && !memcmp(got, want, sizeof got) &&
                                   !memcmp(lg, lw, STEPS * VOCAB * sizeof(float)),
                           what);

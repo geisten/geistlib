@@ -124,7 +124,9 @@ every symbol it calls to a typed function pointer (`make
 runtime-contract-smoke`, in CI and in every release job), as the agent gate
 does.
 
-STABLE: the backend, model and session lifecycle above, plus
+### STABLE
+
+The backend, model and session lifecycle above, plus
 `geist_backend_name`, `geist_backend_errmsg`, `geist_model_errmsg`,
 `geist_session_errmsg` and, promoted for this contract in 0.12.0:
 
@@ -133,7 +135,11 @@ STABLE: the backend, model and session lifecycle above, plus
 | `geist_model_load_with_opts`, `geist_model_load_from_memory_with_opts` | loading with the window it chose (`max_seq_len`) |
 | `geist_model_add_bos`, `geist_model_add_eos` | wrapping the rendered prompt the way the model was trained |
 
-EXPERIMENTAL (#622), part of the gate so that a change cannot go unnoticed:
+### Explicitly NOT in the contract: EXPERIMENTAL, but gated (#622)
+
+Part of `runtime_contract_smoke.c`, so a change cannot go unnoticed, but not
+a promise yet: they become STABLE once geist-runtime has used them through a
+release.
 
 | Symbol | Why the runtime needs it |
 | :-- | :-- |
