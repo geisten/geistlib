@@ -9,6 +9,26 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Plan a model before loading it** (#625). `geist_model_plan` /
+  `geist_model_plan_from_memory` read only the GGUF's header and tensor
+  table and report what a load with the given options would cost: the
+  trained window, the weight bytes, the KV bytes per position of a session
+  (equal to `geist_session_kv_bytes_per_token` of that session) and the
+  model's own bytes per position of `max_seq_len` (its RoPE tables). The
+  window is fixed at load, so a runtime can now choose it from the memory
+  it has and load once, instead of loading twice. No weight is read and
+  nothing is allocated on the backend: 15 ms for Qwen3.8 27B and Bonsai 2
+  27B on an M1 Max, 3–24 ms for the smaller models, and equal to a real
+  session for Gemma 4 E2B/E4B, Qwen3 0.6B, Qwen3.5 0.8B, SmolLM2 and BitNet.
+  To share rather than repeat: the KV-mode resolution of `session_alloc`
+  (`transformer_kv_layout_resolve`), the geometry steps of `state_create`
+  (`geometry_from_metadata`, `geometry_layers`) and the RoPE row widths are
+  functions both use. EXPERIMENTAL, a new optional decoder hook `plan`
+  (appended), part of the runtime contract gate. Tests:
+  `test_model_plan_unit` (plan = session for every KV mode and an env-chosen
+  one, file = memory, a longer window grows the backend's allocations by
+  exactly the planned bytes, refusals). `transformer_state_destroy` no
+  longer reads a layer array whose allocation failed.
 - **The geist-runtime contract** (#622). geist-runtime, the chat layer over
   libgeist, gets the calls it was missing, all EXPERIMENTAL for now:
   `geist_model_metadata_str` (string metadata such as

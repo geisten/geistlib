@@ -867,10 +867,36 @@ void transformer_state_destroy(struct transformer_arch_state *state);
  * logits; the model's weights are untouched. Used by ops->state_reset. */
 void transformer_session_reset(struct transformer_arch_session *sess);
 
+/* Plan a model without loading it (#625): from the GGUF's metadata and
+ * tensor table only, the KV bytes per position a session with opts would
+ * get on be, and the model's own bytes per position of max_seq_len (the
+ * RoPE tables). No weight is read and nothing is allocated on be. */
+[[nodiscard]] enum geist_status transformer_plan(struct geist_backend            *be,
+                                                 struct gguf_ctx                 *gguf,
+                                                 const struct geist_session_opts *opts,
+                                                 size_t *kv_bytes_per_token,
+                                                 size_t *model_bytes_per_token);
+
+/* The KV-cache layout a session resolves to (#625): opts->kv_mode, the
+ * GEIST_KV_* env and the backend. session_alloc and transformer_plan share it. */
+struct transformer_kv_layout {
+    bool kivi, int8, int4_packed, f16, rot;
+    int  sim_qbits;
+};
+[[nodiscard]] struct transformer_kv_layout
+transformer_kv_layout_resolve(const struct transformer_arch_state *state,
+                              const struct geist_session_opts     *opts);
+
 /* geist_session_truncate (#622): keep the first n positions; see the
  * truncate op in geist_arch.h. The caller has settled a deferred advance. */
 [[nodiscard]] enum geist_status transformer_session_truncate(struct transformer_arch_session *sess,
                                                              size_t                           n);
+
+/* The KV-cache bytes per position of a layout on this model (#625): what
+ * transformer_kv_bytes_per_token and transformer_plan both report. */
+[[nodiscard]] enum geist_status transformer_kv_bytes_for(size_t *out_bytes,
+                                                         const struct transformer_arch_state *st,
+                                                         const struct transformer_kv_layout  *kl);
 
 /* The KV-cache bytes per position of this session (#622), from the same
  * geometry and resolved KV mode allocate_runtime_session sizes the caches by. */

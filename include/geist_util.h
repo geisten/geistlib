@@ -237,6 +237,45 @@ size_t                          geist_session_length(const struct geist_session 
 [[nodiscard]] enum geist_status geist_session_kv_bytes_per_token(const struct geist_session *s,
                                                                  size_t *out_bytes);
 
+/* @stability EXPERIMENTAL (#625) — plan a model before loading it.
+ *
+ * The window a model can hold is fixed at load (max_seq_len sizes its RoPE
+ * tables and bounds every session), but what a position costs depends on
+ * the model's layers, the KV mode and the backend. geist_model_plan reads
+ * only the GGUF's metadata and tensor table — no weight is read, nothing is
+ * allocated on be — and reports what a load with these opts would cost:
+ *
+ *   context_length         the trained window (<arch>.context_length), 0 if
+ *                          the GGUF does not say; geist_model_context_length
+ *   weight_bytes           the GGUF's tensor bytes
+ *   kv_bytes_per_token     per position of one session created with opts on
+ *                          be: equal to geist_session_kv_bytes_per_token of
+ *                          that session (one formula, one KV-mode resolution)
+ *   model_bytes_per_token  the model's own per-position tables (RoPE), per
+ *                          position of max_seq_len
+ *
+ * So one session with window W needs about weight_bytes +
+ * W * (kv_bytes_per_token + model_bytes_per_token), plus buffers that do not
+ * grow with W (scratch, recurrent state): keep headroom for those. A
+ * runtime picks W from the memory it has, then loads with that max_seq_len.
+ * Errors as for geist_model_load (geist_last_create_error); *out is zero on
+ * failure. */
+struct geist_model_plan {
+    size_t context_length;
+    size_t weight_bytes;
+    size_t kv_bytes_per_token;
+    size_t model_bytes_per_token;
+};
+[[nodiscard]] enum geist_status geist_model_plan(const char                      *path,
+                                                 struct geist_backend            *be,
+                                                 const struct geist_session_opts *opts,
+                                                 struct geist_model_plan         *out);
+[[nodiscard]] enum geist_status geist_model_plan_from_memory(const void                      *data,
+                                                             size_t                           size,
+                                                             struct geist_backend            *be,
+                                                             const struct geist_session_opts *opts,
+                                                             struct geist_model_plan         *out);
+
 /* @stability EXPERIMENTAL — session snapshot / restore (#548).
  *
  * Save a session's complete decoding state into a caller buffer and put it
