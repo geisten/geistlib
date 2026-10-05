@@ -195,26 +195,34 @@ static inline float dn_decay(float x) {
  * ws layout (see dn_chunk_ws_floats): gamma C | eg C | Kb C*d_k |
  * KCe C*d_k | Qg C*d_k | Vb C*d_v | vnew C*d_v | A C*C | attn C*C |
  * row C (scratch for the substitution).
+ *
+ * fresh (transformer_dn_head_chunk_fresh): S is the empty sequence's
+ * state, zeros, whatever its floats hold (dn_fresh), and is only written.
+ * The two GEMMs that read it are zero and do not run, nor are KCe and Qg
+ * formed, which only they read: 2 of the 7 GEMMs, 40 % of the
+ * multiply-adds of a 64-token chunk at d_k = d_v = 128. The result is the
+ * !fresh one on a zeroed S but for the sign of a zero.
  */
 size_t transformer_dn_chunk_ws_floats(size_t C, size_t d_k, size_t d_v) {
     return 2 * C + 3 * C * d_k + 2 * C * d_v + 2 * C * C + C;
 }
 
-void transformer_dn_head_chunk(float       *S,
-                               const float *Q,
-                               size_t       sq,
-                               const float *K,
-                               size_t       sk,
-                               const float *V,
-                               size_t       sv,
-                               const float *beta,
-                               const float *g,
-                               size_t       sbg,
-                               size_t       C,
-                               size_t       d_k,
-                               size_t       d_v,
-                               float       *o,
-                               float       *ws) {
+[[gnu::always_inline]] static inline void dn_head_chunk(bool         fresh,
+                                                        float       *S,
+                                                        const float *Q,
+                                                        size_t       sq,
+                                                        const float *K,
+                                                        size_t       sk,
+                                                        const float *V,
+                                                        size_t       sv,
+                                                        const float *beta,
+                                                        const float *g,
+                                                        size_t       sbg,
+                                                        size_t       C,
+                                                        size_t       d_k,
+                                                        size_t       d_v,
+                                                        float       *o,
+                                                        float       *ws) {
     float *gamma = ws;
     float *eg    = gamma + C;
     float *Kb    = eg + C;
@@ -236,9 +244,11 @@ void transformer_dn_head_chunk(float       *S,
     for (size_t t = 0; t < C; t++) {
         const float bt = beta[t * sbg];
         for (size_t i = 0; i < d_k; i++) {
-            Kb[t * d_k + i]  = bt * K[t * sk + i];
-            KCe[t * d_k + i] = Kb[t * d_k + i] * eg[t];
-            Qg[t * d_k + i]  = Q[t * sq + i] * eg[t];
+            Kb[t * d_k + i] = bt * K[t * sk + i];
+            if (!fresh) { /* only the GEMMs on S read them */
+                KCe[t * d_k + i] = Kb[t * d_k + i] * eg[t];
+                Qg[t * d_k + i]  = Q[t * sq + i] * eg[t];
+            }
         }
         for (size_t j = 0; j < d_v; j++)
             Vb[t * d_v + j] = bt * V[t * sv + j];
@@ -284,37 +294,56 @@ void transformer_dn_head_chunk(float       *S,
     /* v_new = (A+I)(Vb - KCe S): the spec transforms Vb and KCe through
      * (A+I) separately, but both feed the same difference, so fold the
      * substitution into it — one C x C GEMM instead of two. Stage A*vnew
-     * in Vb, which is dead after the difference. */
-    geist_sgemm(GEIST_OP_N,
-                GEIST_OP_N,
-                (int) C,
-                (int) d_v,
-                (int) d_k,
-                -1.0f,
-                KCe,
-                (int) d_k,
-                S,
-                (int) d_v,
-                0.0f,
-                vnew,
-                (int) d_v);
-    for (size_t i = 0; i < C * d_v; i++)
-        vnew[i] += Vb[i];
-    geist_sgemm(GEIST_OP_N,
-                GEIST_OP_N,
-                (int) C,
-                (int) d_v,
-                (int) C,
-                1.0f,
-                A,
-                (int) C,
-                vnew,
-                (int) d_v,
-                0.0f,
-                Vb,
-                (int) d_v);
-    for (size_t i = 0; i < C * d_v; i++)
-        vnew[i] += Vb[i];
+     * in Vb, which is dead after the difference. Fresh, the difference is
+     * Vb: v_new = A Vb + Vb, the same sums. */
+    if (fresh) {
+        geist_sgemm(GEIST_OP_N,
+                    GEIST_OP_N,
+                    (int) C,
+                    (int) d_v,
+                    (int) C,
+                    1.0f,
+                    A,
+                    (int) C,
+                    Vb,
+                    (int) d_v,
+                    0.0f,
+                    vnew,
+                    (int) d_v);
+        for (size_t i = 0; i < C * d_v; i++)
+            vnew[i] += Vb[i];
+    } else {
+        geist_sgemm(GEIST_OP_N,
+                    GEIST_OP_N,
+                    (int) C,
+                    (int) d_v,
+                    (int) d_k,
+                    -1.0f,
+                    KCe,
+                    (int) d_k,
+                    S,
+                    (int) d_v,
+                    0.0f,
+                    vnew,
+                    (int) d_v);
+        for (size_t i = 0; i < C * d_v; i++)
+            vnew[i] += Vb[i];
+        geist_sgemm(GEIST_OP_N,
+                    GEIST_OP_N,
+                    (int) C,
+                    (int) d_v,
+                    (int) C,
+                    1.0f,
+                    A,
+                    (int) C,
+                    vnew,
+                    (int) d_v,
+                    0.0f,
+                    Vb,
+                    (int) d_v);
+        for (size_t i = 0; i < C * d_v; i++)
+            vnew[i] += Vb[i];
+    }
 
     /* attn = (Q K^T) o D_incl */
     geist_sgemm(GEIST_OP_N,
@@ -335,19 +364,20 @@ void transformer_dn_head_chunk(float       *S,
             attn[i * C + j] = (i >= j) ? attn[i * C + j] * dn_decay(gamma[i] - gamma[j]) : 0.0f;
 
     /* O = Qg S + attn v_new. */
-    geist_sgemm(GEIST_OP_N,
-                GEIST_OP_N,
-                (int) C,
-                (int) d_v,
-                (int) d_k,
-                1.0f,
-                Qg,
-                (int) d_k,
-                S,
-                (int) d_v,
-                0.0f,
-                o,
-                (int) d_v);
+    if (!fresh)
+        geist_sgemm(GEIST_OP_N,
+                    GEIST_OP_N,
+                    (int) C,
+                    (int) d_v,
+                    (int) d_k,
+                    1.0f,
+                    Qg,
+                    (int) d_k,
+                    S,
+                    (int) d_v,
+                    0.0f,
+                    o,
+                    (int) d_v);
     geist_sgemm(GEIST_OP_N,
                 GEIST_OP_N,
                 (int) C,
@@ -358,7 +388,7 @@ void transformer_dn_head_chunk(float       *S,
                 (int) C,
                 vnew,
                 (int) d_v,
-                1.0f,
+                fresh ? 0.0f : 1.0f,
                 o,
                 (int) d_v);
 
@@ -370,9 +400,11 @@ void transformer_dn_head_chunk(float       *S,
         for (size_t i = 0; i < d_k; i++)
             Kb[t * d_k + i] = K[t * sk + i] * w;
     }
-    const float eglast = dn_decay(glast);
-    for (size_t i = 0; i < d_k * d_v; i++)
-        S[i] *= eglast;
+    if (!fresh) {
+        const float eglast = dn_decay(glast);
+        for (size_t i = 0; i < d_k * d_v; i++)
+            S[i] *= eglast;
+    }
     geist_sgemm(GEIST_OP_T,
                 GEIST_OP_N,
                 (int) d_k,
@@ -383,9 +415,45 @@ void transformer_dn_head_chunk(float       *S,
                 (int) d_k,
                 vnew,
                 (int) d_v,
-                1.0f,
+                fresh ? 0.0f : 1.0f,
                 S,
                 (int) d_v);
+}
+
+void transformer_dn_head_chunk(float       *S,
+                               const float *Q,
+                               size_t       sq,
+                               const float *K,
+                               size_t       sk,
+                               const float *V,
+                               size_t       sv,
+                               const float *beta,
+                               const float *g,
+                               size_t       sbg,
+                               size_t       C,
+                               size_t       d_k,
+                               size_t       d_v,
+                               float       *o,
+                               float       *ws) {
+    dn_head_chunk(false, S, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o, ws);
+}
+
+void transformer_dn_head_chunk_fresh(float       *S,
+                                     const float *Q,
+                                     size_t       sq,
+                                     const float *K,
+                                     size_t       sk,
+                                     const float *V,
+                                     size_t       sv,
+                                     const float *beta,
+                                     const float *g,
+                                     size_t       sbg,
+                                     size_t       C,
+                                     size_t       d_k,
+                                     size_t       d_v,
+                                     float       *o,
+                                     float       *ws) {
+    dn_head_chunk(true, S, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o, ws);
 }
 
 /* Largest delta-rule chunk the host path runs at once; see
@@ -502,8 +570,9 @@ void transformer_dn_conv_silu_row(size_t       t,
  * dn_head_chunk per v-head (OMP). Returns false if that staging cannot be
  * had; the caller falls back to the sequential token loop. */
 static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
-                                   float       *qkv, /* [seq, convd] pre-conv, mapped */
-                                   float       *zg,  /* [seq, vald] gate in / mix out */
+                                   bool         fresh, /* the state is zeros (dn_fresh) */
+                                   float       *qkv,   /* [seq, convd] pre-conv, mapped */
+                                   float       *zg,    /* [seq, vald] gate in / mix out */
                                    const float *bb,
                                    const float *baa,
                                    const float *convw,
@@ -556,7 +625,10 @@ static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
     float *gs      = betas + bg_f;
     float *old_cst = gs + bg_f;
     float *ws_all  = old_cst + old_f;
-    memcpy(old_cst, cstate, old_f * sizeof(float));
+    if (fresh)
+        memset(old_cst, 0, old_f * sizeof(float));
+    else
+        memcpy(old_cst, cstate, old_f * sizeof(float));
 
     /* Conv + silu for every token (reads only pre-conv qkv + old state,
      * so tokens are independent), then gating scalars. */
@@ -603,21 +675,45 @@ static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
         for (size_t off = 0; off < seq; off += DN_SUBCHUNK) {
             const size_t c  = seq - off < DN_SUBCHUNK ? seq - off : DN_SUBCHUNK;
             const float *yr = y + off * convd;
-            transformer_dn_head_chunk(S + hv * d_k * d_v,
-                                      yr + hk * d_k,
-                                      convd,
-                                      yr + keyd + hk * d_k,
-                                      convd,
-                                      yr + 2 * keyd + hv * d_v,
-                                      convd,
-                                      betas + off * n_vh + hv,
-                                      gs + off * n_vh + hv,
-                                      n_vh,
-                                      c,
-                                      d_k,
-                                      d_v,
-                                      o + off * d_v,
-                                      ws);
+            float       *Sh = S + hv * d_k * d_v;
+            const float *qr = yr + hk * d_k;
+            const float *kr = yr + keyd + hk * d_k;
+            const float *vr = yr + 2 * keyd + hv * d_v;
+            const float *br = betas + off * n_vh + hv;
+            const float *gr = gs + off * n_vh + hv;
+            /* The first sub-chunk writes a fresh S, every later one reads it. */
+            if (fresh && off == 0)
+                transformer_dn_head_chunk_fresh(Sh,
+                                                qr,
+                                                convd,
+                                                kr,
+                                                convd,
+                                                vr,
+                                                convd,
+                                                br,
+                                                gr,
+                                                n_vh,
+                                                c,
+                                                d_k,
+                                                d_v,
+                                                o + off * d_v,
+                                                ws);
+            else
+                transformer_dn_head_chunk(Sh,
+                                          qr,
+                                          convd,
+                                          kr,
+                                          convd,
+                                          vr,
+                                          convd,
+                                          br,
+                                          gr,
+                                          n_vh,
+                                          c,
+                                          d_k,
+                                          d_v,
+                                          o + off * d_v,
+                                          ws);
         }
         for (size_t t = 0; t < seq; t++) {
             float *o_t = o + t * d_v;
@@ -815,8 +911,10 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
         /* Prefill (seq > 1): chunked delta rule — GEMM work instead of seq
          * sequential state passes. Decode and the (alloc-failure) fallback
          * take the exact sequential loop below. */
+        const bool fresh   = sess->dn_fresh != nullptr && sess->dn_fresh[ctx->layer_idx];
         const bool chunked = seq > 1 && !st->runtime_flags.dn_seq_prefill &&
                              dn_run_prefill_chunked(sess,
+                                                    fresh,
                                                     qkv,
                                                     zg,
                                                     bb,
@@ -838,6 +936,14 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
                                                     convd,
                                                     eps,
                                                     qscale);
+        if (fresh) {
+            /* The token loop reads the state: make it the zeros it stands for. */
+            if (!chunked) {
+                memset(cstate, 0, (K - 1) * convd * sizeof(float));
+                memset(S, 0, n_vh * d_k * d_v * sizeof(float));
+            }
+            sess->dn_fresh[ctx->layer_idx] = false;
+        }
 
         for (size_t t = 0; chunked == false && t < seq; t++) {
             float *qkv_t = qkv + t * convd;

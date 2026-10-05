@@ -14,6 +14,10 @@
  * tiny-batch edge), an odd C, and C = 64 (the m_max chunk); strides
  * exercise the direct-from-y-buffer row layout.
  *
+ * transformer_dn_head_chunk_fresh, the chunk after a reset (dn_fresh),
+ * must equal the chunk from a zeroed S on every shape, while its own S
+ * holds garbage it may not read.
+ *
  * The chunk must also leave no denormal in its output, its state or its
  * workspace: each one costs a microcode assist on x86, and the decay
  * factors made them by the percent (DN_EXP_FLOOR). g in [-3, 0) takes
@@ -116,7 +120,28 @@ static int run_case(size_t C, size_t d_k, size_t d_v, float g_scale, bool forget
     }
     transformer_dn_head_chunk(S_chunk, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o_chunk, ws);
     const size_t den_ws = count_denormals(ws_f, ws);
+
+    /* From the empty state: the fresh chunk, which never reads S, on
+     * garbage against the plain one on zeros, value for value (the sign
+     * of a zero aside). The garbage is not frand's, so the cases after
+     * this one draw what they drew before. */
+    static float S_zero[MAX_D * MAX_D], S_fresh[MAX_D * MAX_D];
+    static float o_zero[MAX_C * MAX_D], o_fresh[MAX_C * MAX_D];
+    for (size_t i = 0; i < d_k * d_v; i++) {
+        S_zero[i]  = 0.0f;
+        S_fresh[i] = (float) ((i * 2654435761u) % 2001u) - 1000.0f;
+    }
+    transformer_dn_head_chunk(S_zero, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o_zero, ws);
+    transformer_dn_head_chunk_fresh(
+            S_fresh, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o_fresh, ws);
     free(ws);
+    size_t fresh_diff = 0;
+    for (size_t i = 0; i < C * d_v; i++)
+        fresh_diff += !(o_fresh[i] == o_zero[i]);
+    for (size_t i = 0; i < d_k * d_v; i++)
+        fresh_diff += !(S_fresh[i] == S_zero[i]);
+    const size_t den_fresh =
+            count_denormals(C * d_v, o_fresh) + count_denormals(d_k * d_v, S_fresh);
     const size_t den_o = count_denormals(C * d_v, o_chunk);
     const size_t den_s = count_denormals(d_k * d_v, S_chunk);
 
@@ -149,12 +174,17 @@ static int run_case(size_t C, size_t d_k, size_t d_v, float g_scale, bool forget
         fprintf(stderr, "FAIL: chunk kernel != sequential (tol %.0e)\n", (double) TOL);
         return 1;
     }
-    if (den_ws != 0 || den_o != 0 || den_s != 0) {
+    if (fresh_diff != 0) {
+        fprintf(stderr, "FAIL: fresh chunk != chunk from zeros at %zu values\n", fresh_diff);
+        return 1;
+    }
+    if (den_ws != 0 || den_o != 0 || den_s != 0 || den_fresh != 0) {
         fprintf(stderr,
-                "FAIL: chunk left denormals: %zu in ws, %zu in o, %zu in S\n",
+                "FAIL: chunk left denormals: %zu in ws, %zu in o, %zu in S, %zu fresh\n",
                 den_ws,
                 den_o,
-                den_s);
+                den_s,
+                den_fresh);
         return 1;
     }
     return 0;
@@ -171,6 +201,7 @@ int main(void) {
     rc |= run_case(64, 64, 64, 4.0f, false); /* fast-forgetting head */
     rc |= run_case(64, 64, 64, 1.5f, true);  /* forgets only: S ends on e^-96 */
     if (rc == 0)
-        printf("OK: dn_head_chunk == dn_head_step on all shapes, no denormals\n");
+        printf("OK: dn_head_chunk == dn_head_step on all shapes, the fresh chunk == the "
+               "chunk from zeros, no denormals\n");
     return rc;
 }
