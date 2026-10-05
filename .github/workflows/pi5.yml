@@ -16,7 +16,11 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: "0 3 * * *"
+    # 22:17 UTC (00:17 Berlin in summer). GitHub fires this repo's crons
+    # about six hours late (03:00 UTC ran at 08:16-09:43 UTC from 2026-09-26
+    # to 10-04, mid-morning on the board); an off-the-hour minute this early
+    # lands the run in the small hours, on a cool board.
+    - cron: "17 22 * * *"
 
 permissions:
   contents: read
