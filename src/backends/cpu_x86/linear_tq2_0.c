@@ -187,64 +187,16 @@ static void cpu_x86_linear_tq2_0_m1(const float               *x,
     }
 }
 
-static void cpu_x86_linear_tq2_0_mN(size_t                     m,
-                                    const float               *x,
-                                    const struct geist_weight *w,
-                                    struct geist_backend      *be,
-                                    float                     *y) {
-    const size_t              n_in  = (size_t) w->n_in;
-    const size_t              n_out = (size_t) w->n_out;
-    const size_t              nb    = n_in / QK;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, QK);
-    if (ws == nullptr) {
-        geist_linear_ref(m, x, w, y);
-        return;
-    }
-    int8_t                     *qx    = ws->mN_acts;
-    float                      *dx    = ws->mN_scale;
-    int32_t                    *sx    = ws->mN_sum_a;
-    const struct block_tq2_0_t *wb    = (const struct block_tq2_0_t *) w->raw;
-    const size_t                m_til = m - m % NR;
-
-    /* One team: quantize the m rows, then the GEMM (implicit barrier
-     * between the two worksharing loops). */
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-    {
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t i = 0; i < m; i++) {
-            quantize_row_q8_256(nb, x + i * n_in, qx + i * n_in, dx + i * nb, sx + i * nb);
-        }
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t j = 0; j < n_out; j++) {
-            const struct block_tq2_0_t *wr = wb + j * nb;
-            float                       out[NR];
-            for (size_t i = 0; i < m_til; i += NR) {
-                dot_rows(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nb, out);
-                for (size_t r = 0; r < NR; r++) {
-                    y[(i + r) * n_out + j] = out[r];
-                }
-            }
-            for (size_t i = m_til; i < m; i++) {
-                y[i * n_out + j] = dot_row(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nb);
-            }
-        }
-    }
-}
-
-/* M>1 on AVX-512 VNNI hosts: the same quantization, then the register
+/* M>1: one team quantizes the m rows, then runs the GEMM (implicit barrier
+ * between the two worksharing loops). With vnni, the GEMM is the register
  * tiles of kernel_tq2_0_avx512_vnni.c, one call per group of
  * TQ2_0_VNNI_TILE_ROWS output rows. */
-static void cpu_x86_linear_tq2_0_mN_vnni(size_t                     m,
-                                         const float               *x,
-                                         const struct geist_weight *w,
-                                         struct geist_backend      *be,
-                                         float                     *y) {
+static void linear_mN(bool                       vnni,
+                      size_t                     m,
+                      const float               *x,
+                      const struct geist_weight *w,
+                      struct geist_backend      *be,
+                      float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
@@ -257,6 +209,7 @@ static void cpu_x86_linear_tq2_0_mN_vnni(size_t                     m,
     float                      *dx      = ws->mN_scale;
     int32_t                    *sx      = ws->mN_sum_a;
     const struct block_tq2_0_t *wb      = (const struct block_tq2_0_t *) w->raw;
+    const size_t                m_til   = m - m % NR;
     const size_t                n_tiles = (n_out + TQ2_0_VNNI_TILE_ROWS - 1) / TQ2_0_VNNI_TILE_ROWS;
 
 #if defined(_OPENMP)
@@ -269,18 +222,52 @@ static void cpu_x86_linear_tq2_0_mN_vnni(size_t                     m,
         for (size_t i = 0; i < m; i++) {
             quantize_row_q8_256(nb, x + i * n_in, qx + i * n_in, dx + i * nb, sx + i * nb);
         }
+        if (vnni) {
 #if defined(_OPENMP)
 #pragma omp for schedule(static)
 #endif
-        for (size_t g = 0; g < n_tiles; g++) {
-            const size_t j0 = g * TQ2_0_VNNI_TILE_ROWS;
-            const size_t rows =
-                    n_out - j0 < TQ2_0_VNNI_TILE_ROWS ? n_out - j0 : TQ2_0_VNNI_TILE_ROWS;
-            tq2_0_gemm_rows_avx512_vnni(m, nb, n_out, j0, rows, wb, qx, dx, sx, y);
+            for (size_t g = 0; g < n_tiles; g++) {
+                const size_t j0 = g * TQ2_0_VNNI_TILE_ROWS;
+                const size_t rows =
+                        n_out - j0 < TQ2_0_VNNI_TILE_ROWS ? n_out - j0 : TQ2_0_VNNI_TILE_ROWS;
+                tq2_0_gemm_rows_avx512_vnni(m, nb, n_out, j0, rows, wb, qx, dx, sx, y);
+            }
+        } else {
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+            for (size_t j = 0; j < n_out; j++) {
+                const struct block_tq2_0_t *wr = wb + j * nb;
+                float                       out[NR];
+                for (size_t i = 0; i < m_til; i += NR) {
+                    dot_rows(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nb, out);
+                    for (size_t r = 0; r < NR; r++) {
+                        y[(i + r) * n_out + j] = out[r];
+                    }
+                }
+                for (size_t i = m_til; i < m; i++) {
+                    y[i * n_out + j] = dot_row(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nb);
+                }
+            }
         }
     }
 }
 
+static void cpu_x86_linear_tq2_0_mN(size_t                     m,
+                                    const float               *x,
+                                    const struct geist_weight *w,
+                                    struct geist_backend      *be,
+                                    float                     *y) {
+    linear_mN(false, m, x, w, be, y);
+}
+
+static void cpu_x86_linear_tq2_0_mN_vnni(size_t                     m,
+                                         const float               *x,
+                                         const struct geist_weight *w,
+                                         struct geist_backend      *be,
+                                         float                     *y) {
+    linear_mN(true, m, x, w, be, y);
+}
 void cpu_x86_linear_tq2_0_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_tq2_0_m1;
     w->linear_mN = vnni_tiles_usable() ? cpu_x86_linear_tq2_0_mN_vnni : cpu_x86_linear_tq2_0_mN;

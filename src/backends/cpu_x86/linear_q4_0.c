@@ -350,79 +350,16 @@ static void cpu_x86_linear_q4_0_m1(const float               *x,
     }
 }
 
-static void cpu_x86_linear_q4_0_mN(size_t                     m,
-                                   const float               *x,
-                                   const struct geist_weight *w,
-                                   struct geist_backend      *be,
-                                   float                     *y) {
-    const size_t              n_in  = (size_t) w->n_in;
-    const size_t              n_out = (size_t) w->n_out;
-    const size_t              nb    = n_in / QK;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, QK);
-    if (ws == nullptr) {
-        geist_linear_ref(m, x, w, y);
-        return;
-    }
-    int8_t      *qx    = ws->mN_acts;
-    float       *dx    = ws->mN_scale;
-    int32_t     *sx    = ws->mN_sum_a;
-    const bool   q4_0  = w->dtype == GEIST_DTYPE_Q4_0;
-    const size_t m_til = m - m % NR;
-
-    /* One team: quantize the m rows, then the GEMM (implicit barrier
-     * between the two worksharing loops). */
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-    {
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t i = 0; i < m; i++) {
-            quantize_row_q8_0_sum(nb, x + i * n_in, qx + i * n_in, dx + i * nb, sx + i * nb);
-        }
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t j = 0; j < n_out; j++) {
-            float out[NR];
-            if (q4_0) {
-                const struct block_q4_0_t *wr = (const struct block_q4_0_t *) w->raw + j * nb;
-                for (size_t i = 0; i < m_til; i += NR) {
-                    dot_rows_q4_0(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nb, out);
-                    for (size_t r = 0; r < NR; r++) {
-                        y[(i + r) * n_out + j] = out[r];
-                    }
-                }
-                for (size_t i = m_til; i < m; i++) {
-                    y[i * n_out + j] =
-                            dot_row_q4_0(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nb);
-                }
-            } else {
-                const struct block_q4_1_t *wr = (const struct block_q4_1_t *) w->raw + j * nb;
-                for (size_t i = 0; i < m_til; i += NR) {
-                    dot_rows_q4_1(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nb, out);
-                    for (size_t r = 0; r < NR; r++) {
-                        y[(i + r) * n_out + j] = out[r];
-                    }
-                }
-                for (size_t i = m_til; i < m; i++) {
-                    y[i * n_out + j] =
-                            dot_row_q4_1(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nb);
-                }
-            }
-        }
-    }
-}
-
-/* M>1 on AVX-512 VNNI hosts: the same quantization, then the register
+/* M>1: one team quantizes the m rows, then runs the GEMM (implicit barrier
+ * between the two worksharing loops). With vnni, the GEMM is the register
  * tiles of kernel_q4_0_avx512_vnni.c, one call per group of
  * Q4_0_VNNI_TILE_ROWS output rows. */
-static void cpu_x86_linear_q4_0_mN_vnni(size_t                     m,
-                                        const float               *x,
-                                        const struct geist_weight *w,
-                                        struct geist_backend      *be,
-                                        float                     *y) {
+static void linear_mN(bool                       vnni,
+                      size_t                     m,
+                      const float               *x,
+                      const struct geist_weight *w,
+                      struct geist_backend      *be,
+                      float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
@@ -435,6 +372,7 @@ static void cpu_x86_linear_q4_0_mN_vnni(size_t                     m,
     float       *dx      = ws->mN_scale;
     int32_t     *sx      = ws->mN_sum_a;
     const bool   q4_0    = w->dtype == GEIST_DTYPE_Q4_0;
+    const size_t m_til   = m - m % NR;
     const size_t n_tiles = (n_out + Q4_0_VNNI_TILE_ROWS - 1) / Q4_0_VNNI_TILE_ROWS;
 
 #if defined(_OPENMP)
@@ -447,19 +385,70 @@ static void cpu_x86_linear_q4_0_mN_vnni(size_t                     m,
         for (size_t i = 0; i < m; i++) {
             quantize_row_q8_0_sum(nb, x + i * n_in, qx + i * n_in, dx + i * nb, sx + i * nb);
         }
+        if (vnni) {
 #if defined(_OPENMP)
 #pragma omp for schedule(static)
 #endif
-        for (size_t g = 0; g < n_tiles; g++) {
-            const size_t j0   = g * Q4_0_VNNI_TILE_ROWS;
-            const size_t rows = n_out - j0 < Q4_0_VNNI_TILE_ROWS ? n_out - j0 : Q4_0_VNNI_TILE_ROWS;
-            if (q4_0) {
-                q4_0_gemm_rows_avx512_vnni(m, nb, n_out, j0, rows, w->raw, qx, dx, sx, y);
-            } else {
-                q4_1_gemm_rows_avx512_vnni(m, nb, n_out, j0, rows, w->raw, qx, dx, sx, y);
+            for (size_t g = 0; g < n_tiles; g++) {
+                const size_t j0 = g * Q4_0_VNNI_TILE_ROWS;
+                const size_t rows =
+                        n_out - j0 < Q4_0_VNNI_TILE_ROWS ? n_out - j0 : Q4_0_VNNI_TILE_ROWS;
+                if (q4_0) {
+                    q4_0_gemm_rows_avx512_vnni(m, nb, n_out, j0, rows, w->raw, qx, dx, sx, y);
+                } else {
+                    q4_1_gemm_rows_avx512_vnni(m, nb, n_out, j0, rows, w->raw, qx, dx, sx, y);
+                }
+            }
+        } else {
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+            for (size_t j = 0; j < n_out; j++) {
+                float out[NR];
+                if (q4_0) {
+                    const struct block_q4_0_t *wr = (const struct block_q4_0_t *) w->raw + j * nb;
+                    for (size_t i = 0; i < m_til; i += NR) {
+                        dot_rows_q4_0(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nb, out);
+                        for (size_t r = 0; r < NR; r++) {
+                            y[(i + r) * n_out + j] = out[r];
+                        }
+                    }
+                    for (size_t i = m_til; i < m; i++) {
+                        y[i * n_out + j] =
+                                dot_row_q4_0(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nb);
+                    }
+                } else {
+                    const struct block_q4_1_t *wr = (const struct block_q4_1_t *) w->raw + j * nb;
+                    for (size_t i = 0; i < m_til; i += NR) {
+                        dot_rows_q4_1(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nb, out);
+                        for (size_t r = 0; r < NR; r++) {
+                            y[(i + r) * n_out + j] = out[r];
+                        }
+                    }
+                    for (size_t i = m_til; i < m; i++) {
+                        y[i * n_out + j] =
+                                dot_row_q4_1(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nb);
+                    }
+                }
             }
         }
     }
+}
+
+static void cpu_x86_linear_q4_0_mN(size_t                     m,
+                                   const float               *x,
+                                   const struct geist_weight *w,
+                                   struct geist_backend      *be,
+                                   float                     *y) {
+    linear_mN(false, m, x, w, be, y);
+}
+
+static void cpu_x86_linear_q4_0_mN_vnni(size_t                     m,
+                                        const float               *x,
+                                        const struct geist_weight *w,
+                                        struct geist_backend      *be,
+                                        float                     *y) {
+    linear_mN(true, m, x, w, be, y);
 }
 
 /* Bytes of one IQ4 weight row of n_in elements. */
