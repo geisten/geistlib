@@ -186,6 +186,10 @@ jobs:
       - name: Agent-runtime contract smoke
         run: make agent-contract-smoke TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
+      # The same for the API geist-runtime builds on (#622).
+      - name: geist-runtime contract smoke
+        run: make runtime-contract-smoke TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
       # The integration + e2e suites load the real GGUF, so they actually exercise
       # the product path (forward pass, tokenizer, KV, the agent/chat loops) — the
       # unit suite cannot. Run them on Linux only and cache the ~3 GB model so it

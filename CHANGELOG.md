@@ -9,6 +9,22 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **The geist-runtime contract** (#622). geist-runtime, the chat layer over
+  libgeist, gets the calls it was missing, all EXPERIMENTAL for now:
+  `geist_model_metadata_str` (string metadata such as
+  `tokenizer.chat_template`, kept from load, so a runtime needs no second GGUF
+  parser and works with models loaded from memory),
+  `geist_model_context_length` (the trained window, `<arch>.context_length`),
+  `geist_session_length` and `geist_session_truncate` (go back to an earlier
+  position without processing the kept part again; refused, the session
+  unchanged, for recurrent layers, the compressed KIVI region and MTP
+  drafting), and `geist_session_kv_bytes_per_token` (a session's KV bytes per
+  position for its resolved KV mode, to choose the longest window that fits
+  into memory). New optional decoder vtable hooks `truncate` and
+  `kv_bytes_per_token`, appended. `examples/runtime_contract_smoke.c` binds
+  every symbol the runtime calls (`make runtime-contract-smoke`, in CI and the
+  release jobs). Tests: `test_session_truncate_unit` (bit-identical logits
+  after truncate and refill, every refusal, the bytes per mode).
 - **Device-local scratch pool on Vulkan** (opt-in, EXPERIMENTAL, #488).
   `GEIST_VK_SCRATCH_DEVICE=1` keeps a session's activation scratch in
   device-local VRAM instead of the 256 MB BAR window, where a large pool
@@ -251,6 +267,9 @@ minor release.
   `GEIST_KV_INT8_FUSED=0` keeps both host loops.
 
 ### Changed
+- **Promoted to STABLE for the geist-runtime contract** (#622):
+  `geist_model_load_with_opts`, `geist_model_load_from_memory_with_opts`,
+  `geist_model_add_bos` and `geist_model_add_eos`.
 
 - **Vulkan weight lookup is a hash index** (#469, #474 item 8). The host
   pointer → device buffer registry consulted on every `linear_t` and
@@ -735,6 +754,10 @@ minor release.
   vtable.
 
 ### Fixed
+- **GGUF string metadata length check** (#622). `gguf_get_meta_string` bounded
+  a value by `8 + length > payload`, which a length near `UINT64_MAX` wraps
+  past; the check is a subtraction now (AGENT.md §4), shared with the new
+  index accessor `gguf_meta_string_at`.
 - **Vulkan: a failed submit no longer hands out stale results; sizes past
   32 bits fail instead of wrapping** (#474). After a dropped batch,
   `buffer_map` returns nullptr with `GEIST_E_BACKEND` as the backend error

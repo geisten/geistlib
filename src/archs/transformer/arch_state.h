@@ -867,6 +867,16 @@ void transformer_state_destroy(struct transformer_arch_state *state);
  * logits; the model's weights are untouched. Used by ops->state_reset. */
 void transformer_session_reset(struct transformer_arch_session *sess);
 
+/* geist_session_truncate (#622): keep the first n positions; see the
+ * truncate op in geist_arch.h. The caller has settled a deferred advance. */
+[[nodiscard]] enum geist_status transformer_session_truncate(struct transformer_arch_session *sess,
+                                                             size_t                           n);
+
+/* The KV-cache bytes per position of this session (#622), from the same
+ * geometry and resolved KV mode allocate_runtime_session sizes the caches by. */
+[[nodiscard]] enum geist_status
+transformer_kv_bytes_per_token(size_t *out_bytes, const struct transformer_arch_session *sess);
+
 /* Apply per-session opts. Called by the engine from geist_session_create.
  * Re-seeds the RNG; (re)allocates the sampler workspace if the opts
  * request a non-greedy mode — that allocation can fail (GEIST_E_OOM). */

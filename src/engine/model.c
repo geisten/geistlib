@@ -16,6 +16,7 @@
 
 #include <geist_arch.h> /* arch_ops vtables the engine dispatches through */
 
+#include "checked.h"
 #include "heap.h"
 #include "sp_bpe_tokenizer.h"
 #include "gguf_tokenizer.h"
@@ -43,24 +44,82 @@ struct model_engine_state {
      * set_prompt / tokenize dispatch on whichever is non-null. */
     struct sp_bpe_tokenizer *sp_tok;
     struct gguf_tokenizer   *gguf_tok;
-    char                    *arch; /* general.architecture, owned copy (nullptr if absent) */
+    struct model_meta       *meta; /* metadata kept from the GGUF (owned, nullptr if OOM) */
 };
 
-/* Read general.architecture from an open GGUF into an owned NUL-terminated copy
- * (GGUF strings are length-prefixed, not terminated). Returns nullptr if absent
- * or OOM — the arch gate rejects the load in that case. */
-static char *model_arch_copy(struct gguf_ctx *tg) {
-    size_t      alen = 0;
-    const char *as   = gguf_get_meta_string(tg, "general.architecture", &alen);
-    if (as == nullptr || alen == 0) {
+/* What the model keeps of the GGUF's metadata once the gguf_ctx closes (#622):
+ * every string entry (the chat template, general.name, …; GGUF strings are
+ * length-prefixed, so each copy is NUL-terminated and keeps its length) and
+ * the trained context length. One allocation: this header, the entry table,
+ * then the bytes. */
+struct model_meta_string {
+    const char *key, *val;
+    size_t      len; /* bytes of val, without the terminator */
+};
+struct model_meta {
+    const char               *arch;           /* general.architecture, nullptr if absent */
+    uint32_t                  context_length; /* <arch>.context_length, 0 if absent */
+    size_t                    n_strings;
+    struct model_meta_string *strings;
+};
+
+/* Copy the string metadata of an open GGUF. nullptr on OOM or a size that
+ * does not fit; the arch gate then rejects the load (no arch). */
+static struct model_meta *model_meta_copy(struct gguf_ctx *tg) {
+    const size_t n_kv  = gguf_meta_count(tg);
+    size_t       n     = 0;
+    size_t       bytes = 0;
+    for (size_t i = 0; i < n_kv; i++) {
+        const char *key = nullptr, *val = nullptr;
+        size_t      len = 0;
+        if (!gguf_meta_string_at(tg, i, &key, &val, &len)) {
+            continue;
+        }
+        if (ckd_add(&bytes, bytes, strlen(key) + 1) || ckd_add(&bytes, bytes, len) ||
+            ckd_add(&bytes, bytes, 1)) {
+            return nullptr;
+        }
+        n++;
+    }
+    size_t table = 0, total = 0;
+    if (ckd_mul(&table, n, sizeof(struct model_meta_string)) ||
+        ckd_add(&total, sizeof(struct model_meta), table) || ckd_add(&total, total, bytes)) {
         return nullptr;
     }
-    char *copy = heap_alloc_aligned(alen + 1, alignof(char));
-    if (copy != nullptr) {
-        memcpy(copy, as, alen);
-        copy[alen] = '\0';
+    struct model_meta *meta = heap_alloc_aligned(total, alignof(struct model_meta));
+    if (meta == nullptr) {
+        return nullptr;
     }
-    return copy;
+    *meta    = (struct model_meta) {.strings = (struct model_meta_string *) (meta + 1)};
+    char *at = (char *) (meta->strings + n);
+    for (size_t i = 0; i < n_kv; i++) {
+        const char *key = nullptr, *val = nullptr;
+        size_t      len = 0;
+        if (!gguf_meta_string_at(tg, i, &key, &val, &len)) {
+            continue;
+        }
+        const size_t              klen = strlen(key);
+        struct model_meta_string *e    = &meta->strings[meta->n_strings++];
+        e->key                         = at;
+        memcpy(at, key, klen + 1);
+        at += klen + 1;
+        e->val = at;
+        e->len = len;
+        memcpy(at, val, len);
+        at[len] = '\0';
+        at += len + 1;
+        if (strcmp(e->key, "general.architecture") == 0 && len > 0) {
+            meta->arch = e->val;
+        }
+    }
+    if (meta->arch != nullptr) {
+        char      key[128];
+        const int k = snprintf(key, sizeof key, "%s.context_length", meta->arch);
+        if (k > 0 && (size_t) k < sizeof key) {
+            (void) gguf_get_meta_u32(tg, key, &meta->context_length);
+        }
+    }
+    return meta;
 }
 
 /* Comma-join every gguf_names entry across the registry into buf, for the
@@ -106,7 +165,8 @@ static const struct geist_arch_descriptor *model_arch_gate(const char *fn, const
 
 /* Free the engine-side pieces gathered before state_create, on a failed
  * load. Mirrors the teardown in geist_model_destroy. */
-static void model_load_undo(struct sp_bpe_tokenizer *sp, struct gguf_tokenizer *gg, char *arch) {
+static void
+model_load_undo(struct sp_bpe_tokenizer *sp, struct gguf_tokenizer *gg, struct model_meta *meta) {
     if (sp != nullptr) {
         sp_bpe_tokenizer_free(sp);
     }
@@ -115,8 +175,8 @@ static void model_load_undo(struct sp_bpe_tokenizer *sp, struct gguf_tokenizer *
         void *p = gg;
         safe_free(&p);
     }
-    if (arch != nullptr) {
-        safe_free((void **) &arch);
+    if (meta != nullptr) {
+        safe_free((void **) &meta);
     }
 }
 
@@ -194,10 +254,10 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
     /* Read GGUF metadata first: the architecture gate must fire before
      * the expensive weight load. gguf_open failure is fatal here —
      * state_create would fail on the same file moments later anyway. */
-    struct sp_bpe_tokenizer            *sp_tok    = nullptr;
-    struct gguf_tokenizer              *gguf_tok  = nullptr;
-    char                               *arch_copy = nullptr;
-    const struct geist_arch_descriptor *desc      = nullptr;
+    struct sp_bpe_tokenizer            *sp_tok   = nullptr;
+    struct gguf_tokenizer              *gguf_tok = nullptr;
+    struct model_meta                  *meta     = nullptr;
+    const struct geist_arch_descriptor *desc     = nullptr;
     {
         const char      *terr = nullptr;
         struct gguf_ctx *tg   = gguf_open(path, &terr);
@@ -209,11 +269,11 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
                                         terr != nullptr ? terr : "unknown error");
             return GEIST_E_IO;
         }
-        arch_copy = model_arch_copy(tg);
-        desc      = model_arch_gate("geist_model_load", arch_copy);
+        meta = model_meta_copy(tg);
+        desc = model_arch_gate("geist_model_load", meta != nullptr ? meta->arch : nullptr);
         if (desc == nullptr) {
             gguf_close(tg);
-            model_load_undo(nullptr, nullptr, arch_copy);
+            model_load_undo(nullptr, nullptr, meta);
             return GEIST_E_UNSUPPORTED;
         }
 
@@ -259,7 +319,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
     geist_error_clear_create_time();
     void *arch_state = desc->decoder_ops->state_create(be, path, opts);
     if (arch_state == nullptr) {
-        model_load_undo(sp_tok, gguf_tok, arch_copy);
+        model_load_undo(sp_tok, gguf_tok, meta);
         if (!geist_have_create_error()) {
             geist_error_set_create_time(GEIST_E_IO,
                                         "geist_model_load",
@@ -273,7 +333,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
     struct geist_model *m = heap_alloc_aligned(sizeof(*m), alignof(struct geist_model));
     if (m == nullptr) {
         desc->decoder_ops->state_destroy(arch_state);
-        model_load_undo(sp_tok, gguf_tok, arch_copy);
+        model_load_undo(sp_tok, gguf_tok, meta);
         geist_error_set_create_time(
                 GEIST_E_OOM, "geist_model_load", "failed to allocate model handle");
         return GEIST_E_OOM;
@@ -283,7 +343,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
     if (eng == nullptr) {
         safe_free((void **) &m);
         desc->decoder_ops->state_destroy(arch_state);
-        model_load_undo(sp_tok, gguf_tok, arch_copy);
+        model_load_undo(sp_tok, gguf_tok, meta);
         geist_error_set_create_time(
                 GEIST_E_OOM, "geist_model_load", "failed to allocate engine-side state");
         return GEIST_E_OOM;
@@ -295,7 +355,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
         safe_free((void **) &eng);
         safe_free((void **) &m);
         desc->decoder_ops->state_destroy(arch_state);
-        model_load_undo(sp_tok, gguf_tok, arch_copy);
+        model_load_undo(sp_tok, gguf_tok, meta);
         geist_error_set_create_time(
                 GEIST_E_OOM, "geist_model_load", "failed to allocate path string");
         return GEIST_E_OOM;
@@ -326,7 +386,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
      * cwd for e.g. a BitNet load, and prefill would read n × d_model floats
      * from an n × 1536 buffer (#240). Only Gemma 4 currently has compatible
      * vision/audio tower shapes. */
-    const bool towers_match = arch_copy != nullptr && strcmp(arch_copy, "gemma4") == 0;
+    const bool towers_match = meta->arch != nullptr && strcmp(meta->arch, "gemma4") == 0;
 
     /* Best-effort load of the audio encoder. The Conformer needs a
      * safetensors file (not part of the GGUF) + mel constants. Failure is
@@ -382,7 +442,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
             .path     = path_copy,
             .sp_tok   = sp_tok,
             .gguf_tok = gguf_tok,
-            .arch     = arch_copy,
+            .meta     = meta,
     };
     *m = (struct geist_model) {
             .text_decoder   = {.arch_ops = desc->decoder_ops, .arch_meta = arch_state},
@@ -429,9 +489,9 @@ geist_model_load_from_memory_with_opts(const void                      *data,
 
     /* Read GGUF metadata first — same fail-closed gate as the file path,
      * before the weight load touches anything. */
-    struct gguf_tokenizer              *gguf_tok  = nullptr;
-    char                               *arch_copy = nullptr;
-    const struct geist_arch_descriptor *desc      = nullptr;
+    struct gguf_tokenizer              *gguf_tok = nullptr;
+    struct model_meta                  *meta     = nullptr;
+    const struct geist_arch_descriptor *desc     = nullptr;
     {
         const char      *terr = nullptr;
         struct gguf_ctx *tg   = gguf_open_memory(data, size, &terr);
@@ -442,11 +502,12 @@ geist_model_load_from_memory_with_opts(const void                      *data,
                                         terr != nullptr ? terr : "unknown error");
             return GEIST_E_FORMAT;
         }
-        arch_copy = model_arch_copy(tg);
-        desc      = model_arch_gate("geist_model_load_from_memory", arch_copy);
+        meta = model_meta_copy(tg);
+        desc = model_arch_gate("geist_model_load_from_memory",
+                               meta != nullptr ? meta->arch : nullptr);
         if (desc == nullptr) {
             gguf_close(tg);
-            model_load_undo(nullptr, nullptr, arch_copy);
+            model_load_undo(nullptr, nullptr, meta);
             return GEIST_E_UNSUPPORTED;
         }
         /* GGUF-embedded tokenizer only (no sibling tokenizer.bin to find). */
@@ -459,7 +520,7 @@ geist_model_load_from_memory_with_opts(const void                      *data,
         gguf_close(tg);
     }
     if (desc->decoder_ops->state_create_from_memory == nullptr) {
-        model_load_undo(nullptr, gguf_tok, arch_copy);
+        model_load_undo(nullptr, gguf_tok, meta);
         geist_error_set_create_time(
                 GEIST_E_UNSUPPORTED,
                 "geist_model_load_from_memory",
@@ -475,7 +536,7 @@ geist_model_load_from_memory_with_opts(const void                      *data,
     geist_error_clear_create_time();
     void *arch_state = desc->decoder_ops->state_create_from_memory(be, data, size, opts);
     if (arch_state == nullptr) {
-        model_load_undo(nullptr, gguf_tok, arch_copy);
+        model_load_undo(nullptr, gguf_tok, meta);
         if (!geist_have_create_error()) {
             geist_error_set_create_time(GEIST_E_FORMAT,
                                         "geist_model_load_from_memory",
@@ -488,7 +549,7 @@ geist_model_load_from_memory_with_opts(const void                      *data,
     struct geist_model *m = heap_alloc_aligned(sizeof(*m), alignof(struct geist_model));
     if (m == nullptr) {
         desc->decoder_ops->state_destroy(arch_state);
-        model_load_undo(nullptr, gguf_tok, arch_copy);
+        model_load_undo(nullptr, gguf_tok, meta);
         geist_error_set_create_time(
                 GEIST_E_OOM, "geist_model_load_from_memory", "failed to allocate model handle");
         return GEIST_E_OOM;
@@ -498,7 +559,7 @@ geist_model_load_from_memory_with_opts(const void                      *data,
     if (eng == nullptr) {
         safe_free((void **) &m);
         desc->decoder_ops->state_destroy(arch_state);
-        model_load_undo(nullptr, gguf_tok, arch_copy);
+        model_load_undo(nullptr, gguf_tok, meta);
         geist_error_set_create_time(GEIST_E_OOM,
                                     "geist_model_load_from_memory",
                                     "failed to allocate engine-side state");
@@ -509,7 +570,7 @@ geist_model_load_from_memory_with_opts(const void                      *data,
             .path     = nullptr, /* embedded — no file path */
             .sp_tok   = nullptr,
             .gguf_tok = gguf_tok,
-            .arch     = arch_copy,
+            .meta     = meta,
     };
     *m = (struct geist_model) {
             .text_decoder   = {.arch_ops = desc->decoder_ops, .arch_meta = arch_state},
@@ -555,8 +616,8 @@ void geist_model_destroy(struct geist_model *m) {
         if (eng->path != nullptr) {
             safe_free((void **) &eng->path);
         }
-        if (eng->arch != nullptr) {
-            safe_free((void **) &eng->arch);
+        if (eng->meta != nullptr) {
+            safe_free((void **) &eng->meta);
         }
         safe_free((void **) &eng);
     }
@@ -574,7 +635,34 @@ const char *geist_model_arch(const struct geist_model *m) {
     const struct model_engine_state *eng = model_engine(m);
     /* The GGUF's general.architecture ("gemma4", "bitnet-b1.58", "llama", …),
      * captured at load. Falls back to "transformer" when the key is absent. */
-    return (eng != nullptr && eng->arch != nullptr) ? eng->arch : "transformer";
+    return (eng != nullptr && eng->meta != nullptr && eng->meta->arch != nullptr) ? eng->meta->arch
+                                                                                  : "transformer";
+}
+
+const char *
+geist_model_metadata_str(const struct geist_model *m, const char *key, size_t *out_len) {
+    if (out_len != nullptr) {
+        *out_len = 0;
+    }
+    const struct model_engine_state *eng = model_engine(m);
+    if (eng == nullptr || eng->meta == nullptr || key == nullptr) {
+        return nullptr;
+    }
+    for (size_t i = 0; i < eng->meta->n_strings; i++) {
+        const struct model_meta_string *e = &eng->meta->strings[i];
+        if (strcmp(e->key, key) == 0) {
+            if (out_len != nullptr) {
+                *out_len = e->len;
+            }
+            return e->val;
+        }
+    }
+    return nullptr;
+}
+
+size_t geist_model_context_length(const struct geist_model *m) {
+    const struct model_engine_state *eng = model_engine(m);
+    return eng != nullptr && eng->meta != nullptr ? eng->meta->context_length : 0;
 }
 
 /* Mirrors the capability checks in geist_session_attach_{audio,image,video}

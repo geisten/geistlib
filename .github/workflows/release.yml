@@ -142,6 +142,8 @@ jobs:
             /tmp/sdk_smoke
             cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/agent_smoke
             /tmp/agent_smoke
+            cc -std=c23 -I "$d/include" examples/runtime_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/runtime_smoke
+            /tmp/runtime_smoke
 
             # ---- CLI binaries (the README first screen, geistlib#: one binary) --
             # geist-linux-arm64: the slim bring-your-own-GGUF CLI (<1 MB).
@@ -222,6 +224,8 @@ jobs:
             /tmp/sdk_smoke
             cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/agent_smoke
             /tmp/agent_smoke
+            cc -std=c23 -I "$d/include" examples/runtime_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/runtime_smoke
+            /tmp/runtime_smoke
 
             # ---- CLI binaries — mirror of the arm64 job (geistlib#217) ------
             # geist-linux-x86_64: the slim bring-your-own-GGUF CLI. Fully
@@ -302,6 +306,8 @@ jobs:
           /tmp/sdk_smoke
           cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" $link -o /tmp/agent_smoke
           /tmp/agent_smoke
+          cc -std=c23 -I "$d/include" examples/runtime_contract_smoke.c "$d/libgeist.a" $link -o /tmp/runtime_smoke
+          /tmp/runtime_smoke
           tar -C dist -czf libgeist-macos-arm64.tar.gz libgeist-macos-arm64
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
