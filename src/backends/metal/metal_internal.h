@@ -1014,6 +1014,10 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
 
 [[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);
 
+/* Releases every pipeline and function the ensure_* tables in pipelines.c
+ * build; the libraries stay with the caller. */
+void metal_release_pipeline_tables(struct metal_state *st);
+
 bool metal_ranges_overlap(size_t a_offset, size_t b_offset, size_t n_bytes);
 
 void *metal_sequence_encoder(struct metal_state *st);

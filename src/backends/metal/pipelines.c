@@ -47,6 +47,164 @@
     return GEIST_OK;
 }
 
+/* A pipeline built from a library that is already in metal_state. The
+ * fields are offsets into the state, so the same rows drive creation
+ * here and the release in metal_release_pipeline_tables. */
+struct metal_pipeline_row {
+    size_t      library;
+    const char *name;
+    size_t      function;
+    size_t      pipeline;
+};
+#define METAL_PIPE(LIB, NAME, FIELD)                 \
+    {offsetof(struct metal_state, LIB##_library),    \
+     NAME,                                           \
+     offsetof(struct metal_state, FIELD##_function), \
+     offsetof(struct metal_state, FIELD##_pipeline)}
+#define METAL_N(rows) (sizeof(rows) / sizeof((rows)[0]))
+
+static const struct metal_pipeline_row metal_deltanet_rows[] = {
+        METAL_PIPE(deltanet, "deltanet_mix", deltanet_mix),
+        METAL_PIPE(deltanet, "dn_dec_qk", dn_dec_qk),
+        METAL_PIPE(deltanet, "dn_dec_v", dn_dec_v),
+        METAL_PIPE(deltanet, "dn_cst_copy", dn_cst_copy),
+        METAL_PIPE(deltanet, "dn_conv_prep", dn_conv_prep),
+        METAL_PIPE(deltanet, "dn_qk_norm", dn_qk_norm),
+        METAL_PIPE(deltanet, "dn_state_roll", dn_state_roll),
+        METAL_PIPE(deltanet, "dn_chunk_stage", dn_chunk_stage),
+        METAL_PIPE(deltanet, "dn_chunk_subst", dn_chunk_subst),
+        METAL_PIPE(deltanet, "dn_chunk_amat", dn_chunk_amat),
+        METAL_PIPE(deltanet, "dn_chunk_vnew1", dn_chunk_vnew1),
+        METAL_PIPE(deltanet, "dn_chunk_vnew2", dn_chunk_vnew2),
+        METAL_PIPE(deltanet, "dn_chunk_out", dn_chunk_out),
+        METAL_PIPE(deltanet, "dn_chunk_supd", dn_chunk_supd),
+        METAL_PIPE(deltanet, "dn_chunk_gate", dn_chunk_gate),
+};
+
+static const struct metal_pipeline_row metal_quant_rows[] = {
+        METAL_PIPE(q4k, "matvec_q4k", q4k),
+        METAL_PIPE(q40_q80, "linear_q40", q40),
+        METAL_PIPE(q40_q80, "linear_q40_m8", q40_m8),
+        METAL_PIPE(q40_q80, "linear_q80", q80),
+        METAL_PIPE(q40_q80, "linear_q80_m8", q80_m8),
+        METAL_PIPE(q5k, "linear_q5k", q5k),
+        METAL_PIPE(q5k, "linear_q5k_m8", q5k_m8),
+        METAL_PIPE(q41, "linear_q41", q41),
+        METAL_PIPE(q41, "linear_q41_m8", q41_m8),
+        METAL_PIPE(quant_sg, "matvec_q40_n4", q40_n4),
+        METAL_PIPE(quant_sg, "matmul_q40_mm_sg", q40_mm),
+        METAL_PIPE(quant_sg, "matvec_q80_n4", q80_n4),
+        METAL_PIPE(quant_sg, "matmul_q80_mm_sg", q80_mm),
+        METAL_PIPE(quant_sg, "matvec_q41_n4", q41_n4),
+        METAL_PIPE(quant_sg, "matmul_q41_mm_sg", q41_mm),
+        METAL_PIPE(quant_sg, "matvec_q5k_n4", q5k_n4),
+        METAL_PIPE(quant_sg, "matmul_q5k_mm_sg", q5k_mm),
+        METAL_PIPE(quant_sg, "matvec_pq2_n4", pq2_n4),
+        METAL_PIPE(quant_sg, "matvec_pq2_n8", pq2_n8),
+        METAL_PIPE(quant_sg, "matmul_pq2_mm_sg", pq2_mm),
+        METAL_PIPE(quant_sg, "matmul_pq2_mm_sg_fast", pq2_mm_fast),
+        METAL_PIPE(quant_sg, "matvec_iq4nl_n4", iq4nl_n4),
+        METAL_PIPE(quant_sg, "matmul_iq4nl_mm_sg", iq4nl_mm),
+        METAL_PIPE(quant_sg, "matvec_iq4xs_n4", iq4xs_n4),
+        METAL_PIPE(quant_sg, "matmul_iq4xs_mm_sg", iq4xs_mm),
+        METAL_PIPE(quant_sg, "matvec_q3k_n4", q3k_n4),
+        METAL_PIPE(quant_sg, "matmul_q3k_mm_sg", q3k_mm),
+        METAL_PIPE(quant_sg, "matvec_tq2_n4", tq2_n4),
+        METAL_PIPE(quant_sg, "matmul_tq2_mm_sg", tq2_mm),
+        METAL_PIPE(quant_sg, "matvec_i2s_n4", i2s_n4),
+        METAL_PIPE(quant_sg, "matmul_i2s_mm_sg", i2s_mm),
+        METAL_PIPE(quant_sg, "matvec_iq3s_n4", iq3s_n4),
+        METAL_PIPE(quant_sg, "matmul_iq3s_mm_sg", iq3s_mm),
+        METAL_PIPE(quant_sg, "matmul_iq4xs_mm_sg_fast", iq4xs_mm_fast),
+        METAL_PIPE(quant_sg, "matmul_q40_mm_sg_fast", q40_mm_fast),
+        METAL_PIPE(quant_sg, "matmul_q80_mm_sg_fast", q80_mm_fast),
+        METAL_PIPE(quant_sg, "matmul_q41_mm_sg_fast", q41_mm_fast),
+        METAL_PIPE(quant_sg, "matmul_q5k_mm_sg_fast", q5k_mm_fast),
+        METAL_PIPE(q4k_n4, "matvec_q4k_n4", q4k_n4),
+        METAL_PIPE(q4k_gate_up_n4, "gate_up_q4k_n4", q4k_gate_up_n4),
+        METAL_PIPE(q4k_pair_n4, "pair_q4k_n4", q4k_pair_n4),
+        METAL_PIPE(q4k, "matmul_q4k_m8", q4k_matmul_m8),
+        METAL_PIPE(q4k_m16, "matmul_q4k_m16", q4k_matmul_m16),
+        METAL_PIPE(q4k_m16_n2, "matmul_q4k_m16_n2", q4k_matmul_m16_n2),
+        METAL_PIPE(q6k, "matvec_q6k", q6k),
+        METAL_PIPE(q6k_mm_sg, "matmul_q6k_sg", q6k_matmul_sg),
+        METAL_PIPE(q6k_mm_sg_fast, "matmul_q6k_sg_fast", q6k_matmul_sg_fast),
+        METAL_PIPE(q6k_n4, "matvec_q6k_n4", q6k_n4),
+        METAL_PIPE(q6k, "matmul_q6k_m8", q6k_matmul_m8),
+        METAL_PIPE(q6k_m16, "matmul_q6k_m16", q6k_matmul_m16),
+        METAL_PIPE(elem, "rmsnorm_rows", rmsnorm_rows),
+        METAL_PIPE(elem_simd, "rmsnorm_rows_simd", rmsnorm_rows_simd),
+        METAL_PIPE(elem, "gelu_rows", gelu_rows),
+        METAL_PIPE(silu, "silu_rows", silu_rows),
+        METAL_PIPE(silu, "relu2_rows", relu2_rows),
+        METAL_PIPE(silu, "silu_mul_rows", silu_mul_rows),
+        METAL_PIPE(elem, "mul_rows", mul_rows),
+        METAL_PIPE(elem, "gelu_mul_rows", gelu_mul_rows),
+        METAL_PIPE(elem, "add_rows", add_rows),
+        METAL_PIPE(elem, "scale_rows", scale_rows),
+        METAL_PIPE(qgate, "qgate_split", qgate_split),
+        METAL_PIPE(qgate, "sigmoid_mul_rows", sigmoid_mul),
+        METAL_PIPE(elem, "rmsnorm_add_rows", rmsnorm_add_rows),
+        METAL_PIPE(elem_simd, "rmsnorm_add_rows_simd", rmsnorm_add_rows_simd),
+        METAL_PIPE(embed, "embed_lookup_scaled", embed_lookup_scaled),
+        METAL_PIPE(embed, "embed_lookup_scaled_rows", embed_lookup_scaled_rows),
+        METAL_PIPE(f32, "matmul_f32", f32_matmul),
+        METAL_PIPE(f32, "matmul_f32_sg", f32_matmul_sg),
+        METAL_PIPE(f32, "matmul_f32_mm_sg", f32_matmul_mm),
+        METAL_PIPE(f32, "matmul_f16w", f16w_matmul),
+        METAL_PIPE(f32, "matmul_f16w_sg", f16w_matmul_sg),
+        METAL_PIPE(f32, "matmul_bf16w", bf16w_matmul),
+        METAL_PIPE(f32, "matmul_bf16w_sg", bf16w_matmul_sg),
+        METAL_PIPE(f32, "ple_gate_f32", f32_ple_gate),
+        METAL_PIPE(f32, "ple_proj_norm_f32", f32_ple_proj_norm),
+};
+
+/* Built only with GEIST_METAL_Q4K_MM_SG on (the default). */
+static const struct metal_pipeline_row metal_q4k_mm_sg_rows[] = {
+        METAL_PIPE(q4k_mm_sg, "matmul_q4k_mm_sg", q4k_mm_sg),
+        METAL_PIPE(q4k_mm_sg_fast, "matmul_q4k_mm_sg_fast", q4k_mm_sg_fast),
+};
+
+static void **metal_state_slot(struct metal_state *st, size_t offset) {
+    return (void **) ((char *) st + offset);
+}
+
+[[nodiscard]] static enum geist_status
+metal_create_pipelines(struct geist_backend           *be,
+                       void                           *ns_string,
+                       size_t                          n,
+                       const struct metal_pipeline_row rows[static n]) {
+    struct metal_state *st = be->state;
+    for (size_t i = 0; i < n; i++) {
+        const enum geist_status s =
+                metal_create_named_pipeline(be,
+                                            *metal_state_slot(st, rows[i].library),
+                                            ns_string,
+                                            rows[i].name,
+                                            metal_state_slot(st, rows[i].function),
+                                            metal_state_slot(st, rows[i].pipeline));
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    return GEIST_OK;
+}
+
+static void metal_release_rows(struct metal_state             *st,
+                               size_t                          n,
+                               const struct metal_pipeline_row rows[static n]) {
+    for (size_t i = 0; i < n; i++) {
+        metal_msg_send_void0(st, *metal_state_slot(st, rows[i].pipeline), "release");
+        metal_msg_send_void0(st, *metal_state_slot(st, rows[i].function), "release");
+    }
+}
+
+void metal_release_pipeline_tables(struct metal_state *st) {
+    metal_release_rows(st, METAL_N(metal_deltanet_rows), metal_deltanet_rows);
+    metal_release_rows(st, METAL_N(metal_quant_rows), metal_quant_rows);
+    metal_release_rows(st, METAL_N(metal_q4k_mm_sg_rows), metal_q4k_mm_sg_rows);
+}
+
 [[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
@@ -99,125 +257,7 @@
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
     }
-    enum geist_status s = metal_create_named_pipeline(be,
-                                                      st->deltanet_library,
-                                                      ns_string,
-                                                      "deltanet_mix",
-                                                      &st->deltanet_mix_function,
-                                                      &st->deltanet_mix_pipeline);
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_dec_qk",
-                                        &st->dn_dec_qk_function,
-                                        &st->dn_dec_qk_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_dec_v",
-                                        &st->dn_dec_v_function,
-                                        &st->dn_dec_v_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_cst_copy",
-                                        &st->dn_cst_copy_function,
-                                        &st->dn_cst_copy_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_conv_prep",
-                                        &st->dn_conv_prep_function,
-                                        &st->dn_conv_prep_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_qk_norm",
-                                        &st->dn_qk_norm_function,
-                                        &st->dn_qk_norm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_state_roll",
-                                        &st->dn_state_roll_function,
-                                        &st->dn_state_roll_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_chunk_stage",
-                                        &st->dn_chunk_stage_function,
-                                        &st->dn_chunk_stage_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_chunk_subst",
-                                        &st->dn_chunk_subst_function,
-                                        &st->dn_chunk_subst_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_chunk_amat",
-                                        &st->dn_chunk_amat_function,
-                                        &st->dn_chunk_amat_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_chunk_vnew1",
-                                        &st->dn_chunk_vnew1_function,
-                                        &st->dn_chunk_vnew1_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_chunk_vnew2",
-                                        &st->dn_chunk_vnew2_function,
-                                        &st->dn_chunk_vnew2_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_chunk_out",
-                                        &st->dn_chunk_out_function,
-                                        &st->dn_chunk_out_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_chunk_supd",
-                                        &st->dn_chunk_supd_function,
-                                        &st->dn_chunk_supd_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->deltanet_library,
-                                        ns_string,
-                                        "dn_chunk_gate",
-                                        &st->dn_chunk_gate_function,
-                                        &st->dn_chunk_gate_pipeline);
-    }
-    return s;
+    return metal_create_pipelines(be, ns_string, METAL_N(metal_deltanet_rows), metal_deltanet_rows);
 }
 
 [[nodiscard]] enum geist_status metal_ensure_q4k_pipeline(struct geist_backend *be) {
@@ -712,603 +752,11 @@
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
     }
-    enum geist_status s = metal_create_named_pipeline(
-            be, st->q4k_library, ns_string, "matvec_q4k", &st->q4k_function, &st->q4k_pipeline);
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q40_q80_library,
-                                        ns_string,
-                                        "linear_q40",
-                                        &st->q40_function,
-                                        &st->q40_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q40_q80_library,
-                                        ns_string,
-                                        "linear_q40_m8",
-                                        &st->q40_m8_function,
-                                        &st->q40_m8_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q40_q80_library,
-                                        ns_string,
-                                        "linear_q80",
-                                        &st->q80_function,
-                                        &st->q80_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q40_q80_library,
-                                        ns_string,
-                                        "linear_q80_m8",
-                                        &st->q80_m8_function,
-                                        &st->q80_m8_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(
-                be, st->q5k_library, ns_string, "linear_q5k", &st->q5k_function, &st->q5k_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q5k_library,
-                                        ns_string,
-                                        "linear_q5k_m8",
-                                        &st->q5k_m8_function,
-                                        &st->q5k_m8_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(
-                be, st->q41_library, ns_string, "linear_q41", &st->q41_function, &st->q41_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q41_library,
-                                        ns_string,
-                                        "linear_q41_m8",
-                                        &st->q41_m8_function,
-                                        &st->q41_m8_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_q40_n4",
-                                        &st->q40_n4_function,
-                                        &st->q40_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_q40_mm_sg",
-                                        &st->q40_mm_function,
-                                        &st->q40_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_q80_n4",
-                                        &st->q80_n4_function,
-                                        &st->q80_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_q80_mm_sg",
-                                        &st->q80_mm_function,
-                                        &st->q80_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_q41_n4",
-                                        &st->q41_n4_function,
-                                        &st->q41_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_q41_mm_sg",
-                                        &st->q41_mm_function,
-                                        &st->q41_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_q5k_n4",
-                                        &st->q5k_n4_function,
-                                        &st->q5k_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_q5k_mm_sg",
-                                        &st->q5k_mm_function,
-                                        &st->q5k_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_pq2_n4",
-                                        &st->pq2_n4_function,
-                                        &st->pq2_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_pq2_n8",
-                                        &st->pq2_n8_function,
-                                        &st->pq2_n8_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_pq2_mm_sg",
-                                        &st->pq2_mm_function,
-                                        &st->pq2_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_pq2_mm_sg_fast",
-                                        &st->pq2_mm_fast_function,
-                                        &st->pq2_mm_fast_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_iq4nl_n4",
-                                        &st->iq4nl_n4_function,
-                                        &st->iq4nl_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_iq4nl_mm_sg",
-                                        &st->iq4nl_mm_function,
-                                        &st->iq4nl_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_iq4xs_n4",
-                                        &st->iq4xs_n4_function,
-                                        &st->iq4xs_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_iq4xs_mm_sg",
-                                        &st->iq4xs_mm_function,
-                                        &st->iq4xs_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_q3k_n4",
-                                        &st->q3k_n4_function,
-                                        &st->q3k_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_q3k_mm_sg",
-                                        &st->q3k_mm_function,
-                                        &st->q3k_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_tq2_n4",
-                                        &st->tq2_n4_function,
-                                        &st->tq2_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_tq2_mm_sg",
-                                        &st->tq2_mm_function,
-                                        &st->tq2_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_i2s_n4",
-                                        &st->i2s_n4_function,
-                                        &st->i2s_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_i2s_mm_sg",
-                                        &st->i2s_mm_function,
-                                        &st->i2s_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matvec_iq3s_n4",
-                                        &st->iq3s_n4_function,
-                                        &st->iq3s_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_iq3s_mm_sg",
-                                        &st->iq3s_mm_function,
-                                        &st->iq3s_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_iq4xs_mm_sg_fast",
-                                        &st->iq4xs_mm_fast_function,
-                                        &st->iq4xs_mm_fast_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_q40_mm_sg_fast",
-                                        &st->q40_mm_fast_function,
-                                        &st->q40_mm_fast_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_q80_mm_sg_fast",
-                                        &st->q80_mm_fast_function,
-                                        &st->q80_mm_fast_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_q41_mm_sg_fast",
-                                        &st->q41_mm_fast_function,
-                                        &st->q41_mm_fast_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->quant_sg_library,
-                                        ns_string,
-                                        "matmul_q5k_mm_sg_fast",
-                                        &st->q5k_mm_fast_function,
-                                        &st->q5k_mm_fast_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q4k_n4_library,
-                                        ns_string,
-                                        "matvec_q4k_n4",
-                                        &st->q4k_n4_function,
-                                        &st->q4k_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q4k_gate_up_n4_library,
-                                        ns_string,
-                                        "gate_up_q4k_n4",
-                                        &st->q4k_gate_up_n4_function,
-                                        &st->q4k_gate_up_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q4k_pair_n4_library,
-                                        ns_string,
-                                        "pair_q4k_n4",
-                                        &st->q4k_pair_n4_function,
-                                        &st->q4k_pair_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q4k_library,
-                                        ns_string,
-                                        "matmul_q4k_m8",
-                                        &st->q4k_matmul_m8_function,
-                                        &st->q4k_matmul_m8_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q4k_m16_library,
-                                        ns_string,
-                                        "matmul_q4k_m16",
-                                        &st->q4k_matmul_m16_function,
-                                        &st->q4k_matmul_m16_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q4k_m16_n2_library,
-                                        ns_string,
-                                        "matmul_q4k_m16_n2",
-                                        &st->q4k_matmul_m16_n2_function,
-                                        &st->q4k_matmul_m16_n2_pipeline);
-    }
+    enum geist_status s =
+            metal_create_pipelines(be, ns_string, METAL_N(metal_quant_rows), metal_quant_rows);
     if (s == GEIST_OK && st->use_q4k_mm_sg) {
-        s = metal_create_named_pipeline(be,
-                                        st->q4k_mm_sg_library,
-                                        ns_string,
-                                        "matmul_q4k_mm_sg",
-                                        &st->q4k_mm_sg_function,
-                                        &st->q4k_mm_sg_pipeline);
-    }
-    if (s == GEIST_OK && st->use_q4k_mm_sg) {
-        s = metal_create_named_pipeline(be,
-                                        st->q4k_mm_sg_fast_library,
-                                        ns_string,
-                                        "matmul_q4k_mm_sg_fast",
-                                        &st->q4k_mm_sg_fast_function,
-                                        &st->q4k_mm_sg_fast_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(
-                be, st->q6k_library, ns_string, "matvec_q6k", &st->q6k_function, &st->q6k_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q6k_mm_sg_library,
-                                        ns_string,
-                                        "matmul_q6k_sg",
-                                        &st->q6k_matmul_sg_function,
-                                        &st->q6k_matmul_sg_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q6k_mm_sg_fast_library,
-                                        ns_string,
-                                        "matmul_q6k_sg_fast",
-                                        &st->q6k_matmul_sg_fast_function,
-                                        &st->q6k_matmul_sg_fast_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q6k_n4_library,
-                                        ns_string,
-                                        "matvec_q6k_n4",
-                                        &st->q6k_n4_function,
-                                        &st->q6k_n4_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q6k_library,
-                                        ns_string,
-                                        "matmul_q6k_m8",
-                                        &st->q6k_matmul_m8_function,
-                                        &st->q6k_matmul_m8_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->q6k_m16_library,
-                                        ns_string,
-                                        "matmul_q6k_m16",
-                                        &st->q6k_matmul_m16_function,
-                                        &st->q6k_matmul_m16_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->elem_library,
-                                        ns_string,
-                                        "rmsnorm_rows",
-                                        &st->rmsnorm_rows_function,
-                                        &st->rmsnorm_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->elem_simd_library,
-                                        ns_string,
-                                        "rmsnorm_rows_simd",
-                                        &st->rmsnorm_rows_simd_function,
-                                        &st->rmsnorm_rows_simd_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->elem_library,
-                                        ns_string,
-                                        "gelu_rows",
-                                        &st->gelu_rows_function,
-                                        &st->gelu_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->silu_library,
-                                        ns_string,
-                                        "silu_rows",
-                                        &st->silu_rows_function,
-                                        &st->silu_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->silu_library,
-                                        ns_string,
-                                        "relu2_rows",
-                                        &st->relu2_rows_function,
-                                        &st->relu2_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->silu_library,
-                                        ns_string,
-                                        "silu_mul_rows",
-                                        &st->silu_mul_rows_function,
-                                        &st->silu_mul_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->elem_library,
-                                        ns_string,
-                                        "mul_rows",
-                                        &st->mul_rows_function,
-                                        &st->mul_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->elem_library,
-                                        ns_string,
-                                        "gelu_mul_rows",
-                                        &st->gelu_mul_rows_function,
-                                        &st->gelu_mul_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->elem_library,
-                                        ns_string,
-                                        "add_rows",
-                                        &st->add_rows_function,
-                                        &st->add_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->elem_library,
-                                        ns_string,
-                                        "scale_rows",
-                                        &st->scale_rows_function,
-                                        &st->scale_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->qgate_library,
-                                        ns_string,
-                                        "qgate_split",
-                                        &st->qgate_split_function,
-                                        &st->qgate_split_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->qgate_library,
-                                        ns_string,
-                                        "sigmoid_mul_rows",
-                                        &st->sigmoid_mul_function,
-                                        &st->sigmoid_mul_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->elem_library,
-                                        ns_string,
-                                        "rmsnorm_add_rows",
-                                        &st->rmsnorm_add_rows_function,
-                                        &st->rmsnorm_add_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->elem_simd_library,
-                                        ns_string,
-                                        "rmsnorm_add_rows_simd",
-                                        &st->rmsnorm_add_rows_simd_function,
-                                        &st->rmsnorm_add_rows_simd_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->embed_library,
-                                        ns_string,
-                                        "embed_lookup_scaled",
-                                        &st->embed_lookup_scaled_function,
-                                        &st->embed_lookup_scaled_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->embed_library,
-                                        ns_string,
-                                        "embed_lookup_scaled_rows",
-                                        &st->embed_lookup_scaled_rows_function,
-                                        &st->embed_lookup_scaled_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->f32_library,
-                                        ns_string,
-                                        "matmul_f32",
-                                        &st->f32_matmul_function,
-                                        &st->f32_matmul_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->f32_library,
-                                        ns_string,
-                                        "matmul_f32_sg",
-                                        &st->f32_matmul_sg_function,
-                                        &st->f32_matmul_sg_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->f32_library,
-                                        ns_string,
-                                        "matmul_f32_mm_sg",
-                                        &st->f32_matmul_mm_function,
-                                        &st->f32_matmul_mm_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->f32_library,
-                                        ns_string,
-                                        "matmul_f16w",
-                                        &st->f16w_matmul_function,
-                                        &st->f16w_matmul_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->f32_library,
-                                        ns_string,
-                                        "matmul_f16w_sg",
-                                        &st->f16w_matmul_sg_function,
-                                        &st->f16w_matmul_sg_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->f32_library,
-                                        ns_string,
-                                        "matmul_bf16w",
-                                        &st->bf16w_matmul_function,
-                                        &st->bf16w_matmul_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->f32_library,
-                                        ns_string,
-                                        "matmul_bf16w_sg",
-                                        &st->bf16w_matmul_sg_function,
-                                        &st->bf16w_matmul_sg_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->f32_library,
-                                        ns_string,
-                                        "ple_gate_f32",
-                                        &st->f32_ple_gate_function,
-                                        &st->f32_ple_gate_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->f32_library,
-                                        ns_string,
-                                        "ple_proj_norm_f32",
-                                        &st->f32_ple_proj_norm_function,
-                                        &st->f32_ple_proj_norm_pipeline);
+        s = metal_create_pipelines(
+                be, ns_string, METAL_N(metal_q4k_mm_sg_rows), metal_q4k_mm_sg_rows);
     }
     return s;
 }
