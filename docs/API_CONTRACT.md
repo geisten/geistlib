@@ -147,6 +147,7 @@ release.
 | `geist_model_context_length` | the trained window, the upper bound of the one it chooses |
 | `geist_session_length`, `geist_session_truncate` | rewinding a conversation without processing the kept part again |
 | `geist_session_kv_bytes_per_token` | choosing the longest window that fits into memory |
+| `geist_model_plan`, `geist_model_plan_from_memory` | the same numbers **before** loading (#625): the window is fixed at load, so a runtime plans, chooses, then loads once |
 
 `geist_session_truncate` refuses (GEIST_E_UNSUPPORTED, the session unchanged)
 where the state cannot return to a position: recurrent (DeltaNet) layers, the
@@ -194,6 +195,13 @@ Two values bound how many tokens a session can hold:
 - **What a position costs**: `geist_session_kv_bytes_per_token` gives a
   session's KV-cache bytes per position for its resolved KV mode, so a
   caller can pick the longest cap that fits into the memory it has.
+- **Before loading** (#625): `geist_model_plan` reads only the GGUF's header
+  and tensor table (milliseconds, even for a 27B; no weight read, nothing
+  allocated on the backend) and reports the trained window, the weight
+  bytes, the KV bytes per position a session with the given options would
+  get, and the model's own bytes per position of the cap (its RoPE tables).
+  One session with cap W needs about weights + W × (KV + model bytes per
+  position), plus buffers that do not grow with W.
 - **The session cap** is `geist_session_opts.max_seq_len` at
   `geist_session_create`, at most the model cap. A session that asks for more
   is refused. 0 means the model cap. Several sessions on one model may each
