@@ -155,7 +155,7 @@ enum vk_pipe {
     VK_PIPE_SILU_MUL,         /* y = silu(a) * b (SwiGLU epilogue) */
     VK_PIPE_SIGMOID_MUL,      /* y = a * sigmoid(gate) (qwen35 attention gate) */
     VK_PIPE_QGATE_SPLIT,      /* [query | gate] per-head split (qwen35) */
-    VK_PIPE_ATTENTION_F16_CM, /* tensor-core causal attention, no sliding window, head_dim==128 */
+    VK_PIPE_ATTENTION_F16_CM, /* tensor-core causal attention, no sliding window, head_dim==256 */
     VK_PIPE_COUNT,
 };
 
