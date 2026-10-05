@@ -1734,11 +1734,6 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     return GEIST_KV_FP32;
 }
 
-/* Whether this backend serves a SCRATCH buffer asked for device-local as
- * memory the host cannot map (#488) and can slice one by offset. Vulkan
- * does only under GEIST_VK_SCRATCH_DEVICE=1; every other backend either
- * has no buffer_create_view or maps everything. A one-float probe, as
- * exec_plan.c's dn_state_host_mappable. */
 /* The KV cache layout a session gets: kv_mode, the GEIST_KV_* env and the
  * backend decide it (#622, #625: shared by session_alloc and the plan, so
  * the two cannot disagree). */
@@ -1804,21 +1799,16 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
     return kl;
 }
 
+/* Whether this backend serves a SCRATCH buffer asked for device-local as
+ * memory the host cannot map (#488) and can slice one by offset. Vulkan
+ * does only under GEIST_VK_SCRATCH_DEVICE=1; every other backend either
+ * has no buffer_create_view or maps everything. */
 static bool backend_scratch_unmappable(struct geist_backend *be) {
-    const struct geist_backend_vtbl *v = be->desc->vtbl;
-    struct geist_buffer             *b = nullptr;
-    if (v->buffer_create_view == nullptr ||
-        v->buffer_create(be, sizeof(float), GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &b) !=
-                GEIST_OK ||
-        b == nullptr) {
-        return false;
-    }
-    const bool mapped = v->buffer_map(b) != nullptr;
-    if (mapped) {
-        v->buffer_unmap(b);
-    }
-    v->buffer_destroy(be, b);
-    return !mapped;
+    bool mapped = true;
+    return be->desc->vtbl->buffer_create_view != nullptr &&
+           transformer_buffer_probe_mappable(
+                   be, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &mapped) &&
+           !mapped;
 }
 
 /* #488: whether this session puts its scratch pool, all but h_a, h_b and

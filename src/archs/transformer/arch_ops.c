@@ -64,6 +64,23 @@ enum geist_status transformer_buffer_xfer(
     return to_device ? v->buffer_upload(buf, n, host) : v->buffer_download(n, host, buf);
 }
 
+bool transformer_buffer_probe_mappable(struct geist_backend  *be,
+                                       enum geist_buffer_role role,
+                                       unsigned int           memory_flags,
+                                       bool                  *mapped) {
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    struct geist_buffer             *b = nullptr;
+    if (v->buffer_create(be, sizeof(float), role, memory_flags, &b) != GEIST_OK || b == nullptr) {
+        return false;
+    }
+    *mapped = v->buffer_map(b) != nullptr;
+    if (*mapped) {
+        v->buffer_unmap(b);
+    }
+    v->buffer_destroy(be, b);
+    return true;
+}
+
 enum geist_status
 transformer_dn_state_zero(struct geist_backend *be, struct geist_buffer *buf, size_t bytes) {
     const struct geist_backend_vtbl *v = be->desc->vtbl;

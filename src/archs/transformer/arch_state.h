@@ -840,6 +840,15 @@ void transformer_recurrent_txn_commit(struct transformer_arch_session *sess);
 [[nodiscard]] enum geist_status transformer_buffer_xfer(
         struct geist_backend *be, struct geist_buffer *buf, size_t n, void *host, bool to_device);
 
+/* Whether a buffer of this role and memory_flags is host-mappable on `be`:
+ * a one-float buffer is created, mapped and destroyed, and *mapped says
+ * whether the map succeeded. false (and *mapped untouched) when the
+ * buffer cannot be created. */
+[[nodiscard]] bool transformer_buffer_probe_mappable(struct geist_backend  *be,
+                                                     enum geist_buffer_role role,
+                                                     unsigned int           memory_flags,
+                                                     bool                  *mapped);
+
 /* Recurrent-state buffer zeroing that survives device-only memory. A backend
  * may answer buffer_map with nullptr for a KV_CACHE-role buffer (vulkan keeps
  * them in VRAM); this falls back to buffer_upload instead of treating that

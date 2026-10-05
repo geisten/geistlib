@@ -99,19 +99,10 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
  * creates it) is host-mappable on this backend: the host oracle in
  * layer_deltanet.c maps it. */
 static bool dn_state_host_mappable(struct geist_backend *be) {
-    const struct geist_backend_vtbl *v = be->desc->vtbl;
-    struct geist_buffer             *b = nullptr;
-    if (v->buffer_create(be, sizeof(float), GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &b) !=
-                GEIST_OK ||
-        b == nullptr) {
-        return false;
-    }
-    const bool mapped = v->buffer_map(b) != nullptr;
-    if (mapped) {
-        v->buffer_unmap(b);
-    }
-    v->buffer_destroy(be, b);
-    return mapped;
+    bool mapped = false;
+    return transformer_buffer_probe_mappable(
+                   be, GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &mapped) &&
+           mapped;
 }
 
 /* #470: the DeltaNet mixer runs either on the backend (fused->deltanet_mix)
