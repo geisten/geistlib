@@ -554,21 +554,6 @@ enum {
     METAL_Q5K_BLOCK_BYTES               = 176u,
     METAL_Q6K_BLOCK_ELEMS               = 256u,
     METAL_Q6K_BLOCK_BYTES               = 210u,
-    METAL_Q40_Q80_BLOCK_ELEMS           = 32u,
-    METAL_Q40_BLOCK_BYTES               = 18u,
-    METAL_Q41_BLOCK_BYTES               = 20u,
-    METAL_Q80_BLOCK_BYTES               = 34u,
-    METAL_IQ4NL_BLOCK_BYTES             = 18u,
-    METAL_IQ4XS_BLOCK_ELEMS             = 256u,
-    METAL_IQ4XS_BLOCK_BYTES             = 136u,
-    METAL_Q3K_BLOCK_BYTES               = 110u,
-    METAL_IQ3S_BLOCK_BYTES              = 110u,
-    METAL_PQ2_BLOCK_ELEMS               = (unsigned) PQ2_0_BLOCK_ELEMS,
-    METAL_PQ2_BLOCK_BYTES               = (unsigned) PQ2_0_BLOCK_BYTES,
-    METAL_TQ2_BLOCK_ELEMS               = (unsigned) TQ2_0_BLOCK_ELEMS,
-    METAL_TQ2_BLOCK_BYTES               = (unsigned) TQ2_0_BLOCK_BYTES,
-    METAL_I2S_BLOCK_ELEMS               = (unsigned) I2_S_BLOCK_ELEMS,
-    METAL_I2S_BLOCK_BYTES               = (unsigned) I2_S_BLOCK_BYTES,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,
@@ -577,22 +562,11 @@ enum {
     METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
 };
 
-/* Elements per block of the formats metal_q40_q80_linear serves. */
+/* Elements per raw block of `dtype` (quant_block_layout); 1 for a dtype
+ * without a fixed layout. */
 static inline size_t metal_quant_block_elems(enum geist_dtype dtype) {
-    switch (dtype) {
-    case GEIST_DTYPE_IQ4_XS:
-    case GEIST_DTYPE_Q3_K:
-    case GEIST_DTYPE_IQ3_S:
-        return METAL_IQ4XS_BLOCK_ELEMS;
-    case GEIST_DTYPE_PQ2_0:
-        return METAL_PQ2_BLOCK_ELEMS;
-    case GEIST_DTYPE_TQ2_0:
-        return METAL_TQ2_BLOCK_ELEMS;
-    case GEIST_DTYPE_I2_S:
-        return METAL_I2S_BLOCK_ELEMS;
-    default:
-        return METAL_Q40_Q80_BLOCK_ELEMS;
-    }
+    size_t elems = 1, bytes = 0, tail = 0;
+    return quant_block_layout(dtype, &elems, &bytes, &tail) ? elems : 1u;
 }
 
 struct metal_size {

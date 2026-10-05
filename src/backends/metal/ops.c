@@ -1733,19 +1733,9 @@ metal_embed_table_geometry(struct geist_backend      *be,
         }
         row_bytes = d_model * sizeof(uint16_t);
     } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
-               (embed_table->dtype == GEIST_DTYPE_Q4_0 || embed_table->dtype == GEIST_DTYPE_Q8_0)) {
-        if ((d_model % METAL_Q40_Q80_BLOCK_ELEMS) != 0) {
-            return GEIST_E_INVALID_ARG;
-        }
-        blocks_per_row           = d_model / METAL_Q40_Q80_BLOCK_ELEMS;
-        const size_t block_bytes = embed_table->dtype == GEIST_DTYPE_Q4_0 ? METAL_Q40_BLOCK_BYTES
-                                                                          : METAL_Q80_BLOCK_BYTES;
-        if (blocks_per_row > SIZE_MAX / block_bytes) {
-            return GEIST_E_INVALID_ARG;
-        }
-        row_bytes = blocks_per_row * block_bytes;
-    } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
-               embed_table->dtype == GEIST_DTYPE_PQ2_0) {
+               (embed_table->dtype == GEIST_DTYPE_Q4_0 || embed_table->dtype == GEIST_DTYPE_Q8_0 ||
+                embed_table->dtype == GEIST_DTYPE_PQ2_0 || embed_table->dtype == GEIST_DTYPE_Q4_K ||
+                embed_table->dtype == GEIST_DTYPE_Q5_K || embed_table->dtype == GEIST_DTYPE_Q6_K)) {
         /* embed_lookup_scaled dispatches on the raw enum value, so every
          * dtype its ternary chain names is pinned here -- not just the one
          * being added. PQ2_0 first sat at 19 and pushed BINARY/TERNARY/
@@ -1757,47 +1747,16 @@ metal_embed_table_geometry(struct geist_backend      *be,
         static_assert(GEIST_DTYPE_F16 == 1, "embed shader hardcodes F16 as 1");
         static_assert(GEIST_DTYPE_BF16 == 2, "embed shader hardcodes BF16 as 2");
         static_assert(GEIST_DTYPE_Q4_0 == 5, "embed shader hardcodes Q4_0 as 5");
+        static_assert(GEIST_DTYPE_Q8_0 == 7, "embed shader hardcodes Q8_0 as 7");
         static_assert(GEIST_DTYPE_Q4_K == 9, "embed shader hardcodes Q4_K as 9");
         static_assert(GEIST_DTYPE_Q5_K == 10, "embed shader hardcodes Q5_K as 10");
         static_assert(GEIST_DTYPE_PQ2_0 == 22, "embed shader hardcodes PQ2_0 as 22");
-        if ((d_model % METAL_PQ2_BLOCK_ELEMS) != 0) {
+        const enum geist_dtype dtype = (enum geist_dtype) embed_table->dtype;
+        if (d_model % metal_quant_block_elems(dtype) != 0 ||
+            quant_raw_bytes(dtype, d_model, &row_bytes)) {
             return GEIST_E_INVALID_ARG;
         }
-        blocks_per_row = d_model / METAL_PQ2_BLOCK_ELEMS;
-        if (blocks_per_row > SIZE_MAX / METAL_PQ2_BLOCK_BYTES) {
-            return GEIST_E_INVALID_ARG;
-        }
-        row_bytes = blocks_per_row * METAL_PQ2_BLOCK_BYTES;
-    } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
-               embed_table->dtype == GEIST_DTYPE_Q4_K) {
-        if ((d_model % METAL_Q4K_BLOCK_ELEMS) != 0) {
-            return GEIST_E_INVALID_ARG;
-        }
-        blocks_per_row = d_model / METAL_Q4K_BLOCK_ELEMS;
-        if (blocks_per_row > SIZE_MAX / METAL_Q4K_BLOCK_BYTES) {
-            return GEIST_E_INVALID_ARG;
-        }
-        row_bytes = blocks_per_row * METAL_Q4K_BLOCK_BYTES;
-    } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
-               embed_table->dtype == GEIST_DTYPE_Q5_K) {
-        if ((d_model % METAL_Q5K_BLOCK_ELEMS) != 0) {
-            return GEIST_E_INVALID_ARG;
-        }
-        blocks_per_row = d_model / METAL_Q5K_BLOCK_ELEMS;
-        if (blocks_per_row > SIZE_MAX / METAL_Q5K_BLOCK_BYTES) {
-            return GEIST_E_INVALID_ARG;
-        }
-        row_bytes = blocks_per_row * METAL_Q5K_BLOCK_BYTES;
-    } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
-               embed_table->dtype == GEIST_DTYPE_Q6_K) {
-        if ((d_model % METAL_Q6K_BLOCK_ELEMS) != 0) {
-            return GEIST_E_INVALID_ARG;
-        }
-        blocks_per_row = d_model / METAL_Q6K_BLOCK_ELEMS;
-        if (blocks_per_row > SIZE_MAX / METAL_Q6K_BLOCK_BYTES) {
-            return GEIST_E_INVALID_ARG;
-        }
-        row_bytes = blocks_per_row * METAL_Q6K_BLOCK_BYTES;
+        blocks_per_row = d_model / metal_quant_block_elems(dtype);
     } else {
         geist_backend_set_error(be,
                                 GEIST_E_UNSUPPORTED,
@@ -4162,10 +4121,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
                     .n_out = (uint32_t) n,
                     .rows  = 1,
                     .blocks_per_row =
-                            (uint32_t) ((size_t) w->n_in /
-                                        (dtype == GEIST_DTYPE_Q6_K || dtype == GEIST_DTYPE_Q4_K
-                                                 ? 256
-                                                 : metal_quant_block_elems(dtype))),
+                            (uint32_t) ((size_t) w->n_in / metal_quant_block_elems(dtype)),
                     .x_offset      = (uint32_t) (x->offset / sizeof(float)),
                     .w_byte_offset = (uint32_t) wo,
                     .y_offset      = (uint32_t) yo,
