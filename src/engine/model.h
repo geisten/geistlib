@@ -4,7 +4,7 @@
  *
  * Layer: ENGINE. Cannot include Architecture or Backend internals.
  *
- * Defined in (Phase B-4):
+ * Defined in:
  *   src/engine/model.c          — load, lifecycle, GGUF arch detection
  *   src/engine/arch_registry.c  — compiled-in architecture list (#if-gated)
  */
@@ -25,7 +25,7 @@ struct geist_arch_ops_vision;
 
 /* Composite Model structure: text decoder + optional encoders + projectors. */
 struct geist_model {
-    /* Required: the text decoder (transformer or mamba). */
+    /* Required: the text decoder. */
     struct {
         const struct geist_arch_ops_decoder *arch_ops;
         void                                *arch_meta;
@@ -44,11 +44,11 @@ struct geist_model {
         void                               *arch_meta;
     } vision_encoder;
 
-    /* Backend-owned weight buffers, indexed by name. Populated during load. */
-    void *weights; /* TODO B-4: real type — array of (name, geist_tensor) */
+    /* Engine-side state (struct model_engine_state in model.c). */
+    void *weights;
 
-    /* Engine-side: tokenizer (no backend involvement). */
-    void *tokenizer; /* TODO B-4: struct geist_tokenizer* */
+    /* The loaded tokenizer: sp_bpe_tokenizer or gguf_tokenizer. */
+    void *tokenizer;
 
     /* Owning backend (weights live in its buffers). */
     struct geist_backend *backend;
@@ -59,18 +59,17 @@ struct geist_model {
 struct geist_arch_descriptor;
 extern const struct geist_arch_descriptor *const geist_arch_registry[];
 
-/* Phase B-4c: tokenizer held by the model. nullptr if not found at load. */
+/* External tokenizer.bin tokenizer. nullptr if not loaded. */
 struct sp_bpe_tokenizer;
 struct sp_bpe_tokenizer *geist_model_internal_tokenizer(struct geist_model *m);
 
-/* P1.6: GGUF-embedded BPE tokenizer (Llama / Mistral / SmolLM2 path).
- * Loaded as a fallback when external tokenizer.bin isn't found. */
+/* GGUF-embedded tokenizer. Tried first; tokenizer.bin is the fallback. */
 struct gguf_tokenizer;
 struct gguf_tokenizer *geist_model_internal_gguf_tokenizer(struct geist_model *m);
 
 /* Internal-test accessor: returns the text decoder's arch_meta pointer
  * (e.g. transformer_arch_state*). Tests in tests/ use this to reach
- * v2-internal primitives like transformer_verify_forward that aren't
+ * internal primitives like transformer_verify_forward that aren't
  * exposed in the public session API. Production code must not depend on
  * this — go through arch_ops vtable instead. */
 void *geist_model_internal_arch_meta(struct geist_model *m);

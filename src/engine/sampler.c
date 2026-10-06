@@ -4,7 +4,7 @@
  * Layer: ENGINE.
  *
  * Numerical stability: softmax uses the max-subtract trick to avoid
- * overflow. Reductions accumulate in double for vocabularies ≥1024.
+ * overflow. Reductions accumulate in double.
  *
  * Hot-path footprint: argmax is O(n), no allocation. Temperature is O(n),
  * no allocation. Top-k / top-p need scratch — the _ws variants take a
@@ -103,8 +103,8 @@ static double softmax_into(size_t n, const float *logits, float temperature, flo
 }
 
 /* Inverse-CDF sample over a probability vector that may not be normalized.
- * Sums prefix until it exceeds u*sum. Stable choice on rounding edge: the
- * last index that passes is returned. */
+ * Returns the first index whose prefix sum exceeds u*sum; the last index
+ * if rounding leaves none. */
 static geist_token_t
 inv_cdf_sample(size_t n, const float *probs, double sum, struct geist_rng *rng) {
     double u   = (double) geist_rng_next_unit(rng) * sum;
@@ -180,8 +180,7 @@ void geist_sampler_workspace_destroy(struct geist_sampler_workspace *ws) {
 /* ---- Selection --------------------------------------------------------- */
 
 /* Total order over pairs: higher score first, lower index on ties. NaN
- * scores are mapped to -inf on the way in, so the order is a real one
- * (qsort's NaN-"equal" comparator was not). */
+ * scores are mapped to -inf on the way in, so the order is total. */
 static inline bool pair_worse(struct geist_sampler_pair a, struct geist_sampler_pair b) {
     if (a.score != b.score) {
         return a.score < b.score;

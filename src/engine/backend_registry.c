@@ -3,7 +3,7 @@
  *
  * Layer: ENGINE.
  *
- * Per Q28: each compiled-in backend appears here, gated by GEIST_BACKEND_*
+ * Each compiled-in backend appears here, gated by GEIST_BACKEND_*
  * defines that the Makefile sets based on the BACKENDS=... variable.
  * The registry is NULL-terminated and ordered by preference (auto-pick
  * takes the first entry).

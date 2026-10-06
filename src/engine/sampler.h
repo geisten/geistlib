@@ -11,10 +11,8 @@
 #ifndef GEIST_INTERNAL_SAMPLER_H
 #define GEIST_INTERNAL_SAMPLER_H
 
-/* Sampler is a pure-FP32 utility — given a logit vector + opts, it
- * returns a token. No backend or arch-state coupling, so any internal
- * layer (engine for the high-level decode loop; architecture when it
- * already holds the logits buffer) may include it. */
+/* No backend or arch-state coupling, so the engine and arch layers may
+ * both include it. */
 #if !defined(GEIST_INTERNAL_ENGINE_LAYER) && !defined(GEIST_INTERNAL_ARCH_LAYER)
 #error "sampler.h is internal — define GEIST_INTERNAL_ENGINE_LAYER or _ARCH_LAYER."
 #endif
