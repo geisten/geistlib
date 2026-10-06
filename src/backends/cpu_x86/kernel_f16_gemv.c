@@ -10,6 +10,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_f16_gemv.h"
+#include "linear_util.h"
 
 #include "quant.h" /* fp16_to_fp32 (scalar tail) */
 
@@ -21,15 +22,6 @@
 #if defined(_OPENMP)
 #include <omp.h>
 #endif
-
-static inline float hsum256(__m256 v) {
-    const __m128 lo = _mm256_castps256_ps128(v);
-    const __m128 hi = _mm256_extractf128_ps(v, 1);
-    __m128       s  = _mm_add_ps(lo, hi);
-    s               = _mm_hadd_ps(s, s);
-    s               = _mm_hadd_ps(s, s);
-    return _mm_cvtss_f32(s);
-}
 
 void f16_gemv_m1(
         size_t n_out, size_t n_in, const float *x, const uint16_t w_f16[], float y[static n_out]) {
@@ -55,7 +47,7 @@ void f16_gemv_m1(
             const __m256 w0 = _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) (wr + k)));
             acc0            = _mm256_fmadd_ps(w0, _mm256_loadu_ps(x + k), acc0);
         }
-        float s = hsum256(_mm256_add_ps(acc0, acc1));
+        float s = hsum_ps_hadd(_mm256_add_ps(acc0, acc1));
         for (; k < n_in; k++) {
             s += fp16_to_fp32(wr[k]) * x[k];
         }
@@ -120,7 +112,7 @@ void q8w_gemv_m1(size_t       n_out,
                     _mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i *) (qr + k))));
             acc0 = _mm256_fmadd_ps(w0, _mm256_loadu_ps(x + k), acc0);
         }
-        float s = hsum256(_mm256_add_ps(acc0, acc1));
+        float s = hsum_ps_hadd(_mm256_add_ps(acc0, acc1));
         for (; k < n_in; k++) {
             s += (float) qr[k] * x[k];
         }
