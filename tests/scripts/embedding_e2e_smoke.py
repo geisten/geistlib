@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """embedding_e2e_smoke.py — run the BitNet embedding chain end to end.
 
-Everything from phases 0-2 is exercised in one pass on a synthetic model:
+The whole chain runs in one pass on a synthetic model:
 
     safetensors -> convert_bitnet_embedding.py -> GGUF -> geistlib loader
     -> per-projection input norms -> the model's declared pooling
@@ -10,23 +10,11 @@ Everything from phases 0-2 is exercised in one pass on a synthetic model:
 There are no real weights here and no reference vectors, so this proves
 nothing about numerical correctness -- that is what
 tools/eval_embedding_fidelity.py is for, and it needs the actual checkpoint.
-What this proves is that the chain RUNS, which nothing else checked: the unit
-tests stop at scratch sizing, and the converter test stops at the GGUF header.
-
-That gap was not theoretical. The first time this ran it found two defects
-that made every real conversion unloadable:
-
-  1. The converter wrote 1-D norms as F16, following upstream's tensor-type
-     table, and the loader required F32 and refused the file outright.
-  2. The per-layer owning-buffer list held 16 entries, and a BitNet
-     embedding layer needs more, so the load died partway through the norms.
-
-Neither is fixed the way it was first patched: the loader now CONVERTS a
-narrow gamma at load (load_norm_to_f32_buffer), because upstream's own
-published GGUFs store every norm as F16 and re-converting from safetensors
-to reach them was not a reasonable ask; and the buffer list is sized 24.
-Both have narrow regression tests of their own. This stays as the broad one:
-it catches the next thing that only shows up when the parts run together.
+What this proves is that the chain RUNS: the unit tests stop at scratch
+sizing, and the converter test stops at the GGUF header. It catches defects
+that only show up when the parts run together, such as F16 norms the loader
+must widen (load_norm_to_f32_buffer) or a per-layer buffer list too short
+for a BitNet embedding layer.
 
 The weights are random ternary values, so the embeddings are meaningless.
 Only structural invariants are asserted -- finite, unit-norm, deterministic,
@@ -34,8 +22,7 @@ input-dependent, and actually reading all seven norms.
 
 Usage: embedding_e2e_smoke.py [path/to/dump_geist_embedding]
 Without an argument the newest built tool is used. `make test-embedding` passes
-$(BIN_DIR) explicitly, so MODE=asan runs the chain under AddressSanitizer —
-which is how the scratch_proj_in buffer leak was found.
+$(BIN_DIR) explicitly, so MODE=asan runs the chain under AddressSanitizer.
 
 Exit codes follow tests/README.md: 0 PASS, 77 SKIPPED, 99 harness error.
 """
