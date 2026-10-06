@@ -7,8 +7,7 @@
  * Two regimes:
  *
  *   V-cache: per-token, per-head. Each row [head_dim floats] gets its own
- *     min and range. Outlier-tolerant because V values rarely cluster in
- *     specific channels — symmetric range over head_dim works well.
+ *     min and range; V values rarely cluster in specific channels.
  *
  *   K-cache: per-channel, per-head, groupwise along sequence. A "group" is
  *     KIVI_K_GROUP_SIZE consecutive tokens (128); within one group each

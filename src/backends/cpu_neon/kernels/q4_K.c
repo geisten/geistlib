@@ -3,14 +3,10 @@
  *
  * Layer: BACKEND (cpu_neon).
  *
- * Owns the M=1 decode + M>1 prefill paths for Q4_K weights, plus the
- * activation-quant helper (`quantize_x_for_q4k`) shared between them.
- * The pure file-format decoder (`dequant_q4_K_row`) and the block
- * struct stay in src/formats/gguf/.
- *
- * The legacy fp32 reference path (`linear_q4k_decode_fp32`) lives here
- * too — it uses the format struct + helpers but the cblas trampoline
- * in cpu_neon's weight_resolve sees it as a competitor kernel.
+ * M=1 decode and M>1 prefill paths for Q4_K weights, the activation
+ * quant helper (`quantize_x_for_q4k`) they share, and an fp32 GEMV
+ * (`linear_q4k_decode_fp32`). The format decoder (`dequant_q4_K_row`)
+ * and the block struct live in src/formats/gguf/.
  */
 #include "quant_blocks.h"
 #include "heap.h"
@@ -366,13 +362,11 @@ static inline void q4k_decode_one_row(size_t n, const struct q4k_decode_ctx *c) 
         const int8_t  *xb       = c->x_q8 + b * Q4_K_BLOCK_ELEMS;
         const int32_t *sump_blk = c->sum32 + (b * Q4_K_BLOCK_ELEMS) / 32;
 
-        /* P10.1: factor mins-correction OUT of the sub-pair loop.
-         * Per super-block:
+        /* Mins correction factored out of the sub-pair loop. Per super-block:
          *   sumi      = Σ_is scales[is] × dot[is]    (int32)
          *   mins_corr = Σ_is mins[is]   × sump[is]   (int32)
          *   acc += scale_x * (d_blk * sumi - dmin_blk * mins_corr)
-         * Phase 1 (acc32): keep sumi as an int32x4_t accumulator across
-         * the super-block; single vaddvq_s32 per super-block. */
+         * sumi stays in an int32x4 accumulator; one vaddvq per super-block. */
         uint8_t scales[8], mins[8];
         for (int is = 0; is < 8; is++) {
             get_scale_min_k4(is, blk->scales, &scales[is], &mins[is]);
@@ -498,16 +492,12 @@ void linear_q4k_decode_w4a8(size_t      n_in,
                             const float x[static n_in],
                             const void *w_q4k,
                             float       y[static n_out]) {
-    /* G2: per-thread quantize cache. In Gemma 4 / Llama, q/k/v_proj share
-     * the same post-attn-norm input x, and gate/up_proj share the post-ffn-
-     * norm input x. Caching x_q8 + sum32 + scale across the 3 (or 2) calls
-     * saves 2 of 3 (or 1 of 2) quantize_x_for_q4k passes per group. The
-     * cache hangs off the master thread (this function runs serially before
-     * the inner-loop OMP team is spawned). Key: the x pointer, n_in and a
-     * copy of x itself: the next rmsnorm rewrites the same buffer, and a
-     * sample of its values could match the old vector's where the rest does
-     * not (test_neon_q4k_act_cache_unit). Comparing n_in floats costs a
-     * fraction of quantizing them. */
+    /* Per-thread quantize cache: q/k/v and gate/up share one input x, so
+     * x_q8 + sum32 + scale are reused across the group. Key: the x pointer,
+     * n_in and a full copy of x, because the next rmsnorm rewrites the same
+     * buffer and a partial sample could falsely match
+     * (test_neon_q4k_act_cache_unit). Comparing costs a fraction of
+     * quantizing. Runs on the calling thread before the OMP team starts. */
     static _Thread_local int8_t      *tl_x_q8         = nullptr;
     static _Thread_local int32_t     *tl_sum32        = nullptr;
     static _Thread_local float       *tl_x_copy       = nullptr;
@@ -516,7 +506,6 @@ void linear_q4k_decode_w4a8(size_t      n_in,
     static _Thread_local size_t       tl_last_n_in    = 0;
     static _Thread_local float        tl_last_scale_x = 0.0f;
 
-    /* Grow scratch caches on demand. */
     if (n_in > tl_cap_n_in) {
         safe_free((void **) &tl_x_q8);
         safe_free((void **) &tl_sum32);
@@ -524,7 +513,7 @@ void linear_q4k_decode_w4a8(size_t      n_in,
         tl_x_q8   = heap_alloc_array_aligned(int8_t, n_in);
         tl_sum32  = heap_alloc_array_aligned(int32_t, n_in / 32);
         tl_x_copy = heap_alloc_array_aligned(float, n_in);
-        tl_last_x = nullptr; /* invalidate */
+        tl_last_x = nullptr;
         if (tl_x_q8 == nullptr || tl_sum32 == nullptr || tl_x_copy == nullptr) {
             tl_cap_n_in = 0;
             q4k_decode_ref(n_in, n_out, x, w_q4k, y);
@@ -535,7 +524,6 @@ void linear_q4k_decode_w4a8(size_t      n_in,
 
     float scale_x;
     if (tl_last_x == x && tl_last_n_in == n_in && memcmp(tl_x_copy, x, n_in * sizeof *x) == 0) {
-        /* Cache hit — the same input: reuse its quantization. */
         scale_x = tl_last_scale_x;
     } else {
         scale_x = quantize_x_for_q4k(n_in, x, tl_x_q8, tl_sum32);
@@ -688,24 +676,18 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
 #define MT 2
 
 /* Loop-reordered blocked GEMM: tile output rows into NC-row panels; per
- * panel, loop blocks OUTER and rows INNER so each activation block (m×256,
- * ~8KB at m=32) is loaded once and REUSED across all NC rows — it stays
- * L1-resident, eliminating the per-output-row eviction that caused the ~40%
- * backend-idle / 3.2B L1-refills. Partials accumulate in a small L1 ytile
- * (m×NC, ≤32KB); scale_x is applied once at panel end. Bit-identical to the
- * row-major form (scale_x factored out of the block sum). */
+ * panel, loop blocks OUTER and rows INNER so each activation block (m×256)
+ * stays L1-resident across all NC rows. Partials accumulate in an L1 ytile
+ * (m×NC); scale_x is applied once at panel end. Bit-identical to the
+ * row-major form. */
 #define NC 64
     const size_t n_panels = (n_out + (size_t) NC - 1) / (size_t) NC;
 
-    /* Activation packing (option B, §10.7): default ON; GEIST_Q4K_PACK_ACT=0
-     * disables (for A/B). Reorder the activation ONCE into a contiguous
-     * block-major panel — packed[((b*4+k)*m + t)*64 + e] — so the inner loop
-     * streams sequentially instead of gathering at token-stride n_in. Across
-     * the n_panels re-reads this turns strided L2 gathers into prefetchable
-     * streams: L1-dcache miss ~2.4% -> ~1% (≈OpenBLAS/llama). Bit-identical.
-     * Scratch is a reused thread-local high-water buffer (the kernel runs on
-     * the single layer-loop thread; its omp panels only READ the buffer, so no
-     * race). Skipped at m<2 where the per-token access is already sequential. */
+    /* Pack the activation once into block-major
+     * packed[((b*4+k)*m + t)*64 + e] so the panels stream sequentially
+     * instead of gathering at stride n_in. GEIST_Q4K_PACK_ACT=0 disables;
+     * skipped for m < 2. Thread-local high-water buffer: filled by the
+     * calling thread, only read by the omp panels. */
     static _Atomic int pack_act = -1;
     int                pack_on  = atomic_load_explicit(&pack_act, memory_order_relaxed);
     if (pack_on < 0) {
@@ -757,13 +739,8 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                 const float d_blk = fp16_to_fp32(blk->d), dmin_blk = fp16_to_fp32(blk->dmin);
                 uint8_t     scales[8], mins[8];
                 q4k_unpack_scales_mins(blk->scales, scales, mins);
-                /* MT=2 inner with transient per-k weight decode. MT=2 (not 4)
-                 * cuts register pressure — measured +3% over MT=4 on Pi 5. Hand-
-                 * asm and keeping scales register-resident (vmlaq_laneq) were both
-                 * tried and lost: gcc's -O3 scheduling + register allocation here
-                 * is near-optimal (the scale stack-reloads it emits are cheap L1
-                 * hits hidden in the SDOT latency shadow, not real waste).
-                 * Bit-identical (integer SDOT accumulation is order-independent). */
+                /* MT=2 inner with transient per-k weight decode: lower register
+                 * pressure than MT=4 (measured faster on Pi 5). */
                 size_t i = 0;
                 for (; i + MT <= m; i += MT) {
                     int32x4_t acc[MT];
@@ -1567,11 +1544,8 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
 }
 
 /* mtile8_ntile4_packed = mtile4_ntile4_packed with the M-tile widened
- * to 8. Reuses the existing ntile4 packed format (no new pack). Each
- * inner (is, b) iteration now amortizes 4 weight loads across 8 input
- * rows = 32 dot products, vs 16 in the mtile4 variant. Closes Mac CPU
- * prefill gap vs llama.cpp's `ggml_gemm_q4_K_8x8_q8_K` to the extent
- * achievable without i8mm (M1 has no MATMUL_INT8). Falls back to
+ * to 8, on the same ntile4 packed format: each inner (is, b) iteration
+ * amortizes 4 weight loads across 8 input rows (32 dots). Falls back to
  * mtile4_ntile4_packed for m < 8. */
 void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                                                              size_t         n_in,
@@ -1596,13 +1570,8 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
     const size_t                      n_chunks         = n_in / 32;
     const size_t                      n_tiles          = (n_out + 3) / 4;
 
-    /* Dynamic schedule with a chunk of 4 tiles (= 16 weight rows): lets
-     * E-cores grab smaller slices when they fall behind P-cores at 8
-     * threads on M-class. Static schedule blocks the team on E-core
-     * completion at 8t (geist regresses 6t→8t while llama scales).
-     * At 4-6t the contention is low enough that static was fine; this
-     * dynamic chunk is also fine there because (n_tiles / chunk_size)
-     * is much larger than nthreads. */
+    /* Dynamic schedule, chunks of 4 tiles (16 rows): with E-cores in the
+     * team a static schedule waits on the slowest core. */
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(dynamic, 4)
 #endif

@@ -38,11 +38,9 @@
 constexpr size_t NKV_HEAD_DIM_MAX = 512;
 
 /* scores[j] = exp(scores[j] - max_score) for j < n, the exponent clamped at
- * ATTN_EXP_FLOOR (gemma4_kernels.h); returns their sum. Out of line: inlined
- * into the loop below, the vector exp call changed the register
- * allocation of their whole loop nest, and INT4 decode ran 2-8 % slower
- * though the loop itself gained one vmaxps (measured on x86, where this
- * loop came from). */
+ * ATTN_EXP_FLOOR (gemma4_kernels.h); returns their sum. Out of line: inlined,
+ * the vector exp call perturbs register allocation of the whole loop nest
+ * (INT4 decode 2-8 % slower, measured on x86). */
 [[gnu::noinline]] static double attn_exp_block(size_t n, float scores[static n], float max_score) {
     double sum = 0.0;
     for (size_t j = 0; j < n; j++) {
@@ -96,11 +94,9 @@ static void nkv_run(size_t       n_q,
      * change to any per-(t,h) reduction order — bit-exact vs serial.
      *
      * collapse(2), NOT a plain loop over t: decode passes n_q == 1, and a
-     * parallel loop over one iteration runs on one thread. Measured on a Pi 5
-     * (BitNet 2B-4T i2_s), the cost of growing context was identical at 1 and
-     * at 3 threads — 22.87 vs 22.67 ms/token from a 32- to a 512-token prompt,
-     * a factor of 1.01 — while everything else in decode scaled 1.77x. The
-     * heads are the axis that still has width when t does not.
+     * parallel loop over one iteration runs on one thread; the heads are the
+     * axis that still has width when t does not.
+
      *
      * Causal + sliding-window masking makes per-t work uneven (later positions
      * attend to more keys), so schedule(dynamic). Guarded so a non-OpenMP build

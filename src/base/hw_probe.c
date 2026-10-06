@@ -106,9 +106,7 @@ void geist_hw_probe_isa(struct geist_hw_probe *out) {
 #endif
     }
 #elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
-    /* Apple Silicon: sysctl is authoritative. M1+ has dotprod and fp16
-     * unconditionally, but we still probe so a future M-series capability
-     * lookup (e.g. SME / SVE) lands here uniformly. */
+    /* Apple Silicon: sysctl is authoritative (M1+ has dotprod and fp16). */
     out->has_neon    = true; /* baseline */
     out->has_dotprod = sysctl_bool("hw.optional.arm.FEAT_DotProd", true);
     out->has_fp16    = sysctl_bool("hw.optional.arm.FEAT_FP16", true);
@@ -226,7 +224,6 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
             FILE *f = fopen(path, "r");
             if (f != nullptr) {
                 if (fgets(buf, sizeof(buf), f) != nullptr) {
-                    /* Strip newline. */
                     buf[strcspn(buf, "\n")] = '\0';
                     bool seen               = false;
                     for (size_t i = 0; i < n_physical && i < 64; i++) {

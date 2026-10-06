@@ -1,6 +1,3 @@
-//
-// Created by germar on 09.03.25.
-//
 #include "heap.h"
 
 #include "checked.h"
@@ -73,8 +70,6 @@ void *heap_alloc_aligned(const size_t size, size_t alignment) {
     if (alignment == 0u) {
         alignment = OPTIMAL_ALIGNMENT;
     }
-    /* Validate the alignment before using it as a mask or passing it to
-     * aligned_alloc; a non-power-of-two alignment would be undefined. */
     if (!size_is_pow2(alignment)) {
         return nullptr;
     }
@@ -91,10 +86,9 @@ void *heap_alloc_aligned(const size_t size, size_t alignment) {
         atomic_fetch_add_explicit(&g_heap_allocs, 1u, memory_order_relaxed);
     }
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
-    /* Big streaming allocations (backend weight repacks, lm_head sketch/Q8
-     * blobs — hundreds of MB read every token) benefit from THP the same way
-     * the GGUF mmap does (gguf_reader.c apply_mmap_advice): fewer TLB misses
-     * in bandwidth-bound GEMVs. Advisory; same opt-out env. #102 Phase 0. */
+    /* Big streaming allocations (weight repacks, lm_head blobs read every
+     * token) get THP like the GGUF mmap (gguf_reader.c apply_mmap_advice):
+     * fewer TLB misses in bandwidth-bound GEMVs. Advisory. */
     if (p != nullptr && aligned >= (2u << 20) && getenv("GEIST_NO_HUGEPAGE") == nullptr) {
         /* madvise needs a page-aligned address; the allocation is only
          * `alignment`-aligned. Advise the page-aligned sub-range. */
@@ -138,16 +132,6 @@ void *heap_calloc_aligned(const size_t count, const size_t size, const size_t al
     return memory;
 }
 
-/**
- * safe_free - a safer way to free dynamically allocated memory
- * @ptr: pointer to memory location
- *
- * Description: This safe_free() function takes care of freeing
- * dynamically allocated memory while ensuring the pointer
- * @ptr passed to it is not nullptr before trying to free it.
- * Also, after freeing the memory, it sets the pointer @ptr
- * to nullptr to avoid the issue of dangling pointers
- */
 void safe_free(void **ptr) {
     if (ptr != nullptr && *ptr != nullptr) {
         free(*ptr);

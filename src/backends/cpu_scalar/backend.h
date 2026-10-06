@@ -30,7 +30,7 @@ struct geist_backend_vtbl;
 struct geist_backend_descriptor {
     const char                      *name;
     const struct geist_backend_vtbl *vtbl;
-    /* Capability matrix — declared per-op, NULL-terminated. */
+    /* Capability matrix — declared per-op. */
     const struct geist_op_support_query *caps;
     size_t                               n_caps;
 };

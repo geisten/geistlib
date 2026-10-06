@@ -148,7 +148,7 @@ static int detect_thread_count(void) {
         if (n > 0)
             return n > GEIST_PP_MAX_THREADS ? GEIST_PP_MAX_THREADS : n;
     }
-    /* Fallback: physical cores. */
+    /* Fallback: performance cores on Apple, else online CPUs. */
 #if defined(__APPLE__)
     int    ncpu = 0;
     size_t sz   = sizeof(ncpu);
@@ -196,7 +196,6 @@ void geist_pp_parallel_for(size_t n, geist_pp_body_fn body_fn, void *ctx) {
             body_fn(i, ctx);
         return;
     }
-    /* Publish task. */
     g_state.n_total        = n;
     g_state.body_fn        = body_fn;
     g_state.ctx            = ctx;
@@ -212,9 +211,7 @@ void geist_pp_parallel_for(size_t n, geist_pp_body_fn body_fn, void *ctx) {
         pthread_cond_broadcast(&g_state.wait_cv);
         pthread_mutex_unlock(&g_state.wait_mutex);
     }
-    /* Master does chunk 0 inline. */
-    do_chunk(0, N, n, body_fn, ctx);
-    /* Wait for all workers. */
+    do_chunk(0, N, n, body_fn, ctx); /* master runs chunk 0 */
     while (atomic_load_explicit(&g_state.pending_workers, memory_order_acquire) != 0) {
         /* spin */
     }

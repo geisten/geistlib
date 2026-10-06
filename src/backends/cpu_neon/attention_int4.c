@@ -4,16 +4,12 @@
  *
  * Layer: BACKEND (cpu_neon).
  *
- * The architecture's attention_int4_via_buffers (forward/attention.c)
- * dotted each query head against the unpacked K rows with vdotq_s32 on
- * ARM. That loop is in attention_kv.h now, unchanged and shared with the
- * INT8 cache's: each cache row unpacked from
- * head_dim / 2 bytes (int4_kv.h), the query quantized to int8 (amax / 127,
- * round to nearest), exact int32 dots, an online softmax over blocks of
- * 512 positions, the V sums in fp32. The architecture keeps the portable
- * loop as the decomposed twin; built without FEAT_DotProd, this file is
- * empty and cpu_neon leaves the slot null.
+ * The loop is in attention_kv.h, shared with the INT8 cache; each cache row
+ * is unpacked from head_dim / 2 bytes (int4_kv.h) before the int8 dot. The
+ * architecture's portable loop is the decomposed twin. Without
+ * FEAT_DotProd this file is empty and the slot stays null.
  */
+
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"

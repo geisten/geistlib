@@ -2,10 +2,6 @@
  * src/base/error.c — status strings + error-slot plumbing.
  *
  * Layer: ENGINE.
- *
- * Per Q27: handle-attached error messages are the primary detail channel;
- * a thread-local fallback exists only for create-time errors (when no
- * handle exists yet to attach to).
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
@@ -14,8 +10,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-
-/* ---------- Status -> string ---------- */
 
 const char *geist_status_to_string(enum geist_status s) {
     switch (s) {
@@ -48,8 +42,6 @@ const char *geist_status_to_string(enum geist_status s) {
     }
     return "GEIST_E_UNKNOWN";
 }
-
-/* ---------- Thread-local create-time fallback ---------- */
 
 static _Thread_local struct geist_error_slot t_create_error = {
         .code        = GEIST_OK,

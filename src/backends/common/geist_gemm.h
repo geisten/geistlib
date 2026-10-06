@@ -7,11 +7,8 @@
  *   - CBLAS (Accelerate on macOS / OpenBLAS on Linux) by default, OR
  *   - a dependency-free native implementation when GEIST_GEMM_NATIVE is set.
  *
- * This is the seam that makes BLAS optional per platform (ROADMAP.md): macOS
- * keeps Accelerate/AMX, linux-arm64 goes BLAS-free, and the future x86 AVX
- * backend slots in here as a third implementation. Row-major is implied (every
- * call site uses it). All quantized W*A8 paths have their own native kernels
- * and do NOT go through here — this is only for genuine dense fp32.
+ * Row-major is implied (every call site uses it). Quantized paths have their
+ * own native kernels and do NOT go through here — this is only for dense fp32.
  */
 #ifndef GEIST_GEMM_H
 #define GEIST_GEMM_H

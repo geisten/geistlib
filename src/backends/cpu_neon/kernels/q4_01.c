@@ -1,9 +1,8 @@
 /*
  * src/backends/cpu_neon/kernels/q4_01.c — Q4_0 / Q4_1 W8A8 NEON kernels.
  *
- * Pure compute. Replaces the generic dequant trampoline for the two
- * 32-element traditional quants (#281 perf phase: the qwen35 Q4_0
- * exports spend 65% of decode in trampolined FFN linears).
+ * Pure compute. Native W4A8 kernels for the two 32-element legacy quants,
+ * avoiding the generic dequant path (see #281).
  *
  * Q4_0 block (18 B): fp16 d + 16 nibble bytes. Element j in [0,16) is
  * lo(qs[j]) - 8, element j+16 is hi(qs[j]) - 8 — so the int8 dot pairs
@@ -144,13 +143,10 @@ void linear_q4_1_decode_w4a8(size_t      n_in,
     safe_free((void **) &bsum);
 }
 
-/* ---- Q4_0 x8 interleaved GEMV (decode lever, #281) -------------------- *
- *
- * Same idea as the Q6_K x8 layout: pack 8 consecutive output rows so one
- * sequential streaming pass serves all 8 — activation loads amortize 8x
- * and the walk is pure 144-byte chunks. The -8 weight bias is deferred
- * through per-block activation sums (dot_raw - 8*bsum), saving the two
- * vsubq_s8 per row-block of the row-major kernel. */
+/* Q4_0 x8 interleaved GEMV (see #281). Same idea as the Q6_K x8 layout: pack 8 consecutive output
+ * rows so one sequential streaming pass serves all 8 — activation loads amortize 8x and the walk is
+ * pure 144-byte chunks. The -8 weight bias is deferred through per-block activation sums (dot_raw -
+ * 8*bsum), saving the two vsubq_s8 per row-block of the row-major kernel. */
 
 struct q4_0_x8_header {
     uint32_t magic;
@@ -239,10 +235,9 @@ void linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
     for (size_t tile = 0; tile < n_out / 8; tile++) {
         const struct q4_0_x8_block *row = w + tile * nb_per_row;
 #if defined(__ARM_NEON)
-        /* Lane-SDOT on the v2 pre-transposed layout: acc lanes are four
-         * output rows, so there is no per-row horizontal add; the f32
-         * update runs the same per-lane op order as the old scalar
-         * accf[r] chain — bit-identical. */
+        /* Lane-SDOT on the pre-transposed layout: each accumulator lane is
+         * one output row, so there is no per-row horizontal add. The f32
+         * update per lane matches the scalar fallback's op order. */
         float32x4_t accv0 = vdupq_n_f32(0.0f);
         float32x4_t accv1 = vdupq_n_f32(0.0f);
         for (size_t b = 0; b < nb_per_row; b++) {
@@ -257,7 +252,7 @@ void linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
             const float32x4_t d1     = vcvt_f32_f16(vget_high_f16(dh));
             int32x4_t         a0     = vdupq_n_s32(0);
             int32x4_t         a1     = vdupq_n_s32(0);
-/* lane index must be a literal — unrolled via macro */
+/* vdotq_laneq_s32 needs a literal lane index, hence the macro. */
 #define Q4_0_X8_V2_LANE(j)                                                                       \
     do {                                                                                         \
         const uint8x16_t q0_ = vld1q_u8(blk->qs + (j) * 16);                                     \
@@ -324,16 +319,9 @@ void linear_q4_0_decode_w4a8_x8(size_t      n_in,
     safe_free((void **) &bsum);
 }
 
-/* ---- Q4_0 x8 int8 mN GEMM (#295 prefill lever) ------------------------ *
- *
- * The Mac prefill path dequantizes weight tiles to f32 and calls
- * Accelerate SGEMM — two memory passes and 8x the weight traffic.
- * This kernel runs int8 GEMM directly on the #291 x8 layout: each
- * 144-byte block (8 rows x 32 elems) is loaded ONCE and dotted
- * against T activation rows, so weight traffic amortizes T-fold and
- * the arithmetic is SDOT. Register tiling: 8 rows x 4 tokens = 16
- * int32x4 accumulators alive per block column pass.
- */
+/* Q4_0 x8 int8 mN GEMM (see #295). Int8 GEMM directly on the x8 layout
+ * instead of dequant + SGEMM: each 144-byte block (8 rows x 32 elems) is
+ * loaded once and dotted against up to 4 activation rows with SDOT. */
 
 void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
                                      size_t         n_in,
@@ -372,13 +360,9 @@ void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
                     d_arr[r] = fp16_to_fp32(blk->d[r]);
                 const float32x4_t d0 = vld1q_f32(d_arr + 0);
                 const float32x4_t d1 = vld1q_f32(d_arr + 4);
-                /* v2 layout: the pack step already stores each 4-row
-                 * group 4x4-u32-transposed, so a plain load + nibble
-                 * split yields the lane-SDOT operand directly — the
-                 * in-kernel zips of the v1 kernel are gone. One
-                 * accumulator carries four output rows in its lanes;
-                 * integer sums are exact and the f32 tail is unchanged,
-                 * so results stay bit-identical. */
+                /* The packed layout is already 4x4-u32-transposed per 4-row
+                 * group, so load + nibble split yields the lane-SDOT operand;
+                 * each accumulator carries four output rows in its lanes. */
                 int8x16_t tl0[4], th0[4], tl1[4], th1[4];
                 for (int j = 0; j < 4; j++) {
                     const uint8x16_t q0 = vld1q_u8(blk->qs + j * 16);
@@ -476,7 +460,7 @@ void linear_q4_0_w4a8_prefill_x8(
     safe_free((void **) &bsums);
 }
 
-/* ---- M>1 prefill: quantize each row once, tile over output rows. ---- */
+/* M>1 prefill on the row-major layout: activations quantized once per row. */
 
 void linear_q4_0_w4a8_prefill_pre(size_t        m,
                                   size_t        n_in,

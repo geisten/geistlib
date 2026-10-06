@@ -1,8 +1,7 @@
 /*
  * src/backends/cpu_neon/kernels/iq2_s.c — IQ2_S W2A8 NEON kernels.
  *
- * Block layout from src/quant/quant_blocks.h; iq2s_subblock_to_int8 is a
- * static inline feeding the W2A8 inner loop.
+ * Block layout from src/quant/quant_blocks.h.
  */
 #include "quant_blocks.h"
 #include "heap.h"
@@ -22,8 +21,7 @@
 #include <omp.h>
 #endif
 
-/* Shared with formats/gguf/iq2_s.c — IQ2_S sub-block grid lookup +
- * sign expansion into a 32-int8 working tile. */
+/* Decode one 32-element IQ2_S sub-block (grid lookup + signs) to int8. */
 static inline void iq2s_subblock_to_int8(int8_t         out[32],
                                          const uint8_t *qs_lo,  /* 4 bytes */
                                          const uint8_t *sign_b, /* 4 bytes */
@@ -149,11 +147,8 @@ void linear_iq2s_w2a8_prefill_pre(size_t        m,
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
 
-        /* m is bounded by GEIST_QUANT_M_CAP (checked above), so both
-         * accumulators live on the stack: this runs inside an omp parallel
-         * for, where a per-row allocation meant n_out × (1 + blocks/row)
-         * malloc/free pairs per call, all contending on the allocator.
-         * geist_weight.h: linear_mN must be allocation-free. */
+        /* Stack accumulators (m <= GEIST_QUANT_M_CAP): linear_mN must be
+         * allocation-free (geist_weight.h). */
         float accs[GEIST_QUANT_M_CAP];
         for (size_t i = 0; i < m; i++)
             accs[i] = 0.0f;

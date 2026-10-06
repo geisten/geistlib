@@ -25,8 +25,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ---------- Lifecycle ---------- */
-
 static void cpu_neon_omp_pool_init(void);
 
 [[nodiscard]] static enum geist_status cpu_neon_create(struct geist_backend            *be,
@@ -53,15 +51,12 @@ static void cpu_neon_destroy(struct geist_backend *be) {
         return;
     }
     struct cpu_neon_state *st = (struct cpu_neon_state *) be->state;
-    /* Backend-owned scratch: freed directly via the workspace. No OMP
-     * barrier needed because the storage lives on `st`, not in TLS. */
+    /* Scratch lives on `st`, not in TLS, so no OMP barrier is needed. */
     cpu_neon_ws_destroy_all(st);
     cpu_neon_dump_kernel_hits();
     geist_backend_free(be, be->state);
     be->state = nullptr;
 }
-
-/* ---------- Buffer ops (mirror cpu_scalar) ---------- */
 
 [[nodiscard]] static enum geist_status cpu_neon_buffer_create(struct geist_backend  *be,
                                                               size_t                 bytes,
@@ -132,9 +127,8 @@ static void cpu_neon_buffer_destroy(struct geist_backend *be, struct geist_buffe
     if (buf == nullptr) {
         return;
     }
-    /* Aliased buffers (P0.3): host_ptr is owned externally — typically an
-     * mmap'd region the gguf_reader retains. Don't free, just discard
-     * the metadata header. */
+    /* Aliased host memory is owned externally (typically the gguf_reader's
+     * mmap); free only the handle. */
     if ((buf->memory_flags & GEIST_MEMORY_ALIASED) == 0 && buf->host != nullptr) {
         safe_free(&buf->host);
     }
@@ -169,24 +163,18 @@ static void cpu_neon_buffer_unmap(struct geist_buffer *buf) {
     (void) buf;
 }
 
-/* ---------- Parallelism-regime hooks (OpenMP thread management) ----------
- *
- * cpu_neon's matmul kernels parallelize via OpenMP `parallel for`, so the
- * global OMP_NUM_THREADS governs throughput — and the count that suits one
- * phase hurts another. The arch layer calls these around each phase; we map
- * the phase to omp_set_num_threads and restore afterwards. GPU/other backends
- * leave the vtable slots null and the arch layer runs at the ambient setting. */
+/* Parallel-region hooks. The kernels use OpenMP `parallel for`, and the
+ * thread count that suits one phase hurts another: the arch layer calls
+ * these around each phase, which set omp_set_num_threads for it and restore
+ * the previous count afterwards. */
 #if defined(_OPENMP)
 #include <omp.h>
 
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
-/* Performance ("P") core count on Apple Silicon. Both prefill and decode
- * regress badly when the schedule includes the slow efficiency ("E") cores:
- * a static OMP partition waits on the E-core chunks (M1 Max, Gemma 4 Q4_K_M
- * pp512: 10 cores → 91 tps vs 8 P-cores → 145; tg128: likewise). num_procs
- * counts all 10, so default to the P-core count instead. Returns 0 if the
- * sysctl is unavailable. */
+/* Performance-core count on Apple Silicon, or 0 if the sysctl is
+ * unavailable. A static OMP partition that includes efficiency cores waits
+ * on their chunks (M1 Max pp512: 91 tps on 10 cores vs 145 on 8 P-cores). */
 static int apple_perf_cores(void) {
     int    v   = 0;
     size_t len = sizeof v;
@@ -201,26 +189,20 @@ static int apple_perf_cores(void) {
 }
 #endif
 
-/* One-time OMP pool sizing at backend create. The region hooks below
- * cap the ACTIVE thread count per phase, but with an ambient pool of
- * all cores (OMP default: num_procs) the scheduler is free to place
- * the capped subset on efficiency cores — measured on M-series
- * (qwen3.5-4B decode): ambient 10-thread pool 114 ms/tok vs an
- * 8-thread pool 47 ms/tok, SAME active cap. Size the pool itself to
- * the performance-core count once, before any parallel region exists.
- * An explicit OMP_NUM_THREADS wins — never override the user. */
+/* One-time OMP pool sizing, before any parallel region exists. The region
+ * hooks only cap the active thread count; with a pool of all cores the
+ * scheduler may still place that subset on efficiency cores (qwen3.5-4B
+ * decode: 114 vs 47 ms/tok), so the pool itself is sized to the P-cores.
+ * An explicit OMP_NUM_THREADS wins. */
 static void cpu_neon_omp_pool_init(void) {
     static _Atomic int done = 0;
     int                exp  = 0;
     if (!atomic_compare_exchange_strong(&done, &exp, 1))
         return;
-    /* Decode fires ~200 tiny parallel regions per token; with the
-     * default passive wait policy the workers sleep between them and
-     * the wake latency dominates (measured qwen3.5-4B decode:
-     * 163 ms/tok passive vs 46 ms active, same thread count). The
-     * policy is runtime-init-only, but backend create runs before the
-     * first parallel region, so setenv still takes effect. setenv with
-     * overwrite=0 — an explicit user policy always wins. */
+    /* Decode fires ~200 tiny parallel regions per token; with a passive
+     * wait policy the wake latency dominates (163 vs 46 ms/tok). The policy
+     * is read at runtime init, which has not happened yet here; overwrite=0
+     * keeps an explicit user policy. */
     setenv("OMP_WAIT_POLICY", "active", 0);
     if (getenv("OMP_NUM_THREADS") != nullptr)
         return;
@@ -234,13 +216,9 @@ static void cpu_neon_omp_pool_init(void) {
  * the adjustment (0): GEIST_PREFILL_THREADS, GEIST_DECODE_THREADS. */
 static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
     if (region == GEIST_REGION_PREFILL_BATCH) {
-        /* Prefill is COMPUTE-bound (matmul) and scales ~linearly with cores, so
-         * use them all — except on Apple, where the slow efficiency cores stall
-         * a static OMP partition, so use the performance-core count instead
-         * (M1 Max pp512: 91 → 145 tps once E-cores drop). On the homogeneous
-         * Pi 5 all 4 A76 cores help (clean pp256 4t 30 vs 3t 24); measure on a
-         * QUIESCED box — a stray background process eating a core inverts this
-         * (4 OMP threads then oversubscribe). */
+        /* Prefill is compute-bound and scales with cores: all of them, or
+         * the P-cores on Apple. On Pi 5 all 4 cores help, but only on a
+         * quiesced box; a background process eating a core inverts it. */
         static _Atomic int n = -1;
         if (n < 0) {
             const char *env = getenv("GEIST_PREFILL_THREADS");
@@ -254,11 +232,9 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
         }
         return n;
     }
-    /* GEIST_REGION_DECODE_STEP: decode (m=1 GEMV) is dominated by the 262K-wide
-     * lm_head plus ~210 small matmuls. It scales with P-cores but regresses when
-     * E-cores join the static schedule. Pi 5 (shared LPDDR): 3 threads beat 4.
-     * Apple: P-core count (M1 Max tg128: ambient/E-core-polluted → ~10 tps,
-     * 8 P-cores → ~31 tps). Other targets keep the ambient count. */
+    /* GEIST_REGION_DECODE_STEP: memory-bound GEMVs. Pi 5 (shared LPDDR):
+     * 3 threads beat 4. Apple: P-cores minus one. Other targets keep the
+     * ambient count. */
     static _Atomic int n = -1;
     if (n < 0) {
         const char *env = getenv("GEIST_DECODE_THREADS");
@@ -269,10 +245,9 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
 #if defined(GEIST_TARGET_PI5)
             n = 3;
 #else
-            /* Leave one P-core for the OMP master / OS: decode fires ~210 tiny
-             * matmuls per token, and saturating all P-cores makes the schedule
-             * contend with coordination work. M1 Max tg128: 8 P-cores → ~25 tps
-             * (noisy), 7 → ~30 tps (stable). Mirrors Pi 5's 3-of-4. */
+            /* One P-core left for the OMP master and the OS: ~210 tiny
+             * matmuls per token contend with coordination work otherwise
+             * (M1 Max tg128: 8 P-cores ~25 tps noisy, 7 ~30 tps stable). */
             const int pc = apple_perf_cores();
             n            = (pc > 1) ? pc - 1 : 0;
 #endif
@@ -317,8 +292,6 @@ static void cpu_neon_parallel_region_end(struct geist_backend *be, int token) {
     (void) token;
 }
 #endif /* _OPENMP */
-
-/* ---------- Vtable + Descriptor ---------- */
 
 static const struct geist_backend_vtbl cpu_neon_vtbl = {
         .create                = cpu_neon_create,
@@ -403,7 +376,7 @@ const struct geist_backend_descriptor geist_backend_cpu_neon = {
                 {
                         .manages_host_threads = true,
                         /* bump when kernel perf character changes without
-                         * a tunable rename (the #318 case) */
+                         * a tunable rename (see #318) */
                         .calibration_generation = 1,
                         .max_m                  = GEIST_QUANT_M_CAP,
                         /* host DeltaNet sub-chunks (layer_deltanet.c) */

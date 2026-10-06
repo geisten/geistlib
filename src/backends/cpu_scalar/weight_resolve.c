@@ -3,39 +3,17 @@
  *
  * Layer: BACKEND.
  *
- * cpu_scalar is the pure-C reference backend. geist_backend_vtbl has no
- * linear() slot; every backend installs kernel pointers via
- * resolve_weight. This file gives cpu_scalar a (slow, correct) resolver
- * that wraps the dequant row helpers (quant.h, defined in
- * src/formats/gguf/) into pre-resolved function pointers.
- *
- * Performance characteristics:
- *   - F32 dense: naive triple loop with double accumulator. ~10× slower
- *     than cpu_neon + cblas; intentional, this is the reference.
+ * Slow, correct kernels bound through resolve_weight; no SIMD, no BLAS.
+ *   - F32 dense: naive loop with a double accumulator.
  *   - Every block format quant.h decodes, and F16 / BF16: geist_linear_ref
- *     (backends/common/linear_ref.c) — each weight row decoded a tile at a
- *     time into a stack buffer, naive dot in double. It allocates nothing,
- *     so it cannot fail; the other CPU backends fall back to it when their
- *     scratch cannot be had. (I2_S/F16 are there for BitNet b1.58 2B-4T,
- *     whose ternary BitLinear weights are I2_S and whose tied lm_head is
- *     F16.)
+ *     (common/linear_ref.c), which allocates nothing and cannot fail; the
+ *     other CPU backends fall back to it when their scratch cannot be had.
  *
- * No SIMD, no BLAS — that's what cpu_neon is for.
- *
- * ORACLE CAVEAT — ternary (I2_S / TQ2_0). Everywhere else this backend is the
- * correctness oracle other backends are checked against, bit for bit. For
- * ternary weights it is NOT, and cannot be: the reference kernel dequantizes
- * to fp32 and the dot then runs in fp32, i.e. W2A32, while cpu_neon binds
- * `cpu_neon_w_i2_s_q8a_*` — int8 activations, W2A8. Two different arithmetics,
- * so two different results by construction.
- *
- * Which is right depends on what you are asking. Arithmetically this path is
- * the more precise one. But 8-bit activations are part of the BitNet b1.58
- * definition, not an approximation of it, so cpu_neon computes the scheme the
- * model was trained for and this backend computes a different model that
- * happens to round less. Measured on BitNet 2B-4T i2_s: greedy output agrees
- * for 36 tokens and then drifts apart at a near-tie on the 37th. Q4_K and the rest stay
- * bit-identical, so a divergence outside ternary is a real bug, not this.
+ * ORACLE CAVEAT — ternary (I2_S / TQ2_0). Everywhere else this backend is
+ * the bit-exact correctness oracle. For ternary weights it is not: this path
+ * runs W2A32, while cpu_neon runs W2A8 (int8 activations, part of the BitNet
+ * b1.58 definition). Greedy BitNet 2B-4T output agrees for 36 tokens, then
+ * drifts at a near-tie. Outside ternary a divergence is a real bug.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 

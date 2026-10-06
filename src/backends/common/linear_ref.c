@@ -8,10 +8,8 @@
 #include <string.h>
 
 /* Elements decoded per step: a multiple of every block size (32, 128 and
- * 256 elements), so a tile is always whole blocks. 4 KB of stack. 256
- * measured 1.5-2.5 % slower than a whole-row decode for Q4_K and Q8_0
- * (2048 x 2048, gcc-14, x86-64-v3): the per-tile reduction and decode call
- * add up; at 1024 the difference is inside the noise. */
+ * 256 elements), so a tile is always whole blocks. 4 KB of stack; smaller
+ * tiles measured slower than a whole-row decode, 1024 is within noise. */
 constexpr size_t REF_TILE = 1024;
 
 /* Rows of x dotted against one decoded tile, each with a double
@@ -147,8 +145,8 @@ void geist_linear_ref_rows(size_t                     m,
     const size_t      n_in = (size_t) w->n_in;
     alignas(64) float tile[REF_TILE];
     if (m == 1) {
-        /* Decode: the accumulator stays in a register. Through acc[] below
-         * this measured 2 % slower for Q4_K and Q8_0 (2048 x 2048). */
+        /* Decode: the accumulator stays in a register (acc[] below is ~2 %
+         * slower here). */
         for (size_t j = 0; j < nj; j++) {
             double a = 0.0;
             for (size_t k0 = 0; k0 < n_in; k0 += REF_TILE) {

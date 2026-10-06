@@ -5,17 +5,13 @@
  * Layer: BACKEND (cpu_neon).
  *
  * The INT8 cache is cpu_neon's default off Apple (caps.preferred_kv_mode).
- * Its attention was the architecture layer's loop
- * (attention_int8_via_buffers in forward/attention.c), whose one-head
- * path — the only one it takes off x86 — dotted each query head against
- * the K rows with vdotq_s32. That path is in attention_kv.h now, unchanged
- * and shared with the INT4 cache's: each query
+ * The loop is in attention_kv.h, shared with the INT4 cache: each query
  * head quantized to int8 (amax / 127, round to nearest), exact int32 dots,
  * an online softmax over blocks of 512 positions, the V sums in fp32. The
- * architecture keeps the portable loop as the decomposed twin for backends
- * without this op; built without FEAT_DotProd, this file is empty and
- * cpu_neon leaves the slot null, which is what ran before too.
+ * architecture's portable loop is the decomposed twin. Without
+ * FEAT_DotProd this file is empty and the slot stays null.
  */
+
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"

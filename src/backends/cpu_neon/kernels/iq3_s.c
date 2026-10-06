@@ -1,8 +1,7 @@
 /*
  * src/backends/cpu_neon/kernels/iq3_s.c — IQ3_S W3A8 NEON kernels.
  *
- * Block layout from src/quant/quant_blocks.h; iq3s_subblock_to_int8 is a
- * static inline feeding the W3A8 inner loop.
+ * Block layout from src/quant/quant_blocks.h.
  */
 #include "quant_blocks.h"
 #include "heap.h"
@@ -22,8 +21,7 @@
 #include <omp.h>
 #endif
 
-/* Shared with formats/gguf/iq3_s.c — IQ3_S sub-block grid lookup +
- * sign expansion into a 32-int8 working tile. */
+/* Decode one 32-element IQ3_S sub-block (grid lookup + signs) to int8. */
 static inline void iq3s_subblock_to_int8(int8_t         out[32],
                                          const uint8_t *qs_lo,  /* 8 bytes */
                                          const uint8_t *sign_b, /* 4 bytes */
@@ -96,7 +94,6 @@ void linear_iq3s_decode_w3a8_pre(size_t       n_in,
                 const int32_t s_a = 1 + 2 * (blk->scales[ib] & 0xf);
                 const int32_t s_b = 1 + 2 * (blk->scales[ib] >> 4);
 
-                /* First 32-element half. */
                 iq3s_subblock_to_int8(
                         w_i8, &blk->qs[ib * 16 + 0], &blk->signs[ib * 8 + 0], blk->qh[ib * 2 + 0]);
                 {
@@ -110,7 +107,6 @@ void linear_iq3s_decode_w3a8_pre(size_t       n_in,
                 }
                 xb += 32;
 
-                /* Second 32-element half. */
                 iq3s_subblock_to_int8(
                         w_i8, &blk->qs[ib * 16 + 8], &blk->signs[ib * 8 + 4], blk->qh[ib * 2 + 1]);
                 {
@@ -172,11 +168,8 @@ void linear_iq3s_w3a8_prefill_pre(size_t        m,
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
 
-        /* m is bounded by GEIST_QUANT_M_CAP (checked above), so both
-         * accumulators live on the stack: this runs inside an omp parallel
-         * for, where a per-row allocation meant n_out × (1 + blocks/row)
-         * malloc/free pairs per call, all contending on the allocator.
-         * geist_weight.h: linear_mN must be allocation-free. */
+        /* Stack accumulators (m <= GEIST_QUANT_M_CAP): linear_mN must be
+         * allocation-free (geist_weight.h). */
         float accs[GEIST_QUANT_M_CAP];
         for (size_t i = 0; i < m; i++)
             accs[i] = 0.0f;
@@ -197,7 +190,6 @@ void linear_iq3s_w3a8_prefill_pre(size_t        m,
                 const int32_t s_a = 1 + 2 * (blk->scales[ib] & 0xf);
                 const int32_t s_b = 1 + 2 * (blk->scales[ib] >> 4);
 
-                /* First 32-element half (scale s_a). */
                 iq3s_subblock_to_int8(
                         w_i8, &blk->qs[ib * 16 + 0], &blk->signs[ib * 8 + 0], blk->qh[ib * 2 + 0]);
                 {
@@ -212,7 +204,6 @@ void linear_iq3s_w3a8_prefill_pre(size_t        m,
                     }
                 }
 
-                /* Second 32-element half (scale s_b). */
                 iq3s_subblock_to_int8(
                         w_i8, &blk->qs[ib * 16 + 8], &blk->signs[ib * 8 + 4], blk->qh[ib * 2 + 1]);
                 {

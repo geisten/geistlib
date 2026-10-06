@@ -92,7 +92,7 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
             if (b + 2 < nb_per_row)
                 __builtin_prefetch(&row[b + 2], 0, 0);
             const float d = fp16_to_fp32(blk->d);
-            /* Read the 32 int8 weight bytes ONCE per super-block. */
+            /* Load the block's 32 weight bytes once; reuse for all m rows. */
             int8x16_t qv0 = vld1q_s8(blk->qs);
             int8x16_t qv1 = vld1q_s8(blk->qs + 16);
             for (size_t i = 0; i < m; i++) {

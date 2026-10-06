@@ -1,12 +1,9 @@
 /*
  * src/backends/cpu_neon/kernel_catalog.c - cpu_neon kernel policy.
  *
- * Strict env parsing convention: a knob is "on" iff its value starts with
- * '1'. This matches the legacy per-knob `env[0] == '1'` checks that
- * existed before the catalog was introduced — anything else (empty,
- * 'true', 'yes', '0') is treated as "use the platform default". Bools
- * that need an explicit "force off" use a separate _FORCE-off var by
- * convention rather than overloading truthiness.
+ * Bool env knobs: unset or empty keeps the platform default; a value
+ * starting with '1' turns the knob on; anything else ('0', 'true', 'yes')
+ * turns it off.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -22,10 +19,6 @@ static bool cpu_neon_env_bool(const char *name, bool fallback) {
     if (env == nullptr || env[0] == '\0') {
         return fallback;
     }
-    /* Strict: only "1..." is true. Matches the pre-catalog convention so
-     * scripts that exported `GEIST_*_NATIVE_MN=true` continue to mean
-     * "fallback (platform default)" rather than silently flipping to
-     * native NEON. */
     return env[0] == '1';
 }
 
@@ -93,11 +86,10 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
             .q6k_ntile_prefill         = has_accelerate,
             .q6k_ntile4_stream_prefill = has_accelerate,
             .q6k_x8_gemv               = has_accelerate,
-            /* Default-on wherever SDOT exists: the packed copy reads as
-             * +~0.5 GB RSS, not +1x model bytes — the cold Q4_0 mmap
-             * pages get evicted (Pi 5 4B A/B: RSS 2.8->3.4 GB, prefill
-             * 9.1->16.5 t/s; decode flat). GEIST_Q4_0_X8_GEMV=0 trades
-             * the speed back when RAM is tighter than time. */
+            /* Default-on wherever SDOT exists: the cold Q4_0 mmap pages get
+             * evicted, so the packed copy costs ~0.5 GB RSS, not 1x model
+             * bytes (Pi 5 4B: prefill 9.1->16.5 t/s). GEIST_Q4_0_X8_GEMV=0
+             * trades the speed back for RAM. */
             .q4_0_x8_gemv    = has_accelerate || (hw != nullptr && hw->has_dotprod),
             .pq2_0_x8_gemv   = hw != nullptr && hw->has_dotprod,
             .q8_0_native_mn  = !has_accelerate,

@@ -1,9 +1,7 @@
 /*
  * kivi.c — 2-bit asymmetric KV-cache quantization.
  *
- * Layer: BACKEND (common). Pure C23; portable scalar implementation.
- * NEON specialization will land alongside the runtime integration in
- * arch_state once the format is locked in.
+ * Layer: BACKEND (common). Portable scalar implementation.
  */
 #include "kivi.h"
 

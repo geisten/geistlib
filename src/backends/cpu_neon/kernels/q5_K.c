@@ -1,9 +1,8 @@
 /*
  * src/backends/cpu_neon/kernels/q5_K.c — Q5_K W5A8 NEON kernels.
  *
- * Pure compute. The on-disk Q5_K block layout (struct block_q5_K_t)
- * comes from src/quant/quant_blocks.h; the file-format decoder
- * dequant_q5_K_row stays in src/formats/gguf/q5_K.c.
+ * Pure compute. Block layout from src/quant/quant_blocks.h; the
+ * dequantizer dequant_q5_K_row lives in src/formats/gguf/q5_K.c.
  */
 #include "quant_blocks.h"
 #include "heap.h"

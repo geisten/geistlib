@@ -4,14 +4,13 @@
  *
  * Layer: BACKEND (cpu_neon).
  *
- * FIDELITY CONTRACT (learned the hard way): sondes time the
- * RESOLVER-INSTALLED mN path on a throwaway backend instance with the
- * policy variant forced — never hand-picked quant.h kernels. The first
- * draft timed raw kernels and confidently mis-calibrated
- * qk_sgemm_threshold to "never" while the real Q4_K path (gemma pp256
- * A/B) showed the SGEMM side 25 % ahead: real paths are composed by
- * the resolver (tile variants, layout installs), so only resolved
- * pointers measure the truth a model would run.
+ * Fidelity contract: sondes time the RESOLVER-INSTALLED mN path on a
+ * throwaway backend instance with the policy variant forced, never
+ * hand-picked quant.h kernels. The resolver composes the real path (tile
+ * variants, layout installs); timing raw kernels mis-calibrated
+ * qk_sgemm_threshold to "never" while the real Q4_K SGEMM side was 25 %
+ * ahead.
+
  *
  * Panels are synthetic (pseudo-random payload, d = fp16 1.0, bytes 2-3
  * zeroed so dequant stays finite); timing per variant is warmup + the

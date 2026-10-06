@@ -4,17 +4,10 @@
  *
  * Layer: BACKEND (shared by cpu_scalar, cpu_neon, cpu_x86).
  *
- * Every elementwise op used to unpack a view the same way and check none
- * of it: fold shape[0..ndim) into an element count with an unchecked
- * multiply, add `offset` to the host pointer, and start writing. `ndim`
- * was only tested for >= 1 although shape[] holds eight entries, the
- * product could wrap, the byte count could exceed the buffer, and nothing
- * looked at alignment. Three near-identical copies of that, one per CPU
- * backend.
- *
- * This is the one copy, and it checks. It takes the host pointer and its
- * extent rather than the buffer, because struct geist_buffer is defined
- * privately by each backend.
+ * Checks ndim, each dimension, the element-count and byte-range overflow,
+ * the extent against the buffer, and alignment. Takes the host pointer and
+ * its extent rather than the buffer, because struct geist_buffer is
+ * defined privately by each backend.
  */
 #pragma once
 
