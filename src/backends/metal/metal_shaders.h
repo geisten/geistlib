@@ -1,8 +1,7 @@
 /* metal_shaders.h — the embedded MSL kernel sources for the Metal backend.
  *
- * Pure data, split out of backend.c for readability: every symbol is a
- * `static const char[]` shader string compiled at backend-create time.
- * backend.c-private — included exactly once, after its param structs. */
+ * Pure data: every symbol is a `static const char[]` shader string compiled
+ * at run time. Included from metal_internal.h, after the param structs. */
 #ifndef GEIST_METAL_SHADERS_H
 #define GEIST_METAL_SHADERS_H
 
@@ -87,17 +86,15 @@ static const char metal_q4k_source[] =
         "    }\n"
         "}\n";
 
-/* Shared 64x32 simdgroup GEMM template (the proven matmul_q4k_mm_sg tile
- * structure, bounds-checked variant). Instantiated per quant format by
- * splicing in the block struct name BLK, a 16-element dequant function DQ
- * (device const BLK*, short il, thread half4x4&) and QKNL = 16-element
- * chunks per block, all defined in the surrounding shader source. Differs
- * from the q4k original in two ways: the staging bounds check uses il0
- * (the k position inside the tile; il drifts ahead of it across a block,
- * so the original check was wrong for partial tiles — dead code there
- * because its dispatch gate excluded them), and the partial-tile epilogue
- * copies scalars only (the float4 fast path needs a 16-byte-aligned y row,
- * which arbitrary n_out does not give). */
+/* Shared 64x32 simdgroup GEMM template (matmul_q4k_mm_sg tile structure,
+ * bounds-checked variant). Instantiated per quant format by splicing in the
+ * block struct name BLK, a 16-element dequant function DQ (device const
+ * BLK*, short il, thread half4x4&) and QKNL = 16-element chunks per block,
+ * all defined in the surrounding shader source. The staging bounds check
+ * uses il0, the k position inside the tile (il drifts ahead of it across a
+ * block). Unlike the q4k kernel, the partial-tile epilogue copies scalars
+ * only: the float4 path needs a 16-byte-aligned y row, which arbitrary
+ * n_out does not give. */
 #define GEIST_METAL_MM_SG_KERNEL(NAME, BLK, DQ, QKNL)                                         \
     "kernel void matmul_" NAME "_mm_sg(device const float*x[[buffer(0)]],device const "       \
     "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup " \
@@ -594,17 +591,14 @@ static const char metal_qsg_n4_iq4xs_source[] =
  * value (code - 1) * d. dqpq2 serves the shared GEMM template (QK_NL 8:
  * eight 16-element chunks per block). The decode GEMV follows q40_n4 (4
  * rows per simdgroup, a thread owning a 32-element quarter block), but a
- * byte of codes is four weights, so per-weight mask + convert + FMA made it
- * ALU-latency bound (57-60 ms per 27B token). A 256-entry half4 table in
- * threadgroup memory maps each code byte to its four codes, so a byte is
- * one lookup and one float4 dot: 50-52 ms; unrolling the four rows (the
- * tail clamps its row index, stores stay guarded) lets their loads
- * overlap: 44-46 ms. The -1 bias folds into sumy. A read-only probe of
- * the same access pattern takes 40 ms (27 ms without the x loads), so
- * what is left is the 2-byte-aligned block layout, not the arithmetic.
- * (Measured and dropped: 8 rows per simdgroup, x staged in threadgroup
- * memory, half activations (over tolerance), a float4 table (threadgroup
- * bandwidth: 60 ms), half the bytes through the ALU instead of the table.) */
+ * byte of codes is four weights, so per-weight mask + convert + FMA is
+ * ALU-latency bound. A 256-entry half4 table in threadgroup memory maps
+ * each code byte to its four codes, so a byte is one lookup and one float4
+ * dot; unrolling the four rows (the tail clamps its row index, stores stay
+ * guarded) lets their loads overlap. The -1 bias folds into sumy. What is
+ * left is bound by the 2-byte-aligned block layout, not the arithmetic.
+ * (Slower or over tolerance: x staged in threadgroup memory, half
+ * activations, a float4 table, half the bytes through the ALU.) */
 static const char metal_qsg_pq2_dq_source[] =
         "struct bpq2{half d;uchar qs[32];};\n"
         "static inline void dqpq2(device const bpq2*xb,short il,thread half4x4&r){"
@@ -614,8 +608,7 @@ static const char metal_qsg_pq2_dq_source[] =
 
 /* R rows per simdgroup. R trades registers for activation traffic: a
  * thread loads 128 bytes of x per iteration and R*8 bytes of weights, so
- * x traffic is 15/R times the weight traffic — at R=4 the kernel moved
- * ~90 MB of (cached) x for 24 MB of weights. */
+ * x traffic is 15/R times the weight traffic. */
 #define GEIST_METAL_PQ2_N_KERNEL(R)                                                       \
     "kernel void matvec_pq2_n" R "(device const float*x[[buffer(0)]],device const "       \
     "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],"         \
@@ -656,8 +649,8 @@ static const char metal_qsg_mm_pq2_fast_source[] =
         GEIST_METAL_MM_SG_FAST_KERNEL("pq2", "bpq2", "dqpq2", "8");
 
 /* Decode GEMV for the two 2-bit ternary formats that share TQ2_0's
- * element layout (TQ2_0 and I2_S), after q3k_n4: 2 rows per simdgroup, a thread owns one
- * 8-element run of every 256-element block, so its 8 codes share one
+ * element layout (TQ2_0 and I2_S), after q3k_n4: 2 rows per simdgroup, a
+ * thread owns one 8-element run of every 256-element block, so its 8 codes share one
  * shift, and the -1 bias folds into sumy. The formats differ in the shift
  * (SH), the block bytes (BB) and where the scale lives: TQ2_0 has a half
  * per block (BLK_D, applied per block through D_MUL), I2_S one f32 per
@@ -1070,9 +1063,8 @@ static const char metal_q6k_source[] =
         "batch=batch_base+m;if(batch<p.rows){y[p.y_offset+batch*p.y_row_stride+row]=partial[m][0];}"
         "}}}\n";
 
-/* 64x32 q6k GEMM (NK=8, proven tile structure). Weight staging dequants one
- * 8-elem k-run per thread: d and the int8 scale load once per run instead of
- * per element (deq6 was ~46% of the kernel's time). */
+/* 64x32 q6k GEMM (NK=8). Weight staging dequants one 8-elem k-run per
+ * thread: d and the int8 scale load once per run instead of per element. */
 static const char metal_q6k_mm_sg_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -1171,7 +1163,7 @@ static const char metal_q6k_mm_sg_fast_source[] =
         "}\n";
 
 /* llama.cpp kernel_mul_mv_q6_K_f32 structure: 2 simdgroups/threadgroup, 2 rows
- * per simdgroup (grid.x*4 rows/tg, unchanged), block-coherent loads — each
+ * per simdgroup (grid.x*4 rows/tg), block-coherent loads — each
  * thread handles 16 elems of a 256-block via 4 contiguous ql/qh bytes and
  * int8 scales, one f16 d per (row,block). */
 static const char metal_q6k_n4_source[] =
@@ -1380,7 +1372,7 @@ static const char metal_silu_source[] =
         "float*y[[buffer(1)]],constant Sc&p[[buffer(2)]],uint gid[[thread_position_in_grid]]){uint "
         "total=p.rows*p.cols;if(gid>=total)return;uint r=gid/p.cols,c=gid-r*p.cols;float "
         "v=max(x[p.x_offset+r*p.x_row_stride+c],0.0f);y[p.y_offset+r*p.y_row_stride+c]=v*v;}\n"
-        /* Fused SwiGLU epilogue (#322 step 3b): silu(a)*b in one pass,
+        /* Fused SwiGLU epilogue: silu(a)*b in one pass,
          * exact same silu formula as silu_rows above so the fused path
          * is bit-identical to silu+mul. Field layout matches struct Bin
          * (metal_binary_rows_params). */
@@ -1485,7 +1477,7 @@ static const char metal_embed_source[] =
         "token,gid):(p.dtype==22u?pq2(w,p,p.token,gid):q6(w,p,p.token,gid))))))));"
         "y[p.yo+gid]=v*p.scale;}\n";
 
-/* Batched variant (#322 step 3): ids arrive via a small constant buffer,
+/* Batched variant: ids arrive via a small constant buffer,
  * p.token carries the row count, one dispatch embeds the whole prefill
  * chunk. Same per-element math as the single-token kernel; separate
  * array (4095-char literal limit), concatenated at library build. */
@@ -1501,11 +1493,10 @@ static const char metal_embed_rows_source[] =
         "y[p.yo+gid.y*p.n+gid.x]=v*p.scale;}\n";
 
 /* matmul_<NAME> (one row per threadgroup) and matmul_<NAME>_sg (8x8
- * simdgroup tiles), instantiated for F32 weights and, #564, for F16 / BF16
- * ones converted to float as they are loaded. F16 and BF16 are exact in
+ * simdgroup tiles), instantiated for F32 weights and for F16 / BF16 ones
+ * converted to float as they are loaded (#564). F16 and BF16 are exact in
  * float, so the result is bit-identical to running the F32 kernels on the
- * matrix widened to F32 — what the loader did for small half-precision
- * matrices before — without the doubled bytes. NAME is the suffix, WT the
+ * matrix widened to F32, without the doubled bytes. NAME is the suffix, WT the
  * stored element type, CV the conversion of `v`. */
 #define GEIST_METAL_HALF_W_KERNELS(NAME, WT, CV)                                               \
     "kernel void matmul_" NAME "(device const float*x[[buffer(0)]],device const " WT           \
@@ -2029,8 +2020,7 @@ static const char metal_attn_f16_source[] =
 /* Decode-specialized fused qnorm+rope+attention (rows==1, f16 KV): tokens are
  * split across the 8 simdgroups with per-simdgroup online softmax kept in
  * registers (simd_sum reductions, no tree-reduce barriers, no serial PV
- * loop); one threadgroup-memory merge at the end. Replaces the two-pass
- * 256-thread kernel that left the GPU idle at decode. */
+ * loop); one threadgroup-memory merge at the end. */
 static const char metal_attn_qnorm_dec_f16_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -2153,7 +2143,7 @@ static const char metal_attn_flash_sg_f16_source_a[] =
         "uint span=thi+1u-tlo,nfull=span/32u,rem=span%32u;"
         "uint nit=nfull+(rem>0u?1u:0u);";
 
-/* No-norm variant for main's contract: the engine applies q-norm and rope
+/* No-norm variant: the engine applies q-norm and rope
  * as separate ops, so this head loads Q as a plain half copy. The main
  * loop is byte-identical — metal_attn_flash_sg_f16_source_b is appended
  * after this head a second time at library init. */
@@ -2239,9 +2229,8 @@ static const char metal_attn_flash_sg_f16_source_b[] =
 
 /* 8-simdgroup / 256-thread variant of the prefill flash for head_dim
  * up to 512: each simdgroup owns one query row and a 64-column output
- * slice; scores reduce across 8 Sred banks. The gemma-3n full-attention
- * layers (head_dim 512) previously fell to the scalar two-pass kernel
- * and were 67% of pp2048 (measured 2026-07-04). */
+ * slice; scores reduce across 8 Sred banks (gemma-3n full-attention
+ * layers, head_dim 512). */
 static const char metal_attn_flash_sg8_f16_source_a[] =
         "#include <metal_stdlib>\nusing namespace metal;\nstruct A{uint "
         "rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\nkernel void "
@@ -2297,8 +2286,7 @@ static const char metal_attn_flash_sg8_f16_source_b[] =
 
 /* Split-KV decode flash for 256 < head_dim <= 512 (the gemma-3n
  * full-attention layers): 16-chunk QK/PV lane unroll (a0..a15),
- * qv[512]/ta[4096]; same split/combine contract as attention_dec_f16.
- * Those layers previously took the scalar O(kv) kernel every token. */
+ * qv[512]/ta[4096]; same split/combine contract as attention_dec_f16. */
 static const char metal_attn_dec512_f16_source_a[] =
         "#include <metal_stdlib>\nusing namespace metal;\nstruct A{uint "
         "rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\nstruct SP{uint ns;};\nkernel void "
@@ -2350,7 +2338,7 @@ static const char metal_attn_dec512_f16_source_b[] =
         "i=lid;i<hd;i+=256u){float acc=0.0f;for(uint "
         "j=0u;j<8u;j++)acc+=ta[j*hd+i]*exp(tm[j]-M);pb[pbb+2u+i]=acc;}}";
 
-/* No-norm head for main's contract (the engine applies q-norm and rope as
+/* No-norm head (the engine applies q-norm and rope as
  * separate ops): plain Q load into qv, then the shared split-KV body. */
 static const char metal_attn_dec_f16_plain_head[] =
         "kernel void attention_dec_f16(device const float*q[[buffer(0)]],device const "
@@ -2398,8 +2386,8 @@ static const char metal_deltanet_source[] =
         "uint hk[[threadgroup_position_in_grid]],uint j[[thread_index_in_threadgroup]]){"
         /* tq/tk stage the normed q/k rows in threadgroup memory: the state
          * loop reads them cross-thread, and mem_threadgroup barriers only
-         * fence threadgroup-address-space data — the old device reads were
-         * formally unfenced (worked on M1 by luck) and slower. */
+         * fence threadgroup-address-space data, so device reads here would
+         * be unfenced. */
         "threadgroup float red[256];threadgroup float tq[256];threadgroup float tk[256];"
         "uint keyd=p.nkh*p.dk,vd=p.nvh*p.dv,cd=2u*keyd+vd;"
         "if(hk>=p.nkh)return;float qs=rsqrt(float(p.dk));"
@@ -2597,9 +2585,8 @@ static const char metal_dn_chunk_prep_source[] =
         "uint j=gid/cd,c=gid%cd;int src=int(C+j)-int(hist);"
         "cs[p.cso+j*cd+c]=src>=0?qkv[p.qo+uint(src)*cd+c]:scr[oc0+(C+j)*cd+c];}\n";
 
-/* Chunk delta rule, split for occupancy (#profiling 2026-08-27: the
- * single per-head kernel ran at ~46 GFLOP/s — n_vh threadgroups cannot
- * fill the GPU). The heavy O(C^2 dk) / O(C dk dv) terms now run on wide
+/* Chunk delta rule, split for occupancy (n_vh threadgroups alone cannot
+ * fill the GPU). The heavy O(C^2 dk) / O(C dk dv) terms run on wide
  * (elements/256 x n_vh) grids; only the cumsum/staging and the serial
  * triangular substitution stay one-threadgroup-per-head. ws per head:
  * gma C | eg C | Kb C*dk | KCe C*dk | Qg C*dk | Vb C*dv | vnew C*dv |
@@ -2648,8 +2635,8 @@ static const char metal_dn_chunk_ws_source[] =
         /* per-head: forward substitution of (I - A_strict)^-1 rows.
          * Thread ti owns columns {ti, ti+256}: A[j][l] reads at iteration
          * r>j were written by the same thread at iteration j, so no device
-         * fence is needed — the profiled 2*C mem_device barriers were ~54us
-         * each and the whole DeltaNet chain (2026-08-27). Cross-thread data
+         * fence is needed (2*C mem_device barriers would dominate the
+         * chain). Cross-thread data
          * moves only through the threadgroup rowt copy of the row\'s
          * pre-substitution values (device-visible from dn_chunk_amat).
          * rowt[512] caps the chunk length; the host gates seq<=512. */
@@ -2667,9 +2654,7 @@ static const char metal_dn_chunk_ws_source[] =
 
 static const char metal_dn_chunk_wide_source[] =
         /* wide: A (strict) and attn (inclusive) in one K-pass; 4 rows per
-         * thread so the cd-strided K column row loads once per x (the
-         * 1-output-per-thread versions of these kernels profiled at
-         * ~250 GFLOP/s, 2026-08-27). Host gates the chunked path on
+         * thread so the cd-strided K column row loads once per x. Host gates the chunked path on
          * head_v%4==0 for the 4-wide j blocks below. */
         GEIST_DN_SIG(
                 "dn_chunk_amat") "uint2 tg[[threadgroup_position_in_grid]],uint "
