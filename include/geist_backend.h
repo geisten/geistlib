@@ -25,10 +25,9 @@
  *      → geist_backend_primitives. Requires a cpu_scalar reference impl
  *        + a parity test. Expected to be rare.
  *   3. New fusion / fast path?
- *      → geist_backend_fused. Non-negotiable: (a) the decomposed
- *        primitive path already produces the same result, (b) plan-level
- *        binding in the arch (no `fused->x != nullptr` at call sites once
- *        probe-and-bind lands), (c) a fused-vs-decomposed parity test.
+ *      → geist_backend_fused. Requires (a) the decomposed primitive path
+ *        already produces the same result, (b) plan-level binding in the
+ *        arch via `supported`, (c) a fused-vs-decomposed parity test.
  *   4. New capability signal?
  *      → a bool in geist_backend_caps, with its consumer named in the
  *        comment. Never name-sniffing, never slot-presence inference.
@@ -111,9 +110,9 @@ struct geist_backend_vtbl {
      * buffer_copy address the view's bytes. buffer_destroy releases only the
      * view handle. The parent must outlive every view of it. Fails with
      * GEIST_E_INVALID_ARG when the range is empty or leaves the parent.
-     * Consumer: transformer_session_alloc's device-local scratch pool
-     * (#488). nullable: the arch keeps its host-visible pool and slices it
-     * with buffer_create_aliased. */
+     * Consumer: transformer_session_alloc's device-local scratch pool.
+     * nullable: the arch keeps its host-visible pool and slices it with
+     * buffer_create_aliased. */
     enum geist_status (*buffer_create_view)(struct geist_backend  *be,
                                             struct geist_buffer   *parent,
                                             size_t                 offset,
@@ -151,26 +150,24 @@ struct geist_backend_vtbl {
                                      size_t                     src_offset,
                                      size_t                     n_bytes);
 
-    /* ---- Load-time weight resolver (P1.1, refactor v2) ----
+    /* ---- Load-time weight resolver ----
      *
      * Inspect a weight tensor's dtype + shape and write direct function
      * pointers into `w->linear_m1` and `w->linear_mN`. Runs once per
      * weight at model load. Subsequent forward calls go through the
      * resolved pointers without per-call dispatch. Optionally allocate
-     * `w->aux_fp32` via heap.h for pre-folded data (AWQ etc.).
+     * `w->aux_fp32` via heap.h for pre-folded data (AWQ etc.). See
+     * geist_weight.h for the full contract.
      *
-     * nullable: backends that don't yet implement the new flow (or that
-     * fundamentally can't pre-resolve, e.g. a future fully-dynamic GPU
-     * backend) leave this slot null. Callers fall back to the legacy
-     * per-op path. */
+     * nullable (as is a GEIST_E_UNSUPPORTED result): the weight then has no
+     * host kernel and only fused->linear_t can run it. */
     enum geist_status (*resolve_weight)(struct geist_backend *be, struct geist_weight *w);
 
     /* Bytes of the backend's FAST host-visible memory still available for
      * per-session scratch (a GPU's BAR window: device-local and mappable, but
      * only 256 MB on a machine without resizable BAR). A scratch pool that does
-     * not fit falls back to plain system memory, which the GPU then reads over
-     * PCIe (activation ops 30-50x slower), so the arch sizes its default
-     * prefill chunk to what fits (transformer_session_alloc). SIZE_MAX =
+     * not fit falls back to system memory read over PCIe (much slower), so
+     * the arch sizes its default prefill chunk to what fits. SIZE_MAX =
      * unlimited. nullable: unlimited. */
     size_t (*fast_host_bytes)(struct geist_backend *be);
 
@@ -201,10 +198,8 @@ struct geist_backend_vtbl {
  * slots may still be nullptr where an arch-side host fallback exists (the
  * comment on each slot says which).
  *
- * (The legacy `linear` primitive was dropped after the resolver path
- * (resolve_weight + geist_weight::linear_m1/_mN) covered every production
- * dtype. Adding a new linear path means adding a resolver case, not a
- * slot.) */
+ * There is no linear primitive: linear layers go through resolve_weight
+ * (geist_weight::linear_m1/_mN); a new linear path is a resolver case. */
 struct geist_backend_primitives {
     /* y = x * w * rsqrt(mean(x^2) + eps). w broadcasts across feature dim.
      * All tensors are F32 DENSE. x and y can be the same tensor (in-place). */
@@ -232,17 +227,13 @@ struct geist_backend_primitives {
                                    struct geist_tensor       *y);
 
     /* y = silu(x) = x / (1 + exp(-x)). F32 DENSE, x and y can be the
-     * same tensor. SiLU is Llama 2/3 + BitNet b1.58 3B's SwiGLU
-     * activation. */
+     * same tensor. */
     enum geist_status (*silu)(struct geist_backend      *be,
                               const struct geist_tensor *x,
                               struct geist_tensor       *y);
 
-    /* y = max(x, 0)^2. F32 DENSE, x and y can be the same tensor.
-     * Squared ReLU is BitNet b1.58 2B-4T's FFN activation; combining
-     * the threshold + the square in one pass halves memory traffic
-     * vs. relu(x) followed by mul(y, y). May be nullptr on backends
-     * that don't implement it; callers must check. */
+    /* y = max(x, 0)^2 (BitNet b1.58 2B-4T FFN activation). F32 DENSE, x
+     * and y can be the same tensor. May be nullptr; callers must check. */
     enum geist_status (*relu_squared)(struct geist_backend      *be,
                                       const struct geist_tensor *x,
                                       struct geist_tensor       *y);
@@ -300,8 +291,7 @@ struct geist_backend_primitives {
 /* ====================================================================== */
 
 /* Fused-op identifiers for load-time probing (see `supported` below).
- * Only ops whose call sites are plan-bound need an id; the rest join as
- * their call sites migrate (policy rule 3). */
+ * Only ops whose call sites are plan-bound have an id. */
 enum geist_fused_op {
     GEIST_FUSED_GELU_TANH_MUL,
     GEIST_FUSED_SILU_MUL,
@@ -451,9 +441,8 @@ struct geist_hadamard_args {
  * hadamard_rotate (see its comment): a model that needs it refuses to load
  * where the probe says no, rather than running a host round-trip per call.
  *
- * Probe-and-bind: call sites migrate from per-call negotiation to
- * consulting `supported` once at plan-build time (the FFN front is
- * converted; remaining stages migrate as touched). The contract is
+ * Probe-and-bind: plan-bound call sites consult `supported` once at
+ * plan-build time; the others negotiate per call. The contract is
  * strict: if `supported` returns true for a query, the op MUST return
  * GEIST_OK (or a real error like OOM — never GEIST_E_UNSUPPORTED) for
  * every call matching that query. Probe and kernel live side by side in
@@ -589,9 +578,8 @@ struct geist_backend_fused {
     /* Fused FFN gate+up matvec with GeGLU epilogue:
      *   y = gelu_tanh(x · gate_w^T) * (x · up_w^T)
      * One kernel reads x once for both weights and applies the activation
-     * in the epilogue — replaces two linears + gelu_mul. x [rows, d_in],
-     * gate_w/up_w resolved weight tensors [inter, d_in] (same dtype and
-     * shape), y [rows, inter]. Backends may support only a subset (e.g.
+     * in the epilogue. x [rows, d_in], gate_w/up_w resolved weight
+     * tensors [inter, d_in] (same dtype and shape), y [rows, inter]. Backends may support only a subset (e.g.
      * rows==1, Q4_K) — GEIST_E_UNSUPPORTED falls back to the decomposed
      * ops. nullptr = always decomposed. */
     enum geist_status (*ffn_gate_up)(struct geist_backend      *be,
@@ -623,9 +611,8 @@ struct geist_backend_fused {
      * q [seq, n_q_heads, hd], k/v [seq, n_kv_heads, hd], norm weights
      * [hd], cos/sin [seq, hd] views already positioned at q_position,
      * caches F32 or F16 DENSE 3D views. Half-split (non-interleaved)
-     * RoPE only. Replaces up to six decomposed ops (2 norms + 2 ropes +
-     * append) with two dispatches. GEIST_E_UNSUPPORTED = arch falls back
-     * to the decomposed ops. nullptr = always decomposed. */
+     * RoPE only. GEIST_E_UNSUPPORTED = arch falls back to the decomposed
+     * ops. nullptr = always decomposed. */
     enum geist_status (*attn_qkv_prep)(struct geist_backend      *be,
                                        struct geist_tensor       *q,
                                        struct geist_tensor       *k,
@@ -746,8 +733,7 @@ struct geist_backend_caps {
     /* Batched-submit pipeline (GPU): host round-trips stall it.
      * Consumers: spec head disables itself; weight loading prefers the
      * backend-arena mode over mmap-alias; KV-mode resolution defaults to
-     * FP32; session m_max cap is raised (no CPU quant-kernel stack
-     * limit). */
+     * FP32; session m_max cap is raised. */
     bool batched_submit;
 
     /* parallel_region_begin/end are implemented and meaningful.
@@ -775,7 +761,7 @@ struct geist_backend_caps {
      * costs its whole size in RAM when looked up on the device, but only
      * the rows a step reads when the host gathers them straight out of the
      * mmap. Consumer: exec_plan's model-level lookup decisions. Set by
-     * metal (#529). */
+     * metal. */
     bool lookup_tables_on_host;
 
     /* Bumped by the backend whenever kernel performance character
@@ -788,16 +774,13 @@ struct geist_backend_caps {
      * chunk recipe runs at its own optimal granularity regardless of
      * the caller's m). Consumer: state_create skips the DN m_max cap,
      * so the surrounding GEMMs keep their occupancy-friendly batch.
-     * Set by metal (its kernel sub-chunks) and by the three CPU backends
-     * (they run the host path, which does). Vulkan runs the same host
-     * path but has not been measured, so it still takes the cap — the
-     * bit is opt-in after measuring, not a description of the code. */
+     * Opt-in after measuring: set by metal and the CPU backends (whose
+     * host path sub-chunks); vulkan runs the same host path but is
+     * unmeasured and keeps the cap. */
     bool dn_subchunk;
 
     /* Preferred prefill batch size (m_max) measured for this backend;
-     * 0 = use the arch default. Consumer: state_create's m_max default.
-     * (metal: 128 — mm_sg GEMM fast paths want rows%64==0 and fewer,
-     * larger chunks.) */
+     * 0 = use the arch default. Consumer: state_create's m_max default. */
     size_t preferred_m_max;
 
     /* Largest batch (rows) the backend's kernels accept per call;
@@ -814,28 +797,20 @@ struct geist_backend_caps {
      * their own build target; the arch layer never sniffs platforms. */
     enum geist_kv_mode preferred_kv_mode;
 
-    /* A layer's INT8/INT4 KV cache is one buffer, K and V aliased slices
-     * of it, V half a row further into its page than K (half a page at
-     * most). A KV head's rows lie a cache row apart: at a power-of-two row
-     * they take 1/n_kv_heads of the cache sets, and K and V in buffers of
-     * their own, which start at the same offset in a page, took the same
-     * ones. Needs buffer_create_aliased to share the bytes of a
-     * GEIST_MEMORY_MAPPED buffer. Consumer: session
-     * allocation. Opt-in after measuring: cpu_x86. */
+    /* Allocate a layer's INT8/INT4 KV cache as one buffer with K and V as
+     * aliased slices, V offset half a row (at most half a page) from K, so
+     * K and V rows do not map to the same CPU cache sets. Needs
+     * buffer_create_aliased on a GEIST_MEMORY_MAPPED buffer. Consumer:
+     * session allocation. Opt-in after measuring: cpu_x86. */
     bool kv_q8_block;
 
-    /* The same for the dense (FP32/F16) KV cache, with V one KV head's slice
-     * (rounded up to 64 bytes) further into its page than K, and not at all
-     * with one KV head (whose rows lie next to each other and take every
-     * set). The dense caches then live in host memory: only for backends
+    /* The same for the dense (FP32/F16) KV cache, with V offset one KV
+     * head's slice (rounded up to 64 bytes); not applied with a single KV
+     * head. The dense caches then live in host memory, so only for backends
      * whose attention reads them there. Consumer: session allocation.
      * Opt-in after measuring: cpu_x86. */
     bool kv_dense_block;
 };
-
-/* ====================================================================== */
-/* Backend Descriptor                                                      */
-/* ====================================================================== */
 
 /* ====================================================================== */
 /* Calibration — measured per-machine tuning (EXPERIMENTAL)                */
@@ -857,6 +832,10 @@ struct geist_tunable {
     enum geist_tunable_kind kind;
     enum geist_status (*measure)(struct geist_backend *be, uint64_t budget_ns, int64_t *out_value);
 };
+
+/* ====================================================================== */
+/* Backend Descriptor                                                      */
+/* ====================================================================== */
 
 /* Each backend exports one of these as a `const` extern. The engine's
  * registry array points at descriptors of compiled-in backends. */
@@ -905,9 +884,8 @@ struct geist_backend {
     /* Error slot — DIAGNOSTIC DETAIL ONLY. Control flow runs through
      * enum geist_status returns; code that reads geist_backend_errcode
      * to decide WHETHER something failed is a bug. Set via
-     * geist_backend_set_error. Writes are guarded
-     * by err_mu so concurrent sessions can't interleave garbage into the
-     * message; reads (geist_backend_errmsg) return a pointer into the
+     * geist_backend_set_error; writes are guarded by err_mu so concurrent
+     * sessions can't interleave messages; reads (geist_backend_errmsg) return a pointer into the
      * slot and are last-writer-wins across sessions — read it after a
      * failing call on your own session. */
     enum geist_status err_code;

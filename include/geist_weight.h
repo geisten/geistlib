@@ -1,27 +1,20 @@
 /*
  * geist_weight.h — Pre-resolved linear-weight descriptor.
  *
- * @stability EXPERIMENTAL — added 2026-05-15 in refactor v2 (P1.1).
+ * @stability EXPERIMENTAL
  *
- * Replaces the per-op vtable dispatch for the linear() weight path. A
- * struct geist_weight is constructed at model load time: the backend's
- * resolve_weight() function inspects (dtype, n_in, n_out) and writes
- * direct function pointers for the M=1 (decode) and M>1 (prefill)
- * kernels. Hot-path callers then invoke
+ * A struct geist_weight is constructed at model load time: the backend's
+ * resolve_weight() inspects (dtype, n_in, n_out) once and writes direct
+ * function pointers for the M=1 (decode) and M>1 (prefill) kernels, so
+ * hot-path callers invoke
  *
  *     w->linear_mN(m, x, w, be, y);
  *
- * without any vtable indirection or per-call dtype switch.
- *
- * Rationale: at load time we know everything needed to pick a kernel —
- * weight dtype, shape, the active backend. Re-deciding on every call
- * (the former cpu_neon_linear switch over Q3_K/Q4_K/Q5_K/Q6_K/Q8_0/IQ2_S/
- * IQ3_S × M=1/M>1) is wasted work in the hot path. This struct moves
- * that decision out.
+ * without a vtable indirection or per-call dtype switch.
  *
  * Memory ownership:
- *   - `raw` aliases the gguf_reader's mmap (P0.3) or a backend-owned
- *     arena (P1.1.f). geist_weight does not own it.
+ *   - `raw` aliases the gguf_reader's mmap or a backend-owned arena.
+ *     geist_weight does not own it.
  *   - `aux_fp32` is owned by the model (heap_alloc_aligned, freed in
  *     model destroy). Used for backend-prefolded auxiliary data
  *     (e.g. AWQ inverse scales, dequantized scale tables).
@@ -32,9 +25,7 @@
  *   - linear_m1 / linear_mN must be allocation-free.
  *   - linear_pair_mN, when installed, must be allocation-free and may
  *     optimize two same-input projections together.
- *   - Caller-provided x and y must already be host-resident; both
- *     are raw float pointers (no buffer_map indirection for the
- *     activation tensors that flow through linear in the new path).
+ *   - Caller-provided x and y are host-resident raw float pointers.
  *   - Caller passes m = number of input rows for the multi-row path;
  *     m == 1 uses linear_m1.
  *
@@ -75,11 +66,8 @@ typedef void (*geist_kernel_linear_m1_fn)(const float               *x,
 
 /* Linear Y = X @ W^T for M>1 (prefill-style). X is [m, n_in],
  * Y is [m, n_out], both row-major dense FP32. See linear_m1_fn for
- * the `be` contract. */
-/* m leads, per the length-first rule. The extents cannot be spelled as
- * `[static ...]` here: x is [m, w->n_in] and y is [m, w->n_out], and those
- * dimensions live in `w` rather than in a parameter, so a contract on them
- * is not expressible. Plain pointers say so honestly. */
+ * the `be` contract. Plain pointers: the extents depend on `w`, so
+ * `[static ...]` cannot express them. */
 typedef void (*geist_kernel_linear_mN_fn)(
         size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
 
@@ -107,8 +95,8 @@ typedef void (*geist_kernel_linear_pair_mN_fn)(size_t                     m,
 enum geist_weight_flags {
     /* aux_fp32 holds AWQ inverse-scales of length n_out. */
     GEIST_W_HAS_AWQ_INV = 1U << 0,
-    /* The weight has been transpiled into a backend-private layout
-     * (P1.1.f end-state). raw points to backend arena, not mmap. */
+    /* The weight has been transpiled into a backend-private layout;
+     * raw points to the backend arena, not the mmap. */
     GEIST_W_BACKEND_OWNS = 1U << 1,
     /* aux_fp32 points to heap-owned backend auxiliary bytes that the
      * model state must free on destroy. aux_n stores byte count when
@@ -160,12 +148,9 @@ struct geist_weight {
 
     /* Optional ZO-tuning gain: points into the model-owned gains array
      * (geist_model_gains). The linear dispatcher multiplies this weight's
-     * output by *gain_slot. nullptr — the default, and the only value a
-     * build without GEIST_TUNE ever sees — means "no gain, no work".
-     *
-     * The field is present unconditionally so that a TU compiled with
-     * GEIST_TUNE and one compiled without agree on the struct layout;
-     * only the *use* in the dispatcher is #ifdef'd. */
+     * output by *gain_slot. nullptr (always, without GEIST_TUNE) = no gain.
+     * Present unconditionally so the struct layout does not depend on
+     * GEIST_TUNE. */
     const float *gain_slot;
 
     /* Optional exact output-row tiles, resolved with the ordinary kernel.
@@ -173,8 +158,7 @@ struct geist_weight {
      * F32 hidden row; y is contiguous F32 [n_tiles, linear_rows_tile].
      * Each tile retains the dense kernel's arithmetic and storage basis.
      * Caller validates ids and preallocates y. No heap allocation here.
-     * nullptr/0 = unsupported; no dense or dequantized fallback allowed.
-     * Appended EXPERIMENTAL fields preserve existing field offsets. */
+     * nullptr/0 = unsupported; no dense or dequantized fallback allowed. */
     enum geist_status (*linear_rows)(size_t n_tiles,
                                     const geist_token_t ids[GEIST_AT_LEAST(n_tiles)],
                                     const struct geist_tensor *x,
@@ -183,7 +167,7 @@ struct geist_weight {
                                     struct geist_tensor *y,
                                     struct geist_backend *be);
     size_t linear_rows_tile;
-    /* Optional setup only preparation (e.g. compile the chosen GPU pipeline).
+    /* Optional setup-only preparation (e.g. compile the chosen GPU pipeline).
      * Called once when creating a readout, serialized with model operations. */
     enum geist_status (*linear_rows_prepare)(const struct geist_weight *w, struct geist_backend *be);
 };
