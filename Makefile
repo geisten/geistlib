@@ -516,7 +516,7 @@ clean:
 
 distclean:
 	@rm -rf build lib bin
-	@rm -f *.npy *.bin test_* eval_geist bench_sgemv summary.json module_tree.txt tokens_ref.txt
+	@rm -f *.npy *.bin test_* eval_geist bench_sgemv summary.json module_tree.txt
 	@echo "Cleaned all targets, modes, and temporary files."
 
 # Code formatting via clang-format. Reads .clang-format from repo root.
