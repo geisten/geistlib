@@ -3,9 +3,8 @@
  *
  * Layer: ARCHITECTURE.
  *
- * Phase P1: skeleton. Locates vision_tower.safetensors and opens it;
- * encode_image / encode_video return 0 until the per-block forward
- * lands in P3-P4.
+ * Locates vision_tower.safetensors and runs the tower on images and
+ * video frames.
  *
  * Search heuristics for vision_tower.safetensors:
  *   - $GEIST_VISION_MODEL_PATH env override
@@ -31,8 +30,7 @@ struct vision_siglip_state {
     struct VisionEncoder *enc;
 };
 
-/* Mirrors audio_conformer's find_file. Kept arch-local for now —
- * promotion to a shared helper waits for the third encoder. */
+/* Mirrors audio_conformer's find_file. */
 static char *find_file(const char        *env_name,
                        const char        *aux_root,
                        const char        *basename,
@@ -71,7 +69,7 @@ static char *find_file(const char        *env_name,
 }
 
 static void *vision_siglip_state_create(struct geist_backend *be, const char *aux_root) {
-    (void) be; /* P3+: tower weights will route through backend buffers. */
+    (void) be; /* the tower runs on host memory, not backend buffers */
 
     static const char *vision_fallbacks[] = {
             "./vision_bench/vision_tower.safetensors",

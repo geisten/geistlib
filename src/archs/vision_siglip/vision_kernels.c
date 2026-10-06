@@ -181,19 +181,12 @@ void vision_attention_bidir_fp32(size_t       n_tokens,
                                  float       *out) {
     /* Per-head attention with OpenMP parallelism over heads.
      *
-     * Q/K/V/O live in interleaved (n, n_heads, head_dim) layout — we
-     * use BLAS strides (lda = n_heads * head_dim) to read per-head
-     * tiles without copying. Each head's QK^T + softmax + AV runs
-     * concurrently in a thread; per-thread scores scratch is
-     * allocated on the heap once and indexed by omp_get_thread_num()
-     * to avoid per-iteration malloc.
-     *
-     * Threading model: OpenMP outer parallel over n_heads=12; we
-     * disable Accelerate's internal threading per-call via
-     * BLAS_THREADING=SINGLE-THREADED if possible — on macOS we rely
-     * on Accelerate's small-problem auto-detect to stay single-thread
-     * for K=64. With 8 cores and 12 heads, expect 2-4x speedup over
-     * the sequential per-head loop.
+     * Q/K/V/O live in interleaved (n, n_heads, head_dim) layout; BLAS
+     * strides (lda = n_heads * head_dim) read per-head tiles without
+     * copying. Each head's QK^T + softmax + AV runs in its own thread;
+     * the per-thread scores scratch is allocated once and indexed by
+     * omp_get_thread_num(). On macOS, Accelerate stays single-threaded
+     * for these small (K=64) GEMMs on its own.
      */
     const float scale     = 1.0f;
     const int   hd_stride = (int) (n_heads * head_dim);
@@ -256,11 +249,9 @@ void vision_attention_bidir_fp32(size_t       n_tokens,
                     scores,
                     (int) n_tokens);
 
-        /* Row-wise softmax (fp32). Dominates attention cost (~70%);
-         * vvexpf when fast-path is enabled brings it from ~1100 ms
-         * wall down to ~150 ms wall. Branch hoisted out of the inner
-         * loop so the default path stays bit-for-bit identical to the
-         * pre-vvexpf code. */
+        /* Row-wise softmax (fp32), ~70% of attention cost. The fast-path
+         * branch is hoisted out of the inner loop so the default path
+         * stays bit-exact scalar expf. */
 #if defined(__APPLE__)
         if (fe) {
             extern void vvexpf(float *y, const float *x, const int *n_int);

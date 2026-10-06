@@ -1,5 +1,5 @@
 /*
- * image_pipeline — P2 impl. Matches transformers.models.gemma4
+ * image_pipeline — matches transformers.models.gemma4
  *   .image_processing_pil_gemma4.Gemma4ImageProcessorPil.
  *
  * Resize: stb_image_resize2 with STBIR_FILTER_CATMULLROM + STBIR_EDGE_CLAMP,
@@ -153,7 +153,7 @@ bool image_pipeline_preprocess(const uint8_t           *rgb_in,
         src = resized;
     }
 
-    /* Patchify HWC uint8 → (n_patches, kh*16 + kw*3 + c) fp32, /255.
+    /* Patchify HWC uint8 → (n_patches, kh*48 + kw*3 + c) fp32, /255.
      * Patch index i = patch_y * grid_w + patch_x. */
     const float  inv255     = 1.0f / 255.0f;
     const size_t grid_w     = plan->grid_w;
