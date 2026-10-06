@@ -3,9 +3,6 @@
  *
  * Layer: ENGINE.
  *
- * Defined in src/base/error.c.
- *
- * Pattern (per Q27):
  *   - Status code is the return value of every fallible API.
  *   - Detailed error message is attached to the relevant handle (backend,
  *     model, session) via geist_*_errmsg().

@@ -1,27 +1,26 @@
-//
-// Created by germar on 09.03.25.
-//
+/*
+ * src/base/heap.h — aligned, overflow-checked allocation (AGENT.md §3).
+ * Every allocation here frees with safe_free()/free().
+ */
 #pragma once
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdalign.h>
 
-/* Cache line size alignment for optimal CPU performance */
-#define CACHE_LINE_SIZE 64 /* 64 bytes = 512 bits (typical cache line size) */
+#define CACHE_LINE_SIZE 64
 
-/* Define SIMD alignment based on available hardware capabilities */
 #if defined(__AVX512F__)
-#define SIMD_ALIGNMENT 64 /* 512 bits */
+#define SIMD_ALIGNMENT 64
 #elif defined(__AVX__) || defined(__AVX2__)
-#define SIMD_ALIGNMENT 32 /* 256 bits */
+#define SIMD_ALIGNMENT 32
 #elif defined(__SSE__) || defined(__SSE2__) || defined(__NEON__)
-#define SIMD_ALIGNMENT 16 /* 128 bits */
+#define SIMD_ALIGNMENT 16
 #else
-#define SIMD_ALIGNMENT 8 /* Fallback */
+#define SIMD_ALIGNMENT 8
 #endif
 
-/* Use the larger of cache line and SIMD alignment for optimal performance */
+/* Minimum alignment of every allocation: the larger of cache line and SIMD width. */
 #define OPTIMAL_ALIGNMENT (CACHE_LINE_SIZE > SIMD_ALIGNMENT ? CACHE_LINE_SIZE : SIMD_ALIGNMENT)
 
 static_assert((CACHE_LINE_SIZE & (CACHE_LINE_SIZE - 1)) == 0,
@@ -29,13 +28,17 @@ static_assert((CACHE_LINE_SIZE & (CACHE_LINE_SIZE - 1)) == 0,
 static_assert((SIMD_ALIGNMENT & (SIMD_ALIGNMENT - 1)) == 0, "SIMD_ALIGNMENT must be a power of 2");
 static_assert(OPTIMAL_ALIGNMENT >= 8, "OPTIMAL_ALIGNMENT must be at least 8 bytes");
 
+/* `alignment` 0 means OPTIMAL_ALIGNMENT; smaller powers of two are raised to
+ * it, non-powers of two fail. Returns nullptr on a zero size, overflow or OOM.
+ * On Linux, allocations >= 2 MiB are advised MADV_HUGEPAGE unless
+ * GEIST_NO_HUGEPAGE is set. */
 void *heap_alloc_aligned(size_t size, size_t alignment);
+/* Zeroed count * size bytes; nullptr on overflow or a zero count/size. */
 void *heap_calloc_aligned(size_t count, size_t size, size_t alignment);
 
-/* count * size, computed by the allocator so it can refuse the overflow
- * instead of receiving a wrapped total. The uninitialized counterpart of
- * heap_calloc_aligned, which has always split its arguments this way.
- * Returns nullptr on overflow or on a zero count/size. */
+/* Uninitialized count * size bytes. The product is computed here so the
+ * overflow is refused instead of arriving wrapped. Returns nullptr on
+ * overflow or on a zero count/size. */
 void *heap_alloc_n_aligned(size_t count, size_t size, size_t alignment);
 
 /* Successful heap_alloc_aligned calls since process start. Hot paths are
@@ -50,16 +53,14 @@ void *heap_alloc_n_aligned(size_t count, size_t size, size_t alignment);
  * sets it. */
 void heap_fail_allocations(bool on);
 
-/* The array macros multiplied `count * sizeof(type)` at the call site and
- * handed the allocator whatever came out. Model- and caller-controlled
- * counts reach these (GGUF tensor dimensions, image geometry, KV
- * capacities), and a wrapped product is a small allocation followed by a
- * large write. The count and the element size stay separate now, all the
- * way to the check. */
+/* Typed array allocation. Count and element size reach the overflow check
+ * separately: model-controlled counts (tensor dims, image geometry, KV
+ * capacities) must not wrap into a small allocation. */
 #define heap_alloc_array_aligned(_type, _num) \
     ((_type *) heap_alloc_n_aligned((_num), sizeof(_type), alignof(_type)))
 
 #define heap_calloc_array_aligned(_type, _num) \
     ((_type *) heap_calloc_aligned((_num), sizeof(_type), alignof(_type)))
 
+/* free(*ptr) and set *ptr = nullptr; tolerates null ptr and null *ptr. */
 void safe_free(void **ptr);

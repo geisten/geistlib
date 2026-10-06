@@ -22,7 +22,7 @@
  *   |c<logical cores>|l<l3 domains>
  * The tunable-name hash auto-invalidates on renames/additions; the
  * per-backend generation is bumped manually when kernel performance
- * character changes without a name change (the #318 case).
+ * character changes without a name change (see #318).
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
