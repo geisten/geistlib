@@ -13,9 +13,8 @@
 #include <arm_neon.h>
 #endif
 
-/* Bulk fp16 → fp32 conversion. Uses hardware vcvt on NEON, scalar fallback
- * everywhere else. The scalar path mirrors quant.h's fp16_to_fp32
- * but is inlined here so this file stays standalone. */
+/* Bulk fp16 → fp32: hardware vcvt on NEON, otherwise a scalar copy of
+ * quant.h's fp16_to_fp32 (this file does not depend on quant.h). */
 static void ptqtp_convert_alpha_fp16_to_fp32(float *dst, const uint16_t *src, size_t n) {
 #if defined(__ARM_NEON) && defined(__ARM_FP16_FORMAT_IEEE)
     size_t i = 0;
@@ -307,13 +306,10 @@ struct ptqtp_ctx *ptqtp_open(const char *path, const char **err) {
         }
     }
 
-    /* Pre-convert all alpha values from fp16 to fp32 once. The kernel hot
-     * path otherwise calls a software fp16_to_fp32 ~15M times per token. */
-    /* total_alpha_elems is summed from tensor dims read out of the (possibly
-     * corrupt/hostile) GGUF file. Every step — the per-tensor product, the
-     * running sum, and the final byte-size multiply — is checked for size_t
-     * overflow. A wrapped size would under-allocate and let the convert loop
-     * below overflow the heap. */
+    /* Convert all alpha values to fp32 once so the kernels skip it per token.
+     * The sizes come from untrusted file dims: every product and the running
+     * sum are overflow-checked, or a wrapped size would under-allocate the
+     * arena the convert loop below writes. */
     size_t total_alpha_elems = 0;
     bool   size_overflow     = false;
     for (uint32_t i = 0; i < ctx->n_tensors; i++) {
@@ -342,8 +338,6 @@ struct ptqtp_ctx *ptqtp_open(const char *path, const char **err) {
         ptqtp_close(ctx);
         return nullptr;
     }
-    /* heap.h provides overflow-checked rounding and at least 64-byte
-     * alignment. */
     ctx->alpha_fp32_arena = heap_alloc_array_aligned(float, total_alpha_elems);
     if (!ctx->alpha_fp32_arena) {
         if (err)

@@ -1,5 +1,5 @@
 /*
- * Minimal GGUF v3 reader for Gemma 4 Q4_K_M / Q8_0 / F16 / F32 inference.
+ * Minimal GGUF v3 reader (mmap or caller memory).
  *
  * Format ref: https://github.com/ggml-org/ggml/blob/master/docs/gguf.md
  *
@@ -13,9 +13,7 @@
  *   <padding to alignment>
  *   tensor_data                     — raw bytes, accessed via offsets
  *
- * This reader skips metadata values (we hardcode model params from config)
- * but walks the KV section to find the tensor_info and data offsets.
- * Typed metadata access via gguf_get_meta_*() (added P1.4.d).
+ * Typed metadata access via gguf_get_meta_*().
  */
 #ifndef GGUF_READER_H
 #define GGUF_READER_H
@@ -100,7 +98,7 @@ struct gguf_ctx *gguf_open_memory(const void *data, size_t size, const char **er
 void gguf_close(struct gguf_ctx *ctx);
 
 /* Drop this process's pages of [p, p + n) when they lie in a file mapping
- * (#468): the whole pages inside the range get MADV_DONTNEED. The mapping is
+ * (see #468): the whole pages inside the range get MADV_DONTNEED. The mapping is
  * read-only, so the bytes stay readable; a later read faults them back in
  * from the file. Meant for weights a backend has copied to its device, whose
  * file pages would otherwise stay resident beside the copy (on unified
@@ -117,7 +115,7 @@ const char *gguf_dtype_name(gguf_dtype_t dt);
 /* Total element count across all dims of a tensor. */
 size_t gguf_tensor_elem_count(const struct gguf_tensor_t *t);
 
-/* ---- Metadata KV access (P1.4.d) -------------------------------------- *
+/* ---- Metadata KV access ------------------------------------------------ *
  *
  * Typed getters for `metadata_kv` entries. All return `false`/`nullptr`
  * when the key is missing or the on-disk value type doesn't match the
@@ -132,8 +130,8 @@ bool        gguf_get_meta_u32(const struct gguf_ctx *ctx, const char *key, uint3
 bool        gguf_get_meta_f32(const struct gguf_ctx *ctx, const char *key, float *out);
 bool        gguf_get_meta_bool(const struct gguf_ctx *ctx, const char *key, bool *out);
 
-/* Metadata entries by position, in file order (#622: the model keeps its
- * string entries after the ctx closes). gguf_meta_string_at writes entry i's
+/* Metadata entries by position, in file order (lets the model copy its
+ * string entries out before the ctx closes). gguf_meta_string_at writes entry i's
  * key and string value (length-prefixed in GGUF, so *out_len, and not
  * NUL-terminated) and returns true; false, with the outputs nullptr / 0, when
  * i is out of range or entry i is not a string. */
@@ -144,7 +142,7 @@ bool   gguf_meta_string_at(const struct gguf_ctx *ctx,
                            const char           **out_val,
                            size_t                *out_len);
 
-/* Array access (P1.5.f). Returns false when the key is missing or the
+/* Array access. Returns false when the key is missing or the
  * value type isn't ARRAY. Caller receives the GGUF element type code
  * (GGUF_VT_*), element count, and a pointer at the first element's
  * payload — i.e. just past the (u32 elem_vt + u64 count) array header.

@@ -15,7 +15,7 @@
 #include "gguf_reader.h"
 
 /* Generic dispatch: dequantize a GGUF tensor of any supported dtype to a
- * freshly malloc'd FP32 array. Caller frees. Returns nullptr on error
+ * fresh heap.h FP32 array; caller frees with safe_free. Returns nullptr on error
  * (unsupported dtype or alloc failure). */
 float *gguf_dequant_to_fp32(const struct gguf_tensor_t *t);
 

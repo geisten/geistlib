@@ -1,5 +1,5 @@
 /*
- * Minimal safetensors reader for Gemma 4 bringup.
+ * Minimal safetensors reader (mmap).
  *
  * Format reference:
  *   bytes 0..7   uint64 little-endian: header_size

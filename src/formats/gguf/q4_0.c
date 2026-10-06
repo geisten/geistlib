@@ -1,5 +1,5 @@
 /*
- * src/formats/gguf/q4_0.c — Q4_0 dequant (read-only — no W*A8 hot path).
+ * src/formats/gguf/q4_0.c — Q4_0 block dequantization.
  *
  * Layer: BACKEND.
  */
