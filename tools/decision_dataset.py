@@ -4,6 +4,17 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 import hashlib
 import json
+from pathlib import Path
+
+
+def read_json(path):
+    def invalid(value):
+        raise ValueError(f"nonfinite JSON value: {value}")
+    return json.loads(Path(path).read_text(), parse_constant=invalid)
+
+
+def write_json(path, value, ensure_ascii=False):
+    path.write_text(json.dumps(value, ensure_ascii=ensure_ascii, indent=2, allow_nan=False) + "\n")
 
 
 def digest(value):

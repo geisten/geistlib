@@ -11,10 +11,6 @@ import decision_dataset as data
 import decision_encoders as encoders
 
 
-def write_json(path, value):
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
-
-
 def prepare(args):
     start = time.perf_counter()
     import pyarrow.parquet as pq
@@ -41,7 +37,7 @@ def prepare(args):
     args.out_dir.mkdir(parents=True, exist_ok=False)
     path = args.out_dir / f"{args.split}.jsonl"
     path.write_text("".join(json.dumps(r, ensure_ascii=False, allow_nan=False) + "\n" for r in prepared))
-    write_json(args.out_dir / "split_audit.json", audit)
+    data.write_json(args.out_dir / "split_audit.json", audit)
     metadata = {"protocol": "geist-decision-encoder-cases-v1", "dataset": "cais/mmlu",
                 "dataset_revision": args.dataset_revision, "dataset_subset": args.overlap_policy == "exclude",
                 "dataset_files_sha256": {s: encoders.sha256(p) for s, p in files.items()},
@@ -52,7 +48,7 @@ def prepare(args):
                 "preparation_wall_ms": (time.perf_counter() - start) * 1000,
                 "scope": "Token-independent cases; model-specific prompts and token IDs recorded by each adapter."
                          " Exact-overlap exclusion changes the population; no semantic deduplication."}
-    write_json(args.out_dir / "metadata.json", metadata)
+    data.write_json(args.out_dir / "metadata.json", metadata)
     print(args.out_dir / "metadata.json")
 
 

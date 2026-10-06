@@ -22,14 +22,10 @@ import decision_encoders as encoders
 import decision_metrics as metrics
 
 
-def write_json(path, value):
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
-
-
 def load_cases(directory, split, purpose):
-    meta = encoders.read_json(directory / "metadata.json")
+    meta = data.read_json(directory / "metadata.json")
     audit_path = directory / "split_audit.json"
-    audit = encoders.read_json(audit_path)
+    audit = data.read_json(audit_path)
     path = directory / f"{split}.jsonl"
     if (meta.get("protocol") != "geist-decision-encoder-cases-v1" or meta["split"] != split
             or encoders.sha256(path) != meta["cases_sha256"]
@@ -187,7 +183,7 @@ def run(args):
             ["git", "status", "--porcelain"], cwd=Path(__file__).resolve().parent, text=True).splitlines()
     except (OSError, subprocess.CalledProcessError):
         manifest["source_revision"] = None
-    write_json(args.out_dir / "manifest.json", manifest)
+    data.write_json(args.out_dir / "manifest.json", manifest)
     try:
         import torch
         torch.set_num_threads(args.threads)
@@ -197,10 +193,10 @@ def run(args):
         backend = encoders.create_backend(args.adapter, args.model_dir, enabled=True,
                                          device=args.device, dtype=args.dtype, max_tokens=args.max_tokens)
         setup_ms = (time.perf_counter() - load_start) * 1000
-        write_json(args.out_dir / "adapter.json", backend.metadata)
+        data.write_json(args.out_dir / "adapter.json", backend.metadata)
     except Exception as exc:
-        write_json(args.out_dir / "failure.json", {"error": type(exc).__name__, "message": str(exc),
-                                                  "phase": "setup", "completed_sample_records": 0})
+        data.write_json(args.out_dir / "failure.json", {"error": type(exc).__name__, "message": str(exc),
+                                                       "phase": "setup", "completed_sample_records": 0})
         raise
     samples = []
     try:
@@ -236,12 +232,12 @@ def run(args):
                       * (1 if sys.platform == "darwin" else 1024))
         if encoders.artifact_manifest(args.model_dir) != artifacts:
             raise ValueError("checkpoint artifacts changed during evaluation")
-        write_json(args.out_dir / "report.json", report)
+        data.write_json(args.out_dir / "report.json", report)
         print(json.dumps({k: report[k] for k in ("questions", "scored", "correct", "rejected",
                                                  "warm_request_p50_ms", "predictions_stable")}), flush=True)
     except Exception as exc:
-        write_json(args.out_dir / "failure.json", {"error": type(exc).__name__, "message": str(exc),
-                                                  "completed_sample_records": len(samples)})
+        data.write_json(args.out_dir / "failure.json", {"error": type(exc).__name__, "message": str(exc),
+                                                       "completed_sample_records": len(samples)})
         raise
     finally:
         backend.close()
